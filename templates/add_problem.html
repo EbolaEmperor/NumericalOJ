@@ -1,0 +1,76 @@
+{% extends "layout.html" %}
+{% block title %}添加题目 - {{ super() }}{% endblock %}
+{% block content %}
+<h2><i class="fas fa-pencil-alt me-2"></i> 添加新题目</h2>
+
+<!-- 如果后端传来了错误信息（如标题或内容为空），则显示警告 -->
+{% if error_message %}
+  <div class="alert alert-danger" role="alert">
+    {{ error_message }}
+  </div>
+{% endif %}
+
+<form method="POST" action="{{ url_for('add_problem') }}">
+  <div class="mb-3">
+    <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
+    <input type="text" class="form-control" id="titleInput" name="title" required>
+  </div>
+  <div class="mb-3">
+    <label for="contentTextArea" class="form-label"><i class="fab fa-markdown me-2"></i> 题面 (Markdown + LaTeX)</label>
+    <textarea class="form-control" id="contentTextArea" name="content" rows="10" required></textarea>
+    <small class="text-muted">可使用 Markdown + LaTeX 语法；如行内公式可用 \$...\$ 或 \\(...\\)。</small>
+  </div>
+  <div class="mb-3">
+    <label for="initialCodeEditor" class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
+    <div class="card">
+      <div class="card-body p-0">
+        <textarea id="initialCode" name="initial_code" style="display:none;"></textarea>
+        <div id="initialCodeEditor"></div>
+      </div>
+    </div>
+    <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
+  </div>
+  <div class="mb-3">
+    <label for="forbiddenFuncInput" class="form-label"><i class="fas fa-ban me-2"></i> 禁用函数 (可选)</label>
+    <input type="text" class="form-control" id="forbiddenFuncInput" name="forbidden_func">
+    <small class="text-muted">可以输入多个函数名，用逗号分隔。</small>
+  </div>
+  <button type="submit" class="btn btn-outline-success"><i class="fas fa-check"></i> 确认添加</button>
+</form>
+
+<!-- 引入 CodeMirror 的 CSS 和 JS（本地托管） -->
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
+<script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+
+<!-- 引入 CodeMirror 的额外样式和脚本（可选） -->
+<!-- 如果需要更多功能，如自动完成、括号匹配等，可以引入相应的插件 -->
+
+<script>
+  // 初始化 CodeMirror for initial_code
+  var initialCodeEditor = CodeMirror.fromTextArea(document.getElementById('initialCode'), {
+    mode: 'octave',
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    matchBrackets: true,
+    autofocus: true,
+    extraKeys: {
+      "Tab": "indentMore",
+      "Shift-Tab": "indentLess"
+    }
+  });
+
+  // 设置等宽字体
+  initialCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  initialCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  // 在表单提交前，将 CodeMirror 的内容同步到隐藏的 textarea
+  document.querySelector('form').addEventListener('submit', function(e) {
+    document.getElementById('initialCode').value = initialCodeEditor.getValue();
+  });
+</script>
+{% endblock %}

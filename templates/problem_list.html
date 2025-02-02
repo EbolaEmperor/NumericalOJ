@@ -1,0 +1,243 @@
+{% extends "layout.html" %}
+{% block title %}
+  {% if user and user.is_admin != 1 %}
+    我的作业 - {{ super() }}
+  {% else %}
+    题目列表 - {{ super() }}
+  {% endif %}
+{% endblock %}
+{% block content %}
+<div class="container my-4">
+  <div class="row">
+    <!-- 左侧内容：题目列表 -->
+    <div class="col-md-8">
+      <h2 class="mb-4">
+        {% if user and user.is_admin != 1 %}
+        <i class="fas fa-tasks me-2"></i> 我的作业
+        {% else %}
+        <i class="fas fa-book me-2"></i> 题目列表
+        {% endif %}
+      </h2>
+      {% if user and user.is_admin == 1 %}
+        <!-- 管理员视图：显示所有题目，并提供添加/删除功能 -->
+        <div class="mb-3">
+          <a href="{{ url_for('add_problem') }}" class="btn btn-outline-success">
+            <i class="fas fa-plus me-2"></i>添加题目
+          </a>
+        </div>
+        <ul class="list-group">
+          {% for p in problems %}
+            <li class="list-group-item">
+              <div class="d-flex justify-content-between align-items-center">
+                <!-- 左侧显示题目编号和标题 -->
+                <div>
+                  <span class="fw-bold">{{ p.id }}.</span>
+                  <a href="{{ url_for('problem_detail', problem_id=p.id) }}" class="ms-2 text-decoration-none">{{ p.title }}</a>
+                </div>
+                <!-- 右侧显示完成人数和删除按钮 -->
+                <div class="d-flex align-items-center">
+                  <span class="text-dark me-3 text-center" style="width: 80px;">
+                    <i class="fas fa-user me-1"></i>× {{ p.cnt or 0 }}
+                  </span>
+                  <button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteProblem({{ p.id }})">
+                    <i class="fas fa-trash-alt me-1"></i>删除题目
+                  </button>
+                </div>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <!-- 非管理员用户视图：只显示其所在班级作业中的题目 -->
+        <ul class="list-group">
+          {% for hw in homeworks %}
+            <li class="list-group-item">
+              <div class="d-flex justify-content-between align-items-center">
+                <!-- 左侧显示题目编号和标题 -->
+                <div>
+                  <span class="fw-bold">{{ hw.problem_id }}.</span>
+                  <a href="{{ url_for('problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none">{{ hw.problem_title }}</a>
+                </div>
+                <!-- 右侧显示完成状态或作业截止时间 -->
+                <div class="d-flex align-items-center">
+                  <span class="text-dark me-3 text-center" style="width: 80px;">
+                    <i class="fas fa-user me-1"></i>× {{ hw.complete_cnt or 0 }}
+                  </span>
+                  {% if hw.is_completed %}
+                    <!-- 如果已完成，显示绿色的勾 -->
+                    <i class="fas fa-check-circle text-success" title="已完成"></i>
+                  {% else %}
+                    {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
+                    {% set remaining = (hw.ddl - now).total_seconds() %}
+                    {% if remaining < 0 %}
+                      <span class="text-muted">已过期</span>
+                    {% elif remaining < 86400 %}
+                      <span class="text-danger">{{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                    {% elif remaining < 3 * 86400 %}
+                      <span class="text-warning">{{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                    {% else %}
+                      <span class="text-success">{{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                    {% endif %}
+                  {% endif %}
+                </div>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+
+    <!-- 右侧侧边栏：显示 MATLAB 编程小提示 -->
+    <div class="col-md-4">
+      <div class="card mt-3">
+        <div class="card-body" style="height: 150px; overflow-y: auto;"> <!-- 固定高度和滚动 -->
+          <h6 class="text-muted"><i class="fas fa-code me-2"></i> MATLAB 编程小贴士</h6>
+          <p id="matlab-tip">加载中...</p>
+          <button class="btn btn-outline-secondary btn-sm float-end" id="refresh-btn" style="border-radius: 50%;">
+            <i class="fas fa-sync-alt"></i> <!-- 只显示图标 -->
+          </button>
+        </div>
+      </div>
+
+      <!-- GitHub 开源项目推荐 -->
+      <div class="card mt-3">
+        <div class="card-body">
+          <h6 class="text-muted"><i class="fab fa-github me-2"></i> GitHub 优质开源项目推荐</h6>
+          <ul class="list-unstyled" id="github-projects-list">
+            <!-- 动态填充 GitHub 开源项目 -->
+          </ul>
+          <button class="btn btn-outline-secondary btn-sm float-end" id="projects-refresh-btn" style="border-radius: 50%;">
+            <i class="fas fa-sync-alt"></i> <!-- 只显示图标 -->
+          </button>
+        </div>
+      </div>
+
+      <!-- 友情链接框 -->
+      <div class="card mt-3">
+        <div class="card-body">
+          <h6 class="text-muted"><i class="fas fa-link me-2"></i> 友情链接</h6>
+          <ul class="list-unstyled">
+            <li><a href="https://www.mathworks.com/" target="_blank" class="ms-2 text-decoration-none">MATLAB 官网</a></li>
+            <li><a href="https://www.bttyt.com" target="_blank" class="ms-2 text-decoration-none">北太天元官网</a></li>
+            <li><a href="https://zju_math.pages.zjusct.io/mathweb/" target="_blank" class="ms-2 text-decoration-none">浙江大学数学之韵</a></li>
+            <li><a href="https://www.cc98.org" target="_blank" class="ms-2 text-decoration-none">CC98</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if user and user.is_admin == 1 %}
+<!-- 删除题目的 Java学术处理函数（仅管理员可用） -->
+<script>
+function deleteProblem(problemId) {
+  if (confirm("确定要删除这个题目吗？")) {
+    fetch(`/admin/delete_problem/${problemId}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        location.reload();
+      } else {
+        alert(data.message || "删除失败");
+      }
+    })
+    .catch(error => {
+      console.error("Error:", error);
+      alert("请求失败，请检查网络");
+    });
+  }
+}
+</script>
+{% endif %}
+
+<script>
+// MATLAB 小贴士
+const matlabTips = [
+  "使用 clc 来清除命令窗口。",
+  "确保每次调用函数时使用正确的输入参数。",
+  "使用 for 循环时，尽量避免使用 eval。",
+  "MATLAB 中的矩阵运算通常比循环更高效。",
+  "利用 MATLAB 内建函数来简化你的代码，避免重复实现相同功能。",
+  "避免在循环中使用 size 或 length 计算数组的维度，改用预先计算的常量。",
+  "当数据集较大时，使用矢量化代码来提高效率。",
+  "使用 clear 清除不再需要的变量，释放内存。",
+  "在写函数时，尽量避免全局变量，使用局部变量来确保代码的可维护性。",
+  "多使用 MATLAB 的内建工具箱，避免重新实现已有的功能。",
+  "在创建大量图表时，使用 subplot 来优化空间使用。",
+  "使用 try-catch 来捕获错误并进行错误处理。",
+  "MATLAB 中的 cell 数组用于存储不同类型的数据，常用于复杂数据结构。",
+  "使用 function 创建自己的函数，提升代码的可复用性。",
+  "了解 MATLAB 的内存管理机制，避免不必要的内存消耗。"
+];
+
+// 随机初始化一个提示
+let currentTipIndex = Math.floor(Math.random() * matlabTips.length);
+
+function refreshTip() {
+  // 刷新显示下一个提示
+  currentTipIndex = (currentTipIndex + 1) % matlabTips.length;
+  document.getElementById('matlab-tip').innerText = matlabTips[currentTipIndex];
+}
+
+// 初始化时显示随机一个提示
+refreshTip();
+
+// 绑定点击事件到刷新按钮
+document.getElementById('refresh-btn').addEventListener('click', refreshTip);
+
+// GitHub 开源项目推荐
+const githubProjects = [
+  { name: "Linux", url: "https://github.com/torvalds/linux" },
+  { name: "Python", url: "https://github.com/python/cpython" },
+  { name: "VSCode", url: "https://github.com/Microsoft/vscode" },
+  { name: "TensorFlow", url: "https://github.com/tensorflow/tensorflow" },
+  { name: "React", url: "https://github.com/facebook/react" },
+  { name: "Vue", url: "https://github.com/vuejs/vue" },
+  { name: "Bootstrap", url: "https://github.com/twbs/bootstrap" },
+  { name: "Django", url: "https://github.com/django/django" },
+  { name: "Node.js", url: "https://github.com/nodejs/node" },
+  { name: "Electron", url: "https://github.com/electron/electron" },
+  { name: "Rust", url: "https://github.com/rust-lang/rust" },
+  { name: "Kubernetes", url: "https://github.com/kubernetes/kubernetes" },
+  { name: "Home Assistant", url: "https://github.com/home-assistant/core" },
+  { name: "Ansible", url: "https://github.com/ansible/ansible" },
+  { name: "Jupyter Notebook", url: "https://github.com/jupyter/notebook" },
+  { name: "Git", url: "https://github.com/git/git" },
+  { name: "Kotlin", url: "https://github.com/JetBrains/kotlin" },
+  { name: "OpenCV", url: "https://github.com/opencv/opencv" },
+  { name: "Apache Kafka", url: "https://github.com/apache/kafka" }
+];
+
+// 显示三个推荐项目
+function refreshProjects() {
+  // 随机选择三个项目
+  const selectedProjects = [];
+  while (selectedProjects.length < 3) {
+    const randomProject = githubProjects[Math.floor(Math.random() * githubProjects.length)];
+    if (!selectedProjects.includes(randomProject)) {
+      selectedProjects.push(randomProject);
+    }
+  }
+  // 更新显示
+  const projectsList = document.getElementById("github-projects-list");
+  projectsList.innerHTML = "";
+  selectedProjects.forEach(project => {
+    const listItem = document.createElement("li");
+    listItem.innerHTML = `<a href="${project.url}" target="_blank" class="ms-2 text-decoration-none">${project.name}</a>`;
+    projectsList.appendChild(listItem);
+  });
+}
+
+// 初始化时显示第一个三个项目
+refreshProjects();
+
+// 绑定点击事件到刷新按钮
+document.getElementById('projects-refresh-btn').addEventListener('click', refreshProjects);
+</script>
+{% endblock %}

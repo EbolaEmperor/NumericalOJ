@@ -1,0 +1,144 @@
+{% extends "layout.html" %}
+{% block title %}提交详情 - {{ super() }}{% endblock %}
+{% block content %}
+<div class="row">
+  <!-- 左侧：提交详情和代码展示 -->
+  <div class="col-md-8 mb-3">
+    <h2><span class="{{ submission.status | lower | replace(' ', '-') }}">
+      {{ submission.status }}
+    </span></h2>
+    <h2><i class="fas fa-trophy me-2"></i> <strong>得分：</strong>
+      {% set max_score = test_points | length %}
+      {% if max_score == 0 %}
+        <span class="text-danger">{{ submission.score }}</span>
+        / ?
+      {% else %}
+        {% set percentage = (submission.score / max_score) * 100 %}
+        {% if submission.score == max_score %}
+          <span class="text-success">{{ submission.score }}</span>
+        {% elif percentage >= 60 %}
+          <span class="text-warning">{{ submission.score }}</span>
+        {% else %}
+          <span class="text-danger">{{ submission.score }}</span>
+        {% endif %}
+        / {{ max_score }}
+      {% endif %}
+    </h2>
+    <p class="mt-3"><i class="fas fa-code me-2"></i> <strong>提交代码：</strong></p>
+    
+    <div class="card">
+      <div class="card-body p-0">
+    <!-- CodeMirror 容器 -->
+    <textarea id="submissionCode" name="code" readonly>{{ submission.code }}</textarea>
+    </div>
+    </div>
+
+    <hr/>
+    <a href="{{ url_for('problem_detail', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
+    <a href="{{ url_for('submission_list', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回本题记录</a>
+  </div>
+
+  <!-- 右侧：测试点详情 -->
+  <div class="col-md-4 mb-3">
+    <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
+      <ul class="list-group mt-2">
+        {% for tp in test_points %}
+        <li class="list-group-item">
+          测试点{{ loop.index }}：
+          <span class="{{ tp.status | lower | replace(' ', '-') }}">
+            {{ tp.status }}
+          </span>
+        </li>
+      {% endfor %}
+      </ul>
+  </div>
+</div>
+
+<!-- 引入 CodeMirror 的 CSS 和 JS（本地托管） -->
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
+<script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+
+<!-- 定义状态颜色的 CSS 类 -->
+<style>
+  /* Accepted - 绿色 */
+  .accepted {
+    color: rgb(36, 180, 77);
+    font-weight: bold;
+  }
+
+  /* Wrong Answer - 红色 */
+  .wrong-answer, .unaccepted {
+    color: rgb(226, 23, 60);
+    font-weight: bold;
+  }
+
+  /* Time Limit Exceeded - 黄色 */
+  .time-limit-exceeded {
+    color: orange; /* 使用橙色以提高可读性 */
+    font-weight: bold;
+  }
+
+  /* Memory Limit Exceeded - 深蓝色 */
+  .memory-limit-exceeded, .forbidden {
+    color: darkblue;
+    font-weight: bold;
+  }
+
+  /* No Output - 紫色 */
+  .no-output {
+    color: purple;
+    font-weight: bold;
+  }
+
+  /* Pending 和 Waiting - 浅蓝色 */
+  .pending, .waiting {
+    color: lightblue;
+    font-weight: bold;
+  }
+</style>
+
+
+<script>
+  // 初始化 CodeMirror for submission code
+  var submissionCodeEditor = CodeMirror.fromTextArea(document.getElementById('submissionCode'), {
+    mode: 'octave',
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    readOnly: true,             // 只读模式
+    matchBrackets: true
+  });
+
+  // 设置等宽字体
+  submissionCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  submissionCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  if (window.innerWidth <= 768) {
+    submissionCodeEditor.setSize(null, "300px");
+  } else {
+    submissionCodeEditor.setSize(null, "500px");
+  }
+
+  // 响应式调整高度
+  window.addEventListener('resize', function() {
+    if (window.innerWidth <= 768) {
+      submissionCodeEditor.setSize(null, "300px");
+    } else {
+      submissionCodeEditor.setSize(null, "500px");
+    }
+  });
+</script>
+
+{% if max_score == 0 %}
+<script>
+  setTimeout(function() {
+    location.replace(location.href); // 强制刷新页面
+  }, 5000); // 5000毫秒后执行，即5秒
+</script>
+{% endif %}
+
+{% endblock %}

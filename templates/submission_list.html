@@ -1,0 +1,72 @@
+{% extends "layout.html" %}
+{% block title %} 提交记录 - {{ super() }}{% endblock %}
+{% block content %}
+<h2><i class="fas fa-chart-pie me-2"></i> 提交记录 - P{{ problem_id }}</h2>
+<div class="list-group">
+  <!-- 表头 -->
+  <div class="list-group-item bg-light d-flex text-muted small">
+    <div class="flex-fill" style="width: 15%; text-align: center;"><i class="fas fa-circle me-2"></i> 状态</div>
+    <div class="flex-fill" style="width: 10%; text-align: center;"><i class="fas fa-trophy me-2"></i> 得分</div>
+    <div class="flex-fill" style="width: 35%; text-align: center;"><i class="fas fa-book me-2"></i> 题目</div>
+    <div class="flex-fill" style="width: 20%; text-align: center;"><i class="fas fa-user me-2"></i> 提交者</div>
+    <div class="flex-fill" style="width: 20%; text-align: center;"><i class="fas fa-history me-2"></i> 提交时间</div>
+    <div style="width: 150px;"></div> <!-- 按钮占位 -->
+  </div>
+
+  {% for sub in user_submissions %}
+    <div class="list-group-item d-flex align-items-center">
+      <!-- 状态列 -->
+      <div class="flex-fill" style="width: 15%; text-align: center;">
+        <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
+          {{ sub.status }}
+        </span>
+      </div>
+      
+      <!-- 得分列 -->
+      <div class="flex-fill" style="width: 10%; text-align: center;">{{ sub.score }}</div>
+      
+      <!-- 题目列 -->
+      <div class="flex-fill text-truncate" style="width: 35%; text-align: center;">
+        {{ sub.problem_title }}
+      </div>
+      
+      <!-- 提交者列 -->
+      <div class="flex-fill text-muted" style="width: 20%; text-align: center;">{{ user['username'] }}</div>
+      
+      <!-- 时间列 -->
+      <div class="flex-fill text-muted" style="width: 20%; text-align: center;">
+        <small>{{ sub.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+      </div>
+      
+      <!-- 操作按钮 -->
+      <div style="width: 150px; text-align: center;">
+        <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" 
+           class="btn btn-sm btn-outline-secondary">
+          查看详情 &rarr;
+        </a>
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+<hr/>
+<a href="{{ url_for('problem_detail', problem_id=problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
+
+<style>
+  /* 保持原有颜色配置 */
+  .badge.accepted { background-color: rgb(36, 180, 77); color: white; }
+  .badge.unaccepted { background-color: rgb(226, 23, 60); color: white; }
+  .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
+  .badge.undefined-status { background-color: gray; color: white; }
+
+  /* 增加列对齐优化 */
+  .list-group-item > div {
+    padding: 0 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 可以添加其他的样式设置 */
+</style>
+{% endblock %}
