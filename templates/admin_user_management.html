@@ -1,0 +1,241 @@
+{% extends "layout.html" %}
+{% block title %}用户管理 - {{ super() }}{% endblock %}
+{% block content %}
+<h2><i class="fas fa-users me-2"></i> 用户管理</h2>
+
+<!-- 搜索和过滤表单 -->
+<form method="get" action="{{ url_for('user_management') }}" class="mb-4">
+  <div class="row g-3">
+    <div class="col-md-4">
+      <input type="text" name="username" class="form-control" 
+             placeholder="搜索用户名" value="{{ search_username }}">
+    </div>
+    <div class="col-md-4">
+      <select name="class" class="form-select">
+        <option value="">全部班级</option>
+        {% for c in classes %}
+          <option value="{{ c.class_en }}" 
+            {% if search_class == c.class_en %}selected{% endif %}>
+            {{ c.class_cn }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-4">
+      <button type="submit" class="btn btn-outline-primary"><i class="fas fa-search me-2"></i>搜索</button>
+      <a href="{{ url_for('user_management') }}" class="btn btn-outline-secondary"><i class="fas fa-sync me-2"></i>重置</a>
+    </div>
+  </div>
+</form>
+
+<!-- 新增班级按钮 -->
+<button type="button" class="btn btn-outline-success mb-3" data-bs-toggle="modal" data-bs-target="#addClassModal">
+  <i class="fas fa-plus me-2"></i>新增班级
+</button>
+
+<table class="table table-bordered" id="userTable">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>用户名</th>
+      <th>邮箱</th>
+      <th>班级</th>
+      <th>操作</th>
+    </tr>
+</thead>
+<tbody>
+  {% for u in users %}
+  <tr id="userRow-{{ u.id }}">
+    <td>{{ u.id }}</td>
+    <td>{{ u.username }}</td>
+    <td>{{ u.email }}</td>
+    <td class="user-class">{{ u.class_cn }}</td>
+    <td>
+      <!-- 点击按钮时调用全局函数 showEditClassModal -->
+      <button type="button" class="btn btn-sm btn-outline-warning"
+              onclick="showEditClassModal('{{ u.id }}', '{{ u.class }}')">
+        <i class="fas fa-edit me-2"></i>修改班级
+      </button>
+    </td>
+  </tr>
+  {% endfor %}
+</tbody>
+</table>
+
+
+<!-- 分页导航 -->
+<nav aria-label="Page navigation">
+  <ul class="pagination">
+    {% if current_page > 1 %}
+      <li class="page-item">
+        <a class="page-link" 
+           href="{{ url_for('users', page=current_page-1, username=search_username, class=search_class) }}">
+          上一页
+        </a>
+      </li>
+    {% endif %}
+
+    {% for p in range(1, total_pages+1) %}
+      <li class="page-item {% if p == current_page %}active{% endif %}">
+        <a class="page-link" 
+           href="{{ url_for('user_management', page=p, username=search_username, class=search_class) }}">
+          {{ p }}
+        </a>
+      </li>
+    {% endfor %}
+
+    {% if current_page < total_pages %}
+      <li class="page-item">
+        <a class="page-link" 
+           href="{{ url_for('user_management', page=current_page+1, username=search_username, class=search_class) }}">
+          下一页
+        </a>
+      </li>
+    {% endif %}
+  </ul>
+</nav>
+
+<!-- 添加班级的模态框 -->
+<div class="modal fade" id="addClassModal" tabindex="-1" aria-labelledby="addClassModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="addClassForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addClassModalLabel">添加班级</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label for="classEnInput" class="form-label">班级英文名（由大小写字母、数字、下划线构成）</label>
+            <input type="text" name="class_en" id="classEnInput" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label for="classCnInput" class="form-label">班级中文名</label>
+            <input type="text" name="class_cn" id="classCnInput" class="form-control" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- 修改班级模态框 -->
+<div class="modal fade" id="editClassModal" tabindex="-1" aria-labelledby="editClassModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="editClassForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="editClassModalLabel">修改用户班级</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <!-- 隐藏用户ID -->
+          <input type="hidden" name="user_id" id="editClassUserId">
+          <div class="mb-3">
+            <label class="form-label">选择班级</label>
+            <select name="class" id="editClassSelect" class="form-control" required>
+              <option value="">请选择</option>
+              {% for c in classes %}
+                <option value="{{ c.class_en }}">{{ c.class_cn }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">保存修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<style>
+  .pagination {
+      margin-top: 20px;
+  }
+  .page-item.active .page-link {
+      background-color: #007bff;
+      border-color: #007bff;
+  }
+  .page-link {
+      color: #007bff;
+  }
+</style>
+
+<script>
+  // 将 showEditClassModal 挂载到全局对象上，供内联 onclick 调用
+  window.showEditClassModal = function(userId, currentClass) {
+    document.getElementById('editClassUserId').value = userId;
+    document.getElementById('editClassSelect').value = currentClass;
+    var editModal = new bootstrap.Modal(document.getElementById('editClassModal'));
+    editModal.show();
+  };
+
+  // 处理“添加班级”模态框表单的 AJAX 提交
+  document.getElementById('addClassForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var formData = new FormData(this);
+
+    fetch("{{ url_for('add_class_ajax') }}", {
+      method: "POST",
+      body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        // 更新页面上所有使用班级下拉框的选项
+        var addOption = document.createElement("option");
+        addOption.value = data.class_en;
+        addOption.text = data.class_cn;
+        document.querySelectorAll('select[name="class"]').forEach(function(select) {
+          select.appendChild(addOption.cloneNode(true));
+        });
+        // 隐藏模态框
+        var addModal = bootstrap.Modal.getInstance(document.getElementById('addClassModal'));
+        addModal.hide();
+        // 清空表单
+        document.getElementById('addClassForm').reset();
+        location.replace(location.href);
+      } else {
+        alert("错误：" + data.message);
+      }
+    })
+    .catch(error => {
+      alert("网络错误：" + error);
+    });
+  });
+
+  // 处理“修改班级”模态框表单的 AJAX 提交
+  document.getElementById('editClassForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var formData = new FormData(this);
+
+    fetch("{{ url_for('edit_user_ajax') }}", {
+      method: "POST",
+      body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        var userRow = document.getElementById('userRow-' + data.user_id);
+        if (userRow) {
+          userRow.querySelector('.user-class').textContent = data.new_class;
+        }
+        var editModal = bootstrap.Modal.getInstance(document.getElementById('editClassModal'));
+        editModal.hide();
+        location.replace(location.href);
+      } else {
+        alert("更新失败：" + data.message);
+      }
+    })
+    .catch(error => {
+      alert("网络错误：" + error);
+    });
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>{% block title %}计算方法 - 在线评测系统{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- MathJax for LaTeX -->
+  <script>
+  window.MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$','$$'], ['\\[','\\]']]
+    }
+  };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-light bg-light">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="{{ url_for('problem_list') }}">计算方法 - 在线评测系统</a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav me-auto">
+        {% if user %}
+        {% if user.is_admin == 1 %}
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('problem_list') }}">
+            <i class="fas fa-book me-2"></i> <!-- 实心书籍图标 -->
+            题目列表
+          </a>
+        </li>
+        {% else %}
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('problem_list') }}">
+            <i class="fas fa-tasks me-2"></i> <!-- 实心书籍图标 -->
+            我的作业
+          </a>
+        </li>
+        {% endif %}
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('all_submissions') }}">
+            <i class="fas fa-chart-pie me-2"></i> <!-- 实心饼图图标 -->
+            提交记录
+          </a>
+        </li>
+        {% endif %}
+        {% if user and user.is_admin == 1 %}
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('user_management') }}">
+              <i class="fas fa-users me-2"></i>
+              用户管理
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('admin_homework') }}">
+              <i class="fas fa-tasks me-2"></i>
+              作业管理
+            </a>
+          </li>
+        {% endif %}
+      </ul>
+      <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+        {% if session.get('username') %}
+          <li class="nav-item me-3">
+            <span class="nav-link disabled">你好，{{ session.get('username') }}</span>
+          </li>
+          <!-- 新增修改密码按钮 -->
+          <li class="nav-item me-3">
+            <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal">
+              <i class="fas fa-key me-2"></i>
+              修改密码
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('logout') }}">
+              <i class="fas fa-sign-out-alt me-2"></i>
+              注销
+            </a>
+          </li>
+        {% else %}
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('login') }}"><i class="fas fa-sign-in-alt"></i> 登录</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('register') }}"><i class="fas fa-user-plus"></i> 注册</a>
+          </li>
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<!-- 密码修改模态框 -->
+{% if session.get('username') %}
+<div class="modal fade" id="changePasswordModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">修改密码</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="passwordForm" method="POST" action="{{ url_for('change_password') }}">
+        <div class="modal-body">
+          <!-- 邮箱显示 -->
+          <div class="mb-3">
+            <label class="form-label"><i class="fas fa-envelope"></i> 验证邮箱</label>
+            <input type="email" class="form-control" value="{{ user.email }}" readonly>
+          </div>
+          
+          <!-- 验证码 -->
+          <div class="mb-3">
+            <label class="form-label"><i class="fas fa-shield-alt"></i> 验证码</label>
+            <div class="input-group">
+              <input type="text" class="form-control" name="code" required>
+              <button type="button" class="btn btn-outline-secondary" onclick="sendPasswordCode()">
+                发送验证码
+              </button>
+            </div>
+          </div>
+
+          <!-- 新密码 -->
+          <div class="mb-3">
+            <label class="form-label"><i class="fas fa-key"></i> 新密码</label>
+            <input type="password" class="form-control" name="new_password" required minlength="6">
+          </div>
+
+          <!-- 确认密码 -->
+          <div class="mb-3">
+            <label class="form-label"><i class="fas fa-key"></i> 确认密码</label>
+            <input type="password" class="form-control" name="confirm_password" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal"><i class="fas fa-times"></i> 取消</button>
+          <button type="submit" class="btn btn-outline-primary"><i class="fas fa-check"></i> 确认修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Flash 消息 -->
+<div class="container mt-4">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+          {{ message }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+</div>
+
+<div class="container mt-4">
+  {% block content %}{% endblock %}
+</div>
+
+{% if session.get('username') %}
+<script>
+  // 发送密码重置验证码
+  function sendPasswordCode() {
+      const btn = document.querySelector('#passwordForm .btn-outline-secondary');
+      btn.disabled = true;
+      
+      fetch('/send_password_code', {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: `email=${encodeURIComponent("{{ user.email }}")}`
+      })
+      .then(response => response.json())
+      .then(data => {
+          if (data.success) {
+              // 倒计时60秒
+              let seconds = 60;
+              const timer = setInterval(() => {
+                  btn.innerHTML = `${seconds}秒后重发`;
+                  if (--seconds < 0) {
+                      clearInterval(timer);
+                      btn.disabled = false;
+                      btn.innerHTML = '发送验证码';
+                  }
+              }, 1000);
+          } else {
+              alert(data.message);
+              btn.disabled = false;
+          }
+      })
+      .catch(() => {
+          btn.disabled = false;
+      });
+  }
+  
+  // 密码表单提交处理
+  document.getElementById('passwordForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      
+      const formData = new FormData(this);
+      fetch(this.action, {
+          method: 'POST',
+          body: formData
+      })
+      .then(response => {
+          if (response.redirected) {
+              window.location.href = response.url;
+          } else {
+              return response.text();
+          }
+      })
+      .then(text => {
+          // 处理错误响应
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(text, 'text/html');
+          const error = doc.querySelector('.alert-danger');
+          if (error) alert(error.textContent);
+      });
+  });
+</script>
+{% endif %}
+
+<script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+</body>
+</html>

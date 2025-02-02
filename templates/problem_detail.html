@@ -1,0 +1,229 @@
+{% extends "layout.html" %}
+{% block title %}{{ problem.title }} - {{ super() }}{% endblock %}
+
+{% block content %}
+<div class="row">
+  <!-- 左侧：题面描述 -->
+  <div class="col-md-6 mb-3">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="mb-0"><strong>{{ problem.id }}.</strong> {{ problem.title }}</h2>
+
+      <!-- 如果是管理员，显示“编辑题目”按钮 -->
+      {% if user and user.is_admin == 1 %}
+      <div class="ms-auto d-flex">
+        <a href="{{ url_for('edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me-2">
+          <i class="fas fa-pencil-alt me-2"></i> 编辑题目
+        </a>
+        <!-- 上传数据按钮触发模态框 -->
+        <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
+          <i class="fas fa-cloud-upload-alt me-2"></i> 上传数据
+        </button>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- 题面内容（Markdown + LaTeX 渲染后） -->
+    <div class="my-3">
+      {{ rendered_content|safe }}
+    </div>
+  </div>
+
+  <!-- 右侧：提交代码 & 提交记录按钮 -->
+  <div class="col-md-6">
+    <!-- 提交表单 -->
+    <form action="{{ url_for('submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
+      
+      <!-- 行：左侧“代码”标签；右侧“提交记录” & “提交”按钮并排 -->
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <label for="codeEditor" class="form-label mb-0"><i class="fas fa-code me-2"></i> 代码</label>
+        <div>
+          <!-- “提交记录”按钮，指向该题目的提交记录页面 -->
+          <a href="{{ url_for('submission_list', problem_id=problem.id) }}"
+             class="btn btn-outline-secondary me-2">
+             <i class="fas fa-chart-pie me-2"></i> 本题记录
+          </a>
+          <!-- “提交”按钮 -->
+          <button type="submit" class="btn btn-outline-primary"><i class="fas fa-paper-plane me-2"></i> 提交</button>
+        </div>
+      </div>
+
+      <!-- CodeMirror 容器，使用 Bootstrap 的卡片组件包裹 -->
+      <div class="card">
+        <div class="card-body p-0">
+          <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
+          <div id="codeMirrorContainer"></div>
+        </div>
+      </div>
+    </form>
+
+    <!-- 最近三条提交记录（若存在） -->
+    {% if last_submissions and last_submissions|length > 0 %}
+      <h5><i class="fas fa-history me-2"></i> 最近提交记录</h5>
+      <ul class="list-group">
+        {% for sub in last_submissions %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
+                <!-- {% if sub.status == 'Accepted' %}
+                    <i class="fas fa-check-circle" aria-hidden="true"></i>
+                {% elif sub.status == 'Wrong Answer' %}
+                    <i class="fas fa-times-circle" aria-hidden="true"></i>
+                {% elif sub.status == 'Time Limit Exceeded' %}
+                    <i class="fas fa-hourglass-end" aria-hidden="true"></i>
+                {% elif sub.status == 'Memory Limit Exceeded' %}
+                    <i class="fas fa-memory" aria-hidden="true"></i>
+                {% elif sub.status == 'No Output' %}
+                    <i class="fas fa-question-circle" aria-hidden="true"></i>
+                {% elif sub.status in ['Pending', 'Waiting'] %}
+                    <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+                {% else %}
+                    <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+                {% endif %} -->
+                {{ sub.status }}
+              </span>
+              <span class="ms-2"><i class="fas fa-trophy"></i> {{ sub.score }}</span>
+            </div>
+            <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" class="btn btn-sm btn-outline-secondary">
+              查看详情 &rarr;
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-muted">暂无最近提交记录</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 上传数据模态框 -->
+{% if user and user.is_admin == 1 %}
+<div class="modal fade" id="uploadDataModal" tabindex="-1" aria-labelledby="uploadDataModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('upload_testdata', problem_id=problem.id) }}" enctype="multipart/form-data">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="uploadDataModalLabel"><i class="fas fa-cloud-upload-alt me-2"></i> 上传测试数据</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label for="testDataZip" class="form-label">选择 ZIP 文件</label>
+            <input class="form-control" type="file" id="testDataZip" name="testdata_zip" accept=".zip" required>
+            <div class="form-text">上传包含 1.in, 1.out, 2.in, 2.out 等文件的 ZIP 包。</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i> 取消</button>
+          <button type="submit" class="btn btn-outline-primary"><i class="fas fa-cloud-upload-alt me-2"></i> 上传</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+
+<!-- 定义状态颜色的 CSS 类 -->
+<style>
+  /* Accepted - 绿色 */
+  .badge.accepted {
+    background-color: rgb(36, 180, 77);
+    color: white;
+  }
+
+  /* Wrong Answer - 红色 */
+  .badge.unaccepted {
+    background-color: rgb(226, 23, 60);
+    color: white;
+  }
+
+  /* Pending 和 Waiting - 浅蓝色 */
+  .badge.pending, .badge.waiting, .badge.running {
+    background-color: lightblue;
+    color: black;
+  }
+
+  /* 未定义状态 - 灰色 */
+  .badge.undefined-status {
+    background-color: gray;
+    color: white;
+  }
+
+/* 可选：响应式调整高度 */
+@media (max-width: 768px) {
+  #codeMirrorContainer .CodeMirror {
+    height: 300px;
+  }
+}
+
+@media (min-width: 769px) {
+  #codeMirrorContainer .CodeMirror {
+    height: 500px;
+  }
+}
+
+/* Bootstrap Badge 默认样式优化 */
+.badge {
+  padding: 0.5em 0.75em;
+  border-radius: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+}
+
+.badge i {
+  margin-right: 0.3em;
+}
+</style>
+
+
+<!-- 引入 CodeMirror 的 CSS 和 JS（本地托管） -->
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
+<script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+
+<!-- 引入 CodeMirror 的额外样式和脚本（可选） -->
+<!-- 如果需要更多功能，如自动完成、括号匹配等，可以引入相应的插件 -->
+
+<script>
+  // 初始化 CodeMirror
+  var editor = CodeMirror.fromTextArea(document.getElementById('codeEditor'), {
+    mode: 'octave',             // 设置为 Octave 语法模式
+    theme: 'eclipse',           // 选择主题
+    lineNumbers: true,          // 显示行号
+    lineWrapping: true,         // 自动换行
+    indentUnit: 4,              // 缩进单位
+    tabSize: 4,                 // 制表符大小
+    matchBrackets: true,        // 括号匹配
+    autofocus: true,            // 自动聚焦
+    extraKeys: {
+      "Tab": "indentMore",
+      "Shift-Tab": "indentLess"
+    }
+  });
+
+  // 设置等宽字体
+  editor.getWrapperElement().style.fontFamily = "monospace";
+  editor.getWrapperElement().style.fontSize = "14px";
+
+  if (window.innerWidth <= 768) {
+    editor.setSize(null, "300px");
+  } else {
+    editor.setSize(null, "500px");
+  }
+
+  // 响应式调整高度
+  window.addEventListener('resize', function() {
+    if (window.innerWidth <= 768) {
+      editor.setSize(null, "300px");
+    } else {
+      editor.setSize(null, "500px");
+    }
+  });
+
+  // 在表单提交前，将 CodeMirror 的内容同步到隐藏的 textarea
+  document.querySelector('form').addEventListener('submit', function(e) {
+    document.getElementById('codeEditor').value = editor.getValue();
+  });
+</script>
+{% endblock %}

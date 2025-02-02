@@ -14,7 +14,9 @@ An online-judge system for MATLAB and Baltamatica.
 
 ### Deployment
 
-You need 3 terminals. The first:
+Firstly, make your MySQL database as the initial structure. And set your SMRT service well. After that, complete the configures in `oj.py`.
+
+Now You need 3 terminals. The first:
 
 ```bash
 cd judger

@@ -1,0 +1,231 @@
+{% extends "layout.html" %}
+{% block title %}作业管理 - {{ super() }}{% endblock %}
+
+{% block content %}
+<h2><i class="fas fa-tasks me-2"></i> 作业管理</h2>
+
+<div class="container">
+  <!-- 班级选择 -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <form method="GET" action="{{ url_for('admin_homework') }}" class="row g-3 align-items-center">
+        <div class="col-auto">
+          <label class="form-label">选择班级：</label>
+        </div>
+        <div class="col-auto">
+          <select name="sclass" class="form-select" onchange="this.form.submit()">
+            <option value="">请选择</option>
+            {% for cls in classes %}
+            <option value="{{ cls.class_en }}" 
+              {% if cls.class_en == selected_class %}selected{% endif %}>
+              {{ cls.class_cn }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {% if selected_class %}
+  <!-- 操作栏 -->
+  <div class="mb-3">
+    <button class="btn btn-outline-success" data-bs-toggle="modal" data-bs-target="#addHomeworkModal">
+      <i class="fas fa-plus me-2"></i>布置新作业
+    </button>
+  
+    <!-- 导出成绩按钮 -->
+    <a href="{{ url_for('export_scores', sclass=selected_class) }}" class="btn btn-outline-primary ms-2">
+      <i class="fas fa-download me-2"></i>导出成绩
+    </a>
+
+    <!-- 导出学生代码按钮 -->
+    <a href="{{ url_for('export_student_codes', sclass=selected_class) }}" class="btn btn-outline-secondary ms-2">
+      <i class="fas fa-code me-2"></i>导出学生代码
+    </a>
+  </div>
+
+  <!-- 作业列表 -->
+  <div class="card">
+    <div class="card-body">
+      <table class="table table-hover">
+        <thead>
+          <tr>
+            <th>题目ID</th>
+            <th>题目名称</th>
+            <th>截止时间</th>
+            <th>完成人数</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for hw in homework_list %}
+          <tr>
+            <td>{{ hw.problem_id }}</td>
+            <td>{{ hw.problem_title }}</td>
+            <td>{{ hw.ddl.strftime('%Y-%m-%d %H:%M') if hw.ddl else '未设置' }}</td>
+            <td>{{ hw.complete_cnt }}</td>
+            <td>
+              <button class="btn btn-sm btn-outline-primary" 
+                      data-bs-toggle="modal" 
+                      data-bs-target="#editDDLModal"
+                      data-hw-id="{{ hw.id }}"
+                      data-ddl="{{ hw.ddl.strftime('%Y-%m-%dT%H:%M') if hw.ddl else '' }}">
+                <i class="fas fa-edit me-2"></i>修改DDL
+              </button>
+              <button class="btn btn-sm btn-outline-danger delete-homework-btn" 
+                      data-hw-id="{{ hw.id }}" 
+                      data-class="{{ selected_class }}">
+                <i class="fas fa-trash-alt me-2"></i>删除作业
+              </button>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="6" class="text-center text-muted">暂无作业</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- 修改DDL模态框 -->
+<div class="modal fade" id="editDDLModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">修改截止时间</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="editDDLForm">
+        <div class="modal-body">
+          <input type="hidden" name="class_en" value="{{ selected_class }}">
+          <input type="hidden" name="homework_id" id="editHwId">
+          <div class="mb-3">
+            <label class="form-label">新截止时间</label>
+            <input type="datetime-local" class="form-control" name="new_ddl" id="editDDLInput" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">保存修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- 添加作业模态框 -->
+<div class="modal fade" id="addHomeworkModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">布置新作业</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" action="{{ url_for('admin_add_homework') }}">
+        <input type="hidden" name="class_en" value="{{ selected_class }}">
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">题目ID</label>
+            <input type="number" class="form-control" name="problem_id" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">截止时间</label>
+            <input type="datetime-local" class="form-control" name="ddl" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">确认添加</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // 修改DDL逻辑
+  const editModal = document.getElementById('editDDLModal')
+  editModal.addEventListener('show.bs.modal', event => {
+    const button = event.relatedTarget
+    const hwId = button.getAttribute('data-hw-id')
+    const ddl = button.getAttribute('data-ddl')
+    
+    document.getElementById('editHwId').value = hwId
+    document.getElementById('editDDLInput').value = ddl
+  })
+
+  // 处理DDL表单提交
+  document.getElementById('editDDLForm').addEventListener('submit', async (e) => {
+    e.preventDefault()
+    
+    const formData = new FormData(e.target)
+    const payload = {
+      class_en: formData.get('class_en'),
+      homework_id: formData.get('homework_id'),
+      new_ddl: formData.get('new_ddl')
+    }
+
+    try {
+      const response = await fetch('/admin/update_ddl', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload)
+      })
+      
+      const result = await response.json()
+      if (result.success) {
+        location.replace(location.href) // 刷新页面更新数据
+      } else {
+        alert(result.message || '操作失败')
+      }
+    } catch (error) {
+      alert('请求失败，请检查网络')
+    }
+  });
+
+  document.querySelectorAll('.delete-homework-btn').forEach(button => {
+    button.addEventListener('click', async function() {
+      const hwId = this.getAttribute('data-hw-id');
+      const classEn = this.getAttribute('data-class');
+      
+      if (!confirm('确定要删除此作业吗？')) {
+        return;
+      }
+      
+      const payload = {
+        class_en: classEn,
+        homework_id: hwId
+      };
+      
+      try {
+        const response = await fetch('/admin/delete_homework', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload)
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+          // 删除成功后刷新页面更新列表
+          location.replace(location.href)
+        } else {
+          alert(result.message || '删除失败');
+        }
+      } catch (error) {
+        alert('请求失败，请检查网络');
+      }
+    });
+  });
+})
+</script>
+{% endblock %}
