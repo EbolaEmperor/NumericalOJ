@@ -5,7 +5,7 @@ An online-judge system for MATLAB and Baltamatica.
 
 - Ubuntu 22.04
 - Baltamatica
-  **Note:** make sure you can run a `.m` file by `baltamatica -m [filename].m`
+- - **Note:** make sure you can run a `.m` file by `baltamatica -m [filename].m`
 - MySQL
 - Redis
 - Python3
