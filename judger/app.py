@@ -8,7 +8,8 @@ import os
 app = Flask(__name__)
 
 ALLOWED_IPS = [
-    "127.0.0.1"
+    "127.0.0.1",
+    "183.131.51.191"
 ]
 
 @app.before_request

@@ -21,10 +21,7 @@ from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
 # config.py
-MAIL_SERVER = 'YOUR SMTP SERVER ADDRESS'
-MAIL_PORT = 465
-MAIL_USERNAME = 'YOUR EMAIL ADDRESS'
-MAIL_PASSWORD = 'YOUR SMTP AUTHORIZE CODE'  # SMTP授权码
+from config import *
 
 app = Flask(__name__)
 app.secret_key = 'some_secret_key_for_session'
@@ -51,9 +48,9 @@ def get_db_connection():
     """
     return pymysql.connect(
         host='localhost',
-        user='YOUR MYSQL USERNAME',           # 你的数据库用户名
-        password='YOUR MYSQL PASSWORD',    # 你的数据库密码
-        database='myojdb',
+        user=MYSQL_USERNAME,           # 你的数据库用户名
+        password=MYSQL_PASSWORD,    # 你的数据库密码
+        database='myojdb',      # 你的数据库名
         charset='utf8mb4',
         cursorclass=pymysql.cursors.DictCursor
     )
@@ -632,6 +629,16 @@ def get_ac_status(userid, problemid):
     finally:
         conn.close()
 
+def get_max_score(userid, problemid):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = f"SELECT P{problemid} FROM max_score WHERE userid={userid}"
+            cursor.execute(sql)
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
 def get_homeworks(user):
     conn = get_db_connection()
     try:
@@ -642,6 +649,8 @@ def get_homeworks(user):
             for hw in hws:
                 status = get_ac_status(user['id'], hw['problem_id'])
                 hw['is_completed'] = status[f"ACP{hw['problem_id']}"]
+                max_score = get_max_score(user['id'], hw['problem_id'])
+                hw['max_score'] = max_score[f"P{hw['problem_id']}"]
             return hws
     finally:
         conn.close()
@@ -1028,8 +1037,11 @@ def compare_float_strings(str1, str2, tolerance=1e-5):
     split_pattern = r'[\s,]+'
     
     # 分割并过滤空字符串
-    list1 = [float(x) for x in re.split(split_pattern, str1.strip()) if x]
-    list2 = [float(x) for x in re.split(split_pattern, str2.strip()) if x]
+    try:
+        list1 = [float(x) for x in re.split(split_pattern, str1.strip()) if x]
+        list2 = [float(x) for x in re.split(split_pattern, str2.strip()) if x]
+    except ValueError:
+        return str1 == str2
     
     # 检查长度一致性
     if len(list1) != len(list2):
@@ -1127,11 +1139,11 @@ def evaluate_submission(submission_id):
 
     # 计算总得分
     score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")
+    user = get_user_by_username(submission['username'])
 
     # 更新提交记录
     if all_accepted:
         final_status = "Accepted"
-        user = get_user_by_username(submission['username'])
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
@@ -1142,10 +1154,6 @@ def evaluate_submission(submission_id):
             if is_ac != 1:
                 with conn.cursor() as cursor:
                     sql = f'UPDATE ac_record SET ACP{problem_id}=1 WHERE userid=%s'
-                    cursor.execute(sql, (user['id'],))
-                conn.commit()
-                with conn.cursor() as cursor:
-                    sql = f'UPDATE max_score SET P{problem_id}={score} WHERE userid=%s AND (P{problem_id} IS NULL OR P{problem_id} < {score})'
                     cursor.execute(sql, (user['id'],))
                 conn.commit()
                 with conn.cursor() as cursor:
@@ -1161,6 +1169,16 @@ def evaluate_submission(submission_id):
             conn.close()
     else:
         final_status = "Unaccepted"
+
+    # 更新最高得分
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = f'UPDATE max_score SET P{problem_id}={score} WHERE userid=%s AND (P{problem_id} IS NULL OR P{problem_id} < {score})'
+            cursor.execute(sql, (user['id'],))
+        conn.commit()
+    finally:
+        conn.close()
     update_submission_evaluation(submission_id, test_point_statuses, score, final_status)
 
 

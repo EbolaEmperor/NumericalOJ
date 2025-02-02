@@ -14,7 +14,7 @@ An online-judge system for MATLAB and Baltamatica.
 
 ### Deployment
 
-Firstly, make your MySQL database as the initial structure. And set your SMRT service well. After that, complete the configures in `oj.py`.
+Firstly, make your MySQL database as the initial structure. And set your SMRT service well. After that, complete the configures in `config.py`.
 
 Now You need 3 terminals. The first:
 
