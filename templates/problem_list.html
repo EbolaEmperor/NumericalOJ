@@ -55,17 +55,23 @@
               <div class="d-flex justify-content-between align-items-center">
                 <!-- 左侧显示题目编号和标题 -->
                 <div>
+                  {% if hw.is_completed %}
+                    <!-- 如果已完成，显示绿色的勾 -->
+                    <i class="fas fa-check me-2 text-success" title="已完成"></i>
+                  {% else %}
+                    {% if hw.max_score != None %}
+                      <i class="fas fa-times me-2 text-danger" title="未通过"></i>
+                    {% else %}
+                    <span class="d-inline-block" style="width: 1.25em;"></span>
+                    {% endif %}
+                  {% endif %}
                   <span class="fw-bold">{{ hw.problem_id }}.</span>
                   <a href="{{ url_for('problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none">{{ hw.problem_title }}</a>
                 </div>
                 <!-- 右侧显示完成状态或作业截止时间 -->
                 <div class="d-flex align-items-center">
-                  <span class="text-dark me-3 text-center" style="width: 80px;">
-                    <i class="fas fa-user me-1"></i>× {{ hw.complete_cnt or 0 }}
-                  </span>
                   {% if hw.is_completed %}
-                    <!-- 如果已完成，显示绿色的勾 -->
-                    <i class="fas fa-check-circle text-success" title="已完成"></i>
+                    <span class="text-success">已完成</span>
                   {% else %}
                     {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
                     {% set remaining = (hw.ddl - now).total_seconds() %}
@@ -79,6 +85,8 @@
                       <span class="text-success">{{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                     {% endif %}
                   {% endif %}
+                  <span class="d-inline-block" style="width: 1em;"></span>
+                  <i class="fas fa-trophy me-2"></i> {{ hw.max_score or 0 }}
                 </div>
               </div>
             </li>
@@ -118,7 +126,7 @@
           <h6 class="text-muted"><i class="fas fa-link me-2"></i> 友情链接</h6>
           <ul class="list-unstyled">
             <li><a href="https://www.mathworks.com/" target="_blank" class="ms-2 text-decoration-none">MATLAB 官网</a></li>
-            <li><a href="https://www.bttyt.com" target="_blank" class="ms-2 text-decoration-none">北太天元官网</a></li>
+            <li><a href="https://www.baltamatica.com" target="_blank" class="ms-2 text-decoration-none">北太天元官网</a></li>
             <li><a href="https://zju_math.pages.zjusct.io/mathweb/" target="_blank" class="ms-2 text-decoration-none">浙江大学数学之韵</a></li>
             <li><a href="https://www.cc98.org" target="_blank" class="ms-2 text-decoration-none">CC98</a></li>
           </ul>
