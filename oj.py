@@ -986,11 +986,39 @@ def get_submissions_by_user_paginated(username, page=1, per_page=20):
             submissions = cursor.fetchall()
             
             # 解析test_points
-            for submission in submissions:
-                if submission['test_points']:
-                    submission['test_points'] = [
-                        json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
-                    ]
+            # for submission in submissions:
+            #     if submission['test_points']:
+            #         submission['test_points'] = [
+            #             json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
+            #         ]
+            return submissions, total_pages
+    finally:
+        conn.close()
+
+def get_all_submissions_paginated(page=1, per_page=20):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 获取总数
+            count_sql = "SELECT COUNT(*) AS total FROM submissions"
+            cursor.execute(count_sql)
+            total = cursor.fetchone()['total']
+            total_pages = (total + per_page - 1) // per_page
+
+            # 获取分页数据
+            data_sql = """SELECT * FROM submissions 
+                        ORDER BY id DESC 
+                        LIMIT %s OFFSET %s"""
+            offset = (page - 1) * per_page
+            cursor.execute(data_sql, (per_page, offset))
+            submissions = cursor.fetchall()
+            
+            # 解析test_points
+            # for submission in submissions:
+            #     if submission['test_points']:
+            #         submission['test_points'] = [
+            #             json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
+            #         ]
             return submissions, total_pages
     finally:
         conn.close()
@@ -1007,11 +1035,17 @@ def all_submissions():
     per_page = 20
     
     # 获取分页后的提交记录
-    submissions, total_pages = get_submissions_by_user_paginated(
-        user['username'], 
-        page=page, 
-        per_page=per_page
-    )
+    if user['is_admin']:
+        submissions, total_pages = get_all_submissions_paginated( 
+            page=page, 
+            per_page=per_page
+        )
+    else:
+        submissions, total_pages = get_submissions_by_user_paginated(
+            user['username'], 
+            page=page, 
+            per_page=per_page
+        )
     
     return render_template('all_submission.html', 
                          submissions=submissions,
