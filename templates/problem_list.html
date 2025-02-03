@@ -76,13 +76,13 @@
                     {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
                     {% set remaining = (hw.ddl - now).total_seconds() %}
                     {% if remaining < 0 %}
-                      <span class="text-muted">已过期</span>
+                      <span class="text-muted"><i class="fas fa-clock me-2"></i> 已过期</span>
                     {% elif remaining < 86400 %}
-                      <span class="text-danger">{{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                      <span class="text-danger"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                     {% elif remaining < 3 * 86400 %}
-                      <span class="text-warning">{{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                      <span class="text-warning"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                     {% else %}
-                      <span class="text-success">{{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                      <span class="text-success"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                     {% endif %}
                   {% endif %}
                   <span class="d-inline-block" style="width: 1em;"></span>
