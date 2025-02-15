@@ -1333,7 +1333,7 @@ def edit_user_ajax():
     if not user_id or not new_class:
         return jsonify({'success': False, 'message': '缺少必要参数'}), 400
 
-    if new_class['class_en'] == "adminclass":
+    if new_class['class_en'] == "Cadmin":
         give_admin = 1
     else:
         give_admin = 0
