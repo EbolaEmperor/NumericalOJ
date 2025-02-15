@@ -80,7 +80,7 @@ def run_hello():
         start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
 
         result = subprocess.run(
-            ["timeout", f"{timeLim}s", "baltamatica", "-m", code_filename],
+            ["timeout", f"{timeLim}s", "octave", "--no-window-system", code_filename],
             capture_output=True, 
             text=True,
             input=user_input

@@ -1,11 +1,11 @@
 # NumericalOJ
-An online-judge system for MATLAB and Baltamatica.
+An online-judge system for MATLAB, Baltamatica or Octave.
 
 ### Requirement
 
 - Ubuntu 22.04
-- Baltamatica
-  - **Note:** make sure you can run a `.m` file by `baltamatica -m [filename].m`
+- One of them: MATLAB, Baltamatica, Octave
+  - **Note:** The default setting is Ovtave. If you want others, you should edit `judger/app.py`. I'm sure you will know how to edit once you see the code.
 - MySQL
 - Redis
 - Python3
