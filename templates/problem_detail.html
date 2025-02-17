@@ -28,33 +28,49 @@
     </div>
   </div>
 
-  <!-- 右侧：提交代码 & 提交记录按钮 -->
+  <!-- 右侧：提交作业 -->
   <div class="col-md-6">
-    <!-- 提交表单 -->
-    <form action="{{ url_for('submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
-      
-      <!-- 行：左侧“代码”标签；右侧“提交记录” & “提交”按钮并排 -->
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <label for="codeEditor" class="form-label mb-0"><i class="fas fa-code me-2"></i> 代码</label>
-        <div>
-          <!-- “提交记录”按钮，指向该题目的提交记录页面 -->
-          <a href="{{ url_for('submission_list', problem_id=problem.id) }}"
-             class="btn btn-outline-secondary me-2">
-             <i class="fas fa-chart-pie me-2"></i> 本题记录
-          </a>
-          <!-- “提交”按钮 -->
-          <button type="submit" class="btn btn-outline-primary"><i class="fas fa-paper-plane me-2"></i> 提交</button>
+    {% if problem.type == 1 %}
+      <!-- 编程题提交部分 -->
+      <form action="{{ url_for('submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <label for="codeEditor" class="form-label mb-0"><i class="fas fa-code me-2"></i> 代码</label>
+          <div>
+            <a href="{{ url_for('submission_list', problem_id=problem.id) }}" class="btn btn-outline-secondary me-2">
+              <i class="fas fa-chart-pie me-2"></i> 提交记录
+            </a>
+            <button type="submit" class="btn btn-outline-primary"><i class="fas fa-paper-plane me-2"></i> 提交</button>
+          </div>
         </div>
-      </div>
 
-      <!-- CodeMirror 容器，使用 Bootstrap 的卡片组件包裹 -->
-      <div class="card">
-        <div class="card-body p-0">
-          <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
-          <div id="codeMirrorContainer"></div>
+        <!-- CodeMirror 代码编辑器 -->
+        <div class="card">
+          <div class="card-body p-0">
+            <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
+            <div id="codeMirrorContainer"></div>
+          </div>
         </div>
-      </div>
-    </form>
+      </form>
+    {% elif problem.type == 2 %}
+      <!-- 书面作业文件上传 -->
+      <form method="POST" action="{{ url_for('submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <label for="file" class="form-label mb-0"><i class="fas fa-file-alt me-2"></i> 上传文件</label>
+          <div>
+            <button type="submit" class="btn btn-outline-primary"><i class="fas fa-upload me-2"></i> 上传作业</button>
+          </div>
+        </div>
+
+        <!-- 文件上传控件 -->
+        <div class="card">
+          <div class="card-body">
+            <input class="form-control" type="file" id="file" name="file" accept=".pdf" required>
+            <div class="form-text">请上传 pdf 文件。</div>
+          </div>
+        </div>
+        <p class="text-danger">注意：作业以最后一次提交为准，点击提交后，之前的提交都作废！</p>
+      </form>
+    {% endif %}
 
     <!-- 最近三条提交记录（若存在） -->
     {% if last_submissions and last_submissions|length > 0 %}
@@ -64,21 +80,6 @@
           <li class="list-group-item d-flex justify-content-between align-items-center">
             <div>
               <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
-                <!-- {% if sub.status == 'Accepted' %}
-                    <i class="fas fa-check-circle" aria-hidden="true"></i>
-                {% elif sub.status == 'Wrong Answer' %}
-                    <i class="fas fa-times-circle" aria-hidden="true"></i>
-                {% elif sub.status == 'Time Limit Exceeded' %}
-                    <i class="fas fa-hourglass-end" aria-hidden="true"></i>
-                {% elif sub.status == 'Memory Limit Exceeded' %}
-                    <i class="fas fa-memory" aria-hidden="true"></i>
-                {% elif sub.status == 'No Output' %}
-                    <i class="fas fa-question-circle" aria-hidden="true"></i>
-                {% elif sub.status in ['Pending', 'Waiting'] %}
-                    <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
-                {% else %}
-                    <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
-                {% endif %} -->
                 {{ sub.status }}
               </span>
               <span class="ms-2"><i class="fas fa-trophy"></i> {{ sub.score }}</span>
@@ -89,14 +90,12 @@
           </li>
         {% endfor %}
       </ul>
-    {% else %}
-      <p class="text-muted">暂无最近提交记录</p>
     {% endif %}
   </div>
 </div>
 
-<!-- 上传数据模态框 -->
 {% if user and user.is_admin == 1 %}
+<!-- 上传数据模态框 -->
 <div class="modal fade" id="uploadDataModal" tabindex="-1" aria-labelledby="uploadDataModalLabel" aria-hidden="true">
   <div class="modal-dialog">
     <form method="POST" action="{{ url_for('upload_testdata', problem_id=problem.id) }}" enctype="multipart/form-data">

@@ -9,6 +9,9 @@
     </span></h2>
     <h2><i class="fas fa-trophy me-2"></i> <strong>得分：</strong>
       {% set max_score = test_points | length %}
+      {% if submission.problem_type == 2 %}
+        {% set max_score = 5 %}
+      {% endif %}
       {% if max_score == 0 %}
         <span class="text-danger">{{ submission.score }}</span>
         / ?
@@ -24,6 +27,7 @@
         / {{ max_score }}
       {% endif %}
     </h2>
+    {% if submission.problem_type == 1 %}
     <p class="mt-3"><i class="fas fa-code me-2"></i> <strong>提交代码：</strong></p>
     
     <div class="card">
@@ -33,6 +37,16 @@
     </div>
     </div>
 
+    {% else %}
+    <!-- 书面作业题目：不显示代码和测试点 -->
+        <div class="card">
+          <div class="card-body p-0">
+            <!-- PDF预览 -->
+            <embed src="{{ url_for('download_submission_file', submission_id=submission.id) }}" type="application/pdf" width="100%" height="580px" />
+          </div>
+        </div>
+    {% endif %}
+
     <hr/>
     <a href="{{ url_for('problem_detail', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
     <a href="{{ url_for('submission_list', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回本题记录</a>
@@ -40,7 +54,36 @@
 
   <!-- 右侧：测试点详情 -->
   <div class="col-md-4 mb-3">
-    <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
+      {% if submission.problem_type == 2 %}
+        {% if user and user.is_admin == 1 %}
+        <div class="mb-3">
+          <label for="scoreInput" class="form-label"><i class="fas fa-trophy me-2"></i> 给分 (1-5 分)</label>
+          <input type="number" class="form-control" id="scoreInput" name="score" min="1" max="5" value="{{ submission.score }}" required>
+        </div>
+        <div class="mb-3">
+          <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
+          <textarea class="form-control" id="commentInput" name="comment" rows="8" required>{{ submission.code }}</textarea>
+        </div>
+        <div class="d-flex justify-content-between">
+          <button type="button" class="btn btn-outline-success" id="submitGradeBtn">
+            <i class="fas fa-check me-2"></i> 提交
+          </button>
+        
+          <!-- 下一个按钮右对齐 -->
+          <button type="button" class="btn btn-outline-success ms-auto" id="nextBtn">
+            <i class="fas fa-arrow-right me-2"></i> 下一个
+          </button>
+        </div>
+        {% else %}
+        <div class="mb-3">
+          <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
+          <textarea class="form-control" id="commentInput" name="comment" rows="8" readonly required>{{ submission.code }}</textarea>
+        </div>
+        {% endif %}
+      {% endif %}
+
+      {% if submission.problem_type == 1 %}
+      <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
       <ul class="list-group mt-2">
         {% for tp in test_points %}
         <li class="list-group-item">
@@ -51,6 +94,7 @@
         </li>
       {% endfor %}
       </ul>
+      {% endif %}
   </div>
 </div>
 
@@ -133,11 +177,65 @@
   });
 </script>
 
-{% if max_score == 0 %}
+{% if max_score == 0 and submission.problem_type == 1 %}
 <script>
   setTimeout(function() {
     location.replace(location.href); // 强制刷新页面
   }, 5000); // 5000毫秒后执行，即5秒
+</script>
+{% endif %}
+
+{% if submission.problem_type == 2 and user and user.is_admin == 1 %}
+<script>
+  document.getElementById('submitGradeBtn').addEventListener('click', function() {
+    // 获取得分和评语
+    var score = document.getElementById('scoreInput').value;
+    var comment = document.getElementById('commentInput').value;
+    
+    // 发送 POST 请求到后端批改接口
+    fetch('{{ url_for('submit_grading', submission_id=submission.id) }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        'score': score,
+        'comment': comment,
+      })
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('nextBtn').click();
+      } else {
+        alert('错误: ' + data.message);
+      }
+    })
+    .catch(error => {
+      alert('提交失败: ' + error);
+    });
+  });
+
+  document.getElementById('nextBtn').addEventListener('click', function() {
+    // 获取当前提交的 ID
+    var currentSubmissionId = {{ submission.id }};
+    
+    // 发送请求到后端，获取下一个待批改的提交记录
+    fetch('{{ url_for("get_next_pending_submission", submission_id=submission.id) }}')
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          // 跳转到下一个待批改作业的页面
+          window.location.href = data.next_submission_url;
+        } else {
+          // 如果没有下一个待批改作业，显示提示消息并返回当前页面
+          location.replace(location.href);  // 刷新页面
+        }
+      })
+      .catch(error => {
+        console.error('错误:', error);
+      });
+  });
 </script>
 {% endif %}
 

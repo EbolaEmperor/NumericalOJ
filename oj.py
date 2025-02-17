@@ -11,7 +11,7 @@ import zipfile
 import shutil
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
-from flask import Flask, request, redirect, url_for, session, render_template, flash, jsonify
+from flask import Flask, request, redirect, url_for, session, render_template, flash, jsonify, send_file
 from celery import Celery
 import requests
 import re
@@ -133,7 +133,7 @@ def get_all_problems():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt FROM problems ORDER BY id ASC"
+            sql = "SELECT id,title,cnt,type FROM problems ORDER BY id ASC"
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -143,7 +143,7 @@ def get_problem(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,cnt,forbidden_func FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,cnt,forbidden_func,type FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -153,28 +153,41 @@ def get_problem_title(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt FROM problems WHERE id=%s"
+            sql = "SELECT id,title,cnt,type FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
         conn.close()
 
-def create_problem(title, content, initial_code='', forbidden_func=''):
+# 修改 create_problem 和 update_problem 函数，添加 type 字段
+def create_problem(title, content, initial_code='', forbidden_func='', type=1):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "INSERT INTO problems (title, content, initial_code, forbidden_func) VALUES (%s, %s, %s, %s)"
-            cursor.execute(sql, (title, content, initial_code, forbidden_func))
+            sql = """INSERT INTO problems (title, content, initial_code, forbidden_func, type) 
+                     VALUES (%s, %s, %s, %s, %s)"""
+            cursor.execute(sql, (title, content, initial_code, forbidden_func, type))
+        conn.commit()
+        pid = cursor.lastrowid
+        with conn.cursor() as cursor:
+            sql = f"ALTER TABLE ac_record ADD COLUMN ACP{pid} TINYINT(1)"
+            cursor.execute(sql)
+        conn.commit()
+        with conn.cursor() as cursor:
+            sql = f"ALTER TABLE max_score ADD COLUMN P{pid} INT"
+            cursor.execute(sql)
         conn.commit()
     finally:
         conn.close()
 
-def update_problem(problem_id, new_title, new_content, new_initial_code='', new_forbidden_func=''):
+def update_problem(problem_id, new_title, new_content, new_initial_code='', new_forbidden_func='', type=1):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "UPDATE problems SET title=%s, content=%s, initial_code=%s, forbidden_func=%s WHERE id=%s"
-            cursor.execute(sql, (new_title, new_content, new_initial_code, new_forbidden_func, problem_id))
+            sql = """UPDATE problems 
+                     SET title=%s, content=%s, initial_code=%s, forbidden_func=%s, type=%s 
+                     WHERE id=%s"""
+            cursor.execute(sql, (new_title, new_content, new_initial_code, new_forbidden_func, type, problem_id))
         conn.commit()
     finally:
         conn.close()
@@ -214,10 +227,22 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
     """
     conn = get_db_connection()
     try:
+        # 获取题目类型
+        problem = get_problem(problem_id)
+        problem_type = problem['type']  # 获取题目类型（1 或 2）
+
+        if problem_type == 2:
+            # 如果是书面题，将之前的提交作废（设为 unaccepted）
+            with conn.cursor() as cursor:
+                test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
+                sql = "UPDATE submissions SET status='unaccepted' WHERE username=%s AND problem_id=%s"
+                cursor.execute(sql, (username, problem_id))
+            conn.commit()
+
         with conn.cursor() as cursor:
             test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
-            sql = """INSERT INTO submissions (problem_id, username, code, score, test_points, status, problem_title)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s)"""
+            sql = """INSERT INTO submissions (problem_id, username, code, score, test_points, status, problem_title, problem_type)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(sql, (
                 problem_id,
                 username,
@@ -225,10 +250,12 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
                 score,
                 test_points_str,  # 每行一个 JSON 对象
                 "Pending",
-                problem_title
+                problem_title,
+                problem_type  # 将题目类型保存到提交记录中
             ))
         conn.commit()
-        return cursor.lastrowid  # 返回新插入的主键ID
+        subid = cursor.lastrowid  # 返回新插入的主键ID
+        return subid
     finally:
         conn.close()
 
@@ -244,12 +271,14 @@ def get_submissions_by_user_and_problem(username, problem_id):
                      ORDER BY id DESC"""
             cursor.execute(sql, (username, problem_id))
             submissions = cursor.fetchall()
-            # 解析每个提交的 test_points
+            # 解析每个提交的 test_points 和题目类型
             for submission in submissions:
                 if submission['test_points']:
                     submission['test_points'] = [
                         json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
                     ]
+                # 将题目类型一并添加到提交记录中
+                submission['problem_type'] = submission['problem_type']
             return submissions
     finally:
         conn.close()
@@ -726,33 +755,33 @@ def problem_detail(problem_id):
 @app.route('/admin/add_problem', methods=['GET', 'POST'])
 def add_problem():
     """
-    管理员添加题目
+    添加题目：管理员可以添加编程题或者书面作业
     """
     user = current_user()
     if not is_admin(user):
         return "<h3>无权限</h3>"
 
     if request.method == 'POST':
-        title = request.form.get('title', '').strip()
-        content = request.form.get('content', '').strip()
+        title = request.form.get('title').strip()
+        content = request.form.get('content').strip()
         initial_code = request.form.get('initial_code', '').strip()
-        forbidden_func = request.form.get('forbidden_func', '').strip()  # 获取禁用函数的输入
+        forbidden_func = request.form.get('forbidden_func', '').strip()
+        problem_type = request.form.get('type')  # 获取题目类型：编程题或书面作业
 
         if not title or not content:
-            return render_template('add_problem.html',
-                                   user=user,
-                                   error_message="标题和内容不能为空")
-        create_problem(title, content, initial_code, forbidden_func)
+            return render_template('add_problem.html', user=user, error_message="标题和内容不能为空")
+
+        # 创建题目
+        create_problem(title, content, initial_code, forbidden_func, problem_type)
+
         return redirect(url_for('problem_list'))
 
-    return render_template('add_problem.html',
-                           user=user,
-                           error_message=None)
+    return render_template('add_problem.html', user=user, error_message=None)
 
 @app.route('/admin/edit_problem/<int:problem_id>', methods=['GET', 'POST'])
 def edit_problem(problem_id):
     """
-    管理员编辑题目
+    编辑题目：管理员可以修改题目的标题、内容、初始代码、禁用函数及题目类型
     """
     user = current_user()
     if not is_admin(user):
@@ -763,25 +792,20 @@ def edit_problem(problem_id):
         return "<h3>题目不存在</h3>"
 
     if request.method == 'POST':
-        new_title = request.form.get('title', '').strip()
-        new_content = request.form.get('content', '').strip()
+        new_title = request.form.get('title').strip()
+        new_content = request.form.get('content').strip()
         new_initial_code = request.form.get('initial_code', '').strip()
-        forbidden_func = request.form.get('forbidden_func', '').strip()  # 获取禁用函数的输入
+        forbidden_func = request.form.get('forbidden_func', '').strip()
+        problem_type = request.form.get('type')  # 获取题目类型：编程题或书面作业
 
         if not new_title or not new_content:
-            return render_template('edit_problem.html',
-                                   problem=problem,
-                                   user=user,
-                                   error_message="标题和内容不能为空")
+            return render_template('edit_problem.html', problem=problem, user=user, error_message="标题和内容不能为空")
 
-        # 更新题目内容和禁用函数
-        update_problem(problem_id, new_title, new_content, new_initial_code, forbidden_func)
+        # 更新题目
+        update_problem(problem_id, new_title, new_content, new_initial_code, forbidden_func, problem_type)
         return redirect(url_for('problem_detail', problem_id=problem_id))
 
-    return render_template('edit_problem.html',
-                           problem=problem,
-                           user=user,
-                           error_message=None)
+    return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
 
 # 添加更新 testdata 的函数
 def update_testdata(problem_id, testdata_json):
@@ -890,7 +914,7 @@ def upload_testdata(problem_id):
 @app.route('/submit/<int:problem_id>', methods=['GET', 'POST'])
 def submit_solution(problem_id):
     """
-    提交答案：存到 submissions 表并触发评测任务
+    提交答案：对于编程题提交代码，对于书面作业上传文件
     """
     user = current_user()
     if not user:
@@ -901,30 +925,65 @@ def submit_solution(problem_id):
         return "<h3>题目不存在</h3>"
 
     if request.method == 'POST':
-        code = request.form.get('code', '')
-        if not code.strip():
-            flash('代码不能为空。', 'danger')
-            return redirect(url_for('problem_detail', problem_id=problem_id))
+        # 判断题目类型
+        if problem['type'] == 1:  # 编程题
+            code = request.form.get('code', '')
+            if not code.strip():
+                flash('代码不能为空。', 'danger')
+                return redirect(url_for('problem_detail', problem_id=problem_id))
 
-        # 创建一个 Pending 状态的提交记录，初始 test_points 可以为空或预设为 Pending
-        submission_id = create_submission(
-            problem_id=problem_id,
-            problem_title=problem['title'],
-            username=user['username'],
-            code=code,
-            score=0,  # 初始得分为 0
-            test_points=[]  # 空列表，后台任务将填充
-        )
+            # 创建一个 Pending 状态的提交记录
+            submission_id = create_submission(
+                problem_id=problem_id,
+                problem_title=problem['title'],
+                username=user['username'],
+                code=code,
+                score=0,
+                test_points=[]
+            )
+            # 触发 Celery 任务进行评测
+            evaluate_submission.delay(submission_id)
 
-        # 触发 Celery 任务进行评测
-        evaluate_submission.delay(submission_id)
+            flash('提交成功，正在评测中...', 'success')
+            return redirect(url_for('submission_detail', submission_id=submission_id))
 
-        flash('提交成功，正在评测中...', 'success')
-        return redirect(url_for('submission_detail', submission_id=submission_id))
+        # 在 submit_solution 里处理书面作业的文件上传
+        elif problem['type'] == 2:  # 书面作业
+            # 书面作业上传文件
+            if 'file' not in request.files:
+                flash('请上传文件。', 'danger')
+                return redirect(url_for('problem_detail', problem_id=problem_id))
+            file = request.files['file']
+            if file.filename == '':
+                flash('未选择文件。', 'danger')
+                return redirect(url_for('problem_detail', problem_id=problem_id))
+            filename = secure_filename(file.filename)
+
+            # 创建一个 Pending 状态的提交记录，保存文件路径
+            submission_id = create_submission(
+                problem_id=problem_id,
+                problem_title=problem['title'],
+                username=user['username'],
+                code=" ",  # 书面作业没有代码
+                score=0,
+                test_points=[filename]  # 不需要自动评测
+            )
+
+            # 检查文件夹路径是否存在，如果不存在则创建
+            upload_folder = os.path.join('uploads', f"{submission_id}")
+            if not os.path.exists(upload_folder):
+                os.makedirs(upload_folder)  # 创建目录
+
+            # 保存文件
+            file_path = os.path.join(upload_folder, filename)  # 将文件保存到特定文件夹
+            file.save(file_path)
+
+            flash('文件提交成功，等待老师评分...', 'success')
+            return redirect(url_for('submission_detail', submission_id=submission_id))
 
     # 如果是 GET 请求，渲染提交页面
-    return render_template('submit.html',
-                           problem_id=problem_id,
+    return render_template('problem_detail.html',
+                           problem=problem,
                            user=user)
 
 @app.route('/submissionslist/<int:problem_id>')
@@ -944,7 +1003,7 @@ def submission_list(problem_id):
                            user_submissions=subs,
                            user=user)
 
-@app.route('/submission/<int:submission_id>')
+@app.route('/submission_detail/<int:submission_id>')
 def submission_detail(submission_id):
     """
     查看某次提交详情
@@ -959,6 +1018,12 @@ def submission_detail(submission_id):
 
     if submission['username'] != user['username'] and not is_admin(user):
         return "<h3>无权查看他人提交</h3>"
+
+    # 处理书面作业，显示文件下载链接
+    problem = get_problem(submission['problem_id'])
+    if problem and problem['type'] == 2:  # 书面作业
+        file_path = f"uploads/{submission['username']}_{submission['problem_id']}_*"
+        submission['file_url'] = file_path
 
     return render_template('submission_detail.html',
                            submission=submission,
@@ -1742,6 +1807,161 @@ def export_student_codes():
         f'attachment; filename="{selected_class}_codes.zip"'
     )
     return response
+
+###############################################################################
+#  书面作业
+###############################################################################
+def get_file_path_for_submission(submission_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "SELECT username, problem_id, test_points FROM submissions WHERE id=%s"
+            cursor.execute(sql, (submission_id,))
+            submission = cursor.fetchone()
+            if not submission:
+                return None
+            if submission['test_points']:
+                submission['test_points'] = [
+                    json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
+                ]
+            file_path = os.path.join('uploads', f"{submission_id}", submission['test_points'][0])
+            return file_path
+    finally:
+        conn.close()
+
+def update_submission_score_and_comment(submission_id, score, comment):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """UPDATE submissions
+                     SET score = %s, code = %s
+                     WHERE id = %s"""
+            cursor.execute(sql, (score, comment, submission_id))
+        conn.commit()
+        submission = get_submission_by_id(submission_id)
+        problem_id = submission["problem_id"]
+        user = get_user_by_username(submission["username"])
+        with conn.cursor() as cursor:
+            sql = f'UPDATE max_score SET P{problem_id}={score} WHERE userid={user["id"]} AND (P{problem_id} IS NULL OR P{problem_id} < {score})'
+            cursor.execute(sql)
+        conn.commit()
+        if score == 5:
+            with conn.cursor() as cursor:
+                sql = f'UPDATE ac_record SET ACP{problem_id}=1 WHERE userid={user["id"]}'
+                cursor.execute(sql)
+            conn.commit()
+            with conn.cursor() as cursor:
+                sql = f"UPDATE problems SET cnt=cnt+1 WHERE id={problem_id}"
+                cursor.execute(sql)
+            conn.commit()
+            if user["is_admin"] != 1:
+                with conn.cursor() as cursor:
+                    sql = f"UPDATE {user['class']} SET complete_cnt=complete_cnt+1 WHERE problem_id={problem_id}"
+                    cursor.execute(sql)
+                conn.commit()
+    finally:
+        conn.close()
+
+@app.route('/download_submission_file/<int:submission_id>')
+def download_submission_file(submission_id):
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return "提交记录不存在", 404
+    
+    if submission['problem_type'] != 2:  # 只有书面作业题才有文件
+        return "不是书面作业题", 400
+    
+    # 获取文件路径（这里假设文件路径存储在 submissions 表的某个字段中）
+    file_path = get_file_path_for_submission(submission_id)
+    if not file_path or not os.path.exists(file_path):
+        return "文件不存在", 404
+    
+    # 这里需要返回文件下载
+    return send_file(file_path, as_attachment=True)
+
+@app.route('/submit_grading/<int:submission_id>', methods=['POST'])
+def submit_grading(submission_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message="无权限批改作业"), 403
+    
+    score = request.form.get('score', type=int)
+    comment = request.form.get('comment', '').strip()
+    
+    if not (1 <= score <= 5):
+        return jsonify(success=False, message="得分必须在 1 到 5 之间"), 400
+    
+    # 获取提交记录
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return jsonify(success=False, message="提交记录不存在"), 404
+
+    # 更新提交记录的得分和评语
+    update_submission_score_and_comment(submission_id, score, comment)
+    
+    # 根据得分更新题目状态
+    new_status = 'Accepted' if score == 5 else 'Unaccepted'
+    update_submission_status(submission_id, new_status)
+    
+    flash('批改结果提交成功', 'success')
+    return jsonify(success=True, message="批改结果已提交")
+
+@app.route('/get_next_pending_submission/<int:submission_id>', methods=['GET'])
+def get_next_pending_submission(submission_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message="无权限查看待批改作业"), 403
+    
+    # 获取当前提交记录
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return jsonify(success=False, message="提交记录不存在"), 404
+
+    # 获取该作业的题目 ID 和类型
+    problem_id = submission['problem_id']
+    problem_type = submission['problem_type']
+
+    # 如果题目是书面作业（problem_type == 2），查找下一个状态为 Pending 的提交记录
+    if problem_type == 2:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 查找下一个状态为 Pending 的书面作业提交
+                sql = """
+                    SELECT id
+                    FROM submissions
+                    WHERE status = 'Pending' AND problem_type = 2
+                    AND id > %s
+                    ORDER BY id ASC
+                    LIMIT 1
+                """
+                cursor.execute(sql, (submission_id,))
+                next_submission = cursor.fetchone()
+                if next_submission:
+                    next_submission_id = next_submission['id']
+                    # 返回下一个作业的 URL
+                    next_submission_url = url_for('submission_detail', submission_id=next_submission_id)
+                    return jsonify(success=True, next_submission_url=next_submission_url)
+            with conn.cursor() as cursor:
+                # 从头查找状态为 Pending 的书面作业提交
+                sql = """
+                    SELECT id
+                    FROM submissions
+                    WHERE status = 'Pending' AND problem_type = 2
+                    ORDER BY id ASC
+                    LIMIT 1
+                """
+                cursor.execute(sql)
+                next_submission = cursor.fetchone()
+                if next_submission:
+                    next_submission_id = next_submission['id']
+                    # 返回下一个作业的 URL
+                    next_submission_url = url_for('submission_detail', submission_id=next_submission_id)
+                    return jsonify(success=True, next_submission_url=next_submission_url)
+        finally:
+            conn.close()
+    flash("已全部批改完成", 'success')
+    return jsonify(success=False, message="无待批改的书面作业")
 
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。

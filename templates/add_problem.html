@@ -15,12 +15,22 @@
     <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
     <input type="text" class="form-control" id="titleInput" name="title" required>
   </div>
+  
   <div class="mb-3">
     <label for="contentTextArea" class="form-label"><i class="fab fa-markdown me-2"></i> 题面 (Markdown + LaTeX)</label>
     <textarea class="form-control" id="contentTextArea" name="content" rows="10" required></textarea>
     <small class="text-muted">可使用 Markdown + LaTeX 语法；如行内公式可用 \$...\$ 或 \\(...\\)。</small>
   </div>
+  
   <div class="mb-3">
+    <label for="problemTypeSelect" class="form-label"><i class="fas fa-question me-2"></i> 题目类型</label>
+    <select class="form-select" id="problemTypeSelect" name="type" required>
+      <option value="1">编程题</option>
+      <option value="2">书面作业</option>
+    </select>
+  </div>
+
+  <div id="programmingFields" class="mb-3">
     <label for="initialCodeEditor" class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
     <div class="card">
       <div class="card-body p-0">
@@ -30,11 +40,18 @@
     </div>
     <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
   </div>
-  <div class="mb-3">
+
+  <div class="mb-3" id="forbiddenFuncDiv">
     <label for="forbiddenFuncInput" class="form-label"><i class="fas fa-ban me-2"></i> 禁用函数 (可选)</label>
     <input type="text" class="form-control" id="forbiddenFuncInput" name="forbidden_func">
     <small class="text-muted">可以输入多个函数名，用逗号分隔。</small>
   </div>
+
+  <!-- 书面作业（不需要管理员上传文件）-->
+  <div id="writtenAssignmentFields" class="mb-3" style="display:none;">
+    <p>书面作业：学生将通过提交文件来完成作业，老师需要人工批改。</p>
+  </div>
+
   <button type="submit" class="btn btn-outline-success"><i class="fas fa-check"></i> 确认添加</button>
 </form>
 
@@ -43,9 +60,6 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
-
-<!-- 引入 CodeMirror 的额外样式和脚本（可选） -->
-<!-- 如果需要更多功能，如自动完成、括号匹配等，可以引入相应的插件 -->
 
 <script>
   // 初始化 CodeMirror for initial_code
@@ -71,6 +85,37 @@
   // 在表单提交前，将 CodeMirror 的内容同步到隐藏的 textarea
   document.querySelector('form').addEventListener('submit', function(e) {
     document.getElementById('initialCode').value = initialCodeEditor.getValue();
+  });
+
+  // 根据题目类型显示不同的输入区域
+  document.getElementById('problemTypeSelect').addEventListener('change', function(e) {
+    var problemType = e.target.value;
+    
+    if (problemType == '1') {
+      // 显示编程题相关字段
+      document.getElementById('programmingFields').style.display = 'block';
+      document.getElementById('forbiddenFuncDiv').style.display = 'block';
+      document.getElementById('writtenAssignmentFields').style.display = 'none';
+    } else if (problemType == '2') {
+      // 显示书面作业相关字段
+      document.getElementById('programmingFields').style.display = 'none';
+      document.getElementById('forbiddenFuncDiv').style.display = 'none';
+      document.getElementById('writtenAssignmentFields').style.display = 'block';
+    }
+  });
+
+  // 初始加载时根据题目类型选择显示对应的内容
+  window.addEventListener('DOMContentLoaded', function() {
+    var problemType = document.getElementById('problemTypeSelect').value;
+    if (problemType == '1') {
+      document.getElementById('programmingFields').style.display = 'block';
+      document.getElementById('forbiddenFuncDiv').style.display = 'block';
+      document.getElementById('writtenAssignmentFields').style.display = 'none';
+    } else if (problemType == '2') {
+      document.getElementById('programmingFields').style.display = 'none';
+      document.getElementById('forbiddenFuncDiv').style.display = 'none';
+      document.getElementById('writtenAssignmentFields').style.display = 'block';
+    }
   });
 </script>
 {% endblock %}
