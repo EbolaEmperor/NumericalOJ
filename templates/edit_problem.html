@@ -20,6 +20,9 @@
     <textarea class="form-control" id="contentTextArea" name="content" rows="10" required>{{ problem.content }}</textarea>
     <small class="text-muted">可使用 Markdown + LaTeX 语法；如行内公式可用 \$...\$ 或 \\(...\\)。</small>
   </div>
+
+  <!-- 仅针对编程题显示 -->
+  {% if problem.type == 1 %}
   <div class="mb-3">
     <label for="initialCodeEditor" class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
     <div class="card">
@@ -35,9 +38,20 @@
     <input type="text" class="form-control" id="forbiddenFuncInput" name="forbidden_func" value="{{ problem.forbidden_func | default('') }}">
     <small class="text-muted">可以输入多个函数名，用逗号分隔。</small>
   </div>
+  {% endif %}
+
+  <!-- 题目类型（不可修改）-->
+  <div class="mb-3">
+    <label for="problemType" class="form-label"><i class="fas fa-question-circle me-2"></i> 题目类型</label>
+    <select class="form-select" id="problemType" name="problem_type" disabled>
+      <option value="1" {% if problem.type == 1 %}selected{% endif %}>编程题</option>
+      <option value="2" {% if problem.type == 2 %}selected{% endif %}>书面作业</option>
+    </select>
+    <small class="text-muted">题目类型一旦创建后无法修改。</small>
+  </div>
+
   <button type="submit" class="btn btn-outline-primary"><i class="fas fa-check"></i> 保存修改</button>
   <a href="{{ url_for('problem_detail', problem_id=problem.id) }}" class="btn btn-outline-secondary"><i class="fas fa-times"></i> 放弃修改</a>
-</hr>
 </form>
 
 <!-- 引入 CodeMirror 的 CSS 和 JS（本地托管） -->
@@ -46,11 +60,9 @@
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
 
-<!-- 引入 CodeMirror 的额外样式和脚本（可选） -->
-<!-- 如果需要更多功能，如自动完成、括号匹配等，可以引入相应的插件 -->
-
 <script>
-  // 初始化 CodeMirror for initial_code
+  // 仅针对编程题初始化 CodeMirror
+  {% if problem.type == 1 %}
   var initialCodeEditor = CodeMirror.fromTextArea(document.getElementById('initialCode'), {
     mode: 'octave',
     theme: 'eclipse',
@@ -74,5 +86,6 @@
   document.querySelector('form').addEventListener('submit', function(e) {
     document.getElementById('initialCode').value = initialCodeEditor.getValue();
   });
+  {% endif %}
 </script>
 {% endblock %}
