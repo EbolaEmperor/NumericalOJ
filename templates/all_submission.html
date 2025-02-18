@@ -41,21 +41,60 @@
 <div class="list-group">
   <!-- 表头 -->
   <div class="list-group-item bg-light d-flex text-muted small">
-    <div class="flex-fill" style="width: 15%; text-align: center;"><i class="fas fa-circle me-2"></i> 状态</div>
-    <div class="flex-fill" style="width: 10%; text-align: center;"><i class="fas fa-trophy me-2"></i> 得分</div>
-    <div class="flex-fill" style="width: 35%; text-align: center;"><i class="fas fa-book me-2"></i> 题目</div>
-    <div class="flex-fill" style="width: 20%; text-align: center;"><i class="fas fa-user me-2"></i> 提交者</div>
-    <div class="flex-fill" style="width: 20%; text-align: center;"><i class="fas fa-history me-2"></i> 提交时间</div>
-    <div style="width: 150px;"></div> <!-- 按钮占位 -->
+    <div class="flex-fill d-block d-sm-none" style="width: 5%; text-align: center;">
+      <i class="fas fa-circle me"></i>
+    </div>
+    <div class="flex-fill d-none d-sm-block" style="width: 15%; text-align: center;">
+      <i class="fas fa-circle me-2"></i>
+      <span class="d-none d-sm-inline">状态</span>
+    </div>
+
+    <div class="flex-fill" style="width: 10%; text-align: center;">
+      <i class="fas fa-trophy me-2"></i>
+      <span class="d-none d-sm-inline">得分</span>
+    </div>
+
+    <div class="flex-fill" style="width: 35%; text-align: center;">
+      <i class="fas fa-book me-2"></i>
+      <span class="d-none d-sm-inline">题目</span>
+    </div>
+
+    <div class="flex-fill d-block d-sm-none" style="width: 30%; text-align: center;">
+      <i class="fas fa-user me"></i>
+    </div>
+    <div class="flex-fill d-none d-sm-block" style="width: 20%; text-align: center;">
+      <i class="fas fa-user me-2"></i>
+      <span class="d-none d-sm-inline">提交者</span>
+    </div>
+
+    <div class="flex-fill d-none d-sm-block" style="width: 20%; text-align: center;">
+      <i class="fas fa-history me-2"></i>
+      提交时间
+    </div>
+
+    <div class="d-block d-sm-none" style="width: 50px; text-align: center;"></div>
+    <div class="d-none d-sm-block" style="width: 100px; text-align: center;"></div> <!-- 按钮占位 -->
   </div>
 
   {% for sub in submissions %}
     <div class="list-group-item d-flex align-items-center">
       <!-- 状态列 -->
-      <div class="flex-fill" style="width: 15%; text-align: center;">
-        <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
-          {{ sub.status }}
-        </span>
+      <div class="flex-fill d-block d-sm-none" style="width: 5%; text-align: center;">
+        <!-- 在移动端显示简写状态 -->
+        <div class="flex-fill d-block d-sm-none">
+          <span class="badge {{ 'accepted' if sub.status == 'Accepted' else 'unaccepted' }}">
+            {{ 'A' if sub.status == 'Accepted' else 'U' }}
+          </span>
+        </div>
+      </div>
+
+      <div class="flex-fill d-none d-sm-block" style="width: 15%; text-align: center;">
+        <!-- 在桌面端显示完整状态 -->
+        <div class="flex-fill d-none d-sm-block">
+          <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
+            {{ sub.status }}
+          </span>
+        </div>
       </div>
       
       <!-- 得分列 -->
@@ -67,18 +106,27 @@
       </div>
       
       <!-- 提交者列 -->
-      <div class="flex-fill text-muted" style="width: 20%; text-align: center;">{{ sub.username }}</div>
+      <div class="flex-fill text-muted d-block d-sm-none" style="width: 30%; text-align: center;">{{ sub.username }}</div>
+      <div class="flex-fill text-muted d-none d-sm-block" style="width: 20%; text-align: center;">{{ sub.username }}</div>
       
-      <!-- 时间列 -->
-      <div class="flex-fill text-muted" style="width: 20%; text-align: center;">
+      <!-- 时间列（仅在大屏幕上显示） -->
+      <div class="flex-fill text-muted d-none d-sm-block" style="width: 20%; text-align: center;">
         <small>{{ sub.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small>
       </div>
       
-      <!-- 操作按钮 -->
-      <div style="width: 150px;">
+      <!-- 操作按钮（仅显示图标） -->
+      <div class="d-block d-sm-none" style="width: 50px; text-align: center;">
         <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" 
            class="btn btn-sm btn-outline-secondary">
-          查看详情 &rarr;
+          <i class="fas fa-info-circle"></i>
+        </a>
+      </div>
+
+      <div class="d-none d-sm-block" style="width: 100px; text-align: center;">
+        <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" 
+           class="btn btn-sm btn-outline-secondary">
+          <i class="fas fa-info-circle"></i>
+          <span class="d-none d-sm-inline">详情</span>
         </a>
       </div>
     </div>
@@ -91,8 +139,6 @@
   /* 保持原有颜色配置 */
   .badge.accepted { background-color: rgb(36, 180, 77); color: white; }
   .badge.unaccepted { background-color: rgb(226, 23, 60); color: white; }
-  .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
-  .badge.undefined-status { background-color: gray; color: white; }
 
   /* 增加列对齐优化 */
   .list-group-item > div {
@@ -101,6 +147,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* 在小屏幕下隐藏不必要的列 */
+  @media (max-width: 767px) {
+    .list-group-item > div:nth-child(6), /* 提交时间 */
+    .list-group-item > div:nth-child(3)  /* 得分 */
+    {
+      display: none;
+    }
+  }
+
   /* 添加分页样式 */
   .pagination {
       margin: 20px 0;

@@ -2,10 +2,9 @@
 {% block title %}登录 - {{ super() }}{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-center align-items-center" style="min-height: 80vh;">
-  <div class="card p-4" style="max-width: 400px; width: 100%;">
+  <div class="card p-4" style="max-width: 100%; width: 100%; max-width: 400px;">
     <h2 class="mb-3 text-center">登录</h2>
 
-    <!-- 如果有注册成功后跳转过来的提示信息，就显示在这里 -->
     {% if success_message %}
       <div class="alert alert-success" role="alert">
         {{ success_message }}
@@ -32,7 +31,6 @@
       </button>
     </form>
 
-    <!-- 登录按钮下方的注册和忘记密码按钮 -->
     <div class="row mt-3">
       <div class="col">
         <a href="{{ url_for('register') }}" class="btn btn-outline-success w-100">

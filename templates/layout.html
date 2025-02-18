@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>{% block title %}计算方法 - 在线评测系统{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Numerical OJ{% endblock %}</title>
+
   <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- MathJax for LaTeX -->
@@ -15,11 +17,18 @@
   };
   </script>
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+  <style>
+    /* 修改侧拉栏宽度 */
+    .offcanvas-end {
+      width: 150px !important; /* 调整为你需要的宽度 */
+    }
+  </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-light bg-light">
+<nav class="navbar navbar-expand-lg navbar-light bg-light d-none d-lg-block">
   <div class="container-fluid">
-    <a class="navbar-brand" href="{{ url_for('problem_list') }}">计算方法 - 在线评测系统</a>
+    <a class="navbar-brand" href="{{ url_for('problem_list') }}"><strong>Numerical OJ</strong></a>
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav me-auto">
         {% if user %}
@@ -90,6 +99,82 @@
     </div>
   </div>
 </nav>
+
+<!-- 移动端右上角按钮 -->
+<button class="btn btn-outline-primary d-lg-none position-fixed top-0 end-0 m-3" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasNavbar" aria-controls="offcanvasNavbar">
+  <i class="fas fa-bars"></i>
+</button>
+
+<!-- 侧拉栏：在移动端设备上显示，位置右侧 -->
+<div class="offcanvas offcanvas-end d-lg-none" tabindex="-1" id="offcanvasNavbar" aria-labelledby="offcanvasNavbarLabel">
+  <div class="offcanvas-header">
+    <h5 class="offcanvas-title" id="offcanvasNavbarLabel"><strong>Num OJ</strong></h5>
+    <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+  </div>
+  <div class="offcanvas-body">
+    <ul class="navbar-nav">
+      {% if user %}
+      {% if user.is_admin == 1 %}
+      <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('problem_list') }}">
+          <i class="fas fa-book me-2"></i> <!-- 实心书籍图标 -->
+          题目列表
+        </a>
+      </li>
+      {% else %}
+      <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('problem_list') }}">
+          <i class="fas fa-tasks me-2"></i> <!-- 实心书籍图标 -->
+          我的作业
+        </a>
+      </li>
+      {% endif %}
+      <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('all_submissions') }}">
+          <i class="fas fa-chart-pie me-2"></i> <!-- 实心饼图图标 -->
+          提交记录
+        </a>
+      </li>
+      {% endif %}
+      {% if user and user.is_admin == 1 %}
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('user_management') }}">
+            <i class="fas fa-users me-2"></i>
+            用户管理
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('admin_homework') }}">
+            <i class="fas fa-tasks me-2"></i>
+            作业管理
+          </a>
+        </li>
+      {% endif %}
+      {% if session.get('username') %}
+        <li class="nav-item">
+          <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal">
+            <i class="fas fa-key me-2"></i>
+            修改密码
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('logout') }}">
+            <i class="fas fa-sign-out-alt me-2"></i>
+            注销
+          </a>
+        </li>
+      {% else %}
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('login') }}"><i class="fas fa-sign-in-alt"></i> 登录</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('register') }}"><i class="fas fa-user-plus"></i> 注册</a>
+        </li>
+      {% endif %}
+    </ul>
+  </div>
+</div>
+
 
 <!-- 密码修改模态框 -->
 {% if session.get('username') %}

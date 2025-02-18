@@ -1,19 +1,17 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="d-flex justify-content-center align-items-center" style="min-height: 80vh;">
-  <div class="card p-4" style="max-width: 400px; width: 100%;">
+  <div class="card p-4" style="max-width: 100%; width: 100%; max-width: 400px;">
     <h2 class="mb-3 text-center">注册</h2>
     {% if error_message %}
       <div class="alert alert-danger">{{ error_message }}</div>
     {% endif %}
     <form method="POST" action="{{ url_for('register') }}">
-      <!-- 新增邮箱字段 -->
       <div class="mb-3">
         <label for="email" class="form-label"><i class="fas fa-envelope"></i> 邮箱 </label>
         <input type="email" class="form-control" id="email" name="email" required>
       </div>
       
-      <!-- 新增验证码字段 -->
       <div class="mb-3">
         <label for="verification_code" class="form-label"><i class="fas fa-shield-alt"></i> 验证码 </label>
         <div class="input-group">
@@ -24,7 +22,6 @@
         </div>
       </div>
       
-      <!-- 原有用户名和密码字段 -->
       <div class="mb-3">
         <label for="username" class="form-label"><i class="fas fa-user"></i> 用户名</label>
         <input type="text" class="form-control" id="username" name="username" required>
@@ -71,7 +68,6 @@ function sendCode() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            // 倒计时60秒
             let seconds = 60;
             const timer = setInterval(() => {
                 btn.textContent = `${seconds}秒后重发`;
