@@ -180,14 +180,14 @@ def create_problem(title, content, initial_code='', forbidden_func='', type=1):
     finally:
         conn.close()
 
-def update_problem(problem_id, new_title, new_content, new_initial_code='', new_forbidden_func='', type=1):
+def update_problem(problem_id, new_title, new_content, new_initial_code='', new_forbidden_func=''):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql = """UPDATE problems 
-                     SET title=%s, content=%s, initial_code=%s, forbidden_func=%s, type=%s 
+                     SET title=%s, content=%s, initial_code=%s, forbidden_func=%s
                      WHERE id=%s"""
-            cursor.execute(sql, (new_title, new_content, new_initial_code, new_forbidden_func, type, problem_id))
+            cursor.execute(sql, (new_title, new_content, new_initial_code, new_forbidden_func, problem_id))
         conn.commit()
     finally:
         conn.close()
@@ -796,13 +796,12 @@ def edit_problem(problem_id):
         new_content = request.form.get('content').strip()
         new_initial_code = request.form.get('initial_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
-        problem_type = request.form.get('type')  # 获取题目类型：编程题或书面作业
 
         if not new_title or not new_content:
             return render_template('edit_problem.html', problem=problem, user=user, error_message="标题和内容不能为空")
 
         # 更新题目
-        update_problem(problem_id, new_title, new_content, new_initial_code, forbidden_func, problem_type)
+        update_problem(problem_id, new_title, new_content, new_initial_code, forbidden_func)
         return redirect(url_for('problem_detail', problem_id=problem_id))
 
     return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
