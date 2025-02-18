@@ -1429,6 +1429,35 @@ def edit_user_ajax():
     flash(f"已将 userID={user_id} 的班级修改为 {new_class['class_cn']}", 'success')
     return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_class': new_class})
 
+@app.route('/admin/edit_username_ajax', methods=['POST'])
+def edit_username_ajax():
+    admin = current_user()
+    if not is_admin(admin):
+        return jsonify({'success': False, 'message': '无权限'}), 403
+
+    user_id = request.form.get('user_id')
+    new_username = request.form.get('new_username')
+
+    if not new_username or not user_id:
+        return jsonify({'success': False, 'message': '缺少必要参数'}), 400
+
+    # 检查新用户名是否已存在
+    if get_user_by_username(new_username):
+        return jsonify({'success': False, 'message': '用户名已存在'}), 400
+
+    # 更新数据库中的用户名
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "UPDATE users SET username=%s WHERE id=%s"
+            cursor.execute(sql, (new_username, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 返回成功信息和新的用户名
+    return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_username': new_username})
+
 @app.route('/admin/add_class_ajax', methods=['POST'])
 def add_class_ajax():
     admin = current_user()
