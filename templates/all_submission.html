@@ -82,8 +82,8 @@
       <div class="flex-fill d-block d-sm-none" style="width: 5%; text-align: center;">
         <!-- 在移动端显示简写状态 -->
         <div class="flex-fill d-block d-sm-none">
-          <span class="badge {{ 'accepted' if sub.status == 'Accepted' else 'unaccepted' }}">
-            {{ 'A' if sub.status == 'Accepted' else 'U' }}
+          <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
+            {{ 'A' if sub.status == 'Accepted' else 'U' if sub.status == 'Unaccepted' else 'P'}}
           </span>
         </div>
       </div>
@@ -139,6 +139,8 @@
   /* 保持原有颜色配置 */
   .badge.accepted { background-color: rgb(36, 180, 77); color: white; }
   .badge.unaccepted { background-color: rgb(226, 23, 60); color: white; }
+  .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
+  .badge.undefined-status { background-color: gray; color: white; }
 
   /* 增加列对齐优化 */
   .list-group-item > div {

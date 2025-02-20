@@ -19,6 +19,7 @@ import smtplib
 import random
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
+import numpy
 
 # config.py
 from config import *
@@ -1147,11 +1148,14 @@ def compare_float_strings(str1, str2, tolerance=1e-5):
     
     # 逐个比较浮点数
     for a, b in zip(list1, list2):
+        if numpy.isnan(a) or numpy.isnan(b):
+            return False
         if a == 0 and b == 0:
             continue
         max_val = max(abs(a), abs(b))
-        relative_error = abs(a - b) / max_val
-        if relative_error > tolerance:
+        abs_error = abs(a - b)
+        relative_error = abs_error / max_val
+        if relative_error > tolerance and abs_error > tolerance:
             return False
     return True
 
