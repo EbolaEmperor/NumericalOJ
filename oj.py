@@ -961,7 +961,7 @@ def submit_solution(problem_id):
 
             # 检查文件扩展名是否是 PDF
             if not filename.lower().endswith('.pdf'):
-                flash(f'{file.filename} 不是 PDF 文件。', 'danger')
+                flash(f'错误：{filename} 不是 PDF 文件', 'danger')
                 return redirect(url_for('problem_detail', problem_id=problem_id))
 
             # 创建一个 Pending 状态的提交记录，保存文件路径
@@ -1914,7 +1914,10 @@ def download_submission_file(submission_id):
         return "文件不存在", 404
     
     # 这里需要返回文件下载
-    return send_file(file_path, as_attachment=True)
+    return send_file(file_path,
+                     mimetype='application/pdf',
+                     as_attachment=False,
+                     download_name=f'submission_{submission_id}.pdf')
 
 @app.route('/submit_grading/<int:submission_id>', methods=['POST'])
 def submit_grading(submission_id):
