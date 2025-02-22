@@ -957,7 +957,12 @@ def submit_solution(problem_id):
             if file.filename == '':
                 flash('未选择文件。', 'danger')
                 return redirect(url_for('problem_detail', problem_id=problem_id))
-            filename = secure_filename(file.filename)
+            filename = secure_filename(f"file_{file.filename}")
+
+            # 检查文件扩展名是否是 PDF
+            if not filename.lower().endswith('.pdf'):
+                flash(f'{file.filename} 不是 PDF 文件。', 'danger')
+                return redirect(url_for('problem_detail', problem_id=problem_id))
 
             # 创建一个 Pending 状态的提交记录，保存文件路径
             submission_id = create_submission(
