@@ -34,7 +34,7 @@
       <!-- 编程题提交部分 -->
       <form action="{{ url_for('submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <label for="codeEditor" class="form-label mb-0"><i class="fas fa-code me-2"></i> 代码</label>
+          <label for="codeEditor" class="form-label mb-0"><i class="fas fa-code me-2"></i> 代码（MATLAB）</label>
           <div>
             <a href="{{ url_for('submission_list', problem_id=problem.id) }}" class="btn btn-outline-secondary me-2">
               <i class="fas fa-chart-pie me-2"></i> 提交记录
@@ -57,6 +57,9 @@
         <div class="d-flex justify-content-between align-items-center mb-2">
           <label for="file" class="form-label mb-0"><i class="fas fa-file-alt me-2"></i> 上传文件</label>
           <div>
+            {% if user.is_admin == 1%}
+            <button type="removeInvalid" class="btn btn-outline-danger"><i class="fas fa-trash me-2"></i> 移除无效提交</button>
+            {% endif %}
             <button type="submit" class="btn btn-outline-primary"><i class="fas fa-upload me-2"></i> 上传作业</button>
           </div>
         </div>
@@ -68,7 +71,7 @@
             <div class="form-text">请上传 pdf 文件。</div>
           </div>
         </div>
-        <p class="text-danger">注意：作业以最后一次提交为准，点击提交后，之前的提交都作废！</p>
+        <p class="text-danger">注意：书面作业以最后一次提交为准，点击提交后，之前的提交都作废！</p>
       </form>
     {% endif %}
 
@@ -180,6 +183,39 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+
+<script>
+// 绑定移除无效提交按钮
+document.querySelector('button[type="removeInvalid"]').addEventListener('click', function(e) {
+  e.preventDefault();  // 防止表单提交
+
+  // 获取问题的 ID
+  var problemId = {{ problem.id }};
+  
+  // 使用 fetch 发送 AJAX 请求
+  fetch('{{ url_for("invalidate_invalid_submissions", problem_id=problem.id) }}', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ problem_id: problemId })  // 传递参数（问题ID）
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert("无效提交已移除");
+      // 刷新页面或做其他更新
+      location.reload();  // 重新加载页面
+    } else {
+      alert("错误: " + data.message);
+    }
+  })
+  .catch(error => {
+    console.error("请求失败:", error);
+    alert("请求失败，请稍后再试");
+  });
+});
+</script>
 
 <!-- 引入 CodeMirror 的额外样式和脚本（可选） -->
 <!-- 如果需要更多功能，如自动完成、括号匹配等，可以引入相应的插件 -->

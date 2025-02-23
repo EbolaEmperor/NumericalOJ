@@ -1226,6 +1226,7 @@ def evaluate_submission(submission_id):
         except requests.RequestException:
             # 网络错误或超时
             test_point_statuses.append({"status": "Error"})
+            all_accepted = False
             continue
 
         status = result.get('status', 'Error')
@@ -2002,6 +2003,52 @@ def get_next_pending_submission(submission_id):
             conn.close()
     flash("已全部批改完成", 'success')
     return jsonify(success=False, message="无待批改的书面作业")
+
+def invalidate_previous_pending_submissions(problem_id):
+    """
+    处理某题的无效提交：将除最后一个外所有 Pending 状态的提交更新为 Unaccepted
+    """
+    # 获取所有提交该问题的用户
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 查询所有 Pending 状态的提交，并按时间倒序排列
+            sql = """
+                SELECT id, username
+                FROM submissions
+                WHERE problem_id = %s AND status = 'Pending'
+                ORDER BY created_at DESC
+            """
+            cursor.execute(sql, (problem_id,))
+            pending_submissions = cursor.fetchall()
+
+            # 遍历每个用户
+            user_submissions = {}
+            for submission in pending_submissions:
+                user_submissions.setdefault(submission['username'], []).append(submission['id'])
+
+            # 对每个用户，更新除最后一个外的所有 Pending 提交状态
+            for username, submissions in user_submissions.items():
+                if len(submissions) > 1:
+                    # 更新除最后一个之外的提交
+                    for submission_id in submissions[1:]:
+                        update_submission_status(submission_id, 'Unaccepted')
+            conn.commit()
+    finally:
+        conn.close()
+
+@app.route('/invalidate_invalid_submissions/<int:problem_id>', methods=['POST'])
+def invalidate_invalid_submissions(problem_id):
+    # 仅限管理员
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message="无权限"), 403
+    try:
+        # 调用之前编写的函数，处理无效提交
+        invalidate_previous_pending_submissions(problem_id)
+        return jsonify(success=True, message="无效提交已移除")
+    except Exception as e:
+        return jsonify(success=False, message=f"错误: {str(e)}"), 500
 
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
