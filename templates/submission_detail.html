@@ -188,57 +188,58 @@
 </script>
 {% else %}
 <script>
-// 使用 PDF.js 渲染 PDF
-var url = "{{ url_for('download_submission_file', submission_id=submission.id) }}";
-var pdfViewer = document.getElementById('pdfViewer');
+  // 使用 PDF.js 渲染 PDF
+  var url = "{{ url_for('download_submission_file', submission_id=submission.id) }}";
+  var pdfViewer = document.getElementById('pdfViewer');
 
-// 使用 PDF.js 渲染 PDF 文件
-pdfjsLib.getDocument(url).promise.then(function(pdf) {
-  console.log('PDF loaded');
-  
-  // 获取容器的宽度
-  var containerWidth = pdfViewer.clientWidth;
-
-  // 获取第一页
-  pdf.getPage(1).then(function(page) {
-    // 根据预览框的宽度来设置缩放比例
-    var scale = containerWidth / page.getViewport({ scale: 1 }).width;
+  // 使用 PDF.js 渲染 PDF 文件
+  pdfjsLib.getDocument(url).promise.then(function(pdf) {
+    console.log('PDF loaded');
     
-    // 为了提高清晰度，设置一个更高的缩放比例（比如 1.5 或 2）
-    var highResolutionScale = scale * 2;  // 或者使用 2 来进一步提高分辨率
+    // 获取容器的宽度
+    var containerWidth = pdfViewer.clientWidth;
 
-    // 获取页面的视口
-    var viewport = page.getViewport({ scale: highResolutionScale });
+    for (var pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      pdf.getPage(pageNum).then(function(page) {
+        // 计算适合容器的缩放比例
+        var scale = containerWidth / page.getViewport({ scale: 1 }).width;
 
-    // 创建 canvas 元素来显示 PDF 页面
-    var canvas = document.createElement('canvas');
-    var context = canvas.getContext('2d');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+        // 为了提高渲染的清晰度，设置一个更高的缩放比例（比如 2x）
+        var highResolutionScale = scale * 2;  // 高分辨率渲染
 
-    // 将 canvas 添加到预览框
-    pdfViewer.appendChild(canvas);
+        // 获取页面的视口，使用提高的渲染比例
+        var viewport = page.getViewport({ scale: highResolutionScale });
 
-    // 渲染页面
-    page.render({
-      canvasContext: context,
-      viewport: viewport
-    }).promise.then(function() {
-      // 渲染完毕后，调整 canvas 元素的宽度为容器宽度，保持高分辨率
-      var height = canvas.height;
-      var width = containerWidth;
-      var ratio = containerWidth / canvas.width;
+        // 创建 canvas 元素来显示 PDF 页面
+        var canvas = document.createElement('canvas');
+        var context = canvas.getContext('2d');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
 
-      // 缩放 canvas，保持高分辨率
-      canvas.style.width = width + 'px';
-      canvas.style.height = height * ratio + 'px';
-    });
-  }).catch(function(pageError) {
-    console.error('Error rendering PDF page:', pageError);
+        // 将 canvas 添加到预览框
+        pdfViewer.appendChild(canvas);
+
+        // 渲染页面
+        page.render({
+          canvasContext: context,
+          viewport: viewport
+        }).promise.then(function() {
+          // 渲染完毕后，调整 canvas 元素的宽度为容器宽度，保持高分辨率
+          var height = canvas.height;
+          var width = containerWidth;
+          var ratio = containerWidth / canvas.width;
+
+          // 缩放 canvas，保持高分辨率
+          canvas.style.width = width + 'px';
+          canvas.style.height = height * ratio + 'px';
+        });
+      }).catch(function(pageError) {
+        console.error('Error rendering PDF page:', pageError);
+      });
+    }
+  }).catch(function(error) {
+    console.error('Error loading PDF:', error);
   });
-}).catch(function(error) {
-  console.error('Error loading PDF:', error);
-});
 </script>
 {% endif %}
 
