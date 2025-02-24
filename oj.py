@@ -685,26 +685,81 @@ def get_homeworks(user):
     finally:
         conn.close()
 
+def get_today_submission_counts():
+    today = datetime.today().date()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 获取今日提交总数
+            cursor.execute("""
+                SELECT COUNT(*) FROM submissions 
+                WHERE DATE(created_at) = %s
+            """, (today,))
+            total_submissions = cursor.fetchone()['COUNT(*)']
+            
+            # 获取今日通过总数
+            cursor.execute("""
+                SELECT COUNT(*) FROM submissions 
+                WHERE DATE(created_at) = %s AND status = 'Accepted'
+            """, (today,))
+            total_accepted = cursor.fetchone()['COUNT(*)']
+        
+        return total_submissions, total_accepted
+    finally:
+        conn.close()
+
+def get_last_10_days_submission_counts():
+    today = datetime.today().date()
+    last_10_days = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(-9,1)]
+    counts = {}
+
+    conn = get_db_connection()
+    try:
+        for day in last_10_days:
+            with conn.cursor() as cursor:
+                # 获取每日提交数
+                cursor.execute("""
+                    SELECT COUNT(*) FROM submissions 
+                    WHERE DATE(created_at) = %s
+                """, (day,))
+                count = cursor.fetchone()['COUNT(*)']
+                counts[day] = count
+    finally:
+        conn.close()
+    
+    return last_10_days, [counts[day] for day in last_10_days]
+
 @app.route('/problems', methods=['GET'])
 def problem_list():
-    """
-    题库列表
-    """
     user = current_user()
     if not user:
         return redirect(url_for('login'))
 
+    # 获取今日提交和通过数
+    total_submissions, total_accepted = get_today_submission_counts()
+
+    # 获取最近十天的提交数
+    last_10_days, daily_counts = get_last_10_days_submission_counts()
+
     if user['is_admin'] == 1:
         problems = get_all_problems()
         return render_template('problem_list.html',
-                            problems=problems,
-                            user=user)
+                               problems=problems,
+                               user=user,
+                               total_submissions=total_submissions,
+                               total_accepted=total_accepted,
+                               last_10_days=last_10_days,
+                               daily_counts=daily_counts)
     else:
         homeworks = get_homeworks(user)
         return render_template('problem_list.html',
-                            homeworks=homeworks,
-                            now=datetime.now(),
-                            user=user)
+                               homeworks=homeworks,
+                               now=datetime.now(),
+                               user=user,
+                               total_submissions=total_submissions,
+                               total_accepted=total_accepted,
+                               last_10_days=last_10_days,
+                               daily_counts=daily_counts)
 
 @app.route('/problem/<int:problem_id>', methods=['GET'])
 def problem_detail(problem_id):
