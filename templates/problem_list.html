@@ -97,6 +97,29 @@
 
     <!-- 右侧侧边栏：显示 MATLAB 编程小提示 -->
     <div class="col-md-4">
+      <!-- 数据统计框 -->
+      <div class="card mt-3">
+        <div class="card-body">
+          <h6 class="text-muted"><i class="fas fa-chart-bar me-2"></i> 数据统计</h6>
+          <div class="d-flex justify-content-center mb-3" style="white-space: nowrap;">
+            <!-- 今日总提交 -->
+            <div class="text-center mx-5">
+              <div class="fs-2 fw-bold">{{ total_submissions }}</div>
+              <div class="fs-8 text-muted">今日提交</div>
+            </div>
+            <!-- 今日总通过 -->
+            <div class="text-center mx-5">
+              <div class="fs-2 fw-bold">{{ total_accepted }}</div>
+              <div class="fs-8 text-muted">今日通过</div>
+            </div>
+          </div>
+          <!-- 柱状图 -->
+          <div style="position: relative; height: 12vh;">
+            <canvas id="submissionChart"></canvas>
+          </div>
+        </div>
+      </div>
+
       <div class="card mt-3">
         <div class="card-body" style="height: 150px; overflow-y: auto;"> <!-- 固定高度和滚动 -->
           <h6 class="text-muted"><i class="fas fa-code me-2"></i> MATLAB 编程小贴士</h6>
@@ -108,17 +131,16 @@
       </div>
 
       <!-- GitHub 开源项目推荐 -->
-      <div class="card mt-3">
+      <!-- <div class="card mt-3">
         <div class="card-body">
           <h6 class="text-muted"><i class="fab fa-github me-2"></i> GitHub 优质开源项目推荐</h6>
           <ul class="list-unstyled" id="github-projects-list">
-            <!-- 动态填充 GitHub 开源项目 -->
           </ul>
           <button class="btn btn-outline-secondary btn-sm float-end" id="projects-refresh-btn" style="border-radius: 50%;">
-            <i class="fas fa-sync-alt"></i> <!-- 只显示图标 -->
+            <i class="fas fa-sync-alt"></i>
           </button>
         </div>
-      </div>
+      </div> -->
 
       <!-- 友情链接框 -->
       <div class="card mt-3">
@@ -164,7 +186,76 @@ function deleteProblem(problemId) {
 </script>
 {% endif %}
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+
 <script>
+  const ctx = document.getElementById('submissionChart').getContext('2d');
+  const submissionChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: {{ last_10_days|tojson }},
+      datasets: [{
+        label: '每日总提交数',
+        data: {{ daily_counts|tojson }},
+        backgroundColor: '#3498db',
+        borderColor: '#2980b9',
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: false  // 隐藏图例
+        },
+        tooltip: {
+          enabled: false  // 禁用 tooltip
+        }
+      },
+      scales: {
+        y: {
+          display: false,  // 隐藏 y 轴坐标
+          beginAtZero: true
+        },
+        x: {
+          type: 'category',  // 设置为类别轴，确保显示日期
+          labels: {{ last_10_days|tojson }},
+          ticks: {
+            maxRotation: 0,  // 防止标签旋转，确保清晰可读
+            autoSkip: false,  // 确保标签不被跳过
+            callback: function(value, index, values) {
+              // 只显示第一个和最后一个日期
+              if (index === 0) {
+                return {{ last_10_days[0]|tojson }};  // 显示第一天
+              } else if (index === values.length - 1) {
+                return {{ last_10_days[9]|tojson }};
+              }
+              return '';  // 中间的日期不显示
+            }
+          },
+          title: {
+            display: false,
+            text: '网站活跃度'
+          }
+        }
+      }
+    }
+  });
+
+  // 在每个柱子顶端显示数字
+  submissionChart.options.plugins.datalabels = {
+    anchor: 'end',
+    align: 'top',
+    color: '#000',
+    font: {
+      weight: 'bold'
+    },
+    formatter: (value) => value
+  };
+  submissionChart.update();
+
 // MATLAB 小贴士
 const matlabTips = [
   "使用 clc 来清除命令窗口。",
