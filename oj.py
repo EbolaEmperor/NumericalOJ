@@ -238,6 +238,18 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
                 test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
                 sql = "UPDATE submissions SET status='unaccepted' WHERE username=%s AND problem_id=%s"
                 cursor.execute(sql, (username, problem_id))
+                # 如果是第一次提交，更新班级作业、题目信息的 “完成人数” 计数器
+                sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
+                cursor.execute(sql, (username, problem_id))
+                total_submissions = cursor.fetchone()['COUNT(*)']
+                if total_submissions == 0:
+                    user = get_user_by_username(username)
+                    if user["is_admin"] != 1:
+                        class_en = user["class"]
+                        sql = f"UPDATE {class_en} SET complete_cnt=complete_cnt+1 WHERE problem_id={problem_id}"
+                        cursor.execute(sql)
+                    sql = f"UPDATE problems SET cnt=cnt+1 WHERE id={problem_id}"
+                    cursor.execute(sql)
             conn.commit()
 
         with conn.cursor() as cursor:
@@ -1943,15 +1955,6 @@ def update_submission_score_and_comment(submission_id, score, comment):
                 sql = f'UPDATE ac_record SET ACP{problem_id}=1 WHERE userid={user["id"]}'
                 cursor.execute(sql)
             conn.commit()
-            with conn.cursor() as cursor:
-                sql = f"UPDATE problems SET cnt=cnt+1 WHERE id={problem_id}"
-                cursor.execute(sql)
-            conn.commit()
-            if user["is_admin"] != 1:
-                with conn.cursor() as cursor:
-                    sql = f"UPDATE {user['class']} SET complete_cnt=complete_cnt+1 WHERE problem_id={problem_id}"
-                    cursor.execute(sql)
-                conn.commit()
     finally:
         conn.close()
 
