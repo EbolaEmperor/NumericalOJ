@@ -134,7 +134,7 @@ def get_all_problems():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type FROM problems ORDER BY id ASC"
+            sql = "SELECT id,title,cnt,type,max_score FROM problems ORDER BY id ASC"
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -144,7 +144,7 @@ def get_problem(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,cnt,forbidden_func,type FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,cnt,forbidden_func,type,max_score FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -154,7 +154,7 @@ def get_problem_title(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type FROM problems WHERE id=%s"
+            sql = "SELECT id,title,cnt,type,max_score FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -164,10 +164,11 @@ def get_problem_title(problem_id):
 def create_problem(title, content, initial_code='', forbidden_func='', type=1):
     conn = get_db_connection()
     try:
+        max_score = 0 if type == 1 else 5
         with conn.cursor() as cursor:
-            sql = """INSERT INTO problems (title, content, initial_code, forbidden_func, type) 
+            sql = """INSERT INTO problems (title, content, initial_code, forbidden_func, type, max_score) 
                      VALUES (%s, %s, %s, %s, %s)"""
-            cursor.execute(sql, (title, content, initial_code, forbidden_func, type))
+            cursor.execute(sql, (title, content, initial_code, forbidden_func, type, max_score))
         conn.commit()
         pid = cursor.lastrowid
         with conn.cursor() as cursor:
@@ -693,6 +694,8 @@ def get_homeworks(user):
                 hw['is_completed'] = status[f"ACP{hw['problem_id']}"]
                 max_score = get_max_score(user['id'], hw['problem_id'])
                 hw['max_score'] = max_score[f"P{hw['problem_id']}"]
+                problem = get_problem_title(hw['problem_id'])
+                hw['total_score'] = problem['max_score']
             return hws
     finally:
         conn.close()
@@ -793,13 +796,6 @@ def problem_detail(problem_id):
             flash('无权限访问该题目', 'danger')
             return redirect(url_for('problem_list'))
 
-        # 检查作业是否已过期
-        for hw in homeworks:
-            if hw['problem_id'] == problem_id:
-                if hw['ddl'] and hw['ddl'] < datetime.now():
-                    flash('作业已过期', 'danger')
-                    return redirect(url_for('problem_list'))
-
     # 将 Markdown 转为 HTML
     rendered_content = markdown.markdown(
         problem['content'],
@@ -875,12 +871,14 @@ def edit_problem(problem_id):
     return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
 
 # 添加更新 testdata 的函数
-def update_testdata(problem_id, testdata_json):
+def update_testdata(problem_id, testdata_json, testdata_num):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql = "UPDATE problems SET testdata=%s WHERE id=%s"
             cursor.execute(sql, (testdata_json, problem_id))
+            sql = "UPDATE problems SET max_score=%s WHERE id=%s"
+            cursor.execute(sql, (testdata_num, problem_id))
         conn.commit()
     finally:
         conn.close()
@@ -956,9 +954,10 @@ def upload_testdata(problem_id):
             
             # 将 testdata 转换为 JSON 字符串
             testdata_json = json.dumps(testdata, ensure_ascii=False)
+            testdata_num = len(in_files)
 
             # 更新数据库中的 testdata 字段
-            update_testdata(problem_id, testdata_json)
+            update_testdata(problem_id, testdata_json, testdata_num)
 
             flash('测试数据上传成功。', 'success')
 
@@ -990,6 +989,14 @@ def submit_solution(problem_id):
     problem = get_problem(problem_id)
     if not problem:
         return "<h3>题目不存在</h3>"
+
+    homeworks = get_homeworks(user)
+    # 检查作业是否已过期
+    for hw in homeworks:
+        if hw['problem_id'] == problem_id:
+            if hw['ddl'] and hw['ddl'] < datetime.now():
+                flash('无法提交已过期的作业', 'danger')
+                return redirect(url_for('problem_detail', problem_id=problem_id))
 
     if request.method == 'POST':
         # 判断题目类型
