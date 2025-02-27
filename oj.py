@@ -164,10 +164,10 @@ def get_problem_title(problem_id):
 def create_problem(title, content, initial_code='', forbidden_func='', type=1):
     conn = get_db_connection()
     try:
-        max_score = 0 if type == 1 else 5
+        max_score = (0 if type == 1 else 5)
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems (title, content, initial_code, forbidden_func, type, max_score) 
-                     VALUES (%s, %s, %s, %s, %s)"""
+                     VALUES (%s, %s, %s, %s, %s, %s)"""
             cursor.execute(sql, (title, content, initial_code, forbidden_func, type, max_score))
         conn.commit()
         pid = cursor.lastrowid
