@@ -72,8 +72,8 @@ An online-judge system for MATLAB, Baltamatica or Octave, easy to deploy.
 
    ```bash
    cd judger
-   supervisord -c supervisor.conf
+   supervisord -c judger.conf
    cd ..
    supervisord -c celery.conf
-   supervisord -c oj.conf
+   supervisord -c web.conf
    ```

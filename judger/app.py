@@ -53,6 +53,17 @@ def run_hello():
                         "time": 0,
                         "memory": 0,
                     }), 200
+                if func == "\\" and re.search(r'\\', code_content):
+                    return jsonify({
+                        "status": "Forbidden",
+                        "exitStatus": 11, 
+                        "files": {
+                            "stdout": "Operator \\ is not allowed",
+                            "stderr": "Operator \\ is not allowed"
+                        },
+                        "time": 0,
+                        "memory": 0,
+                    }), 200
 
         # --------------------------------------------------------
         # 继续处理代码的运行逻辑
@@ -80,7 +91,7 @@ def run_hello():
         start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
 
         result = subprocess.run(
-            ["timeout", f"{timeLim}s", "octave", "--no-window-system", code_filename],
+            ["timeout", f"{timeLim}s", "octave", code_filename],
             capture_output=True, 
             text=True,
             input=user_input
