@@ -990,13 +990,14 @@ def submit_solution(problem_id):
     if not problem:
         return "<h3>题目不存在</h3>"
 
-    homeworks = get_homeworks(user)
-    # 检查作业是否已过期
-    for hw in homeworks:
-        if hw['problem_id'] == problem_id:
-            if hw['ddl'] and hw['ddl'] < datetime.now():
-                flash('无法提交已过期的作业', 'danger')
-                return redirect(url_for('problem_detail', problem_id=problem_id))
+    if user['is_admin'] != 1:
+        homeworks = get_homeworks(user)
+        # 检查作业是否已过期
+        for hw in homeworks:
+            if hw['problem_id'] == problem_id:
+                if hw['ddl'] and hw['ddl'] < datetime.now():
+                    flash('无法提交已过期的作业', 'danger')
+                    return redirect(url_for('problem_detail', problem_id=problem_id))
 
     if request.method == 'POST':
         # 判断题目类型
@@ -1317,7 +1318,18 @@ def evaluate_submission(submission_id):
             all_accepted = False
 
         # 记录测试点状态
-        test_point_statuses.append({"status": status})
+        stderr = result.get('files', {}).get('stderr', "").strip()
+        # 将 stderr 按行分割
+        lines = stderr.split('\n')
+
+        # 判断行数是否至少为 3
+        if len(lines) < 3:
+            stderr = ""  # 如果行数少于 3，设为空
+        else:
+            # 删除前两行和最后一行
+            lines = lines[2:-1]
+            stderr = '\n'.join(lines)
+        test_point_statuses.append({"status": status, "stderr": stderr})
 
     # 计算总得分
     score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")

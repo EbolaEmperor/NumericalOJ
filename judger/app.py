@@ -71,8 +71,8 @@ def run_hello():
         input_filename = f"{sid}/input.txt"
         output_filename = f"{sid}/output.txt"
         code_filename = f"{sid}/a.m"
-        code_content = code_content.replace("input.txt", input_filename)
-        code_content = code_content.replace("output.txt", output_filename)
+        # code_content = code_content.replace("input.txt", input_filename)
+        # code_content = code_content.replace("output.txt", output_filename)
         timeLim = tle * 1.5 / 1000 / 1000 / 1000
 
         subprocess.run(
@@ -91,10 +91,11 @@ def run_hello():
         start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
 
         result = subprocess.run(
-            ["timeout", f"{timeLim}s", "octave", code_filename],
+            ["timeout", f"{timeLim}s", "octave", "a.m"],
             capture_output=True, 
             text=True,
-            input=user_input
+            input=user_input,
+            cwd=f"{sid}"
         )
 
         end_time = time.perf_counter_ns()
