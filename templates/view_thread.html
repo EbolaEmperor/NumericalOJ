@@ -1,0 +1,52 @@
+{% extends "layout.html" %}
+{% block title %} 讨论区 - {{ super() }} {% endblock %}
+{% block content %}
+<div class="container my-4">
+  <h2>{{ thread.title }}</h2>
+  <span class="text-muted fs-7">
+    <i class="fas fa-calendar me-1"></i> {{ thread.created_at }}
+  </span>
+
+  <h3 class="mt-4"><i class="fas fa-comments me-2"></i> 内容与回复</h3>
+  <ul class="list-group">
+    <li class="list-group-item">
+        <div class="d-flex justify-content-between align-items-center">
+            <!-- 使用直接渲染后的 HTML 内容 -->
+            <div id="thread-content">{{ thread.content | safe }}</div>
+        </div>
+    </li>
+    {% for reply in replies %}
+      <li class="list-group-item">
+        <div class="d-flex justify-content-between align-items-center">
+          <!-- 使用直接渲染后的 HTML 内容 -->
+          <div id="reply-content-{{ reply.id }}">{{ reply.content | safe }}</div>
+          <span class="text-muted">{{ reply.created_at }}</span>
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+
+  {% if user %}
+    <!-- 回复帖子 -->
+    <h3 class="mt-4"><i class="fas fa-pencil-alt me-2"></i> 回复帖子</h3>
+    <form method="POST">
+      <textarea class="form-control" name="content" rows="5" required></textarea><br>
+      <button type="submit" class="btn btn-outline-success"><i class="fas fa-check"></i> 提交回复</button>
+    </form>
+  {% endif %}
+</div>
+
+<!-- 替换 highlight.js 引入方式 -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.6.0/styles/atom-one-light.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.6.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.6.0/languages/matlab.min.js"></script>
+
+<script>
+  // 自动检测代码语言并高亮
+  document.addEventListener('DOMContentLoaded', (event) => {
+    document.querySelectorAll('pre code').forEach((el) => {
+      hljs.highlightElement(el);
+    });
+  });
+</script>
+{% endblock %}

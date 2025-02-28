@@ -86,18 +86,18 @@
       <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
       <ul class="list-group mt-2">
         {% for tp in test_points %}
-        <li class="list-group-item">
-          测试点{{ loop.index }}：
-          <span class="{{ tp.status | lower | replace(' ', '-') }}">
-            {{ tp.status }}
-          </span>
-          {% if tp.status == "Nonzero Exit Status" and tp.stderr and loop.first %}
-            <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
-              <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
-            </div>
-          {% endif %}
-        </li>
-      {% endfor %}
+          <li class="list-group-item">
+            测试点{{ loop.index }}：
+            <span class="{{ tp.status | lower | replace(' ', '-') }}">
+              {{ tp.status }}
+            </span>
+            {% if tp.status == "Nonzero Exit Status" and tp.stderr and loop.first %}
+              <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
+                <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
+              </div>
+            {% endif %}
+          </li>
+        {% endfor %}
       </ul>
       {% endif %}
   </div>
