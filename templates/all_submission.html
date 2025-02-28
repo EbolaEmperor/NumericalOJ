@@ -20,7 +20,7 @@
     {% endif %}
 
     {% for p in range(1, total_pages + 1) %}
-      {% if p >= current_page - 2 and p <= current_page + 2 %}
+      {% if p >= current_page - 10 and p <= current_page + 10 %}
         <li class="page-item {% if p == current_page %}active{% endif %}">
           <a class="page-link" href="{{ url_for('all_submissions', page=p) }}">{{ p }}</a>
         </li>

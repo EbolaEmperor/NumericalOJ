@@ -2127,6 +2127,163 @@ def invalidate_invalid_submissions(problem_id):
     except Exception as e:
         return jsonify(success=False, message=f"错误: {str(e)}"), 500
 
+
+###############################################################################
+#  讨论区
+###############################################################################
+@app.route('/forum')
+def forum_index():
+    """讨论区首页，显示所有帖子"""
+    user = current_user()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "SELECT * FROM forum_threads ORDER BY created_at DESC"
+            cursor.execute(sql)
+            threads = cursor.fetchall()
+    finally:
+        conn.close()
+    
+    # 获取今日提交和通过数
+    total_submissions, total_accepted = get_today_submission_counts()
+
+    # 获取最近十天的提交数
+    last_10_days, daily_counts = get_last_10_days_submission_counts()
+
+    return render_template('forum_index.html', 
+                           threads=threads, 
+                           user=user,
+                           total_submissions=total_submissions,
+                           total_accepted=total_accepted,
+                           last_10_days=last_10_days,
+                           daily_counts=daily_counts)
+
+from markdown.extensions import codehilite
+from pygments import highlight
+from pygments.lexers import get_lexer_by_name
+from pygments.formatters.html import HtmlFormatter
+
+@app.route('/forum/thread/<int:thread_id>', methods=['GET', 'POST'])
+def view_thread(thread_id):
+    """查看单个帖子的详细信息和回复"""
+    user = current_user()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "SELECT * FROM forum_threads WHERE id = %s"
+            cursor.execute(sql, (thread_id,))
+            thread = cursor.fetchone()
+
+            if not thread:
+                flash('帖子不存在', 'danger')
+                return redirect(url_for('forum_index'))
+
+            # 获取该帖子的所有回复
+            sql = "SELECT * FROM forum_replies WHERE thread_id = %s ORDER BY created_at ASC"
+            cursor.execute(sql, (thread_id,))
+            replies = cursor.fetchall()
+
+            # 使用 markdown 渲染帖子和回复内容，并为代码块添加高亮
+            thread['content'] = render_markdown_with_highlighting(thread['content'])
+            for reply in replies:
+                reply['content'] = render_markdown_with_highlighting(reply['content'])
+
+    finally:
+        conn.close()
+
+    if request.method == 'POST':
+        content = request.form.get('content').strip()
+
+        if not content:
+            flash('回复内容不能为空', 'danger')
+            return redirect(url_for('view_thread', thread_id=thread_id))
+
+        # 创建回复
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                sql = """INSERT INTO forum_replies (thread_id, content, user_id)
+                         VALUES (%s, %s, %s)"""
+                cursor.execute(sql, (thread_id, content, user['id']))
+            conn.commit()
+            flash('回复成功', 'success')
+        finally:
+            conn.close()
+
+        return redirect(url_for('view_thread', thread_id=thread_id))
+
+    return render_template('view_thread.html', thread=thread, replies=replies, user=user)
+
+
+def render_markdown_with_highlighting(text):
+    """
+    渲染 Markdown 内容（移除手动代码高亮逻辑）
+    """
+    # 使用 markdown 库将 Markdown 转换为 HTML
+    md = markdown.Markdown(extensions=['fenced_code', 'codehilite', 'extra', 'md_in_html', 'tables'])
+    
+    # 渲染 Markdown 内容
+    html = md.convert(text)
+    return html
+
+@app.route('/forum/new', methods=['GET', 'POST'])
+def create_thread():
+    """创建新帖子"""
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+
+    if request.method == 'POST':
+        title = request.form.get('title').strip()
+        content = request.form.get('content').strip()
+
+        if not title or not content:
+            flash('标题和内容不能为空', 'danger')
+            return redirect(url_for('create_thread'))
+
+        # 创建帖子
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                sql = """INSERT INTO forum_threads (title, content, user_id)
+                         VALUES (%s, %s, %s)"""
+                cursor.execute(sql, (title, content, user['id']))
+            conn.commit()
+            flash('帖子创建成功', 'success')
+        finally:
+            conn.close()
+
+        return redirect(url_for('forum_index'))
+
+    return render_template('create_thread.html', user=user)
+
+@app.route('/forum/reply/<int:thread_id>', methods=['POST'])
+def reply_thread(thread_id):
+    """回复帖子"""
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+
+    content = request.form.get('content').strip()
+
+    if not content:
+        flash('回复内容不能为空', 'danger')
+        return redirect(url_for('view_thread', thread_id=thread_id))
+
+    # 创建回复
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """INSERT INTO forum_replies (thread_id, content, user_id)
+                     VALUES (%s, %s, %s)"""
+            cursor.execute(sql, (thread_id, content, user['id']))
+        conn.commit()
+        flash('回复成功', 'success')
+    finally:
+        conn.close()
+
+    return redirect(url_for('view_thread', thread_id=thread_id))
+
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

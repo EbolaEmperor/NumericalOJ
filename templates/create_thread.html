@@ -1,0 +1,20 @@
+{% extends "layout.html" %}
+{% block title %} 创建新帖子 - {{ super() }} {% endblock %}
+{% block content %}
+<div class="container my-4">
+  <h2 class="mb-4"><i class="fas fa-pencil-alt me-2"></i> 创建新帖子</h2>
+  <form method="POST">
+    <div class="mb-3">
+      <label for="title" class="form-label"><i class="fas fa-heading me-2"></i> 标题</label>
+      <input type="text" class="form-control" id="title" name="title" required>
+    </div>
+    <div class="mb-3">
+      <label for="content" class="form-label"><i class="fab fa-markdown me-2"></i> 内容</label>
+      <textarea class="form-control" id="content" name="content" rows="5" required></textarea>
+      <small class="text-muted">可使用 Markdown + LaTeX 语法；如行内公式可用 \$...\$ 或 \\(...\\)。</small>
+    </div>
+
+    <button type="submit" class="btn btn-outline-success"><i class="fas fa-check me-2"></i> 创建帖子</button>
+  </form>
+</div>
+{% endblock %}
