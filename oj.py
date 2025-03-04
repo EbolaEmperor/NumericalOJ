@@ -723,6 +723,29 @@ def get_today_submission_counts():
     finally:
         conn.close()
 
+def get_today_forum_counts():
+    today = datetime.today().date()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 获取今日帖子总数
+            cursor.execute("""
+                SELECT COUNT(*) FROM forum_threads 
+                WHERE DATE(created_at) = %s
+            """, (today,))
+            total_threads = cursor.fetchone()['COUNT(*)']
+            
+            # 获取今日回复总数
+            cursor.execute("""
+                SELECT COUNT(*) FROM forum_replies 
+                WHERE DATE(created_at) = %s
+            """, (today,))
+            total_replies = cursor.fetchone()['COUNT(*)']
+        
+        return total_threads, total_replies
+    finally:
+        conn.close()
+
 def get_last_10_days_submission_counts():
     today = datetime.today().date()
     last_10_days = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(-9,1)]
@@ -735,6 +758,27 @@ def get_last_10_days_submission_counts():
                 # 获取每日提交数
                 cursor.execute("""
                     SELECT COUNT(*) FROM submissions 
+                    WHERE DATE(created_at) = %s
+                """, (day,))
+                count = cursor.fetchone()['COUNT(*)']
+                counts[day] = count
+    finally:
+        conn.close()
+    
+    return last_10_days, [counts[day] for day in last_10_days]
+
+def get_last_10_days_forum_counts():
+    today = datetime.today().date()
+    last_10_days = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(-9,1)]
+    counts = {}
+
+    conn = get_db_connection()
+    try:
+        for day in last_10_days:
+            with conn.cursor() as cursor:
+                # 获取每日回复数
+                cursor.execute("""
+                    SELECT COUNT(*) FROM forum_replies 
                     WHERE DATE(created_at) = %s
                 """, (day,))
                 count = cursor.fetchone()['COUNT(*)']
@@ -1321,6 +1365,7 @@ def evaluate_submission(submission_id):
         stderr = result.get('files', {}).get('stderr', "").strip()
         # 将 stderr 按行分割
         lines = stderr.split('\n')
+        exec_time = int(numpy.round(int(result.get('time', "")) / 1000 / 1000))
 
         # 判断行数是否至少为 3
         if len(lines) < 3:
@@ -1329,7 +1374,7 @@ def evaluate_submission(submission_id):
             # 删除前两行和最后一行
             lines = lines[2:-1]
             stderr = '\n'.join(lines)
-        test_point_statuses.append({"status": status, "stderr": stderr})
+        test_point_statuses.append({"status": status, "stderr": stderr, "time": exec_time})
 
     # 计算总得分
     score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")
@@ -2145,10 +2190,10 @@ def forum_index():
         conn.close()
     
     # 获取今日提交和通过数
-    total_submissions, total_accepted = get_today_submission_counts()
+    total_submissions, total_accepted = get_today_forum_counts()
 
     # 获取最近十天的提交数
-    last_10_days, daily_counts = get_last_10_days_submission_counts()
+    last_10_days, daily_counts = get_last_10_days_forum_counts()
 
     return render_template('forum_index.html', 
                            threads=threads, 
