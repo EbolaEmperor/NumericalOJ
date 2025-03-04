@@ -108,6 +108,11 @@
               <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
             </div>
           {% endif %}
+          {% if tp.status == "Wrong Answer" and tp.stdout %}
+            <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
+              <pre style="white-space: pre-wrap; word-wrap: break-word;">[Your Output] {{ tp.stdout }}</pre>
+            </div>
+          {% endif %}
         </li>
         {% endfor %}
       </ul>
