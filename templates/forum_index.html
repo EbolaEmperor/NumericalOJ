@@ -14,7 +14,7 @@
         <!-- 如果是用户，显示发帖按钮 -->
         <div class="mb-3">
           <a href="{{ url_for('create_thread') }}" class="btn btn-outline-success">
-            <i class="fas fa-plus me-2"></i> 发起新话题
+            <i class="fas fa-plus me-2"></i> 创建新帖子
           </a>
         </div>
       {% endif %}
@@ -47,11 +47,11 @@
           <div class="d-flex justify-content-center mb-3" style="white-space: nowrap;">
             <div class="text-center mx-5">
               <div class="fs-2 fw-bold">{{ total_submissions }}</div>
-              <div class="fs-8 text-muted">今日提交</div>
+              <div class="fs-8 text-muted">今日帖子</div>
             </div>
             <div class="text-center mx-5">
               <div class="fs-2 fw-bold">{{ total_accepted }}</div>
-              <div class="fs-8 text-muted">今日通过</div>
+              <div class="fs-8 text-muted">今日回复</div>
             </div>
           </div>
           <!-- 柱状图 -->
@@ -172,8 +172,7 @@ const matlabTips = [
   "使用 try-catch 来捕获错误并进行错误处理。",
   "MATLAB 中的 cell 数组用于存储不同类型的数据，常用于复杂数据结构。",
   "使用 function 创建自己的函数，提升代码的可复用性。",
-  "了解 MATLAB 的内存管理机制，避免不必要的内存消耗。",
-  "测试点 Error 的可能原因：\n1. 程序运行时间超过 10 秒被强制掐断；\n2. 代码里有语法错误；3. 评测系统故障。"
+  "了解 MATLAB 的内存管理机制，避免不必要的内存消耗。"
 ];
 
 // 随机初始化一个提示
