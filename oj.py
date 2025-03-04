@@ -1349,10 +1349,10 @@ def evaluate_submission(submission_id):
             continue
 
         status = result.get('status', 'Error')
+        actual_output = result.get('files', {}).get('stdout', "").strip()
 
         if status == 'Accepted':
             expected_output = tc.get("output", "").strip()
-            actual_output = result.get('files', {}).get('stdout', "").strip()
             if compare_float_strings(actual_output, expected_output):
                 status = 'Accepted'
             else:
@@ -1374,7 +1374,14 @@ def evaluate_submission(submission_id):
             # 删除前两行和最后一行
             lines = lines[2:-1]
             stderr = '\n'.join(lines)
-        test_point_statuses.append({"status": status, "stderr": stderr, "time": exec_time})
+
+        if len(actual_output) > 80:
+            actual_output = actual_output[:80] + "..."
+
+        test_point_statuses.append({"status": status, 
+                                    "stderr": stderr, 
+                                    "stdout": actual_output,
+                                    "time": exec_time})
 
     # 计算总得分
     score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")
