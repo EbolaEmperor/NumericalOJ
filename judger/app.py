@@ -30,10 +30,15 @@ def run_hello():
         user_input = data.get("input", "")
         code_content = data.get("code", "")
         tle = data.get("timeLimit")
-        mle = data.get("memoryLimit")
+        mle = data.get("memoryLimit") * 10
         forbidden_funcs = data.get("forbidden", "")
 
         if forbidden_funcs:
+            match0 = re.search(r'here_is_user_code_fuck_fuck_fuck_hahaha(.*?)user_code_end_fuck_hahaha_fuck', code_content, re.DOTALL)
+            if match0:
+                code_content_check = match0.group(1)
+            else:
+                code_content_check = code_content
             forbidden_funcs = forbidden_funcs.split(",")  # 获取禁用的函数列表，按逗号分割
             forbidden_funcs = [func.strip() for func in forbidden_funcs]
             # --------------------------------------------------------
@@ -42,18 +47,18 @@ def run_hello():
             for func in forbidden_funcs:
                 # 正则表达式匹配函数调用，确保匹配函数名后面跟着 '('，前后允许有空格或符号
                 pattern = r'[^a-zA-Z0-9_](' + re.escape(func) + r')\s*\('  # 匹配前面不是字母、数字或下划线的字符，并且后面跟 '('
-                if re.search(pattern, code_content):
+                if re.search(pattern, code_content_check):
                     return jsonify({
                         "status": "Forbidden",
                         "exitStatus": 11, 
                         "files": {
-                            "stdout": "Function '{func}' is not allowed",
-                            "stderr": "Function '{func}' is not allowed"
+                            "stdout": f"Function '{func}' is not allowed",
+                            "stderr": f"Function '{func}' is not allowed"
                         },
                         "time": 0,
                         "memory": 0,
                     }), 200
-                if func == "\\" and re.search(r'\\', code_content):
+                if func == "\\" and re.search(r'\\', code_content_check):
                     return jsonify({
                         "status": "Forbidden",
                         "exitStatus": 11, 
@@ -73,7 +78,7 @@ def run_hello():
         code_filename = f"{sid}/a.m"
         # code_content = code_content.replace("input.txt", input_filename)
         # code_content = code_content.replace("output.txt", output_filename)
-        timeLim = tle * 1.5 / 1000 / 1000 / 1000
+        timeLim = tle * 1.2 / 1000 / 1000 / 1000
 
         subprocess.run(
             ["mkdir", f"{sid}"],

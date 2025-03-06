@@ -144,7 +144,7 @@ def get_problem(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,cnt,forbidden_func,type,max_score FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,max_score FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -161,14 +161,14 @@ def get_problem_title(problem_id):
         conn.close()
 
 # 修改 create_problem 和 update_problem 函数，添加 type 字段
-def create_problem(title, content, initial_code='', forbidden_func='', type=1):
+def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1):
     conn = get_db_connection()
     try:
         max_score = (0 if type == 1 else 5)
         with conn.cursor() as cursor:
-            sql = """INSERT INTO problems (title, content, initial_code, forbidden_func, type, max_score) 
+            sql = """INSERT INTO problems (title, content, initial_code, test_code, forbidden_func, type, max_score) 
                      VALUES (%s, %s, %s, %s, %s, %s)"""
-            cursor.execute(sql, (title, content, initial_code, forbidden_func, type, max_score))
+            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, max_score))
         conn.commit()
         pid = cursor.lastrowid
         with conn.cursor() as cursor:
@@ -182,14 +182,14 @@ def create_problem(title, content, initial_code='', forbidden_func='', type=1):
     finally:
         conn.close()
 
-def update_problem(problem_id, new_title, new_content, new_initial_code='', new_forbidden_func=''):
+def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func=''):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql = """UPDATE problems 
-                     SET title=%s, content=%s, initial_code=%s, forbidden_func=%s
+                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s
                      WHERE id=%s"""
-            cursor.execute(sql, (new_title, new_content, new_initial_code, new_forbidden_func, problem_id))
+            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, problem_id))
         conn.commit()
     finally:
         conn.close()
@@ -873,6 +873,7 @@ def add_problem():
         title = request.form.get('title').strip()
         content = request.form.get('content').strip()
         initial_code = request.form.get('initial_code', '').strip()
+        test_code = request.form.get('test_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
         problem_type = request.form.get('type')  # 获取题目类型：编程题或书面作业
 
@@ -880,7 +881,7 @@ def add_problem():
             return render_template('add_problem.html', user=user, error_message="标题和内容不能为空")
 
         # 创建题目
-        create_problem(title, content, initial_code, forbidden_func, problem_type)
+        create_problem(title, content, initial_code, test_code, forbidden_func, problem_type)
 
         return redirect(url_for('problem_list'))
 
@@ -903,13 +904,14 @@ def edit_problem(problem_id):
         new_title = request.form.get('title').strip()
         new_content = request.form.get('content').strip()
         new_initial_code = request.form.get('initial_code', '').strip()
+        new_test_code = request.form.get('test_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
 
         if not new_title or not new_content:
             return render_template('edit_problem.html', problem=problem, user=user, error_message="标题和内容不能为空")
 
         # 更新题目
-        update_problem(problem_id, new_title, new_content, new_initial_code, forbidden_func)
+        update_problem(problem_id, new_title, new_content, new_initial_code, new_test_code, forbidden_func)
         return redirect(url_for('problem_detail', problem_id=problem_id))
 
     return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
@@ -1298,6 +1300,12 @@ def evaluate_submission(submission_id):
 
     problem_id = submission['problem_id']
     code = submission['code']
+    problem = get_problem(problem_id)
+
+    test_code = problem['test_code']
+    if test_code and ("%%user_code_here" in test_code):
+        code = "%here_is_user_code_fuck_fuck_fuck_hahaha\n" + code + "\n%user_code_end_fuck_hahaha_fuck\n"
+        code = test_code.replace("%%user_code_here", code)
 
     # 获取测试数据
     conn = get_db_connection()

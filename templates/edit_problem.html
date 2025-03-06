@@ -33,6 +33,16 @@
     </div>
     <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
   </div>
+  <div id="programmingFields" class="mb-3">
+    <label for="initialCodeEditor" class="form-label"><i class="fas fa-code me-2"></i> 交互库代码 (可选)</label>
+    <div class="card">
+      <div class="card-body p-0">
+        <textarea id="testCode" name="test_code" style="display:none;">{{ problem.test_code }}</textarea>
+        <div id="initialCodeEditor"></div>
+      </div>
+    </div>
+    <small class="text-muted">这段代码用作交互库。学生代码将会粘贴到 %%user_code_here 所在位置。 </small>
+  </div>
   <div class="mb-3">
     <label for="forbiddenFuncInput" class="form-label"><i class="fas fa-ban me-2"></i> 禁用函数 (可选)</label>
     <input type="text" class="form-control" id="forbiddenFuncInput" name="forbidden_func" value="{{ problem.forbidden_func | default('') }}">
@@ -85,6 +95,30 @@
   // 在表单提交前，将 CodeMirror 的内容同步到隐藏的 textarea
   document.querySelector('form').addEventListener('submit', function(e) {
     document.getElementById('initialCode').value = initialCodeEditor.getValue();
+  });
+
+  var testCodeEditor = CodeMirror.fromTextArea(document.getElementById('testCode'), {
+    mode: 'octave',
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    matchBrackets: true,
+    autofocus: true,
+    extraKeys: {
+      "Tab": "indentMore",
+      "Shift-Tab": "indentLess"
+    }
+  });
+
+  // 设置等宽字体
+  testCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  testCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  // 在表单提交前，将 CodeMirror 的内容同步到隐藏的 textarea
+  document.querySelector('form').addEventListener('submit', function(e) {
+    document.getElementById('testCode').value = testCodeEditor.getValue();
   });
   {% endif %}
 </script>
