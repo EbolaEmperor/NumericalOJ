@@ -2344,6 +2344,106 @@ def reply_thread(thread_id):
 
     return redirect(url_for('view_thread', thread_id=thread_id))
 
+###############################################################################
+#  AI 助教
+###############################################################################
+
+from flask import Response
+
+def generate_completion_stream(prompt, model="deepseek-r1:32b"):
+    """
+    真正的流式生成函数:
+    1. 发送请求时使用 stream=True
+    2. 使用 iter_lines() 一行一行地读取
+    3. 尝试解析 JSON 并yield其中的 'response' 字段文本
+    """
+    base_url = "http://localhost:11434/api"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    url = f"{base_url}/generate"
+    data = {
+        "model": model,
+        "prompt": prompt,
+        # 开启流式输出
+        "stream": True,
+    }
+
+    with requests.post(url, headers=headers, json=data, stream=True) as r:
+        r.raise_for_status()
+        for line in r.iter_lines(decode_unicode=True):
+            # 有时会读到空行，需要跳过
+            if not line:
+                continue
+            try:
+                # 假设每行都是 JSON
+                partial_json = json.loads(line)
+                # 取出 'response' 字段（具体字段名要看你的后端接口格式）
+                text_chunk = partial_json.get('response', '')
+                # yield 出文本
+                yield text_chunk
+            except json.JSONDecodeError:
+                # 如果解析失败，说明可能不是 JSON，可以视需求处理
+                continue
+
+@app.route('/ask_ai', methods=['POST'])
+def ask_ai():
+    """
+    流式返回：将 AI 的回复以文本流的方式传给前端
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify(success=False, message="缺少请求体"), 400
+
+    problem_id = data.get('problem_id', '')
+    problem = get_problem(problem_id)
+    problem_content = problem['content']
+    user_code = data.get('user_code', '').strip()
+    sid = data.get('submission_id', '')
+    submission = get_submission_by_id(sid)
+    test_points = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in submission["test_points"]])
+
+    if not problem_content:
+        return jsonify(success=False, message="缺少题目内容"), 400
+    if not user_code:
+        return jsonify(success=False, message="缺少用户代码"), 400
+
+    # 构造提示词
+    prompt = f"""我正在尝试解决一道 matlab 编程题，下面是题目要求：
+
+{problem_content}
+
+这是我的解答代码：
+
+```matlab
+{user_code}
+```
+
+这是我的评测结果：
+
+```
+{test_points}
+```
+
+请你扮演一个助教，帮我分析我的代码有什么问题。
+请注意，我是抱着学习的态度向你请教，因此你应该指出我代码里可能的问题，而不是直接给出解答思路，更不能直接告诉我答案。
+千万不要给我完整代码，只要告诉我改进思路！
+"""
+
+    # 利用流式生成函数，返回一个生成器
+    def generate_answer():
+        try:
+            for chunk in generate_completion_stream(prompt):
+                # 这里可以选择 SSE 格式，也可以直接返回纯文本
+                # SSE 格式示例：yield f"data: {chunk}\n\n"
+                yield chunk
+        except Exception as e:
+            # 如果出错，可以把异常信息返回给前端
+            yield f"\n[服务端异常] {str(e)}"
+
+    # 返回一个流式响应
+    return Response(generate_answer(), mimetype='text/plain')
+
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

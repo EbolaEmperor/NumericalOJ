@@ -27,24 +27,25 @@
         / {{ max_score }}
       {% endif %}
     </h2>
+
     {% if submission.problem_type == 1 %}
     <p class="mt-3"><i class="fas fa-code me-2"></i> <strong>提交代码：</strong></p>
     
     <div class="card">
       <div class="card-body p-0">
-    <!-- CodeMirror 容器 -->
-    <textarea id="submissionCode" name="code" readonly>{{ submission.code }}</textarea>
-    </div>
+        <!-- CodeMirror 容器 -->
+        <textarea id="submissionCode" name="code" readonly>{{ submission.code }}</textarea>
+      </div>
     </div>
 
     {% else %}
     <!-- 书面作业题目：不显示代码和测试点 -->
-        <div class="card">
-          <div class="card-body p-0">
-            <!-- 使用 PDF.js 渲染 PDF 文件 -->
-            <div id="pdfViewer" style="width: 100%; height: 580px;"></div>
-          </div>
-        </div>
+    <div class="card">
+      <div class="card-body p-0">
+        <!-- 使用 PDF.js 渲染 PDF 文件 -->
+        <div id="pdfViewer" style="width: 100%; height: 580px;"></div>
+      </div>
+    </div>
     {% endif %}
 
     <hr/>
@@ -52,7 +53,7 @@
     <a href="{{ url_for('submission_list', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回本题记录</a>
   </div>
 
-  <!-- 右侧：测试点详情 -->
+  <!-- 右侧：测试点详情 + AI 按钮 -->
   <div class="col-md-4 mb-3">
       {% if submission.problem_type == 2 %}
         {% if user and user.is_admin == 1 %}
@@ -108,88 +109,131 @@
               <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
             </div>
           {% endif %}
-          {% if tp.status == "Wrong Answer" and tp.stdout %}
+          {% if (tp.status == "Wrong Answer" or tp.status == "Forbidden") and tp.stdout %}
             <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
-              <pre style="white-space: pre-wrap; word-wrap: break-word;">[Your Output] {{ tp.stdout }}</pre>
+              <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stdout }}</pre>
             </div>
           {% endif %}
         </li>
         {% endfor %}
       </ul>
       {% endif %}
+
+      <!-- AI 部分开始：在测试点下面添加一个“询问 AI”按钮 -->
+      {% if submission.problem_type == 1 and user.is_admin %}
+      <hr/>
+      <button type="button" class="btn btn-outline-info w-100 mb-3" id="askAiBtn">
+        <i class="fas fa-robot me-2"></i> 询问 AI
+      </button>
+      {% endif %}
+      <!-- AI 部分结束 -->
   </div>
 </div>
 
-<!-- 引入 PDF.js 库 -->
+<!-- 引入 PDF.js 库（书面作业用） -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
 
-<!-- 引入 CodeMirror 的 CSS 和 JS（本地托管） -->
+<!-- 引入 CodeMirror 的 CSS 和 JS -->
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
 
+<!-- 引入一个简单的前端 Markdown 渲染库，如 marked.js -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
 <!-- 定义状态颜色的 CSS 类 -->
 <style>
   #pdfViewer {
-    width: 100%;         /* 确保宽度填满父容器 */
-    height: 580px;       /* 预设高度 */
-    overflow-y: auto;    /* 允许垂直滚动 */
-    overflow-x: hidden;  /* 禁止水平滚动 */
+    width: 100%;
+    height: 580px;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
-  /* Accepted - 绿色 */
+  /* 各种状态对应的颜色 */
   .accepted {
     color: rgb(36, 180, 77);
     font-weight: bold;
   }
-
-  /* Wrong Answer - 红色 */
   .wrong-answer, .unaccepted {
     color: rgb(226, 23, 60);
     font-weight: bold;
   }
-
-  /* Time Limit Exceeded - 黄色 */
   .time-limit-exceeded {
-    color: orange; /* 使用橙色以提高可读性 */
+    color: orange;
     font-weight: bold;
   }
-
-  /* Memory Limit Exceeded - 深蓝色 */
   .memory-limit-exceeded, .forbidden {
     color: darkblue;
     font-weight: bold;
   }
-
-  /* No Output - 紫色 */
   .no-output {
     color: purple;
     font-weight: bold;
   }
-
-  /* Pending 和 Waiting - 浅蓝色 */
-  .pending, .waiting {
+  .pending, .waiting, .running {
     color: lightblue;
     font-weight: bold;
   }
 </style>
 
+
+<!-- 在 body 内，摆放一个 Modal，用于显示 AI 回复 -->
+<div class="modal fade" id="aiModal" tabindex="-1" aria-labelledby="aiModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="aiModalLabel">AI 助教答复</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <!-- 加载中的图标 -->
+        <div id="aiLoading" class="text-center mb-3" style="display: none;">
+          <div class="spinner-border" role="status">
+            <span class="visually-hidden">思考中...</span>
+          </div>
+          <p class="mt-2">AI 正在思考，请稍候...</p>
+        </div>
+
+        <!-- AI 输出的总容器 -->
+        <div id="aiAnswerArea" style="display: none;">
+            <!-- 切换“思考过程”显示/隐藏的按钮，默认不出现，遇到 </think> 后再显示 -->
+            <button id="toggleReasoningBtn" type="button"
+                    style="display: none;"
+                    class="btn btn-outline-secondary">
+              展开思考过程
+            </button>
+          <!-- “思考过程”容器，默认隐藏 -->
+          <div id="reasoningContainer" style="display: none;">
+            <div id="reasoningText" class="thinking-gray"></div>
+          </div>
+          <!-- 放正式 Markdown 输出的容器 -->
+          <div id="answerMain"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 {% if submission.problem_type == 1 %}
 <script>
   // 初始化 CodeMirror for submission code
-  var submissionCodeEditor = CodeMirror.fromTextArea(document.getElementById('submissionCode'), {
-    mode: 'octave',
-    theme: 'eclipse',
-    lineNumbers: true,
-    lineWrapping: true,
-    indentUnit: 4,
-    tabSize: 4,
-    readOnly: true,             // 只读模式
-    matchBrackets: true
+  var submissionCodeEditor = CodeMirror.fromTextArea(
+    document.getElementById('submissionCode'), {
+      mode: 'octave',
+      theme: 'eclipse',
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 4,
+      tabSize: 4,
+      readOnly: true,             
+      matchBrackets: true
   });
-
-  // 设置等宽字体
   submissionCodeEditor.getWrapperElement().style.fontFamily = "monospace";
   submissionCodeEditor.getWrapperElement().style.fontSize = "14px";
 
@@ -198,8 +242,6 @@
   } else {
     submissionCodeEditor.setSize(null, "500px");
   }
-
-  // 响应式调整高度
   window.addEventListener('resize', function() {
     if (window.innerWidth <= 768) {
       submissionCodeEditor.setSize(null, "300px");
@@ -210,48 +252,33 @@
 </script>
 {% else %}
 <script>
-  // 使用 PDF.js 渲染 PDF
+  // 使用 PDF.js 渲染 PDF（书面作业）
   var url = "{{ url_for('download_submission_file', submission_id=submission.id) }}";
   var pdfViewer = document.getElementById('pdfViewer');
 
-  // 使用 PDF.js 渲染 PDF 文件
   pdfjsLib.getDocument(url).promise.then(function(pdf) {
     console.log('PDF loaded');
     
-    // 获取容器的宽度
     var containerWidth = pdfViewer.clientWidth;
-
     for (var pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       pdf.getPage(pageNum).then(function(page) {
-        // 计算适合容器的缩放比例
         var scale = containerWidth / page.getViewport({ scale: 1 }).width;
-
-        // 为了提高渲染的清晰度，设置一个更高的缩放比例（比如 2x）
-        var highResolutionScale = scale * 2;  // 高分辨率渲染
-
-        // 获取页面的视口，使用提高的渲染比例
+        var highResolutionScale = scale * 2;
         var viewport = page.getViewport({ scale: highResolutionScale });
 
-        // 创建 canvas 元素来显示 PDF 页面
         var canvas = document.createElement('canvas');
         var context = canvas.getContext('2d');
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-
-        // 将 canvas 添加到预览框
         pdfViewer.appendChild(canvas);
 
-        // 渲染页面
         page.render({
           canvasContext: context,
           viewport: viewport
         }).promise.then(function() {
-          // 渲染完毕后，调整 canvas 元素的宽度为容器宽度，保持高分辨率
           var height = canvas.height;
           var width = containerWidth;
           var ratio = containerWidth / canvas.width;
-
-          // 缩放 canvas，保持高分辨率
           canvas.style.width = width + 'px';
           canvas.style.height = height * ratio + 'px';
         });
@@ -267,29 +294,24 @@
 
 {% if max_score == 0 and submission.problem_type == 1 %}
 <script>
+  // 如果测试点还没出来，5秒后强制刷新
   setTimeout(function() {
-    location.replace(location.href); // 强制刷新页面
-  }, 5000); // 5000毫秒后执行，即5秒
+    location.replace(location.href);
+  }, 5000);
 </script>
 {% endif %}
 
+<!-- 批改书面作业部分 -->
 {% if submission.problem_type == 2 and user and user.is_admin == 1 %}
 <script>
   document.getElementById('submitGradeBtn').addEventListener('click', function() {
-    // 获取得分和评语
     var score = document.getElementById('scoreInput').value;
     var comment = document.getElementById('commentInput').value;
     
-    // 发送 POST 请求到后端批改接口
     fetch('{{ url_for('submit_grading', submission_id=submission.id) }}', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        'score': score,
-        'comment': comment,
-      })
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ 'score': score, 'comment': comment })
     })
     .then(response => response.json())
     .then(data => {
@@ -305,19 +327,15 @@
   });
 
   document.getElementById('nextBtn').addEventListener('click', function() {
-    // 获取当前提交的 ID
     var currentSubmissionId = {{ submission.id }};
     
-    // 发送请求到后端，获取下一个待批改的提交记录
     fetch('{{ url_for("get_next_pending_submission", submission_id=submission.id) }}')
       .then(response => response.json())
       .then(data => {
         if (data.success) {
-          // 跳转到下一个待批改作业的页面
           window.location.href = data.next_submission_url;
         } else {
-          // 如果没有下一个待批改作业，显示提示消息并返回当前页面
-          location.replace(location.href);  // 刷新页面
+          location.replace(location.href);  
         }
       })
       .catch(error => {
@@ -327,4 +345,211 @@
 </script>
 {% endif %}
 
+<!-- AI 部分：只有在 problem_type == 1 时才显示 询问 AI 按钮 -->
+{% if submission.problem_type == 1 %}
+<script>
+  // =============================
+  // 工具函数：解析 <think> 标记
+  // =============================
+  
+  // 这个状态机式的逻辑：
+  //  - normalText: 收集 <think> 外的内容（即正式输出）
+  //  - reasoningText: 收集 <think> 内的思考文本
+  //  - inThink: 用于标记是否处在 <think> 区段
+  //  - 如果在 <think> 区段中尚未遇到 </think>，就实时显示思考内容为灰色
+  //  - 一旦遇到 </think>，自动折叠并显示“查看/收起”按钮
+  //  - 如果多次出现 <think>，也能依次解析
+  
+  // 下面写成一个函数 parseThinkTags，但实际上我们是边读流边解析
+  // 这里只是演示思路；本例中会直接 inline 写在 fetch/while 中。
+  
+  // =============================
+  // 准备 DOM 元素
+  // =============================
+  const askAiBtn = document.getElementById('askAiBtn');       // 触发 AI 的按钮
+  const aiModal = new bootstrap.Modal(document.getElementById('aiModal'));
+  const aiLoading = document.getElementById('aiLoading');
+  const aiAnswerArea = document.getElementById('aiAnswerArea');
+  const answerMain = document.getElementById('answerMain');
+  const reasoningContainer = document.getElementById('reasoningContainer');
+  const reasoningTextDiv = document.getElementById('reasoningText');
+  const toggleReasoningBtn = document.getElementById('toggleReasoningBtn');
+  
+  // 点击“查看思考过程”按钮，切换显示 / 隐藏
+  toggleReasoningBtn.addEventListener('click', function() {
+    if (reasoningContainer.style.display === 'none') {
+      reasoningContainer.style.display = 'block';
+      toggleReasoningBtn.textContent = '收起思考过程';
+    } else {
+      reasoningContainer.style.display = 'none';
+      toggleReasoningBtn.textContent = '展开思考过程';
+    }
+  });
+  
+  // =============================
+  // 点击询问 AI
+  // =============================
+  askAiBtn.addEventListener('click', function() {
+    // 显示模态框
+    aiModal.show();
+    // 显示“思考中”，隐藏输出区
+    aiLoading.style.display = 'block';
+    aiAnswerArea.style.display = 'none';
+  
+    // 清空上次回答
+    answerMain.innerHTML = '';
+    reasoningTextDiv.innerHTML = '';
+    reasoningContainer.style.display = 'none';
+    toggleReasoningBtn.style.display = 'none';
+    toggleReasoningBtn.textContent = '展开思考过程';
+  
+    // 取用户代码（如果有 CodeMirror）
+    const userCode = submissionCodeEditor.getValue() || '';
+  
+    // 发起 POST 请求
+    fetch('{{ url_for("ask_ai") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        problem_id: {{ submission.problem_id }},
+        submission_id: {{ submission.id }},
+        user_code: userCode
+      })
+    })
+    .then(async (response) => {
+      aiLoading.style.display = 'none';      // 关掉“思考中”
+      aiAnswerArea.style.display = 'block';  // 显示输出区域
+  
+      if (!response.ok) {
+        answerMain.innerHTML = `<p class="text-danger">服务器错误：${response.status}</p>`;
+        return;
+      }
+  
+      // 为流式读取做准备
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+  
+      // 我们使用一个简单的状态机
+      let partialText = '';   // 存放当前未被解析处理的剩余文本
+      let inThink = false;    // 是否正处于 <think> ... </think> 区段
+      let foundThink = false; // 是否出现过 <think>
+      let closedThink = false;// 是否出现过 </think>
+  
+      // 已分类的内容
+      let normalText = '';     // 正式输出
+      let reasoningText = '';  // 思考输出
+  
+      let finished = false;
+  
+      while (!finished) {
+        const { done, value } = await reader.read();
+        if (done) {
+          finished = true;
+        } else {
+          // 解码本次 chunk
+          const chunk = decoder.decode(value, { stream: true });
+          partialText += chunk;
+  
+          // 解析 <think> 与 </think>
+          // 可能一次 chunk 里有多个 <think> 或 </think>，用 while 循环解析
+          while (true) {
+            if (!inThink) {
+              // 找 <think>
+              const startIndex = partialText.indexOf('<think>');
+              if (startIndex === -1) {
+                // 没找到 <think>，全是正式输出
+                normalText += partialText;
+                partialText = '';
+                break;
+              } else {
+                // 将 <think> 之前的部分加入 normalText
+                normalText += partialText.slice(0, startIndex);
+                // 截断掉这段
+                partialText = partialText.slice(startIndex + 7); // 跳过 '<think>'
+                inThink = true;
+                foundThink = true;
+              }
+            } else {
+              // 正在 <think> 区段
+              const endIndex = partialText.indexOf('</think>');
+              if (endIndex === -1) {
+                // 没找到结束标签，全部都是思考内容
+                reasoningText += partialText;
+                partialText = '';
+                break;
+              } else {
+                // 把结束标签前的部分加入 reasoningText
+                reasoningText += partialText.slice(0, endIndex);
+                // 截断
+                partialText = partialText.slice(endIndex + 8); // 跳过 '</think>'
+                inThink = false;
+                closedThink = true;
+              }
+            }
+          }
+  
+          // ===========================
+          // 实时刷新页面显示
+          // ===========================
+  
+          // 对 normalText 做 Markdown 渲染
+          // 注意：因为 normalText 可能不完整(尤其是大段 markdown 代码块还没读完)，
+          //       所以流式渲染时若 markdown 未闭合，会有一定概率排版不完整。
+          //       如果介意，可以等流结束再做一次最终渲染。
+          const htmlForNormal = marked.parse(normalText);
+          answerMain.innerHTML = htmlForNormal;
+  
+          // 若还在思考区间，实时显示思考内容
+          // => 显示 reasoningContainer，把 reasoningText 写进去
+          if (foundThink && !closedThink) {
+            reasoningContainer.style.display = 'block'; 
+            reasoningTextDiv.textContent = reasoningText; 
+          } else if (foundThink && closedThink) {
+            // 一旦思考闭合，默认折叠
+            reasoningTextDiv.textContent = reasoningText;
+            reasoningContainer.style.display = 'none';
+            toggleReasoningBtn.style.display = 'inline-block';
+          }
+  
+          // 如果你要每次 chunk 都做公式渲染：
+          // if (window.MathJax) {
+          //   MathJax.typesetPromise([answerMain]);
+          //   // reasoningTextDiv 也可能要渲染公式
+          //   // MathJax.typesetPromise([reasoningTextDiv]);
+          // }
+        }
+      } // while(!finished)
+  
+      // ============= 流结束后 =============
+  
+      // 如果最后 inThink 还为 true，说明没有闭合 </think>，直接显示思考内容
+      if (inThink) {
+        reasoningContainer.style.display = 'block';
+        toggleReasoningBtn.style.display = 'inline-block';
+      }
+  
+      // 这里也可以做一次「最终的」Markdown 渲染/公式渲染，以防止部分语法被截断
+      // answerMain.innerHTML = marked.parse(normalText);
+      // if (window.MathJax) {
+      //   MathJax.typesetPromise([answerMain]);
+      // }
+  
+    })
+    .catch(err => {
+      aiLoading.style.display = 'none';
+      aiAnswerArea.style.display = 'block';
+      answerMain.innerHTML = `<p class="text-danger">请求出错：${err}</p>`;
+    });
+  });
+  </script>
+{% endif %}
+
+<style>
+  /* 可选：把思考内容设置为灰色、小字 */
+  .thinking-gray {
+      color: gray;
+      font-size: small;
+      white-space: pre-wrap;
+  }
+</style>
 {% endblock %}
