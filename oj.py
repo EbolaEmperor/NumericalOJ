@@ -2350,41 +2350,91 @@ def reply_thread(thread_id):
 
 from flask import Response
 
-def generate_completion_stream(prompt, model="deepseek-r1:32b"):
+def generate_completion_stream(prompt, model="deepseek-r1-distill-qwen"):
     """
     真正的流式生成函数:
     1. 发送请求时使用 stream=True
     2. 使用 iter_lines() 一行一行地读取
-    3. 尝试解析 JSON 并yield其中的 'response' 字段文本
+    3. 维护一个状态机 in_thinking，用来在 reasoning_content 出现时输出 <think>，在 content 出现时输出 </think>。
     """
-    base_url = "http://localhost:11434/api"
+    import requests
+    import json
+
+    url = "https://chat.zju.edu.cn/api/ai/v1/chat/completions"
     headers = {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": "sk-i9a1L6oaMw4T76ugAb2fB438C02b4338BaB4095a319826E6",  # 你的 token
+        "User-Agent": "Mozilla/5.0"
     }
-    url = f"{base_url}/generate"
+    # 这里是 system 提示词
+    role = """
+你是一个小猫，你会说人话，你温柔可爱、学术水平高超，你需要帮小朋友分析他的代码有什么问题。
+你应该指出小朋友代码里可能的问题，但不能直接给出解答思路，更不能直接告诉他答案，只能告诉他改进思路。
+"""
     data = {
         "model": model,
-        "prompt": prompt,
-        # 开启流式输出
+        "messages": [
+            {"role": "system", "content": role},
+            {"role": "user", "content": prompt}
+        ],
         "stream": True,
     }
 
+    in_thinking = False  # 状态机标志：是否在思考区间
+
     with requests.post(url, headers=headers, json=data, stream=True) as r:
         r.raise_for_status()
-        for line in r.iter_lines(decode_unicode=True):
-            # 有时会读到空行，需要跳过
+        for line in r.iter_lines():
             if not line:
                 continue
-            try:
-                # 假设每行都是 JSON
-                partial_json = json.loads(line)
-                # 取出 'response' 字段（具体字段名要看你的后端接口格式）
-                text_chunk = partial_json.get('response', '')
-                # yield 出文本
-                yield text_chunk
-            except json.JSONDecodeError:
-                # 如果解析失败，说明可能不是 JSON，可以视需求处理
+            raw_str = line.decode('utf-8').strip()
+            # 如果后端返回 SSE 形式，通常会有 "data: " 前缀，这里可酌情去掉
+            if raw_str.startswith("data:"):
+                raw_str = raw_str[5:].strip()
+
+            # 如果遇到 "[DONE]" 之类结束标记，可以 break
+            if raw_str in ("[DONE]", ""):
                 continue
+
+            try:
+                partial_json = json.loads(raw_str)
+            except json.JSONDecodeError:
+                # 如果不是有效 JSON，跳过
+                continue
+
+            if not partial_json.get("choices"):
+                continue
+            delta = partial_json["choices"][0].get("delta", {})
+
+            # 取 reasoning_content 或 content
+            # reasoning = delta.get("reasoning_content", "")
+            content = delta.get("content", "")
+            yield content
+
+            # ============== 逻辑核心 ==============
+            # 若出现 reasoning_content
+            # if reasoning:
+            #     # 如果之前不在 thinking 状态，则先输出 <think>
+            #     if not in_thinking:
+            #         yield "<think>"
+            #         in_thinking = True
+            #     # 累加思考文本
+            #     yield reasoning
+            
+            # 若出现 content 表示进入正式输出
+            # if content:
+            #     # 如果在 thinking 状态，先补上 </think>
+            #     if in_thinking:
+            #         yield "</think>"
+            #         in_thinking = False
+            #     # 再输出 content
+            #     yield content
+            # # ============== 逻辑核心 ==============
+
+        # 流结束后，如果还在 thinking 状态，需要补一个 </think>
+        # if in_thinking:
+        #     yield "</think>"
+        
 
 @app.route('/ask_ai', methods=['POST'])
 def ask_ai():
@@ -2409,25 +2459,29 @@ def ask_ai():
         return jsonify(success=False, message="缺少用户代码"), 400
 
     # 构造提示词
-    prompt = f"""我正在尝试解决一道 matlab 编程题，下面是题目要求：
+    prompt = f"""你是一个小猫，你会说人话，你温柔知性、猫美心善、学术水平高超，你需要帮小朋友分析他的代码有什么问题。
+你应该指出小朋友代码里可能的问题，但不能直接给出完整的解答思路，更不能直接告诉他答案，只能告诉他改进思路。
+如果他原本的代码就毫无逻辑可言，请安慰他，让他回去好好思考一下。
+
+这是一道 matlab 编程题，下面是题目要求：
 
 {problem_content}
 
-这是我的解答代码：
+这是小朋友写的解答代码：
 
 ```matlab
 {user_code}
 ```
 
-这是我的评测结果：
+这是小朋友得到的评测结果：
 
 ```
 {test_points}
 ```
 
-请你扮演一个助教，帮我分析我的代码有什么问题。
-请注意，我是抱着学习的态度向你请教，因此你应该指出我代码里可能的问题，而不是直接给出解答思路，更不能直接告诉我答案。
-千万不要给我完整代码，只要告诉我改进思路！
+你应该指出小朋友代码里可能的问题，但不能直接给出完整的解答思路，更不能直接告诉他答案，只能告诉他改进思路。
+如果他原本的代码就毫无逻辑可言，请安慰他，让他回去好好思考一下。
+对了，请你给小朋友一句问候语，以体现你确实是一个小猫。
 """
 
     # 利用流式生成函数，返回一个生成器
