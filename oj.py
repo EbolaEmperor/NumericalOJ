@@ -167,7 +167,7 @@ def create_problem(title, content, initial_code='', test_code='', forbidden_func
         max_score = (0 if type == 1 else 5)
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems (title, content, initial_code, test_code, forbidden_func, type, max_score) 
-                     VALUES (%s, %s, %s, %s, %s, %s)"""
+                     VALUES (%s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, max_score))
         conn.commit()
         pid = cursor.lastrowid
@@ -2350,7 +2350,7 @@ def reply_thread(thread_id):
 
 from flask import Response
 
-def generate_completion_stream(prompt, model="deepseek-r1-distill-qwen"):
+def generate_completion_stream(prompt, model="deepseek-r1-250120"):
     """
     真正的流式生成函数:
     1. 发送请求时使用 stream=True
@@ -2360,16 +2360,16 @@ def generate_completion_stream(prompt, model="deepseek-r1-distill-qwen"):
     import requests
     import json
 
-    url = "https://chat.zju.edu.cn/api/ai/v1/chat/completions"
+    url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": "sk-i9a1L6oaMw4T76ugAb2fB438C02b4338BaB4095a319826E6",  # 你的 token
+        "Authorization": "Bearer b1cb99f2-40bb-4802-b269-418801460c37",  # 你的 token
         "User-Agent": "Mozilla/5.0"
     }
     # 这里是 system 提示词
     role = """
 你是一个小猫，你会说人话，你温柔可爱、学术水平高超，你需要帮小朋友分析他的代码有什么问题。
-你需要特别关注小朋友的测试点得分情况。如果有 Nonzero Exit Status，则你只需要分析语法错误，不用关注问题本身。
+你需要特别关注小朋友的测试点得分情况。如果有 Nonzero Exit Status 或者 Error，则你只需要分析语法错误，不用关注问题本身。
 如果有 Time Limit Exceed，则应该分析复杂度和计算效率，而不是分析代码的正确性。
 如果有 Wrong Answer，则需要分析代码的正确性。
 """
@@ -2409,28 +2409,28 @@ def generate_completion_stream(prompt, model="deepseek-r1-distill-qwen"):
             delta = partial_json["choices"][0].get("delta", {})
 
             # 取 reasoning_content 或 content
-            # reasoning = delta.get("reasoning_content", "")
+            reasoning = delta.get("reasoning_content", "")
             content = delta.get("content", "")
-            yield content
+            # yield content
 
             # ============== 逻辑核心 ==============
             # 若出现 reasoning_content
-            # if reasoning:
-            #     # 如果之前不在 thinking 状态，则先输出 <think>
-            #     if not in_thinking:
-            #         yield "<think>"
-            #         in_thinking = True
-            #     # 累加思考文本
-            #     yield reasoning
+            if reasoning:
+                # 如果之前不在 thinking 状态，则先输出 <think>
+                if not in_thinking:
+                    yield "<think>"
+                    in_thinking = True
+                # 累加思考文本
+                yield reasoning
             
             # 若出现 content 表示进入正式输出
-            # if content:
-            #     # 如果在 thinking 状态，先补上 </think>
-            #     if in_thinking:
-            #         yield "</think>"
-            #         in_thinking = False
-            #     # 再输出 content
-            #     yield content
+            if content:
+                # 如果在 thinking 状态，先补上 </think>
+                if in_thinking:
+                    yield "</think>"
+                    in_thinking = False
+                # 再输出 content
+                yield content
             # # ============== 逻辑核心 ==============
 
         # 流结束后，如果还在 thinking 状态，需要补一个 </think>
@@ -2478,7 +2478,7 @@ def ask_ai():
 {test_points}
 ```
 
-如果评测结果全是 Nonezero Exit Status，则你不必关注问题内容，只需分析小朋友的语法错误。
+如果评测结果全是 Nonezero Exit Status 或者 Error，则你不必关注问题内容，只需分析小朋友的语法错误。
 
 如果评测结果由 Accepted 和 Time Limit Exceed 构成，则说明小朋友的代码正确性没有问题，
 此时你不必分析小朋友代码的正确性，而是仅仅从复杂度或者循环效率的角度来提示小朋友如何加速。
