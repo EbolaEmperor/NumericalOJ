@@ -10,13 +10,17 @@
 
       <!-- 如果是管理员，显示“编辑题目”按钮 -->
       {% if user and user.is_admin == 1 %}
-      <div class="ms-auto d-flex">
-        <a href="{{ url_for('edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me-2">
-          <i class="fas fa-pencil-alt me-2"></i> 编辑题目
+      <div class="ms-auto d-flex gap-3">
+        <a href="{{ url_for('edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
+          <i class="fas fa-pencil-alt me"></i>
         </a>
         <!-- 上传数据按钮触发模态框 -->
         <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
-          <i class="fas fa-cloud-upload-alt me-2"></i> 上传数据
+          <i class="fas fa-cloud-upload-alt me"></i>
+        </button>
+        <!-- 新增重测按钮，使用 POST 表单提交 -->
+        <button type="button" class="btn btn-outline-danger" id="btnRejudge">
+          <i class="fas fa-redo-alt me"></i>
         </button>
       </div>
       {% endif %}
@@ -120,6 +124,34 @@
         </div>
       </div>
     </form>
+  </div>
+</div>
+
+<div class="modal fade" id="rejudgeProgressModal" tabindex="-1" aria-labelledby="rejudgeProgressLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="rejudgeProgressLabel">重测进度</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="progress mb-3">
+          <div class="progress-bar progress-bar-striped progress-bar-animated" 
+               role="progressbar"
+               style="width: 0%;" 
+               id="rejudgeProgressBar"
+               aria-valuenow="0" 
+               aria-valuemin="0" 
+               aria-valuemax="100">
+            0%
+          </div>
+        </div>
+        <p class="small text-muted" id="rejudgeProgressDetail">尚未开始</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
   </div>
 </div>
 {% endif %}
@@ -261,4 +293,90 @@ document.querySelector('button[type="removeInvalid"]').addEventListener('click',
     document.getElementById('codeEditor').value = editor.getValue();
   });
 </script>
+
+{% if user and user.is_admin == 1 %}
+<script>
+  (function() {
+    var rejudgeTimer = null; // 轮询定时器ID
+    var progressBar = document.getElementById("rejudgeProgressBar");
+    var progressDetail = document.getElementById("rejudgeProgressDetail");
+  
+    // 点击“重测”按钮
+    document.getElementById('btnRejudge')?.addEventListener('click', function() {
+      if (!confirm("确认要重测本题的所有提交吗？")) {
+        return;
+      }
+      // 发起重测请求
+      fetch("{{ url_for('rejudge_problem', problem_id=problem.id) }}", {
+        method: "POST"
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) {
+          alert("重测失败：" + data.message);
+          return;
+        }
+        // 成功：打开进度 Modal
+        var modalEl = document.getElementById("rejudgeProgressModal");
+        var modal = new bootstrap.Modal(modalEl);
+        modal.show();
+  
+        // 清零进度
+        updateProgress(0, 0, 0); 
+  
+        // 启动轮询
+        if (rejudgeTimer) {
+          clearInterval(rejudgeTimer);
+        }
+        rejudgeTimer = setInterval(function() {
+          checkRejudgeStatus();
+        }, 1500); // 每1.5s查询一次
+      })
+      .catch(err => {
+        console.error(err);
+        alert("请求失败，请稍后再试");
+      });
+    });
+  
+    // 查询后台进度
+    function checkRejudgeStatus() {
+      fetch("{{ url_for('rejudge_status', problem_id=problem.id) }}")
+        .then(res => res.json())
+        .then(data => {
+          if (!data.success) {
+            // 若后端返回 not success，说明已结束/或未开始
+            console.log("重测结束或无进度: " + data.message);
+            if (rejudgeTimer) {
+              clearInterval(rejudgeTimer);
+              rejudgeTimer = null;
+            }
+            return;
+          }
+          // data.progress: 0~100
+          // data.done, data.total
+          updateProgress(data.progress, data.done, data.total);
+          if (data.progress >= 100) {
+            // 已完成
+            if (rejudgeTimer) {
+              clearInterval(rejudgeTimer);
+              rejudgeTimer = null;
+            }
+          }
+        })
+        .catch(err => {
+          console.error("轮询进度出错:", err);
+        });
+    }
+  
+    // 更新UI
+    function updateProgress(percent, done, total) {
+      progressBar.style.width = percent + "%";
+      progressBar.setAttribute("aria-valuenow", percent);
+      progressBar.textContent = percent + "%";
+      progressDetail.textContent = "已完成 " + done + " / " + total;
+    }
+  })();
+</script>
+{% endif %}
+
 {% endblock %}
