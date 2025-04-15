@@ -24,6 +24,12 @@ import numpy
 # config.py
 from config import *
 
+import redis
+
+# 假设 Redis 跑在 localhost:6379
+# 根据需要添加密码、db 等
+rds = redis.StrictRedis(host='127.0.0.1', port=6379, decode_responses=True)
+
 app = Flask(__name__)
 app.secret_key = 'some_secret_key_for_session'
 app.config['DEBUG'] = True
@@ -35,6 +41,8 @@ app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
 
 # 允许上传的文件扩展名
 ALLOWED_EXTENSIONS = {'zip'}
+
+REJUDGE_PROGRESS = {}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -1044,6 +1052,11 @@ def submit_solution(problem_id):
                 if hw['ddl'] and hw['ddl'] < datetime.now():
                     flash('无法提交已过期的作业', 'danger')
                     return redirect(url_for('problem_detail', problem_id=problem_id))
+    
+    # subs = get_submissions_by_user_and_problem(user['username'], problem_id)
+    # if subs:
+    #     flash('您已经提交过答案！', 'danger')
+    #     return redirect(url_for('problem_detail', problem_id=problem_id))
 
     if request.method == 'POST':
         # 判断题目类型
@@ -1342,7 +1355,7 @@ def evaluate_submission(submission_id):
             "input": tc.get("input", ""),
             "forbidden": fbd_func["forbidden_func"],
             "sid": f"eoj-{submission_id}",
-            "timeLimit": 10000000000,          # 根据需要调整，单位纳秒
+            "timeLimit": 8000000000,          # 根据需要调整，单位纳秒
             "memoryLimit": 512 * 1024 * 1024  # 根据需要调整，单位字节（256MB）
         }
 
@@ -2503,6 +2516,85 @@ def ask_ai():
 
     # 返回一个流式响应
     return Response(generate_answer(), mimetype='text/plain')
+
+# Rejudge 模块
+
+def get_all_submissions_for_problem(problem_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                SELECT id 
+                FROM submissions
+                WHERE problem_id=%s
+                ORDER BY id ASC
+            """
+            cursor.execute(sql, (problem_id,))
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+from celery import chain
+
+@celery.task
+def evaluate_submission_and_update(submission_id, problem_id):
+    evaluate_submission(submission_id)
+
+    # 任务完成后 done+1
+    key = f"rejudge:{problem_id}"
+    rds.hincrby(key, "done", 1)
+
+from celery import chain
+
+@app.route('/admin/rejudge_problem/<int:problem_id>', methods=['POST'])
+def rejudge_problem(problem_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message="无权限"), 403
+
+    submissions = get_all_submissions_for_problem(problem_id)
+    if not submissions:
+        return jsonify(success=False, message="该题暂无提交"), 400
+
+    # 在 Redis 新建一个Hash: rejudge:{problem_id}, 包含 total=xx, done=0
+    key = f"rejudge:{problem_id}"
+    rds.hmset(key, {"total": len(submissions), "done": 0})
+
+    # 把这些提交状态都改为Pending
+    for sub in submissions:
+        update_submission_status(sub["id"], "Pending")
+
+    # 用 chain 串行调用
+    chain_tasks = None
+    for sub in submissions:
+        sid = sub["id"]
+        task = evaluate_submission_and_update.si(sid, problem_id)
+        if chain_tasks is None:
+            chain_tasks = task
+        else:
+            chain_tasks = chain_tasks | task
+    chain_tasks.apply_async()
+
+    return jsonify(success=True, message="已开始重测")
+
+@app.route('/admin/rejudge_status/<int:problem_id>', methods=['GET'])
+def rejudge_status(problem_id):
+    key = f"rejudge:{problem_id}"
+    if not rds.exists(key):
+        return jsonify(success=False, message="该题未在重测或已结束")
+
+    info = rds.hgetall(key)   # 读出Hash: { "total": "53", "done": "0" }
+    total = int(info.get("total", 0))
+    done = int(info.get("done", 0))
+
+    if total <= 0:
+        return jsonify(success=False, message="总数异常")
+    progress = int(done / total * 100)
+
+    return jsonify(success=True, 
+                   progress=progress,
+                   done=done,
+                   total=total)
 
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
