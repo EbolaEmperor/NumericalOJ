@@ -103,17 +103,6 @@
           <h6 class="text-muted"><i class="fas fa-chart-bar me-2"></i> 数据统计</h6>
           <div class="d-flex justify-content-center mb-3" style="white-space: nowrap;">
             
-            <!-- 期末成绩公示时使用 -->
-            <!-- <div class="text-center mx-5">
-              <div class="fs-2 fw-bold">{{ total_grade }}</div>
-              <div class="fs-8 text-muted">你的平时成绩 (满分100，仅供参考)</div>
-            </div> -->
-
-            <div class="text-center mx-5">
-              <div class="fs-2 fw-bold">{{ exam_score|default('-', true) }}</div>
-              <div class="fs-8 text-muted">期末成绩</div>
-            </div>
-
             <!-- 平时使用 -->
             <!-- <div class="text-center mx-5">
               <div class="fs-2 fw-bold">{{ total_submissions }}</div>
@@ -123,6 +112,16 @@
               <div class="fs-2 fw-bold">{{ total_accepted }}</div>
               <div class="fs-8 text-muted">今日通过</div>
             </div> -->
+
+            <div class="text-center mx-5">
+              <div class="fs-2 fw-bold">{{ regular_score|default('-', true) }}</div>
+              <div class="fs-8 text-muted">平时成绩</div>
+            </div>
+
+            <div class="text-center mx-5">
+              <div class="fs-2 fw-bold">{{ final_score|default('-', true) }}</div>
+              <div class="fs-8 text-muted">期末成绩</div>
+            </div>
 
           </div>
 
