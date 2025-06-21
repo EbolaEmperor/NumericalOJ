@@ -43,6 +43,11 @@
     <a href="{{ url_for('export_student_codes', sclass=selected_class) }}" class="btn btn-outline-secondary ms-2">
       <i class="fas fa-code me-2"></i>导出学生代码
     </a>
+
+    <!-- 上传期末成绩按钮 -->
+    <button class="btn btn-outline-warning ms-2" data-bs-toggle="modal" data-bs-target="#uploadExamModal">
+      <i class="fas fa-file-upload me-2"></i>上传期末成绩
+    </button>
   </div>
 
   <!-- 作业列表 -->
@@ -147,6 +152,34 @@
   </div>
 </div>
 
+<!-- 上传期末成绩模态框 -->
+<div class="modal fade" id="uploadExamModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">上传期末成绩（Excel）</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="uploadExamForm" enctype="multipart/form-data">
+        <input type="hidden" name="class_en" value="{{ selected_class }}">
+        <div class="modal-body">
+          <div class="alert alert-info" role="alert">
+            请选择包含两列（学号、成绩）的 .xlsx / .xls 文件。
+          </div>
+          <div class="mb-3">
+            <label class="form-label">选择文件</label>
+            <input type="file" class="form-control" name="file" accept=".xlsx,.xls" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">上传</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
   // 修改DDL逻辑
@@ -226,6 +259,31 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     });
   });
+
+  // 处理期末成绩上传
+  const uploadExamForm = document.getElementById('uploadExamForm');
+  if (uploadExamForm) {
+    uploadExamForm.addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const formData = new FormData(this);
+
+      try {
+        const response = await fetch('/admin/upload_exam_scores', {
+          method: 'POST',
+          body: formData
+        });
+        const result = await response.json();
+        if (result.success) {
+          alert('上传成功');
+          location.reload();
+        } else {
+          alert(result.message || '上传失败');
+        }
+      } catch(err) {
+        alert('请求失败，请检查网络');
+      }
+    });
+  }
 })
 </script>
 {% endblock %}
