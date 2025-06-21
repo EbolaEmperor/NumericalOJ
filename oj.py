@@ -848,18 +848,24 @@ def problem_list():
         total_grade = 100
     # total_grade = ",".join(str(x) for x in scorelist)
 
-    # 查询期末考试成绩
-    exam_score = None
+    # 查询老师上传的平时/期末成绩
+    regular_score = None
+    final_score_val = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            sql = "SELECT score FROM final_exam_scores WHERE student_id=%s"
+            sql = "SELECT regular_score, final_score FROM final_exam_scores WHERE student_id=%s"
             cursor.execute(sql, (user['username'],))
             res = cursor.fetchone()
             if res:
-                exam_score = res['score']
+                regular_score = res['regular_score']
+                final_score_val = res['final_score']
+            else:
+                regular_score = None
+                final_score_val = None
     except Exception:
-        exam_score = None
+        regular_score = None
+        final_score_val = None
     finally:
         if 'conn' in locals():
             conn.close()
@@ -874,7 +880,8 @@ def problem_list():
                                last_10_days=last_10_days,
                                daily_counts=daily_counts,
                                total_grade=total_grade,
-                               exam_score=exam_score)
+                               regular_score=regular_score,
+                               final_score=final_score_val)
     else:
         homeworks = get_homeworks(user)
         return render_template('problem_list.html',
@@ -886,7 +893,8 @@ def problem_list():
                                last_10_days=last_10_days,
                                daily_counts=daily_counts,
                                total_grade=total_grade,
-                               exam_score=exam_score)
+                               regular_score=regular_score,
+                               final_score=final_score_val)
 
 @app.route('/problem/<int:problem_id>', methods=['GET'])
 def problem_detail(problem_id):
@@ -2718,25 +2726,27 @@ def upload_exam_scores():
         try:
             with conn.cursor() as cursor:
                 insert_sql = """
-                    INSERT INTO final_exam_scores (class_en, student_id, score)
-                    VALUES (%s, %s, %s)
-                    ON DUPLICATE KEY UPDATE score = VALUES(score)
+                    INSERT INTO final_exam_scores (class_en, student_id, regular_score, final_score)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE regular_score = VALUES(regular_score), final_score = VALUES(final_score)
                 """
 
                 for row in rows[start_idx:]:
                     if row is None:
                         continue
-                    if len(row) < 2:
+                    if len(row) < 3:
                         continue
                     student_id = str(row[0]).strip()
                     try:
-                        score = float(row[1]) if row[1] is not None else None
+                        regular_score = float(row[1]) if row[1] is not None else None
+                        final_score = float(row[2]) if row[2] is not None else None
                     except ValueError:
-                        score = None
-                    if not student_id or score is None:
+                        regular_score = None
+                        final_score = None
+                    if not student_id or regular_score is None or final_score is None:
                         continue
 
-                    cursor.execute(insert_sql, (class_en, student_id, score))
+                    cursor.execute(insert_sql, (class_en, student_id, regular_score, final_score))
             conn.commit()
         finally:
             conn.close()
@@ -2759,11 +2769,21 @@ def create_final_exam_scores_table():
                     id INT PRIMARY KEY AUTO_INCREMENT,
                     class_en VARCHAR(32),
                     student_id VARCHAR(64),
-                    score FLOAT,
+                    regular_score FLOAT,
+                    final_score FLOAT,
                     UNIQUE KEY uniq_class_student (class_en, student_id)
                 ) CHARACTER SET utf8mb4;
             """
             cursor.execute(sql)
+            # 尝试为旧表补充缺失列（向后兼容）
+            try:
+                cursor.execute("ALTER TABLE final_exam_scores ADD COLUMN regular_score FLOAT")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE final_exam_scores ADD COLUMN final_score FLOAT")
+            except Exception:
+                pass
         conn.commit()
     finally:
         conn.close()
