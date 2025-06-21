@@ -20,6 +20,8 @@ import random
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 import numpy
+# Excel 处理
+import openpyxl
 
 # config.py
 from config import *
@@ -41,11 +43,17 @@ app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
 
 # 允许上传的文件扩展名
 ALLOWED_EXTENSIONS = {'zip'}
+# 允许上传的成绩文件扩展名
+ALLOWED_GRADES_EXTENSIONS = {'xlsx', 'xls'}
 
 REJUDGE_PROGRESS = {}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# 判断是否允许上传成绩文件
+def allowed_grade_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_GRADES_EXTENSIONS
 
 ###############################################################################
 #  数据库连接
@@ -247,7 +255,7 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
                 test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
                 sql = "UPDATE submissions SET status='unaccepted' WHERE username=%s AND problem_id=%s"
                 cursor.execute(sql, (username, problem_id))
-                # 如果是第一次提交，更新班级作业、题目信息的 “完成人数” 计数器
+                # 如果是第一次提交，更新班级作业、题目信息的 "完成人数" 计数器
                 sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
                 cursor.execute(sql, (username, problem_id))
                 total_submissions = cursor.fetchone()['COUNT(*)']
@@ -680,6 +688,21 @@ def get_ac_status(userid, problemid):
     finally:
         conn.close()
 
+def get_max_score_all(userid):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 使用参数化查询，避免 SQL 注入
+            sql = "SELECT * FROM max_score WHERE userid=%s"
+            cursor.execute(sql, (userid,))
+            row = cursor.fetchone()
+            for k, v in row.items():
+                if v is None:
+                    row[k] = 0
+            return row
+    finally:
+        conn.close()
+
 def get_max_score(userid, problemid):
     conn = get_db_connection()
     try:
@@ -808,6 +831,39 @@ def problem_list():
     # 获取最近十天的提交数
     last_10_days, daily_counts = get_last_10_days_submission_counts()
 
+    scores = get_max_score_all(user['id'])
+    scorelist = [ (scores["P8"]+scores["P9"]+scores["P10"])/9.0*10.0,
+                  scores["P11"]/6.0*10.0,
+                  scores["P12"]+scores["P13"],
+                  scores["P14"]+scores["P15"],
+                  numpy.sqrt((scores["P16"]+4)*10.0) * numpy.sign(scores["P16"]),
+                  scores["P17"]/6.0*10.0,
+                  scores["P18"]*2.0+scores["P19"],
+                  scores["P20"]*2,
+                  scores["P21"]*2,
+                  scores["P22"]*5 ]
+    scorelist = numpy.sort(scorelist)
+    total_grade = int(numpy.ceil(numpy.sum(scorelist[2:10]) / 80.0 * 100.0))
+    if total_grade > 100:
+        total_grade = 100
+    # total_grade = ",".join(str(x) for x in scorelist)
+
+    # 查询期末考试成绩
+    exam_score = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            sql = "SELECT score FROM final_exam_scores WHERE student_id=%s"
+            cursor.execute(sql, (user['username'],))
+            res = cursor.fetchone()
+            if res:
+                exam_score = res['score']
+    except Exception:
+        exam_score = None
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
     if user['is_admin'] == 1:
         problems = get_all_problems()
         return render_template('problem_list.html',
@@ -816,7 +872,9 @@ def problem_list():
                                total_submissions=total_submissions,
                                total_accepted=total_accepted,
                                last_10_days=last_10_days,
-                               daily_counts=daily_counts)
+                               daily_counts=daily_counts,
+                               total_grade=total_grade,
+                               exam_score=exam_score)
     else:
         homeworks = get_homeworks(user)
         return render_template('problem_list.html',
@@ -826,7 +884,9 @@ def problem_list():
                                total_submissions=total_submissions,
                                total_accepted=total_accepted,
                                last_10_days=last_10_days,
-                               daily_counts=daily_counts)
+                               daily_counts=daily_counts,
+                               total_grade=total_grade,
+                               exam_score=exam_score)
 
 @app.route('/problem/<int:problem_id>', methods=['GET'])
 def problem_detail(problem_id):
@@ -2363,7 +2423,7 @@ def reply_thread(thread_id):
 
 from flask import Response
 
-def generate_completion_stream(prompt, model="deepseek-r1-250120"):
+def generate_completion_stream(prompt, model="Qwen3"):
     """
     真正的流式生成函数:
     1. 发送请求时使用 stream=True
@@ -2373,10 +2433,10 @@ def generate_completion_stream(prompt, model="deepseek-r1-250120"):
     import requests
     import json
 
-    url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    url = "https://chat.zju.edu.cn/api/ai/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer b1cb99f2-40bb-4802-b269-418801460c37",  # 你的 token
+        "Authorization": "Bearer sk-Fy1cCt68Tg3BypEq9302DfA94769455dA78cFb1fDaB24772",  # 你的 token
         "User-Agent": "Mozilla/5.0"
     }
     # 这里是 system 提示词
@@ -2395,6 +2455,7 @@ def generate_completion_stream(prompt, model="deepseek-r1-250120"):
         "stream": True,
     }
 
+    fuckdxx = False
     in_thinking = False  # 状态机标志：是否在思考区间
 
     with requests.post(url, headers=headers, json=data, stream=True) as r:
@@ -2438,10 +2499,14 @@ def generate_completion_stream(prompt, model="deepseek-r1-250120"):
             
             # 若出现 content 表示进入正式输出
             if content:
+                if fuckdxx:
+                    yield "<think>"
+                    fuckdxx = False
+                
                 # 如果在 thinking 状态，先补上 </think>
-                if in_thinking:
-                    yield "</think>"
-                    in_thinking = False
+                # if in_thinking:
+                #     yield "</think>"
+                #     in_thinking = False
                 # 再输出 content
                 yield content
             # # ============== 逻辑核心 ==============
@@ -2595,6 +2660,113 @@ def rejudge_status(problem_id):
                    progress=progress,
                    done=done,
                    total=total)
+
+# ===============================
+#  期末成绩上传
+# ===============================
+
+# 老师上传期末考试成绩（Excel）
+@app.route('/admin/upload_exam_scores', methods=['POST'])
+def upload_exam_scores():
+    """接收 Excel 表格，保存学生期末成绩"""
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message="无权限"), 403
+
+    class_en = request.form.get('class_en', '').strip()
+    if not class_en:
+        return jsonify(success=False, message="缺少班级参数"), 400
+
+    # 检查班级是否存在
+    if not get_class_by_en(class_en):
+        return jsonify(success=False, message="班级不存在"), 400
+
+    # 检查文件
+    if 'file' not in request.files:
+        return jsonify(success=False, message="未选择文件"), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify(success=False, message="未选择文件"), 400
+
+    if not allowed_grade_file(file.filename):
+        return jsonify(success=False, message="仅支持 .xlsx/.xls 文件"), 400
+
+    import tempfile, shutil, os
+    temp_dir = tempfile.mkdtemp()
+    temp_path = os.path.join(temp_dir, file.filename)
+    file.save(temp_path)
+
+    try:
+        # 解析 Excel
+        wb = openpyxl.load_workbook(temp_path, data_only=True)
+        sheet = wb.active
+        rows = list(sheet.iter_rows(values_only=True))
+
+        if not rows:
+            return jsonify(success=False, message="Excel 文件为空"), 400
+
+        # 如果首行是表头（非数字），则跳过
+        start_idx = 0
+        if isinstance(rows[0][0], str) and not rows[0][0].isdigit():
+            start_idx = 1
+
+        # 确保表存在
+        create_final_exam_scores_table()
+
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                insert_sql = """
+                    INSERT INTO final_exam_scores (class_en, student_id, score)
+                    VALUES (%s, %s, %s)
+                    ON DUPLICATE KEY UPDATE score = VALUES(score)
+                """
+
+                for row in rows[start_idx:]:
+                    if row is None:
+                        continue
+                    if len(row) < 2:
+                        continue
+                    student_id = str(row[0]).strip()
+                    try:
+                        score = float(row[1]) if row[1] is not None else None
+                    except ValueError:
+                        score = None
+                    if not student_id or score is None:
+                        continue
+
+                    cursor.execute(insert_sql, (class_en, student_id, score))
+            conn.commit()
+        finally:
+            conn.close()
+
+    except Exception as e:
+        return jsonify(success=False, message=f"解析 Excel 失败: {str(e)}"), 500
+    finally:
+        shutil.rmtree(temp_dir)
+
+    flash('期末成绩上传成功', 'success')
+    return jsonify(success=True, message="成绩上传成功")
+
+# 创建期末考试成绩表（如不存在）
+def create_final_exam_scores_table():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                CREATE TABLE IF NOT EXISTS final_exam_scores (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    class_en VARCHAR(32),
+                    student_id VARCHAR(64),
+                    score FLOAT,
+                    UNIQUE KEY uniq_class_student (class_en, student_id)
+                ) CHARACTER SET utf8mb4;
+            """
+            cursor.execute(sql)
+        conn.commit()
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。

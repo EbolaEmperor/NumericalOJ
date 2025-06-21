@@ -102,21 +102,34 @@
         <div class="card-body">
           <h6 class="text-muted"><i class="fas fa-chart-bar me-2"></i> 数据统计</h6>
           <div class="d-flex justify-content-center mb-3" style="white-space: nowrap;">
-            <!-- 今日总提交 -->
+            
+            <!-- 期末成绩公示时使用 -->
+            <!-- <div class="text-center mx-5">
+              <div class="fs-2 fw-bold">{{ total_grade }}</div>
+              <div class="fs-8 text-muted">你的平时成绩 (满分100，仅供参考)</div>
+            </div> -->
+
             <div class="text-center mx-5">
+              <div class="fs-2 fw-bold">{{ exam_score|default('-', true) }}</div>
+              <div class="fs-8 text-muted">期末成绩</div>
+            </div>
+
+            <!-- 平时使用 -->
+            <!-- <div class="text-center mx-5">
               <div class="fs-2 fw-bold">{{ total_submissions }}</div>
               <div class="fs-8 text-muted">今日提交</div>
             </div>
-            <!-- 今日总通过 -->
             <div class="text-center mx-5">
               <div class="fs-2 fw-bold">{{ total_accepted }}</div>
               <div class="fs-8 text-muted">今日通过</div>
-            </div>
+            </div> -->
+
           </div>
+
           <!-- 柱状图 -->
-          <div style="position: relative; height: 12vh;">
+          <!-- <div style="position: relative; height: 12vh;">
             <canvas id="submissionChart"></canvas>
-          </div>
+          </div> -->
         </div>
       </div>
 
@@ -255,7 +268,9 @@ function deleteProblem(problemId) {
     formatter: (value) => value
   };
   submissionChart.update();
+</script>
 
+<script>
 // MATLAB 小贴士
 const matlabTips = [
   "使用 clc 来清除命令窗口。",
@@ -273,7 +288,7 @@ const matlabTips = [
   "MATLAB 中的 cell 数组用于存储不同类型的数据，常用于复杂数据结构。",
   "使用 function 创建自己的函数，提升代码的可复用性。",
   "了解 MATLAB 的内存管理机制，避免不必要的内存消耗。",
-  "测试点 Error 的可能原因：\n1. 程序运行时间超过 10 秒被强制掐断；\n2. 代码里有语法错误；3. 评测系统故障。"
+  "MATLAB 中的 for 循环效率极低，如有可能，应尽量用矩阵向量运算代替之。"
 ];
 
 // 随机初始化一个提示

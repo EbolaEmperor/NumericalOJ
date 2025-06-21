@@ -10,7 +10,7 @@
 
       <!-- 如果是管理员，显示“编辑题目”按钮 -->
       {% if user and user.is_admin == 1 %}
-      <div class="ms-auto d-flex gap-3">
+      <div class="ms-auto d-flex gap-1">
         <a href="{{ url_for('edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
           <i class="fas fa-pencil-alt me"></i>
         </a>

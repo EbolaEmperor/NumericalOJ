@@ -20,7 +20,14 @@
         <div class="d-flex justify-content-between align-items-center">
           <!-- 使用直接渲染后的 HTML 内容 -->
           <div id="reply-content-{{ reply.id }}">{{ reply.content | safe }}</div>
+          <div>
+          {% if reply.user_id == 4 or reply.user_id == 6 or reply.user_id == 8 %}
+            <p class="text-danger">[官方回复]</p>
+          {% else %}
+            <p class="text-success">[学生回复]</p>
+          {% endif %}
           <span class="text-muted">{{ reply.created_at }}</span>
+          </div>
         </div>
       </li>
     {% endfor %}
