@@ -114,13 +114,13 @@
             </div> -->
 
             <div class="text-center mx-5">
-              <div class="fs-2 fw-bold">{{ regular_score|default('-', true) }}</div>
-              <div class="fs-8 text-muted">平时成绩</div>
+              <div class="fs-2 fw-bold">{{ regular_score|default('-', true) }} </div>
+              <div class="fs-8 text-muted">平时成绩 (40%)</div>
             </div>
 
             <div class="text-center mx-5">
-              <div class="fs-2 fw-bold">{{ final_score|default('-', true) }}</div>
-              <div class="fs-8 text-muted">期末成绩</div>
+              <div class="fs-2 fw-bold">{{ final_score|default('-', true) }} </div>
+              <div class="fs-8 text-muted">期末成绩 (60%)</div>
             </div>
 
           </div>
@@ -354,4 +354,17 @@ refreshProjects();
 // 绑定点击事件到刷新按钮
 document.getElementById('projects-refresh-btn').addEventListener('click', refreshProjects);
 </script>
+
+<!-- 放在 problem_list.html 任何已有 <script> 之后，或单独加一个 <script> -->
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    // 用 Jinja2 输出 JS 原生数字 / null
+    const regularScore = {{ regular_score | tojson | safe }};
+    const totalGrade   = {{ total_grade   | tojson | safe }};
+  
+    if (regularScore !== null && totalGrade !== null && regularScore !== totalGrade) {
+      alert('管理员上传的平时分与系统核算不一致，请钉钉私聊助教确认情况。');
+    }
+  });
+  </script>
 {% endblock %}

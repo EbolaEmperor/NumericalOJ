@@ -1,20 +1,30 @@
 {% extends "layout.html" %}
 {% block title %}提交详情 - {{ super() }}{% endblock %}
 {% block content %}
+{% set lang_label = 'MATLAB' if (plang or 'matlab') == 'matlab' else 'C' %}
+
 <div class="row">
   <!-- 左侧：提交详情和代码展示 -->
   <div class="col-md-8 mb-3">
-    <h2><span class="{{ submission.status | lower | replace(' ', '-') }}">
-      {{ submission.status }}
-    </span></h2>
-    <h2><i class="fas fa-trophy me-2"></i> <strong>得分：</strong>
+    <div class="d-flex align-items-center justify-content-between">
+      <h2 class="mb-0">
+        <span class="{{ submission.status | lower | replace(' ', '-') }}">{{ submission.status }}</span>
+      </h2>
+      {% if submission.problem_type == 1 %}
+      <span class="badge bg-secondary">
+        <i class="fas fa-language me-1"></i> 本题语言：{{ lang_label }}
+      </span>
+      {% endif %}
+    </div>
+
+    <h2 class="mt-2">
+      <i class="fas fa-trophy me-2"></i> <strong>得分：</strong>
       {% set max_score = test_points | length %}
       {% if submission.problem_type == 2 %}
         {% set max_score = 5 %}
       {% endif %}
       {% if max_score == 0 %}
-        <span class="text-danger">{{ submission.score }}</span>
-        / ?
+        <span class="text-danger">{{ submission.score }}</span> / ?
       {% else %}
         {% set percentage = (submission.score / max_score) * 100 %}
         {% if submission.score == max_score %}
@@ -29,20 +39,16 @@
     </h2>
 
     {% if submission.problem_type == 1 %}
-    <p class="mt-3"><i class="fas fa-code me-2"></i> <strong>提交代码：</strong></p>
-    
+    <p class="mt-3"><i class="fas fa-code me-2"></i> <strong>提交代码（{{ lang_label }}）：</strong></p>
     <div class="card">
       <div class="card-body p-0">
-        <!-- CodeMirror 容器 -->
-        <textarea id="submissionCode" name="code" readonly>{{ submission.code }}</textarea>
+        <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
       </div>
     </div>
-
     {% else %}
     <!-- 书面作业题目：不显示代码和测试点 -->
     <div class="card">
       <div class="card-body p-0">
-        <!-- 使用 PDF.js 渲染 PDF 文件 -->
         <div id="pdfViewer" style="width: 100%; height: 580px;"></div>
       </div>
     </div>
@@ -53,294 +59,183 @@
     <a href="{{ url_for('submission_list', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回本题记录</a>
   </div>
 
-  <!-- 右侧：测试点详情 + AI 按钮 -->
+  <!-- 右侧：测试点详情 + AI 按钮 / 书面作业批改 -->
   <div class="col-md-4 mb-3">
-      {% if submission.problem_type == 2 %}
-        {% if user and user.is_admin == 1 %}
-        <div class="mb-3">
-          <label for="scoreInput" class="form-label"><i class="fas fa-trophy me-2"></i> 给分 (1-5 分)</label>
-          <input type="number" class="form-control" id="scoreInput" name="score" min="1" max="5" value="{{ submission.score }}" required>
-        </div>
-        <div class="mb-3">
-          <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
-          <textarea class="form-control" id="commentInput" name="comment" rows="8" required>{{ submission.code }}</textarea>
-        </div>
+    {% if submission.problem_type == 2 %}
+      {% if user and user.is_admin == 1 %}
+      <div class="mb-3">
+        <label for="scoreInput" class="form-label"><i class="fas fa-trophy me-2"></i> 给分 (1-5 分)</label>
+        <input type="number" class="form-control" id="scoreInput" name="score" min="1" max="5" value="{{ submission.score }}" required>
+      </div>
+      <div class="mb-3">
+        <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
+        <textarea class="form-control" id="commentInput" name="comment" rows="8" required>{{ submission.code }}</textarea>
+      </div>
+      <div class="d-flex justify-content-between">
+        <button type="button" class="btn btn-outline-success" id="submitGradeBtn">
+          <i class="fas fa-check me-2"></i> 提交
+        </button>
+        <button type="button" class="btn btn-outline-success ms-auto" id="nextBtn">
+          <i class="fas fa-arrow-right me-2"></i> 下一个
+        </button>
+      </div>
+      {% else %}
+      <div class="mb-3">
+        <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
+        <textarea class="form-control" id="commentInput" name="comment" rows="8" readonly required>{{ submission.code }}</textarea>
+      </div>
+      {% endif %}
+    {% endif %}
+
+    {% if submission.problem_type == 1 %}
+    <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
+    <ul class="list-group mt-2">
+      {% for tp in test_points %}
+      <li class="list-group-item">
         <div class="d-flex justify-content-between">
-          <button type="button" class="btn btn-outline-success" id="submitGradeBtn">
-            <i class="fas fa-check me-2"></i> 提交
-          </button>
-        
-          <!-- 下一个按钮右对齐 -->
-          <button type="button" class="btn btn-outline-success ms-auto" id="nextBtn">
-            <i class="fas fa-arrow-right me-2"></i> 下一个
-          </button>
+          <div>
+            测试点{{ loop.index }}：
+            <span class="{{ tp.status | lower | replace(' ', '-') }}">{{ tp.status }}</span>
+          </div>
+          {% if tp.time %}
+          <div>{{ tp.time }} ms</div>
+          {% endif %}
         </div>
-        {% else %}
-        <div class="mb-3">
-          <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
-          <textarea class="form-control" id="commentInput" name="comment" rows="8" readonly required>{{ submission.code }}</textarea>
+
+        {% if tp.status == "Nonzero Exit Status" and tp.stderr and loop.first %}
+        <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
+          <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
         </div>
         {% endif %}
-      {% endif %}
+        {% if (tp.status == "Wrong Answer" or tp.status == "Forbidden") and tp.stdout %}
+        <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
+          <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stdout }}</pre>
+        </div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
 
-      {% if submission.problem_type == 1 %}
-      <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
-      <ul class="list-group mt-2">
-        {% for tp in test_points %}
-        <li class="list-group-item">
-          <!-- 上方一行：左侧为“测试点+状态”，右侧为“时间” -->
-          <div class="d-flex justify-content-between">
-            <div>
-              测试点{{ loop.index }}：
-              <span class="{{ tp.status | lower | replace(' ', '-') }}">
-                {{ tp.status }}
-              </span>
-            </div>
-            {% if tp.time %}
-              <div>
-                {{ tp.time }} ms
-              </div>
-            {% endif %}
-          </div>
-    
-          <!-- 下方显示错误信息（如有） -->
-          {% if tp.status == "Nonzero Exit Status" and tp.stderr and loop.first %}
-            <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
-              <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
-            </div>
-          {% endif %}
-          {% if (tp.status == "Wrong Answer" or tp.status == "Forbidden") and tp.stdout %}
-            <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
-              <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stdout }}</pre>
-            </div>
-          {% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-
-      <!-- AI 部分开始：在测试点下面添加一个“询问 AI”按钮 -->
-      {% if submission.problem_type == 1 and submission.status == "Unaccepted" %}
-      <hr/>
-      <button type="button" class="btn btn-outline-info w-100 mb-3" id="askAiBtn">
-        <i class="fas fa-robot me-2"></i> 询问 AI 助教
-      </button>
-      {% endif %}
-      <!-- AI 部分结束 -->
+    {% if submission.problem_type == 1 and submission.status == "Unaccepted" %}
+    <hr/>
+    <button type="button" class="btn btn-outline-info w-100 mb-3" id="askAiBtn">
+      <i class="fas fa-robot me-2"></i> 询问 AI 助教
+    </button>
+    {% endif %}
   </div>
 </div>
 
-<!-- 引入 PDF.js 库（书面作业用） -->
+<!-- PDF.js（书面作业） -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
 
-<!-- 引入 CodeMirror 的 CSS 和 JS -->
+<!-- CodeMirror -->
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+<!-- 新增：C 语言高亮 -->
+<script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
 
-<!-- 引入一个简单的前端 Markdown 渲染库，如 marked.js -->
+<!-- marked.js（AI 输出 Markdown 渲染） -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
-<!-- 定义状态颜色的 CSS 类 -->
 <style>
-  #pdfViewer {
-    width: 100%;
-    height: 580px;
-    overflow-y: auto;
-    overflow-x: hidden;
-  }
-
-  /* 各种状态对应的颜色 */
-  .accepted {
-    color: rgb(36, 180, 77);
-    font-weight: bold;
-  }
-  .wrong-answer, .unaccepted {
-    color: rgb(226, 23, 60);
-    font-weight: bold;
-  }
-  .time-limit-exceeded {
-    color: orange;
-    font-weight: bold;
-  }
-  .memory-limit-exceeded, .forbidden {
-    color: darkblue;
-    font-weight: bold;
-  }
-  .no-output {
-    color: purple;
-    font-weight: bold;
-  }
-  .pending, .waiting, .running {
-    color: lightblue;
-    font-weight: bold;
-  }
+  #pdfViewer { width: 100%; height: 580px; overflow-y: auto; overflow-x: hidden; }
+  .accepted { color: rgb(36, 180, 77); font-weight: bold; }
+  .wrong-answer, .unaccepted { color: rgb(226, 23, 60); font-weight: bold; }
+  .time-limit-exceeded { color: orange; font-weight: bold; }
+  .memory-limit-exceeded, .forbidden { color: darkblue; font-weight: bold; }
+  .no-output { color: purple; font-weight: bold; }
+  .pending, .waiting, .running { color: lightblue; font-weight: bold; }
+  .thinking-gray { color: gray; font-size: small; white-space: pre-wrap; }
 </style>
-
-
-<!-- 在 body 内，摆放一个 Modal，用于显示 AI 回复 -->
-<div class="modal fade" id="aiModal" tabindex="-1" aria-labelledby="aiModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg" style="max-height: 90vh; margin-top: 5vh; margin-bottom: auto;">
-    <div class="modal-content" style="max-height: 90vh; display: flex; flex-direction: column;">
-      <div class="modal-header">
-        <h5 class="modal-title" id="aiModalLabel"><i class="fas fa-robot me-2"></i> AI 助教答复</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body" style="overflow-y: auto;">
-        <p class="text-danger">内容由“大先生”提供的 Qwen3 模型生成，仅供参考，请批判性使用。</p>
-        <!-- 加载中的图标 -->
-        <div id="aiLoading" class="text-center mb-3" style="display: none;">
-          <div class="spinner-border" role="status">
-            <span class="visually-hidden">思考中...</span>
-          </div>
-          <p class="mt-2">AI 正在思考，请稍候...</p>
-        </div>
-        <!-- AI 输出的总容器 -->
-        <div id="aiAnswerArea" style="display: none;">
-            <!-- 切换“思考过程”显示/隐藏的按钮，默认不出现，遇到 </think> 后再显示 -->
-            <button id="toggleReasoningBtn" type="button"
-                    style="display: none;"
-                    class="btn btn-outline-secondary">
-              <i class="fas fa-angle-down me-2"></i> 展开思考过程
-            </button>
-          <!-- “思考过程”容器，默认隐藏 -->
-          <div id="reasoningContainer" style="display: none;">
-            <div id="reasoningText" class="thinking-gray"></div>
-          </div>
-          <!-- 放正式 Markdown 输出的容器 -->
-          <div id="answerMain"></div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>关闭</button>
-      </div>
-    </div>
-  </div>
-</div>
-
 
 {% if submission.problem_type == 1 %}
 <script>
-  // 初始化 CodeMirror for submission code
+  // 根据后端传入的 plang 设置 CodeMirror 模式
+  var mode = ('{{ plang or "matlab" }}' === 'c') ? 'text/x-csrc' : 'octave';
+
   var submissionCodeEditor = CodeMirror.fromTextArea(
-    document.getElementById('submissionCode'), {
-      mode: 'octave',
+    document.getElementById('submissionCode'),
+    {
+      mode: mode,
       theme: 'eclipse',
       lineNumbers: true,
       lineWrapping: true,
       indentUnit: 4,
       tabSize: 4,
-      readOnly: true,             
+      readOnly: true,
       matchBrackets: true
-  });
+    }
+  );
   submissionCodeEditor.getWrapperElement().style.fontFamily = "monospace";
   submissionCodeEditor.getWrapperElement().style.fontSize = "14px";
 
-  if (window.innerWidth <= 768) {
-    submissionCodeEditor.setSize(null, "300px");
-  } else {
-    submissionCodeEditor.setSize(null, "500px");
+  function resizeEditor() {
+    submissionCodeEditor.setSize(null, (window.innerWidth <= 768) ? "300px" : "500px");
   }
-  window.addEventListener('resize', function() {
-    if (window.innerWidth <= 768) {
-      submissionCodeEditor.setSize(null, "300px");
-    } else {
-      submissionCodeEditor.setSize(null, "500px");
-    }
-  });
+  resizeEditor();
+  window.addEventListener('resize', resizeEditor);
 </script>
 {% else %}
 <script>
-  // 使用 PDF.js 渲染 PDF（书面作业）
+  // PDF.js 渲染
   var url = "{{ url_for('download_submission_file', submission_id=submission.id) }}";
   var pdfViewer = document.getElementById('pdfViewer');
 
   pdfjsLib.getDocument(url).promise.then(function(pdf) {
-    console.log('PDF loaded');
-    
     var containerWidth = pdfViewer.clientWidth;
-    for (var pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       pdf.getPage(pageNum).then(function(page) {
         var scale = containerWidth / page.getViewport({ scale: 1 }).width;
-        var highResolutionScale = scale * 2;
-        var viewport = page.getViewport({ scale: highResolutionScale });
-
+        var viewport = page.getViewport({ scale: scale * 2 });
         var canvas = document.createElement('canvas');
         var context = canvas.getContext('2d');
         canvas.width = viewport.width;
         canvas.height = viewport.height;
         pdfViewer.appendChild(canvas);
-
-        page.render({
-          canvasContext: context,
-          viewport: viewport
-        }).promise.then(function() {
-          var height = canvas.height;
-          var width = containerWidth;
+        page.render({ canvasContext: context, viewport: viewport }).promise.then(function() {
           var ratio = containerWidth / canvas.width;
-          canvas.style.width = width + 'px';
-          canvas.style.height = height * ratio + 'px';
+          canvas.style.width = containerWidth + 'px';
+          canvas.style.height = (canvas.height * ratio) + 'px';
         });
-      }).catch(function(pageError) {
-        console.error('Error rendering PDF page:', pageError);
       });
     }
-  }).catch(function(error) {
-    console.error('Error loading PDF:', error);
   });
 </script>
 {% endif %}
 
 {% if max_score == 0 and submission.problem_type == 1 %}
 <script>
-  // 如果测试点还没出来，5秒后强制刷新
-  setTimeout(function() {
-    location.replace(location.href);
-  }, 5000);
+  // 如果测试点还没出来，5秒后刷新
+  setTimeout(function(){ location.replace(location.href); }, 5000);
 </script>
 {% endif %}
 
-<!-- 批改书面作业部分 -->
 {% if submission.problem_type == 2 and user and user.is_admin == 1 %}
 <script>
   document.getElementById('submitGradeBtn').addEventListener('click', function() {
     var score = document.getElementById('scoreInput').value;
     var comment = document.getElementById('commentInput').value;
-    
     fetch('{{ url_for('submit_grading', submission_id=submission.id) }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ 'score': score, 'comment': comment })
     })
-    .then(response => response.json())
+    .then(r => r.json())
     .then(data => {
-      if (data.success) {
-        document.getElementById('nextBtn').click();
-      } else {
-        alert('错误: ' + data.message);
-      }
+      if (data.success) { document.getElementById('nextBtn').click(); }
+      else { alert('错误: ' + data.message); }
     })
-    .catch(error => {
-      alert('提交失败: ' + error);
-    });
+    .catch(err => { alert('提交失败: ' + err); });
   });
 
   document.getElementById('nextBtn').addEventListener('click', function() {
-    var currentSubmissionId = {{ submission.id }};
-    
     fetch('{{ url_for("get_next_pending_submission", submission_id=submission.id) }}')
-      .then(response => response.json())
-      .then(data => {
-        if (data.success) {
-          window.location.href = data.next_submission_url;
-        } else {
-          location.replace(location.href);  
-        }
-      })
-      .catch(error => {
-        console.error('错误:', error);
-      });
+      .then(r => r.json())
+      .then(data => { window.location.href = data.success ? data.next_submission_url : location.href; })
+      .catch(err => console.error('错误:', err));
   });
 </script>
 {% endif %}

