@@ -4,150 +4,302 @@ import subprocess
 import time
 import resource
 import os
+import shlex
 
 app = Flask(__name__)
 
 ALLOWED_IPS = [
-    "127.0.0.1",
-    "183.131.51.191"
+    "127.0.0.1"
 ]
 
+# ========== 通用工具 ==========
+SAFE_SID_PATTERN = re.compile(r'^[A-Za-z0-9_\-\.]+$')
+
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+def sanitize_sid(sid: str) -> str:
+    # 防止目录穿越与奇怪字符
+    if not sid or not SAFE_SID_PATTERN.match(sid):
+        # 用时间戳兜底
+        return f"run_{int(time.time()*1000)}"
+    return sid
+
+def check_forbidden(code_content: str, forbidden_str: str):
+    """
+    与你原来逻辑一致：
+    - 支持把用户代码嵌在 here_is_user_code_fuck_fuck_fuck_hahaha ... user_code_end_fuck_hahaha_fuck 中时只检查中间部分
+    - 逗号分割禁用函数名，按 func(...) 正则匹配
+    """
+    if not forbidden_str:
+        return None  # OK
+    match0 = re.search(
+        r'here_is_user_code_fuck_fuck_fuck_hahaha(.*?)user_code_end_fuck_hahaha_fuck',
+        code_content, re.DOTALL
+    )
+    code_content_check = match0.group(1) if match0 else code_content
+
+    forbidden_funcs = [func.strip() for func in forbidden_str.split(",") if func.strip()]
+    for func in forbidden_funcs:
+        # C/Octave 通用的“函数名(”匹配：前缀不为字母/数字/下划线
+        pattern = r'[^a-zA-Z0-9_](' + re.escape(func) + r')\s*\('
+        if re.search(pattern, code_content_check):
+            return f"Function '{func}' is not allowed"
+
+        # 你原来的特别处理：禁止反斜杠（只对 Octave 有意义，这里保留）
+        if func == "\\" and re.search(r'\\', code_content_check):
+            return "Operator \\ is not allowed"
+    return None  # OK
+
+def read_output_with_fallback(output_filename: str, captured_stdout: str):
+    try:
+        with open(output_filename, "r", encoding="utf-8") as file:
+            outp = file.read()
+        # 读到就删
+        subprocess.run(["rm", output_filename], capture_output=False, text=False)
+        return outp
+    except FileNotFoundError:
+        # 没有 output.txt，就用 stdout
+        return captured_stdout
+
+def set_run_limits(cpu_seconds: float, mem_bytes: int):
+    """
+    作为 preexec_fn：对子进程设置 rlimit。
+    - CPU 限时：RLIMIT_CPU（秒，向上取整）
+    - 地址空间：RLIMIT_AS（Byte）
+    """
+    def _setter():
+        # CPU：再加一点点 buffer，避免刚好被 SIGXCPU 打断
+        cpu_soft = max(1, int(cpu_seconds))
+        cpu_hard = cpu_soft + 1
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_soft, cpu_hard))
+
+        if mem_bytes and mem_bytes > 0:
+            # 地址空间（含堆栈）
+            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+            # 限制数据段也可以考虑（部分系统上更严格）：
+            # resource.setrlimit(resource.RLIMIT_DATA, (mem_bytes, mem_bytes))
+    return _setter
+
+# ========== 白名单 ==========
 @app.before_request
 def check_ip_whitelist():
     client_ip = request.remote_addr
     if client_ip not in ALLOWED_IPS:
         return jsonify({"message": f"Forbidden: IP {client_ip} not allowed"}), 403
 
+# ========== Octave/MATLAB 保留的原接口 ==========
 @app.route("/run-hello", methods=["POST"])
 def run_hello():
     data = request.get_json() or {}
-
     try:
-        # --------------------------------------------------------
-        # 2) 从用户 POST 的字段里获取 sid, input, code 和 forbidden
-        # --------------------------------------------------------
-        sid = data.get("sid", "")
+        sid = sanitize_sid(data.get("sid", ""))
         user_input = data.get("input", "")
         code_content = data.get("code", "")
-        tle = data.get("timeLimit")
-        mle = data.get("memoryLimit") * 10
+        tle = data.get("timeLimit")  # ns
+        mle = data.get("memoryLimit") * 10  # 保留你原来的乘 10 逻辑
         forbidden_funcs = data.get("forbidden", "")
 
-        if forbidden_funcs:
-            match0 = re.search(r'here_is_user_code_fuck_fuck_fuck_hahaha(.*?)user_code_end_fuck_hahaha_fuck', code_content, re.DOTALL)
-            if match0:
-                code_content_check = match0.group(1)
-            else:
-                code_content_check = code_content
-            forbidden_funcs = forbidden_funcs.split(",")  # 获取禁用的函数列表，按逗号分割
-            forbidden_funcs = [func.strip() for func in forbidden_funcs]
-            # --------------------------------------------------------
-            # 3) 检查代码中是否包含禁用函数
-            # --------------------------------------------------------
-            for func in forbidden_funcs:
-                # 正则表达式匹配函数调用，确保匹配函数名后面跟着 '('，前后允许有空格或符号
-                pattern = r'[^a-zA-Z0-9_](' + re.escape(func) + r')\s*\('  # 匹配前面不是字母、数字或下划线的字符，并且后面跟 '('
-                if re.search(pattern, code_content_check):
-                    return jsonify({
-                        "status": "Forbidden",
-                        "exitStatus": 11, 
-                        "files": {
-                            "stdout": f"Function '{func}' is not allowed",
-                            "stderr": f"Function '{func}' is not allowed"
-                        },
-                        "time": 0,
-                        "memory": 0,
-                    }), 200
-                if func == "\\" and re.search(r'\\', code_content_check):
-                    return jsonify({
-                        "status": "Forbidden",
-                        "exitStatus": 11, 
-                        "files": {
-                            "stdout": "Operator \\ is not allowed",
-                            "stderr": "Operator \\ is not allowed"
-                        },
-                        "time": 0,
-                        "memory": 0,
-                    }), 200
+        # 禁用函数检查
+        forbid_msg = check_forbidden(code_content, forbidden_funcs)
+        if forbid_msg:
+            return jsonify({
+                "status": "Forbidden",
+                "exitStatus": 11,
+                "files": {"stdout": forbid_msg, "stderr": forbid_msg},
+                "time": 0,
+                "memory": 0,
+            }), 200
 
-        # --------------------------------------------------------
-        # 继续处理代码的运行逻辑
-        # --------------------------------------------------------
+        # 路径
+        ensure_dir(sid)
         input_filename = f"{sid}/input.txt"
         output_filename = f"{sid}/output.txt"
         code_filename = f"{sid}/a.m"
-        # code_content = code_content.replace("input.txt", input_filename)
-        # code_content = code_content.replace("output.txt", output_filename)
-        timeLim = tle * 1.2 / 1000 / 1000 / 1000
 
-        subprocess.run(
-            ["mkdir", f"{sid}"],
-            capture_output=False, 
-            text=False
-        )
-
+        # 生成文件
         with open(input_filename, "w", encoding="utf-8") as f:
             f.write(user_input)
-
         with open(code_filename, "w", encoding="utf-8") as f:
             f.write(code_content)
+
+        # timeout 用秒；多给 10% buffer
+        timeLim_sec = (tle or 0) * 1.1 / 1e9
 
         start_time = time.perf_counter_ns()
         start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
 
         result = subprocess.run(
-            ["timeout", f"{timeLim}s", "octave", "a.m"],
-            capture_output=True, 
+            ["timeout", f"{timeLim_sec}s", "octave", "a.m"],
+            capture_output=True,
             text=True,
             input=user_input,
-            cwd=f"{sid}"
+            cwd=sid
         )
 
         end_time = time.perf_counter_ns()
         end_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
 
-        exec_time = end_time - start_time        # 纳秒
-        mem_usage_byte = (end_mem - start_mem) * 1024       # Byte
+        exec_time = end_time - start_time        # ns
+        mem_usage_byte = (end_mem - start_mem) * 1024  # ru_maxrss: KB => Byte
 
-        outp = ""
-        try:
-            with open(output_filename, "r", encoding="utf-8") as file:
-                outp = file.read()
-                subprocess.run(
-                    ["rm", output_filename],
-                    capture_output=False, 
-                    text=False
-                )
-        except FileNotFoundError:
-            outp = f"{output_filename} not found"
+        outp = read_output_with_fallback(output_filename, result.stdout)
 
         status = "Accepted"
         exval = 0
-        if exec_time > tle:
+        stderr = result.stderr or ""
+        if len(stderr) > 300:
+            stderr = stderr[:300] + "..."
+
+        if exec_time > (tle or 0):
             status = "Time Limit Exceeded"
             exval = 9
-        elif mem_usage_byte > mle:
+        elif mem_usage_byte > (mle or 0):
             status = "Memory Limit Exceeded"
             exval = 10
         elif result.returncode != 0:
             status = "Nonzero Exit Status"
             exval = result.returncode
+
         return jsonify({
             "status": status,
-            "exitStatus": exval, 
-            "files": {
-                "stdout": outp,
-                "stderr": result.stderr
-            },
+            "exitStatus": exval,
+            "files": {"stdout": outp, "stderr": stderr},
             "time": exec_time,
             "memory": mem_usage_byte,
         }), 200
 
     except Exception as e:
+        return jsonify({"message": f"Failed to run hello: {str(e)}"}), 500
+
+# ========== 新增：C 语言评测接口 ==========
+@app.route("/run-c", methods=["POST"])
+def run_c():
+    """
+    输入字段与 /run-hello 保持一致：
+    - sid: 运行目录（会创建）
+    - input: 作为程序 stdin
+    - code: C 源码（写入 main.c）
+    - timeLimit: ns（和原接口一致）
+    - memoryLimit: Byte（与原接口一致；按你原来逻辑乘 10，用作运行时 RLIMIT_AS）
+    - forbidden: 逗号分割的函数名列表（如 "system,fopen"）
+    返回字段与 /run-hello 相同。
+    """
+    data = request.get_json() or {}
+    try:
+        sid = sanitize_sid(data.get("sid", ""))
+        user_input = data.get("input", "")
+        code_content = data.get("code", "")
+        tle = data.get("timeLimit")  # ns
+        mle = data.get("memoryLimit") * 10  # 与 /run-hello 一致
+        forbidden_funcs = data.get("forbidden", "")
+
+        # 禁用函数检查（对 C 同样生效）
+        forbid_msg = check_forbidden(code_content, forbidden_funcs)
+        if forbid_msg:
+            return jsonify({
+                "status": "Forbidden",
+                "exitStatus": 11,
+                "files": {"stdout": forbid_msg, "stderr": forbid_msg},
+                "time": 0,
+                "memory": 0,
+            }), 200
+
+        # 建目录 & 写文件
+        ensure_dir(sid)
+        input_filename = f"{sid}/input.txt"
+        output_filename = f"{sid}/output.txt"
+        code_filename = f"{sid}/main.c"
+        bin_filename = f"{sid}/a.out"
+
+        with open(input_filename, "w", encoding="utf-8") as f:
+            f.write(user_input)
+        with open(code_filename, "w", encoding="utf-8") as f:
+            f.write(code_content)
+
+        # ===== 编译 =====
+        # 编译给一个较短的 timeout（例如 10s）
+        compile_timeout_sec = 10
+        # -O2 优化，-pipe 加快 I/O，-static 通常不建议强制；视环境可加 -lm
+        # 若用户需要数学库，建议始终链接 -lm（无害）
+        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
+                       "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11",
+                       "main.c", "-o", "a.out"]
+        compile_res = subprocess.run(
+            compile_cmd,
+            cwd=sid,
+            capture_output=True,
+            text=True
+        )
+        if compile_res.returncode != 0:
+            stderr = compile_res.stderr or ""
+            if len(stderr) > 300:
+                stderr = stderr[:300] + "..."
+            return jsonify({
+                "status": "Compile Error",
+                "exitStatus": compile_res.returncode,
+                "files": {"stdout": compile_res.stdout or "", "stderr": stderr},
+                "time": 0,
+                "memory": 0,
+            }), 200
+
+        # ===== 运行 =====
+        # timeout 秒：和 /run-hello 一致，tle(ns) -> s；多给 10% buffer
+        timeLim_sec = (tle or 0) * 1.1 / 1e9
+        # rlimit：CPU 用 tle（不带 1.1 buffer），内存用 mle
+        cpu_limit_sec = max(1.0, (tle or 0) / 1e9)
+
+        start_time = time.perf_counter_ns()
+        start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+        # 注意：同时使用 coreutils 的 timeout 和 RLIMIT_CPU；双保险
+        run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
+        run_res = subprocess.run(
+            run_cmd,
+            cwd=sid,
+            capture_output=True,
+            text=True,
+            input=user_input,
+            preexec_fn=set_run_limits(cpu_limit_sec, mle or 0)
+        )
+
+        end_time = time.perf_counter_ns()
+        end_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+        exec_time = end_time - start_time  # ns
+        mem_usage_byte = (end_mem - start_mem) * 1024  # Byte
+
+        outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+
+        status = "Accepted"
+        exval = 0
+        stderr = run_res.stderr or ""
+        if len(stderr) > 300:
+            stderr = stderr[:300] + "..."
+
+        # 与 /run-hello 同样的判定优先级
+        if exec_time > (tle or 0):
+            status = "Time Limit Exceeded"
+            exval = 9
+        elif mem_usage_byte > (mle or 0):
+            status = "Memory Limit Exceeded"
+            exval = 10
+        elif run_res.returncode != 0:
+            status = "Nonzero Exit Status"
+            exval = run_res.returncode
+
         return jsonify({
-            "message": f"Failed to run hello: {str(e)}"
-        }), 500
+            "status": status,
+            "exitStatus": exval,
+            "files": {"stdout": outp, "stderr": stderr},
+            "time": exec_time,
+            "memory": mem_usage_byte,
+        }), 200
+
+    except Exception as e:
+        return jsonify({"message": f"Failed to run C: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
+    # 生产环境建议把 debug=False，并由反向代理/进程管理器托管
     app.run(host="0.0.0.0", port=5050, debug=True)
