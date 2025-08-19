@@ -2,13 +2,18 @@
 {% block title %}{{ problem.title }} - {{ super() }}{% endblock %}
 
 {% block content %}
+{% set plang = (problem.lang or 'matlab')|lower %}
+{% set lang_label = 'MATLAB' if plang == 'matlab' else 'C' %}
+
 <div class="row">
   <!-- 左侧：题面描述 -->
   <div class="col-md-6 mb-3">
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <h2 class="mb-0"><strong>{{ problem.id }}.</strong> {{ problem.title }}</h2>
+      <div class="d-flex align-items-center gap-2">
+        <h2 class="mb-0"><strong>{{ problem.id }}.</strong> {{ problem.title }}</h2>
+      </div>
 
-      <!-- 如果是管理员，显示“编辑题目”按钮 -->
+      <!-- 如果是管理员，显示“编辑题目 / 上传数据 / 重测”按钮 -->
       {% if user and user.is_admin == 1 %}
       <div class="ms-auto d-flex gap-1">
         <a href="{{ url_for('edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
@@ -18,7 +23,7 @@
         <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
           <i class="fas fa-cloud-upload-alt me"></i>
         </button>
-        <!-- 新增重测按钮，使用 POST 表单提交 -->
+        <!-- 新增重测按钮 -->
         <button type="button" class="btn btn-outline-danger" id="btnRejudge">
           <i class="fas fa-redo-alt me"></i>
         </button>
@@ -38,7 +43,9 @@
       <!-- 编程题提交部分 -->
       <form action="{{ url_for('submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <label for="codeEditor" class="form-label mb-0"><i class="fas fa-code me-2"></i> 代码（MATLAB）</label>
+          <label for="codeEditor" class="form-label mb-0">
+            <i class="fas fa-code me-2"></i> 代码（{{ lang_label }}）
+          </label>
           <div>
             <a href="{{ url_for('submission_list', problem_id=problem.id) }}" class="btn btn-outline-secondary me-2">
               <i class="fas fa-chart-pie me-2"></i> 提交记录
@@ -61,7 +68,7 @@
         <div class="d-flex justify-content-between align-items-center mb-2">
           <label for="file" class="form-label mb-0"><i class="fas fa-file-alt me-2"></i> 上传文件</label>
           <div>
-            {% if user.is_admin == 1%}
+            {% if user.is_admin == 1 %}
             <button type="removeInvalid" class="btn btn-outline-danger"><i class="fas fa-trash me-2"></i> 移除无效提交</button>
             {% endif %}
             <button type="submit" class="btn btn-outline-primary"><i class="fas fa-upload me-2"></i> 上传作业</button>
@@ -171,7 +178,7 @@
     color: white;
   }
 
-  /* Pending 和 Waiting - 浅蓝色 */
+  /* Pending / Waiting / Running - 浅蓝 */
   .badge.pending, .badge.waiting, .badge.running {
     background-color: lightblue;
     color: black;
@@ -183,86 +190,75 @@
     color: white;
   }
 
-/* 可选：响应式调整高度 */
-@media (max-width: 768px) {
-  #codeMirrorContainer .CodeMirror {
-    height: 300px;
+  /* CodeMirror 高度自适应 */
+  @media (max-width: 768px) {
+    #codeMirrorContainer .CodeMirror { height: 300px; }
   }
-}
-
-@media (min-width: 769px) {
-  #codeMirrorContainer .CodeMirror {
-    height: 500px;
+  @media (min-width: 769px) {
+    #codeMirrorContainer .CodeMirror { height: 500px; }
   }
-}
-
-/* Bootstrap Badge 默认样式优化 */
-.badge {
-  padding: 0.5em 0.75em;
-  border-radius: 0.25rem;
-  display: inline-flex;
-  align-items: center;
-}
-
-.badge i {
-  margin-right: 0.3em;
-}
+  .badge {
+    padding: 0.5em 0.75em;
+    border-radius: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+  }
+  .badge i { margin-right: 0.3em; }
 </style>
-
 
 <!-- 引入 CodeMirror 的 CSS 和 JS（本地托管） -->
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+<!-- 新增：C 语言高亮 -->
+<script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
 
 <script>
-// 绑定移除无效提交按钮
-document.querySelector('button[type="removeInvalid"]').addEventListener('click', function(e) {
-  e.preventDefault();  // 防止表单提交
-
-  // 获取问题的 ID
-  var problemId = {{ problem.id }};
-  
-  // 使用 fetch 发送 AJAX 请求
-  fetch('{{ url_for("invalidate_invalid_submissions", problem_id=problem.id) }}', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ problem_id: problemId })  // 传递参数（问题ID）
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
-      alert("无效提交已移除");
-      // 刷新页面或做其他更新
-      location.reload();  // 重新加载页面
-    } else {
-      alert("错误: " + data.message);
-    }
-  })
-  .catch(error => {
-    console.error("请求失败:", error);
-    alert("请求失败，请稍后再试");
+// 绑定“移除无效提交”按钮（仅书面作业 + 管理员时存在）
+(function() {
+  const rmBtn = document.querySelector('button[type="removeInvalid"]');
+  if (!rmBtn) return;
+  rmBtn.addEventListener('click', function(e) {
+    e.preventDefault();  // 防止表单提交
+    var problemId = {{ problem.id }};
+    fetch('{{ url_for("invalidate_invalid_submissions", problem_id=problem.id) }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ problem_id: problemId })
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        alert("无效提交已移除");
+        location.reload();
+      } else {
+        alert("错误: " + data.message);
+      }
+    })
+    .catch(error => {
+      console.error("请求失败:", error);
+      alert("请求失败，请稍后再试");
+    });
   });
-});
+})();
 </script>
 
-<!-- 引入 CodeMirror 的额外样式和脚本（可选） -->
-<!-- 如果需要更多功能，如自动完成、括号匹配等，可以引入相应的插件 -->
-
+{% if problem.type == 1 %}
 <script>
+  // 根据语言设置 CodeMirror 模式
+  var mode = ('{{ plang }}' === 'c') ? 'text/x-csrc' : 'octave';
+
   // 初始化 CodeMirror
   var editor = CodeMirror.fromTextArea(document.getElementById('codeEditor'), {
-    mode: 'octave',             // 设置为 Octave 语法模式
-    theme: 'eclipse',           // 选择主题
-    lineNumbers: true,          // 显示行号
-    lineWrapping: true,         // 自动换行
-    indentUnit: 4,              // 缩进单位
-    tabSize: 4,                 // 制表符大小
-    matchBrackets: true,        // 括号匹配
-    autofocus: true,            // 自动聚焦
+    mode: mode,
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    matchBrackets: true,
+    autofocus: true,
     extraKeys: {
       "Tab": "indentMore",
       "Shift-Tab": "indentLess"
@@ -273,26 +269,22 @@ document.querySelector('button[type="removeInvalid"]').addEventListener('click',
   editor.getWrapperElement().style.fontFamily = "monospace";
   editor.getWrapperElement().style.fontSize = "14px";
 
-  if (window.innerWidth <= 768) {
-    editor.setSize(null, "300px");
-  } else {
-    editor.setSize(null, "500px");
-  }
-
-  // 响应式调整高度
-  window.addEventListener('resize', function() {
+  function resizeEditor() {
     if (window.innerWidth <= 768) {
       editor.setSize(null, "300px");
     } else {
       editor.setSize(null, "500px");
     }
-  });
+  }
+  resizeEditor();
+  window.addEventListener('resize', resizeEditor);
 
   // 在表单提交前，将 CodeMirror 的内容同步到隐藏的 textarea
   document.querySelector('form').addEventListener('submit', function(e) {
     document.getElementById('codeEditor').value = editor.getValue();
   });
 </script>
+{% endif %}
 
 {% if user and user.is_admin == 1 %}
 <script>
@@ -300,75 +292,45 @@ document.querySelector('button[type="removeInvalid"]').addEventListener('click',
     var rejudgeTimer = null; // 轮询定时器ID
     var progressBar = document.getElementById("rejudgeProgressBar");
     var progressDetail = document.getElementById("rejudgeProgressDetail");
-  
+
     // 点击“重测”按钮
     document.getElementById('btnRejudge')?.addEventListener('click', function() {
-      if (!confirm("确认要重测本题的所有提交吗？")) {
-        return;
-      }
-      // 发起重测请求
-      fetch("{{ url_for('rejudge_problem', problem_id=problem.id) }}", {
-        method: "POST"
-      })
+      if (!confirm("确认要重测本题的所有提交吗？")) return;
+
+      fetch("{{ url_for('rejudge_problem', problem_id=problem.id) }}", { method: "POST" })
       .then(res => res.json())
       .then(data => {
-        if (!data.success) {
-          alert("重测失败：" + data.message);
-          return;
-        }
-        // 成功：打开进度 Modal
+        if (!data.success) { alert("重测失败：" + data.message); return; }
+
         var modalEl = document.getElementById("rejudgeProgressModal");
         var modal = new bootstrap.Modal(modalEl);
         modal.show();
-  
-        // 清零进度
-        updateProgress(0, 0, 0); 
-  
-        // 启动轮询
-        if (rejudgeTimer) {
-          clearInterval(rejudgeTimer);
-        }
-        rejudgeTimer = setInterval(function() {
-          checkRejudgeStatus();
-        }, 1500); // 每1.5s查询一次
+
+        updateProgress(0, 0, 0);
+
+        if (rejudgeTimer) clearInterval(rejudgeTimer);
+        rejudgeTimer = setInterval(checkRejudgeStatus, 1500);
       })
-      .catch(err => {
-        console.error(err);
-        alert("请求失败，请稍后再试");
-      });
+      .catch(err => { console.error(err); alert("请求失败，请稍后再试"); });
     });
-  
-    // 查询后台进度
+
     function checkRejudgeStatus() {
       fetch("{{ url_for('rejudge_status', problem_id=problem.id) }}")
         .then(res => res.json())
         .then(data => {
           if (!data.success) {
-            // 若后端返回 not success，说明已结束/或未开始
-            console.log("重测结束或无进度: " + data.message);
-            if (rejudgeTimer) {
-              clearInterval(rejudgeTimer);
-              rejudgeTimer = null;
-            }
+            if (rejudgeTimer) { clearInterval(rejudgeTimer); rejudgeTimer = null; }
             return;
           }
-          // data.progress: 0~100
-          // data.done, data.total
           updateProgress(data.progress, data.done, data.total);
-          if (data.progress >= 100) {
-            // 已完成
-            if (rejudgeTimer) {
-              clearInterval(rejudgeTimer);
-              rejudgeTimer = null;
-            }
+          if (data.progress >= 100 && rejudgeTimer) {
+            clearInterval(rejudgeTimer);
+            rejudgeTimer = null;
           }
         })
-        .catch(err => {
-          console.error("轮询进度出错:", err);
-        });
+        .catch(err => { console.error("轮询进度出错:", err); });
     }
-  
-    // 更新UI
+
     function updateProgress(percent, done, total) {
       progressBar.style.width = percent + "%";
       progressBar.setAttribute("aria-valuenow", percent);
