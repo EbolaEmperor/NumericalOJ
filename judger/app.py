@@ -9,7 +9,8 @@ import shlex
 app = Flask(__name__)
 
 ALLOWED_IPS = [
-    "127.0.0.1"
+    "127.0.0.1",
+    "183.131.51.191"
 ]
 
 # ========== 通用工具 ==========
@@ -244,10 +245,7 @@ def run_c():
             }), 200
 
         # ===== 运行 =====
-        # timeout 秒：和 /run-hello 一致，tle(ns) -> s；多给 10% buffer
-        timeLim_sec = (tle or 0) * 1.1 / 1e9
-        # rlimit：CPU 用 tle（不带 1.1 buffer），内存用 mle
-        cpu_limit_sec = max(1.0, (tle or 0) / 1e9)
+        timeLim_sec = (tle or 0) * 1.2 / 1e9
 
         start_time = time.perf_counter_ns()
         start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
@@ -260,7 +258,7 @@ def run_c():
             capture_output=True,
             text=True,
             input=user_input,
-            preexec_fn=set_run_limits(cpu_limit_sec, mle or 0)
+            preexec_fn=set_run_limits(timeLim_sec, mle or 0)
         )
 
         end_time = time.perf_counter_ns()
@@ -285,7 +283,131 @@ def run_c():
             status = "Memory Limit Exceeded"
             exval = 10
         elif run_res.returncode != 0:
-            status = "Nonzero Exit Status"
+            status = "Runtime Error"
+            exval = run_res.returncode
+
+        return jsonify({
+            "status": status,
+            "exitStatus": exval,
+            "files": {"stdout": outp, "stderr": stderr},
+            "time": exec_time,
+            "memory": mem_usage_byte,
+        }), 200
+
+    except Exception as e:
+        return jsonify({"message": f"Failed to run C: {str(e)}"}), 500
+
+# ========== 新增：C++ 语言评测接口 ==========
+@app.route("/run-cpp", methods=["POST"])
+def run_cpp():
+    """
+    输入字段与 /run-hello 保持一致：
+    - sid: 运行目录（会创建）
+    - input: 作为程序 stdin
+    - code: C++ 源码（写入 main.cpp）
+    - timeLimit: ns（和原接口一致）
+    - memoryLimit: Byte（与原接口一致；按你原来逻辑乘 10，用作运行时 RLIMIT_AS）
+    - forbidden: 逗号分割的函数名列表（如 "system,fopen"）
+    返回字段与 /run-hello 相同。
+    """
+    data = request.get_json() or {}
+    try:
+        sid = sanitize_sid(data.get("sid", ""))
+        user_input = data.get("input", "")
+        code_content = data.get("code", "")
+        tle = data.get("timeLimit")  # ns
+        mle = data.get("memoryLimit") * 10  # 与 /run-hello 一致
+        forbidden_funcs = data.get("forbidden", "")
+
+        # 禁用函数检查（对 C 同样生效）
+        forbid_msg = check_forbidden(code_content, forbidden_funcs)
+        if forbid_msg:
+            return jsonify({
+                "status": "Forbidden",
+                "exitStatus": 11,
+                "files": {"stdout": forbid_msg, "stderr": forbid_msg},
+                "time": 0,
+                "memory": 0,
+            }), 200
+
+        # 建目录 & 写文件
+        ensure_dir(sid)
+        input_filename = f"{sid}/input.txt"
+        output_filename = f"{sid}/output.txt"
+        code_filename = f"{sid}/main.cpp"
+        bin_filename = f"{sid}/a.out"
+
+        with open(input_filename, "w", encoding="utf-8") as f:
+            f.write(user_input)
+        with open(code_filename, "w", encoding="utf-8") as f:
+            f.write(code_content)
+
+        # ===== 编译 =====
+        # 编译给一个较短的 timeout（例如 10s）
+        compile_timeout_sec = 10
+        # -O2 优化，-pipe 加快 I/O，-static 通常不建议强制；视环境可加 -lm
+        # 若用户需要数学库，建议始终链接 -lm（无害）
+        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
+                       "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20",
+                       "main.cpp", "-o", "a.out"]
+        compile_res = subprocess.run(
+            compile_cmd,
+            cwd=sid,
+            capture_output=True,
+            text=True
+        )
+        if compile_res.returncode != 0:
+            stderr = compile_res.stderr or ""
+            if len(stderr) > 3000:
+                stderr = stderr[:3000] + "..."
+            return jsonify({
+                "status": "Compile Error",
+                "exitStatus": compile_res.returncode,
+                "files": {"stdout": compile_res.stdout or "", "stderr": stderr},
+                "time": 0,
+                "memory": 0,
+            }), 200
+
+        # ===== 运行 =====
+        timeLim_sec = (tle or 0) * 1.2 / 1e9
+
+        start_time = time.perf_counter_ns()
+        start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+        # 注意：同时使用 coreutils 的 timeout 和 RLIMIT_CPU；双保险
+        run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
+        run_res = subprocess.run(
+            run_cmd,
+            cwd=sid,
+            capture_output=True,
+            text=True,
+            input=user_input,
+            preexec_fn=set_run_limits(timeLim_sec, mle or 0)
+        )
+
+        end_time = time.perf_counter_ns()
+        end_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+        exec_time = end_time - start_time  # ns
+        mem_usage_byte = (end_mem - start_mem) * 1024  # Byte
+
+        outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+
+        status = "Accepted"
+        exval = 0
+        stderr = run_res.stderr or ""
+        if len(stderr) > 300:
+            stderr = stderr[:300] + "..."
+
+        # 与 /run-hello 同样的判定优先级
+        if exec_time > (tle or 0):
+            status = "Time Limit Exceeded"
+            exval = 9
+        elif mem_usage_byte > (mle or 0):
+            status = "Memory Limit Exceeded"
+            exval = 10
+        elif run_res.returncode != 0:
+            status = "Runtime Error"
             exval = run_res.returncode
 
         return jsonify({

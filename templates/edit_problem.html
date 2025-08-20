@@ -10,10 +10,37 @@
 {% endif %}
 
 <form method="POST" action="{{ url_for('edit_problem', problem_id=problem.id) }}">
+
+  {% if problem.type == 1 %}
+  <!-- 同行：语言 + 时限 -->
+  <div class="row mb-3">
+    <div class="col-md-4">
+      <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
+      <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
+    </div>
+
+    <div class="col-md-4">
+      <label for="langSelect" class="form-label"><i class="fas fa-language me-2"></i> 题目语言</label>
+      <select class="form-select" id="langSelect" name="lang">
+        {% set plang = (problem.lang or 'matlab') | lower %}
+        <option value="matlab" {% if plang == 'matlab' %}selected{% endif %}>MATLAB</option>
+        <option value="c" {% if plang == 'c' %}selected{% endif %}>C</option>
+        <option value="cpp" {% if plang == 'cpp' %}selected{% endif %}>C++</option>
+      </select>
+    </div>
+
+    {% set tl_ms = (problem.time_limit_ms or 2000) %}
+    <div class="col-md-4">
+      <label for="timeLimitInput" class="form-label"><i class="fas fa-stopwatch me-2"></i> 时限 (毫秒 ms)</label>
+      <input type="number" class="form-control" id="timeLimitInput" name="time_limit" min="1" value="{{ tl_ms }}">
+    </div>
+  </div>
+  {% else %}
   <div class="mb-3">
     <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
     <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
   </div>
+  {% endif %}
 
   <div class="mb-3">
     <label for="contentTextArea" class="form-label"><i class="fab fa-markdown me-2"></i> 题面 (Markdown + LaTeX)</label>
@@ -22,35 +49,28 @@
   </div>
 
   {% if problem.type == 1 %}
-  <!-- 新增：题目语言 -->
-  <div class="mb-3">
-    <label for="langSelect" class="form-label"><i class="fas fa-language me-2"></i> 题目语言</label>
-    <select class="form-select" id="langSelect" name="lang">
-      {% set plang = (problem.lang or 'matlab') | lower %}
-      <option value="matlab" {% if plang == 'matlab' %}selected{% endif %}>MATLAB</option>
-      <option value="c" {% if plang == 'c' %}selected{% endif %}>C</option>
-    </select>
-    <small class="text-muted">切换后，下方代码编辑器高亮将随语言切换。</small>
-  </div>
-
-  <div class="mb-3">
-    <label class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
-    <div class="card">
-      <div class="card-body p-0">
-        <textarea id="initialCode" name="initial_code">{{ problem.initial_code }}</textarea>
+  <div class="row mb-3">
+    <div class="col-md-6">
+      <label class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
+      <div class="card">
+        <div class="card-body p-0">
+          <textarea id="initialCode" name="initial_code" style="display:none;">{{ problem.initial_code }}</textarea>
+          <div id="initialCodeEditorBox"></div>
+        </div>
       </div>
+      <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
     </div>
-    <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
-  </div>
 
-  <div id="programmingFields" class="mb-3">
-    <label class="form-label"><i class="fas fa-code me-2"></i> 交互库代码 (可选)</label>
-    <div class="card">
-      <div class="card-body p-0">
-        <textarea id="testCode" name="test_code">{{ problem.test_code }}</textarea>
+    <div class="col-md-6">
+      <label class="form-label"><i class="fas fa-code me-2"></i> 交互库代码 (可选)</label>
+      <div class="card">
+        <div class="card-body p-0">
+          <textarea id="testCode" name="test_code" style="display:none;">{{ problem.test_code }}</textarea>
+          <div id="testCodeEditorBox"></div>
+        </div>
       </div>
+      <small class="text-muted">这段代码用作交互库/模板。学生代码将粘贴到 <code>%%user_code_here</code>。</small>
     </div>
-    <small class="text-muted">这段代码用作交互库/模板。学生代码将粘贴到 <code>%%user_code_here</code>。</small>
   </div>
 
   <div class="mb-3">
@@ -78,19 +98,20 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
-<!-- 新增：C 语言高亮 -->
 <script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
 
 <script>
   {% if problem.type == 1 %}
   function getModeByLang(lang) {
-    return (lang === 'c') ? 'text/x-csrc' : 'octave';
+    if (lang === 'cpp') return 'text/x-c++src';
+    if (lang === 'c') return 'text/x-csrc';
+    return 'octave';
   }
   const langSelect = document.getElementById('langSelect');
   const initialMode = getModeByLang(langSelect.value);
 
-  // 用 fromTextArea，让 CM 接管 textarea
-  var initialCodeEditor = CodeMirror.fromTextArea(document.getElementById('initialCode'), {
+  var initialCodeEditor = CodeMirror(document.getElementById('initialCodeEditorBox'), {
+    value: document.getElementById('initialCode').textContent || '',
     mode: initialMode,
     theme: 'eclipse',
     lineNumbers: true,
@@ -104,7 +125,8 @@
   initialCodeEditor.getWrapperElement().style.fontFamily = "monospace";
   initialCodeEditor.getWrapperElement().style.fontSize = "14px";
 
-  var testCodeEditor = CodeMirror.fromTextArea(document.getElementById('testCode'), {
+  var testCodeEditor = CodeMirror(document.getElementById('testCodeEditorBox'), {
+    value: document.getElementById('testCode').textContent || '',
     mode: initialMode,
     theme: 'eclipse',
     lineNumbers: true,
@@ -118,19 +140,16 @@
   testCodeEditor.getWrapperElement().style.fontFamily = "monospace";
   testCodeEditor.getWrapperElement().style.fontSize = "14px";
 
-  // 语言切换 -> 更新编辑器 mode
   langSelect.addEventListener('change', function() {
     const mode = getModeByLang(this.value);
     initialCodeEditor.setOption('mode', mode);
     testCodeEditor.setOption('mode', mode);
   });
 
-  // 提交前让 CM 把内容写回 textarea（关键！）
   document.querySelector('form').addEventListener('submit', function() {
-    initialCodeEditor.save();
-    testCodeEditor.save();
+    document.getElementById('initialCode').value = initialCodeEditor.getValue();
+    document.getElementById('testCode').value = testCodeEditor.getValue();
   });
   {% endif %}
 </script>
-
 {% endblock %}
