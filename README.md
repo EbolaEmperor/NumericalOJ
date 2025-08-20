@@ -52,6 +52,12 @@ An online-judge system for MATLAB, Baltamatica or Octave, easy to deploy.
   sudo apt install supervisor
   ```
 
+- zjunet (If you are deploying this repo in ZJU net.)
+
+  ```
+  see https://github.com/QSCTech/zjunet
+  ```
+
 ### Deployment (for use)
 
 1. Create a MySQL database:
