@@ -161,6 +161,46 @@
   .thinking-gray { color: gray; font-size: small; white-space: pre-wrap; }
 </style>
 
+<!-- 在 body 内，摆放一个 Modal，用于显示 AI 回复 -->
+<div class="modal fade" id="aiModal" tabindex="-1" aria-labelledby="aiModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg" style="max-height: 90vh; margin-top: 5vh; margin-bottom: auto;">
+    <div class="modal-content" style="max-height: 90vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <h5 class="modal-title" id="aiModalLabel"><i class="fas fa-robot me-2"></i> AI 助教答复</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" style="overflow-y: auto;">
+        <p class="text-danger">内容由“大先生”提供的 Qwen3 模型生成，仅供参考，请批判性使用。</p>
+        <!-- 加载中的图标 -->
+        <div id="aiLoading" class="text-center mb-3" style="display: none;">
+          <div class="spinner-border" role="status">
+            <span class="visually-hidden">思考中...</span>
+          </div>
+          <p class="mt-2">AI 正在思考，请稍候...</p>
+        </div>
+        <!-- AI 输出的总容器 -->
+        <div id="aiAnswerArea" style="display: none;">
+            <!-- 切换“思考过程”显示/隐藏的按钮，默认不出现，遇到 </think> 后再显示 -->
+            <button id="toggleReasoningBtn" type="button"
+                    style="display: none;"
+                    class="btn btn-outline-secondary">
+              <i class="fas fa-angle-down me-2"></i> 展开思考过程
+            </button>
+          <!-- “思考过程”容器，默认隐藏 -->
+          <div id="reasoningContainer" style="display: none;">
+            <div id="reasoningText" class="thinking-gray"></div>
+          </div>
+          <!-- 放正式 Markdown 输出的容器 -->
+          <div id="answerMain"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% if submission.problem_type == 1 %}
 <script>
   // 根据后端传入的 plang 设置 CodeMirror 模式
