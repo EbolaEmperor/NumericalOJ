@@ -2527,95 +2527,114 @@ from flask import Response
 
 def generate_completion_stream(prompt, model="Qwen3"):
     """
-    真正的流式生成函数:
-    1. 发送请求时使用 stream=True
-    2. 使用 iter_lines() 一行一行地读取
-    3. 维护一个状态机 in_thinking，用来在 reasoning_content 出现时输出 <think>，在 content 出现时输出 </think>。
+    使用阿里云 DashScope Apps SSE 接口的流式生成：
+    - has_thoughts=True 时，服务端在思考阶段会把“思考过程”放在 output.thoughts 中（action_type="reasoning"）。
+    - 当思考阶段有内容时：输出 <think> 并持续输出“思考”字符流。
+    - 当进入正式输出（output.text 开始出现内容）时：先输出 </think>，再输出正文文本。
+    - 为避免重复文本，维护“已发送长度”的增量输出。
     """
     import requests
     import json
+    import os
 
-    url = "https://chat.zju.edu.cn/api/ai/v1/chat/completions"
+    # 建议把密钥和 app_id 放到环境变量，避免硬编码在仓库
+    APP_ID = DASHSCOPE_APP_ID
+    API_KEY = DASHSCOPE_API_KEY
+
+    url = f"https://dashscope.aliyuncs.com/api/v1/apps/{APP_ID}/completion"
     headers = {
+        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
-        "Authorization": "Bearer sk-Fy1cCt68Tg3BypEq9302DfA94769455dA78cFb1fDaB24772",  # 你的 token
+        "X-DashScope-SSE": "enable",
         "User-Agent": "Mozilla/5.0"
     }
-    # 这里是 system 提示词
+
+    # 你原来在函数里写的 system 设定，这里继续保留；它会与用户 prompt 拼接后一起作为 input.prompt。
     role = """
 你是一个小猫，你会说人话，你温柔可爱、学术水平高超，你需要帮小朋友分析他的代码有什么问题。
-你需要特别关注小朋友的测试点得分情况。如果有 Nonzero Exit Status 或者 Error，则你只需要分析语法错误，不用关注问题本身。
+你需要特别关注小朋友的测试点得分情况。如果有 Compile Error 或者 Error，则你只需要分析语法错误，不用关注问题本身。
 如果有 Time Limit Exceed，则应该分析复杂度和计算效率，而不是分析代码的正确性。
+如果有 Runtime Error，则应该分析可能的内存越界、堆栈溢出等问题。
 如果有 Wrong Answer，则需要分析代码的正确性。
-"""
+""".strip()
+
+    # 按官方示例使用 apps completion 的入参格式
     data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": role},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": True,
+        "input": {
+            # 直接把 system 与用户 prompt 合并成一个完整提示，传给 app
+            "prompt": f"{role}\n\n{prompt}"
+        },
+        "parameters": {
+            "incremental_output": True,
+            "has_thoughts": True
+        },
+        "debug": {}
     }
 
-    fuckdxx = False
-    in_thinking = False  # 状态机标志：是否在思考区间
+    # 状态机与去重（增量）所需变量
+    in_thinking = False           # 是否处于思考阶段（决定是否需要输出 <think>/</think>）
+    sent_reason_len = 0           # 已输出的“思考”字符数
+    sent_text_len = 0             # 已输出的“正文”字符数
 
+    # 开始请求并流式读取
     with requests.post(url, headers=headers, json=data, stream=True) as r:
         r.raise_for_status()
-        for line in r.iter_lines():
+        for line in r.iter_lines(decode_unicode=True):
             if not line:
                 continue
-            raw_str = line.decode('utf-8').strip()
-            # 如果后端返回 SSE 形式，通常会有 "data: " 前缀，这里可酌情去掉
-            if raw_str.startswith("data:"):
-                raw_str = raw_str[5:].strip()
 
-            # 如果遇到 "[DONE]" 之类结束标记，可以 break
-            if raw_str in ("[DONE]", ""):
+            # SSE 里会有注释行、id/event 行，真正的负载在 "data:" 行
+            if line.startswith(":"):
+                # 形如 ":HTTP_STATUS/200" 的注释行，忽略
+                continue
+            if not line.startswith("data:"):
+                continue
+
+            payload = line[5:].strip()
+            if payload in ("", "[DONE]"):
                 continue
 
             try:
-                partial_json = json.loads(raw_str)
+                packet = json.loads(payload)
             except json.JSONDecodeError:
-                # 如果不是有效 JSON，跳过
+                # 不是合法 JSON，忽略本行
                 continue
 
-            if not partial_json.get("choices"):
-                continue
-            delta = partial_json["choices"][0].get("delta", {})
+            output = packet.get("output", {}) or {}
 
-            # 取 reasoning_content 或 content
-            reasoning = delta.get("reasoning_content", "")
-            content = delta.get("content", "")
-            # yield content
+            # ============ 抽取“思考阶段”的增量文本 ============
+            # thoughts 是一个数组，我们挑出 action_type == "reasoning" 的那一项
+            reason_stream = ""
+            thoughts = output.get("thoughts") or []
+            for t in thoughts:
+                if t.get("action_type") == "reasoning":
+                    # 经验上 Qwen 的“思考流”可能放在 response 或 thought 或 action_input_stream
+                    reason_stream = (
+                        t.get("thought")
+                        or ""
+                    )
+                    # 只关心 reasoning 这一条，找到就退出
+                    break
 
-            # ============== 逻辑核心 ==============
-            # 若出现 reasoning_content
-            if reasoning:
-                # 如果之前不在 thinking 状态，则先输出 <think>
+            # 如果有思考内容：确保先打 <think>，然后只增量输出新增部分
+            if reason_stream:
                 if not in_thinking:
                     yield "<think>"
                     in_thinking = True
-                # 累加思考文本
-                yield reasoning
-            
-            # 若出现 content 表示进入正式输出
-            if content:
-                if fuckdxx:
-                    yield "<think>"
-                    fuckdxx = False
-                
-                # 如果在 thinking 状态，先补上 </think>
-                # if in_thinking:
-                #     yield "</think>"
-                #     in_thinking = False
-                # 再输出 content
-                yield content
-            # # ============== 逻辑核心 ==============
+                yield reason_stream
 
-        # 流结束后，如果还在 thinking 状态，需要补一个 </think>
-        # if in_thinking:
-        #     yield "</think>"
+            # ============ 抽取“正式输出”的增量文本 ============
+            text_stream = output.get("text") or ""
+            if text_stream:
+                # 一旦正式输出开始，若仍处于思考阶段，就先闭合
+                if in_thinking:
+                    yield "</think>"
+                    in_thinking = False
+                yield text_stream
+
+        # 连接结束后，如果还在思考阶段，补一个闭合标签
+        if in_thinking:
+            yield "</think>"
         
 
 @app.route('/ask_ai', methods=['POST'])
@@ -2658,10 +2677,12 @@ def ask_ai():
 {test_points}
 ```
 
-如果评测结果全是 Nonezero Exit Status 或者 Error，则你不必关注问题内容，只需分析小朋友的语法错误。
+如果评测结果全是 Compile Error 或者 Error，则你不必关注问题内容，只需分析小朋友的语法错误。
 
 如果评测结果由 Accepted 和 Time Limit Exceed 构成，则说明小朋友的代码正确性没有问题，
 此时你不必分析小朋友代码的正确性，而是仅仅从复杂度或者循环效率的角度来提示小朋友如何加速。
+
+如果有 Runtime Error，则应该分析可能的内存越界、堆栈溢出等问题。
 
 如果评测结果里有 Wrong Answer，你应该指出小朋友代码里可能的问题，你需要把他错的那一行代码输出一下以便让他知道。
 
