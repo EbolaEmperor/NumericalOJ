@@ -1,7 +1,11 @@
 {% extends "layout.html" %}
 {% block title %}提交详情 - {{ super() }}{% endblock %}
 {% block content %}
-{% set lang_label = 'MATLAB' if (plang or 'matlab') == 'matlab' else 'C' %}
+{% set lang_label = 
+  'MATLAB' if (plang or 'matlab') == 'matlab' 
+  else 'C++' if (plang or '') == 'cpp' 
+  else 'C' %}
+{% set tl_ms = (problem.time_limit_ms or 2000) %}
 
 <div class="row">
   <!-- 左侧：提交详情和代码展示 -->
@@ -11,9 +15,14 @@
         <span class="{{ submission.status | lower | replace(' ', '-') }}">{{ submission.status }}</span>
       </h2>
       {% if submission.problem_type == 1 %}
-      <span class="badge bg-secondary">
-        <i class="fas fa-language me-1"></i> 本题语言：{{ lang_label }}
-      </span>
+      <label for="langTL" class="form-label mb-0">
+        <span class="badge bg-secondary">
+          <i class="fas fa-language me-1"></i> {{ lang_label }}
+        </span>
+        <span class="badge bg-secondary">
+          <i class="fas fa-stopwatch me-1"></i> {{ tl_ms }} ms
+        </span>
+      </label>
       {% endif %}
     </div>
 
@@ -102,7 +111,7 @@
           {% endif %}
         </div>
 
-        {% if tp.status == "Nonzero Exit Status" and tp.stderr and loop.first %}
+        {% if (tp.status == "Nonzero Exit Status" or tp.status == "Compile Error") and tp.stderr and loop.first %}
         <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
           <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
         </div>
@@ -145,6 +154,7 @@
   .accepted { color: rgb(36, 180, 77); font-weight: bold; }
   .wrong-answer, .unaccepted { color: rgb(226, 23, 60); font-weight: bold; }
   .time-limit-exceeded { color: orange; font-weight: bold; }
+  .runtime-error { color: rgb(198, 69, 245); font-weight: bold; }
   .memory-limit-exceeded, .forbidden { color: darkblue; font-weight: bold; }
   .no-output { color: purple; font-weight: bold; }
   .pending, .waiting, .running { color: lightblue; font-weight: bold; }
@@ -154,7 +164,9 @@
 {% if submission.problem_type == 1 %}
 <script>
   // 根据后端传入的 plang 设置 CodeMirror 模式
-  var mode = ('{{ plang or "matlab" }}' === 'c') ? 'text/x-csrc' : 'octave';
+  var mode = ('{{ plang or "matlab" }}' === 'cpp') 
+             ? 'text/x-c++src' 
+             : ( '{{ plang or "matlab" }}' === 'c' ? 'text/x-csrc' : 'octave');
 
   var submissionCodeEditor = CodeMirror.fromTextArea(
     document.getElementById('submissionCode'),

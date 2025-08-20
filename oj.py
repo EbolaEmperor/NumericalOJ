@@ -150,7 +150,7 @@ def get_all_problems():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score FROM problems ORDER BY id ASC"
+            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms FROM problems ORDER BY id ASC"
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -160,7 +160,7 @@ def get_problem(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -170,20 +170,21 @@ def get_problem_title(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score FROM problems WHERE id=%s"
+            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
         conn.close()
 
-def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1, lang='matlab'):
+def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1, lang='matlab', time_limit_ms=2000):
     conn = get_db_connection()
     try:
-        max_score = (0 if type == 1 else 5)
+        max_score = (0 if int(type) == 1 else 5)
         with conn.cursor() as cursor:
-            sql = """INSERT INTO problems (title, content, initial_code, test_code, forbidden_func, type, lang, max_score) 
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"""
-            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, lang, max_score))
+            sql = """INSERT INTO problems 
+                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms))
         conn.commit()
         pid = cursor.lastrowid
         with conn.cursor() as cursor:
@@ -197,14 +198,15 @@ def create_problem(title, content, initial_code='', test_code='', forbidden_func
     finally:
         conn.close()
 
-def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func='', new_lang='matlab'):
+def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func='', new_lang='matlab', new_time_limit_ms=None):
     conn = get_db_connection()
     try:
+        # 允许不传则不改；为了简单，这里直接改（前端保证传值）
         with conn.cursor() as cursor:
             sql = """UPDATE problems 
-                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s
+                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s
                      WHERE id=%s"""
-            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, new_lang, problem_id))
+            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, new_lang, new_time_limit_ms, problem_id))
         conn.commit()
     finally:
         conn.close()
@@ -937,6 +939,28 @@ def problem_detail(problem_id):
                            last_submissions=last_submissions,
                            initial_code=initial_code)
 
+def parse_time_limit_ms_from_form(form):
+    """
+    支持两种字段（任选其一）：
+      - time_limit_s：秒（推荐）
+      - time_limit_ms：毫秒
+    都为空就用默认 2000ms。
+    """
+    tls = (form.get('time_limit_s') or '').strip()
+    tlms = (form.get('time_limit') or '').strip()
+    if tls:
+        try:
+            # 允许小数秒，保留到毫秒
+            return int(float(tls) * 1000)
+        except:
+            pass
+    if tlms:
+        try:
+            return int(tlms)
+        except:
+            pass
+    return 2000  # 默认
+
 @app.route('/admin/add_problem', methods=['GET', 'POST'])
 def add_problem():
     user = current_user()
@@ -950,12 +974,13 @@ def add_problem():
         test_code = request.form.get('test_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
         problem_type = request.form.get('type')  # 1 编程 2 书面
-        lang = (request.form.get('lang') or 'matlab').strip().lower()  # 'matlab' | 'c'
+        lang = (request.form.get('lang') or 'matlab').strip().lower()  # 'matlab' | 'c' | 'cpp'
+        time_limit_ms = parse_time_limit_ms_from_form(request.form)
 
         if not title or not content:
             return render_template('add_problem.html', user=user, error_message="标题和内容不能为空")
 
-        create_problem(title, content, initial_code, test_code, forbidden_func, problem_type, lang)
+        create_problem(title, content, initial_code, test_code, forbidden_func, problem_type, lang, time_limit_ms)
         return redirect(url_for('problem_list'))
 
     return render_template('add_problem.html', user=user, error_message=None)
@@ -977,11 +1002,12 @@ def edit_problem(problem_id):
         new_test_code = request.form.get('test_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
         new_lang = (request.form.get('lang') or problem.get('lang') or 'matlab').strip().lower()
+        new_time_limit_ms = parse_time_limit_ms_from_form(request.form) if 'time_limit_s' in request.form or 'time_limit' in request.form else (problem.get('time_limit') or 2000)
 
         if not new_title or not new_content:
             return render_template('edit_problem.html', problem=problem, user=user, error_message="标题和内容不能为空")
 
-        update_problem(problem_id, new_title, new_content, new_initial_code, new_test_code, forbidden_func, new_lang)
+        update_problem(problem_id, new_title, new_content, new_initial_code, new_test_code, forbidden_func, new_lang, new_time_limit_ms)
         return redirect(url_for('problem_detail', problem_id=problem_id))
 
     return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
@@ -1438,6 +1464,21 @@ def evaluate_submission(submission_id):
         judge_url = 'http://localhost:5050/run-c'
         file_ext = '.c'
 
+    elif lang == 'cpp':
+        # C++：块注释
+        if test_code and "%%user_code_here" in test_code:
+            wrapped_user_code = ("/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
+                                 + code + "\n"
+                                 "/*user_code_end_fuck_hahaha_fuck*/\n")
+            final_code = test_code.replace("%%user_code_here", wrapped_user_code)
+        else:
+            # 无模板：用户代码应自带 main；同样加入标记（在注释里）
+            final_code = ("/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
+                          + code + "\n"
+                          "/*user_code_end_fuck_hahaha_fuck*/\n")
+        judge_url = 'http://localhost:5050/run-cpp'
+        file_ext = '.cpp'
+
     else:
         # 未知语言：直接报错
         update_submission_status(submission_id, 'Error')
@@ -1467,14 +1508,18 @@ def evaluate_submission(submission_id):
     test_point_statuses = []
     all_accepted = True
 
+    # 读取时限（毫秒 -> 纳秒）
+    time_limit_ms = problem.get('time_limit_ms') or 2000
+    time_limit_ns = int(time_limit_ms) * 1000000
+
     for idx, tc in enumerate(test_cases, start=1):
         payload = {
             "code": final_code,
             "input": tc.get("input", ""),
             "forbidden": fbd_func,
             "sid": f"eoj-{submission_id}-{idx}",
-            "timeLimit": 8000000000,          # ns
-            "memoryLimit": 512 * 1024 * 1024  # Byte
+            "timeLimit": time_limit_ns,          # ns（从题目配置读取）
+            "memoryLimit": 512 * 1024 * 1024     # Byte
         }
 
         try:
@@ -1505,14 +1550,15 @@ def evaluate_submission(submission_id):
         lines = stderr.split('\n')
         exec_time = int(numpy.round(int(result.get('time', "0")) / 1_000_000))  # ms
 
-        if len(lines) < 3:
-            stderr = ""
-        else:
-            lines = lines[2:-1]
-            stderr = '\n'.join(lines)
+        if lang == 'matlab':
+            if len(lines) < 3:
+                stderr = ""
+            else:
+                lines = lines[2:-1]
+                stderr = '\n'.join(lines)
 
-        if len(actual_output) > 80:
-            actual_output = actual_output[:80] + "..."
+        if len(actual_output) > 200:
+            actual_output = actual_output[:200] + "..."
 
         test_point_statuses.append({
             "status": status, 
@@ -2107,7 +2153,7 @@ def export_student_codes():
                 code = sub['code']
                 user_id = sub['username']
                 # 根据题目语言决定后缀
-                ext = '.m' if (problem.get('lang') or 'matlab').lower() == 'matlab' else '.c'
+                ext = '.m' if (problem.get('lang') or 'matlab').lower() == 'matlab' else '.cpp'
                 file_name = f"{folder_name}/{user_id}{ext}"
                 zip_file.writestr(file_name, code.encode('utf-8'))
     
