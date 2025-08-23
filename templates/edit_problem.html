@@ -9,8 +9,7 @@
   </div>
 {% endif %}
 
-<form method="POST" action="{{ url_for('edit_problem', problem_id=problem.id) }}">
-
+<form id="editProblemForm" method="POST" action="{{ url_for('edit_problem', problem_id=problem.id) }}">
   {% if problem.type == 1 %}
   <!-- 同行：语言 + 时限 -->
   <div class="row mb-3">
@@ -110,8 +109,9 @@
   const langSelect = document.getElementById('langSelect');
   const initialMode = getModeByLang(langSelect.value);
 
+  // 用 .value 而不是 .textContent 读取 textarea 初始值
   var initialCodeEditor = CodeMirror(document.getElementById('initialCodeEditorBox'), {
-    value: document.getElementById('initialCode').textContent || '',
+    value: document.getElementById('initialCode').value || '',
     mode: initialMode,
     theme: 'eclipse',
     lineNumbers: true,
@@ -126,7 +126,7 @@
   initialCodeEditor.getWrapperElement().style.fontSize = "14px";
 
   var testCodeEditor = CodeMirror(document.getElementById('testCodeEditorBox'), {
-    value: document.getElementById('testCode').textContent || '',
+    value: document.getElementById('testCode').value || '',
     mode: initialMode,
     theme: 'eclipse',
     lineNumbers: true,
@@ -146,10 +146,12 @@
     testCodeEditor.setOption('mode', mode);
   });
 
-  document.querySelector('form').addEventListener('submit', function() {
+  // 只绑定到编辑表单，避免绑错到其他 form（如导航条）
+  document.getElementById('editProblemForm').addEventListener('submit', function() {
     document.getElementById('initialCode').value = initialCodeEditor.getValue();
     document.getElementById('testCode').value = testCodeEditor.getValue();
   });
   {% endif %}
 </script>
+
 {% endblock %}

@@ -9,7 +9,7 @@
   </div>
 {% endif %}
 
-<form method="POST" action="{{ url_for('add_problem') }}">
+<form id="addProblemForm" method="POST" action="{{ url_for('add_problem') }}">
   
   <!-- 一行容器 -->
   <div class="row mb-3">
@@ -42,7 +42,7 @@
 
     <!-- 时限 -->
     <div class="col-md-3" id="timeLimitField">
-      <label for="timeLimit" class="form-label">
+      <label for="timeLimitInput" class="form-label">
         <i class="fas fa-stopwatch me-2"></i> 测试点时限 (毫秒 ms)
       </label>
       <input type="number" class="form-control" id="timeLimitInput" name="time_limit" value="2000" required>
@@ -108,12 +108,12 @@
     return 'octave';
   }
 
-  const formEl = document.querySelector('form');
+  const formEl = document.getElementById('addProblemForm');
   const problemTypeSelect = document.getElementById('problemTypeSelect');
   const langSelect = document.getElementById('langSelect');
 
   var initialCodeEditor = CodeMirror(document.getElementById('initialCodeEditorBox'), {
-    value: '',
+    value: document.getElementById('initialCode').value || '',
     mode: getModeByLang(langSelect.value),
     theme: 'eclipse',
     lineNumbers: true,
@@ -128,7 +128,7 @@
   initialCodeEditor.getWrapperElement().style.fontSize = "14px";
 
   var testCodeEditor = CodeMirror(document.getElementById('testCodeEditorBox'), {
-    value: '',
+    value: document.getElementById('testCode').value || '',
     mode: getModeByLang(langSelect.value),
     theme: 'eclipse',
     lineNumbers: true,
@@ -151,8 +151,9 @@
     document.getElementById('langField').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('timeLimitField').style.display = isProgramming ? 'block' : 'none';
   }
+  // 立即执行一次，确保初始可见性正确
+  syncVisibility();
   problemTypeSelect.addEventListener('change', syncVisibility);
-  window.addEventListener('DOMContentLoaded', syncVisibility);
 
   langSelect.addEventListener('change', function() {
     const mode = getModeByLang(this.value);
@@ -160,6 +161,7 @@
     testCodeEditor.setOption('mode', mode);
   });
 
+  // 仅绑定到当前这个表单，提交前回填隐藏 textarea 的值
   formEl.addEventListener('submit', function() {
     document.getElementById('initialCode').value = initialCodeEditor.getValue();
     document.getElementById('testCode').value = testCodeEditor.getValue();
