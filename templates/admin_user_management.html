@@ -28,7 +28,7 @@
   </div>
 </form>
 
-<!-- 新增班级按钮 -->
+<!-- 新增班级按钮（新增班级类型到 class_table） -->
 <button type="button" class="btn btn-outline-success mb-3" data-bs-toggle="modal" data-bs-target="#addClassModal">
   <i class="fas fa-plus me-2"></i>新增班级
 </button>
@@ -39,7 +39,7 @@
       <th><i class="fas fa-id-badge me-2"></i> ID</th>
       <th><i class="fas fa-user me-2"></i> 用户名</th>
       <th><i class="fas fa-envelope me-2"></i> 邮箱</th>
-      <th><i class="fas fa-users me-2"></i> 班级</th>
+      <th style="min-width: 360px;"><i class="fas fa-users me-2"></i> 班级</th>
     </tr>
 </thead>
 <tbody>
@@ -53,18 +53,42 @@
       </button>
     </td>
     <td>{{ u.email }}</td>
-    <td class="d-flex justify-content-between align-items-center">
-      <div class="user-class">{{ u.class_cn }}</div>
-      <!-- 修改班级按钮 -->
-      <button type="button" class="btn btn-sm btn-outline-warning" onclick="showEditClassModal('{{ u.id }}', '{{ u.class }}')">
-        <i class="fas fa-edit"></i>
+
+    <!-- 班级列：左边竖排标签，右边按钮横排 -->
+<td>
+  <div class="user-classes-grid" data-user-id="{{ u.id }}">
+    <!-- 左列：班级徽章（主班在第一行，额外班依次往下） -->
+    <div class="user-classes-badges">
+      <span class="badge bg-primary d-block mb-1" title="主班级">{{ u.class_cn }}</span>
+      {% if u.extra_classes %}
+        {% for ec in u.extra_classes %}
+          <span class="badge bg-info text-dark badge-removable d-block mb-1" 
+                data-class-en="{{ ec.class_en }}">
+            {{ ec.class_cn }}
+            <span class="remove-x" title="移除"
+                  onclick="removeUserExtraClass('{{ u.id }}','{{ ec.class_en }}', this)">×</span>
+          </span>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <!-- 右列：操作按钮（左到右） -->
+    <div class="user-classes-actions">
+      <button type="button" class="btn btn-sm btn-outline-warning" 
+              onclick="showEditClassModal('{{ u.id }}', '{{ u.class }}')">
+        <i class="fas fa-edit me-1"></i>改主班级
       </button>
-    </td>
+      <button type="button" class="btn btn-sm btn-outline-success" 
+              onclick="showAddUserClassModal('{{ u.id }}')">
+        <i class="fas fa-user-plus me-1"></i>添加班级
+      </button>
+    </div>
+  </div>
+</td>
   </tr>
   {% endfor %}
 </tbody>
 </table>
-
 
 <!-- 分页导航 -->
 <nav aria-label="Page navigation">
@@ -98,7 +122,7 @@
   </ul>
 </nav>
 
-<!-- 添加班级的模态框 -->
+<!-- 添加“班级类型”的模态框（原有） -->
 <div class="modal fade" id="addClassModal" tabindex="-1" aria-labelledby="addClassModalLabel" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -126,13 +150,13 @@
   </div>
 </div>
 
-<!-- 修改班级模态框 -->
+<!-- 修改“主班级”的模态框（原有） -->
 <div class="modal fade" id="editClassModal" tabindex="-1" aria-labelledby="editClassModalLabel" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
       <form id="editClassForm">
         <div class="modal-header">
-          <h5 class="modal-title" id="editClassModalLabel">修改用户班级</h5>
+          <h5 class="modal-title" id="editClassModalLabel">修改用户主班级</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
         </div>
         <div class="modal-body">
@@ -147,6 +171,7 @@
               {% endfor %}
             </select>
           </div>
+          <div class="form-text">此操作会修改用户主班级，请谨慎操作！</div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -157,7 +182,38 @@
   </div>
 </div>
 
-<!-- 修改用户名的模态框 -->
+<!-- 新增：为某个用户“添加额外班级”的模态框 -->
+<div class="modal fade" id="addUserClassModal" tabindex="-1" aria-labelledby="addUserClassLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="addUserClassForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addUserClassLabel">给用户添加班级</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="user_id" id="addUserClassUserId">
+          <div class="mb-3">
+            <label class="form-label">选择班级</label>
+            <select name="class_en" id="addUserClassSelect" class="form-control" required>
+              <option value="">请选择</option>
+              {% for c in classes %}
+                <option value="{{ c.class_en }}">{{ c.class_cn }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-text">此操作不会改变主班级，只会在映射表中增加一条记录。</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-success">添加</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- 修改用户名的模态框（原有） -->
 <div class="modal fade" id="editUsernameModal" tabindex="-1" aria-labelledby="editUsernameModalLabel" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -167,7 +223,6 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
         </div>
         <div class="modal-body">
-          <!-- 隐藏用户ID -->
           <input type="hidden" name="user_id" id="editUsernameUserId">
           <div class="mb-3">
             <label class="form-label">新用户名</label>
@@ -184,90 +239,86 @@
 </div>
 
 <style>
-  .pagination {
-      margin-top: 20px;
+  .pagination { margin-top: 20px; }
+  .page-item.active .page-link { background-color: #007bff; border-color: #007bff; }
+  .page-link { color: #007bff; }
+  .badge-removable { position: relative; padding-right: 1.5rem; }
+  .badge-removable .remove-x {
+    position: absolute; right: .25rem; top: -.35rem;
+    cursor: pointer; font-weight: bold;
   }
-  .page-item.active .page-link {
-      background-color: #007bff;
-      border-color: #007bff;
+  /* 两列布局：左=徽章列（宽度由内容决定），右=按钮列（撑满单元格剩余宽度） */
+  .user-classes-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr; /* 左列宽度=徽章最长那一行；右列占剩余 */
+    align-items: start;
+    column-gap: 1rem;
   }
-  .page-link {
-      color: #007bff;
+
+  /* 左列徽章竖排，每个占一行，宽度随文字内容，不拉满 */
+  .user-classes-badges .badge {
+    display: block;          /* 竖排：一行一个 */
+    width: fit-content;      /* 宽度刚好包住文字 */
+    max-width: 100%;         /* 过长时不超出单元格 */
+    white-space: normal;     /* 长名字可以换行 */
+    text-align: left;
+    margin-bottom: .25rem;
+  }
+
+  /* 可移除徽章的小叉样式 */
+  .badge-removable { position: relative; padding-right: 1.5rem; }
+  .badge-removable .remove-x {
+    position: absolute; right: .25rem; top: -.35rem;
+    cursor: pointer; font-weight: bold;
+  }
+
+  /* 右列按钮横向排列；靠右对齐（占据右侧），并在窄屏时自动换行 */
+  .user-classes-actions {
+    display: flex;
+    flex-wrap: wrap;          /* 按需换行 */
+    gap: .5rem;
+    justify-content: flex-end;/* 靠右 */
+    align-items: flex-start;
   }
 </style>
 
 <script>
-  // 将 showEditClassModal 挂载到全局对象上，供内联 onclick 调用
+  function renderExtraClassBadge(userId, classEn, classCn) {
+    const row = document.getElementById('userRow-' + userId);
+    if (!row) return;
+
+    const badgeContainer = row.querySelector('.user-classes-badges');
+    if (!badgeContainer) return;
+
+    // 已存在同班级徽章则不重复渲染
+    if (badgeContainer.querySelector(`.badge[data-class-en="${classEn}"]`)) return;
+
+    const badge = document.createElement('span');
+    badge.className = 'badge bg-info text-dark badge-removable mb-1';
+    badge.setAttribute('data-class-en', classEn);
+    badge.innerHTML = `
+      ${classCn}
+      <span class="remove-x" title="移除"
+            onclick="removeUserExtraClass('${userId}','${classEn}', this)">×</span>
+    `;
+    badgeContainer.appendChild(badge);
+  }
+
+  // === 班级映射：class_en -> class_cn（用于徽章中文名显示） ===
+  const classMap = {
+    {% for c in classes %}
+      "{{ c.class_en }}": "{{ c.class_cn }}",
+    {% endfor %}
+  };
+
+  // 内联 onclick 需要
   window.showEditClassModal = function(userId, currentClass) {
     document.getElementById('editClassUserId').value = userId;
-    document.getElementById('editClassSelect').value = currentClass;
+    document.getElementById('editClassSelect').value = currentClass || '';
     var editModal = new bootstrap.Modal(document.getElementById('editClassModal'));
     editModal.show();
   };
 
-  // 处理“添加班级”模态框表单的 AJAX 提交
-  document.getElementById('addClassForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    var formData = new FormData(this);
-
-    fetch("{{ url_for('add_class_ajax') }}", {
-      method: "POST",
-      body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        // 更新页面上所有使用班级下拉框的选项
-        var addOption = document.createElement("option");
-        addOption.value = data.class_en;
-        addOption.text = data.class_cn;
-        document.querySelectorAll('select[name="class"]').forEach(function(select) {
-          select.appendChild(addOption.cloneNode(true));
-        });
-        // 隐藏模态框
-        var addModal = bootstrap.Modal.getInstance(document.getElementById('addClassModal'));
-        addModal.hide();
-        // 清空表单
-        document.getElementById('addClassForm').reset();
-        location.replace(location.href);
-      } else {
-        alert("错误：" + data.message);
-      }
-    })
-    .catch(error => {
-      alert("网络错误：" + error);
-    });
-  });
-
-  // 处理“修改班级”模态框表单的 AJAX 提交
-  document.getElementById('editClassForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    var formData = new FormData(this);
-
-    fetch("{{ url_for('edit_user_ajax') }}", {
-      method: "POST",
-      body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        var userRow = document.getElementById('userRow-' + data.user_id);
-        if (userRow) {
-          userRow.querySelector('.user-class').textContent = data.new_class;
-        }
-        var editModal = bootstrap.Modal.getInstance(document.getElementById('editClassModal'));
-        editModal.hide();
-        location.replace(location.href);
-      } else {
-        alert("更新失败：" + data.message);
-      }
-    })
-    .catch(error => {
-      alert("网络错误：" + error);
-    });
-  });
-
-  // 显示修改用户名模态框
   window.showEditUsernameModal = function(userId, currentUsername) {
     document.getElementById('editUsernameUserId').value = userId;
     document.getElementById('editUsernameInput').value = currentUsername;
@@ -275,33 +326,158 @@
     editModal.show();
   };
 
-  // 处理修改用户名表单的AJAX提交
+  window.showAddUserClassModal = function(userId) {
+    document.getElementById('addUserClassUserId').value = userId;
+
+    const select = document.getElementById('addUserClassSelect');
+    // 恢复所有选项（除了占位空值）
+    Array.from(select.options).forEach(opt => opt.disabled = (opt.value === ''));
+
+    // 找到该行
+    const row = document.getElementById('userRow-' + userId);
+
+    // 主班级：直接从“改主班级”按钮的 onclick 里拿 class_en
+    const changeBtn = row?.querySelector('button[onclick^="showEditClassModal"]');
+    let primaryEn = '';
+    if (changeBtn) {
+      const m = changeBtn.getAttribute('onclick').match(/,\s*'([^']+)'/);
+      primaryEn = m ? m[1] : '';
+    }
+    if (primaryEn) {
+      const opt = Array.from(select.options).find(o => o.value === primaryEn);
+      if (opt) opt.disabled = true;
+    }
+
+    // 已有的额外班级：从 .user-classes-badges 里读取 data-class-en
+    const owned = new Set();
+    row?.querySelectorAll('.user-classes-badges .badge[data-class-en]').forEach(b => {
+      owned.add(b.getAttribute('data-class-en'));
+    });
+    owned.forEach(en => {
+      const opt = Array.from(select.options).find(o => o.value === en);
+      if (opt) opt.disabled = true;
+    });
+
+    select.value = '';
+    new bootstrap.Modal(document.getElementById('addUserClassModal')).show();
+  };
+
+  // 添加“班级类型”表单（原有）
+  document.getElementById('addClassForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var formData = new FormData(this);
+    fetch("{{ url_for('add_class_ajax') }}", { method: "POST", body: formData })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          // 把新班级加入到所有下拉框里
+          document.querySelectorAll('select[name="class"], #addUserClassSelect').forEach(function(sel) {
+            const opt = document.createElement('option');
+            opt.value = data.class_en;
+            opt.text  = data.class_cn;
+            sel.appendChild(opt);
+          });
+          bootstrap.Modal.getInstance(document.getElementById('addClassModal')).hide();
+          this.reset();
+          location.replace(location.href);
+        } else {
+          alert("错误：" + data.message);
+        }
+      })
+      .catch(err => alert("网络错误：" + err));
+  });
+
+  // 修改主班级（原有）
+  document.getElementById('editClassForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var formData = new FormData(this);
+    fetch("{{ url_for('edit_user_ajax') }}", { method: "POST", body: formData })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          var userRow = document.getElementById('userRow-' + data.user_id);
+          if (userRow) {
+            // 更新主班级徽章文本
+            userRow.querySelector('.badge.bg-primary').textContent = data.new_class.class_cn || data.new_class.class_en || '已更新';
+          }
+          bootstrap.Modal.getInstance(document.getElementById('editClassModal')).hide();
+          location.replace(location.href);
+        } else {
+          alert("更新失败：" + data.message);
+        }
+      })
+      .catch(err => alert("网络错误：" + err));
+  });
+
+  // 修改用户名（原有）
   document.getElementById('editUsernameForm').addEventListener('submit', function(e) {
     e.preventDefault();
     var formData = new FormData(this);
-
-    fetch("{{ url_for('edit_username_ajax') }}", {
-      method: "POST",
-      body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        // 更新页面上用户名的显示
-        var userRow = document.getElementById('userRow-' + data.user_id);
-        if (userRow) {
-          userRow.querySelector('.user-username').textContent = data.new_username;
+    fetch("{{ url_for('edit_username_ajax') }}", { method: "POST", body: formData })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          var userRow = document.getElementById('userRow-' + data.user_id);
+          if (userRow) userRow.querySelector('.user-username').textContent = data.new_username;
+          bootstrap.Modal.getInstance(document.getElementById('editUsernameModal')).hide();
+          location.replace(location.href);
+        } else {
+          alert("更新失败：" + data.message);
         }
-        var editModal = bootstrap.Modal.getInstance(document.getElementById('editUsernameModal'));
-        editModal.hide();
-        location.replace(location.href);
-      } else {
-        alert("更新失败：" + data.message);
-      }
-    })
-    .catch(error => {
-      alert("网络错误：" + error);
-    });
+      })
+      .catch(err => alert("网络错误：" + err));
   });
+
+  document.getElementById('addUserClassForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const userId  = document.getElementById('addUserClassUserId').value;
+    const classEn = document.getElementById('addUserClassSelect').value;
+    if (!classEn) { alert('请选择班级'); return; }
+
+    const form = new FormData();
+    form.append('user_id', userId);
+    form.append('class_en', classEn);
+
+    fetch("{{ url_for('add_user_to_class') }}", { method: "POST", body: form })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) {
+          alert('添加失败：' + (data.message || '未知错误'));
+          return;
+        }
+
+        // 优先用后端返回的 class_cn；如无，则回退到前端 classMap
+        const classCn = (data.class_cn || (classMap && classMap[classEn]) || classEn);
+
+        // 只有在确实新增时（data.added 为真、或后端没返回 added 字段）才渲染；
+        // 但即使没返回 added，也可通过 DOM 去重（函数里已做去重）
+        if (data.added !== false) {
+          renderExtraClassBadge(userId, classEn, classCn);
+        } else if (data.reason === 'already_primary') {
+          alert('该用户的主班级已经是这个班，无需再添加。');
+        } else {
+          alert(data.message || '该用户已在此班，无需重复添加。');
+        }
+
+        // 关闭模态框
+        bootstrap.Modal.getInstance(document.getElementById('addUserClassModal')).hide();
+      })
+      .catch(err => alert('网络错误：' + err));
+  });
+
+  window.removeUserExtraClass = function(userId, classEn, el) {
+    const form = new FormData();
+    form.append('user_id', userId);
+    form.append('class_en', classEn);
+
+    fetch("{{ url_for('remove_user_from_class') }}", { method: "POST", body: form })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) { alert('移除失败：' + (data.message || '未知错误')); return; }
+        const badge = el.closest('.badge');
+        if (badge) badge.remove();
+      })
+      .catch(err => alert('网络错误：' + err));
+  };
 </script>
 {% endblock %}

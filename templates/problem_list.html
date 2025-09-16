@@ -18,6 +18,7 @@
         <i class="fas fa-book me-2"></i> 题目列表
         {% endif %}
       </h2>
+
       {% if user and user.is_admin == 1 %}
         <!-- 管理员视图：显示所有题目，并提供添加/删除功能 -->
         <div class="mb-3">
@@ -47,51 +48,112 @@
             </li>
           {% endfor %}
         </ul>
+
       {% else %}
-        <!-- 非管理员用户视图：只显示其所在班级作业中的题目 -->
-        <ul class="list-group">
-          {% for hw in homeworks %}
-            <li class="list-group-item">
-              <div class="d-flex justify-content-between align-items-center">
-                <!-- 左侧显示题目编号和标题 -->
-                <div>
-                  {% if hw.is_completed %}
-                    <!-- 如果已完成，显示绿色的勾 -->
-                    <i class="fas fa-check me-2 text-success" title="已完成"></i>
-                  {% else %}
-                    {% if hw.max_score != None %}
-                      <i class="fas fa-times me-2 text-danger" title="未通过"></i>
-                    {% else %}
-                    <span class="d-inline-block" style="width: 1.25em;"></span>
-                    {% endif %}
-                  {% endif %}
-                  <span class="fw-bold">{{ hw.problem_id }}.</span>
-                  <a href="{{ url_for('problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none">{{ hw.problem_title }}</a>
-                </div>
-                <!-- 右侧显示完成状态或作业截止时间 -->
-                <div class="d-flex align-items-center">
-                  {% if hw.is_completed %}
-                    <span class="text-success">已完成</span>
-                  {% else %}
-                    {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
-                    {% set remaining = (hw.ddl - now).total_seconds() %}
-                    {% if remaining < 0 %}
-                      <span class="text-muted"><i class="fas fa-clock me-2"></i> 已过期</span>
-                    {% elif remaining < 86400 %}
-                      <span class="text-danger"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
-                    {% elif remaining < 3 * 86400 %}
-                      <span class="text-warning"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
-                    {% else %}
-                      <span class="text-success"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
-                    {% endif %}
-                  {% endif %}
-                  <span class="d-inline-block" style="width: 1em;"></span>
-                  <i class="fas fa-trophy me-2"></i> {{ hw.max_score or 0 }} / {{ hw.total_score or 0 }}
-                </div>
-              </div>
-            </li>
+        {# ========= 非管理员视图 ========= #}
+
+        {# 多班级：按班级块分组渲染；单班级：沿用原来的 homeworks 列表 #}
+        {% if homeworks_by_class %}
+          {% for block in homeworks_by_class %}
+            <h5 class="mt-4 mb-3">
+              <i class="fas fa-users me-2"></i>{{ block.class_cn }}
+              {% if block.is_primary %}<span class="badge bg-primary ms-2">主班级</span>{% endif %}
+            </h5>
+            {% if block.hw_list and block.hw_list|length > 0 %}
+              <ul class="list-group">
+                {% for hw in block.hw_list %}
+                  <li class="list-group-item">
+                    <div class="d-flex justify-content-between align-items-center">
+                      <!-- 左侧显示题目编号和标题 -->
+                      <div>
+                        {% if hw.is_completed %}
+                          <!-- 如果已完成，显示绿色的勾 -->
+                          <i class="fas fa-check me-2 text-success" title="已完成"></i>
+                        {% else %}
+                          {% if hw.max_score != None %}
+                            <i class="fas fa-times me-2 text-danger" title="未通过"></i>
+                          {% else %}
+                            <span class="d-inline-block" style="width: 1.25em;"></span>
+                          {% endif %}
+                        {% endif %}
+                        <span class="fw-bold">{{ hw.problem_id }}.</span>
+                        <a href="{{ url_for('problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none">{{ hw.problem_title }}</a>
+                      </div>
+                      <!-- 右侧显示完成状态或作业截止时间 -->
+                      <div class="d-flex align-items-center">
+                        {% if hw.is_completed %}
+                          <span class="text-success">已完成</span>
+                        {% else %}
+                          {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
+                          {% set remaining = (hw.ddl - now).total_seconds() %}
+                          {% if remaining < 0 %}
+                            <span class="text-muted"><i class="fas fa-clock me-2"></i> 已过期</span>
+                          {% elif remaining < 86400 %}
+                            <span class="text-danger"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                          {% elif remaining < 3 * 86400 %}
+                            <span class="text-warning"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                          {% else %}
+                            <span class="text-success"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                          {% endif %}
+                        {% endif %}
+                        <span class="d-inline-block" style="width: 1em;"></span>
+                        <i class="fas fa-trophy me-2"></i> {{ hw.max_score if hw.max_score is not none else 0 }} / {{ hw.total_score or 0 }}
+                      </div>
+                    </div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <div class="alert alert-light border mt-2">该班级暂无作业</div>
+            {% endif %}
           {% endfor %}
-        </ul>
+
+        {% else %}
+          {# 单班级：保留你原先的 homeworks 列表 #}
+          <ul class="list-group">
+            {% for hw in homeworks %}
+              <li class="list-group-item">
+                <div class="d-flex justify-content-between align-items-center">
+                  <!-- 左侧显示题目编号和标题 -->
+                  <div>
+                    {% if hw.is_completed %}
+                      <!-- 如果已完成，显示绿色的勾 -->
+                      <i class="fas fa-check me-2 text-success" title="已完成"></i>
+                    {% else %}
+                      {% if hw.max_score != None %}
+                        <i class="fas fa-times me-2 text-danger" title="未通过"></i>
+                      {% else %}
+                      <span class="d-inline-block" style="width: 1.25em;"></span>
+                      {% endif %}
+                    {% endif %}
+                    <span class="fw-bold">{{ hw.problem_id }}.</span>
+                    <a href="{{ url_for('problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none">{{ hw.problem_title }}</a>
+                  </div>
+                  <!-- 右侧显示完成状态或作业截止时间 -->
+                  <div class="d-flex align-items-center">
+                    {% if hw.is_completed %}
+                      <span class="text-success">已完成</span>
+                    {% else %}
+                      {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
+                      {% set remaining = (hw.ddl - now).total_seconds() %}
+                      {% if remaining < 0 %}
+                        <span class="text-muted"><i class="fas fa-clock me-2"></i> 已过期</span>
+                      {% elif remaining < 86400 %}
+                        <span class="text-danger"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                      {% elif remaining < 3 * 86400 %}
+                        <span class="text-warning"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                      {% else %}
+                        <span class="text-success"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                      {% endif %}
+                    {% endif %}
+                    <span class="d-inline-block" style="width: 1em;"></span>
+                    <i class="fas fa-trophy me-2"></i> {{ hw.max_score or 0 }} / {{ hw.total_score or 0 }}
+                  </div>
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
       {% endif %}
     </div>
 
@@ -102,8 +164,6 @@
         <div class="card-body">
           <h6 class="text-muted"><i class="fas fa-chart-bar me-2"></i> 数据统计</h6>
           <div class="d-flex justify-content-center mb-3" style="white-space: nowrap;">
-            
-            <!-- 平时使用 -->
             <div class="text-center mx-5">
               <div class="fs-2 fw-bold">{{ total_submissions }}</div>
               <div class="fs-8 text-muted">今日提交</div>
@@ -112,49 +172,33 @@
               <div class="fs-2 fw-bold">{{ total_accepted }}</div>
               <div class="fs-8 text-muted">今日通过</div>
             </div>
-
-            <!-- <div class="text-center mx-5">
-              <div class="fs-2 fw-bold">{{ regular_score|default('-', true) }} </div>
-              <div class="fs-8 text-muted">平时成绩 (40%)</div>
-            </div>
-
-            <div class="text-center mx-5">
-              <div class="fs-2 fw-bold">{{ final_score|default('-', true) }} </div>
-              <div class="fs-8 text-muted">期末成绩 (60%)</div>
-            </div> -->
-
           </div>
-
-          <!-- 柱状图 -->
-          <!-- <div style="position: relative; height: 12vh;">
+          <div style="position: relative; height: 12vh;">
             <canvas id="submissionChart"></canvas>
-          </div> -->
+          </div>
         </div>
       </div>
 
       <div class="card mt-3">
-        <div class="card-body" style="height: 150px; overflow-y: auto;"> <!-- 固定高度和滚动 -->
-          <h6 class="text-muted"><i class="fas fa-code me-2"></i> MATLAB 编程小贴士</h6>
+        <div class="card-body" style="height: 150px; overflow-y: auto;">
+          <h6 class="text-muted"><i class="fas fa-code me-2"></i> C++ 编程小贴士</h6>
           <p id="matlab-tip">加载中...</p>
           <button class="btn btn-outline-secondary btn-sm float-end" id="refresh-btn" style="border-radius: 50%;">
-            <i class="fas fa-sync-alt"></i> <!-- 只显示图标 -->
+            <i class="fas fa-sync-alt"></i>
           </button>
         </div>
       </div>
 
-      <!-- GitHub 开源项目推荐 -->
-      <!-- <div class="card mt-3">
+      <div class="card mt-3">
         <div class="card-body">
           <h6 class="text-muted"><i class="fab fa-github me-2"></i> GitHub 优质开源项目推荐</h6>
-          <ul class="list-unstyled" id="github-projects-list">
-          </ul>
+        <ul class="list-unstyled" id="github-projects-list"></ul>
           <button class="btn btn-outline-secondary btn-sm float-end" id="projects-refresh-btn" style="border-radius: 50%;">
             <i class="fas fa-sync-alt"></i>
           </button>
         </div>
-      </div> -->
+      </div>
 
-      <!-- 友情链接框 -->
       <div class="card mt-3">
         <div class="card-body">
           <h6 class="text-muted"><i class="fas fa-link me-2"></i> 友情链接</h6>
@@ -171,28 +215,13 @@
 </div>
 
 {% if user and user.is_admin == 1 %}
-<!-- 删除题目的 Java学术处理函数（仅管理员可用） -->
 <script>
 function deleteProblem(problemId) {
   if (confirm("确定要删除这个题目吗？")) {
-    fetch(`/admin/delete_problem/${problemId}`, {
-      method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        location.reload();
-      } else {
-        alert(data.message || "删除失败");
-      }
-    })
-    .catch(error => {
-      console.error("Error:", error);
-      alert("请求失败，请检查网络");
-    });
+    fetch(`/admin/delete_problem/${problemId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }})
+      .then(r => r.json())
+      .then(data => { data.success ? location.reload() : alert(data.message || "删除失败"); })
+      .catch(() => alert("请求失败，请检查网络"));
   }
 }
 </script>
@@ -218,91 +247,55 @@ function deleteProblem(problemId) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          display: false  // 隐藏图例
-        },
-        tooltip: {
-          enabled: false  // 禁用 tooltip
-        }
-      },
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
       scales: {
-        y: {
-          display: false,  // 隐藏 y 轴坐标
-          beginAtZero: true
-        },
+        y: { display: false, beginAtZero: true },
         x: {
-          type: 'category',  // 设置为类别轴，确保显示日期
+          type: 'category',
           labels: {{ last_10_days|tojson }},
           ticks: {
-            maxRotation: 0,  // 防止标签旋转，确保清晰可读
-            autoSkip: false,  // 确保标签不被跳过
+            maxRotation: 0,
+            autoSkip: false,
             callback: function(value, index, values) {
-              // 只显示第一个和最后一个日期
-              if (index === 0) {
-                return {{ last_10_days[0]|tojson }};  // 显示第一天
-              } else if (index === values.length - 1) {
-                return {{ last_10_days[9]|tojson }};
-              }
-              return '';  // 中间的日期不显示
+              if (index === 0) return {{ last_10_days[0]|tojson }};
+              if (index === values.length - 1) return {{ last_10_days[9]|tojson }};
+              return '';
             }
-          },
-          title: {
-            display: false,
-            text: '网站活跃度'
           }
         }
       }
     }
   });
-
-  // 在每个柱子顶端显示数字
-  submissionChart.options.plugins.datalabels = {
-    anchor: 'end',
-    align: 'top',
-    color: '#000',
-    font: {
-      weight: 'bold'
-    },
-    formatter: (value) => value
-  };
+  submissionChart.options.plugins.datalabels = { anchor: 'end', align: 'top', color: '#000', font: { weight: 'bold' }, formatter: v => v };
   submissionChart.update();
 </script>
 
 <script>
-// MATLAB 小贴士
+// C++ 小贴士
 const matlabTips = [
-  "使用 clc 来清除命令窗口。",
-  "确保每次调用函数时使用正确的输入参数。",
-  "使用 for 循环时，尽量避免使用 eval。",
-  "MATLAB 中的矩阵运算通常比循环更高效。",
-  "利用 MATLAB 内建函数来简化你的代码，避免重复实现相同功能。",
-  "避免在循环中使用 size 或 length 计算数组的维度，改用预先计算的常量。",
-  "当数据集较大时，使用矢量化代码来提高效率。",
-  "使用 clear 清除不再需要的变量，释放内存。",
-  "在写函数时，尽量避免全局变量，使用局部变量来确保代码的可维护性。",
-  "多使用 MATLAB 的内建工具箱，避免重新实现已有的功能。",
-  "在创建大量图表时，使用 subplot 来优化空间使用。",
-  "使用 try-catch 来捕获错误并进行错误处理。",
-  "MATLAB 中的 cell 数组用于存储不同类型的数据，常用于复杂数据结构。",
-  "使用 function 创建自己的函数，提升代码的可复用性。",
-  "了解 MATLAB 的内存管理机制，避免不必要的内存消耗。",
-  "MATLAB 中的 for 循环效率极低，如有可能，应尽量用矩阵向量运算代替之。"
+  "使用 std::vector 代替裸指针数组，避免内存泄漏。",
+  "在循环中尽量使用前置 ++i 而不是 i++，提高效率。",
+  "使用 const 引用传参可以避免不必要的拷贝。",
+  "尽量使用范围 for (range-based for) 来简化循环。",
+  "使用 std::unique_ptr 或 std::shared_ptr 管理动态内存，避免手动 delete。",
+  "使用标准库算法（如 std::sort, std::find）代替手写循环。",
+  "避免在循环中频繁使用 new/delete，尽量在外部预分配内存。",
+  "使用头文件保护符或 #pragma once 避免重复包含。",
+  "在调试时多使用 assert 来捕获异常状态。",
+  "使用 std::string 代替 C 风格字符串，减少内存错误风险。",
+  "写类时要遵循 Rule of Three/Five，正确管理拷贝与析构。",
+  "使用命名空间避免名字冲突，但不要滥用 using namespace std。",
+  "在多线程程序中使用 std::mutex 等同步机制确保线程安全。",
+  "尽量用 auto 推导复杂类型，提升代码可读性。",
+  "使用 enum class 代替传统枚举，避免命名冲突。",
+  "注意浮点比较时不要直接用 ==，而是使用误差范围判断。"
 ];
-
-// 随机初始化一个提示
 let currentTipIndex = Math.floor(Math.random() * matlabTips.length);
-
 function refreshTip() {
-  // 刷新显示下一个提示
   currentTipIndex = (currentTipIndex + 1) % matlabTips.length;
   document.getElementById('matlab-tip').innerText = matlabTips[currentTipIndex];
 }
-
-// 初始化时显示随机一个提示
 refreshTip();
-
-// 绑定点击事件到刷新按钮
 document.getElementById('refresh-btn').addEventListener('click', refreshTip);
 
 // GitHub 开源项目推荐
@@ -327,44 +320,32 @@ const githubProjects = [
   { name: "OpenCV", url: "https://github.com/opencv/opencv" },
   { name: "Apache Kafka", url: "https://github.com/apache/kafka" }
 ];
-
-// 显示三个推荐项目
 function refreshProjects() {
-  // 随机选择三个项目
-  const selectedProjects = [];
-  while (selectedProjects.length < 3) {
-    const randomProject = githubProjects[Math.floor(Math.random() * githubProjects.length)];
-    if (!selectedProjects.includes(randomProject)) {
-      selectedProjects.push(randomProject);
-    }
+  const selected = [];
+  while (selected.length < 3) {
+    const p = githubProjects[Math.floor(Math.random() * githubProjects.length)];
+    if (!selected.includes(p)) selected.push(p);
   }
-  // 更新显示
-  const projectsList = document.getElementById("github-projects-list");
-  projectsList.innerHTML = "";
-  selectedProjects.forEach(project => {
-    const listItem = document.createElement("li");
-    listItem.innerHTML = `<a href="${project.url}" target="_blank" class="ms-2 text-decoration-none">${project.name}</a>`;
-    projectsList.appendChild(listItem);
+  const list = document.getElementById("github-projects-list");
+  list.innerHTML = "";
+  selected.forEach(p => {
+    const li = document.createElement("li");
+    li.innerHTML = `<a href="${p.url}" target="_blank" class="ms-2 text-decoration-none">${p.name}</a>`;
+    list.appendChild(li);
   });
 }
-
-// 初始化时显示第一个三个项目
 refreshProjects();
-
-// 绑定点击事件到刷新按钮
 document.getElementById('projects-refresh-btn').addEventListener('click', refreshProjects);
 </script>
 
-<!-- 放在 problem_list.html 任何已有 <script> 之后，或单独加一个 <script> -->
 <script>
   document.addEventListener('DOMContentLoaded', () => {
     // 用 Jinja2 输出 JS 原生数字 / null
     const regularScore = {{ regular_score | tojson | safe }};
     const totalGrade   = {{ total_grade   | tojson | safe }};
-  
     if (regularScore !== null && totalGrade !== null && regularScore !== totalGrade) {
       alert('管理员上传的平时分与系统核算不一致，请钉钉私聊助教确认情况。');
     }
   });
-  </script>
+</script>
 {% endblock %}

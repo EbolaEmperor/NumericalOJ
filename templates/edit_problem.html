@@ -25,6 +25,7 @@
         <option value="matlab" {% if plang == 'matlab' %}selected{% endif %}>MATLAB</option>
         <option value="c" {% if plang == 'c' %}selected{% endif %}>C</option>
         <option value="cpp" {% if plang == 'cpp' %}selected{% endif %}>C++</option>
+        <option value="python" {% if plang == 'python' %}selected{% endif %}>Python</option>
       </select>
     </div>
 
@@ -98,12 +99,14 @@
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/python/python.js') }}"></script>
 
 <script>
   {% if problem.type == 1 %}
   function getModeByLang(lang) {
     if (lang === 'cpp') return 'text/x-c++src';
     if (lang === 'c') return 'text/x-csrc';
+    if (lang === 'python' || lang === 'py') return 'python';
     return 'octave';
   }
   const langSelect = document.getElementById('langSelect');

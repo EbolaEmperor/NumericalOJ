@@ -1,3 +1,23 @@
+-- =====================================================
+-- NumericalOJ 数据库初始化脚本
+-- =====================================================
+-- 
+-- 这个脚本包含了 NumericalOJ 系统的完整数据库结构
+-- 导入后可以直接使用系统，包含以下功能：
+-- 
+-- 1. 用户管理（支持多班级系统）
+-- 2. 题目管理（编程题和书面作业）
+-- 3. 提交评测系统
+-- 4. 讨论区功能
+-- 5. 成绩管理
+-- 
+-- 默认管理员账号：
+-- 用户名: admin
+-- 密码: admin123
+-- 邮箱: admin@example.com
+-- 
+-- =====================================================
+
 -- MySQL dump 10.13  Distrib 8.4.4, for Linux (x86_64)
 --
 -- Host: localhost    Database: myojdb
@@ -15,56 +35,6 @@
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
---
--- Table structure for table `CCompMet24_25_34`
---
-
-DROP TABLE IF EXISTS `CCompMet24_25_34`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `CCompMet24_25_34` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `problem_id` int DEFAULT NULL,
-  `ddl` datetime DEFAULT NULL,
-  `complete_cnt` int DEFAULT NULL,
-  `problem_title` text,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `Cbujiao2`
---
-
-DROP TABLE IF EXISTS `Cbujiao2`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `Cbujiao2` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `problem_id` int DEFAULT NULL,
-  `ddl` datetime DEFAULT NULL,
-  `complete_cnt` int DEFAULT NULL,
-  `problem_title` text,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `Cbuxuan_temp`
---
-
-DROP TABLE IF EXISTS `Cbuxuan_temp`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `Cbuxuan_temp` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `problem_id` int DEFAULT NULL,
-  `ddl` datetime DEFAULT NULL,
-  `complete_cnt` int DEFAULT NULL,
-  `problem_title` text,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=16 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
 -- Table structure for table `ac_record`
@@ -75,6 +45,7 @@ DROP TABLE IF EXISTS `ac_record`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `ac_record` (
   `userid` int NOT NULL,
+  `ACP1` tinyint(1) DEFAULT '0',
   PRIMARY KEY (`userid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -163,6 +134,7 @@ DROP TABLE IF EXISTS `max_score`;
 CREATE TABLE `max_score` (
   `userid` int NOT NULL,
   `class_en` text,
+  `P1` int DEFAULT '0',
   PRIMARY KEY (`userid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -254,10 +226,157 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB AUTO_INCREMENT=186 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
+--
+-- Table structure for table `user_class_map`
+--
+
+DROP TABLE IF EXISTS `user_class_map`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `user_class_map` (
+  `user_id` int NOT NULL,
+  `class_en` varchar(255) NOT NULL,
+  `is_primary` tinyint(1) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`user_id`,`class_en`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_class_en` (`class_en`),
+  KEY `idx_primary` (`is_primary`),
+  CONSTRAINT `user_class_map_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `user_class_map_ibfk_2` FOREIGN KEY (`class_en`) REFERENCES `class_table` (`class_en`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `class_table`
+--
+
+LOCK TABLES `class_table` WRITE;
+/*!40000 ALTER TABLE `class_table` DISABLE KEYS */;
+INSERT INTO `class_table` VALUES 
+('Cadmin','管理员',1),
+('Cdemo2024','演示班级2024',0),
+('Ctest','测试班级',0);
+/*!40000 ALTER TABLE `class_table` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `Cdemo2024` (示例班级作业表)
+--
+
+DROP TABLE IF EXISTS `Cdemo2024`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `Cdemo2024` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `problem_id` int DEFAULT NULL,
+  `ddl` datetime DEFAULT NULL,
+  `complete_cnt` int DEFAULT '0',
+  `problem_title` text,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `Ctest` (测试班级作业表)
+--
+
+DROP TABLE IF EXISTS `Ctest`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `Ctest` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `problem_id` int DEFAULT NULL,
+  `ddl` datetime DEFAULT NULL,
+  `complete_cnt` int DEFAULT '0',
+  `problem_title` text,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `users`
+--
+
 LOCK TABLES `users` WRITE;
 /*!40000 ALTER TABLE `users` DISABLE KEYS */;
-INSERT INTO `users` VALUES (4,'admin','29db96ffdbd1e2e8e5443e85814e24f87a7dd9673470ea9cc2875bb7944d6942',1,'114514@qq.com','Cadmin','管理员');
+INSERT INTO `users` VALUES (4,'admin','240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9',1,'admin@example.com','Cadmin','管理员');
 /*!40000 ALTER TABLE `users` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Dumping data for table `user_class_map`
+--
+
+LOCK TABLES `user_class_map` WRITE;
+/*!40000 ALTER TABLE `user_class_map` DISABLE KEYS */;
+INSERT INTO `user_class_map` VALUES (4,'Cadmin',1);
+/*!40000 ALTER TABLE `user_class_map` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Dumping data for table `ac_record`
+--
+
+LOCK TABLES `ac_record` WRITE;
+/*!40000 ALTER TABLE `ac_record` DISABLE KEYS */;
+INSERT INTO `ac_record` VALUES (4);
+/*!40000 ALTER TABLE `ac_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Dumping data for table `max_score`
+--
+
+LOCK TABLES `max_score` WRITE;
+/*!40000 ALTER TABLE `max_score` DISABLE KEYS */;
+INSERT INTO `max_score` VALUES (4,'Cadmin');
+/*!40000 ALTER TABLE `max_score` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Dumping data for table `problems` (示例题目)
+--
+
+LOCK TABLES `problems` WRITE;
+/*!40000 ALTER TABLE `problems` DISABLE KEYS */;
+INSERT INTO `problems` VALUES (1,'Hello World','# Hello World 问题
+
+这是一个简单的示例问题，用于测试系统功能。
+
+## 问题描述
+
+编写一个程序，输出 "Hello, World!" 
+
+## 输入格式
+
+无输入
+
+## 输出格式
+
+输出一行："Hello, World!"
+
+## 示例
+
+### 输入
+```
+（无输入）
+```
+
+### 输出
+```
+Hello, World!
+```','% 请在这里编写你的 MATLAB 代码\ndisp(''Hello, World!'');','{\"input\":\"\",\"output\":\"Hello, World!\"}',0,'',1,'matlab',1,'%%user_code_here',2000);
+/*!40000 ALTER TABLE `problems` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Dumping data for table `Cdemo2024` (为演示班级添加示例作业)
+--
+
+LOCK TABLES `Cdemo2024` WRITE;
+/*!40000 ALTER TABLE `Cdemo2024` DISABLE KEYS */;
+INSERT INTO `Cdemo2024` VALUES (1,1,'2025-12-31 23:59:59',0,'Hello World');
+/*!40000 ALTER TABLE `Cdemo2024` ENABLE KEYS */;
 UNLOCK TABLES;
 
 --

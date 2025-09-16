@@ -81,6 +81,13 @@
           <li class="nav-item me-3">
             <span class="nav-link disabled">你好，{{ session.get('username') }}</span>
           </li>
+            <!-- 新增：调整班级按钮（桌面） -->
+          <li class="nav-item me-3">
+            <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#classManagerModal">
+              <i class="fas fa-users-cog me-2"></i>
+              调整班级
+            </a>
+          </li>
           <!-- 新增修改密码按钮 -->
           <li class="nav-item me-3">
             <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal">
@@ -164,6 +171,13 @@
         </li>
       {% endif %}
       {% if user %}
+        <!-- 新增：调整班级（移动端） -->
+        <li class="nav-item">
+          <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#classManagerModal">
+            <i class="fas fa-users-cog me-2"></i>
+            调整班级
+          </a>
+        </li>
         <li class="nav-item">
           <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal">
             <i class="fas fa-key me-2"></i>
@@ -239,6 +253,77 @@
 </div>
 {% endif %}
 
+
+{% if user %}
+<!-- 班级管理 Modal -->
+<div class="modal fade" id="classManagerModal" tabindex="-1" aria-labelledby="classManagerLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+
+      <div class="modal-header">
+        <h5 class="modal-title" id="classManagerLabel">
+          <i class="fas fa-users-cog me-2"></i> 调整班级
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+
+      <div class="modal-body">
+        <h6 class="mb-2">我的班级</h6>
+        <div id="myClassesBox" class="list-group mb-3">
+          <!-- JS 渲染 -->
+        </div>
+        <div class="form-text mb-3">
+          主班级用于默认作业显示与统计；至少保留一个班级，只有一个时不能退出。
+        </div>
+
+        <hr>
+
+        <h6 class="mb-2">加入新班级</h6>
+        <div class="d-flex gap-2 align-items-center">
+          <select id="joinClassSelect" class="form-select" style="max-width: 320px;">
+            <option value="">请选择班级</option>
+          </select>
+          <button class="btn btn-outline-success" id="joinClassBtn">
+            <i class="fas fa-user-plus me-1"></i> 加入
+          </button>
+        </div>
+        <div class="form-text mt-2">仅显示你未加入的班级。</div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+          <i class="fas fa-times me-1"></i> 关闭
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<style>
+  /* 班级列表的行：左侧信息，右侧动作 */
+  .class-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: .75rem;
+  }
+  .class-left {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    min-width: 0;
+  }
+  .class-actions { display: flex; gap: .5rem; }
+  .class-name {
+    font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .radio-wrap { display: inline-flex; align-items: center; gap: .35rem; }
+</style>
+
+
 <!-- Flash 消息 -->
 <div class="container mt-4">
   {% with messages = get_flashed_messages(with_categories=true) %}
@@ -254,6 +339,185 @@
 </div>
 
 <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+
+{% if user %}
+<script>
+(function(){
+  const modalEl = document.getElementById('classManagerModal');
+  if (!modalEl) return;
+
+  const myBox   = document.getElementById('myClassesBox');
+  const joinSel = document.getElementById('joinClassSelect');
+  const joinBtn = document.getElementById('joinClassBtn');
+
+  let model = { memberships: [], primary_en: '', all_classes: [] };
+
+  // 打开时加载
+  modalEl.addEventListener('show.bs.modal', () => {
+    fetch('/me/classes')
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) throw new Error(data.message || '加载失败');
+        model.memberships = data.memberships || [];
+        model.primary_en  = data.primary_en || '';
+        model.all_classes = data.all_classes || [];
+        renderMyClasses();
+        renderJoinSelect();
+      })
+      .catch(err => {
+        myBox.innerHTML = `<div class="list-group-item text-danger">加载失败：${err}</div>`;
+        joinSel.innerHTML = `<option value="">加载失败</option>`;
+      });
+  });
+
+  function renderMyClasses() {
+    myBox.innerHTML = '';
+    if (!model.memberships.length) {
+      myBox.innerHTML = `<div class="list-group-item text-muted">暂无班级</div>`;
+      return;
+    }
+
+    model.memberships.forEach(m => {
+      const row = document.createElement('div');
+      row.className = 'list-group-item class-row';
+
+      const left = document.createElement('div');
+      left.className = 'class-left';
+
+      // 主班选择 radio
+      const radioWrap = document.createElement('label');
+      radioWrap.className = 'radio-wrap';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'primaryClass';
+      radio.value = m.class_en;
+      radio.checked = !!m.is_primary;
+      radio.addEventListener('change', () => setPrimary(m.class_en));
+      radioWrap.appendChild(radio);
+      radioWrap.appendChild(document.createTextNode('主'));
+      left.appendChild(radioWrap);
+
+      // 班级名
+      const name = document.createElement('span');
+      name.className = 'class-name';
+      name.textContent = m.class_cn || m.class_en;
+      left.appendChild(name);
+
+      // 徽章
+      if (m.is_primary) {
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-primary';
+        badge.textContent = '主班级';
+        left.appendChild(badge);
+      }
+
+      // 动作
+      const actions = document.createElement('div');
+      actions.className = 'class-actions';
+      const leaveBtn = document.createElement('button');
+      leaveBtn.className = 'btn btn-sm btn-outline-danger';
+      leaveBtn.innerHTML = '<i class="fas fa-sign-out-alt me-1"></i> 退出';
+
+      const onlyOne = model.memberships.length <= 1; // 至少保留 1 个
+      leaveBtn.disabled = onlyOne;
+      leaveBtn.addEventListener('click', () => {
+        if (onlyOne) return;
+        if (!confirm(`确认退出「${m.class_cn || m.class_en}」吗？`)) return;
+        leaveClass(m.class_en);
+      });
+
+      actions.appendChild(leaveBtn);
+
+      row.appendChild(left);
+      row.appendChild(actions);
+      myBox.appendChild(row);
+    });
+  }
+
+  function renderJoinSelect() {
+    const owned = new Set(model.memberships.map(m => m.class_en));
+    joinSel.innerHTML = '<option value="">请选择班级</option>';
+    (model.all_classes || []).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.class_en;
+      opt.textContent = c.class_cn || c.class_en;
+      if (owned.has(c.class_en)) opt.disabled = true;
+      joinSel.appendChild(opt);
+    });
+  }
+
+  joinBtn.addEventListener('click', () => {
+    const classEn = joinSel.value;
+    if (!classEn) { alert('请选择班级'); return; }
+    joinBtn.disabled = true;
+    joinClass(classEn).finally(() => joinBtn.disabled = false);
+  });
+
+  function joinClass(classEn) {
+    const form = new FormData();
+    form.append('class_en', classEn);
+    return fetch('/me/join_class', { method: 'POST', body: form })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) throw new Error(data.message || '加入失败');
+        model.memberships.push({
+          class_en: classEn,
+          class_cn: data.class_cn || getCn(classEn),
+          is_primary: false
+        });
+        renderMyClasses();
+        renderJoinSelect();
+        toast('已加入：' + (data.class_cn || getCn(classEn)));
+      })
+      .catch(err => alert(err));
+  }
+
+  function leaveClass(classEn) {
+    const form = new FormData();
+    form.append('class_en', classEn);
+    return fetch('/me/leave_class', { method: 'POST', body: form })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) throw new Error(data.message || '退出失败');
+        model.memberships = model.memberships.filter(m => m.class_en !== classEn);
+        if (data.primary_en) model.primary_en = data.primary_en;
+        model.memberships.forEach(m => m.is_primary = (m.class_en === model.primary_en));
+        renderMyClasses();
+        renderJoinSelect();
+        toast('已退出：' + getCn(classEn));
+      })
+      .catch(err => alert(err));
+  }
+
+  function setPrimary(classEn) {
+    const form = new FormData();
+    form.append('class_en', classEn);
+    fetch('/me/set_primary_class', { method: 'POST', body: form })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) throw new Error(data.message || '设置失败');
+        model.primary_en = classEn;
+        model.memberships.forEach(m => m.is_primary = (m.class_en === classEn));
+        renderMyClasses();
+        toast('主班级已切换为：' + getCn(classEn));
+      })
+      .catch(err => {
+        alert(err);
+        renderMyClasses(); // 回滚 UI
+      });
+  }
+
+  function getCn(classEn) {
+    const x = (model.all_classes || []).find(c => c.class_en === classEn);
+    return (x && (x.class_cn || x.class_en)) || classEn;
+  }
+
+  function toast(msg) {
+    console.log(msg); // 需要的话换成你站内的 Toast
+  }
+})();
+</script>
+{% endif %}
 
 <div class="container mt-4">
   {% block content %}{% endblock %}

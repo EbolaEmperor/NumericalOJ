@@ -4,7 +4,8 @@
 {% set lang_label = 
   'MATLAB' if (plang or 'matlab') == 'matlab' 
   else 'C++' if (plang or '') == 'cpp' 
-  else 'C' %}
+  else 'C' if (plang or '') == 'c' 
+  else 'Python' %}
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
 
 <div class="row">
@@ -143,8 +144,10 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
-<!-- 新增：C 语言高亮 -->
+<!-- 新增：C/C++ 高亮 -->
 <script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
+<!-- 新增：Python 高亮 -->
+<script src="{{ url_for('static', filename='codemirror/mode/python/python.js') }}"></script>
 
 <!-- marked.js（AI 输出 Markdown 渲染） -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -170,7 +173,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body" style="overflow-y: auto;">
-        <p class="text-danger">内容由“大先生”提供的 Qwen3 模型生成，仅供参考，请批判性使用。</p>
+        <p class="text-danger">内容由阿里云提供的 Qwen-plus 模型生成，仅供参考，请批判性使用。</p>
         <!-- 加载中的图标 -->
         <div id="aiLoading" class="text-center mb-3" style="display: none;">
           <div class="spinner-border" role="status">
@@ -204,9 +207,11 @@
 {% if submission.problem_type == 1 %}
 <script>
   // 根据后端传入的 plang 设置 CodeMirror 模式
-  var mode = ('{{ plang or "matlab" }}' === 'cpp') 
-             ? 'text/x-c++src' 
-             : ( '{{ plang or "matlab" }}' === 'c' ? 'text/x-csrc' : 'octave');
+  var pl = '{{ plang or "matlab" }}';
+  var mode = (pl === 'cpp') ? 'text/x-c++src'
+           : (pl === 'c') ? 'text/x-csrc'
+           : (pl === 'python' || pl === 'py') ? 'python'
+           : 'octave';
 
   var submissionCodeEditor = CodeMirror.fromTextArea(
     document.getElementById('submissionCode'),

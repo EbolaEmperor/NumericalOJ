@@ -6,7 +6,8 @@
 {% set lang_label = 
   'MATLAB' if (plang or 'matlab') == 'matlab' 
   else 'C++' if (plang or '') == 'cpp' 
-  else 'C' %}
+  else 'C' if (plang or '') == 'c' 
+  else 'Python' %}
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
 
 <div class="row">
@@ -181,6 +182,8 @@
 <script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
 <script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
+<!-- 新增：Python 语法高亮 -->
+<script src="{{ url_for('static', filename='codemirror/mode/python/python.js') }}"></script>
 
 <script>
 (function() {
@@ -203,9 +206,11 @@
 
 {% if problem.type == 1 %}
 <script>
-  var mode = ('{{ plang or "matlab" }}' === 'cpp') 
-             ? 'text/x-c++src' 
-             : ( '{{ plang or "matlab" }}' === 'c' ? 'text/x-csrc' : 'octave');
+  var pl = '{{ plang or "matlab" }}';
+  var mode = (pl === 'cpp') ? 'text/x-c++src'
+           : (pl === 'c') ? 'text/x-csrc'
+           : (pl === 'python' || pl === 'py') ? 'python'
+           : 'octave';
 
   var editor = CodeMirror.fromTextArea(document.getElementById('codeEditor'), {
     mode: mode,
