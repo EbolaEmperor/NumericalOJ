@@ -42,7 +42,8 @@ def check_forbidden(code_content: str, forbidden_str: str):
 
     forbidden_funcs = [func.strip() for func in forbidden_str.split(",") if func.strip()]
     for func in forbidden_funcs:
-        # C/Octave 通用的“函数名(”匹配：前缀不为字母/数字/下划线
+        # C/Octave/Python 通用的“函数名(”匹配：前缀不为字母/数字/下划线
+        # 注意对 Python 的 os.system/ pathlib.Path(...).write_text( 也可匹配到 system( / write_text(
         pattern = r'[^a-zA-Z0-9_](' + re.escape(func) + r')\s*\('
         if re.search(pattern, code_content_check):
             return f"Function '{func}' is not allowed"
@@ -98,7 +99,7 @@ def run_hello():
         user_input = data.get("input", "")
         code_content = data.get("code", "")
         tle = data.get("timeLimit")  # ns
-        mle = data.get("memoryLimit") * 10  # 保留你原来的乘 10 逻辑
+        mle = (data.get("memoryLimit") or 0) * 10  # 保留你原来的乘 10 逻辑
         forbidden_funcs = data.get("forbidden", "")
 
         # 禁用函数检查
@@ -173,6 +174,108 @@ def run_hello():
     except Exception as e:
         return jsonify({"message": f"Failed to run hello: {str(e)}"}), 500
 
+# ========== 新增：Python 语言评测接口 ==========
+@app.route("/run-py", methods=["POST"])
+def run_py():
+    """
+    输入字段与 /run-hello 保持一致：
+    - sid: 运行目录（会创建）
+    - input: 作为程序 stdin
+    - code: Python 源码（写入 main.py）
+    - timeLimit: ns
+    - memoryLimit: Byte（与原接口一致；按你原来逻辑乘 10，用作运行时 RLIMIT_AS）
+    - forbidden: 逗号分割的函数名列表（如 "system,exec,eval,open"）
+    返回字段与 /run-hello 相同。
+    """
+    data = request.get_json() or {}
+    try:
+        sid = sanitize_sid(data.get("sid", ""))
+        user_input = data.get("input", "")
+        code_content = data.get("code", "")
+        tle = data.get("timeLimit")  # ns
+        mle = (data.get("memoryLimit") or 0) * 10  # 与其它语言保持一致
+        forbidden_funcs = data.get("forbidden", "")
+
+        # 禁用函数检查（正则兼容 Python）
+        forbid_msg = check_forbidden(code_content, forbidden_funcs)
+        if forbid_msg:
+            return jsonify({
+                "status": "Forbidden",
+                "exitStatus": 11,
+                "files": {"stdout": forbid_msg, "stderr": forbid_msg},
+                "time": 0,
+                "memory": 0,
+            }), 200
+
+        # 建目录 & 写文件
+        ensure_dir(sid)
+        input_filename = f"{sid}/input.txt"
+        output_filename = f"{sid}/output.txt"
+        code_filename = f"{sid}/main.py"
+
+        with open(input_filename, "w", encoding="utf-8") as f:
+            f.write(user_input)
+        with open(code_filename, "w", encoding="utf-8") as f:
+            f.write(code_content)
+
+        # ===== 运行 =====
+        timeLim_sec = (tle or 0) * 1.2 / 1e9
+
+        start_time = time.perf_counter_ns()
+        start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+        # 使用 -I 隔离环境（忽略用户 site），-u 无缓冲 IO，-B 禁止 .pyc 生成可选
+        # 同时设置 PYTHONIOENCODING，保证中文一致性
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+
+        run_cmd = ["timeout", f"{timeLim_sec}s", "python3", "-I", "-u", "main.py"]
+        run_res = subprocess.run(
+            run_cmd,
+            cwd=sid,
+            capture_output=True,
+            text=True,
+            input=user_input,
+            preexec_fn=set_run_limits(timeLim_sec, mle or 0),
+            env=env
+        )
+
+        end_time = time.perf_counter_ns()
+        end_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+        exec_time = end_time - start_time  # ns
+        mem_usage_byte = (end_mem - start_mem) * 1024  # Byte
+
+        outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+
+        status = "Accepted"
+        exval = 0
+        stderr = run_res.stderr or ""
+        if len(stderr) > 300:
+            stderr = stderr[:300] + "..."
+
+        # 判定优先级与其它语言一致
+        if exec_time > (tle or 0):
+            status = "Time Limit Exceeded"
+            exval = 9
+        elif mem_usage_byte > (mle or 0):
+            status = "Memory Limit Exceeded"
+            exval = 10
+        elif run_res.returncode != 0:
+            status = "Runtime Error"
+            exval = run_res.returncode
+
+        return jsonify({
+            "status": status,
+            "exitStatus": exval,
+            "files": {"stdout": outp, "stderr": stderr},
+            "time": exec_time,
+            "memory": mem_usage_byte,
+        }), 200
+
+    except Exception as e:
+        return jsonify({"message": f"Failed to run Python: {str(e)}"}), 500
+
 # ========== 新增：C 语言评测接口 ==========
 @app.route("/run-c", methods=["POST"])
 def run_c():
@@ -192,7 +295,7 @@ def run_c():
         user_input = data.get("input", "")
         code_content = data.get("code", "")
         tle = data.get("timeLimit")  # ns
-        mle = data.get("memoryLimit") * 10  # 与 /run-hello 一致
+        mle = (data.get("memoryLimit") or 0) * 10  # 与 /run-hello 一致
         forbidden_funcs = data.get("forbidden", "")
 
         # 禁用函数检查（对 C 同样生效）
@@ -219,10 +322,7 @@ def run_c():
             f.write(code_content)
 
         # ===== 编译 =====
-        # 编译给一个较短的 timeout（例如 10s）
         compile_timeout_sec = 10
-        # -O2 优化，-pipe 加快 I/O，-static 通常不建议强制；视环境可加 -lm
-        # 若用户需要数学库，建议始终链接 -lm（无害）
         compile_cmd = ["timeout", f"{compile_timeout_sec}s",
                        "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11",
                        "main.c", "-o", "a.out"]
@@ -316,7 +416,7 @@ def run_cpp():
         user_input = data.get("input", "")
         code_content = data.get("code", "")
         tle = data.get("timeLimit")  # ns
-        mle = data.get("memoryLimit") * 10  # 与 /run-hello 一致
+        mle = (data.get("memoryLimit") or 0) * 10  # 与 /run-hello 一致
         forbidden_funcs = data.get("forbidden", "")
 
         # 禁用函数检查（对 C 同样生效）
@@ -343,10 +443,7 @@ def run_cpp():
             f.write(code_content)
 
         # ===== 编译 =====
-        # 编译给一个较短的 timeout（例如 10s）
         compile_timeout_sec = 10
-        # -O2 优化，-pipe 加快 I/O，-static 通常不建议强制；视环境可加 -lm
-        # 若用户需要数学库，建议始终链接 -lm（无害）
         compile_cmd = ["timeout", f"{compile_timeout_sec}s",
                        "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20",
                        "main.cpp", "-o", "a.out"]

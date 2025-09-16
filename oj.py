@@ -681,6 +681,56 @@ def change_password():
 
     return redirect(url_for('problem_list', success="密码修改成功"))
 
+def get_user_classes(user_id):
+    """
+    返回该用户加入的所有班级（含主/额外），按 is_primary DESC 排序。
+    兼容：若映射表为空，退回 users.class。
+    返回形如：[{'class_en':'Cxxx','class_cn':'...','is_primary':1}, ...]
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+              SELECT m.class_en, ct.class_cn, m.is_primary
+              FROM user_class_map m
+              LEFT JOIN class_table ct ON m.class_en = ct.class_en
+              WHERE m.user_id=%s
+              ORDER BY m.is_primary DESC, m.class_en ASC
+            """
+            cursor.execute(sql, (user_id,))
+            rows = cursor.fetchall()
+            if rows and len(rows) > 0:
+                return rows
+
+            # 兼容旧系统：没有映射记录，就用 users.class
+            cursor.execute("SELECT class FROM users WHERE id=%s", (user_id,))
+            u = cursor.fetchone()
+            class_en = u.get('class')
+            if not class_en:
+                return []
+            cursor.execute("SELECT class_en, class_cn FROM class_table WHERE class_en=%s", (class_en,))
+            c = cursor.fetchone()
+            if not c:
+                return [{'class_en': class_en, 'class_cn': class_en, 'is_primary': 1}]
+            return [{'class_en': c['class_en'], 'class_cn': c['class_cn'], 'is_primary': 1}]
+    finally:
+        conn.close()
+
+def get_max_score_for_class(userid, problemid, class_en):
+    """
+    从 max_score 表中按 (userid, class_en) 获取 P{problemid}。
+    注意：直接返回 DB 中的值，可能是 None（表示未尝试），也可能是 0（尝试过但 0 分）。
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = f"SELECT P{problemid} AS p FROM max_score WHERE userid=%s AND class_en=%s"
+            cursor.execute(sql, (userid, class_en))
+            row = cursor.fetchone()
+            return (row['p'] if row else None)
+    finally:
+        conn.close()
+
 def get_ac_status(userid, problemid):
     conn = get_db_connection()
     try:
@@ -717,20 +767,91 @@ def get_max_score(userid, problemid):
         conn.close()
 
 def get_homeworks(user):
+    """
+    汇总用户所有班级的作业，并带上班级标签与完成/最高分信息。
+    返回 list，每项包含: class_en, class_cn, problem_id, ddl, complete_cnt, problem_title,
+                        is_completed, max_score, total_score
+    """
+    classes = get_user_classes(user['id'])
+    all_hw = []
+    for cls in classes:
+        class_en, class_cn = cls['class_en'], cls.get('class_cn') or cls['class_en']
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT * FROM {class_en} ORDER BY id ASC")
+                hws = cursor.fetchall()
+                for hw in hws:
+                    # 是否完成：延续原来的 ac_record（不按班区分）
+                    status = get_ac_status(user['id'], hw['problem_id'])
+                    is_completed = status.get(f"ACP{hw['problem_id']}") if status else 0
+
+                    # 最高分：从 max_score 里取该 (user, class_en) 的行
+                    conn2 = get_db_connection()
+                    try:
+                        with conn2.cursor() as c2:
+                            c2.execute(
+                                "SELECT * FROM max_score WHERE userid=%s AND class_en=%s",
+                                (user['id'], class_en)
+                            )
+                            ms_row = c2.fetchone() or {}
+                    finally:
+                        conn2.close()
+                    max_score = (ms_row.get(f"P{hw['problem_id']}") or 0)
+
+                    problem = get_problem_title(hw['problem_id'])
+                    total_score = problem['max_score'] if problem else 0
+
+                    item = dict(hw)
+                    item['class_en'] = class_en
+                    item['class_cn'] = class_cn
+                    item['is_completed'] = is_completed
+                    item['max_score'] = max_score
+                    item['total_score'] = total_score
+                    all_hw.append(item)
+        finally:
+            conn.close()
+
+    # 可选：按 ddl 或班级再排序
+    all_hw.sort(key=lambda x: (x['ddl'] or datetime.max, x['class_en']))
+    return all_hw
+
+def get_homeworks_for_class(user_id, class_en):
+    """
+    读取该 class_en 班级布置的所有作业，返回列表。
+    每个元素包含：
+      - problem_id, problem_title, ddl, complete_cnt（来自班级表）
+      - is_completed（ac_record.ACP{pid} == 1）
+      - max_score（max_score.P{pid}，可能为 None 或 0 或 >0）
+      - total_score（problems.max_score）
+    """
+    # 先验证 class 合法，避免 SQL 注入
+    cinfo = get_class_by_en(class_en)
+    if not cinfo:
+        return []
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = f"SELECT * FROM {user['class']}"
-            cursor.execute(sql)
+            # 班级表里的作业列表
+            cursor.execute(f"SELECT id, problem_id, ddl, complete_cnt, problem_title FROM {class_en} ORDER BY id ASC")
             hws = cursor.fetchall()
-            for hw in hws:
-                status = get_ac_status(user['id'], hw['problem_id'])
-                hw['is_completed'] = status[f"ACP{hw['problem_id']}"]
-                max_score = get_max_score(user['id'], hw['problem_id'])
-                hw['max_score'] = max_score[f"P{hw['problem_id']}"]
-                problem = get_problem_title(hw['problem_id'])
-                hw['total_score'] = problem['max_score']
-            return hws
+
+        # 逐条补充状态与成绩
+        for hw in hws:
+            pid = hw['problem_id']
+            # 是否完成（AC）
+            ac = get_ac_status(user_id, pid)
+            hw['is_completed'] = (ac and ac.get(f"ACP{pid}") == 1)
+
+            # 最高分（保留 None）
+            ms = get_max_score_for_class(user_id, pid, class_en)
+            hw['max_score'] = ms  # None 表示未尝试；0 表示尝试了 0 分
+
+            # 题目满分
+            p = get_problem_title(pid)
+            hw['total_score'] = (p['max_score'] if p else 0)
+        return hws
     finally:
         conn.close()
 
@@ -828,30 +949,11 @@ def problem_list():
     if not user:
         return redirect(url_for('login'))
 
-    # 获取今日提交和通过数
+    # 今日数据
     total_submissions, total_accepted = get_today_submission_counts()
-
-    # 获取最近十天的提交数
     last_10_days, daily_counts = get_last_10_days_submission_counts()
 
-    scores = get_max_score_all(user['id'])
-    scorelist = [ (scores["P8"]+scores["P9"]+scores["P10"])/9.0*10.0,
-                  scores["P11"]/6.0*10.0,
-                  scores["P12"]+scores["P13"],
-                  scores["P14"]+scores["P15"],
-                  numpy.sqrt((scores["P16"]+4)*10.0) * numpy.sign(scores["P16"]),
-                  scores["P17"]/6.0*10.0,
-                  scores["P18"]*2.0+scores["P19"],
-                  scores["P20"]*2,
-                  scores["P21"]*2,
-                  scores["P22"]*5 ]
-    scorelist = numpy.sort(scorelist)
-    total_grade = int(numpy.ceil(numpy.sum(scorelist[3:10]) / 70.0 * 100.0))
-    if total_grade > 100:
-        total_grade = 100
-    # total_grade = ",".join(str(x) for x in scorelist)
-
-    # 查询老师上传的平时/期末成绩
+    # 期末成绩（维持原逻辑，可选）
     regular_score = None
     final_score_val = None
     try:
@@ -872,7 +974,10 @@ def problem_list():
     finally:
         if 'conn' in locals():
             conn.close()
+    
+    total_grade = 100
 
+    # 管理员：保持原样
     if user['is_admin'] == 1:
         problems = get_all_problems()
         return render_template('problem_list.html',
@@ -880,24 +985,69 @@ def problem_list():
                                user=user,
                                total_submissions=total_submissions,
                                total_accepted=total_accepted,
+                               total_grade=total_grade,
                                last_10_days=last_10_days,
                                daily_counts=daily_counts,
-                               total_grade=total_grade,
+                               # 下两项保留，模板里自由使用
                                regular_score=regular_score,
                                final_score=final_score_val)
-    else:
-        homeworks = get_homeworks(user)
+
+    # 普通用户：检查班级数量
+    classes = get_user_classes(user['id'])  # [{class_en, class_cn, is_primary}, ...]
+    now_ts = datetime.now()
+
+    if not classes:
+        # 兜底：没有班级，展示空
         return render_template('problem_list.html',
-                               homeworks=homeworks,
-                               now=datetime.now(),
+                               homeworks=[],
                                user=user,
+                               now=now_ts,
                                total_submissions=total_submissions,
                                total_accepted=total_accepted,
+                               total_grade=total_grade,
                                last_10_days=last_10_days,
                                daily_counts=daily_counts,
-                               total_grade=total_grade,
                                regular_score=regular_score,
                                final_score=final_score_val)
+
+    if len(classes) == 1:
+        # 单班级：沿用旧字段 homeworks（模板完全不改）
+        cls = classes[0]['class_en']
+        homeworks = get_homeworks_for_class(user['id'], cls)
+        return render_template('problem_list.html',
+                               homeworks=homeworks,
+                               user=user,
+                               now=now_ts,
+                               total_submissions=total_submissions,
+                               total_accepted=total_accepted,
+                               total_grade=total_grade,
+                               last_10_days=last_10_days,
+                               daily_counts=daily_counts,
+                               regular_score=regular_score,
+                               final_score=final_score_val)
+
+    # 多班级：按班级分组传给模板
+    homeworks_by_class = []
+    for c in classes:
+        items = get_homeworks_for_class(user['id'], c['class_en'])
+        homeworks_by_class.append({
+            "class_en": c['class_en'],
+            "class_cn": c['class_cn'],
+            "is_primary": c['is_primary'],
+            "hw_list": items
+        })
+
+    return render_template('problem_list.html',
+                           homeworks_by_class=homeworks_by_class,
+                           user=user,
+                           now=now_ts,
+                           total_submissions=total_submissions,
+                           total_accepted=total_accepted,
+                           total_grade=total_grade,
+                           last_10_days=last_10_days,
+                           daily_counts=daily_counts,
+                           regular_score=regular_score,
+                           final_score=final_score_val)
 
 @app.route('/problem/<int:problem_id>', methods=['GET'])
 def problem_detail(problem_id):
@@ -1391,6 +1541,22 @@ def compare_float_strings(str1, str2, tolerance=1e-5):
             return False
     return True
 
+def bump_complete_cnt_for_user_classes(user, problem_id):
+    classes = get_user_classes(user['id'])
+    conn = get_db_connection()
+    try:
+        for cls in classes:
+            class_en = cls['class_en']
+            with conn.cursor() as cursor:
+                # 仅当该班布置了这道题才 +1
+                cursor.execute(f"SELECT id FROM {class_en} WHERE problem_id=%s", (problem_id,))
+                row = cursor.fetchone()
+                if row:
+                    cursor.execute(f"UPDATE {class_en} SET complete_cnt = complete_cnt + 1 WHERE problem_id=%s", (problem_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
 
 @celery.task
 def evaluate_submission(submission_id):
@@ -1478,6 +1644,20 @@ def evaluate_submission(submission_id):
                           "/*user_code_end_fuck_hahaha_fuck*/\n")
         judge_url = 'http://localhost:5050/run-cpp'
         file_ext = '.cpp'
+    
+    elif lang == 'python' or lang == 'py':
+        # Python：# 行注释
+        if test_code and "%%user_code_here" in test_code:
+            wrapped_user_code = ("#here_is_user_code_fuck_fuck_fuck_hahaha\n"
+                                 + code + "\n"
+                                 "#user_code_end_fuck_hahaha_fuck\n")
+            final_code = test_code.replace("%%user_code_here", wrapped_user_code)
+        else:
+            final_code = ("#here_is_user_code_fuck_fuck_fuck_hahaha\n"
+                          + code + "\n"
+                          "#user_code_end_fuck_hahaha_fuck\n")
+        judge_url = 'http://localhost:5050/run-py'
+        file_ext = '.py'
 
     else:
         # 未知语言：直接报错
@@ -1590,10 +1770,7 @@ def evaluate_submission(submission_id):
                     cursor.execute(sql)
                 conn.commit()
                 if user['is_admin'] != 1:
-                    with conn.cursor() as cursor:
-                        sql = f"UPDATE {user['class']} SET complete_cnt=complete_cnt+1 WHERE problem_id={problem_id}"
-                        cursor.execute(sql)
-                    conn.commit()
+                    bump_complete_cnt_for_user_classes(user, problem_id)
         finally:
             conn.close()
 
@@ -1653,65 +1830,123 @@ def get_class_by_cn(class_cn):
         conn.close()
 
 
-# 修改 /admin/users 路由
 @app.route('/admin/users')
 def user_management():
     user = current_user()
     if not is_admin(user):
         return "<h3>无权限</h3>"
 
-    # 获取查询参数
+    # 查询参数
     page = request.args.get('page', 1, type=int)
     search_username = request.args.get('username', '').strip()
     search_class = request.args.get('class', '').strip()
     per_page = 50
 
-    # 构建查询条件
-    conditions = []
-    params = []
+    # ---------- 组装过滤条件（对 users 表） ----------
+    # 说明：
+    # - 用户名：users.username LIKE %xxx%
+    # - 班级：主班级 = search_class 或 额外班级映射存在（user_id in (select ... from user_class_map where class_en=...))
+    user_where_clauses = []
+    user_where_params = []
+
     if search_username:
-        conditions.append("username LIKE %s")
-        params.append(f"%{search_username}%")
+        user_where_clauses.append("u.username LIKE %s")
+        user_where_params.append(f"%{search_username}%")
+
     if search_class:
-        conditions.append("class = %s")
-        params.append(search_class)
+        user_where_clauses.append(
+            "(u.class = %s OR u.id IN (SELECT user_id FROM user_class_map WHERE class_en = %s))"
+        )
+        user_where_params.extend([search_class, search_class])
 
-    # 基础查询语句
-    base_query = "FROM users"
-    if conditions:
-        base_query += " WHERE " + " AND ".join(conditions)
+    user_where_sql = ""
+    if user_where_clauses:
+        user_where_sql = "WHERE " + " AND ".join(user_where_clauses)
 
+    # ---------- 统计总数（基于过滤后的 users） ----------
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 获取总数
-            count_sql = f"SELECT COUNT(*) AS total {base_query}"
-            cursor.execute(count_sql, params)
+            count_sql = f"""
+                SELECT COUNT(*) AS total
+                FROM (
+                    SELECT u.id
+                    FROM users u
+                    {user_where_sql}
+                    ORDER BY u.id ASC
+                ) t
+            """
+            cursor.execute(count_sql, user_where_params)
             total = cursor.fetchone()['total']
             total_pages = (total + per_page - 1) // per_page
 
-            # 获取分页数据
+            # ---------- 拉取当前页用户 ----------
             data_sql = f"""
-                SELECT id, username, email, class, class_cn
-                {base_query}
-                ORDER BY id ASC
+                SELECT u.id, u.username, u.email, u.class, u.class_cn
+                FROM users u
+                {user_where_sql}
+                ORDER BY u.id ASC
                 LIMIT %s OFFSET %s
             """
-            params.extend([per_page, (page-1)*per_page])
+            params = user_where_params + [per_page, (page - 1) * per_page]
             cursor.execute(data_sql, params)
             users = cursor.fetchall()
+
+        # ---------- 批量拉取这些用户的额外班级（映射表） ----------
+        if users:
+            uid_list = [u['id'] for u in users]
+            placeholders = ','.join(['%s'] * len(uid_list))
+
+            with conn.cursor() as cursor:
+                # 关联 class_table 拿中文名
+                map_sql = f"""
+                    SELECT m.user_id, m.class_en, ct.class_cn, m.is_primary
+                    FROM user_class_map m
+                    JOIN class_table ct ON ct.class_en = m.class_en
+                    WHERE m.user_id IN ({placeholders})
+                """
+                cursor.execute(map_sql, uid_list)
+                mapping_rows = cursor.fetchall()
+
+            # 组装 user_id -> [extra_classes...]
+            extra_map = {uid: [] for uid in uid_list}
+            for row in mapping_rows:
+                # 仅展示“额外”班级；主班级仍以 users.class 显示
+                # 如果你希望也显示 is_primary=1 的映射（若你把主班也同步进了映射表），这里可跳过主班
+                if 'class' in users[0]:  # 安全判空
+                    # 找到该用户的主班（来自 users.class）
+                    # 我们只要把与主班相同的 class_en 过滤掉即可
+                    pass
+                extra_map[row['user_id']].append({
+                    "class_en": row['class_en'],
+                    "class_cn": row['class_cn'],
+                    "is_primary": row.get('is_primary', 0)
+                })
+
+            # 将 extra_classes 挂到每个用户
+            user_by_id = {u['id']: u for u in users}
+            for u in users:
+                # 过滤掉与主班同名的映射，避免重复显示
+                u_extra = []
+                for cls in extra_map.get(u['id'], []):
+                    if cls['class_en'] != u['class']:
+                        u_extra.append(cls)
+                u['extra_classes'] = u_extra
+        else:
+            # 没有用户时，保持结构一致
+            users = []
     finally:
         conn.close()
 
     classes = get_all_classes()
     return render_template('admin_user_management.html',
-                         users=users,
-                         classes=classes,
-                         user=user,
-                         current_page=page,
-                         total_pages=total_pages,
-                         search_username=search_username,
-                         search_class=search_class)
+                           users=users,
+                           classes=classes,
+                           user=user,
+                           current_page=page,
+                           total_pages=total_pages,
+                           search_username=search_username,
+                           search_class=search_class)
 
 @app.route('/admin/edit_user_ajax', methods=['POST'])
 def edit_user_ajax():
@@ -1719,42 +1954,75 @@ def edit_user_ajax():
     if not is_admin(admin):
         return jsonify({'success': False, 'message': '无权限'}), 403
 
-    user_id = request.form.get('user_id')
-    new_class = get_class_by_en(request.form.get('class'))
-    user = get_user_by_id(user_id)
-
-    if not user_id or not new_class:
+    # 读取参数
+    user_id = request.form.get('user_id', type=int)
+    new_class_en = (request.form.get('class') or '').strip()
+    if not user_id or not new_class_en:
         return jsonify({'success': False, 'message': '缺少必要参数'}), 400
 
-    if new_class['class_en'] == "Cadmin":
-        give_admin = 1
-    else:
-        give_admin = 0
+    # 查用户 & 目标班级
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': '用户不存在'}), 404
 
-    # 更新用户班级
+    new_class = get_class_by_en(new_class_en)
+    if not new_class:
+        return jsonify({'success': False, 'message': '目标班级不存在'}), 400
+
+    old_class_en = user.get('class') or None
+    # is_admin 规则：主班为 Cadmin 则给管理员，否则普通
+    give_admin = 1 if new_class['class_en'] == 'Cadmin' else 0
+
+    # 已经是该主班，不做无谓更新
+    if old_class_en == new_class['class_en'] and user.get('class_cn') == new_class['class_cn'] and user.get('is_admin') == give_admin:
+        return jsonify({'success': True, 'message': '主班级未变化', 'user_id': user_id, 'new_class': new_class})
+
     conn = get_db_connection()
     try:
-        if user['class']:
-            with conn.cursor() as cursor:
-                sql = "UPDATE class_table SET class_cnt=class_cnt-1 WHERE class_en=%s"
-                cursor.execute(sql, (user['class'],))
-            conn.commit()
         with conn.cursor() as cursor:
-            sql = "UPDATE users SET class=%s, class_cn=%s, is_admin=%s WHERE id=%s"
-            cursor.execute(sql, (new_class['class_en'], new_class['class_cn'], give_admin, user_id))
+            # 1) 先更新 users（主班、中文名、是否管理员）
+            cursor.execute(
+                "UPDATE users SET class=%s, class_cn=%s, is_admin=%s WHERE id=%s",
+                (new_class['class_en'], new_class['class_cn'], give_admin, user_id)
+            )
+
+            # 2) class_table 主班人数计数（兼容旧系统）
+            if old_class_en:
+                cursor.execute("UPDATE class_table SET class_cnt=class_cnt-1 WHERE class_en=%s", (old_class_en,))
+            cursor.execute("UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s", (new_class['class_en'],))
+
+            # 3) max_score.class_en 跟随主班
+            cursor.execute("UPDATE max_score SET class_en=%s WHERE userid=%s", (new_class['class_en'], user_id))
+
+            # 4) 兼容新结构：维护 user_class_map 的 is_primary
+            #    - 将该用户所有映射 is_primary 置 0
+            #    - 将新主班 upsert 为 is_primary=1（如果已有记录，直接置 1；如果此前做过“额外班”，相当于提升为主班）
+            #    - 这里不移除其它额外班映射（保持原有成员关系）
+            try:
+                # 将该用户所有映射置 0
+                cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user_id,))
+                # 新主班置 1（upsert）
+                cursor.execute(
+                    """
+                    INSERT INTO user_class_map (user_id, class_en, is_primary)
+                    VALUES (%s, %s, 1)
+                    ON DUPLICATE KEY UPDATE is_primary=VALUES(is_primary)
+                    """,
+                    (user_id, new_class['class_en'])
+                )
+            except Exception:
+                # 如果没有这张表或结构不同，不阻塞主链路（兼容旧库）
+                pass
+
         conn.commit()
-        with conn.cursor() as cursor:
-            sql = "UPDATE max_score SET class_en=%s WHERE userid=%s"
-            cursor.execute(sql, (new_class['class_en'], user_id))
-        conn.commit()
-        with conn.cursor() as cursor:
-            sql = "UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s"
-            cursor.execute(sql, (new_class['class_en'],))
-        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
     finally:
         conn.close()
 
-    flash(f"已将 userID={user_id} 的班级修改为 {new_class['class_cn']}", 'success')
+    flash(f"已将 userID={user_id} 的主班级修改为 {new_class['class_cn']}", 'success')
     return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_class': new_class})
 
 @app.route('/admin/edit_username_ajax', methods=['POST'])
@@ -1982,7 +2250,7 @@ def admin_delete_homework():
 
 @app.route('/export_scores')
 def export_scores():
-    """导出指定班级的成绩（GBK编码）"""
+    """导出指定班级的成绩（GBK编码），支持多班级映射，向后兼容旧 users.class。"""
     user = current_user()
     if not is_admin(user):
         return redirect(url_for('login'))
@@ -1991,99 +2259,111 @@ def export_scores():
     if not selected_class:
         return "班级参数错误", 400
     
-    # 验证班级有效性
+    # 验证班级有效性（避免后面动态表名注入）
     class_info = get_class_by_en(selected_class)
     if not class_info:
         return "班级不存在", 404
     
-    # 获取该班级所有布置的题目
-    homework_problems = []
+    # 1) 获取该班布置的题目（从 Cxxx 班级作业表）
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT problem_id FROM {selected_class}")
-            homework_problems = cursor.fetchall()
+            cursor.execute(f"SELECT problem_id FROM {selected_class} ORDER BY id ASC")
+            rows = cursor.fetchall()
+            problem_ids = [r['problem_id'] for r in rows]
     finally:
         conn.close()
     
-    if not homework_problems:
+    if not problem_ids:
         return "该班级没有布置任何作业", 404
     
-    # 获取题目标题映射（处理中文编码问题）
-    problem_ids = [p['problem_id'] for p in homework_problems]
+    # 2) 题目标题映射（GBK 友好）
     problem_titles = {}
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id, title FROM problems WHERE id IN (%s)" % ','.join(['%s']*len(problem_ids))
-            cursor.execute(sql, problem_ids)
+            fmt = ','.join(['%s'] * len(problem_ids))
+            cursor.execute(f"SELECT id, title FROM problems WHERE id IN ({fmt})", problem_ids)
             for p in cursor.fetchall():
-                # 处理特殊字符，替换无法编码的字符
+                # 处理中文与特殊字符，避免 Excel 打开乱码/不可编码
                 title = p['title'].encode('gbk', errors='replace').decode('gbk')
                 problem_titles[p['id']] = title
     finally:
         conn.close()
     
-    # 获取班级所有学生
-    students = []
+    # 3) 获取该班学生：优先从 user_class_map；若为空则回退 users.class
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT id, username FROM users WHERE class = %s", (selected_class,))
+            cursor.execute("""
+                SELECT u.id, u.username
+                FROM user_class_map m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.class_en = %s
+                ORDER BY u.id ASC
+            """, (selected_class,))
             students = cursor.fetchall()
+            
+            if not students:
+                # 向后兼容：旧系统只在 users.class 里
+                cursor.execute("SELECT id, username FROM users WHERE class = %s ORDER BY id ASC", (selected_class,))
+                students = cursor.fetchall()
     finally:
         conn.close()
     
-    # 收集成绩数据
-    from io import BytesIO
-    import csv
-    import codecs
+    if not students:
+        return "该班级没有学生", 404
     
+    # 4) 批量拉取 max_score，避免 N+1
+    user_ids = [s['id'] for s in students]
+    placeholders = ','.join(['%s'] * len(user_ids))
+    max_score_map = {}
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT * FROM max_score WHERE class_en = %s AND userid IN ({placeholders})",
+                [selected_class] + user_ids
+            )
+            for row in cursor.fetchall():
+                max_score_map[row['userid']] = row
+    finally:
+        conn.close()
+    
+    # 5) 生成 GBK CSV
+    from io import BytesIO
+    import csv, codecs
     output = BytesIO()
-    # 使用GBK编码写入器
     writer = csv.writer(codecs.getwriter('gbk')(output))
     
-    # 表头处理
-    headers = ['用户名'] + list(problem_titles.values()) + ['总分']
+    headers = ['用户名'] + [problem_titles[pid] for pid in problem_ids] + ['总分']
     writer.writerow([h.encode('gbk', 'replace').decode('gbk') for h in headers])
 
-    for student in students:
-        conn = get_db_connection()
-        max_score = None
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT * FROM max_score WHERE userid = %s AND class_en = %s",
-                    (student['id'], selected_class)
-                )
-                max_score = cursor.fetchone()
-        finally:
-            conn.close()
-        
-        row = [student['username']]
+    for stu in students:
+        uid = stu['id']
+        row = [stu['username']]
         total = 0
         
+        ms = max_score_map.get(uid, {})
         for pid in problem_ids:
-            score = max_score.get(f'P{pid}', 0) if max_score else 0
+            score = ms.get(f'P{pid}', 0) if ms else 0
             score = score or 0
             total += score
             row.append(str(score))
-        
         row.append(str(total))
-        # 处理每行数据的编码
-        encoded_row = [cell.encode('gbk', 'replace').decode('gbk') for cell in row]
-        writer.writerow(encoded_row)
+        
+        # 逐个单元格转 GBK 安全字符串
+        writer.writerow([cell.encode('gbk', 'replace').decode('gbk') for cell in row])
     
     from flask import make_response
-    response = make_response(output.getvalue())
-    response.headers['Content-Type'] = 'text/csv; charset=GBK'
-    response.headers['Content-Disposition'] = f'attachment; filename="{selected_class}_scores.csv"'
-    
-    return response
+    resp = make_response(output.getvalue())
+    resp.headers['Content-Type'] = 'text/csv; charset=GBK'
+    resp.headers['Content-Disposition'] = f'attachment; filename="{selected_class}_scores.csv"'
+    return resp
 
 @app.route('/export_student_codes')
 def export_student_codes():
-    """导出指定班级的学生代码（按最高分最新提交）"""
+    """导出指定班级的学生代码（按最高分、最新提交），支持多班级映射，兼容旧 users.class。"""
     user = current_user()
     if not is_admin(user):
         return redirect(url_for('login'))
@@ -2092,72 +2372,149 @@ def export_student_codes():
     if not selected_class:
         return "班级参数错误", 400
     
-    # 验证班级有效性
+    # 1) 校验班级
     class_info = get_class_by_en(selected_class)
     if not class_info:
         return "班级不存在", 404
     
-    # 获取该班级所有布置的题目
-    homework_problems = []
+    # 2) 获取该班布置的题目（从班级作业表 Cxxx 取）
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT problem_id FROM {selected_class}")
+            cursor.execute(f"SELECT problem_id FROM {selected_class} ORDER BY id ASC")
             homework_problems = cursor.fetchall()
     finally:
         conn.close()
-    
     if not homework_problems:
         return "该班级没有布置任何作业", 404
     
-    # 创建内存中的ZIP文件
+    problem_ids = [p['problem_id'] for p in homework_problems]
+
+    # 3) 拉取题目标题与语言（一次性）
+    problems_map = {}  # pid -> {'title':..., 'lang':...}
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            fmt = ','.join(['%s'] * len(problem_ids))
+            cursor.execute(f"SELECT id, title, lang FROM problems WHERE id IN ({fmt})", problem_ids)
+            for row in cursor.fetchall():
+                problems_map[row['id']] = {'title': row['title'], 'lang': (row.get('lang') or 'matlab').lower()}
+    finally:
+        conn.close()
+
+    # 4) 获取该班学生：优先从 user_class_map；若为空回退 users.class
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT u.id, u.username
+                FROM user_class_map m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.class_en = %s
+                ORDER BY u.id ASC
+            """, (selected_class,))
+            students = cursor.fetchall()
+            if not students:
+                cursor.execute("SELECT id, username FROM users WHERE class = %s ORDER BY id ASC", (selected_class,))
+                students = cursor.fetchall()
+    finally:
+        conn.close()
+    if not students:
+        return "该班级没有学生", 404
+
+    # 5) 生成内存 ZIP
     from io import BytesIO
+    import zipfile, re
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        # 遍历每个作业题目
-        for hw in homework_problems:
-            problem_id = hw['problem_id']
-            
-            # 获取题目标题
-            problem = get_problem_title(problem_id)
-            if not problem:
-                continue
-                
-            # 安全处理题目标题（替换非法字符）
-            folder_name = re.sub(r'[\\/*?:"<>|]', '_', problem['title'])
-            
-            # 获取该题所有学生的最佳提交
+        # 为了只导出班级成员的最佳代码，我们在 SQL 里先限定用户集合
+        # 构造 username 列表（用 username 关联 submissions）
+        usernames = [s['username'] for s in students]
+        # 如果用户名很多，可以分块；这里直接一次性 IN(...)（MySQL 默认可承受千级）
+        if not usernames:
+            # 理论到不了这儿
+            pass
+        
+        # 按每个题目导出
+        for pid in problem_ids:
+            pmeta = problems_map.get(pid, {})
+            ptitle = pmeta.get('title') or f'Problem_{pid}'
+            plang  = (pmeta.get('lang') or 'matlab').lower()
+
+            # 题目文件夹名：替换非法字符
+            folder_name = re.sub(r'[\\/*?:"<>|]', '_', ptitle)
+
+            # 选择代码后缀
+            if plang == 'matlab':
+                ext = '.m'
+            elif plang == 'c':
+                ext = '.c'
+            elif plang == 'cpp':
+                ext = '.cpp'
+            elif plang in ('python', 'py'):
+                ext = '.py'
+            else:
+                ext = '.txt'
+
+            # —— 拉取该题该班学生的最佳提交（分数优先，其次时间新）——
+            # 用 CTE 过滤用户集合：先把 usernames 填入临时表式的 CTE，再 Join submissions
+            # 为了减少 IN 列表的长度，我们用 users 表做 join，再用 class 映射筛人（双路径：映射表优先、旧表回退）
             conn = get_db_connection()
             try:
                 with conn.cursor() as cursor:
+                    # 说明：
+                    # class_users: 班级中的用户（优先映射表；若同一用户已在映射表中，则不再用旧表行）
+                    # ranked_submissions: 对每位用户在此题的提交做 ROW_NUMBER 排名
                     sql = """
-                        WITH ranked_submissions AS (
-                            SELECT s.id, s.username, s.code, s.score, s.created_at, u.id as userid,
-                                ROW_NUMBER() OVER (
-                                    PARTITION BY u.id 
-                                    ORDER BY s.score DESC, s.created_at DESC
-                                ) as rn
+                        WITH class_users AS (
+                            SELECT u.id, u.username
+                            FROM user_class_map m
+                            JOIN users u ON u.id = m.user_id
+                            WHERE m.class_en = %s
+                            UNION
+                            SELECT u2.id, u2.username
+                            FROM users u2
+                            WHERE u2.class = %s
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM user_class_map m2
+                                  WHERE m2.user_id = u2.id AND m2.class_en = %s
+                              )
+                        ),
+                        ranked_submissions AS (
+                            SELECT s.id, s.username, s.code, s.score, s.created_at,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY cu.id
+                                       ORDER BY s.score DESC, s.created_at DESC
+                                   ) AS rn
                             FROM submissions s
-                            INNER JOIN users u ON s.username = u.username
-                            WHERE u.class = %s AND s.problem_id = %s
+                            JOIN class_users cu ON cu.username = s.username
+                            WHERE s.problem_id = %s
                         )
-                        SELECT * FROM ranked_submissions WHERE rn = 1
+                        SELECT username, code
+                        FROM ranked_submissions
+                        WHERE rn = 1
+                        ORDER BY username ASC
                     """
-                    cursor.execute(sql, (selected_class, problem_id))
-                    submissions = cursor.fetchall()
+                    cursor.execute(sql, (selected_class, selected_class, selected_class, pid))
+                    best_rows = cursor.fetchall()
             finally:
                 conn.close()
-            
-            # 将代码写入ZIP
-            for sub in submissions:
-                code = sub['code']
-                user_id = sub['username']
-                # 根据题目语言决定后缀
-                ext = '.m' if (problem.get('lang') or 'matlab').lower() == 'matlab' else '.cpp'
-                file_name = f"{folder_name}/{user_id}{ext}"
-                zip_file.writestr(file_name, code.encode('utf-8'))
-    
-    # 准备响应
+
+            # 写入 ZIP
+            for row in best_rows:
+                uname = row['username']
+                code  = row.get('code') or ""
+                # 安全处理用户名（避免奇怪字符成为路径）
+                safe_uname = re.sub(r'[\\/*?:"<>|]', '_', uname)
+                file_name = f"{folder_name}/{safe_uname}{ext}"
+                # 写入（UTF-8）
+                try:
+                    zip_file.writestr(file_name, code.encode('utf-8'))
+                except Exception:
+                    # 兜底：即便编码异常也写入原始 bytes（这里理论不会发生）
+                    zip_file.writestr(file_name, code)
+
+    # 6) 返回响应
     from flask import make_response
     zip_buffer.seek(0)
     response = make_response(zip_buffer.getvalue())
@@ -2554,7 +2911,7 @@ def generate_completion_stream(prompt, model="Qwen3"):
 你是一个小猫，你会说人话，你温柔可爱、学术水平高超，你需要帮小朋友分析他的代码有什么问题。
 你需要特别关注小朋友的测试点得分情况。如果有 Compile Error 或者 Error，则你只需要分析语法错误，不用关注问题本身。
 如果有 Time Limit Exceed，则应该分析复杂度和计算效率，而不是分析代码的正确性。
-如果有 Runtime Error，则应该分析可能的内存越界、堆栈溢出等问题。
+如果有 Runtime Error，则应该分析可能的内存越界、堆栈溢出等问题，另外非零返回也会被系统判断为 RE。
 如果有 Wrong Answer，则需要分析代码的正确性。
 """.strip()
 
@@ -2661,7 +3018,7 @@ def ask_ai():
 
     # 构造提示词
     prompt = f"""你是一个小猫，你会说人话，你温柔可爱、猫美心善、学术水平高超，你需要帮小朋友分析他的代码有什么问题。
-这是一道 matlab 编程题，下面是题目要求：
+这是一道编程题，下面是题目要求：
 
 {problem_content}
 
@@ -2682,9 +3039,11 @@ def ask_ai():
 如果评测结果由 Accepted 和 Time Limit Exceed 构成，则说明小朋友的代码正确性没有问题，
 此时你不必分析小朋友代码的正确性，而是仅仅从复杂度或者循环效率的角度来提示小朋友如何加速。
 
-如果有 Runtime Error，则应该分析可能的内存越界、堆栈溢出等问题。
+如果有 Runtime Error，则应该分析可能的内存越界、堆栈溢出等问题。另外非零返回也会被系统判断为 RE。
 
 如果评测结果里有 Wrong Answer，你应该指出小朋友代码里可能的问题，你需要把他错的那一行代码输出一下以便让他知道。
+
+如果你已经发现了明显错误，并且 100% 确认这一定是关键错误，就立刻停止思考，把错误告诉小朋友。你不需要找出所有的错误，只要找到关键即可。
 
 你不能直接给出完整的解答思路，只能告诉他改进思路。
 如果他原本的代码就毫无逻辑可言，请安慰他，让他回去好好思考一下。
@@ -2902,6 +3261,337 @@ def create_final_exam_scores_table():
         conn.commit()
     finally:
         conn.close()
+
+@app.route('/admin/add_user_to_class', methods=['POST'])
+def add_user_to_class():
+    admin = current_user()
+    if not is_admin(admin):
+        return jsonify(success=False, message='无权限'), 403
+
+    user_id = request.form.get('user_id', type=int)
+    class_en = (request.form.get('class_en') or '').strip()
+    if not (user_id and class_en):
+        return jsonify(success=False, message='参数错误'), 400
+
+    # 班级存在性校验
+    cls = get_class_by_en(class_en)
+    if not cls:
+        return jsonify(success=False, message='班级不存在'), 400
+
+    # 如果用户主班级就是该班，则无需添加到映射表
+    user = get_user_by_id(user_id)
+    if user and (user.get('class') == class_en):
+        return jsonify(success=True, added=False, reason='already_primary',
+                       message='该用户的主班级已经是此班，无需添加')
+
+    # 进行插入；利用唯一键判断是否真的新增
+    conn = get_db_connection()
+    added = False
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                INSERT INTO user_class_map (user_id, class_en, is_primary)
+                VALUES (%s, %s, 0)
+                ON DUPLICATE KEY UPDATE
+                  is_primary = VALUES(is_primary)
+            """
+            cursor.execute(sql, (user_id, class_en))
+            # MySQL 行为：
+            # - 新增：rowcount == 1
+            # - 命中唯一键且触发 UPDATE（虽然值没变）：rowcount == 2
+            # 我们只把 "rowcount == 1" 视为真正新增
+            added = (cursor.rowcount == 1)
+        if added:
+            conn.commit()
+            # 只有真正新增成员时再+1
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE class_table SET class_cnt = class_cnt + 1 WHERE class_en=%s", (class_en,))
+            conn.commit()
+        else:
+            conn.rollback()  # 没有新增，不需要变更
+    finally:
+        conn.close()
+
+    return jsonify(success=True, added=added,
+                   message=('已添加' if added else '班级已存在或无需添加'))
+
+@app.route('/admin/remove_user_from_class', methods=['POST'])
+def remove_user_from_class():
+    admin = current_user()
+    if not is_admin(admin): return jsonify(success=False, message='无权限'), 403
+
+    user_id = request.form.get('user_id', type=int)
+    class_en = request.form.get('class_en', '').strip()
+    if not (user_id and class_en): return jsonify(success=False, message='参数错误'), 400
+
+    # 禁止移除主班级（用 edit_user_ajax 改主班级）
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT is_primary FROM user_class_map WHERE user_id=%s AND class_en=%s",
+                (user_id, class_en)
+            )
+            row = cursor.fetchone()
+            if row and row['is_primary'] == 1:
+                return jsonify(success=False, message='不能移除主班级，请使用修改主班级功能'), 400
+
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM user_class_map WHERE user_id=%s AND class_en=%s",
+                (user_id, class_en)
+            )
+        conn.commit()
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE class_table SET class_cnt = class_cnt - 1 WHERE class_en=%s AND class_cnt>0", (class_en,))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify(success=True)
+
+###############################################################################
+#  用户自主班级管理 API
+###############################################################################
+
+@app.route('/me/classes', methods=['GET'])
+def get_my_classes():
+    """获取当前用户的班级信息"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="请先登录"), 401
+    
+    # 获取用户所有班级（包含主班级和额外班级）
+    user_classes = get_user_classes(user['id'])
+    
+    # 获取主班级
+    primary_en = None
+    for cls in user_classes:
+        if cls.get('is_primary'):
+            primary_en = cls['class_en']
+            break
+    
+    # 如果映射表为空，回退到 users.class
+    if not user_classes and user.get('class'):
+        primary_en = user['class']
+        user_classes = [{
+            'class_en': user['class'],
+            'class_cn': user.get('class_cn') or user['class'],
+            'is_primary': 1
+        }]
+    
+    # 获取所有可用班级（除了管理员班级）
+    all_classes = get_all_classes_except_admin()
+    
+    return jsonify(
+        success=True,
+        memberships=user_classes,
+        primary_en=primary_en,
+        all_classes=all_classes
+    )
+
+@app.route('/me/join_class', methods=['POST'])
+def join_class():
+    """用户加入新班级"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="请先登录"), 401
+    
+    class_en = request.form.get('class_en', '').strip()
+    if not class_en:
+        return jsonify(success=False, message="缺少班级参数"), 400
+    
+    # 验证班级存在且非管理员班级
+    target_class = get_class_by_en(class_en)
+    if not target_class:
+        return jsonify(success=False, message="班级不存在"), 400
+    
+    if class_en == 'Cadmin':
+        return jsonify(success=False, message="不能加入管理员班级"), 400
+    
+    # 检查是否已经是该班成员（主班级或额外班级）
+    user_classes = get_user_classes(user['id'])
+    for cls in user_classes:
+        if cls['class_en'] == class_en:
+            return jsonify(success=False, message="您已经是该班级成员"), 400
+    
+    # 检查主班级（兼容旧系统）
+    if user.get('class') == class_en:
+        return jsonify(success=False, message="您已经是该班级成员"), 400
+    
+    # 加入班级（作为额外班级，非主班级）
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                INSERT INTO user_class_map (user_id, class_en, is_primary)
+                VALUES (%s, %s, 0)
+            """
+            cursor.execute(sql, (user['id'], class_en))
+        conn.commit()
+        
+        # 更新班级人数统计
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE class_table SET class_cnt = class_cnt + 1 WHERE class_en=%s", (class_en,))
+        conn.commit()
+        
+    except Exception as e:
+        return jsonify(success=False, message=f"加入班级失败: {str(e)}"), 500
+    finally:
+        conn.close()
+    
+    return jsonify(success=True, message="成功加入班级", class_cn=target_class['class_cn'])
+
+@app.route('/me/leave_class', methods=['POST'])
+def leave_class():
+    """用户退出班级"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="请先登录"), 401
+    
+    class_en = request.form.get('class_en', '').strip()
+    if not class_en:
+        return jsonify(success=False, message="缺少班级参数"), 400
+    
+    # 获取用户当前所有班级
+    user_classes = get_user_classes(user['id'])
+    
+    # 检查是否至少有一个班级（不能全部退出）
+    if len(user_classes) <= 1:
+        return jsonify(success=False, message="至少需要保留一个班级"), 400
+    
+    # 检查是否是该班级成员
+    is_member = False
+    is_primary = False
+    for cls in user_classes:
+        if cls['class_en'] == class_en:
+            is_member = True
+            is_primary = cls.get('is_primary', 0) == 1
+            break
+    
+    if not is_member:
+        return jsonify(success=False, message="您不是该班级成员"), 400
+    
+    conn = get_db_connection()
+    try:
+        # 如果退出的是主班级，需要重新指定主班级
+        new_primary_en = None
+        if is_primary:
+            # 找到第一个非当前班级作为新主班级
+            for cls in user_classes:
+                if cls['class_en'] != class_en:
+                    new_primary_en = cls['class_en']
+                    break
+            
+            if new_primary_en:
+                # 更新 users 表的主班级
+                new_primary_class = get_class_by_en(new_primary_en)
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE users SET class=%s, class_cn=%s WHERE id=%s",
+                        (new_primary_en, new_primary_class['class_cn'], user['id'])
+                    )
+                
+                # 更新映射表中的主班级标记
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user['id'],))
+                    cursor.execute(
+                        "UPDATE user_class_map SET is_primary=1 WHERE user_id=%s AND class_en=%s",
+                        (user['id'], new_primary_en)
+                    )
+        
+        # 从映射表中删除该班级记录
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM user_class_map WHERE user_id=%s AND class_en=%s",
+                (user['id'], class_en)
+            )
+        
+        conn.commit()
+        
+        # 更新班级人数统计
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE class_table SET class_cnt = class_cnt - 1 WHERE class_en=%s AND class_cnt > 0", (class_en,))
+        conn.commit()
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify(success=False, message=f"退出班级失败: {str(e)}"), 500
+    finally:
+        conn.close()
+    
+    return jsonify(success=True, message="成功退出班级", primary_en=new_primary_en)
+
+@app.route('/me/set_primary_class', methods=['POST'])
+def set_primary_class():
+    """设置主班级"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="请先登录"), 401
+    
+    class_en = request.form.get('class_en', '').strip()
+    if not class_en:
+        return jsonify(success=False, message="缺少班级参数"), 400
+    
+    # 验证目标班级存在
+    target_class = get_class_by_en(class_en)
+    if not target_class:
+        return jsonify(success=False, message="班级不存在"), 400
+    
+    # 检查用户是否是该班级成员
+    user_classes = get_user_classes(user['id'])
+    is_member = False
+    for cls in user_classes:
+        if cls['class_en'] == class_en:
+            is_member = True
+            break
+    
+    # 兼容旧系统：检查主班级
+    if not is_member and user.get('class') == class_en:
+        is_member = True
+    
+    if not is_member:
+        return jsonify(success=False, message="您不是该班级成员"), 400
+    
+    # 检查是否已经是主班级
+    if user.get('class') == class_en:
+        return jsonify(success=True, message="已经是主班级")
+    
+    # 确定新主班级是否管理员班级
+    is_admin_class = (class_en == 'Cadmin')
+    new_is_admin = 1 if is_admin_class else 0
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 更新 users 表的主班级和管理员状态
+            cursor.execute(
+                "UPDATE users SET class=%s, class_cn=%s, is_admin=%s WHERE id=%s",
+                (class_en, target_class['class_cn'], new_is_admin, user['id'])
+            )
+            
+            # 更新 max_score 表的班级关联
+            cursor.execute("UPDATE max_score SET class_en=%s WHERE userid=%s", (class_en, user['id']))
+            
+            # 更新映射表中的主班级标记
+            cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user['id'],))
+            cursor.execute(
+                """
+                INSERT INTO user_class_map (user_id, class_en, is_primary)
+                VALUES (%s, %s, 1)
+                ON DUPLICATE KEY UPDATE is_primary=1
+                """,
+                (user['id'], class_en)
+            )
+        
+        conn.commit()
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify(success=False, message=f"设置主班级失败: {str(e)}"), 500
+    finally:
+        conn.close()
+    
+    return jsonify(success=True, message="主班级设置成功")
 
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
