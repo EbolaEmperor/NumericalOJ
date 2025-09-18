@@ -8,8 +8,9 @@
 -- 1. 用户管理（支持多班级系统）
 -- 2. 题目管理（编程题和书面作业）
 -- 3. 提交评测系统
--- 4. 讨论区功能
--- 5. 成绩管理
+-- 4. 提交次数限制（每用户每题最多5次）
+-- 5. 讨论区功能
+-- 6. 成绩管理
 -- 
 -- 默认管理员账号：
 -- 用户名: admin
@@ -204,6 +205,27 @@ CREATE TABLE `submissions` (
   `problem_type` int DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=12497 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `submission_limits`
+--
+
+DROP TABLE IF EXISTS `submission_limits`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `submission_limits` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `username` varchar(50) NOT NULL,
+  `problem_id` int NOT NULL,
+  `submission_count` int NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_user_problem` (`username`,`problem_id`),
+  KEY `idx_username` (`username`),
+  KEY `idx_problem_id` (`problem_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
