@@ -351,6 +351,55 @@ def get_submission_by_id(submission_id):
     finally:
         conn.close()
 
+###############################################################################
+#  提交次数限制相关函数
+###############################################################################
+def get_user_submission_count(username, problem_id):
+    """
+    获取用户对某题的提交次数（从现在开始计算）
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "SELECT submission_count FROM submission_limits WHERE username=%s AND problem_id=%s"
+            cursor.execute(sql, (username, problem_id))
+            result = cursor.fetchone()
+            return result['submission_count'] if result else 0
+    finally:
+        conn.close()
+
+def increment_submission_count(username, problem_id):
+    """
+    增加用户对某题的提交次数
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 使用 INSERT ... ON DUPLICATE KEY UPDATE 来处理首次提交和后续提交
+            sql = """INSERT INTO submission_limits (username, problem_id, submission_count)
+                     VALUES (%s, %s, 1)
+                     ON DUPLICATE KEY UPDATE 
+                     submission_count = submission_count + 1,
+                     updated_at = CURRENT_TIMESTAMP"""
+            cursor.execute(sql, (username, problem_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+def can_submit(username, problem_id, max_submissions=5):
+    """
+    检查用户是否还能对某题进行提交
+    """
+    current_count = get_user_submission_count(username, problem_id)
+    return current_count < max_submissions
+
+def get_remaining_submissions(username, problem_id, max_submissions=5):
+    """
+    获取用户对某题的剩余提交次数
+    """
+    current_count = get_user_submission_count(username, problem_id)
+    return max(0, max_submissions - current_count)
+
 def update_submission_status(submission_id, new_status):
     conn = get_db_connection()
     try:
@@ -1081,13 +1130,19 @@ def problem_detail(problem_id):
 
     # 获取初始代码
     initial_code = problem.get('initial_code', '')
+    
+    # 获取剩余提交次数（管理员不受限制）
+    remaining_submissions = get_remaining_submissions(user['username'], problem_id) if user['is_admin'] != 1 else None
+    can_submit_flag = can_submit(user['username'], problem_id) if user['is_admin'] != 1 else True
 
     return render_template('problem_detail.html',
                            problem=problem,
                            rendered_content=rendered_content,
                            user=user,
                            last_submissions=last_submissions,
-                           initial_code=initial_code)
+                           initial_code=initial_code,
+                           remaining_submissions=remaining_submissions,
+                           can_submit=can_submit_flag)
 
 def parse_time_limit_ms_from_form(form):
     """
@@ -1291,10 +1346,14 @@ def submit_solution(problem_id):
                     flash('无法提交已过期的作业', 'danger')
                     return redirect(url_for('problem_detail', problem_id=problem_id))
     
-    # subs = get_submissions_by_user_and_problem(user['username'], problem_id)
-    # if subs:
-    #     flash('您已经提交过答案！', 'danger')
-    #     return redirect(url_for('problem_detail', problem_id=problem_id))
+    # 检查提交次数限制（管理员不受限制）
+    if user['is_admin'] != 1:
+        if not can_submit(user['username'], problem_id):
+            flash('您对此题的提交次数已达到上限（5次）！', 'danger')
+            return redirect(url_for('problem_detail', problem_id=problem_id))
+    
+    # 获取剩余提交次数（用于显示）
+    remaining_submissions = get_remaining_submissions(user['username'], problem_id) if user['is_admin'] != 1 else None
 
     if request.method == 'POST':
         # 判断题目类型
@@ -1313,6 +1372,11 @@ def submit_solution(problem_id):
                 score=0,
                 test_points=[]
             )
+            
+            # 增加提交次数计数（管理员不计数）
+            if user['is_admin'] != 1:
+                increment_submission_count(user['username'], problem_id)
+            
             # 触发 Celery 任务进行评测
             evaluate_submission.delay(submission_id)
 
@@ -1345,6 +1409,10 @@ def submit_solution(problem_id):
                 score=0,
                 test_points=[filename]  # 不需要自动评测
             )
+            
+            # 增加提交次数计数（管理员不计数）
+            if user['is_admin'] != 1:
+                increment_submission_count(user['username'], problem_id)
 
             # 检查文件夹路径是否存在，如果不存在则创建
             upload_folder = os.path.join('uploads', f"{submission_id}")
@@ -1361,7 +1429,8 @@ def submit_solution(problem_id):
     # 如果是 GET 请求，渲染提交页面
     return render_template('problem_detail.html',
                            problem=problem,
-                           user=user)
+                           user=user,
+                           remaining_submissions=remaining_submissions)
 
 @app.route('/submissionslist/<int:problem_id>')
 def submission_list(problem_id):
