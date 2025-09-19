@@ -767,14 +767,15 @@ def get_user_classes(user_id):
 
 def get_max_score_for_class(userid, problemid, class_en):
     """
-    从 max_score 表中按 (userid, class_en) 获取 P{problemid}。
+    获取用户对某题的最高分，不区分班级。
     注意：直接返回 DB 中的值，可能是 None（表示未尝试），也可能是 0（尝试过但 0 分）。
     """
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = f"SELECT P{problemid} AS p FROM max_score WHERE userid=%s AND class_en=%s"
-            cursor.execute(sql, (userid, class_en))
+            # 不区分班级，从所有记录中找最高分
+            sql = f"SELECT MAX(P{problemid}) AS p FROM max_score WHERE userid=%s"
+            cursor.execute(sql, (userid,))
             row = cursor.fetchone()
             return (row['p'] if row else None)
     finally:
@@ -1843,7 +1844,7 @@ def evaluate_submission(submission_id):
         finally:
             conn.close()
 
-    # 更新最高分
+    # 更新最高分：只需要更新用户的主班级记录
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2383,19 +2384,31 @@ def export_scores():
     if not students:
         return "该班级没有学生", 404
     
-    # 4) 批量拉取 max_score，避免 N+1
+    # 4) 批量拉取 max_score，不区分班级，直接查用户的最高分记录
     user_ids = [s['id'] for s in students]
     placeholders = ','.join(['%s'] * len(user_ids))
     max_score_map = {}
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # 不按class_en过滤，直接取用户的成绩记录
             cursor.execute(
-                f"SELECT * FROM max_score WHERE class_en = %s AND userid IN ({placeholders})",
-                [selected_class] + user_ids
+                f"SELECT * FROM max_score WHERE userid IN ({placeholders})",
+                user_ids
             )
             for row in cursor.fetchall():
-                max_score_map[row['userid']] = row
+                # 如果同一用户有多条记录（多班级），取最高分
+                uid = row['userid']
+                if uid not in max_score_map:
+                    max_score_map[uid] = row
+                else:
+                    # 合并多条记录，每个题目取最高分
+                    existing = max_score_map[uid]
+                    for key, value in row.items():
+                        if key.startswith('P') and value is not None:
+                            existing_val = existing.get(key)
+                            if existing_val is None or value > existing_val:
+                                existing[key] = value
     finally:
         conn.close()
     
