@@ -56,6 +56,67 @@ def allowed_grade_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_GRADES_EXTENSIONS
 
 ###############################################################################
+#  站点设置（全局开关）
+###############################################################################
+def ensure_settings_table():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS site_settings (
+                    k VARCHAR(64) PRIMARY KEY,
+                    v VARCHAR(255)
+                ) CHARACTER SET utf8mb4
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_setting(key, default=None):
+    ensure_settings_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT v FROM site_settings WHERE k=%s", (key,))
+            row = cursor.fetchone()
+            return (row and row.get('v')) if row else default
+    finally:
+        conn.close()
+
+def set_setting(key, value):
+    ensure_settings_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO site_settings (k, v) VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE v=VALUES(v)
+                """,
+                (key, str(value))
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
+
+def is_class_adjust_enabled():
+    # 默认开启（'1'）
+    val = get_setting(CLASS_ADJUST_FLAG_KEY, default='1')
+    return str(val) == '1'
+
+@app.context_processor
+def inject_globals():
+    # 提供到所有模板：class_adjust_enabled
+    try:
+        return { 'class_adjust_enabled': is_class_adjust_enabled() }
+    except Exception:
+        return { 'class_adjust_enabled': True }
+
+###############################################################################
 #  数据库连接
 ###############################################################################
 def get_db_connection():
@@ -386,14 +447,14 @@ def increment_submission_count(username, problem_id):
     finally:
         conn.close()
 
-def can_submit(username, problem_id, max_submissions=5):
+def can_submit(username, problem_id, max_submissions=10):
     """
     检查用户是否还能对某题进行提交
     """
     current_count = get_user_submission_count(username, problem_id)
     return current_count < max_submissions
 
-def get_remaining_submissions(username, problem_id, max_submissions=5):
+def get_remaining_submissions(username, problem_id, max_submissions=10):
     """
     获取用户对某题的剩余提交次数
     """
@@ -2208,6 +2269,16 @@ def admin_homework():
                            homework_list=homework_list,
                            user=user)
 
+@app.route('/admin/class_adjust', methods=['POST'])
+def admin_class_adjust():
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限'), 403
+
+    enabled = request.form.get('enabled', '0')
+    set_setting(CLASS_ADJUST_FLAG_KEY, '1' if enabled == '1' else '0')
+    return jsonify(success=True, enabled=(enabled == '1'))
+
 @app.route('/admin/update_ddl', methods=['POST'])
 def admin_update_ddl():
     user = current_user()
@@ -3441,6 +3512,7 @@ def get_my_classes():
     user = current_user()
     if not user:
         return jsonify(success=False, message="请先登录"), 401
+    # 允许查看（即使关闭时），便于用户了解当前绑定
     
     # 获取用户所有班级（包含主班级和额外班级）
     user_classes = get_user_classes(user['id'])
@@ -3477,6 +3549,8 @@ def join_class():
     user = current_user()
     if not user:
         return jsonify(success=False, message="请先登录"), 401
+    if not is_class_adjust_enabled():
+        return jsonify(success=False, message="当前不允许调整班级，请联系老师"), 403
     
     class_en = request.form.get('class_en', '').strip()
     if not class_en:
@@ -3529,6 +3603,8 @@ def leave_class():
     user = current_user()
     if not user:
         return jsonify(success=False, message="请先登录"), 401
+    if not is_class_adjust_enabled():
+        return jsonify(success=False, message="当前不允许调整班级，请联系老师"), 403
     
     class_en = request.form.get('class_en', '').strip()
     if not class_en:
@@ -3609,6 +3685,8 @@ def set_primary_class():
     user = current_user()
     if not user:
         return jsonify(success=False, message="请先登录"), 401
+    if not is_class_adjust_enabled():
+        return jsonify(success=False, message="当前不允许调整班级，请联系老师"), 403
     
     class_en = request.form.get('class_en', '').strip()
     if not class_en:
