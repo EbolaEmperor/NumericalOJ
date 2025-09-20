@@ -56,8 +56,8 @@
           <div>
             {% if user.is_admin != 1 %}
               {% if remaining_submissions is not none %}
-                <span class="{% if remaining_submissions <= 2 %}text-danger{% else %}text-muted{% endif %} me-2">
-                  剩余提交次数: <strong>{{ remaining_submissions }}</strong>/5
+                <span class="{% if remaining_submissions <= 3 %}text-danger{% else %}text-muted{% endif %} me-2">
+                  剩余提交次数: <strong>{{ remaining_submissions }}</strong>/10
                 </span>
               {% endif %}
               <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
