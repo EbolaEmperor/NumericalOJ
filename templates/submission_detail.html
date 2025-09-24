@@ -99,6 +99,21 @@
 
     {% if submission.problem_type == 1 %}
     <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
+    
+    <!-- 判题进度提示 -->
+    {% set max_score = test_points | length %}
+    {% if max_score == 0 %}
+    <div id="judgingStatus" class="alert alert-info d-none mb-3">
+      <div class="d-flex align-items-center">
+        <i class="fas fa-spinner fa-spin me-2"></i>
+        <div>
+          <strong>判题进行中</strong><br>
+          <small id="judgingText">正在编译和初始化...</small>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+    
     <ul class="list-group mt-2">
       {% for tp in test_points %}
       <li class="list-group-item">
@@ -265,8 +280,100 @@
 
 {% if max_score == 0 and submission.problem_type == 1 %}
 <script>
-  // 如果测试点还没出来，5秒后刷新
-  setTimeout(function(){ location.replace(location.href); }, 5000);
+  // 智能轮询判题状态
+  let pollCount = 0;
+  let maxPollCount = 60; // 最多轮询60次（约2-5分钟）
+  let judgingStatusEl = document.getElementById('judgingStatus');
+  let judgingTextEl = document.getElementById('judgingText');
+  
+  // 显示判题状态提示
+  if (judgingStatusEl) {
+    judgingStatusEl.classList.remove('d-none');
+  }
+  
+  function getPollingInterval() {
+    // 动态轮询间隔：前10次每1秒，然后每2秒，最后每5秒
+    if (pollCount < 10) return 1000;   // 前10秒每秒检查
+    if (pollCount < 30) return 2000;   // 然后20秒内每2秒检查
+    return 5000;                       // 最后每5秒检查
+  }
+
+  function updateJudgingText() {
+    if (!judgingTextEl) return;
+    
+    if (pollCount < 5) {
+      judgingTextEl.textContent = '正在编译和初始化...';
+    } else if (pollCount < 15) {
+      judgingTextEl.textContent = '正在运行测试点...';
+    } else if (pollCount < 30) {
+      judgingTextEl.textContent = '判题进行中，请耐心等待...';
+    } else {
+      judgingTextEl.textContent = '判题时间较长，正在处理复杂测试...';
+    }
+  }
+
+  function checkSubmissionStatus() {
+    updateJudgingText();
+    
+    fetch('{{ url_for("submission_status", submission_id=submission.id) }}')
+      .then(response => response.json())
+      .then(data => {
+        pollCount++;
+        
+        if (data.error) {
+          console.error('状态检查错误:', data.error);
+          if (judgingTextEl) {
+            judgingTextEl.textContent = '状态检查出错，即将刷新页面...';
+          }
+          setTimeout(() => location.replace(location.href), 2000);
+          return;
+        }
+        
+        // 如果判题完成，显示完成提示并刷新页面
+        if (!data.is_judging) {
+          console.log('判题完成，刷新页面');
+          if (judgingTextEl) {
+            judgingTextEl.innerHTML = '<i class="fas fa-check-circle me-1"></i>判题完成！正在刷新...';
+          }
+          setTimeout(() => location.replace(location.href), 500);
+          return;
+        }
+        
+        // 如果还在判题中且未超过最大次数，继续轮询
+        if (pollCount < maxPollCount) {
+          console.log(`第${pollCount}次检查，判题进行中...`);
+          setTimeout(checkSubmissionStatus, getPollingInterval());
+        } else {
+          // 超时后回退到传统方式
+          console.log('轮询超时，使用传统刷新');
+          if (judgingTextEl) {
+            judgingTextEl.textContent = '判题时间过长，正在刷新页面...';
+          }
+          setTimeout(() => location.replace(location.href), 1000);
+        }
+      })
+      .catch(error => {
+        console.error('网络错误:', error);
+        pollCount++;
+        
+        if (judgingTextEl) {
+          judgingTextEl.textContent = '网络连接不稳定，正在重试...';
+        }
+        
+        // 网络错误时也继续尝试
+        if (pollCount < maxPollCount) {
+          setTimeout(checkSubmissionStatus, Math.min(5000, getPollingInterval() * 2));
+        } else {
+          if (judgingTextEl) {
+            judgingTextEl.textContent = '网络错误，正在刷新页面...';
+          }
+          setTimeout(() => location.replace(location.href), 2000);
+        }
+      });
+  }
+  
+  // 页面加载后立即开始检查
+  setTimeout(checkSubmissionStatus, 1000);
 </script>
 {% endif %}
 

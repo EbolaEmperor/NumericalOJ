@@ -1543,6 +1543,37 @@ def submission_detail(submission_id):
         problem=problem       # 可用可不用
     )
 
+@app.route('/submission_status/<int:submission_id>')
+def submission_status(submission_id):
+    """
+    轻量级API：仅返回提交状态，用于实时更新判题结果
+    """
+    user = current_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return jsonify({'error': 'Submission not found'}), 404
+
+    if submission['username'] != user['username'] and not is_admin(user):
+        return jsonify({'error': 'Access denied'}), 403
+
+    # 判断是否还在判题中
+    is_judging = (
+        submission['status'] in ['Pending', 'Waiting', 'Running'] or
+        (submission['test_points'] and len(submission['test_points']) == 0) or
+        submission['score'] is None
+    )
+
+    return jsonify({
+        'status': submission['status'],
+        'score': submission['score'],
+        'is_judging': is_judging,
+        'test_points_count': len(submission['test_points']) if submission['test_points'] else 0,
+        'last_updated': submission.get('updated_at', submission.get('submit_time', ''))
+    })
+
 # 添加新的数据库查询方法
 def get_submissions_by_user_paginated(username, page=1, per_page=20):
     conn = get_db_connection()
