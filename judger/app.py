@@ -163,10 +163,16 @@ def run_hello():
             status = "Nonzero Exit Status"
             exval = result.returncode
 
+        # 检查是否生成了输出图片
+        files_dict = {"stdout": outp, "stderr": stderr}
+        output_image_path = f"{sid}/output.png"
+        if os.path.exists(output_image_path):
+            files_dict["output.png"] = True  # 标记存在图片文件
+
         return jsonify({
             "status": status,
             "exitStatus": exval,
-            "files": {"stdout": outp, "stderr": stderr},
+            "files": files_dict,
             "time": exec_time,
             "memory": mem_usage_byte,
         }), 200
@@ -265,10 +271,16 @@ def run_py():
             status = "Runtime Error"
             exval = run_res.returncode
 
+        # 检查是否生成了输出图片
+        files_dict = {"stdout": outp, "stderr": stderr}
+        output_image_path = f"{sid}/output.png"
+        if os.path.exists(output_image_path):
+            files_dict["output.png"] = True  # 标记存在图片文件
+
         return jsonify({
             "status": status,
             "exitStatus": exval,
-            "files": {"stdout": outp, "stderr": stderr},
+            "files": files_dict,
             "time": exec_time,
             "memory": mem_usage_byte,
         }), 200
@@ -386,10 +398,16 @@ def run_c():
             status = "Runtime Error"
             exval = run_res.returncode
 
+        # 检查是否生成了输出图片
+        files_dict = {"stdout": outp, "stderr": stderr}
+        output_image_path = f"{sid}/output.png"
+        if os.path.exists(output_image_path):
+            files_dict["output.png"] = True  # 标记存在图片文件
+
         return jsonify({
             "status": status,
             "exitStatus": exval,
-            "files": {"stdout": outp, "stderr": stderr},
+            "files": files_dict,
             "time": exec_time,
             "memory": mem_usage_byte,
         }), 200
@@ -507,16 +525,22 @@ def run_cpp():
             status = "Runtime Error"
             exval = run_res.returncode
 
+        # 检查是否生成了输出图片
+        files_dict = {"stdout": outp, "stderr": stderr}
+        output_image_path = f"{sid}/output.png"
+        if os.path.exists(output_image_path):
+            files_dict["output.png"] = True  # 标记存在图片文件
+
         return jsonify({
             "status": status,
             "exitStatus": exval,
-            "files": {"stdout": outp, "stderr": stderr},
+            "files": files_dict,
             "time": exec_time,
             "memory": mem_usage_byte,
         }), 200
 
     except Exception as e:
-        return jsonify({"message": f"Failed to run C: {str(e)}"}), 500
+        return jsonify({"message": f"Failed to run C++: {str(e)}"}), 500
 
 
 if __name__ == "__main__":

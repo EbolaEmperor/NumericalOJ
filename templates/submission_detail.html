@@ -137,6 +137,23 @@
           <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stdout }}</pre>
         </div>
         {% endif %}
+
+        <!-- 显示输出图片 -->
+        {% if tp.has_output_image %}
+        <div class="mt-2">
+          <small class="text-muted">
+            <i class="fas fa-image me-1"></i> 程序输出图片：
+          </small>
+          <div class="mt-1">
+            <img src="{{ url_for('get_submission_output_image', submission_id=submission.id, test_index=tp.test_index) }}" 
+                 alt="测试点{{ loop.index }}输出图片" 
+                 class="img-fluid border rounded output-image"
+                 style="max-width: 100%; max-height: 300px; cursor: pointer;"
+                 onclick="showImageModal(this.src, '测试点{{ loop.index }}输出图片')"
+                 onerror="this.parentElement.parentElement.style.display='none';">
+          </div>
+        </div>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -179,6 +196,27 @@
   .thinking-gray { color: gray; font-size: small; white-space: pre-wrap; }
 </style>
 
+<!-- 图片查看模态框 -->
+<div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="imageModalLabel"><i class="fas fa-image me-2"></i> 输出图片</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body text-center">
+        <img id="modalImage" src="" alt="" class="img-fluid" style="max-width: 100%; max-height: 80vh;">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>关闭</button>
+        <a id="downloadImageBtn" href="" download class="btn btn-primary">
+          <i class="fas fa-download me-2"></i>下载图片
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- 在 body 内，摆放一个 Modal，用于显示 AI 回复 -->
 <div class="modal fade" id="aiModal" tabindex="-1" aria-labelledby="aiModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg" style="max-height: 90vh; margin-top: 5vh; margin-bottom: auto;">
@@ -218,6 +256,25 @@
     </div>
   </div>
 </div>
+
+<!-- JavaScript 函数：显示图片模态框 -->
+<script>
+  // 显示图片的模态框函数
+  function showImageModal(imageSrc, imageTitle) {
+    const imageModal = new bootstrap.Modal(document.getElementById('imageModal'));
+    const modalImage = document.getElementById('modalImage');
+    const modalLabel = document.getElementById('imageModalLabel');
+    const downloadBtn = document.getElementById('downloadImageBtn');
+    
+    modalImage.src = imageSrc;
+    modalImage.alt = imageTitle;
+    modalLabel.textContent = imageTitle;
+    downloadBtn.href = imageSrc;
+    downloadBtn.download = imageTitle + '.png';
+    
+    imageModal.show();
+  }
+</script>
 
 {% if submission.problem_type == 1 %}
 <script>

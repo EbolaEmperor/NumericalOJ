@@ -1574,6 +1574,46 @@ def submission_status(submission_id):
         'last_updated': submission.get('updated_at', submission.get('submit_time', ''))
     })
 
+@app.route('/submission_output_image/<int:submission_id>/<int:test_index>')
+def get_submission_output_image(submission_id, test_index):
+    """
+    获取提交记录中某个测试点的输出图片
+    """
+    user = current_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return jsonify({'error': 'Submission not found'}), 404
+
+    if submission['username'] != user['username'] and not is_admin(user):
+        return jsonify({'error': 'Access denied'}), 403
+
+    # 构建图片文件路径（基于评测系统的存储路径）
+    # 根据评测系统的sid格式：eoj-{submission_id}-{test_index}
+    sid = f"eoj-{submission_id}-{test_index}"
+    
+    # 可能的图片路径（根据评测系统的实际存储位置调整）
+    # 评测系统在judger目录下的工作目录中创建sid目录
+    import os
+    possible_paths = [
+        f"/Users/wenchong/code/NumericalOJ/judger/{sid}/output.png",  # 相对于judger目录
+        f"./judger/{sid}/output.png",  # 相对于项目根目录
+        f"/tmp/{sid}/output.png",  # 临时目录
+        f"./{sid}/output.png",  # 当前目录
+        f"~/oj/judger/{sid}/output.png"  # 可能的绝对路径
+    ]
+    
+    for img_path in possible_paths:
+        # 展开用户目录路径
+        expanded_path = os.path.expanduser(img_path)
+        if os.path.exists(expanded_path):
+            return send_file(expanded_path, mimetype='image/png')
+    
+    # 如果找不到图片文件，返回404
+    return jsonify({'error': 'Output image not found'}), 404
+
 # 添加新的数据库查询方法
 def get_submissions_by_user_paginated(username, page=1, per_page=20):
     conn = get_db_connection()
@@ -1902,11 +1942,20 @@ def evaluate_submission(submission_id):
         if len(actual_output) > 200:
             actual_output = actual_output[:200] + "..."
 
+        # 检查是否生成了输出图片
+        has_output_image = False
+        if 'files' in result and isinstance(result['files'], dict):
+            # 检查是否有output.png文件
+            if 'output.png' in result['files'] or any(key.endswith('output.png') for key in result['files'].keys()):
+                has_output_image = True
+
         test_point_statuses.append({
             "status": status, 
             "stderr": stderr, 
             "stdout": actual_output,
-            "time": exec_time
+            "time": exec_time,
+            "has_output_image": has_output_image,
+            "test_index": idx  # 添加测试点索引，用于生成图片URL
         })
 
     # === 汇总与落库（沿用你原逻辑） ===
