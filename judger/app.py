@@ -371,7 +371,7 @@ def run_c():
                     f.write(content)
 
         # ===== 编译 =====
-        compile_timeout_sec = 10
+        compile_timeout_sec = 30
         compile_cmd = ["timeout", f"{compile_timeout_sec}s",
                        "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11"]
         
@@ -511,7 +511,7 @@ def run_cpp():
                     f.write(content)
 
         # ===== 编译 =====
-        compile_timeout_sec = 10
+        compile_timeout_sec = 30
         compile_cmd = ["timeout", f"{compile_timeout_sec}s",
                        "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20"]
         
@@ -596,6 +596,334 @@ def run_cpp():
 
     except Exception as e:
         return jsonify({"message": f"Failed to run C++: {str(e)}"}), 500
+
+# ========== 批量评测接口：编译一次，运行多个测试点 ==========
+@app.route("/batch-evaluate-c", methods=["POST"])
+def batch_evaluate_c():
+    """
+    C语言批量评测接口：编译一次，运行多个测试点
+    输入字段：
+    - sid: 运行目录（会创建）
+    - code: C 源码
+    - test_cases: 测试点数组 [{"input": "...", "expected_output": "..."}, ...]
+    - timeLimit: ns（每个测试点的时间限制）
+    - memoryLimit: Byte
+    - forbidden: 逗号分割的函数名列表
+    - user_files: 用户头文件字典
+    返回字段：
+    - compile_result: 编译结果 {"status": "success/error", "stderr": "..."}
+    - test_results: 每个测试点的结果数组
+    """
+    data = request.get_json() or {}
+    try:
+        sid = sanitize_sid(data.get("sid", ""))
+        code_content = data.get("code", "")
+        test_cases = data.get("test_cases", [])
+        tle = data.get("timeLimit")  # ns
+        mle = (data.get("memoryLimit") or 0) * 10
+        forbidden_funcs = data.get("forbidden", "")
+        user_files = data.get("user_files", {})
+
+        # 禁用函数检查
+        forbid_msg = check_forbidden(code_content, forbidden_funcs)
+        if forbid_msg:
+            return jsonify({
+                "compile_result": {"status": "forbidden", "stderr": forbid_msg},
+                "test_results": []
+            }), 200
+
+        # 建目录 & 写文件
+        ensure_dir(sid)
+        code_filename = f"{sid}/main.c"
+        bin_filename = f"{sid}/a.out"
+
+        with open(code_filename, "w", encoding="utf-8") as f:
+            f.write(code_content)
+        
+        # 写入用户的头文件
+        if user_files:
+            for filename, content in user_files.items():
+                user_file_path = f"{sid}/{filename}"
+                with open(user_file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+        # ===== 编译（只编译一次）=====
+        compile_timeout_sec = 30
+        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
+                       "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11"]
+        
+        if os.path.exists(LIBRARY_PATH):
+            compile_cmd.extend(["-I", LIBRARY_PATH])
+        
+        compile_cmd.extend(["main.c", "-o", "a.out"])
+        compile_res = subprocess.run(
+            compile_cmd,
+            cwd=sid,
+            capture_output=True,
+            text=True
+        )
+        
+        if compile_res.returncode != 0:
+            stderr = compile_res.stderr or ""
+            if len(stderr) > 300:
+                stderr = stderr[:300] + "..."
+            return jsonify({
+                "compile_result": {"status": "error", "stderr": stderr},
+                "test_results": []
+            }), 200
+
+        # ===== 逐个运行测试点 =====
+        test_results = []
+        timeLim_sec = (tle or 0) * 1.2 / 1e9
+
+        for i, test_case in enumerate(test_cases):
+            user_input = test_case.get("input", "")
+            input_filename = f"{sid}/input_{i}.txt"
+            output_filename = f"{sid}/output_{i}.txt"
+            
+            # 写入测试输入
+            with open(input_filename, "w", encoding="utf-8") as f:
+                f.write(user_input)
+
+            start_time = time.perf_counter_ns()
+            start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+            # 运行程序
+            run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
+            run_res = subprocess.run(
+                run_cmd,
+                cwd=sid,
+                capture_output=True,
+                text=True,
+                input=user_input,
+                preexec_fn=set_run_limits(timeLim_sec, mle or 0)
+            )
+
+            end_time = time.perf_counter_ns()
+            end_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+            exec_time = end_time - start_time  # ns
+            mem_usage_byte = (end_mem - start_mem) * 1024  # Byte
+
+            outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+
+            # 处理用户程序可能输出的图片文件
+            # 如果用户程序输出了 output.png，立即重命名为 output_{i}.png 避免被覆盖
+            original_image_path = f"{sid}/output.png"
+            renamed_image_path = f"{sid}/output_{i}.png"
+            has_output_image = False
+            
+            if os.path.exists(original_image_path):
+                try:
+                    # 重命名图片文件
+                    subprocess.run(["mv", original_image_path, renamed_image_path], 
+                                 capture_output=True, text=False)
+                    has_output_image = True
+                except Exception:
+                    # 重命名失败，尝试复制
+                    try:
+                        subprocess.run(["cp", original_image_path, renamed_image_path], 
+                                     capture_output=True, text=False)
+                        has_output_image = True
+                    except Exception:
+                        pass
+
+            status = "Accepted"
+            exval = 0
+            stderr = run_res.stderr or ""
+            if len(stderr) > 300:
+                stderr = stderr[:300] + "..."
+
+            # 判定结果
+            if exec_time > (tle or 0):
+                status = "Time Limit Exceeded"
+                exval = 9
+            elif mem_usage_byte > (mle or 0):
+                status = "Memory Limit Exceeded"
+                exval = 10
+            elif run_res.returncode != 0:
+                status = "Runtime Error"
+                exval = run_res.returncode
+
+            # 检查输出图片
+            files_dict = {"stdout": outp, "stderr": stderr}
+            if has_output_image:
+                files_dict[f"output_{i}.png"] = True
+
+            test_results.append({
+                "test_case_index": i,
+                "status": status,
+                "exitStatus": exval,
+                "files": files_dict,
+                "time": exec_time,
+                "memory": mem_usage_byte,
+            })
+
+        return jsonify({
+            "compile_result": {"status": "success", "stderr": ""},
+            "test_results": test_results
+        }), 200
+
+    except Exception as e:
+        return jsonify({"message": f"Failed to batch evaluate C: {str(e)}"}), 500
+
+@app.route("/batch-evaluate-cpp", methods=["POST"])
+def batch_evaluate_cpp():
+    """
+    C++语言批量评测接口：编译一次，运行多个测试点
+    """
+    data = request.get_json() or {}
+    try:
+        sid = sanitize_sid(data.get("sid", ""))
+        code_content = data.get("code", "")
+        test_cases = data.get("test_cases", [])
+        tle = data.get("timeLimit")  # ns
+        mle = (data.get("memoryLimit") or 0) * 10
+        forbidden_funcs = data.get("forbidden", "")
+        user_files = data.get("user_files", {})
+
+        # 禁用函数检查
+        forbid_msg = check_forbidden(code_content, forbidden_funcs)
+        if forbid_msg:
+            return jsonify({
+                "compile_result": {"status": "forbidden", "stderr": forbid_msg},
+                "test_results": []
+            }), 200
+
+        # 建目录 & 写文件
+        ensure_dir(sid)
+        code_filename = f"{sid}/main.cpp"
+        bin_filename = f"{sid}/a.out"
+
+        with open(code_filename, "w", encoding="utf-8") as f:
+            f.write(code_content)
+        
+        # 写入用户的头文件
+        if user_files:
+            for filename, content in user_files.items():
+                user_file_path = f"{sid}/{filename}"
+                with open(user_file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+        # ===== 编译（只编译一次）=====
+        compile_timeout_sec = 30
+        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
+                       "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20"]
+        
+        if os.path.exists(LIBRARY_PATH):
+            compile_cmd.extend(["-I", LIBRARY_PATH])
+        
+        compile_cmd.extend(["main.cpp", "-o", "a.out"])
+        compile_res = subprocess.run(
+            compile_cmd,
+            cwd=sid,
+            capture_output=True,
+            text=True
+        )
+        
+        if compile_res.returncode != 0:
+            stderr = compile_res.stderr or ""
+            if len(stderr) > 3000:
+                stderr = stderr[:3000] + "..."
+            return jsonify({
+                "compile_result": {"status": "error", "stderr": stderr},
+                "test_results": []
+            }), 200
+
+        # ===== 逐个运行测试点 =====
+        test_results = []
+        timeLim_sec = (tle or 0) * 1.2 / 1e9
+
+        for i, test_case in enumerate(test_cases):
+            user_input = test_case.get("input", "")
+            input_filename = f"{sid}/input_{i}.txt"
+            output_filename = f"{sid}/output_{i}.txt"
+            
+            # 写入测试输入
+            with open(input_filename, "w", encoding="utf-8") as f:
+                f.write(user_input)
+
+            start_time = time.perf_counter_ns()
+            start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+            # 运行程序
+            run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
+            run_res = subprocess.run(
+                run_cmd,
+                cwd=sid,
+                capture_output=True,
+                text=True,
+                input=user_input,
+                preexec_fn=set_run_limits(timeLim_sec, mle or 0)
+            )
+
+            end_time = time.perf_counter_ns()
+            end_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+            exec_time = end_time - start_time  # ns
+            mem_usage_byte = (end_mem - start_mem) * 1024  # Byte
+
+            outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+
+            # 处理用户程序可能输出的图片文件
+            # 如果用户程序输出了 output.png，立即重命名为 output_{i}.png 避免被覆盖
+            original_image_path = f"{sid}/output.png"
+            renamed_image_path = f"{sid}/output_{i}.png"
+            has_output_image = False
+            
+            if os.path.exists(original_image_path):
+                try:
+                    # 重命名图片文件
+                    subprocess.run(["mv", original_image_path, renamed_image_path], 
+                                 capture_output=True, text=False)
+                    has_output_image = True
+                except Exception:
+                    # 重命名失败，尝试复制
+                    try:
+                        subprocess.run(["cp", original_image_path, renamed_image_path], 
+                                     capture_output=True, text=False)
+                        has_output_image = True
+                    except Exception:
+                        pass
+
+            status = "Accepted"
+            exval = 0
+            stderr = run_res.stderr or ""
+            if len(stderr) > 300:
+                stderr = stderr[:300] + "..."
+
+            # 判定结果
+            if exec_time > (tle or 0):
+                status = "Time Limit Exceeded"
+                exval = 9
+            elif mem_usage_byte > (mle or 0):
+                status = "Memory Limit Exceeded"
+                exval = 10
+            elif run_res.returncode != 0:
+                status = "Runtime Error"
+                exval = run_res.returncode
+
+            # 检查输出图片
+            files_dict = {"stdout": outp, "stderr": stderr}
+            if has_output_image:
+                files_dict[f"output_{i}.png"] = True
+
+            test_results.append({
+                "test_case_index": i,
+                "status": status,
+                "exitStatus": exval,
+                "files": files_dict,
+                "time": exec_time,
+                "memory": mem_usage_byte,
+            })
+
+        return jsonify({
+            "compile_result": {"status": "success", "stderr": ""},
+            "test_results": test_results
+        }), 200
+
+    except Exception as e:
+        return jsonify({"message": f"Failed to batch evaluate C++: {str(e)}"}), 500
 
 
 if __name__ == "__main__":

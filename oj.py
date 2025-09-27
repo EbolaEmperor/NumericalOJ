@@ -1591,18 +1591,34 @@ def get_submission_output_image(submission_id, test_index):
         return jsonify({'error': 'Access denied'}), 403
 
     # 构建图片文件路径（基于评测系统的存储路径）
-    # 根据评测系统的sid格式：eoj-{submission_id}-{test_index}
-    sid = f"eoj-{submission_id}-{test_index}"
+    import os
+    
+    # 对于批量评测，图片存储在批量评测目录中，文件名为 output_{test_index-1}.png
+    # 对于单个评测，图片存储在单独的目录中，文件名为 output.png
+    
+    # 首先尝试批量评测的路径格式
+    batch_sid = f"eoj-batch-{submission_id}"
+    batch_image_filename = f"output_{test_index-1}.png"  # 批量评测中索引从0开始
+    
+    # 然后尝试单个评测的路径格式  
+    individual_sid = f"eoj-{submission_id}-{test_index}"
+    individual_image_filename = "output.png"
     
     # 可能的图片路径（根据评测系统的实际存储位置调整）
-    # 评测系统在judger目录下的工作目录中创建sid目录
-    import os
     possible_paths = [
-        f"/Users/wenchong/code/NumericalOJ/judger/{sid}/output.png",  # 相对于judger目录
-        f"./judger/{sid}/output.png",  # 相对于项目根目录
-        f"/tmp/{sid}/output.png",  # 临时目录
-        f"./{sid}/output.png",  # 当前目录
-        f"~/oj/judger/{sid}/output.png"  # 可能的绝对路径
+        # 批量评测路径
+        f"/Users/wenchong/code/NumericalOJ/judger/{batch_sid}/{batch_image_filename}",
+        f"./judger/{batch_sid}/{batch_image_filename}",
+        f"/tmp/{batch_sid}/{batch_image_filename}",
+        f"./{batch_sid}/{batch_image_filename}",
+        f"~/oj/judger/{batch_sid}/{batch_image_filename}",
+        
+        # 单个评测路径（兼容旧版本）
+        f"/Users/wenchong/code/NumericalOJ/judger/{individual_sid}/{individual_image_filename}",
+        f"./judger/{individual_sid}/{individual_image_filename}",
+        f"/tmp/{individual_sid}/{individual_image_filename}",
+        f"./{individual_sid}/{individual_image_filename}",
+        f"~/oj/judger/{individual_sid}/{individual_image_filename}"
     ]
     
     for img_path in possible_paths:
@@ -1912,7 +1928,7 @@ def evaluate_submission(submission_id):
         update_submission_status(submission_id, 'Error')
         return
 
-    # === 逐测试点评测 ===
+    # === 批量评测优化：C/C++使用新接口，其他语言保持原逻辑 ===
     test_point_statuses = []
     all_accepted = True
 
@@ -1920,70 +1936,174 @@ def evaluate_submission(submission_id):
     time_limit_ms = problem.get('time_limit_ms') or 2000
     time_limit_ns = int(time_limit_ms) * 1000000
 
-    for idx, tc in enumerate(test_cases, start=1):
-        payload = {
+    # 对于编译型语言（C/C++），使用批量评测接口优化性能
+    if lang in ['c', 'cpp']:
+        # 使用批量评测接口
+        batch_judge_url = f'http://localhost:5050/batch-evaluate-{lang}'
+        
+        # 准备批量评测的payload
+        batch_payload = {
             "code": final_code,
-            "input": tc.get("input", ""),
+            "test_cases": test_cases,
             "forbidden": fbd_func,
-            "sid": f"eoj-{submission_id}-{idx}",
-            "timeLimit": time_limit_ns,          # ns（从题目配置读取）
-            "memoryLimit": 512 * 1024 * 1024,    # Byte
-            "user_files": user_files             # 用户的代码仓库文件
+            "sid": f"eoj-batch-{submission_id}",
+            "timeLimit": time_limit_ns,
+            "memoryLimit": 512 * 1024 * 1024,
+            "user_files": user_files
         }
 
         try:
-            response = requests.post(judge_url, json=payload, timeout=20)
+            response = requests.post(batch_judge_url, json=batch_payload, timeout=60)  # 批量评测需要更长时间
             response.raise_for_status()
-            result = response.json()
-        except requests.RequestException:
-            test_point_statuses.append({"status": "Error"})
+            batch_result = response.json()
+        except requests.RequestException as e:
+            # 批量评测失败，回退到逐个评测
+            print(f"[Warning] Batch evaluation failed for submission {submission_id}: {str(e)}")
+            batch_result = None
+
+        if batch_result and batch_result.get('compile_result', {}).get('status') == 'success':
+            # 编译成功，处理测试结果
+            test_results = batch_result.get('test_results', [])
+            
+            for idx, (tc, result) in enumerate(zip(test_cases, test_results), start=1):
+                status = result.get('status', 'Error')
+                actual_output = (result.get('files', {}) or {}).get('stdout', "")
+                actual_output = actual_output.strip() if isinstance(actual_output, str) else ""
+
+                if status == 'Accepted':
+                    expected_output = tc.get("output", "").strip()
+                    if compare_float_strings(actual_output, expected_output):
+                        status = 'Accepted'
+                    else:
+                        status = 'Wrong Answer'
+                        all_accepted = False
+                else:
+                    all_accepted = False
+
+                stderr = (result.get('files', {}) or {}).get('stderr', "")
+                stderr = stderr.strip() if isinstance(stderr, str) else ""
+                exec_time = int(numpy.round(int(result.get('time', "0")) / 1_000_000))  # ms
+
+                if len(actual_output) > 200:
+                    actual_output = actual_output[:200] + "..."
+
+                # 检查是否生成了输出图片
+                has_output_image = False
+                if 'files' in result and isinstance(result['files'], dict):
+                    # 检查批量评测中的图片文件命名格式
+                    if f'output_{idx-1}.png' in result['files']:
+                        has_output_image = True
+
+                test_point_statuses.append({
+                    "status": status,
+                    "stderr": stderr,
+                    "stdout": actual_output,
+                    "time": exec_time,
+                    "has_output_image": has_output_image,
+                    "test_index": idx
+                })
+        
+        elif batch_result and batch_result.get('compile_result', {}).get('status') == 'error':
+            # 编译错误，所有测试点都标记为编译错误
+            compile_stderr = batch_result.get('compile_result', {}).get('stderr', 'Compile Error')
             all_accepted = False
-            continue
-
-        status = result.get('status', 'Error')
-        actual_output = (result.get('files', {}) or {}).get('stdout', "")
-        actual_output = actual_output.strip() if isinstance(actual_output, str) else ""
-
-        if status == 'Accepted':
-            expected_output = tc.get("output", "").strip()
-            if compare_float_strings(actual_output, expected_output):
-                status = 'Accepted'
-            else:
-                status = 'Wrong Answer'
-                all_accepted = False
+            
+            for idx, tc in enumerate(test_cases, start=1):
+                test_point_statuses.append({
+                    "status": "Compile Error",
+                    "stderr": compile_stderr,
+                    "stdout": "",
+                    "time": 0,
+                    "has_output_image": False,
+                    "test_index": idx
+                })
+        
+        elif batch_result and batch_result.get('compile_result', {}).get('status') == 'forbidden':
+            # 禁用函数错误
+            forbidden_msg = batch_result.get('compile_result', {}).get('stderr', 'Forbidden Function')
+            all_accepted = False
+            
+            for idx, tc in enumerate(test_cases, start=1):
+                test_point_statuses.append({
+                    "status": "Forbidden",
+                    "stderr": forbidden_msg,
+                    "stdout": forbidden_msg,
+                    "time": 0,
+                    "has_output_image": False,
+                    "test_index": idx
+                })
+        
         else:
-            all_accepted = False
+            # 批量评测失败，回退到原有逐个评测逻辑
+            print(f"[Warning] Falling back to individual evaluation for submission {submission_id}")
+            batch_result = None
 
-        stderr = (result.get('files', {}) or {}).get('stderr', "")
-        stderr = stderr.strip() if isinstance(stderr, str) else ""
-        lines = stderr.split('\n')
-        exec_time = int(numpy.round(int(result.get('time', "0")) / 1_000_000))  # ms
+    # 如果不是编译型语言或批量评测失败，使用原有的逐个评测逻辑
+    if lang not in ['c', 'cpp'] or not batch_result or batch_result.get('compile_result', {}).get('status') != 'success':
+        for idx, tc in enumerate(test_cases, start=1):
+            payload = {
+                "code": final_code,
+                "input": tc.get("input", ""),
+                "forbidden": fbd_func,
+                "sid": f"eoj-{submission_id}-{idx}",
+                "timeLimit": time_limit_ns,          # ns（从题目配置读取）
+                "memoryLimit": 512 * 1024 * 1024,    # Byte
+                "user_files": user_files             # 用户的代码仓库文件
+            }
 
-        if lang == 'matlab':
-            if len(lines) < 3:
-                stderr = ""
+            try:
+                response = requests.post(judge_url, json=payload, timeout=20)
+                response.raise_for_status()
+                result = response.json()
+            except requests.RequestException:
+                test_point_statuses.append({"status": "Error"})
+                all_accepted = False
+                continue
+
+            status = result.get('status', 'Error')
+            actual_output = (result.get('files', {}) or {}).get('stdout', "")
+            actual_output = actual_output.strip() if isinstance(actual_output, str) else ""
+
+            if status == 'Accepted':
+                expected_output = tc.get("output", "").strip()
+                if compare_float_strings(actual_output, expected_output):
+                    status = 'Accepted'
+                else:
+                    status = 'Wrong Answer'
+                    all_accepted = False
             else:
-                lines = lines[2:-1]
-                stderr = '\n'.join(lines)
+                all_accepted = False
 
-        if len(actual_output) > 200:
-            actual_output = actual_output[:200] + "..."
+            stderr = (result.get('files', {}) or {}).get('stderr', "")
+            stderr = stderr.strip() if isinstance(stderr, str) else ""
+            lines = stderr.split('\n')
+            exec_time = int(numpy.round(int(result.get('time', "0")) / 1_000_000))  # ms
 
-        # 检查是否生成了输出图片
-        has_output_image = False
-        if 'files' in result and isinstance(result['files'], dict):
-            # 检查是否有output.png文件
-            if 'output.png' in result['files'] or any(key.endswith('output.png') for key in result['files'].keys()):
-                has_output_image = True
+            if lang == 'matlab':
+                if len(lines) < 3:
+                    stderr = ""
+                else:
+                    lines = lines[2:-1]
+                    stderr = '\n'.join(lines)
 
-        test_point_statuses.append({
-            "status": status, 
-            "stderr": stderr, 
-            "stdout": actual_output,
-            "time": exec_time,
-            "has_output_image": has_output_image,
-            "test_index": idx  # 添加测试点索引，用于生成图片URL
-        })
+            if len(actual_output) > 200:
+                actual_output = actual_output[:200] + "..."
+
+            # 检查是否生成了输出图片
+            has_output_image = False
+            if 'files' in result and isinstance(result['files'], dict):
+                # 检查是否有output.png文件
+                if 'output.png' in result['files'] or any(key.endswith('output.png') for key in result['files'].keys()):
+                    has_output_image = True
+
+            test_point_statuses.append({
+                "status": status, 
+                "stderr": stderr, 
+                "stdout": actual_output,
+                "time": exec_time,
+                "has_output_image": has_output_image,
+                "test_index": idx  # 添加测试点索引，用于生成图片URL
+            })
 
     # === 汇总与落库（沿用你原逻辑） ===
     score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")
