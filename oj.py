@@ -1764,15 +1764,18 @@ def bump_complete_cnt_for_user_classes(user, problem_id):
 def evaluate_submission(submission_id):
     """
     处理评测任务：与评测机通信，更新提交记录
-    支持两种语言：
+    支持多种语言：
       - MATLAB: 发送到 http://localhost:5050/run-hello
       - C:      发送到 http://localhost:5050/run-c
+      - C++:    发送到 http://localhost:5050/run-cpp
+      - Python: 发送到 http://localhost:5050/run-py
     说明：
       1) test_code 可选。若包含占位符 '%%user_code_here'，则把用户代码按语言合规地嵌入其中：
          - MATLAB: 用 % 注释包裹标记，保证能运行；
-         - C:      用 /* ... */ 注释包裹标记，保证能编译。
+         - C/C++:  用 /* ... */ 注释包裹标记，保证能编译。
       2) forbidden: 仍传到评测端，由评测端做函数调用屏蔽。
       3) 对比输出逻辑沿用原有 compare_float_strings。
+      4) 支持用户自定义头文件：从代码仓库获取用户的头文件并包含到代码中。
     """
     submission = get_submission_by_id(submission_id)
     if not submission:
@@ -1784,8 +1787,31 @@ def evaluate_submission(submission_id):
     problem_id = submission['problem_id']
     code = submission['code']
     problem = get_problem(problem_id)  # 包含 lang
-    lang = (problem.get('lang') or 'matlab').strip().lower()  # 'matlab' | 'c'
+    lang = (problem.get('lang') or 'matlab').strip().lower()  # 'matlab' | 'c' | 'cpp' | 'python'
     test_code = problem.get('test_code') or ''
+
+    # 获取用户信息（用于获取用户的代码仓库文件）
+    user = get_user_by_username(submission['username'])
+    user_files = {}
+    
+    # 获取用户的代码仓库文件（仅对C/C++有效）
+    if user and lang in ['c', 'cpp']:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                sql = """
+                SELECT filename, file_content 
+                FROM user_code_repository 
+                WHERE user_id = %s
+                """
+                cursor.execute(sql, (user['id'],))
+                files = cursor.fetchall()
+                for file_data in files:
+                    user_files[file_data['filename']] = file_data['file_content']
+        except Exception as e:
+            print(f"Warning: Failed to load user repository files: {e}")
+        finally:
+            conn.close()
 
     # forbidden functions
     conn = get_db_connection()
@@ -1901,7 +1927,8 @@ def evaluate_submission(submission_id):
             "forbidden": fbd_func,
             "sid": f"eoj-{submission_id}-{idx}",
             "timeLimit": time_limit_ns,          # ns（从题目配置读取）
-            "memoryLimit": 512 * 1024 * 1024     # Byte
+            "memoryLimit": 512 * 1024 * 1024,    # Byte
+            "user_files": user_files             # 用户的代码仓库文件
         }
 
         try:
@@ -3832,6 +3859,217 @@ def set_primary_class():
         conn.close()
     
     return jsonify(success=True, message="主班级设置成功")
+
+###############################################################################
+#  代码仓库管理
+###############################################################################
+@app.route('/code_repository')
+def code_repository():
+    """代码仓库管理页面"""
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+    
+    return render_template('code_repository.html', user=user)
+
+@app.route('/api/repository/files', methods=['GET'])
+def get_repository_files():
+    """获取用户代码仓库文件列表"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+            SELECT id, filename, file_size, created_at, updated_at 
+            FROM user_code_repository 
+            WHERE user_id = %s 
+            ORDER BY filename
+            """
+            cursor.execute(sql, (user['id'],))
+            files = cursor.fetchall()
+            
+            # 转换日期格式
+            for file in files:
+                file['created_at'] = file['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+                file['updated_at'] = file['updated_at'].strftime('%Y-%m-%d %H:%M:%S')
+                file['file_size_kb'] = round(file['file_size'] / 1024, 2) if file['file_size'] > 0 else 0
+            
+            return jsonify(success=True, files=files)
+    except Exception as e:
+        return jsonify(success=False, message=f"获取文件列表失败: {str(e)}"), 500
+    finally:
+        conn.close()
+
+@app.route('/api/repository/file/<int:file_id>', methods=['GET'])
+def get_repository_file(file_id):
+    """获取指定文件内容"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+            SELECT filename, file_content 
+            FROM user_code_repository 
+            WHERE id = %s AND user_id = %s
+            """
+            cursor.execute(sql, (file_id, user['id']))
+            file_data = cursor.fetchone()
+            
+            if not file_data:
+                return jsonify(success=False, message="文件不存在"), 404
+            
+            return jsonify(success=True, filename=file_data['filename'], content=file_data['file_content'])
+    except Exception as e:
+        return jsonify(success=False, message=f"获取文件失败: {str(e)}"), 500
+    finally:
+        conn.close()
+
+@app.route('/api/repository/file', methods=['POST'])
+def save_repository_file():
+    """保存或创建文件"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    
+    data = request.get_json()
+    filename = data.get('filename', '').strip()
+    content = data.get('content', '')
+    file_id = data.get('file_id')  # 如果提供了file_id，则是编辑现有文件
+    
+    if not filename:
+        return jsonify(success=False, message="文件名不能为空"), 400
+    
+    # 验证文件名（只允许头文件）
+    if not filename.endswith(('.h', '.hpp', '.c', '.cpp')):
+        return jsonify(success=False, message="只允许上传 .h, .hpp, .c, .cpp 文件"), 400
+    
+    # 验证文件名格式
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
+        return jsonify(success=False, message="文件名只能包含字母、数字、下划线、连字符和点"), 400
+    
+    file_size = len(content.encode('utf-8'))
+    
+    # 文件大小限制 (100KB)
+    if file_size > 100 * 1024:
+        return jsonify(success=False, message="文件大小不能超过100KB"), 400
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if file_id:
+                # 编辑现有文件
+                sql = """
+                UPDATE user_code_repository 
+                SET filename = %s, file_content = %s, file_size = %s
+                WHERE id = %s AND user_id = %s
+                """
+                cursor.execute(sql, (filename, content, file_size, file_id, user['id']))
+                
+                if cursor.rowcount == 0:
+                    return jsonify(success=False, message="文件不存在或无权限"), 404
+                
+                message = "文件更新成功"
+            else:
+                # 创建新文件
+                sql = """
+                INSERT INTO user_code_repository (user_id, filename, file_content, file_size)
+                VALUES (%s, %s, %s, %s)
+                """
+                try:
+                    cursor.execute(sql, (user['id'], filename, content, file_size))
+                    message = "文件创建成功"
+                except pymysql.IntegrityError:
+                    return jsonify(success=False, message="文件名已存在"), 409
+            
+            conn.commit()
+            return jsonify(success=True, message=message)
+    except Exception as e:
+        conn.rollback()
+        return jsonify(success=False, message=f"保存文件失败: {str(e)}"), 500
+    finally:
+        conn.close()
+
+@app.route('/api/repository/file/<int:file_id>', methods=['DELETE'])
+def delete_repository_file(file_id):
+    """删除文件"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "DELETE FROM user_code_repository WHERE id = %s AND user_id = %s"
+            cursor.execute(sql, (file_id, user['id']))
+            
+            if cursor.rowcount == 0:
+                return jsonify(success=False, message="文件不存在或无权限"), 404
+            
+            conn.commit()
+            return jsonify(success=True, message="文件删除成功")
+    except Exception as e:
+        conn.rollback()
+        return jsonify(success=False, message=f"删除文件失败: {str(e)}"), 500
+    finally:
+        conn.close()
+
+@app.route('/api/repository/upload', methods=['POST'])
+def upload_repository_file():
+    """上传文件"""
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    
+    if 'file' not in request.files:
+        return jsonify(success=False, message="没有选择文件"), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify(success=False, message="没有选择文件"), 400
+    
+    filename = secure_filename(file.filename)
+    
+    # 验证文件扩展名
+    if not filename.endswith(('.h', '.hpp', '.c', '.cpp')):
+        return jsonify(success=False, message="只允许上传 .h, .hpp, .c, .cpp 文件"), 400
+    
+    # 读取文件内容
+    try:
+        content = file.read().decode('utf-8')
+    except UnicodeDecodeError:
+        return jsonify(success=False, message="文件编码错误，请使用UTF-8编码"), 400
+    
+    file_size = len(content.encode('utf-8'))
+    
+    # 文件大小限制 (100KB)
+    if file_size > 100 * 1024:
+        return jsonify(success=False, message="文件大小不能超过100KB"), 400
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+            INSERT INTO user_code_repository (user_id, filename, file_content, file_size)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+            file_content = VALUES(file_content),
+            file_size = VALUES(file_size)
+            """
+            cursor.execute(sql, (user['id'], filename, content, file_size))
+            
+            conn.commit()
+            return jsonify(success=True, message="文件上传成功")
+    except Exception as e:
+        conn.rollback()
+        return jsonify(success=False, message=f"上传文件失败: {str(e)}"), 500
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
