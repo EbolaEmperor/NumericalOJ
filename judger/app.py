@@ -8,6 +8,35 @@ import shlex
 
 app = Flask(__name__)
 
+# 获取OJ系统根目录路径
+def get_oj_root_path():
+    """
+    获取OJ系统根目录路径，用于-I编译选项
+    优先级：环境变量 > 相对路径计算 > 默认路径
+    """
+    # 方法1: 从环境变量获取
+    oj_root = os.environ.get('OJ_ROOT_PATH')
+    if oj_root and os.path.exists(oj_root):
+        return oj_root
+    
+    # 方法2: 基于当前脚本位置计算
+    # judger/app.py -> ../  (上一级目录就是OJ根目录)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    oj_root = os.path.dirname(current_dir)
+    if os.path.exists(oj_root):
+        return oj_root
+    
+    # 方法3: 使用默认路径
+    return "/opt/oj"
+
+OJ_ROOT_PATH = get_oj_root_path()
+LIBRARY_PATH = os.path.join(OJ_ROOT_PATH, "library")
+
+# 启动时打印路径信息，便于调试
+print(f"[Judger] OJ Root Path: {OJ_ROOT_PATH}")
+print(f"[Judger] Library Path: {LIBRARY_PATH}")
+print(f"[Judger] Library Path exists: {os.path.exists(LIBRARY_PATH)}")
+
 ALLOWED_IPS = [
     "127.0.0.1",
     "183.131.51.191"
@@ -332,12 +361,25 @@ def run_c():
             f.write(user_input)
         with open(code_filename, "w", encoding="utf-8") as f:
             f.write(code_content)
+        
+        # 写入用户的头文件（如果有）
+        user_files = data.get("user_files", {})
+        if user_files:
+            for filename, content in user_files.items():
+                user_file_path = f"{sid}/{filename}"
+                with open(user_file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
 
         # ===== 编译 =====
         compile_timeout_sec = 10
         compile_cmd = ["timeout", f"{compile_timeout_sec}s",
-                       "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11",
-                       "main.c", "-o", "a.out"]
+                       "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11"]
+        
+        # 添加库路径（如果存在）
+        if os.path.exists(LIBRARY_PATH):
+            compile_cmd.extend(["-I", LIBRARY_PATH])
+        
+        compile_cmd.extend(["main.c", "-o", "a.out"])
         compile_res = subprocess.run(
             compile_cmd,
             cwd=sid,
@@ -459,12 +501,25 @@ def run_cpp():
             f.write(user_input)
         with open(code_filename, "w", encoding="utf-8") as f:
             f.write(code_content)
+        
+        # 写入用户的头文件（如果有）
+        user_files = data.get("user_files", {})
+        if user_files:
+            for filename, content in user_files.items():
+                user_file_path = f"{sid}/{filename}"
+                with open(user_file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
 
         # ===== 编译 =====
         compile_timeout_sec = 10
         compile_cmd = ["timeout", f"{compile_timeout_sec}s",
-                       "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20",
-                       "main.cpp", "-o", "a.out"]
+                       "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20"]
+        
+        # 添加库路径（如果存在）
+        if os.path.exists(LIBRARY_PATH):
+            compile_cmd.extend(["-I", LIBRARY_PATH])
+        
+        compile_cmd.extend(["main.cpp", "-o", "a.out"])
         compile_res = subprocess.run(
             compile_cmd,
             cwd=sid,

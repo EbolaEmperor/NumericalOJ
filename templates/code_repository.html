@@ -1,0 +1,591 @@
+{% extends "layout.html" %}
+
+{% block title %}代码仓库管理 - Numerical OJ{% endblock %}
+
+{% block content %}
+<div class="container-fluid p-0" style="height: calc(100vh - 56px);">
+    <div class="row h-100 g-0">
+        <!-- 左侧文件列表 -->
+        <div class="col-md-3 bg-light border-end" style="min-height: 100%;">
+            <div class="p-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="mb-0">我的代码仓库</h5>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="createNewFile()">
+                            <i class="fas fa-plus"></i> 新建
+                        </button>
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="uploadFile()">
+                            <i class="fas fa-upload"></i> 上传
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- 文件列表 -->
+                <div id="fileList" class="list-group">
+                    <div class="text-center text-muted p-3">
+                        <i class="fas fa-spinner fa-spin"></i> 加载中...
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧编辑器 -->
+        <div class="col-md-9 d-flex flex-column" style="min-height: 100%;">
+            <!-- 文件标签栏 -->
+            <div class="bg-light border-bottom p-2" id="fileTabBar" style="min-height: 50px;">
+                <div id="welcomeTab" class="text-center text-muted p-3">
+                    <i class="fas fa-code fa-3x mb-3"></i>
+                    <h5>欢迎使用代码仓库</h5>
+                    <p>选择左侧的文件开始编辑，或创建新文件</p>
+                </div>
+                <div id="fileTab" class="d-none">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="d-flex align-items-center">
+                            <span id="currentFileName" class="fw-bold"></span>
+                            <span id="fileModified" class="text-danger ms-2 d-none">*</span>
+                        </div>
+                        <div class="btn-group">
+                            <button type="button" class="btn btn-success btn-sm" onclick="saveFile()">
+                                <i class="fas fa-save"></i> 保存
+                            </button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="deleteFile()">
+                                <i class="fas fa-trash"></i> 删除
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="closeFile()">
+                                <i class="fas fa-times"></i> 关闭
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 代码编辑器 -->
+            <div class="flex-grow-1" style="position: relative;">
+                <textarea id="codeEditor" class="form-control border-0" style="width: 100%; height: 100%; resize: none; font-family: 'Courier New', monospace; font-size: 14px;" placeholder="在这里编写代码..."></textarea>
+                <div id="codeMirrorContainer" style="height: 100%;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 新建文件模态框 -->
+<div class="modal fade" id="newFileModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">新建文件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="newFileForm">
+                    <div class="mb-3">
+                        <label for="newFileName" class="form-label">文件名</label>
+                        <input type="text" class="form-control" id="newFileName" placeholder="例如: myheader.h" required>
+                        <div class="form-text">支持的文件类型: .h, .hpp, .c, .cpp</div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmCreateFile()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 文件上传模态框 -->
+<div class="modal fade" id="uploadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">上传文件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="uploadFile" class="form-label">选择文件</label>
+                        <input type="file" class="form-control" id="uploadFile" accept=".h,.hpp,.c,.cpp" required>
+                        <div class="form-text">支持的文件类型: .h, .hpp, .c, .cpp (最大100KB)</div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmUploadFile()">上传</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* 文件列表样式 */
+.file-item {
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.file-item:hover {
+    background-color: #e9ecef !important;
+}
+
+.file-item.active {
+    background-color: #007bff !important;
+    color: white !important;
+}
+
+/* 编辑器样式 */
+#codeEditor {
+    outline: none;
+    border: none !important;
+    background-color: #f8f9fa;
+}
+
+#codeEditor:focus {
+    box-shadow: none;
+    background-color: white;
+}
+
+/* CodeMirror 样式 */
+#codeMirrorContainer .CodeMirror {
+    height: 100%;
+    border: none;
+    font-family: 'Courier New', Monaco, 'Lucida Console', monospace;
+    font-size: 14px;
+}
+
+#codeMirrorContainer .CodeMirror-scroll {
+    overflow: auto;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+</style>
+
+<!-- CodeMirror CSS -->
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
+
+<!-- CodeMirror JavaScript -->
+<script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/python/python.js') }}"></script>
+
+<script>
+let currentFileId = null;
+let currentFileName = '';
+let isModified = false;
+let originalContent = '';
+let codeMirrorEditor = null;
+
+// 页面加载完成后初始化
+document.addEventListener('DOMContentLoaded', function() {
+    loadFileList();
+    initializeCodeMirror();
+    
+    // 监听键盘快捷键
+    document.addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.key === 's') {
+            e.preventDefault();
+            if (currentFileId !== null) {
+                saveFile();
+            }
+        }
+    });
+});
+
+// 初始化CodeMirror编辑器
+function initializeCodeMirror() {
+    const textarea = document.getElementById('codeEditor');
+    
+    codeMirrorEditor = CodeMirror.fromTextArea(textarea, {
+        mode: 'text/x-csrc', // 默认C语言模式
+        theme: 'eclipse',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 4,
+        tabSize: 4,
+        matchBrackets: true,
+        autoCloseBrackets: true,
+        autofocus: false,
+        extraKeys: { "Tab": "indentMore", "Shift-Tab": "indentLess" }
+    });
+    
+    codeMirrorEditor.getWrapperElement().style.fontFamily = "monospace";
+    codeMirrorEditor.getWrapperElement().style.fontSize = "14px";
+    
+    // 监听编辑器内容变化
+    codeMirrorEditor.on('change', function() {
+        if (currentFileId !== null) {
+            const currentContent = codeMirrorEditor.getValue();
+            isModified = (currentContent !== originalContent);
+            updateModifiedStatus();
+        }
+    });
+    
+    // 设置编辑器高度
+    codeMirrorEditor.setSize(null, '100%');
+    
+    // 隐藏原始textarea
+    textarea.style.display = 'none';
+}
+
+// 根据文件名获取CodeMirror模式
+function getCodeMirrorMode(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    switch (ext) {
+        case 'h':
+        case 'c':
+            return 'text/x-csrc';
+        case 'hpp':
+        case 'cpp':
+            return 'text/x-c++src';
+        case 'py':
+            return 'python';
+        default:
+            return 'text/x-csrc'; // 默认C语言
+    }
+}
+
+// 加载文件列表
+function loadFileList() {
+    fetch('/api/repository/files')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                renderFileList(data.files);
+            } else {
+                showAlert('error', data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showAlert('error', '加载文件列表失败');
+        });
+}
+
+// 渲染文件列表
+function renderFileList(files) {
+    const fileList = document.getElementById('fileList');
+    
+    if (files.length === 0) {
+        fileList.innerHTML = `
+            <div class="text-center text-muted p-3">
+                <i class="fas fa-folder-open fa-2x mb-2"></i>
+                <p>暂无文件</p>
+                <small>点击"新建"或"上传"按钮添加文件</small>
+            </div>
+        `;
+        return;
+    }
+    
+    let html = '';
+    files.forEach(file => {
+        const icon = getFileIcon(file.filename);
+        html += `
+            <div class="list-group-item file-item" data-file-id="${file.id}" onclick="openFile(${file.id}, '${file.filename}')">
+                <div class="d-flex align-items-center">
+                    <i class="${icon} me-2"></i>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold">${file.filename}</div>
+                        <small class="text-muted">${file.file_size_kb} KB • ${file.updated_at}</small>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    fileList.innerHTML = html;
+}
+
+// 获取文件图标
+function getFileIcon(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    switch (ext) {
+        case 'h':
+        case 'hpp':
+            return 'fas fa-file-code text-primary';
+        case 'c':
+        case 'cpp':
+            return 'fas fa-file-code text-success';
+        default:
+            return 'fas fa-file text-secondary';
+    }
+}
+
+// 打开文件
+function openFile(fileId, filename) {
+    if (isModified) {
+        if (!confirm('当前文件有未保存的更改，是否放弃更改？')) {
+            return;
+        }
+    }
+    
+    fetch(`/api/repository/file/${fileId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                currentFileId = fileId;
+                currentFileName = data.filename;
+                originalContent = data.content;
+                isModified = false;
+                
+                // 设置CodeMirror编辑器内容和语法高亮模式
+                if (codeMirrorEditor) {
+                    const mode = getCodeMirrorMode(data.filename);
+                    codeMirrorEditor.setOption('mode', mode);
+                    codeMirrorEditor.setValue(data.content);
+                    codeMirrorEditor.clearHistory(); // 清除编辑历史
+                }
+                
+                document.getElementById('currentFileName').textContent = data.filename;
+                
+                // 切换界面
+                document.getElementById('welcomeTab').classList.add('d-none');
+                document.getElementById('fileTab').classList.remove('d-none');
+                
+                // 更新文件列表选中状态
+                document.querySelectorAll('.file-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                document.querySelector(`[data-file-id="${fileId}"]`).classList.add('active');
+                
+                updateModifiedStatus();
+            } else {
+                showAlert('error', data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showAlert('error', '打开文件失败');
+        });
+}
+
+// 关闭文件
+function closeFile() {
+    if (isModified) {
+        if (!confirm('当前文件有未保存的更改，是否放弃更改？')) {
+            return;
+        }
+    }
+    
+    currentFileId = null;
+    currentFileName = '';
+    isModified = false;
+    originalContent = '';
+    
+    // 清空CodeMirror编辑器
+    if (codeMirrorEditor) {
+        codeMirrorEditor.setValue('');
+        codeMirrorEditor.setOption('mode', 'text/x-csrc');
+    }
+    
+    document.getElementById('welcomeTab').classList.remove('d-none');
+    document.getElementById('fileTab').classList.add('d-none');
+    
+    // 清除文件列表选中状态
+    document.querySelectorAll('.file-item').forEach(item => {
+        item.classList.remove('active');
+    });
+}
+
+// 保存文件
+function saveFile() {
+    if (currentFileId === null) return;
+    
+    // 从CodeMirror编辑器获取内容
+    const content = codeMirrorEditor ? codeMirrorEditor.getValue() : document.getElementById('codeEditor').value;
+    
+    fetch('/api/repository/file', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            file_id: currentFileId,
+            filename: currentFileName,
+            content: content
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            originalContent = content;
+            isModified = false;
+            updateModifiedStatus();
+            showAlert('success', data.message);
+            loadFileList(); // 刷新文件列表
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '保存文件失败');
+    });
+}
+
+// 删除文件
+function deleteFile() {
+    if (currentFileId === null) return;
+    
+    if (!confirm(`确定要删除文件 "${currentFileName}" 吗？此操作不可恢复。`)) {
+        return;
+    }
+    
+    fetch(`/api/repository/file/${currentFileId}`, {
+        method: 'DELETE'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.message);
+            closeFile();
+            loadFileList();
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '删除文件失败');
+    });
+}
+
+// 创建新文件
+function createNewFile() {
+    document.getElementById('newFileName').value = '';
+    new bootstrap.Modal(document.getElementById('newFileModal')).show();
+}
+
+// 确认创建文件
+function confirmCreateFile() {
+    const filename = document.getElementById('newFileName').value.trim();
+    
+    if (!filename) {
+        showAlert('error', '请输入文件名');
+        return;
+    }
+    
+    // 验证文件扩展名
+    if (!/\.(h|hpp|c|cpp)$/i.test(filename)) {
+        showAlert('error', '只允许创建 .h, .hpp, .c, .cpp 文件');
+        return;
+    }
+    
+    fetch('/api/repository/file', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            filename: filename,
+            content: ''
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.message);
+            bootstrap.Modal.getInstance(document.getElementById('newFileModal')).hide();
+            loadFileList();
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '创建文件失败');
+    });
+}
+
+// 上传文件
+function uploadFile() {
+    document.getElementById('uploadFile').value = '';
+    new bootstrap.Modal(document.getElementById('uploadModal')).show();
+}
+
+// 确认上传文件
+function confirmUploadFile() {
+    const fileInput = document.getElementById('uploadFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        showAlert('error', '请选择文件');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    fetch('/api/repository/upload', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.message);
+            bootstrap.Modal.getInstance(document.getElementById('uploadModal')).hide();
+            loadFileList();
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '上传文件失败');
+    });
+}
+
+// 更新修改状态显示
+function updateModifiedStatus() {
+    const modifiedIndicator = document.getElementById('fileModified');
+    if (isModified) {
+        modifiedIndicator.classList.remove('d-none');
+    } else {
+        modifiedIndicator.classList.add('d-none');
+    }
+}
+
+// 显示提示信息
+function showAlert(type, message) {
+    const alertClass = type === 'success' ? 'alert-success' : 'alert-danger';
+    const alertHtml = `
+        <div class="alert ${alertClass} alert-dismissible fade show position-fixed" 
+             style="top: 70px; right: 20px; z-index: 1050; min-width: 300px;">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+    
+    const alertContainer = document.createElement('div');
+    alertContainer.innerHTML = alertHtml;
+    document.body.appendChild(alertContainer);
+    
+    // 3秒后自动移除
+    setTimeout(() => {
+        const alert = alertContainer.querySelector('.alert');
+        if (alert) {
+            bootstrap.Alert.getOrCreateInstance(alert).close();
+        }
+    }, 3000);
+}
+</script>
+{% endblock %}
