@@ -201,6 +201,11 @@ def create_user(username, password_hash, email, user_class):
             sql = 'UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s'
             cursor.execute(sql, (user_class['class_en'],))
         conn.commit()
+        # 在 user_class_map 表中添加主班级记录
+        with conn.cursor() as cursor:
+            sql = 'INSERT INTO user_class_map (user_id, class_en, is_primary) VALUES (%s, %s, %s)'
+            cursor.execute(sql, (user['id'], user_class['class_en'], 1))
+        conn.commit()
     finally:
         conn.close()
 
