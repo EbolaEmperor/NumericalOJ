@@ -1405,13 +1405,22 @@ def submit_solution(problem_id):
         return "<h3>题目不存在</h3>"
 
     if user['is_admin'] != 1:
+        # 多班级：如果有多个班级同时布置该题，取“最晚的DDL”来判定能否提交
         homeworks = get_homeworks(user)
-        # 检查作业是否已过期
+        ddls = []
+        assigned = False
         for hw in homeworks:
             if hw['problem_id'] == problem_id:
-                if hw['ddl'] and hw['ddl'] < datetime.now():
-                    flash('无法提交已过期的作业', 'danger')
-                    return redirect(url_for('problem_detail', problem_id=problem_id))
+                assigned = True
+                if hw['ddl']:
+                    ddls.append(hw['ddl'])
+
+        # 若从未被任何班级布置，则后续逻辑会在访问控制处禁止；这里按“未设置DDL”不拦截
+        if ddls:
+            latest_ddl = max(ddls)
+            if latest_ddl < datetime.now():
+                flash('无法提交已过期的作业', 'danger')
+                return redirect(url_for('problem_detail', problem_id=problem_id))
     
     # 检查提交次数限制（管理员不受限制）
     if user['is_admin'] != 1:
