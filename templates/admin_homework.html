@@ -40,9 +40,9 @@
     </a>
 
     <!-- 导出学生代码按钮 -->
-    <a href="{{ url_for('export_student_codes', sclass=selected_class) }}" class="btn btn-outline-secondary ms-2">
+    <button id="exportCodesBtn" data-class="{{ selected_class }}" class="btn btn-outline-secondary ms-2">
       <i class="fas fa-code me-2"></i>导出学生代码
-    </a>
+    </button>
 
     <!-- 上传期末成绩按钮 -->
     <button class="btn btn-outline-warning ms-2" data-bs-toggle="modal" data-bs-target="#uploadExamModal">
@@ -180,6 +180,63 @@
   </div>
 </div>
 
+<!-- 导出代码进度模态框 -->
+<div class="modal fade" id="exportProgressModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-tasks me-2"></i>导出学生代码</h5>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <div class="d-flex justify-content-between mb-2">
+            <span id="progressStage">准备中...</span>
+          </div>
+          <div id="progressMessage" class="text-muted small mb-3">
+            正在启动任务...
+          </div>
+        </div>
+
+        <!-- 题目代码查重进度条 -->
+        <div id="problemCheckProgress" class="mb-4" style="display: none;">
+          <div class="d-flex justify-content-between mb-2">
+            <span class="fw-bold"><i class="fas fa-code me-2"></i>题目代码查重</span>
+            <span id="problemCheckPercentage">0%</span>
+          </div>
+          <div class="progress" style="height: 20px;">
+            <div id="problemCheckBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
+                 role="progressbar" style="width: 0%;">
+              0%
+            </div>
+          </div>
+          <div id="problemCheckMessage" class="text-muted small mt-1">等待开始...</div>
+        </div>
+
+        <!-- 代码仓库查重进度条 -->
+        <div id="repoCheckProgress" class="mb-3" style="display: none;">
+          <div class="d-flex justify-content-between mb-2">
+            <span class="fw-bold"><i class="fas fa-folder me-2"></i>代码仓库查重</span>
+            <span id="repoCheckPercentage">0%</span>
+          </div>
+          <div class="progress" style="height: 20px;">
+            <div id="repoCheckBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" 
+                 role="progressbar" style="width: 0%;">
+              0%
+            </div>
+          </div>
+          <div id="repoCheckMessage" class="text-muted small mt-1">等待开始...</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="cancelExportBtn" disabled>取消</button>
+        <a id="downloadBtn" href="#" class="btn btn-success" style="display: none;">
+          <i class="fas fa-download me-2"></i>下载文件
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
   // 修改DDL逻辑
@@ -283,6 +340,223 @@ document.addEventListener('DOMContentLoaded', function() {
         alert('请求失败，请检查网络');
       }
     });
+  }
+
+  // 导出学生代码功能
+  const exportCodesBtn = document.getElementById('exportCodesBtn');
+  if (exportCodesBtn) {
+    exportCodesBtn.addEventListener('click', async function() {
+      const selectedClass = this.getAttribute('data-class');
+      
+      // 显示进度模态框
+      const progressModal = new bootstrap.Modal(document.getElementById('exportProgressModal'));
+      progressModal.show();
+      
+      // 重置进度显示
+      updateProgress(0, '正在启动任务...', 'collecting', null);
+      document.getElementById('downloadBtn').style.display = 'none';
+      document.getElementById('cancelExportBtn').disabled = true;
+      document.getElementById('problemCheckProgress').style.display = 'none';
+      document.getElementById('repoCheckProgress').style.display = 'none';
+      
+      try {
+        // 启动导出任务
+        const response = await fetch(`/export_student_codes?sclass=${selectedClass}`);
+        const result = await response.json();
+        
+        if (!result.success) {
+          updateProgress(0, result.message || '启动任务失败', 'error', null);
+          document.getElementById('cancelExportBtn').disabled = false;
+          document.getElementById('cancelExportBtn').textContent = '关闭';
+          return;
+        }
+        
+        // 开始轮询进度
+        const taskId = result.task_id;
+        pollProgress(taskId, progressModal);
+        
+      } catch (error) {
+        updateProgress(0, '网络错误: ' + error.message, 'error', null);
+        document.getElementById('cancelExportBtn').disabled = false;
+        document.getElementById('cancelExportBtn').textContent = '关闭';
+      }
+    });
+  }
+  
+  // 取消/关闭按钮
+  document.getElementById('cancelExportBtn').addEventListener('click', function() {
+    const progressModal = bootstrap.Modal.getInstance(document.getElementById('exportProgressModal'));
+    if (progressModal) {
+      progressModal.hide();
+    }
+  });
+  
+  // 轮询进度
+  let pollInterval = null;
+  function pollProgress(taskId, modalInstance) {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+    }
+    
+    pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`/export_progress/${taskId}`);
+        const result = await response.json();
+        
+        if (!result.success) {
+          clearInterval(pollInterval);
+          updateProgress(0, result.message || '获取进度失败', 'error', null);
+          document.getElementById('cancelExportBtn').disabled = false;
+          document.getElementById('cancelExportBtn').textContent = '关闭';
+          return;
+        }
+        
+        const progress = result.progress;
+        updateProgress(progress.percentage, progress.message, progress.stage, progress.sub_progress);
+        
+        // 如果完成或出错，停止轮询
+        if (progress.stage === 'completed') {
+          clearInterval(pollInterval);
+          document.getElementById('cancelExportBtn').disabled = false;
+          document.getElementById('cancelExportBtn').textContent = '关闭';
+          
+          // 显示下载按钮
+          const downloadBtn = document.getElementById('downloadBtn');
+          downloadBtn.href = `/download_export/${taskId}`;
+          downloadBtn.style.display = 'inline-block';
+          
+        } else if (progress.stage === 'error') {
+          clearInterval(pollInterval);
+          document.getElementById('cancelExportBtn').disabled = false;
+          document.getElementById('cancelExportBtn').textContent = '关闭';
+        }
+        
+      } catch (error) {
+        clearInterval(pollInterval);
+        updateProgress(0, '获取进度失败: ' + error.message, 'error', null);
+        document.getElementById('cancelExportBtn').disabled = false;
+        document.getElementById('cancelExportBtn').textContent = '关闭';
+      }
+    }, 500); // 每500ms轮询一次
+  }
+  
+  // 更新进度显示
+  function updateProgress(percentage, message, stage, subProgress) {
+    const progressMessage = document.getElementById('progressMessage');
+    const progressStage = document.getElementById('progressStage');
+    
+    // 更新消息
+    progressMessage.textContent = message;
+    
+    // 更新阶段显示
+    let stageText = '';
+    let stageClass = '';
+    
+    switch(stage) {
+      case 'collecting':
+        stageText = '<i class="fas fa-download me-2"></i>收集代码';
+        stageClass = 'text-primary';
+        break;
+      case 'plagiarism_check':
+        stageText = '<i class="fas fa-search me-2"></i>代码查重中';
+        stageClass = 'text-info';
+        break;
+      case 'generating':
+        stageText = '<i class="fas fa-file-alt me-2"></i>生成报告';
+        stageClass = 'text-warning';
+        break;
+      case 'completed':
+        stageText = '<i class="fas fa-check-circle me-2"></i>完成';
+        stageClass = 'text-success';
+        break;
+      case 'error':
+        stageText = '<i class="fas fa-times-circle me-2"></i>错误';
+        stageClass = 'text-danger';
+        break;
+      default:
+        stageText = '<i class="fas fa-spinner me-2"></i>准备中';
+        stageClass = 'text-secondary';
+    }
+    
+    progressStage.innerHTML = stageText;
+    progressStage.className = stageClass + ' fw-bold';
+    
+    // 如果任务完成，强制设置两个进度条为 100%
+    if (stage === 'completed') {
+      // 强制显示题目代码查重进度条为 100%
+      const problemDiv = document.getElementById('problemCheckProgress');
+      const problemBar = document.getElementById('problemCheckBar');
+      const problemPercentage = document.getElementById('problemCheckPercentage');
+      const problemMessage = document.getElementById('problemCheckMessage');
+      
+      problemDiv.style.display = 'block';
+      problemBar.style.width = '100%';
+      problemBar.textContent = '100%';
+      problemPercentage.textContent = '100%';
+      problemBar.className = 'progress-bar bg-info'; // 移除动画
+      
+      // 强制显示代码仓库查重进度条为 100%
+      const repoDiv = document.getElementById('repoCheckProgress');
+      const repoBar = document.getElementById('repoCheckBar');
+      const repoPercentage = document.getElementById('repoCheckPercentage');
+      const repoMessage = document.getElementById('repoCheckMessage');
+      
+      repoDiv.style.display = 'block';
+      repoBar.style.width = '100%';
+      repoBar.textContent = '100%';
+      repoPercentage.textContent = '100%';
+      repoBar.className = 'progress-bar bg-success'; // 移除动画
+      
+      // 如果有 sub_progress，更新详细消息
+      if (subProgress) {
+        if (subProgress.problem_check && subProgress.problem_check.message) {
+          problemMessage.textContent = subProgress.problem_check.message;
+        }
+        if (subProgress.repo_check && subProgress.repo_check.message) {
+          repoMessage.textContent = subProgress.repo_check.message;
+        }
+      }
+    }
+    // 否则，正常更新子进度条
+    else if (subProgress) {
+      // 题目代码查重进度
+      if (subProgress.problem_check) {
+        const problemDiv = document.getElementById('problemCheckProgress');
+        const problemBar = document.getElementById('problemCheckBar');
+        const problemPercentage = document.getElementById('problemCheckPercentage');
+        const problemMessage = document.getElementById('problemCheckMessage');
+        
+        problemDiv.style.display = 'block';
+        const pct = subProgress.problem_check.percentage || 0;
+        problemBar.style.width = pct + '%';
+        problemBar.textContent = pct + '%';
+        problemPercentage.textContent = pct + '%';
+        problemMessage.textContent = subProgress.problem_check.message || '';
+        
+        if (pct >= 100) {
+          problemBar.className = 'progress-bar bg-info';
+        }
+      }
+      
+      // 代码仓库查重进度
+      if (subProgress.repo_check) {
+        const repoDiv = document.getElementById('repoCheckProgress');
+        const repoBar = document.getElementById('repoCheckBar');
+        const repoPercentage = document.getElementById('repoCheckPercentage');
+        const repoMessage = document.getElementById('repoCheckMessage');
+        
+        repoDiv.style.display = 'block';
+        const pct = subProgress.repo_check.percentage || 0;
+        repoBar.style.width = pct + '%';
+        repoBar.textContent = pct + '%';
+        repoPercentage.textContent = pct + '%';
+        repoMessage.textContent = subProgress.repo_check.message || '';
+        
+        if (pct >= 100) {
+          repoBar.className = 'progress-bar bg-success';
+        }
+      }
+    }
   }
 })
 </script>

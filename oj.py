@@ -31,6 +31,8 @@ import redis
 # 假设 Redis 跑在 localhost:6379
 # 根据需要添加密码、db 等
 rds = redis.StrictRedis(host='127.0.0.1', port=6379, decode_responses=True)
+# 用于存储二进制数据（如 ZIP 文件）的 Redis 连接
+rds_binary = redis.StrictRedis(host='127.0.0.1', port=6379, decode_responses=False)
 
 app = Flask(__name__)
 app.secret_key = 'some_secret_key_for_session'
@@ -2755,167 +2757,653 @@ def export_scores():
     resp.headers['Content-Disposition'] = f'attachment; filename="{selected_class}_scores.csv"'
     return resp
 
+###############################################################################
+#  代码查重功能
+###############################################################################
+def update_export_progress(task_id, stage, current, total, message, sub_progress=None):
+    """
+    更新导出任务进度到Redis
+    :param sub_progress: 子进度信息，格式为 {'problem_check': {...}, 'repo_check': {...}}
+    """
+    progress_data = {
+        'stage': stage,  # 'collecting' | 'plagiarism_check' | 'generating' | 'completed' | 'error'
+        'current': current,
+        'total': total,
+        'message': message,
+        'percentage': int((current / total * 100)) if total > 0 else 0,
+        'sub_progress': sub_progress or {}
+    }
+    rds.setex(f'export_progress:{task_id}', 600, json.dumps(progress_data))  # 过期时间10分钟
+
+def normalize_code(code):
+    """
+    标准化代码：移除注释、多余空白，用于更准确的相似度比较
+    """
+    import re
+    # 移除单行注释（支持 //, #, %）
+    code = re.sub(r'//.*?$', '', code, flags=re.MULTILINE)
+    code = re.sub(r'#.*?$', '', code, flags=re.MULTILINE)
+    code = re.sub(r'%.*?$', '', code, flags=re.MULTILINE)
+    
+    # 移除多行注释（/* */ 和 """ """）
+    code = re.sub(r'/\*.*?\*/', '', code, flags=re.DOTALL)
+    code = re.sub(r'""".*?"""', '', code, flags=re.DOTALL)
+    code = re.sub(r"'''.*?'''", '', code, flags=re.DOTALL)
+    
+    # 移除多余的空白字符
+    code = re.sub(r'\s+', ' ', code)
+    
+    return code.strip()
+
+def calculate_code_similarity(code1, code2):
+    """
+    计算两段代码的相似度（0-1之间）
+    使用SequenceMatcher进行比较
+    """
+    from difflib import SequenceMatcher
+    
+    # 标准化代码
+    norm_code1 = normalize_code(code1)
+    norm_code2 = normalize_code(code2)
+    
+    # 如果任一代码为空，返回0
+    if not norm_code1 or not norm_code2:
+        return 0.0
+    
+    # 计算相似度
+    similarity = SequenceMatcher(None, norm_code1, norm_code2).ratio()
+    return similarity
+
+def detect_plagiarism(codes_data, threshold=0.9, task_id=None):
+    """
+    检测代码查重
+    :param codes_data: 列表，每项为 {'username': ..., 'code': ..., 'problem_id': ..., 'problem_title': ...}
+    :param threshold: 相似度阈值，默认0.9（90%）
+    :param task_id: 任务ID，用于更新进度
+    :return: 查重结果列表
+    """
+    results = []
+    n = len(codes_data)
+    
+    # 按题目分组
+    problem_groups = {}
+    for item in codes_data:
+        pid = item['problem_id']
+        if pid not in problem_groups:
+            problem_groups[pid] = []
+        problem_groups[pid].append(item)
+    
+    # 计算总的比较次数
+    total_comparisons = 0
+    for pid, group in problem_groups.items():
+        if len(group) >= 2:
+            # n个学生需要比较 n*(n-1)/2 次
+            total_comparisons += len(group) * (len(group) - 1) // 2
+    
+    if total_comparisons == 0:
+        if task_id:
+            update_export_progress(task_id, 'plagiarism_check', 1, 1, '没有需要查重的代码')
+        return results
+    
+    completed_comparisons = 0
+    
+    # 对每个题目内的代码进行两两比较
+    for pid, group in problem_groups.items():
+        if len(group) < 2:
+            continue
+        
+        problem_title = group[0]['problem_title']
+        
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                user1 = group[i]['username']
+                user2 = group[j]['username']
+                code1 = group[i]['code']
+                code2 = group[j]['code']
+                
+                # 更新进度
+                if task_id:
+                    message = f'正在比较: 题目 {problem_title} - {user1} vs {user2}'
+                    sub_progress = {
+                        'problem_check': {
+                            'current': completed_comparisons,
+                            'total': total_comparisons,
+                            'percentage': int((completed_comparisons / total_comparisons * 100)) if total_comparisons > 0 else 0,
+                            'message': message
+                        }
+                    }
+                    update_export_progress(task_id, 'plagiarism_check', completed_comparisons, total_comparisons, 
+                                         '题目代码查重中...', sub_progress)
+                
+                # 计算相似度
+                similarity = calculate_code_similarity(code1, code2)
+                
+                # 如果相似度超过阈值，记录
+                if similarity >= threshold:
+                    results.append({
+                        'problem_id': pid,
+                        'problem_title': problem_title,
+                        'user1': user1,
+                        'user2': user2,
+                        'similarity': similarity
+                    })
+                
+                completed_comparisons += 1
+    
+    # 查重完成
+    if task_id:
+        sub_progress = {
+            'problem_check': {
+                'current': total_comparisons,
+                'total': total_comparisons,
+                'percentage': 100,
+                'message': f'题目代码查重完成，发现 {len(results)} 组相似代码'
+            }
+        }
+        update_export_progress(task_id, 'plagiarism_check', total_comparisons, total_comparisons, 
+                             f'题目代码查重完成，发现 {len(results)} 组相似代码', sub_progress)
+    
+    return results
+
+def get_student_repository_files(user_id):
+    """
+    获取学生的代码仓库所有文件
+    :return: 列表，每项为 {'filename': ..., 'content': ...}
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+            SELECT filename, file_content 
+            FROM user_code_repository 
+            WHERE user_id = %s 
+            ORDER BY filename
+            """
+            cursor.execute(sql, (user_id,))
+            files = cursor.fetchall()
+            return [{'filename': f['filename'], 'content': f['file_content'] or ''} for f in files]
+    except Exception as e:
+        print(f"获取代码仓库文件失败: {e}")
+        return []
+    finally:
+        conn.close()
+
+def detect_repository_plagiarism(students_data, threshold=0.9, task_id=None):
+    """
+    检测代码仓库查重
+    :param students_data: 列表，每项为 {'user_id': ..., 'username': ..., 'files': [...]}
+    :param threshold: 相似度阈值，默认0.9（90%）
+    :param task_id: 任务ID，用于更新进度
+    :return: 查重结果列表
+    """
+    results = []
+    
+    # 过滤掉没有代码仓库文件的学生
+    students_with_files = [s for s in students_data if s['files']]
+    
+    if len(students_with_files) < 2:
+        if task_id:
+            update_export_progress(task_id, 'plagiarism_check', 1, 1, '代码仓库文件不足，跳过查重')
+        return results
+    
+    # 计算总的比较次数：学生对数 × 文件对数
+    total_comparisons = 0
+    for i in range(len(students_with_files)):
+        for j in range(i + 1, len(students_with_files)):
+            files1 = students_with_files[i]['files']
+            files2 = students_with_files[j]['files']
+            total_comparisons += len(files1) * len(files2)
+    
+    if total_comparisons == 0:
+        if task_id:
+            update_export_progress(task_id, 'plagiarism_check', 1, 1, '没有需要比较的代码仓库文件')
+        return results
+    
+    completed_comparisons = 0
+    
+    # 两两比较学生的代码仓库
+    for i in range(len(students_with_files)):
+        for j in range(i + 1, len(students_with_files)):
+            student1 = students_with_files[i]
+            student2 = students_with_files[j]
+            user1 = student1['username']
+            user2 = student2['username']
+            
+            # 比较两个学生的所有文件对
+            for file1 in student1['files']:
+                for file2 in student2['files']:
+                    # 更新进度
+                    if task_id:
+                        message = f'正在比较: {user1}/{file1["filename"]} vs {user2}/{file2["filename"]}'
+                        sub_progress = {
+                            'repo_check': {
+                                'current': completed_comparisons,
+                                'total': total_comparisons,
+                                'percentage': int((completed_comparisons / total_comparisons * 100)) if total_comparisons > 0 else 0,
+                                'message': message
+                            }
+                        }
+                        update_export_progress(task_id, 'plagiarism_check', completed_comparisons, total_comparisons, 
+                                             '代码仓库查重中...', sub_progress)
+                    
+                    # 计算相似度
+                    similarity = calculate_code_similarity(file1['content'], file2['content'])
+                    
+                    # 如果相似度超过阈值，记录
+                    if similarity >= threshold:
+                        results.append({
+                            'user1': user1,
+                            'user2': user2,
+                            'file1': file1['filename'],
+                            'file2': file2['filename'],
+                            'similarity': similarity,
+                            'type': 'repository'  # 标记为代码仓库查重
+                        })
+                    
+                    completed_comparisons += 1
+    
+    # 查重完成
+    if task_id:
+        sub_progress = {
+            'repo_check': {
+                'current': total_comparisons,
+                'total': total_comparisons,
+                'percentage': 100,
+                'message': f'代码仓库查重完成，发现 {len(results)} 组相似文件'
+            }
+        }
+        update_export_progress(task_id, 'plagiarism_check', total_comparisons, total_comparisons, 
+                             f'代码仓库查重完成，发现 {len(results)} 组相似文件', sub_progress)
+    
+    return results
+
+def generate_plagiarism_report(plagiarism_results, repository_results=None):
+    """
+    生成查重报告文本
+    :param plagiarism_results: 题目代码查重结果
+    :param repository_results: 代码仓库查重结果
+    """
+    if not plagiarism_results and not repository_results:
+        return "未发现相似度达到90%以上的代码。\n"
+    
+    report = "=" * 80 + "\n"
+    report += "代码查重报告\n"
+    report += "=" * 80 + "\n"
+    report += f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    report += f"查重阈值: 90%\n"
+    report += f"题目代码: 发现 {len(plagiarism_results) if plagiarism_results else 0} 组疑似相似代码\n"
+    report += f"代码仓库: 发现 {len(repository_results) if repository_results else 0} 组疑似相似文件\n"
+    report += "=" * 80 + "\n\n"
+    
+    # 第一部分：题目代码查重结果
+    if plagiarism_results:
+        report += "\n" + "=" * 80 + "\n"
+        report += "一、题目代码查重结果\n"
+        report += "=" * 80 + "\n\n"
+        
+        # 按题目分组显示
+        by_problem = {}
+        for result in plagiarism_results:
+            pid = result['problem_id']
+            if pid not in by_problem:
+                by_problem[pid] = []
+            by_problem[pid].append(result)
+        
+        for pid, items in by_problem.items():
+            report += f"\n题目 ID: {pid}\n"
+            report += f"题目标题: {items[0]['problem_title']}\n"
+            report += "-" * 80 + "\n"
+            
+            for idx, item in enumerate(items, 1):
+                report += f"  [{idx}] 学生1: {item['user1']}  <-->  学生2: {item['user2']}\n"
+                report += f"       相似度: {item['similarity'] * 100:.2f}%\n\n"
+            
+            report += "\n"
+    
+    # 第二部分：代码仓库查重结果
+    if repository_results:
+        report += "\n" + "=" * 80 + "\n"
+        report += "二、代码仓库查重结果\n"
+        report += "=" * 80 + "\n\n"
+        
+        # 按学生对分组显示
+        by_student_pair = {}
+        for result in repository_results:
+            key = f"{result['user1']} <--> {result['user2']}"
+            if key not in by_student_pair:
+                by_student_pair[key] = []
+            by_student_pair[key].append(result)
+        
+        for pair, items in by_student_pair.items():
+            report += f"\n学生对: {pair}\n"
+            report += "-" * 80 + "\n"
+            
+            for idx, item in enumerate(items, 1):
+                report += f"  [{idx}] 文件1: {item['file1']}  <-->  文件2: {item['file2']}\n"
+                report += f"       相似度: {item['similarity'] * 100:.2f}%\n\n"
+            
+            report += "\n"
+    
+    report += "=" * 80 + "\n"
+    report += "说明:\n"
+    report += "1. 本报告列出了相似度达到90%以上的代码对和文件对\n"
+    report += "2. 相似度计算基于代码文本比对，已排除注释和空白的影响\n"
+    report += "3. 题目代码查重：比较同一题目内不同学生的提交代码\n"
+    report += "4. 代码仓库查重：比较不同学生代码仓库中的所有文件\n"
+    report += "5. 高相似度可能由于：代码抄袭、共同参考答案、题目简单导致解法相似等\n"
+    report += "6. 建议人工审核高相似度代码，结合提交时间等信息综合判断\n"
+    report += "=" * 80 + "\n"
+    
+    return report
+
+@celery.task(bind=True)
+def export_codes_with_plagiarism_check_task(self, selected_class):
+    """
+    异步任务：导出学生代码并进行查重
+    """
+    task_id = self.request.id
+    
+    try:
+        # 1) 校验班级
+        class_info = get_class_by_en(selected_class)
+        if not class_info:
+            update_export_progress(task_id, 'error', 0, 1, '班级不存在')
+            return None
+        
+        update_export_progress(task_id, 'collecting', 0, 100, '开始收集学生代码...')
+        
+        # 2) 获取该班布置的题目（从班级作业表 Cxxx 取）
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT problem_id FROM {selected_class} ORDER BY id ASC")
+                homework_problems = cursor.fetchall()
+        finally:
+            conn.close()
+        if not homework_problems:
+            update_export_progress(task_id, 'error', 0, 1, '该班级没有布置任何作业')
+            return None
+        
+        problem_ids = [p['problem_id'] for p in homework_problems]
+
+        # 3) 拉取题目标题与语言（一次性）
+        problems_map = {}  # pid -> {'title':..., 'lang':...}
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                fmt = ','.join(['%s'] * len(problem_ids))
+                cursor.execute(f"SELECT id, title, lang FROM problems WHERE id IN ({fmt})", problem_ids)
+                for row in cursor.fetchall():
+                    problems_map[row['id']] = {'title': row['title'], 'lang': (row.get('lang') or 'matlab').lower()}
+        finally:
+            conn.close()
+
+        # 4) 获取该班学生：优先从 user_class_map；若为空回退 users.class
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT u.id, u.username
+                    FROM user_class_map m
+                    JOIN users u ON u.id = m.user_id
+                    WHERE m.class_en = %s
+                    ORDER BY u.id ASC
+                """, (selected_class,))
+                students = cursor.fetchall()
+                if not students:
+                    cursor.execute("SELECT id, username FROM users WHERE class = %s ORDER BY id ASC", (selected_class,))
+                    students = cursor.fetchall()
+        finally:
+            conn.close()
+        if not students:
+            update_export_progress(task_id, 'error', 0, 1, '该班级没有学生')
+            return None
+
+        update_export_progress(task_id, 'collecting', 10, 100, f'找到 {len(students)} 名学生，{len(problem_ids)} 道题目')
+
+        # 5) 生成内存 ZIP
+        from io import BytesIO
+        import zipfile, re
+        zip_buffer = BytesIO()
+        
+        # 用于收集所有代码数据，供查重使用
+        codes_for_plagiarism_check = []
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            usernames = [s['username'] for s in students]
+            
+            # 按每个题目导出
+            for idx, pid in enumerate(problem_ids):
+                pmeta = problems_map.get(pid, {})
+                ptitle = pmeta.get('title') or f'Problem_{pid}'
+                plang  = (pmeta.get('lang') or 'matlab').lower()
+
+                update_export_progress(task_id, 'collecting', 10 + idx * 40 // len(problem_ids), 100, 
+                                     f'正在收集题目 {idx+1}/{len(problem_ids)}: {ptitle}')
+
+                # 题目文件夹名：替换非法字符
+                folder_name = re.sub(r'[\\/*?:"<>|]', '_', ptitle)
+
+                # 选择代码后缀
+                if plang == 'matlab':
+                    ext = '.m'
+                elif plang == 'c':
+                    ext = '.c'
+                elif plang == 'cpp':
+                    ext = '.cpp'
+                elif plang in ('python', 'py'):
+                    ext = '.py'
+                else:
+                    ext = '.txt'
+
+                # 拉取该题该班学生的最佳提交
+                conn = get_db_connection()
+                try:
+                    with conn.cursor() as cursor:
+                        sql = """
+                            WITH class_users AS (
+                                SELECT u.id, u.username
+                                FROM user_class_map m
+                                JOIN users u ON u.id = m.user_id
+                                WHERE m.class_en = %s
+                                UNION
+                                SELECT u2.id, u2.username
+                                FROM users u2
+                                WHERE u2.class = %s
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM user_class_map m2
+                                      WHERE m2.user_id = u2.id AND m2.class_en = %s
+                                  )
+                            ),
+                            ranked_submissions AS (
+                                SELECT s.id, s.username, s.code, s.score, s.created_at,
+                                       ROW_NUMBER() OVER (
+                                           PARTITION BY cu.id
+                                           ORDER BY s.score DESC, s.created_at DESC
+                                       ) AS rn
+                                FROM submissions s
+                                JOIN class_users cu ON cu.username = s.username
+                                WHERE s.problem_id = %s
+                            )
+                            SELECT username, code
+                            FROM ranked_submissions
+                            WHERE rn = 1
+                            ORDER BY username ASC
+                        """
+                        cursor.execute(sql, (selected_class, selected_class, selected_class, pid))
+                        best_rows = cursor.fetchall()
+                finally:
+                    conn.close()
+
+                # 写入 ZIP 并收集代码用于查重
+                for row in best_rows:
+                    uname = row['username']
+                    code  = row.get('code') or ""
+                    
+                    # 收集代码数据用于查重
+                    codes_for_plagiarism_check.append({
+                        'username': uname,
+                        'code': code,
+                        'problem_id': pid,
+                        'problem_title': ptitle
+                    })
+                    
+                    # 安全处理用户名（避免奇怪字符成为路径）
+                    safe_uname = re.sub(r'[\\/*?:"<>|]', '_', uname)
+                    file_name = f"{folder_name}/{safe_uname}{ext}"
+                    # 写入（UTF-8）
+                    try:
+                        zip_file.writestr(file_name, code.encode('utf-8'))
+                    except Exception:
+                        zip_file.writestr(file_name, code)
+            
+            update_export_progress(task_id, 'collecting', 50, 100, '题目代码收集完成，开始收集代码仓库...')
+            
+            # 收集并导出学生代码仓库
+            repository_data = []
+            for idx, student in enumerate(students):
+                user_id = student['id']
+                username = student['username']
+                
+                update_export_progress(task_id, 'collecting', 50 + idx * 10 // len(students), 100, 
+                                     f'正在收集 {username} 的代码仓库 ({idx+1}/{len(students)})')
+                
+                # 获取该学生的代码仓库文件
+                repo_files = get_student_repository_files(user_id)
+                
+                if repo_files:
+                    repository_data.append({
+                        'user_id': user_id,
+                        'username': username,
+                        'files': repo_files
+                    })
+                    
+                    # 导出到ZIP
+                    safe_uname = re.sub(r'[\\/*?:"<>|]', '_', username)
+                    for repo_file in repo_files:
+                        file_name = f"代码仓库/{safe_uname}/{repo_file['filename']}"
+                        try:
+                            zip_file.writestr(file_name, repo_file['content'].encode('utf-8'))
+                        except Exception:
+                            zip_file.writestr(file_name, repo_file['content'])
+            
+            update_export_progress(task_id, 'collecting', 60, 100, '代码仓库收集完成，开始题目代码查重...')
+            
+            # 执行题目代码查重
+            plagiarism_results = detect_plagiarism(codes_for_plagiarism_check, threshold=0.9, task_id=task_id)
+            
+            update_export_progress(task_id, 'plagiarism_check', 75, 100, '题目代码查重完成，开始代码仓库查重...')
+            
+            # 执行代码仓库查重
+            repository_results = detect_repository_plagiarism(repository_data, threshold=0.9, task_id=task_id)
+            
+            update_export_progress(task_id, 'generating', 90, 100, '查重完成，生成报告...')
+            
+            # 生成查重报告并添加到ZIP
+            plagiarism_report = generate_plagiarism_report(plagiarism_results, repository_results)
+            zip_file.writestr("查重报告.txt", plagiarism_report.encode('utf-8'))
+
+        update_export_progress(task_id, 'generating', 95, 100, '准备下载文件...')
+        
+        # 将 ZIP 文件保存到 Redis（有效期10分钟）- 使用二进制连接
+        zip_data = zip_buffer.getvalue()
+        rds_binary.setex(f'export_zip:{task_id}', 600, zip_data)
+        
+        # 任务完成，强制设置两个进度条为 100%
+        total_similar = len(plagiarism_results) + len(repository_results)
+        sub_progress = {
+            'problem_check': {
+                'current': 100,
+                'total': 100,
+                'percentage': 100,
+                'message': f'题目代码查重完成，发现 {len(plagiarism_results)} 组相似代码'
+            },
+            'repo_check': {
+                'current': 100,
+                'total': 100,
+                'percentage': 100,
+                'message': f'代码仓库查重完成，发现 {len(repository_results)} 组相似文件'
+            }
+        }
+        update_export_progress(task_id, 'completed', 100, 100, 
+                             f'导出完成！题目代码: {len(plagiarism_results)} 组，代码仓库: {len(repository_results)} 组',
+                             sub_progress)
+        
+        return task_id
+        
+    except Exception as e:
+        import traceback
+        error_msg = f'导出失败: {str(e)}'
+        update_export_progress(task_id, 'error', 0, 1, error_msg)
+        print(traceback.format_exc())
+        return None
+
 @app.route('/export_student_codes')
 def export_student_codes():
-    """导出指定班级的学生代码（按最高分、最新提交），支持多班级映射，兼容旧 users.class。"""
+    """启动异步导出任务"""
     user = current_user()
     if not is_admin(user):
         return redirect(url_for('login'))
     
     selected_class = request.args.get('sclass')
     if not selected_class:
-        return "班级参数错误", 400
+        return jsonify({'success': False, 'message': '班级参数错误'}), 400
     
-    # 1) 校验班级
-    class_info = get_class_by_en(selected_class)
-    if not class_info:
-        return "班级不存在", 404
+    # 启动异步任务
+    task = export_codes_with_plagiarism_check_task.delay(selected_class)
     
-    # 2) 获取该班布置的题目（从班级作业表 Cxxx 取）
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"SELECT problem_id FROM {selected_class} ORDER BY id ASC")
-            homework_problems = cursor.fetchall()
-    finally:
-        conn.close()
-    if not homework_problems:
-        return "该班级没有布置任何作业", 404
+    return jsonify({
+        'success': True,
+        'task_id': task.id,
+        'message': '导出任务已启动'
+    })
+
+@app.route('/export_progress/<task_id>')
+def export_progress(task_id):
+    """查询导出任务进度"""
+    user = current_user()
+    if not is_admin(user):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
     
-    problem_ids = [p['problem_id'] for p in homework_problems]
+    progress_key = f'export_progress:{task_id}'
+    progress_data = rds.get(progress_key)
+    
+    if not progress_data:
+        return jsonify({'success': False, 'message': '任务不存在或已过期'}), 404
+    
+    progress = json.loads(progress_data)
+    return jsonify({
+        'success': True,
+        'progress': progress
+    })
 
-    # 3) 拉取题目标题与语言（一次性）
-    problems_map = {}  # pid -> {'title':..., 'lang':...}
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            fmt = ','.join(['%s'] * len(problem_ids))
-            cursor.execute(f"SELECT id, title, lang FROM problems WHERE id IN ({fmt})", problem_ids)
-            for row in cursor.fetchall():
-                problems_map[row['id']] = {'title': row['title'], 'lang': (row.get('lang') or 'matlab').lower()}
-    finally:
-        conn.close()
-
-    # 4) 获取该班学生：优先从 user_class_map；若为空回退 users.class
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT u.id, u.username
-                FROM user_class_map m
-                JOIN users u ON u.id = m.user_id
-                WHERE m.class_en = %s
-                ORDER BY u.id ASC
-            """, (selected_class,))
-            students = cursor.fetchall()
-            if not students:
-                cursor.execute("SELECT id, username FROM users WHERE class = %s ORDER BY id ASC", (selected_class,))
-                students = cursor.fetchall()
-    finally:
-        conn.close()
-    if not students:
-        return "该班级没有学生", 404
-
-    # 5) 生成内存 ZIP
-    from io import BytesIO
-    import zipfile, re
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        # 为了只导出班级成员的最佳代码，我们在 SQL 里先限定用户集合
-        # 构造 username 列表（用 username 关联 submissions）
-        usernames = [s['username'] for s in students]
-        # 如果用户名很多，可以分块；这里直接一次性 IN(...)（MySQL 默认可承受千级）
-        if not usernames:
-            # 理论到不了这儿
-            pass
-        
-        # 按每个题目导出
-        for pid in problem_ids:
-            pmeta = problems_map.get(pid, {})
-            ptitle = pmeta.get('title') or f'Problem_{pid}'
-            plang  = (pmeta.get('lang') or 'matlab').lower()
-
-            # 题目文件夹名：替换非法字符
-            folder_name = re.sub(r'[\\/*?:"<>|]', '_', ptitle)
-
-            # 选择代码后缀
-            if plang == 'matlab':
-                ext = '.m'
-            elif plang == 'c':
-                ext = '.c'
-            elif plang == 'cpp':
-                ext = '.cpp'
-            elif plang in ('python', 'py'):
-                ext = '.py'
-            else:
-                ext = '.txt'
-
-            # —— 拉取该题该班学生的最佳提交（分数优先，其次时间新）——
-            # 用 CTE 过滤用户集合：先把 usernames 填入临时表式的 CTE，再 Join submissions
-            # 为了减少 IN 列表的长度，我们用 users 表做 join，再用 class 映射筛人（双路径：映射表优先、旧表回退）
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cursor:
-                    # 说明：
-                    # class_users: 班级中的用户（优先映射表；若同一用户已在映射表中，则不再用旧表行）
-                    # ranked_submissions: 对每位用户在此题的提交做 ROW_NUMBER 排名
-                    sql = """
-                        WITH class_users AS (
-                            SELECT u.id, u.username
-                            FROM user_class_map m
-                            JOIN users u ON u.id = m.user_id
-                            WHERE m.class_en = %s
-                            UNION
-                            SELECT u2.id, u2.username
-                            FROM users u2
-                            WHERE u2.class = %s
-                              AND NOT EXISTS (
-                                  SELECT 1 FROM user_class_map m2
-                                  WHERE m2.user_id = u2.id AND m2.class_en = %s
-                              )
-                        ),
-                        ranked_submissions AS (
-                            SELECT s.id, s.username, s.code, s.score, s.created_at,
-                                   ROW_NUMBER() OVER (
-                                       PARTITION BY cu.id
-                                       ORDER BY s.score DESC, s.created_at DESC
-                                   ) AS rn
-                            FROM submissions s
-                            JOIN class_users cu ON cu.username = s.username
-                            WHERE s.problem_id = %s
-                        )
-                        SELECT username, code
-                        FROM ranked_submissions
-                        WHERE rn = 1
-                        ORDER BY username ASC
-                    """
-                    cursor.execute(sql, (selected_class, selected_class, selected_class, pid))
-                    best_rows = cursor.fetchall()
-            finally:
-                conn.close()
-
-            # 写入 ZIP
-            for row in best_rows:
-                uname = row['username']
-                code  = row.get('code') or ""
-                # 安全处理用户名（避免奇怪字符成为路径）
-                safe_uname = re.sub(r'[\\/*?:"<>|]', '_', uname)
-                file_name = f"{folder_name}/{safe_uname}{ext}"
-                # 写入（UTF-8）
-                try:
-                    zip_file.writestr(file_name, code.encode('utf-8'))
-                except Exception:
-                    # 兜底：即便编码异常也写入原始 bytes（这里理论不会发生）
-                    zip_file.writestr(file_name, code)
-
-    # 6) 返回响应
+@app.route('/download_export/<task_id>')
+def download_export(task_id):
+    """下载导出的ZIP文件"""
+    user = current_user()
+    if not is_admin(user):
+        return redirect(url_for('login'))
+    
+    # 从 Redis 获取 ZIP 数据（使用二进制连接）
+    zip_key = f'export_zip:{task_id}'
+    zip_data = rds_binary.get(zip_key)
+    
+    if not zip_data:
+        return "文件不存在或已过期", 404
+    
+    # 获取班级名称（从进度信息中）
+    progress_key = f'export_progress:{task_id}'
+    progress_data = rds.get(progress_key)
+    filename = 'student_codes.zip'
+    if progress_data:
+        # 可以从任务参数中获取班级名，这里简化处理
+        filename = 'student_codes.zip'
+    
     from flask import make_response
-    zip_buffer.seek(0)
-    response = make_response(zip_buffer.getvalue())
+    # rds_binary.get() 返回的已经是字节类型，直接使用
+    response = make_response(zip_data)
     response.headers['Content-Type'] = 'application/zip'
-    response.headers['Content-Disposition'] = (
-        f'attachment; filename="{selected_class}_codes.zip"'
-    )
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
 
 ###############################################################################
