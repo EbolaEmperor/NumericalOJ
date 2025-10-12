@@ -40,6 +40,7 @@
       <th><i class="fas fa-user me-2"></i> 用户名</th>
       <th><i class="fas fa-envelope me-2"></i> 邮箱</th>
       <th style="min-width: 360px;"><i class="fas fa-users me-2"></i> 班级</th>
+      <th><i class="fas fa-graduation-cap me-2"></i> 操作</th>
     </tr>
 </thead>
 <tbody>
@@ -85,6 +86,12 @@
     </div>
   </div>
 </td>
+    <td>
+      <button type="button" class="btn btn-sm btn-outline-info" 
+              onclick="showGradesModal('{{ u.id }}', '{{ u.username }}')">
+        <i class="fas fa-chart-line me-1"></i>查看成绩
+      </button>
+    </td>
   </tr>
   {% endfor %}
 </tbody>
@@ -234,6 +241,54 @@
           <button type="submit" class="btn btn-primary">保存修改</button>
         </div>
       </form>
+    </div>
+  </div>
+</div>
+
+<!-- 查看/编辑成绩的模态框 -->
+<div class="modal fade" id="gradesModal" tabindex="-1" aria-labelledby="gradesModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="gradesModalLabel">
+          <i class="fas fa-chart-line me-2"></i>
+          查看成绩 - <span id="gradesUsername"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="gradesUserId">
+        <div id="gradesLoadingIndicator" class="text-center my-3">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">加载中...</span>
+          </div>
+        </div>
+        <div id="gradesTableContainer" style="display: none;">
+          <div class="mb-3">
+            <input type="text" id="gradeSearchInput" class="form-control" placeholder="搜索题目标题...">
+          </div>
+          <div style="max-height: 500px; overflow-y: auto;">
+            <table class="table table-striped table-hover" id="gradesTable">
+              <thead class="sticky-top bg-white">
+                <tr>
+                  <th>题目ID</th>
+                  <th>题目标题</th>
+                  <th>用户得分</th>
+                  <th>满分</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="gradesTableBody">
+                <!-- 动态加载 -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div id="gradesErrorMessage" class="alert alert-danger" style="display: none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+      </div>
     </div>
   </div>
 </div>
@@ -476,6 +531,162 @@
         if (!data.success) { alert('移除失败：' + (data.message || '未知错误')); return; }
         const badge = el.closest('.badge');
         if (badge) badge.remove();
+      })
+      .catch(err => alert('网络错误：' + err));
+  };
+
+  // ===== 成绩管理功能 =====
+  let allGrades = [];  // 存储所有成绩数据，用于搜索过滤
+
+  window.showGradesModal = function(userId, username) {
+    document.getElementById('gradesUserId').value = userId;
+    document.getElementById('gradesUsername').textContent = username;
+    
+    // 显示加载指示器，隐藏表格和错误信息
+    document.getElementById('gradesLoadingIndicator').style.display = 'block';
+    document.getElementById('gradesTableContainer').style.display = 'none';
+    document.getElementById('gradesErrorMessage').style.display = 'none';
+    document.getElementById('gradeSearchInput').value = '';
+    
+    // 显示模态框
+    new bootstrap.Modal(document.getElementById('gradesModal')).show();
+    
+    // 加载成绩数据
+    fetch("{{ url_for('get_user_grades') }}?user_id=" + userId)
+      .then(r => r.json())
+      .then(data => {
+        document.getElementById('gradesLoadingIndicator').style.display = 'none';
+        
+        if (!data.success) {
+          document.getElementById('gradesErrorMessage').textContent = '加载失败：' + (data.message || '未知错误');
+          document.getElementById('gradesErrorMessage').style.display = 'block';
+          return;
+        }
+        
+        // 存储数据并渲染表格
+        allGrades = data.grades || [];
+        renderGradesTable(allGrades);
+        document.getElementById('gradesTableContainer').style.display = 'block';
+      })
+      .catch(err => {
+        document.getElementById('gradesLoadingIndicator').style.display = 'none';
+        document.getElementById('gradesErrorMessage').textContent = '网络错误：' + err;
+        document.getElementById('gradesErrorMessage').style.display = 'block';
+      });
+  };
+
+  function renderGradesTable(grades) {
+    const tbody = document.getElementById('gradesTableBody');
+    tbody.innerHTML = '';
+    
+    if (grades.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center">暂无成绩数据</td></tr>';
+      return;
+    }
+    
+    grades.forEach(item => {
+      const row = document.createElement('tr');
+      const scoreClass = item.user_score === item.max_score ? 'text-success fw-bold' : 'text-primary';
+      
+      row.innerHTML = `
+        <td>${item.problem_id}</td>
+        <td>${item.problem_title}</td>
+        <td class="${scoreClass}" id="score-${item.problem_id}">${item.user_score}</td>
+        <td>${item.max_score}</td>
+        <td>
+          <button type="button" class="btn btn-sm btn-outline-primary" 
+                  onclick="editGrade(${item.problem_id}, '${item.problem_title}', ${item.user_score}, ${item.max_score})">
+            <i class="fas fa-edit"></i> 修改
+          </button>
+        </td>
+      `;
+      tbody.appendChild(row);
+    });
+  }
+
+  // 搜索过滤功能
+  document.getElementById('gradeSearchInput').addEventListener('input', function(e) {
+    const searchTerm = e.target.value.toLowerCase();
+    const filteredGrades = allGrades.filter(item => 
+      item.problem_title.toLowerCase().includes(searchTerm) ||
+      item.problem_id.toString().includes(searchTerm)
+    );
+    renderGradesTable(filteredGrades);
+  });
+
+  window.editGrade = function(problemId, problemTitle, currentScore, maxScore) {
+    const userId = document.getElementById('gradesUserId').value;
+    const scorePrompt = currentScore === null ? '未做' : currentScore;
+    
+    const newScore = prompt(
+      `修改成绩\n题目: ${problemTitle} (ID: ${problemId})\n当前得分: ${scorePrompt}\n满分: ${maxScore}\n\n请输入新的得分 (0-${maxScore})，留空表示未做:`,
+      currentScore === null ? '' : currentScore
+    );
+    
+    if (newScore === null) return;  // 用户取消
+    
+    // 验证输入
+    let finalScore = null;
+    if (newScore.trim() !== '') {
+      const parsed = parseInt(newScore);
+      if (isNaN(parsed) || parsed < 0 || parsed > maxScore) {
+        alert(`请输入 0 到 ${maxScore} 之间的整数，或留空表示未做`);
+        return;
+      }
+      finalScore = parsed;
+    }
+    
+    // 发送更新请求
+    const form = new FormData();
+    form.append('user_id', userId);
+    form.append('problem_id', problemId);
+    form.append('score', finalScore === null ? '' : finalScore);
+    
+    fetch("{{ url_for('update_user_grade') }}", { method: "POST", body: form })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) {
+          alert('更新失败：' + (data.message || '未知错误'));
+          return;
+        }
+        
+        // 更新存储的数据
+        const gradeItem = allGrades.find(g => g.problem_id === problemId);
+        if (gradeItem) {
+          gradeItem.user_score = finalScore;
+        }
+        
+        // 更新界面显示
+        if (finalScore === null) {
+          // 如果成绩被清空，从列表中移除这个题目
+          allGrades = allGrades.filter(g => g.problem_id !== problemId);
+          renderGradesTable(allGrades);
+        } else {
+          // 更新表格中的分数显示
+          const scoreCell = document.getElementById('score-' + problemId);
+          if (scoreCell) {
+            scoreCell.textContent = finalScore;
+            scoreCell.className = finalScore === maxScore ? 'text-success fw-bold' : 'text-primary';
+          }
+        }
+        
+        // 显示成功消息
+        const toast = document.createElement('div');
+        toast.className = 'position-fixed top-0 end-0 p-3';
+        toast.style.zIndex = '9999';
+        toast.innerHTML = `
+          <div class="toast show" role="alert">
+            <div class="toast-header bg-success text-white">
+              <strong class="me-auto">成功</strong>
+              <button type="button" class="btn-close btn-close-white" onclick="this.closest('.position-fixed').remove()"></button>
+            </div>
+            <div class="toast-body">
+              成绩已更新
+            </div>
+          </div>
+        `;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
       })
       .catch(err => alert('网络错误：' + err));
   };
