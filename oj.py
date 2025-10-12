@@ -2428,6 +2428,131 @@ def edit_username_ajax():
     # 返回成功信息和新的用户名
     return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_username': new_username})
 
+@app.route('/admin/get_user_grades', methods=['GET'])
+def get_user_grades():
+    """获取用户所有题目的成绩"""
+    admin = current_user()
+    if not is_admin(admin):
+        return jsonify({'success': False, 'message': '无权限'}), 403
+    
+    user_id = request.args.get('user_id', type=int)
+    if not user_id:
+        return jsonify({'success': False, 'message': '缺少用户ID'}), 400
+    
+    # 验证用户是否存在
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': '用户不存在'}), 404
+    
+    conn = get_db_connection()
+    try:
+        # 获取所有题目信息
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT id, title, max_score FROM problems ORDER BY id ASC")
+            problems = cursor.fetchall()
+        
+        # 获取用户成绩记录
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM max_score WHERE userid=%s", (user_id,))
+            score_row = cursor.fetchone()
+        
+        # 组装成绩数据，只包含用户做过的题目
+        grades = []
+        for problem in problems:
+            problem_id = problem['id']
+            user_score = None
+            
+            if score_row:
+                # 从 max_score 表中获取对应题目的成绩
+                score_value = score_row.get(f'P{problem_id}')
+                # 注意：NULL 表示未做，0 表示做了但得0分
+                user_score = score_value
+            
+            # 只添加用户做过的题目（user_score 不为 NULL）
+            if user_score is not None:
+                grades.append({
+                    'problem_id': problem_id,
+                    'problem_title': problem['title'],
+                    'user_score': user_score,
+                    'max_score': problem['max_score'] or 0
+                })
+        
+        return jsonify({'success': True, 'grades': grades})
+    
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
+    finally:
+        conn.close()
+
+@app.route('/admin/update_user_grade', methods=['POST'])
+def update_user_grade():
+    """更新用户某题的成绩"""
+    admin = current_user()
+    if not is_admin(admin):
+        return jsonify({'success': False, 'message': '无权限'}), 403
+    
+    user_id = request.form.get('user_id', type=int)
+    problem_id = request.form.get('problem_id', type=int)
+    score_str = request.form.get('score', '').strip()
+    
+    if not user_id or not problem_id:
+        return jsonify({'success': False, 'message': '缺少必要参数'}), 400
+    
+    # 验证用户是否存在
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': '用户不存在'}), 404
+    
+    # 验证题目是否存在
+    problem = get_problem_title(problem_id)
+    if not problem:
+        return jsonify({'success': False, 'message': '题目不存在'}), 404
+    
+    # 处理分数：空字符串表示未做（NULL），否则转换为整数
+    if score_str == '':
+        score = None
+    else:
+        try:
+            score = int(score_str)
+            max_score = problem['max_score'] or 0
+            if score < 0 or score > max_score:
+                return jsonify({'success': False, 'message': f'分数必须在 0 到 {max_score} 之间'}), 400
+        except ValueError:
+            return jsonify({'success': False, 'message': '分数格式错误'}), 400
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 检查用户在 max_score 表中是否有记录
+            cursor.execute("SELECT userid FROM max_score WHERE userid=%s", (user_id,))
+            exists = cursor.fetchone()
+            
+            if not exists:
+                # 如果没有记录，先插入一条
+                cursor.execute(
+                    "INSERT INTO max_score (userid, class_en) VALUES (%s, %s)",
+                    (user_id, user.get('class', ''))
+                )
+            
+            # 更新成绩
+            if score is None:
+                # 设置为 NULL
+                sql = f"UPDATE max_score SET P{problem_id}=NULL WHERE userid=%s"
+                cursor.execute(sql, (user_id,))
+            else:
+                # 设置为具体分数
+                sql = f"UPDATE max_score SET P{problem_id}=%s WHERE userid=%s"
+                cursor.execute(sql, (score, user_id))
+        
+        conn.commit()
+        return jsonify({'success': True, 'message': '成绩更新成功'})
+    
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
+    finally:
+        conn.close()
+
 @app.route('/admin/add_class_ajax', methods=['POST'])
 def add_class_ajax():
     admin = current_user()
@@ -3251,11 +3376,16 @@ def export_codes_with_plagiarism_check_task(self, selected_class):
                     # 安全处理用户名（避免奇怪字符成为路径）
                     safe_uname = re.sub(r'[\\/*?:"<>|]', '_', uname)
                     file_name = f"{folder_name}/{safe_uname}{ext}"
-                    # 写入（UTF-8）
+                    # 写入（UTF-8），设置标志位以支持Windows系统正确显示文件名
                     try:
-                        zip_file.writestr(file_name, code.encode('utf-8'))
+                        # 使用ZipInfo对象并设置UTF-8标志位
+                        info = zipfile.ZipInfo(file_name)
+                        info.flag_bits |= 0x800  # 设置UTF-8标志位，兼容Windows
+                        zip_file.writestr(info, code.encode('utf-8'))
                     except Exception:
-                        zip_file.writestr(file_name, code)
+                        info = zipfile.ZipInfo(file_name)
+                        info.flag_bits |= 0x800
+                        zip_file.writestr(info, code)
             
             update_export_progress(task_id, 'collecting', 50, 100, '题目代码收集完成，开始收集代码仓库...')
             
@@ -3282,10 +3412,15 @@ def export_codes_with_plagiarism_check_task(self, selected_class):
                     safe_uname = re.sub(r'[\\/*?:"<>|]', '_', username)
                     for repo_file in repo_files:
                         file_name = f"代码仓库/{safe_uname}/{repo_file['filename']}"
+                        # 设置UTF-8标志位以支持Windows系统正确显示文件名
                         try:
-                            zip_file.writestr(file_name, repo_file['content'].encode('utf-8'))
+                            info = zipfile.ZipInfo(file_name)
+                            info.flag_bits |= 0x800  # 设置UTF-8标志位，兼容Windows
+                            zip_file.writestr(info, repo_file['content'].encode('utf-8'))
                         except Exception:
-                            zip_file.writestr(file_name, repo_file['content'])
+                            info = zipfile.ZipInfo(file_name)
+                            info.flag_bits |= 0x800
+                            zip_file.writestr(info, repo_file['content'])
             
             update_export_progress(task_id, 'collecting', 60, 100, '代码仓库收集完成，开始题目代码查重...')
             
@@ -3301,7 +3436,10 @@ def export_codes_with_plagiarism_check_task(self, selected_class):
             
             # 生成查重报告并添加到ZIP
             plagiarism_report = generate_plagiarism_report(plagiarism_results, repository_results)
-            zip_file.writestr("查重报告.txt", plagiarism_report.encode('utf-8'))
+            # 设置UTF-8标志位以支持Windows系统正确显示文件名
+            info = zipfile.ZipInfo("查重报告.txt")
+            info.flag_bits |= 0x800  # 设置UTF-8标志位，兼容Windows
+            zip_file.writestr(info, plagiarism_report.encode('utf-8'))
 
         update_export_progress(task_id, 'generating', 95, 100, '准备下载文件...')
         
