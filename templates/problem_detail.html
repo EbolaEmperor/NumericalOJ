@@ -42,7 +42,7 @@
   <div class="col-md-6">
     {% if problem.type == 1 %}
       <form action="{{ url_for('submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
-        <div class="d-flex justify-content-between align-items-center mb-2">
+        <div class="d-flex justify-content-between align-items-end mb-2">
           <label for="codeEditor" class="form-label mb-0">
             <i class="fas fa-code me-2"></i> 代码 
             &nbsp;&nbsp;
@@ -53,21 +53,28 @@
               <i class="fas fa-stopwatch me-2"></i> {{ tl_ms }} ms
             </span>
           </label>
-          <div>
+          <div class="d-flex flex-column align-items-end">
             {% if user.is_admin != 1 %}
               {% if remaining_submissions is not none %}
-                <span class="{% if remaining_submissions <= 3 %}text-danger{% else %}text-muted{% endif %} me-2">
+                <small class="{% if remaining_submissions <= 3 %}text-danger{% else %}text-muted{% endif %} mb-1">
                   剩余提交次数: <strong>{{ remaining_submissions }}</strong>/10
-                </span>
+                </small>
               {% endif %}
-              <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
-                <i class="fas fa-paper-plane me-2"></i> {% if can_submit %}提交{% else %}已达上限{% endif %}
-              </button>
-            {% else %}
-              <button type="submit" class="btn btn-outline-primary">
-                <i class="fas fa-paper-plane me-2"></i> 提交
-              </button>
             {% endif %}
+            <div>
+              <button type="button" class="btn btn-outline-secondary me-2" id="loadLastCodeBtn">
+                <i class="fas fa-copy me-1"></i> 复制上次代码
+              </button>
+              {% if user.is_admin != 1 %}
+                <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
+                  <i class="fas fa-paper-plane me-2"></i> {% if can_submit %}提交{% else %}已达上限{% endif %}
+                </button>
+              {% else %}
+                <button type="submit" class="btn btn-outline-primary">
+                  <i class="fas fa-paper-plane me-2"></i> 提交
+                </button>
+              {% endif %}
+            </div>
           </div>
         </div>
 
@@ -268,6 +275,38 @@
 
   document.querySelector('form').addEventListener('submit', function() {
     document.getElementById('codeEditor').value = editor.getValue();
+  });
+
+  // 加载上次代码按钮
+  document.getElementById('loadLastCodeBtn')?.addEventListener('click', function() {
+    const problemId = {{ problem.id }};
+    const btn = this;
+    const originalHtml = btn.innerHTML;
+    
+    // 禁用按钮并显示加载中
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> 加载中...';
+    
+    fetch(`/api/get_last_submission_code/${problemId}`)
+      .then(response => response.json())
+      .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+        
+        if (data.success) {
+          // 将代码加载到 CodeMirror 编辑器中
+          editor.setValue(data.code);
+        } else {
+          // 显示错误提示
+          alert(data.message || '加载失败');
+        }
+      })
+      .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+        alert('请求失败，请稍后再试');
+        console.error('Error:', error);
+      });
   });
 </script>
 {% endif %}
