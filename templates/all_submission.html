@@ -83,7 +83,11 @@
         <!-- 在移动端显示简写状态 -->
         <div class="flex-fill d-block d-sm-none">
           <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
-            {{ 'A' if sub.status == 'Accepted' else 'U' if sub.status == 'Unaccepted' else 'P'}}
+            {%- if sub.status == 'Accepted' -%}A
+            {%- elif sub.status == 'Unaccepted' -%}U
+            {%- elif sub.status == 'Compile Error' -%}CE
+            {%- elif sub.status in ['Pending', 'Waiting', 'Running'] -%}P
+            {%- else -%}?{%- endif -%}
           </span>
         </div>
       </div>
@@ -140,6 +144,7 @@
   .badge.accepted { background-color: rgb(36, 180, 77); color: white; }
   .badge.unaccepted { background-color: rgb(226, 23, 60); color: white; }
   .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
+  .badge.compile-error { background-color: #ff9800; color: white; }
   .badge.undefined-status { background-color: gray; color: white; }
 
   /* 增加列对齐优化 */
