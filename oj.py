@@ -228,7 +228,7 @@ def get_problem(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms,submission_limit FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -238,21 +238,21 @@ def get_problem_title(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms FROM problems WHERE id=%s"
+            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
         conn.close()
 
-def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1, lang='matlab', time_limit_ms=2000):
+def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1, lang='matlab', time_limit_ms=2000, submission_limit=10):
     conn = get_db_connection()
     try:
         max_score = (0 if int(type) == 1 else 5)
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems 
-                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms) 
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
-            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms))
+                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit))
         conn.commit()
         pid = cursor.lastrowid
         with conn.cursor() as cursor:
@@ -266,15 +266,15 @@ def create_problem(title, content, initial_code='', test_code='', forbidden_func
     finally:
         conn.close()
 
-def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func='', new_lang='matlab', new_time_limit_ms=None):
+def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func='', new_lang='matlab', new_time_limit_ms=None, new_submission_limit=None):
     conn = get_db_connection()
     try:
         # 允许不传则不改；为了简单，这里直接改（前端保证传值）
         with conn.cursor() as cursor:
             sql = """UPDATE problems 
-                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s
+                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s, submission_limit=%s
                      WHERE id=%s"""
-            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, new_lang, new_time_limit_ms, problem_id))
+            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, new_lang, new_time_limit_ms, new_submission_limit, problem_id))
         conn.commit()
     finally:
         conn.close()
@@ -1200,9 +1200,12 @@ def problem_detail(problem_id):
     # 获取初始代码
     initial_code = problem.get('initial_code', '')
     
+    # 获取题目的提交次数限制
+    submission_limit = problem.get('submission_limit', 10)
+    
     # 获取剩余提交次数（管理员不受限制）
-    remaining_submissions = get_remaining_submissions(user['username'], problem_id) if user['is_admin'] != 1 else None
-    can_submit_flag = can_submit(user['username'], problem_id) if user['is_admin'] != 1 else True
+    remaining_submissions = get_remaining_submissions(user['username'], problem_id, submission_limit) if user['is_admin'] != 1 else None
+    can_submit_flag = can_submit(user['username'], problem_id, submission_limit) if user['is_admin'] != 1 else True
 
     return render_template('problem_detail.html',
                            problem=problem,
@@ -1250,11 +1253,12 @@ def add_problem():
         problem_type = request.form.get('type')  # 1 编程 2 书面
         lang = (request.form.get('lang') or 'matlab').strip().lower()  # 'matlab' | 'c' | 'cpp'
         time_limit_ms = parse_time_limit_ms_from_form(request.form)
+        submission_limit = int(request.form.get('submission_limit', 10))
 
         if not title or not content:
             return render_template('add_problem.html', user=user, error_message="标题和内容不能为空")
 
-        create_problem(title, content, initial_code, test_code, forbidden_func, problem_type, lang, time_limit_ms)
+        create_problem(title, content, initial_code, test_code, forbidden_func, problem_type, lang, time_limit_ms, submission_limit)
         return redirect(url_for('problem_list'))
 
     return render_template('add_problem.html', user=user, error_message=None)
@@ -1277,11 +1281,12 @@ def edit_problem(problem_id):
         forbidden_func = request.form.get('forbidden_func', '').strip()
         new_lang = (request.form.get('lang') or problem.get('lang') or 'matlab').strip().lower()
         new_time_limit_ms = parse_time_limit_ms_from_form(request.form) if 'time_limit_s' in request.form or 'time_limit' in request.form else (problem.get('time_limit') or 2000)
+        new_submission_limit = int(request.form.get('submission_limit', problem.get('submission_limit', 10)))
 
         if not new_title or not new_content:
             return render_template('edit_problem.html', problem=problem, user=user, error_message="标题和内容不能为空")
 
-        update_problem(problem_id, new_title, new_content, new_initial_code, new_test_code, forbidden_func, new_lang, new_time_limit_ms)
+        update_problem(problem_id, new_title, new_content, new_initial_code, new_test_code, forbidden_func, new_lang, new_time_limit_ms, new_submission_limit)
         return redirect(url_for('problem_detail', problem_id=problem_id))
 
     return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
@@ -1424,14 +1429,17 @@ def submit_solution(problem_id):
                 flash('无法提交已过期的作业', 'danger')
                 return redirect(url_for('problem_detail', problem_id=problem_id))
     
+    # 获取题目的提交次数限制
+    submission_limit = problem.get('submission_limit', 10)
+    
     # 检查提交次数限制（管理员不受限制）
     if user['is_admin'] != 1:
-        if not can_submit(user['username'], problem_id):
-            flash('您对此题的提交次数已达到上限（5次）！', 'danger')
+        if not can_submit(user['username'], problem_id, submission_limit):
+            flash(f'您对此题的提交次数已达到上限（{submission_limit}次）！', 'danger')
             return redirect(url_for('problem_detail', problem_id=problem_id))
     
     # 获取剩余提交次数（用于显示）
-    remaining_submissions = get_remaining_submissions(user['username'], problem_id) if user['is_admin'] != 1 else None
+    remaining_submissions = get_remaining_submissions(user['username'], problem_id, submission_limit) if user['is_admin'] != 1 else None
 
     if request.method == 'POST':
         # 判断题目类型

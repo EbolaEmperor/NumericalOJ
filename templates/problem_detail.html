@@ -56,8 +56,9 @@
           <div class="d-flex flex-column align-items-end">
             {% if user.is_admin != 1 %}
               {% if remaining_submissions is not none %}
+                {% set sub_limit = problem.submission_limit or 10 %}
                 <small class="{% if remaining_submissions <= 3 %}text-danger{% else %}text-muted{% endif %} mb-1">
-                  剩余提交次数: <strong>{{ remaining_submissions }}</strong>/10
+                  剩余提交次数: <strong>{{ remaining_submissions }}</strong>/{{ sub_limit }}
                 </small>
               {% endif %}
             {% endif %}
@@ -95,8 +96,9 @@
             {% endif %}
             {% if user.is_admin != 1 %}
               {% if remaining_submissions is not none %}
+                {% set sub_limit = problem.submission_limit or 10 %}
                 <span class="{% if remaining_submissions <= 2 %}text-danger{% else %}text-muted{% endif %} me-2">
-                  剩余提交次数: <strong>{{ remaining_submissions }}</strong>/5
+                  剩余提交次数: <strong>{{ remaining_submissions }}</strong>/{{ sub_limit }}
                 </span>
               {% endif %}
               <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>

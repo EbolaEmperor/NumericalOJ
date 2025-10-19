@@ -160,6 +160,7 @@ CREATE TABLE `problems` (
   `max_score` int DEFAULT NULL,
   `test_code` text,
   `time_limit_ms` int DEFAULT '2000',
+  `submission_limit` int DEFAULT '10'
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

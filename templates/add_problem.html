@@ -11,9 +11,9 @@
 
 <form id="addProblemForm" method="POST" action="{{ url_for('add_problem') }}">
   
-  <!-- 一行容器 -->
+  <!-- 第一行：标题、类型、语言 -->
   <div class="row mb-3">
-    <div class="col-md-3">
+    <div class="col-md-6">
       <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
       <input type="text" class="form-control" id="titleInput" name="title" required>
     </div>
@@ -31,7 +31,7 @@
     <!-- 题目语言（仅编程题显示） -->
     <div class="col-md-3" id="langField">
       <label for="langSelect" class="form-label">
-        <i class="fas fa-language me-2"></i> 题目语言
+        <i class="fas fa-language me-2"></i> 语言
       </label>
       <select class="form-select" id="langSelect" name="lang">
         <option value="matlab" selected>MATLAB</option>
@@ -40,13 +40,24 @@
         <option value="python">Python</option>
       </select>
     </div>
+  </div>
 
+  <!-- 第二行：时限、提交次数限制（仅编程题显示） -->
+  <div class="row mb-3" id="programmingConfigFields">
     <!-- 时限 -->
-    <div class="col-md-3" id="timeLimitField">
+    <div class="col-md-6" id="timeLimitField">
       <label for="timeLimitInput" class="form-label">
         <i class="fas fa-stopwatch me-2"></i> 测试点时限 (毫秒 ms)
       </label>
       <input type="number" class="form-control" id="timeLimitInput" name="time_limit" value="2000" required>
+    </div>
+
+    <!-- 提交次数限制 -->
+    <div class="col-md-6">
+      <label for="submissionLimitInput" class="form-label">
+        <i class="fas fa-check-circle me-2"></i> 提交次数限制
+      </label>
+      <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" value="10" min="1" required>
     </div>
   </div>
 
@@ -152,7 +163,7 @@
     document.getElementById('forbiddenFuncDiv').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('writtenAssignmentFields').style.display = isProgramming ? 'none' : 'block';
     document.getElementById('langField').style.display = isProgramming ? 'block' : 'none';
-    document.getElementById('timeLimitField').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('programmingConfigFields').style.display = isProgramming ? 'flex' : 'none';
   }
   // 立即执行一次，确保初始可见性正确
   syncVisibility();
