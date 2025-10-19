@@ -1829,7 +1829,7 @@ def bump_complete_cnt_for_user_classes(user, problem_id):
         conn.close()
 
 
-@celery.task
+@celery.task(time_limit=300, soft_time_limit=240)  # 设置任务超时：硬限制5分钟，软限制4分钟
 def evaluate_submission(submission_id):
     """
     处理评测任务：与评测机通信，更新提交记录
@@ -1991,6 +1991,47 @@ def evaluate_submission(submission_id):
 
     # 对于编译型语言（C/C++），使用批量评测接口优化性能
     if lang in ['c', 'cpp']:
+        # 先进行快速编译检查，如果编译失败立即返回
+        quick_compile_payload = {
+            "code": final_code,
+            "input": "",  # 空输入用于编译检查
+            "forbidden": fbd_func,
+            "sid": f"eoj-quick-compile-{submission_id}",
+            "timeLimit": 1000000000,  # 1秒，仅用于编译检查
+            "memoryLimit": 512 * 1024 * 1024,
+            "user_files": user_files
+        }
+        
+        # 快速编译检查
+        try:
+            quick_response = requests.post(f'http://localhost:5050/run-{lang}', 
+                                        json=quick_compile_payload, timeout=15)
+            quick_result = quick_response.json()
+            
+            # 如果编译失败，立即返回编译错误
+            if quick_result.get('status') == 'Compile Error':
+                compile_stderr = quick_result.get('files', {}).get('stderr', 'Compile Error')
+                all_accepted = False
+                
+                for idx, tc in enumerate(test_cases, start=1):
+                    test_point_statuses.append({
+                        "status": "Compile Error",
+                        "stderr": compile_stderr,
+                        "stdout": "",
+                        "time": 0,
+                        "has_output_image": False,
+                        "test_index": idx
+                    })
+                
+                # 更新提交状态并返回
+                update_submission_status(submission_id, 'Compile Error')
+                update_submission_evaluation(submission_id, test_point_statuses, 0, 'Compile Error')
+                return
+                
+        except requests.RequestException:
+            # 快速编译检查失败，继续使用批量评测
+            pass
+        
         # 使用批量评测接口
         batch_judge_url = f'http://localhost:5050/batch-evaluate-{lang}'
         
@@ -2006,7 +2047,7 @@ def evaluate_submission(submission_id):
         }
 
         try:
-            response = requests.post(batch_judge_url, json=batch_payload, timeout=60)  # 批量评测需要更长时间
+            response = requests.post(batch_judge_url, json=batch_payload, timeout=120)  # 批量评测超时：编译30秒 + 运行时间
             response.raise_for_status()
             batch_result = response.json()
         except requests.RequestException as e:
@@ -2105,7 +2146,7 @@ def evaluate_submission(submission_id):
             }
 
             try:
-                response = requests.post(judge_url, json=payload, timeout=20)
+                response = requests.post(judge_url, json=payload, timeout=15)  # 减少单个测试点超时
                 response.raise_for_status()
                 result = response.json()
             except requests.RequestException:
