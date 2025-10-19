@@ -11,6 +11,8 @@
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
 
 <div class="row">
+  <!-- 隐藏的元数据，避免在 <script> 内直接注入 Jinja -->
+  <div id="problemMeta" data-problem-id="{{ problem.id }}" style="display:none"></div>
   <!-- 左侧：题面描述 -->
   <div class="col-md-6 mb-3">
     <div class="d-flex justify-content-between align-items-center mb-3">
@@ -215,6 +217,7 @@
   .badge.accepted { background-color: rgb(36, 180, 77); color: white; }
   .badge.unaccepted { background-color: rgb(226, 23, 60); color: white; }
   .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
+  .badge.compile-error { background-color: #ff9800; color: white; }
   .badge.undefined-status { background-color: gray; color: white; }
   @media (max-width: 768px) { #codeMirrorContainer .CodeMirror { height: 300px; } }
   @media (min-width: 769px) { #codeMirrorContainer .CodeMirror { height: 500px; } }
@@ -236,7 +239,7 @@
   if (!rmBtn) return;
   rmBtn.addEventListener('click', function(e) {
     e.preventDefault();
-    var problemId = {{ problem.id }};
+    var problemId = document.getElementById('problemMeta')?.dataset.problemId;
     fetch('{{ url_for("invalidate_invalid_submissions", problem_id=problem.id) }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -281,7 +284,7 @@
 
   // 加载上次代码按钮
   document.getElementById('loadLastCodeBtn')?.addEventListener('click', function() {
-    const problemId = {{ problem.id }};
+    const problemId = document.getElementById('problemMeta')?.dataset.problemId;
     const btn = this;
     const originalHtml = btn.innerHTML;
     
