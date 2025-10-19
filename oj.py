@@ -1590,6 +1590,35 @@ def submission_status(submission_id):
         'last_updated': submission.get('updated_at', submission.get('submit_time', ''))
     })
 
+@app.route('/api/get_last_submission_code/<int:problem_id>')
+def get_last_submission_code(problem_id):
+    """
+    API: 获取用户对某题的最后一次提交代码
+    """
+    user = current_user()
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    
+    # 获取用户对该题的所有提交
+    submissions = get_submissions_by_user_and_problem(user['username'], problem_id)
+    
+    if not submissions or len(submissions) == 0:
+        return jsonify({'success': False, 'message': '没有找到之前的提交记录'}), 404
+    
+    # 获取最后一次提交
+    last_submission = submissions[0]
+    
+    # 检查是否有代码
+    if not last_submission.get('code'):
+        return jsonify({'success': False, 'message': '上一次提交没有代码'}), 404
+    
+    return jsonify({
+        'success': True,
+        'code': last_submission['code'],
+        'submission_id': last_submission['id'],
+        'score': last_submission['score']
+    })
+
 @app.route('/submission_output_image/<int:submission_id>/<int:test_index>')
 def get_submission_output_image(submission_id, test_index):
     """
