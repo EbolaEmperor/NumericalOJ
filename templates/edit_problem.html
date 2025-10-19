@@ -11,15 +11,15 @@
 
 <form id="editProblemForm" method="POST" action="{{ url_for('edit_problem', problem_id=problem.id) }}">
   {% if problem.type == 1 %}
-  <!-- 同行：语言 + 时限 -->
+  <!-- 同行：语言 + 时限 + 提交限制 -->
   <div class="row mb-3">
     <div class="col-md-4">
       <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
       <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
     </div>
 
-    <div class="col-md-4">
-      <label for="langSelect" class="form-label"><i class="fas fa-language me-2"></i> 题目语言</label>
+    <div class="col-md-2">
+      <label for="langSelect" class="form-label"><i class="fas fa-language me-2"></i> 语言</label>
       <select class="form-select" id="langSelect" name="lang">
         {% set plang = (problem.lang or 'matlab') | lower %}
         <option value="matlab" {% if plang == 'matlab' %}selected{% endif %}>MATLAB</option>
@@ -30,9 +30,15 @@
     </div>
 
     {% set tl_ms = (problem.time_limit_ms or 2000) %}
-    <div class="col-md-4">
-      <label for="timeLimitInput" class="form-label"><i class="fas fa-stopwatch me-2"></i> 时限 (毫秒 ms)</label>
+    <div class="col-md-3">
+      <label for="timeLimitInput" class="form-label"><i class="fas fa-stopwatch me-2"></i> 时限 (ms)</label>
       <input type="number" class="form-control" id="timeLimitInput" name="time_limit" min="1" value="{{ tl_ms }}">
+    </div>
+
+    {% set sub_limit = (problem.submission_limit or 10) %}
+    <div class="col-md-3">
+      <label for="submissionLimitInput" class="form-label"><i class="fas fa-check-circle me-2"></i> 提交限制</label>
+      <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" min="1" value="{{ sub_limit }}">
     </div>
   </div>
   {% else %}
