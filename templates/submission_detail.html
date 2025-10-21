@@ -461,6 +461,92 @@
 </script>
 {% endif %}
 
+<!-- 首次 AC 庆祝动画样式 -->
+<style>
+  #celebrationOverlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 9999;
+    display: none;
+    justify-content: center;
+    align-items: center;
+    animation: fadeIn 0.5s ease-in;
+  }
+  
+  .celebration-content {
+    text-align: center;
+    color: white;
+    animation: scaleIn 0.6s ease-out;
+  }
+  
+  .celebration-content h1 {
+    font-size: 4rem;
+    margin-bottom: 1rem;
+    text-shadow: 0 0 20px rgba(255, 215, 0, 0.8);
+  }
+  
+  .celebration-emoji {
+    font-size: 8rem;
+    animation: bounce 1s infinite;
+  }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  
+  @keyframes scaleIn {
+    from { transform: scale(0.5); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-30px); }
+  }
+  
+  .fireworks {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  
+  .firework {
+    position: absolute;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    animation: explode 1s ease-out forwards;
+  }
+  
+  @keyframes explode {
+    0% {
+      opacity: 1;
+      transform: translate(0, 0) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translate(var(--tx), var(--ty)) scale(0);
+    }
+  }
+</style>
+
+<!-- 首次 AC 庆祝覆盖层 -->
+<div id="celebrationOverlay">
+  <div class="fireworks" id="fireworksContainer"></div>
+  <div class="celebration-content">
+    <div class="celebration-emoji">🎉</div>
+    <h1>恭喜通过！</h1>
+    <p style="font-size: 1.5rem; margin-top: 1rem;">太棒了！你成功解决了这道题目！</p>
+    <p style="font-size: 1.2rem; margin-top: 0.5rem; color: #ffd700;">AI 小猫正在为你分析代码亮点...</p>
+  </div>
+</div>
+
 <!-- AI 部分：只有在 problem_type == 1 时才显示 询问 AI 按钮 -->
 {% if submission.problem_type == 1 %}
 <script>
@@ -496,8 +582,8 @@
     }
   });
 
-  // 点击询问 AI 按钮后的逻辑
-  askAiBtn.addEventListener('click', function() {
+  // 通用的 AI 调用函数
+  function callAI(endpoint) {
     aiModal.show();
     aiLoading.style.display = 'block';
     aiAnswerArea.style.display = 'none';
@@ -512,7 +598,7 @@
     // 获取用户代码（如果有 CodeMirror）
     const userCode = submissionCodeEditor.getValue() || '';
 
-    fetch('{{ url_for("ask_ai") }}', {
+    fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -617,6 +703,93 @@
       aiAnswerArea.style.display = 'block';
       answerMain.innerHTML = `<p class="text-danger">请求出错：${err}</p>`;
     });
+  }
+
+  // 点击询问 AI 按钮后的逻辑
+  if (askAiBtn) {
+    askAiBtn.addEventListener('click', function() {
+      callAI('{{ url_for("ask_ai") }}');
+    });
+  }
+
+  // 创建烟花效果
+  function createFireworks() {
+    const container = document.getElementById('fireworksContainer');
+    const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24', '#6c5ce7', '#fd79a8'];
+    
+    for (let i = 0; i < 30; i++) {
+      setTimeout(() => {
+        const x = Math.random() * window.innerWidth;
+        const y = Math.random() * window.innerHeight * 0.6;
+        
+        for (let j = 0; j < 20; j++) {
+          const firework = document.createElement('div');
+          firework.className = 'firework';
+          firework.style.left = x + 'px';
+          firework.style.top = y + 'px';
+          firework.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+          
+          const angle = (Math.PI * 2 * j) / 20;
+          const velocity = 50 + Math.random() * 100;
+          const tx = Math.cos(angle) * velocity;
+          const ty = Math.sin(angle) * velocity;
+          
+          firework.style.setProperty('--tx', tx + 'px');
+          firework.style.setProperty('--ty', ty + 'px');
+          
+          container.appendChild(firework);
+          
+          setTimeout(() => firework.remove(), 1000);
+        }
+      }, i * 100);
+    }
+  }
+
+  // 检测是否首次 AC 并显示庆祝动画
+  function checkFirstAC() {
+    const submissionStatus = '{{ submission.status }}';
+    const submissionId = {{ submission.id }};
+    const problemId = {{ submission.problem_id }};
+    const isAdmin = {{ 'true' if user and user.is_admin == 1 else 'false' }};
+    
+    // 如果是管理员，不显示庆祝动画和 AI 分析
+    if (isAdmin) {
+      return;
+    }
+    
+    // 检查是否是 Accepted 状态
+    if (submissionStatus !== 'Accepted') {
+      return;
+    }
+    
+    // 使用 sessionStorage 确保每个会话只显示一次
+    const celebrationKey = `celebrated_${submissionId}`;
+    if (sessionStorage.getItem(celebrationKey)) {
+      return;
+    }
+    
+    // 标记为已庆祝
+    sessionStorage.setItem(celebrationKey, 'true');
+    
+    // 显示庆祝动画
+    const overlay = document.getElementById('celebrationOverlay');
+    overlay.style.display = 'flex';
+    
+    // 创建烟花效果
+    createFireworks();
+    
+    // 3秒后关闭庆祝动画并自动调用 AI 分析
+    setTimeout(() => {
+      overlay.style.display = 'none';
+      
+      // 自动调用 AI 进行 AC 后分析
+      callAI('{{ url_for("ask_ai_for_ac") }}');
+    }, 3000);
+  }
+
+  // 页面加载完成后检查是否首次 AC
+  window.addEventListener('load', function() {
+    checkFirstAC();
   });
 </script>
 {% endif %}
