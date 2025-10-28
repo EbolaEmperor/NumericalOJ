@@ -2631,6 +2631,55 @@ def update_user_grade():
     finally:
         conn.close()
 
+@app.route('/admin/problem_scores/<int:problem_id>')
+def get_problem_scores(problem_id):
+    """获取题目所有用户的得分"""
+    admin = current_user()
+    if not is_admin(admin):
+        return jsonify({'success': False, 'message': '无权限'}), 403
+    
+    # 获取题目信息
+    problem = get_problem_title(problem_id)
+    if not problem:
+        return jsonify({'success': False, 'message': '题目不存在'}), 404
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 查询仅有成绩记录的用户（分数非空）
+            sql = f"""
+                SELECT u.id, u.username, u.class_cn, ms.P{problem_id} as score
+                FROM users u
+                JOIN max_score ms ON u.id = ms.userid
+                WHERE u.is_admin = 0 AND ms.P{problem_id} IS NOT NULL
+                ORDER BY u.class_cn, u.username
+            """
+            cursor.execute(sql)
+            results = cursor.fetchall()
+            
+            # 处理结果
+            scores = []
+            for row in results:
+                scores.append({
+                    'user_id': row['id'],
+                    'username': row['username'],
+                    'class_cn': row['class_cn'] or '未分配班级',
+                    'score': row['score']
+                })
+            
+            return jsonify({
+                'success': True, 
+                'problem_id': problem_id,
+                'problem_title': problem['title'],
+                'max_score': problem['max_score'] or 0,
+                'scores': scores
+            })
+    
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
+    finally:
+        conn.close()
+
 @app.route('/admin/add_class_ajax', methods=['POST'])
 def add_class_ajax():
     admin = current_user()
