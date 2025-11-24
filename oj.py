@@ -3443,10 +3443,32 @@ def export_codes_with_plagiarism_check_task(self, selected_class):
                     uname = row['username']
                     code  = row.get('code') or ""
                     
-                    # 收集代码数据用于查重
+                    # 获取该用户的 user_id（从 students 列表中查找）
+                    user_id = None
+                    for student in students:
+                        if student['username'] == uname:
+                            user_id = student['id']
+                            break
+                    
+                    # 检测代码中的 include 语句，获取引用的代码仓库文件
+                    included_files = extract_includes_from_code(code)
+                    code_with_includes = code
+                    
+                    if included_files and user_id:
+                        # 获取用户代码仓库中被引用的文件
+                        repository_files = get_user_repository_files_by_names(user_id, included_files)
+                        
+                        # 将引用的代码仓库文件内容附加到主代码中，用于查重
+                        if repository_files:
+                            code_with_includes += "\n\n// ===== 以下是引用的代码仓库文件 =====\n"
+                            for filename, content in repository_files.items():
+                                code_with_includes += f"\n// ===== {filename} =====\n"
+                                code_with_includes += content + "\n"
+                    
+                    # 收集代码数据用于查重（包含引用的代码仓库文件）
                     codes_for_plagiarism_check.append({
                         'username': uname,
-                        'code': code,
+                        'code': code_with_includes,  # 使用包含引用文件的完整代码
                         'problem_id': pid,
                         'problem_title': ptitle
                     })
