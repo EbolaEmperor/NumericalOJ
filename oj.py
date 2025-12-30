@@ -1071,27 +1071,25 @@ def problem_list():
     total_submissions, total_accepted = get_today_submission_counts()
     last_10_days, daily_counts = get_last_10_days_submission_counts()
 
-    # 期末成绩（维持原逻辑，可选）
-    regular_score = None
-    final_score_val = None
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            sql = "SELECT regular_score, final_score FROM final_exam_scores WHERE student_id=%s"
-            cursor.execute(sql, (user['username'],))
-            res = cursor.fetchone()
-            if res:
-                regular_score = int(res['regular_score'])
-                final_score_val = int(res['final_score'])
-            else:
-                regular_score = None
-                final_score_val = None
-    except Exception:
-        regular_score = None
-        final_score_val = None
-    finally:
-        if 'conn' in locals():
-            conn.close()
+    # 辅助函数：获取用户在指定班级的成绩
+    def get_class_grades(class_en):
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                sql = "SELECT regular_score, final_score FROM final_exam_scores WHERE class_en=%s AND student_id=%s"
+                cursor.execute(sql, (class_en, user['username']))
+                res = cursor.fetchone()
+                if res:
+                    return {
+                        'regular_score': int(res['regular_score']) if res['regular_score'] is not None else None,
+                        'final_score': int(res['final_score']) if res['final_score'] is not None else None
+                    }
+                return None
+        except Exception:
+            return None
+        finally:
+            if 'conn' in locals():
+                conn.close()
     
     total_grade = 100
 
@@ -1105,10 +1103,7 @@ def problem_list():
                                total_accepted=total_accepted,
                                total_grade=total_grade,
                                last_10_days=last_10_days,
-                               daily_counts=daily_counts,
-                               # 下两项保留，模板里自由使用
-                               regular_score=regular_score,
-                               final_score=final_score_val)
+                               daily_counts=daily_counts)
 
     # 普通用户：检查班级数量
     classes = get_user_classes(user['id'])  # [{class_en, class_cn, is_primary}, ...]
@@ -1124,14 +1119,13 @@ def problem_list():
                                total_accepted=total_accepted,
                                total_grade=total_grade,
                                last_10_days=last_10_days,
-                               daily_counts=daily_counts,
-                               regular_score=regular_score,
-                               final_score=final_score_val)
+                               daily_counts=daily_counts)
 
     if len(classes) == 1:
         # 单班级：沿用旧字段 homeworks（模板完全不改）
         cls = classes[0]['class_en']
         homeworks = get_homeworks_for_class(user['id'], cls)
+        class_grades = get_class_grades(cls)
         return render_template('problem_list.html',
                                homeworks=homeworks,
                                user=user,
@@ -1141,18 +1135,21 @@ def problem_list():
                                total_grade=total_grade,
                                last_10_days=last_10_days,
                                daily_counts=daily_counts,
-                               regular_score=regular_score,
-                               final_score=final_score_val)
+                               single_class_en=cls,
+                               single_class_cn=classes[0]['class_cn'],
+                               class_grades=class_grades)
 
     # 多班级：按班级分组传给模板
     homeworks_by_class = []
     for c in classes:
         items = get_homeworks_for_class(user['id'], c['class_en'])
+        grades = get_class_grades(c['class_en'])
         homeworks_by_class.append({
             "class_en": c['class_en'],
             "class_cn": c['class_cn'],
             "is_primary": c['is_primary'],
-            "hw_list": items
+            "hw_list": items,
+            "grades": grades
         })
 
     return render_template('problem_list.html',
@@ -1163,9 +1160,7 @@ def problem_list():
                            total_accepted=total_accepted,
                            total_grade=total_grade,
                            last_10_days=last_10_days,
-                           daily_counts=daily_counts,
-                           regular_score=regular_score,
-                           final_score=final_score_val)
+                           daily_counts=daily_counts)
 
 @app.route('/problem/<int:problem_id>', methods=['GET'])
 def problem_detail(problem_id):
