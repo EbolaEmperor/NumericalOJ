@@ -55,10 +55,17 @@
         {# 多班级：按班级块分组渲染；单班级：沿用原来的 homeworks 列表 #}
         {% if homeworks_by_class %}
           {% for block in homeworks_by_class %}
-            <h5 class="mt-4 mb-3">
-              <i class="fas fa-users me-2"></i>{{ block.class_cn }}
-              {% if block.is_primary %}<span class="badge bg-primary ms-2">主班级</span>{% endif %}
-            </h5>
+            <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
+              <h5 class="mb-0">
+                <i class="fas fa-users me-2"></i>{{ block.class_cn }}
+                {% if block.is_primary %}<span class="badge bg-primary ms-2">主班级</span>{% endif %}
+              </h5>
+              {% if block.grades and block.grades.regular_score is not none and block.grades.final_score is not none %}
+              <button class="btn btn-sm btn-outline-primary" onclick="showGrades('{{ block.class_cn }}', {{ block.grades.regular_score }}, {{ block.grades.final_score }})">
+                <i class="fas fa-graduation-cap me-1"></i>查看成绩
+              </button>
+              {% endif %}
+            </div>
             {% if block.hw_list and block.hw_list|length > 0 %}
               <ul class="list-group">
                 {% for hw in block.hw_list %}
@@ -110,6 +117,18 @@
 
         {% else %}
           {# 单班级：保留你原先的 homeworks 列表 #}
+          {% if single_class_cn %}
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="mb-0">
+              <i class="fas fa-users me-2"></i>{{ single_class_cn }}
+            </h5>
+            {% if class_grades and class_grades.regular_score is not none and class_grades.final_score is not none %}
+            <button class="btn btn-sm btn-outline-primary" onclick="showGrades('{{ single_class_cn }}', {{ class_grades.regular_score }}, {{ class_grades.final_score }})">
+              <i class="fas fa-graduation-cap me-1"></i>查看成绩
+            </button>
+            {% endif %}
+          </div>
+          {% endif %}
           <ul class="list-group">
             {% for hw in homeworks %}
               <li class="list-group-item">
@@ -209,6 +228,35 @@
             <li><a href="https://www.cc98.org" target="_blank" class="ms-2 text-decoration-none">CC98</a></li>
           </ul>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 成绩模态框 -->
+<div class="modal fade" id="gradesModal" tabindex="-1" aria-labelledby="gradesModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="gradesModalLabel">
+          <i class="fas fa-graduation-cap me-2"></i><span id="modalClassName"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row text-center">
+          <div class="col-6">
+            <div class="fs-1 fw-bold text-primary" id="modalRegularScore">-</div>
+            <div class="text-muted">平时成绩</div>
+          </div>
+          <div class="col-6">
+            <div class="fs-1 fw-bold text-success" id="modalFinalScore">-</div>
+            <div class="text-muted">期末成绩</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
       </div>
     </div>
   </div>
@@ -339,13 +387,13 @@ document.getElementById('projects-refresh-btn').addEventListener('click', refres
 </script>
 
 <script>
-  document.addEventListener('DOMContentLoaded', () => {
-    // 用 Jinja2 输出 JS 原生数字 / null
-    const regularScore = {{ regular_score | tojson | safe }};
-    const totalGrade   = {{ total_grade   | tojson | safe }};
-    if (regularScore !== null && totalGrade !== null && regularScore !== totalGrade) {
-      alert('管理员上传的平时分与系统核算不一致，请钉钉私聊助教确认情况。');
-    }
-  });
+// 显示成绩模态框
+function showGrades(className, regularScore, finalScore) {
+  document.getElementById('modalClassName').textContent = className;
+  document.getElementById('modalRegularScore').textContent = regularScore;
+  document.getElementById('modalFinalScore').textContent = finalScore;
+  const modal = new bootstrap.Modal(document.getElementById('gradesModal'));
+  modal.show();
+}
 </script>
 {% endblock %}
