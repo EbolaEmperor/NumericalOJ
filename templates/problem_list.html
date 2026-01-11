@@ -390,8 +390,8 @@ document.getElementById('projects-refresh-btn').addEventListener('click', refres
 // 显示成绩模态框
 function showGrades(className, regularScore, finalScore) {
   document.getElementById('modalClassName').textContent = className;
-  document.getElementById('modalRegularScore').textContent = regularScore;
-  document.getElementById('modalFinalScore').textContent = finalScore;
+  document.getElementById('modalRegularScore').textContent = regularScore != null ? parseFloat(regularScore).toFixed(1) : '-';
+  document.getElementById('modalFinalScore').textContent = finalScore != null ? parseFloat(finalScore).toFixed(1) : '-';
   const modal = new bootstrap.Modal(document.getElementById('gradesModal'));
   modal.show();
 }

@@ -1081,8 +1081,8 @@ def problem_list():
                 res = cursor.fetchone()
                 if res:
                     return {
-                        'regular_score': int(res['regular_score']) if res['regular_score'] is not None else None,
-                        'final_score': int(res['final_score']) if res['final_score'] is not None else None
+                        'regular_score': round(res['regular_score'], 1) if res['regular_score'] is not None else None,
+                        'final_score': round(res['final_score'], 1) if res['final_score'] is not None else None
                     }
                 return None
         except Exception:
