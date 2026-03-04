@@ -55,6 +55,7 @@
         <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
       </div>
     </div>
+    <div id="aiInlineStatus" class="alert alert-secondary mt-3 d-none" role="status" aria-live="polite"></div>
     {% else %}
     <!-- 书面作业题目：不显示代码和测试点 -->
     <div class="card">
@@ -79,7 +80,7 @@
       </div>
       <div class="mb-3">
         <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
-        <textarea class="form-control" id="commentInput" name="comment" rows="8" required>{{ submission.code }}</textarea>
+        <textarea class="form-control" id="commentInput" name="comment" rows="12" required>{{ submission.code }}</textarea>
       </div>
       <div class="d-flex justify-content-between">
         <button type="button" class="btn btn-outline-success" id="submitGradeBtn">
@@ -91,8 +92,10 @@
       </div>
       {% else %}
       <div class="mb-3">
-        <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
-        <textarea class="form-control" id="commentInput" name="comment" rows="8" readonly required>{{ submission.code }}</textarea>
+        <label class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
+        <div id="studentCommentRendered"
+             class="form-control"
+             style="min-height: 280px; height: auto; overflow-y: auto; white-space: normal;"></div>
       </div>
       {% endif %}
     {% endif %}
@@ -181,9 +184,6 @@
 <!-- 新增：Python 高亮 -->
 <script src="{{ url_for('static', filename='codemirror/mode/python/python.js') }}"></script>
 
-<!-- marked.js（AI 输出 Markdown 渲染） -->
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
 <style>
   #pdfViewer { width: 100%; height: 580px; overflow-y: auto; overflow-x: hidden; }
   .accepted { color: rgb(36, 180, 77); font-weight: bold; }
@@ -193,7 +193,6 @@
   .memory-limit-exceeded, .forbidden { color: darkblue; font-weight: bold; }
   .no-output { color: purple; font-weight: bold; }
   .pending, .waiting, .running { color: lightblue; font-weight: bold; }
-  .thinking-gray { color: gray; font-size: small; white-space: pre-wrap; }
 </style>
 
 <!-- 图片查看模态框 -->
@@ -212,46 +211,6 @@
         <a id="downloadImageBtn" href="" download class="btn btn-primary">
           <i class="fas fa-download me-2"></i>下载图片
         </a>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- 在 body 内，摆放一个 Modal，用于显示 AI 回复 -->
-<div class="modal fade" id="aiModal" tabindex="-1" aria-labelledby="aiModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg" style="max-height: 90vh; margin-top: 5vh; margin-bottom: auto;">
-    <div class="modal-content" style="max-height: 90vh; display: flex; flex-direction: column;">
-      <div class="modal-header">
-        <h5 class="modal-title" id="aiModalLabel"><i class="fas fa-robot me-2"></i> AI 助教答复</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body" style="overflow-y: auto;">
-        <p class="text-danger">内容由阿里云提供的 Qwen-plus 模型生成，仅供参考，请批判性使用。</p>
-        <!-- 加载中的图标 -->
-        <div id="aiLoading" class="text-center mb-3" style="display: none;">
-          <div class="spinner-border" role="status">
-            <span class="visually-hidden">思考中...</span>
-          </div>
-          <p class="mt-2">AI 正在思考，请稍候...</p>
-        </div>
-        <!-- AI 输出的总容器 -->
-        <div id="aiAnswerArea" style="display: none;">
-            <!-- 切换“思考过程”显示/隐藏的按钮，默认不出现，遇到 </think> 后再显示 -->
-            <button id="toggleReasoningBtn" type="button"
-                    style="display: none;"
-                    class="btn btn-outline-secondary">
-              <i class="fas fa-angle-down me-2"></i> 展开思考过程
-            </button>
-          <!-- “思考过程”容器，默认隐藏 -->
-          <div id="reasoningContainer" style="display: none;">
-            <div id="reasoningText" class="thinking-gray"></div>
-          </div>
-          <!-- 放正式 Markdown 输出的容器 -->
-          <div id="answerMain"></div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>关闭</button>
       </div>
     </div>
   </div>
@@ -475,6 +434,32 @@
 </script>
 {% endif %}
 
+{% if submission.problem_type == 2 and (not user or user.is_admin != 1) %}
+<script>
+  (function renderStudentCommentLatex() {
+    const el = document.getElementById('studentCommentRendered');
+    if (!el) return;
+
+    const raw = {{ (submission.code or '') | tojson }};
+    if (!raw || !String(raw).trim()) {
+      el.innerHTML = '<span class="text-muted">暂无评语</span>';
+      return;
+    }
+
+    const escaped = String(raw)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+    el.innerHTML = escaped;
+
+    if (window.MathJax && window.MathJax.typesetPromise) {
+      MathJax.typesetPromise([el]).catch(() => {});
+    }
+  })();
+</script>
+{% endif %}
+
 {% if submission.problem_type == 2 and user and user.is_admin == 1 %}
 <script>
   document.getElementById('submitGradeBtn').addEventListener('click', function() {
@@ -591,55 +576,177 @@
 <!-- AI 部分：只有在 problem_type == 1 时才显示 询问 AI 按钮 -->
 {% if submission.problem_type == 1 %}
 <script>
-  // 辅助函数：检查 text 尾部是否包含 tag 的部分（前缀），返回可以 flush 的部分和剩余部分
-  function splitByPotentialTag(text, tag) {
-    let prefixLen = 0;
-    for (let i = 1; i < tag.length; i++) {
-      if (text.slice(-i) === tag.slice(0, i)) {
-        prefixLen = i;
-      }
-    }
-    return { flush: text.slice(0, text.length - prefixLen), remainder: text.slice(text.length - prefixLen) };
+  const askAiBtn = document.getElementById('askAiBtn');
+  const aiInlineStatus = document.getElementById('aiInlineStatus');
+  const cachedAiCodeMarks = {{ cached_ai_code_marks | tojson }};
+  const hasCachedAiCodeMarks = !!(cachedAiCodeMarks && cachedAiCodeMarks.success);
+
+  let aiIssueMarkers = [];
+  let aiIssueRequestToken = 0;
+  let aiIssueTooltipEl = null;
+  let aiIssueTooltipBound = false;
+  const askAiBtnDefaultHtml = askAiBtn ? askAiBtn.innerHTML : '';
+
+  function setAiStatus(message, level) {
+    if (!aiInlineStatus) return;
+    const levelClass = level === 'danger'
+      ? 'alert-danger'
+      : level === 'warning'
+      ? 'alert-warning'
+      : level === 'success'
+      ? 'alert-success'
+      : 'alert-secondary';
+    aiInlineStatus.className = `alert ${levelClass} mt-3 mb-0`;
+    aiInlineStatus.textContent = message;
+    aiInlineStatus.classList.remove('d-none');
   }
 
-  // 假设这些 DOM 元素已存在
-  const askAiBtn = document.getElementById('askAiBtn');
-  const aiModal = new bootstrap.Modal(document.getElementById('aiModal'));
-  const aiLoading = document.getElementById('aiLoading');
-  const aiAnswerArea = document.getElementById('aiAnswerArea');
-  const answerMain = document.getElementById('answerMain');
-  const reasoningContainer = document.getElementById('reasoningContainer');
-  const reasoningTextDiv = document.getElementById('reasoningText');
-  const toggleReasoningBtn = document.getElementById('toggleReasoningBtn');
-
-  // 切换显示思考过程
-  toggleReasoningBtn.addEventListener('click', function() {
-    if (reasoningContainer.style.display === 'none') {
-      reasoningContainer.style.display = 'block';
-      toggleReasoningBtn.textContent = '收起思考过程';
-    } else {
-      reasoningContainer.style.display = 'none';
-      toggleReasoningBtn.textContent = '展开思考过程';
+  function setAskAiBtnLoading(loading) {
+    if (!askAiBtn) return;
+    askAiBtn.disabled = !!loading;
+    if (loading) {
+      askAiBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>AI 分析中...';
+      return;
     }
-  });
+    askAiBtn.innerHTML = askAiBtnDefaultHtml || '<i class="fas fa-robot me-2"></i> 询问 AI 助教';
+  }
 
-  // 通用的 AI 调用函数
-  function callAI(endpoint) {
-    aiModal.show();
-    aiLoading.style.display = 'block';
-    aiAnswerArea.style.display = 'none';
+  function ensureAiIssueTooltip() {
+    if (aiIssueTooltipEl) return;
+    aiIssueTooltipEl = document.createElement('div');
+    aiIssueTooltipEl.id = 'aiIssueTooltip';
+    aiIssueTooltipEl.className = 'ai-issue-tooltip';
+    document.body.appendChild(aiIssueTooltipEl);
+  }
 
-    // 清空上次的回答
-    answerMain.innerHTML = '';
-    reasoningTextDiv.innerHTML = '';
-    reasoningContainer.style.display = 'none';
-    toggleReasoningBtn.style.display = 'none';
-    toggleReasoningBtn.textContent = '展开思考过程';
+  function hideAiIssueTooltip() {
+    if (!aiIssueTooltipEl) return;
+    aiIssueTooltipEl.style.opacity = '0';
+    aiIssueTooltipEl.style.visibility = 'hidden';
+  }
 
-    // 获取用户代码（如果有 CodeMirror）
-    const userCode = submissionCodeEditor.getValue() || '';
+  function showAiIssueTooltip(text, clientX, clientY) {
+    ensureAiIssueTooltip();
+    if (!aiIssueTooltipEl) return;
+    aiIssueTooltipEl.textContent = text;
+    aiIssueTooltipEl.style.opacity = '1';
+    aiIssueTooltipEl.style.visibility = 'visible';
 
-    fetch(endpoint, {
+    const margin = 14;
+    const rect = aiIssueTooltipEl.getBoundingClientRect();
+    let left = clientX + margin;
+    let top = clientY + margin;
+
+    if (left + rect.width > window.innerWidth - 8) {
+      left = Math.max(8, clientX - rect.width - margin);
+    }
+    if (top + rect.height > window.innerHeight - 8) {
+      top = Math.max(8, clientY - rect.height - margin);
+    }
+
+    aiIssueTooltipEl.style.left = `${left}px`;
+    aiIssueTooltipEl.style.top = `${top}px`;
+  }
+
+  function bindAiIssueTooltipEvents() {
+    if (aiIssueTooltipBound || !submissionCodeEditor) return;
+    aiIssueTooltipBound = true;
+    ensureAiIssueTooltip();
+
+    const wrapper = submissionCodeEditor.getWrapperElement();
+    wrapper.addEventListener('mousemove', function(e) {
+      const target = e.target && e.target.closest ? e.target.closest('.cm-ai-issue-underline') : null;
+      if (!target) {
+        hideAiIssueTooltip();
+        return;
+      }
+
+      let reason = target.dataset.issueReason || target.getAttribute('title') || '';
+      reason = String(reason).trim();
+      if (!reason) {
+        hideAiIssueTooltip();
+        return;
+      }
+
+      // 避免浏览器原生 title 提示，统一走自定义浮层
+      if (!target.dataset.issueReason) {
+        target.dataset.issueReason = reason;
+      }
+      if (target.hasAttribute('title')) {
+        target.removeAttribute('title');
+      }
+
+      showAiIssueTooltip(reason, e.clientX, e.clientY);
+    });
+
+    wrapper.addEventListener('mouseleave', hideAiIssueTooltip);
+    wrapper.addEventListener('mousedown', hideAiIssueTooltip);
+    wrapper.addEventListener('wheel', hideAiIssueTooltip, { passive: true });
+    window.addEventListener('scroll', hideAiIssueTooltip, true);
+    window.addEventListener('resize', hideAiIssueTooltip);
+  }
+
+  function clearAiIssueMarkers() {
+    aiIssueMarkers.forEach(marker => marker.clear());
+    aiIssueMarkers = [];
+    hideAiIssueTooltip();
+  }
+
+  function normalizeIssueLineRange(issue, lineCount) {
+    let ls = parseInt(issue.line_start || 1, 10);
+    let le = parseInt(issue.line_end || ls, 10);
+    if (!Number.isFinite(ls)) ls = 1;
+    if (!Number.isFinite(le)) le = ls;
+    if (ls > le) {
+      const t = ls;
+      ls = le;
+      le = t;
+    }
+    ls = Math.max(1, Math.min(lineCount, ls));
+    le = Math.max(1, Math.min(lineCount, le));
+    return [ls, le];
+  }
+
+  function renderAiIssueMarks(displayCode, issues) {
+    const safeCode = (typeof displayCode === 'string') ? displayCode : '';
+    submissionCodeEditor.setValue(safeCode);
+    submissionCodeEditor.refresh();
+
+    clearAiIssueMarkers();
+    bindAiIssueTooltipEvents();
+
+    const codeLines = safeCode.split('\n');
+    const lineCount = Math.max(1, codeLines.length);
+    issues.forEach((issue) => {
+      const lineRange = normalizeIssueLineRange(issue, lineCount);
+      const ls = lineRange[0];
+      const le = lineRange[1];
+      const reason = String(issue.reason || '这里可能有问题').trim();
+
+      for (let lineNo = ls; lineNo <= le; lineNo++) {
+        const lineText = codeLines[lineNo - 1] || '';
+        const toCh = lineText.length;
+        if (toCh <= 0) continue;
+        try {
+          const marker = submissionCodeEditor.markText(
+            { line: lineNo - 1, ch: 0 },
+            { line: lineNo - 1, ch: toCh },
+            {
+              className: 'cm-ai-issue-underline',
+              title: reason,
+              handleMouseEvents: true
+            }
+          );
+          aiIssueMarkers.push(marker);
+        } catch (e) {
+          console.warn('markText 失败:', e, issue);
+        }
+      }
+    });
+  }
+
+  function requestAiIssueMarks(userCode, requestToken) {
+    fetch('{{ url_for("ask_ai_code_marks") }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -648,109 +755,80 @@
         user_code: userCode
       })
     })
-    .then(async (response) => {
-      aiLoading.style.display = 'none';
-      aiAnswerArea.style.display = 'block';
+    .then(r => r.json())
+    .then(data => {
+      if (requestToken !== aiIssueRequestToken) return;
+      setAskAiBtnLoading(false);
+      const displayCode = (data && typeof data.code_used === 'string') ? data.code_used : (userCode || '');
+      const ok = !!(data && data.success);
+      const issues = (ok && Array.isArray(data.issues)) ? data.issues : [];
+      const summary = ok && data.summary ? String(data.summary) : '';
 
-      if (!response.ok) {
-        answerMain.innerHTML = `<p class="text-danger">服务器错误：${response.status}</p>`;
+      if (!ok) {
+        clearAiIssueMarkers();
+        submissionCodeEditor.setValue(displayCode);
+        submissionCodeEditor.refresh();
+        setAiStatus(
+          (data && data.message) ? String(data.message) : 'AI 未返回可用结果。',
+          'danger'
+        );
         return;
       }
 
-      // 为流式读取做准备
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
+      renderAiIssueMarks(displayCode, issues);
 
-      // 状态机和缓存变量
-      let partialText = '';
-      let inThink = false;      // 当前是否处于 <think> 区段
-      let foundThink = false;   // 是否曾出现过 <think>
-      let closedThink = false;  // 是否曾出现过 </think>
-      let normalText = '';      // 正式输出文本
-      let reasoningText = '';   // 思考过程文本
-
-      let finished = false;
-      while (!finished) {
-        const { done, value } = await reader.read();
-        if (done) {
-          finished = true;
-        } else {
-          const chunk = decoder.decode(value, { stream: true });
-          partialText += chunk;
-
-          let keepParsing = true;
-          while (keepParsing) {
-            if (!inThink) {
-              // 当前在正式文本区，寻找 <think>
-              let startIndex = partialText.indexOf('<think>');
-              if (startIndex === -1) {
-                // 未找到完整的 <think> 标签，检查尾部是否可能是标签的一部分
-                let { flush, remainder } = splitByPotentialTag(partialText, '<think>');
-                normalText += flush;
-                partialText = remainder;
-                keepParsing = false;
-              } else {
-                // 找到了完整的 <think> 标签
-                normalText += partialText.slice(0, startIndex);
-                partialText = partialText.slice(startIndex + 7); // 去掉 "<think>"
-                inThink = true;
-                foundThink = true;
-              }
-            } else {
-              // 当前在思考区，寻找 </think>
-              let endIndex = partialText.indexOf('</think>');
-              if (endIndex === -1) {
-                // 未找到完整的 </think> 标签，检查尾部是否可能是标签的一部分
-                let { flush, remainder } = splitByPotentialTag(partialText, '</think>');
-                reasoningText += flush;
-                partialText = remainder;
-                keepParsing = false;
-              } else {
-                // 找到完整的 </think> 标签
-                reasoningText += partialText.slice(0, endIndex);
-                partialText = partialText.slice(endIndex + 8); // 去掉 "</think>"
-                inThink = false;
-                closedThink = true;
-              }
-            }
-          } // end while(keepParsing)
-
-          // 实时刷新页面显示
-          answerMain.innerHTML = marked.parse(normalText);
-          if (foundThink && !closedThink) {
-            reasoningContainer.style.display = 'block';
-            reasoningTextDiv.textContent = reasoningText;
-          } else if (foundThink && closedThink) {
-            reasoningTextDiv.textContent = reasoningText;
-            reasoningContainer.style.display = 'none';
-            toggleReasoningBtn.style.display = 'inline-block';
-          }
-
-          // 如果需要对公式进行重新渲染，例如 $y=kx+b$，可以调用 MathJax
-          if (window.MathJax) {
-            MathJax.typesetPromise([answerMain]);
-          }
-        }
-      } // end while(!finished)
-
-      // 流结束后，如果仍处于 <think> 区间，显示思考内容并显示“展开思考过程”按钮
-      if (inThink) {
-        reasoningContainer.style.display = 'block';
-        toggleReasoningBtn.style.display = 'inline-block';
+      if (summary) {
+        setAiStatus(`${summary}`, issues.length > 0 ? 'warning' : 'success');
+      } else if (issues.length > 0) {
+        setAiStatus(`已定位 ${issues.length} 处关键问题（鼠标悬停红色波浪线可查看原因）`, 'warning');
+      } else {
+        setAiStatus('未定位到明确的问题代码位置。', 'success');
       }
     })
     .catch(err => {
-      aiLoading.style.display = 'none';
-      aiAnswerArea.style.display = 'block';
-      answerMain.innerHTML = `<p class="text-danger">请求出错：${err}</p>`;
+      if (requestToken !== aiIssueRequestToken) return;
+      setAskAiBtnLoading(false);
+      clearAiIssueMarkers();
+      submissionCodeEditor.setValue(userCode || '');
+      submissionCodeEditor.refresh();
+      setAiStatus(`问题标注失败：${err}`, 'danger');
     });
+  }
+
+  // 仅代码标注模式
+  function callAI() {
+    if (!submissionCodeEditor) return;
+    const requestToken = ++aiIssueRequestToken;
+    clearAiIssueMarkers();
+    setAskAiBtnLoading(true);
+    setAiStatus('AI 正在定位问题代码，请稍候...', 'info');
+
+    const userCode = submissionCodeEditor.getValue() || '';
+    requestAiIssueMarks(userCode, requestToken);
   }
 
   // 点击询问 AI 按钮后的逻辑
   if (askAiBtn) {
     askAiBtn.addEventListener('click', function() {
-      callAI('{{ url_for("ask_ai") }}');
+      callAI();
     });
+  }
+
+  function renderCachedAiMarksOnLoad() {
+    if (!hasCachedAiCodeMarks) return;
+    const issues = Array.isArray(cachedAiCodeMarks.issues) ? cachedAiCodeMarks.issues : [];
+    const displayCode = (typeof cachedAiCodeMarks.code_used === 'string')
+      ? cachedAiCodeMarks.code_used
+      : (submissionCodeEditor.getValue() || '');
+
+    renderAiIssueMarks(displayCode, issues);
+    if (cachedAiCodeMarks.summary) {
+      setAiStatus(`${cachedAiCodeMarks.summary}`, issues.length > 0 ? 'warning' : 'success');
+    } else if (issues.length > 0) {
+      setAiStatus(`定位到 ${issues.length} 处关键问题（鼠标悬停红色波浪线可查看原因）`, 'warning');
+    } else {
+      setAiStatus('未定位到明确的问题代码位置。', 'success');
+    }
   }
 
   // 创建烟花效果
@@ -822,25 +900,63 @@
     // 3秒后关闭庆祝动画并自动调用 AI 分析
     setTimeout(() => {
       overlay.style.display = 'none';
-      
-      // 自动调用 AI 进行 AC 后分析
-      callAI('{{ url_for("ask_ai_for_ac") }}');
+
+      // 自动调用 AI 进行 AC 后分析（已停用，保留代码以便后续恢复）
+      // if (!hasCachedAiCodeMarks) {
+      //   callAI();
+      // }
     }, 3000);
   }
 
   // 页面加载完成后检查是否首次 AC
   window.addEventListener('load', function() {
-    checkFirstAC();
+    renderCachedAiMarksOnLoad();
+    // checkFirstAC(); // AC 庆祝动画已停用，保留代码以便后续恢复
   });
 </script>
 {% endif %}
 
 <style>
-  /* 可选：把思考内容设置为灰色、小字 */
-  .thinking-gray {
-      color: gray;
-      font-size: small;
+  /* AI 标注问题代码：红色波浪线，悬停显示 title 原因 */
+  .cm-ai-issue-underline {
+      text-decoration-line: underline;
+      text-decoration-style: wavy;
+      text-decoration-color: #e74c3c;
+      text-decoration-thickness: 1.5px;
+      cursor: help;
+      background-color: rgba(231, 76, 60, 0.1);
+  }
+
+  .ai-issue-tooltip {
+      position: fixed;
+      z-index: 12000;
+      max-width: min(460px, 76vw);
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(25, 25, 25, 0.12);
+      background: linear-gradient(180deg, #fffdf8 0%, #fff8f3 100%);
+      color: #2b2b2b;
+      box-shadow: 0 14px 40px rgba(25, 25, 25, 0.2);
+      font-size: 13px;
+      line-height: 1.5;
       white-space: pre-wrap;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 120ms ease-out, visibility 120ms ease-out;
+  }
+
+  .ai-issue-tooltip::before {
+      content: '';
+      position: absolute;
+      top: 10px;
+      left: -6px;
+      width: 10px;
+      height: 10px;
+      transform: rotate(45deg);
+      background: #fffaf5;
+      border-left: 1px solid rgba(25, 25, 25, 0.12);
+      border-bottom: 1px solid rgba(25, 25, 25, 0.12);
   }
 </style>
 {% endblock %}

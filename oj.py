@@ -79,30 +79,35 @@ def _extract_text_from_response_content(content):
     return ""
 
 def _call_qwen_text(prompt_text, api_key, base_url, timeout=300):
-    message_content = [{"type": "text", "text": prompt_text}]
+    text_model = os.getenv("QWEN_TEXT_MODEL", "qwen3.5-plus")
+    messages = [{"role": "user", "content": prompt_text}]
 
     if OpenAI is not None:
         try:
             client = OpenAI(api_key=api_key, base_url=base_url)
             stream = client.chat.completions.create(
-                model="qwen3-omni-flash",
-                messages=[{
-                    "role": "user",
-                    "content": message_content
-                }],
-                modalities=["text"],
+                model=text_model,
+                messages=messages,
+                extra_body={"enable_thinking": False},
                 stream=True,
-                stream_options={"include_usage": True},
             )
             parts = []
+            reasoning_parts = []
             for chunk in stream:
-                if not chunk.choices:
+                if not getattr(chunk, "choices", None):
                     continue
-                delta_content = chunk.choices[0].delta.content
-                parts.append(_extract_text_from_response_content(delta_content))
+                delta = chunk.choices[0].delta
+                if hasattr(delta, "content") and delta.content:
+                    parts.append(delta.content)
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_parts.append(delta.reasoning_content)
             text = ''.join(parts).strip()
             if text:
                 return text
+            # 极端情况下若没有正文，退化返回思考内容，避免空响应
+            fallback_text = ''.join(reasoning_parts).strip()
+            if fallback_text:
+                return fallback_text
         except Exception as e:
             print(f"[Qwen API] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
 
@@ -111,14 +116,15 @@ def _call_qwen_text(prompt_text, api_key, base_url, timeout=300):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "qwen3-omni-flash",
-        "messages": [{
-            "role": "user",
-            "content": message_content
-        }],
-        "modalities": ["text"]
+        "model": text_model,
+        "messages": messages,
+        "enable_thinking": True
     }
     resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    if resp.status_code >= 400:
+        # 有些兼容层不接受 enable_thinking，做一次无该字段的降级重试
+        payload.pop("enable_thinking", None)
+        resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
     resp.raise_for_status()
     result = resp.json()
     choices = result.get('choices') or []
@@ -157,6 +163,42 @@ def _extract_first_json_object(text):
                     return obj
             except Exception:
                 continue
+    return None
+
+def _extract_first_json_object_relaxed(text):
+    """
+    宽松 JSON 解析：
+    - 先尝试严格解析
+    - 若失败，自动修复常见的“非法反斜杠转义”（如 LaTeX: \\sum、\\lambda）
+    """
+    strict_obj = _extract_first_json_object(text)
+    if strict_obj is not None:
+        return strict_obj
+
+    if not text:
+        return None
+
+    candidates = [text.strip()]
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+
+    # 抽取可能的 JSON 主体，再修复非法转义
+    for candidate in candidates:
+        start = candidate.find('{')
+        end = candidate.rfind('}')
+        if start < 0 or end <= start:
+            continue
+        body = candidate[start:end + 1]
+        # 将 \x（x 不属于 JSON 合法转义）替换成 \\x
+        repaired = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', body)
+        try:
+            obj = json.loads(repaired)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+
     return None
 
 def render_pdf_to_images(pdf_path, output_dir):
@@ -313,9 +355,21 @@ def evaluate_written_homework_with_ai(problem, student_latex):
     problem_content = (problem or {}).get('content', '')
 
     prompt = (
-        "你是严谨的书面作业阅卷老师。请根据题目与学生答案（LaTeX）打分并给出扣分原因。"
-        "满分 5 分，最低 0 分，只能输出 JSON，不要输出任何额外文字。\n"
-        "JSON 格式要求："
+        "你是严谨的数学书面作业阅卷老师，请从“证明严谨性”角度评分。\n"
+        "只允许输出 JSON，不要输出任何额外文字。\n\n"
+        "【硬性评分规则】\n"
+        "1) 5 分（满分）必须同时满足：\n"
+        "- 关键结论都有明确推导，不跳步；\n"
+        "- 使用的定理/性质有对应条件并且已验证；\n"
+        "- 涉及最值/取等时，明确说明可达性或取等条件；\n"
+        "- 记号、逻辑链条完整，无明显歧义。\n"
+        "2) 只要出现以下任一情况，最高只能 4 分：\n"
+        "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
+        "- 缺少条件验证、边界讨论、取等条件说明；\n"
+        "- 推理链存在轻微断裂但主思路正确。\n"
+        "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
+        "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
+        "【输出 JSON 格式】\n"
         "{\"score\": <0-5 的数字>, \"deductions\": [\"扣分原因1\", \"扣分原因2\"], \"comment\": \"总体评语\"}\n\n"
         f"【题目标题】\n{problem_title}\n\n"
         f"【题目内容】\n{problem_content}\n\n"
@@ -323,7 +377,7 @@ def evaluate_written_homework_with_ai(problem, student_latex):
     )
 
     response_text = _call_qwen_text(prompt, api_key, base_url, timeout=300)
-    data = _extract_first_json_object(response_text)
+    data = _extract_first_json_object_relaxed(response_text)
     if not data:
         raise RuntimeError(f"评分结果解析失败，模型原始输出：{response_text[:500]}")
 
@@ -345,6 +399,13 @@ def evaluate_written_homework_with_ai(problem, student_latex):
     if isinstance(deductions, str):
         deductions = [deductions]
     deductions = [str(x).strip() for x in (deductions or []) if str(x).strip()]
+
+    # 满分兜底：若存在扣分点，则不能给 5 分
+    if score == 5 and deductions:
+        score = 4
+    # 非满分兜底：至少给出一条扣分点
+    if score < 5 and not deductions:
+        deductions = ["解答存在步骤不严谨或论证不完整，未达到满分标准。"]
 
     comment = data.get('comment')
     if comment is None:
@@ -731,6 +792,70 @@ def get_submission_by_id(submission_id):
                     json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
                 ]
             return submission
+    finally:
+        conn.close()
+
+def get_cached_ai_code_marks_for_submission(submission):
+    """
+    从 submission.ai_code_marks_json 读取并标准化 AI 代码标注结果。
+    字段不存在或内容非法时返回 None。
+    """
+    if not submission or not isinstance(submission, dict):
+        return None
+
+    raw = submission.get('ai_code_marks_json')
+    if not raw:
+        return None
+
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as e:
+        print(f"[AI Code Marks] 缓存 JSON 解析失败(submission_id={submission.get('id')}): {e}")
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    code_used_raw = data.get('code_used')
+    if code_used_raw is None:
+        code_used_raw = submission.get('code') or ''
+    code_used = str(code_used_raw).replace('\r\n', '\n').replace('\r', '\n')
+    issues = _normalize_ai_code_issues(data.get('issues') or [], code_used, max_issues=8)
+    summary = str(data.get('summary') or '').strip()
+    cached_at = str(data.get('generated_at') or '').strip()
+
+    return {
+        "success": True,
+        "issues": issues,
+        "summary": summary,
+        "code_used": code_used,
+        "cached": True,
+        "cached_at": cached_at
+    }
+
+def save_submission_ai_code_marks_json(submission_id, payload):
+    """
+    将 AI 代码标注 JSON 写入 submissions.ai_code_marks_json。
+    若数据库尚未加该列，会跳过写入并返回 False。
+    """
+    if not payload or not isinstance(payload, dict):
+        return False
+
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "UPDATE submissions SET ai_code_marks_json=%s WHERE id=%s"
+            cursor.execute(sql, (payload_text, submission_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        msg = str(e)
+        if ('ai_code_marks_json' in msg) and ('Unknown column' in msg or '1054' in msg):
+            print("[AI Code Marks] 缺少 ai_code_marks_json 字段，已跳过缓存写入。")
+            return False
+        raise
     finally:
         conn.close()
 
@@ -1821,7 +1946,6 @@ def submit_solution(problem_id):
 
             try:
                 transcribe_written_homework_to_latex.delay(submission_id)
-                flash('文件提交成功，LaTeX 转写与自动评分任务已进入队列，将在后台自动执行。', 'success')
             except Exception as e:
                 flash(f'文件已提交，但自动评分任务入队失败：{str(e)}', 'warning')
 
@@ -1869,6 +1993,9 @@ def submission_detail(submission_id):
     # 处理书面作业，显示文件下载链接
     problem = get_problem(submission['problem_id'])
     plang = (problem.get('lang') or 'matlab').lower()  # 'matlab' | 'c'
+    cached_ai_code_marks = None
+    if submission.get('problem_type') == 1:
+        cached_ai_code_marks = get_cached_ai_code_marks_for_submission(submission)
     if problem and problem['type'] == 2:  # 书面作业
         file_path = f"uploads/{submission['username']}_{submission['problem_id']}_*"
         submission['file_url'] = file_path
@@ -1879,7 +2006,8 @@ def submission_detail(submission_id):
         test_points=submission['test_points'],
         user=user,
         plang=plang,          # ★ 新增
-        problem=problem       # 可用可不用
+        problem=problem,      # 可用可不用
+        cached_ai_code_marks=cached_ai_code_marks
     )
 
 @app.route('/submission_status/<int:submission_id>')
@@ -4587,6 +4715,185 @@ def get_user_repository_files_by_names(user_id, filenames):
         return {}
     finally:
         conn.close()
+
+def _normalize_ai_code_issues(raw_issues, user_code, max_issues=8):
+    def visual_line_length(s, tab_size=4):
+        visual = 0
+        for ch in s:
+            if ch == '\t':
+                visual += tab_size - (visual % tab_size)
+            else:
+                visual += 1
+        return visual
+
+    lines = user_code.splitlines()
+    if not lines:
+        lines = [user_code or ""]
+    n = len(lines)
+
+    normalized = []
+    for item in raw_issues or []:
+        if not isinstance(item, dict):
+            continue
+
+        reason = str(item.get('reason') or item.get('message') or item.get('desc') or '').strip()
+        if not reason:
+            continue
+
+        try:
+            ls = int(item.get('line_start') or item.get('start_line') or item.get('line') or 1)
+            le = int(item.get('line_end') or item.get('end_line') or ls)
+        except Exception:
+            continue
+
+        if ls > le:
+            ls, le = le, ls
+        ls = max(1, min(n, ls))
+        le = max(1, min(n, le))
+
+        start_visual_len = visual_line_length(lines[ls - 1], tab_size=4)
+        end_visual_len = visual_line_length(lines[le - 1], tab_size=4)
+
+        try:
+            cs = int(item.get('column_start') or item.get('start_col') or item.get('column') or 1)
+        except Exception:
+            cs = 1
+        try:
+            ce = int(item.get('column_end') or item.get('end_col') or max(cs, end_visual_len))
+        except Exception:
+            ce = max(cs, end_visual_len)
+
+        # 模型输出按 1-based，列按“可视列”约束（Tab=4）
+        cs = max(1, min(start_visual_len + 1, cs))
+        ce = max(cs, min(end_visual_len + 1, ce))
+
+        normalized.append({
+            "line_start": ls,
+            "line_end": le,
+            "column_start": cs,
+            "column_end": ce,
+            "reason": reason,
+            "severity": str(item.get('severity') or 'error')
+        })
+        if len(normalized) >= max_issues:
+            break
+
+    return normalized
+
+@app.route('/ask_ai_code_marks', methods=['POST'])
+def ask_ai_code_marks():
+    data = request.get_json()
+    if not data:
+        return jsonify(success=False, message="缺少请求体"), 400
+
+    problem_id = data.get('problem_id', '')
+    problem = get_problem(problem_id)
+    if not problem:
+        return jsonify(success=False, message="题目不存在"), 404
+
+    problem_content = problem.get('content') or ''
+    if not problem_content:
+        return jsonify(success=False, message="缺少题目内容"), 400
+
+    raw_code = data.get('user_code', '')
+    if raw_code is None:
+        raw_code = ''
+    # 统一换行符，但不做 strip，避免首尾空行导致行号错位
+    user_code = str(raw_code).replace('\r\n', '\n').replace('\r', '\n')
+    if not user_code.strip():
+        return jsonify(success=False, message="缺少用户代码"), 400
+
+    sid = data.get('submission_id', '')
+    submission = get_submission_by_id(sid)
+    if not submission:
+        return jsonify(success=False, message="提交记录不存在"), 404
+
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    if submission['username'] != user['username'] and not is_admin(user):
+        return jsonify(success=False, message="无权访问该提交"), 403
+
+    force_refresh = bool(data.get('force_refresh'))
+    if not force_refresh:
+        cached_result = get_cached_ai_code_marks_for_submission(submission)
+        if cached_result:
+            return jsonify(**cached_result, source='cache')
+
+    test_points = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in (submission.get("test_points") or [])])
+
+    # 读取代码仓库被 include 的文件，帮助模型更准定位问题
+    included_files = extract_includes_from_code(user_code)
+    repository_files = {}
+    if included_files:
+        repository_files = get_user_repository_files_by_names(user['id'], included_files)
+
+    repository_context = ""
+    if repository_files:
+        repository_context = "\n\n你可以参考以下同学代码仓库文件：\n"
+        for filename, content in repository_files.items():
+            repository_context += f"\n[文件] {filename}\n```\n{content}\n```\n"
+
+    numbered_lines = [f"{idx:4d}| {line}" for idx, line in enumerate(user_code.split('\n'), start=1)]
+    numbered_code = "\n".join(numbered_lines)
+
+    prompt = f"""你是代码审阅助手。请根据题目、提交代码和评测结果，定位最关键的问题代码位置。
+
+要求：
+1. 只返回 JSON，不要输出任何解释文本，不要使用 Markdown。
+2. 返回格式必须是：
+{{
+  "issues": [
+    {{
+      "line_start": 10,
+      "line_end": 10,
+      "reason": "这里数组下标可能越界",
+      "severity": "error"
+    }}
+  ],
+  "summary": "一句话总结主要问题"
+}}
+3. line_start/line_end 都是 1-based。
+4. 本任务不需要返回列号，只定位到“行”即可。
+5. line_start/line_end 必须严格对应下面“带行号代码”左侧的行号数字。
+6. 最多返回 8 个 issues，只保留最重要的。
+7. 有可能代码逻辑是正确的，但参数设置不当，导致结果不对。这时候你应该找到用户的参数设置，并在 Issue 里给出参数设置的建议。
+8. 只在确实有问题的代码行上标注，不要猜测行号。
+
+[题目]
+{problem_content}
+
+[提交代码（带行号）]
+{numbered_code}
+{repository_context}
+
+[评测结果]
+{test_points}
+"""
+
+    try:
+        api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+        if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
+            raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
+        base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
+        response_text = _call_qwen_text(prompt, api_key, base_url, timeout=240)
+        data_obj = _extract_first_json_object(response_text)
+        if not isinstance(data_obj, dict):
+            raise RuntimeError(f"模型返回无法解析为 JSON：{response_text[:300]}")
+
+        issues = _normalize_ai_code_issues(data_obj.get('issues') or [], user_code, max_issues=8)
+        summary = str(data_obj.get('summary') or '').strip()
+        cache_payload = {
+            "issues": issues,
+            "summary": summary,
+            "code_used": user_code,
+            "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "model": os.getenv("QWEN_TEXT_MODEL", "qwen3.5-plus")
+        }
+        save_submission_ai_code_marks_json(sid, cache_payload)
+        return jsonify(success=True, issues=issues, summary=summary, code_used=user_code, source='generated')
+    except Exception as e:
+        return jsonify(success=False, message=f"标注生成失败：{str(e)}"), 500
 
 @app.route('/ask_ai', methods=['POST'])
 def ask_ai():
