@@ -7,6 +7,8 @@ import uuid
 import pymysql
 import markdown
 import os
+import base64
+import mimetypes
 import zipfile
 import shutil
 from werkzeug.utils import secure_filename
@@ -22,6 +24,11 @@ from datetime import datetime, timedelta
 import numpy
 # Excel 处理
 import openpyxl
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 # config.py
 from config import *
@@ -56,6 +63,314 @@ def allowed_file(filename):
 # 判断是否允许上传成绩文件
 def allowed_grade_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_GRADES_EXTENSIONS
+
+def _extract_text_from_response_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict) and isinstance(item.get('text'), str):
+                parts.append(item['text'])
+        return ''.join(parts)
+    return ""
+
+def _call_qwen_text(prompt_text, api_key, base_url, timeout=300):
+    message_content = [{"type": "text", "text": prompt_text}]
+
+    if OpenAI is not None:
+        try:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            stream = client.chat.completions.create(
+                model="qwen3-omni-flash",
+                messages=[{
+                    "role": "user",
+                    "content": message_content
+                }],
+                modalities=["text"],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            parts = []
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta_content = chunk.choices[0].delta.content
+                parts.append(_extract_text_from_response_content(delta_content))
+            text = ''.join(parts).strip()
+            if text:
+                return text
+        except Exception as e:
+            print(f"[Qwen API] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "qwen3-omni-flash",
+        "messages": [{
+            "role": "user",
+            "content": message_content
+        }],
+        "modalities": ["text"]
+    }
+    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    result = resp.json()
+    choices = result.get('choices') or []
+    if not choices:
+        raise RuntimeError("模型未返回有效结果。")
+    content = (choices[0].get('message') or {}).get('content')
+    text = _extract_text_from_response_content(content).strip()
+    if not text:
+        raise RuntimeError("模型未返回可用文本。")
+    return text
+
+def _extract_first_json_object(text):
+    if not text:
+        return None
+
+    candidates = [text.strip()]
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        for idx, ch in enumerate(candidate):
+            if ch != '{':
+                continue
+            try:
+                obj, _ = decoder.raw_decode(candidate[idx:])
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                continue
+    return None
+
+def render_pdf_to_images(pdf_path, output_dir):
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as e:
+        raise RuntimeError("缺少 pypdfium2 依赖，无法将 PDF 渲染为图片。") from e
+
+    pdf = pdfium.PdfDocument(pdf_path)
+    image_paths = []
+    try:
+        if len(pdf) == 0:
+            raise RuntimeError("PDF 文件为空，无法转写。")
+        prefix = os.path.splitext(os.path.basename(pdf_path))[0]
+        for page_idx in range(len(pdf)):
+            page = pdf[page_idx]
+            try:
+                bitmap = page.render(scale=2.0)
+                image = bitmap.to_pil()
+                image_filename = f"{prefix}_page_{page_idx + 1:03d}.png"
+                image_path = os.path.join(output_dir, image_filename)
+                image.save(image_path, format='PNG')
+                image_paths.append(image_path)
+            finally:
+                page.close()
+    finally:
+        pdf.close()
+    return image_paths
+
+def _build_image_data_url(image_path):
+    mime_type, _ = mimetypes.guess_type(image_path)
+    if not mime_type:
+        mime_type = 'image/png'
+    with open(image_path, 'rb') as f:
+        encoded = base64.b64encode(f.read()).decode('utf-8')
+    return f"data:{mime_type};base64,{encoded}"
+
+def _split_image_batches(image_data_urls, max_images_per_request=20):
+    if max_images_per_request < 1:
+        max_images_per_request = 20
+    return [
+        image_data_urls[i:i + max_images_per_request]
+        for i in range(0, len(image_data_urls), max_images_per_request)
+    ]
+
+def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url):
+    message_content = [
+        {
+            "type": "image_url",
+            "image_url": {"url": image_url}
+        }
+        for image_url in image_urls
+    ]
+    message_content.append({
+        "type": "text",
+        "text": prompt_text
+    })
+
+    if OpenAI is not None:
+        try:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            stream = client.chat.completions.create(
+                model="qwen3-omni-flash",
+                messages=[{
+                    "role": "user",
+                    "content": message_content
+                }],
+                modalities=["text"],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            parts = []
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta_content = chunk.choices[0].delta.content
+                parts.append(_extract_text_from_response_content(delta_content))
+            latex_text = ''.join(parts).strip()
+            if latex_text:
+                return latex_text
+        except Exception as e:
+            print(f"[LaTeX OCR] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "qwen3-omni-flash",
+        "messages": [{
+            "role": "user",
+            "content": message_content
+        }],
+        "modalities": ["text"]
+    }
+    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=300)
+    resp.raise_for_status()
+    result = resp.json()
+    choices = result.get('choices') or []
+    if not choices:
+        raise RuntimeError("模型未返回有效结果。")
+    content = (choices[0].get('message') or {}).get('content')
+    latex_text = _extract_text_from_response_content(content).strip()
+    if not latex_text:
+        raise RuntimeError("模型未返回可用的 LaTeX 文本。")
+    return latex_text
+
+def transcribe_images_to_latex(image_paths):
+    if not image_paths:
+        raise RuntimeError("未生成可用于识别的图片。")
+
+    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
+        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
+
+    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
+    prompt = (
+        "请将这份书面作业完整转写为 LaTeX 源码。"
+        "要求：保留原题号、段落和公式结构；"
+        "无法识别的内容用\\\\text{[无法辨认]}标注；"
+        "只输出 LaTeX，不要任何解释和 Markdown 代码块。"
+    )
+    image_data_urls = [_build_image_data_url(path) for path in image_paths]
+    try:
+        max_images_per_request = int(os.getenv("LATEX_OCR_MAX_IMAGES_PER_REQUEST", "20"))
+    except ValueError:
+        max_images_per_request = 20
+    image_batches = _split_image_batches(image_data_urls, max_images_per_request=max_images_per_request)
+
+    transcribed_parts = []
+    total = len(image_batches)
+    for idx, batch in enumerate(image_batches, start=1):
+        chunk_prompt = prompt
+        if total > 1:
+            chunk_prompt += (
+                f" 这是第 {idx}/{total} 组页面。"
+                "请只输出这一组页面对应的 LaTeX 片段，不要重复其他组内容。"
+            )
+        part = _transcribe_image_batch(batch, chunk_prompt, api_key, base_url)
+        if part:
+            transcribed_parts.append(part.strip())
+
+    if not transcribed_parts:
+        raise RuntimeError("模型未返回可用的 LaTeX 文本。")
+    return "\n\n".join(transcribed_parts).strip()
+
+def evaluate_written_homework_with_ai(problem, student_latex):
+    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
+        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
+
+    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
+    problem_title = (problem or {}).get('title', '')
+    problem_content = (problem or {}).get('content', '')
+
+    prompt = (
+        "你是严谨的书面作业阅卷老师。请根据题目与学生答案（LaTeX）打分并给出扣分原因。"
+        "满分 5 分，最低 0 分，只能输出 JSON，不要输出任何额外文字。\n"
+        "JSON 格式要求："
+        "{\"score\": <0-5 的数字>, \"deductions\": [\"扣分原因1\", \"扣分原因2\"], \"comment\": \"总体评语\"}\n\n"
+        f"【题目标题】\n{problem_title}\n\n"
+        f"【题目内容】\n{problem_content}\n\n"
+        f"【学生答案（LaTeX）】\n{student_latex}\n"
+    )
+
+    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=300)
+    data = _extract_first_json_object(response_text)
+    if not data:
+        raise RuntimeError(f"评分结果解析失败，模型原始输出：{response_text[:500]}")
+
+    raw_score = data.get('score')
+    if raw_score is None:
+        raw_score = data.get('评分')
+    try:
+        score = int(round(float(raw_score)))
+    except Exception:
+        num_match = re.search(r'([0-5](?:\.\d+)?)', str(response_text))
+        if not num_match:
+            raise RuntimeError("评分结果中缺少 score 字段。")
+        score = int(round(float(num_match.group(1))))
+    score = max(0, min(5, score))
+
+    deductions = data.get('deductions')
+    if deductions is None:
+        deductions = data.get('reasons') or data.get('扣分原因') or []
+    if isinstance(deductions, str):
+        deductions = [deductions]
+    deductions = [str(x).strip() for x in (deductions or []) if str(x).strip()]
+
+    comment = data.get('comment')
+    if comment is None:
+        comment = data.get('评语') or ""
+    comment = str(comment).strip()
+
+    lines = [f"AI 自动评分：{score}/5"]
+    if deductions:
+        lines.append("扣分原因：")
+        for idx, reason in enumerate(deductions, start=1):
+            lines.append(f"{idx}. {reason}")
+    if comment:
+        lines.append("")
+        lines.append(f"评语：{comment}")
+    final_comment = "\n".join(lines).strip()
+
+    return score, final_comment
+
+def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename):
+    image_paths = render_pdf_to_images(pdf_path, upload_folder)
+    latex_text = transcribe_images_to_latex(image_paths)
+    tex_filename = f"{os.path.splitext(uploaded_filename)[0]}.tex"
+    tex_path = os.path.join(upload_folder, tex_filename)
+    with open(tex_path, 'w', encoding='utf-8') as f:
+        f.write(latex_text)
+    return tex_path
 
 ###############################################################################
 #  站点设置（全局开关）
@@ -322,7 +637,7 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
             # 如果是书面题，将之前的提交作废（设为 unaccepted）
             with conn.cursor() as cursor:
                 test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
-                sql = "UPDATE submissions SET status='unaccepted' WHERE username=%s AND problem_id=%s"
+                sql = "UPDATE submissions SET status='Unaccepted' WHERE username=%s AND problem_id=%s"
                 cursor.execute(sql, (username, problem_id))
                 # 如果是第一次提交，更新班级作业、题目信息的 "完成人数" 计数器
                 sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
@@ -1504,7 +1819,12 @@ def submit_solution(problem_id):
             file_path = os.path.join(upload_folder, filename)  # 将文件保存到特定文件夹
             file.save(file_path)
 
-            flash('文件提交成功，等待老师评分...', 'success')
+            try:
+                transcribe_written_homework_to_latex.delay(submission_id)
+                flash('文件提交成功，LaTeX 转写与自动评分任务已进入队列，将在后台自动执行。', 'success')
+            except Exception as e:
+                flash(f'文件已提交，但自动评分任务入队失败：{str(e)}', 'warning')
+
             return redirect(url_for('submission_detail', submission_id=submission_id))
 
     # 如果是 GET 请求，渲染提交页面
@@ -1778,6 +2098,67 @@ celery = Celery('oj',
                 broker=app.config['CELERY_BROKER_URL'], 
                 backend=app.config['CELERY_RESULT_BACKEND'])
 celery.conf.update(app.config)
+
+@celery.task(time_limit=900, soft_time_limit=840)
+def transcribe_written_homework_to_latex(submission_id):
+    """
+    书面作业 LaTeX 转写 + AI 评分任务（异步）：
+    - 从 uploads/<submission_id>/ 读取用户上传的 PDF
+    - 渲染图片后调用 qwen3-omni-flash 转写
+    - 在同目录生成同名 .tex 文件
+    - 将题目 + 转写后的 LaTeX 发送给模型自动评分并回写 submission
+    """
+    submission = get_submission_by_id(submission_id)
+    if not submission or submission.get('problem_type') != 2:
+        return
+
+    update_submission_status(submission_id, 'Running')
+
+    file_path = get_file_path_for_submission(submission_id)
+    if not file_path or not os.path.exists(file_path):
+        print(f"[LaTeX OCR] submission={submission_id} 文件不存在: {file_path}")
+        update_submission_status(submission_id, 'Pending')
+        return
+
+    upload_folder = os.path.dirname(file_path)
+    uploaded_filename = os.path.basename(file_path)
+
+    try:
+        tex_path = save_transcribed_latex(
+            pdf_path=file_path,
+            upload_folder=upload_folder,
+            uploaded_filename=uploaded_filename
+        )
+        with open(tex_path, 'r', encoding='utf-8') as f:
+            latex_text = f.read()
+        if not latex_text.strip():
+            raise RuntimeError("转写得到的 LaTeX 为空。")
+
+        problem = get_problem(submission['problem_id'])
+        if not problem:
+            raise RuntimeError("题目不存在，无法自动评分。")
+
+        score, ai_comment = evaluate_written_homework_with_ai(problem, latex_text)
+        update_submission_score_and_comment(submission_id, score, ai_comment)
+        new_status = 'Accepted' if score == 5 else 'Unaccepted'
+        update_submission_status(submission_id, new_status)
+        print(f"[LaTeX OCR] submission={submission_id} 转写+评分完成: score={score}, status={new_status}, tex={tex_path}")
+    except Exception as e:
+        # 失败时写入错误文件，便于老师或管理员排查
+        error_filename = f"{os.path.splitext(uploaded_filename)[0]}_latex_error.txt"
+        error_path = os.path.join(upload_folder, error_filename)
+        try:
+            with open(error_path, 'w', encoding='utf-8') as f:
+                f.write(f"LaTeX 转写/自动评分失败（submission_id={submission_id}）\n")
+                f.write(str(e))
+        except Exception:
+            pass
+        try:
+            update_submission_comment(submission_id, f"AI 自动评分失败：{str(e)}")
+            update_submission_status(submission_id, 'Pending')
+        except Exception:
+            pass
+        print(f"[LaTeX OCR] submission={submission_id} 转写或评分失败: {e}")
 
 def compare_float_strings(str1, str2, tolerance=1e-5):
     # 用正则表达式分割字符串：匹配任何空白字符或逗号
@@ -3733,6 +4114,16 @@ def update_submission_score_and_comment(submission_id, score, comment):
     finally:
         conn.close()
 
+def update_submission_comment(submission_id, comment):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "UPDATE submissions SET code = %s WHERE id = %s"
+            cursor.execute(sql, (comment, submission_id))
+        conn.commit()
+    finally:
+        conn.close()
+
 @app.route('/download_submission_file/<int:submission_id>')
 def download_submission_file(submission_id):
     submission = get_submission_by_id(submission_id)
@@ -3762,8 +4153,8 @@ def submit_grading(submission_id):
     score = request.form.get('score', type=int)
     comment = request.form.get('comment', '').strip()
     
-    if not (1 <= score <= 5):
-        return jsonify(success=False, message="得分必须在 1 到 5 之间"), 400
+    if score is None or not (0 <= score <= 5):
+        return jsonify(success=False, message="得分必须在 0 到 5 之间"), 400
     
     # 获取提交记录
     submission = get_submission_by_id(submission_id)
