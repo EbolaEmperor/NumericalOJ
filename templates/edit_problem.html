@@ -42,9 +42,16 @@
     </div>
   </div>
   {% else %}
-  <div class="mb-3">
-    <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
-    <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
+  <div class="row mb-3">
+    <div class="col-md-8">
+      <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
+      <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
+    </div>
+    {% set sub_limit = (problem.submission_limit or 10) %}
+    <div class="col-md-4">
+      <label for="submissionLimitInput" class="form-label"><i class="fas fa-check-circle me-2"></i> 提交限制</label>
+      <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" min="1" value="{{ sub_limit }}">
+    </div>
   </div>
   {% endif %}
 
