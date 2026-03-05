@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import atexit
 import json
+import os
+import queue
+import threading
+import time
 
 import pymysql
 from flask import session
@@ -14,16 +19,168 @@ CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
 _settings_table_ready = False
 
 
-def get_db_connection():
-    """返回一个 pymysql 数据库连接。"""
+def _create_raw_mysql_connection():
     return pymysql.connect(
         host='localhost',
         user=MYSQL_USERNAME,
         password=MYSQL_PASSWORD,
         database='myojdb',
         charset='utf8mb4',
+        connect_timeout=int(os.getenv('MYSQL_CONNECT_TIMEOUT', '5')),
         cursorclass=pymysql.cursors.DictCursor,
     )
+
+
+class _PooledConnectionProxy:
+    """
+    连接代理：
+    - 对外表现与 pymysql Connection 一致
+    - close() 时将连接归还池，而不是实际断开
+    """
+
+    def __init__(self, pool, raw_conn):
+        self._pool = pool
+        self._raw_conn = raw_conn
+        self._closed = False
+
+    def __getattr__(self, item):
+        return getattr(self._raw_conn, item)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._pool.release(self._raw_conn)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
+class _MySQLConnectionPool:
+    def __init__(self, min_size=2, max_size=6, wait_timeout=5, recycle_seconds=1200):
+        self._min_size = max(1, int(min_size))
+        self._max_size = max(self._min_size, int(max_size))
+        self._wait_timeout = max(1, int(wait_timeout))
+        self._recycle_seconds = max(60, int(recycle_seconds))
+
+        self._idle = queue.Queue(maxsize=self._max_size)
+        self._lock = threading.Lock()
+        self._created = 0
+        self._conn_birth = {}
+
+        self._warm_up()
+        atexit.register(self.close_idle_connections)
+
+    def _warm_up(self):
+        target = self._min_size
+        for _ in range(target):
+            try:
+                conn = _create_raw_mysql_connection()
+            except Exception:
+                # 启动阶段不因预热失败中断，后续按需创建
+                break
+            with self._lock:
+                conn_id = id(conn)
+                self._conn_birth[conn_id] = time.time()
+                self._idle.put_nowait(conn)
+                self._created += 1
+
+    def _should_recycle(self, conn):
+        born_at = self._conn_birth.get(id(conn), 0)
+        return (time.time() - born_at) >= self._recycle_seconds
+
+    def _discard(self, conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with self._lock:
+            self._conn_birth.pop(id(conn), None)
+            if self._created > 0:
+                self._created -= 1
+
+    def _prepare_for_checkout(self, conn):
+        if self._should_recycle(conn):
+            self._discard(conn)
+            new_conn = _create_raw_mysql_connection()
+            with self._lock:
+                self._created += 1
+            return new_conn
+
+        try:
+            conn.ping(reconnect=True)
+            return conn
+        except Exception:
+            self._discard(conn)
+            new_conn = _create_raw_mysql_connection()
+            with self._lock:
+                self._created += 1
+            return new_conn
+
+    def acquire(self):
+        conn = None
+        with self._lock:
+            if not self._idle.empty():
+                conn = self._idle.get_nowait()
+            elif self._created < self._max_size:
+                conn = _create_raw_mysql_connection()
+                self._created += 1
+
+        if conn is None:
+            try:
+                conn = self._idle.get(timeout=self._wait_timeout)
+            except queue.Empty as e:
+                raise RuntimeError("MySQL 连接池耗尽，请稍后重试") from e
+
+        prepared = self._prepare_for_checkout(conn)
+        with self._lock:
+            if id(prepared) not in self._conn_birth:
+                self._conn_birth[id(prepared)] = time.time()
+        return _PooledConnectionProxy(self, prepared)
+
+    def release(self, conn):
+        try:
+            # 避免事务泄露到下一次使用
+            conn.rollback()
+        except Exception:
+            self._discard(conn)
+            return
+
+        if self._should_recycle(conn):
+            self._discard(conn)
+            return
+
+        try:
+            self._idle.put_nowait(conn)
+        except queue.Full:
+            self._discard(conn)
+
+    def close_idle_connections(self):
+        while not self._idle.empty():
+            conn = self._idle.get_nowait()
+            try:
+                conn.close()
+            except Exception:
+                pass
+        with self._lock:
+            self._conn_birth.clear()
+            self._created = 0
+
+
+_db_pool = _MySQLConnectionPool(
+    min_size=int(os.getenv('MYSQL_POOL_MIN_SIZE', '2')),
+    max_size=int(os.getenv('MYSQL_POOL_MAX_SIZE', '6')),
+    wait_timeout=int(os.getenv('MYSQL_POOL_WAIT_TIMEOUT', '3')),
+    recycle_seconds=int(os.getenv('MYSQL_POOL_RECYCLE_SECONDS', '1200')),
+)
+
+
+def get_db_connection():
+    """返回一个连接池代理连接（close() 时归还池）。"""
+    return _db_pool.acquire()
 
 
 def ensure_settings_table():
