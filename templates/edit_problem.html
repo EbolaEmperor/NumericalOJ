@@ -9,7 +9,7 @@
   </div>
 {% endif %}
 
-<form id="editProblemForm" method="POST" action="{{ url_for('edit_problem', problem_id=problem.id) }}">
+<form id="editProblemForm" method="POST" action="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}">
   {% if problem.type == 1 %}
   <!-- 同行：语言 + 时限 + 提交限制 -->
   <div class="row mb-3">
@@ -104,7 +104,7 @@
   </div>
 
   <button type="submit" class="btn btn-outline-primary"><i class="fas fa-check"></i> 保存修改</button>
-  <a href="{{ url_for('problem_detail', problem_id=problem.id) }}" class="btn btn-outline-secondary"><i class="fas fa-times"></i> 放弃修改</a>
+  <a href="{{ url_for('problem_core.problem_detail', problem_id=problem.id) }}" class="btn btn-outline-secondary"><i class="fas fa-times"></i> 放弃修改</a>
 </form>
 
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">

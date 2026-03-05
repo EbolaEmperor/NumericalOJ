@@ -13,7 +13,7 @@
     {% if current_page > 1 %}
       <li class="page-item">
         <a class="page-link" 
-           href="{{ url_for('all_submissions', page=current_page-1) }}">
+           href="{{ url_for('problem_core.all_submissions', page=current_page-1) }}">
           &laquo; 上一页
         </a>
       </li>
@@ -22,7 +22,7 @@
     {% for p in range(1, total_pages + 1) %}
       {% if p >= current_page - 10 and p <= current_page + 10 %}
         <li class="page-item {% if p == current_page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('all_submissions', page=p) }}">{{ p }}</a>
+          <a class="page-link" href="{{ url_for('problem_core.all_submissions', page=p) }}">{{ p }}</a>
         </li>
       {% endif %}
     {% endfor %}
@@ -30,7 +30,7 @@
     {% if current_page < total_pages %}
       <li class="page-item">
         <a class="page-link" 
-           href="{{ url_for('all_submissions', page=current_page+1) }}">
+           href="{{ url_for('problem_core.all_submissions', page=current_page+1) }}">
           下一页 &raquo;
         </a>
       </li>
@@ -120,14 +120,14 @@
       
       <!-- 操作按钮（仅显示图标） -->
       <div class="d-block d-sm-none" style="width: 50px; text-align: center;">
-        <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" 
+        <a href="{{ url_for('submission.submission_detail', submission_id=sub.id) }}" 
            class="btn btn-sm btn-outline-secondary">
           <i class="fas fa-info-circle"></i>
         </a>
       </div>
 
       <div class="d-none d-sm-block" style="width: 100px; text-align: center;">
-        <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" 
+        <a href="{{ url_for('submission.submission_detail', submission_id=sub.id) }}" 
            class="btn btn-sm btn-outline-secondary">
           <i class="fas fa-info-circle"></i>
           <span class="d-none d-sm-inline">详情</span>

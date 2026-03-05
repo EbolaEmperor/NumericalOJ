@@ -66,8 +66,8 @@
     {% endif %}
 
     <hr/>
-    <a href="{{ url_for('problem_detail', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
-    <a href="{{ url_for('submission_list', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回本题记录</a>
+    <a href="{{ url_for('problem_core.problem_detail', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
+    <a href="{{ url_for('submission.submission_list', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回本题记录</a>
   </div>
 
   <!-- 右侧：测试点详情 + AI 按钮 / 书面作业批改 -->
@@ -148,7 +148,7 @@
             <i class="fas fa-image me-1"></i> 程序输出图片：
           </small>
           <div class="mt-1">
-            <img src="{{ url_for('get_submission_output_image', submission_id=submission.id, test_index=tp.test_index) }}" 
+            <img src="{{ url_for('submission.get_submission_output_image', submission_id=submission.id, test_index=tp.test_index) }}" 
                  alt="测试点{{ loop.index }}输出图片" 
                  class="img-fluid border rounded output-image"
                  style="max-width: 100%; max-height: 300px; cursor: pointer;"
@@ -172,7 +172,7 @@
 </div>
 
 <!-- PDF.js（书面作业） -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/pdfjs/pdf.min.js') }}"></script>
 
 <!-- CodeMirror -->
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
@@ -269,8 +269,11 @@
 {% else %}
 <script>
   // PDF.js 渲染
-  var url = "{{ url_for('download_submission_file', submission_id=submission.id) }}";
+  var url = "{{ url_for('grading.download_submission_file', submission_id=submission.id) }}";
   var pdfViewer = document.getElementById('pdfViewer');
+  if (window.pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "{{ url_for('static', filename='vendor/pdfjs/pdf.worker.min.js') }}";
+  }
 
   pdfjsLib.getDocument(url).promise.then(function(pdf) {
     var containerWidth = pdfViewer.clientWidth;
@@ -331,7 +334,7 @@
   function checkSubmissionStatus() {
     updateJudgingText();
     
-    fetch('{{ url_for("submission_status", submission_id=submission.id) }}')
+    fetch('{{ url_for("submission.submission_status", submission_id=submission.id) }}')
       .then(response => response.json())
       .then(data => {
         pollCount++;
@@ -400,7 +403,7 @@
   const writtenMaxPollCount = 180; // 最多约6分钟（2秒一次）
 
   function checkWrittenSubmissionStatus() {
-    fetch('{{ url_for("submission_status", submission_id=submission.id) }}')
+    fetch('{{ url_for("submission.submission_status", submission_id=submission.id) }}')
       .then(response => response.json())
       .then(data => {
         writtenPollCount++;
@@ -465,7 +468,7 @@
   document.getElementById('submitGradeBtn').addEventListener('click', function() {
     var score = document.getElementById('scoreInput').value;
     var comment = document.getElementById('commentInput').value;
-    fetch('{{ url_for('submit_grading', submission_id=submission.id) }}', {
+    fetch('{{ url_for('grading.submit_grading', submission_id=submission.id) }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ 'score': score, 'comment': comment })
@@ -479,7 +482,7 @@
   });
 
   document.getElementById('nextBtn').addEventListener('click', function() {
-    fetch('{{ url_for("get_next_pending_submission", submission_id=submission.id) }}')
+    fetch('{{ url_for("grading.get_next_pending_submission", submission_id=submission.id) }}')
       .then(r => r.json())
       .then(data => { window.location.href = data.success ? data.next_submission_url : location.href; })
       .catch(err => console.error('错误:', err));
@@ -746,7 +749,7 @@
   }
 
   function requestAiIssueMarks(userCode, requestToken) {
-    fetch('{{ url_for("ask_ai_code_marks") }}', {
+    fetch('{{ url_for("ai.ask_ai_code_marks") }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

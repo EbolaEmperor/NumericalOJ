@@ -7,7 +7,7 @@
 
   <!-- <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"> -->
   <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
   <!-- MathJax for LaTeX -->
   <script>
   window.MathJax = {
@@ -17,7 +17,7 @@
     }
   };
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <script src="{{ url_for('static', filename='vendor/mathjax/tex-mml-chtml.js') }}"></script>
 
   <style>
     /* 修改侧拉栏宽度 */
@@ -29,39 +29,39 @@
 <body>
 <nav class="navbar navbar-expand-lg navbar-light bg-light d-none d-lg-block">
   <div class="container-fluid">
-    <a class="navbar-brand" href="{{ url_for('problem_list') }}"><strong>Numerical OJ</strong></a>
+    <a class="navbar-brand" href="{{ url_for('problem_core.problem_list') }}"><strong>Numerical OJ</strong></a>
     <div class="collapse navbar-collapse">
       <ul class="navbar-nav me-auto">
         {% if user %}
         {% if user.is_admin == 1 %}
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('problem_list') }}">
+          <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
             <i class="fas fa-book me-2"></i> <!-- 实心书籍图标 -->
             题目列表
           </a>
         </li>
         {% else %}
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('problem_list') }}">
+          <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
             <i class="fas fa-tasks me-2"></i> <!-- 实心书籍图标 -->
             我的作业
           </a>
         </li>
         {% endif %}
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('all_submissions') }}">
+          <a class="nav-link" href="{{ url_for('problem_core.all_submissions') }}">
             <i class="fas fa-chart-pie me-2"></i> <!-- 实心饼图图标 -->
             提交记录
           </a>
         </li>
         <!-- <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('forum_index') }}">
+          <a class="nav-link" href="{{ url_for('forum.forum_index') }}">
             <i class="fas fa-comments me-2"></i>
             讨论区
           </a>
         </li> -->
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('code_repository') }}">
+          <a class="nav-link" href="{{ url_for('repository.code_repository') }}">
             <i class="fas fa-code me-2"></i>
             代码仓库
           </a>
@@ -69,13 +69,13 @@
         {% endif %}
         {% if user and user.is_admin == 1 %}
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('user_management') }}">
+            <a class="nav-link" href="{{ url_for('admin_user.user_management') }}">
               <i class="fas fa-users me-2"></i>
               用户管理
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('admin_homework') }}">
+            <a class="nav-link" href="{{ url_for('homework.admin_homework') }}">
               <i class="fas fa-tasks me-2"></i>
               作业管理
             </a>
@@ -104,17 +104,17 @@
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('logout') }}">
+            <a class="nav-link" href="{{ url_for('auth.logout') }}">
               <i class="fas fa-sign-out-alt me-2"></i>
               注销
             </a>
           </li>
         {% else %}
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('login') }}"><i class="fas fa-sign-in-alt"></i> 登录</a>
+            <a class="nav-link" href="{{ url_for('auth.login') }}"><i class="fas fa-sign-in-alt"></i> 登录</a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('register') }}"><i class="fas fa-user-plus"></i> 注册</a>
+            <a class="nav-link" href="{{ url_for('auth.register') }}"><i class="fas fa-user-plus"></i> 注册</a>
           </li>
         {% endif %}
       </ul>
@@ -138,33 +138,33 @@
       {% if user %}
       {% if user.is_admin == 1 %}
       <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('problem_list') }}">
+        <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
           <i class="fas fa-book me-2"></i> <!-- 实心书籍图标 -->
           题目列表
         </a>
       </li>
       {% else %}
       <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('problem_list') }}">
+        <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
           <i class="fas fa-tasks me-2"></i> <!-- 实心书籍图标 -->
           我的作业
         </a>
       </li>
       {% endif %}
       <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('all_submissions') }}">
+        <a class="nav-link" href="{{ url_for('problem_core.all_submissions') }}">
           <i class="fas fa-chart-pie me-2"></i> <!-- 实心饼图图标 -->
           提交记录
         </a>
       </li>
       <!-- <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('forum_index') }}">
+        <a class="nav-link" href="{{ url_for('forum.forum_index') }}">
           <i class="fas fa-comments me-2"></i>
           讨论区
         </a>
       </li> -->
       <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('code_repository') }}">
+        <a class="nav-link" href="{{ url_for('repository.code_repository') }}">
           <i class="fas fa-code me-2"></i>
           代码仓库
         </a>
@@ -172,13 +172,13 @@
       {% endif %}
       {% if user and user.is_admin == 1 %}
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('user_management') }}">
+          <a class="nav-link" href="{{ url_for('admin_user.user_management') }}">
             <i class="fas fa-users me-2"></i>
             用户管理
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('admin_homework') }}">
+          <a class="nav-link" href="{{ url_for('homework.admin_homework') }}">
             <i class="fas fa-tasks me-2"></i>
             作业管理
           </a>
@@ -200,17 +200,17 @@
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('logout') }}">
+          <a class="nav-link" href="{{ url_for('auth.logout') }}">
             <i class="fas fa-sign-out-alt me-2"></i>
             注销
           </a>
         </li>
       {% else %}
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('login') }}"><i class="fas fa-sign-in-alt"></i> 登录</a>
+          <a class="nav-link" href="{{ url_for('auth.login') }}"><i class="fas fa-sign-in-alt"></i> 登录</a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('register') }}"><i class="fas fa-user-plus"></i> 注册</a>
+          <a class="nav-link" href="{{ url_for('auth.register') }}"><i class="fas fa-user-plus"></i> 注册</a>
         </li>
       {% endif %}
     </ul>
@@ -227,7 +227,7 @@
         <h5 class="modal-title">修改密码</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form id="passwordForm" method="POST" action="{{ url_for('change_password') }}">
+      <form id="passwordForm" method="POST" action="{{ url_for('auth.change_password') }}">
         <div class="modal-body">
           <!-- 邮箱显示 -->
           <div class="mb-3">

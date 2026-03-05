@@ -22,7 +22,7 @@
 
       {% if user and user.is_admin == 1 %}
       <div class="ms-auto d-flex gap-1">
-        <a href="{{ url_for('edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
+        <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
           <i class="fas fa-pencil-alt me"></i>
         </a>
         <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
@@ -46,7 +46,7 @@
   <!-- 右侧：提交作业 -->
   <div class="col-md-6">
     {% if problem.type == 1 %}
-      <form action="{{ url_for('submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
+      <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
         <div class="d-flex justify-content-between align-items-end mb-2">
           <label for="codeEditor" class="form-label mb-0">
             <i class="fas fa-code me-2"></i> 代码 
@@ -92,7 +92,7 @@
         </div>
       </form>
     {% elif problem.type == 2 %}
-      <form method="POST" action="{{ url_for('submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4">
+      <form method="POST" action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <label for="file" class="form-label mb-0"><i class="fas fa-file-alt me-2"></i> 上传文件</label>
           <div>
@@ -130,7 +130,7 @@
     {% if last_submissions and last_submissions|length > 0 %}
       <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 class="mb-0"><i class="fas fa-history me-2"></i> 最近提交记录</h5>
-        <a href="{{ url_for('submission_list', problem_id=problem.id) }}" class="btn btn-sm btn-outline-secondary">
+        <a href="{{ url_for('submission.submission_list', problem_id=problem.id) }}" class="btn btn-sm btn-outline-secondary">
           <i class="fas fa-chart-pie me-2"></i> 提交记录
         </a>
       </div>
@@ -143,7 +143,7 @@
               </span>
               <span class="ms-2"><i class="fas fa-trophy"></i> {{ sub.score }}</span>
             </div>
-            <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" class="btn btn-sm btn-outline-secondary">
+            <a href="{{ url_for('submission.submission_detail', submission_id=sub.id) }}" class="btn btn-sm btn-outline-secondary">
               查看详情 &rarr;
             </a>
           </li>
@@ -153,7 +153,7 @@
       <!-- 如果没有提交记录，也要显示提交记录按钮 -->
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h5 class="mb-0 text-muted"><i class="fas fa-history me-2"></i> 暂无提交记录</h5>
-        <a href="{{ url_for('submission_list', problem_id=problem.id) }}" class="btn btn-sm btn-outline-secondary">
+        <a href="{{ url_for('submission.submission_list', problem_id=problem.id) }}" class="btn btn-sm btn-outline-secondary">
           <i class="fas fa-chart-pie me-2"></i> 提交记录
         </a>
       </div>
@@ -165,7 +165,7 @@
 <!-- 上传数据模态框 & 重测进度模态框：保持不变 -->
 <div class="modal fade" id="uploadDataModal" tabindex="-1" aria-labelledby="uploadDataModalLabel" aria-hidden="true">
   <div class="modal-dialog">
-    <form method="POST" action="{{ url_for('upload_testdata', problem_id=problem.id) }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('admin_problem.upload_testdata', problem_id=problem.id) }}" enctype="multipart/form-data">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title" id="uploadDataModalLabel"><i class="fas fa-cloud-upload-alt me-2"></i> 上传测试数据</h5>
@@ -292,7 +292,7 @@
   rmBtn.addEventListener('click', function(e) {
     e.preventDefault();
     var problemId = document.getElementById('problemMeta')?.dataset.problemId;
-    fetch('{{ url_for("invalidate_invalid_submissions", problem_id=problem.id) }}', {
+    fetch('{{ url_for("grading.invalidate_invalid_submissions", problem_id=problem.id) }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ problem_id: problemId })
@@ -378,7 +378,7 @@
     document.getElementById('btnRejudge')?.addEventListener('click', function() {
       if (!confirm("确认要重测本题的所有提交吗？")) return;
 
-      fetch("{{ url_for('rejudge_problem', problem_id=problem.id) }}", { method: "POST" })
+      fetch("{{ url_for('rejudge.rejudge_problem', problem_id=problem.id) }}", { method: "POST" })
       .then(res => res.json())
       .then(data => {
         if (!data.success) { alert("重测失败：" + data.message); return; }
@@ -394,7 +394,7 @@
     });
 
     function checkRejudgeStatus() {
-      fetch("{{ url_for('rejudge_status', problem_id=problem.id) }}")
+      fetch("{{ url_for('rejudge.rejudge_status', problem_id=problem.id) }}")
         .then(res => res.json())
         .then(data => {
           if (!data.success) { if (rejudgeTimer) { clearInterval(rejudgeTimer); rejudgeTimer = null; } return; }
@@ -422,7 +422,7 @@
       document.getElementById('scoresError').style.display = 'none';
       
       // 获取用户得分数据
-      fetch("{{ url_for('get_problem_scores', problem_id=problem.id) }}")
+      fetch("{{ url_for('admin_user.get_problem_scores', problem_id=problem.id) }}")
         .then(response => response.json())
         .then(data => {
           document.getElementById('scoresLoading').style.display = 'none';

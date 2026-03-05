@@ -17,7 +17,7 @@
       </div>
     {% endif %}
 
-    <form method="POST" action="{{ url_for('login') }}">
+    <form method="POST" action="{{ url_for('auth.login') }}">
       <div class="mb-3">
         <label for="username" class="form-label"><i class="fas fa-user me-1"></i> 学号</label>
         <input type="text" class="form-control" id="username" name="username" required>
@@ -33,12 +33,12 @@
 
     <div class="row mt-3">
       <div class="col">
-        <a href="{{ url_for('register') }}" class="btn btn-outline-success w-100">
+        <a href="{{ url_for('auth.register') }}" class="btn btn-outline-success w-100">
           <i class="fas fa-user-plus"></i> 注册
         </a>
       </div>
       <div class="col">
-        <a href="{{ url_for('forgot_password') }}" class="btn btn-outline-secondary w-100">
+        <a href="{{ url_for('auth.forgot_password') }}" class="btn btn-outline-secondary w-100">
           <i class="fas fa-lock"></i> 忘记密码
         </a>
       </div>
