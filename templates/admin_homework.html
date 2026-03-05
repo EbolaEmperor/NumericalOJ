@@ -8,7 +8,7 @@
   <!-- 班级选择 -->
   <div class="card mb-4">
     <div class="card-body">
-      <form method="GET" action="{{ url_for('admin_homework') }}" class="row g-3 align-items-center">
+      <form method="GET" action="{{ url_for('homework.admin_homework') }}" class="row g-3 align-items-center">
         <div class="col-auto">
           <label class="form-label">选择班级：</label>
         </div>
@@ -35,7 +35,7 @@
     </button>
   
     <!-- 导出成绩按钮 -->
-    <a href="{{ url_for('export_scores', sclass=selected_class) }}" class="btn btn-outline-primary ms-2">
+    <a href="{{ url_for('homework.export_scores', sclass=selected_class) }}" class="btn btn-outline-primary ms-2">
       <i class="fas fa-download me-2"></i>导出成绩
     </a>
 
@@ -131,7 +131,7 @@
         <h5 class="modal-title">布置新作业</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST" action="{{ url_for('admin_add_homework') }}">
+      <form method="POST" action="{{ url_for('homework.admin_add_homework') }}">
         <input type="hidden" name="class_en" value="{{ selected_class }}">
         <div class="modal-body">
           <div class="mb-3">

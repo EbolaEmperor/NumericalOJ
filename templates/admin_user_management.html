@@ -4,7 +4,7 @@
 <h2><i class="fas fa-users me-2"></i> 用户管理</h2>
 
 <!-- 搜索和过滤表单 -->
-<form method="get" action="{{ url_for('user_management') }}" class="mb-4">
+<form method="get" action="{{ url_for('admin_user.user_management') }}" class="mb-4">
   <div class="row g-3">
     <div class="col-md-4">
       <input type="text" name="username" class="form-control" 
@@ -23,7 +23,7 @@
     </div>
     <div class="col-md-4">
       <button type="submit" class="btn btn-outline-primary"><i class="fas fa-search me-2"></i>搜索</button>
-      <a href="{{ url_for('user_management') }}" class="btn btn-outline-secondary"><i class="fas fa-sync me-2"></i>重置</a>
+      <a href="{{ url_for('admin_user.user_management') }}" class="btn btn-outline-secondary"><i class="fas fa-sync me-2"></i>重置</a>
     </div>
   </div>
 </form>
@@ -103,7 +103,7 @@
     {% if current_page > 1 %}
       <li class="page-item">
         <a class="page-link" 
-           href="{{ url_for('user_management', page=current_page-1, username=search_username, class=search_class) }}">
+           href="{{ url_for('admin_user.user_management', page=current_page-1, username=search_username, class=search_class) }}">
           上一页
         </a>
       </li>
@@ -112,7 +112,7 @@
     {% for p in range(1, total_pages+1) %}
       <li class="page-item {% if p == current_page %}active{% endif %}">
         <a class="page-link" 
-           href="{{ url_for('user_management', page=p, username=search_username, class=search_class) }}">
+           href="{{ url_for('admin_user.user_management', page=p, username=search_username, class=search_class) }}">
           {{ p }}
         </a>
       </li>
@@ -121,7 +121,7 @@
     {% if current_page < total_pages %}
       <li class="page-item">
         <a class="page-link" 
-           href="{{ url_for('user_management', page=current_page+1, username=search_username, class=search_class) }}">
+           href="{{ url_for('admin_user.user_management', page=current_page+1, username=search_username, class=search_class) }}">
           下一页
         </a>
       </li>
@@ -421,7 +421,7 @@
   document.getElementById('addClassForm').addEventListener('submit', function(e) {
     e.preventDefault();
     var formData = new FormData(this);
-    fetch("{{ url_for('add_class_ajax') }}", { method: "POST", body: formData })
+    fetch("{{ url_for('admin_user.add_class_ajax') }}", { method: "POST", body: formData })
       .then(r => r.json())
       .then(data => {
         if (data.success) {
@@ -446,7 +446,7 @@
   document.getElementById('editClassForm').addEventListener('submit', function(e) {
     e.preventDefault();
     var formData = new FormData(this);
-    fetch("{{ url_for('edit_user_ajax') }}", { method: "POST", body: formData })
+    fetch("{{ url_for('admin_user.edit_user_ajax') }}", { method: "POST", body: formData })
       .then(r => r.json())
       .then(data => {
         if (data.success) {
@@ -468,7 +468,7 @@
   document.getElementById('editUsernameForm').addEventListener('submit', function(e) {
     e.preventDefault();
     var formData = new FormData(this);
-    fetch("{{ url_for('edit_username_ajax') }}", { method: "POST", body: formData })
+    fetch("{{ url_for('admin_user.edit_username_ajax') }}", { method: "POST", body: formData })
       .then(r => r.json())
       .then(data => {
         if (data.success) {
@@ -493,7 +493,7 @@
     form.append('user_id', userId);
     form.append('class_en', classEn);
 
-    fetch("{{ url_for('add_user_to_class') }}", { method: "POST", body: form })
+    fetch("{{ url_for('class_management.add_user_to_class') }}", { method: "POST", body: form })
       .then(r => r.json())
       .then(data => {
         if (!data.success) {
@@ -525,7 +525,7 @@
     form.append('user_id', userId);
     form.append('class_en', classEn);
 
-    fetch("{{ url_for('remove_user_from_class') }}", { method: "POST", body: form })
+    fetch("{{ url_for('class_management.remove_user_from_class') }}", { method: "POST", body: form })
       .then(r => r.json())
       .then(data => {
         if (!data.success) { alert('移除失败：' + (data.message || '未知错误')); return; }
@@ -552,7 +552,7 @@
     new bootstrap.Modal(document.getElementById('gradesModal')).show();
     
     // 加载成绩数据
-    fetch("{{ url_for('get_user_grades') }}?user_id=" + userId)
+    fetch("{{ url_for('admin_user.get_user_grades') }}?user_id=" + userId)
       .then(r => r.json())
       .then(data => {
         document.getElementById('gradesLoadingIndicator').style.display = 'none';
@@ -642,7 +642,7 @@
     form.append('problem_id', problemId);
     form.append('score', finalScore === null ? '' : finalScore);
     
-    fetch("{{ url_for('update_user_grade') }}", { method: "POST", body: form })
+    fetch("{{ url_for('admin_user.update_user_grade') }}", { method: "POST", body: form })
       .then(r => r.json())
       .then(data => {
         if (!data.success) {

@@ -84,14 +84,14 @@
       
       <!-- 操作按钮（仅显示图标） -->
       <div class="d-block d-sm-none" style="width: 50px; text-align: center;">
-        <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" 
+        <a href="{{ url_for('submission.submission_detail', submission_id=sub.id) }}" 
            class="btn btn-sm btn-outline-secondary">
           <i class="fas fa-info-circle"></i>
         </a>
       </div>
 
       <div class="d-none d-sm-block" style="width: 100px; text-align: center;">
-        <a href="{{ url_for('submission_detail', submission_id=sub.id) }}" 
+        <a href="{{ url_for('submission.submission_detail', submission_id=sub.id) }}" 
            class="btn btn-sm btn-outline-secondary">
           <i class="fas fa-info-circle"></i>
           <span class="d-none d-sm-inline">详情</span>
@@ -102,7 +102,7 @@
 </div>
 
 <hr/>
-<a href="{{ url_for('problem_detail', problem_id=problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
+<a href="{{ url_for('problem_core.problem_detail', problem_id=problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
 
 <style>
   /* 保持原有颜色配置 */
