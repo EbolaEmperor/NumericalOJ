@@ -2,6 +2,31 @@
 {% block title %} 提交记录 - {{ super() }}{% endblock %}
 {% block content %}
 <h2><i class="fas fa-chart-pie me-2"></i> 提交记录 - P{{ problem_id }}</h2>
+<nav aria-label="Submission pagination" class="mb-3">
+  <ul class="pagination justify-content-center">
+    {% if current_page > 1 %}
+      <li class="page-item">
+        <a class="page-link" href="{{ url_for('submission.submission_list', problem_id=problem_id, page=current_page-1) }}">
+          &laquo; 上一页
+        </a>
+      </li>
+    {% endif %}
+
+    {% for p in page_numbers %}
+      <li class="page-item {% if p == current_page %}active{% endif %}">
+        <a class="page-link" href="{{ url_for('submission.submission_list', problem_id=problem_id, page=p) }}">{{ p }}</a>
+      </li>
+    {% endfor %}
+
+    {% if current_page < total_pages %}
+      <li class="page-item">
+        <a class="page-link" href="{{ url_for('submission.submission_list', problem_id=problem_id, page=current_page+1) }}">
+          下一页 &raquo;
+        </a>
+      </li>
+    {% endif %}
+  </ul>
+</nav>
 <div class="list-group">
   <!-- 表头 -->
   <div class="list-group-item bg-light d-flex text-muted small">
@@ -130,5 +155,17 @@
   }
 
   /* 可以添加其他的样式设置 */
+  .pagination {
+    margin: 16px 0;
+  }
+  .page-item.active .page-link {
+    background-color: #007bff;
+    border-color: #007bff;
+  }
+  .page-link {
+    color: #007bff;
+    min-width: 45px;
+    text-align: center;
+  }
 </style>
 {% endblock %}

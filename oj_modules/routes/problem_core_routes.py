@@ -16,7 +16,7 @@ from oj_modules.db_services import (
     get_db_connection,
     get_problem,
     get_remaining_submissions,
-    get_submissions_by_user_and_problem,
+    get_submission_summaries_by_user_and_problem,
     get_user_classes,
     get_user_by_username,
     increment_submission_count,
@@ -28,6 +28,10 @@ problem_core_bp = Blueprint('problem_core', __name__)
 _evaluate_submission_task = None
 _transcribe_written_homework_task = None
 _DASHBOARD_STATS_CACHE_TTL_SECONDS = 15
+_USER_CLASSES_CACHE_TTL_SECONDS = 30
+_HOMEWORKS_CACHE_TTL_SECONDS = 10
+_CLASS_GRADES_CACHE_TTL_SECONDS = 20
+_USER_CACHE_TTL_SECONDS = 30
 _dashboard_stats_cache = {
     "expires_at": 0.0,
     "total_submissions": 0,
@@ -35,6 +39,10 @@ _dashboard_stats_cache = {
     "last_10_days": [],
     "daily_counts": [],
 }
+_user_classes_cache = {}
+_homeworks_cache = {}
+_class_grades_cache = {}
+_user_cache = {}
 
 
 def init_problem_core_module(evaluate_submission_task, transcribe_written_homework_task):
@@ -47,10 +55,34 @@ def current_user():
     username = session.get('username')
     if not username:
         return None
-    return get_user_by_username(username)
+    now_ts = time.time()
+    cached = _user_cache.get(username)
+    if cached and now_ts < cached["expires_at"]:
+        return cached["value"]
+
+    user = get_user_by_username(username)
+    _user_cache[username] = {
+        "expires_at": now_ts + _USER_CACHE_TTL_SECONDS,
+        "value": user,
+    }
+    return user
 
 
-def _get_homeworks_for_classes(user_id, class_en_list):
+def get_user_classes_cached(user_id):
+    now_ts = time.time()
+    cached = _user_classes_cache.get(user_id)
+    if cached and now_ts < cached["expires_at"]:
+        return cached["value"]
+
+    classes = get_user_classes(user_id)
+    _user_classes_cache[user_id] = {
+        "expires_at": now_ts + _USER_CLASSES_CACHE_TTL_SECONDS,
+        "value": classes,
+    }
+    return classes
+
+
+def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
     """
     批量读取多个班级作业，并一次性补齐题目标题、AC 状态、最高分。
     返回: {class_en: [hw, ...]}
@@ -59,102 +91,141 @@ def _get_homeworks_for_classes(user_id, class_en_list):
     if not class_en_list:
         return result
 
-    conn = get_db_connection()
+    cache_key = (user_id, tuple(class_en_list))
+    now_ts = time.time()
+    cached = _homeworks_cache.get(cache_key)
+    if cached and now_ts < cached["expires_at"]:
+        return cached["value"]
+
+    db_cursor = cursor
+    conn = None
     try:
-        with conn.cursor() as cursor:
-            placeholders = ",".join(["%s"] * len(class_en_list))
-            cursor.execute(
-                f"SELECT class_en FROM class_table WHERE class_en IN ({placeholders})",
-                tuple(class_en_list),
+        if db_cursor is None:
+            conn = get_db_connection()
+            db_cursor = conn.cursor()
+
+        union_parts = []
+        union_params = []
+        for cls in class_en_list:
+            union_parts.append(
+                f"SELECT %s AS class_en, id, problem_id, ddl, complete_cnt FROM `{cls}`"
             )
-            valid_class_set = {row["class_en"] for row in cursor.fetchall()}
-            valid_classes = [cls for cls in class_en_list if cls in valid_class_set]
-            if not valid_classes:
-                return result
+            union_params.append(cls)
+        if not union_parts:
+            return result
 
-            union_parts = []
-            union_params = []
-            for cls in valid_classes:
-                union_parts.append(
-                    f"SELECT %s AS class_en, id, problem_id, ddl, complete_cnt FROM `{cls}`"
-                )
-                union_params.append(cls)
+        union_sql = " UNION ALL ".join(union_parts)
+        db_cursor.execute(
+            f"""
+            SELECT t.class_en, t.id, t.problem_id, t.ddl, t.complete_cnt,
+                   p.title AS problem_title, p.max_score AS total_score
+            FROM ({union_sql}) t
+            LEFT JOIN problems p ON p.id = t.problem_id
+            ORDER BY t.class_en ASC, t.id ASC
+            """,
+            tuple(union_params),
+        )
+        homework_rows = db_cursor.fetchall()
+        problem_ids = set()
 
-            cursor.execute(
-                " UNION ALL ".join(union_parts) + " ORDER BY class_en ASC, id ASC",
-                tuple(union_params),
-            )
-            homework_rows = cursor.fetchall()
+        for row in homework_rows:
+            cls = row["class_en"]
+            if cls not in result:
+                continue
+            pid = row["problem_id"]
+            try:
+                problem_ids.add(int(pid))
+            except Exception:
+                pass
+            hw = {
+                "id": row["id"],
+                "problem_id": pid,
+                "ddl": row["ddl"],
+                "complete_cnt": row["complete_cnt"],
+                "problem_title": row.get("problem_title"),
+                "total_score": row.get("total_score"),
+            }
+            result[cls].append(hw)
 
-            problem_ids = set()
-            for row in homework_rows:
-                cls = row["class_en"]
-                if cls not in result:
-                    continue
-                hw = {
-                    "id": row["id"],
-                    "problem_id": row["problem_id"],
-                    "ddl": row["ddl"],
-                    "complete_cnt": row["complete_cnt"],
-                }
-                result[cls].append(hw)
-                problem_ids.add(row["problem_id"])
+        if problem_ids:
+            sorted_pids = sorted(problem_ids)
+            ac_cols = [f"ACP{pid}" for pid in sorted_pids]
+            score_cols = [f"P{pid}" for pid in sorted_pids]
 
-            problem_map = {}
-            if problem_ids:
-                pid_placeholders = ",".join(["%s"] * len(problem_ids))
-                cursor.execute(
-                    f"SELECT id, title, max_score FROM problems WHERE id IN ({pid_placeholders})",
-                    tuple(problem_ids),
-                )
-                problem_map = {row["id"]: row for row in cursor.fetchall()}
+            try:
+                ac_col_sql = ", ".join([f"`{col}`" for col in ac_cols])
+                db_cursor.execute(f"SELECT {ac_col_sql} FROM ac_record WHERE userid=%s", (user_id,))
+                ac_row = db_cursor.fetchone() or {}
+            except Exception:
+                db_cursor.execute("SELECT * FROM ac_record WHERE userid=%s", (user_id,))
+                ac_row = db_cursor.fetchone() or {}
 
-            cursor.execute("SELECT * FROM ac_record WHERE userid=%s", (user_id,))
-            ac_row = cursor.fetchone() or {}
-
-            cursor.execute("SELECT * FROM max_score WHERE userid=%s", (user_id,))
-            max_score_row = cursor.fetchone() or {}
+            try:
+                score_col_sql = ", ".join([f"`{col}`" for col in score_cols])
+                db_cursor.execute(f"SELECT {score_col_sql} FROM max_score WHERE userid=%s", (user_id,))
+                max_score_row = db_cursor.fetchone() or {}
+            except Exception:
+                db_cursor.execute("SELECT * FROM max_score WHERE userid=%s", (user_id,))
+                max_score_row = db_cursor.fetchone() or {}
+        else:
+            ac_row = {}
+            max_score_row = {}
 
         for cls, hw_list in result.items():
             for hw in hw_list:
                 pid = hw["problem_id"]
                 ac_key = f"ACP{pid}"
                 score_key = f"P{pid}"
-                problem = problem_map.get(pid)
 
                 hw["is_completed"] = (ac_row.get(ac_key) == 1)
                 hw["max_score"] = max_score_row.get(score_key)
                 hw["problem_title"] = (
-                    problem["title"] if problem and problem.get("title") else f"Problem {pid}"
+                    hw.get("problem_title") if hw.get("problem_title") else f"Problem {pid}"
                 )
                 hw["total_score"] = (
-                    problem["max_score"] if problem and problem.get("max_score") is not None else 0
+                    hw.get("total_score") if hw.get("total_score") is not None else 0
                 )
+        _homeworks_cache[cache_key] = {
+            "expires_at": now_ts + _HOMEWORKS_CACHE_TTL_SECONDS,
+            "value": result,
+        }
         return result
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
-def get_class_grades_map(student_id, class_en_list):
+def get_class_grades_map(student_id, class_en_list, cursor=None):
     if not class_en_list:
         return {}
+
+    cache_key = (student_id, tuple(class_en_list))
+    now_ts = time.time()
+    cached = _class_grades_cache.get(cache_key)
+    if cached and now_ts < cached["expires_at"]:
+        return cached["value"]
+
+    db_cursor = cursor
+    conn = None
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            placeholders = ",".join(["%s"] * len(class_en_list))
-            cursor.execute(
-                f"""
-                SELECT class_en, regular_score, final_score
-                FROM final_exam_scores
-                WHERE student_id=%s AND class_en IN ({placeholders})
-                """,
-                tuple([student_id] + class_en_list),
-            )
-            rows = cursor.fetchall()
+        if db_cursor is None:
+            conn = get_db_connection()
+            db_cursor = conn.cursor()
+
+        placeholders = ",".join(["%s"] * len(class_en_list))
+        db_cursor.execute(
+            f"""
+            SELECT class_en, regular_score, final_score
+            FROM final_exam_scores
+            WHERE student_id=%s AND class_en IN ({placeholders})
+            """,
+            tuple([student_id] + class_en_list),
+        )
+        rows = db_cursor.fetchall()
     except Exception:
         return {}
     finally:
-        if "conn" in locals():
+        if conn is not None:
             conn.close()
 
     grades_map = {}
@@ -167,11 +238,43 @@ def get_class_grades_map(student_id, class_en_list):
                 round(row["final_score"], 1) if row["final_score"] is not None else None
             ),
         }
+    _class_grades_cache[cache_key] = {
+        "expires_at": now_ts + _CLASS_GRADES_CACHE_TTL_SECONDS,
+        "value": grades_map,
+    }
     return grades_map
 
 
+def get_homeworks_and_grades_map(user_id, student_id, class_en_list):
+    """
+    在缓存未命中时复用同一连接拿到作业数据与班级成绩，减少 problem_list 路径连接数。
+    """
+    if not class_en_list:
+        return {}, {}
+
+    class_key = tuple(class_en_list)
+    now_ts = time.time()
+    h_cached = _homeworks_cache.get((user_id, class_key))
+    g_cached = _class_grades_cache.get((student_id, class_key))
+    if (
+        h_cached and g_cached
+        and now_ts < h_cached["expires_at"]
+        and now_ts < g_cached["expires_at"]
+    ):
+        return h_cached["value"], g_cached["value"]
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            homeworks_map = _get_homeworks_for_classes(user_id, class_en_list, cursor=cursor)
+            grades_map = get_class_grades_map(student_id, class_en_list, cursor=cursor)
+    finally:
+        conn.close()
+    return homeworks_map, grades_map
+
+
 def get_homeworks(user):
-    classes = get_user_classes(user['id'])
+    classes = get_user_classes_cached(user['id'])
     class_tables = [c['class_en'] for c in classes]
     if not class_tables:
         return []
@@ -293,10 +396,13 @@ def get_submissions_by_user_paginated(username, page=1, per_page=20):
             total = cursor.fetchone()['total']
             total_pages = (total + per_page - 1) // per_page
 
-            data_sql = """SELECT * FROM submissions
-                        WHERE username=%s
-                        ORDER BY id DESC
-                        LIMIT %s OFFSET %s"""
+            data_sql = """
+                SELECT id, username, status, score, problem_title, created_at
+                FROM submissions
+                WHERE username=%s
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+            """
             offset = (page - 1) * per_page
             cursor.execute(data_sql, (username, per_page, offset))
             submissions = cursor.fetchall()
@@ -314,9 +420,12 @@ def get_all_submissions_paginated(page=1, per_page=20):
             total = cursor.fetchone()['total']
             total_pages = (total + per_page - 1) // per_page
 
-            data_sql = """SELECT * FROM submissions
-                        ORDER BY id DESC
-                        LIMIT %s OFFSET %s"""
+            data_sql = """
+                SELECT id, username, status, score, problem_title, created_at
+                FROM submissions
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+            """
             offset = (page - 1) * per_page
             cursor.execute(data_sql, (per_page, offset))
             submissions = cursor.fetchall()
@@ -348,7 +457,7 @@ def problem_list():
             daily_counts=daily_counts,
         )
 
-    classes = get_user_classes(user['id'])
+    classes = get_user_classes_cached(user['id'])
     now_ts = datetime.now()
 
     if not classes:
@@ -366,8 +475,9 @@ def problem_list():
 
     if len(classes) == 1:
         cls = classes[0]['class_en']
-        homeworks = get_homeworks_for_class(user['id'], cls)
-        class_grades = get_class_grades_map(user['username'], [cls]).get(cls)
+        homeworks_map, grades_map = get_homeworks_and_grades_map(user['id'], user['username'], [cls])
+        homeworks = homeworks_map.get(cls, [])
+        class_grades = grades_map.get(cls)
         return render_template(
             'problem_list.html',
             homeworks=homeworks,
@@ -384,8 +494,11 @@ def problem_list():
         )
 
     class_en_list = [c['class_en'] for c in classes]
-    class_homeworks_map = _get_homeworks_for_classes(user['id'], class_en_list)
-    class_grades_map = get_class_grades_map(user['username'], class_en_list)
+    class_homeworks_map, class_grades_map = get_homeworks_and_grades_map(
+        user['id'],
+        user['username'],
+        class_en_list,
+    )
 
     homeworks_by_class = []
     for c in classes:
@@ -433,7 +546,7 @@ def problem_detail(problem_id):
         extensions=['extra', 'md_in_html', 'fenced_code', 'tables'],
     )
 
-    submissions = get_submissions_by_user_and_problem(user['username'], problem_id)
+    submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id)
     last_submissions = submissions[:3]
     initial_code = problem.get('initial_code', '')
 
@@ -564,7 +677,7 @@ def all_submissions():
     if not user:
         return redirect(url_for('auth.login'))
 
-    page = request.args.get('page', 1, type=int)
+    page = max(1, request.args.get('page', 1, type=int))
     per_page = 20
 
     if user['is_admin']:
@@ -572,10 +685,15 @@ def all_submissions():
     else:
         submissions, total_pages = get_submissions_by_user_paginated(user['username'], page=page, per_page=per_page)
 
+    page_start = max(1, page - 10)
+    page_end = min(total_pages, page + 10)
+    page_numbers = list(range(page_start, page_end + 1))
+
     return render_template(
         'all_submission.html',
         submissions=submissions,
         user=user,
         current_page=page,
         total_pages=total_pages,
+        page_numbers=page_numbers,
     )
