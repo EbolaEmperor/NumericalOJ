@@ -3,13 +3,14 @@
 
 import os
 
-from flask import Blueprint, jsonify, redirect, render_template, send_file, session, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from oj_modules.db_services import (
     get_cached_ai_code_marks_for_submission,
+    get_latest_submission_code_by_user_and_problem,
     get_problem,
     get_submission_by_id,
-    get_submissions_by_user_and_problem,
+    get_submission_summaries_by_user_and_problem_paginated,
     get_user_by_username,
 )
 
@@ -34,12 +35,22 @@ def submission_list(problem_id):
     if not user:
         return redirect(url_for('auth.login'))
 
-    subs = get_submissions_by_user_and_problem(user['username'], problem_id)
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+    subs, total_pages = get_submission_summaries_by_user_and_problem_paginated(
+        user['username'], problem_id, page=page, per_page=per_page
+    )
+    page_start = max(1, page - 8)
+    page_end = min(total_pages, page + 8)
+    page_numbers = list(range(page_start, page_end + 1))
     return render_template(
         'submission_list.html',
         problem_id=problem_id,
         user_submissions=subs,
         user=user,
+        current_page=page,
+        total_pages=total_pages,
+        page_numbers=page_numbers,
     )
 
 
@@ -110,11 +121,10 @@ def get_last_submission_code(problem_id):
     if not user:
         return jsonify({'success': False, 'message': '未登录'}), 401
 
-    submissions = get_submissions_by_user_and_problem(user['username'], problem_id)
-    if not submissions or len(submissions) == 0:
+    last_submission = get_latest_submission_code_by_user_and_problem(user['username'], problem_id)
+    if not last_submission:
         return jsonify({'success': False, 'message': '没有找到之前的提交记录'}), 404
 
-    last_submission = submissions[0]
     if not last_submission.get('code'):
         return jsonify({'success': False, 'message': '上一次提交没有代码'}), 404
 

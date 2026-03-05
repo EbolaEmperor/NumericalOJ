@@ -365,6 +365,52 @@ def get_submissions_by_user_and_problem(username, problem_id):
         conn.close()
 
 
+def get_submission_summaries_by_user_and_problem(username, problem_id):
+    """
+    仅返回列表页展示所需字段，避免把 code/test_points 大字段拉出。
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                SELECT id, problem_id, username, score, status, problem_title, created_at
+                FROM submissions
+                WHERE username=%s AND problem_id=%s
+                ORDER BY id DESC
+            """
+            cursor.execute(sql, (username, problem_id))
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_submission_summaries_by_user_and_problem_paginated(username, problem_id, page=1, per_page=30):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            count_sql = """
+                SELECT COUNT(*) AS total
+                FROM submissions
+                WHERE username=%s AND problem_id=%s
+            """
+            cursor.execute(count_sql, (username, problem_id))
+            total = cursor.fetchone()['total']
+            total_pages = (total + per_page - 1) // per_page
+
+            data_sql = """
+                SELECT id, problem_id, username, score, status, problem_title, created_at
+                FROM submissions
+                WHERE username=%s AND problem_id=%s
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+            """
+            offset = (page - 1) * per_page
+            cursor.execute(data_sql, (username, problem_id, per_page, offset))
+            return cursor.fetchall(), total_pages
+    finally:
+        conn.close()
+
+
 def get_submissions_by_user(username):
     conn = get_db_connection()
     try:
@@ -380,6 +426,23 @@ def get_submissions_by_user(username):
                         json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
                     ]
             return submissions
+    finally:
+        conn.close()
+
+
+def get_latest_submission_code_by_user_and_problem(username, problem_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                SELECT id, code, score
+                FROM submissions
+                WHERE username=%s AND problem_id=%s
+                ORDER BY id DESC
+                LIMIT 1
+            """
+            cursor.execute(sql, (username, problem_id))
+            return cursor.fetchone()
     finally:
         conn.close()
 

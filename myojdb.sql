@@ -83,6 +83,7 @@ CREATE TABLE `final_exam_scores` (
   UNIQUE KEY `uniq_class_student` (`class_en`,`student_id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=177 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+ALTER TABLE final_exam_scores ADD INDEX idx_final_exam_student_class (student_id, class_en);
 
 --
 -- Table structure for table `forum_replies`
@@ -201,12 +202,16 @@ CREATE TABLE `submissions` (
   `score` int NOT NULL,
   `test_points` text,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `status` text NOT NULL,
+  `status` varchar(16) NOT NULL,
   `problem_title` text,
   `problem_type` int DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=12497 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+ALTER TABLE submissions ADD INDEX idx_submissions_user_problem_id (username, problem_id, id);
+ALTER TABLE submissions ADD INDEX idx_submissions_user_id (username, id);
+ALTER TABLE submissions ADD INDEX idx_submissions_created_status (created_at, status);
+
 
 --
 -- Table structure for table `submission_limits`
