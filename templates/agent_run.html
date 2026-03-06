@@ -1,0 +1,304 @@
+{% extends "layout.html" %}
+{% block title %}Agent 运行详情 - {{ super() }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h3 class="mb-0"><i class="fas fa-robot me-2"></i> Agent 实时运行</h3>
+  {% if problem %}
+    <a href="{{ url_for('problem_core.problem_detail', problem_id=problem.id) }}" class="btn btn-outline-secondary btn-sm">
+      <i class="fas fa-arrow-left me-1"></i> 返回题目
+    </a>
+  {% endif %}
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-3">
+    <div class="card agent-sidebar-card">
+      <div class="card-header py-2">
+        <div class="small text-muted">Task ID</div>
+        <div class="small fw-semibold text-break">{{ task_id }}</div>
+      </div>
+      <div class="card-body py-2">
+        <div class="mb-2">
+          <span id="agentStatusBadge" class="badge bg-secondary">Pending</span>
+        </div>
+        <div class="small text-muted mb-1" id="agentProgressText">进度：0/0</div>
+        <div class="small text-muted mb-2" id="agentMessageText">任务排队中</div>
+        <div class="small mb-1">
+          <strong>最新 Submission:</strong>
+          <a id="latestSubmissionLink" href="#" target="_blank" class="ms-1 d-none">查看</a>
+          <span id="latestSubmissionEmpty" class="text-muted">暂无</span>
+        </div>
+      </div>
+      <div class="card-header py-2">
+        <div class="fw-semibold">运行日志</div>
+      </div>
+      <div class="card-body py-2">
+        <div id="agentEvents" class="agent-events-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-9">
+    <div class="card agent-main-card">
+      <div class="card-header d-flex justify-content-between align-items-center py-2">
+        <div class="fw-semibold">Submission Details</div>
+        <a id="openSubmissionInNewTab" href="#" target="_blank" class="btn btn-outline-secondary btn-sm d-none">
+          <i class="fas fa-external-link-alt me-1"></i> 新窗口
+        </a>
+      </div>
+      <div class="card-body p-0 agent-main-body">
+        <div id="agentMainPlaceholder" class="agent-main-placeholder">
+          Agent 启动后会自动跳转到最新提交详情。
+        </div>
+        <iframe
+          id="agentSubmissionFrame"
+          class="{% if not latest_submission_id %}d-none{% endif %}"
+          src="{% if latest_submission_id %}{{ url_for('submission.submission_detail', submission_id=latest_submission_id) }}{% endif %}"
+          title="Submission Details">
+        </iframe>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .agent-sidebar-card {
+    height: calc(100vh - 150px);
+    min-height: 520px;
+  }
+  .agent-main-card {
+    height: calc(100vh - 150px);
+    min-height: 520px;
+  }
+  .agent-main-body {
+    position: relative;
+    height: 100%;
+  }
+  .agent-main-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #6c757d;
+    background: #fbfbfb;
+    font-size: 0.98rem;
+  }
+  #agentSubmissionFrame {
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+  .agent-events-list {
+    height: calc(100% - 8px);
+    max-height: calc(100vh - 330px);
+    min-height: 220px;
+    overflow-y: auto;
+    font-size: 0.86rem;
+  }
+  .agent-event-item {
+    border-left: 3px solid #dee2e6;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    background: #fafafa;
+  }
+  .agent-event-item.level-success {
+    border-left-color: #198754;
+  }
+  .agent-event-item.level-warning {
+    border-left-color: #fd7e14;
+  }
+  .agent-event-item.level-error {
+    border-left-color: #dc3545;
+  }
+  .agent-event-time {
+    color: #6c757d;
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .agent-event-text {
+    margin-top: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  @media (max-width: 991px) {
+    .agent-sidebar-card,
+    .agent-main-card {
+      height: auto;
+      min-height: 0;
+    }
+    .agent-main-body {
+      min-height: 520px;
+    }
+    .agent-events-list {
+      max-height: 260px;
+      min-height: 160px;
+    }
+  }
+</style>
+
+<script>
+  (function () {
+    const taskId = {{ task_id | tojson }};
+    const statusUrl = {{ url_for('problem_core.admin_agent_run_status', task_id=task_id) | tojson }};
+    const streamUrl = {{ url_for('problem_core.admin_agent_run_stream', task_id=task_id) | tojson }};
+    const initialState = {{ (initial_state or {}) | tojson }};
+
+    const statusBadgeEl = document.getElementById('agentStatusBadge');
+    const progressTextEl = document.getElementById('agentProgressText');
+    const messageTextEl = document.getElementById('agentMessageText');
+    const eventsEl = document.getElementById('agentEvents');
+    const frameEl = document.getElementById('agentSubmissionFrame');
+    const placeholderEl = document.getElementById('agentMainPlaceholder');
+    const latestSubmissionLinkEl = document.getElementById('latestSubmissionLink');
+    const latestSubmissionEmptyEl = document.getElementById('latestSubmissionEmpty');
+    const openInNewTabEl = document.getElementById('openSubmissionInNewTab');
+
+    let currentSubmissionId = null;
+    let pollingTimer = null;
+
+    function isFinished(state) {
+      const status = String((state && state.status) || '').toLowerCase();
+      return status === 'completed' || status === 'failed' || status === 'canceled' || status === 'cancelled';
+    }
+
+    function statusBadgeClass(status) {
+      const key = String(status || '').toLowerCase();
+      if (key === 'completed') return 'bg-success';
+      if (key === 'failed') return 'bg-danger';
+      if (key === 'running') return 'bg-primary';
+      return 'bg-secondary';
+    }
+
+    function renderEvents(events) {
+      const rows = Array.isArray(events) ? events : [];
+      if (!rows.length) {
+        eventsEl.innerHTML = '<div class="text-muted small">暂无日志</div>';
+        return;
+      }
+      const html = rows.slice().reverse().map(function (evt) {
+        const level = String((evt && evt.level) || 'info');
+        const t = String((evt && evt.time) || '');
+        const msg = String((evt && evt.message) || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return (
+          '<div class="agent-event-item level-' + level + '">' +
+            '<div class="agent-event-time">' + t + '</div>' +
+            '<div class="agent-event-text">' + msg + '</div>' +
+          '</div>'
+        );
+      }).join('');
+      eventsEl.innerHTML = html;
+    }
+
+    function syncSubmissionFrame(submissionId) {
+      if (!submissionId) return;
+      if (submissionId === currentSubmissionId) return;
+
+      currentSubmissionId = submissionId;
+      const targetUrl = '/submission_detail/' + submissionId;
+      frameEl.src = targetUrl;
+      frameEl.classList.remove('d-none');
+      placeholderEl.classList.add('d-none');
+
+      latestSubmissionLinkEl.href = targetUrl;
+      latestSubmissionLinkEl.classList.remove('d-none');
+      latestSubmissionEmptyEl.classList.add('d-none');
+
+      openInNewTabEl.href = targetUrl;
+      openInNewTabEl.classList.remove('d-none');
+    }
+
+    function applyState(state) {
+      if (!state || typeof state !== 'object') return;
+      const status = state.status || 'Pending';
+      statusBadgeEl.textContent = status;
+      statusBadgeEl.className = 'badge ' + statusBadgeClass(status);
+      const round = Number(state.round || 0);
+      const maxRounds = Number(state.max_rounds || 0);
+      progressTextEl.textContent = '进度：' + round + '/' + maxRounds;
+      messageTextEl.textContent = state.message || '任务执行中';
+      renderEvents(state.events);
+
+      const latestSubmissionId = state.latest_submission_id || state.final_submission_id || null;
+      if (latestSubmissionId) {
+        syncSubmissionFrame(latestSubmissionId);
+      }
+
+      if (isFinished(state) && !latestSubmissionId) {
+        placeholderEl.textContent = '任务已结束，但暂无可展示的提交详情。';
+      }
+    }
+
+    function startPolling(finished) {
+      if (pollingTimer) return;
+      if (finished) return;
+      pollingTimer = setInterval(function () {
+        fetch(statusUrl)
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (!data || !data.success) return;
+            applyState(data.state);
+            if (isFinished(data.state) && pollingTimer) {
+              clearInterval(pollingTimer);
+              pollingTimer = null;
+            }
+          })
+          .catch(function () {});
+      }, 2000);
+    }
+
+    function startStream() {
+      if (!window.EventSource) {
+        startPolling(false);
+        return;
+      }
+      const source = new EventSource(streamUrl);
+      let closed = false;
+
+      function closeStream() {
+        if (closed) return;
+        closed = true;
+        source.close();
+      }
+
+      source.addEventListener('status', function (evt) {
+        try {
+          const state = JSON.parse(evt.data);
+          applyState(state);
+          if (isFinished(state)) {
+            closeStream();
+          }
+        } catch (_) {}
+      });
+
+      source.addEventListener('done', function (evt) {
+        try {
+          const state = JSON.parse(evt.data);
+          applyState(state);
+        } catch (_) {}
+        closeStream();
+      });
+
+      source.addEventListener('timeout', function () {
+        closeStream();
+        startPolling(false);
+      });
+
+      source.addEventListener('error', function () {
+        if (closed) return;
+        closeStream();
+        startPolling(false);
+      });
+    }
+
+    applyState(initialState);
+    const finished = isFinished(initialState);
+    if (finished) {
+      startPolling(true);
+    } else {
+      startStream();
+    }
+  })();
+</script>
+{% endblock %}

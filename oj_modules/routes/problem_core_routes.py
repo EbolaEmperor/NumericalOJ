@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import os
+import json
 import re
 import time
 from datetime import datetime, timedelta
 
 import markdown
-from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, flash, jsonify, redirect, render_template, request, session, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
@@ -22,12 +23,14 @@ from oj_modules.db_services import (
     get_user_by_username,
     increment_submission_count,
 )
+from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
 
 
 problem_core_bp = Blueprint('problem_core', __name__)
 
 _evaluate_submission_task = None
 _transcribe_written_homework_task = None
+_agent_solve_problem_task = None
 _DASHBOARD_STATS_CACHE_TTL_SECONDS = 15
 _USER_CLASSES_CACHE_TTL_SECONDS = 30
 _HOMEWORKS_CACHE_TTL_SECONDS = 10
@@ -62,10 +65,71 @@ def _strip_problem_title_tags(title):
     return text if text else original
 
 
-def init_problem_core_module(evaluate_submission_task, transcribe_written_homework_task):
-    global _evaluate_submission_task, _transcribe_written_homework_task
+def init_problem_core_module(evaluate_submission_task, transcribe_written_homework_task, agent_solve_problem_task=None):
+    global _evaluate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task
     _evaluate_submission_task = evaluate_submission_task
     _transcribe_written_homework_task = transcribe_written_homework_task
+    _agent_solve_problem_task = agent_solve_problem_task
+
+
+def _is_agent_state_finished(state):
+    if not isinstance(state, dict):
+        return False
+    status = str(state.get("status") or "").strip().lower()
+    return status in ("completed", "failed", "canceled", "cancelled")
+
+
+def _build_agent_state_from_async_result(task_id):
+    if not task_id or _agent_solve_problem_task is None:
+        return None
+    try:
+        async_result = _agent_solve_problem_task.AsyncResult(task_id)
+    except Exception:
+        return None
+
+    celery_state = str(async_result.state or "PENDING").upper()
+    now = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+    state = {
+        "task_id": task_id,
+        "status": "Pending",
+        "message": "任务排队中",
+        "round": 0,
+        "max_rounds": 0,
+        "latest_submission_id": None,
+        "final_submission_id": None,
+        "attempts": [],
+        "events": [],
+        "updated_at": now,
+        "celery_state": celery_state,
+    }
+
+    if celery_state in ("RECEIVED", "STARTED", "RETRY"):
+        state["status"] = "Running"
+        state["message"] = "任务执行中"
+        return state
+
+    if celery_state == "FAILURE":
+        state["status"] = "Failed"
+        state["message"] = str(async_result.result) if async_result.result is not None else "任务执行失败"
+        return state
+
+    if celery_state == "SUCCESS":
+        result_data = async_result.result if isinstance(async_result.result, dict) else {}
+        state["status"] = "Completed" if result_data.get("success") else "Failed"
+        state["message"] = result_data.get("message") or "任务已结束"
+        state["final_submission_id"] = result_data.get("final_submission_id")
+        state["latest_submission_id"] = result_data.get("final_submission_id")
+        state["attempts"] = result_data.get("attempts") or []
+        return state
+
+    return state
+
+
+def _get_agent_run_state(task_id):
+    state = get_agent_run_snapshot(task_id)
+    if isinstance(state, dict):
+        return state
+    return _build_agent_state_from_async_result(task_id)
 
 
 def current_user():
@@ -560,6 +624,183 @@ def problem_detail(problem_id):
         initial_code=initial_code,
         remaining_submissions=remaining_submissions,
         can_submit=can_submit_flag,
+    )
+
+
+@problem_core_bp.route('/admin/agent_solve_problem/<int:problem_id>', methods=['POST'])
+def admin_agent_solve_problem(problem_id):
+    user = current_user()
+    if not user or user.get('is_admin') != 1:
+        return jsonify(success=False, message='无权限'), 403
+
+    problem = get_problem(problem_id)
+    if not problem:
+        return jsonify(success=False, message='题目不存在'), 404
+    if int(problem.get('type') or 1) != 1:
+        return jsonify(success=False, message='仅支持编程题'), 400
+    if _agent_solve_problem_task is None:
+        return jsonify(success=False, message='Agent 任务未初始化'), 500
+
+    task = _agent_solve_problem_task.delay(problem_id, user['username'])
+    return jsonify(
+        success=True,
+        message='Agent 任务已启动',
+        task_id=task.id,
+        view_url=url_for('problem_core.admin_agent_run', task_id=task.id),
+    )
+
+
+@problem_core_bp.route('/admin/agent_run/<task_id>', methods=['GET'])
+def admin_agent_run(task_id):
+    user = current_user()
+    if not user:
+        return redirect(url_for('auth.login'))
+    if user.get('is_admin') != 1:
+        flash('无权限访问该页面', 'danger')
+        return redirect(url_for('problem_core.problem_list'))
+
+    state = _get_agent_run_state(task_id) or {"task_id": task_id}
+    problem_id = state.get("problem_id")
+    if not problem_id:
+        problem_id = request.args.get("problem_id", type=int)
+    problem = get_problem(problem_id) if problem_id else None
+
+    latest_submission_id = state.get("latest_submission_id") or state.get("final_submission_id")
+    return render_template(
+        'agent_run.html',
+        user=user,
+        task_id=task_id,
+        problem=problem,
+        initial_state=state,
+        latest_submission_id=latest_submission_id,
+    )
+
+
+@problem_core_bp.route('/admin/agent_run_status/<task_id>', methods=['GET'])
+def admin_agent_run_status(task_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if user.get('is_admin') != 1:
+        return jsonify(success=False, message='无权限'), 403
+
+    state = _get_agent_run_state(task_id) or {
+        "task_id": task_id,
+        "status": "Pending",
+        "message": "任务排队中",
+        "round": 0,
+        "max_rounds": 0,
+        "latest_submission_id": None,
+        "final_submission_id": None,
+        "attempts": [],
+        "events": [],
+    }
+    return jsonify(success=True, state=state)
+
+
+@problem_core_bp.route('/admin/agent_run_stream/<task_id>', methods=['GET'])
+def admin_agent_run_stream(task_id):
+    user = current_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if user.get('is_admin') != 1:
+        return jsonify({'error': 'Access denied'}), 403
+
+    initial_state = _get_agent_run_state(task_id) or {
+        "task_id": task_id,
+        "status": "Pending",
+        "message": "任务排队中",
+        "round": 0,
+        "max_rounds": 0,
+        "latest_submission_id": None,
+        "final_submission_id": None,
+        "attempts": [],
+        "events": [],
+    }
+
+    def _encode_sse(event_name, payload):
+        return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        first_payload = initial_state
+        yield _encode_sse("status", first_payload)
+        if _is_agent_state_finished(first_payload):
+            yield _encode_sse("done", first_payload)
+            return
+
+        start_ts = time.time()
+        pubsub = subscribe_agent_run_events(task_id)
+        if pubsub is None:
+            last_marker = (
+                first_payload.get("status"),
+                first_payload.get("round"),
+                first_payload.get("latest_submission_id"),
+                first_payload.get("updated_at"),
+            )
+            while True:
+                snapshot = _get_agent_run_state(task_id) or first_payload
+                marker = (
+                    snapshot.get("status"),
+                    snapshot.get("round"),
+                    snapshot.get("latest_submission_id"),
+                    snapshot.get("updated_at"),
+                )
+                if marker != last_marker:
+                    yield _encode_sse("status", snapshot)
+                    last_marker = marker
+                if _is_agent_state_finished(snapshot):
+                    yield _encode_sse("done", snapshot)
+                    return
+                if time.time() - start_ts > 3600:
+                    yield _encode_sse("timeout", snapshot)
+                    return
+                time.sleep(1.0)
+
+        try:
+            while True:
+                msg = pubsub.get_message(timeout=15.0)
+                now = time.time()
+                if now - start_ts > 3600:
+                    latest = _get_agent_run_state(task_id) or initial_state
+                    yield _encode_sse("timeout", latest)
+                    return
+
+                if not msg:
+                    yield ": keepalive\n\n"
+                    continue
+
+                if msg.get("type") != "message":
+                    continue
+
+                raw = msg.get("data")
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="ignore")
+                try:
+                    snapshot = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    continue
+                if not isinstance(snapshot, dict):
+                    continue
+
+                yield _encode_sse("status", snapshot)
+                if _is_agent_state_finished(snapshot):
+                    yield _encode_sse("done", snapshot)
+                    return
+        finally:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
     )
 
 

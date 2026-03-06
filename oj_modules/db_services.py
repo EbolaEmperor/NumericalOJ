@@ -721,6 +721,7 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
                     cursor.execute(sql)
             conn.commit()
 
+        subid = None
         with conn.cursor() as cursor:
             test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
             sql = """INSERT INTO submissions (problem_id, username, code, score, test_points, status, problem_title, problem_type)
@@ -735,8 +736,11 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
                 problem_title,
                 problem_type,
             ))
+            # 需要在 cursor 生命周期内读取 lastrowid，避免偶发拿到无效 id
+            subid = cursor.lastrowid
         conn.commit()
-        subid = cursor.lastrowid
+        if not subid:
+            raise RuntimeError("create_submission: failed to get valid submission id")
         for sid in invalidated_submission_ids:
             refresh_submission_status_snapshot(sid)
         refresh_submission_status_snapshot(subid)

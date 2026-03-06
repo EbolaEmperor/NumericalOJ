@@ -15,24 +15,28 @@
   <div id="problemMeta" data-problem-id="{{ problem.id }}" style="display:none"></div>
   <!-- 左侧：题面描述 -->
   <div class="col-md-6 mb-3">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <div class="d-flex align-items-center gap-2">
-        <h2 class="mb-0"><strong>{{ problem.id }}.</strong> {{ problem.title }}</h2>
+    <div class="problem-header mb-3">
+      <div class="problem-title-row">
+        <h2 class="mb-0 problem-title-singleline" id="problemTitleHeading">
+          <strong>{{ problem.id }}.</strong> {{ problem.title }}
+        </h2>
       </div>
-
       {% if user and user.is_admin == 1 %}
-      <div class="ms-auto d-flex gap-1">
+      <div class="problem-admin-actions mt-2">
+        <button type="button" class="btn btn-outline-success" id="btnAgentSolve" title="AI Agent 自动解题">
+          <i class="fas fa-robot me-1"></i> 解题
+        </button>
         <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
-          <i class="fas fa-pencil-alt me"></i>
+          <i class="fas fa-pencil-alt me-1"></i> 编辑
         </a>
         <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
-          <i class="fas fa-cloud-upload-alt me"></i>
+          <i class="fas fa-cloud-upload-alt me-1"></i> 上传
         </button>
         <button type="button" class="btn btn-outline-danger" id="btnRejudge">
-          <i class="fas fa-redo-alt me"></i>
+          <i class="fas fa-redo-alt me-1"></i> 重测
         </button>
         <button type="button" class="btn btn-outline-info" id="btnViewScores">
-          <i class="fas fa-chart-bar me"></i>
+          <i class="fas fa-chart-bar me-1"></i> 统计
         </button>
       </div>
       {% endif %}
@@ -271,6 +275,38 @@
 {% endif %}
 
 <style>
+  .problem-header {
+    width: 100%;
+  }
+  .problem-title-row {
+    width: 100%;
+    overflow: hidden;
+  }
+  .problem-title-singleline {
+    display: block;
+    width: 100%;
+    white-space: nowrap;
+    line-height: 1.15;
+    font-size: 2rem;
+    letter-spacing: -0.01em;
+  }
+  .problem-admin-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .problem-admin-actions .btn {
+    min-width: 72px;
+  }
+  @media (max-width: 768px) {
+    .problem-title-singleline {
+      font-size: 1.45rem;
+    }
+    .problem-admin-actions {
+      gap: 8px;
+    }
+  }
   .badge.accepted { background-color: rgb(36, 180, 77); color: white; }
   .badge.unaccepted { background-color: rgb(226, 23, 60); color: white; }
   .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
@@ -326,6 +362,34 @@
 <script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
 <!-- 新增：Python 语法高亮 -->
 <script src="{{ url_for('static', filename='codemirror/mode/python/python.js') }}"></script>
+
+<script>
+(function() {
+  const titleEl = document.getElementById('problemTitleHeading');
+  if (!titleEl) return;
+
+  function fitProblemTitleSingleLine() {
+    const isMobile = window.innerWidth <= 768;
+    const maxPx = isMobile ? 24 : 36;
+    const minPx = isMobile ? 11 : 12;
+    let size = maxPx;
+
+    titleEl.style.fontSize = size + 'px';
+    while (titleEl.scrollWidth > titleEl.clientWidth && size > minPx) {
+      size -= 1;
+      titleEl.style.fontSize = size + 'px';
+    }
+
+    if (titleEl.scrollWidth > titleEl.clientWidth && titleEl.clientWidth > 0) {
+      const ratioSize = Math.floor(size * (titleEl.clientWidth / titleEl.scrollWidth));
+      titleEl.style.fontSize = Math.max(10, ratioSize) + 'px';
+    }
+  }
+
+  requestAnimationFrame(fitProblemTitleSingleLine);
+  window.addEventListener('resize', fitProblemTitleSingleLine);
+})();
+</script>
 
 <script>
 (function() {
@@ -416,6 +480,35 @@
     var rejudgeTimer = null;
     var progressBar = document.getElementById("rejudgeProgressBar");
     var progressDetail = document.getElementById("rejudgeProgressDetail");
+
+    document.getElementById('btnAgentSolve')?.addEventListener('click', function() {
+      if (!confirm("确认启动 Agent 自动解题吗？")) return;
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin me"></i>';
+
+      fetch("{{ url_for('problem_core.admin_agent_solve_problem', problem_id=problem.id) }}", { method: "POST" })
+        .then(res => res.json())
+        .then(data => {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          if (!data.success) {
+            alert("启动失败：" + (data.message || "未知错误"));
+            return;
+          }
+          if (data.view_url) {
+            window.location.href = data.view_url;
+            return;
+          }
+          alert("Agent 任务已启动，Task ID: " + data.task_id);
+        })
+        .catch(() => {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          alert("请求失败，请稍后再试");
+        });
+    });
 
     document.getElementById('btnRejudge')?.addEventListener('click', function() {
       if (!confirm("确认要重测本题的所有提交吗？")) return;
