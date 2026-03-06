@@ -39,8 +39,7 @@ print(f"[Judger] Library Path: {LIBRARY_PATH}")
 print(f"[Judger] Library Path exists: {os.path.exists(LIBRARY_PATH)}")
 
 ALLOWED_IPS = [
-    "127.0.0.1",
-    "183.131.51.191"
+    "127.0.0.1"
 ]
 
 # ========== 通用工具 ==========
