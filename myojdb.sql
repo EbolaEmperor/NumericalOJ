@@ -46,8 +46,11 @@ DROP TABLE IF EXISTS `ac_record`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `ac_record` (
   `userid` int NOT NULL,
-  `ACP1` tinyint(1) DEFAULT '0',
-  PRIMARY KEY (`userid`)
+  `problem_id` int NOT NULL,
+  `is_ac` tinyint(1) NOT NULL DEFAULT '1',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`userid`,`problem_id`),
+  KEY `idx_ac_record_problem_user` (`problem_id`,`userid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -135,9 +138,11 @@ DROP TABLE IF EXISTS `max_score`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `max_score` (
   `userid` int NOT NULL,
-  `class_en` text,
-  `P1` int DEFAULT '0',
-  PRIMARY KEY (`userid`)
+  `problem_id` int NOT NULL,
+  `score` int NOT NULL,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`userid`,`problem_id`),
+  KEY `idx_max_score_problem_user` (`problem_id`,`userid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -161,7 +166,7 @@ CREATE TABLE `problems` (
   `max_score` int DEFAULT NULL,
   `test_code` text,
   `time_limit_ms` int DEFAULT '2000',
-  `submission_limit` int DEFAULT '10'
+  `submission_limit` int DEFAULT '10',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -347,7 +352,6 @@ UNLOCK TABLES;
 
 LOCK TABLES `ac_record` WRITE;
 /*!40000 ALTER TABLE `ac_record` DISABLE KEYS */;
-INSERT INTO `ac_record` VALUES (4);
 /*!40000 ALTER TABLE `ac_record` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -357,7 +361,6 @@ UNLOCK TABLES;
 
 LOCK TABLES `max_score` WRITE;
 /*!40000 ALTER TABLE `max_score` DISABLE KEYS */;
-INSERT INTO `max_score` VALUES (4,'Cadmin');
 /*!40000 ALTER TABLE `max_score` ENABLE KEYS */;
 UNLOCK TABLES;
 

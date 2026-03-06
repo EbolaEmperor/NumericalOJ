@@ -118,15 +118,17 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
         db_cursor.execute(
             f"""
             SELECT t.class_en, t.id, t.problem_id, t.ddl, t.complete_cnt,
-                   p.title AS problem_title, p.max_score AS total_score
+                   p.title AS problem_title, p.max_score AS total_score,
+                   ar.is_ac, ms.score AS user_score
             FROM ({union_sql}) t
             LEFT JOIN problems p ON p.id = t.problem_id
+            LEFT JOIN ac_record ar ON ar.userid=%s AND ar.problem_id = t.problem_id
+            LEFT JOIN max_score ms ON ms.userid=%s AND ms.problem_id = t.problem_id
             ORDER BY t.class_en ASC, t.id ASC
             """,
-            tuple(union_params),
+            tuple(union_params + [user_id, user_id]),
         )
         homework_rows = db_cursor.fetchall()
-        problem_ids = set()
 
         for row in homework_rows:
             cls = row["class_en"]
@@ -134,7 +136,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
                 continue
             pid = row["problem_id"]
             try:
-                problem_ids.add(int(pid))
+                pid = int(pid)
             except Exception:
                 pass
             hw = {
@@ -144,46 +146,23 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
                 "complete_cnt": row["complete_cnt"],
                 "problem_title": row.get("problem_title"),
                 "total_score": row.get("total_score"),
+                "is_completed": (row.get("is_ac") == 1),
+                "max_score": row.get("user_score"),
             }
             result[cls].append(hw)
-
-        if problem_ids:
-            sorted_pids = sorted(problem_ids)
-            ac_cols = [f"ACP{pid}" for pid in sorted_pids]
-            score_cols = [f"P{pid}" for pid in sorted_pids]
-
-            try:
-                ac_col_sql = ", ".join([f"`{col}`" for col in ac_cols])
-                db_cursor.execute(f"SELECT {ac_col_sql} FROM ac_record WHERE userid=%s", (user_id,))
-                ac_row = db_cursor.fetchone() or {}
-            except Exception:
-                db_cursor.execute("SELECT * FROM ac_record WHERE userid=%s", (user_id,))
-                ac_row = db_cursor.fetchone() or {}
-
-            try:
-                score_col_sql = ", ".join([f"`{col}`" for col in score_cols])
-                db_cursor.execute(f"SELECT {score_col_sql} FROM max_score WHERE userid=%s", (user_id,))
-                max_score_row = db_cursor.fetchone() or {}
-            except Exception:
-                db_cursor.execute("SELECT * FROM max_score WHERE userid=%s", (user_id,))
-                max_score_row = db_cursor.fetchone() or {}
-        else:
-            ac_row = {}
-            max_score_row = {}
 
         for cls, hw_list in result.items():
             for hw in hw_list:
                 pid = hw["problem_id"]
-                ac_key = f"ACP{pid}"
-                score_key = f"P{pid}"
-
-                hw["is_completed"] = (ac_row.get(ac_key) == 1)
-                hw["max_score"] = max_score_row.get(score_key)
                 hw["problem_title"] = (
                     hw.get("problem_title") if hw.get("problem_title") else f"Problem {pid}"
                 )
                 hw["total_score"] = (
                     hw.get("total_score") if hw.get("total_score") is not None else 0
+                )
+                hw["has_submission"] = bool(
+                    hw["max_score"] is not None
+                    or hw["is_completed"]
                 )
         _homeworks_cache[cache_key] = {
             "expires_at": now_ts + _HOMEWORKS_CACHE_TTL_SECONDS,

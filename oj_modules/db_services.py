@@ -293,19 +293,11 @@ def create_user(username, password_hash, email, user_class):
             sql = 'INSERT INTO users (username, password_hash, email, class, class_cn) VALUES (%s, %s, %s, %s, %s)'
             cursor.execute(sql, (username, password_hash, email, user_class['class_en'], user_class['class_cn']))
         conn.commit()
-        user = get_user_by_username(username)
-        with conn.cursor() as cursor:
-            sql = 'INSERT INTO ac_record (userid) VALUES (%s)'
-            cursor.execute(sql, (user['id'],))
-        conn.commit()
-        with conn.cursor() as cursor:
-            sql = 'INSERT INTO max_score (userid, class_en) VALUES (%s, %s)'
-            cursor.execute(sql, (user['id'], user['class']))
-        conn.commit()
         with conn.cursor() as cursor:
             sql = 'UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s'
             cursor.execute(sql, (user_class['class_en'],))
         conn.commit()
+        user = get_user_by_username(username)
         with conn.cursor() as cursor:
             sql = 'INSERT INTO user_class_map (user_id, class_en, is_primary) VALUES (%s, %s, %s)'
             cursor.execute(sql, (user['id'], user_class['class_en'], 1))
@@ -431,15 +423,72 @@ def create_problem(title, content, initial_code='', test_code='', forbidden_func
                      VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit))
         conn.commit()
-        pid = cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def upsert_user_problem_max_score(user_id, problem_id, score):
+    conn = get_db_connection()
+    try:
         with conn.cursor() as cursor:
-            sql = f"ALTER TABLE ac_record ADD COLUMN ACP{pid} TINYINT(1)"
-            cursor.execute(sql)
+            cursor.execute(
+                """
+                INSERT INTO max_score (userid, problem_id, score)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE score=VALUES(score)
+                """,
+                (user_id, problem_id, score),
+            )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_user_problem_max_score_if_higher(user_id, problem_id, score):
+    conn = get_db_connection()
+    try:
         with conn.cursor() as cursor:
-            sql = f"ALTER TABLE max_score ADD COLUMN P{pid} INT"
-            cursor.execute(sql)
+            cursor.execute(
+                """
+                INSERT INTO max_score (userid, problem_id, score)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                score = IF(score < VALUES(score), VALUES(score), score)
+                """,
+                (user_id, problem_id, score),
+            )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_user_problem_max_score(user_id, problem_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM max_score WHERE userid=%s AND problem_id=%s",
+                (user_id, problem_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_user_problem_ac_record_if_absent(user_id, problem_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT IGNORE INTO ac_record (userid, problem_id, is_ac)
+                VALUES (%s, %s, 1)
+                """,
+                (user_id, problem_id),
+            )
+            inserted = cursor.rowcount > 0
+        conn.commit()
+        return inserted
     finally:
         conn.close()
 

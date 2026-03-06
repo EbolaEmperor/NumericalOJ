@@ -6,6 +6,7 @@ import re
 from flask import Blueprint, flash, jsonify, render_template, request, session
 
 from oj_modules.db_services import (
+    delete_user_problem_max_score,
     get_all_classes,
     get_class_by_cn,
     get_class_by_en,
@@ -13,6 +14,7 @@ from oj_modules.db_services import (
     get_problem_title,
     get_user_by_id,
     get_user_by_username,
+    upsert_user_problem_max_score,
 )
 
 
@@ -165,7 +167,6 @@ def edit_user_ajax():
             if old_class_en:
                 cursor.execute("UPDATE class_table SET class_cnt=class_cnt-1 WHERE class_en=%s", (old_class_en,))
             cursor.execute("UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s", (new_class['class_en'],))
-            cursor.execute("UPDATE max_score SET class_en=%s WHERE userid=%s", (new_class['class_en'], user_id))
 
             try:
                 cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user_id,))
@@ -236,29 +237,27 @@ def get_user_grades():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT id, title, max_score FROM problems ORDER BY id ASC")
-            problems = cursor.fetchall()
-
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM max_score WHERE userid=%s", (user_id,))
-            score_row = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT p.id AS problem_id, p.title AS problem_title, p.max_score, ms.score AS user_score
+                FROM problems p
+                LEFT JOIN max_score ms
+                    ON ms.problem_id = p.id AND ms.userid = %s
+                WHERE ms.score IS NOT NULL
+                ORDER BY p.id ASC
+                """,
+                (user_id,),
+            )
+            rows = cursor.fetchall()
 
         grades = []
-        for problem in problems:
-            problem_id = problem['id']
-            user_score = None
-
-            if score_row:
-                score_value = score_row.get(f'P{problem_id}')
-                user_score = score_value
-
-            if user_score is not None:
-                grades.append({
-                    'problem_id': problem_id,
-                    'problem_title': problem['title'],
-                    'user_score': user_score,
-                    'max_score': problem['max_score'] or 0,
-                })
+        for row in rows:
+            grades.append({
+                'problem_id': row['problem_id'],
+                'problem_title': row['problem_title'],
+                'user_score': row['user_score'],
+                'max_score': row['max_score'] or 0,
+            })
 
         return jsonify({'success': True, 'grades': grades})
 
@@ -300,33 +299,15 @@ def update_user_grade():
         except ValueError:
             return jsonify({'success': False, 'message': '分数格式错误'}), 400
 
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT userid FROM max_score WHERE userid=%s", (user_id,))
-            exists = cursor.fetchone()
-
-            if not exists:
-                cursor.execute(
-                    "INSERT INTO max_score (userid, class_en) VALUES (%s, %s)",
-                    (user_id, user.get('class', '')),
-                )
-
-            if score is None:
-                sql = f"UPDATE max_score SET P{problem_id}=NULL WHERE userid=%s"
-                cursor.execute(sql, (user_id,))
-            else:
-                sql = f"UPDATE max_score SET P{problem_id}=%s WHERE userid=%s"
-                cursor.execute(sql, (score, user_id))
-
-        conn.commit()
+        if score is None:
+            delete_user_problem_max_score(user_id, problem_id)
+        else:
+            upsert_user_problem_max_score(user_id, problem_id, score)
         return jsonify({'success': True, 'message': '成绩更新成功'})
 
     except Exception as e:
-        conn.rollback()
         return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
-    finally:
-        conn.close()
 
 
 @admin_user_bp.route('/admin/problem_scores/<int:problem_id>')
@@ -342,14 +323,14 @@ def get_problem_scores(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = f"""
-                SELECT u.id, u.username, u.class_cn, ms.P{problem_id} as score
+            sql = """
+                SELECT u.id, u.username, u.class_cn, ms.score
                 FROM users u
                 JOIN max_score ms ON u.id = ms.userid
-                WHERE u.is_admin = 0 AND ms.P{problem_id} IS NOT NULL
+                WHERE u.is_admin = 0 AND ms.problem_id = %s AND ms.score IS NOT NULL
                 ORDER BY u.class_cn, u.username
             """
-            cursor.execute(sql)
+            cursor.execute(sql, (problem_id,))
             results = cursor.fetchall()
 
             scores = []

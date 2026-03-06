@@ -523,23 +523,25 @@ def export_scores():
         return "该班级没有学生", 404
 
     user_ids = [s['id'] for s in students]
-    placeholders = ','.join(['%s'] * len(user_ids))
     max_score_map = {}
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT * FROM max_score WHERE userid IN ({placeholders})", user_ids)
+            uid_placeholders = ','.join(['%s'] * len(user_ids))
+            pid_placeholders = ','.join(['%s'] * len(problem_ids))
+            cursor.execute(
+                f"""
+                SELECT userid, problem_id, score
+                FROM max_score
+                WHERE userid IN ({uid_placeholders}) AND problem_id IN ({pid_placeholders})
+                """,
+                tuple(user_ids + problem_ids),
+            )
             for row in cursor.fetchall():
                 uid = row['userid']
                 if uid not in max_score_map:
-                    max_score_map[uid] = row
-                else:
-                    existing = max_score_map[uid]
-                    for key, value in row.items():
-                        if key.startswith('P') and value is not None:
-                            existing_val = existing.get(key)
-                            if existing_val is None or value > existing_val:
-                                existing[key] = value
+                    max_score_map[uid] = {}
+                max_score_map[uid][row['problem_id']] = row['score']
     finally:
         conn.close()
 
@@ -560,7 +562,7 @@ def export_scores():
 
         ms = max_score_map.get(uid, {})
         for pid in problem_ids:
-            score = ms.get(f'P{pid}', 0) if ms else 0
+            score = ms.get(pid, 0) if ms else 0
             score = score or 0
             total += score
             row.append(str(score))
