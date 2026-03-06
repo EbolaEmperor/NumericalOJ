@@ -1,5 +1,6 @@
 import re
-from flask import Flask, request, jsonify
+import json
+from flask import Flask, request, jsonify, Response, stream_with_context
 import subprocess
 import time
 import resource
@@ -111,6 +112,84 @@ def set_run_limits(cpu_seconds: float, mem_bytes: int):
             # 限制数据段也可以考虑（部分系统上更严格）：
             # resource.setrlimit(resource.RLIMIT_DATA, (mem_bytes, mem_bytes))
     return _setter
+
+
+def ndjson_line(data):
+    return json.dumps(data, ensure_ascii=False) + "\n"
+
+
+def run_compiled_binary_test_case(sid, case_index, test_case, tle, mle):
+    user_input = test_case.get("input", "")
+    input_filename = f"{sid}/input_{case_index}.txt"
+    output_filename = f"{sid}/output_{case_index}.txt"
+
+    with open(input_filename, "w", encoding="utf-8") as f:
+        f.write(user_input)
+
+    time_lim_sec = (tle or 0) * 1.2 / 1e9
+    start_time = time.perf_counter_ns()
+    start_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+    run_cmd = ["timeout", f"{time_lim_sec}s", "./a.out"]
+    run_res = subprocess.run(
+        run_cmd,
+        cwd=sid,
+        capture_output=True,
+        text=True,
+        input=user_input,
+        preexec_fn=set_run_limits(time_lim_sec, mle or 0)
+    )
+
+    end_time = time.perf_counter_ns()
+    end_mem = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+    exec_time = end_time - start_time  # ns
+    mem_usage_byte = (end_mem - start_mem) * 1024  # Byte
+    outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+
+    # 处理用户程序输出图片，避免覆盖
+    original_image_path = f"{sid}/output.png"
+    renamed_image_path = f"{sid}/output_{case_index}.png"
+    has_output_image = False
+    if os.path.exists(original_image_path):
+        try:
+            subprocess.run(["mv", original_image_path, renamed_image_path], capture_output=True, text=False)
+            has_output_image = True
+        except Exception:
+            try:
+                subprocess.run(["cp", original_image_path, renamed_image_path], capture_output=True, text=False)
+                has_output_image = True
+            except Exception:
+                pass
+
+    status = "Accepted"
+    exval = 0
+    stderr = run_res.stderr or ""
+    if len(stderr) > 300:
+        stderr = stderr[:300] + "..."
+
+    if exec_time > (tle or 0):
+        status = "Time Limit Exceeded"
+        exval = 9
+    elif mem_usage_byte > (mle or 0):
+        status = "Memory Limit Exceeded"
+        exval = 10
+    elif run_res.returncode != 0:
+        status = "Runtime Error"
+        exval = run_res.returncode
+
+    files_dict = {"stdout": outp, "stderr": stderr}
+    if has_output_image:
+        files_dict[f"output_{case_index}.png"] = True
+
+    return {
+        "test_case_index": case_index,
+        "status": status,
+        "exitStatus": exval,
+        "files": files_dict,
+        "time": exec_time,
+        "memory": mem_usage_byte,
+    }
 
 # ========== 白名单 ==========
 @app.before_request
@@ -598,6 +677,138 @@ def run_cpp():
         return jsonify({"message": f"Failed to run C++: {str(e)}"}), 500
 
 # ========== 批量评测接口：编译一次，运行多个测试点 ==========
+@app.route("/batch-evaluate-stream-c", methods=["POST"])
+def batch_evaluate_stream_c():
+    data = request.get_json() or {}
+    sid = sanitize_sid(data.get("sid", ""))
+    code_content = data.get("code", "")
+    test_cases = data.get("test_cases", [])
+    tle = data.get("timeLimit")  # ns
+    mle = (data.get("memoryLimit") or 0) * 10
+    forbidden_funcs = data.get("forbidden", "")
+    user_files = data.get("user_files", {})
+
+    def generate():
+        try:
+            forbid_msg = check_forbidden(code_content, forbidden_funcs)
+            if forbid_msg:
+                yield ndjson_line({"event": "compile", "status": "forbidden", "stderr": forbid_msg})
+                yield ndjson_line({"event": "done", "ok": False})
+                return
+
+            ensure_dir(sid)
+            with open(f"{sid}/main.c", "w", encoding="utf-8") as f:
+                f.write(code_content)
+
+            if user_files:
+                for filename, content in user_files.items():
+                    with open(f"{sid}/{filename}", "w", encoding="utf-8") as f:
+                        f.write(content)
+
+            compile_timeout_sec = 30
+            compile_cmd = ["timeout", f"{compile_timeout_sec}s", "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11"]
+            if os.path.exists(LIBRARY_PATH):
+                compile_cmd.extend(["-I", LIBRARY_PATH])
+            compile_cmd.extend(["main.c", "-o", "a.out"])
+
+            compile_res = subprocess.run(
+                compile_cmd,
+                cwd=sid,
+                capture_output=True,
+                text=True
+            )
+            if compile_res.returncode != 0:
+                stderr = compile_res.stderr or ""
+                if len(stderr) > 300:
+                    stderr = stderr[:300] + "..."
+                yield ndjson_line({"event": "compile", "status": "error", "stderr": stderr})
+                yield ndjson_line({"event": "done", "ok": False})
+                return
+
+            yield ndjson_line({"event": "compile", "status": "success", "stderr": ""})
+
+            for i, test_case in enumerate(test_cases):
+                result = run_compiled_binary_test_case(sid, i, test_case, tle, mle)
+                yield ndjson_line({"event": "test_result", "result": result})
+
+            yield ndjson_line({"event": "done", "ok": True})
+        except Exception as e:
+            yield ndjson_line({"event": "error", "message": f"Failed to stream batch evaluate C: {str(e)}"})
+            yield ndjson_line({"event": "done", "ok": False})
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/batch-evaluate-stream-cpp", methods=["POST"])
+def batch_evaluate_stream_cpp():
+    data = request.get_json() or {}
+    sid = sanitize_sid(data.get("sid", ""))
+    code_content = data.get("code", "")
+    test_cases = data.get("test_cases", [])
+    tle = data.get("timeLimit")  # ns
+    mle = (data.get("memoryLimit") or 0) * 10
+    forbidden_funcs = data.get("forbidden", "")
+    user_files = data.get("user_files", {})
+
+    def generate():
+        try:
+            forbid_msg = check_forbidden(code_content, forbidden_funcs)
+            if forbid_msg:
+                yield ndjson_line({"event": "compile", "status": "forbidden", "stderr": forbid_msg})
+                yield ndjson_line({"event": "done", "ok": False})
+                return
+
+            ensure_dir(sid)
+            with open(f"{sid}/main.cpp", "w", encoding="utf-8") as f:
+                f.write(code_content)
+
+            if user_files:
+                for filename, content in user_files.items():
+                    with open(f"{sid}/{filename}", "w", encoding="utf-8") as f:
+                        f.write(content)
+
+            compile_timeout_sec = 30
+            compile_cmd = ["timeout", f"{compile_timeout_sec}s", "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20"]
+            if os.path.exists(LIBRARY_PATH):
+                compile_cmd.extend(["-I", LIBRARY_PATH])
+            compile_cmd.extend(["main.cpp", "-o", "a.out"])
+
+            compile_res = subprocess.run(
+                compile_cmd,
+                cwd=sid,
+                capture_output=True,
+                text=True
+            )
+            if compile_res.returncode != 0:
+                stderr = compile_res.stderr or ""
+                if len(stderr) > 3000:
+                    stderr = stderr[:3000] + "..."
+                yield ndjson_line({"event": "compile", "status": "error", "stderr": stderr})
+                yield ndjson_line({"event": "done", "ok": False})
+                return
+
+            yield ndjson_line({"event": "compile", "status": "success", "stderr": ""})
+
+            for i, test_case in enumerate(test_cases):
+                result = run_compiled_binary_test_case(sid, i, test_case, tle, mle)
+                yield ndjson_line({"event": "test_result", "result": result})
+
+            yield ndjson_line({"event": "done", "ok": True})
+        except Exception as e:
+            yield ndjson_line({"event": "error", "message": f"Failed to stream batch evaluate C++: {str(e)}"})
+            yield ndjson_line({"event": "done", "ok": False})
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.route("/batch-evaluate-c", methods=["POST"])
 def batch_evaluate_c():
     """

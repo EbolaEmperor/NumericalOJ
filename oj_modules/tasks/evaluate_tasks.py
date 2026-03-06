@@ -12,6 +12,7 @@ from oj_modules.db_services import (
     insert_user_problem_ac_record_if_absent,
     get_problem,
     get_submission_by_id,
+    set_submission_status_snapshot,
     get_user_classes,
     get_user_by_username,
     upsert_user_problem_max_score_if_higher,
@@ -79,6 +80,15 @@ def register_evaluate_submission_task(celery_app):
             return
 
         update_submission_status(submission_id, 'Running')
+        set_submission_status_snapshot(
+            submission_id=submission_id,
+            username=submission.get('username'),
+            problem_id=submission.get('problem_id'),
+            problem_type=submission.get('problem_type'),
+            status='Running',
+            score=0,
+            test_points=[],
+        )
 
         problem_id = submission['problem_id']
         code = submission['code']
@@ -242,6 +252,15 @@ def register_evaluate_submission_task(celery_app):
                             "has_output_image": False,
                             "test_index": idx,
                         })
+                        set_submission_status_snapshot(
+                            submission_id=submission_id,
+                            username=submission.get('username'),
+                            problem_id=submission.get('problem_id'),
+                            problem_type=submission.get('problem_type'),
+                            status='Running',
+                            score=sum(1 for tp in test_point_statuses if tp.get("status") == "Accepted"),
+                            test_points=test_point_statuses,
+                        )
 
                     update_submission_status(submission_id, 'Compile Error')
                     update_submission_evaluation(submission_id, test_point_statuses, 0, 'Compile Error')
@@ -260,84 +279,257 @@ def register_evaluate_submission_task(celery_app):
                 "memoryLimit": 512 * 1024 * 1024,
                 "user_files": user_files,
             }
-
+            stream_skip_fallback = False
+            stream_judge_url = f'http://localhost:5050/batch-evaluate-stream-{lang}'
             try:
-                response = requests.post(batch_judge_url, json=batch_payload, timeout=120)
-                response.raise_for_status()
-                batch_result = response.json()
-            except requests.RequestException as e:
-                print(f"[Warning] Batch evaluation failed for submission {submission_id}: {str(e)}")
-                batch_result = None
+                stream_response = requests.post(
+                    stream_judge_url,
+                    json=batch_payload,
+                    stream=True,
+                    timeout=(10, 240),
+                )
+                stream_response.raise_for_status()
 
-            if batch_result and batch_result.get('compile_result', {}).get('status') == 'success':
-                test_results = batch_result.get('test_results', [])
+                stream_handled = False
+                for raw_line in stream_response.iter_lines(decode_unicode=True):
+                    if not raw_line:
+                        continue
+                    try:
+                        evt = json.loads(raw_line)
+                    except Exception:
+                        continue
 
-                for idx, (tc, result) in enumerate(zip(test_cases, test_results), start=1):
-                    status = result.get('status', 'Error')
-                    actual_output = (result.get('files', {}) or {}).get('stdout', "")
-                    actual_output = actual_output.strip() if isinstance(actual_output, str) else ""
-
-                    if status == 'Accepted':
-                        expected_output = tc.get("output", "").strip()
-                        if compare_float_strings(actual_output, expected_output):
-                            status = 'Accepted'
-                        else:
-                            status = 'Wrong Answer'
+                    event_type = evt.get("event")
+                    if event_type == "compile":
+                        compile_status = evt.get("status")
+                        if compile_status == "error":
+                            compile_stderr = evt.get("stderr", "Compile Error")
                             all_accepted = False
-                    else:
-                        all_accepted = False
+                            for idx, _ in enumerate(test_cases, start=1):
+                                test_point_statuses.append({
+                                    "status": "Compile Error",
+                                    "stderr": compile_stderr,
+                                    "stdout": "",
+                                    "time": 0,
+                                    "has_output_image": False,
+                                    "test_index": idx,
+                                })
+                                set_submission_status_snapshot(
+                                    submission_id=submission_id,
+                                    username=submission.get('username'),
+                                    problem_id=submission.get('problem_id'),
+                                    problem_type=submission.get('problem_type'),
+                                    status='Running',
+                                    score=0,
+                                    test_points=test_point_statuses,
+                                )
+                            stream_handled = True
+                            break
+                        if compile_status == "forbidden":
+                            forbidden_msg = evt.get("stderr", "Forbidden Function")
+                            all_accepted = False
+                            for idx, _ in enumerate(test_cases, start=1):
+                                test_point_statuses.append({
+                                    "status": "Forbidden",
+                                    "stderr": forbidden_msg,
+                                    "stdout": forbidden_msg,
+                                    "time": 0,
+                                    "has_output_image": False,
+                                    "test_index": idx,
+                                })
+                                set_submission_status_snapshot(
+                                    submission_id=submission_id,
+                                    username=submission.get('username'),
+                                    problem_id=submission.get('problem_id'),
+                                    problem_type=submission.get('problem_type'),
+                                    status='Running',
+                                    score=0,
+                                    test_points=test_point_statuses,
+                                )
+                            stream_handled = True
+                            break
+                    elif event_type == "test_result":
+                        result = evt.get("result") or {}
+                        tc_index = result.get("test_case_index", len(test_point_statuses))
+                        try:
+                            tc_index = int(tc_index)
+                        except Exception:
+                            tc_index = len(test_point_statuses)
+                        idx = tc_index + 1
+                        tc = test_cases[tc_index] if 0 <= tc_index < len(test_cases) else {}
 
-                    stderr = (result.get('files', {}) or {}).get('stderr', "")
-                    stderr = stderr.strip() if isinstance(stderr, str) else ""
-                    exec_time = int(round(int(result.get('time', "0")) / 1_000_000))
+                        status = result.get('status', 'Error')
+                        actual_output = (result.get('files', {}) or {}).get('stdout', "")
+                        actual_output = actual_output.strip() if isinstance(actual_output, str) else ""
 
-                    if len(actual_output) > 200:
-                        actual_output = actual_output[:200] + "..."
+                        if status == 'Accepted':
+                            expected_output = tc.get("output", "").strip()
+                            if compare_float_strings(actual_output, expected_output):
+                                status = 'Accepted'
+                            else:
+                                status = 'Wrong Answer'
+                                all_accepted = False
+                        else:
+                            all_accepted = False
 
-                    has_output_image = False
-                    if 'files' in result and isinstance(result['files'], dict):
-                        if f'output_{idx - 1}.png' in result['files']:
-                            has_output_image = True
+                        stderr = (result.get('files', {}) or {}).get('stderr', "")
+                        stderr = stderr.strip() if isinstance(stderr, str) else ""
+                        exec_time = int(round(int(result.get('time', "0")) / 1_000_000))
 
-                    test_point_statuses.append({
-                        "status": status,
-                        "stderr": stderr,
-                        "stdout": actual_output,
-                        "time": exec_time,
-                        "has_output_image": has_output_image,
-                        "test_index": idx,
-                    })
+                        if len(actual_output) > 200:
+                            actual_output = actual_output[:200] + "..."
 
-            elif batch_result and batch_result.get('compile_result', {}).get('status') == 'error':
-                compile_stderr = batch_result.get('compile_result', {}).get('stderr', 'Compile Error')
-                all_accepted = False
+                        has_output_image = False
+                        if 'files' in result and isinstance(result['files'], dict):
+                            if f'output_{idx - 1}.png' in result['files']:
+                                has_output_image = True
 
-                for idx, _ in enumerate(test_cases, start=1):
-                    test_point_statuses.append({
-                        "status": "Compile Error",
-                        "stderr": compile_stderr,
-                        "stdout": "",
-                        "time": 0,
-                        "has_output_image": False,
-                        "test_index": idx,
-                    })
+                        test_point_statuses.append({
+                            "status": status,
+                            "stderr": stderr,
+                            "stdout": actual_output,
+                            "time": exec_time,
+                            "has_output_image": has_output_image,
+                            "test_index": idx,
+                        })
+                        set_submission_status_snapshot(
+                            submission_id=submission_id,
+                            username=submission.get('username'),
+                            problem_id=submission.get('problem_id'),
+                            problem_type=submission.get('problem_type'),
+                            status='Running',
+                            score=sum(1 for tp in test_point_statuses if tp.get("status") == "Accepted"),
+                            test_points=test_point_statuses,
+                        )
+                    elif event_type == "done":
+                        stream_handled = True
+                        break
+                    elif event_type == "error":
+                        break
 
-            elif batch_result and batch_result.get('compile_result', {}).get('status') == 'forbidden':
-                forbidden_msg = batch_result.get('compile_result', {}).get('stderr', 'Forbidden Function')
-                all_accepted = False
+                if stream_handled:
+                    stream_skip_fallback = True
+                    batch_result = {"compile_result": {"status": "success"}, "stream_mode": True}
+            except requests.RequestException as e:
+                print(f"[Warning] Stream batch evaluation failed for submission {submission_id}: {str(e)}")
 
-                for idx, _ in enumerate(test_cases, start=1):
-                    test_point_statuses.append({
-                        "status": "Forbidden",
-                        "stderr": forbidden_msg,
-                        "stdout": forbidden_msg,
-                        "time": 0,
-                        "has_output_image": False,
-                        "test_index": idx,
-                    })
-            else:
-                print(f"[Warning] Falling back to individual evaluation for submission {submission_id}")
-                batch_result = None
+            if not stream_skip_fallback:
+                if test_point_statuses:
+                    test_point_statuses = []
+                    all_accepted = True
+                    set_submission_status_snapshot(
+                        submission_id=submission_id,
+                        username=submission.get('username'),
+                        problem_id=submission.get('problem_id'),
+                        problem_type=submission.get('problem_type'),
+                        status='Running',
+                        score=0,
+                        test_points=[],
+                    )
+                try:
+                    response = requests.post(batch_judge_url, json=batch_payload, timeout=120)
+                    response.raise_for_status()
+                    batch_result = response.json()
+                except requests.RequestException as e:
+                    print(f"[Warning] Batch evaluation failed for submission {submission_id}: {str(e)}")
+                    batch_result = None
+
+                if batch_result and batch_result.get('compile_result', {}).get('status') == 'success':
+                    test_results = batch_result.get('test_results', [])
+
+                    for idx, (tc, result) in enumerate(zip(test_cases, test_results), start=1):
+                        status = result.get('status', 'Error')
+                        actual_output = (result.get('files', {}) or {}).get('stdout', "")
+                        actual_output = actual_output.strip() if isinstance(actual_output, str) else ""
+
+                        if status == 'Accepted':
+                            expected_output = tc.get("output", "").strip()
+                            if compare_float_strings(actual_output, expected_output):
+                                status = 'Accepted'
+                            else:
+                                status = 'Wrong Answer'
+                                all_accepted = False
+                        else:
+                            all_accepted = False
+
+                        stderr = (result.get('files', {}) or {}).get('stderr', "")
+                        stderr = stderr.strip() if isinstance(stderr, str) else ""
+                        exec_time = int(round(int(result.get('time', "0")) / 1_000_000))
+
+                        if len(actual_output) > 200:
+                            actual_output = actual_output[:200] + "..."
+
+                        has_output_image = False
+                        if 'files' in result and isinstance(result['files'], dict):
+                            if f'output_{idx - 1}.png' in result['files']:
+                                has_output_image = True
+
+                        test_point_statuses.append({
+                            "status": status,
+                            "stderr": stderr,
+                            "stdout": actual_output,
+                            "time": exec_time,
+                            "has_output_image": has_output_image,
+                            "test_index": idx,
+                        })
+                        set_submission_status_snapshot(
+                            submission_id=submission_id,
+                            username=submission.get('username'),
+                            problem_id=submission.get('problem_id'),
+                            problem_type=submission.get('problem_type'),
+                            status='Running',
+                            score=sum(1 for tp in test_point_statuses if tp.get("status") == "Accepted"),
+                            test_points=test_point_statuses,
+                        )
+
+                elif batch_result and batch_result.get('compile_result', {}).get('status') == 'error':
+                    compile_stderr = batch_result.get('compile_result', {}).get('stderr', 'Compile Error')
+                    all_accepted = False
+
+                    for idx, _ in enumerate(test_cases, start=1):
+                        test_point_statuses.append({
+                            "status": "Compile Error",
+                            "stderr": compile_stderr,
+                            "stdout": "",
+                            "time": 0,
+                            "has_output_image": False,
+                            "test_index": idx,
+                        })
+                        set_submission_status_snapshot(
+                            submission_id=submission_id,
+                            username=submission.get('username'),
+                            problem_id=submission.get('problem_id'),
+                            problem_type=submission.get('problem_type'),
+                            status='Running',
+                            score=0,
+                            test_points=test_point_statuses,
+                        )
+
+                elif batch_result and batch_result.get('compile_result', {}).get('status') == 'forbidden':
+                    forbidden_msg = batch_result.get('compile_result', {}).get('stderr', 'Forbidden Function')
+                    all_accepted = False
+
+                    for idx, _ in enumerate(test_cases, start=1):
+                        test_point_statuses.append({
+                            "status": "Forbidden",
+                            "stderr": forbidden_msg,
+                            "stdout": forbidden_msg,
+                            "time": 0,
+                            "has_output_image": False,
+                            "test_index": idx,
+                        })
+                        set_submission_status_snapshot(
+                            submission_id=submission_id,
+                            username=submission.get('username'),
+                            problem_id=submission.get('problem_id'),
+                            problem_type=submission.get('problem_type'),
+                            status='Running',
+                            score=0,
+                            test_points=test_point_statuses,
+                        )
+                else:
+                    print(f"[Warning] Falling back to individual evaluation for submission {submission_id}")
+                    batch_result = None
 
         if lang not in ['c', 'cpp'] or not batch_result or batch_result.get('compile_result', {}).get('status') != 'success':
             for idx, tc in enumerate(test_cases, start=1):
@@ -358,6 +550,15 @@ def register_evaluate_submission_task(celery_app):
                 except requests.RequestException:
                     test_point_statuses.append({"status": "Error"})
                     all_accepted = False
+                    set_submission_status_snapshot(
+                        submission_id=submission_id,
+                        username=submission.get('username'),
+                        problem_id=submission.get('problem_id'),
+                        problem_type=submission.get('problem_type'),
+                        status='Running',
+                        score=sum(1 for tp in test_point_statuses if tp.get("status") == "Accepted"),
+                        test_points=test_point_statuses,
+                    )
                     continue
 
                 status = result.get('status', 'Error')
@@ -402,6 +603,15 @@ def register_evaluate_submission_task(celery_app):
                     "has_output_image": has_output_image,
                     "test_index": idx,
                 })
+                set_submission_status_snapshot(
+                    submission_id=submission_id,
+                    username=submission.get('username'),
+                    problem_id=submission.get('problem_id'),
+                    problem_type=submission.get('problem_type'),
+                    status='Running',
+                    score=sum(1 for tp in test_point_statuses if tp.get("status") == "Accepted"),
+                    test_points=test_point_statuses,
+                )
 
         score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")
         user = get_user_by_username(submission['username'])

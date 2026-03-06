@@ -11,12 +11,19 @@ import time
 import pymysql
 from flask import session
 
+try:
+    import redis
+except Exception:
+    redis = None
+
 from config import MYSQL_PASSWORD, MYSQL_USERNAME
 from oj_modules.ai_utils import _normalize_ai_code_issues
 
 
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
 _settings_table_ready = False
+_submission_snapshot_rds = None
+_submission_snapshot_ttl_seconds = int(os.getenv('SUBMISSION_SNAPSHOT_TTL_SECONDS', '21600'))
 
 
 def _create_raw_mysql_connection():
@@ -181,6 +188,186 @@ _db_pool = _MySQLConnectionPool(
 def get_db_connection():
     """返回一个连接池代理连接（close() 时归还池）。"""
     return _db_pool.acquire()
+
+
+def init_submission_snapshot_cache(redis_client, ttl_seconds=None):
+    global _submission_snapshot_rds, _submission_snapshot_ttl_seconds
+    _submission_snapshot_rds = redis_client
+    if ttl_seconds is not None:
+        try:
+            _submission_snapshot_ttl_seconds = max(60, int(ttl_seconds))
+        except Exception:
+            pass
+
+
+def _ensure_submission_snapshot_redis():
+    global _submission_snapshot_rds
+    if _submission_snapshot_rds is not None:
+        return _submission_snapshot_rds
+    if redis is None:
+        return None
+
+    try:
+        _submission_snapshot_rds = redis.StrictRedis(
+            host=os.getenv('REDIS_HOST', '127.0.0.1'),
+            port=int(os.getenv('REDIS_PORT', '6379')),
+            db=int(os.getenv('REDIS_DB', '0')),
+            decode_responses=True,
+        )
+        _submission_snapshot_rds.ping()
+    except Exception:
+        _submission_snapshot_rds = None
+    return _submission_snapshot_rds
+
+
+def _submission_snapshot_key(submission_id):
+    return f"submission:{submission_id}"
+
+
+def _submission_snapshot_channel(submission_id):
+    return f"submission_events:{submission_id}"
+
+
+def _format_snapshot_time():
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+
+
+def _count_test_points_from_raw(raw):
+    if raw is None:
+        return 0
+    if isinstance(raw, list):
+        return len(raw)
+    text = str(raw).strip()
+    if not text:
+        return 0
+    return len([line for line in text.split('\n') if line.strip()])
+
+
+def _parse_test_points(raw):
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return []
+    points = []
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            points.append(json.loads(line))
+        except Exception:
+            pass
+    return points
+
+
+def _build_submission_status_snapshot_from_row(row, last_updated=None):
+    if not row:
+        return None
+    test_points = _parse_test_points(row.get("test_points"))
+    return {
+        "id": int(row["id"]),
+        "username": row.get("username"),
+        "problem_id": row.get("problem_id"),
+        "problem_type": row.get("problem_type"),
+        "status": row.get("status"),
+        "score": row.get("score"),
+        "test_points": test_points,
+        "test_points_count": len(test_points),
+        "last_updated": last_updated or _format_snapshot_time(),
+    }
+
+
+def _save_submission_status_snapshot(snapshot):
+    if not snapshot:
+        return
+    client = _ensure_submission_snapshot_redis()
+    if client is None:
+        return
+    key = _submission_snapshot_key(snapshot["id"])
+    try:
+        payload = json.dumps(snapshot, ensure_ascii=False)
+        client.setex(key, _submission_snapshot_ttl_seconds, payload)
+        client.publish(_submission_snapshot_channel(snapshot["id"]), payload)
+    except Exception:
+        pass
+
+
+def set_submission_status_snapshot(
+    submission_id,
+    username,
+    problem_id,
+    problem_type,
+    status,
+    score,
+    test_points,
+):
+    points = test_points if isinstance(test_points, list) else []
+    snapshot = {
+        "id": int(submission_id),
+        "username": username,
+        "problem_id": problem_id,
+        "problem_type": problem_type,
+        "status": status,
+        "score": score,
+        "test_points": points,
+        "test_points_count": len(points),
+        "last_updated": _format_snapshot_time(),
+    }
+    _save_submission_status_snapshot(snapshot)
+    return snapshot
+
+
+def refresh_submission_status_snapshot(submission_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, username, problem_id, problem_type, status, score, test_points
+                FROM submissions
+                WHERE id=%s
+                """,
+                (submission_id,),
+            )
+            row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    snapshot = _build_submission_status_snapshot_from_row(row)
+    _save_submission_status_snapshot(snapshot)
+    return snapshot
+
+
+def get_submission_status_snapshot(submission_id, prefer_cache=True):
+    if prefer_cache:
+        client = _ensure_submission_snapshot_redis()
+    else:
+        client = None
+    if client is not None:
+        try:
+            raw = client.get(_submission_snapshot_key(submission_id))
+            if raw:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+    return refresh_submission_status_snapshot(submission_id)
+
+
+def subscribe_submission_status_events(submission_id):
+    client = _ensure_submission_snapshot_redis()
+    if client is None:
+        return None
+    try:
+        pubsub = client.pubsub(ignore_subscribe_messages=True)
+        pubsub.subscribe(_submission_snapshot_channel(submission_id))
+        return pubsub
+    except Exception:
+        return None
 
 
 def ensure_settings_table():
@@ -511,10 +698,14 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
     try:
         problem = get_problem(problem_id)
         problem_type = problem['type']
+        invalidated_submission_ids = []
 
         if problem_type == 2:
             with conn.cursor() as cursor:
                 test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
+                sql = "SELECT id FROM submissions WHERE username=%s AND problem_id=%s AND status='Pending'"
+                cursor.execute(sql, (username, problem_id))
+                invalidated_submission_ids = [row['id'] for row in cursor.fetchall()]
                 sql = "UPDATE submissions SET status='Unaccepted' WHERE username=%s AND problem_id=%s"
                 cursor.execute(sql, (username, problem_id))
                 sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
@@ -546,6 +737,9 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
             ))
         conn.commit()
         subid = cursor.lastrowid
+        for sid in invalidated_submission_ids:
+            refresh_submission_status_snapshot(sid)
+        refresh_submission_status_snapshot(subid)
         return subid
     finally:
         conn.close()
@@ -773,6 +967,7 @@ def update_submission_status(submission_id, new_status):
         conn.commit()
     finally:
         conn.close()
+    refresh_submission_status_snapshot(submission_id)
 
 
 def update_submission_evaluation(submission_id, test_point_statuses, score, status):
@@ -787,3 +982,4 @@ def update_submission_evaluation(submission_id, test_point_statuses, score, stat
         conn.commit()
     finally:
         conn.close()
+    refresh_submission_status_snapshot(submission_id)

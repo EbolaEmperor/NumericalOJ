@@ -8,6 +8,7 @@ from oj_modules.db_services import (
     insert_user_problem_ac_record_if_absent,
     get_submission_by_id,
     get_db_connection,
+    refresh_submission_status_snapshot,
     get_user_by_username,
     upsert_user_problem_max_score_if_higher,
     update_submission_status,
@@ -42,6 +43,7 @@ def update_submission_score_and_comment(submission_id, score, comment):
                      WHERE id = %s"""
             cursor.execute(sql, (score, comment, submission_id))
         conn.commit()
+        refresh_submission_status_snapshot(submission_id)
 
         submission = get_submission_by_id(submission_id)
         problem_id = submission["problem_id"]
@@ -70,6 +72,7 @@ def update_submission_comment(submission_id, comment):
         conn.commit()
     finally:
         conn.close()
+    refresh_submission_status_snapshot(submission_id)
 
 
 def invalidate_previous_pending_submissions(problem_id):
