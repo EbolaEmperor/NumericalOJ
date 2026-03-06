@@ -2,14 +2,18 @@
 # -*- coding: utf-8 -*-
 
 import os
+import json
+import time
 
-from flask import Blueprint, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, stream_with_context, url_for
 
 from oj_modules.db_services import (
     get_cached_ai_code_marks_for_submission,
     get_latest_submission_code_by_user_and_problem,
     get_problem,
     get_submission_by_id,
+    get_submission_status_snapshot,
+    subscribe_submission_status_events,
     get_submission_summaries_by_user_and_problem_paginated,
     get_user_by_username,
 )
@@ -93,26 +97,154 @@ def submission_status(submission_id):
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    submission = get_submission_by_id(submission_id)
-    if not submission:
+    snapshot = get_submission_status_snapshot(submission_id, prefer_cache=True)
+    if not snapshot:
         return jsonify({'error': 'Submission not found'}), 404
 
-    if submission['username'] != user['username'] and not is_admin(user):
+    if snapshot.get('username') != user['username'] and not is_admin(user):
         return jsonify({'error': 'Access denied'}), 403
 
     is_judging = (
-        submission['status'] in ['Pending', 'Waiting', 'Running']
-        or (submission['test_points'] and len(submission['test_points']) == 0)
-        or submission['score'] is None
+        snapshot.get('status') in ['Pending', 'Waiting', 'Running']
+        or snapshot.get('score') is None
     )
 
     return jsonify({
-        'status': submission['status'],
-        'score': submission['score'],
+        'status': snapshot.get('status'),
+        'score': snapshot.get('score'),
         'is_judging': is_judging,
-        'test_points_count': len(submission['test_points']) if submission['test_points'] else 0,
-        'last_updated': submission.get('updated_at', submission.get('submit_time', '')),
+        'test_points_count': snapshot.get('test_points_count', 0),
+        'test_points': snapshot.get('test_points', []),
+        'last_updated': snapshot.get('last_updated', ''),
     })
+
+
+@submission_bp.route('/submission_status_stream/<int:submission_id>')
+def submission_status_stream(submission_id):
+    user = current_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    initial_snapshot = get_submission_status_snapshot(submission_id, prefer_cache=True)
+    if not initial_snapshot:
+        return jsonify({'error': 'Submission not found'}), 404
+
+    if initial_snapshot.get('username') != user['username'] and not is_admin(user):
+        return jsonify({'error': 'Access denied'}), 403
+
+    def _build_payload(snapshot):
+        is_judging = (
+            snapshot.get('status') in ['Pending', 'Waiting', 'Running']
+            or snapshot.get('score') is None
+        )
+        return {
+            'status': snapshot.get('status'),
+            'score': snapshot.get('score'),
+            'is_judging': is_judging,
+            'test_points_count': snapshot.get('test_points_count', 0),
+            'test_points': snapshot.get('test_points', []),
+            'last_updated': snapshot.get('last_updated', ''),
+        }
+
+    def _encode_sse(event_name, payload):
+        return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        # 首帧立即推送
+        first_payload = _build_payload(initial_snapshot)
+        yield _encode_sse("status", first_payload)
+        if not first_payload['is_judging']:
+            yield _encode_sse("done", first_payload)
+            return
+
+        start_ts = time.time()
+        pubsub = subscribe_submission_status_events(submission_id)
+        if pubsub is None:
+            # Redis 订阅不可用时，回退到慢轮询
+            last_marker = (
+                first_payload.get('status'),
+                first_payload.get('score'),
+                first_payload.get('test_points_count'),
+                first_payload.get('last_updated'),
+            )
+            last_ping = start_ts
+            while True:
+                snapshot = get_submission_status_snapshot(submission_id, prefer_cache=True)
+                if not snapshot:
+                    yield _encode_sse("error", {"error": "Submission not found"})
+                    return
+
+                payload = _build_payload(snapshot)
+                marker = (
+                    payload.get('status'),
+                    payload.get('score'),
+                    payload.get('test_points_count'),
+                    payload.get('last_updated'),
+                )
+                if marker != last_marker:
+                    yield _encode_sse("status", payload)
+                    last_marker = marker
+                if not payload['is_judging']:
+                    yield _encode_sse("done", payload)
+                    return
+
+                now = time.time()
+                if now - start_ts > 360:
+                    yield _encode_sse("timeout", payload)
+                    return
+                if now - last_ping > 15:
+                    yield ": keepalive\n\n"
+                    last_ping = now
+                time.sleep(0.5)
+
+        try:
+            while True:
+                msg = pubsub.get_message(timeout=15.0)
+                now = time.time()
+                if now - start_ts > 360:
+                    latest = get_submission_status_snapshot(submission_id, prefer_cache=True) or initial_snapshot
+                    yield _encode_sse("timeout", _build_payload(latest))
+                    return
+
+                if not msg:
+                    # 心跳，维持连接
+                    yield ": keepalive\n\n"
+                    continue
+
+                if msg.get("type") != "message":
+                    continue
+
+                raw = msg.get("data")
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="ignore")
+                try:
+                    snapshot = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    continue
+                if not isinstance(snapshot, dict):
+                    continue
+
+                payload = _build_payload(snapshot)
+                yield _encode_sse("status", payload)
+                if not payload['is_judging']:
+                    yield _encode_sse("done", payload)
+                    return
+        finally:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
+    )
 
 
 @submission_bp.route('/api/get_last_submission_code/<int:problem_id>')

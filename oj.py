@@ -8,6 +8,7 @@ from celery import Celery
 from config import *
 from oj_modules.db_services import (
     get_user_by_username,
+    init_submission_snapshot_cache,
     is_class_adjust_enabled,
 )
 from oj_modules.routes.submission_routes import submission_bp
@@ -107,6 +108,8 @@ init_rejudge_module(celery, rds, evaluate_submission)
 init_homework_module(celery, rds, rds_binary)
 # 初始化题目核心模块（依赖 Celery 任务）
 init_problem_core_module(evaluate_submission, transcribe_written_homework_to_latex)
+# 初始化 submission 状态快照缓存（Redis）
+init_submission_snapshot_cache(rds)
 
 ###############################################################################
 #  班级管理

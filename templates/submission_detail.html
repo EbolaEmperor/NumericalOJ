@@ -117,7 +117,7 @@
     </div>
     {% endif %}
     
-    <ul class="list-group mt-2">
+    <ul class="list-group mt-2" id="testPointsList">
       {% for tp in test_points %}
       <li class="list-group-item">
         <div class="d-flex justify-content-between">
@@ -302,8 +302,10 @@
   // 智能轮询判题状态
   let pollCount = 0;
   let maxPollCount = 60; // 最多轮询60次（约2-5分钟）
+  const submissionId = {{ submission.id }};
   let judgingStatusEl = document.getElementById('judgingStatus');
   let judgingTextEl = document.getElementById('judgingText');
+  let testPointsListEl = document.getElementById('testPointsList');
   
   // 显示判题状态提示
   if (judgingStatusEl) {
@@ -312,8 +314,8 @@
   
   function getPollingInterval() {
     // 动态轮询间隔：前10次每1秒，然后每2秒，最后每5秒
-    if (pollCount < 10) return 1000;   // 前10秒每秒检查
-    if (pollCount < 30) return 2000;   // 然后20秒内每2秒检查
+    if (pollCount < 20) return 500;   // 前10秒每秒检查
+    if (pollCount < 40) return 1000;   // 然后20秒内每2秒检查
     return 5000;                       // 最后每5秒检查
   }
 
@@ -331,40 +333,131 @@
     }
   }
 
+  function statusClassName(status) {
+    return String(status || '').toLowerCase().replace(/\s+/g, '-');
+  }
+
+  function renderTestPoints(testPoints) {
+    if (!testPointsListEl || !Array.isArray(testPoints)) return;
+    testPointsListEl.innerHTML = '';
+
+    testPoints.forEach((tp, idx) => {
+      const li = document.createElement('li');
+      li.className = 'list-group-item';
+
+      const header = document.createElement('div');
+      header.className = 'd-flex justify-content-between';
+
+      const left = document.createElement('div');
+      left.appendChild(document.createTextNode(`测试点${idx + 1}：`));
+      const statusSpan = document.createElement('span');
+      statusSpan.className = statusClassName(tp.status);
+      statusSpan.textContent = tp.status || 'Running';
+      left.appendChild(statusSpan);
+
+      header.appendChild(left);
+      if (tp.time) {
+        const right = document.createElement('div');
+        right.textContent = `${tp.time} ms`;
+        header.appendChild(right);
+      }
+      li.appendChild(header);
+
+      if ((tp.status === 'Nonzero Exit Status' || tp.status === 'Compile Error') && tp.stderr && idx === 0) {
+        const box = document.createElement('div');
+        box.className = 'mt-2 p-3 border rounded text-white';
+        box.style.backgroundColor = 'rgba(255, 67, 67, 0.707)';
+        const pre = document.createElement('pre');
+        pre.style.whiteSpace = 'pre-wrap';
+        pre.style.wordWrap = 'break-word';
+        pre.textContent = tp.stderr;
+        box.appendChild(pre);
+        li.appendChild(box);
+      }
+
+      if ((tp.status === 'Wrong Answer' || tp.status === 'Forbidden') && tp.stdout) {
+        const box = document.createElement('div');
+        box.className = 'mt-2 p-3 border rounded text-white';
+        box.style.backgroundColor = 'rgba(255, 67, 67, 0.707)';
+        const pre = document.createElement('pre');
+        pre.style.whiteSpace = 'pre-wrap';
+        pre.style.wordWrap = 'break-word';
+        pre.textContent = tp.stdout;
+        box.appendChild(pre);
+        li.appendChild(box);
+      }
+
+      if (tp.has_output_image) {
+        const wrap = document.createElement('div');
+        wrap.className = 'mt-2';
+        const small = document.createElement('small');
+        small.className = 'text-muted';
+        small.innerHTML = '<i class="fas fa-image me-1"></i> 程序输出图片：';
+        wrap.appendChild(small);
+
+        const imgWrap = document.createElement('div');
+        imgWrap.className = 'mt-1';
+        const img = document.createElement('img');
+        const testIndex = tp.test_index || (idx + 1);
+        img.src = `/submission_output_image/${submissionId}/${testIndex}`;
+        img.alt = `测试点${idx + 1}输出图片`;
+        img.className = 'img-fluid border rounded output-image';
+        img.style.maxWidth = '100%';
+        img.style.maxHeight = '300px';
+        img.style.cursor = 'pointer';
+        img.onclick = function () {
+          showImageModal(img.src, `测试点${idx + 1}输出图片`);
+        };
+        img.onerror = function () {
+          wrap.style.display = 'none';
+        };
+        imgWrap.appendChild(img);
+        wrap.appendChild(imgWrap);
+        li.appendChild(wrap);
+      }
+
+      testPointsListEl.appendChild(li);
+    });
+  }
+
+  function handleSubmissionStatusData(data) {
+    pollCount++;
+    updateJudgingText();
+
+    if (data.error) {
+      console.error('状态检查错误:', data.error);
+      if (judgingTextEl) {
+        judgingTextEl.textContent = '状态检查出错，即将刷新页面...';
+      }
+      setTimeout(() => location.replace(location.href), 2000);
+      return false;
+    }
+
+    renderTestPoints(data.test_points || []);
+
+    if (!data.is_judging) {
+      if (judgingTextEl) {
+        judgingTextEl.innerHTML = '<i class="fas fa-check-circle me-1"></i>判题完成！正在刷新...';
+      }
+      setTimeout(() => location.replace(location.href), 500);
+      return false;
+    }
+    return true;
+  }
+
   function checkSubmissionStatus() {
     updateJudgingText();
     
     fetch('{{ url_for("submission.submission_status", submission_id=submission.id) }}')
       .then(response => response.json())
       .then(data => {
-        pollCount++;
-        
-        if (data.error) {
-          console.error('状态检查错误:', data.error);
-          if (judgingTextEl) {
-            judgingTextEl.textContent = '状态检查出错，即将刷新页面...';
-          }
-          setTimeout(() => location.replace(location.href), 2000);
+        if (!handleSubmissionStatusData(data)) {
           return;
         }
-        
-        // 如果判题完成，显示完成提示并刷新页面
-        if (!data.is_judging) {
-          console.log('判题完成，刷新页面');
-          if (judgingTextEl) {
-            judgingTextEl.innerHTML = '<i class="fas fa-check-circle me-1"></i>判题完成！正在刷新...';
-          }
-          setTimeout(() => location.replace(location.href), 500);
-          return;
-        }
-        
-        // 如果还在判题中且未超过最大次数，继续轮询
+
         if (pollCount < maxPollCount) {
-          console.log(`第${pollCount}次检查，判题进行中...`);
           setTimeout(checkSubmissionStatus, getPollingInterval());
         } else {
-          // 超时后回退到传统方式
-          console.log('轮询超时，使用传统刷新');
           if (judgingTextEl) {
             judgingTextEl.textContent = '判题时间过长，正在刷新页面...';
           }
@@ -390,9 +483,64 @@
         }
       });
   }
-  
-  // 页面加载后立即开始检查
-  setTimeout(checkSubmissionStatus, 1000);
+
+  function startSubmissionStatusStream() {
+    if (!window.EventSource) {
+      setTimeout(checkSubmissionStatus, 500);
+      return;
+    }
+
+    const streamUrl = '{{ url_for("submission.submission_status_stream", submission_id=submission.id) }}';
+    const source = new EventSource(streamUrl);
+    let hasMessage = false;
+    let closedByClient = false;
+
+    function closeStream() {
+      if (!closedByClient) {
+        closedByClient = true;
+        source.close();
+      }
+    }
+
+    source.addEventListener('status', function(evt) {
+      hasMessage = true;
+      try {
+        const data = JSON.parse(evt.data);
+        if (!handleSubmissionStatusData(data)) {
+          closeStream();
+        }
+      } catch (_) {
+      }
+    });
+
+    source.addEventListener('done', function(evt) {
+      hasMessage = true;
+      try {
+        const data = JSON.parse(evt.data);
+        handleSubmissionStatusData(data);
+      } catch (_) {
+      }
+      closeStream();
+    });
+
+    source.addEventListener('timeout', function() {
+      closeStream();
+      setTimeout(checkSubmissionStatus, 500);
+    });
+
+    source.addEventListener('error', function() {
+      if (closedByClient) return;
+      closeStream();
+      if (!hasMessage) {
+        setTimeout(checkSubmissionStatus, 500);
+      } else {
+        setTimeout(checkSubmissionStatus, 1000);
+      }
+    });
+  }
+
+  // 页面加载后优先使用流式订阅，失败再回退轮询
+  setTimeout(startSubmissionStatusStream, 300);
 </script>
 {% endif %}
 
