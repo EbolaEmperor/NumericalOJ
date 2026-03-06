@@ -7,6 +7,21 @@
   {% endif %}
 {% endblock %}
 {% block content %}
+<style>
+  .student-hw-row { align-items: center; }
+  .student-hw-main { min-width: 0; flex: 1 1 auto; }
+  .student-hw-meta { flex: 0 0 auto; white-space: nowrap; margin-left: 0.5rem; }
+  .student-hw-title { word-break: break-word; }
+  .student-hw-ddl-mobile {
+    margin-left: 1.95rem;
+    margin-top: 0.2rem;
+    line-height: 1.25;
+    font-size: 0.875rem;
+  }
+  @media (max-width: 767.98px) {
+    .student-hw-row { align-items: flex-start; }
+  }
+</style>
 <div class="container my-4">
   <div class="row">
     <!-- 左侧内容：题目列表 -->
@@ -70,37 +85,50 @@
               <ul class="list-group">
                 {% for hw in block.hw_list %}
                   <li class="list-group-item">
-                    <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex justify-content-between student-hw-row">
                       <!-- 左侧显示题目编号和标题 -->
-                      <div>
+                      <div class="student-hw-main">
                         {% if hw.is_completed %}
                           <!-- 如果已完成，显示绿色的勾 -->
-                          <i class="fas fa-check me-2 text-success" title="已完成"></i>
+                          <i class="fas fa-check fa-fw text-success" title="已完成"></i>
                         {% else %}
                           {% if hw.has_submission %}
-                            <i class="fas fa-times me-2 text-danger" title="未通过"></i>
+                            <i class="fas fa-times fa-fw text-danger" title="未通过"></i>
                           {% else %}
                             <span class="d-inline-block" style="width: 1.25em;"></span>
                           {% endif %}
                         {% endif %}
-                        <span class="fw-bold">{{ hw.problem_id }}.</span>
-                        <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none">{{ hw.problem_title }}</a>
+                        <span class="fw-bold student-hw-title">{{ loop.index }}.</span>
+                        <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a>
+                        {% if not hw.is_completed %}
+                          {% set remaining = (hw.ddl - now).total_seconds() %}
+                          <div class="student-hw-ddl-mobile d-md-none">
+                            {% if remaining < 0 %}
+                              <span class="text-muted"><i class="fas fa-clock me-1"></i> 已过期</span>
+                            {% elif remaining < 86400 %}
+                              <span class="text-danger"><i class="fas fa-clock me-1"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                            {% elif remaining < 3 * 86400 %}
+                              <span class="text-warning"><i class="fas fa-clock me-1"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                            {% else %}
+                              <span class="text-success"><i class="fas fa-clock me-1"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                            {% endif %}
+                          </div>
+                        {% endif %}
                       </div>
                       <!-- 右侧显示完成状态或作业截止时间 -->
-                      <div class="d-flex align-items-center">
+                      <div class="d-flex align-items-center student-hw-meta">
                         {% if hw.is_completed %}
-                          <span class="text-success">已完成</span>
+                          <span class="text-success d-none d-md-inline">已完成</span>
                         {% else %}
-                          {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
-                          {% set remaining = (hw.ddl - now).total_seconds() %}
+                          {# 桌面端显示 DDL，移动端在标题下方显示 #}
                           {% if remaining < 0 %}
-                            <span class="text-muted"><i class="fas fa-clock me-2"></i> 已过期</span>
+                            <span class="text-muted d-none d-md-inline"><i class="fas fa-clock me-2"></i> 已过期</span>
                           {% elif remaining < 86400 %}
-                            <span class="text-danger"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                            <span class="text-danger d-none d-md-inline"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                           {% elif remaining < 3 * 86400 %}
-                            <span class="text-warning"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                            <span class="text-warning d-none d-md-inline"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                           {% else %}
-                            <span class="text-success"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                            <span class="text-success d-none d-md-inline"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                           {% endif %}
                         {% endif %}
                         <span class="d-inline-block" style="width: 1em;"></span>
@@ -132,37 +160,50 @@
           <ul class="list-group">
             {% for hw in homeworks %}
               <li class="list-group-item">
-                <div class="d-flex justify-content-between align-items-center">
+                <div class="d-flex justify-content-between student-hw-row">
                   <!-- 左侧显示题目编号和标题 -->
-                  <div>
+                  <div class="student-hw-main">
                     {% if hw.is_completed %}
                       <!-- 如果已完成，显示绿色的勾 -->
-                      <i class="fas fa-check me-2 text-success" title="已完成"></i>
+                      <i class="fas fa-check fa-fw me-2 text-success" title="已完成"></i>
                     {% else %}
                       {% if hw.has_submission %}
-                        <i class="fas fa-times me-2 text-danger" title="未通过"></i>
+                        <i class="fas fa-times fa-fw me-2 text-danger" title="未通过"></i>
                       {% else %}
                       <span class="d-inline-block" style="width: 1.25em;"></span>
                       {% endif %}
                     {% endif %}
-                    <span class="fw-bold">{{ hw.problem_id }}.</span>
-                    <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none">{{ hw.problem_title }}</a>
+                    <span class="fw-bold student-hw-title">{{ loop.index }}.</span>
+                    <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a>
+                    {% if not hw.is_completed %}
+                      {% set remaining = (hw.ddl - now).total_seconds() %}
+                      <div class="student-hw-ddl-mobile d-md-none">
+                        {% if remaining < 0 %}
+                          <span class="text-muted"><i class="fas fa-clock me-1"></i> 已过期</span>
+                        {% elif remaining < 86400 %}
+                          <span class="text-danger"><i class="fas fa-clock me-1"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                        {% elif remaining < 3 * 86400 %}
+                          <span class="text-warning"><i class="fas fa-clock me-1"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                        {% else %}
+                          <span class="text-success"><i class="fas fa-clock me-1"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                        {% endif %}
+                      </div>
+                    {% endif %}
                   </div>
                   <!-- 右侧显示完成状态或作业截止时间 -->
-                  <div class="d-flex align-items-center">
+                  <div class="d-flex align-items-center student-hw-meta">
                     {% if hw.is_completed %}
-                      <span class="text-success">已完成</span>
+                      <span class="text-success d-none d-md-inline">已完成</span>
                     {% else %}
-                      {# 计算剩余秒数，1天=86400秒，3天=3*86400秒 #}
-                      {% set remaining = (hw.ddl - now).total_seconds() %}
+                      {# 桌面端显示 DDL，移动端在标题下方显示 #}
                       {% if remaining < 0 %}
-                        <span class="text-muted"><i class="fas fa-clock me-2"></i> 已过期</span>
+                        <span class="text-muted d-none d-md-inline"><i class="fas fa-clock me-2"></i> 已过期</span>
                       {% elif remaining < 86400 %}
-                        <span class="text-danger"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <span class="text-danger d-none d-md-inline"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                       {% elif remaining < 3 * 86400 %}
-                        <span class="text-warning"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <span class="text-warning d-none d-md-inline"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                       {% else %}
-                        <span class="text-success"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <span class="text-success d-none d-md-inline"><i class="fas fa-clock me-2"></i> {{ hw.ddl.strftime('%Y-%m-%d %H:%M') }}</span>
                       {% endif %}
                     {% endif %}
                     <span class="d-inline-block" style="width: 1em;"></span>

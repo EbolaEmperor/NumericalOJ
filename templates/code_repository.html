@@ -250,9 +250,9 @@ function initializeCodeMirror() {
 function getCodeMirrorMode(filename) {
     const ext = filename.split('.').pop().toLowerCase();
     switch (ext) {
-        case 'h':
         case 'c':
             return 'text/x-csrc';
+        case 'h':
         case 'hpp':
         case 'cpp':
             return 'text/x-c++src';

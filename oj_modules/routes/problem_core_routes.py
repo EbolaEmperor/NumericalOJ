@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -43,6 +44,22 @@ _user_classes_cache = {}
 _homeworks_cache = {}
 _class_grades_cache = {}
 _user_cache = {}
+
+
+def _strip_problem_title_tags(title):
+    """
+    去掉题目标题中的分组标签，如「NA-1」。
+    仅用于普通用户展示，不改动数据库原始标题。
+    """
+    if title is None:
+        return title
+    original = str(title).strip()
+    text = original
+    # 移除所有全角书名号里的短标签
+    text = re.sub(r'\s*「[^」]{1,32}」\s*', ' ', text)
+    # 合并多余空白
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text if text else original
 
 
 def init_problem_core_module(evaluate_submission_task, transcribe_written_homework_task):
@@ -157,6 +174,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
                 hw["problem_title"] = (
                     hw.get("problem_title") if hw.get("problem_title") else f"Problem {pid}"
                 )
+                hw["problem_title"] = _strip_problem_title_tags(hw["problem_title"])
                 hw["total_score"] = (
                     hw.get("total_score") if hw.get("total_score") is not None else 0
                 )
@@ -663,6 +681,9 @@ def all_submissions():
         submissions, total_pages = get_all_submissions_paginated(page=page, per_page=per_page)
     else:
         submissions, total_pages = get_submissions_by_user_paginated(user['username'], page=page, per_page=per_page)
+    for sub in submissions:
+        sub['display_problem_title'] = _strip_problem_title_tags(sub.get('problem_title'))
+        sub['is_ac'] = (sub.get('status') == 'Accepted')
 
     page_start = max(1, page - 10)
     page_end = min(total_pages, page + 10)

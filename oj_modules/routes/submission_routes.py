@@ -4,6 +4,7 @@
 import os
 import json
 import time
+import re
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, stream_with_context, url_for
 
@@ -20,6 +21,15 @@ from oj_modules.db_services import (
 
 
 submission_bp = Blueprint('submission', __name__)
+
+
+def _strip_problem_title_tags(title):
+    if title is None:
+        return title
+    original = str(title).strip()
+    text = re.sub(r'\s*「[^」]{1,32}」\s*', ' ', original)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text if text else original
 
 
 def current_user():
@@ -44,6 +54,9 @@ def submission_list(problem_id):
     subs, total_pages = get_submission_summaries_by_user_and_problem_paginated(
         user['username'], problem_id, page=page, per_page=per_page
     )
+    for sub in subs:
+        sub['display_problem_title'] = _strip_problem_title_tags(sub.get('problem_title'))
+        sub['is_ac'] = (sub.get('status') == 'Accepted')
     page_start = max(1, page - 8)
     page_end = min(total_pages, page + 8)
     page_numbers = list(range(page_start, page_end + 1))

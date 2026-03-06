@@ -48,14 +48,17 @@
     {% if problem.type == 1 %}
       <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
         <div class="d-flex justify-content-between align-items-end mb-2">
-          <label for="codeEditor" class="form-label mb-0">
-            <i class="fas fa-code me-2"></i> 代码 
-            &nbsp;&nbsp;
-            <span class="badge bg-secondary me-2">
-              <i class="fas fa-language me-2"></i> {{ lang_label }}
+          <label for="codeEditor" class="form-label mb-0 code-label-wrap">
+            <span class="code-title-line">
+              <i class="fas fa-code me-2"></i> 代码
             </span>
-            <span class="badge bg-secondary">
-              <i class="fas fa-stopwatch me-2"></i> {{ tl_ms }} ms
+            <span class="code-meta-line">
+              <span class="badge bg-secondary">
+                <i class="fas fa-language me-2"></i> {{ lang_label }}
+              </span>
+              <span class="badge bg-secondary">
+                <i class="fas fa-stopwatch me-2"></i> {{ tl_ms }} ms
+              </span>
             </span>
           </label>
           <div class="d-flex flex-column align-items-end">
@@ -67,9 +70,11 @@
                 </small>
               {% endif %}
             {% endif %}
-            <div>
-              <button type="button" class="btn btn-outline-secondary me-2" id="loadLastCodeBtn">
-                <i class="fas fa-copy me-1"></i> 复制上次代码
+            <div class="{% if user.is_admin != 1 %}student-code-actions{% endif %}">
+              <button type="button" class="btn btn-outline-secondary {% if user.is_admin == 1 %}me-2{% endif %}" id="loadLastCodeBtn" title="复制上次代码">
+                <i class="fas fa-copy me-1"></i>
+                <span class="d-inline d-md-none">复用</span>
+                <span class="d-none d-md-inline">复制上次代码</span>
               </button>
               {% if user.is_admin != 1 %}
                 <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
@@ -271,10 +276,47 @@
   .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
   .badge.compile-error { background-color: #ff9800; color: white; }
   .badge.undefined-status { background-color: gray; color: white; }
+  .code-label-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .code-meta-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+  .code-title-line {
+    line-height: 1.1;
+  }
+  @media (min-width: 769px) {
+    .code-label-wrap {
+      flex-direction: row;
+      align-items: center;
+      gap: 12px;
+    }
+  }
   @media (max-width: 768px) { #codeMirrorContainer .CodeMirror { height: 300px; } }
   @media (min-width: 769px) { #codeMirrorContainer .CodeMirror { height: 500px; } }
   .badge { padding: 0.5em 0.75em; border-radius: 0.25rem; display: inline-flex; align-items: center; }
   .badge i { margin-right: 0.3em; }
+  @media (max-width: 768px) {
+    .student-code-actions {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      width: 100%;
+      justify-content: flex-end;
+    }
+    .student-code-actions .btn {
+      flex: 1 1 0;
+      min-width: 0;
+      white-space: nowrap;
+    }
+  }
 </style>
 
 <link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
