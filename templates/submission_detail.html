@@ -117,49 +117,37 @@
     </div>
     {% endif %}
     
-    <ul class="list-group mt-2" id="testPointsList">
-      {% for tp in test_points %}
-      <li class="list-group-item">
-        <div class="d-flex justify-content-between">
-          <div>
-            测试点{{ loop.index }}：
-            <span class="{{ tp.status | lower | replace(' ', '-') }}">{{ tp.status }}</span>
-          </div>
-          {% if tp.time %}
-          <div>{{ tp.time }} ms</div>
-          {% endif %}
+    <div id="testPointGrid" class="test-point-grid mt-2"></div>
+
+    <div class="card mt-3 d-none" id="testPointDetailPanel">
+      <div class="card-header py-2">
+        <strong id="testPointDetailTitle">测试点详情</strong>
+      </div>
+      <div class="card-body">
+        <div id="testPointDetailHint" class="text-muted">点击上方方块查看该测试点详情。</div>
+
+        <div id="testPointDetailMeta" class="small text-muted d-none mb-2"></div>
+
+        <div id="testPointDetailErrorWrap" class="d-none mb-3">
+          <div class="fw-semibold mb-1">错误信息</div>
+          <pre id="testPointDetailErrorText" class="tp-detail-pre mb-0"></pre>
         </div>
 
-        {% if (tp.status == "Nonzero Exit Status" or tp.status == "Compile Error") and tp.stderr and loop.first %}
-        <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
-          <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stderr }}</pre>
+        <div id="testPointDetailOutputWrap" class="d-none mb-3">
+          <div class="fw-semibold mb-1">程序输出</div>
+          <pre id="testPointDetailOutputText" class="tp-detail-pre mb-0"></pre>
         </div>
-        {% endif %}
-        {% if (tp.status == "Wrong Answer" or tp.status == "Forbidden") and tp.stdout %}
-        <div class="mt-2 p-3 border rounded text-white" style="background-color: rgba(255, 67, 67, 0.707);">
-          <pre style="white-space: pre-wrap; word-wrap: break-word;">{{ tp.stdout }}</pre>
-        </div>
-        {% endif %}
 
-        <!-- 显示输出图片 -->
-        {% if tp.has_output_image %}
-        <div class="mt-2">
-          <small class="text-muted">
-            <i class="fas fa-image me-1"></i> 程序输出图片：
-          </small>
-          <div class="mt-1">
-            <img src="{{ url_for('submission.get_submission_output_image', submission_id=submission.id, test_index=tp.test_index) }}" 
-                 alt="测试点{{ loop.index }}输出图片" 
-                 class="img-fluid border rounded output-image"
-                 style="max-width: 100%; max-height: 300px; cursor: pointer;"
-                 onclick="showImageModal(this.src, '测试点{{ loop.index }}输出图片')"
-                 onerror="this.parentElement.parentElement.style.display='none';">
-          </div>
+        <div id="testPointDetailImageWrap" class="d-none">
+          <div class="fw-semibold mb-2">输出图片</div>
+          <img id="testPointDetailImage"
+               src=""
+               alt=""
+               class="img-fluid border rounded"
+               style="max-width: 100%; max-height: 320px; cursor: pointer;">
         </div>
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ul>
+      </div>
+    </div>
     {% endif %}
 
     {% if submission.problem_type == 1 and submission.status == "Unaccepted" %}
@@ -193,6 +181,101 @@
   .memory-limit-exceeded, .forbidden { color: darkblue; font-weight: bold; }
   .no-output { color: purple; font-weight: bold; }
   .pending, .waiting, .running { color: lightblue; font-weight: bold; }
+
+  .test-point-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .test-point-grid.medium {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .test-point-grid.dense {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .test-point-card {
+    position: relative;
+    min-height: 104px;
+    border: 2px solid #d9d9d9;
+    border-radius: 10px;
+    background: #fff;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px 8px 10px;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+  }
+  .test-point-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  }
+  .test-point-card.selected {
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.2);
+  }
+  .tp-index {
+    position: absolute;
+    left: 8px;
+    top: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #6c757d;
+  }
+  .tp-status-short {
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.1;
+    text-align: center;
+  }
+  .tp-time {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #6c757d;
+    text-align: center;
+  }
+  .test-point-grid.dense .test-point-card {
+    min-height: 86px;
+    padding: 14px 6px 8px;
+  }
+  .test-point-grid.dense .tp-index {
+    left: 6px;
+    top: 4px;
+    font-size: 11px;
+  }
+  .test-point-grid.dense .tp-status-short {
+    font-size: 19px;
+  }
+  .test-point-grid.dense .tp-time {
+    margin-top: 4px;
+    font-size: 11px;
+  }
+  .test-point-card.tp-accepted .tp-status-short { color: rgb(36, 180, 77); }
+  .test-point-card.tp-wrong-answer .tp-status-short,
+  .test-point-card.tp-unaccepted .tp-status-short,
+  .test-point-card.tp-nonzero-exit-status .tp-status-short,
+  .test-point-card.tp-compile-error .tp-status-short,
+  .test-point-card.tp-error .tp-status-short { color: rgb(226, 23, 60); }
+  .test-point-card.tp-time-limit-exceeded .tp-status-short { color: orange; }
+  .test-point-card.tp-runtime-error .tp-status-short { color: rgb(198, 69, 245); }
+  .test-point-card.tp-memory-limit-exceeded .tp-status-short,
+  .test-point-card.tp-forbidden .tp-status-short { color: darkblue; }
+  .test-point-card.tp-no-output .tp-status-short { color: purple; }
+  .test-point-card.tp-pending .tp-status-short,
+  .test-point-card.tp-waiting .tp-status-short,
+  .test-point-card.tp-running .tp-status-short { color: #3aa2d7; }
+  .tp-detail-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f8f9fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 10px;
+    max-height: 240px;
+    overflow: auto;
+  }
 </style>
 
 <!-- 图片查看模态框 -->
@@ -265,6 +348,242 @@
   }
   resizeEditor();
   window.addEventListener('resize', resizeEditor);
+
+  const submissionId = {{ submission.id }};
+  const initialTestPoints = {{ (test_points or []) | tojson }};
+  const testPointGridEl = document.getElementById('testPointGrid');
+  const testPointDetailPanelEl = document.getElementById('testPointDetailPanel');
+  const testPointDetailTitleEl = document.getElementById('testPointDetailTitle');
+  const testPointDetailHintEl = document.getElementById('testPointDetailHint');
+  const testPointDetailMetaEl = document.getElementById('testPointDetailMeta');
+  const testPointDetailErrorWrapEl = document.getElementById('testPointDetailErrorWrap');
+  const testPointDetailErrorTextEl = document.getElementById('testPointDetailErrorText');
+  const testPointDetailOutputWrapEl = document.getElementById('testPointDetailOutputWrap');
+  const testPointDetailOutputTextEl = document.getElementById('testPointDetailOutputText');
+  const testPointDetailImageWrapEl = document.getElementById('testPointDetailImageWrap');
+  const testPointDetailImageEl = document.getElementById('testPointDetailImage');
+  let currentTestPoints = Array.isArray(initialTestPoints) ? initialTestPoints : [];
+  let selectedTestPointIndex = null;
+  let hasUserSelectedTestPoint = false;
+
+  function statusClassName(status) {
+    return String(status || '').toLowerCase().replace(/\s+/g, '-');
+  }
+
+  function isAcceptedStatus(status) {
+    return String(status || '').trim().toLowerCase() === 'accepted';
+  }
+
+  function statusShortName(status) {
+    const key = String(status || '').trim();
+    const map = {
+      'Accepted': 'AC',
+      'Wrong Answer': 'WA',
+      'Compile Error': 'CE',
+      'Runtime Error': 'RE',
+      'Time Limit Exceeded': 'TLE',
+      'Memory Limit Exceeded': 'MLE',
+      'Forbidden': 'FB',
+      'No Output': 'NO',
+      'Nonzero Exit Status': 'NZ',
+      'Pending': 'PD',
+      'Waiting': 'WT',
+      'Running': 'RUN',
+      'Error': 'ERR',
+      'Unaccepted': 'UA'
+    };
+    return map[key] || (key ? key.slice(0, 3).toUpperCase() : '...');
+  }
+
+  function formatTime(tp) {
+    if (tp && (tp.time === 0 || tp.time)) {
+      return `${tp.time} ms`;
+    }
+    return '--';
+  }
+
+  function getTestPointImageUrl(tp, idx) {
+    const testIndex = (tp && tp.test_index) ? tp.test_index : (idx + 1);
+    return `/submission_output_image/${submissionId}/${testIndex}`;
+  }
+
+  function setTestPointDetailVisible(visible) {
+    if (!testPointDetailPanelEl) return;
+    testPointDetailPanelEl.classList.toggle('d-none', !visible);
+  }
+
+  function clearTestPointDetail(hintText, keepVisible) {
+    setTestPointDetailVisible(!!keepVisible);
+    if (testPointDetailTitleEl) testPointDetailTitleEl.textContent = '测试点详情';
+    if (testPointDetailHintEl) {
+      testPointDetailHintEl.textContent = hintText || '点击上方方块查看该测试点详情。';
+      testPointDetailHintEl.classList.remove('d-none');
+    }
+    if (testPointDetailMetaEl) {
+      testPointDetailMetaEl.classList.add('d-none');
+      testPointDetailMetaEl.textContent = '';
+    }
+    if (testPointDetailErrorWrapEl) testPointDetailErrorWrapEl.classList.add('d-none');
+    if (testPointDetailErrorTextEl) testPointDetailErrorTextEl.textContent = '';
+    if (testPointDetailOutputWrapEl) testPointDetailOutputWrapEl.classList.add('d-none');
+    if (testPointDetailOutputTextEl) testPointDetailOutputTextEl.textContent = '';
+    if (testPointDetailImageWrapEl) testPointDetailImageWrapEl.classList.add('d-none');
+    if (testPointDetailImageEl) {
+      testPointDetailImageEl.src = '';
+      testPointDetailImageEl.alt = '';
+      testPointDetailImageEl.onclick = null;
+      testPointDetailImageEl.onerror = null;
+    }
+  }
+
+  function renderTestPointDetail(index) {
+    const tp = currentTestPoints[index];
+    if (!tp) {
+      clearTestPointDetail();
+      return;
+    }
+    setTestPointDetailVisible(true);
+
+    const status = tp.status || 'Running';
+    const statusShort = statusShortName(status);
+    const stderr = String(tp.stderr || '').trim();
+    const stdout = String(tp.stdout || '').trim();
+    const canShowStdout = status !== 'Accepted';
+    const hasImage = !!tp.has_output_image;
+
+    if (testPointDetailTitleEl) {
+      testPointDetailTitleEl.textContent = `测试点 #${index + 1} (${statusShort})`;
+    }
+    if (testPointDetailHintEl) {
+      testPointDetailHintEl.classList.add('d-none');
+    }
+    if (testPointDetailMetaEl) {
+      testPointDetailMetaEl.classList.remove('d-none');
+      testPointDetailMetaEl.textContent = `状态：${status} | 运行时间：${formatTime(tp)}`;
+    }
+
+    if (stderr) {
+      testPointDetailErrorWrapEl.classList.remove('d-none');
+      testPointDetailErrorTextEl.textContent = stderr;
+    } else {
+      testPointDetailErrorWrapEl.classList.add('d-none');
+      testPointDetailErrorTextEl.textContent = '';
+    }
+
+    if (stdout && canShowStdout) {
+      testPointDetailOutputWrapEl.classList.remove('d-none');
+      testPointDetailOutputTextEl.textContent = stdout;
+    } else {
+      testPointDetailOutputWrapEl.classList.add('d-none');
+      testPointDetailOutputTextEl.textContent = '';
+    }
+
+    if (hasImage) {
+      const imageUrl = getTestPointImageUrl(tp, index);
+      testPointDetailImageWrapEl.classList.remove('d-none');
+      testPointDetailImageEl.src = imageUrl;
+      testPointDetailImageEl.alt = `测试点${index + 1}输出图片`;
+      testPointDetailImageEl.onclick = function () {
+        showImageModal(imageUrl, `测试点${index + 1}输出图片`);
+      };
+      testPointDetailImageEl.onerror = function () {
+        testPointDetailImageWrapEl.classList.add('d-none');
+      };
+    } else {
+      testPointDetailImageWrapEl.classList.add('d-none');
+      testPointDetailImageEl.src = '';
+      testPointDetailImageEl.alt = '';
+      testPointDetailImageEl.onclick = null;
+      testPointDetailImageEl.onerror = null;
+    }
+
+    if (!stderr && !stdout && !hasImage && testPointDetailHintEl) {
+      testPointDetailHintEl.textContent = '该测试点暂无更多详情。';
+      testPointDetailHintEl.classList.remove('d-none');
+    }
+  }
+
+  function selectTestPoint(index, fromUserAction) {
+    if (fromUserAction) {
+      hasUserSelectedTestPoint = true;
+    }
+    selectedTestPointIndex = index;
+    if (testPointGridEl) {
+      const cards = testPointGridEl.querySelectorAll('.test-point-card');
+      cards.forEach((card, idx) => {
+        card.classList.toggle('selected', idx === index);
+      });
+    }
+    renderTestPointDetail(index);
+  }
+
+  function findDefaultTestPointIndex(testPoints) {
+    if (!Array.isArray(testPoints) || !testPoints.length) return null;
+    for (let i = 0; i < testPoints.length; i++) {
+      if (!isAcceptedStatus(testPoints[i] && testPoints[i].status)) {
+        return i;
+      }
+    }
+    return 0;
+  }
+
+  function renderTestPoints(testPoints) {
+    if (!testPointGridEl || !Array.isArray(testPoints)) return;
+
+    currentTestPoints = testPoints;
+    const isDense = testPoints.length > 20;
+    const isMedium = testPoints.length > 12 && testPoints.length <= 20;
+    testPointGridEl.classList.toggle('medium', isMedium);
+    testPointGridEl.classList.toggle('dense', isDense);
+    testPointGridEl.innerHTML = '';
+
+    if (!testPoints.length) {
+      selectedTestPointIndex = null;
+      clearTestPointDetail('判题中，暂时没有可展示的测试点结果。', false);
+      return;
+    }
+
+    testPoints.forEach((tp, idx) => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = `test-point-card tp-${statusClassName(tp.status)}`;
+
+      const idxEl = document.createElement('span');
+      idxEl.className = 'tp-index';
+      idxEl.textContent = `#${idx + 1}`;
+      card.appendChild(idxEl);
+
+      const statusEl = document.createElement('div');
+      statusEl.className = 'tp-status-short';
+      statusEl.textContent = statusShortName(tp.status || 'Running');
+      card.appendChild(statusEl);
+
+      const timeEl = document.createElement('div');
+      timeEl.className = 'tp-time';
+      timeEl.textContent = formatTime(tp);
+      card.appendChild(timeEl);
+
+      card.addEventListener('click', function () {
+        selectTestPoint(idx, true);
+      });
+      testPointGridEl.appendChild(card);
+    });
+
+    if (hasUserSelectedTestPoint && selectedTestPointIndex !== null && selectedTestPointIndex < testPoints.length) {
+      selectTestPoint(selectedTestPointIndex, false);
+    } else {
+      const defaultIndex = findDefaultTestPointIndex(testPoints);
+      if (defaultIndex !== null) {
+        hasUserSelectedTestPoint = false;
+        selectTestPoint(defaultIndex, false);
+      } else {
+        selectedTestPointIndex = null;
+        clearTestPointDetail(undefined, false);
+      }
+    }
+  }
+
+  renderTestPoints(initialTestPoints);
 </script>
 {% else %}
 <script>
@@ -302,10 +621,8 @@
   // 智能轮询判题状态
   let pollCount = 0;
   let maxPollCount = 60; // 最多轮询60次（约2-5分钟）
-  const submissionId = {{ submission.id }};
   let judgingStatusEl = document.getElementById('judgingStatus');
   let judgingTextEl = document.getElementById('judgingText');
-  let testPointsListEl = document.getElementById('testPointsList');
   
   // 显示判题状态提示
   if (judgingStatusEl) {
@@ -333,93 +650,6 @@
     }
   }
 
-  function statusClassName(status) {
-    return String(status || '').toLowerCase().replace(/\s+/g, '-');
-  }
-
-  function renderTestPoints(testPoints) {
-    if (!testPointsListEl || !Array.isArray(testPoints)) return;
-    testPointsListEl.innerHTML = '';
-
-    testPoints.forEach((tp, idx) => {
-      const li = document.createElement('li');
-      li.className = 'list-group-item';
-
-      const header = document.createElement('div');
-      header.className = 'd-flex justify-content-between';
-
-      const left = document.createElement('div');
-      left.appendChild(document.createTextNode(`测试点${idx + 1}：`));
-      const statusSpan = document.createElement('span');
-      statusSpan.className = statusClassName(tp.status);
-      statusSpan.textContent = tp.status || 'Running';
-      left.appendChild(statusSpan);
-
-      header.appendChild(left);
-      if (tp.time) {
-        const right = document.createElement('div');
-        right.textContent = `${tp.time} ms`;
-        header.appendChild(right);
-      }
-      li.appendChild(header);
-
-      if ((tp.status === 'Nonzero Exit Status' || tp.status === 'Compile Error') && tp.stderr && idx === 0) {
-        const box = document.createElement('div');
-        box.className = 'mt-2 p-3 border rounded text-white';
-        box.style.backgroundColor = 'rgba(255, 67, 67, 0.707)';
-        const pre = document.createElement('pre');
-        pre.style.whiteSpace = 'pre-wrap';
-        pre.style.wordWrap = 'break-word';
-        pre.textContent = tp.stderr;
-        box.appendChild(pre);
-        li.appendChild(box);
-      }
-
-      if ((tp.status === 'Wrong Answer' || tp.status === 'Forbidden') && tp.stdout) {
-        const box = document.createElement('div');
-        box.className = 'mt-2 p-3 border rounded text-white';
-        box.style.backgroundColor = 'rgba(255, 67, 67, 0.707)';
-        const pre = document.createElement('pre');
-        pre.style.whiteSpace = 'pre-wrap';
-        pre.style.wordWrap = 'break-word';
-        pre.textContent = tp.stdout;
-        box.appendChild(pre);
-        li.appendChild(box);
-      }
-
-      if (tp.has_output_image) {
-        const wrap = document.createElement('div');
-        wrap.className = 'mt-2';
-        const small = document.createElement('small');
-        small.className = 'text-muted';
-        small.innerHTML = '<i class="fas fa-image me-1"></i> 程序输出图片：';
-        wrap.appendChild(small);
-
-        const imgWrap = document.createElement('div');
-        imgWrap.className = 'mt-1';
-        const img = document.createElement('img');
-        const testIndex = tp.test_index || (idx + 1);
-        img.src = `/submission_output_image/${submissionId}/${testIndex}`;
-        img.alt = `测试点${idx + 1}输出图片`;
-        img.className = 'img-fluid border rounded output-image';
-        img.style.maxWidth = '100%';
-        img.style.maxHeight = '300px';
-        img.style.cursor = 'pointer';
-        img.onclick = function () {
-          showImageModal(img.src, `测试点${idx + 1}输出图片`);
-        };
-        img.onerror = function () {
-          wrap.style.display = 'none';
-        };
-        imgWrap.appendChild(img);
-        wrap.appendChild(imgWrap);
-        li.appendChild(wrap);
-      }
-
-      testPointsListEl.appendChild(li);
-    });
-  }
-
   function handleSubmissionStatusData(data) {
     pollCount++;
     updateJudgingText();
@@ -433,7 +663,9 @@
       return false;
     }
 
-    renderTestPoints(data.test_points || []);
+    if (typeof renderTestPoints === 'function') {
+      renderTestPoints(data.test_points || []);
+    }
 
     if (!data.is_judging) {
       if (judgingTextEl) {
