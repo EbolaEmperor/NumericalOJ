@@ -5,9 +5,11 @@ import json
 import os
 
 from oj_modules.db_services import (
-    get_db_connection,
+    insert_user_problem_ac_record_if_absent,
     get_submission_by_id,
+    get_db_connection,
     get_user_by_username,
+    upsert_user_problem_max_score_if_higher,
     update_submission_status,
 )
 
@@ -45,16 +47,16 @@ def update_submission_score_and_comment(submission_id, score, comment):
         problem_id = submission["problem_id"]
         user = get_user_by_username(submission["username"])
 
-        with conn.cursor() as cursor:
-            sql = f'UPDATE max_score SET P{problem_id}={score} WHERE userid={user["id"]} AND (P{problem_id} IS NULL OR P{problem_id} < {score})'
-            cursor.execute(sql)
-        conn.commit()
+        upsert_user_problem_max_score_if_higher(user["id"], problem_id, score)
 
-        if score == 5:
-            with conn.cursor() as cursor:
-                sql = f'UPDATE ac_record SET ACP{problem_id}=1 WHERE userid={user["id"]}'
-                cursor.execute(sql)
-            conn.commit()
+        problem_max_score = 0
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT max_score FROM problems WHERE id=%s", (problem_id,))
+            p = cursor.fetchone()
+            problem_max_score = (p or {}).get("max_score") or 0
+
+        if problem_max_score > 0 and score >= problem_max_score:
+            insert_user_problem_ac_record_if_absent(user["id"], problem_id)
     finally:
         conn.close()
 

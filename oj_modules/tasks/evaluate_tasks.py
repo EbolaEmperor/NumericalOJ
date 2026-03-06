@@ -9,10 +9,12 @@ import requests
 
 from oj_modules.db_services import (
     get_db_connection,
+    insert_user_problem_ac_record_if_absent,
     get_problem,
     get_submission_by_id,
     get_user_classes,
     get_user_by_username,
+    upsert_user_problem_max_score_if_higher,
     update_submission_evaluation,
     update_submission_status,
 )
@@ -406,35 +408,19 @@ def register_evaluate_submission_task(celery_app):
 
         final_status = "Accepted" if all_accepted else "Unaccepted"
         if final_status == "Accepted":
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cursor:
-                    sql = f'SELECT ACP{problem_id} FROM ac_record WHERE userid=%s'
-                    cursor.execute(sql, (user['id'],))
-                    ac_rec = cursor.fetchone()
-                    is_ac = ac_rec[f'ACP{problem_id}']
-                if is_ac != 1:
+            if insert_user_problem_ac_record_if_absent(user['id'], problem_id):
+                conn = get_db_connection()
+                try:
                     with conn.cursor() as cursor:
-                        sql = f'UPDATE ac_record SET ACP{problem_id}=1 WHERE userid=%s'
-                        cursor.execute(sql, (user['id'],))
+                        sql = 'UPDATE problems SET cnt=cnt+1 WHERE id=%s'
+                        cursor.execute(sql, (problem_id,))
                     conn.commit()
-                    with conn.cursor() as cursor:
-                        sql = f'UPDATE problems SET cnt=cnt+1 WHERE id={problem_id}'
-                        cursor.execute(sql)
-                    conn.commit()
-                    if user['is_admin'] != 1:
-                        bump_complete_cnt_for_user_classes(user, problem_id)
-            finally:
-                conn.close()
+                finally:
+                    conn.close()
+                if user['is_admin'] != 1:
+                    bump_complete_cnt_for_user_classes(user, problem_id)
 
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                sql = f'UPDATE max_score SET P{problem_id}={score} WHERE userid=%s AND (P{problem_id} IS NULL OR P{problem_id} < {score})'
-                cursor.execute(sql, (user['id'],))
-            conn.commit()
-        finally:
-            conn.close()
+        upsert_user_problem_max_score_if_higher(user['id'], problem_id, score)
 
         update_submission_evaluation(submission_id, test_point_statuses, score, final_status)
 

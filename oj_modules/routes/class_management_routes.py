@@ -418,8 +418,6 @@ def set_primary_class():
                 (class_en, target_class['class_cn'], new_is_admin, user['id']),
             )
 
-            cursor.execute("UPDATE max_score SET class_en=%s WHERE userid=%s", (class_en, user['id']))
-
             cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user['id'],))
             cursor.execute(
                 """

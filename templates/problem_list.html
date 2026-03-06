@@ -77,7 +77,7 @@
                           <!-- 如果已完成，显示绿色的勾 -->
                           <i class="fas fa-check me-2 text-success" title="已完成"></i>
                         {% else %}
-                          {% if hw.max_score != None %}
+                          {% if hw.has_submission %}
                             <i class="fas fa-times me-2 text-danger" title="未通过"></i>
                           {% else %}
                             <span class="d-inline-block" style="width: 1.25em;"></span>
@@ -139,7 +139,7 @@
                       <!-- 如果已完成，显示绿色的勾 -->
                       <i class="fas fa-check me-2 text-success" title="已完成"></i>
                     {% else %}
-                      {% if hw.max_score != None %}
+                      {% if hw.has_submission %}
                         <i class="fas fa-times me-2 text-danger" title="未通过"></i>
                       {% else %}
                       <span class="d-inline-block" style="width: 1.25em;"></span>
