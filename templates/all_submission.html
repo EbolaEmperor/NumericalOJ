@@ -39,27 +39,30 @@
 <div class="list-group">
   <!-- 表头 -->
   <div class="list-group-item bg-light d-flex text-muted small">
-    <div class="flex-fill d-block d-sm-none" style="width: 5%; text-align: center;">
+    <div class="flex-fill d-block d-sm-none" style="width: 15%; text-align: center;">
       <i class="fas fa-circle me"></i>
+      <span>状态</span>
     </div>
     <div class="flex-fill d-none d-sm-block" style="width: 15%; text-align: center;">
       <i class="fas fa-circle me-2"></i>
-      <span class="d-none d-sm-inline">状态</span>
+      <span>状态</span>
     </div>
 
     <div class="flex-fill" style="width: 10%; text-align: center;">
       <i class="fas fa-trophy me-2"></i>
-      <span class="d-none d-sm-inline">得分</span>
+      <span>得分</span>
     </div>
 
     <div class="flex-fill" style="width: 35%; text-align: center;">
       <i class="fas fa-book me-2"></i>
-      <span class="d-none d-sm-inline">题目</span>
+      <span>题目</span>
     </div>
 
+    {% if user and user.is_admin %}
     <div class="flex-fill d-block d-sm-none" style="width: 30%; text-align: center;">
       <i class="fas fa-user me"></i>
     </div>
+    {% endif %}
     <div class="flex-fill d-none d-sm-block" style="width: 20%; text-align: center;">
       <i class="fas fa-user me-2"></i>
       <span class="d-none d-sm-inline">提交者</span>
@@ -77,15 +80,19 @@
   {% for sub in submissions %}
     <div class="list-group-item d-flex align-items-center">
       <!-- 状态列 -->
-      <div class="flex-fill d-block d-sm-none" style="width: 5%; text-align: center;">
-        <!-- 在移动端显示简写状态 -->
+      <div class="flex-fill d-block d-sm-none" style="width: 15%; text-align: center;">
+        <!-- 普通用户移动端仅显示 AC 状态 -->
         <div class="flex-fill d-block d-sm-none">
-          <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
-            {%- if sub.status == 'Accepted' -%}A
-            {%- elif sub.status == 'Unaccepted' -%}U
-            {%- elif sub.status == 'Compile Error' -%}CE
-            {%- elif sub.status in ['Pending', 'Waiting', 'Running'] -%}P
-            {%- else -%}?{%- endif -%}
+          <span class="badge {% if user and not user.is_admin %}mobile-ac-state-{{ 'ac' if sub.is_ac else 'nonac' }}{% else %}{{ sub.status | lower | replace(' ', '-') }}{% endif %}">
+            {%- if user and not user.is_admin -%}
+              {{ 'AC' if sub.is_ac else 'UA' }}
+            {%- else -%}
+              {%- if sub.status == 'Accepted' -%}A
+              {%- elif sub.status == 'Unaccepted' -%}U
+              {%- elif sub.status == 'Compile Error' -%}CE
+              {%- elif sub.status in ['Pending', 'Waiting', 'Running'] -%}P
+              {%- else -%}?{%- endif -%}
+            {%- endif -%}
           </span>
         </div>
       </div>
@@ -104,11 +111,13 @@
       
       <!-- 题目列 -->
       <div class="flex-fill text-truncate" style="width: 35%; text-align: center;">
-        {{ sub.problem_title }}
+        {{ sub.display_problem_title or sub.problem_title }}
       </div>
       
+      {% if user and user.is_admin %}
       <!-- 提交者列 -->
       <div class="flex-fill text-muted d-block d-sm-none" style="width: 30%; text-align: center;">{{ sub.username }}</div>
+      {% endif %}
       <div class="flex-fill text-muted d-none d-sm-block" style="width: 20%; text-align: center;">{{ sub.username }}</div>
       
       <!-- 时间列（仅在大屏幕上显示） -->
@@ -144,6 +153,8 @@
   .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
   .badge.compile-error { background-color: #ff9800; color: white; }
   .badge.undefined-status { background-color: gray; color: white; }
+  .badge.mobile-ac-state-ac { background-color: rgb(36, 180, 77); color: white; }
+  .badge.mobile-ac-state-nonac { background-color: rgb(226, 23, 60); color: white; }
 
   /* 增加列对齐优化 */
   .list-group-item > div {
@@ -151,15 +162,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  /* 在小屏幕下隐藏不必要的列 */
-  @media (max-width: 767px) {
-    .list-group-item > div:nth-child(6), /* 提交时间 */
-    .list-group-item > div:nth-child(3)  /* 得分 */
-    {
-      display: none;
-    }
   }
 
   /* 添加分页样式 */
