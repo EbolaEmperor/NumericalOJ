@@ -217,6 +217,38 @@ ALTER TABLE submissions ADD INDEX idx_submissions_user_problem_id (username, pro
 ALTER TABLE submissions ADD INDEX idx_submissions_user_id (username, id);
 ALTER TABLE submissions ADD INDEX idx_submissions_created_status (created_at, status);
 
+--
+-- Table structure for table `agent_task_runs`
+--
+
+DROP TABLE IF EXISTS `agent_task_runs`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_task_runs` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_id` varchar(64) NOT NULL,
+  `problem_id` int DEFAULT NULL,
+  `problem_title` varchar(255) DEFAULT NULL,
+  `requested_by` varchar(50) DEFAULT NULL,
+  `status` varchar(32) NOT NULL DEFAULT 'Pending',
+  `message` text,
+  `rounds_run` int NOT NULL DEFAULT '0',
+  `max_rounds` int NOT NULL DEFAULT '0',
+  `best_score` int NOT NULL DEFAULT '0',
+  `final_submission_id` int DEFAULT NULL,
+  `latest_submission_id` int DEFAULT NULL,
+  `attempts_json` longtext,
+  `events_json` longtext,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_task_id` (`task_id`),
+  KEY `idx_agent_runs_status_updated` (`status`,`updated_at`),
+  KEY `idx_agent_runs_problem_updated` (`problem_id`,`updated_at`),
+  KEY `idx_agent_runs_user_updated` (`requested_by`,`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
 
 --
 -- Table structure for table `submission_limits`
@@ -362,6 +394,15 @@ UNLOCK TABLES;
 LOCK TABLES `max_score` WRITE;
 /*!40000 ALTER TABLE `max_score` DISABLE KEYS */;
 /*!40000 ALTER TABLE `max_score` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Dumping data for table `agent_task_runs`
+--
+
+LOCK TABLES `agent_task_runs` WRITE;
+/*!40000 ALTER TABLE `agent_task_runs` DISABLE KEYS */;
+/*!40000 ALTER TABLE `agent_task_runs` ENABLE KEYS */;
 UNLOCK TABLES;
 
 --

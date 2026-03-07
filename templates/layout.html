@@ -80,6 +80,12 @@
               作业管理
             </a>
           </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('problem_core.admin_agent_tasks') }}">
+              <i class="fas fa-robot me-2"></i>
+              Agent 任务
+            </a>
+          </li>
           
         {% endif %}
       </ul>
@@ -181,6 +187,12 @@
           <a class="nav-link" href="{{ url_for('homework.admin_homework') }}">
             <i class="fas fa-tasks me-2"></i>
             作业管理
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('problem_core.admin_agent_tasks') }}">
+            <i class="fas fa-robot me-2"></i>
+            Agent 任务
           </a>
         </li>
       {% endif %}

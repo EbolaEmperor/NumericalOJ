@@ -15,6 +15,8 @@ from oj_modules.db_services import (
     can_submit,
     create_submission,
     get_all_problems,
+    get_agent_run_by_task_id,
+    get_agent_runs_paginated,
     get_db_connection,
     get_problem,
     get_remaining_submissions,
@@ -127,6 +129,9 @@ def _build_agent_state_from_async_result(task_id):
 
 def _get_agent_run_state(task_id):
     state = get_agent_run_snapshot(task_id)
+    if isinstance(state, dict):
+        return state
+    state = get_agent_run_by_task_id(task_id)
     if isinstance(state, dict):
         return state
     return _build_agent_state_from_async_result(task_id)
@@ -907,6 +912,42 @@ def submit_solution(problem_id):
             return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
     return render_template('problem_detail.html', problem=problem, user=user, remaining_submissions=remaining_submissions)
+
+
+@problem_core_bp.route('/admin/agent_tasks')
+def admin_agent_tasks():
+    user = current_user()
+    if not user:
+        return redirect(url_for('auth.login'))
+    if user.get('is_admin') != 1:
+        flash('无权限访问该页面', 'danger')
+        return redirect(url_for('problem_core.problem_list'))
+
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 20
+    runs, total_pages = get_agent_runs_paginated(page=page, per_page=per_page)
+
+    for run in runs:
+        run['display_problem_title'] = (
+            str(run.get('problem_title') or '').strip()
+            or f"Problem {run.get('problem_id') or '-'}"
+        )
+        run['display_status'] = str(run.get('status') or 'Pending')
+        run['display_rounds'] = f"{int(run.get('rounds_run') or 0)}/{int(run.get('max_rounds') or 0)}"
+        run['display_best_score'] = int(run.get('best_score') or 0)
+
+    page_start = max(1, page - 8)
+    page_end = min(total_pages, page + 8)
+    page_numbers = list(range(page_start, page_end + 1))
+
+    return render_template(
+        'admin_agent_tasks.html',
+        user=user,
+        agent_runs=runs,
+        current_page=page,
+        total_pages=total_pages,
+        page_numbers=page_numbers,
+    )
 
 
 @problem_core_bp.route('/my_submissions')

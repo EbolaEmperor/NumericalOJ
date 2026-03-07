@@ -448,3 +448,82 @@ def _normalize_ai_code_issues(raw_issues, user_code, max_issues=8):
             break
 
     return normalized
+
+
+def generate_ai_code_marks_from_submission_context(
+    problem_content,
+    user_code,
+    test_points_text,
+    repository_files=None,
+    max_issues=8,
+    timeout=240,
+):
+    problem_text = str(problem_content or "").strip()
+    code_text = str(user_code or "").replace('\r\n', '\n').replace('\r', '\n')
+    if not problem_text:
+        raise RuntimeError("缺少题目内容")
+    if not code_text.strip():
+        raise RuntimeError("缺少用户代码")
+
+    repo_files = repository_files if isinstance(repository_files, dict) else {}
+    repository_context = ""
+    if repo_files:
+        repository_context = "\n\n你可以参考以下同学代码仓库文件：\n"
+        for filename, content in repo_files.items():
+            repository_context += f"\n[文件] {filename}\n```\n{content}\n```\n"
+
+    numbered_lines = [f"{idx:4d}| {line}" for idx, line in enumerate(code_text.split('\n'), start=1)]
+    numbered_code = "\n".join(numbered_lines)
+
+    prompt = f"""你是代码审阅助手。请根据题目、提交代码和评测结果，定位最关键的问题代码位置。
+
+要求：
+1. 只返回 JSON，不要输出任何解释文本，不要使用 Markdown。
+2. 返回格式必须是：
+{{
+  "issues": [
+    {{
+      "line_start": 10,
+      "line_end": 10,
+      "reason": "这里数组下标可能越界",
+      "severity": "error"
+    }}
+  ],
+  "summary": "一句话总结主要问题"
+}}
+3. line_start/line_end 都是 1-based。
+4. line_start/line_end 必须严格对应下面“带行号代码”左侧的行号数字。
+5. 如果评测结果是 Compile Error 或者 Nonzero Exit，那就只分析代码的语法错误，不要分析代码的逻辑错误。
+6. 最多返回 8 个 issues，只保留最重要的。
+7. 有可能代码逻辑是正确的，但参数设置不当，导致结果不对。这时候你应该找到用户的参数设置，并在 Issue 里给出参数设置的建议。
+8. 只在确实有问题的代码行上标注，不要猜测行号。
+
+[题目]
+{problem_text}
+
+[提交代码（带行号）]
+{numbered_code}
+{repository_context}
+
+[评测结果]
+{test_points_text}
+"""
+
+    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
+        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
+    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
+    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout)
+    data_obj = _extract_first_json_object(response_text)
+    if not isinstance(data_obj, dict):
+        raise RuntimeError(f"模型返回无法解析为 JSON：{response_text[:300]}")
+
+    issues = _normalize_ai_code_issues(data_obj.get('issues') or [], code_text, max_issues=max_issues)
+    summary = str(data_obj.get('summary') or '').strip()
+    return {
+        "success": True,
+        "issues": issues,
+        "summary": summary,
+        "code_used": code_text,
+        "source": "generated",
+    }

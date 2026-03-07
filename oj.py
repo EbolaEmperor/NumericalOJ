@@ -44,8 +44,8 @@ app.config['DEBUG'] = True
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
 
 # Celery 配置
-app.config['CELERY_BROKER_URL'] = 'redis://localhost:6379/0'  # 根据您的 Redis 配置调整
-app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
+CELERY_BROKER_URL = 'redis://localhost:6379/0'  # 根据您的 Redis 配置调整
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
 
 # Blueprint 注册（路径保持不变）
 app.register_blueprint(submission_bp)
@@ -101,9 +101,11 @@ def index():
 #  Celery 任务定义
 ###############################################################################
 celery = Celery('oj', 
-                broker=app.config['CELERY_BROKER_URL'], 
-                backend=app.config['CELERY_RESULT_BACKEND'])
-celery.conf.update(app.config)
+                broker=CELERY_BROKER_URL, 
+                backend=CELERY_RESULT_BACKEND)
+celery.conf.task_routes = {
+    'oj.agent.solve_problem': {'queue': 'agent'},
+}
 evaluate_submission = register_evaluate_submission_task(celery)
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
 agent_solve_problem = register_agent_solve_problem_task(celery, evaluate_submission)
