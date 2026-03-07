@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import json
-import os
 from datetime import datetime
 
 from flask import Blueprint, Response, jsonify, request, session
 
-from config import DASHSCOPE_API_KEY, DASHSCOPE_APP_ID
+from config import DASHSCOPE_API_KEY, DASHSCOPE_APP_ID, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import (
     generate_ai_code_marks_from_submission_context,
 )
@@ -165,21 +164,35 @@ def ask_ai_code_marks():
             user_code=user_code,
             test_points_text=test_points,
             repository_files=repository_files,
+            submission_id=sid,
+            test_points=submission.get("test_points") or [],
             max_issues=8,
             timeout=240,
         )
         issues = result.get('issues') or []
         summary = str(result.get('summary') or '').strip()
         code_used = str(result.get('code_used') or user_code)
+        image_mismatch_analysis = str(result.get('image_mismatch_analysis') or '').strip()
+        image_analysis_test_index = result.get('image_analysis_test_index')
         cache_payload = {
             "issues": issues,
             "summary": summary,
             "code_used": code_used,
+            "image_mismatch_analysis": image_mismatch_analysis,
+            "image_analysis_test_index": image_analysis_test_index,
             "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "model": os.getenv("QWEN_TEXT_MODEL", "qwen3.5-plus"),
+            "model": QWEN_TEXT_MODEL,
         }
         save_submission_ai_code_marks_json(sid, cache_payload)
-        return jsonify(success=True, issues=issues, summary=summary, code_used=code_used, source='generated')
+        return jsonify(
+            success=True,
+            issues=issues,
+            summary=summary,
+            code_used=code_used,
+            image_mismatch_analysis=image_mismatch_analysis,
+            image_analysis_test_index=image_analysis_test_index,
+            source='generated',
+        )
     except Exception as e:
         return jsonify(success=False, message=f"标注生成失败：{str(e)}"), 500
 

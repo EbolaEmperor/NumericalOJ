@@ -200,6 +200,7 @@
 
     let currentSubmissionId = null;
     let pollingTimer = null;
+    let lastAiTutorRefreshKey = null;
     const eventDetailModal = (window.bootstrap && eventDetailModalEl) ? new bootstrap.Modal(eventDetailModalEl) : null;
 
     function isFinished(state) {
@@ -306,6 +307,44 @@
       openInNewTabEl.classList.remove('d-none');
     }
 
+    function refreshSubmissionFrame(submissionId) {
+      if (!submissionId || !frameEl) return;
+      const targetUrl = '/submission_detail/' + submissionId;
+      const refreshedUrl = targetUrl + '?agent_refresh=' + Date.now();
+      frameEl.src = refreshedUrl;
+      frameEl.classList.remove('d-none');
+      placeholderEl.classList.add('d-none');
+      latestSubmissionLinkEl.href = targetUrl;
+      openInNewTabEl.href = targetUrl;
+    }
+
+    function maybeRefreshFrameAfterAiTutor(state) {
+      if (!state || typeof state !== 'object') return;
+      const rows = Array.isArray(state.events) ? state.events : [];
+      if (!rows.length) return;
+
+      let matched = null;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const evt = rows[i];
+        if (String((evt && evt.event_type) || '') === 'ai_tutor_feedback') {
+          matched = evt;
+          break;
+        }
+      }
+      if (!matched) return;
+
+      const details = parseEventDetails(matched) || {};
+      const round = Number(details.round || 0);
+      const detailSubmissionId = Number(details.submission_id || 0);
+      const submissionId = detailSubmissionId || state.latest_submission_id || state.final_submission_id || currentSubmissionId;
+      if (!submissionId) return;
+
+      const refreshKey = String(matched.time || '') + '|' + String(round || 0) + '|' + String(submissionId);
+      if (refreshKey === lastAiTutorRefreshKey) return;
+      lastAiTutorRefreshKey = refreshKey;
+      refreshSubmissionFrame(submissionId);
+    }
+
     function applyState(state) {
       if (!state || typeof state !== 'object') return;
       const status = state.status || 'Pending';
@@ -321,6 +360,7 @@
       if (latestSubmissionId) {
         syncSubmissionFrame(latestSubmissionId);
       }
+      maybeRefreshFrameAfterAiTutor(state);
 
       if (isFinished(state) && !latestSubmissionId) {
         placeholderEl.textContent = '任务已结束，但暂无可展示的提交详情。';

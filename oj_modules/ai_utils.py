@@ -9,7 +9,13 @@ import re
 
 import requests
 
-from config import DASHSCOPE_API_KEY
+from config import (
+    AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT,
+    DASHSCOPE_API_KEY,
+    DASHSCOPE_BASE_URL,
+    QWEN_OMNI_MODEL,
+    QWEN_TEXT_MODEL,
+)
 
 try:
     from openai import OpenAI
@@ -32,8 +38,8 @@ def _extract_text_from_response_content(content):
     return ""
 
 
-def _call_qwen_text(prompt_text, api_key, base_url, timeout=300):
-    text_model = os.getenv("QWEN_TEXT_MODEL", "qwen3.5-plus")
+def _call_qwen_text(prompt_text, api_key, base_url, timeout=300, model=None):
+    text_model = str(model or QWEN_TEXT_MODEL)
     messages = [{"role": "user", "content": prompt_text}]
 
     if OpenAI is not None:
@@ -450,11 +456,202 @@ def _normalize_ai_code_issues(raw_issues, user_code, max_issues=8):
     return normalized
 
 
+def _parse_test_points_text(test_points_text):
+    rows = []
+    for line in str(test_points_text or "").splitlines():
+        line = str(line or "").strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            rows.append(obj)
+    return rows
+
+
+def _to_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    return text in ("1", "true", "yes", "y", "on")
+
+
+def _find_submission_output_image_path(submission_id, test_index):
+    try:
+        sid = int(submission_id)
+        idx = max(1, int(test_index))
+    except Exception:
+        return None
+
+    batch_sid = f"eoj-batch-{sid}"
+    batch_image_filename = f"output_{idx - 1}.png"
+    individual_sid = f"eoj-{sid}-{idx}"
+    individual_image_filename = "output.png"
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    cwd = os.getcwd()
+    possible_paths = [
+        os.path.join(project_root, "judger", batch_sid, batch_image_filename),
+        os.path.join(cwd, "judger", batch_sid, batch_image_filename),
+        os.path.join("/tmp", batch_sid, batch_image_filename),
+        os.path.join(cwd, batch_sid, batch_image_filename),
+        os.path.expanduser(os.path.join("~", "oj", "judger", batch_sid, batch_image_filename)),
+        os.path.join(project_root, "judger", individual_sid, individual_image_filename),
+        os.path.join(cwd, "judger", individual_sid, individual_image_filename),
+        os.path.join("/tmp", individual_sid, individual_image_filename),
+        os.path.join(cwd, individual_sid, individual_image_filename),
+        os.path.expanduser(os.path.join("~", "oj", "judger", individual_sid, individual_image_filename)),
+    ]
+
+    seen = set()
+    for raw_path in possible_paths:
+        path = os.path.abspath(os.path.expanduser(raw_path))
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _call_qwen_omni_with_image(prompt_text, image_data_url, api_key, base_url, timeout=180):
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+            {"type": "text", "text": str(prompt_text or "").strip()},
+        ],
+    }]
+    model = str(QWEN_OMNI_MODEL)
+
+    if OpenAI is not None:
+        try:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                modalities=["text"],
+                stream=False,
+            )
+            choices = getattr(resp, "choices", None) or []
+            if choices and getattr(choices[0], "message", None):
+                text = _extract_text_from_response_content(choices[0].message.content).strip()
+                if text:
+                    return text
+        except Exception as e:
+            print(f"[Image Analysis] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "modalities": ["text"],
+    }
+    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    result = resp.json()
+    choices = result.get("choices") or []
+    if not choices:
+        raise RuntimeError("图片分析模型未返回有效结果。")
+    content = (choices[0].get("message") or {}).get("content")
+    text = _extract_text_from_response_content(content).strip()
+    if not text:
+        raise RuntimeError("图片分析模型未返回可用文本。")
+    return text
+
+
+def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_points):
+    if not submission_id:
+        return "", None
+    points = test_points if isinstance(test_points, list) else []
+    if not points:
+        return "", None
+    if not any(_to_bool((tp or {}).get("has_output_image")) for tp in points):
+        return "", None
+
+    def is_accepted_status(tp):
+        status = str((tp or {}).get("status") or "").strip().lower()
+        return status == "accepted"
+
+    preferred_idx = None
+    for offset, tp in enumerate(points, start=1):
+        if is_accepted_status(tp):
+            continue
+        try:
+            preferred_idx = int((tp or {}).get("test_index") or offset)
+        except Exception:
+            preferred_idx = offset
+        break
+
+    if preferred_idx is None:
+        return "", None
+
+    image_path = _find_submission_output_image_path(submission_id, preferred_idx)
+    used_idx = preferred_idx
+
+    if not image_path:
+        for offset, tp in enumerate(points, start=1):
+            if is_accepted_status(tp):
+                continue
+            if not _to_bool((tp or {}).get("has_output_image")):
+                continue
+            try:
+                test_idx = int((tp or {}).get("test_index") or offset)
+            except Exception:
+                test_idx = offset
+            image_path = _find_submission_output_image_path(submission_id, test_idx)
+            if image_path:
+                used_idx = test_idx
+                break
+
+    if not image_path:
+        return "", None
+
+    image_url = _build_image_data_url(image_path)
+    prompt = (
+        "你是 OJ 评测图片一致性检查助手。请对照题目要求和这张程序输出图片，"
+        "找出“不符合题意/与要求不一致”的地方。\n"
+        "输出要求：\n"
+        "1) 使用中文；\n"
+        "2) 先给结论（是否存在明显不符合）；\n"
+        "3) 最多列 3 条关键不符合点，每条包含：现象 + 与题目要求冲突点；\n"
+        "4) 不要输出代码。\n\n"
+        f"[题目要求]\n{problem_text}"
+    )
+
+    api_key = DASHSCOPE_API_KEY
+    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
+        return "", None
+    base_url = str(DASHSCOPE_BASE_URL).rstrip('/')
+    try:
+        analysis = _call_qwen_omni_with_image(
+            prompt_text=prompt,
+            image_data_url=image_url,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=int(AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT),
+        )
+    except Exception as e:
+        print(f"[Image Analysis] 图片一致性分析失败: {e}")
+        return "", None
+
+    return str(analysis or "").strip(), used_idx
+
+
 def generate_ai_code_marks_from_submission_context(
     problem_content,
     user_code,
     test_points_text,
     repository_files=None,
+    submission_id=None,
+    test_points=None,
     max_issues=8,
     timeout=240,
 ):
@@ -475,7 +672,20 @@ def generate_ai_code_marks_from_submission_context(
     numbered_lines = [f"{idx:4d}| {line}" for idx, line in enumerate(code_text.split('\n'), start=1)]
     numbered_code = "\n".join(numbered_lines)
 
-    prompt = f"""你是代码审阅助手。请根据题目、提交代码和评测结果，定位最关键的问题代码位置。
+    test_points_rows = test_points if isinstance(test_points, list) else _parse_test_points_text(test_points_text)
+    image_mismatch_analysis, image_test_index = _analyze_image_mismatch_against_problem(
+        problem_text=problem_text,
+        submission_id=submission_id,
+        test_points=test_points_rows,
+    )
+    image_context = ""
+    if image_mismatch_analysis:
+        image_context = (
+            f"\n\n[输出图片一致性分析（由 {QWEN_OMNI_MODEL} 基于测试点#{image_test_index} 输出图片生成）]\n"
+            f"{image_mismatch_analysis}\n"
+        )
+
+    prompt = f"""你是代码审阅助手。请根据题目、提交代码、评测结果与图片分析结论，定位最关键的问题代码位置。
 
 要求：
 1. 只返回 JSON，不要输出任何解释文本，不要使用 Markdown。
@@ -494,9 +704,10 @@ def generate_ai_code_marks_from_submission_context(
 3. line_start/line_end 都是 1-based。
 4. line_start/line_end 必须严格对应下面“带行号代码”左侧的行号数字。
 5. 如果评测结果是 Compile Error 或者 Nonzero Exit，那就只分析代码的语法错误，不要分析代码的逻辑错误。
-6. 最多返回 8 个 issues，只保留最重要的。
-7. 有可能代码逻辑是正确的，但参数设置不当，导致结果不对。这时候你应该找到用户的参数设置，并在 Issue 里给出参数设置的建议。
-8. 只在确实有问题的代码行上标注，不要猜测行号。
+6. 如果是因为用户知识不足导致他不会写，请在 reason 里详细讲解，为用户补充知识。
+7. 最多返回 8 个 issues，只保留最重要的。
+8. 有可能代码逻辑是正确的，但参数设置不当，导致结果不对。这时候你应该找到用户的参数设置，并在 Issue 里给出参数设置的建议。
+9. 只在确实有问题的代码行上标注，不要猜测行号。
 
 [题目]
 {problem_text}
@@ -507,13 +718,14 @@ def generate_ai_code_marks_from_submission_context(
 
 [评测结果]
 {test_points_text}
+{image_context}
 """
 
-    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+    api_key = DASHSCOPE_API_KEY
     if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
-    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout)
+    base_url = str(DASHSCOPE_BASE_URL).rstrip('/')
+    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout, model=QWEN_TEXT_MODEL)
     data_obj = _extract_first_json_object(response_text)
     if not isinstance(data_obj, dict):
         raise RuntimeError(f"模型返回无法解析为 JSON：{response_text[:300]}")
@@ -525,5 +737,7 @@ def generate_ai_code_marks_from_submission_context(
         "issues": issues,
         "summary": summary,
         "code_used": code_text,
+        "image_mismatch_analysis": image_mismatch_analysis,
+        "image_analysis_test_index": image_test_index,
         "source": "generated",
     }
