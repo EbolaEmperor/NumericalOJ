@@ -22,6 +22,7 @@ from oj_modules.ai_utils import _normalize_ai_code_issues
 
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
 _settings_table_ready = False
+_agent_runs_table_ready = False
 _submission_snapshot_rds = None
 _submission_snapshot_ttl_seconds = int(os.getenv('SUBMISSION_SNAPSHOT_TTL_SECONDS', '21600'))
 
@@ -368,6 +369,238 @@ def subscribe_submission_status_events(submission_id):
         return pubsub
     except Exception:
         return None
+
+
+def ensure_agent_runs_table():
+    global _agent_runs_table_ready
+    if _agent_runs_table_ready:
+        return
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_task_runs (
+                    id BIGINT NOT NULL AUTO_INCREMENT,
+                    task_id VARCHAR(64) NOT NULL,
+                    problem_id INT DEFAULT NULL,
+                    problem_title VARCHAR(255) DEFAULT NULL,
+                    requested_by VARCHAR(50) DEFAULT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'Pending',
+                    message TEXT,
+                    rounds_run INT NOT NULL DEFAULT 0,
+                    max_rounds INT NOT NULL DEFAULT 0,
+                    best_score INT NOT NULL DEFAULT 0,
+                    final_submission_id INT DEFAULT NULL,
+                    latest_submission_id INT DEFAULT NULL,
+                    attempts_json LONGTEXT,
+                    events_json LONGTEXT,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uniq_task_id (task_id),
+                    KEY idx_agent_runs_status_updated (status, updated_at),
+                    KEY idx_agent_runs_problem_updated (problem_id, updated_at),
+                    KEY idx_agent_runs_user_updated (requested_by, updated_at)
+                ) CHARACTER SET utf8mb4
+                """
+            )
+        conn.commit()
+        _agent_runs_table_ready = True
+    finally:
+        conn.close()
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_json_text(value, default):
+    raw = value if value is not None else default
+    try:
+        return json.dumps(raw, ensure_ascii=False)
+    except Exception:
+        return json.dumps(default, ensure_ascii=False)
+
+
+def _parse_json_text(value, default):
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        parsed = json.loads(text)
+        return parsed if parsed is not None else default
+    except Exception:
+        return default
+
+
+def _format_datetime_value(value):
+    if value is None:
+        return None
+    if hasattr(value, "strftime"):
+        try:
+            return value.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            pass
+    return str(value)
+
+
+def _best_score_from_attempts(attempts):
+    if not isinstance(attempts, list):
+        return 0
+    best = 0
+    for item in attempts:
+        if not isinstance(item, dict):
+            continue
+        summary = item.get("summary") or {}
+        if not isinstance(summary, dict):
+            continue
+        score = _safe_int(summary.get("score"), 0)
+        if score > best:
+            best = score
+    return best
+
+
+def upsert_agent_run_snapshot(state):
+    if not isinstance(state, dict):
+        return
+    task_id = str(state.get("task_id") or "").strip()
+    if not task_id:
+        return
+
+    ensure_agent_runs_table()
+    attempts = state.get("attempts") if isinstance(state.get("attempts"), list) else []
+    events = state.get("events") if isinstance(state.get("events"), list) else []
+    best_score = max(
+        _safe_int(state.get("best_score"), 0),
+        _best_score_from_attempts(attempts),
+    )
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO agent_task_runs (
+                    task_id, problem_id, problem_title, requested_by, status, message,
+                    rounds_run, max_rounds, best_score, final_submission_id, latest_submission_id,
+                    attempts_json, events_json
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s
+                )
+                ON DUPLICATE KEY UPDATE
+                    problem_id=VALUES(problem_id),
+                    problem_title=VALUES(problem_title),
+                    requested_by=VALUES(requested_by),
+                    status=VALUES(status),
+                    message=VALUES(message),
+                    rounds_run=VALUES(rounds_run),
+                    max_rounds=VALUES(max_rounds),
+                    best_score=VALUES(best_score),
+                    final_submission_id=VALUES(final_submission_id),
+                    latest_submission_id=VALUES(latest_submission_id),
+                    attempts_json=VALUES(attempts_json),
+                    events_json=VALUES(events_json)
+                """,
+                (
+                    task_id,
+                    state.get("problem_id"),
+                    str(state.get("problem_title") or "")[:255] if state.get("problem_title") is not None else None,
+                    state.get("requested_by"),
+                    str(state.get("status") or "Pending")[:32],
+                    state.get("message"),
+                    _safe_int(state.get("round"), 0),
+                    _safe_int(state.get("max_rounds"), 0),
+                    best_score,
+                    state.get("final_submission_id"),
+                    state.get("latest_submission_id"),
+                    _to_json_text(attempts, []),
+                    _to_json_text(events, []),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_agent_run_by_task_id(task_id):
+    if not task_id:
+        return None
+    ensure_agent_runs_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT task_id, problem_id, problem_title, requested_by, status, message,
+                       rounds_run, max_rounds, best_score, final_submission_id, latest_submission_id,
+                       attempts_json, events_json, created_at, updated_at
+                FROM agent_task_runs
+                WHERE task_id=%s
+                LIMIT 1
+                """,
+                (task_id,),
+            )
+            row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    attempts = _parse_json_text(row.get("attempts_json"), [])
+    events = _parse_json_text(row.get("events_json"), [])
+    return {
+        "task_id": row.get("task_id"),
+        "problem_id": row.get("problem_id"),
+        "problem_title": row.get("problem_title"),
+        "requested_by": row.get("requested_by"),
+        "status": row.get("status"),
+        "message": row.get("message"),
+        "round": _safe_int(row.get("rounds_run"), 0),
+        "max_rounds": _safe_int(row.get("max_rounds"), 0),
+        "best_score": _safe_int(row.get("best_score"), 0),
+        "final_submission_id": row.get("final_submission_id"),
+        "latest_submission_id": row.get("latest_submission_id"),
+        "attempts": attempts if isinstance(attempts, list) else [],
+        "events": events if isinstance(events, list) else [],
+        "created_at": _format_datetime_value(row.get("created_at")),
+        "updated_at": _format_datetime_value(row.get("updated_at")),
+    }
+
+
+def get_agent_runs_paginated(page=1, per_page=20):
+    ensure_agent_runs_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) AS total FROM agent_task_runs")
+            total = int((cursor.fetchone() or {}).get("total") or 0)
+            total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+            offset = (max(1, int(page)) - 1) * int(per_page)
+            cursor.execute(
+                """
+                SELECT task_id, problem_id, problem_title, requested_by, status, message,
+                       rounds_run, max_rounds, best_score, final_submission_id,
+                       created_at, updated_at
+                FROM agent_task_runs
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+                """,
+                (int(per_page), int(offset)),
+            )
+            rows = cursor.fetchall()
+            return rows, total_pages
+    finally:
+        conn.close()
 
 
 def ensure_settings_table():

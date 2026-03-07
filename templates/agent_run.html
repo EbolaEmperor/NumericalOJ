@@ -62,6 +62,21 @@
   </div>
 </div>
 
+<div class="modal fade" id="agentEventDetailModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="agentEventDetailTitle">API 请求体</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="small text-muted mb-2" id="agentEventDetailMeta"></div>
+        <pre id="agentEventDetailPre" class="agent-event-json-pre"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
 <style>
   .agent-sidebar-card {
     height: calc(100vh - 150px);
@@ -122,6 +137,30 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .agent-event-item.clickable {
+    cursor: pointer;
+    border-left-width: 4px;
+    background: #f7fbff;
+  }
+  .agent-event-item.clickable:hover {
+    background: #eef6ff;
+  }
+  .agent-event-action {
+    margin-top: 6px;
+    font-size: 0.78rem;
+    color: #0d6efd;
+  }
+  .agent-event-json-pre {
+    margin: 0;
+    padding: 12px;
+    max-height: 62vh;
+    background: #111827;
+    color: #e5e7eb;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.82rem;
+  }
   @media (max-width: 991px) {
     .agent-sidebar-card,
     .agent-main-card {
@@ -154,9 +193,14 @@
     const latestSubmissionLinkEl = document.getElementById('latestSubmissionLink');
     const latestSubmissionEmptyEl = document.getElementById('latestSubmissionEmpty');
     const openInNewTabEl = document.getElementById('openSubmissionInNewTab');
+    const eventDetailModalEl = document.getElementById('agentEventDetailModal');
+    const eventDetailTitleEl = document.getElementById('agentEventDetailTitle');
+    const eventDetailMetaEl = document.getElementById('agentEventDetailMeta');
+    const eventDetailPreEl = document.getElementById('agentEventDetailPre');
 
     let currentSubmissionId = null;
     let pollingTimer = null;
+    const eventDetailModal = (window.bootstrap && eventDetailModalEl) ? new bootstrap.Modal(eventDetailModalEl) : null;
 
     function isFinished(state) {
       const status = String((state && state.status) || '').toLowerCase();
@@ -171,24 +215,77 @@
       return 'bg-secondary';
     }
 
+    function parseEventDetails(evt) {
+      if (!evt || evt.details == null) return null;
+      if (typeof evt.details === 'object') return evt.details;
+      if (typeof evt.details === 'string') {
+        try {
+          return JSON.parse(evt.details);
+        } catch (_) {
+          return { raw: evt.details };
+        }
+      }
+      return null;
+    }
+
+    function openEventDetail(evt) {
+      const details = parseEventDetails(evt);
+      if (!details) return;
+      const round = Number(details.round || 0);
+      const title = round > 0 ? ('第 ' + round + ' 轮 API 请求体') : 'API 请求体';
+      eventDetailTitleEl.textContent = title;
+      eventDetailMetaEl.textContent = String((evt && evt.time) || '');
+      const payload = (details && details.request_body !== undefined) ? details.request_body : details;
+      eventDetailPreEl.textContent = JSON.stringify(payload, null, 2);
+      if (eventDetailModal) {
+        eventDetailModal.show();
+      } else {
+        window.alert('当前页面缺少弹窗组件，无法显示请求体详情。');
+      }
+    }
+
     function renderEvents(events) {
       const rows = Array.isArray(events) ? events : [];
+      eventsEl.innerHTML = '';
       if (!rows.length) {
         eventsEl.innerHTML = '<div class="text-muted small">暂无日志</div>';
         return;
       }
-      const html = rows.slice().reverse().map(function (evt) {
+
+      const frag = document.createDocumentFragment();
+      rows.slice().reverse().forEach(function (evt) {
         const level = String((evt && evt.level) || 'info');
         const t = String((evt && evt.time) || '');
-        const msg = String((evt && evt.message) || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        return (
-          '<div class="agent-event-item level-' + level + '">' +
-            '<div class="agent-event-time">' + t + '</div>' +
-            '<div class="agent-event-text">' + msg + '</div>' +
-          '</div>'
-        );
-      }).join('');
-      eventsEl.innerHTML = html;
+        const msg = String((evt && evt.message) || '');
+        const details = parseEventDetails(evt);
+        const hasRequestBody = !!(details && typeof details === 'object' && details.request_body);
+
+        const itemEl = document.createElement('div');
+        itemEl.className = 'agent-event-item level-' + level + (hasRequestBody ? ' clickable' : '');
+
+        const timeEl = document.createElement('div');
+        timeEl.className = 'agent-event-time';
+        timeEl.textContent = t;
+        itemEl.appendChild(timeEl);
+
+        const textEl = document.createElement('div');
+        textEl.className = 'agent-event-text';
+        textEl.textContent = msg;
+        itemEl.appendChild(textEl);
+
+        if (hasRequestBody) {
+          const actionEl = document.createElement('div');
+          actionEl.className = 'agent-event-action';
+          actionEl.textContent = '点击查看本轮 API 请求体';
+          itemEl.appendChild(actionEl);
+          itemEl.addEventListener('click', function () {
+            openEventDetail(evt);
+          });
+        }
+
+        frag.appendChild(itemEl);
+      });
+      eventsEl.appendChild(frag);
     }
 
     function syncSubmissionFrame(submissionId) {

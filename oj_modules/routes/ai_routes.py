@@ -8,7 +8,9 @@ from datetime import datetime
 from flask import Blueprint, Response, jsonify, request, session
 
 from config import DASHSCOPE_API_KEY, DASHSCOPE_APP_ID
-from oj_modules.ai_utils import _call_qwen_text, _extract_first_json_object, _normalize_ai_code_issues
+from oj_modules.ai_utils import (
+    generate_ai_code_marks_from_submission_context,
+)
 from oj_modules.db_services import (
     get_cached_ai_code_marks_for_submission,
     get_problem,
@@ -157,70 +159,27 @@ def ask_ai_code_marks():
     if included_files:
         repository_files = get_user_repository_files_by_names(user['id'], included_files)
 
-    repository_context = ""
-    if repository_files:
-        repository_context = "\n\n你可以参考以下同学代码仓库文件：\n"
-        for filename, content in repository_files.items():
-            repository_context += f"\n[文件] {filename}\n```\n{content}\n```\n"
-
-    numbered_lines = [f"{idx:4d}| {line}" for idx, line in enumerate(user_code.split('\n'), start=1)]
-    numbered_code = "\n".join(numbered_lines)
-
-    prompt = f"""你是代码审阅助手。请根据题目、提交代码和评测结果，定位最关键的问题代码位置。
-
-要求：
-1. 只返回 JSON，不要输出任何解释文本，不要使用 Markdown。
-2. 返回格式必须是：
-{{
-  "issues": [
-    {{
-      "line_start": 10,
-      "line_end": 10,
-      "reason": "这里数组下标可能越界",
-      "severity": "error"
-    }}
-  ],
-  "summary": "一句话总结主要问题"
-}}
-3. line_start/line_end 都是 1-based。
-4. 本任务不需要返回列号，只定位到“行”即可。
-5. line_start/line_end 必须严格对应下面“带行号代码”左侧的行号数字。
-6. 最多返回 8 个 issues，只保留最重要的。
-7. 有可能代码逻辑是正确的，但参数设置不当，导致结果不对。这时候你应该找到用户的参数设置，并在 Issue 里给出参数设置的建议。
-8. 只在确实有问题的代码行上标注，不要猜测行号。
-
-[题目]
-{problem_content}
-
-[提交代码（带行号）]
-{numbered_code}
-{repository_context}
-
-[评测结果]
-{test_points}
-"""
-
     try:
-        api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
-        if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-            raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-        base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
-        response_text = _call_qwen_text(prompt, api_key, base_url, timeout=240)
-        data_obj = _extract_first_json_object(response_text)
-        if not isinstance(data_obj, dict):
-            raise RuntimeError(f"模型返回无法解析为 JSON：{response_text[:300]}")
-
-        issues = _normalize_ai_code_issues(data_obj.get('issues') or [], user_code, max_issues=8)
-        summary = str(data_obj.get('summary') or '').strip()
+        result = generate_ai_code_marks_from_submission_context(
+            problem_content=problem_content,
+            user_code=user_code,
+            test_points_text=test_points,
+            repository_files=repository_files,
+            max_issues=8,
+            timeout=240,
+        )
+        issues = result.get('issues') or []
+        summary = str(result.get('summary') or '').strip()
+        code_used = str(result.get('code_used') or user_code)
         cache_payload = {
             "issues": issues,
             "summary": summary,
-            "code_used": user_code,
+            "code_used": code_used,
             "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "model": os.getenv("QWEN_TEXT_MODEL", "qwen3.5-plus"),
         }
         save_submission_ai_code_marks_json(sid, cache_payload)
-        return jsonify(success=True, issues=issues, summary=summary, code_used=user_code, source='generated')
+        return jsonify(success=True, issues=issues, summary=summary, code_used=code_used, source='generated')
     except Exception as e:
         return jsonify(success=False, message=f"标注生成失败：{str(e)}"), 500
 
