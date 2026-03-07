@@ -1123,6 +1123,8 @@ def get_cached_ai_code_marks_for_submission(submission):
     code_used = str(code_used_raw).replace('\r\n', '\n').replace('\r', '\n')
     issues = _normalize_ai_code_issues(data.get('issues') or [], code_used, max_issues=8)
     summary = str(data.get('summary') or '').strip()
+    image_mismatch_analysis = str(data.get('image_mismatch_analysis') or '').strip()
+    image_analysis_test_index = data.get('image_analysis_test_index')
     cached_at = str(data.get('generated_at') or '').strip()
 
     return {
@@ -1130,6 +1132,8 @@ def get_cached_ai_code_marks_for_submission(submission):
         "issues": issues,
         "summary": summary,
         "code_used": code_used,
+        "image_mismatch_analysis": image_mismatch_analysis,
+        "image_analysis_test_index": image_analysis_test_index,
         "cached": True,
         "cached_at": cached_at,
     }

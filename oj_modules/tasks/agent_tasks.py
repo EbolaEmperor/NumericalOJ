@@ -308,6 +308,8 @@ def _format_ai_tutor_feedback_from_marks(result):
         return ""
     summary = str(result.get("summary") or "").strip()
     issues = result.get("issues") if isinstance(result.get("issues"), list) else []
+    image_mismatch_analysis = str(result.get("image_mismatch_analysis") or "").strip()
+    image_analysis_test_index = result.get("image_analysis_test_index")
 
     lines = []
     if summary:
@@ -329,6 +331,13 @@ def _format_ai_tutor_feedback_from_marks(result):
                 pos = "未知行"
             sev = str(issue.get("severity") or "error")
             lines.append(f"{idx}) {pos} [{sev}] {reason}")
+    if image_mismatch_analysis:
+        lines.append(f"这个程序在交互式运行的时候，输出了图片，从图片上看，结果存在以下问题。")
+        if image_analysis_test_index:
+            lines.append(f"【图片分析】（测试点#{image_analysis_test_index}）：")
+        else:
+            lines.append("【图片分析】")
+        lines.append(_truncate_text(image_mismatch_analysis, limit=500))
     return _truncate_text("\n".join(lines).strip(), limit=1600)
 
 
@@ -351,6 +360,8 @@ def _simulate_user_click_ai_tutor(problem, submission, user, user_code, submissi
         user_code=user_code or "",
         test_points_text=test_points_text,
         repository_files=repository_files,
+        submission_id=submission_id,
+        test_points=submission.get("test_points") or [],
         max_issues=8,
         timeout=240,
     )
@@ -361,6 +372,8 @@ def _simulate_user_click_ai_tutor(problem, submission, user, user_code, submissi
         "issues": result.get("issues") or [],
         "summary": str(result.get("summary") or "").strip(),
         "code_used": str(result.get("code_used") or user_code or ""),
+        "image_mismatch_analysis": str(result.get("image_mismatch_analysis") or "").strip(),
+        "image_analysis_test_index": result.get("image_analysis_test_index"),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "model": "qwen3.5-plus",
     }
@@ -935,7 +948,7 @@ def _summarize_history_with_qwen35(history_messages, target_chars, state=None, r
         "1) 使用中文；\n"
         "2) 必须包含：题目提示/硬约束、已尝试修改与对应评测现象、仍未解决点、下一轮注意事项；\n"
         "3) 不要编造对话里不存在的信息；\n"
-        "4) 不要输出代码；\n"
+        "4) 如果发现反复尝试且难以解决的数学或代码问题，请你帮助解决\n"
         f"5) 总长度控制在 {int(target_chars)} 字符以内。\n\n"
         "历史对话片段如下：\n"
         f"{serialized}"
@@ -978,6 +991,24 @@ def _summarize_history_with_qwen35(history_messages, target_chars, state=None, r
     return _truncate_text(cleaned, limit=max(240, int(target_chars)))
 
 
+def _extract_latest_code_only_from_assistant(content):
+    text = str(content or "").strip()
+    if not text:
+        return ""
+
+    fenced_blocks = list(re.finditer(r"```(?:\w+)?\s*[\s\S]*?\s*```", text))
+    if fenced_blocks:
+        return fenced_blocks[-1].group(0).strip()
+
+    marker = re.search(r"【代码】\s*([\s\S]+)$", text)
+    if marker:
+        code_part = marker.group(1).strip()
+        if code_part:
+            return f"```text\n{code_part}\n```"
+
+    return f"```text\n{text}\n```"
+
+
 def _trim_conversation_by_budget(conversation, max_chars, keep_rounds, state=None, round_idx=None):
     if not isinstance(conversation, list):
         return []
@@ -996,78 +1027,73 @@ def _trim_conversation_by_budget(conversation, max_chars, keep_rounds, state=Non
     if _conversation_total_chars(cleaned) <= max_chars:
         return cleaned
 
-    head = cleaned[:1]
-    tail = cleaned[1:]
-    keep_tail_count = max(2, int(keep_rounds) * 2)
-    recent = tail[-keep_tail_count:] if tail else []
-    older = tail[:-keep_tail_count] if tail else []
-    if not older and len(cleaned) > 1:
-        latest_assistant_idx = -1
-        for idx in range(len(cleaned) - 1, -1, -1):
-            if cleaned[idx].get("role") == "assistant":
-                latest_assistant_idx = idx
-                break
-        if latest_assistant_idx >= 0:
-            older = cleaned[:latest_assistant_idx]
-            recent = cleaned[latest_assistant_idx:]
-        else:
-            older = cleaned[:-1]
-            recent = cleaned[-1:]
-        head = []
+    _ = keep_rounds
+
+    latest_assistant_idx = -1
+    for idx in range(len(cleaned) - 1, -1, -1):
+        if cleaned[idx].get("role") == "assistant":
+            latest_assistant_idx = idx
+            break
+
+    latest_code_content = ""
+    if latest_assistant_idx >= 0:
+        latest_code_content = _extract_latest_code_only_from_assistant(
+            cleaned[latest_assistant_idx].get("content") or ""
+        )
+
+    if latest_assistant_idx >= 0:
+        summary_source = cleaned[:latest_assistant_idx] + cleaned[latest_assistant_idx + 1:]
+    else:
+        summary_source = cleaned
 
     summary_budget = min(_AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS, max(600, int(max_chars * 0.35)))
     summary_text = (
         _summarize_history_with_qwen35(
-            older,
+            summary_source,
             target_chars=summary_budget,
             state=state,
             round_idx=round_idx,
             event_label="历史摘要",
         )
-        if older else ""
+        if summary_source else ""
     )
 
-    rebuilt = list(head)
+    rebuilt = []
     if summary_text:
         rebuilt.append({
             "role": "user",
             "content": "【历史信息摘要（qwen3.5-plus）】\n" + summary_text,
         })
-    rebuilt.extend(recent)
+
+    if latest_code_content:
+        rebuilt.append({
+            "role": "assistant",
+            "content": "【上一版最新代码】\n" + latest_code_content,
+        })
+    elif cleaned:
+        rebuilt.append(cleaned[-1])
+
     if _conversation_total_chars(rebuilt) <= max_chars:
         return rebuilt
 
-    # 若仅保留最近轮次仍超预算，则对更早部分进行二次摘要，至少保留最后两条消息。
-    if len(rebuilt) > 2:
-        stable_recent = rebuilt[-2:]
-        prefix = rebuilt[:-2]
-        second_summary = _summarize_history_with_qwen35(
-            prefix,
-            target_chars=summary_budget,
-            state=state,
-            round_idx=round_idx,
-            event_label="二次历史摘要",
-        )
-        if second_summary:
-            rebuilt = [
-                {"role": "user", "content": "【更早历史摘要（qwen3.5-plus）】\n" + second_summary},
-                stable_recent[0],
-                stable_recent[1],
-            ]
-            if _conversation_total_chars(rebuilt) <= max_chars:
-                return rebuilt
+    # 优先保留“最新代码”，超预算时先移除摘要。
+    if len(rebuilt) > 1 and rebuilt[-1].get("role") == "assistant":
+        code_only = [rebuilt[-1]]
+        if _conversation_total_chars(code_only) <= max_chars:
+            return code_only
+        rebuilt = code_only
 
-    # 摘要失败或极端超长时兜底截断，避免任务无法继续。
+    # 极端超长时兜底截断，避免任务无法继续。
     fallback = []
     for idx, msg in enumerate(rebuilt):
         limit = max(220, int(max_chars / max(1, len(rebuilt))))
-        if idx == len(rebuilt) - 1:
+        if idx == len(rebuilt) - 1 and msg.get("role") == "assistant":
             limit = max(limit, int(limit * 1.8))
         fallback.append({
             "role": msg.get("role"),
             "content": _truncate_text(msg.get("content"), limit=limit),
         })
-    while len(fallback) > 2 and _conversation_total_chars(fallback) > max_chars:
+    while len(fallback) > 1 and _conversation_total_chars(fallback) > max_chars:
         del fallback[0]
     return fallback
 
@@ -1203,7 +1229,7 @@ def _tool_submit_code(problem, username, code, evaluate_submission_task):
 
 def _tool_query_test_results(submission_id, timeout_seconds=240):
     print(f"[AgentTool] query_test_results submission_id={submission_id}")
-    _ = timeout_seconds
+    deadline = time.time() + max(30, int(timeout_seconds))
 
     def is_judging(status):
         return status in ("Pending", "Waiting", "Running")
@@ -1223,34 +1249,45 @@ def _tool_query_test_results(submission_id, timeout_seconds=240):
     if not latest:
         latest = get_submission_by_id(submission_id)
     if latest and not is_judging(latest.get("status")):
-        return {"timeout": False, **_summarize_submission(latest)}
+        return {"timeout": False, "completed": True, **_summarize_submission(latest)}
 
     pubsub = subscribe_submission_status_events(submission_id)
-    if pubsub is None:
-        # 无法订阅事件时不做 sleep 轮询，直接返回当前快照
-        return {"timeout": True, **_summarize_submission(latest)}
+    if pubsub is not None:
+        try:
+            while time.time() < deadline:
+                msg = pubsub.get_message(timeout=1.0)
+                if not msg:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") != "message":
+                    continue
 
-    try:
-        for msg in pubsub.listen():
-            if not isinstance(msg, dict):
-                continue
-            if msg.get("type") != "message":
-                continue
+                snap = decode_message(msg.get("data"))
+                if not snap:
+                    continue
 
-            snap = decode_message(msg.get("data"))
-            if not snap:
-                continue
+                latest = snap
+                if not is_judging(latest.get("status")):
+                    return {"timeout": False, "completed": True, **_summarize_submission(latest)}
+        finally:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
 
+    # 订阅不可用或超时时回退轮询，但仍坚持等待到终态/超时后再返回。
+    while time.time() < deadline:
+        snap = get_submission_status_snapshot(submission_id, prefer_cache=True)
+        if not snap:
+            snap = get_submission_by_id(submission_id)
+        if snap:
             latest = snap
             if not is_judging(latest.get("status")):
-                return {"timeout": False, **_summarize_submission(latest)}
-    finally:
-        try:
-            pubsub.close()
-        except Exception:
-            pass
+                return {"timeout": False, "completed": True, **_summarize_submission(latest)}
+        time.sleep(1.0)
 
-    return {"timeout": False, **_summarize_submission(latest)}
+    return {"timeout": True, "completed": False, **_summarize_submission(latest)}
 
 
 def _build_initial_prompt(problem, core_hints=None):
@@ -1445,30 +1482,49 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             summary = _tool_query_test_results(submission_id, timeout_seconds=300)
             compact_summary = _compact_summary(summary)
             failure_signature = _build_failure_signature(compact_summary)
+            _push_agent_event(
+                state,
+                (
+                    f"第 {round_idx} 轮评测完成："
+                    f"状态={compact_summary.get('status')} 分数={compact_summary.get('score')}"
+                ),
+            )
             ai_tutor_feedback = ""
-            try:
-                submission_detail = get_submission_by_id(submission_id) or {}
-                ai_tutor_feedback = _simulate_user_click_ai_tutor(
-                    problem=problem,
-                    submission=submission_detail,
-                    user=user,
-                    user_code=code,
-                    submission_id=submission_id,
-                )
-            except Exception as tutor_err:
+            is_accepted_round = str(compact_summary.get("status") or "").strip() == "Accepted"
+            evaluation_completed = bool(summary.get("completed")) and not bool(summary.get("timeout"))
+            should_call_ai_tutor = evaluation_completed and (not is_accepted_round)
+            if should_call_ai_tutor:
+                try:
+                    submission_detail = get_submission_by_id(submission_id) or {}
+                    ai_tutor_feedback = _simulate_user_click_ai_tutor(
+                        problem=problem,
+                        submission=submission_detail,
+                        user=user,
+                        user_code=code,
+                        submission_id=submission_id,
+                    )
+                except Exception as tutor_err:
+                    _push_agent_event(
+                        state,
+                        f"第 {round_idx} 轮 AI 助教调用失败: {tutor_err}",
+                        level="warning",
+                        event_type="ai_tutor_error",
+                    )
+                if ai_tutor_feedback:
+                    last_ai_tutor_feedback = ai_tutor_feedback
+                    _push_agent_event(
+                        state,
+                        f"第 {round_idx} 轮 AI 助教建议已获取",
+                        event_type="ai_tutor_feedback",
+                        details={"round": round_idx, "submission_id": submission_id, "feedback": ai_tutor_feedback},
+                    )
+            elif not evaluation_completed:
                 _push_agent_event(
                     state,
-                    f"第 {round_idx} 轮 AI 助教调用失败: {tutor_err}",
+                    f"第 {round_idx} 轮评测未完成（等待超时），跳过 AI 助教调用",
                     level="warning",
-                    event_type="ai_tutor_error",
-                )
-            if ai_tutor_feedback:
-                last_ai_tutor_feedback = ai_tutor_feedback
-                _push_agent_event(
-                    state,
-                    f"第 {round_idx} 轮 AI 助教建议已获取",
-                    event_type="ai_tutor_feedback",
-                    details={"round": round_idx, "feedback": ai_tutor_feedback},
+                    event_type="ai_tutor_skipped",
+                    details={"round": round_idx, "submission_id": submission_id},
                 )
 
             attempt_item = {
@@ -1485,13 +1541,6 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 attempt_item["memory"] = _compact_working_memory_for_attempt(working_memory)
             attempts.append(attempt_item)
             state["attempts"] = attempts
-            _push_agent_event(
-                state,
-                (
-                    f"第 {round_idx} 轮评测完成："
-                    f"状态={compact_summary.get('status')} 分数={compact_summary.get('score')}"
-                ),
-            )
 
             if _AGENT_MEMORY_ENABLED:
                 memory_delta = _update_working_memory(

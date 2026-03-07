@@ -154,6 +154,13 @@
                class="img-fluid border rounded"
                style="max-width: 100%; max-height: 320px; cursor: pointer;">
         </div>
+
+        <div id="testPointDetailOmniWrap" class="d-none mt-3">
+          <div class="fw-semibold mb-1">
+            <i class="fas fa-eye me-1"></i> Omni 图片分析
+          </div>
+          <pre id="testPointDetailOmniText" class="tp-detail-pre mb-0"></pre>
+        </div>
       </div>
     </div>
     {% endif %}
@@ -386,9 +393,12 @@
   const testPointDetailOutputTextEl = document.getElementById('testPointDetailOutputText');
   const testPointDetailImageWrapEl = document.getElementById('testPointDetailImageWrap');
   const testPointDetailImageEl = document.getElementById('testPointDetailImage');
+  const testPointDetailOmniWrapEl = document.getElementById('testPointDetailOmniWrap');
+  const testPointDetailOmniTextEl = document.getElementById('testPointDetailOmniText');
   let currentTestPoints = Array.isArray(initialTestPoints) ? initialTestPoints : [];
   let selectedTestPointIndex = null;
   let hasUserSelectedTestPoint = false;
+  let aiOmniImageAnalysis = { text: '', testIndex: null };
 
   function statusClassName(status) {
     return String(status || '').toLowerCase().replace(/\s+/g, '-');
@@ -458,6 +468,43 @@
       testPointDetailImageEl.onclick = null;
       testPointDetailImageEl.onerror = null;
     }
+    if (testPointDetailOmniWrapEl) testPointDetailOmniWrapEl.classList.add('d-none');
+    if (testPointDetailOmniTextEl) testPointDetailOmniTextEl.textContent = '';
+  }
+
+  function updateAiOmniImageAnalysis(text, testIndex) {
+    const normalizedText = String(text || '').trim();
+    let normalizedIndex = parseInt(testIndex, 10);
+    if (!Number.isFinite(normalizedIndex) || normalizedIndex <= 0) {
+      normalizedIndex = null;
+    }
+    aiOmniImageAnalysis = {
+      text: normalizedText,
+      testIndex: normalizedIndex
+    };
+    if (selectedTestPointIndex !== null) {
+      renderTestPointDetail(selectedTestPointIndex);
+    }
+  }
+
+  function renderOmniImageAnalysisForTestPoint(tp, index) {
+    if (!testPointDetailOmniWrapEl || !testPointDetailOmniTextEl) return;
+    testPointDetailOmniWrapEl.classList.add('d-none');
+    testPointDetailOmniTextEl.textContent = '';
+
+    const analysisText = String((aiOmniImageAnalysis && aiOmniImageAnalysis.text) || '').trim();
+    const analysisTestIndex = parseInt((aiOmniImageAnalysis || {}).testIndex, 10);
+    if (!analysisText || !Number.isFinite(analysisTestIndex) || analysisTestIndex <= 0) {
+      return;
+    }
+
+    const selectedTestIndex = (tp && tp.test_index) ? parseInt(tp.test_index, 10) : (index + 1);
+    if (!Number.isFinite(selectedTestIndex) || selectedTestIndex !== analysisTestIndex) {
+      return;
+    }
+
+    testPointDetailOmniTextEl.textContent = analysisText;
+    testPointDetailOmniWrapEl.classList.remove('d-none');
   }
 
   function renderTestPointDetail(index) {
@@ -521,7 +568,10 @@
       testPointDetailImageEl.onerror = null;
     }
 
-    if (!stderr && !stdout && !hasImage && testPointDetailHintEl) {
+    renderOmniImageAnalysisForTestPoint(tp, index);
+    const hasOmniAnalysisShown = !!(testPointDetailOmniWrapEl && !testPointDetailOmniWrapEl.classList.contains('d-none'));
+
+    if (!stderr && !stdout && !hasImage && !hasOmniAnalysisShown && testPointDetailHintEl) {
       testPointDetailHintEl.textContent = '该测试点暂无更多详情。';
       testPointDetailHintEl.classList.remove('d-none');
     }
@@ -1170,6 +1220,8 @@
       const ok = !!(data && data.success);
       const issues = (ok && Array.isArray(data.issues)) ? data.issues : [];
       const summary = ok && data.summary ? String(data.summary) : '';
+      const omniAnalysis = ok && data.image_mismatch_analysis ? String(data.image_mismatch_analysis) : '';
+      const omniTestIndex = ok ? data.image_analysis_test_index : null;
 
       if (!ok) {
         clearAiIssueMarkers();
@@ -1182,6 +1234,9 @@
         return;
       }
 
+      if (typeof updateAiOmniImageAnalysis === 'function') {
+        updateAiOmniImageAnalysis(omniAnalysis, omniTestIndex);
+      }
       renderAiIssueMarks(displayCode, issues);
 
       if (summary) {
@@ -1227,6 +1282,14 @@
     const displayCode = (typeof cachedAiCodeMarks.code_used === 'string')
       ? cachedAiCodeMarks.code_used
       : (submissionCodeEditor.getValue() || '');
+    const omniAnalysis = cachedAiCodeMarks.image_mismatch_analysis
+      ? String(cachedAiCodeMarks.image_mismatch_analysis)
+      : '';
+    const omniTestIndex = cachedAiCodeMarks.image_analysis_test_index;
+
+    if (typeof updateAiOmniImageAnalysis === 'function') {
+      updateAiOmniImageAnalysis(omniAnalysis, omniTestIndex);
+    }
 
     renderAiIssueMarks(displayCode, issues);
     if (cachedAiCodeMarks.summary) {
