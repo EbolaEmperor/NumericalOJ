@@ -8,6 +8,7 @@ import time
 import requests
 
 from config import (
+    AI_TUTOR_MODEL,
     AGENT_CONTEXT_KEEP_ROUNDS,
     AGENT_CONTEXT_MAX_CHARS,
     AGENT_CONTEXT_SUMMARY_INPUT_MAX_CHARS,
@@ -28,6 +29,7 @@ from config import (
 )
 from oj_modules.db_services import (
     create_submission,
+    get_db_connection,
     get_cached_ai_code_marks_for_submission,
     get_problem,
     get_submission_status_snapshot,
@@ -277,12 +279,18 @@ def _extract_text_from_content(content):
     return ""
 
 
-def _build_api_request_payload(messages, model=None):
-    return {
+def _build_api_request_payload(messages, model=None, tools=None, enable_thinking=None):
+    payload = {
         "model": str(model or QWEN_CODER_MODEL),
         "messages": _safe_json_copy(messages, default=[]),
         "stream": False,
     }
+    if isinstance(tools, list) and tools:
+        payload["tools"] = _safe_json_copy(tools, default=[])
+        payload["tool_choice"] = "auto"
+    if enable_thinking is not None:
+        payload["enable_thinking"] = bool(enable_thinking)
+    return payload
 
 
 def _append_api_call_log(state, round_idx, request_body, api_type="solve"):
@@ -375,7 +383,7 @@ def _simulate_user_click_ai_tutor(problem, submission, user, user_code, submissi
         "image_mismatch_analysis": str(result.get("image_mismatch_analysis") or "").strip(),
         "image_analysis_test_index": result.get("image_analysis_test_index"),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "model": "qwen3.5-plus",
+        "model": AI_TUTOR_MODEL,
     }
     try:
         save_submission_ai_code_marks_json(submission_id, payload)
@@ -384,26 +392,90 @@ def _simulate_user_click_ai_tutor(problem, submission, user, user_code, submissi
     return _format_ai_tutor_feedback_from_marks(result)
 
 
-def _call_qwen_chat_model(messages, model, timeout=180, empty_text_error="模型未返回有效文本。"):
+def _normalize_assistant_message(raw_message):
+    data = {}
+    if raw_message is None:
+        data = {}
+    elif isinstance(raw_message, dict):
+        data = raw_message
+    elif hasattr(raw_message, "model_dump"):
+        try:
+            data = raw_message.model_dump()
+        except Exception:
+            data = {}
+    else:
+        data = {}
+
+    role = str(data.get("role") or "assistant").strip() or "assistant"
+    content = _extract_text_from_content(data.get("content"))
+    message = {"role": role, "content": str(content or "")}
+
+    normalized_calls = []
+    for call in data.get("tool_calls") or []:
+        item = call
+        if not isinstance(item, dict) and hasattr(item, "model_dump"):
+            try:
+                item = item.model_dump()
+            except Exception:
+                item = {}
+        if not isinstance(item, dict):
+            continue
+        function_data = item.get("function") or {}
+        if not isinstance(function_data, dict) and hasattr(function_data, "model_dump"):
+            try:
+                function_data = function_data.model_dump()
+            except Exception:
+                function_data = {}
+        name = str((function_data or {}).get("name") or "").strip()
+        if not name:
+            continue
+        arguments = (function_data or {}).get("arguments")
+        if isinstance(arguments, str):
+            arg_text = arguments
+        else:
+            try:
+                arg_text = json.dumps(arguments or {}, ensure_ascii=False)
+            except Exception:
+                arg_text = "{}"
+        call_id = str(item.get("id") or "").strip() or f"call_{int(time.time() * 1000)}_{len(normalized_calls)}"
+        normalized_calls.append({
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arg_text},
+        })
+    if normalized_calls:
+        message["tool_calls"] = normalized_calls
+    return message
+
+
+def _call_qwen_chat_completion(messages, model, timeout=180, tools=None, enable_thinking=None):
     api_key = _ensure_dashscope_api_key()
     base_url = str(DASHSCOPE_BASE_URL).rstrip("/")
     use_model = str(model or QWEN_CODER_MODEL)
-    payload = _build_api_request_payload(messages, model=use_model)
+    payload = _build_api_request_payload(
+        messages,
+        model=use_model,
+        tools=tools,
+        enable_thinking=enable_thinking,
+    )
 
     if OpenAI is not None:
         try:
             client = OpenAI(api_key=api_key, base_url=base_url)
-            resp = client.chat.completions.create(
-                model=use_model,
-                messages=messages,
-                stream=False,
-            )
+            kwargs = {
+                "model": use_model,
+                "messages": messages,
+                "stream": False,
+            }
+            if isinstance(tools, list) and tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            if enable_thinking is not None:
+                kwargs["extra_body"] = {"enable_thinking": bool(enable_thinking)}
+            resp = client.chat.completions.create(**kwargs)
             choices = getattr(resp, "choices", None) or []
             if choices and getattr(choices[0], "message", None):
-                content = choices[0].message.content
-                text = _extract_text_from_content(content).strip()
-                if text:
-                    return text
+                return _normalize_assistant_message(choices[0].message)
         except Exception as e:
             print(f"[Agent] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
 
@@ -418,8 +490,24 @@ def _call_qwen_chat_model(messages, model, timeout=180, empty_text_error="模型
     if not choices:
         raise RuntimeError("模型未返回有效结果。")
     message = choices[0].get("message") or {}
-    content = message.get("content")
-    text = _extract_text_from_content(content).strip()
+    return _normalize_assistant_message(message)
+
+
+def _call_qwen_chat_model(
+    messages,
+    model,
+    timeout=180,
+    empty_text_error="模型未返回有效文本。",
+    enable_thinking=None,
+):
+    message = _call_qwen_chat_completion(
+        messages=messages,
+        model=model,
+        timeout=timeout,
+        tools=None,
+        enable_thinking=enable_thinking,
+    )
+    text = _extract_text_from_content(message.get("content")).strip()
     if not text:
         raise RuntimeError(str(empty_text_error or "模型未返回有效文本。"))
     return text
@@ -434,12 +522,22 @@ def _call_qwen3_coder_plus(messages, timeout=180):
     )
 
 
-def _call_qwen3_5_plus_text(messages, timeout=120):
+def _call_qwen3_coder_plus_with_tools(messages, tools, timeout=180):
+    return _call_qwen_chat_completion(
+        messages=messages,
+        model=QWEN_CODER_MODEL,
+        timeout=timeout,
+        tools=tools,
+    )
+
+
+def _call_qwen3_5_plus_text(messages, timeout=120, enable_thinking=None):
     return _call_qwen_chat_model(
         messages=messages,
         model=QWEN_TEXT_MODEL,
         timeout=timeout,
         empty_text_error="模型未返回有效摘要文本。",
+        enable_thinking=enable_thinking,
     )
 
 
@@ -898,7 +996,40 @@ def _conversation_total_chars(conversation):
         if not isinstance(msg, dict):
             continue
         total += len(str(msg.get("content") or ""))
+        if msg.get("role") == "assistant":
+            try:
+                total += len(json.dumps(msg.get("tool_calls") or [], ensure_ascii=False))
+            except Exception:
+                pass
+        if msg.get("role") == "tool":
+            total += len(str(msg.get("tool_call_id") or ""))
+            total += len(str(msg.get("name") or ""))
     return total
+
+
+def _compact_tool_content_for_history_summary(content):
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return _truncate_text(_normalize_text_line(text), limit=1200)
+
+    if not isinstance(parsed, dict):
+        return _truncate_text(_normalize_text_line(text), limit=1200)
+    compact = _safe_json_copy(parsed, default={})
+    for key in ("latest_code", "code", "content", "ai_tutor_feedback"):
+        if key in compact:
+            compact[key] = _truncate_text(compact.get(key), limit=500)
+    if isinstance(compact.get("files"), list):
+        compact["files"] = compact.get("files")[:12]
+    if isinstance(compact.get("failed_points"), list):
+        compact["failed_points"] = compact.get("failed_points")[:4]
+    try:
+        return _truncate_text(json.dumps(compact, ensure_ascii=False), limit=1400)
+    except Exception:
+        return _truncate_text(_normalize_text_line(text), limit=1200)
 
 
 def _serialize_messages_for_history_summary(messages, max_chars):
@@ -909,6 +1040,8 @@ def _serialize_messages_for_history_summary(messages, max_chars):
             continue
         role = str(msg.get("role") or "").strip() or "user"
         content = str(msg.get("content") or "").strip()
+        if role == "tool":
+            content = _compact_tool_content_for_history_summary(content)
         if not content:
             continue
 
@@ -919,6 +1052,18 @@ def _serialize_messages_for_history_summary(messages, max_chars):
                 content = f"诊断要点：{diagnosis}\n代码：<省略>"
             else:
                 content = re.sub(r"```[\s\S]*?```", "<代码块省略>", content, flags=re.DOTALL)
+            tool_calls = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else []
+            if tool_calls:
+                called = []
+                for tc in tool_calls[:6]:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") or {}
+                    if isinstance(fn, dict):
+                        called.append(str(fn.get("name") or "").strip())
+                called = [x for x in called if x]
+                if called:
+                    content = (content + f"\n工具调用: {', '.join(called)}").strip()
 
         normalized = _normalize_text_line(content)
         normalized = _truncate_text(normalized, limit=1400)
@@ -935,34 +1080,17 @@ def _serialize_messages_for_history_summary(messages, max_chars):
 
 
 def _summarize_history_with_qwen35(history_messages, target_chars, state=None, round_idx=None, event_label="历史摘要"):
-    serialized = _serialize_messages_for_history_summary(
-        history_messages,
-        max_chars=_AGENT_CONTEXT_SUMMARY_INPUT_MAX_CHARS,
-    )
-    if not serialized:
+    if not isinstance(history_messages, list) or not history_messages:
         return ""
 
-    user_prompt = (
-        "请将以下 OJ 自动解题多轮对话压缩为下一轮可用的历史摘要。\n"
-        "输出要求：\n"
-        "1) 使用中文；\n"
-        "2) 必须包含：题目提示/硬约束、已尝试修改与对应评测现象、仍未解决点、下一轮注意事项；\n"
-        "3) 不要编造对话里不存在的信息；\n"
-        "4) 如果发现反复尝试且难以解决的数学或代码问题，请你帮助解决\n"
-        f"5) 总长度控制在 {int(target_chars)} 字符以内。\n\n"
-        "历史对话片段如下：\n"
-        f"{serialized}"
-    )
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是 OJ 调试上下文压缩助手。"
-                "你的目标是在信息不丢失关键约束的前提下，生成高度可执行的历史摘要。"
-            ),
-        },
-        {"role": "user", "content": user_prompt},
-    ]
+    messages = _safe_json_copy(history_messages, default=[])
+    if not isinstance(messages, list):
+        messages = []
+    messages.append({
+        "role": "user",
+        "content": f"生成历史摘要，限制字数：{int(target_chars)}",
+    })
+
     request_body = _build_api_request_payload(messages, model=QWEN_TEXT_MODEL)
     _append_api_call_log(state, round_idx, request_body, api_type="context_summary")
     if isinstance(state, dict):
@@ -988,7 +1116,7 @@ def _summarize_history_with_qwen35(history_messages, target_chars, state=None, r
         m = re.search(r"```(?:\w+)?\s*(.*?)\s*```", cleaned, flags=re.DOTALL)
         if m:
             cleaned = m.group(1).strip()
-    return _truncate_text(cleaned, limit=max(240, int(target_chars)))
+    return cleaned
 
 
 def _extract_latest_code_only_from_assistant(content):
@@ -1009,6 +1137,47 @@ def _extract_latest_code_only_from_assistant(content):
     return f"```text\n{text}\n```"
 
 
+def _drop_orphan_tool_messages(messages):
+    result = []
+    seen_tool_call_ids = set()
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip()
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else []
+            normalized_tool_calls = []
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                call_id = str(call.get("id") or "").strip()
+                if not call_id:
+                    continue
+                seen_tool_call_ids.add(call_id)
+                normalized_tool_calls.append(call)
+            row = {"role": "assistant", "content": str(msg.get("content") or "")}
+            if normalized_tool_calls:
+                row["tool_calls"] = normalized_tool_calls
+            result.append(row)
+            continue
+        if role == "tool":
+            call_id = str(msg.get("tool_call_id") or "").strip()
+            if not call_id or call_id not in seen_tool_call_ids:
+                continue
+            row = {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": str(msg.get("content") or ""),
+            }
+            if msg.get("name"):
+                row["name"] = str(msg.get("name"))
+            result.append(row)
+            continue
+        if role == "user":
+            result.append({"role": "user", "content": str(msg.get("content") or "")})
+    return result
+
+
 def _trim_conversation_by_budget(conversation, max_chars, keep_rounds, state=None, round_idx=None):
     if not isinstance(conversation, list):
         return []
@@ -1018,159 +1187,79 @@ def _trim_conversation_by_budget(conversation, max_chars, keep_rounds, state=Non
             continue
         role = str(item.get("role") or "").strip()
         content = str(item.get("content") or "")
-        if role not in ("user", "assistant"):
+        if role not in ("user", "assistant", "tool"):
             continue
-        cleaned.append({"role": role, "content": content})
+        row = {"role": role, "content": content}
+        if role == "assistant":
+            tool_calls = item.get("tool_calls") if isinstance(item.get("tool_calls"), list) else []
+            if tool_calls:
+                row["tool_calls"] = _safe_json_copy(tool_calls, default=[])
+        if role == "tool":
+            row["tool_call_id"] = str(item.get("tool_call_id") or "")
+            if item.get("name"):
+                row["name"] = str(item.get("name"))
+        cleaned.append(row)
 
     if not cleaned:
         return []
+    cleaned = _drop_orphan_tool_messages(cleaned)
     if _conversation_total_chars(cleaned) <= max_chars:
         return cleaned
 
+    # 严禁本地裁剪：仅允许基于完整历史生成摘要，再整体替换上下文。
     _ = keep_rounds
-
-    latest_assistant_idx = -1
-    for idx in range(len(cleaned) - 1, -1, -1):
-        if cleaned[idx].get("role") == "assistant":
-            latest_assistant_idx = idx
-            break
-
-    latest_code_content = ""
-    if latest_assistant_idx >= 0:
-        latest_code_content = _extract_latest_code_only_from_assistant(
-            cleaned[latest_assistant_idx].get("content") or ""
-        )
-
-    if latest_assistant_idx >= 0:
-        summary_source = cleaned[:latest_assistant_idx] + cleaned[latest_assistant_idx + 1:]
-    else:
-        summary_source = cleaned
-
-    summary_budget = min(_AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS, max(600, int(max_chars * 0.35)))
-    summary_text = (
-        _summarize_history_with_qwen35(
-            summary_source,
-            target_chars=summary_budget,
-            state=state,
-            round_idx=round_idx,
-            event_label="历史摘要",
-        )
-        if summary_source else ""
+    summary_budget = min(_AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS, max(600, int(max_chars * 0.9)))
+    full_summary = _summarize_history_with_qwen35(
+        cleaned,
+        target_chars=summary_budget,
+        state=state,
+        round_idx=round_idx,
+        event_label="全量历史摘要",
     )
-
-    rebuilt = []
-    if summary_text:
-        rebuilt.append({
-            "role": "user",
-            "content": "【历史信息摘要（qwen3.5-plus）】\n" + summary_text,
-        })
-
-    if latest_code_content:
-        rebuilt.append({
+    if full_summary:
+        return [{
             "role": "assistant",
-            "content": "【上一版最新代码】\n" + latest_code_content,
-        })
-    elif cleaned:
-        rebuilt.append(cleaned[-1])
-
-    if _conversation_total_chars(rebuilt) <= max_chars:
-        return rebuilt
-
-    # 优先保留“最新代码”，超预算时先移除摘要。
-    if len(rebuilt) > 1 and rebuilt[-1].get("role") == "assistant":
-        code_only = [rebuilt[-1]]
-        if _conversation_total_chars(code_only) <= max_chars:
-            return code_only
-        rebuilt = code_only
-
-    # 极端超长时兜底截断，避免任务无法继续。
-    fallback = []
-    for idx, msg in enumerate(rebuilt):
-        limit = max(220, int(max_chars / max(1, len(rebuilt))))
-        if idx == len(rebuilt) - 1 and msg.get("role") == "assistant":
-            limit = max(limit, int(limit * 1.8))
-        fallback.append({
-            "role": msg.get("role"),
-            "content": _truncate_text(msg.get("content"), limit=limit),
-        })
-    while len(fallback) > 1 and _conversation_total_chars(fallback) > max_chars:
-        del fallback[0]
-    return fallback
+            "content": "【历史信息摘要（qwen3.5-plus）】\n" + full_summary,
+        }]
+    return cleaned
 
 
-def _build_round_feedback_user_message(problem, round_idx, eval_summary, working_memory, ai_tutor_feedback=""):
-    core_hints = []
-    if isinstance(working_memory, dict):
-        maybe_hints = working_memory.get("core_hints")
-        if isinstance(maybe_hints, list):
-            core_hints = [str(x) for x in maybe_hints if str(x).strip()]
-    hint_text = "\n".join([f"- {h}" for h in core_hints[:8]]) if core_hints else "无"
-
-    failed_text = []
-    for fp in (eval_summary.get("failed_points") or [])[:4]:
-        if not isinstance(fp, dict):
-            continue
-        stderr = _truncate_text(fp.get("stderr"), limit=140)
-        stdout = _truncate_text(fp.get("stdout"), limit=140)
-        failed_text.append(
-            f"- 测试点#{fp.get('index')} status={fp.get('status')} stderr={stderr} stdout={stdout}"
+def _build_conversation_messages(
+    conversation,
+    round_idx,
+    working_memory,
+    latest_submission_id=None,
+    latest_summary=None,
+    last_ai_tutor_feedback="",
+):
+    system_lines = [
+        "你现在是一个可调用工具的 OJ 自主 Agent。",
+        "请自行决策并调用工具迭代解题。",
+        "代码仓库里有提前准备好的头文件，如有需要可以通过 #include \"文件名\" 直接引用",
+        "目标：产出能通过评测的代码。",
+        "要求：1. 不要臆造代码仓库文件或评测结果。 2. 题目给的的提示非常重要，请一定要参考题目提示来完成或者修复代码。",
+    ]
+    if _AGENT_MEMORY_ENABLED and isinstance(working_memory, dict):
+        core_hints = working_memory.get("core_hints")
+        if isinstance(core_hints, list) and core_hints:
+            system_lines.append("题目硬约束（必须满足）：")
+            for item in core_hints[:8]:
+                system_lines.append(f"- {str(item)}")
+    if latest_submission_id:
+        system_lines.append(f"最近一次 submission_id: {latest_submission_id}")
+    if isinstance(latest_summary, dict):
+        system_lines.append(
+            "最近评测摘要："
+            f"status={latest_summary.get('status')} "
+            f"score={latest_summary.get('score')} "
+            f"passed={latest_summary.get('accepted_count')}/{latest_summary.get('total_count')}"
         )
-    failed_joined = "\n".join(failed_text) if failed_text else "- 无失败点详情"
-    tutor_block = _truncate_text(ai_tutor_feedback, limit=1400) if ai_tutor_feedback else "无"
-    lang = (problem.get("lang") or "matlab").lower()
+    if last_ai_tutor_feedback:
+        system_lines.append("最近 AI 助教建议（可参考）：")
+        system_lines.append(_truncate_text(last_ai_tutor_feedback, limit=600))
+    system_lines.append(f"当前推理轮次：{int(round_idx)}")
 
-    return (
-        "代码没有通过测试，我接下来给你题目提示和本轮评测结果，请你定位问题并修复 bug。此外，我还会给你来自 AI 助教的建议，你可以酌情采纳。\n\n"
-        "【题目提示】\n"
-        f"{hint_text}\n\n"
-        "【本轮评测结果】\n"
-        f"- 目标语言: {lang}\n"
-        f"- 题目标题: {problem.get('title', '')}\n"
-        f"- 状态: {eval_summary.get('status')}\n"
-        f"- 分数: {eval_summary.get('score')}\n"
-        f"- 通过数: {eval_summary.get('accepted_count')}/{eval_summary.get('total_count')}\n\n"
-        "【前4个错误点】\n"
-        f"{failed_joined}\n\n"
-        "【AI 助教建议】\n"
-        f"{tutor_block}\n\n"
-        "【要求】\n"
-        "- 不要重复前几轮已经犯过的错误。\n"
-        "- 代码必须可编译。\n\n"
-        "【输出格式】\n"
-        "【诊断】\n"
-        "1) 问题：... 修复方案：..."
-        "2) 问题：... 修复方案：...\n"
-        "【代码】\n"
-        "```语言\n"
-        "<完整代码>\n"
-        "```"
-    )
-
-
-def _build_conversation_messages(conversation, round_idx, working_memory):
-    if round_idx == 1:
-        system_content = (
-            "You are a helpful coding agent. "
-            "Current turn is round 1: output final source code only."
-        )
-    else:
-        system_content = (
-            "You are a helpful coding agent. "
-            "Current turn is a retry round: output must be structured diagnosis + complete source code. "
-            "If earlier messages contain round-1-only format requirements, ignore them and follow current turn format."
-        )
-        if _AGENT_MEMORY_ENABLED:
-            system_content += " Do not repeat mistakes from earlier rounds."
-        if isinstance(working_memory, dict):
-            core_hints = working_memory.get("core_hints")
-            if isinstance(core_hints, list) and core_hints:
-                hint_lines = "\n".join([f"- {str(x)}" for x in core_hints[:6]])
-                system_content += (
-                    "\nTreat the following problem hints as highest-priority hard constraints:\n"
-                    f"{hint_lines}"
-                )
-
-    return [{"role": "system", "content": system_content}] + list(conversation or [])
+    return [{"role": "system", "content": "\n".join(system_lines)}] + list(conversation or [])
 
 
 def _summarize_submission(submission):
@@ -1290,31 +1379,450 @@ def _tool_query_test_results(submission_id, timeout_seconds=240):
     return {"timeout": True, "completed": False, **_summarize_submission(latest)}
 
 
-def _build_initial_prompt(problem, core_hints=None):
+def _tool_list_repository_files(user_id, limit=200):
+    safe_limit = _clamp_int(limit, 200, min_value=1, max_value=500)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, filename, file_size, created_at, updated_at
+                FROM user_code_repository
+                WHERE user_id = %s
+                ORDER BY filename
+                LIMIT %s
+                """,
+                (user_id, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+            files = []
+            for row in rows:
+                item = {
+                    "id": row.get("id"),
+                    "filename": row.get("filename"),
+                    "file_size": row.get("file_size", 0),
+                    "file_size_kb": round(float(row.get("file_size", 0) or 0) / 1024.0, 2),
+                }
+                created_at = row.get("created_at")
+                updated_at = row.get("updated_at")
+                item["created_at"] = created_at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(created_at, "strftime") else str(created_at or "")
+                item["updated_at"] = updated_at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(updated_at, "strftime") else str(updated_at or "")
+                files.append(item)
+            return files
+    finally:
+        conn.close()
+
+
+def _tool_read_repository_file(user_id, filename="", file_id=None, max_chars=12000):
+    safe_max_chars = _clamp_int(max_chars, 12000, min_value=200, max_value=50000)
+    use_filename = str(filename or "").strip()
+    use_file_id = None
+    try:
+        if file_id is not None and str(file_id).strip() != "":
+            use_file_id = int(file_id)
+    except Exception:
+        use_file_id = None
+    if not use_filename and use_file_id is None:
+        raise RuntimeError("filename 与 file_id 至少提供一个。")
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if use_file_id is not None:
+                cursor.execute(
+                    """
+                    SELECT id, filename, file_content, file_size
+                    FROM user_code_repository
+                    WHERE id = %s AND user_id = %s
+                    LIMIT 1
+                    """,
+                    (use_file_id, user_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, filename, file_content, file_size
+                    FROM user_code_repository
+                    WHERE filename = %s AND user_id = %s
+                    LIMIT 1
+                    """,
+                    (use_filename, user_id),
+                )
+            row = cursor.fetchone()
+            if not row:
+                raise RuntimeError("目标文件不存在。")
+            content = str(row.get("file_content") or "")
+            return {
+                "id": row.get("id"),
+                "filename": row.get("filename"),
+                "file_size": row.get("file_size", len(content.encode("utf-8"))),
+                "content": _truncate_text(content, limit=safe_max_chars),
+                "truncated": len(content) > safe_max_chars,
+            }
+    finally:
+        conn.close()
+
+
+def _tool_update_repository_file(user_id, content, filename="", file_id=None):
+    new_content = str(content or "")
+    use_filename = str(filename or "").strip()
+    use_file_id = None
+    try:
+        if file_id is not None and str(file_id).strip() != "":
+            use_file_id = int(file_id)
+    except Exception:
+        use_file_id = None
+    if not use_filename and use_file_id is None:
+        raise RuntimeError("filename 与 file_id 至少提供一个。")
+
+    file_size = len(new_content.encode("utf-8"))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if use_file_id is not None:
+                cursor.execute(
+                    """
+                    UPDATE user_code_repository
+                    SET file_content = %s, file_size = %s
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (new_content, file_size, use_file_id, user_id),
+                )
+                if cursor.rowcount == 0:
+                    raise RuntimeError("目标文件不存在。")
+                cursor.execute(
+                    """
+                    SELECT id, filename
+                    FROM user_code_repository
+                    WHERE id = %s AND user_id = %s
+                    LIMIT 1
+                    """,
+                    (use_file_id, user_id),
+                )
+                row = cursor.fetchone() or {}
+            else:
+                cursor.execute(
+                    """
+                    UPDATE user_code_repository
+                    SET file_content = %s, file_size = %s
+                    WHERE filename = %s AND user_id = %s
+                    """,
+                    (new_content, file_size, use_filename, user_id),
+                )
+                if cursor.rowcount == 0:
+                    raise RuntimeError("目标文件不存在。")
+                cursor.execute(
+                    """
+                    SELECT id, filename
+                    FROM user_code_repository
+                    WHERE filename = %s AND user_id = %s
+                    LIMIT 1
+                    """,
+                    (use_filename, user_id),
+                )
+                row = cursor.fetchone() or {}
+            conn.commit()
+            return {
+                "id": row.get("id"),
+                "filename": row.get("filename"),
+                "file_size": file_size,
+                "updated": True,
+            }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _tool_search_repository(user_id, pattern, max_files=500, max_matches=120):
+    expr = str(pattern or "").strip()
+    if not expr:
+        raise RuntimeError("pattern 不能为空。")
+    safe_max_files = _clamp_int(max_files, 500, min_value=1, max_value=1000)
+    safe_max_matches = _clamp_int(max_matches, 120, min_value=1, max_value=1000)
+    try:
+        regex = re.compile(expr, flags=re.MULTILINE)
+    except re.error as e:
+        raise RuntimeError(f"正则表达式无效: {e}") from e
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, filename, file_content
+                FROM user_code_repository
+                WHERE user_id = %s
+                ORDER BY filename
+                LIMIT %s
+                """,
+                (user_id, safe_max_files),
+            )
+            rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+
+    matched = []
+    for row in rows:
+        filename = str(row.get("filename") or "")
+        content = str(row.get("file_content") or "")
+        for m in regex.finditer(content):
+            start = int(m.start())
+            end = int(m.end())
+            line_no = content.count("\n", 0, start) + 1
+            last_nl = content.rfind("\n", 0, start)
+            col_no = start + 1 if last_nl < 0 else (start - last_nl)
+            snippet_left = max(0, start - 60)
+            snippet_right = min(len(content), end + 60)
+            snippet = content[snippet_left:snippet_right]
+            snippet = snippet.replace("\r", "")
+            matched.append({
+                "file_id": row.get("id"),
+                "filename": filename,
+                "line": int(line_no),
+                "column": int(col_no),
+                "match_text": _truncate_text(m.group(0), limit=160),
+                "snippet": _truncate_text(snippet, limit=280),
+            })
+            if len(matched) >= safe_max_matches:
+                break
+        if len(matched) >= safe_max_matches:
+            break
+
+    return {
+        "pattern": expr,
+        "scanned_files": len(rows),
+        "match_count": len(matched),
+        "matches": matched,
+    }
+
+
+def _tool_get_knowledge(question, max_chars=1800):
+    query = str(question or "").strip()
+    if not query:
+        raise RuntimeError("question 不能为空。")
+    safe_max_chars = _clamp_int(max_chars, 1800, min_value=300, max_value=6000)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是领域知识专家，职责是回答知识性问题，模拟联网搜索后的专家答复。"
+            ),
+        },
+        {"role": "user", "content": query},
+    ]
+    answer = _call_qwen3_5_plus_text(messages, timeout=120)
+    return {
+        "question": query,
+        "answer": _truncate_text(answer, limit=safe_max_chars),
+    }
+
+
+def _tool_planning(messages):
+    if not isinstance(messages, list) or not messages:
+        raise RuntimeError("planning 缺少可用 messages。")
+    plan_messages = _safe_json_copy(messages, default=[])
+    if not isinstance(plan_messages, list):
+        plan_messages = []
+    plan_messages.append({
+        "role": "user",
+        "content": "请为我生成一个可执行的代码计划，帮助我完成这道编程题。请充分利用我给你提供的代码仓库，将计划描述清楚。你可以使用自然语言，也可以使用代码语言，也可以二者混杂，总之就是要清晰地表述完成这道编程题的计划",
+    })
+    plan_text = _call_qwen3_5_plus_text(plan_messages, timeout=120, enable_thinking=True)
+    return {
+        "plan": str(plan_text or ""),
+    }
+
+
+def _safe_load_tool_arguments(arguments):
+    if isinstance(arguments, dict):
+        return arguments
+    if arguments is None:
+        return {}
+    if isinstance(arguments, str):
+        text = arguments.strip()
+        if not text:
+            return {}
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _build_agent_react_tools():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_latest_code",
+                "description": "读取当前保存的最新代码。",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "update_code",
+                "description": "更新当前最新代码。默认整段替换。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "完整代码文本"},
+                        "note": {"type": "string", "description": "本次修改说明"},
+                    },
+                    "required": ["code"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_evaluation",
+                "description": "提交当前代码到评测系统并等待评测结果。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "可选。若提供则先覆盖当前代码再提交"},
+                        "timeout_seconds": {"type": "integer", "description": "等待评测超时时间，默认 300 秒"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_repository_files",
+                "description": "读取当前用户代码仓库文件列表。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "最多返回多少个文件，默认 200"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_repository_file",
+                "description": "读取用户代码仓库中的单个文件内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "文件名"},
+                        "file_id": {"type": "integer", "description": "文件 id，和 filename 二选一"},
+                        "max_chars": {"type": "integer", "description": "返回内容最大字符数，默认 12000"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "update_repository_file",
+                "description": "修改用户代码仓库中的单个文件内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "文件名"},
+                        "file_id": {"type": "integer", "description": "文件 id，和 filename 二选一"},
+                        "content": {"type": "string", "description": "新的完整文件内容"},
+                    },
+                    "required": ["content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_repository",
+                "description": "在用户代码仓库全部文件中按正则表达式搜索。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "正则表达式"},
+                        "max_files": {"type": "integer", "description": "最多扫描的文件数，默认 500"},
+                        "max_matches": {"type": "integer", "description": "最多返回匹配条目数，默认 120"},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_knowledge",
+                "description": "向专家咨询知识性问题。专家只回答知识，不做代码调试。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": "要咨询的知识问题"},
+                        "max_chars": {"type": "integer", "description": "回答最大字符数，默认 1800"},
+                    },
+                    "required": ["question"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "planning",
+                "description": "向一个很厉害的专家询问执行计划。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+    ]
+
+
+def _build_initial_prompt(problem, core_hints=None, repository_filenames=None):
     lang = (problem.get("lang") or "matlab").lower()
     initial_code = (problem.get("initial_code") or "").strip()
+    title = str(problem.get("title", "") or "").strip()
+    content = str(problem.get("content", "") or "").strip()
     hint_lines = _dedupe_keep_order(core_hints or [])[:8]
-    hint_part = ""
+    lines = [
+        f"我现在要用 {lang} 语言写一道编程题，题目标题是 {title}，题目描述如下：",
+        content,
+    ]
+    if initial_code:
+        lines.extend([
+            "",
+            "题目提供了模板，请基于这个模板补全可运行的代码：",
+            f"```{lang}",
+            initial_code,
+            "```",
+        ])
     if hint_lines:
-        hint_part = "题目提示（最高优先级，必须先满足）：\n" + "\n".join([f"- {h}" for h in hint_lines]) + "\n\n"
-    initial_code_part = (
-        f"\n\n题目初始代码（你必须基于此代码继续实现，而不是忽略它）：\n{initial_code}\n"
-        if initial_code else
-        "\n\n题目未提供初始代码，可自行从零实现。\n"
-    )
-    return (
-        "你是一个 ACM/OJ 解题助手。"
-        "请根据题目描述输出可通过评测的完整代码。"
-        "当前是首轮：只输出完整代码，不要解释。"
-        "若后续用户消息明确要求“诊断+代码”格式，以后续消息为准。\n\n"
-        f"目标语言: {lang}\n"
-        f"题目标题: {problem.get('title', '')}\n"
-        "题目描述如下：\n"
-        f"{problem.get('content', '')}\n\n"
-        f"{hint_part}"
-        "如果题目提供了模板，你必须在模板风格下补全可运行代码。"
-        f"{initial_code_part}"
-    )
+        hint_text = "\n".join([f"- {h}" for h in hint_lines])
+        lines.extend([
+            "",
+            "出题人善意地给了一些提示：",
+            hint_text,
+            "在你决策的过程中，请首先考虑这些提示，确保提示里的每条内容你都做到了。我重复一遍这些提示：",
+            hint_text,
+        ])
+    repo_names = []
+    for item in (repository_filenames or []):
+        name = str(item or "").strip()
+        if name:
+            repo_names.append(name)
+    repo_names = _dedupe_keep_order(repo_names)[:200]
+    repo_list_text = "\n".join([f"- {name}" for name in repo_names]) if repo_names else "- （暂无文件）"
+    lines.extend([
+        "",
+        "我的代码仓库里目前有这些文件：",
+        repo_list_text,
+        "你可以通过 #include \"文件名\" 引用它们，然后就可以直接使用里面提供的函数。",
+        "请首先确认我的代码仓库里有没有适用于本题的工具，在确认代码仓库里没有可用工具之后，再自己写代码，避免重复造轮子。",
+        "当你理解了任务意图，并完全理解了我提供的已有工具之后，请向专家询问计划，并按照计划完成代码。",
+    ])
+    return "\n".join(lines).strip()
 
 
 def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
@@ -1331,8 +1839,9 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
         try:
             cfg_rounds = int(AGENT_MAX_ROUNDS)
         except Exception:
-            cfg_rounds = 3
+            cfg_rounds = 8
         max_rounds = max(1, cfg_rounds)
+        max_tool_calls = max(8, max_rounds * 8)
 
         state = {
             "task_id": task_id,
@@ -1383,7 +1892,6 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
 
         attempts = []
         final_submission_id = None
-        last_ai_tutor_feedback = ""
         core_hints = _extract_problem_hints(problem)
         working_memory = _init_working_memory(core_hints=core_hints)
         state["working_memory"] = working_memory
@@ -1394,9 +1902,60 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 event_type="core_hints",
                 details={"core_hints": core_hints},
             )
-        conversation = [{"role": "user", "content": _build_initial_prompt(problem, core_hints=core_hints)}]
+
+        latest_code = str(problem.get("initial_code") or "")
+        runtime = {
+            "latest_code": latest_code,
+            "latest_submission_id": None,
+            "latest_summary": None,
+            "last_ai_tutor_feedback": "",
+            "submission_code_map": {},
+            "accepted": False,
+        }
+
+        if latest_code.strip():
+            _push_agent_event(
+                state,
+                f"检测到题目初始代码，长度={len(latest_code)} 字符",
+                event_type="initial_code",
+            )
+
+        repository_filenames = []
+        try:
+            repo_rows = _tool_list_repository_files(user_id=user["id"], limit=200)
+            if isinstance(repo_rows, list):
+                for row in repo_rows:
+                    if isinstance(row, dict):
+                        name = str(row.get("filename") or "").strip()
+                        if name:
+                            repository_filenames.append(name)
+            if repository_filenames:
+                _push_agent_event(
+                    state,
+                    f"已读取代码仓库文件列表，共 {len(repository_filenames)} 个文件",
+                    event_type="repository_files",
+                )
+        except Exception as repo_err:
+            _push_agent_event(
+                state,
+                f"读取代码仓库文件列表失败: {repo_err}",
+                level="warning",
+                event_type="repository_files_error",
+            )
+
+        conversation = [{
+            "role": "user",
+            "content": _build_initial_prompt(
+                problem,
+                core_hints=core_hints,
+                repository_filenames=repository_filenames,
+            ),
+        }]
+        tools = _build_agent_react_tools()
+        total_tool_calls = 0
 
         for round_idx in range(1, max_rounds + 1):
+            state["round"] = round_idx
             before_chars = _conversation_total_chars(conversation)
             trimmed_conversation = _trim_conversation_by_budget(
                 conversation,
@@ -1414,12 +1973,19 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         f"保留消息数={len(conversation)}"
                     ),
                 )
-            messages = _build_conversation_messages(conversation, round_idx, working_memory)
-            api_request_body = _build_api_request_payload(messages)
+            messages = _build_conversation_messages(
+                conversation,
+                round_idx=round_idx,
+                working_memory=working_memory,
+                latest_submission_id=runtime.get("latest_submission_id"),
+                latest_summary=runtime.get("latest_summary"),
+                last_ai_tutor_feedback=runtime.get("last_ai_tutor_feedback") or "",
+            )
+            api_request_body = _build_api_request_payload(messages, tools=tools)
             _append_api_call_log(state, round_idx, api_request_body, api_type="solve")
             _push_agent_event(
                 state,
-                f"第 {round_idx}/{max_rounds} 轮：生成代码中",
+                f"第 {round_idx}/{max_rounds} 轮：ReAct 决策中",
                 round=round_idx,
                 event_type="api_request",
                 details={
@@ -1430,7 +1996,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             )
 
             try:
-                model_reply = _call_qwen3_coder_plus(messages)
+                assistant_output = _call_qwen3_coder_plus_with_tools(messages, tools=tools)
             except Exception as e:
                 msg = f"第 {round_idx} 轮模型调用失败: {e}"
                 _push_agent_event(state, msg, level="error", status="Failed")
@@ -1441,162 +2007,267 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                     "attempts": attempts,
                 }
 
-            conversation.append({"role": "assistant", "content": model_reply})
-            code = _extract_code_from_model_reply(model_reply, problem.get("lang"))
-            diag = _extract_retry_diagnosis(model_reply) if round_idx > 1 else ""
-            if round_idx > 1:
-                if diag:
-                    _push_agent_event(state, f"模型诊断摘要：{diag}")
-            if not code.strip():
-                msg = f"第 {round_idx} 轮未生成有效代码"
-                _push_agent_event(state, msg, level="error", status="Failed")
-                return {
-                    "success": False,
-                    "message": msg,
-                    "task_id": task_id,
-                    "attempts": attempts,
-                }
+            assistant_text = str(assistant_output.get("content") or "").strip()
+            tool_calls = assistant_output.get("tool_calls") if isinstance(assistant_output.get("tool_calls"), list) else []
 
-            _push_agent_event(state, f"第 {round_idx} 轮代码已生成，准备提交")
+            assistant_message = {"role": "assistant", "content": assistant_text}
+            if tool_calls:
+                assistant_message["tool_calls"] = _safe_json_copy(tool_calls, default=[])
+            conversation.append(assistant_message)
 
-            try:
-                submission_id = _tool_submit_code(problem, requested_by, code, evaluate_submission_task)
-            except Exception as e:
-                msg = f"第 {round_idx} 轮提交失败: {e}"
-                _push_agent_event(state, msg, level="error", status="Failed")
-                return {
-                    "success": False,
-                    "message": msg,
-                    "task_id": task_id,
-                    "attempts": attempts,
-                }
+            if assistant_text:
+                _push_agent_event(state, f"第 {round_idx} 轮模型回复：{_truncate_text(assistant_text, limit=200)}")
 
-            final_submission_id = submission_id
-            _push_agent_event(
-                state,
-                f"第 {round_idx} 轮已提交，submission_id={submission_id}",
-                latest_submission_id=submission_id,
-                final_submission_id=submission_id,
-            )
+            if not tool_calls:
+                _push_agent_event(state, f"第 {round_idx} 轮未调用工具")
+                break
 
-            summary = _tool_query_test_results(submission_id, timeout_seconds=300)
-            compact_summary = _compact_summary(summary)
-            failure_signature = _build_failure_signature(compact_summary)
-            _push_agent_event(
-                state,
-                (
-                    f"第 {round_idx} 轮评测完成："
-                    f"状态={compact_summary.get('status')} 分数={compact_summary.get('score')}"
-                ),
-            )
-            ai_tutor_feedback = ""
-            is_accepted_round = str(compact_summary.get("status") or "").strip() == "Accepted"
-            evaluation_completed = bool(summary.get("completed")) and not bool(summary.get("timeout"))
-            should_call_ai_tutor = evaluation_completed and (not is_accepted_round)
-            if should_call_ai_tutor:
+            for tool_call in tool_calls:
+                if total_tool_calls >= max_tool_calls:
+                    break
+                total_tool_calls += 1
+
+                call_id = str(tool_call.get("id") or "").strip()
+                if not call_id:
+                    call_id = f"tool_call_{round_idx}_{total_tool_calls}"
+                function_data = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                func_name = str((function_data or {}).get("name") or "").strip()
+                arguments = _safe_load_tool_arguments((function_data or {}).get("arguments"))
+
+                _push_agent_event(
+                    state,
+                    f"第 {round_idx} 轮调用工具：{func_name}",
+                    event_type="tool_call",
+                    details={
+                        "round": round_idx,
+                        "tool_name": func_name,
+                        "tool_call_id": call_id,
+                        "arguments": arguments,
+                        "model_tool_call": _safe_json_copy(tool_call, default={}),
+                    },
+                )
+
+                tool_result = {"success": False, "message": f"未知工具：{func_name}"}
                 try:
-                    submission_detail = get_submission_by_id(submission_id) or {}
-                    ai_tutor_feedback = _simulate_user_click_ai_tutor(
-                        problem=problem,
-                        submission=submission_detail,
-                        user=user,
-                        user_code=code,
-                        submission_id=submission_id,
-                    )
-                except Exception as tutor_err:
+                    if func_name == "read_latest_code":
+                        code_text = str(runtime.get("latest_code") or "")
+                        tool_result = {
+                            "success": True,
+                            "has_code": bool(code_text.strip()),
+                            "language": (problem.get("lang") or "matlab").lower(),
+                            "chars": len(code_text),
+                            "latest_code": code_text,
+                        }
+                    elif func_name == "update_code":
+                        code_text = str(arguments.get("code") or "")
+                        if not code_text.strip():
+                            raise RuntimeError("code 不能为空。")
+                        runtime["latest_code"] = code_text
+                        tool_result = {
+                            "success": True,
+                            "message": "代码已更新",
+                            "chars": len(code_text),
+                            "note": _truncate_text(arguments.get("note"), limit=200),
+                        }
+                    elif func_name == "submit_evaluation":
+                        if arguments.get("code") is not None:
+                            incoming_code = str(arguments.get("code") or "")
+                            if incoming_code.strip():
+                                runtime["latest_code"] = incoming_code
+                        code_text = str(runtime.get("latest_code") or "")
+                        if not code_text.strip():
+                            raise RuntimeError("当前没有可提交代码，请先调用 update_code。")
+
+                        timeout_seconds = _clamp_int(arguments.get("timeout_seconds"), 300, min_value=60, max_value=900)
+                        submission_id = _tool_submit_code(problem, requested_by, code_text, evaluate_submission_task)
+                        final_submission_id = submission_id
+                        runtime["latest_submission_id"] = submission_id
+                        runtime["submission_code_map"][str(submission_id)] = code_text
+                        _push_agent_event(
+                            state,
+                            f"第 {round_idx} 轮已提交，submission_id={submission_id}",
+                            latest_submission_id=submission_id,
+                            final_submission_id=submission_id,
+                        )
+
+                        summary = _tool_query_test_results(submission_id, timeout_seconds=timeout_seconds)
+                        compact_summary = _compact_summary(summary)
+                        runtime["latest_summary"] = compact_summary
+                        is_accepted = str(compact_summary.get("status") or "").strip() == "Accepted"
+                        runtime["accepted"] = is_accepted
+
+                        diag = _extract_retry_diagnosis(assistant_text) or _truncate_text(assistant_text, limit=360)
+                        failure_signature = _build_failure_signature(compact_summary)
+                        attempt_item = {
+                            "round": len(attempts) + 1,
+                            "model_round": round_idx,
+                            "submission_id": submission_id,
+                            "summary": compact_summary,
+                            "diagnosis": diag,
+                            "failure_signature": failure_signature,
+                            "api_request_body": api_request_body,
+                        }
+                        attempts.append(attempt_item)
+                        state["attempts"] = attempts
+
+                        if _AGENT_MEMORY_ENABLED:
+                            memory_delta = _update_working_memory(
+                                working_memory,
+                                round_idx=round_idx,
+                                diagnosis=diag,
+                                eval_summary=compact_summary,
+                                latest_code=code_text,
+                            )
+                            state["working_memory"] = working_memory
+                            attempts[-1]["memory"] = _compact_working_memory_for_attempt(working_memory)
+                            _push_agent_event(
+                                state,
+                                (
+                                    f"工作记忆更新：signature={memory_delta.get('signature')} "
+                                    f"patterns={memory_delta.get('pattern_count')} "
+                                    f"high_risk={memory_delta.get('high_risk_count')} "
+                                    f"do_not_repeat={memory_delta.get('do_not_repeat_count')}"
+                                ),
+                            )
+
+                        _push_agent_event(
+                            state,
+                            (
+                                f"第 {round_idx} 轮评测完成："
+                                f"状态={compact_summary.get('status')} 分数={compact_summary.get('score')}"
+                            ),
+                            latest_submission_id=submission_id,
+                            final_submission_id=submission_id,
+                        )
+
+                        if summary.get("timeout"):
+                            _push_agent_event(
+                                state,
+                                f"第 {round_idx} 轮评测等待超时",
+                                level="warning",
+                                event_type="judge_timeout",
+                                details={"round": round_idx, "submission_id": submission_id},
+                            )
+
+                        if is_accepted:
+                            msg = "任务已成功完成"
+                            _push_agent_event(
+                                state,
+                                f"第 {round_idx} 轮提交已通过全部测试点，结束任务",
+                                level="success",
+                                status="Completed",
+                                event_type="accepted",
+                                details={
+                                    "round": round_idx,
+                                    "submission_id": submission_id,
+                                    "status": compact_summary.get("status"),
+                                    "score": compact_summary.get("score"),
+                                },
+                                final_submission_id=submission_id,
+                            )
+                            return {
+                                "success": True,
+                                "message": msg,
+                                "task_id": task_id,
+                                "final_submission_id": submission_id,
+                                "attempts": attempts,
+                            }
+
+                        tool_result = {
+                            "success": True,
+                            "submission_id": submission_id,
+                            "timeout": bool(summary.get("timeout")),
+                            "completed": bool(summary.get("completed")),
+                            **compact_summary,
+                        }
+                    elif func_name == "ask_ai_tutor":
+                        tool_result = {
+                            "success": False,
+                            "disabled": True,
+                            "message": "ask_ai_tutor 功能暂时禁用",
+                        }
+                    elif func_name == "list_repository_files":
+                        files = _tool_list_repository_files(
+                            user_id=user["id"],
+                            limit=arguments.get("limit", 200),
+                        )
+                        tool_result = {"success": True, "count": len(files), "files": files}
+                    elif func_name == "read_repository_file":
+                        file_data = _tool_read_repository_file(
+                            user_id=user["id"],
+                            filename=arguments.get("filename", ""),
+                            file_id=arguments.get("file_id"),
+                            max_chars=arguments.get("max_chars", 12000),
+                        )
+                        tool_result = {"success": True, **file_data}
+                    elif func_name == "update_repository_file":
+                        updated = _tool_update_repository_file(
+                            user_id=user["id"],
+                            filename=arguments.get("filename", ""),
+                            file_id=arguments.get("file_id"),
+                            content=arguments.get("content", ""),
+                        )
+                        tool_result = {"success": True, **updated}
+                    elif func_name == "search_repository":
+                        result = _tool_search_repository(
+                            user_id=user["id"],
+                            pattern=arguments.get("pattern", ""),
+                            max_files=arguments.get("max_files", 500),
+                            max_matches=arguments.get("max_matches", 120),
+                        )
+                        tool_result = {"success": True, **result}
+                    elif func_name == "get_knowledge":
+                        knowledge = _tool_get_knowledge(
+                            question=arguments.get("question", ""),
+                            max_chars=arguments.get("max_chars", 1800),
+                        )
+                        tool_result = {"success": True, **knowledge}
+                    elif func_name == "planning":
+                        planning_result = _tool_planning(messages=messages)
+                        tool_result = {"success": True, **planning_result}
+                except Exception as tool_err:
+                    tool_result = {"success": False, "message": f"{func_name} 执行失败: {tool_err}"}
                     _push_agent_event(
                         state,
-                        f"第 {round_idx} 轮 AI 助教调用失败: {tutor_err}",
+                        tool_result["message"],
                         level="warning",
-                        event_type="ai_tutor_error",
+                        event_type="tool_error",
+                        details={"round": round_idx, "tool_name": func_name},
                     )
-                if ai_tutor_feedback:
-                    last_ai_tutor_feedback = ai_tutor_feedback
-                    _push_agent_event(
-                        state,
-                        f"第 {round_idx} 轮 AI 助教建议已获取",
-                        event_type="ai_tutor_feedback",
-                        details={"round": round_idx, "submission_id": submission_id, "feedback": ai_tutor_feedback},
-                    )
-            elif not evaluation_completed:
+
+                tool_content = json.dumps(tool_result, ensure_ascii=False)
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": func_name,
+                    "content": tool_content,
+                })
+
+            if total_tool_calls >= max_tool_calls:
                 _push_agent_event(
                     state,
-                    f"第 {round_idx} 轮评测未完成（等待超时），跳过 AI 助教调用",
-                    level="warning",
-                    event_type="ai_tutor_skipped",
-                    details={"round": round_idx, "submission_id": submission_id},
-                )
-
-            attempt_item = {
-                "round": round_idx,
-                "submission_id": submission_id,
-                "summary": compact_summary,
-                "diagnosis": _truncate_text(diag, limit=360) if diag else "",
-                "failure_signature": failure_signature,
-                "api_request_body": api_request_body,
-            }
-            if ai_tutor_feedback:
-                attempt_item["ai_tutor_feedback"] = ai_tutor_feedback
-            if _AGENT_MEMORY_ENABLED:
-                attempt_item["memory"] = _compact_working_memory_for_attempt(working_memory)
-            attempts.append(attempt_item)
-            state["attempts"] = attempts
-
-            if _AGENT_MEMORY_ENABLED:
-                memory_delta = _update_working_memory(
-                    working_memory,
-                    round_idx=round_idx,
-                    diagnosis=(diag + "\n" + ai_tutor_feedback).strip() if ai_tutor_feedback else diag,
-                    eval_summary=compact_summary,
-                    latest_code=code,
-                )
-                state["working_memory"] = working_memory
-                if attempts:
-                    attempts[-1]["memory"] = _compact_working_memory_for_attempt(working_memory)
-                _push_agent_event(
-                    state,
-                    (
-                        f"工作记忆更新：signature={memory_delta.get('signature')} "
-                        f"patterns={memory_delta.get('pattern_count')} "
-                        f"high_risk={memory_delta.get('high_risk_count')} "
-                        f"do_not_repeat={memory_delta.get('do_not_repeat_count')}"
-                    ),
-                )
-
-            if summary.get("status") == "Accepted":
-                msg = f"Agent 在第 {round_idx} 轮通过"
-                _push_agent_event(
-                    state,
-                    msg,
-                    level="success",
-                    status="Completed",
-                    final_submission_id=submission_id,
-                )
-                return {
-                    "success": True,
-                    "message": msg,
-                    "task_id": task_id,
-                    "final_submission_id": submission_id,
-                    "attempts": attempts,
-                }
-
-            if summary.get("timeout"):
-                _push_agent_event(
-                    state,
-                    f"第 {round_idx} 轮评测超时，提前结束",
+                    f"工具调用次数已达上限({max_tool_calls})，结束任务",
                     level="warning",
                 )
                 break
 
-            if round_idx < max_rounds:
-                feedback_user_message = _build_round_feedback_user_message(
-                    problem,
-                    round_idx=round_idx,
-                    eval_summary=compact_summary,
-                    working_memory=working_memory,
-                    ai_tutor_feedback=last_ai_tutor_feedback,
-                )
-                conversation.append({"role": "user", "content": feedback_user_message})
+        if runtime.get("accepted"):
+            msg = "任务已成功完成"
+            _push_agent_event(
+                state,
+                msg,
+                level="success",
+                status="Completed",
+                event_type="accepted",
+                final_submission_id=final_submission_id,
+            )
+            return {
+                "success": True,
+                "message": msg,
+                "task_id": task_id,
+                "final_submission_id": final_submission_id,
+                "attempts": attempts,
+            }
 
         _push_agent_event(
             state,

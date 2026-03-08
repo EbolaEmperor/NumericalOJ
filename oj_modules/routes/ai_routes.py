@@ -6,7 +6,7 @@ from datetime import datetime
 
 from flask import Blueprint, Response, jsonify, request, session
 
-from config import DASHSCOPE_API_KEY, DASHSCOPE_APP_ID, QWEN_TEXT_MODEL
+from config import AI_TUTOR_MODEL, DASHSCOPE_API_KEY, DASHSCOPE_APP_ID, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import (
     generate_ai_code_marks_from_submission_context,
 )
@@ -181,7 +181,7 @@ def ask_ai_code_marks():
             "image_mismatch_analysis": image_mismatch_analysis,
             "image_analysis_test_index": image_analysis_test_index,
             "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "model": QWEN_TEXT_MODEL,
+            "model": AI_TUTOR_MODEL,
         }
         save_submission_ai_code_marks_json(sid, cache_payload)
         return jsonify(
