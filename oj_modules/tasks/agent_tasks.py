@@ -1280,6 +1280,7 @@ def _summarize_submission(submission):
             "accepted_count": 0,
             "total_count": 0,
             "failed_points": [],
+            "test_points": [],
         }
 
     points = submission.get("test_points") or []
@@ -1288,17 +1289,33 @@ def _summarize_submission(submission):
 
     accepted = 0
     failed_points = []
+    test_points = []
     for idx, tp in enumerate(points, start=1):
         status = str((tp or {}).get("status") or "Error")
+        point_index = (tp or {}).get("test_index")
+        try:
+            point_index = int(point_index) if point_index is not None else idx
+        except Exception:
+            point_index = idx
+        point_item = {
+            "index": point_index,
+            "status": status,
+            "stdout": _truncate_text((tp or {}).get("stdout"), limit=800),
+            "stderr": _truncate_text((tp or {}).get("stderr"), limit=800),
+            "time": (tp or {}).get("time", 0),
+            "has_output_image": bool((tp or {}).get("has_output_image")),
+        }
+        test_points.append(point_item)
         if status == "Accepted":
             accepted += 1
             continue
         failed_points.append({
-            "index": idx,
+            "index": point_index,
             "status": status,
-            "stderr": _truncate_text((tp or {}).get("stderr")),
-            "stdout": _truncate_text((tp or {}).get("stdout")),
+            "stderr": point_item.get("stderr"),
+            "stdout": point_item.get("stdout"),
             "time": (tp or {}).get("time", 0),
+            "has_output_image": point_item.get("has_output_image"),
         })
 
     return {
@@ -1307,6 +1324,7 @@ def _summarize_submission(submission):
         "accepted_count": accepted,
         "total_count": len(points),
         "failed_points": failed_points,
+        "test_points": test_points,
     }
 
 
@@ -1582,8 +1600,7 @@ def _analyze_repository_file_for_agent(filename, content, max_output_chars=12000
     }
 
 
-def _tool_read_repository_file(user_id, filename="", file_id=None, max_chars=12000):
-    safe_max_chars = _clamp_int(max_chars, 12000, min_value=200, max_value=50000)
+def _load_repository_file_row(user_id, filename="", file_id=None):
     use_filename = str(filename or "").strip()
     use_file_id = None
     try:
@@ -1618,18 +1635,30 @@ def _tool_read_repository_file(user_id, filename="", file_id=None, max_chars=120
                     (use_filename, user_id),
                 )
             row = cursor.fetchone()
-            if not row:
-                raise RuntimeError("目标文件不存在。")
-            content = str(row.get("file_content") or "")
-            analyzed = _analyze_repository_file_for_agent(
-                filename=row.get("filename"),
-                content=content,
-                max_output_chars=safe_max_chars,
-                max_interfaces=120,
-            )
-            return str(analyzed.get("processed_content") or "")
     finally:
         conn.close()
+
+    if not row:
+        raise RuntimeError("目标文件不存在。")
+    return row
+
+
+def _tool_read_repository_file(user_id, filename="", file_id=None, max_chars=12000):
+    safe_max_chars = _clamp_int(max_chars, 12000, min_value=200, max_value=50000)
+    row = _load_repository_file_row(user_id=user_id, filename=filename, file_id=file_id)
+    content = str(row.get("file_content") or "")
+    analyzed = _analyze_repository_file_for_agent(
+        filename=row.get("filename"),
+        content=content,
+        max_output_chars=safe_max_chars,
+        max_interfaces=120,
+    )
+    return str(analyzed.get("processed_content") or "")
+
+
+def _tool_read_repository_file_full(user_id, filename="", file_id=None):
+    row = _load_repository_file_row(user_id=user_id, filename=filename, file_id=file_id)
+    return str(row.get("file_content") or "")
 
 
 def _tool_update_repository_file(user_id, content, filename="", file_id=None):
@@ -1877,13 +1906,27 @@ def _build_agent_react_tools():
             "type": "function",
             "function": {
                 "name": "read_repository_file",
-                "description": "读取用户代码仓库中的单个文件。",
+                "description": "读取用户代码仓库中的单个文件，返回精简后的代码，只包含函数声明与注释，不包含实现",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "filename": {"type": "string", "description": "文件名"},
                         "file_id": {"type": "integer", "description": "文件 id，和 filename 二选一"},
                         "max_chars": {"type": "integer", "description": "返回内容最大字符数，默认 12000"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_repository_file_full",
+                "description": "读取用户代码仓库中的单个文件原文全文（包含完整函数实现，不做精简，请你只在必要时调用这个函数）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "文件名"},
+                        "file_id": {"type": "integer", "description": "文件 id，和 filename 二选一"},
                     },
                 },
             },
@@ -2348,6 +2391,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             "submission_id": submission_id,
                             "timeout": bool(summary.get("timeout")),
                             "completed": bool(summary.get("completed")),
+                            "test_points": summary.get("test_points") or [],
                             **compact_summary,
                         }
                     elif func_name == "ask_ai_tutor":
@@ -2368,6 +2412,13 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             filename=arguments.get("filename", ""),
                             file_id=arguments.get("file_id"),
                             max_chars=arguments.get("max_chars", 12000),
+                        )
+                        tool_result = {"success": True, "content": file_content}
+                    elif func_name == "read_repository_file_full":
+                        file_content = _tool_read_repository_file_full(
+                            user_id=user["id"],
+                            filename=arguments.get("filename", ""),
+                            file_id=arguments.get("file_id"),
                         )
                         tool_result = {"success": True, "content": file_content}
                     elif func_name == "update_repository_file":
