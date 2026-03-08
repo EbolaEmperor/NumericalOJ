@@ -541,6 +541,16 @@ def _call_qwen3_5_plus_text(messages, timeout=120, enable_thinking=None):
     )
 
 
+def _call_qwen3_5_flash_text(messages, timeout=120, enable_thinking=False):
+    return _call_qwen_chat_model(
+        messages=messages,
+        model=AI_TUTOR_MODEL,
+        timeout=timeout,
+        empty_text_error="模型未返回有效文本。",
+        enable_thinking=enable_thinking,
+    )
+
+
 def _extract_code_from_model_reply(reply_text, lang):
     text = (reply_text or "").strip()
     if not text:
@@ -1413,6 +1423,165 @@ def _tool_list_repository_files(user_id, limit=200):
         conn.close()
 
 
+def _detect_repo_file_language(filename):
+    lower = str(filename or "").strip().lower()
+    if lower.endswith((".h", ".hpp", ".hh", ".hxx", ".c", ".cc", ".cpp", ".cxx")):
+        return "cpp"
+    if lower.endswith(".py"):
+        return "python"
+    if lower.endswith(".m"):
+        return "matlab"
+    return "text"
+
+
+def _is_header_file(filename):
+    lower = str(filename or "").strip().lower()
+    return lower.endswith((".h", ".hpp", ".hh", ".hxx"))
+
+
+def _extract_interfaces_from_header_text(content, max_items=120):
+    safe_max = _clamp_int(max_items, 120, min_value=10, max_value=500)
+    text = str(content or "")
+    lines = text.splitlines()
+    rows = []
+    for idx, raw in enumerate(lines, start=1):
+        line = str(raw or "").strip()
+        if not line or line.startswith("//"):
+            continue
+        cls = re.match(r'^\s*(class|struct)\s+([A-Za-z_]\w*)\b', line)
+        if cls:
+            rows.append({
+                "kind": str(cls.group(1)),
+                "name": str(cls.group(2)),
+                "signature": _truncate_text(line, limit=300),
+                "purpose": "",
+                "line": idx,
+            })
+            if len(rows) >= safe_max:
+                break
+            continue
+        fn = re.match(
+            r'^\s*(?:template\s*<[^>]+>\s*)?(?:[\w:\<\>\~\*&\s]+?)\s+([A-Za-z_~]\w*(?:::\w+)*)\s*\([^;{}]*\)\s*(?:const\b)?\s*(?:noexcept\b)?\s*(?:->\s*[^;{]+)?\s*;\s*$',
+            line,
+        )
+        if fn:
+            rows.append({
+                "kind": "function",
+                "name": str(fn.group(1)),
+                "signature": _truncate_text(line, limit=300),
+                "purpose": "",
+                "line": idx,
+            })
+            if len(rows) >= safe_max:
+                break
+            continue
+        if line.startswith("using ") and line.endswith(";"):
+            rows.append({
+                "kind": "using",
+                "name": "",
+                "signature": _truncate_text(line, limit=300),
+                "purpose": "",
+                "line": idx,
+            })
+            if len(rows) >= safe_max:
+                break
+            continue
+        if line.startswith("typedef ") and line.endswith(";"):
+            rows.append({
+                "kind": "typedef",
+                "name": "",
+                "signature": _truncate_text(line, limit=300),
+                "purpose": "",
+                "line": idx,
+            })
+            if len(rows) >= safe_max:
+                break
+            continue
+    return rows
+
+
+def _normalize_model_plain_code(text, language):
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    stripped = _extract_code_from_model_reply(raw, language)
+    return str(stripped or raw).strip()
+
+
+def _analyze_repository_file_for_agent(filename, content, max_output_chars=12000, max_interfaces=120):
+    safe_output_chars = _clamp_int(max_output_chars, 12000, min_value=200, max_value=50000)
+    safe_max_interfaces = _clamp_int(max_interfaces, 120, min_value=10, max_value=500)
+    raw_content = str(content or "")
+    language = _detect_repo_file_language(filename)
+    is_header = _is_header_file(filename)
+
+    safe_input_chars = min(120000, max(8000, safe_output_chars * 4))
+    source_truncated = len(raw_content) > safe_input_chars
+    if source_truncated:
+        half = safe_input_chars // 2
+        model_input = (
+            raw_content[:half]
+            + "\n\n/* ... 文件内容过长，中间部分已省略 ... */\n\n"
+            + raw_content[-half:]
+        )
+    else:
+        model_input = raw_content
+
+    if is_header:
+        system_prompt = (
+            "你是 C/C++ 头文件清理助手。"
+            "你的输出必须仍然是一个可读的头文件文本。"
+            "禁止输出 JSON，禁止输出解释，禁止输出 Markdown 代码块。"
+        )
+        user_prompt = (
+            f"文件名：{filename}\n"
+            "请将下面这个头文件处理成“仅接口定义”的形式：\n"
+            "1) 删除/改写函数实现，只保留声明（例如 `int f(){...}` 改为 `int f();`）。\n"
+            "2) 给每个函数声明和 class/struct 增加一条简短注释说明用途。\n"
+            "3) 若原文件已有注释，保留原注释文本，不要删除或改写。\n"
+            "4) 保留原有 include、宏、命名空间、类结构和接口签名。\n"
+            "5) 只输出处理后的头文件文本，不要其它内容。\n\n"
+            "原文件内容：\n"
+            f"{model_input}"
+        )
+    else:
+        system_prompt = (
+            "你是代码文件精简助手。"
+            "禁止输出 JSON，禁止输出解释，禁止输出 Markdown 代码块。"
+        )
+        user_prompt = (
+            f"文件名：{filename}\n"
+            "请输出这个文件的“接口导向视图”：保留可调用接口、类型定义与必要注释，"
+            "省略与接口无关的实现细节。若已有注释则保留原注释。"
+            "只输出处理后的代码文本，不要其它内容。\n\n"
+            "原文件内容：\n"
+            f"{model_input}"
+        )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    model_text = _call_qwen3_5_flash_text(messages, timeout=120, enable_thinking=False)
+    processed_content = _normalize_model_plain_code(model_text, language)
+    if not processed_content:
+        raise RuntimeError("文件分析失败：模型未返回可用内容。")
+
+    interfaces = _extract_interfaces_from_header_text(processed_content, max_items=safe_max_interfaces)
+    output_truncated = len(processed_content) > safe_output_chars
+    summary = f"已使用 {AI_TUTOR_MODEL} 生成接口导向视图，识别到 {len(interfaces)} 个接口符号"
+    return {
+        "analysis_model": AI_TUTOR_MODEL,
+        "analysis_enable_thinking": False,
+        "language": language,
+        "is_header": is_header,
+        "summary": _truncate_text(summary, limit=1200),
+        "interfaces": interfaces,
+        "source_truncated_for_analysis": source_truncated,
+        "processed_content": _truncate_text(processed_content, limit=safe_output_chars),
+        "processed_truncated": output_truncated,
+    }
+
+
 def _tool_read_repository_file(user_id, filename="", file_id=None, max_chars=12000):
     safe_max_chars = _clamp_int(max_chars, 12000, min_value=200, max_value=50000)
     use_filename = str(filename or "").strip()
@@ -1452,13 +1621,13 @@ def _tool_read_repository_file(user_id, filename="", file_id=None, max_chars=120
             if not row:
                 raise RuntimeError("目标文件不存在。")
             content = str(row.get("file_content") or "")
-            return {
-                "id": row.get("id"),
-                "filename": row.get("filename"),
-                "file_size": row.get("file_size", len(content.encode("utf-8"))),
-                "content": _truncate_text(content, limit=safe_max_chars),
-                "truncated": len(content) > safe_max_chars,
-            }
+            analyzed = _analyze_repository_file_for_agent(
+                filename=row.get("filename"),
+                content=content,
+                max_output_chars=safe_max_chars,
+                max_interfaces=120,
+            )
+            return str(analyzed.get("processed_content") or "")
     finally:
         conn.close()
 
@@ -1708,7 +1877,7 @@ def _build_agent_react_tools():
             "type": "function",
             "function": {
                 "name": "read_repository_file",
-                "description": "读取用户代码仓库中的单个文件内容。",
+                "description": "读取用户代码仓库中的单个文件。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1739,7 +1908,7 @@ def _build_agent_react_tools():
             "type": "function",
             "function": {
                 "name": "search_repository",
-                "description": "在用户代码仓库全部文件中按正则表达式搜索。",
+                "description": "你可以构造正则表达式，在用户代码仓库全部文件中按正则表达式搜索，函数会返回搜索结果。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1766,17 +1935,17 @@ def _build_agent_react_tools():
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "planning",
-                "description": "向一个很厉害的专家询问执行计划。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-        },
+        # {
+        #     "type": "function",
+        #     "function": {
+        #         "name": "planning",
+        #         "description": "向一个很厉害的专家询问执行计划。",
+        #         "parameters": {
+        #             "type": "object",
+        #             "properties": {},
+        #         },
+        #     },
+        # },
     ]
 
 
@@ -1820,7 +1989,8 @@ def _build_initial_prompt(problem, core_hints=None, repository_filenames=None):
         repo_list_text,
         "你可以通过 #include \"文件名\" 引用它们，然后就可以直接使用里面提供的函数。",
         "请首先确认我的代码仓库里有没有适用于本题的工具，在确认代码仓库里没有可用工具之后，再自己写代码，避免重复造轮子。",
-        "当你理解了任务意图，并完全理解了我提供的已有工具之后，请向专家询问计划，并按照计划完成代码。",
+        "请仔细阅读我的代码仓库里的注释，确保你理解了我提供的代码仓库里的代码是做什么用的。",
+        # "当你理解了任务意图，并完全理解了我提供的已有工具之后，请向专家询问计划，并按照计划完成代码。",
     ])
     return "\n".join(lines).strip()
 
@@ -2193,13 +2363,13 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         )
                         tool_result = {"success": True, "count": len(files), "files": files}
                     elif func_name == "read_repository_file":
-                        file_data = _tool_read_repository_file(
+                        file_content = _tool_read_repository_file(
                             user_id=user["id"],
                             filename=arguments.get("filename", ""),
                             file_id=arguments.get("file_id"),
                             max_chars=arguments.get("max_chars", 12000),
                         )
-                        tool_result = {"success": True, **file_data}
+                        tool_result = {"success": True, "content": file_content}
                     elif func_name == "update_repository_file":
                         updated = _tool_update_repository_file(
                             user_id=user["id"],
