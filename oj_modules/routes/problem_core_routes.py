@@ -6,6 +6,7 @@ import json
 import re
 import time
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 import markdown
 from flask import Blueprint, Response, flash, jsonify, redirect, render_template, request, session, stream_with_context, url_for
@@ -24,6 +25,7 @@ from oj_modules.db_services import (
     get_user_classes,
     get_user_by_username,
     increment_submission_count,
+    upsert_agent_run_snapshot,
 )
 from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
 
@@ -646,12 +648,48 @@ def admin_agent_solve_problem(problem_id):
     if _agent_solve_problem_task is None:
         return jsonify(success=False, message='Agent 任务未初始化'), 500
 
-    task = _agent_solve_problem_task.delay(problem_id, user['username'])
+    task_id = uuid4().hex
+    pending_state = {
+        "task_id": task_id,
+        "problem_id": int(problem.get("id") or problem_id),
+        "problem_title": problem.get("title"),
+        "requested_by": user.get("username"),
+        "status": "Pending",
+        "message": "任务排队中",
+        "round": 0,
+        "max_rounds": 0,
+        "best_score": 0,
+        "latest_submission_id": None,
+        "final_submission_id": None,
+        "attempts": [],
+        "events": [{
+            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+            "level": "info",
+            "message": "任务已创建，等待执行",
+            "event_type": "created",
+        }],
+    }
+    upsert_agent_run_snapshot(pending_state)
+
+    try:
+        _agent_solve_problem_task.apply_async(args=(problem_id, user['username']), task_id=task_id)
+    except Exception as e:
+        pending_state["status"] = "Failed"
+        pending_state["message"] = f"任务入队失败：{e}"
+        pending_state["events"].append({
+            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+            "level": "error",
+            "message": pending_state["message"],
+            "event_type": "enqueue_error",
+        })
+        upsert_agent_run_snapshot(pending_state)
+        return jsonify(success=False, message=pending_state["message"]), 500
+
     return jsonify(
         success=True,
         message='Agent 任务已启动',
-        task_id=task.id,
-        view_url=url_for('problem_core.admin_agent_run', task_id=task.id),
+        task_id=task_id,
+        view_url=url_for('problem_core.admin_agent_run', task_id=task_id),
     )
 
 

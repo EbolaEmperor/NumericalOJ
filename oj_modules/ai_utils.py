@@ -10,6 +10,7 @@ import re
 import requests
 
 from config import (
+    AI_TUTOR_MODEL,
     AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
@@ -725,7 +726,7 @@ def generate_ai_code_marks_from_submission_context(
     if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
     base_url = str(DASHSCOPE_BASE_URL).rstrip('/')
-    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout, model=QWEN_TEXT_MODEL)
+    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout, model=AI_TUTOR_MODEL)
     data_obj = _extract_first_json_object(response_text)
     if not isinstance(data_obj, dict):
         raise RuntimeError(f"模型返回无法解析为 JSON：{response_text[:300]}")

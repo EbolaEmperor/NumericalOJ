@@ -1,5 +1,6 @@
 {% extends "layout.html" %}
 {% block title %}Agent 运行详情 - {{ super() }}{% endblock %}
+{% block content_container_class %}container-fluid mt-4 px-3{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -233,11 +234,25 @@
       const details = parseEventDetails(evt);
       if (!details) return;
       const round = Number(details.round || 0);
-      const title = round > 0 ? ('第 ' + round + ' 轮 API 请求体') : 'API 请求体';
+      const hasRequestBody = !!(details && typeof details === 'object' && details.request_body !== undefined);
+      const hasToolCall = !!(details && typeof details === 'object' && (details.model_tool_call || details.tool_name));
+      const hasFinalSummary = !!(details && typeof details === 'object' && typeof details.final_summary === 'string' && details.final_summary.trim());
+      let title = '日志详情';
+      if (hasRequestBody) {
+        title = round > 0 ? ('第 ' + round + ' 轮 API 请求体') : 'API 请求体';
+      } else if (hasToolCall) {
+        title = round > 0 ? ('第 ' + round + ' 轮工具调用详情') : '工具调用详情';
+      } else if (hasFinalSummary) {
+        title = '成功总结';
+      }
       eventDetailTitleEl.textContent = title;
       eventDetailMetaEl.textContent = String((evt && evt.time) || '');
-      const payload = (details && details.request_body !== undefined) ? details.request_body : details;
-      eventDetailPreEl.textContent = JSON.stringify(payload, null, 2);
+      if (hasFinalSummary && !hasRequestBody && !hasToolCall) {
+        eventDetailPreEl.textContent = String(details.final_summary || '');
+      } else {
+        const payload = (details && details.request_body !== undefined) ? details.request_body : details;
+        eventDetailPreEl.textContent = JSON.stringify(payload, null, 2);
+      }
       if (eventDetailModal) {
         eventDetailModal.show();
       } else {
@@ -260,9 +275,12 @@
         const msg = String((evt && evt.message) || '');
         const details = parseEventDetails(evt);
         const hasRequestBody = !!(details && typeof details === 'object' && details.request_body);
+        const hasToolCallPayload = !!(details && typeof details === 'object' && (details.model_tool_call || details.tool_name));
+        const hasFinalSummary = !!(details && typeof details === 'object' && typeof details.final_summary === 'string' && details.final_summary.trim());
+        const isClickable = hasRequestBody || hasToolCallPayload || hasFinalSummary;
 
         const itemEl = document.createElement('div');
-        itemEl.className = 'agent-event-item level-' + level + (hasRequestBody ? ' clickable' : '');
+        itemEl.className = 'agent-event-item level-' + level + (isClickable ? ' clickable' : '');
 
         const timeEl = document.createElement('div');
         timeEl.className = 'agent-event-time';
@@ -274,10 +292,12 @@
         textEl.textContent = msg;
         itemEl.appendChild(textEl);
 
-        if (hasRequestBody) {
+        if (isClickable) {
           const actionEl = document.createElement('div');
           actionEl.className = 'agent-event-action';
-          actionEl.textContent = '点击查看本轮 API 请求体';
+          actionEl.textContent = hasRequestBody
+            ? '点击查看本轮 API 请求体'
+            : (hasToolCallPayload ? '点击查看工具调用 JSON' : '点击查看成功总结');
           itemEl.appendChild(actionEl);
           itemEl.addEventListener('click', function () {
             openEventDetail(evt);
