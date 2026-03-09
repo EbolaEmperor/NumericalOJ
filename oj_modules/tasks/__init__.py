@@ -6,6 +6,7 @@ from oj_modules.tasks.written_homework_tasks import register_written_homework_ta
 from oj_modules.tasks.agent_tasks import (
     get_agent_run_snapshot,
     init_agent_progress_cache,
+    register_agent_generate_testdata_task,
     register_agent_solve_problem_task,
     subscribe_agent_run_events,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "register_evaluate_submission_task",
     "register_written_homework_task",
     "register_agent_solve_problem_task",
+    "register_agent_generate_testdata_task",
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",

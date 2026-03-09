@@ -9,6 +9,10 @@ MYSQL_PASSWORD = 'YOUR MUSQL PASSWORD'
 DASHSCOPE_APP_ID = "YOUR ALIYUN DASHSCOPE APP ID"
 DASHSCOPE_API_KEY = "YOUR API KEY"
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+CODING_PLAN_URL = "https://coding.dashscope.aliyuncs.com/v1"
+CODING_PLAN_KEY = "YOUR CODING PLAN API KEY"
+
 QWEN_CODER_MODEL = "qwen3-coder-plus"
 QWEN_TEXT_MODEL = "qwen3.5-plus"
 AI_TUTOR_MODEL = "qwen3.5-flash"

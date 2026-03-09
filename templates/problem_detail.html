@@ -23,9 +23,14 @@
       </div>
       {% if user and user.is_admin == 1 %}
       <div class="problem-admin-actions mt-2">
-        <button type="button" class="btn btn-outline-success" id="btnAgentSolve" title="AI Agent 自动解题">
+        <button type="button" class="btn btn-outline-primary" id="btnAgentSolve" title="AI Agent 自动解题">
           <i class="fas fa-robot me-1"></i> 解题
         </button>
+        {% if problem.type == 1 %}
+        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#agentGenerateDataModal">
+          <i class="fas fa-robot me-1"></i> 造数据
+        </button>
+        {% endif %}
         <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
           <i class="fas fa-pencil-alt me-1"></i> 编辑
         </a>
@@ -171,6 +176,58 @@
 </div>
 
 {% if user and user.is_admin == 1 %}
+{% if problem.type == 1 %}
+<div class="modal fade" id="agentGenerateDataModal" tabindex="-1" aria-labelledby="agentGenerateDataModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="agentGenerateDataModalLabel">
+          <i class="fas fa-database me-2"></i>数据生成 Agent
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="agentTestPointCount" class="form-label">测试点数量</label>
+          <input
+            type="number"
+            min="1"
+            max="5000"
+            step="1"
+            class="form-control"
+            id="agentTestPointCount"
+            value="{{ problem.max_score or 10 }}">
+          <div class="form-text">Agent 需要生成 `1.in/1.out ... n.in/n.out`。</div>
+        </div>
+        <div class="mb-3">
+          <label for="agentDataRequirement" class="form-label">数据生成要求</label>
+          <textarea
+            class="form-control"
+            id="agentDataRequirement"
+            rows="4"
+            placeholder="例如：覆盖边界值、随机大数据、特殊构造等"></textarea>
+          <div class="form-text">可选。会原样传给 Agent 作为额外约束。</div>
+        </div>
+        <div class="mb-0">
+          <label for="agentStandardCode" class="form-label">标准程序</label>
+          <textarea
+            class="form-control font-monospace"
+            id="agentStandardCode"
+            rows="14"
+            placeholder="请粘贴标准程序">{{ initial_code or '' }}</textarea>
+          <div class="form-text">将用于替换交互程序中的 `%%user_code_here`。</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-outline-primary" id="btnStartAgentGenerateData">
+          <i class="fas fa-play me-2"></i>启动 Agent
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 <!-- 上传数据模态框 & 重测进度模态框：保持不变 -->
 <div class="modal fade" id="uploadDataModal" tabindex="-1" aria-labelledby="uploadDataModalLabel" aria-hidden="true">
   <div class="modal-dialog">
@@ -482,7 +539,6 @@
     var progressDetail = document.getElementById("rejudgeProgressDetail");
 
     document.getElementById('btnAgentSolve')?.addEventListener('click', function() {
-      if (!confirm("确认启动 Agent 自动解题吗？")) return;
       const btn = this;
       const originalHtml = btn.innerHTML;
       btn.disabled = true;
@@ -509,6 +565,72 @@
           alert("请求失败，请稍后再试");
         });
     });
+
+    document.getElementById('btnStartAgentGenerateData')?.addEventListener('click', function() {
+      var countEl = document.getElementById('agentTestPointCount');
+      var requirementEl = document.getElementById('agentDataRequirement');
+      var codeEl = document.getElementById('agentStandardCode');
+      var count = parseInt((countEl && countEl.value) || '0', 10);
+      var dataRequirement = (requirementEl && requirementEl.value) ? requirementEl.value : '';
+      var standardCode = (codeEl && codeEl.value) ? codeEl.value : '';
+
+      if (!Number.isInteger(count) || count < 1 || count > 5000) {
+        alert('测试点数量需在 1-5000 之间');
+        return;
+      }
+      if (!standardCode.trim()) {
+        alert('标准程序不能为空');
+        return;
+      }
+
+      var btn = this;
+      var originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>启动中...';
+
+      fetch("{{ url_for('problem_core.admin_agent_generate_testdata', problem_id=problem.id) }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          test_point_count: count,
+          data_requirement: dataRequirement,
+          standard_code: standardCode
+        })
+      })
+        .then(res => res.json())
+        .then(data => {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          if (!data.success) {
+            alert("启动失败：" + (data.message || "未知错误"));
+            return;
+          }
+          if (data.view_url) {
+            window.location.href = data.view_url;
+            return;
+          }
+          alert("任务已启动，Task ID: " + data.task_id);
+        })
+        .catch(() => {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+          alert("请求失败，请稍后再试");
+        });
+    });
+
+    var dataModalEl = document.getElementById('agentGenerateDataModal');
+    if (dataModalEl) {
+      dataModalEl.addEventListener('show.bs.modal', function() {
+        var codeEl = document.getElementById('agentStandardCode');
+        if (!codeEl) return;
+        if (typeof editor !== 'undefined' && editor && typeof editor.getValue === 'function') {
+          var currentCode = editor.getValue();
+          if (currentCode && currentCode.trim()) {
+            codeEl.value = currentCode;
+          }
+        }
+      });
+    }
 
     document.getElementById('btnRejudge')?.addEventListener('click', function() {
       if (!confirm("确认要重测本题的所有提交吗？")) return;

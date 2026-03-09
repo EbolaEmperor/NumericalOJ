@@ -25,6 +25,7 @@ from oj_modules.routes.auth_routes import auth_bp
 from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_core_module
 from oj_modules.tasks import (
     init_agent_progress_cache,
+    register_agent_generate_testdata_task,
     register_agent_solve_problem_task,
     register_evaluate_submission_task,
     register_written_homework_task,
@@ -105,17 +106,24 @@ celery = Celery('oj',
                 backend=CELERY_RESULT_BACKEND)
 celery.conf.task_routes = {
     'oj.agent.solve_problem': {'queue': 'agent'},
+    'oj.agent.generate_testdata': {'queue': 'agent'},
 }
 evaluate_submission = register_evaluate_submission_task(celery)
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
 agent_solve_problem = register_agent_solve_problem_task(celery, evaluate_submission)
+agent_generate_testdata = register_agent_generate_testdata_task(celery, evaluate_submission)
 
 # 初始化重测模块（依赖 Celery、Redis、评测函数）
 init_rejudge_module(celery, rds, evaluate_submission)
 # 初始化作业管理模块（依赖 Celery、Redis）
 init_homework_module(celery, rds, rds_binary)
 # 初始化题目核心模块（依赖 Celery 任务）
-init_problem_core_module(evaluate_submission, transcribe_written_homework_to_latex, agent_solve_problem)
+init_problem_core_module(
+    evaluate_submission,
+    transcribe_written_homework_to_latex,
+    agent_solve_problem,
+    agent_generate_testdata,
+)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds)
 # 初始化 agent 运行状态缓存（Redis）
