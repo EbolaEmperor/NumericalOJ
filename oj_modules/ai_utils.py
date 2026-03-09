@@ -12,8 +12,11 @@ import requests
 from config import (
     AI_TUTOR_MODEL,
     AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT,
+    CODING_PLAN_KEY,
+    CODING_PLAN_URL,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
+    QWEN_CODER_MODEL,
     QWEN_OMNI_MODEL,
     QWEN_TEXT_MODEL,
 )
@@ -39,13 +42,55 @@ def _extract_text_from_response_content(content):
     return ""
 
 
+_CODING_PLAN_TARGET_MODELS = {
+    "qwen3.5-plus",
+    "qwen3-coder-plus",
+    str(QWEN_TEXT_MODEL or "").strip(),
+    str(QWEN_CODER_MODEL or "").strip(),
+}
+
+
+def _is_invalid_secret(value):
+    text = str(value or "").strip()
+    return (not text) or ("YOUR" in text.upper())
+
+
+def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base_url=None):
+    use_model = str(model or "").strip()
+    if use_model in _CODING_PLAN_TARGET_MODELS:
+        api_key = os.getenv("CODING_PLAN_KEY") or CODING_PLAN_KEY
+        base_url = os.getenv("CODING_PLAN_URL") or CODING_PLAN_URL
+        if _is_invalid_secret(api_key):
+            raise RuntimeError("未配置 CODING_PLAN_KEY。")
+        if not str(base_url or "").strip():
+            raise RuntimeError("未配置 CODING_PLAN_URL。")
+        return str(api_key).strip(), str(base_url).rstrip('/')
+
+    api_key = fallback_api_key
+    if api_key is None:
+        api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+    base_url = fallback_base_url
+    if base_url is None:
+        base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    if _is_invalid_secret(api_key):
+        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
+    if not str(base_url or "").strip():
+        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
+    return str(api_key).strip(), str(base_url).rstrip('/')
+
+
 def _call_qwen_text(prompt_text, api_key, base_url, timeout=300, model=None):
     text_model = str(model or QWEN_TEXT_MODEL)
+    use_api_key, use_base_url = _resolve_chat_endpoint_for_model(
+        text_model,
+        fallback_api_key=api_key,
+        fallback_base_url=base_url,
+    )
     messages = [{"role": "user", "content": prompt_text}]
 
     if OpenAI is not None:
         try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            client = OpenAI(api_key=use_api_key, base_url=use_base_url)
             stream = client.chat.completions.create(
                 model=text_model,
                 messages=messages,
@@ -72,7 +117,7 @@ def _call_qwen_text(prompt_text, api_key, base_url, timeout=300, model=None):
             print(f"[Qwen API] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {use_api_key}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -80,10 +125,10 @@ def _call_qwen_text(prompt_text, api_key, base_url, timeout=300, model=None):
         "messages": messages,
         "enable_thinking": True
     }
-    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
     if resp.status_code >= 400:
         payload.pop("enable_thinking", None)
-        resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+        resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
     resp.raise_for_status()
     result = resp.json()
     choices = result.get('choices') or []
@@ -306,11 +351,7 @@ def transcribe_images_to_latex(image_paths):
 
 
 def evaluate_written_homework_with_ai(problem, student_latex):
-    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-
-    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
+    api_key, base_url = _resolve_chat_endpoint_for_model(QWEN_TEXT_MODEL)
     problem_title = (problem or {}).get('title', '')
     problem_content = (problem or {}).get('content', '')
 
@@ -336,7 +377,7 @@ def evaluate_written_homework_with_ai(problem, student_latex):
         f"【学生答案（LaTeX）】\n{student_latex}\n"
     )
 
-    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=300)
+    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=300, model=QWEN_TEXT_MODEL)
     data = _extract_first_json_object_relaxed(response_text)
     if not data:
         raise RuntimeError(f"评分结果解析失败，模型原始输出：{response_text[:500]}")

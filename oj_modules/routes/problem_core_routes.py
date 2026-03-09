@@ -35,6 +35,7 @@ problem_core_bp = Blueprint('problem_core', __name__)
 _evaluate_submission_task = None
 _transcribe_written_homework_task = None
 _agent_solve_problem_task = None
+_agent_generate_testdata_task = None
 _DASHBOARD_STATS_CACHE_TTL_SECONDS = 15
 _USER_CLASSES_CACHE_TTL_SECONDS = 30
 _HOMEWORKS_CACHE_TTL_SECONDS = 10
@@ -69,11 +70,17 @@ def _strip_problem_title_tags(title):
     return text if text else original
 
 
-def init_problem_core_module(evaluate_submission_task, transcribe_written_homework_task, agent_solve_problem_task=None):
-    global _evaluate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task
+def init_problem_core_module(
+    evaluate_submission_task,
+    transcribe_written_homework_task,
+    agent_solve_problem_task=None,
+    agent_generate_testdata_task=None,
+):
+    global _evaluate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task, _agent_generate_testdata_task
     _evaluate_submission_task = evaluate_submission_task
     _transcribe_written_homework_task = transcribe_written_homework_task
     _agent_solve_problem_task = agent_solve_problem_task
+    _agent_generate_testdata_task = agent_generate_testdata_task
 
 
 def _is_agent_state_finished(state):
@@ -688,6 +695,87 @@ def admin_agent_solve_problem(problem_id):
     return jsonify(
         success=True,
         message='Agent 任务已启动',
+        task_id=task_id,
+        view_url=url_for('problem_core.admin_agent_run', task_id=task_id),
+    )
+
+
+@problem_core_bp.route('/admin/agent_generate_testdata/<int:problem_id>', methods=['POST'])
+def admin_agent_generate_testdata(problem_id):
+    user = current_user()
+    if not user or user.get('is_admin') != 1:
+        return jsonify(success=False, message='无权限'), 403
+
+    problem = get_problem(problem_id)
+    if not problem:
+        return jsonify(success=False, message='题目不存在'), 404
+    if int(problem.get('type') or 1) != 1:
+        return jsonify(success=False, message='仅支持编程题'), 400
+    if _agent_generate_testdata_task is None:
+        return jsonify(success=False, message='数据生成 Agent 任务未初始化'), 500
+
+    payload = request.get_json(silent=True) or {}
+    standard_code = str(payload.get('standard_code') or '').strip()
+    if not standard_code:
+        return jsonify(success=False, message='标准程序不能为空'), 400
+    data_requirement = str(payload.get('data_requirement') or '').strip()
+    if len(data_requirement) > 4000:
+        data_requirement = data_requirement[:4000]
+
+    try:
+        test_point_count = int(payload.get('test_point_count'))
+    except Exception:
+        return jsonify(success=False, message='测试点数量无效'), 400
+    if test_point_count < 1 or test_point_count > 5000:
+        return jsonify(success=False, message='测试点数量需在 1-5000 之间'), 400
+
+    task_id = uuid4().hex
+    pending_state = {
+        "task_id": task_id,
+        "problem_id": int(problem.get("id") or problem_id),
+        "problem_title": problem.get("title"),
+        "requested_by": user.get("username"),
+        "status": "Pending",
+        "message": "数据生成 Agent 任务排队中",
+        "round": 0,
+        "max_rounds": 0,
+        "best_score": 0,
+        "latest_submission_id": None,
+        "final_submission_id": None,
+        "attempts": [],
+        "events": [{
+            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+            "level": "info",
+            "message": "数据生成 Agent 任务已创建，等待执行",
+            "event_type": "created",
+            "details": {
+                "test_point_count": test_point_count,
+                "has_data_requirement": bool(data_requirement),
+            },
+        }],
+    }
+    upsert_agent_run_snapshot(pending_state)
+
+    try:
+        _agent_generate_testdata_task.apply_async(
+            args=(problem_id, user['username'], test_point_count, standard_code, data_requirement),
+            task_id=task_id,
+        )
+    except Exception as e:
+        pending_state["status"] = "Failed"
+        pending_state["message"] = f"任务入队失败：{e}"
+        pending_state["events"].append({
+            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+            "level": "error",
+            "message": pending_state["message"],
+            "event_type": "enqueue_error",
+        })
+        upsert_agent_run_snapshot(pending_state)
+        return jsonify(success=False, message=pending_state["message"]), 500
+
+    return jsonify(
+        success=True,
+        message='数据生成 Agent 任务已启动',
         task_id=task_id,
         view_url=url_for('problem_core.admin_agent_run', task_id=task_id),
     )

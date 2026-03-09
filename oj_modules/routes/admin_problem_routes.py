@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import json
 import os
 import pymysql
 import shutil
@@ -17,6 +16,7 @@ from oj_modules.db_services import (
     get_user_by_username,
     update_problem,
 )
+from oj_modules.testdata_services import TestdataValidationError, import_testdata_zip
 
 
 admin_problem_bp = Blueprint('admin_problem', __name__)
@@ -58,19 +58,6 @@ def parse_time_limit_ms_from_form(form):
         except Exception:
             pass
     return 2000
-
-
-def update_testdata(problem_id, testdata_json, testdata_num):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = "UPDATE problems SET testdata=%s WHERE id=%s"
-            cursor.execute(sql, (testdata_json, problem_id))
-            sql = "UPDATE problems SET max_score=%s WHERE id=%s"
-            cursor.execute(sql, (testdata_num, problem_id))
-        conn.commit()
-    finally:
-        conn.close()
 
 
 @admin_problem_bp.route('/admin/add_problem', methods=['GET', 'POST'])
@@ -185,36 +172,12 @@ def upload_testdata(problem_id):
     try:
         os.makedirs('tmp', exist_ok=True)
         file.save(temp_path)
-
-        with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_path)
-
-        testdata = []
-        in_files = sorted([f for f in os.listdir(extract_path) if f.endswith('.in')])
-        out_files = sorted([f for f in os.listdir(extract_path) if f.endswith('.out')])
-
-        if len(in_files) != len(out_files):
-            flash('输入文件和输出文件数量不匹配。', 'danger')
-            return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
-
-        for in_file, out_file in zip(in_files, out_files):
-            base_in = os.path.splitext(in_file)[0]
-            base_out = os.path.splitext(out_file)[0]
-            if base_in != base_out:
-                flash(f'输入文件 {in_file} 与输出文件 {out_file} 名称不匹配。', 'danger')
-                return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
-
-            with open(os.path.join(extract_path, in_file), 'r', encoding='utf-8') as f_in:
-                with open(os.path.join(extract_path, out_file), 'r', encoding='utf-8') as f_out:
-                    input_data = f_in.read().strip()
-                    output_data = f_out.read().strip()
-                    testdata.append({'input': input_data, 'output': output_data})
-
-        testdata_json = json.dumps(testdata, ensure_ascii=False)
-        update_testdata(problem_id, testdata_json, len(in_files))
+        import_testdata_zip(problem_id=problem_id, zip_path=temp_path, extract_dir=extract_path)
         flash('测试数据上传成功。', 'success')
     except zipfile.BadZipFile:
         flash('上传的文件不是有效的 ZIP 压缩包。', 'danger')
+    except TestdataValidationError as e:
+        flash(str(e), 'danger')
     except Exception as e:
         flash(f'上传过程中发生错误：{str(e)}', 'danger')
     finally:
