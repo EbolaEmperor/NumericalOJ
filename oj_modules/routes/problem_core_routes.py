@@ -54,6 +54,51 @@ _class_grades_cache = {}
 _user_cache = {}
 
 
+def invalidate_problem_list_cache_for_user(user_id=None, username=None):
+    """
+    失效指定用户在 problem list 相关路径上的缓存。
+    """
+    if user_id is not None:
+        _user_classes_cache.pop(user_id, None)
+        for cache_key in list(_homeworks_cache.keys()):
+            if cache_key[0] == user_id:
+                _homeworks_cache.pop(cache_key, None)
+
+    if username:
+        _user_cache.pop(username, None)
+        for cache_key in list(_class_grades_cache.keys()):
+            if cache_key[0] == username:
+                _class_grades_cache.pop(cache_key, None)
+
+
+def invalidate_problem_list_cache_for_class(class_en):
+    """
+    失效包含指定班级的作业/成绩缓存。
+    """
+    if not class_en:
+        return
+
+    for cache_key in list(_homeworks_cache.keys()):
+        class_list = cache_key[1]
+        if class_en in class_list:
+            _homeworks_cache.pop(cache_key, None)
+
+    for cache_key in list(_class_grades_cache.keys()):
+        class_list = cache_key[1]
+        if class_en in class_list:
+            _class_grades_cache.pop(cache_key, None)
+
+
+def invalidate_problem_list_cache_all():
+    """
+    全量失效 problem list 相关缓存。
+    """
+    _user_classes_cache.clear()
+    _homeworks_cache.clear()
+    _class_grades_cache.clear()
+    _user_cache.clear()
+
+
 def _strip_problem_title_tags(title):
     """
     去掉题目标题中的分组标签，如「NA-1」。

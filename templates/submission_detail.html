@@ -72,6 +72,7 @@
         <div id="pdfViewer" style="width: 100%; height: 580px;"></div>
       </div>
     </div>
+    {% if (problem.written_grading_mode or 1) != 2 %}
     <div class="card mt-3">
       <div class="card-header py-2">
         <strong><i class="fas fa-file-code me-2"></i>LaTeX 转写结果</strong>
@@ -83,6 +84,7 @@
       </div>
     </div>
     {% endif %}
+    {% endif %}
 
     <hr/>
     <a href="{{ url_for('problem_core.problem_detail', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
@@ -92,31 +94,24 @@
   <!-- 右侧：测试点详情 + AI 按钮 / 书面作业批改 -->
   <div class="col-md-4 mb-3">
     {% if submission.problem_type == 2 %}
-      {% if user and user.is_admin == 1 %}
       <div class="mb-3">
-        <label for="scoreInput" class="form-label"><i class="fas fa-trophy me-2"></i> 给分 (0-5 分)</label>
-        <input type="number" class="form-control" id="scoreInput" name="score" min="0" max="5" value="{{ submission.score }}" required>
-      </div>
-      <div class="mb-3">
-        <label for="commentInput" class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
-        <textarea class="form-control" id="commentInput" name="comment" rows="12" required>{{ submission.code }}</textarea>
-      </div>
-      <div class="d-flex justify-content-between">
-        <button type="button" class="btn btn-outline-success" id="submitGradeBtn">
-          <i class="fas fa-check me-2"></i> 提交
-        </button>
-        <button type="button" class="btn btn-outline-success ms-auto" id="nextBtn">
-          <i class="fas fa-arrow-right me-2"></i> 下一个
-        </button>
-      </div>
-      {% else %}
-      <div class="mb-3">
-        <label class="form-label"><i class="fas fa-comment me-2"></i> 评语</label>
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <label class="form-label mb-0"><i class="fas fa-comment me-2"></i> 批改结果</label>
+          {% if user and user.is_admin == 1 %}
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-primary btn-sm" id="openGradeEditorBtn">
+              <i class="fas fa-pen-to-square me-1"></i> 编辑
+            </button>
+            <button type="button" class="btn btn-outline-success btn-sm" id="nextBtn">
+              <i class="fas fa-arrow-right me-1"></i> 下一个
+            </button>
+          </div>
+          {% endif %}
+        </div>
         <div id="studentCommentRendered"
              class="form-control"
-             style="min-height: 280px; height: auto; overflow-y: auto; white-space: normal;"></div>
+             style="min-height: 360px; height: auto; overflow-y: auto; white-space: normal;"></div>
       </div>
-      {% endif %}
     {% endif %}
 
     {% if submission.problem_type == 1 %}
@@ -324,6 +319,37 @@
     </div>
   </div>
 </div>
+
+{% if submission.problem_type == 2 and user and user.is_admin == 1 %}
+<div class="modal fade" id="gradeEditModal" tabindex="-1" aria-labelledby="gradeEditModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="gradeEditModalLabel"><i class="fas fa-pen-to-square me-2"></i>编辑批改结果</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="editScoreInput" class="form-label"><i class="fas fa-trophy me-2"></i>给分 (0-5 分)</label>
+          <input type="number" class="form-control" id="editScoreInput" name="score" min="0" max="5" step="1" required>
+        </div>
+        <div class="mb-0">
+          <label for="editCommentInput" class="form-label"><i class="fas fa-comment me-2"></i>评语</label>
+          <textarea class="form-control" id="editCommentInput" name="comment" rows="14"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+          <i class="fas fa-times me-2"></i>取消
+        </button>
+        <button type="button" class="btn btn-outline-success" id="submitGradeBtn">
+          <i class="fas fa-check me-2"></i>保存并提交
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <!-- JavaScript 函数：显示图片模态框 -->
 <script>
@@ -869,17 +895,20 @@
     const scoreMaxEl = document.getElementById('submissionScoreMax');
     const latexEl = document.getElementById('submissionLatexRendered');
     const commentEl = document.getElementById('studentCommentRendered');
-    const adminCommentEl = document.getElementById('commentInput');
-    const adminScoreInput = document.getElementById('scoreInput');
+    const gradeEditModalEl = document.getElementById('gradeEditModal');
+    const editCommentInput = document.getElementById('editCommentInput');
+    const editScoreInput = document.getElementById('editScoreInput');
     const streamUrl = '{{ url_for("submission.submission_status_stream", submission_id=submission.id) }}';
 
     const initialPayload = {
       status: {{ (submission.status or '') | tojson }},
       score: {{ submission.score | tojson }},
       written_latex_text: {{ (submission_latex_text or '') | tojson }},
+      written_latex_html: {{ (submission_latex_html or '') | tojson }},
       written_latex_error: {{ (submission_latex_error or '') | tojson }},
       written_comment: {{ (submission.code or '') | tojson }}
     };
+    let latestWrittenPayload = Object.assign({}, initialPayload);
 
     function escapeHtml(text) {
       return String(text || '')
@@ -918,12 +947,15 @@
       }
     }
 
-    function renderLatex(rawLatex, errText, status) {
+    function renderLatex(rawLatexHtml, rawLatex, errText, status) {
       if (!latexEl) return;
+      const latexHtml = String(rawLatexHtml || '');
       const latex = String(rawLatex || '');
       const err = String(errText || '');
       const st = String(status || '');
-      if (latex.trim()) {
+      if (latexHtml.trim()) {
+        latexEl.innerHTML = latexHtml;
+      } else if (latex.trim()) {
         latexEl.innerHTML = escapeHtml(latex);
       } else if (err.trim()) {
         latexEl.innerHTML = '<span class="text-danger">' + escapeHtml(err) + '</span>';
@@ -940,6 +972,7 @@
     function renderComment(rawComment) {
       const raw = String(rawComment || '');
       if (commentEl) {
+        commentEl.dataset.rawComment = raw;
         if (!raw.trim()) {
           commentEl.innerHTML = '<span class="text-muted">暂无评语</span>';
         } else {
@@ -949,20 +982,36 @@
           MathJax.typesetPromise([commentEl]).catch(() => {});
         }
       }
-      if (adminCommentEl) {
-        adminCommentEl.value = raw;
-      }
+    }
+
+    function isGradeEditModalOpen() {
+      return !!(gradeEditModalEl && gradeEditModalEl.classList.contains('show'));
     }
 
     function applyWrittenPayload(payload) {
-      const data = payload || {};
+      latestWrittenPayload = Object.assign({}, latestWrittenPayload, payload || {});
+      const data = latestWrittenPayload;
       updateHeader(data.status, data.score);
-      renderLatex(data.written_latex_text, data.written_latex_error, data.status);
+      renderLatex(data.written_latex_html, data.written_latex_text, data.written_latex_error, data.status);
       renderComment(data.written_comment);
-      if (adminScoreInput && Number.isFinite(Number(data.score))) {
-        adminScoreInput.value = String(Number(data.score));
+      if (!isGradeEditModalOpen()) {
+        if (editScoreInput && Number.isFinite(Number(data.score))) {
+          editScoreInput.value = String(Number(data.score));
+        }
+        if (editCommentInput) {
+          editCommentInput.value = String(data.written_comment || '');
+        }
       }
     }
+
+    window.__writtenSubmissionDetail = {
+      applyPayload: function(payload) {
+        applyWrittenPayload(payload || {});
+      },
+      getPayload: function() {
+        return Object.assign({}, latestWrittenPayload);
+      },
+    };
 
     applyWrittenPayload(initialPayload);
 
@@ -993,28 +1042,87 @@
 
 {% if submission.problem_type == 2 and user and user.is_admin == 1 %}
 <script>
-  document.getElementById('submitGradeBtn').addEventListener('click', function() {
-    var score = document.getElementById('scoreInput').value;
-    var comment = document.getElementById('commentInput').value;
-    fetch('{{ url_for('grading.submit_grading', submission_id=submission.id) }}', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ 'score': score, 'comment': comment })
-    })
-    .then(r => r.json())
-    .then(data => {
-      if (data.success) { document.getElementById('nextBtn').click(); }
-      else { alert('错误: ' + data.message); }
-    })
-    .catch(err => { alert('提交失败: ' + err); });
-  });
+  (function bindAdminGradingEditor() {
+    const openEditorBtn = document.getElementById('openGradeEditorBtn');
+    const saveBtn = document.getElementById('submitGradeBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const modalEl = document.getElementById('gradeEditModal');
+    const scoreInput = document.getElementById('editScoreInput');
+    const commentInput = document.getElementById('editCommentInput');
+    if (!openEditorBtn || !saveBtn || !nextBtn || !modalEl || !scoreInput || !commentInput) {
+      return;
+    }
 
-  document.getElementById('nextBtn').addEventListener('click', function() {
-    fetch('{{ url_for("grading.get_next_pending_submission", submission_id=submission.id) }}')
+    const modal = new bootstrap.Modal(modalEl);
+    const saveBtnDefaultHtml = saveBtn.innerHTML;
+
+    function getCurrentPayload() {
+      if (window.__writtenSubmissionDetail && typeof window.__writtenSubmissionDetail.getPayload === 'function') {
+        return window.__writtenSubmissionDetail.getPayload();
+      }
+      return {};
+    }
+
+    function fillEditorFromCurrentPayload() {
+      const payload = getCurrentPayload();
+      const currentScore = Number(payload.score);
+      scoreInput.value = Number.isFinite(currentScore) ? String(currentScore) : '0';
+      commentInput.value = String(payload.written_comment || '');
+    }
+
+    openEditorBtn.addEventListener('click', function() {
+      fillEditorFromCurrentPayload();
+      modal.show();
+    });
+
+    saveBtn.addEventListener('click', function() {
+      const scoreRaw = Number(scoreInput.value);
+      const score = Math.round(scoreRaw);
+      if (!Number.isFinite(scoreRaw) || score < 0 || score > 5) {
+        alert('得分必须在 0 到 5 之间。');
+        return;
+      }
+      const comment = String(commentInput.value || '');
+
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>提交中...';
+
+      fetch('{{ url_for('grading.submit_grading', submission_id=submission.id) }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ 'score': String(score), 'comment': comment })
+      })
       .then(r => r.json())
-      .then(data => { window.location.href = data.success ? data.next_submission_url : location.href; })
-      .catch(err => console.error('错误:', err));
-  });
+      .then(data => {
+        if (!data.success) {
+          throw new Error(data.message || '提交失败');
+        }
+        const nextStatus = (score === 5) ? 'Accepted' : 'Unaccepted';
+        if (window.__writtenSubmissionDetail && typeof window.__writtenSubmissionDetail.applyPayload === 'function') {
+          window.__writtenSubmissionDetail.applyPayload({
+            score: score,
+            status: nextStatus,
+            written_comment: comment,
+          });
+        }
+        modal.hide();
+      })
+      .catch(err => {
+        alert('提交失败: ' + (err && err.message ? err.message : err));
+      })
+      .finally(() => {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = saveBtnDefaultHtml;
+      });
+    });
+
+    nextBtn.addEventListener('click', function() {
+      fetch('{{ url_for("grading.get_next_pending_submission", submission_id=submission.id) }}')
+        .then(r => r.json())
+        .then(data => { window.location.href = data.success ? data.next_submission_url : location.href; })
+        .catch(err => console.error('错误:', err));
+    });
+  })();
 </script>
 {% endif %}
 

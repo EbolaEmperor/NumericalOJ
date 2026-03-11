@@ -28,6 +28,15 @@ _rds_binary = None
 _export_task = None
 
 
+def _invalidate_problem_list_cache_for_class(class_en):
+    try:
+        from oj_modules.routes.problem_core_routes import invalidate_problem_list_cache_for_class
+        invalidate_problem_list_cache_for_class(class_en)
+    except Exception:
+        # 缓存失效失败不影响主流程
+        pass
+
+
 def current_user():
     username = session.get('username')
     if not username:
@@ -379,6 +388,7 @@ def admin_update_ddl():
             sql = f"UPDATE {class_en} SET ddl=%s WHERE id=%s"
             cursor.execute(sql, (new_ddl, homework_id))
         conn.commit()
+        _invalidate_problem_list_cache_for_class(class_en)
         return jsonify(success=True, message='DDL更新成功')
     except pymysql.Error as e:
         return jsonify(success=False, message=f'数据库错误: {str(e)}'), 500
@@ -418,6 +428,7 @@ def admin_add_homework():
                 sql = f"INSERT INTO {class_en} (problem_id, ddl, complete_cnt, problem_title) VALUES (%s, %s, 0, %s)"
                 cursor.execute(sql, (problem_id, ddl, problem['title']))
             conn.commit()
+            _invalidate_problem_list_cache_for_class(class_en)
             flash('作业添加成功', 'success')
         finally:
             conn.close()
@@ -452,6 +463,7 @@ def admin_delete_homework():
             sql = f"DELETE FROM {class_en} WHERE id=%s"
             cursor.execute(sql, (homework_id,))
         conn.commit()
+        _invalidate_problem_list_cache_for_class(class_en)
         flash("删除成功", "success")
         return jsonify(success=True, message="删除成功")
     except pymysql.Error as e:

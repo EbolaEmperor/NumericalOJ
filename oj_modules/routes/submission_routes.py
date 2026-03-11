@@ -5,6 +5,9 @@ import os
 import json
 import time
 import re
+import html
+
+import markdown
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, stream_with_context, url_for
 
@@ -51,6 +54,30 @@ def _read_text_file_safe(path, max_chars=200000):
             return (f.read() or "")[:max_chars]
     except Exception:
         return ""
+
+
+def _render_written_markdown_to_html(markdown_text):
+    raw_text = str(markdown_text or "")
+    if not raw_text.strip():
+        return ""
+
+    # 转写内容来自用户上传文件，先转义原始 HTML 再解析 Markdown，避免注入。
+    escaped_text = html.escape(raw_text, quote=False)
+    try:
+        rendered = markdown.markdown(
+            escaped_text,
+            extensions=['extra', 'fenced_code', 'tables', 'sane_lists'],
+        )
+    except Exception:
+        return escaped_text.replace("\n", "<br>")
+
+    # 限制危险链接协议。
+    rendered = re.sub(
+        r'(?i)\s(href|src)\s*=\s*([\'"])\s*(javascript:|vbscript:|data:)',
+        r' \1=\2#',
+        rendered,
+    )
+    return rendered
 
 
 def _load_written_submission_latex_and_error(submission):
@@ -161,10 +188,18 @@ def submission_detail(submission_id):
         cached_ai_code_marks = get_cached_ai_code_marks_for_submission(submission)
     submission_latex_text = ""
     submission_latex_error = ""
+    submission_latex_html = ""
+    written_grading_mode = 1
     if problem and problem['type'] == 2:
+        try:
+            written_grading_mode = int(problem.get('written_grading_mode') or 1)
+        except Exception:
+            written_grading_mode = 1
         file_path = f"uploads/{submission['username']}_{submission['problem_id']}_*"
         submission['file_url'] = file_path
-        submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
+        if written_grading_mode != 2:
+            submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
+            submission_latex_html = _render_written_markdown_to_html(submission_latex_text)
 
     return render_template(
         'submission_detail.html',
@@ -176,6 +211,8 @@ def submission_detail(submission_id):
         cached_ai_code_marks=cached_ai_code_marks,
         submission_latex_text=submission_latex_text,
         submission_latex_error=submission_latex_error,
+        submission_latex_html=submission_latex_html,
+        written_grading_mode=written_grading_mode,
     )
 
 
@@ -239,9 +276,19 @@ def submission_status_stream(submission_id):
             sid = snapshot.get('id')
             row = get_submission_by_id(sid) if sid else None
             if row:
-                latex_text, latex_error = _load_written_submission_latex_and_error(row)
-                payload['written_latex_text'] = latex_text
-                payload['written_latex_error'] = latex_error
+                problem = get_problem(row.get('problem_id'))
+                written_mode = 1
+                if problem:
+                    try:
+                        written_mode = int(problem.get('written_grading_mode') or 1)
+                    except Exception:
+                        written_mode = 1
+                payload['written_grading_mode'] = written_mode
+                if written_mode != 2:
+                    latex_text, latex_error = _load_written_submission_latex_and_error(row)
+                    payload['written_latex_text'] = latex_text
+                    payload['written_latex_html'] = _render_written_markdown_to_html(latex_text)
+                    payload['written_latex_error'] = latex_error
                 payload['written_comment'] = str(row.get('code') or '')
         return payload
 
