@@ -25,6 +25,15 @@ _settings_table_ready = False
 _agent_runs_table_ready = False
 _submission_snapshot_rds = None
 _submission_snapshot_ttl_seconds = int(os.getenv('SUBMISSION_SNAPSHOT_TTL_SECONDS', '21600'))
+_problem_written_mode_column_ready = False
+_problem_written_model_column_ready = False
+
+_ALLOWED_WRITTEN_GRADING_MODELS = {
+    "qwen3.5-plus",
+    "qwen3.5-plus-thinking",
+    "qwen3.5-flash",
+    "qwen3.5-flash-thinking",
+}
 
 
 def _create_raw_mysql_connection():
@@ -189,6 +198,75 @@ _db_pool = _MySQLConnectionPool(
 def get_db_connection():
     """返回一个连接池代理连接（close() 时归还池）。"""
     return _db_pool.acquire()
+
+
+def ensure_problem_written_grading_mode_column():
+    global _problem_written_mode_column_ready
+    if _problem_written_mode_column_ready:
+        return
+
+    success = False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM problems LIKE 'written_grading_mode'")
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    ALTER TABLE problems
+                    ADD COLUMN written_grading_mode TINYINT NOT NULL DEFAULT 1
+                    """
+                )
+                conn.commit()
+            success = True
+    except Exception:
+        # 兼容只读或迁移过程中的异常；后续查询仍可按默认模式处理。
+        pass
+    finally:
+        conn.close()
+    if success:
+        _problem_written_mode_column_ready = True
+
+
+def normalize_written_grading_model(value, default="qwen3.5-plus-thinking"):
+    text = str(value or "").strip().lower()
+    if text in _ALLOWED_WRITTEN_GRADING_MODELS:
+        return text
+    return str(default or "qwen3.5-plus-thinking").strip().lower()
+
+
+def ensure_problem_written_grading_model_column():
+    global _problem_written_model_column_ready
+    if _problem_written_model_column_ready:
+        return
+
+    success = False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM problems LIKE 'written_grading_model'")
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    ALTER TABLE problems
+                    ADD COLUMN written_grading_model VARCHAR(32) NOT NULL DEFAULT 'qwen3.5-plus-thinking'
+                    """
+                )
+                conn.commit()
+            success = True
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    if success:
+        _problem_written_model_column_ready = True
+
+
+def ensure_problem_written_grading_columns():
+    ensure_problem_written_grading_mode_column()
+    ensure_problem_written_grading_model_column()
 
 
 def init_submission_snapshot_cache(redis_client, ttl_seconds=None):
@@ -801,10 +879,11 @@ def get_class_by_cn(class_cn):
 
 
 def get_all_problems():
+    ensure_problem_written_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms FROM problems ORDER BY id ASC"
+            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,written_grading_mode,written_grading_model FROM problems ORDER BY id ASC"
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -812,10 +891,11 @@ def get_all_problems():
 
 
 def get_problem(problem_id):
+    ensure_problem_written_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms,submission_limit FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -823,25 +903,65 @@ def get_problem(problem_id):
 
 
 def get_problem_title(problem_id):
+    ensure_problem_written_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit FROM problems WHERE id=%s"
+            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
         conn.close()
 
 
-def create_problem(title, content, initial_code='', test_code='', forbidden_func='', type=1, lang='matlab', time_limit_ms=2000, submission_limit=10):
+def create_problem(
+    title,
+    content,
+    initial_code='',
+    test_code='',
+    forbidden_func='',
+    type=1,
+    lang='matlab',
+    time_limit_ms=2000,
+    submission_limit=10,
+    written_grading_mode=1,
+    written_grading_model="qwen3.5-plus-thinking",
+):
+    ensure_problem_written_grading_columns()
     conn = get_db_connection()
     try:
         max_score = (0 if int(type) == 1 else 5)
+        use_written_mode = 1
+        use_written_model = "qwen3.5-plus-thinking"
+        if int(type) == 2:
+            try:
+                use_written_mode = int(written_grading_mode)
+            except Exception:
+                use_written_mode = 1
+            if use_written_mode not in (1, 2):
+                use_written_mode = 1
+            use_written_model = normalize_written_grading_model(written_grading_model)
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems
-                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
-            cursor.execute(sql, (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit))
+                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit, written_grading_mode, written_grading_model)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            cursor.execute(
+                sql,
+                (
+                    title,
+                    content,
+                    initial_code,
+                    test_code,
+                    forbidden_func,
+                    type,
+                    lang,
+                    max_score,
+                    time_limit_ms,
+                    submission_limit,
+                    use_written_mode,
+                    use_written_model,
+                ),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -913,14 +1033,54 @@ def insert_user_problem_ac_record_if_absent(user_id, problem_id):
         conn.close()
 
 
-def update_problem(problem_id, new_title, new_content, new_initial_code='', new_test_code='', new_forbidden_func='', new_lang='matlab', new_time_limit_ms=None, new_submission_limit=None):
+def update_problem(
+    problem_id,
+    new_title,
+    new_content,
+    new_initial_code='',
+    new_test_code='',
+    new_forbidden_func='',
+    new_lang='matlab',
+    new_time_limit_ms=None,
+    new_submission_limit=None,
+    new_written_grading_mode=None,
+    new_written_grading_model=None,
+):
+    ensure_problem_written_grading_columns()
     conn = get_db_connection()
     try:
+        mode_val = None
+        if new_written_grading_mode is not None:
+            try:
+                mode_val = int(new_written_grading_mode)
+            except Exception:
+                mode_val = 1
+            if mode_val not in (1, 2):
+                mode_val = 1
+        model_val = None
+        if new_written_grading_model is not None:
+            model_val = normalize_written_grading_model(new_written_grading_model)
         with conn.cursor() as cursor:
             sql = """UPDATE problems
-                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s, submission_limit=%s
+                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s, submission_limit=%s,
+                         written_grading_mode=%s, written_grading_model=%s
                      WHERE id=%s"""
-            cursor.execute(sql, (new_title, new_content, new_initial_code, new_test_code, new_forbidden_func, new_lang, new_time_limit_ms, new_submission_limit, problem_id))
+            cursor.execute(
+                sql,
+                (
+                    new_title,
+                    new_content,
+                    new_initial_code,
+                    new_test_code,
+                    new_forbidden_func,
+                    new_lang,
+                    new_time_limit_ms,
+                    new_submission_limit,
+                    mode_val if mode_val is not None else 1,
+                    model_val if model_val is not None else "qwen3.5-plus-thinking",
+                    problem_id,
+                ),
+            )
         conn.commit()
     finally:
         conn.close()

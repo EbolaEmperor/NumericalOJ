@@ -21,6 +21,15 @@ from oj_modules.db_services import (
 admin_user_bp = Blueprint('admin_user', __name__)
 
 
+def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
+    try:
+        from oj_modules.routes.problem_core_routes import invalidate_problem_list_cache_for_user
+        invalidate_problem_list_cache_for_user(user_id=user_id, username=username)
+    except Exception:
+        # 缓存失效失败不影响主流程
+        pass
+
+
 def current_user():
     username = session.get('username')
     if not username:
@@ -189,6 +198,7 @@ def edit_user_ajax():
     finally:
         conn.close()
 
+    _invalidate_problem_list_cache_for_user(user_id=user_id, username=user.get('username'))
     flash(f"已将 userID={user_id} 的主班级修改为 {new_class['class_cn']}", 'success')
     return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_class': new_class})
 

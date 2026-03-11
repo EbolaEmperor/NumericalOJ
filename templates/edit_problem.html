@@ -43,12 +43,30 @@
   </div>
   {% else %}
   <div class="row mb-3">
-    <div class="col-md-8">
+    <div class="col-md-3">
       <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
       <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
     </div>
+    <div class="col-md-3">
+      <label for="writtenGradingModeSelect" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
+      {% set written_mode = (problem.written_grading_mode or 1) %}
+      <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode">
+        <option value="1" {% if written_mode == 1 %}selected{% endif %}>OCR + 文本批改</option>
+        <option value="2" {% if written_mode == 2 %}selected{% endif %}>直接批改图片</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label for="writtenGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
+      {% set written_model = (problem.written_grading_model or 'qwen3.5-plus-thinking') %}
+      <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
+        <option value="qwen3.5-plus-thinking" {% if written_model == 'qwen3.5-plus-thinking' %}selected{% endif %}>qwen3.5-plus-thinking</option>
+        <option value="qwen3.5-plus" {% if written_model == 'qwen3.5-plus' %}selected{% endif %}>qwen3.5-plus</option>
+        <option value="qwen3.5-flash-thinking" {% if written_model == 'qwen3.5-flash-thinking' %}selected{% endif %}>qwen3.5-flash-thinking</option>
+        <option value="qwen3.5-flash" {% if written_model == 'qwen3.5-flash' %}selected{% endif %}>qwen3.5-flash</option>
+      </select>
+    </div>
     {% set sub_limit = (problem.submission_limit or 10) %}
-    <div class="col-md-4">
+    <div class="col-md-3">
       <label for="submissionLimitInput" class="form-label"><i class="fas fa-check-circle me-2"></i> 提交限制</label>
       <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" min="1" value="{{ sub_limit }}">
     </div>

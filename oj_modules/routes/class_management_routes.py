@@ -24,6 +24,15 @@ class_management_bp = Blueprint('class_management', __name__)
 ALLOWED_GRADES_EXTENSIONS = {'xlsx', 'xls'}
 
 
+def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
+    try:
+        from oj_modules.routes.problem_core_routes import invalidate_problem_list_cache_for_user
+        invalidate_problem_list_cache_for_user(user_id=user_id, username=username)
+    except Exception:
+        # 缓存失效失败不影响主流程
+        pass
+
+
 def current_user():
     username = session.get('username')
     if not username:
@@ -187,6 +196,9 @@ def add_user_to_class():
     finally:
         conn.close()
 
+    if added:
+        _invalidate_problem_list_cache_for_user(user_id=user_id, username=(user or {}).get('username'))
+
     return jsonify(success=True, added=added, message=('已添加' if added else '班级已存在或无需添加'))
 
 
@@ -200,6 +212,8 @@ def remove_user_from_class():
     class_en = request.form.get('class_en', '').strip()
     if not (user_id and class_en):
         return jsonify(success=False, message='参数错误'), 400
+
+    target_user = get_user_by_id(user_id)
 
     conn = get_db_connection()
     try:
@@ -223,6 +237,8 @@ def remove_user_from_class():
         conn.commit()
     finally:
         conn.close()
+
+    _invalidate_problem_list_cache_for_user(user_id=user_id, username=(target_user or {}).get('username'))
     return jsonify(success=True)
 
 
@@ -299,6 +315,7 @@ def join_class():
     finally:
         conn.close()
 
+    _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
     return jsonify(success=True, message="成功加入班级", class_cn=target_class['class_cn'])
 
 
@@ -372,6 +389,7 @@ def leave_class():
     finally:
         conn.close()
 
+    _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
     return jsonify(success=True, message="成功退出班级", primary_en=new_primary_en)
 
 
@@ -436,4 +454,5 @@ def set_primary_class():
     finally:
         conn.close()
 
+    _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
     return jsonify(success=True, message="主班级设置成功")

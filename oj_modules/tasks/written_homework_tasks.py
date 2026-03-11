@@ -3,7 +3,12 @@
 
 import os
 
-from oj_modules.ai_utils import evaluate_written_homework_with_ai, save_transcribed_latex
+from oj_modules.ai_utils import (
+    evaluate_written_homework_with_ai,
+    evaluate_written_homework_with_ai_from_images,
+    render_pdf_to_images,
+    save_transcribed_latex,
+)
 from oj_modules.db_services import (
     get_problem,
     get_submission_by_id,
@@ -46,30 +51,58 @@ def register_written_homework_task(celery_app):
         uploaded_filename = os.path.basename(file_path)
 
         try:
-            markdown_path = save_transcribed_latex(
-                pdf_path=file_path,
-                upload_folder=upload_folder,
-                uploaded_filename=uploaded_filename,
-            )
-            with open(markdown_path, 'r', encoding='utf-8') as f:
-                latex_text = f.read()
-            if not latex_text.strip():
-                raise RuntimeError("转写得到的 LaTeX 为空。")
-            # OCR 已完成，立即发布一次实时状态，供前端渲染 LaTeX 转写结果。
-            refresh_submission_status_snapshot(submission_id)
-
             problem = get_problem(submission['problem_id'])
             if not problem:
                 raise RuntimeError("题目不存在，无法自动评分。")
+            try:
+                written_mode = int(problem.get('written_grading_mode') or 1)
+            except Exception:
+                written_mode = 1
+            written_model = str(problem.get('written_grading_model') or 'qwen3.5-plus-thinking').strip().lower()
 
-            score, ai_comment = evaluate_written_homework_with_ai(problem, latex_text)
+            if written_mode == 2:
+                image_paths = render_pdf_to_images(file_path, upload_folder)
+                score, ai_comment = evaluate_written_homework_with_ai_from_images(
+                    problem,
+                    image_paths,
+                    grading_model_spec=written_model,
+                )
+            else:
+                def _on_partial_latex(_partial_text, _markdown_path):
+                    # 每次 OCR 增量写盘后发布一次快照，驱动前端 SSE 即时刷新。
+                    refresh_submission_status_snapshot(submission_id)
+
+                markdown_path = save_transcribed_latex(
+                    pdf_path=file_path,
+                    upload_folder=upload_folder,
+                    uploaded_filename=uploaded_filename,
+                    on_partial_latex=_on_partial_latex,
+                )
+                with open(markdown_path, 'r', encoding='utf-8') as f:
+                    latex_text = f.read()
+                if not latex_text.strip():
+                    raise RuntimeError("转写得到的 LaTeX 为空。")
+                # OCR 已完成，立即发布一次实时状态，供前端渲染 LaTeX 转写结果。
+                refresh_submission_status_snapshot(submission_id)
+                score, ai_comment = evaluate_written_homework_with_ai(
+                    problem,
+                    latex_text,
+                    grading_model_spec=written_model,
+                )
+
             update_submission_score_and_comment(submission_id, score, ai_comment)
             new_status = 'Accepted' if score == 5 else 'Unaccepted'
             update_submission_status(submission_id, new_status)
-            print(
-                f"[LaTeX OCR] submission={submission_id} 转写+评分完成: "
-                f"score={score}, status={new_status}, markdown={markdown_path}"
-            )
+            if written_mode == 2:
+                print(
+                    f"[Image Grade] submission={submission_id} 图片直评完成: "
+                    f"score={score}, status={new_status}"
+                )
+            else:
+                print(
+                    f"[LaTeX OCR] submission={submission_id} 转写+评分完成: "
+                    f"score={score}, status={new_status}, markdown={markdown_path}"
+                )
         except Exception as e:
             error_filename = f"{os.path.splitext(uploaded_filename)[0]}_latex_error.txt"
             error_path = os.path.join(upload_folder, error_filename)

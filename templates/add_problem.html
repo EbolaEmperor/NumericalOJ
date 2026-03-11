@@ -64,6 +64,28 @@
   <!-- 书面作业提示 -->
   <div id="writtenAssignmentFields" class="mb-3" style="display:none;">
     <p>书面作业：学生将通过提交文件来完成作业，老师需要人工批改。</p>
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label for="writtenGradingModeSelect" class="form-label">
+          <i class="fas fa-sliders me-2"></i> 批改模式
+        </label>
+        <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode">
+          <option value="1" selected>OCR + 文本批改</option>
+          <option value="2">直接批改图片</option>
+        </select>
+      </div>
+      <div class="col-md-6">
+        <label for="writtenGradingModelSelect" class="form-label">
+          <i class="fas fa-robot me-2"></i> 批改模型
+        </label>
+        <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
+          <option value="qwen3.5-plus-thinking" selected>qwen3.5-plus-thinking</option>
+          <option value="qwen3.5-plus">qwen3.5-plus</option>
+          <option value="qwen3.5-flash-thinking">qwen3.5-flash-thinking</option>
+          <option value="qwen3.5-flash">qwen3.5-flash</option>
+        </select>
+      </div>
+    </div>
   </div>
 
   <div class="mb-3">

@@ -6,6 +6,8 @@ import json
 import mimetypes
 import os
 import re
+import tempfile
+import time
 
 import requests
 
@@ -60,6 +62,64 @@ _CODING_PLAN_TARGET_MODELS = {
     str(QWEN_TEXT_MODEL or "").strip(),
     str(QWEN_CODER_MODEL or "").strip(),
 }
+_WRITTEN_GRADING_MODEL_SPECS = {
+    "qwen3.5-plus": ("qwen3.5-plus", False, "coding_plan"),
+    "qwen3.5-plus-thinking": ("qwen3.5-plus", True, "coding_plan"),
+    "qwen3.5-flash": ("qwen3.5-flash", False, "dashscope"),
+    "qwen3.5-flash-thinking": ("qwen3.5-flash", True, "dashscope"),
+}
+_CONTROL_ESCAPE_TO_LATEX_PREFIX = {
+    "\n": "n",
+    "\t": "t",
+    "\r": "r",
+    "\x08": "b",
+    "\x0c": "f",
+}
+_LATEX_ESCAPE_ARTIFACT_PATTERN = re.compile(r"([\n\r\t\x08\x0c])\s*([A-Za-z]{2,})")
+_COMMON_LATEX_COMMANDS = {
+    "neq", "ne", "leq", "geq", "approx", "sim", "equiv",
+    "in", "notin", "subset", "subseteq", "supset", "supseteq",
+    "cup", "cap", "to", "rightarrow", "leftarrow", "leftrightarrow",
+    "mapsto", "times", "cdot", "pm", "mp", "div",
+    "frac", "sqrt", "sum", "prod", "int", "lim",
+    "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon",
+    "theta", "lambda", "mu", "pi", "sigma", "omega",
+    "infty", "forall", "exists", "nabla",
+    "begin", "end", "left", "right",
+    "mathbb", "mathcal", "mathbf", "mathrm", "text", "operatorname",
+}
+_COMMON_LATEX_PREFIXES = (
+    "math", "text", "begin", "end", "left", "right", "operatorname",
+    "mathbf", "mathrm", "mathbb", "mathcal", "underline", "overline",
+)
+
+
+def _looks_like_latex_command(command):
+    cmd = str(command or "").strip().lower()
+    if len(cmd) < 2:
+        return False
+    if cmd in _COMMON_LATEX_COMMANDS:
+        return True
+    return any(cmd.startswith(prefix) and len(cmd) > len(prefix) for prefix in _COMMON_LATEX_PREFIXES)
+
+
+def _repair_latex_escape_artifacts(text):
+    raw = str(text or "")
+    if not raw:
+        return ""
+
+    def _replace_match(match):
+        ctrl = match.group(1)
+        tail = match.group(2) or ""
+        prefix = _CONTROL_ESCAPE_TO_LATEX_PREFIX.get(ctrl)
+        if not prefix:
+            return match.group(0)
+        command = f"{prefix}{tail}"
+        if not _looks_like_latex_command(command):
+            return match.group(0)
+        return f"\\{command}"
+
+    return _LATEX_ESCAPE_ARTIFACT_PATTERN.sub(_replace_match, raw)
 
 
 def _is_invalid_secret(value):
@@ -91,24 +151,65 @@ def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base
     return str(api_key).strip(), str(base_url).rstrip('/')
 
 
-def _call_qwen_text(prompt_text, api_key, base_url, timeout=300, model=None):
+def _parse_written_grading_model_spec(model_spec):
+    key = str(model_spec or "qwen3.5-plus-thinking").strip().lower()
+    return _WRITTEN_GRADING_MODEL_SPECS.get(key, _WRITTEN_GRADING_MODEL_SPECS["qwen3.5-plus-thinking"])
+
+
+def _resolve_endpoint_for_written_grading_route(route_key):
+    route = str(route_key or "").strip().lower()
+    if route == "coding_plan":
+        api_key = os.getenv("CODING_PLAN_KEY") or CODING_PLAN_KEY
+        base_url = os.getenv("CODING_PLAN_URL") or CODING_PLAN_URL
+        if _is_invalid_secret(api_key):
+            raise RuntimeError("未配置 CODING_PLAN_KEY。")
+        if not str(base_url or "").strip():
+            raise RuntimeError("未配置 CODING_PLAN_URL。")
+        return str(api_key).strip(), str(base_url).rstrip('/')
+
+    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    if _is_invalid_secret(api_key):
+        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
+    if not str(base_url or "").strip():
+        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
+    return str(api_key).strip(), str(base_url).rstrip('/')
+
+
+def _call_qwen_text(
+    prompt_text,
+    api_key=None,
+    base_url=None,
+    timeout=300,
+    model=None,
+    enable_thinking=True,
+    resolve_endpoint=True,
+):
     text_model = str(model or QWEN_TEXT_MODEL)
-    use_api_key, use_base_url = _resolve_chat_endpoint_for_model(
-        text_model,
-        fallback_api_key=api_key,
-        fallback_base_url=base_url,
-    )
+    if resolve_endpoint:
+        use_api_key, use_base_url = _resolve_chat_endpoint_for_model(
+            text_model,
+            fallback_api_key=api_key,
+            fallback_base_url=base_url,
+        )
+    else:
+        if not str(api_key or "").strip() or not str(base_url or "").strip():
+            raise RuntimeError("缺少模型调用凭证或地址。")
+        use_api_key = str(api_key).strip()
+        use_base_url = str(base_url).rstrip('/')
     messages = [{"role": "user", "content": prompt_text}]
 
     if OpenAI is not None:
         try:
             client = OpenAI(api_key=use_api_key, base_url=use_base_url)
-            stream = client.chat.completions.create(
-                model=text_model,
-                messages=messages,
-                extra_body={"enable_thinking": True},
-                stream=True,
-            )
+            kwargs = {
+                "model": text_model,
+                "messages": messages,
+                "stream": True,
+            }
+            if enable_thinking is not None:
+                kwargs["extra_body"] = {"enable_thinking": bool(enable_thinking)}
+            stream = client.chat.completions.create(**kwargs)
             parts = []
             reasoning_parts = []
             for chunk in stream:
@@ -135,8 +236,9 @@ def _call_qwen_text(prompt_text, api_key, base_url, timeout=300, model=None):
     payload = {
         "model": text_model,
         "messages": messages,
-        "enable_thinking": True
     }
+    if enable_thinking is not None:
+        payload["enable_thinking"] = bool(enable_thinking)
     resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
     if resp.status_code >= 400:
         payload.pop("enable_thinking", None)
@@ -213,6 +315,53 @@ def _extract_first_json_object_relaxed(text):
     return None
 
 
+def _repair_grading_json_text_locally(raw_text):
+    text = str(raw_text or "").strip()
+    if not text:
+        return ""
+
+    # 先尝试提取 fenced json 内容
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    # 去掉常见前缀，如“评分结果：”
+    text = re.sub(r'^[^\{\["]*?(?="(?:score|deductions|comment|评分|扣分原因|评语)"\s*:)', "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+    if not text:
+        return ""
+
+    # 缺失外层大括号时补齐；并清理尾逗号
+    if not text.startswith("{"):
+        text = "{" + text
+    if not text.endswith("}"):
+        text = text + "}"
+    text = re.sub(r',\s*}', '}', text)
+    return text
+
+
+def _repair_grading_json_with_qwen_flash(raw_text):
+    prompt = (
+        "你是 JSON 修复器。请把下面这段“接近 JSON 但格式错误”的文本整理成合法 JSON 对象。\n"
+        "要求：\n"
+        "1. 只输出一个 JSON 对象，不要输出任何解释。\n"
+        "2. 保留原语义字段，目标字段为 score、deductions、comment。\n"
+        "3. deductions 必须是字符串数组。\n"
+        "4. score 需是 0-5 的数字（必要时按原文最接近值修正）。\n\n"
+        "5. 若字段值中包含 LaTeX 命令，JSON 字符串里的反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
+        f"待修复文本：\n```text\n{str(raw_text or '')}\n```"
+    )
+    api_key, base_url = _resolve_endpoint_for_written_grading_route("dashscope")
+    return _call_qwen_text(
+        prompt_text=prompt,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=90,
+        model="qwen3.5-flash",
+        enable_thinking=False,
+        resolve_endpoint=False,
+    )
+
+
 def render_pdf_to_images(pdf_path, output_dir):
     try:
         import pypdfium2 as pdfium
@@ -259,7 +408,7 @@ def _split_image_batches(image_data_urls, max_images_per_request=20):
     ]
 
 
-def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url):
+def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url, on_delta=None):
     message_content = [
         {
             "type": "image_url",
@@ -290,7 +439,15 @@ def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url):
                 if not chunk.choices:
                     continue
                 delta_content = chunk.choices[0].delta.content
-                parts.append(_extract_text_from_response_content(delta_content))
+                delta_text = _extract_text_from_response_content(delta_content)
+                if not delta_text:
+                    continue
+                parts.append(delta_text)
+                if callable(on_delta):
+                    try:
+                        on_delta(delta_text)
+                    except Exception:
+                        pass
             latex_text = _strip_markdown_code_fence_markers(''.join(parts))
             if latex_text:
                 return latex_text
@@ -319,10 +476,15 @@ def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url):
     latex_text = _strip_markdown_code_fence_markers(_extract_text_from_response_content(content))
     if not latex_text:
         raise RuntimeError("模型未返回可用的 LaTeX 文本。")
+    if callable(on_delta):
+        try:
+            on_delta(latex_text)
+        except Exception:
+            pass
     return latex_text
 
 
-def transcribe_images_to_latex(image_paths):
+def transcribe_images_to_latex(image_paths, on_partial_text=None):
     if not image_paths:
         raise RuntimeError("未生成可用于识别的图片。")
 
@@ -347,52 +509,149 @@ def transcribe_images_to_latex(image_paths):
     image_batches = _split_image_batches(image_data_urls, max_images_per_request=max_images_per_request)
 
     transcribed_parts = []
+    current_raw_part = []
+
+    def _emit_partial_preview():
+        if not callable(on_partial_text):
+            return
+        preview_parts = list(transcribed_parts)
+        if current_raw_part:
+            preview_current = _strip_markdown_code_fence_markers(''.join(current_raw_part))
+            if preview_current:
+                preview_parts.append(preview_current.strip())
+        preview_text = "\n\n".join([p for p in preview_parts if str(p or "").strip()]).strip()
+        try:
+            on_partial_text(preview_text)
+        except Exception:
+            pass
+
     total = len(image_batches)
     for idx, batch in enumerate(image_batches, start=1):
+        current_raw_part = []
         chunk_prompt = prompt
         if total > 1:
             chunk_prompt += (
                 f" 这是第 {idx}/{total} 组页面。"
                 "请只输出这一组页面对应的 LaTeX 片段，不要重复其他组内容。"
             )
-        part = _transcribe_image_batch(batch, chunk_prompt, api_key, base_url)
+
+        def _on_delta(delta_text):
+            if not delta_text:
+                return
+            current_raw_part.append(delta_text)
+            _emit_partial_preview()
+
+        part = _transcribe_image_batch(batch, chunk_prompt, api_key, base_url, on_delta=_on_delta)
         if part:
             transcribed_parts.append(part.strip())
+            current_raw_part = []
+            _emit_partial_preview()
 
     if not transcribed_parts:
         raise RuntimeError("模型未返回可用的 LaTeX 文本。")
     return "\n\n".join(transcribed_parts).strip()
 
 
-def evaluate_written_homework_with_ai(problem, student_latex):
-    api_key, base_url = _resolve_chat_endpoint_for_model(QWEN_TEXT_MODEL)
-    problem_title = (problem or {}).get('title', '')
-    problem_content = (problem or {}).get('content', '')
+def _call_qwen_text_with_images(
+    prompt_text,
+    image_data_urls,
+    api_key=None,
+    base_url=None,
+    timeout=300,
+    model="qwen3.5-plus",
+    enable_thinking=True,
+    resolve_endpoint=True,
+):
+    if resolve_endpoint:
+        use_api_key, use_base_url = _resolve_chat_endpoint_for_model(
+            model,
+            fallback_api_key=api_key,
+            fallback_base_url=base_url,
+        )
+    else:
+        if not str(api_key or "").strip() or not str(base_url or "").strip():
+            raise RuntimeError("缺少模型调用凭证或地址。")
+        use_api_key = str(api_key).strip()
+        use_base_url = str(base_url).rstrip('/')
 
-    prompt = (
-        "你是严谨的数学书面作业阅卷老师，请从“证明严谨性”角度评分。\n"
-        "只允许输出 JSON，不要输出任何额外文字。\n\n"
-        "【硬性评分规则】\n"
-        "1) 5 分（满分）必须同时满足：\n"
-        "- 关键结论都有明确推导，不跳步；\n"
-        "- 使用的定理/性质有对应条件并且已验证；\n"
-        "- 涉及最值/取等时，明确说明可达性或取等条件；\n"
-        "- 记号、逻辑链条完整，无明显歧义。\n"
-        "2) 只要出现以下任一情况，最高只能 4 分：\n"
-        "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
-        "- 缺少条件验证、边界讨论、取等条件说明；\n"
-        "- 推理链存在轻微断裂但主思路正确。\n"
-        "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
-        "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
-        "【输出 JSON 格式】\n"
-        "{\"score\": <0-5 的数字>, \"deductions\": [\"扣分原因1\", \"扣分原因2\"], \"comment\": \"总体评语\"}\n\n"
-        f"【题目标题】\n{problem_title}\n\n"
-        f"【题目内容】\n{problem_content}\n\n"
-        f"【学生答案（LaTeX）】\n{student_latex}\n"
-    )
+    message_content = [
+        {"type": "image_url", "image_url": {"url": str(image_url)}}
+        for image_url in (image_data_urls or [])
+        if str(image_url or "").strip()
+    ]
+    message_content.append({"type": "text", "text": str(prompt_text or "").strip()})
+    messages = [{"role": "user", "content": message_content}]
 
-    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=300, model=QWEN_TEXT_MODEL)
+    if OpenAI is not None:
+        try:
+            client = OpenAI(api_key=use_api_key, base_url=use_base_url)
+            kwargs = {
+                "model": str(model or "qwen3.5-plus"),
+                "messages": messages,
+                "modalities": ["text"],
+                "stream": True,
+            }
+            if enable_thinking is not None:
+                kwargs["extra_body"] = {"enable_thinking": bool(enable_thinking)}
+            stream = client.chat.completions.create(**kwargs)
+            parts = []
+            reasoning_parts = []
+            for chunk in stream:
+                if not getattr(chunk, "choices", None):
+                    continue
+                delta = chunk.choices[0].delta
+                if hasattr(delta, "content") and delta.content:
+                    parts.append(_extract_text_from_response_content(delta.content))
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_parts.append(_extract_text_from_response_content(delta.reasoning_content))
+            text = ''.join(parts).strip()
+            if text:
+                return text
+            fallback_text = ''.join(reasoning_parts).strip()
+            if fallback_text:
+                return fallback_text
+        except Exception as e:
+            print(f"[Qwen Vision Grade] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
+
+    headers = {
+        "Authorization": f"Bearer {use_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": str(model or "qwen3.5-plus"),
+        "messages": messages,
+        "modalities": ["text"],
+    }
+    if enable_thinking is not None:
+        payload["enable_thinking"] = bool(enable_thinking)
+    resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    if resp.status_code >= 400:
+        payload.pop("enable_thinking", None)
+        resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    result = resp.json()
+    choices = result.get("choices") or []
+    if not choices:
+        raise RuntimeError("模型未返回有效结果。")
+    content = (choices[0].get("message") or {}).get("content")
+    text = _extract_text_from_response_content(content).strip()
+    if not text:
+        raise RuntimeError("模型未返回可用文本。")
+    return text
+
+
+def _parse_written_homework_grading_result(response_text):
     data = _extract_first_json_object_relaxed(response_text)
+    if not data:
+        locally_repaired = _repair_grading_json_text_locally(response_text)
+        if locally_repaired:
+            data = _extract_first_json_object_relaxed(locally_repaired)
+    if not data:
+        try:
+            model_repaired = _repair_grading_json_with_qwen_flash(response_text)
+            data = _extract_first_json_object_relaxed(model_repaired)
+        except Exception:
+            data = None
     if not data:
         raise RuntimeError(f"评分结果解析失败，模型原始输出：{response_text[:500]}")
 
@@ -413,7 +672,7 @@ def evaluate_written_homework_with_ai(problem, student_latex):
         deductions = data.get('reasons') or data.get('扣分原因') or []
     if isinstance(deductions, str):
         deductions = [deductions]
-    deductions = [str(x).strip() for x in (deductions or []) if str(x).strip()]
+    deductions = [_repair_latex_escape_artifacts(str(x).strip()) for x in (deductions or []) if str(x).strip()]
 
     if score == 5 and deductions:
         score = 4
@@ -423,8 +682,11 @@ def evaluate_written_homework_with_ai(problem, student_latex):
     comment = data.get('comment')
     if comment is None:
         comment = data.get('评语') or ""
-    comment = str(comment).strip()
+    comment = _repair_latex_escape_artifacts(str(comment).strip())
+    return score, deductions, comment
 
+
+def _format_written_homework_comment(score, deductions, comment):
     lines = [f"AI 自动评分：{score}/5"]
     if deductions:
         lines.append("扣分原因：")
@@ -433,18 +695,168 @@ def evaluate_written_homework_with_ai(problem, student_latex):
     if comment:
         lines.append("")
         lines.append(f"评语：{comment}")
-    final_comment = "\n".join(lines).strip()
+    return "\n".join(lines).strip()
 
+
+def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec="qwen3.5-plus-thinking"):
+    model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
+    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
+    problem_title = (problem or {}).get('title', '')
+    problem_content = (problem or {}).get('content', '')
+
+    prompt = (
+        "你是严谨的数学书面作业阅卷老师，请从“证明严谨性”角度评分。\n"
+        "只允许输出 JSON，不要输出任何额外文字。\n\n"
+        "【硬性评分规则】\n"
+        "1) 5 分（满分）必须同时满足：\n"
+        "- 关键结论都有明确推导，不跳步；\n"
+        "- 使用的定理/性质有对应条件并且已验证；\n"
+        "- 涉及最值/取等时，明确说明可达性或取等条件；\n"
+        "- 记号、逻辑链条完整，无明显歧义。\n"
+        "2) 只要出现以下任一情况，最高只能 4 分：\n"
+        "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
+        "- 缺少条件验证、边界讨论、取等条件说明；\n"
+        "- 推理链存在轻微断裂但主思路正确。\n"
+        "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
+        "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
+        "5) 若 JSON 字符串中包含 LaTeX 命令，反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
+        "【输出 JSON 格式】\n"
+        "{\"score\": <0-5 的数字>, \"deductions\": [\"扣分原因1\", \"扣分原因2\"], \"comment\": \"总体评语\"}\n\n"
+        f"【题目标题】\n{problem_title}\n\n"
+        f"【题目内容】\n{problem_content}\n\n"
+        f"【学生答案（LaTeX）】\n{student_latex}\n"
+    )
+
+    response_text = _call_qwen_text(
+        prompt,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=300,
+        model=model_name,
+        enable_thinking=enable_thinking,
+        resolve_endpoint=False,
+    )
+    score, deductions, comment = _parse_written_homework_grading_result(response_text)
+    final_comment = _format_written_homework_comment(score, deductions, comment)
     return score, final_comment
 
 
-def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename):
+def evaluate_written_homework_with_ai_from_images(
+    problem,
+    image_paths,
+    grading_model_spec="qwen3.5-plus-thinking",
+):
+    if not image_paths:
+        raise RuntimeError("未找到可用于图片批改的页面图片。")
+
+    model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
+    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
+    image_data_urls = [_build_image_data_url(path) for path in image_paths]
+
+    problem_title = (problem or {}).get('title', '')
+    problem_content = (problem or {}).get('content', '')
+
+    prompt = (
+        "你是严谨的数学书面作业阅卷老师。你将收到题面文本和学生作业图片，请直接根据图片内容完成评分。\n"
+        "只允许输出 JSON，不要输出任何额外文字。\n\n"
+        "【硬性评分规则】\n"
+        "1) 5 分（满分）必须同时满足：\n"
+        "- 关键结论都有明确推导，不跳步；\n"
+        "- 使用的定理/性质有对应条件并且已验证；\n"
+        "- 涉及最值/取等时，明确说明可达性或取等条件；\n"
+        "- 记号、逻辑链条完整，无明显歧义。\n"
+        "2) 只要出现以下任一情况，最高只能 4 分：\n"
+        "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
+        "- 缺少条件验证、边界讨论、取等条件说明；\n"
+        "- 推理链存在轻微断裂但主思路正确。\n"
+        "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
+        "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
+        "5) 若 JSON 字符串中包含 LaTeX 命令，反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
+        "【输出 JSON 格式】\n"
+        "{\"score\": <0-5 的数字>, \"deductions\": [\"扣分原因1\", \"扣分原因2\"], \"comment\": \"总体评语\"}\n\n"
+        f"【题目标题】\n{problem_title}\n\n"
+        f"【题目内容】\n{problem_content}\n\n"
+        "【学生答案】\n"
+        "请直接阅读图片中的手写内容进行评分。"
+    )
+
+    response_text = _call_qwen_text_with_images(
+        prompt_text=prompt,
+        image_data_urls=image_data_urls,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=360,
+        model=model_name,
+        enable_thinking=enable_thinking,
+        resolve_endpoint=False,
+    )
+    score, deductions, comment = _parse_written_homework_grading_result(response_text)
+    final_comment = _format_written_homework_comment(score, deductions, comment)
+    return score, final_comment
+
+
+def _atomic_write_text(path, content):
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_latex_", suffix=".md", dir=parent, text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(str(content or ""))
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename, on_partial_latex=None):
     image_paths = render_pdf_to_images(pdf_path, upload_folder)
-    latex_text = transcribe_images_to_latex(image_paths)
     markdown_filename = f"{os.path.splitext(uploaded_filename)[0]}.md"
     markdown_path = os.path.join(upload_folder, markdown_filename)
-    with open(markdown_path, 'w', encoding='utf-8') as f:
-        f.write(latex_text)
+    _atomic_write_text(markdown_path, "")
+
+    try:
+        stream_emit_interval = max(0.1, float(os.getenv("LATEX_OCR_STREAM_EMIT_INTERVAL", "0.6")))
+    except ValueError:
+        stream_emit_interval = 0.6
+    try:
+        stream_emit_min_delta = max(1, int(os.getenv("LATEX_OCR_STREAM_EMIT_MIN_DELTA", "60")))
+    except ValueError:
+        stream_emit_min_delta = 60
+
+    last_emit_ts = 0.0
+    last_emitted_text = ""
+
+    def _on_partial_text(text):
+        nonlocal last_emit_ts, last_emitted_text
+        partial = str(text or "")
+        if partial == last_emitted_text:
+            return
+        now = time.monotonic()
+        if (
+            last_emitted_text
+            and (now - last_emit_ts) < stream_emit_interval
+            and abs(len(partial) - len(last_emitted_text)) < stream_emit_min_delta
+        ):
+            return
+        _atomic_write_text(markdown_path, partial)
+        last_emit_ts = now
+        last_emitted_text = partial
+        if callable(on_partial_latex):
+            try:
+                on_partial_latex(partial, markdown_path)
+            except Exception:
+                pass
+
+    latex_text = transcribe_images_to_latex(image_paths, on_partial_text=_on_partial_text)
+    _atomic_write_text(markdown_path, latex_text)
+    if callable(on_partial_latex):
+        try:
+            on_partial_latex(latex_text, markdown_path)
+        except Exception:
+            pass
     return markdown_path
 
 
