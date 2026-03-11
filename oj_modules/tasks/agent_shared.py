@@ -17,6 +17,7 @@ from config import (
     AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS,
     AGENT_CONTEXT_SUMMARY_TIMEOUT,
     AGENT_MAX_ROUNDS,
+    AGENT_SUBMIT_LIMIT,
     AGENT_MEMORY_ENABLED,
     AGENT_MEMORY_MAX_DO_NOT_REPEAT,
     AGENT_MEMORY_MAX_NOTES,
@@ -85,6 +86,7 @@ _AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS = _clamp_int(
     min_value=500,
     max_value=12000,
 )
+_AGENT_SUBMIT_LIMIT = _clamp_int(AGENT_SUBMIT_LIMIT, 5, min_value=1, max_value=100)
 
 
 def init_agent_progress_cache(redis_client, ttl_seconds=None):
@@ -804,6 +806,40 @@ def _tool_query_test_results(submission_id, timeout_seconds=240):
     def is_judging(status):
         return status in ("Pending", "Waiting", "Running")
 
+    def _test_point_count(snapshot):
+        if not isinstance(snapshot, dict):
+            return 0
+        points = snapshot.get("test_points")
+        return len(points) if isinstance(points, list) else 0
+
+    def _need_wait_for_terminal_details(snapshot):
+        if not isinstance(snapshot, dict):
+            return False
+        status = str(snapshot.get("status") or "").strip()
+        if status not in ("Compile Error", "Forbidden", "Error"):
+            return False
+        return _test_point_count(snapshot) <= 0
+
+    def _load_latest_direct():
+        snap = get_submission_status_snapshot(submission_id, prefer_cache=False)
+        if not snap:
+            snap = get_submission_by_id(submission_id)
+        return snap
+
+    def _finalize_terminal(snapshot):
+        latest_snapshot = snapshot if isinstance(snapshot, dict) else {}
+        # 评测任务可能先写终态状态，再写 test_points；这里短暂补等，避免拿到空明细。
+        if _need_wait_for_terminal_details(latest_snapshot):
+            grace_deadline = min(deadline, time.time() + 3.0)
+            while time.time() < grace_deadline:
+                direct = _load_latest_direct()
+                if direct:
+                    latest_snapshot = direct
+                if not _need_wait_for_terminal_details(latest_snapshot):
+                    break
+                time.sleep(0.2)
+        return {"timeout": False, "completed": True, **_summarize_submission(latest_snapshot)}
+
     def decode_message(raw):
         payload = raw
         if isinstance(payload, bytes):
@@ -819,7 +855,7 @@ def _tool_query_test_results(submission_id, timeout_seconds=240):
     if not latest:
         latest = get_submission_by_id(submission_id)
     if latest and not is_judging(latest.get("status")):
-        return {"timeout": False, "completed": True, **_summarize_submission(latest)}
+        return _finalize_terminal(latest)
 
     pubsub = subscribe_submission_status_events(submission_id)
     if pubsub is not None:
@@ -839,7 +875,7 @@ def _tool_query_test_results(submission_id, timeout_seconds=240):
 
                 latest = snap
                 if not is_judging(latest.get("status")):
-                    return {"timeout": False, "completed": True, **_summarize_submission(latest)}
+                    return _finalize_terminal(latest)
         finally:
             try:
                 pubsub.close()
@@ -854,7 +890,7 @@ def _tool_query_test_results(submission_id, timeout_seconds=240):
         if snap:
             latest = snap
             if not is_judging(latest.get("status")):
-                return {"timeout": False, "completed": True, **_summarize_submission(latest)}
+                return _finalize_terminal(latest)
         time.sleep(1.0)
 
     return {"timeout": True, "completed": False, **_summarize_submission(latest)}

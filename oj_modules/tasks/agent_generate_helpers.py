@@ -587,7 +587,8 @@ def _build_data_generation_initial_prompt(problem, interactor_code, standard_cod
         "4. 确认无误后，将所有 in/out 文件其打包为 zip，并调用工具上传。\n"
         "5. 上传数据后，将标准程序提交系统测试，看是否通过所有测试点。\n"
         "6. 若标准程序没有通过测试，请从 1 开始重复上述步骤，直到标准程序能通过所有测试点为止。\n\n"
-        "你最多只能调用 5 次 submit_solution，若 5 次还没成功，你会被强制终止。\n\n"
+        f"你最多只能调用 {_AGENT_SUBMIT_LIMIT} 次 submit_solution，"
+        f"若 {_AGENT_SUBMIT_LIMIT} 次还没成功，你会被强制终止。\n\n"
         f"{lang_extra_prompt}"
         "现在，请你调用 get_context 获取题目要求、交互程序、标准程序以及其它详细说明。"
     )

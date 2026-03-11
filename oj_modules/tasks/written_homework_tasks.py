@@ -4,7 +4,12 @@
 import os
 
 from oj_modules.ai_utils import evaluate_written_homework_with_ai, save_transcribed_latex
-from oj_modules.db_services import get_problem, get_submission_by_id, update_submission_status
+from oj_modules.db_services import (
+    get_problem,
+    get_submission_by_id,
+    refresh_submission_status_snapshot,
+    update_submission_status,
+)
 from oj_modules.grading_services import (
     get_file_path_for_submission,
     update_submission_comment,
@@ -41,15 +46,17 @@ def register_written_homework_task(celery_app):
         uploaded_filename = os.path.basename(file_path)
 
         try:
-            tex_path = save_transcribed_latex(
+            markdown_path = save_transcribed_latex(
                 pdf_path=file_path,
                 upload_folder=upload_folder,
                 uploaded_filename=uploaded_filename,
             )
-            with open(tex_path, 'r', encoding='utf-8') as f:
+            with open(markdown_path, 'r', encoding='utf-8') as f:
                 latex_text = f.read()
             if not latex_text.strip():
                 raise RuntimeError("转写得到的 LaTeX 为空。")
+            # OCR 已完成，立即发布一次实时状态，供前端渲染 LaTeX 转写结果。
+            refresh_submission_status_snapshot(submission_id)
 
             problem = get_problem(submission['problem_id'])
             if not problem:
@@ -61,7 +68,7 @@ def register_written_homework_task(celery_app):
             update_submission_status(submission_id, new_status)
             print(
                 f"[LaTeX OCR] submission={submission_id} 转写+评分完成: "
-                f"score={score}, status={new_status}, tex={tex_path}"
+                f"score={score}, status={new_status}, markdown={markdown_path}"
             )
         except Exception as e:
             error_filename = f"{os.path.splitext(uploaded_filename)[0]}_latex_error.txt"

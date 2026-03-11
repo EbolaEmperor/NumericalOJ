@@ -16,12 +16,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
         if not task_id:
             task_id = f"unknown-{int(time.time())}"
 
-        try:
-            cfg_rounds = int(AGENT_MAX_ROUNDS)
-        except Exception:
-            cfg_rounds = 8
-        max_rounds = max(1, cfg_rounds)
-        max_tool_calls = max(8, max_rounds * 8)
+        submit_limit = _AGENT_SUBMIT_LIMIT
 
         state = {
             "task_id": task_id,
@@ -31,7 +26,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             "status": "Running",
             "message": "Agent 任务启动中",
             "round": 0,
-            "max_rounds": max_rounds,
+            "max_rounds": 0,
             "best_score": 0,
             "latest_submission_id": None,
             "final_submission_id": None,
@@ -83,58 +78,64 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 details={"core_hints": core_hints},
             )
 
-        latest_code = str(problem.get("initial_code") or "")
-        runtime = {
-            "latest_code": latest_code,
-            "latest_submission_id": None,
-            "latest_summary": None,
-            "last_ai_tutor_feedback": "",
-            "submission_code_map": {},
-            "accepted": False,
-        }
+        initial_code = str(problem.get("initial_code") or "")
+        workspace = _initialize_solver_workspace(
+            user_id=user["id"],
+            problem_id=int(problem.get("id") or problem_id),
+            task_id=task_id,
+            lang=(problem.get("lang") or "cpp").lower(),
+            initial_code=initial_code,
+        )
+        workspace_dir = str(workspace.get("workspace_dir") or "")
+        main_code_path = str(workspace.get("main_code_path") or "")
+        workspace_files = workspace.get("synced_files") if isinstance(workspace.get("synced_files"), list) else []
 
-        if latest_code.strip():
+        _push_agent_event(
+            state,
+            f"已创建工作区：{workspace_dir}",
+            event_type="workspace_ready",
+            details={
+                "workspace_dir": workspace_dir,
+                "main_code_path": main_code_path,
+                "synced_file_count": len(workspace_files),
+            },
+        )
+
+        if initial_code.strip():
             _push_agent_event(
                 state,
-                f"检测到题目初始代码，长度={len(latest_code)} 字符",
+                f"已写入题目初始代码到 {main_code_path}，长度={len(initial_code)} 字符",
                 event_type="initial_code",
             )
 
-        repository_filenames = []
-        try:
-            repo_rows = _tool_list_repository_files(user_id=user["id"], limit=200)
-            if isinstance(repo_rows, list):
-                for row in repo_rows:
-                    if isinstance(row, dict):
-                        name = str(row.get("filename") or "").strip()
-                        if name:
-                            repository_filenames.append(name)
-            if repository_filenames:
-                _push_agent_event(
-                    state,
-                    f"已读取代码仓库文件列表，共 {len(repository_filenames)} 个文件",
-                    event_type="repository_files",
-                )
-        except Exception as repo_err:
-            _push_agent_event(
-                state,
-                f"读取代码仓库文件列表失败: {repo_err}",
-                level="warning",
-                event_type="repository_files_error",
-            )
+        runtime = {
+            "workspace_dir": workspace_dir,
+            "main_code_path": main_code_path,
+            "latest_submission_id": None,
+            "latest_summary": None,
+            "accepted": False,
+            "submit_calls": 0,
+            "submit_limit": submit_limit,
+            "force_fail_submit_limit": False,
+            "force_fail_message": "",
+        }
 
         conversation = [{
             "role": "user",
             "content": _build_initial_prompt(
                 problem,
+                workspace_dir=workspace_dir,
+                main_code_path=main_code_path,
                 core_hints=core_hints,
-                repository_filenames=repository_filenames,
+                workspace_filenames=workspace_files,
             ),
         }]
         tools = _build_agent_react_tools()
         total_tool_calls = 0
 
-        for round_idx in range(1, max_rounds + 1):
+        round_idx = 0
+        while True:
+            round_idx += 1
             state["round"] = round_idx
             before_chars = _conversation_total_chars(conversation)
             trimmed_conversation = _trim_conversation_by_budget(
@@ -159,13 +160,14 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 working_memory=working_memory,
                 latest_submission_id=runtime.get("latest_submission_id"),
                 latest_summary=runtime.get("latest_summary"),
-                last_ai_tutor_feedback=runtime.get("last_ai_tutor_feedback") or "",
+                workspace_dir=runtime.get("workspace_dir") or "",
+                main_code_path=runtime.get("main_code_path") or "",
             )
             api_request_body = _build_api_request_payload(messages, tools=tools)
             _append_api_call_log(state, round_idx, api_request_body, api_type="solve")
             _push_agent_event(
                 state,
-                f"第 {round_idx}/{max_rounds} 轮：ReAct 决策中",
+                f"第 {round_idx} 轮：ReAct 决策中",
                 round=round_idx,
                 event_type="api_request",
                 details={
@@ -200,11 +202,11 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
 
             if not tool_calls:
                 _push_agent_event(state, f"第 {round_idx} 轮未调用工具")
-                break
+                if runtime.get("accepted"):
+                    break
+                continue
 
             for tool_call in tool_calls:
-                if total_tool_calls >= max_tool_calls:
-                    break
                 total_tool_calls += 1
 
                 call_id = str(tool_call.get("id") or "").strip()
@@ -229,40 +231,77 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
 
                 tool_result = {"success": False, "message": f"未知工具：{func_name}"}
                 try:
-                    if func_name == "read_latest_code":
-                        code_text = str(runtime.get("latest_code") or "")
+                    if func_name == "get_context":
                         tool_result = {
                             "success": True,
-                            "has_code": bool(code_text.strip()),
                             "language": (problem.get("lang") or "matlab").lower(),
-                            "chars": len(code_text),
-                            "latest_code": code_text,
+                            "workspace_dir": runtime.get("workspace_dir"),
+                            "main_code_path": runtime.get("main_code_path"),
+                            "problem_title": problem.get("title"),
+                            "problem_content": str(problem.get("content") or ""),
                         }
-                    elif func_name == "update_code":
-                        code_text = str(arguments.get("code") or "")
-                        if not code_text.strip():
-                            raise RuntimeError("code 不能为空。")
-                        runtime["latest_code"] = code_text
-                        tool_result = {
-                            "success": True,
-                            "message": "代码已更新",
-                            "chars": len(code_text),
-                            "note": _truncate_text(arguments.get("note"), limit=200),
-                        }
+                    elif func_name == "list_files":
+                        files = _tool_workspace_list_files(
+                            workspace_dir=runtime["workspace_dir"],
+                            path=arguments.get("path", ""),
+                            recursive=arguments.get("recursive", True),
+                            max_entries=arguments.get("max_entries", 500),
+                        )
+                        tool_result = {"success": True, **files}
+                    elif func_name == "read_file":
+                        read_result = _tool_workspace_read_file(
+                            workspace_dir=runtime["workspace_dir"],
+                            path=arguments.get("path", ""),
+                            max_chars=arguments.get("max_chars", 12000),
+                        )
+                        tool_result = {"success": True, **read_result}
+                    elif func_name == "create_file":
+                        created = _tool_workspace_create_file(
+                            workspace_dir=runtime["workspace_dir"],
+                            path=arguments.get("path", ""),
+                            content=arguments.get("content", ""),
+                            overwrite=arguments.get("overwrite", True),
+                        )
+                        tool_result = {"success": True, **created}
+                    elif func_name == "edit_file":
+                        edited = _tool_workspace_edit_file(
+                            workspace_dir=runtime["workspace_dir"],
+                            path=arguments.get("path", ""),
+                            new_content=arguments.get("new_content"),
+                            find_text=arguments.get("find_text"),
+                            replace_text=arguments.get("replace_text"),
+                            replace_all=arguments.get("replace_all", True),
+                        )
+                        tool_result = {"success": True, **edited}
+                    elif func_name == "run_command":
+                        run_result = _tool_workspace_run_command(
+                            workspace_dir=runtime["workspace_dir"],
+                            command=arguments.get("command", ""),
+                            timeout_seconds=arguments.get("timeout_seconds", 60),
+                        )
+                        tool_result = {"success": True, **run_result}
                     elif func_name == "submit_evaluation":
-                        if arguments.get("code") is not None:
-                            incoming_code = str(arguments.get("code") or "")
-                            if incoming_code.strip():
-                                runtime["latest_code"] = incoming_code
-                        code_text = str(runtime.get("latest_code") or "")
+                        source_path = str(arguments.get("source_path") or runtime.get("main_code_path") or "").strip()
+                        if not source_path:
+                            raise RuntimeError("缺少 source_path，且未配置默认主代码文件。")
+                        source_abs = _resolve_workspace_path(runtime["workspace_dir"], source_path)
+                        if not os.path.isfile(source_abs):
+                            raise RuntimeError(f"待提交代码文件不存在：{source_path}")
+                        with open(source_abs, "r", encoding="utf-8", errors="replace") as f:
+                            code_text = f.read()
                         if not code_text.strip():
-                            raise RuntimeError("当前没有可提交代码，请先调用 update_code。")
+                            raise RuntimeError("待提交代码为空。")
 
                         timeout_seconds = _clamp_int(arguments.get("timeout_seconds"), 300, min_value=60, max_value=900)
+                        synced_headers = _tool_sync_workspace_headers_to_repository(
+                            user_id=user["id"],
+                            workspace_dir=runtime["workspace_dir"],
+                        )
+                        synced_count = int(synced_headers.get("synced_count") or 0)
+                        skipped_headers = synced_headers.get("skipped_files") if isinstance(synced_headers.get("skipped_files"), list) else []
                         submission_id = _tool_submit_code(problem, requested_by, code_text, evaluate_submission_task)
                         final_submission_id = submission_id
                         runtime["latest_submission_id"] = submission_id
-                        runtime["submission_code_map"][str(submission_id)] = code_text
                         _push_agent_event(
                             state,
                             f"第 {round_idx} 轮已提交，submission_id={submission_id}",
@@ -275,6 +314,8 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         runtime["latest_summary"] = compact_summary
                         is_accepted = str(compact_summary.get("status") or "").strip() == "Accepted"
                         runtime["accepted"] = is_accepted
+                        runtime["submit_calls"] = int(runtime.get("submit_calls") or 0) + 1
+                        current_submit_calls = int(runtime["submit_calls"])
 
                         diag = _extract_retry_diagnosis(assistant_text) or _truncate_text(assistant_text, limit=360)
                         failure_signature = _build_failure_signature(compact_summary)
@@ -353,66 +394,57 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                                 "attempts": attempts,
                             }
 
-                        tool_result = {
-                            "success": True,
-                            "submission_id": submission_id,
+                        raw_test_points = summary.get("test_points") if isinstance(summary.get("test_points"), list) else []
+                        raw_failed_points = summary.get("failed_points") if isinstance(summary.get("failed_points"), list) else []
+                        judge_result = {
+                            "status": compact_summary.get("status"),
+                            "score": compact_summary.get("score"),
+                            "accepted_count": compact_summary.get("accepted_count"),
+                            "total_count": compact_summary.get("total_count"),
                             "timeout": bool(summary.get("timeout")),
                             "completed": bool(summary.get("completed")),
-                            "test_points": summary.get("test_points") or [],
+                            "failed_points": raw_failed_points,
+                        }
+                        if not raw_test_points:
+                            judge_result["note"] = "当前评测未返回测试点明细（可能是编译阶段失败，或题目尚未配置测试点）。"
+
+                        tool_result = {
+                            "success": True,
+                            "source_path": os.path.relpath(source_abs, runtime["workspace_dir"]),
+                            "header_sync": {
+                                "synced_count": synced_count,
+                                "skipped_count": len(skipped_headers),
+                            },
+                            "submission_id": submission_id,
+                            "submit_calls": current_submit_calls,
+                            "submit_limit": runtime["submit_limit"],
+                            "judge_result": judge_result,
+                            "timeout": bool(summary.get("timeout")),
+                            "completed": bool(summary.get("completed")),
+                            "test_points": raw_test_points,
+                            "failed_points": raw_failed_points,
                             **compact_summary,
                         }
-                    elif func_name == "ask_ai_tutor":
-                        tool_result = {
-                            "success": False,
-                            "disabled": True,
-                            "message": "ask_ai_tutor 功能暂时禁用",
-                        }
-                    elif func_name == "list_repository_files":
-                        files = _tool_list_repository_files(
-                            user_id=user["id"],
-                            limit=arguments.get("limit", 200),
-                        )
-                        tool_result = {"success": True, "count": len(files), "files": files}
-                    elif func_name == "read_repository_file":
-                        file_content = _tool_read_repository_file(
-                            user_id=user["id"],
-                            filename=arguments.get("filename", ""),
-                            file_id=arguments.get("file_id"),
-                            max_chars=arguments.get("max_chars", 12000),
-                        )
-                        tool_result = {"success": True, "content": file_content}
-                    elif func_name == "read_repository_file_full":
-                        file_content = _tool_read_repository_file_full(
-                            user_id=user["id"],
-                            filename=arguments.get("filename", ""),
-                            file_id=arguments.get("file_id"),
-                        )
-                        tool_result = {"success": True, "content": file_content}
-                    elif func_name == "update_repository_file":
-                        updated = _tool_update_repository_file(
-                            user_id=user["id"],
-                            filename=arguments.get("filename", ""),
-                            file_id=arguments.get("file_id"),
-                            content=arguments.get("content", ""),
-                        )
-                        tool_result = {"success": True, **updated}
-                    elif func_name == "search_repository":
-                        result = _tool_search_repository(
-                            user_id=user["id"],
-                            pattern=arguments.get("pattern", ""),
-                            max_files=arguments.get("max_files", 500),
-                            max_matches=arguments.get("max_matches", 120),
-                        )
-                        tool_result = {"success": True, **result}
-                    elif func_name == "get_knowledge":
-                        knowledge = _tool_get_knowledge(
-                            question=arguments.get("question", ""),
-                            max_chars=arguments.get("max_chars", 1800),
-                        )
-                        tool_result = {"success": True, **knowledge}
-                    elif func_name == "planning":
-                        planning_result = _tool_planning(messages=messages)
-                        tool_result = {"success": True, **planning_result}
+                        if (not is_accepted) and current_submit_calls >= int(runtime["submit_limit"]):
+                            limit_msg = (
+                                f"submit_evaluation 调用已达到上限 {runtime['submit_limit']} 次，"
+                                "且仍未通过，任务将被强制终止。"
+                            )
+                            runtime["force_fail_submit_limit"] = True
+                            runtime["force_fail_message"] = limit_msg
+                            tool_result["force_terminate"] = True
+                            tool_result["message"] = limit_msg
+                            _push_agent_event(
+                                state,
+                                limit_msg,
+                                level="warning",
+                                event_type="submit_limit_reached",
+                                details={
+                                    "submit_calls": current_submit_calls,
+                                    "submit_limit": runtime["submit_limit"],
+                                    "submission_id": submission_id,
+                                },
+                            )
                 except Exception as tool_err:
                     tool_result = {"success": False, "message": f"{func_name} 执行失败: {tool_err}"}
                     _push_agent_event(
@@ -430,13 +462,10 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                     "name": func_name,
                     "content": tool_content,
                 })
+                if runtime.get("force_fail_submit_limit"):
+                    break
 
-            if total_tool_calls >= max_tool_calls:
-                _push_agent_event(
-                    state,
-                    f"工具调用次数已达上限({max_tool_calls})，结束任务",
-                    level="warning",
-                )
+            if runtime.get("force_fail_submit_limit"):
                 break
 
         if runtime.get("accepted"):
@@ -457,20 +486,20 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 "attempts": attempts,
             }
 
+        fail_message = runtime.get("force_fail_message") or "Agent 任务结束，未通过全部测试点"
         _push_agent_event(
             state,
-            "Agent 任务结束，未通过全部测试点",
+            fail_message,
             level="warning",
             status="Failed",
             final_submission_id=final_submission_id,
         )
         return {
             "success": False,
-            "message": "Agent 任务结束，未通过全部测试点",
+            "message": fail_message,
             "task_id": task_id,
             "final_submission_id": final_submission_id,
             "attempts": attempts,
         }
 
     return agent_solve_problem
-

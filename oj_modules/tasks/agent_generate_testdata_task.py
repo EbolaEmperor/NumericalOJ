@@ -19,7 +19,7 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
         n_points = _clamp_int(test_point_count, 10, min_value=1, max_value=5000)
         standard_program = str(standard_code or "")
         data_requirement_text = str(data_requirement or "").strip()
-        submit_limit = 5
+        submit_limit = _AGENT_SUBMIT_LIMIT
 
         state = {
             "task_id": task_id,
@@ -114,7 +114,8 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
                 "你必须先调用 get_context 获取完整上下文，再进行后续操作。"
                 "你只能基于工具返回的真实结果做决策，不能臆造文件、编译结果或评测结果。"
                 "当 upload_testdata 与 submit_solution（或 submit_standard_solution）都成功并且评测通过时，任务才完成。"
-                "你最多只能调用 5 次 submit_solution；第 5 次返回后若仍未通过，任务会被强制终止并判定失败。"
+                f"你最多只能调用 {submit_limit} 次 submit_solution；"
+                f"第 {submit_limit} 次返回后若仍未通过，任务会被强制终止并判定失败。"
             ),
         }
 

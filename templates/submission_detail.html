@@ -16,22 +16,23 @@
       {% set header_max_score = 5 %}
     {% endif %}
     <div class="d-flex align-items-center justify-content-between">
-      <h2 class="mb-0">
-        <span class="{{ submission.status | lower | replace(' ', '-') }}">{{ submission.status }}</span>
+      <h2 class="mb-0" data-header-max-score="{{ header_max_score }}">
+        <span id="submissionStatusText" class="{{ submission.status | lower | replace(' ', '-') }}">{{ submission.status }}</span>
         <span class="ms-3">
           <i class="fas fa-trophy me-1"></i>
           {% if header_max_score == 0 %}
-            <span class="text-danger">{{ submission.score }}</span> / ?
+            <span id="submissionScoreValue" class="text-danger">{{ submission.score }}</span> /
+            <span id="submissionScoreMax">?</span>
           {% else %}
             {% set header_percentage = (submission.score / header_max_score) * 100 %}
             {% if submission.score == header_max_score %}
-              <span class="text-success">{{ submission.score }}</span>
+              <span id="submissionScoreValue" class="text-success">{{ submission.score }}</span>
             {% elif header_percentage >= 60 %}
-              <span class="text-warning">{{ submission.score }}</span>
+              <span id="submissionScoreValue" class="text-warning">{{ submission.score }}</span>
             {% else %}
-              <span class="text-danger">{{ submission.score }}</span>
+              <span id="submissionScoreValue" class="text-danger">{{ submission.score }}</span>
             {% endif %}
-            / {{ header_max_score }}
+            / <span id="submissionScoreMax">{{ header_max_score }}</span>
           {% endif %}
         </span>
       </h2>
@@ -69,6 +70,16 @@
     <div class="card">
       <div class="card-body p-0">
         <div id="pdfViewer" style="width: 100%; height: 580px;"></div>
+      </div>
+    </div>
+    <div class="card mt-3">
+      <div class="card-header py-2">
+        <strong><i class="fas fa-file-code me-2"></i>LaTeX 转写结果</strong>
+      </div>
+      <div class="card-body">
+        <div id="submissionLatexRendered"
+             class="form-control"
+             style="min-height: 220px; height: auto; overflow-y: auto; white-space: normal;"></div>
       </div>
     </div>
     {% endif %}
@@ -850,69 +861,132 @@
 </script>
 {% endif %}
 
-{% if submission.problem_type == 2 and (not user or user.is_admin != 1) and submission.status in ['Pending', 'Waiting', 'Running'] %}
+{% if submission.problem_type == 2 %}
 <script>
-  // 书面作业：等待 AI 转写/评分完成后自动刷新页面
-  let writtenPollCount = 0;
-  const writtenMaxPollCount = 180; // 最多约6分钟（2秒一次）
+  (function bindWrittenSubmissionStream() {
+    const statusEl = document.getElementById('submissionStatusText');
+    const scoreEl = document.getElementById('submissionScoreValue');
+    const scoreMaxEl = document.getElementById('submissionScoreMax');
+    const latexEl = document.getElementById('submissionLatexRendered');
+    const commentEl = document.getElementById('studentCommentRendered');
+    const adminCommentEl = document.getElementById('commentInput');
+    const adminScoreInput = document.getElementById('scoreInput');
+    const streamUrl = '{{ url_for("submission.submission_status_stream", submission_id=submission.id) }}';
 
-  function checkWrittenSubmissionStatus() {
-    fetch('{{ url_for("submission.submission_status", submission_id=submission.id) }}')
-      .then(response => response.json())
-      .then(data => {
-        writtenPollCount++;
+    const initialPayload = {
+      status: {{ (submission.status or '') | tojson }},
+      score: {{ submission.score | tojson }},
+      written_latex_text: {{ (submission_latex_text or '') | tojson }},
+      written_latex_error: {{ (submission_latex_error or '') | tojson }},
+      written_comment: {{ (submission.code or '') | tojson }}
+    };
 
-        if (data.error) {
-          if (writtenPollCount < writtenMaxPollCount) {
-            setTimeout(checkWrittenSubmissionStatus, 3000);
-          }
-          return;
+    function escapeHtml(text) {
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>');
+    }
+
+    function statusClassName(status) {
+      return String(status || '').toLowerCase().trim().replace(/\s+/g, '-');
+    }
+
+    function updateHeader(status, score) {
+      if (statusEl) {
+        statusEl.className = statusClassName(status);
+        statusEl.textContent = String(status || '-');
+      }
+
+      if (!scoreEl || !scoreMaxEl) return;
+      const maxScoreRaw = scoreMaxEl.textContent ? String(scoreMaxEl.textContent).trim() : "5";
+      const maxScore = Number(maxScoreRaw);
+      const safeScore = Number(score);
+      if (!Number.isFinite(safeScore)) {
+        scoreEl.textContent = '-';
+        scoreEl.className = 'text-danger';
+        return;
+      }
+      scoreEl.textContent = String(safeScore);
+      if (Number.isFinite(maxScore) && maxScore > 0 && safeScore === maxScore) {
+        scoreEl.className = 'text-success';
+      } else if (Number.isFinite(maxScore) && maxScore > 0 && (safeScore / maxScore) >= 0.6) {
+        scoreEl.className = 'text-warning';
+      } else {
+        scoreEl.className = 'text-danger';
+      }
+    }
+
+    function renderLatex(rawLatex, errText, status) {
+      if (!latexEl) return;
+      const latex = String(rawLatex || '');
+      const err = String(errText || '');
+      const st = String(status || '');
+      if (latex.trim()) {
+        latexEl.innerHTML = escapeHtml(latex);
+      } else if (err.trim()) {
+        latexEl.innerHTML = '<span class="text-danger">' + escapeHtml(err) + '</span>';
+      } else if (['Pending', 'Waiting', 'Running'].includes(st)) {
+        latexEl.innerHTML = '<span class="text-muted">LaTeX 转写中，请稍后查看实时结果。</span>';
+      } else {
+        latexEl.innerHTML = '<span class="text-muted">暂无 LaTeX 转写结果。</span>';
+      }
+      if (window.MathJax && window.MathJax.typesetPromise) {
+        MathJax.typesetPromise([latexEl]).catch(() => {});
+      }
+    }
+
+    function renderComment(rawComment) {
+      const raw = String(rawComment || '');
+      if (commentEl) {
+        if (!raw.trim()) {
+          commentEl.innerHTML = '<span class="text-muted">暂无评语</span>';
+        } else {
+          commentEl.innerHTML = escapeHtml(raw);
         }
-
-        // AI 评分完成（不再处于 Pending/Running）后刷新详情
-        if (!data.is_judging) {
-          setTimeout(() => location.replace(location.href), 400);
-          return;
+        if (window.MathJax && window.MathJax.typesetPromise) {
+          MathJax.typesetPromise([commentEl]).catch(() => {});
         }
+      }
+      if (adminCommentEl) {
+        adminCommentEl.value = raw;
+      }
+    }
 
-        if (writtenPollCount < writtenMaxPollCount) {
-          setTimeout(checkWrittenSubmissionStatus, 2000);
-        }
-      })
-      .catch(() => {
-        writtenPollCount++;
-        if (writtenPollCount < writtenMaxPollCount) {
-          setTimeout(checkWrittenSubmissionStatus, 3000);
-        }
-      });
-  }
+    function applyWrittenPayload(payload) {
+      const data = payload || {};
+      updateHeader(data.status, data.score);
+      renderLatex(data.written_latex_text, data.written_latex_error, data.status);
+      renderComment(data.written_comment);
+      if (adminScoreInput && Number.isFinite(Number(data.score))) {
+        adminScoreInput.value = String(Number(data.score));
+      }
+    }
 
-  setTimeout(checkWrittenSubmissionStatus, 1500);
-</script>
-{% endif %}
+    applyWrittenPayload(initialPayload);
 
-{% if submission.problem_type == 2 and (not user or user.is_admin != 1) %}
-<script>
-  (function renderStudentCommentLatex() {
-    const el = document.getElementById('studentCommentRendered');
-    if (!el) return;
-
-    const raw = {{ (submission.code or '') | tojson }};
-    if (!raw || !String(raw).trim()) {
-      el.innerHTML = '<span class="text-muted">暂无评语</span>';
+    if (!window.EventSource) {
       return;
     }
 
-    const escaped = String(raw)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>');
-    el.innerHTML = escaped;
-
-    if (window.MathJax && window.MathJax.typesetPromise) {
-      MathJax.typesetPromise([el]).catch(() => {});
-    }
+    const source = new EventSource(streamUrl);
+    source.addEventListener('status', function(evt) {
+      try {
+        const data = JSON.parse(evt.data);
+        applyWrittenPayload(data);
+      } catch (_) {}
+    });
+    source.addEventListener('done', function(evt) {
+      try {
+        const data = JSON.parse(evt.data);
+        applyWrittenPayload(data);
+      } catch (_) {}
+      source.close();
+    });
+    source.addEventListener('error', function() {
+      // 交给 EventSource 自动重连，不使用轮询。
+    });
   })();
 </script>
 {% endif %}
