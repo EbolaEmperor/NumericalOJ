@@ -42,6 +42,18 @@ def _extract_text_from_response_content(content):
     return ""
 
 
+def _strip_markdown_code_fence_markers(text):
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    cleaned_lines = []
+    for line in raw.splitlines():
+        if re.match(r"^\s*```[^\n`]*\s*$", line):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
+
+
 _CODING_PLAN_TARGET_MODELS = {
     "qwen3.5-plus",
     "qwen3-coder-plus",
@@ -94,7 +106,7 @@ def _call_qwen_text(prompt_text, api_key, base_url, timeout=300, model=None):
             stream = client.chat.completions.create(
                 model=text_model,
                 messages=messages,
-                extra_body={"enable_thinking": False},
+                extra_body={"enable_thinking": True},
                 stream=True,
             )
             parts = []
@@ -279,7 +291,7 @@ def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url):
                     continue
                 delta_content = chunk.choices[0].delta.content
                 parts.append(_extract_text_from_response_content(delta_content))
-            latex_text = ''.join(parts).strip()
+            latex_text = _strip_markdown_code_fence_markers(''.join(parts))
             if latex_text:
                 return latex_text
         except Exception as e:
@@ -304,7 +316,7 @@ def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url):
     if not choices:
         raise RuntimeError("模型未返回有效结果。")
     content = (choices[0].get('message') or {}).get('content')
-    latex_text = _extract_text_from_response_content(content).strip()
+    latex_text = _strip_markdown_code_fence_markers(_extract_text_from_response_content(content))
     if not latex_text:
         raise RuntimeError("模型未返回可用的 LaTeX 文本。")
     return latex_text
@@ -320,10 +332,12 @@ def transcribe_images_to_latex(image_paths):
 
     base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
     prompt = (
-        "请将这份书面作业完整转写为 LaTeX 源码。"
-        "要求：保留原题号、段落和公式结构；"
-        "无法识别的内容用\\\\text{[无法辨认]}标注；"
-        "只输出 LaTeX，不要任何解释和 Markdown 代码块。"
+        "请将这份书面作业完整转写为 Markdown 内嵌 LaTeX 的格式。"
+        "要求："
+        "1. 保留原题号、段落和公式结构；"
+        "2. 无法识别的内容用 {[无法辨认]} 标注；"
+        "3. 行内公式用 $...$ 包裹，行间公式用 $$(换行)...(换行)$$ 包裹；"
+        "4. 不要输出任何解释，直接输出 Markdown 源码。"
     )
     image_data_urls = [_build_image_data_url(path) for path in image_paths]
     try:
@@ -427,11 +441,11 @@ def evaluate_written_homework_with_ai(problem, student_latex):
 def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename):
     image_paths = render_pdf_to_images(pdf_path, upload_folder)
     latex_text = transcribe_images_to_latex(image_paths)
-    tex_filename = f"{os.path.splitext(uploaded_filename)[0]}.tex"
-    tex_path = os.path.join(upload_folder, tex_filename)
-    with open(tex_path, 'w', encoding='utf-8') as f:
+    markdown_filename = f"{os.path.splitext(uploaded_filename)[0]}.md"
+    markdown_path = os.path.join(upload_folder, markdown_filename)
+    with open(markdown_path, 'w', encoding='utf-8') as f:
         f.write(latex_text)
-    return tex_path
+    return markdown_path
 
 
 def _normalize_ai_code_issues(raw_issues, user_code, max_issues=8):

@@ -992,7 +992,6 @@ def submit_solution(problem_id):
             else:
                 _evaluate_submission_task.delay(submission_id)
 
-            flash('提交成功，正在评测中...', 'success')
             return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
         if problem['type'] == 2:
@@ -1059,7 +1058,7 @@ def admin_agent_tasks():
             or f"Problem {run.get('problem_id') or '-'}"
         )
         run['display_status'] = str(run.get('status') or 'Pending')
-        run['display_rounds'] = f"{int(run.get('rounds_run') or 0)}/{int(run.get('max_rounds') or 0)}"
+        run['display_rounds'] = f"{int(run.get('rounds_run') or 0)}"
         run['display_best_score'] = int(run.get('best_score') or 0)
 
     page_start = max(1, page - 8)

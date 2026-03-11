@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 import json
+import os
 import re
+import subprocess
 import time
 
 from config import AI_TUTOR_MODEL
@@ -138,6 +140,15 @@ def _truncate_text(value, limit=300):
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
+
+
+def _truncate_block_text(value, limit=12000):
+    text = str(value or "")
+    safe_limit = _clamp_int(limit, 12000, min_value=200, max_value=200000)
+    if len(text) <= safe_limit:
+        return text
+    keep = safe_limit // 2
+    return text[:keep] + "\n...<truncated>...\n" + text[-keep:]
 
 
 def _extract_retry_diagnosis(reply_text):
@@ -563,15 +574,23 @@ def _build_conversation_messages(
     working_memory,
     latest_submission_id=None,
     latest_summary=None,
-    last_ai_tutor_feedback="",
+    workspace_dir="",
+    main_code_path="",
 ):
     system_lines = [
         "你现在是一个可调用工具的 OJ 自主 Agent。",
         "请自行决策并调用工具迭代解题。",
-        "代码仓库里有提前准备好的头文件，如有需要可以通过 #include \"文件名\" 直接引用",
+        "系统已把用户代码仓库文件复制到你的工作目录；你只能在工作目录内读写文件。",
         "目标：产出能通过评测的代码。",
-        "要求：1. 不要臆造代码仓库文件或评测结果。 2. 题目给的的提示非常重要，请一定要参考题目提示来完成或者修复代码。",
+        "要求：1. 不要臆造文件或评测结果。 2. 题目给的提示非常重要，请优先满足。 3. 如果提交后没有获得满分，必须在本地复现错误、编译、运行，决不允许编辑完直接再提交。",
+        f"硬性约束：最多只能调用 {_AGENT_SUBMIT_LIMIT} 次 submit_evaluation；"
+        f"第 {_AGENT_SUBMIT_LIMIT} 次返回后若仍未通过，任务会被强制终止并判定失败。",
+        "完成条件：submit_evaluation 返回的评测状态为 Accepted。",
     ]
+    if workspace_dir:
+        system_lines.append(f"工作目录：{workspace_dir}")
+    if main_code_path:
+        system_lines.append(f"默认主代码文件：{main_code_path}")
     if _AGENT_MEMORY_ENABLED and isinstance(working_memory, dict):
         core_hints = working_memory.get("core_hints")
         if isinstance(core_hints, list) and core_hints:
@@ -587,13 +606,295 @@ def _build_conversation_messages(
             f"score={latest_summary.get('score')} "
             f"passed={latest_summary.get('accepted_count')}/{latest_summary.get('total_count')}"
         )
-    if last_ai_tutor_feedback:
-        system_lines.append("最近 AI 助教建议（可参考）：")
-        system_lines.append(_truncate_text(last_ai_tutor_feedback, limit=600))
     system_lines.append(f"当前推理轮次：{int(round_idx)}")
 
     return [{"role": "system", "content": "\n".join(system_lines)}] + list(conversation or [])
 
+
+def _workspace_main_filename(lang):
+    use_lang = str(lang or "").strip().lower()
+    if use_lang == "c":
+        return "main.c"
+    if use_lang in ("python", "py"):
+        return "main.py"
+    if use_lang in ("matlab", "octave"):
+        return "main.m"
+    return "main.cpp"
+
+
+def _load_repository_files_for_workspace(user_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT filename, file_content
+                FROM user_code_repository
+                WHERE user_id = %s
+                ORDER BY filename
+                """,
+                (user_id,),
+            )
+            rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+    files = []
+    for row in rows:
+        filename = os.path.basename(str(row.get("filename") or "").strip())
+        if not filename:
+            continue
+        files.append({
+            "filename": filename,
+            "content": str(row.get("file_content") or ""),
+        })
+    return files
+
+
+def _initialize_solver_workspace(user_id, problem_id, task_id, lang, initial_code=""):
+    root = os.path.abspath(os.path.join("tmp", "agent_solve_runs", f"{int(problem_id)}_{str(task_id)}"))
+    os.makedirs(root, exist_ok=True)
+
+    repo_files = _load_repository_files_for_workspace(user_id=user_id)
+    synced_files = []
+    for item in repo_files:
+        filename = os.path.basename(str(item.get("filename") or "").strip())
+        if not filename:
+            continue
+        abs_path = os.path.join(root, filename)
+        parent = os.path.dirname(abs_path)
+        os.makedirs(parent, exist_ok=True)
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(str(item.get("content") or ""))
+        synced_files.append(filename)
+
+    main_filename = _workspace_main_filename(lang)
+    main_abs = os.path.join(root, main_filename)
+    initial = str(initial_code or "")
+    if initial.strip():
+        with open(main_abs, "w", encoding="utf-8") as f:
+            f.write(initial)
+    elif not os.path.isfile(main_abs):
+        with open(main_abs, "w", encoding="utf-8") as f:
+            f.write("")
+    synced_files.append(main_filename)
+
+    return {
+        "workspace_dir": root,
+        "main_code_path": main_filename,
+        "synced_files": sorted(set(synced_files)),
+    }
+
+
+def _resolve_workspace_path(workspace_dir, relative_path="", allow_workspace_root=False):
+    if not workspace_dir:
+        raise RuntimeError("workspace 未初始化。")
+    root = os.path.abspath(str(workspace_dir))
+    rel = str(relative_path or "").replace("\\", "/").strip()
+    if not rel:
+        if allow_workspace_root:
+            return root
+        raise RuntimeError("path 不能为空。")
+    rel = rel.lstrip("/")
+    norm_rel = os.path.normpath(rel)
+    abs_path = os.path.abspath(os.path.join(root, norm_rel))
+    if abs_path != root and not abs_path.startswith(root + os.sep):
+        raise RuntimeError("path 不能越界到工作目录之外。")
+    if abs_path == root and not allow_workspace_root:
+        raise RuntimeError("path 不能指向工作目录根路径。")
+    return abs_path
+
+
+def _tool_workspace_create_file(workspace_dir, path, content, overwrite=True):
+    abs_path = _resolve_workspace_path(workspace_dir, path)
+    parent = os.path.dirname(abs_path)
+    os.makedirs(parent, exist_ok=True)
+    if os.path.exists(abs_path) and not bool(overwrite):
+        raise RuntimeError("目标文件已存在，且 overwrite=false。")
+    text = str(content or "")
+    with open(abs_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return {
+        "path": os.path.relpath(abs_path, workspace_dir),
+        "bytes": len(text.encode("utf-8")),
+    }
+
+
+def _tool_workspace_edit_file(
+    workspace_dir,
+    path,
+    new_content=None,
+    find_text=None,
+    replace_text=None,
+    replace_all=True,
+):
+    abs_path = _resolve_workspace_path(workspace_dir, path)
+    if not os.path.isfile(abs_path):
+        raise RuntimeError("目标文件不存在。")
+    with open(abs_path, "r", encoding="utf-8") as f:
+        original = f.read()
+
+    if new_content is not None:
+        updated = str(new_content)
+        replace_count = 1
+    else:
+        src = str(find_text or "")
+        if not src:
+            raise RuntimeError("缺少 find_text 或 new_content。")
+        dst = str(replace_text or "")
+        if bool(replace_all):
+            updated = original.replace(src, dst)
+            replace_count = original.count(src)
+        else:
+            updated = original.replace(src, dst, 1)
+            replace_count = 1 if src in original else 0
+        if replace_count <= 0:
+            raise RuntimeError("未找到待替换文本。")
+
+    with open(abs_path, "w", encoding="utf-8") as f:
+        f.write(updated)
+    return {
+        "path": os.path.relpath(abs_path, workspace_dir),
+        "replaced": int(replace_count),
+        "bytes": len(updated.encode("utf-8")),
+    }
+
+
+def _tool_workspace_read_file(workspace_dir, path, max_chars=12000):
+    abs_path = _resolve_workspace_path(workspace_dir, path)
+    if not os.path.isfile(abs_path):
+        raise RuntimeError("目标文件不存在。")
+    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    safe_limit = _clamp_int(max_chars, 12000, min_value=200, max_value=200000)
+    return {
+        "path": os.path.relpath(abs_path, workspace_dir),
+        "content": _truncate_block_text(content, limit=safe_limit),
+        "truncated": len(content) > safe_limit,
+    }
+
+
+def _tool_workspace_list_files(workspace_dir, path="", recursive=True, max_entries=500):
+    base_abs = _resolve_workspace_path(workspace_dir, path, allow_workspace_root=True)
+    safe_max = _clamp_int(max_entries, 500, min_value=1, max_value=3000)
+    rows = []
+    if bool(recursive):
+        for root, dirnames, filenames in os.walk(base_abs):
+            dirnames.sort()
+            filenames.sort()
+            rel_root = os.path.relpath(root, workspace_dir)
+            for dirname in dirnames:
+                rel_path = os.path.normpath(os.path.join(rel_root, dirname))
+                rows.append({"path": rel_path, "is_dir": True, "size": 0})
+                if len(rows) >= safe_max:
+                    return {"entries": rows, "truncated": True}
+            for filename in filenames:
+                abs_file = os.path.join(root, filename)
+                rel_path = os.path.normpath(os.path.join(rel_root, filename))
+                try:
+                    size = os.path.getsize(abs_file)
+                except Exception:
+                    size = 0
+                rows.append({"path": rel_path, "is_dir": False, "size": int(size)})
+                if len(rows) >= safe_max:
+                    return {"entries": rows, "truncated": True}
+    else:
+        for name in sorted(os.listdir(base_abs)):
+            abs_item = os.path.join(base_abs, name)
+            rel_path = os.path.relpath(abs_item, workspace_dir)
+            is_dir = os.path.isdir(abs_item)
+            try:
+                size = 0 if is_dir else os.path.getsize(abs_item)
+            except Exception:
+                size = 0
+            rows.append({"path": rel_path, "is_dir": bool(is_dir), "size": int(size)})
+            if len(rows) >= safe_max:
+                return {"entries": rows, "truncated": True}
+    return {"entries": rows, "truncated": False}
+
+
+def _tool_workspace_run_command(workspace_dir, command, timeout_seconds=60):
+    cmd = str(command or "").strip()
+    if not cmd:
+        raise RuntimeError("command 不能为空。")
+    timeout_val = _clamp_int(timeout_seconds, 60, min_value=1, max_value=900)
+    try:
+        proc = subprocess.run(
+            ["bash", "-lc", cmd],
+            cwd=workspace_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout_val,
+            check=False,
+        )
+        return {
+            "success": proc.returncode == 0,
+            "exit_code": int(proc.returncode),
+            "stdout": _truncate_block_text(proc.stdout, limit=16000),
+            "stderr": _truncate_block_text(proc.stderr, limit=16000),
+            "timeout": False,
+        }
+    except subprocess.TimeoutExpired as e:
+        return {
+            "success": False,
+            "exit_code": None,
+            "stdout": _truncate_block_text(e.stdout or "", limit=16000),
+            "stderr": _truncate_block_text(e.stderr or "", limit=16000),
+            "timeout": True,
+            "message": f"命令执行超时（{timeout_val}s）",
+        }
+
+
+def _tool_sync_workspace_headers_to_repository(user_id, workspace_dir):
+    if not workspace_dir or not os.path.isdir(workspace_dir):
+        raise RuntimeError("workspace 目录不存在。")
+
+    candidates = []
+    skipped = []
+    for name in sorted(os.listdir(workspace_dir)):
+        abs_path = os.path.join(workspace_dir, name)
+        if not os.path.isfile(abs_path):
+            continue
+        lower = str(name).lower()
+        if not (lower.endswith(".h") or lower.endswith(".hpp")):
+            continue
+        filename = os.path.basename(name)
+        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", filename):
+            skipped.append({"filename": filename, "reason": "文件名包含非法字符"})
+            continue
+        candidates.append((filename, abs_path))
+
+    synced = []
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            for filename, abs_path in candidates:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                size = len(content.encode("utf-8"))
+                cursor.execute(
+                    """
+                    INSERT INTO user_code_repository (user_id, filename, file_content, file_size)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        file_content = VALUES(file_content),
+                        file_size = VALUES(file_size),
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (user_id, filename, content, size),
+                )
+                synced.append({"filename": filename, "file_size": size})
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {
+        "synced_count": len(synced),
+        "synced_files": synced,
+        "skipped_files": skipped,
+    }
 
 
 def _tool_list_repository_files(user_id, limit=200):
@@ -985,66 +1286,95 @@ def _tool_search_repository(user_id, pattern, max_files=500, max_matches=120):
     }
 
 
-def _tool_get_knowledge(question, max_chars=1800):
-    query = str(question or "").strip()
-    if not query:
-        raise RuntimeError("question 不能为空。")
-    safe_max_chars = _clamp_int(max_chars, 1800, min_value=300, max_value=6000)
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是领域知识专家，职责是回答知识性问题，模拟联网搜索后的专家答复。"
-            ),
-        },
-        {"role": "user", "content": query},
-    ]
-    answer = _call_qwen3_5_plus_text(messages, timeout=120)
-    return {
-        "question": query,
-        "answer": _truncate_text(answer, limit=safe_max_chars),
-    }
-
-
-def _tool_planning(messages):
-    if not isinstance(messages, list) or not messages:
-        raise RuntimeError("planning 缺少可用 messages。")
-    plan_messages = _safe_json_copy(messages, default=[])
-    if not isinstance(plan_messages, list):
-        plan_messages = []
-    plan_messages.append({
-        "role": "user",
-        "content": "请为我生成一个可执行的代码计划，帮助我完成这道编程题。请充分利用我给你提供的代码仓库，将计划描述清楚。你可以使用自然语言，也可以使用代码语言，也可以二者混杂，总之就是要清晰地表述完成这道编程题的计划",
-    })
-    plan_text = _call_qwen3_5_plus_text(plan_messages, timeout=120, enable_thinking=True)
-    return {
-        "plan": str(plan_text or ""),
-    }
-
-
-
 def _build_agent_react_tools():
     return [
         {
             "type": "function",
             "function": {
-                "name": "read_latest_code",
-                "description": "读取当前保存的最新代码。",
-                "parameters": {"type": "object", "properties": {}},
+                "name": "get_context",
+                "description": "读取当前解题任务上下文信息（语言、工作目录、主代码文件等）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
             },
         },
         {
             "type": "function",
             "function": {
-                "name": "update_code",
-                "description": "更新当前最新代码。默认整段替换。",
+                "name": "list_files",
+                "description": "列出工作目录中的文件。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "code": {"type": "string", "description": "完整代码文本"},
-                        "note": {"type": "string", "description": "本次修改说明"},
+                        "path": {"type": "string", "description": "相对路径，默认根目录"},
+                        "recursive": {"type": "boolean", "description": "是否递归，默认 true"},
+                        "max_entries": {"type": "integer", "description": "最大条数，默认 500"},
                     },
-                    "required": ["code"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "读取工作目录内文件内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "相对路径"},
+                        "max_chars": {"type": "integer", "description": "最大字符数，默认 12000"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_file",
+                "description": "创建文件（代码文件或文本文件）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "工作目录内相对路径"},
+                        "content": {"type": "string", "description": "完整文件内容"},
+                        "overwrite": {"type": "boolean", "description": "文件存在时是否覆盖，默认 true"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "编辑已存在文件。可整文件替换，或按 find_text 替换。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "工作目录内相对路径"},
+                        "new_content": {"type": "string", "description": "若提供则直接整文件替换"},
+                        "find_text": {"type": "string", "description": "待替换文本"},
+                        "replace_text": {"type": "string", "description": "替换后的文本"},
+                        "replace_all": {"type": "boolean", "description": "是否替换全部，默认 true"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_command",
+                "description": "在 Debian 工作目录执行命令（用于编译/运行/自检）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "bash 命令"},
+                        "timeout_seconds": {"type": "integer", "description": "超时秒数，默认 60"},
+                    },
+                    "required": ["command"],
                 },
             },
         },
@@ -1052,127 +1382,35 @@ def _build_agent_react_tools():
             "type": "function",
             "function": {
                 "name": "submit_evaluation",
-                "description": "提交当前代码到评测系统并等待评测结果。",
+                "description": "从工作目录读取代码并提交评测。系统会提交你的主代码文件以及它依赖的所有头文件，不会提交你自己写的测试代码。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "code": {"type": "string", "description": "可选。若提供则先覆盖当前代码再提交"},
-                        "timeout_seconds": {"type": "integer", "description": "等待评测超时时间，默认 300 秒"},
+                        "source_path": {"type": "string", "description": "可选。要提交的代码文件路径，默认主代码文件"},
+                        "timeout_seconds": {"type": "integer", "description": "等待评测超时秒数，默认 300"},
                     },
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_repository_files",
-                "description": "读取当前用户代码仓库文件列表。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {"type": "integer", "description": "最多返回多少个文件，默认 200"},
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_repository_file",
-                "description": "读取用户代码仓库中的单个文件，返回精简后的代码，只包含函数声明与注释，不包含实现",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string", "description": "文件名"},
-                        "file_id": {"type": "integer", "description": "文件 id，和 filename 二选一"},
-                        "max_chars": {"type": "integer", "description": "返回内容最大字符数，默认 12000"},
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_repository_file_full",
-                "description": "读取用户代码仓库中的单个文件原文全文（包含完整函数实现，不做精简，请你只在必要时调用这个函数）。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string", "description": "文件名"},
-                        "file_id": {"type": "integer", "description": "文件 id，和 filename 二选一"},
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "update_repository_file",
-                "description": "修改用户代码仓库中的单个文件内容。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string", "description": "文件名"},
-                        "file_id": {"type": "integer", "description": "文件 id，和 filename 二选一"},
-                        "content": {"type": "string", "description": "新的完整文件内容"},
-                    },
-                    "required": ["content"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_repository",
-                "description": "你可以构造正则表达式，在用户代码仓库全部文件中按正则表达式搜索，函数会返回搜索结果。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string", "description": "正则表达式"},
-                        "max_files": {"type": "integer", "description": "最多扫描的文件数，默认 500"},
-                        "max_matches": {"type": "integer", "description": "最多返回匹配条目数，默认 120"},
-                    },
-                    "required": ["pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_knowledge",
-                "description": "向专家咨询知识性问题。专家只回答知识，不做代码调试。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string", "description": "要咨询的知识问题"},
-                        "max_chars": {"type": "integer", "description": "回答最大字符数，默认 1800"},
-                    },
-                    "required": ["question"],
-                },
-            },
-        },
-        # {
-        #     "type": "function",
-        #     "function": {
-        #         "name": "planning",
-        #         "description": "向一个很厉害的专家询问执行计划。",
-        #         "parameters": {
-        #             "type": "object",
-        #             "properties": {},
-        #         },
-        #     },
-        # },
     ]
 
 
-def _build_initial_prompt(problem, core_hints=None, repository_filenames=None):
+def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=None, workspace_filenames=None):
     lang = (problem.get("lang") or "matlab").lower()
     initial_code = (problem.get("initial_code") or "").strip()
     title = str(problem.get("title", "") or "").strip()
     content = str(problem.get("content", "") or "").strip()
     hint_lines = _dedupe_keep_order(core_hints or [])[:8]
     lines = [
-        f"我现在要用 {lang} 语言写一道编程题，题目标题是 {title}，题目描述如下：",
+        "你是一个解题 Agent，你需要为在线评测系统完成编程题并通过评测。",
+        "你首先需要获取：",
+        "1. 题目要求",
+        "2. 当前工作目录与文件列表",
+        "3. 默认主代码文件路径",
+        "",
+        f"当前题目语言：{lang}",
+        f"题目标题：{title}",
+        "题目描述如下：",
         content,
     ]
     if initial_code:
@@ -1192,22 +1430,42 @@ def _build_initial_prompt(problem, core_hints=None, repository_filenames=None):
             "在你决策的过程中，请首先考虑这些提示，确保提示里的每条内容你都做到了。我重复一遍这些提示：",
             hint_text,
         ])
-    repo_names = []
-    for item in (repository_filenames or []):
+    file_names = []
+    for item in (workspace_filenames or []):
         name = str(item or "").strip()
         if name:
-            repo_names.append(name)
-    repo_names = _dedupe_keep_order(repo_names)[:200]
-    repo_list_text = "\n".join([f"- {name}" for name in repo_names]) if repo_names else "- （暂无文件）"
+            file_names.append(name)
+    file_names = _dedupe_keep_order(file_names)[:200]
+    files_text = "\n".join([f"- {name}" for name in file_names]) if file_names else "- （暂无文件）"
     lines.extend([
         "",
-        "我的代码仓库里目前有这些文件：",
-        repo_list_text,
-        "你可以通过 #include \"文件名\" 引用它们，然后就可以直接使用里面提供的函数。",
-        "请首先确认我的代码仓库里有没有适用于本题的工具，在确认代码仓库里没有可用工具之后，再自己写代码，避免重复造轮子。",
-        "请仔细阅读我的代码仓库里的注释，确保你理解了我提供的代码仓库里的代码是做什么用的。",
-        # "当你理解了任务意图，并完全理解了我提供的已有工具之后，请向专家询问计划，并按照计划完成代码。",
+        f"你的工作目录是：{workspace_dir}",
+        f"默认主代码文件是：{main_code_path}",
+        "工作目录里已经有一些我写好的文件可供你通过 include \"文件名\" 直接使用。",
+        "你的工作流程如下：",
+        "0. 先调用 get_context，确认题目上下文、工作目录与主代码文件。",
+        "1. 调用 list_files 列出工作目录中的文件，理解现有代码，优先复用已有文件。",
+        "2. 创建/编辑/修改代码文件。对于 C++ 语言，如果主代码文件不包含 main 函数，则需要自己另外写一个测试文件，即：另写一个带 main 函数的 cpp 测试代码，在开头 #include \"主代码文件\"。",
+        "3. 根据题意创建必要的输入文件，如果你的测试程序不需要输入，则跳过此步。",
+        "4. 编译运行你的测试程序，确保能够编译通过，且能够正确通过测试。如果无法通过，重复 1-4 步，直到能够通过自己写的测试。",
+        "5. 调用 submit_evaluation 提交评测；系统会提交你的主代码文件以及它依赖的所有头文件，不会提交你自己写的测试代码。",
+        "当你提交后，发现没有获得满分时，严禁修改代码后直接再交，严禁修改代码后直接再交，严禁修改代码后直接再交！你必须：",
+        "1. 分析错误原因，尝试写一个测试代码来复现错误。",
+        "2. 编译、运行测试代码，看到底为什么错了。",
+        "3. 修复你的程序，直到能通过你自己新写的测试代码为止。",
+        "4. 重新提交。",
+        "",
     ])
+    if lang in ("python", "py"):
+        lines.append("系统提供了 python3 以及 numpy、pandas 等一切必要的工具，你不必自己安装依赖。")
+        lines.append("")
+    elif lang in ("matlab", "octave"):
+        lines.append("系统没有 MATLAB 环境，但提供了 octave 环境，请用 octave 来代替执行 MATLAB 代码。")
+        lines.append("")
+    lines.append(
+        f"你最多只能调用 {_AGENT_SUBMIT_LIMIT} 次 submit_evaluation，"
+        f"若 {_AGENT_SUBMIT_LIMIT} 次还没成功，你会被强制终止并判定失败。"
+    )
     return "\n".join(lines).strip()
 
 

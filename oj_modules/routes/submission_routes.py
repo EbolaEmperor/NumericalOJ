@@ -43,6 +43,76 @@ def is_admin(user):
     return user and user.get('is_admin') == 1
 
 
+def _read_text_file_safe(path, max_chars=200000):
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return (f.read() or "")[:max_chars]
+    except Exception:
+        return ""
+
+
+def _load_written_submission_latex_and_error(submission):
+    if not submission or int(submission.get("problem_type") or 0) != 2:
+        return "", ""
+
+    sid = submission.get("id")
+    if not sid:
+        return "", ""
+
+    upload_dir = os.path.join("uploads", str(sid))
+    if not os.path.isdir(upload_dir):
+        return "", ""
+
+    test_points = submission.get("test_points")
+    source_filename = ""
+    if isinstance(test_points, list) and test_points:
+        source_filename = os.path.basename(str(test_points[0] or "").strip())
+
+    latex_candidates = []
+    err_candidates = []
+    if source_filename:
+        base_name, _ = os.path.splitext(source_filename)
+        if base_name:
+            latex_candidates.append(os.path.join(upload_dir, f"{base_name}.md"))
+            latex_candidates.append(os.path.join(upload_dir, f"{base_name}.tex"))
+            err_candidates.append(os.path.join(upload_dir, f"{base_name}_latex_error.txt"))
+
+    try:
+        for name in sorted(os.listdir(upload_dir)):
+            lower = name.lower()
+            abs_path = os.path.join(upload_dir, name)
+            if lower.endswith(".md") or lower.endswith(".tex"):
+                latex_candidates.append(abs_path)
+            elif lower.endswith("_latex_error.txt"):
+                err_candidates.append(abs_path)
+    except Exception:
+        pass
+
+    latex_text = ""
+    seen_latex = set()
+    for path in latex_candidates:
+        if path in seen_latex:
+            continue
+        seen_latex.add(path)
+        latex_text = _read_text_file_safe(path)
+        if latex_text.strip():
+            break
+
+    error_text = ""
+    seen_err = set()
+    for path in err_candidates:
+        if path in seen_err:
+            continue
+        seen_err.add(path)
+        error_text = _read_text_file_safe(path, max_chars=12000)
+        if error_text.strip():
+            break
+
+    return latex_text, error_text
+
+
 @submission_bp.route('/submissionslist/<int:problem_id>')
 def submission_list(problem_id):
     user = current_user()
@@ -89,9 +159,12 @@ def submission_detail(submission_id):
     cached_ai_code_marks = None
     if submission.get('problem_type') == 1:
         cached_ai_code_marks = get_cached_ai_code_marks_for_submission(submission)
+    submission_latex_text = ""
+    submission_latex_error = ""
     if problem and problem['type'] == 2:
         file_path = f"uploads/{submission['username']}_{submission['problem_id']}_*"
         submission['file_url'] = file_path
+        submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
 
     return render_template(
         'submission_detail.html',
@@ -101,6 +174,8 @@ def submission_detail(submission_id):
         plang=plang,
         problem=problem,
         cached_ai_code_marks=cached_ai_code_marks,
+        submission_latex_text=submission_latex_text,
+        submission_latex_error=submission_latex_error,
     )
 
 
@@ -150,7 +225,9 @@ def submission_status_stream(submission_id):
             snapshot.get('status') in ['Pending', 'Waiting', 'Running']
             or snapshot.get('score') is None
         )
-        return {
+        payload = {
+            'submission_id': snapshot.get('id'),
+            'problem_type': snapshot.get('problem_type'),
             'status': snapshot.get('status'),
             'score': snapshot.get('score'),
             'is_judging': is_judging,
@@ -158,6 +235,15 @@ def submission_status_stream(submission_id):
             'test_points': snapshot.get('test_points', []),
             'last_updated': snapshot.get('last_updated', ''),
         }
+        if int(snapshot.get('problem_type') or 0) == 2:
+            sid = snapshot.get('id')
+            row = get_submission_by_id(sid) if sid else None
+            if row:
+                latex_text, latex_error = _load_written_submission_latex_and_error(row)
+                payload['written_latex_text'] = latex_text
+                payload['written_latex_error'] = latex_error
+                payload['written_comment'] = str(row.get('code') or '')
+        return payload
 
     def _encode_sse(event_name, payload):
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
