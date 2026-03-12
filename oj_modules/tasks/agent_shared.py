@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import json
-import os
 import re
 import time
 
@@ -271,8 +270,8 @@ def _is_invalid_secret(value):
 def _resolve_chat_endpoint_for_model(model):
     use_model = str(model or "").strip()
     if use_model in _CODING_PLAN_TARGET_MODELS:
-        api_key = os.getenv("CODING_PLAN_KEY") or CODING_PLAN_KEY
-        base_url = os.getenv("CODING_PLAN_URL") or CODING_PLAN_URL
+        api_key = CODING_PLAN_KEY
+        base_url = CODING_PLAN_URL
         if _is_invalid_secret(api_key):
             raise RuntimeError("未配置 CODING_PLAN_KEY。")
         if not str(base_url or "").strip():
@@ -315,6 +314,30 @@ def _build_api_request_payload(messages, model=None, tools=None, enable_thinking
     if enable_thinking is not None:
         payload["enable_thinking"] = bool(enable_thinking)
     return payload
+
+
+def _coerce_message_roles_for_api(messages):
+    allowed_roles = {"system", "user", "assistant", "tool"}
+    result = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        item = _safe_json_copy(msg, default={})
+        role = str(item.get("role") or "user").strip().lower() or "user"
+        content = str(item.get("content") or "")
+        if role == "memory":
+            item["role"] = "system"
+            item["content"] = f"[memory]\\n{content}".strip()
+            result.append(item)
+            continue
+        if role not in allowed_roles:
+            item["role"] = "user"
+            item["content"] = f"[{role}] {content}".strip()
+            result.append(item)
+            continue
+        item["role"] = role
+        result.append(item)
+    return result
 
 
 def _append_api_call_log(state, round_idx, request_body, api_type="solve"):
@@ -394,8 +417,9 @@ def _normalize_assistant_message(raw_message):
 def _call_qwen_chat_completion(messages, model, timeout=180, tools=None, enable_thinking=None):
     use_model = str(model or QWEN_CODER_MODEL)
     api_key, base_url = _resolve_chat_endpoint_for_model(use_model)
+    api_messages = _coerce_message_roles_for_api(messages)
     payload = _build_api_request_payload(
-        messages,
+        api_messages,
         model=use_model,
         tools=tools,
         enable_thinking=enable_thinking,
@@ -406,7 +430,7 @@ def _call_qwen_chat_completion(messages, model, timeout=180, tools=None, enable_
             client = OpenAI(api_key=api_key, base_url=base_url)
             kwargs = {
                 "model": use_model,
-                "messages": messages,
+                "messages": api_messages,
                 "stream": False,
             }
             if isinstance(tools, list) and tools:

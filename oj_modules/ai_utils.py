@@ -18,6 +18,9 @@ from config import (
     CODING_PLAN_URL,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
+    LATEX_OCR_MAX_IMAGES_PER_REQUEST,
+    LATEX_OCR_STREAM_EMIT_INTERVAL,
+    LATEX_OCR_STREAM_EMIT_MIN_DELTA,
     QWEN_CODER_MODEL,
     QWEN_OMNI_MODEL,
     QWEN_TEXT_MODEL,
@@ -130,8 +133,8 @@ def _is_invalid_secret(value):
 def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base_url=None):
     use_model = str(model or "").strip()
     if use_model in _CODING_PLAN_TARGET_MODELS:
-        api_key = os.getenv("CODING_PLAN_KEY") or CODING_PLAN_KEY
-        base_url = os.getenv("CODING_PLAN_URL") or CODING_PLAN_URL
+        api_key = CODING_PLAN_KEY
+        base_url = CODING_PLAN_URL
         if _is_invalid_secret(api_key):
             raise RuntimeError("未配置 CODING_PLAN_KEY。")
         if not str(base_url or "").strip():
@@ -140,10 +143,10 @@ def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base
 
     api_key = fallback_api_key
     if api_key is None:
-        api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+        api_key = DASHSCOPE_API_KEY
     base_url = fallback_base_url
     if base_url is None:
-        base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        base_url = DASHSCOPE_BASE_URL or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     if _is_invalid_secret(api_key):
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
     if not str(base_url or "").strip():
@@ -159,16 +162,16 @@ def _parse_written_grading_model_spec(model_spec):
 def _resolve_endpoint_for_written_grading_route(route_key):
     route = str(route_key or "").strip().lower()
     if route == "coding_plan":
-        api_key = os.getenv("CODING_PLAN_KEY") or CODING_PLAN_KEY
-        base_url = os.getenv("CODING_PLAN_URL") or CODING_PLAN_URL
+        api_key = CODING_PLAN_KEY
+        base_url = CODING_PLAN_URL
         if _is_invalid_secret(api_key):
             raise RuntimeError("未配置 CODING_PLAN_KEY。")
         if not str(base_url or "").strip():
             raise RuntimeError("未配置 CODING_PLAN_URL。")
         return str(api_key).strip(), str(base_url).rstrip('/')
 
-    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
-    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    api_key = DASHSCOPE_API_KEY
+    base_url = DASHSCOPE_BASE_URL or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     if _is_invalid_secret(api_key):
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
     if not str(base_url or "").strip():
@@ -488,11 +491,11 @@ def transcribe_images_to_latex(image_paths, on_partial_text=None):
     if not image_paths:
         raise RuntimeError("未生成可用于识别的图片。")
 
-    api_key = os.getenv("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY
+    api_key = DASHSCOPE_API_KEY
     if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
 
-    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
+    base_url = str(DASHSCOPE_BASE_URL or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
     prompt = (
         "请将这份书面作业完整转写为 Markdown 内嵌 LaTeX 的格式。"
         "要求："
@@ -503,7 +506,7 @@ def transcribe_images_to_latex(image_paths, on_partial_text=None):
     )
     image_data_urls = [_build_image_data_url(path) for path in image_paths]
     try:
-        max_images_per_request = int(os.getenv("LATEX_OCR_MAX_IMAGES_PER_REQUEST", "20"))
+        max_images_per_request = int(LATEX_OCR_MAX_IMAGES_PER_REQUEST)
     except ValueError:
         max_images_per_request = 20
     image_batches = _split_image_batches(image_data_urls, max_images_per_request=max_images_per_request)
@@ -716,7 +719,6 @@ def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec
         "2) 只要出现以下任一情况，最高只能 4 分：\n"
         "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
         "- 缺少条件验证、边界讨论、取等条件说明；\n"
-        "- 推理链存在轻微断裂但主思路正确。\n"
         "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
         "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
         "5) 若 JSON 字符串中包含 LaTeX 命令，反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
@@ -768,7 +770,6 @@ def evaluate_written_homework_with_ai_from_images(
         "2) 只要出现以下任一情况，最高只能 4 分：\n"
         "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
         "- 缺少条件验证、边界讨论、取等条件说明；\n"
-        "- 推理链存在轻微断裂但主思路正确。\n"
         "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
         "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
         "5) 若 JSON 字符串中包含 LaTeX 命令，反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
@@ -818,11 +819,11 @@ def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename, on_partia
     _atomic_write_text(markdown_path, "")
 
     try:
-        stream_emit_interval = max(0.1, float(os.getenv("LATEX_OCR_STREAM_EMIT_INTERVAL", "0.6")))
+        stream_emit_interval = max(0.1, float(LATEX_OCR_STREAM_EMIT_INTERVAL))
     except ValueError:
         stream_emit_interval = 0.6
     try:
-        stream_emit_min_delta = max(1, int(os.getenv("LATEX_OCR_STREAM_EMIT_MIN_DELTA", "60")))
+        stream_emit_min_delta = max(1, int(LATEX_OCR_STREAM_EMIT_MIN_DELTA))
     except ValueError:
         stream_emit_min_delta = 60
 

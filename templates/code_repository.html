@@ -19,6 +19,15 @@
                         </button>
                     </div>
                 </div>
+                <div class="d-grid gap-2 mb-3">
+                    <button id="structuredIndexBuildBtn" type="button" class="btn btn-warning btn-sm" onclick="startStructuredIndexBuild()">
+                        <i class="fas fa-sitemap"></i> 结构化整理
+                    </button>
+                    <button type="button" class="btn btn-outline-success btn-sm" onclick="openSemanticSearch()">
+                        <i class="fas fa-search"></i> 语义检索
+                    </button>
+                    <div id="indexJobStatus" class="small text-muted"></div>
+                </div>
                 
                 <!-- 文件列表 -->
                 <div id="fileList" class="list-group">
@@ -63,6 +72,43 @@
             <div class="flex-grow-1" style="position: relative;">
                 <textarea id="codeEditor" class="form-control border-0" style="width: 100%; height: 100%; resize: none; font-family: 'Courier New', monospace; font-size: 14px;" placeholder="在这里编写代码..."></textarea>
                 <div id="codeMirrorContainer" style="height: 100%;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 语义检索模态框 -->
+<div class="modal fade" id="semanticSearchModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">代码仓库语义检索</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-8">
+                        <label for="semanticQuery" class="form-label">查询语句</label>
+                        <input type="text" class="form-control" id="semanticQuery" placeholder="例如：计算前缀和的函数">
+                    </div>
+                    <div class="col-md-2">
+                        <label for="semanticTopK" class="form-label">Top-K</label>
+                        <select class="form-select" id="semanticTopK">
+                            <option value="3">3</option>
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 d-grid">
+                        <button type="button" class="btn btn-success" onclick="searchRepositorySemantic()">
+                            检索
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-3 text-muted small" id="semanticSearchMeta"></div>
+                <div class="mt-3" id="semanticSearchResults">
+                    <div class="text-muted">请输入查询语句后点击检索。</div>
+                </div>
             </div>
         </div>
     </div>
@@ -175,6 +221,26 @@
 ::-webkit-scrollbar-thumb:hover {
     background: #a8a8a8;
 }
+
+.semantic-hit-card {
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+    background: #fff;
+}
+
+.semantic-hit-code {
+    margin-top: 8px;
+    max-height: 220px;
+    overflow: auto;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 12px;
+    white-space: pre-wrap;
+}
 </style>
 
 <!-- CodeMirror CSS -->
@@ -193,11 +259,15 @@ let currentFileName = '';
 let isModified = false;
 let originalContent = '';
 let codeMirrorEditor = null;
+let currentIndexJobId = null;
+let indexStatusTimer = null;
+let isStartingIndexBuild = false;
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function() {
     loadFileList();
     initializeCodeMirror();
+    resumeIndexJobStatus();
     
     // 监听键盘快捷键
     document.addEventListener('keydown', function(e) {
@@ -551,6 +621,237 @@ function confirmUploadFile() {
     .catch(error => {
         console.error('Error:', error);
         showAlert('error', '上传文件失败');
+    });
+}
+
+function startStructuredIndexBuild() {
+    if (isStartingIndexBuild) {
+        return;
+    }
+    isStartingIndexBuild = true;
+    const btn = document.getElementById('structuredIndexBuildBtn');
+    if (btn) {
+        btn.disabled = true;
+    }
+
+    const startBuild = (forceRestart) => fetch('/api/repository/index/build', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            force_restart: !!forceRestart
+        })
+    })
+    .then(response => response.json());
+
+    startBuild(false)
+    .then(data => {
+        if (data && data.need_confirm) {
+            const confirmed = window.confirm('上一个整理任务正在运行，是否终止？');
+            if (!confirmed) {
+                return null;
+            }
+            return startBuild(true);
+        }
+        return data || null;
+    })
+    .then(data => {
+        if (!data) {
+            return;
+        }
+        if (!data.success) {
+            showAlert('error', data.message || '启动结构化整理失败');
+            return;
+        }
+        currentIndexJobId = data.job_id;
+        try {
+            localStorage.setItem('repositoryIndexJobId', String(currentIndexJobId));
+        } catch (e) {}
+        showAlert('success', data.message || '结构化整理任务已启动');
+        pollIndexJobStatus(currentIndexJobId);
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '启动结构化整理失败');
+    })
+    .finally(() => {
+        isStartingIndexBuild = false;
+        if (btn) {
+            btn.disabled = false;
+        }
+    });
+}
+
+function pollIndexJobStatus(jobId) {
+    if (!jobId) return;
+    if (indexStatusTimer) {
+        clearInterval(indexStatusTimer);
+        indexStatusTimer = null;
+    }
+
+    const statusEl = document.getElementById('indexJobStatus');
+    const updateOnce = () => {
+        fetch(`/api/repository/index/status/${jobId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) {
+                    statusEl.textContent = '任务状态查询失败';
+                    return;
+                }
+                const job = data.job || {};
+                const progress = Number(job.progress || 0);
+                const detail = String(job.progress_message || '').trim();
+                statusEl.textContent = `整理任务 #${jobId}：${job.status || 'unknown'} (${progress}%)，文件 ${job.processed_files || 0}/${job.total_files || 0}${detail ? `，${detail}` : ''}`;
+
+                if (job.status === 'success') {
+                    clearInterval(indexStatusTimer);
+                    indexStatusTimer = null;
+                    try {
+                        localStorage.removeItem('repositoryIndexJobId');
+                    } catch (e) {}
+                    showAlert('success', `结构化整理完成：${job.total_chunks || 0} 个函数 chunk，${job.total_classes || 0} 个类`);
+                } else if (job.status === 'failed') {
+                    clearInterval(indexStatusTimer);
+                    indexStatusTimer = null;
+                    try {
+                        localStorage.removeItem('repositoryIndexJobId');
+                    } catch (e) {}
+                    showAlert('error', job.error_message || '结构化整理失败');
+                } else if (job.status === 'canceled') {
+                    clearInterval(indexStatusTimer);
+                    indexStatusTimer = null;
+                    try {
+                        localStorage.removeItem('repositoryIndexJobId');
+                    } catch (e) {}
+                    showAlert('warning', job.error_message || '结构化整理已取消');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusEl.textContent = '任务状态查询失败';
+            });
+    };
+
+    updateOnce();
+    indexStatusTimer = setInterval(updateOnce, 1500);
+}
+
+function resumeIndexJobStatus() {
+    let localJobId = null;
+    try {
+        localJobId = localStorage.getItem('repositoryIndexJobId');
+    } catch (e) {}
+
+    if (localJobId) {
+        const parsed = Number(localJobId);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            currentIndexJobId = parsed;
+            pollIndexJobStatus(parsed);
+            return;
+        }
+    }
+
+    fetch('/api/repository/index/status/active')
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success || !data.has_active || !data.job) {
+                return;
+            }
+            const activeId = Number(data.job.id || 0);
+            if (!Number.isFinite(activeId) || activeId <= 0) {
+                return;
+            }
+            currentIndexJobId = activeId;
+            try {
+                localStorage.setItem('repositoryIndexJobId', String(activeId));
+            } catch (e) {}
+            pollIndexJobStatus(activeId);
+        })
+        .catch(error => {
+            console.error('Error:', error);
+        });
+}
+
+function openSemanticSearch() {
+    document.getElementById('semanticQuery').value = '';
+    document.getElementById('semanticSearchMeta').textContent = '';
+    document.getElementById('semanticSearchResults').innerHTML = '<div class="text-muted">请输入查询语句后点击检索。</div>';
+    new bootstrap.Modal(document.getElementById('semanticSearchModal')).show();
+}
+
+function escapeHtml(raw) {
+    return String(raw || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function searchRepositorySemantic() {
+    const query = document.getElementById('semanticQuery').value.trim();
+    const topK = Number(document.getElementById('semanticTopK').value || 5);
+    const resultEl = document.getElementById('semanticSearchResults');
+    const metaEl = document.getElementById('semanticSearchMeta');
+
+    if (!query) {
+        showAlert('error', '请输入查询语句');
+        return;
+    }
+
+    resultEl.innerHTML = '<div class="text-muted"><i class="fas fa-spinner fa-spin"></i> 检索中...</div>';
+    metaEl.textContent = '';
+
+    fetch('/api/repository/index/search', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            query: query,
+            top_k: topK,
+            score_threshold: 0.05
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (!data.success) {
+            resultEl.innerHTML = `<div class="text-danger">${escapeHtml(data.message || '检索失败')}</div>`;
+            return;
+        }
+
+        const hits = data.hits || [];
+        metaEl.textContent = `检索模型：${data.embedding_model || 'unknown'}，命中 ${hits.length} 条`;
+        if (hits.length === 0) {
+            resultEl.innerHTML = '<div class="text-muted">未命中结果。请先执行“结构化整理”，或更换检索语句。</div>';
+            return;
+        }
+
+        let html = '';
+        hits.forEach((hit, idx) => {
+            const scoreText = Number(hit.score || 0).toFixed(4);
+            html += `
+                <div class="semantic-hit-card">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="fw-bold">${idx + 1}. ${escapeHtml(hit.qualified_name || '')}</div>
+                        <span class="badge text-bg-primary">score=${scoreText}</span>
+                    </div>
+                    <div class="small text-muted mt-1">
+                        ${escapeHtml(hit.filename || '')} · 行 ${escapeHtml(hit.start_line || '-')}-${escapeHtml(hit.end_line || '-')}
+                        ${hit.access ? ` · ${escapeHtml(hit.access)}` : ''}
+                    </div>
+                    <div class="small mt-2"><strong>签名：</strong>${escapeHtml(hit.signature || '')}</div>
+                    <div class="small mt-1"><strong>说明：</strong>${escapeHtml(hit.summary || '')}</div>
+                    <pre class="semantic-hit-code">${escapeHtml(hit.code || '')}</pre>
+                </div>
+            `;
+        });
+        resultEl.innerHTML = html;
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        resultEl.innerHTML = '<div class="text-danger">检索失败，请稍后重试</div>';
     });
 }
 

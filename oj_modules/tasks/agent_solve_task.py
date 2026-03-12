@@ -113,12 +113,27 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             "main_code_path": main_code_path,
             "latest_submission_id": None,
             "latest_summary": None,
+            "repository_knn_memory": "",
             "accepted": False,
             "submit_calls": 0,
             "submit_limit": submit_limit,
             "force_fail_submit_limit": False,
             "force_fail_message": "",
         }
+        knn_memory_text, knn_hits = _build_repository_knn_memory_message(
+            user_id=user["id"],
+            problem=problem,
+            latest_summary=None,
+            top_k=_AGENT_REPOSITORY_KNN_TOP_K,
+        )
+        runtime["repository_knn_memory"] = knn_memory_text
+        if knn_memory_text:
+            _push_agent_event(
+                state,
+                f"已注入代码仓库向量记忆（KNN 命中 {knn_hits} 条）",
+                event_type="repository_knn_memory",
+                details={"hit_count": int(knn_hits), "top_k": int(_AGENT_REPOSITORY_KNN_TOP_K)},
+            )
 
         conversation = [{
             "role": "user",
@@ -162,6 +177,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 latest_summary=runtime.get("latest_summary"),
                 workspace_dir=runtime.get("workspace_dir") or "",
                 main_code_path=runtime.get("main_code_path") or "",
+                repository_knn_memory=runtime.get("repository_knn_memory") or "",
             )
             api_request_body = _build_api_request_payload(messages, tools=tools)
             _append_api_call_log(state, round_idx, api_request_body, api_type="solve")
@@ -312,6 +328,24 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         summary = _tool_query_test_results(submission_id, timeout_seconds=timeout_seconds)
                         compact_summary = _compact_summary(summary)
                         runtime["latest_summary"] = compact_summary
+                        knn_memory_text, knn_hits = _build_repository_knn_memory_message(
+                            user_id=user["id"],
+                            problem=problem,
+                            latest_summary=compact_summary,
+                            top_k=_AGENT_REPOSITORY_KNN_TOP_K,
+                        )
+                        runtime["repository_knn_memory"] = knn_memory_text
+                        if knn_memory_text:
+                            _push_agent_event(
+                                state,
+                                f"已刷新代码仓库向量记忆（KNN 命中 {knn_hits} 条）",
+                                event_type="repository_knn_memory",
+                                details={
+                                    "hit_count": int(knn_hits),
+                                    "top_k": int(_AGENT_REPOSITORY_KNN_TOP_K),
+                                    "submission_id": submission_id,
+                                },
+                            )
                         is_accepted = str(compact_summary.get("status") or "").strip() == "Accepted"
                         runtime["accepted"] = is_accepted
                         runtime["submit_calls"] = int(runtime.get("submit_calls") or 0) + 1

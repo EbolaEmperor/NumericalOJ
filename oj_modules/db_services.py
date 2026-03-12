@@ -3,7 +3,6 @@
 
 import atexit
 import json
-import os
 import queue
 import threading
 import time
@@ -16,7 +15,19 @@ try:
 except Exception:
     redis = None
 
-from config import MYSQL_PASSWORD, MYSQL_USERNAME
+from config import (
+    MYSQL_CONNECT_TIMEOUT,
+    MYSQL_PASSWORD,
+    MYSQL_POOL_MAX_SIZE,
+    MYSQL_POOL_MIN_SIZE,
+    MYSQL_POOL_RECYCLE_SECONDS,
+    MYSQL_POOL_WAIT_TIMEOUT,
+    MYSQL_USERNAME,
+    REDIS_DB,
+    REDIS_HOST,
+    REDIS_PORT,
+    SUBMISSION_SNAPSHOT_TTL_SECONDS,
+)
 from oj_modules.ai_utils import _normalize_ai_code_issues
 
 
@@ -24,7 +35,7 @@ CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
 _settings_table_ready = False
 _agent_runs_table_ready = False
 _submission_snapshot_rds = None
-_submission_snapshot_ttl_seconds = int(os.getenv('SUBMISSION_SNAPSHOT_TTL_SECONDS', '21600'))
+_submission_snapshot_ttl_seconds = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 _problem_written_mode_column_ready = False
 _problem_written_model_column_ready = False
 
@@ -43,7 +54,7 @@ def _create_raw_mysql_connection():
         password=MYSQL_PASSWORD,
         database='myojdb',
         charset='utf8mb4',
-        connect_timeout=int(os.getenv('MYSQL_CONNECT_TIMEOUT', '5')),
+        connect_timeout=int(MYSQL_CONNECT_TIMEOUT),
         cursorclass=pymysql.cursors.DictCursor,
     )
 
@@ -188,10 +199,10 @@ class _MySQLConnectionPool:
 
 
 _db_pool = _MySQLConnectionPool(
-    min_size=int(os.getenv('MYSQL_POOL_MIN_SIZE', '2')),
-    max_size=int(os.getenv('MYSQL_POOL_MAX_SIZE', '6')),
-    wait_timeout=int(os.getenv('MYSQL_POOL_WAIT_TIMEOUT', '3')),
-    recycle_seconds=int(os.getenv('MYSQL_POOL_RECYCLE_SECONDS', '1200')),
+    min_size=int(MYSQL_POOL_MIN_SIZE),
+    max_size=int(MYSQL_POOL_MAX_SIZE),
+    wait_timeout=int(MYSQL_POOL_WAIT_TIMEOUT),
+    recycle_seconds=int(MYSQL_POOL_RECYCLE_SECONDS),
 )
 
 
@@ -288,9 +299,9 @@ def _ensure_submission_snapshot_redis():
 
     try:
         _submission_snapshot_rds = redis.StrictRedis(
-            host=os.getenv('REDIS_HOST', '127.0.0.1'),
-            port=int(os.getenv('REDIS_PORT', '6379')),
-            db=int(os.getenv('REDIS_DB', '0')),
+            host=REDIS_HOST,
+            port=int(REDIS_PORT),
+            db=int(REDIS_DB),
             decode_responses=True,
         )
         _submission_snapshot_rds.ping()
