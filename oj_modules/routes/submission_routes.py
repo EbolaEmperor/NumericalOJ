@@ -24,6 +24,7 @@ from oj_modules.db_services import (
 
 
 submission_bp = Blueprint('submission', __name__)
+_EXACT_DOUBLE_BACKSLASH_PATTERN = re.compile(r'(?<!\\)\\\\(?!\\)')
 
 
 def _strip_problem_title_tags(title):
@@ -54,6 +55,17 @@ def _read_text_file_safe(path, max_chars=200000):
             return (f.read() or "")[:max_chars]
     except Exception:
         return ""
+
+
+def _normalize_transcribed_backslashes_for_mathjax(text):
+    """
+    只把“恰好两个反斜杠”替换为“四个反斜杠”。
+    已经是四个及以上连续反斜杠的片段保持不变。
+    """
+    raw = str(text or "")
+    if not raw:
+        return ""
+    return _EXACT_DOUBLE_BACKSLASH_PATTERN.sub(r"\\\\\\\\", raw)
 
 
 def _render_written_markdown_to_html(markdown_text):
@@ -126,6 +138,7 @@ def _load_written_submission_latex_and_error(submission):
         latex_text = _read_text_file_safe(path)
         if latex_text.strip():
             break
+    latex_text = _normalize_transcribed_backslashes_for_mathjax(latex_text)
 
     error_text = ""
     seen_err = set()
