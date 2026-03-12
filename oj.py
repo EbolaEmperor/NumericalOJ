@@ -13,7 +13,7 @@ from oj_modules.db_services import (
 )
 from oj_modules.routes.submission_routes import submission_bp
 from oj_modules.routes.admin_problem_routes import admin_problem_bp
-from oj_modules.routes.repository_routes import repository_bp
+from oj_modules.routes.repository_routes import repository_bp, init_repository_index_module
 from oj_modules.routes.forum_routes import forum_bp
 from oj_modules.routes.grading_routes import grading_bp
 from oj_modules.routes.ai_routes import ai_bp
@@ -26,6 +26,7 @@ from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_
 from oj_modules.tasks import (
     init_agent_progress_cache,
     register_agent_generate_testdata_task,
+    register_repository_index_build_task,
     register_agent_solve_problem_task,
     register_evaluate_submission_task,
     register_written_homework_task,
@@ -112,6 +113,7 @@ evaluate_submission = register_evaluate_submission_task(celery)
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
 agent_solve_problem = register_agent_solve_problem_task(celery, evaluate_submission)
 agent_generate_testdata = register_agent_generate_testdata_task(celery, evaluate_submission)
+build_repository_index = register_repository_index_build_task(celery)
 
 # 初始化重测模块（依赖 Celery、Redis、评测函数）
 init_rejudge_module(celery, rds, evaluate_submission)
@@ -124,6 +126,8 @@ init_problem_core_module(
     agent_solve_problem,
     agent_generate_testdata,
 )
+# 初始化代码仓库结构化整理模块（依赖 Celery 任务）
+init_repository_index_module(build_repository_index)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds)
 # 初始化 agent 运行状态缓存（Redis）

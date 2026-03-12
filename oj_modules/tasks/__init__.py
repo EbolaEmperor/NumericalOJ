@@ -10,12 +10,14 @@ from oj_modules.tasks.agent_tasks import (
     register_agent_solve_problem_task,
     subscribe_agent_run_events,
 )
+from oj_modules.tasks.repository_index_tasks import register_repository_index_build_task
 
 __all__ = [
     "register_evaluate_submission_task",
     "register_written_homework_task",
     "register_agent_solve_problem_task",
     "register_agent_generate_testdata_task",
+    "register_repository_index_build_task",
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",

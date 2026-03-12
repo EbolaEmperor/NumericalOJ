@@ -7,15 +7,27 @@ import re
 import subprocess
 import time
 
-from config import AI_TUTOR_MODEL
+from config import (
+    AI_TUTOR_MODEL,
+    AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
+    AGENT_REPOSITORY_KNN_TOP_K,
+)
 from oj_modules.ai_utils import generate_ai_code_marks_from_submission_context
 from oj_modules.db_services import (
     get_cached_ai_code_marks_for_submission,
     get_db_connection,
     save_submission_ai_code_marks_json,
 )
+from oj_modules.repository_index_services import search_repository_chunks
 from oj_modules.repository_services import extract_includes_from_code, get_user_repository_files_by_names
 from oj_modules.tasks.agent_shared import *
+
+
+_AGENT_REPOSITORY_KNN_TOP_K = _clamp_int(AGENT_REPOSITORY_KNN_TOP_K, 5, min_value=1, max_value=20)
+try:
+    _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = float(AGENT_REPOSITORY_KNN_SCORE_THRESHOLD)
+except Exception:
+    _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = 0.08
 
 def _format_ai_tutor_feedback_from_marks(result):
     if not isinstance(result, dict):
@@ -567,6 +579,99 @@ def _compact_working_memory_for_attempt(working_memory):
     }
 
 
+def _build_repository_knn_query(problem, latest_summary=None):
+    if not isinstance(problem, dict):
+        return ""
+    lines = []
+    title = _normalize_text_line(problem.get("title"))
+    if title:
+        lines.append(f"题目标题: {title}")
+    content = str(problem.get("content") or "").strip()
+    if content:
+        lines.append(f"题目描述: {_truncate_text(_normalize_text_line(content), limit=800)}")
+
+    hints = _extract_problem_hints(problem)
+    if hints:
+        lines.append("题目提示: " + "；".join([_truncate_text(_normalize_text_line(x), limit=120) for x in hints[:6]]))
+
+    if isinstance(latest_summary, dict):
+        status = _normalize_text_line(latest_summary.get("status"))
+        score = latest_summary.get("score")
+        accepted_count = latest_summary.get("accepted_count")
+        total_count = latest_summary.get("total_count")
+        lines.append(
+            f"最近评测: status={status} score={score} passed={accepted_count}/{total_count}"
+        )
+        failed_points = latest_summary.get("failed_points") if isinstance(latest_summary.get("failed_points"), list) else []
+        for fp in failed_points[:3]:
+            if not isinstance(fp, dict):
+                continue
+            fp_status = _normalize_text_line(fp.get("status"))
+            stderr = _truncate_text(_normalize_text_line(fp.get("stderr")), limit=180)
+            stdout = _truncate_text(_normalize_text_line(fp.get("stdout")), limit=180)
+            if stderr or stdout:
+                lines.append(f"失败点: {fp_status} stderr={stderr} stdout={stdout}")
+            else:
+                lines.append(f"失败点: {fp_status}")
+
+    query = "\n".join([x for x in lines if x]).strip()
+    return _truncate_text(query, limit=1600)
+
+
+def _format_repository_knn_memory_message(knn_result, query, top_k):
+    if not isinstance(knn_result, dict):
+        return ""
+    hits = knn_result.get("hits") if isinstance(knn_result.get("hits"), list) else []
+    if not hits:
+        return ""
+
+    model_name = str(knn_result.get("embedding_model") or "").strip()
+    backend = str(knn_result.get("vector_db_backend") or "vector_db").strip()
+    lines = [
+        "这是来自代码仓库向量数据库的记忆（memory），用于辅助当前解题，不可盲从：",
+        f"- KNN top_k={int(top_k)} backend={backend} model={model_name}",
+        f"- query: {_truncate_text(_normalize_text_line(query), limit=280)}",
+    ]
+    for idx, hit in enumerate(hits[:top_k], start=1):
+        if not isinstance(hit, dict):
+            continue
+        qname = _truncate_text(_normalize_text_line(hit.get("qualified_name")), limit=120)
+        filename = _truncate_text(_normalize_text_line(hit.get("filename")), limit=80)
+        signature = _truncate_text(_normalize_text_line(hit.get("signature")), limit=180)
+        summary = _truncate_text(_normalize_text_line(hit.get("summary")), limit=220)
+        score = hit.get("score")
+        access = _normalize_text_line(hit.get("access"))
+        lines.append(
+            f"{idx}. {qname} ({filename}) score={score} access={access}"
+        )
+        if signature:
+            lines.append(f"   signature: {signature}")
+        if summary:
+            lines.append(f"   summary: {summary}")
+    lines.append("请优先依据题意、测试反馈与本地运行结果，谨慎参考以上记忆。")
+    return _truncate_text("\n".join(lines), limit=4200)
+
+
+def _build_repository_knn_memory_message(user_id, problem, latest_summary=None, top_k=None):
+    use_top_k = _clamp_int(top_k, _AGENT_REPOSITORY_KNN_TOP_K, min_value=1, max_value=20)
+    query = _build_repository_knn_query(problem=problem, latest_summary=latest_summary)
+    if not query:
+        return "", 0
+    try:
+        knn_result = search_repository_chunks(
+            user_id=int(user_id),
+            query=query,
+            top_k=use_top_k,
+            score_threshold=_AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
+        )
+    except Exception:
+        return "", 0
+
+    text = _format_repository_knn_memory_message(knn_result=knn_result, query=query, top_k=use_top_k)
+    hits = knn_result.get("hits") if isinstance(knn_result.get("hits"), list) else []
+    return text, len(hits)
+
+
 
 def _build_conversation_messages(
     conversation,
@@ -576,6 +681,7 @@ def _build_conversation_messages(
     latest_summary=None,
     workspace_dir="",
     main_code_path="",
+    repository_knn_memory="",
 ):
     system_lines = [
         "你现在是一个可调用工具的 OJ 自主 Agent。",
@@ -608,7 +714,11 @@ def _build_conversation_messages(
         )
     system_lines.append(f"当前推理轮次：{int(round_idx)}")
 
-    return [{"role": "system", "content": "\n".join(system_lines)}] + list(conversation or [])
+    messages = [{"role": "system", "content": "\n".join(system_lines)}]
+    memory_text = str(repository_knn_memory or "").strip()
+    if memory_text:
+        messages.append({"role": "memory", "content": memory_text})
+    return messages + list(conversation or [])
 
 
 def _workspace_main_filename(lang):

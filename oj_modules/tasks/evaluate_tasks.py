@@ -3,7 +3,6 @@
 
 import json
 import math
-import os
 import re
 import uuid
 
@@ -14,6 +13,12 @@ try:
 except Exception:
     redis = None
 
+from config import (
+    EVALUATE_SUBMISSION_LOCK_TTL_SECONDS,
+    REDIS_DB,
+    REDIS_HOST,
+    REDIS_PORT,
+)
 from oj_modules.db_services import (
     get_db_connection,
     insert_user_problem_ac_record_if_absent,
@@ -29,7 +34,7 @@ from oj_modules.db_services import (
 
 
 EVALUATE_TASK_NAME = "oj.evaluate_submission"
-_LOCK_TTL_SECONDS = max(60, int(os.getenv("EVALUATE_SUBMISSION_LOCK_TTL_SECONDS", "900")))
+_LOCK_TTL_SECONDS = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS))
 _lock_rds = None
 
 
@@ -42,9 +47,9 @@ def _get_lock_redis_client():
 
     try:
         _lock_rds = redis.StrictRedis(
-            host=os.getenv('REDIS_HOST', '127.0.0.1'),
-            port=int(os.getenv('REDIS_PORT', '6379')),
-            db=int(os.getenv('REDIS_DB', '0')),
+            host=REDIS_HOST,
+            port=int(REDIS_PORT),
+            db=int(REDIS_DB),
             decode_responses=True,
         )
         _lock_rds.ping()

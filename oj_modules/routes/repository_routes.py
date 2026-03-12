@@ -8,9 +8,30 @@ from flask import Blueprint, jsonify, redirect, render_template, request, sessio
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import get_db_connection, get_user_by_username
+from oj_modules.repository_index_services import (
+    create_repository_index_job,
+    ensure_repository_index_tables,
+    get_repository_index_job,
+    get_latest_active_repository_index_job,
+    list_repository_classes,
+    request_cancel_repository_index_job,
+    search_repository_chunks,
+    update_repository_index_job,
+)
 
 
 repository_bp = Blueprint('repository', __name__)
+_repository_build_index_task = None
+
+
+def init_repository_index_module(repository_build_index_task):
+    global _repository_build_index_task
+    _repository_build_index_task = repository_build_index_task
+    try:
+        ensure_repository_index_tables()
+    except Exception:
+        # 避免初始化失败阻断主站运行；真正调用接口时会再确保建表。
+        pass
 
 
 def current_user():
@@ -91,7 +112,7 @@ def save_repository_file():
     if not user:
         return jsonify(success=False, message="未登录"), 401
 
-    data = request.get_json()
+    data = request.get_json() or {}
     filename = data.get('filename', '').strip()
     content = data.get('content', '')
     file_id = data.get('file_id')
@@ -214,3 +235,127 @@ def upload_repository_file():
         return jsonify(success=False, message=f"上传文件失败: {str(e)}"), 500
     finally:
         conn.close()
+
+
+@repository_bp.route('/api/repository/index/build', methods=['POST'])
+def build_repository_index():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    if _repository_build_index_task is None:
+        return jsonify(success=False, message="结构化整理任务未初始化"), 500
+
+    try:
+        payload = request.get_json(silent=True) or {}
+        force_restart = bool(payload.get('force_restart'))
+        active_job = get_latest_active_repository_index_job(user_id=user['id'])
+
+        if active_job and not force_restart:
+            return jsonify(
+                success=False,
+                need_confirm=True,
+                active_job_id=int(active_job['id']),
+                message='上一个整理任务正在运行，是否终止？',
+            ), 409
+
+        cancelled_job_id = None
+        if active_job and force_restart:
+            cancelled_job_id = int(active_job['id'])
+            cancelled = request_cancel_repository_index_job(
+                job_id=cancelled_job_id,
+                user_id=user['id'],
+                reason='用户确认终止上一个整理任务并重启。',
+            )
+            task_id = str((cancelled or {}).get('task_id') or '').strip()
+            if task_id:
+                try:
+                    _repository_build_index_task.app.control.revoke(task_id, terminate=True, signal='SIGTERM')
+                except Exception:
+                    # revoke 失败时依赖协作式 cancel 标记在任务内尽快退出
+                    pass
+
+        job_id = create_repository_index_job(user['id'])
+        async_result = _repository_build_index_task.delay(user['id'], job_id)
+        update_repository_index_job(
+            job_id,
+            task_id=str(async_result.id),
+            cancel_requested=0,
+        )
+        message = '已开始结构化整理'
+        if cancelled_job_id is not None:
+            message = f'已终止任务 #{cancelled_job_id}，并开始新的结构化整理'
+        return jsonify(
+            success=True,
+            message=message,
+            job_id=job_id,
+            task_id=async_result.id,
+            replaced_job_id=cancelled_job_id,
+        )
+    except Exception as e:
+        return jsonify(success=False, message=f"启动结构化整理失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/index/status/<int:job_id>', methods=['GET'])
+def get_repository_index_status(job_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        row = get_repository_index_job(job_id=job_id, user_id=user['id'])
+        if not row:
+            return jsonify(success=False, message='任务不存在'), 404
+        return jsonify(success=True, job=row)
+    except Exception as e:
+        return jsonify(success=False, message=f"获取任务状态失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/index/status/active', methods=['GET'])
+def get_active_repository_index_status():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        row = get_latest_active_repository_index_job(user_id=user['id'])
+        if not row:
+            return jsonify(success=True, has_active=False, job=None)
+        return jsonify(success=True, has_active=True, job=row)
+    except Exception as e:
+        return jsonify(success=False, message=f"获取活跃任务失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/index/search', methods=['POST'])
+def search_repository_index():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+
+    data = request.get_json() or {}
+    query = str(data.get('query') or '').strip()
+    if not query:
+        return jsonify(success=False, message='query 不能为空'), 400
+    top_k = data.get('top_k', 5)
+    score_threshold = data.get('score_threshold', 0.1)
+
+    try:
+        result = search_repository_chunks(
+            user_id=user['id'],
+            query=query,
+            top_k=top_k,
+            score_threshold=score_threshold,
+        )
+        return jsonify(success=True, **result)
+    except Exception as e:
+        return jsonify(success=False, message=f"检索失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/index/classes', methods=['GET'])
+def get_repository_classes():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    limit = request.args.get('limit', 300)
+    try:
+        classes = list_repository_classes(user_id=user['id'], limit=limit)
+        return jsonify(success=True, classes=classes, count=len(classes))
+    except Exception as e:
+        return jsonify(success=False, message=f"获取类结构失败: {str(e)}"), 500
