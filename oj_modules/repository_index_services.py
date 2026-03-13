@@ -4,8 +4,10 @@
 import hashlib
 import json
 import os
-import re
+import subprocess
+import tempfile
 import uuid
+from bisect import bisect_right
 from datetime import datetime
 
 import numpy as np
@@ -14,6 +16,7 @@ import requests
 from oj_modules.ai_utils import _call_qwen_text, _extract_first_json_object_relaxed
 from oj_modules.db_services import get_db_connection
 from config import (
+    AI_TUTOR_MODEL,
     AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
     AGENT_REPOSITORY_KNN_TOP_K,
     DASHSCOPE_API_KEY,
@@ -26,7 +29,6 @@ from config import (
     REPOSITORY_FAISS_INDEX_ROOT,
     REPOSITORY_QWEN_EMBEDDING_MODEL,
     REPOSITORY_SENTENCE_MODEL,
-    REPOSITORY_STRUCTURED_MAX_INPUT_CHARS,
     REPOSITORY_STRUCTURED_MODEL,
     REPOSITORY_STRUCTURED_TIMEOUT,
     REPOSITORY_VECTOR_BACKEND,
@@ -42,20 +44,26 @@ try:
 except Exception:
     faiss = None
 
+try:
+    from tree_sitter import Language, Parser
+    import tree_sitter_cpp
+except Exception:
+    Language = None
+    Parser = None
+    tree_sitter_cpp = None
+
 
 _ALLOWED_REPO_EXTENSIONS = ('.h', '.hpp', '.c', '.cpp')
 _ALLOWED_ACCESS = {'public', 'private', 'protected'}
 _ALLOWED_FUNC_KIND = {'function', 'method', 'constructor', 'destructor', 'operator'}
-_ALLOWED_DOC_SOURCE = {'original_comment', 'llm_generated', 'mixed', 'none'}
-_ALLOWED_QUALITY = {'high', 'medium', 'low'}
 
 _DEFAULT_EMBEDDING_DIM = int(REPOSITORY_EMBEDDING_DIM)
 _DEFAULT_SENTENCE_MODEL = str(REPOSITORY_SENTENCE_MODEL or '').strip()
 _DEFAULT_QWEN_EMBEDDING_MODEL = str(REPOSITORY_QWEN_EMBEDDING_MODEL or '').strip()
 _DEFAULT_PROVIDER = str(REPOSITORY_EMBEDDING_PROVIDER or '').strip().lower()
 _DEFAULT_LLM_MODEL = str(REPOSITORY_STRUCTURED_MODEL or '').strip() or str(QWEN_TEXT_MODEL or '').strip()
+_STRUCTURED_ENTITY_MODEL = str(AI_TUTOR_MODEL or '').strip() or _DEFAULT_LLM_MODEL
 _DEFAULT_LLM_TIMEOUT_SECONDS = int(REPOSITORY_STRUCTURED_TIMEOUT)
-_DEFAULT_LLM_MAX_INPUT_CHARS = int(REPOSITORY_STRUCTURED_MAX_INPUT_CHARS)
 _DEFAULT_EMBEDDING_TIMEOUT_SECONDS = int(REPOSITORY_EMBEDDING_TIMEOUT)
 _DEFAULT_EMBEDDING_BATCH_SIZE = max(1, int(REPOSITORY_EMBEDDING_BATCH_SIZE))
 _VECTOR_DB_BACKEND = str(REPOSITORY_VECTOR_BACKEND or '').strip().lower()
@@ -70,6 +78,7 @@ except Exception:
     _DEFAULT_SEARCH_SCORE_THRESHOLD = 0.0
 
 _sentence_model_cache = {}
+_tree_sitter_parser_cache = {}
 
 
 class RepositoryIndexJobCancelled(Exception):
@@ -239,45 +248,17 @@ def _normalize_kind(value, default='function'):
     return default
 
 
-def _normalize_doc_source(value):
-    text = _safe_str(value).lower()
-    if text in _ALLOWED_DOC_SOURCE:
-        return text
-    return 'none'
-
-
-def _normalize_quality(value):
-    text = _safe_str(value).lower()
-    if text in _ALLOWED_QUALITY:
-        return text
-    return 'low'
-
-
 def _detect_language_from_filename(filename):
     name = _safe_str(filename).lower()
     if name.endswith('.c'):
         return 'c'
     if name.endswith('.h'):
-        return 'h'
+        return 'cpp'
     if name.endswith('.hpp'):
-        return 'hpp'
+        return 'cpp'
     if name.endswith('.cpp'):
         return 'cpp'
     return 'cpp'
-
-
-def _truncate_for_prompt(content):
-    text = str(content or '')
-    limit = max(8000, _safe_int(_DEFAULT_LLM_MAX_INPUT_CHARS, 120000))
-    if len(text) <= limit:
-        return text, False
-    half = limit // 2
-    clipped = (
-        text[:half]
-        + "\n\n/* ... 文件内容过长，中间部分已省略 ... */\n\n"
-        + text[-half:]
-    )
-    return clipped, True
 
 
 def _sha256_text(text):
@@ -538,76 +519,1366 @@ def _load_user_repository_files(user_id):
     return result
 
 
-def _build_qwen_prompt(filename, content, truncated):
-    trunc_note = "是" if truncated else "否"
+def _build_line_starts(text):
+    starts = [0]
+    for idx, ch in enumerate(str(text or '')):
+        if ch == '\n':
+            starts.append(idx + 1)
+    return starts
+
+
+def _offset_to_line(line_starts, offset):
+    try:
+        pos = int(offset)
+    except Exception:
+        return 0
+    if pos < 0:
+        return 0
+    return bisect_right(line_starts, pos)
+
+
+def _range_offsets_from_node(node):
+    if not isinstance(node, dict):
+        return None, None
+    rng = node.get('range') if isinstance(node.get('range'), dict) else {}
+    begin = rng.get('begin') if isinstance(rng.get('begin'), dict) else {}
+    end = rng.get('end') if isinstance(rng.get('end'), dict) else {}
+    if begin.get('offset') is None or end.get('offset') is None:
+        return None, None
+    start = int(begin.get('offset'))
+    tok_len = end.get('tokLen')
+    try:
+        tok_len = max(1, int(tok_len))
+    except Exception:
+        tok_len = 1
+    stop = int(end.get('offset')) + tok_len
+    return max(0, start), max(0, stop)
+
+
+def _extract_text_by_offsets(text, start, stop):
+    raw = str(text or '')
+    if start is None or stop is None:
+        return ''
+    n = len(raw)
+    a = max(0, min(n, int(start)))
+    b = max(0, min(n, int(stop)))
+    if b <= a:
+        return ''
+    return raw[a:b]
+
+
+def _get_cpp_tree_sitter_parser():
+    parser = _tree_sitter_parser_cache.get('cpp')
+    if parser is not None:
+        return parser
+    if (Language is None) or (Parser is None) or (tree_sitter_cpp is None):
+        raise RuntimeError('未安装 tree-sitter 解析依赖（tree-sitter + tree-sitter-cpp）。')
+    language = Language(tree_sitter_cpp.language())
+    parser = Parser(language)
+    _tree_sitter_parser_cache['cpp'] = parser
+    return parser
+
+
+def _ts_node_text(source_bytes, node):
+    if node is None:
+        return ''
+    return source_bytes[node.start_byte:node.end_byte].decode('utf-8', errors='replace')
+
+
+def _ts_compact_text(text):
+    return _safe_str(' '.join(str(text or '').replace('\n', ' ').replace('\t', ' ').split()))
+
+
+def _ts_iter_nodes(node):
+    if node is None:
+        return
+    yield node
+    for child in node.children:
+        for sub in _ts_iter_nodes(child):
+            yield sub
+
+
+def _ts_find_first_descendant(node, target_types):
+    for sub in _ts_iter_nodes(node):
+        if sub.type in target_types:
+            return sub
+    return None
+
+
+def _ts_find_descendants(node, target_types):
+    for sub in _ts_iter_nodes(node):
+        if sub.type in target_types:
+            yield sub
+
+
+def _ts_parse_issue_score(root_node):
+    if root_node is None:
+        return 10**9
+    error_nodes = 0
+    missing_nodes = 0
+    for node in _ts_iter_nodes(root_node):
+        if _safe_str(node.type) == 'ERROR':
+            error_nodes += 1
+        if bool(getattr(node, 'is_missing', False)):
+            missing_nodes += 1
+    has_error = 1 if bool(getattr(root_node, 'has_error', False)) else 0
+    return has_error * 1_000_000 + error_nodes * 1_000 + missing_nodes
+
+
+def _ts_find_matching_brace(chars, start_idx):
+    n = len(chars)
+    if start_idx < 0 or start_idx >= n or chars[start_idx] != '{':
+        return None
+    depth = 0
+    i = start_idx
+    in_line_comment = False
+    in_block_comment = False
+    in_double_quote = False
+    in_single_quote = False
+
+    while i < n:
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < n else ''
+
+        if in_line_comment:
+            if ch == '\n':
+                in_line_comment = False
+            i += 1
+            continue
+        if in_block_comment:
+            if ch == '*' and nxt == '/':
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_double_quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == '"':
+                in_double_quote = False
+            i += 1
+            continue
+        if in_single_quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == "'":
+                in_single_quote = False
+            i += 1
+            continue
+
+        if ch == '/' and nxt == '/':
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == '/' and nxt == '*':
+            in_block_comment = True
+            i += 2
+            continue
+        if ch == '"':
+            in_double_quote = True
+            i += 1
+            continue
+        if ch == "'":
+            in_single_quote = True
+            i += 1
+            continue
+
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+
+        i += 1
+    return None
+
+
+def _ts_mask_default_brace_initializers_for_parse(source_text):
+    text = str(source_text or '')
+    if '= {' not in text and '={' not in text:
+        return text, False
+    chars = list(text)
+    n = len(chars)
+    i = 0
+    changed = False
+    in_line_comment = False
+    in_block_comment = False
+    in_double_quote = False
+    in_single_quote = False
+
+    while i < n:
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < n else ''
+
+        if in_line_comment:
+            if ch == '\n':
+                in_line_comment = False
+            i += 1
+            continue
+        if in_block_comment:
+            if ch == '*' and nxt == '/':
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_double_quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == '"':
+                in_double_quote = False
+            i += 1
+            continue
+        if in_single_quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == "'":
+                in_single_quote = False
+            i += 1
+            continue
+
+        if ch == '/' and nxt == '/':
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == '/' and nxt == '*':
+            in_block_comment = True
+            i += 2
+            continue
+        if ch == '"':
+            in_double_quote = True
+            i += 1
+            continue
+        if ch == "'":
+            in_single_quote = True
+            i += 1
+            continue
+
+        if ch == '=':
+            j = i + 1
+            while j < n and chars[j].isspace():
+                j += 1
+            if j < n and chars[j] == '{':
+                end = _ts_find_matching_brace(chars, j)
+                if end is not None:
+                    k = end + 1
+                    while k < n and chars[k].isspace():
+                        k += 1
+                    if k < n and chars[k] in (',', ')'):
+                        chars[j] = '0'
+                        for idx in range(j + 1, end + 1):
+                            chars[idx] = ' '
+                        changed = True
+                        i = end + 1
+                        continue
+        i += 1
+
+    return ''.join(chars), changed
+
+
+def _ts_nearest_ancestor_of_types(node, target_types):
+    parent = node.parent if node is not None else None
+    while parent is not None:
+        if parent.type in target_types:
+            return parent
+        parent = parent.parent
+    return None
+
+
+def _ts_same_node(left, right):
+    if left is None or right is None:
+        return False
     return (
-        "你是一个代码结构化整理助手。请读取给定的单个 C/C++ 代码文件，并输出一个严格合法的 JSON 对象。\n"
-        "要求：\n"
-        "1. 只输出 JSON，不要输出解释、不要输出 Markdown 代码块。\n"
-        "2. 必须覆盖函数和类信息。\n"
-        "3. 类信息必须包含：类清单、继承关系、成员变量、成员函数。\n"
-        "4. 成员变量必须记录所属 class_name 和访问权限 access（private/public/protected）。\n"
-        "5. 对每个函数整理参数、返回值、摘要。\n"
-        "6. 若代码中已有注释，优先基于原注释填充 summary/params[].description/returns.description。\n"
-        "7. 若代码中没有注释，你需要分析这段代码的功能，并根据你的分析，填充 summary/params[].description/returns.description 字段。"
-        "8. 无法确认的字段使用空字符串、空数组或 null，不要编造不存在的函数或类。\n\n"
-        "JSON 顶层格式必须为：\n"
-        "{\n"
-        "  \"schema_version\": \"1.0\",\n"
-        "  \"filename\": \"...\",\n"
-        "  \"language\": \"c|cpp|h|hpp\",\n"
-        "  \"classes\": [\n"
-        "    {\n"
-        "      \"class_name\": \"\",\n"
-        "      \"qualified_name\": \"\",\n"
-        "      \"kind\": \"class|struct\",\n"
-        "      \"bases\": [{\"base_name\": \"\", \"access\": \"public|private|protected\", \"is_virtual\": false}],\n"
-        "      \"member_variables\": [\n"
-        "        {\"name\": \"\", \"type\": \"\", \"class_name\": \"\", \"access\": \"public|private|protected\", \"is_static\": false, \"line\": 0}\n"
-        "      ],\n"
-        "      \"member_methods\": [\n"
-        "        {\"name\": \"\", \"qualified_name\": \"\", \"signature\": \"\", \"return_type\": \"\", \"access\": \"public|private|protected\", \"is_static\": false, \"is_virtual\": false, \"is_const\": false, \"is_pure_virtual\": false, \"start_line\": 0, \"end_line\": 0}\n"
-        "      ]\n"
-        "    }\n"
-        "  ],\n"
-        "  \"functions\": [\n"
-        "    {\n"
-        "      \"kind\": \"function|method|constructor|destructor|operator\",\n"
-        "      \"qualified_name\": \"\",\n"
-        "      \"class_name\": \"\",\n"
-        "      \"access\": \"public|private|protected\",\n"
-        "      \"signature\": \"\",\n"
-        "      \"params\": [{\"name\": \"\", \"type\": \"\", \"default_value\": null, \"description\": \"\"}],\n"
-        "      \"returns\": {\"type\": \"\", \"description\": \"\"},\n"
-        "      \"summary\": \"\",\n"
-        "      \"doc_source\": \"original_comment|llm_generated|mixed|none\",\n"
-        "      \"quality\": \"high|medium|low\",\n"
-        "      \"location\": {\"start_line\": 0, \"end_line\": 0},\n"
-        "      \"code\": \"\"\n"
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        f"文件名：{filename}\n"
-        f"内容是否截断：{trunc_note}\n"
-        "文件内容如下：\n"
-        f"{content}\n\n"
-        "如果我对这个函数以及输入输出已经有了详细的注释，那就基于我原本的注释整理成结构化的 json。"
+        _safe_str(left.type) == _safe_str(right.type)
+        and int(left.start_byte) == int(right.start_byte)
+        and int(left.end_byte) == int(right.end_byte)
     )
 
 
-def _call_qwen_structured_file(filename, content):
-    clipped_content, truncated = _truncate_for_prompt(content)
-    prompt = _build_qwen_prompt(filename=filename, content=clipped_content, truncated=truncated)
-    model_output = _call_qwen_text(
+def _ts_collect_class_member_nodes(body_node, class_node):
+    collected = []
+    if body_node is None or class_node is None:
+        return collected
+    for sub in _ts_iter_nodes(body_node):
+        if sub.type not in ('field_declaration', 'function_definition'):
+            continue
+        nearest_class = _ts_nearest_ancestor_of_types(sub, {'class_specifier', 'struct_specifier'})
+        if _ts_same_node(nearest_class, class_node):
+            collected.append(sub)
+    return collected
+
+
+def _ts_line_of(node):
+    return max(1, int((node.start_point[0] if node is not None else 0) + 1))
+
+
+def _ts_end_line_of(node):
+    return max(1, int((node.end_point[0] if node is not None else 0) + 1))
+
+
+def _ts_find_best_declarator_name_node(declarator_node):
+    if declarator_node is None:
+        return None
+    rank = {
+        'qualified_identifier': 0,
+        'operator_name': 1,
+        'destructor_name': 2,
+        'field_identifier': 3,
+        'identifier': 4,
+    }
+    best_node = None
+    best_rank = 1_000_000
+    stack = [declarator_node]
+    while stack:
+        node = stack.pop()
+        node_type = _safe_str(node.type)
+        if node_type == 'parameter_list':
+            continue
+        if node_type in rank:
+            node_rank = int(rank.get(node_type, 1_000_000))
+            if node_rank < best_rank:
+                best_node = node
+                best_rank = node_rank
+                if best_rank == 0:
+                    return best_node
+        for child in reversed(node.children):
+            stack.append(child)
+    return best_node
+
+
+def _ts_extract_function_name_and_owner(declarator_node, source_bytes):
+    if declarator_node is None:
+        return '', ''
+
+    target_node = _ts_find_best_declarator_name_node(declarator_node)
+    if target_node is None:
+        return '', ''
+
+    if target_node.type == 'qualified_identifier':
+        qualified_text = _ts_compact_text(_ts_node_text(source_bytes, target_node))
+        if '::' in qualified_text:
+            parts = [p for p in qualified_text.split('::') if _safe_str(p)]
+            if len(parts) >= 2:
+                return _safe_str(parts[-1]), _safe_str('::'.join(parts[:-1]))
+        return qualified_text, ''
+
+    if target_node.type == 'operator_name':
+        op_text = _ts_compact_text(_ts_node_text(source_bytes, target_node))
+        if op_text.startswith('operator'):
+            suffix = op_text[len('operator'):].replace(' ', '')
+            return _safe_str(f"operator{suffix}"), ''
+        return op_text, ''
+
+    if target_node.type == 'destructor_name':
+        return _ts_compact_text(_ts_node_text(source_bytes, target_node)), ''
+
+    if target_node.type in ('field_identifier', 'identifier'):
+        return _ts_compact_text(_ts_node_text(source_bytes, target_node)), ''
+    return _ts_compact_text(_ts_node_text(source_bytes, target_node)), ''
+
+
+def _ts_extract_param_items(parameter_list_node, source_bytes):
+    params = []
+    if parameter_list_node is None:
+        return params
+    for param_decl in parameter_list_node.children:
+        if param_decl.type != 'parameter_declaration':
+            continue
+        param_text = _ts_compact_text(_ts_node_text(source_bytes, param_decl))
+        if (not param_text) or (param_text == 'void'):
+            continue
+        param_name = ''
+        for id_node in _ts_find_descendants(param_decl, {'identifier', 'field_identifier'}):
+            param_name = _ts_compact_text(_ts_node_text(source_bytes, id_node))
+        param_type = param_text
+        if param_name and param_type.endswith(param_name):
+            param_type = _safe_str(param_type[:len(param_type) - len(param_name)])
+        params.append({
+            'name': _safe_str(param_name),
+            'type': _safe_str(param_type),
+            'default_value': None,
+            'description': '',
+        })
+    return params
+
+
+def _ts_build_method_item_from_node(method_node, source_bytes, class_name, access_text, has_body):
+    declarator_node = _ts_find_first_descendant(method_node, {'function_declarator'})
+    param_list_node = _ts_find_first_descendant(declarator_node, {'parameter_list'}) if declarator_node else None
+    method_name, owner_name = _ts_extract_function_name_and_owner(declarator_node, source_bytes)
+    effective_class = _safe_str(owner_name) or _safe_str(class_name)
+    if not method_name:
+        return None
+    code_text = _ts_node_text(source_bytes, method_node)
+    signature = _extract_signature_from_code(code_text) or _ts_compact_text(code_text)
+    kind = 'method'
+    short_class = _safe_str(effective_class.split('::')[-1]) if effective_class else ''
+    if method_name.startswith('~'):
+        kind = 'destructor'
+    elif method_name.startswith('operator'):
+        kind = 'operator'
+    elif short_class and method_name == short_class:
+        kind = 'constructor'
+    return_type = _return_type_from_signature(signature, method_name, kind)
+    return {
+        'kind': kind,
+        'name': method_name,
+        'qualified_name': f"{effective_class}::{method_name}" if effective_class else method_name,
+        'signature': signature,
+        'return_type': return_type,
+        'params': _ts_extract_param_items(param_list_node, source_bytes),
+        'access': _normalize_access(access_text, default=''),
+        'is_static': False,
+        'is_virtual': False,
+        'is_const': (' const' in f" {signature}"),
+        'is_pure_virtual': False,
+        'start_line': _ts_line_of(method_node),
+        'end_line': _ts_end_line_of(method_node),
+        'has_body': bool(has_body),
+        'code': code_text,
+    }
+
+
+def _extract_classes_and_functions_from_treesitter(filename, content):
+    source = str(content or '')
+    source_bytes = source.encode('utf-8', errors='replace')
+    parser = _get_cpp_tree_sitter_parser()
+    parse_source = source
+    parse_bytes = source_bytes
+    tree = parser.parse(parse_bytes)
+    root = tree.root_node
+
+    # tree-sitter-cpp may recover with MISSING nodes on some default arg "{}" patterns.
+    # Retry with an equal-length masked source to keep byte offsets stable.
+    if bool(getattr(root, 'has_error', False)):
+        masked_source, changed = _ts_mask_default_brace_initializers_for_parse(parse_source)
+        if changed:
+            masked_bytes = masked_source.encode('utf-8', errors='replace')
+            masked_tree = parser.parse(masked_bytes)
+            masked_root = masked_tree.root_node
+            if _ts_parse_issue_score(masked_root) < _ts_parse_issue_score(root):
+                parse_source = masked_source
+                parse_bytes = masked_bytes
+                tree = masked_tree
+                root = masked_root
+
+    classes = []
+    functions = []
+    method_access_by_range = {}
+
+    for node in _ts_iter_nodes(root):
+        if node.type not in ('class_specifier', 'struct_specifier'):
+            continue
+        class_name_node = None
+        for child in node.children:
+            if child.type in ('type_identifier', 'identifier'):
+                class_name_node = child
+                break
+        class_name = _ts_compact_text(_ts_node_text(source_bytes, class_name_node))
+        if not class_name:
+            continue
+
+        class_kind = 'class'
+        prefix_text = _ts_compact_text(_ts_node_text(source_bytes, node)[:12]).lower()
+        if prefix_text.startswith('struct'):
+            class_kind = 'struct'
+
+        base_items = []
+        base_clause = _ts_find_first_descendant(node, {'base_class_clause'})
+        if base_clause is not None:
+            current_access = 'public'
+            for bc in base_clause.children:
+                if bc.type == 'access_specifier':
+                    current_access = _normalize_access(_ts_compact_text(_ts_node_text(source_bytes, bc)), default='public') or 'public'
+                elif bc.type in ('type_identifier', 'qualified_identifier', 'template_type'):
+                    base_name = _ts_compact_text(_ts_node_text(source_bytes, bc))
+                    if base_name:
+                        base_items.append({
+                            'base_name': base_name,
+                            'access': current_access,
+                            'is_virtual': False,
+                        })
+
+        body_node = None
+        for child in node.children:
+            if child.type == 'field_declaration_list':
+                body_node = child
+                break
+        if body_node is None:
+            continue
+
+        default_access = 'private' if class_kind == 'class' else 'public'
+        current_access = default_access
+        member_vars = []
+        member_methods = []
+        member_var_decls = []
+        member_method_decls = []
+
+        for child in body_node.children:
+            if child.type == 'access_specifier':
+                current_access = _normalize_access(_ts_compact_text(_ts_node_text(source_bytes, child)), default=current_access) or current_access
+                continue
+
+            for member_node in _ts_collect_class_member_nodes(child, node):
+                if member_node.type == 'field_declaration':
+                    method_decl_node = _ts_find_first_descendant(member_node, {'function_declarator'})
+                    if method_decl_node is not None:
+                        field_has_body = _ts_find_first_descendant(
+                            member_node,
+                            {'compound_statement', 'initializer_list', 'try_statement'},
+                        ) is not None
+                        method_item = _ts_build_method_item_from_node(
+                            method_node=member_node,
+                            source_bytes=source_bytes,
+                            class_name=class_name,
+                            access_text=current_access,
+                            has_body=field_has_body,
+                        )
+                        if method_item is not None:
+                            member_methods.append(method_item)
+                            decl = _build_member_method_decl_for_prompt(method_item)
+                            if decl:
+                                member_method_decls.append(decl)
+                            if field_has_body:
+                                key = (
+                                    _safe_str(method_item.get('kind')),
+                                    _safe_str(method_item.get('name')),
+                                    _safe_str(method_item.get('signature')),
+                                    int(method_item.get('start_line') or 0),
+                                    int(method_item.get('end_line') or 0),
+                                )
+                                method_access_by_range[key] = _normalize_access(current_access, default=default_access) or default_access
+                                functions.append(_build_function_item_from_member_method(class_name, method_item))
+                        continue
+
+                    type_text = ''
+                    if member_node.children:
+                        type_text = _ts_compact_text(_ts_node_text(source_bytes, member_node.children[0]))
+                    for field_id in _ts_find_descendants(member_node, {'field_identifier'}):
+                        var_name = _ts_compact_text(_ts_node_text(source_bytes, field_id))
+                        if not var_name:
+                            continue
+                        var_item = {
+                            'name': var_name,
+                            'type': type_text,
+                            'class_name': class_name,
+                            'access': _normalize_access(current_access, default=default_access) or default_access,
+                            'is_static': False,
+                            'line': _ts_line_of(field_id),
+                        }
+                        member_vars.append(var_item)
+                        decl = _build_member_variable_decl_for_prompt(var_item)
+                        if decl:
+                            member_var_decls.append(decl)
+                    continue
+
+                if member_node.type == 'function_definition':
+                    method_item = _ts_build_method_item_from_node(
+                        method_node=member_node,
+                        source_bytes=source_bytes,
+                        class_name=class_name,
+                        access_text=current_access,
+                        has_body=True,
+                    )
+                    if method_item is None:
+                        continue
+                    member_methods.append(method_item)
+                    decl = _build_member_method_decl_for_prompt(method_item)
+                    if decl:
+                        member_method_decls.append(decl)
+                    key = (
+                        _safe_str(method_item.get('kind')),
+                        _safe_str(method_item.get('name')),
+                        _safe_str(method_item.get('signature')),
+                        int(method_item.get('start_line') or 0),
+                        int(method_item.get('end_line') or 0),
+                    )
+                    method_access_by_range[key] = _normalize_access(current_access, default=default_access) or default_access
+                    functions.append(_build_function_item_from_member_method(class_name, method_item))
+
+        classes.append({
+            'class_name': class_name,
+            'qualified_name': class_name,
+            'kind': class_kind,
+            'bases': base_items,
+            'member_variables': member_vars,
+            'member_methods': member_methods,
+            '_prompt_member_variable_decls': member_var_decls,
+            '_prompt_member_method_decls': member_method_decls,
+            '_clang_decl_id': '',
+        })
+
+    for node in _ts_iter_nodes(root):
+        if node.type != 'function_definition':
+            continue
+        parent = node.parent
+        inside_class = False
+        while parent is not None:
+            if parent.type in ('class_specifier', 'struct_specifier'):
+                inside_class = True
+                break
+            parent = parent.parent
+        if inside_class:
+            continue
+
+        declarator_node = _ts_find_first_descendant(node, {'function_declarator'})
+        if declarator_node is None:
+            continue
+        param_list_node = _ts_find_first_descendant(declarator_node, {'parameter_list'})
+        node_name, owner_name = _ts_extract_function_name_and_owner(declarator_node, source_bytes)
+        if not node_name:
+            continue
+        class_name = _safe_str(owner_name)
+        kind = 'function'
+        short_class = _safe_str(class_name.split('::')[-1]) if class_name else ''
+        if node_name.startswith('~'):
+            kind = 'destructor'
+        elif node_name.startswith('operator'):
+            kind = 'operator'
+        elif short_class and node_name == short_class:
+            kind = 'constructor'
+        elif class_name:
+            kind = 'method'
+        code_text = _ts_node_text(source_bytes, node)
+        signature = _extract_signature_from_code(code_text) or _ts_compact_text(code_text)
+        return_type = _return_type_from_signature(signature, node_name, kind)
+        start_line = _ts_line_of(node)
+        end_line = _ts_end_line_of(node)
+        access_key = (kind, node_name, signature, start_line, end_line)
+        functions.append({
+            'kind': kind,
+            'qualified_name': f"{class_name}::{node_name}" if class_name else node_name,
+            'class_name': class_name,
+            'access': _normalize_access(method_access_by_range.get(access_key), default=''),
+            'signature': signature,
+            'params': _ts_extract_param_items(param_list_node, source_bytes),
+            'returns': {
+                'type': return_type,
+                'description': '',
+            },
+            'summary': '',
+            'location': {
+                'start_line': max(0, int(start_line)),
+                'end_line': max(0, int(end_line)),
+            },
+            'code': code_text,
+        })
+
+    return classes, functions
+
+
+def _node_source_file(node):
+    if not isinstance(node, dict):
+        return ''
+
+    def _extract_file(loc_obj):
+        if not isinstance(loc_obj, dict):
+            return ''
+        direct = _safe_str(loc_obj.get('file'))
+        if direct:
+            return os.path.abspath(direct)
+        for key in ('spellingLoc', 'expansionLoc', 'presumedLoc', 'includedFrom'):
+            nested = loc_obj.get(key) if isinstance(loc_obj.get(key), dict) else {}
+            nested_file = _safe_str(nested.get('file'))
+            if nested_file:
+                return os.path.abspath(nested_file)
+        return ''
+
+    loc = node.get('loc') if isinstance(node.get('loc'), dict) else {}
+    src = _extract_file(loc)
+    if src:
+        return src
+    rng = node.get('range') if isinstance(node.get('range'), dict) else {}
+    begin = rng.get('begin') if isinstance(rng.get('begin'), dict) else {}
+    src = _extract_file(begin)
+    if src:
+        return src
+    end = rng.get('end') if isinstance(rng.get('end'), dict) else {}
+    src = _extract_file(end)
+    if src:
+        return src
+    return ''
+
+
+def _node_belongs_to_source(node, source_path, source_content_length=0):
+    src = _node_source_file(node)
+    expected = os.path.abspath(str(source_path or ''))
+    if src:
+        return os.path.abspath(src) == expected
+
+    # Some AST nodes omit file path; only keep those whose offsets are
+    # inside the current source text to avoid pulling in system headers.
+    start, stop = _range_offsets_from_node(node)
+    try:
+        text_len = max(0, int(source_content_length or 0))
+    except Exception:
+        text_len = 0
+    if start is None or stop is None or text_len <= 0:
+        return False
+    return 0 <= int(start) <= text_len and 0 <= int(stop) <= text_len and int(stop) > int(start)
+
+
+def _iter_ast_nodes(node):
+    if not isinstance(node, dict):
+        return
+    yield node
+    for child in (node.get('inner') or []):
+        if isinstance(child, dict):
+            for sub in _iter_ast_nodes(child):
+                yield sub
+
+
+def _node_has_body(node):
+    if not isinstance(node, dict):
+        return False
+    for child in (node.get('inner') or []):
+        if not isinstance(child, dict):
+            continue
+        if child.get('kind') in ('CompoundStmt', 'CXXTryStmt'):
+            return True
+    return False
+
+
+def _node_param_items(node):
+    params = []
+    for child in (node.get('inner') or []):
+        if not isinstance(child, dict) or child.get('kind') != 'ParmVarDecl':
+            continue
+        params.append({
+            'name': _safe_str(child.get('name')),
+            'type': _safe_str((child.get('type') or {}).get('qualType')),
+            'default_value': None,
+            'description': '',
+        })
+    return params
+
+
+def _type_suffix_from_qual_type(qual_type):
+    text = _safe_str(qual_type)
+    pos = text.find(')')
+    if pos < 0:
+        return ''
+    return _safe_str(text[pos + 1:])
+
+
+def _return_type_from_qual_type(qual_type):
+    text = _safe_str(qual_type)
+    if ' (' not in text:
+        return ''
+    return _safe_str(text.split(' (', 1)[0])
+
+
+def _build_signature_from_ast_node(node):
+    kind = _safe_str(node.get('kind'))
+    name = _safe_str(node.get('name'))
+    params = _node_param_items(node)
+    parts = []
+    for param in params:
+        ptype = _safe_str(param.get('type'))
+        pname = _safe_str(param.get('name'))
+        if ptype and pname:
+            parts.append(f"{ptype} {pname}")
+        elif ptype:
+            parts.append(ptype)
+        elif pname:
+            parts.append(pname)
+    params_text = ', '.join(parts)
+    qual_type = _safe_str((node.get('type') or {}).get('qualType'))
+    suffix = _type_suffix_from_qual_type(qual_type)
+
+    if kind in ('CXXConstructorDecl', 'CXXDestructorDecl'):
+        signature = f"{name}({params_text})"
+    else:
+        ret_type = _return_type_from_qual_type(qual_type)
+        if ret_type:
+            signature = f"{ret_type} {name}({params_text})"
+        else:
+            signature = f"{name}({params_text})"
+    signature = _safe_str(signature)
+    if suffix:
+        signature = _safe_str(f"{signature} {suffix}")
+    return signature
+
+
+def _extract_signature_from_code(code_text):
+    raw = str(code_text or '')
+    if not raw:
+        return ''
+    brace_idx = raw.find('{')
+    if brace_idx >= 0:
+        head = raw[:brace_idx]
+    else:
+        semi_idx = raw.find(';')
+        head = raw[:semi_idx] if semi_idx >= 0 else raw
+    head = _safe_str(' '.join(str(head).replace('\n', ' ').replace('\t', ' ').split()))
+    if not head:
+        return ''
+    close_idx = head.rfind(')')
+    if close_idx > 0:
+        colon_idx = head.find(':', close_idx)
+        if colon_idx > close_idx:
+            head = _safe_str(head[:close_idx + 1])
+    return head
+
+
+def _return_type_from_signature(signature, node_name, func_kind):
+    if func_kind in ('constructor', 'destructor'):
+        return ''
+    text = _safe_str(signature)
+    if not text:
+        return ''
+    if func_kind == 'operator':
+        op_pos = text.find('operator')
+        if op_pos > 0:
+            return _safe_str(text[:op_pos])
+        return ''
+    marker = _safe_str(node_name)
+    if not marker:
+        return ''
+    pos = text.find(marker)
+    if pos <= 0:
+        return ''
+    return _safe_str(text[:pos])
+
+
+def _build_member_method_decl_for_prompt(method):
+    access = _safe_str(method.get('access')) or 'private'
+    signature = _safe_str(method.get('signature'))
+    if not signature:
+        return ''
+    return f"{access}: {signature};"
+
+
+def _build_member_variable_decl_for_prompt(member):
+    access = _safe_str(member.get('access')) or 'private'
+    m_type = _safe_str(member.get('type'))
+    m_name = _safe_str(member.get('name'))
+    if m_type and m_name:
+        return f"{access}: {m_type} {m_name};"
+    if m_name:
+        return f"{access}: {m_name};"
+    return ''
+
+
+def _extract_classes_from_clang_ast(ast_root, source_path, content):
+    line_starts = _build_line_starts(content)
+    source_len = len(str(content or ''))
+    classes = []
+    class_id_to_name = {}
+    seen_ids = set()
+
+    for node in _iter_ast_nodes(ast_root):
+        if not isinstance(node, dict):
+            continue
+        kind = _safe_str(node.get('kind'))
+        if kind not in ('CXXRecordDecl', 'RecordDecl'):
+            continue
+        if not _node_belongs_to_source(node, source_path, source_content_length=source_len):
+            continue
+        if _safe_bool(node.get('isImplicit'), False):
+            continue
+        if not _safe_bool(node.get('completeDefinition'), False):
+            continue
+        class_name = _safe_str(node.get('name'))
+        if not class_name:
+            continue
+
+        class_id = _safe_str(node.get('id'))
+        if class_id and class_id in seen_ids:
+            continue
+        if class_id:
+            seen_ids.add(class_id)
+
+        class_kind = _safe_str(node.get('tagUsed') or node.get('kind')).lower()
+        if class_kind not in ('class', 'struct'):
+            class_kind = 'class'
+        qualified_name = class_name
+        if class_id:
+            class_id_to_name[class_id] = qualified_name
+
+        bases = []
+        for base in (node.get('bases') or []):
+            if not isinstance(base, dict):
+                continue
+            base_name = _safe_str((base.get('type') or {}).get('qualType'))
+            if not base_name:
+                continue
+            access = _normalize_access(base.get('access'), default='public') or 'public'
+            bases.append({
+                'base_name': base_name,
+                'access': access,
+                'is_virtual': _safe_bool(base.get('isVirtual'), False),
+            })
+
+        default_access = 'private' if class_kind == 'class' else 'public'
+        current_access = default_access
+        members_vars = []
+        members_methods = []
+        member_var_decls = []
+        member_method_decls = []
+
+        for child in (node.get('inner') or []):
+            if not isinstance(child, dict):
+                continue
+            child_kind = _safe_str(child.get('kind'))
+            if child_kind == 'AccessSpecDecl':
+                current_access = _normalize_access(child.get('access'), default=current_access) or current_access
+                continue
+
+            if child_kind == 'FieldDecl':
+                start, stop = _range_offsets_from_node(child)
+                line_no = _offset_to_line(line_starts, start)
+                item = {
+                    'name': _safe_str(child.get('name')),
+                    'type': _safe_str((child.get('type') or {}).get('qualType')),
+                    'class_name': class_name,
+                    'access': _normalize_access(current_access, default=default_access) or default_access,
+                    'is_static': _safe_bool(child.get('storageClass') == 'static', False),
+                    'line': max(0, int(line_no or 0)),
+                }
+                if item['name']:
+                    members_vars.append(item)
+                    decl = _build_member_variable_decl_for_prompt(item)
+                    if decl:
+                        member_var_decls.append(decl)
+                continue
+
+            if child_kind not in ('CXXMethodDecl', 'CXXConstructorDecl', 'CXXDestructorDecl'):
+                continue
+            if _safe_bool(child.get('isImplicit'), False):
+                continue
+
+            start, stop = _range_offsets_from_node(child)
+            start_line = _offset_to_line(line_starts, start)
+            end_line = _offset_to_line(line_starts, max(start if start is not None else 0, (stop or 0) - 1))
+            code = _extract_text_by_offsets(content, start, stop)
+            signature = _extract_signature_from_code(code) or _build_signature_from_ast_node(child)
+            method_name = _safe_str(child.get('name'))
+            qual_type = _safe_str((child.get('type') or {}).get('qualType'))
+            method_kind = 'method'
+            if child_kind == 'CXXConstructorDecl':
+                method_kind = 'constructor'
+            elif child_kind == 'CXXDestructorDecl':
+                method_kind = 'destructor'
+            elif method_name.startswith('operator'):
+                method_kind = 'operator'
+            return_type = _return_type_from_signature(signature, method_name, method_kind)
+            if (not return_type) and (method_kind not in ('constructor', 'destructor')):
+                return_type = _return_type_from_qual_type(qual_type)
+            method_item = {
+                'kind': method_kind,
+                'name': method_name,
+                'qualified_name': f"{qualified_name}::{method_name}" if method_name else qualified_name,
+                'signature': signature,
+                'return_type': return_type,
+                'params': _node_param_items(child),
+                'access': _normalize_access(current_access, default=default_access) or default_access,
+                'is_static': _safe_bool(child.get('storageClass') == 'static', False),
+                'is_virtual': _safe_bool(child.get('isVirtual'), False),
+                'is_const': ' const' in f" {_safe_str(_type_suffix_from_qual_type(qual_type))}",
+                'is_pure_virtual': _safe_bool(child.get('isPure'), False),
+                'start_line': max(0, int(start_line or 0)),
+                'end_line': max(0, int(end_line or 0)),
+                'has_body': _node_has_body(child),
+                'code': code,
+            }
+            members_methods.append(method_item)
+            decl = _build_member_method_decl_for_prompt(method_item)
+            if decl:
+                member_method_decls.append(decl)
+
+        class_payload = {
+            'class_name': class_name,
+            'qualified_name': qualified_name,
+            'kind': class_kind,
+            'bases': bases,
+            'member_variables': members_vars,
+            'member_methods': members_methods,
+            '_prompt_member_variable_decls': member_var_decls,
+            '_prompt_member_method_decls': member_method_decls,
+            '_clang_decl_id': class_id,
+        }
+        classes.append(class_payload)
+
+    return classes, class_id_to_name
+
+
+def _extract_functions_from_clang_ast(ast_root, source_path, content, class_id_to_name):
+    line_starts = _build_line_starts(content)
+    source_len = len(str(content or ''))
+    functions = []
+    seen = set()
+
+    for node in _iter_ast_nodes(ast_root):
+        if not isinstance(node, dict):
+            continue
+        kind = _safe_str(node.get('kind'))
+        if kind not in ('FunctionDecl', 'CXXMethodDecl', 'CXXConstructorDecl', 'CXXDestructorDecl', 'CXXConversionDecl'):
+            continue
+        if not _node_belongs_to_source(node, source_path, source_content_length=source_len):
+            continue
+        if _safe_bool(node.get('isImplicit'), False):
+            continue
+        if not _node_has_body(node):
+            continue
+
+        start, stop = _range_offsets_from_node(node)
+        code = _extract_text_by_offsets(content, start, stop)
+        if not _safe_str(code):
+            continue
+
+        node_name = _safe_str(node.get('name'))
+        if not node_name:
+            continue
+
+        class_name = ''
+        parent_id = _safe_str(node.get('parentDeclContextId'))
+        if parent_id:
+            class_name = _safe_str(class_id_to_name.get(parent_id))
+        if '(lambda' in class_name:
+            continue
+
+        if kind == 'FunctionDecl':
+            func_kind = 'function'
+        elif kind == 'CXXMethodDecl':
+            func_kind = 'operator' if node_name.startswith('operator') else 'method'
+        elif kind == 'CXXConstructorDecl':
+            func_kind = 'constructor'
+        elif kind == 'CXXDestructorDecl':
+            func_kind = 'destructor'
+        else:
+            func_kind = 'operator'
+
+        signature = _extract_signature_from_code(code) or _build_signature_from_ast_node(node)
+        qual_type = _safe_str((node.get('type') or {}).get('qualType'))
+        return_type = _return_type_from_signature(signature, node_name, func_kind)
+        if (not return_type) and (func_kind not in ('constructor', 'destructor')):
+            return_type = _return_type_from_qual_type(qual_type)
+        qualified_name = f"{class_name}::{node_name}" if class_name else node_name
+        if not qualified_name:
+            continue
+
+        start_line = _offset_to_line(line_starts, start)
+        end_line = _offset_to_line(line_starts, max(start if start is not None else 0, (stop or 0) - 1))
+        dedupe_key = (func_kind, node_name, signature, int(start_line or 0), int(end_line or 0))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        functions.append({
+            'kind': func_kind,
+            'qualified_name': qualified_name,
+            'class_name': class_name,
+            'access': _normalize_access(node.get('access'), default=''),
+            'signature': signature,
+            'params': _node_param_items(node),
+            'returns': {
+                'type': return_type,
+                'description': '',
+            },
+            'summary': '',
+            'location': {
+                'start_line': max(0, int(start_line or 0)),
+                'end_line': max(0, int(end_line or 0)),
+            },
+            'code': code,
+        })
+    return functions
+
+
+def _run_clang_ast_dump(filename, content):
+    ext = os.path.splitext(str(filename or ''))[1].lower()
+    if ext not in _ALLOWED_REPO_EXTENSIONS:
+        ext = '.cpp'
+    lang = _detect_language_from_filename(filename)
+    clang_lang = 'c' if lang == 'c' else 'c++'
+    std_flag = '-std=c11' if lang == 'c' else '-std=c++17'
+
+    with tempfile.TemporaryDirectory(prefix='repo_clang_ast_') as tmp_dir:
+        source_path = os.path.join(tmp_dir, f'source{ext}')
+        with open(source_path, 'w', encoding='utf-8', errors='replace') as f:
+            f.write(str(content or ''))
+        cmd = [
+            'clang',
+            '-Xclang', '-ast-dump=json',
+            '-fsyntax-only',
+            '-x', clang_lang,
+            std_flag,
+            '-Wno-everything',
+            source_path,
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        stdout = str(proc.stdout or '').strip()
+        stderr_raw = str(proc.stderr or '')
+        stderr = stderr_raw if len(stderr_raw) <= 400 else (stderr_raw[:400] + '...')
+        if not stdout:
+            raise RuntimeError(f'clang AST 解析失败：{filename}；stderr={stderr}')
+        try:
+            ast_data = json.loads(stdout)
+        except Exception as exc:
+            raise RuntimeError(f'clang AST JSON 解析失败：{filename}；stderr={stderr}') from exc
+        return ast_data, source_path
+
+
+def _call_qwen_structured_function_entity(filename, function_item):
+    prompt = (
+        "你是代码结构化整理助手。请基于给定“单个函数/方法”信息补充结构化说明。\n"
+        "要求：\n"
+        "1. 只输出一个 JSON 对象，不要输出解释。\n"
+        "2. 只允许输出这些字段：summary, params, returns。\n"
+        "3. params 仅输出 name 和 description；returns 仅输出 description。\n"
+        "4. 不要改动参数名，不要虚构参数。\n"
+        "5. summary 必须使用中文，必须描述该函数实际行为，不要输出“代码片段不完整/签名不匹配”等元描述。\n\n"
+        "JSON 格式：\n"
+        "{\n"
+        "  \"summary\": \"代码功能说明，使用中文\",\n"
+        "  \"params\": [{\"name\": \"\", \"description\": \"\"}],\n"
+        "  \"returns\": {\"description\": \"\"}\n"
+        "}\n\n"
+        f"[文件名]\n{filename}\n\n"
+        f"[函数代码]\n{function_item.get('code')}\n"
+    )
+    text = _call_qwen_text(
         prompt_text=prompt,
         timeout=_DEFAULT_LLM_TIMEOUT_SECONDS,
-        model=_DEFAULT_LLM_MODEL,
+        model=_STRUCTURED_ENTITY_MODEL,
         enable_thinking=False,
     )
-    data = _extract_first_json_object_relaxed(model_output)
+    data = _extract_first_json_object_relaxed(text)
     if not isinstance(data, dict):
-        raise RuntimeError(f"模型未返回合法 JSON，文件：{filename}")
+        raise RuntimeError(f"函数结构化补充失败：{filename}#{function_item.get('qualified_name')}")
     return data
+
+
+def _call_qwen_structured_class_entity(filename, class_item):
+    payload = {
+        'class_name': class_item.get('class_name'),
+        'qualified_name': class_item.get('qualified_name'),
+        'kind': class_item.get('kind'),
+        'bases': class_item.get('bases') or [],
+        'member_variables_decl': class_item.get('_prompt_member_variable_decls') or [],
+        'member_methods_decl': class_item.get('_prompt_member_method_decls') or [],
+    }
+    prompt = (
+        "你是代码结构化整理助手。请基于给定“单个类/结构体声明信息”输出结构化 JSON。\n"
+        "注意：成员函数只给了声明，没有实现；禁止编造成员函数实现细节。\n"
+        "只输出一个 JSON 对象，字段必须为：\n"
+        "class_name, qualified_name, kind, bases, member_variables, member_methods。\n\n"
+        "JSON 中 member_variables 元素格式：\n"
+        "{\"name\":\"\",\"type\":\"\",\"class_name\":\"\",\"access\":\"public|private|protected\",\"is_static\":false,\"line\":0}\n"
+        "JSON 中 member_methods 元素格式：\n"
+        "{\"name\":\"\",\"qualified_name\":\"\",\"signature\":\"\",\"return_type\":\"\",\"access\":\"public|private|protected\","
+        "\"is_static\":false,\"is_virtual\":false,\"is_const\":false,\"is_pure_virtual\":false,\"start_line\":0,\"end_line\":0}\n\n"
+        f"[文件名]\n{filename}\n\n"
+        f"[类声明输入]\n{json.dumps(payload, ensure_ascii=False)}\n"
+    )
+    text = _call_qwen_text(
+        prompt_text=prompt,
+        timeout=_DEFAULT_LLM_TIMEOUT_SECONDS,
+        model=_STRUCTURED_ENTITY_MODEL,
+        enable_thinking=False,
+    )
+    data = _extract_first_json_object_relaxed(text)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"类结构化补充失败：{filename}#{class_item.get('qualified_name')}")
+    return data
+
+
+def _merge_function_with_llm_enrichment(function_item, llm_item):
+    merged = dict(function_item or {})
+    llm_data = llm_item if isinstance(llm_item, dict) else {}
+
+    merged['summary'] = _safe_str(llm_data.get('summary'), default=merged.get('summary') or '')
+
+    param_desc = {}
+    for row in (llm_data.get('params') or []):
+        if not isinstance(row, dict):
+            continue
+        key = _safe_str(row.get('name'))
+        if not key:
+            continue
+        param_desc[key] = _safe_str(row.get('description'))
+
+    merged_params = []
+    for param in (merged.get('params') or []):
+        if not isinstance(param, dict):
+            continue
+        p = dict(param)
+        pname = _safe_str(p.get('name'))
+        if pname in param_desc and param_desc[pname]:
+            p['description'] = param_desc[pname]
+        merged_params.append(p)
+    merged['params'] = merged_params
+
+    returns = merged.get('returns') if isinstance(merged.get('returns'), dict) else {}
+    returns = dict(returns)
+    llm_returns = llm_data.get('returns') if isinstance(llm_data.get('returns'), dict) else {}
+    ret_desc = _safe_str(llm_returns.get('description'))
+    if ret_desc:
+        returns['description'] = ret_desc
+    merged['returns'] = returns
+    return merged
+
+
+def _build_function_item_from_member_method(class_name, method_item):
+    method = method_item if isinstance(method_item, dict) else {}
+    method_name = _safe_str(method.get('name'))
+    qualified_name = _safe_str(method.get('qualified_name'))
+    if not qualified_name:
+        qualified_name = f"{class_name}::{method_name}" if class_name and method_name else method_name
+    signature = _safe_str(method.get('signature'))
+    params = method.get('params') if isinstance(method.get('params'), list) else []
+    normalized_params = []
+    for row in params:
+        if not isinstance(row, dict):
+            continue
+        normalized_params.append({
+            'name': _safe_str(row.get('name')),
+            'type': _safe_str(row.get('type')),
+            'default_value': row.get('default_value'),
+            'description': _safe_str(row.get('description')),
+        })
+
+    start_line = _safe_int(method.get('start_line'), 0)
+    end_line = _safe_int(method.get('end_line'), start_line)
+    return {
+        'kind': _safe_str(method.get('kind'), default='method') or 'method',
+        'qualified_name': qualified_name,
+        'class_name': _safe_str(class_name),
+        'access': _normalize_access(method.get('access'), default=''),
+        'signature': signature,
+        'params': normalized_params,
+        'returns': {
+            'type': _safe_str(method.get('return_type')),
+            'description': '',
+        },
+        'summary': '',
+        'location': {
+            'start_line': max(0, int(start_line)),
+            'end_line': max(0, int(end_line)),
+        },
+        'code': _safe_str(method.get('code')) or (f"{signature};" if signature else ''),
+        'has_body': _safe_bool(method.get('has_body'), False),
+    }
+
+
+def _function_identity_key(function_item):
+    item = function_item if isinstance(function_item, dict) else {}
+    qname = _safe_str(item.get('qualified_name'))
+    simple_name = qname.split('::')[-1] if qname else ''
+    signature = _safe_str(item.get('signature'))
+    kind = _safe_str(item.get('kind'))
+    location = item.get('location') if isinstance(item.get('location'), dict) else {}
+    start_line = _safe_int(location.get('start_line'), _safe_int(item.get('start_line'), 0))
+    end_line = _safe_int(location.get('end_line'), _safe_int(item.get('end_line'), start_line))
+    return (kind, simple_name, signature, int(start_line), int(end_line))
+
+
+def _notify_structuring_progress(progress_callback, stage, detail):
+    if not callable(progress_callback):
+        return
+    try:
+        progress_callback(str(stage or '').strip(), str(detail or '').strip())
+    except Exception:
+        pass
+
+
+def _build_structured_with_treesitter_and_qwen(file_item, progress_callback=None, function_callback=None):
+    filename = _safe_str((file_item or {}).get('filename'))
+    content = str((file_item or {}).get('content') or '')
+    repo_file_id = _safe_int((file_item or {}).get('id'), 0)
+    source_hash = _sha256_text(content)
+
+    _notify_structuring_progress(progress_callback, 'syntax_parse', '正在解析语法树')
+    raw_classes, raw_functions = _extract_classes_and_functions_from_treesitter(
+        filename=filename,
+        content=content,
+    )
+    _notify_structuring_progress(
+        progress_callback,
+        'syntax_parse',
+        f'语法树解析完成：类 {len(raw_classes)} 个，函数实现 {len(raw_functions)} 个',
+    )
+
+    classes = []
+    total_classes = len(raw_classes)
+    for class_idx, cls in enumerate(raw_classes, start=1):
+        cls_name = _safe_str(cls.get('qualified_name') or cls.get('class_name')) or '(anonymous)'
+        _notify_structuring_progress(
+            progress_callback,
+            'class_structuring',
+            f'类声明结构化 {class_idx}/{total_classes}：{cls_name}',
+        )
+        class_payload = dict(cls)
+        for noisy_key in ('_prompt_member_variable_decls', '_prompt_member_method_decls', '_clang_decl_id'):
+            class_payload.pop(noisy_key, None)
+        try:
+            llm_cls = _call_qwen_structured_class_entity(filename=filename, class_item=cls)
+            if isinstance(llm_cls, dict):
+                for field in ('kind', 'bases', 'member_variables', 'member_methods'):
+                    if llm_cls.get(field) is not None:
+                        class_payload[field] = llm_cls.get(field)
+        except Exception as exc:
+            _notify_structuring_progress(
+                progress_callback,
+                'class_structuring',
+                f'类声明补充失败，降级使用语法树结果：{cls_name}；{str(exc)}',
+            )
+        normalized_cls = _normalize_class_item(
+            class_payload,
+            filename=filename,
+            repo_file_id=repo_file_id,
+            source_hash=source_hash,
+        )
+        if normalized_cls:
+            classes.append(normalized_cls)
+
+    functions = []
+    total_functions = len(raw_functions)
+    for func_idx, func in enumerate(raw_functions, start=1):
+        qname = _safe_str(func.get('qualified_name')) or '(anonymous)'
+        _notify_structuring_progress(
+            progress_callback,
+            'function_structuring',
+            f'函数结构化 {func_idx}/{total_functions}：{qname}',
+        )
+        merged = dict(func)
+        try:
+            llm_func = _call_qwen_structured_function_entity(filename=filename, function_item=func)
+            merged = _merge_function_with_llm_enrichment(func, llm_func)
+        except Exception as exc:
+            _notify_structuring_progress(
+                progress_callback,
+                'function_structuring',
+                f'函数补充失败，降级使用语法树结果：{qname}；{str(exc)}',
+            )
+        normalized_func = _normalize_function_item(
+            merged,
+            filename=filename,
+            repo_file_id=repo_file_id,
+            source_hash=source_hash,
+        )
+        if normalized_func:
+            if callable(function_callback):
+                function_callback(normalized_func, classes)
+            functions.append(normalized_func)
+
+    return {
+        'functions': functions,
+        'classes': classes,
+        'source_hash': source_hash,
+    }
 
 
 def _normalize_param_item(item):
@@ -756,9 +2027,6 @@ def _normalize_function_item(item, filename, repo_file_id, source_hash):
     if not summary:
         summary = f"Function {qualified_name}"
 
-    doc_source = _normalize_doc_source(item.get('doc_source'))
-    quality = _normalize_quality(item.get('quality'))
-
     return {
         'schema_version': '1.0',
         'chunk_id': uuid.uuid4().hex,
@@ -773,88 +2041,12 @@ def _normalize_function_item(item, filename, repo_file_id, source_hash):
         'params': params,
         'returns': returns,
         'summary': summary,
-        'doc_source': doc_source,
-        'quality': quality,
         'location': {
             'start_line': start_line,
             'end_line': end_line,
         },
         'source_hash': source_hash,
         'code': str(item.get('code') or ''),
-    }
-
-
-def _normalize_llm_file_output(file_item, llm_data):
-    filename = file_item['filename']
-    repo_file_id = file_item['id']
-    source_hash = _sha256_text(file_item['content'])
-
-    classes = []
-    raw_classes = llm_data.get('classes') if isinstance(llm_data, dict) else []
-    for item in (raw_classes or []):
-        normalized = _normalize_class_item(
-            item=item,
-            filename=filename,
-            repo_file_id=repo_file_id,
-            source_hash=source_hash,
-        )
-        if normalized:
-            classes.append(normalized)
-
-    functions = []
-    raw_functions = llm_data.get('functions') if isinstance(llm_data, dict) else []
-    for item in (raw_functions or []):
-        normalized = _normalize_function_item(
-            item=item,
-            filename=filename,
-            repo_file_id=repo_file_id,
-            source_hash=source_hash,
-        )
-        if normalized:
-            functions.append(normalized)
-
-    # 若模型未把成员函数放到 functions，尝试从 class.member_methods 补齐可检索条目。
-    existing_keys = set((f.get('qualified_name'), f.get('signature')) for f in functions)
-    for cls in classes:
-        for method in cls.get('member_methods') or []:
-            qname = _safe_str(method.get('qualified_name'))
-            sig = _safe_str(method.get('signature'))
-            key = (qname, sig)
-            if not qname or key in existing_keys:
-                continue
-            chunk = {
-                'schema_version': '1.0',
-                'chunk_id': uuid.uuid4().hex,
-                'repo_file_id': int(repo_file_id),
-                'filename': filename,
-                'language': _detect_language_from_filename(filename),
-                'kind': 'method',
-                'qualified_name': qname,
-                'class_name': _safe_str(cls.get('qualified_name')) or _safe_str(cls.get('class_name')),
-                'access': _normalize_access(method.get('access'), default='') or '',
-                'signature': sig,
-                'params': [],
-                'returns': {
-                    'type': _safe_str(method.get('return_type')),
-                    'description': '',
-                },
-                'summary': f"Method {qname}",
-                'doc_source': 'none',
-                'quality': 'low',
-                'location': {
-                    'start_line': max(0, _safe_int(method.get('start_line'), 0)),
-                    'end_line': max(0, _safe_int(method.get('end_line'), 0)),
-                },
-                'source_hash': source_hash,
-                'code': '',
-            }
-            functions.append(chunk)
-            existing_keys.add(key)
-
-    return {
-        'functions': functions,
-        'classes': classes,
-        'source_hash': source_hash,
     }
 
 
@@ -988,7 +2180,7 @@ def _build_embedding_input(chunk, class_map):
         params_text,
         returns_text,
         class_context,
-        str(chunk.get('code') or '')[:1200],
+        str(chunk.get('code') or ''),
     ]
     return '\n'.join([p for p in pieces if p])
 
@@ -1060,98 +2252,116 @@ def _load_faiss_index(user_id):
     return index, meta
 
 
-def _persist_repository_index(user_id, functions, classes, embeddings, embedding_model):
+def _reset_repository_index_storage(user_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM repository_chunk_embeddings WHERE user_id = %s", (int(user_id),))
             cursor.execute("DELETE FROM repository_function_chunks WHERE user_id = %s", (int(user_id),))
             cursor.execute("DELETE FROM repository_class_metadata WHERE user_id = %s", (int(user_id),))
-
-            for cls in classes:
-                cursor.execute(
-                    """
-                    INSERT INTO repository_class_metadata (
-                        class_id, user_id, repo_file_id, filename, kind, class_name, qualified_name,
-                        source_hash, bases_json, members_json, json_data
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        cls['class_id'],
-                        int(user_id),
-                        cls.get('repo_file_id'),
-                        cls['filename'],
-                        cls['kind'],
-                        cls['class_name'],
-                        cls['qualified_name'],
-                        cls['source_hash'],
-                        json.dumps(cls.get('bases') or [], ensure_ascii=False),
-                        json.dumps(
-                            {
-                                'member_variables': cls.get('member_variables') or [],
-                                'member_methods': cls.get('member_methods') or [],
-                            },
-                            ensure_ascii=False,
-                        ),
-                        json.dumps(cls, ensure_ascii=False),
-                    ),
-                )
-
-            for idx, func in enumerate(functions):
-                vector = embeddings[idx].astype(np.float32)
-                cursor.execute(
-                    """
-                    INSERT INTO repository_function_chunks (
-                        chunk_id, user_id, repo_file_id, filename, language, kind, qualified_name,
-                        class_name, access_modifier, signature, summary, return_type, start_line,
-                        end_line, source_hash, code, params_json, returns_json, json_data
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        func['chunk_id'],
-                        int(user_id),
-                        func.get('repo_file_id'),
-                        func['filename'],
-                        func.get('language') or 'cpp',
-                        func.get('kind') or 'function',
-                        func['qualified_name'],
-                        func.get('class_name'),
-                        func.get('access'),
-                        func.get('signature') or '',
-                        func.get('summary') or '',
-                        (func.get('returns') or {}).get('type') if isinstance(func.get('returns'), dict) else '',
-                        int(func.get('location', {}).get('start_line', 0)),
-                        int(func.get('location', {}).get('end_line', 0)),
-                        func.get('source_hash') or '',
-                        func.get('code') or '',
-                        json.dumps(func.get('params') or [], ensure_ascii=False),
-                        json.dumps(func.get('returns') or {}, ensure_ascii=False),
-                        json.dumps(func, ensure_ascii=False),
-                    ),
-                )
-                cursor.execute(
-                    """
-                    INSERT INTO repository_chunk_embeddings (
-                        chunk_id, user_id, embedding_model, vector_dim, vector_json
-                    ) VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (
-                        func['chunk_id'],
-                        int(user_id),
-                        embedding_model,
-                        int(vector.shape[0]),
-                        json.dumps(vector.tolist(), ensure_ascii=False),
-                    ),
-                )
         conn.commit()
     finally:
         conn.close()
     _write_faiss_index(
         user_id=user_id,
-        chunk_ids=[f['chunk_id'] for f in functions],
-        embeddings=embeddings,
-        embedding_model=embedding_model,
+        chunk_ids=[],
+        embeddings=np.zeros((0, 0), dtype=np.float32),
+        embedding_model='',
     )
+
+
+
+def _insert_repository_class_metadata_item(user_id, cls):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO repository_class_metadata (
+                    class_id, user_id, repo_file_id, filename, kind, class_name, qualified_name,
+                    source_hash, bases_json, members_json, json_data
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    cls['class_id'],
+                    int(user_id),
+                    cls.get('repo_file_id'),
+                    cls['filename'],
+                    cls['kind'],
+                    cls['class_name'],
+                    cls['qualified_name'],
+                    cls['source_hash'],
+                    json.dumps(cls.get('bases') or [], ensure_ascii=False),
+                    json.dumps(
+                        {
+                            'member_variables': cls.get('member_variables') or [],
+                            'member_methods': cls.get('member_methods') or [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(cls, ensure_ascii=False),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_repository_function_embedding_item(user_id, func, vector, embedding_model):
+    arr = np.asarray(vector, dtype=np.float32).reshape(-1)
+    if arr.size <= 0:
+        raise RuntimeError(f"向量写入失败：函数 {str(func.get('qualified_name') or '')} 的向量为空。")
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO repository_function_chunks (
+                    chunk_id, user_id, repo_file_id, filename, language, kind, qualified_name,
+                    class_name, access_modifier, signature, summary, return_type, start_line,
+                    end_line, source_hash, code, params_json, returns_json, json_data
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    func['chunk_id'],
+                    int(user_id),
+                    func.get('repo_file_id'),
+                    func['filename'],
+                    func.get('language') or 'cpp',
+                    func.get('kind') or 'function',
+                    func['qualified_name'],
+                    func.get('class_name'),
+                    func.get('access'),
+                    func.get('signature') or '',
+                    func.get('summary') or '',
+                    (func.get('returns') or {}).get('type') if isinstance(func.get('returns'), dict) else '',
+                    int(func.get('location', {}).get('start_line', 0)),
+                    int(func.get('location', {}).get('end_line', 0)),
+                    func.get('source_hash') or '',
+                    func.get('code') or '',
+                    json.dumps(func.get('params') or [], ensure_ascii=False),
+                    json.dumps(func.get('returns') or {}, ensure_ascii=False),
+                    json.dumps(func, ensure_ascii=False),
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO repository_chunk_embeddings (
+                    chunk_id, user_id, embedding_model, vector_dim, vector_json
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    func['chunk_id'],
+                    int(user_id),
+                    embedding_model,
+                    int(arr.shape[0]),
+                    json.dumps(arr.tolist(), ensure_ascii=False),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _build_cumulative_embeddings(functions, embedding_map):
@@ -1179,6 +2389,14 @@ def _build_vectorizing_target_message(func):
     return '正在向量化函数'
 
 
+def _format_repository_progress_message(stage, detail=''):
+    stage_key = _safe_str(stage).lower() or 'processing'
+    detail_text = _safe_str(detail)
+    if detail_text:
+        return f"[stage:{stage_key}] {detail_text}"
+    return f"[stage:{stage_key}]"
+
+
 def run_repository_index_job(user_id, job_id):
     ensure_repository_index_tables()
     user_id = int(user_id)
@@ -1203,7 +2421,7 @@ def run_repository_index_job(user_id, job_id):
             processed_files=0,
             total_chunks=0,
             total_classes=0,
-            progress_message='已进入执行阶段，准备读取代码仓库文件。',
+            progress_message=_format_repository_progress_message('prepare', '已进入执行阶段，准备读取代码仓库文件。'),
         )
 
         all_functions = []
@@ -1211,116 +2429,172 @@ def run_repository_index_job(user_id, job_id):
         embedding_map = {}
         embedding_model = _embedding_model_name()
         parse_errors = []
+        update_repository_index_job(
+            job_id,
+            progress_message=_format_repository_progress_message('prepare', '正在清理旧索引数据。'),
+        )
+        _reset_repository_index_storage(user_id)
+        update_repository_index_job(
+            job_id,
+            progress_message=_format_repository_progress_message('prepare', '旧索引已清理，开始结构化与向量化。'),
+        )
 
         for idx, file_item in enumerate(files, start=1):
             if _is_repository_index_job_cancel_requested(job_id):
                 raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
             filename = str(file_item.get('filename') or '')
-            update_repository_index_job(
-                job_id,
-                progress_message=f'正在生成结构化 JSON：{filename}',
-                processed_files=idx - 1,
-                total_chunks=len(all_functions),
-                total_classes=len(all_classes),
-            )
-            try:
-                llm_data = _call_qwen_structured_file(
-                    filename=filename,
-                    content=file_item['content'],
+            def _report_file_progress(stage, detail):
+                update_repository_index_job(
+                    job_id,
+                    progress_message=_format_repository_progress_message(stage, f"{filename} - {detail}"),
+                    processed_files=idx - 1,
+                    total_chunks=len(all_functions),
+                    total_classes=len(all_classes),
                 )
-                normalized = _normalize_llm_file_output(file_item=file_item, llm_data=llm_data)
+
+            _report_file_progress('file_prepare', '开始处理文件')
+            try:
+                def _on_function_ready(normalized_func, file_classes_snapshot):
+                    nonlocal embedding_model
+                    if _is_repository_index_job_cancel_requested(job_id):
+                        raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
+
+                    class_map = {}
+                    for cls in list(all_classes) + list(file_classes_snapshot or []):
+                        qn = _safe_str(cls.get('qualified_name'))
+                        cn = _safe_str(cls.get('class_name'))
+                        if qn:
+                            class_map[qn] = cls
+                        if cn and cn not in class_map:
+                            class_map[cn] = cls
+
+                    classes_total_preview = len(all_classes) + len(file_classes_snapshot or [])
+                    update_repository_index_job(
+                        job_id,
+                        progress_message=_format_repository_progress_message(
+                            'embedding',
+                            f"{filename} - {_build_vectorizing_target_message(normalized_func)}",
+                        ),
+                        processed_files=idx - 1,
+                        total_chunks=len(all_functions),
+                        total_classes=classes_total_preview,
+                    )
+                    text = _build_embedding_input(normalized_func, class_map)
+                    vectors_one, model_used = encode_texts([text], embedding_model_override=embedding_model)
+                    if vectors_one.shape[0] != 1:
+                        raise RuntimeError('向量化失败：单函数向量化返回数量异常。')
+                    vector = np.asarray(vectors_one[0], dtype=np.float32)
+                    if str(model_used or '').strip():
+                        embedding_model = str(model_used).strip()
+
+                    update_repository_index_job(
+                        job_id,
+                        progress_message=_format_repository_progress_message(
+                            'persist',
+                            (
+                                f"{filename} - 已向量化并写入函数："
+                                f"{_safe_str(normalized_func.get('qualified_name')) or '(anonymous)'}"
+                            ),
+                        ),
+                        processed_files=idx - 1,
+                        total_chunks=len(all_functions),
+                        total_classes=classes_total_preview,
+                    )
+                    _insert_repository_function_embedding_item(
+                        user_id=user_id,
+                        func=normalized_func,
+                        vector=vector,
+                        embedding_model=embedding_model,
+                    )
+                    all_functions.append(normalized_func)
+                    embedding_map[str(normalized_func.get('chunk_id') or '')] = vector
+
+                normalized = _build_structured_with_treesitter_and_qwen(
+                    file_item=file_item,
+                    progress_callback=_report_file_progress,
+                    function_callback=_on_function_ready,
+                )
                 file_functions = normalized.get('functions') or []
                 file_classes = normalized.get('classes') or []
 
-                class_map = {}
-                for cls in list(all_classes) + list(file_classes):
-                    qn = _safe_str(cls.get('qualified_name'))
-                    cn = _safe_str(cls.get('class_name'))
-                    if qn:
-                        class_map[qn] = cls
-                    if cn and cn not in class_map:
-                        class_map[cn] = cls
-
-                vectors_file = None
-                file_texts = []
-                if file_functions:
-                    for func in file_functions:
-                        update_repository_index_job(
-                            job_id,
-                            progress_message=_build_vectorizing_target_message(func),
-                            processed_files=idx - 1,
-                            total_chunks=len(all_functions),
-                            total_classes=len(all_classes),
-                        )
-                        file_texts.append(_build_embedding_input(func, class_map))
-                    vectors_file, model_used = encode_texts(file_texts, embedding_model_override=embedding_model)
-                    if vectors_file.shape[0] != len(file_functions):
-                        raise RuntimeError('向量化失败：返回向量数量与当前文件函数数量不一致。')
-                    if str(model_used or '').strip():
-                        embedding_model = str(model_used).strip()
-                elif file_classes:
+                if (not file_functions) and file_classes:
                     class_name = _safe_str(file_classes[0].get('qualified_name') or file_classes[0].get('class_name'))
                     detail = f'当前文件仅包含类定义：{class_name}，无需生成函数向量。'
                     update_repository_index_job(
                         job_id,
-                        progress_message=detail,
+                        progress_message=_format_repository_progress_message('embedding', f"{filename} - {detail}"),
                         processed_files=idx - 1,
                         total_chunks=len(all_functions),
                         total_classes=len(all_classes),
                     )
 
-                all_classes.extend(file_classes)
-                all_functions.extend(file_functions)
-                if vectors_file is not None:
-                    for v_idx, func in enumerate(file_functions):
-                        embedding_map[str(func.get('chunk_id') or '')] = vectors_file[v_idx].astype(np.float32)
+                for class_idx, cls in enumerate(file_classes, start=1):
+                    cls_name = _safe_str(cls.get('qualified_name') or cls.get('class_name')) or '(anonymous)'
+                    update_repository_index_job(
+                        job_id,
+                        progress_message=_format_repository_progress_message(
+                            'persist',
+                            f"{filename} - 写入类元数据 {class_idx}/{len(file_classes)}：{cls_name}",
+                        ),
+                        processed_files=idx - 1,
+                        total_chunks=len(all_functions),
+                        total_classes=len(all_classes),
+                    )
+                    _insert_repository_class_metadata_item(user_id=user_id, cls=cls)
+                    all_classes.append(cls)
 
                 if _is_repository_index_job_cancel_requested(job_id):
                     raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
                 vectors = _build_cumulative_embeddings(all_functions, embedding_map)
                 update_repository_index_job(
                     job_id,
-                    progress_message=f'正在写入索引（MySQL + FAISS）：{filename}',
+                    progress_message=_format_repository_progress_message('persist', f"{filename} - 正在刷新向量索引（FAISS）"),
                     processed_files=idx - 1,
                     total_chunks=len(all_functions),
                     total_classes=len(all_classes),
                 )
-                _persist_repository_index(
+                _write_faiss_index(
                     user_id=user_id,
-                    functions=all_functions,
-                    classes=all_classes,
+                    chunk_ids=[f['chunk_id'] for f in all_functions],
                     embeddings=vectors,
                     embedding_model=embedding_model,
                 )
             except Exception as exc:
                 parse_errors.append(f"{filename}: {str(exc)}")
-                # 即使该文件失败，也将当前已完成的数据落库，保证“每处理完一个文件就写一次库”。
                 if _is_repository_index_job_cancel_requested(job_id):
                     raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-                vectors = _build_cumulative_embeddings(all_functions, embedding_map)
-                update_repository_index_job(
-                    job_id,
-                    progress_message=f'文件处理失败，正在保留已完成索引：{filename}',
-                    processed_files=idx - 1,
-                    total_chunks=len(all_functions),
-                    total_classes=len(all_classes),
-                )
-                _persist_repository_index(
-                    user_id=user_id,
-                    functions=all_functions,
-                    classes=all_classes,
-                    embeddings=vectors,
-                    embedding_model=embedding_model,
-                )
+                try:
+                    vectors = _build_cumulative_embeddings(all_functions, embedding_map)
+                    update_repository_index_job(
+                        job_id,
+                        progress_message=_format_repository_progress_message(
+                            'persist',
+                            f"{filename} - 文件处理失败，正在刷新已完成向量索引",
+                        ),
+                        processed_files=idx - 1,
+                        total_chunks=len(all_functions),
+                        total_classes=len(all_classes),
+                    )
+                    _write_faiss_index(
+                        user_id=user_id,
+                        chunk_ids=[f['chunk_id'] for f in all_functions],
+                        embeddings=vectors,
+                        embedding_model=embedding_model,
+                    )
+                except Exception as sync_exc:
+                    parse_errors.append(f"{filename}: 刷新 FAISS 失败：{str(sync_exc)}")
 
             update_repository_index_job(
                 job_id,
                 processed_files=idx,
                 total_chunks=len(all_functions),
                 total_classes=len(all_classes),
-                progress_message=(
-                    f'已完成文件 {idx}/{total_files}：{filename}；'
-                    f'累计函数 {len(all_functions)}，类 {len(all_classes)}'
+                progress_message=_format_repository_progress_message(
+                    'file_done',
+                    (
+                        f'已完成文件 {idx}/{total_files}：{filename}；'
+                        f'累计函数 {len(all_functions)}，类 {len(all_classes)}'
+                    ),
                 ),
             )
 
@@ -1332,6 +2606,33 @@ def run_repository_index_job(user_id, job_id):
             if len(parse_errors) > 5:
                 warn_msg += f"；另有 {len(parse_errors) - 5} 个文件失败"
 
+        if parse_errors:
+            update_repository_index_job(
+                job_id,
+                status='failed',
+                processed_files=len(files),
+                total_files=len(files),
+                total_chunks=len(all_functions),
+                total_classes=len(all_classes),
+                finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                error_message=warn_msg,
+                progress_message=_format_repository_progress_message(
+                    'failed',
+                    f'结构化整理存在失败文件 {len(parse_errors)}/{len(files)}，请查看错误信息。',
+                ),
+            )
+            return {
+                'success': False,
+                'job_id': job_id,
+                'error': f'结构化整理存在失败文件 {len(parse_errors)}/{len(files)}',
+                'warnings': parse_errors,
+                'partial': True,
+                'files': len(files),
+                'chunks': len(all_functions),
+                'classes': len(all_classes),
+                'embedding_model': embedding_model,
+            }
+
         update_repository_index_job(
             job_id,
             status='success',
@@ -1341,7 +2642,7 @@ def run_repository_index_job(user_id, job_id):
             total_classes=len(all_classes),
             finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             error_message=warn_msg or None,
-            progress_message='结构化整理与向量化已完成。',
+            progress_message=_format_repository_progress_message('completed', '结构化整理与向量化已完成。'),
         )
         return {
             'success': True,
@@ -1359,7 +2660,7 @@ def run_repository_index_job(user_id, job_id):
             cancel_requested=1,
             error_message=str(exc),
             finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            progress_message=str(exc),
+            progress_message=_format_repository_progress_message('canceled', str(exc)),
         )
         return {
             'success': False,
@@ -1375,7 +2676,7 @@ def run_repository_index_job(user_id, job_id):
                 cancel_requested=1,
                 error_message='结构化整理任务已被取消。',
                 finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                progress_message='结构化整理任务已被取消。',
+                progress_message=_format_repository_progress_message('canceled', '结构化整理任务已被取消。'),
             )
             return {
                 'success': False,
@@ -1388,7 +2689,7 @@ def run_repository_index_job(user_id, job_id):
             status='failed',
             error_message=str(exc),
             finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            progress_message=f'任务失败：{str(exc)}',
+            progress_message=_format_repository_progress_message('failed', f'任务失败：{str(exc)}'),
         )
         return {
             'success': False,

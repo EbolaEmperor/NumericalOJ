@@ -263,6 +263,35 @@ let currentIndexJobId = null;
 let indexStatusTimer = null;
 let isStartingIndexBuild = false;
 
+const repositoryIndexStageLabelMap = {
+    prepare: '准备阶段',
+    file_prepare: '文件预处理',
+    clang_ast: 'clang AST 解析',
+    syntax_parse: '语法树解析',
+    class_structuring: '类声明结构化',
+    function_structuring: '函数结构化',
+    embedding: '向量化',
+    persist: '写入索引',
+    file_done: '文件完成',
+    completed: '全部完成',
+    canceled: '任务取消',
+    failed: '任务失败',
+};
+
+function parseRepositoryIndexProgressMessage(rawMessage) {
+    const text = String(rawMessage || '').trim();
+    if (!text) {
+        return { stage: '', detail: '' };
+    }
+    const match = text.match(/^\[stage:([a-z_]+)\]\s*(.*)$/i);
+    if (!match) {
+        return { stage: '', detail: text };
+    }
+    const stage = String(match[1] || '').toLowerCase();
+    const detail = String(match[2] || '').trim();
+    return { stage, detail };
+}
+
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function() {
     loadFileList();
@@ -701,8 +730,14 @@ function pollIndexJobStatus(jobId) {
                 }
                 const job = data.job || {};
                 const progress = Number(job.progress || 0);
-                const detail = String(job.progress_message || '').trim();
-                statusEl.textContent = `整理任务 #${jobId}：${job.status || 'unknown'} (${progress}%)，文件 ${job.processed_files || 0}/${job.total_files || 0}${detail ? `，${detail}` : ''}`;
+                const parsedProgress = parseRepositoryIndexProgressMessage(job.progress_message);
+                const stageLabel = repositoryIndexStageLabelMap[parsedProgress.stage] || '';
+                const detail = parsedProgress.detail;
+                const stageText = stageLabel ? `【${stageLabel}】` : '';
+                statusEl.textContent =
+                    `整理任务 #${jobId}：${job.status || 'unknown'} (${progress}%)，文件 ${job.processed_files || 0}/${job.total_files || 0}` +
+                    `${stageText ? `，${stageText}` : ''}` +
+                    `${detail ? `，${detail}` : ''}`;
 
                 if (job.status === 'success') {
                     clearInterval(indexStatusTimer);
