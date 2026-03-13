@@ -23,6 +23,7 @@ try:
     _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = float(AGENT_REPOSITORY_KNN_SCORE_THRESHOLD)
 except Exception:
     _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = 0.0
+_READ_FILE_HARD_LIMIT_BYTES = 10 * 1024
 
 def _truncate_text(value, limit=300):
     text = str(value or "").strip()
@@ -289,7 +290,7 @@ def _summarize_problem_for_repository_search(query_text):
         {
             "role": "user",
             "content": (
-                "请把下面的题目上下文归纳成向量检索用的题目大意（120~220字）：\n"
+                "请把下面的题目上下文归纳成向量检索用的题目大意，并列出可能需要的算法关键词，控制在 200 字左右。\n"
                 f"{source}"
             ),
         },
@@ -688,6 +689,14 @@ def _tool_workspace_read_file(workspace_dir, path, max_chars=12000):
     abs_path = _resolve_workspace_path(workspace_dir, path)
     if not os.path.isfile(abs_path):
         raise RuntimeError("目标文件不存在。")
+    file_size = int(os.path.getsize(abs_path))
+    if file_size > _READ_FILE_HARD_LIMIT_BYTES:
+        file_kb = file_size / 1024.0
+        return {
+            "path": os.path.relpath(abs_path, workspace_dir),
+            "content": f"文件太大（{file_kb:.1f}KB）无法完整返回，请使用正则搜索或语义搜索工具。",
+            "truncated": True,
+        }
     with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     safe_limit = _clamp_int(max_chars, 12000, min_value=200, max_value=200000)
@@ -854,7 +863,7 @@ def _build_agent_react_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "读取工作目录内文件内容。",
+                "description": "读取工作目录内文件内容。若文件超过10KB，将返回大文件提示并建议使用正则/语义搜索。",
                 "parameters": {
                     "type": "object",
                     "properties": {

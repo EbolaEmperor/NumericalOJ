@@ -11,6 +11,9 @@ import zipfile
 from oj_modules.tasks.agent_shared import *
 from oj_modules.testdata_services import TestdataValidationError, import_testdata_zip
 
+_READ_FILE_HARD_LIMIT_BYTES = 10 * 1024
+
+
 def _truncate_block_text(value, limit=12000):
     text = str(value or "")
     safe_limit = _clamp_int(limit, 12000, min_value=200, max_value=200000)
@@ -98,6 +101,14 @@ def _tool_data_agent_read_file(workspace_dir, path, max_chars=12000):
     abs_path = _resolve_workspace_path(workspace_dir, path)
     if not os.path.isfile(abs_path):
         raise RuntimeError("目标文件不存在。")
+    file_size = int(os.path.getsize(abs_path))
+    if file_size > _READ_FILE_HARD_LIMIT_BYTES:
+        file_kb = file_size / 1024.0
+        return {
+            "path": os.path.relpath(abs_path, workspace_dir),
+            "content": f"文件太大（{file_kb:.1f}KB）无法完整返回，请使用正则搜索或语义搜索工具。",
+            "truncated": True,
+        }
     with open(abs_path, "r", encoding="utf-8") as f:
         content = f.read()
     return {
@@ -412,7 +423,7 @@ def _build_data_generation_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "读取工作目录内文件内容。",
+                "description": "读取工作目录内文件内容。若文件超过10KB，将返回大文件提示并建议使用正则/语义搜索。",
                 "parameters": {
                     "type": "object",
                     "properties": {
