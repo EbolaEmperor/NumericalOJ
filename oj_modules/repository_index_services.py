@@ -957,6 +957,10 @@ def encode_texts(texts, embedding_model_override=None):
     )
 
 
+def encode_texts_with_qwen_embedding(texts, embedding_model_override=None):
+    return _encode_with_qwen_embedding(texts, model_name=embedding_model_override)
+
+
 def _build_embedding_input(chunk, class_map):
     class_name = _safe_str(chunk.get('class_name'))
     class_meta = class_map.get(class_name) or {}
@@ -1463,10 +1467,17 @@ def _load_chunk_details_by_ids(user_id, chunk_ids):
     return mapping
 
 
-def search_repository_chunks(user_id, query, top_k=5, score_threshold=0.1):
+def search_repository_chunks(
+    user_id,
+    query,
+    top_k=5,
+    score_threshold=0.1,
+    query_vector=None,
+    query_embedding_model=None,
+):
     ensure_repository_index_tables()
     text = str(query or '').strip()
-    if not text:
+    if query_vector is None and not text:
         return {
             'query': text,
             'hits': [],
@@ -1499,15 +1510,31 @@ def search_repository_chunks(user_id, query, top_k=5, score_threshold=0.1):
         }
 
     index_dim = int(index.d)
-    query_vec, model_used = encode_texts([text], embedding_model_override=meta.get('embedding_model'))
-    if query_vec.shape[0] == 0:
-        return {
-            'query': text,
-            'hits': [],
-            'embedding_model': model_used,
-            'vector_db_backend': _VECTOR_DB_BACKEND,
-        }
-    q = _normalize_l2(np.asarray(query_vec, dtype=np.float32))
+    model_used = str(meta.get('embedding_model') or _embedding_model_name())
+    if query_vector is None:
+        query_vec, model_used = encode_texts([text], embedding_model_override=meta.get('embedding_model'))
+        if query_vec.shape[0] == 0:
+            return {
+                'query': text,
+                'hits': [],
+                'embedding_model': model_used,
+                'vector_db_backend': _VECTOR_DB_BACKEND,
+            }
+        q = _normalize_l2(np.asarray(query_vec, dtype=np.float32))
+    else:
+        raw_vec = np.asarray(query_vector, dtype=np.float32)
+        if raw_vec.ndim == 1:
+            raw_vec = raw_vec.reshape(1, -1)
+        if raw_vec.ndim != 2 or raw_vec.shape[0] <= 0 or raw_vec.shape[1] <= 0:
+            return {
+                'query': text,
+                'hits': [],
+                'embedding_model': str(query_embedding_model or model_used or _embedding_model_name()),
+                'vector_db_backend': _VECTOR_DB_BACKEND,
+            }
+        q = _normalize_l2(raw_vec[:1])
+        if query_embedding_model:
+            model_used = str(query_embedding_model)
     if q.shape[1] != index_dim:
         raise RuntimeError(
             f'查询向量维度不匹配：query_dim={q.shape[1]} index_dim={index_dim}。'

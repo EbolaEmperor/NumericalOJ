@@ -123,8 +123,6 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
         knn_memory_text, knn_hits = _build_repository_knn_memory_message(
             user_id=user["id"],
             problem=problem,
-            latest_summary=None,
-            top_k=_AGENT_REPOSITORY_KNN_TOP_K,
         )
         runtime["repository_knn_memory"] = knn_memory_text
         if knn_memory_text:
@@ -132,7 +130,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 state,
                 f"已注入代码仓库向量记忆（KNN 命中 {knn_hits} 条）",
                 event_type="repository_knn_memory",
-                details={"hit_count": int(knn_hits), "top_k": int(_AGENT_REPOSITORY_KNN_TOP_K)},
+                details={"hit_count": int(knn_hits), "top_k": int(_AGENT_REPOSITORY_MEMORY_TOP_K)},
             )
 
         conversation = [{
@@ -142,7 +140,6 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 workspace_dir=workspace_dir,
                 main_code_path=main_code_path,
                 core_hints=core_hints,
-                workspace_filenames=workspace_files,
             ),
         }]
         tools = _build_agent_react_tools()
@@ -296,6 +293,13 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             timeout_seconds=arguments.get("timeout_seconds", 60),
                         )
                         tool_result = {"success": True, **run_result}
+                    elif func_name == "search_useful_code":
+                        search_result = _tool_search_useful_code(
+                            user_id=user["id"],
+                            description=arguments.get("description", ""),
+                            top_k=arguments.get("top_k", _AGENT_REPOSITORY_MEMORY_TOP_K),
+                        )
+                        tool_result = {"success": True, **search_result}
                     elif func_name == "submit_evaluation":
                         source_path = str(arguments.get("source_path") or runtime.get("main_code_path") or "").strip()
                         if not source_path:
@@ -328,24 +332,6 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         summary = _tool_query_test_results(submission_id, timeout_seconds=timeout_seconds)
                         compact_summary = _compact_summary(summary)
                         runtime["latest_summary"] = compact_summary
-                        knn_memory_text, knn_hits = _build_repository_knn_memory_message(
-                            user_id=user["id"],
-                            problem=problem,
-                            latest_summary=compact_summary,
-                            top_k=_AGENT_REPOSITORY_KNN_TOP_K,
-                        )
-                        runtime["repository_knn_memory"] = knn_memory_text
-                        if knn_memory_text:
-                            _push_agent_event(
-                                state,
-                                f"已刷新代码仓库向量记忆（KNN 命中 {knn_hits} 条）",
-                                event_type="repository_knn_memory",
-                                details={
-                                    "hit_count": int(knn_hits),
-                                    "top_k": int(_AGENT_REPOSITORY_KNN_TOP_K),
-                                    "submission_id": submission_id,
-                                },
-                            )
                         is_accepted = str(compact_summary.get("status") or "").strip() == "Accepted"
                         runtime["accepted"] = is_accepted
                         runtime["submit_calls"] = int(runtime.get("submit_calls") or 0) + 1
@@ -371,7 +357,6 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                                 round_idx=round_idx,
                                 diagnosis=diag,
                                 eval_summary=compact_summary,
-                                latest_code=code_text,
                             )
                             state["working_memory"] = working_memory
                             attempts[-1]["memory"] = _compact_working_memory_for_attempt(working_memory)
@@ -379,9 +364,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                                 state,
                                 (
                                     f"工作记忆更新：signature={memory_delta.get('signature')} "
-                                    f"patterns={memory_delta.get('pattern_count')} "
-                                    f"high_risk={memory_delta.get('high_risk_count')} "
-                                    f"do_not_repeat={memory_delta.get('do_not_repeat_count')}"
+                                    f"patterns={memory_delta.get('pattern_count')}"
                                 ),
                             )
 
