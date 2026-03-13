@@ -79,10 +79,10 @@
           <i class="fas fa-robot me-2"></i> 批改模型
         </label>
         <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
-          <option value="qwen3.5-plus-thinking" selected>qwen3.5-plus-thinking</option>
-          <option value="qwen3.5-plus">qwen3.5-plus</option>
-          <option value="qwen3.5-flash-thinking">qwen3.5-flash-thinking</option>
-          <option value="qwen3.5-flash">qwen3.5-flash</option>
+          {% set default_written_model = default_written_grading_model %}
+          {% for model_option in written_grading_model_options %}
+          <option value="{{ model_option }}" {% if model_option == default_written_model %}selected{% endif %}>{{ model_option }}</option>
+          {% endfor %}
         </select>
       </div>
     </div>

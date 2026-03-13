@@ -60,17 +60,16 @@ def _strip_markdown_code_fence_markers(text):
 
 
 _CODING_PLAN_TARGET_MODELS = {
-    "qwen3.5-plus",
-    "qwen3-coder-plus",
     str(QWEN_TEXT_MODEL or "").strip(),
     str(QWEN_CODER_MODEL or "").strip(),
 }
 _WRITTEN_GRADING_MODEL_SPECS = {
-    "qwen3.5-plus": ("qwen3.5-plus", False, "coding_plan"),
-    "qwen3.5-plus-thinking": ("qwen3.5-plus", True, "coding_plan"),
-    "qwen3.5-flash": ("qwen3.5-flash", False, "dashscope"),
-    "qwen3.5-flash-thinking": ("qwen3.5-flash", True, "dashscope"),
+    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "coding_plan"),
+    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking": (str(QWEN_TEXT_MODEL or "").strip(), True, "coding_plan"),
+    str(AI_TUTOR_MODEL or "").strip().lower(): (str(AI_TUTOR_MODEL or "").strip(), False, "dashscope"),
+    f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking": (str(AI_TUTOR_MODEL or "").strip(), True, "dashscope"),
 }
+_DEFAULT_WRITTEN_GRADING_MODEL_SPEC = f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
 _CONTROL_ESCAPE_TO_LATEX_PREFIX = {
     "\n": "n",
     "\t": "t",
@@ -130,6 +129,13 @@ def _is_invalid_secret(value):
     return (not text) or ("YOUR" in text.upper())
 
 
+def _resolve_dashscope_base_url():
+    base_url = str(DASHSCOPE_BASE_URL or "").strip().rstrip("/")
+    if not base_url:
+        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
+    return base_url
+
+
 def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base_url=None):
     use_model = str(model or "").strip()
     if use_model in _CODING_PLAN_TARGET_MODELS:
@@ -146,7 +152,7 @@ def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base
         api_key = DASHSCOPE_API_KEY
     base_url = fallback_base_url
     if base_url is None:
-        base_url = DASHSCOPE_BASE_URL or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        base_url = _resolve_dashscope_base_url()
     if _is_invalid_secret(api_key):
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
     if not str(base_url or "").strip():
@@ -155,8 +161,11 @@ def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base
 
 
 def _parse_written_grading_model_spec(model_spec):
-    key = str(model_spec or "qwen3.5-plus-thinking").strip().lower()
-    return _WRITTEN_GRADING_MODEL_SPECS.get(key, _WRITTEN_GRADING_MODEL_SPECS["qwen3.5-plus-thinking"])
+    key = str(model_spec or _DEFAULT_WRITTEN_GRADING_MODEL_SPEC).strip().lower()
+    return _WRITTEN_GRADING_MODEL_SPECS.get(
+        key,
+        _WRITTEN_GRADING_MODEL_SPECS[_DEFAULT_WRITTEN_GRADING_MODEL_SPEC],
+    )
 
 
 def _resolve_endpoint_for_written_grading_route(route_key):
@@ -171,7 +180,7 @@ def _resolve_endpoint_for_written_grading_route(route_key):
         return str(api_key).strip(), str(base_url).rstrip('/')
 
     api_key = DASHSCOPE_API_KEY
-    base_url = DASHSCOPE_BASE_URL or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    base_url = _resolve_dashscope_base_url()
     if _is_invalid_secret(api_key):
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
     if not str(base_url or "").strip():
@@ -359,7 +368,7 @@ def _repair_grading_json_with_qwen_flash(raw_text):
         api_key=api_key,
         base_url=base_url,
         timeout=90,
-        model="qwen3.5-flash",
+        model=AI_TUTOR_MODEL,
         enable_thinking=False,
         resolve_endpoint=False,
     )
@@ -402,9 +411,14 @@ def _build_image_data_url(image_path):
     return f"data:{mime_type};base64,{encoded}"
 
 
-def _split_image_batches(image_data_urls, max_images_per_request=20):
+def _split_image_batches(image_data_urls, max_images_per_request=None):
+    if max_images_per_request is None:
+        try:
+            max_images_per_request = int(LATEX_OCR_MAX_IMAGES_PER_REQUEST)
+        except Exception:
+            max_images_per_request = 1
     if max_images_per_request < 1:
-        max_images_per_request = 20
+        max_images_per_request = 1
     return [
         image_data_urls[i:i + max_images_per_request]
         for i in range(0, len(image_data_urls), max_images_per_request)
@@ -412,6 +426,7 @@ def _split_image_batches(image_data_urls, max_images_per_request=20):
 
 
 def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url, on_delta=None):
+    omni_model = str(QWEN_OMNI_MODEL or "").strip() or str(QWEN_TEXT_MODEL or "").strip()
     message_content = [
         {
             "type": "image_url",
@@ -428,7 +443,7 @@ def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url, on_delta
         try:
             client = OpenAI(api_key=api_key, base_url=base_url)
             stream = client.chat.completions.create(
-                model="qwen3-omni-flash",
+                model=omni_model,
                 messages=[{
                     "role": "user",
                     "content": message_content
@@ -462,7 +477,7 @@ def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url, on_delta
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "qwen3-omni-flash",
+        "model": omni_model,
         "messages": [{
             "role": "user",
             "content": message_content
@@ -495,7 +510,7 @@ def transcribe_images_to_latex(image_paths, on_partial_text=None):
     if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
 
-    base_url = str(DASHSCOPE_BASE_URL or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip('/')
+    base_url = _resolve_dashscope_base_url()
     prompt = (
         "请将这份书面作业完整转写为 Markdown 内嵌 LaTeX 的格式。"
         "要求："
@@ -507,8 +522,8 @@ def transcribe_images_to_latex(image_paths, on_partial_text=None):
     image_data_urls = [_build_image_data_url(path) for path in image_paths]
     try:
         max_images_per_request = int(LATEX_OCR_MAX_IMAGES_PER_REQUEST)
-    except ValueError:
-        max_images_per_request = 20
+    except Exception:
+        max_images_per_request = 1
     image_batches = _split_image_batches(image_data_urls, max_images_per_request=max_images_per_request)
 
     transcribed_parts = []
@@ -561,7 +576,7 @@ def _call_qwen_text_with_images(
     api_key=None,
     base_url=None,
     timeout=300,
-    model="qwen3.5-plus",
+    model=None,
     enable_thinking=True,
     resolve_endpoint=True,
 ):
@@ -589,7 +604,7 @@ def _call_qwen_text_with_images(
         try:
             client = OpenAI(api_key=use_api_key, base_url=use_base_url)
             kwargs = {
-                "model": str(model or "qwen3.5-plus"),
+                "model": str(model or QWEN_TEXT_MODEL),
                 "messages": messages,
                 "modalities": ["text"],
                 "stream": True,
@@ -621,7 +636,7 @@ def _call_qwen_text_with_images(
         "Content-Type": "application/json",
     }
     payload = {
-        "model": str(model or "qwen3.5-plus"),
+        "model": str(model or QWEN_TEXT_MODEL),
         "messages": messages,
         "modalities": ["text"],
     }
@@ -701,7 +716,7 @@ def _format_written_homework_comment(score, deductions, comment):
     return "\n".join(lines).strip()
 
 
-def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec="qwen3.5-plus-thinking"):
+def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec=_DEFAULT_WRITTEN_GRADING_MODEL_SPEC):
     model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
     api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
     problem_title = (problem or {}).get('title', '')
@@ -746,7 +761,7 @@ def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec
 def evaluate_written_homework_with_ai_from_images(
     problem,
     image_paths,
-    grading_model_spec="qwen3.5-plus-thinking",
+    grading_model_spec=_DEFAULT_WRITTEN_GRADING_MODEL_SPEC,
 ):
     if not image_paths:
         raise RuntimeError("未找到可用于图片批改的页面图片。")
@@ -820,12 +835,12 @@ def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename, on_partia
 
     try:
         stream_emit_interval = max(0.1, float(LATEX_OCR_STREAM_EMIT_INTERVAL))
-    except ValueError:
-        stream_emit_interval = 0.6
+    except Exception:
+        stream_emit_interval = 0.1
     try:
         stream_emit_min_delta = max(1, int(LATEX_OCR_STREAM_EMIT_MIN_DELTA))
-    except ValueError:
-        stream_emit_min_delta = 60
+    except Exception:
+        stream_emit_min_delta = 1
 
     last_emit_ts = 0.0
     last_emitted_text = ""
@@ -1098,7 +1113,7 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
     api_key = DASHSCOPE_API_KEY
     if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
         return "", None
-    base_url = str(DASHSCOPE_BASE_URL).rstrip('/')
+    base_url = _resolve_dashscope_base_url()
     try:
         analysis = _call_qwen_omni_with_image(
             prompt_text=prompt,
@@ -1112,6 +1127,34 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
         return "", None
 
     return str(analysis or "").strip(), used_idx
+
+
+def analyze_submission_output_image_against_problem(problem_text, submission_id, test_points):
+    text = str(problem_text or "").strip()
+    points = test_points if isinstance(test_points, list) else []
+    if not text or not points or not submission_id:
+        return {
+            "has_output_image": False,
+            "analysis": "",
+            "test_index": None,
+        }
+    has_output_image = any(_to_bool((tp or {}).get("has_output_image")) for tp in points)
+    if not has_output_image:
+        return {
+            "has_output_image": False,
+            "analysis": "",
+            "test_index": None,
+        }
+    analysis, used_idx = _analyze_image_mismatch_against_problem(
+        problem_text=text,
+        submission_id=submission_id,
+        test_points=points,
+    )
+    return {
+        "has_output_image": True,
+        "analysis": str(analysis or "").strip(),
+        "test_index": used_idx,
+    }
 
 
 def generate_ai_code_marks_from_submission_context(
@@ -1193,7 +1236,7 @@ def generate_ai_code_marks_from_submission_context(
     api_key = DASHSCOPE_API_KEY
     if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    base_url = str(DASHSCOPE_BASE_URL).rstrip('/')
+    base_url = _resolve_dashscope_base_url()
     response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout, model=AI_TUTOR_MODEL)
     data_obj = _extract_first_json_object(response_text)
     if not isinstance(data_obj, dict):

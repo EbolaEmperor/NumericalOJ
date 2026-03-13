@@ -130,7 +130,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 state,
                 f"已注入代码仓库向量记忆（KNN 命中 {knn_hits} 条）",
                 event_type="repository_knn_memory",
-                details={"hit_count": int(knn_hits), "top_k": int(_AGENT_REPOSITORY_MEMORY_TOP_K)},
+                details={"hit_count": int(knn_hits), "top_k": int(_AGENT_REPOSITORY_KNN_TOP_K)},
             )
 
         conversation = [{
@@ -297,7 +297,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         search_result = _tool_search_useful_code(
                             user_id=user["id"],
                             description=arguments.get("description", ""),
-                            top_k=arguments.get("top_k", _AGENT_REPOSITORY_MEMORY_TOP_K),
+                            top_k=arguments.get("top_k", _AGENT_REPOSITORY_KNN_TOP_K),
                         )
                         tool_result = {"success": True, **search_result}
                     elif func_name == "submit_evaluation":
@@ -312,7 +312,12 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         if not code_text.strip():
                             raise RuntimeError("待提交代码为空。")
 
-                        timeout_seconds = _clamp_int(arguments.get("timeout_seconds"), 300, min_value=60, max_value=900)
+                        timeout_seconds = _clamp_int(
+                            arguments.get("timeout_seconds"),
+                            300,
+                            min_value=60,
+                            max_value=_TOOL_TIMEOUT_MAX_SECONDS,
+                        )
                         synced_headers = _tool_sync_workspace_headers_to_repository(
                             user_id=user["id"],
                             workspace_dir=runtime["workspace_dir"],
@@ -413,6 +418,11 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
 
                         raw_test_points = summary.get("test_points") if isinstance(summary.get("test_points"), list) else []
                         raw_failed_points = summary.get("failed_points") if isinstance(summary.get("failed_points"), list) else []
+                        image_mismatch_analysis, image_analysis_test_index, has_output_image = _analyze_submission_output_image_for_agent(
+                            problem=problem,
+                            submission_id=submission_id,
+                            test_points=raw_test_points,
+                        )
                         judge_result = {
                             "status": compact_summary.get("status"),
                             "score": compact_summary.get("score"),
@@ -422,6 +432,11 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             "completed": bool(summary.get("completed")),
                             "failed_points": raw_failed_points,
                         }
+                        if has_output_image:
+                            judge_result["has_output_image"] = True
+                        if image_mismatch_analysis:
+                            judge_result["image_mismatch_analysis"] = image_mismatch_analysis
+                            judge_result["image_analysis_test_index"] = image_analysis_test_index
                         if not raw_test_points:
                             judge_result["note"] = "当前评测未返回测试点明细（可能是编译阶段失败，或题目尚未配置测试点）。"
 
@@ -442,6 +457,11 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             "failed_points": raw_failed_points,
                             **compact_summary,
                         }
+                        if has_output_image:
+                            tool_result["has_output_image"] = True
+                        if image_mismatch_analysis:
+                            tool_result["image_mismatch_analysis"] = image_mismatch_analysis
+                            tool_result["image_analysis_test_index"] = image_analysis_test_index
                         if (not is_accepted) and current_submit_calls >= int(runtime["submit_limit"]):
                             limit_msg = (
                                 f"submit_evaluation 调用已达到上限 {runtime['submit_limit']} 次，"

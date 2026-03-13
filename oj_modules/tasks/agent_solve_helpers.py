@@ -6,8 +6,11 @@ import re
 import subprocess
 
 from config import (
+    AGENT_REPOSITORY_KNN_TOP_K,
     AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
+    AI_TUTOR_MODEL,
 )
+from oj_modules.ai_utils import analyze_submission_output_image_against_problem
 from oj_modules.db_services import (
     get_db_connection,
 )
@@ -15,11 +18,11 @@ from oj_modules.repository_index_services import encode_texts_with_qwen_embeddin
 from oj_modules.tasks.agent_shared import *
 
 
-_AGENT_REPOSITORY_MEMORY_TOP_K = 5
+_AGENT_REPOSITORY_KNN_TOP_K = _clamp_int(AGENT_REPOSITORY_KNN_TOP_K, 1, min_value=1, max_value=20)
 try:
     _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = float(AGENT_REPOSITORY_KNN_SCORE_THRESHOLD)
 except Exception:
-    _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = 0.08
+    _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = 0.0
 
 def _truncate_text(value, limit=300):
     text = str(value or "").strip()
@@ -294,7 +297,7 @@ def _summarize_problem_for_repository_search(query_text):
     try:
         summary = _call_qwen_chat_model(
             messages=messages,
-            model="qwen3.5-flash",
+            model=AI_TUTOR_MODEL,
             timeout=60,
             empty_text_error="题目大意归纳失败。",
             enable_thinking=False,
@@ -341,7 +344,7 @@ def _format_repository_knn_memory_message(knn_result, top_k):
 
 
 def _build_repository_knn_memory_message(user_id, problem):
-    use_top_k = int(_AGENT_REPOSITORY_MEMORY_TOP_K)
+    use_top_k = int(_AGENT_REPOSITORY_KNN_TOP_K)
     query_seed = _build_problem_summary_source(problem=problem)
     if not query_seed:
         return "", 0
@@ -385,11 +388,11 @@ def _build_repository_knn_memory_message(user_id, problem):
     return text, len(hits)
 
 
-def _tool_search_useful_code(user_id, description, top_k=5):
+def _tool_search_useful_code(user_id, description, top_k=None):
     query = str(description or "").strip()
     if not query:
         raise RuntimeError("description 不能为空。")
-    use_top_k = _clamp_int(top_k, _AGENT_REPOSITORY_MEMORY_TOP_K, min_value=1, max_value=20)
+    use_top_k = _clamp_int(top_k, _AGENT_REPOSITORY_KNN_TOP_K, min_value=1, max_value=20)
 
     query_vector = None
     query_embedding_model = ""
@@ -446,6 +449,42 @@ def _tool_search_useful_code(user_id, description, top_k=5):
         "vector_db_backend": knn_result.get("vector_db_backend"),
         "hits": hits,
     }
+
+
+def _analyze_submission_output_image_for_agent(problem, submission_id, test_points):
+    if not submission_id or not isinstance(problem, dict):
+        return "", None, False
+    problem_text = str(problem.get("content") or "").strip()
+    if not problem_text:
+        return "", None, False
+
+    points = []
+    for idx, tp in enumerate(test_points or [], start=1):
+        if not isinstance(tp, dict):
+            continue
+        item = dict(tp)
+        if item.get("test_index") in (None, ""):
+            item["test_index"] = item.get("index") or idx
+        points.append(item)
+
+    if not points:
+        return "", None, False
+
+    try:
+        analyzed = analyze_submission_output_image_against_problem(
+            problem_text=problem_text,
+            submission_id=submission_id,
+            test_points=points,
+        )
+    except Exception:
+        return "", None, False
+
+    if not isinstance(analyzed, dict):
+        return "", None, False
+    analysis = str(analyzed.get("analysis") or "").strip()
+    test_index = analyzed.get("test_index")
+    has_output_image = bool(analyzed.get("has_output_image"))
+    return analysis, test_index, has_output_image
 
 
 
@@ -702,7 +741,7 @@ def _tool_workspace_run_command(workspace_dir, command, timeout_seconds=60):
     cmd = str(command or "").strip()
     if not cmd:
         raise RuntimeError("command 不能为空。")
-    timeout_val = _clamp_int(timeout_seconds, 60, min_value=1, max_value=900)
+    timeout_val = _clamp_int(timeout_seconds, 60, min_value=1, max_value=_TOOL_TIMEOUT_MAX_SECONDS)
     try:
         proc = subprocess.run(
             ["bash", "-lc", cmd],
@@ -884,7 +923,7 @@ def _build_agent_react_tools():
                     "type": "object",
                     "properties": {
                         "description": {"type": "string", "description": "你需要的功能描述"},
-                        "top_k": {"type": "integer", "description": "返回条数，默认 5"},
+                        "top_k": {"type": "integer", "description": f"返回条数，默认 {_AGENT_REPOSITORY_KNN_TOP_K}"},
                     },
                     "required": ["description"],
                 },

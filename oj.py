@@ -34,11 +34,15 @@ from oj_modules.tasks import (
 
 import redis
 
-# 假设 Redis 跑在 localhost:6379
-# 根据需要添加密码、db 等
-rds = redis.StrictRedis(host='127.0.0.1', port=6379, decode_responses=True)
+# Redis 连接
+rds = redis.StrictRedis(host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB), decode_responses=True)
 # 用于存储二进制数据（如 ZIP 文件）的 Redis 连接
-rds_binary = redis.StrictRedis(host='127.0.0.1', port=6379, decode_responses=False)
+rds_binary = redis.StrictRedis(
+    host=REDIS_HOST,
+    port=int(REDIS_PORT),
+    db=int(REDIS_DB),
+    decode_responses=False,
+)
 
 app = Flask(__name__)
 app.secret_key = 'some_secret_key_for_session'
@@ -46,8 +50,9 @@ app.config['DEBUG'] = True
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
 
 # Celery 配置
-CELERY_BROKER_URL = 'redis://localhost:6379/0'  # 根据您的 Redis 配置调整
-CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+_REDIS_URL = f"redis://{REDIS_HOST}:{int(REDIS_PORT)}/{int(REDIS_DB)}"
+CELERY_BROKER_URL = _REDIS_URL
+CELERY_RESULT_BACKEND = _REDIS_URL
 
 # Blueprint 注册（路径保持不变）
 app.register_blueprint(submission_bp)

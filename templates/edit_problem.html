@@ -57,12 +57,11 @@
     </div>
     <div class="col-md-3">
       <label for="writtenGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
-      {% set written_model = (problem.written_grading_model or 'qwen3.5-plus-thinking') %}
+      {% set written_model = (problem.written_grading_model or default_written_grading_model) %}
       <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
-        <option value="qwen3.5-plus-thinking" {% if written_model == 'qwen3.5-plus-thinking' %}selected{% endif %}>qwen3.5-plus-thinking</option>
-        <option value="qwen3.5-plus" {% if written_model == 'qwen3.5-plus' %}selected{% endif %}>qwen3.5-plus</option>
-        <option value="qwen3.5-flash-thinking" {% if written_model == 'qwen3.5-flash-thinking' %}selected{% endif %}>qwen3.5-flash-thinking</option>
-        <option value="qwen3.5-flash" {% if written_model == 'qwen3.5-flash' %}selected{% endif %}>qwen3.5-flash</option>
+        {% for model_option in written_grading_model_options %}
+        <option value="{{ model_option }}" {% if written_model == model_option %}selected{% endif %}>{{ model_option }}</option>
+        {% endfor %}
       </select>
     </div>
     {% set sub_limit = (problem.submission_limit or 10) %}

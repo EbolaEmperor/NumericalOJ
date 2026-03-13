@@ -150,7 +150,7 @@ def _tool_data_agent_run_command(workspace_dir, command, timeout_seconds=60):
     cmd = str(command or "").strip()
     if not cmd:
         raise RuntimeError("command 不能为空。")
-    timeout_val = _clamp_int(timeout_seconds, 60, min_value=1, max_value=900)
+    timeout_val = _clamp_int(timeout_seconds, 60, min_value=1, max_value=_TOOL_TIMEOUT_MAX_SECONDS)
     try:
         proc = subprocess.run(
             ["bash", "-lc", cmd],
