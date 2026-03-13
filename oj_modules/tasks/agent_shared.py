@@ -18,16 +18,17 @@ from config import (
     AGENT_MAX_ROUNDS,
     AGENT_SUBMIT_LIMIT,
     AGENT_MEMORY_ENABLED,
-    AGENT_MEMORY_MAX_DO_NOT_REPEAT,
     AGENT_MEMORY_MAX_NOTES,
     AGENT_MEMORY_MAX_PATTERNS,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
+    EVALUATE_SUBMISSION_LOCK_TTL_SECONDS,
     QWEN_CODER_MODEL,
     QWEN_TEXT_MODEL,
     REDIS_DB,
     REDIS_HOST,
     REDIS_PORT,
+    SUBMISSION_SNAPSHOT_TTL_SECONDS,
 )
 from oj_modules.db_services import (
     create_submission,
@@ -51,7 +52,7 @@ except Exception:
 AGENT_SOLVE_TASK_NAME = "oj.agent.solve_problem"
 AGENT_GENERATE_TESTDATA_TASK_NAME = "oj.agent.generate_testdata"
 _agent_progress_rds = None
-_AGENT_PROGRESS_TTL_SECONDS = 21600
+_AGENT_PROGRESS_TTL_SECONDS = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 
 
 def _clamp_int(value, default, min_value=None, max_value=None):
@@ -71,7 +72,6 @@ _AGENT_CONTEXT_MAX_CHARS = _clamp_int(AGENT_CONTEXT_MAX_CHARS, 24000, min_value=
 _AGENT_CONTEXT_KEEP_ROUNDS = _clamp_int(AGENT_CONTEXT_KEEP_ROUNDS, 3, min_value=1, max_value=10)
 _AGENT_MEMORY_MAX_PATTERNS = _clamp_int(AGENT_MEMORY_MAX_PATTERNS, 12, min_value=4, max_value=60)
 _AGENT_MEMORY_MAX_NOTES = _clamp_int(AGENT_MEMORY_MAX_NOTES, 12, min_value=4, max_value=60)
-_AGENT_MEMORY_MAX_DO_NOT_REPEAT = _clamp_int(AGENT_MEMORY_MAX_DO_NOT_REPEAT, 10, min_value=3, max_value=40)
 _AGENT_CONTEXT_SUMMARY_TIMEOUT = _clamp_int(AGENT_CONTEXT_SUMMARY_TIMEOUT, 120, min_value=20, max_value=300)
 _AGENT_CONTEXT_SUMMARY_INPUT_MAX_CHARS = _clamp_int(
     AGENT_CONTEXT_SUMMARY_INPUT_MAX_CHARS,
@@ -86,6 +86,8 @@ _AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS = _clamp_int(
     max_value=12000,
 )
 _AGENT_SUBMIT_LIMIT = _clamp_int(AGENT_SUBMIT_LIMIT, 5, min_value=1, max_value=100)
+_TOOL_TIMEOUT_MAX_SECONDS = _clamp_int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, 60, min_value=60, max_value=3600)
+_SUMMARY_MODEL_DISPLAY = str(QWEN_TEXT_MODEL or "").strip() or "configured-model"
 
 
 def init_agent_progress_cache(redis_client, ttl_seconds=None):
@@ -255,8 +257,6 @@ def _compact_summary(summary):
 
 
 _CODING_PLAN_TARGET_MODELS = {
-    "qwen3.5-plus",
-    "qwen3-coder-plus",
     str(QWEN_TEXT_MODEL or "").strip(),
     str(QWEN_CODER_MODEL or "").strip(),
 }
@@ -745,7 +745,7 @@ def _trim_conversation_by_budget(conversation, max_chars, keep_rounds, state=Non
     if full_summary:
         return [{
             "role": "assistant",
-            "content": "【历史信息摘要（qwen3.5-plus）】\n" + full_summary,
+            "content": f"【历史信息摘要（{_SUMMARY_MODEL_DISPLAY}）】\n" + full_summary,
         }]
     return cleaned
 

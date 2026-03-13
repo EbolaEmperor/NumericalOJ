@@ -6,6 +6,7 @@ import re
 import pymysql
 from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.utils import secure_filename
+from config import AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, AGENT_REPOSITORY_KNN_TOP_K
 
 from oj_modules.db_services import get_db_connection, get_user_by_username
 from oj_modules.repository_index_services import (
@@ -22,6 +23,14 @@ from oj_modules.repository_index_services import (
 
 repository_bp = Blueprint('repository', __name__)
 _repository_build_index_task = None
+try:
+    _DEFAULT_REPOSITORY_SEARCH_TOP_K = max(1, int(AGENT_REPOSITORY_KNN_TOP_K))
+except Exception:
+    _DEFAULT_REPOSITORY_SEARCH_TOP_K = 1
+try:
+    _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD = float(AGENT_REPOSITORY_KNN_SCORE_THRESHOLD)
+except Exception:
+    _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD = 0.0
 
 
 def init_repository_index_module(repository_build_index_task):
@@ -333,8 +342,8 @@ def search_repository_index():
     query = str(data.get('query') or '').strip()
     if not query:
         return jsonify(success=False, message='query 不能为空'), 400
-    top_k = data.get('top_k', 5)
-    score_threshold = data.get('score_threshold', 0.1)
+    top_k = data.get('top_k', _DEFAULT_REPOSITORY_SEARCH_TOP_K)
+    score_threshold = data.get('score_threshold', _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD)
 
     try:
         result = search_repository_chunks(

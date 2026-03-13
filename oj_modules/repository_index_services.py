@@ -14,8 +14,11 @@ import requests
 from oj_modules.ai_utils import _call_qwen_text, _extract_first_json_object_relaxed
 from oj_modules.db_services import get_db_connection
 from config import (
+    AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
+    AGENT_REPOSITORY_KNN_TOP_K,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
+    QWEN_TEXT_MODEL,
     REPOSITORY_EMBEDDING_BATCH_SIZE,
     REPOSITORY_EMBEDDING_DIM,
     REPOSITORY_EMBEDDING_PROVIDER,
@@ -47,19 +50,24 @@ _ALLOWED_DOC_SOURCE = {'original_comment', 'llm_generated', 'mixed', 'none'}
 _ALLOWED_QUALITY = {'high', 'medium', 'low'}
 
 _DEFAULT_EMBEDDING_DIM = int(REPOSITORY_EMBEDDING_DIM)
-_DEFAULT_SENTENCE_MODEL = (
-    str(REPOSITORY_SENTENCE_MODEL or '').strip()
-    or 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
-)
-_DEFAULT_QWEN_EMBEDDING_MODEL = str(REPOSITORY_QWEN_EMBEDDING_MODEL or '').strip() or 'text-embedding-v4'
-_DEFAULT_PROVIDER = str(REPOSITORY_EMBEDDING_PROVIDER or '').strip().lower() or 'qwen_embedding'
-_DEFAULT_LLM_MODEL = str(REPOSITORY_STRUCTURED_MODEL or '').strip() or 'qwen3.5-plus'
+_DEFAULT_SENTENCE_MODEL = str(REPOSITORY_SENTENCE_MODEL or '').strip()
+_DEFAULT_QWEN_EMBEDDING_MODEL = str(REPOSITORY_QWEN_EMBEDDING_MODEL or '').strip()
+_DEFAULT_PROVIDER = str(REPOSITORY_EMBEDDING_PROVIDER or '').strip().lower()
+_DEFAULT_LLM_MODEL = str(REPOSITORY_STRUCTURED_MODEL or '').strip() or str(QWEN_TEXT_MODEL or '').strip()
 _DEFAULT_LLM_TIMEOUT_SECONDS = int(REPOSITORY_STRUCTURED_TIMEOUT)
 _DEFAULT_LLM_MAX_INPUT_CHARS = int(REPOSITORY_STRUCTURED_MAX_INPUT_CHARS)
 _DEFAULT_EMBEDDING_TIMEOUT_SECONDS = int(REPOSITORY_EMBEDDING_TIMEOUT)
 _DEFAULT_EMBEDDING_BATCH_SIZE = max(1, int(REPOSITORY_EMBEDDING_BATCH_SIZE))
-_VECTOR_DB_BACKEND = str(REPOSITORY_VECTOR_BACKEND or '').strip().lower() or 'faiss'
+_VECTOR_DB_BACKEND = str(REPOSITORY_VECTOR_BACKEND or '').strip().lower()
 _FAISS_INDEX_ROOT = os.path.abspath(str(REPOSITORY_FAISS_INDEX_ROOT or os.path.join('tmp', 'repository_vector_index')))
+try:
+    _DEFAULT_SEARCH_TOP_K = max(1, int(AGENT_REPOSITORY_KNN_TOP_K))
+except Exception:
+    _DEFAULT_SEARCH_TOP_K = 1
+try:
+    _DEFAULT_SEARCH_SCORE_THRESHOLD = float(AGENT_REPOSITORY_KNN_SCORE_THRESHOLD)
+except Exception:
+    _DEFAULT_SEARCH_SCORE_THRESHOLD = 0.0
 
 _sentence_model_cache = {}
 
@@ -870,7 +878,7 @@ def _normalize_l2(vectors):
 
 def _resolve_dashscope_credentials():
     api_key = DASHSCOPE_API_KEY
-    base_url = DASHSCOPE_BASE_URL or 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    base_url = DASHSCOPE_BASE_URL
     api_key = str(api_key or '').strip()
     base_url = str(base_url or '').strip().rstrip('/')
     if (not api_key) or ('YOUR' in api_key.upper()):
@@ -1470,8 +1478,8 @@ def _load_chunk_details_by_ids(user_id, chunk_ids):
 def search_repository_chunks(
     user_id,
     query,
-    top_k=5,
-    score_threshold=0.1,
+    top_k=None,
+    score_threshold=None,
     query_vector=None,
     query_embedding_model=None,
 ):
@@ -1485,11 +1493,11 @@ def search_repository_chunks(
             'vector_db_backend': _VECTOR_DB_BACKEND,
         }
 
-    use_top_k = max(1, min(50, _safe_int(top_k, 5)))
+    use_top_k = max(1, min(50, _safe_int(top_k, _DEFAULT_SEARCH_TOP_K)))
     try:
-        use_threshold = float(score_threshold)
+        use_threshold = float(_DEFAULT_SEARCH_SCORE_THRESHOLD if score_threshold is None else score_threshold)
     except Exception:
-        use_threshold = 0.1
+        use_threshold = float(_DEFAULT_SEARCH_SCORE_THRESHOLD)
 
     index, meta = _load_faiss_index(user_id)
     if index is None or not isinstance(meta, dict):

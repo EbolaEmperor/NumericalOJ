@@ -8,12 +8,14 @@ import zipfile
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
+from config import AI_TUTOR_MODEL, QWEN_TEXT_MODEL
 
 from oj_modules.db_services import (
     create_problem,
     get_db_connection,
     get_problem,
     get_user_by_username,
+    normalize_written_grading_model,
     update_problem,
 )
 from oj_modules.testdata_services import TestdataValidationError, import_testdata_zip
@@ -21,6 +23,22 @@ from oj_modules.testdata_services import TestdataValidationError, import_testdat
 
 admin_problem_bp = Blueprint('admin_problem', __name__)
 ALLOWED_EXTENSIONS = {'zip'}
+_DEFAULT_WRITTEN_GRADING_MODEL = (
+    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
+    if str(QWEN_TEXT_MODEL or "").strip()
+    else f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking"
+)
+_WRITTEN_GRADING_MODEL_OPTIONS = [
+    item for item in dict.fromkeys([
+        f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking" if str(QWEN_TEXT_MODEL or "").strip() else "",
+        str(QWEN_TEXT_MODEL or "").strip().lower(),
+        f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking" if str(AI_TUTOR_MODEL or "").strip() else "",
+        str(AI_TUTOR_MODEL or "").strip().lower(),
+    ])
+    if item
+]
+if _DEFAULT_WRITTEN_GRADING_MODEL and _DEFAULT_WRITTEN_GRADING_MODEL not in _WRITTEN_GRADING_MODEL_OPTIONS:
+    _WRITTEN_GRADING_MODEL_OPTIONS.insert(0, _DEFAULT_WRITTEN_GRADING_MODEL)
 
 
 def current_user():
@@ -69,15 +87,9 @@ def parse_written_grading_mode_from_form(form, default=1):
     return mode if mode in (1, 2) else int(default)
 
 
-def parse_written_grading_model_from_form(form, default="qwen3.5-plus-thinking"):
+def parse_written_grading_model_from_form(form, default=_DEFAULT_WRITTEN_GRADING_MODEL):
     raw = str(form.get('written_grading_model', default) or default).strip().lower()
-    allowed = {
-        "qwen3.5-plus",
-        "qwen3.5-plus-thinking",
-        "qwen3.5-flash",
-        "qwen3.5-flash-thinking",
-    }
-    return raw if raw in allowed else str(default or "qwen3.5-plus-thinking").strip().lower()
+    return normalize_written_grading_model(raw, default=default)
 
 
 @admin_problem_bp.route('/admin/add_problem', methods=['GET', 'POST'])
@@ -94,13 +106,19 @@ def add_problem():
         forbidden_func = request.form.get('forbidden_func', '').strip()
         problem_type = request.form.get('type')
         written_grading_mode = parse_written_grading_mode_from_form(request.form, default=1)
-        written_grading_model = parse_written_grading_model_from_form(request.form, default="qwen3.5-plus-thinking")
+        written_grading_model = parse_written_grading_model_from_form(request.form, default=_DEFAULT_WRITTEN_GRADING_MODEL)
         lang = (request.form.get('lang') or 'matlab').strip().lower()
         time_limit_ms = parse_time_limit_ms_from_form(request.form)
         submission_limit = int(request.form.get('submission_limit', 10))
 
         if not title or not content:
-            return render_template('add_problem.html', user=user, error_message="标题和内容不能为空")
+            return render_template(
+                'add_problem.html',
+                user=user,
+                error_message="标题和内容不能为空",
+                written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
+                default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+            )
 
         create_problem(
             title,
@@ -117,7 +135,13 @@ def add_problem():
         )
         return redirect(url_for('problem_core.problem_list'))
 
-    return render_template('add_problem.html', user=user, error_message=None)
+    return render_template(
+        'add_problem.html',
+        user=user,
+        error_message=None,
+        written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
+        default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+    )
 
 
 @admin_problem_bp.route('/admin/edit_problem/<int:problem_id>', methods=['GET', 'POST'])
@@ -145,11 +169,18 @@ def edit_problem(problem_id):
         new_submission_limit = int(request.form.get('submission_limit', problem.get('submission_limit', 10)))
         default_mode = problem.get('written_grading_mode', 1)
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)
-        default_model = problem.get('written_grading_model', 'qwen3.5-plus-thinking')
+        default_model = problem.get('written_grading_model', _DEFAULT_WRITTEN_GRADING_MODEL)
         new_written_grading_model = parse_written_grading_model_from_form(request.form, default=default_model)
 
         if not new_title or not new_content:
-            return render_template('edit_problem.html', problem=problem, user=user, error_message="标题和内容不能为空")
+            return render_template(
+                'edit_problem.html',
+                problem=problem,
+                user=user,
+                error_message="标题和内容不能为空",
+                written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
+                default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+            )
 
         update_problem(
             problem_id,
@@ -166,7 +197,14 @@ def edit_problem(problem_id):
         )
         return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
-    return render_template('edit_problem.html', problem=problem, user=user, error_message=None)
+    return render_template(
+        'edit_problem.html',
+        problem=problem,
+        user=user,
+        error_message=None,
+        written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
+        default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+    )
 
 
 @admin_problem_bp.app_errorhandler(RequestEntityTooLarge)

@@ -3,6 +3,7 @@
 
 import os
 
+from config import AI_TUTOR_MODEL, EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import (
     evaluate_written_homework_with_ai,
     evaluate_written_homework_with_ai_from_images,
@@ -23,6 +24,13 @@ from oj_modules.grading_services import (
 
 
 WRITTEN_TASK_NAME = "oj.transcribe_written_homework_to_latex"
+_DEFAULT_WRITTEN_GRADING_MODEL_SPEC = (
+    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
+    if str(QWEN_TEXT_MODEL or "").strip()
+    else f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking"
+)
+_WRITTEN_TASK_TIME_LIMIT = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS))
+_WRITTEN_TASK_SOFT_TIME_LIMIT = max(30, _WRITTEN_TASK_TIME_LIMIT - 60)
 
 
 def register_written_homework_task(celery_app):
@@ -30,7 +38,11 @@ def register_written_homework_task(celery_app):
     if existing:
         return existing
 
-    @celery_app.task(name=WRITTEN_TASK_NAME, time_limit=900, soft_time_limit=840)
+    @celery_app.task(
+        name=WRITTEN_TASK_NAME,
+        time_limit=_WRITTEN_TASK_TIME_LIMIT,
+        soft_time_limit=_WRITTEN_TASK_SOFT_TIME_LIMIT,
+    )
     def transcribe_written_homework_to_latex(submission_id):
         """
         书面作业 LaTeX 转写 + AI 评分任务（异步）。
@@ -58,7 +70,7 @@ def register_written_homework_task(celery_app):
                 written_mode = int(problem.get('written_grading_mode') or 1)
             except Exception:
                 written_mode = 1
-            written_model = str(problem.get('written_grading_model') or 'qwen3.5-plus-thinking').strip().lower()
+            written_model = str(problem.get('written_grading_model') or _DEFAULT_WRITTEN_GRADING_MODEL_SPEC).strip().lower()
 
             if written_mode == 2:
                 image_paths = render_pdf_to_images(file_path, upload_folder)

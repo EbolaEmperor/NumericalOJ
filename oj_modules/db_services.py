@@ -16,6 +16,7 @@ except Exception:
     redis = None
 
 from config import (
+    AI_TUTOR_MODEL,
     MYSQL_CONNECT_TIMEOUT,
     MYSQL_PASSWORD,
     MYSQL_POOL_MAX_SIZE,
@@ -23,6 +24,7 @@ from config import (
     MYSQL_POOL_RECYCLE_SECONDS,
     MYSQL_POOL_WAIT_TIMEOUT,
     MYSQL_USERNAME,
+    QWEN_TEXT_MODEL,
     REDIS_DB,
     REDIS_HOST,
     REDIS_PORT,
@@ -39,11 +41,19 @@ _submission_snapshot_ttl_seconds = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 _problem_written_mode_column_ready = False
 _problem_written_model_column_ready = False
 
+_QWEN_TEXT_MODEL_KEY = str(QWEN_TEXT_MODEL or "").strip().lower()
+_AI_TUTOR_MODEL_KEY = str(AI_TUTOR_MODEL or "").strip().lower()
+_DEFAULT_WRITTEN_GRADING_MODEL = (
+    (f"{_QWEN_TEXT_MODEL_KEY}-thinking" if _QWEN_TEXT_MODEL_KEY else "")
+    or (f"{_AI_TUTOR_MODEL_KEY}-thinking" if _AI_TUTOR_MODEL_KEY else "")
+)
 _ALLOWED_WRITTEN_GRADING_MODELS = {
-    "qwen3.5-plus",
-    "qwen3.5-plus-thinking",
-    "qwen3.5-flash",
-    "qwen3.5-flash-thinking",
+    item for item in {
+        _QWEN_TEXT_MODEL_KEY,
+        f"{_QWEN_TEXT_MODEL_KEY}-thinking" if _QWEN_TEXT_MODEL_KEY else "",
+        _AI_TUTOR_MODEL_KEY,
+        f"{_AI_TUTOR_MODEL_KEY}-thinking" if _AI_TUTOR_MODEL_KEY else "",
+    } if item
 }
 
 
@@ -240,11 +250,11 @@ def ensure_problem_written_grading_mode_column():
         _problem_written_mode_column_ready = True
 
 
-def normalize_written_grading_model(value, default="qwen3.5-plus-thinking"):
+def normalize_written_grading_model(value, default=_DEFAULT_WRITTEN_GRADING_MODEL):
     text = str(value or "").strip().lower()
     if text in _ALLOWED_WRITTEN_GRADING_MODELS:
         return text
-    return str(default or "qwen3.5-plus-thinking").strip().lower()
+    return str(default or _DEFAULT_WRITTEN_GRADING_MODEL).strip().lower()
 
 
 def ensure_problem_written_grading_model_column():
@@ -259,10 +269,11 @@ def ensure_problem_written_grading_model_column():
             cursor.execute("SHOW COLUMNS FROM problems LIKE 'written_grading_model'")
             row = cursor.fetchone()
             if not row:
+                default_model_sql = normalize_written_grading_model(_DEFAULT_WRITTEN_GRADING_MODEL).replace("'", "''")
                 cursor.execute(
-                    """
+                    f"""
                     ALTER TABLE problems
-                    ADD COLUMN written_grading_model VARCHAR(32) NOT NULL DEFAULT 'qwen3.5-plus-thinking'
+                    ADD COLUMN written_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'
                     """
                 )
                 conn.commit()
@@ -936,14 +947,14 @@ def create_problem(
     time_limit_ms=2000,
     submission_limit=10,
     written_grading_mode=1,
-    written_grading_model="qwen3.5-plus-thinking",
+    written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
 ):
     ensure_problem_written_grading_columns()
     conn = get_db_connection()
     try:
         max_score = (0 if int(type) == 1 else 5)
         use_written_mode = 1
-        use_written_model = "qwen3.5-plus-thinking"
+        use_written_model = _DEFAULT_WRITTEN_GRADING_MODEL
         if int(type) == 2:
             try:
                 use_written_mode = int(written_grading_mode)
@@ -1088,7 +1099,7 @@ def update_problem(
                     new_time_limit_ms,
                     new_submission_limit,
                     mode_val if mode_val is not None else 1,
-                    model_val if model_val is not None else "qwen3.5-plus-thinking",
+                    model_val if model_val is not None else _DEFAULT_WRITTEN_GRADING_MODEL,
                     problem_id,
                 ),
             )
