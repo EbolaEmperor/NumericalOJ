@@ -364,19 +364,30 @@ def request_cancel_repository_index_job(job_id, user_id=None, reason='用户取�
         conn.close()
 
 
-def _load_user_repository_files(user_id):
+def _load_user_repository_files(user_id, file_id=None):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, filename, file_content
-                FROM user_code_repository
-                WHERE user_id = %s
-                ORDER BY filename ASC
-                """,
-                (int(user_id),),
-            )
+            if file_id is None:
+                cursor.execute(
+                    """
+                    SELECT id, filename, file_content
+                    FROM user_code_repository
+                    WHERE user_id = %s
+                    ORDER BY filename ASC
+                    """,
+                    (int(user_id),),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, filename, file_content
+                    FROM user_code_repository
+                    WHERE user_id = %s AND id = %s
+                    LIMIT 1
+                    """,
+                    (int(user_id), int(file_id)),
+                )
             rows = cursor.fetchall() or []
     finally:
         conn.close()
@@ -440,6 +451,46 @@ def _ts_find_descendants(node, target_types):
             yield sub
 
 
+def _ts_select_declarator_for_function_definition(function_node):
+    if function_node is None:
+        return None
+    if _safe_str(function_node.type) != 'function_definition':
+        return _ts_find_first_descendant(function_node, {'function_declarator'})
+
+    for child in function_node.children:
+        if _safe_str(child.type) == 'function_declarator':
+            return child
+
+    for child in function_node.children:
+        child_type = _safe_str(child.type)
+        if child_type in ('compound_statement', 'try_statement'):
+            break
+        if child_type in ('class_specifier', 'struct_specifier', 'comment'):
+            continue
+        cand = _ts_find_first_descendant(child, {'function_declarator'})
+        if cand is not None:
+            return cand
+
+    return _ts_find_first_descendant(function_node, {'function_declarator'})
+
+
+def _ts_infer_owner_from_function_definition(function_node, source_bytes):
+    if function_node is None:
+        return ''
+    for child in function_node.children:
+        if _safe_str(child.type) not in ('class_specifier', 'struct_specifier'):
+            continue
+        name_node = None
+        for sub in child.children:
+            if _safe_str(sub.type) in ('type_identifier', 'identifier'):
+                name_node = sub
+                break
+        owner = _ts_compact_text(_ts_node_text(source_bytes, name_node))
+        if owner:
+            return owner
+    return ''
+
+
 def _ts_nearest_ancestor_of_types(node, target_types):
     parent = node.parent if node is not None else None
     while parent is not None:
@@ -478,6 +529,189 @@ def _ts_line_of(node):
 
 def _ts_end_line_of(node):
     return max(1, int((node.end_point[0] if node is not None else 0) + 1))
+
+
+def _ts_line_of_byte(source_bytes, byte_offset):
+    try:
+        end = max(0, min(int(byte_offset), len(source_bytes)))
+    except Exception:
+        end = 0
+    return int(source_bytes[:end].count(b'\n')) + 1
+
+
+def _ts_child_index(parent, child):
+    if parent is None or child is None:
+        return -1
+    for idx, node in enumerate(parent.children):
+        if _ts_same_node(node, child):
+            return idx
+    return -1
+
+
+def _ts_extract_callable_code_with_recovery(source_bytes, callable_node):
+    code_text = _ts_node_text(source_bytes, callable_node)
+    if callable_node is None:
+        return code_text, 1, 1
+
+    start_byte = int(callable_node.start_byte)
+    end_byte = int(callable_node.end_byte)
+    spill_anchor = callable_node
+
+    parent = callable_node.parent
+    if (
+        _safe_str(getattr(callable_node, 'type', '')) == 'declaration'
+        and _safe_str(getattr(parent, 'type', '')) == 'labeled_statement'
+    ):
+        label_node = parent.child_by_field_name('label')
+        if label_node is None and parent.children:
+            first = parent.children[0]
+            if _safe_str(getattr(first, 'type', '')) == 'statement_identifier':
+                label_node = first
+        label_text = _ts_compact_text(_ts_node_text(source_bytes, label_node)).lower()
+        if label_text in _ALLOWED_ACCESS:
+            spill_anchor = parent
+
+    scope_parent = spill_anchor.parent
+    sibling_index = _ts_child_index(scope_parent, spill_anchor)
+    if scope_parent is not None and sibling_index >= 0:
+        lookahead = 0
+        for sibling in scope_parent.children[sibling_index + 1:]:
+            lookahead += 1
+            sibling_type = _safe_str(getattr(sibling, 'type', ''))
+            sibling_text = _ts_compact_text(_ts_node_text(source_bytes, sibling))
+            if sibling_type == 'ERROR' and sibling_text == '}':
+                recovered_end = int(sibling.end_byte)
+                if recovered_end > end_byte:
+                    end_byte = recovered_end
+                break
+            if sibling_type in (
+                'function_definition',
+                'class_specifier',
+                'struct_specifier',
+                'namespace_definition',
+                'declaration',
+                'labeled_statement',
+            ):
+                break
+            if lookahead >= 32:
+                break
+
+    recovered_text = ''
+    if end_byte > start_byte:
+        recovered_text = source_bytes[start_byte:end_byte].decode('utf-8', errors='replace')
+    if _safe_str(recovered_text):
+        code_text = recovered_text
+
+    start_line = _ts_line_of_byte(source_bytes, start_byte)
+    end_line = _ts_line_of_byte(source_bytes, end_byte)
+    return code_text, max(1, int(start_line)), max(1, int(end_line))
+
+
+def _ts_collect_comment_nodes(root, source_bytes):
+    comments = []
+    for sub in _ts_iter_nodes(root):
+        if _safe_str(sub.type) != 'comment':
+            continue
+        text = _ts_node_text(source_bytes, sub)
+        if not _safe_str(text):
+            continue
+        comments.append({
+            'start_line': _ts_line_of(sub),
+            'end_line': _ts_end_line_of(sub),
+            'text': text,
+        })
+    comments.sort(key=lambda x: (int(x.get('start_line') or 0), int(x.get('end_line') or 0)))
+    return comments
+
+
+def _ts_build_comment_context(comment_nodes):
+    comments = comment_nodes if isinstance(comment_nodes, list) else []
+    line_to_comment = {}
+    for idx, item in enumerate(comments):
+        start_line = max(1, _safe_int(item.get('start_line'), 1))
+        end_line = max(start_line, _safe_int(item.get('end_line'), start_line))
+        for line_no in range(start_line, end_line + 1):
+            line_to_comment[int(line_no)] = int(idx)
+    return {
+        'comments': comments,
+        'line_to_comment': line_to_comment,
+    }
+
+
+def _ts_strip_comment_markers(raw_comment):
+    text = str(raw_comment or '')
+    if not text:
+        return ''
+    lines = text.splitlines()
+    cleaned = []
+    for line in lines:
+        row = str(line).strip()
+        if row.startswith('//'):
+            row = row[2:].lstrip()
+        if row.startswith('/*'):
+            row = row[2:].lstrip()
+        if row.endswith('*/'):
+            row = row[:-2].rstrip()
+        if row.startswith('*'):
+            row = row[1:].lstrip()
+        cleaned.append(row)
+    return '\n'.join(cleaned).strip()
+
+
+def _ts_extract_leading_comment_for_node(node, source_lines, comment_context):
+    if node is None:
+        return ''
+    source_rows = source_lines if isinstance(source_lines, list) else []
+    comments = (comment_context or {}).get('comments') if isinstance(comment_context, dict) else []
+    line_to_comment = (comment_context or {}).get('line_to_comment') if isinstance(comment_context, dict) else {}
+    if not comments or not isinstance(line_to_comment, dict):
+        return ''
+
+    line = _ts_line_of(node) - 1
+    if line <= 0:
+        return ''
+
+    collected_ids = []
+    blank_lines_before = 0
+    max_blank_lines_before = 1
+    while line >= 1:
+        row_text = source_rows[line - 1] if 1 <= line <= len(source_rows) else ''
+        if not _safe_str(row_text):
+            if collected_ids:
+                break
+            blank_lines_before += 1
+            if blank_lines_before > max_blank_lines_before:
+                break
+            line -= 1
+            continue
+
+        comment_id = line_to_comment.get(int(line))
+        if comment_id is None:
+            break
+
+        if (not collected_ids) or (comment_id != collected_ids[-1]):
+            collected_ids.append(int(comment_id))
+        comment_item = comments[int(comment_id)]
+        line = max(0, _safe_int(comment_item.get('start_line'), line) - 1)
+
+    if not collected_ids:
+        return ''
+
+    collected_ids = sorted(set(collected_ids), key=lambda x: _safe_int(comments[x].get('start_line'), 0))
+    plain_blocks = []
+    raw_blocks = []
+    for cid in collected_ids:
+        raw_text = _safe_str(comments[cid].get('text'))
+        if not raw_text:
+            continue
+        raw_blocks.append(raw_text)
+        plain_text = _ts_strip_comment_markers(raw_text)
+        if plain_text:
+            plain_blocks.append(plain_text)
+
+    if plain_blocks:
+        return '\n'.join(plain_blocks).strip()
+    return '\n'.join(raw_blocks).strip()
 
 
 def _ts_find_best_declarator_name_node(declarator_node):
@@ -571,7 +805,7 @@ def _ts_extract_param_items(parameter_list_node, source_bytes):
     return params
 
 
-def _ts_build_signature_from_callable_node(callable_node, source_bytes):
+def _ts_build_signature_from_callable_node(callable_node, source_bytes, declarator_node=None):
     node = callable_node
     if node is None:
         return ''
@@ -579,6 +813,29 @@ def _ts_build_signature_from_callable_node(callable_node, source_bytes):
     # Build signature directly from syntax nodes before the function body,
     # avoiding fragile text truncation when default args contain braces.
     if node.type == 'function_definition':
+        if declarator_node is not None:
+            decl_text = _ts_compact_text(_ts_node_text(source_bytes, declarator_node))
+            if decl_text:
+                prefix_parts = []
+                suffix_parts = []
+                seen_decl = False
+                for child in node.children:
+                    child_type = _safe_str(child.type)
+                    if child_type in ('compound_statement', 'try_statement'):
+                        break
+                    if _ts_same_node(child, declarator_node):
+                        seen_decl = True
+                        continue
+                    if child_type in ('comment', 'class_specifier', 'struct_specifier'):
+                        continue
+                    text = _ts_compact_text(_ts_node_text(source_bytes, child))
+                    if not text:
+                        continue
+                    if seen_decl:
+                        suffix_parts.append(text)
+                    else:
+                        prefix_parts.append(text)
+                return _safe_str(' '.join(prefix_parts + [decl_text] + suffix_parts))
         parts = []
         for child in node.children:
             if child.type in ('compound_statement', 'try_statement'):
@@ -594,15 +851,44 @@ def _ts_build_signature_from_callable_node(callable_node, source_bytes):
     return text
 
 
-def _ts_build_method_item_from_node(method_node, source_bytes, class_name, access_text, has_body):
-    declarator_node = _ts_find_first_descendant(method_node, {'function_declarator'})
+def _ts_is_valid_method_declaration_field_node(field_node, source_bytes):
+    if field_node is None or _safe_str(field_node.type) != 'field_declaration':
+        return False
+    text = _safe_str(_ts_node_text(source_bytes, field_node))
+    if not text:
+        return False
+    # Keep only declaration-like members; reject error-recovered large fragments.
+    if ('{' in text) or ('}' in text):
+        return False
+    if not text.endswith(';'):
+        return False
+    return True
+
+
+def _ts_build_method_item_from_node(
+    method_node,
+    source_bytes,
+    class_name,
+    access_text,
+    has_body,
+    source_lines=None,
+    comment_context=None,
+):
+    if _safe_str(getattr(method_node, 'type', '')) == 'function_definition':
+        declarator_node = _ts_select_declarator_for_function_definition(method_node)
+    else:
+        declarator_node = _ts_find_first_descendant(method_node, {'function_declarator'})
     param_list_node = _ts_find_first_descendant(declarator_node, {'parameter_list'}) if declarator_node else None
     method_name, owner_name = _ts_extract_function_name_and_owner(declarator_node, source_bytes)
     effective_class = _safe_str(owner_name) or _safe_str(class_name)
     if not method_name:
         return None
-    code_text = _ts_node_text(source_bytes, method_node)
-    signature = _ts_build_signature_from_callable_node(method_node, source_bytes) or _ts_compact_text(code_text)
+    code_text, start_line, end_line = _ts_extract_callable_code_with_recovery(source_bytes, method_node)
+    signature = _ts_build_signature_from_callable_node(
+        method_node,
+        source_bytes,
+        declarator_node=declarator_node,
+    ) or _ts_compact_text(code_text)
     kind = 'method'
     short_class = _safe_str(effective_class.split('::')[-1]) if effective_class else ''
     if method_name.startswith('~'):
@@ -624,23 +910,32 @@ def _ts_build_method_item_from_node(method_node, source_bytes, class_name, acces
         'is_virtual': False,
         'is_const': (' const' in f" {signature}"),
         'is_pure_virtual': False,
-        'start_line': _ts_line_of(method_node),
-        'end_line': _ts_end_line_of(method_node),
+        'start_line': max(1, int(start_line)),
+        'end_line': max(1, int(end_line)),
         'has_body': bool(has_body),
         'code': code_text,
+        '_leading_comment': _ts_extract_leading_comment_for_node(
+            declarator_node if declarator_node is not None else method_node,
+            source_lines=source_lines,
+            comment_context=comment_context,
+        ),
     }
 
 
 def _extract_classes_and_functions_from_treesitter(filename, content):
     source = str(content or '')
+    source_lines = source.splitlines()
     source_bytes = source.encode('utf-8', errors='replace')
     parser = _get_cpp_tree_sitter_parser()
     tree = parser.parse(source_bytes)
     root = tree.root_node
+    comment_nodes = _ts_collect_comment_nodes(root, source_bytes)
+    comment_context = _ts_build_comment_context(comment_nodes)
 
     classes = []
     functions = []
     method_access_by_range = {}
+    seen_function_keys = set()
 
     for node in _ts_iter_nodes(root):
         if node.type not in ('class_specifier', 'struct_specifier'):
@@ -698,7 +993,7 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
             for member_node in _ts_collect_class_member_nodes(child, node):
                 if member_node.type == 'field_declaration':
                     method_decl_node = _ts_find_first_descendant(member_node, {'function_declarator'})
-                    if method_decl_node is not None:
+                    if method_decl_node is not None and _ts_is_valid_method_declaration_field_node(member_node, source_bytes):
                         field_has_body = _ts_find_first_descendant(
                             member_node,
                             {'compound_statement', 'initializer_list', 'try_statement'},
@@ -709,6 +1004,8 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
                             class_name=class_name,
                             access_text=current_access,
                             has_body=field_has_body,
+                            source_lines=source_lines,
+                            comment_context=comment_context,
                         )
                         if method_item is not None:
                             member_methods.append(method_item)
@@ -755,6 +1052,8 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
                         class_name=class_name,
                         access_text=current_access,
                         has_body=True,
+                        source_lines=source_lines,
+                        comment_context=comment_context,
                     )
                     if method_item is None:
                         continue
@@ -797,14 +1096,14 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
         if inside_class:
             continue
 
-        declarator_node = _ts_find_first_descendant(node, {'function_declarator'})
+        declarator_node = _ts_select_declarator_for_function_definition(node)
         if declarator_node is None:
             continue
         param_list_node = _ts_find_first_descendant(declarator_node, {'parameter_list'})
         node_name, owner_name = _ts_extract_function_name_and_owner(declarator_node, source_bytes)
         if not node_name:
             continue
-        class_name = _safe_str(owner_name)
+        class_name = _safe_str(owner_name) or _safe_str(_ts_infer_owner_from_function_definition(node, source_bytes))
         kind = 'function'
         short_class = _safe_str(class_name.split('::')[-1]) if class_name else ''
         if node_name.startswith('~'):
@@ -815,12 +1114,23 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
             kind = 'constructor'
         elif class_name:
             kind = 'method'
-        code_text = _ts_node_text(source_bytes, node)
-        signature = _ts_build_signature_from_callable_node(node, source_bytes) or _ts_compact_text(code_text)
+        code_text, start_line, end_line = _ts_extract_callable_code_with_recovery(source_bytes, node)
+        signature = _ts_build_signature_from_callable_node(
+            node,
+            source_bytes,
+            declarator_node=declarator_node,
+        ) or _ts_compact_text(code_text)
         return_type = _return_type_from_signature(signature, node_name, kind)
-        start_line = _ts_line_of(node)
-        end_line = _ts_end_line_of(node)
         access_key = (kind, node_name, signature, start_line, end_line)
+        func_key = (
+            _safe_str(f"{class_name}::{node_name}" if class_name else node_name),
+            _safe_str(signature),
+            int(start_line),
+            int(end_line),
+        )
+        if func_key in seen_function_keys:
+            continue
+        seen_function_keys.add(func_key)
         functions.append({
             'kind': kind,
             'qualified_name': f"{class_name}::{node_name}" if class_name else node_name,
@@ -838,6 +1148,108 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
                 'end_line': max(0, int(end_line)),
             },
             'code': code_text,
+            '_leading_comment': _ts_extract_leading_comment_for_node(
+                declarator_node if declarator_node is not None else node,
+                source_lines=source_lines,
+                comment_context=comment_context,
+            ),
+        })
+
+    # Recovery path: some class methods may be degraded to declaration nodes under
+    # public:/private:/protected: labeled statements when tree-sitter hits errors.
+    if classes:
+        default_class_name = _safe_str((classes[0] or {}).get('qualified_name') or (classes[0] or {}).get('class_name')) if len(classes) == 1 else ''
+    else:
+        default_class_name = ''
+    for node in _ts_iter_nodes(root):
+        if node.type != 'declaration':
+            continue
+        declarator_node = _ts_find_first_descendant(node, {'function_declarator'})
+        if declarator_node is None:
+            continue
+        declarator_text = _ts_compact_text(_ts_node_text(source_bytes, declarator_node))
+        if not declarator_text or '(' not in declarator_text:
+            continue
+        parent = node.parent
+        if parent is None or _safe_str(parent.type) != 'labeled_statement':
+            continue
+        parent_text = _ts_compact_text(_ts_node_text(source_bytes, parent)).lower()
+        if not (
+            parent_text.startswith('public:')
+            or parent_text.startswith('private:')
+            or parent_text.startswith('protected:')
+        ):
+            continue
+
+        node_name, owner_name = _ts_extract_function_name_and_owner(declarator_node, source_bytes)
+        if not node_name:
+            continue
+        class_name = _safe_str(owner_name) or default_class_name
+        kind = 'function'
+        short_class = _safe_str(class_name.split('::')[-1]) if class_name else ''
+        if node_name.startswith('~'):
+            kind = 'destructor'
+        elif node_name.startswith('operator'):
+            kind = 'operator'
+        elif short_class and node_name == short_class:
+            kind = 'constructor'
+        elif class_name:
+            kind = 'method'
+
+        prefix_parts = []
+        for child in node.children:
+            child_type = _safe_str(child.type)
+            if child_type in ('init_declarator', 'function_declarator'):
+                break
+            if child_type in (
+                'storage_class_specifier',
+                'type_qualifier',
+                'primitive_type',
+                'sized_type_specifier',
+                'type_identifier',
+                'qualified_identifier',
+                'template_type',
+            ):
+                text_part = _ts_compact_text(_ts_node_text(source_bytes, child))
+                if text_part:
+                    prefix_parts.append(text_part)
+        signature = _safe_str(' '.join(prefix_parts + [declarator_text])) or declarator_text
+        return_type = _return_type_from_signature(signature, node_name, kind)
+        code_text, start_line, end_line = _ts_extract_callable_code_with_recovery(source_bytes, node)
+        func_key = (
+            _safe_str(f"{class_name}::{node_name}" if class_name else node_name),
+            _safe_str(signature),
+            int(start_line),
+            int(end_line),
+        )
+        if func_key in seen_function_keys:
+            continue
+        seen_function_keys.add(func_key)
+        functions.append({
+            'kind': kind,
+            'qualified_name': f"{class_name}::{node_name}" if class_name else node_name,
+            'class_name': class_name,
+            'access': _normalize_access(parent_text.split(':', 1)[0], default=''),
+            'signature': signature,
+            'params': _ts_extract_param_items(
+                _ts_find_first_descendant(declarator_node, {'parameter_list'}),
+                source_bytes,
+            ),
+            'returns': {
+                'type': return_type,
+                'description': '',
+            },
+            'summary': '',
+            'location': {
+                'start_line': max(0, int(start_line)),
+                'end_line': max(0, int(end_line)),
+            },
+            'code': code_text,
+            '_leading_comment': _ts_extract_leading_comment_for_node(
+                declarator_node,
+                source_lines=source_lines,
+                comment_context=comment_context,
+            ),
         })
 
     return classes, functions
@@ -893,6 +1305,8 @@ def _build_member_variable_decl_for_prompt(member):
 
 
 def _call_qwen_structured_function_entity(filename, function_item):
+    leading_comment = _safe_str((function_item or {}).get('_leading_comment'))
+    comment_block = leading_comment if leading_comment else '(无)'
     prompt = (
         "你是代码结构化整理助手。请基于给定“单个函数/方法”信息补充结构化说明。\n"
         "要求：\n"
@@ -900,7 +1314,8 @@ def _call_qwen_structured_function_entity(filename, function_item):
         "2. 只允许输出这些字段：summary, params, returns。\n"
         "3. params 仅输出 name 和 description；returns 仅输出 description。\n"
         "4. 不要改动参数名，不要虚构参数。\n"
-        "5. summary 必须使用中文，必须描述该函数实际行为，不要输出“代码片段不完整/签名不匹配”等元描述。\n\n"
+        "5. summary 必须使用中文，必须描述该函数实际行为，不要输出“代码片段不完整/签名不匹配”等元描述。\n"
+        "6. 如果代码里已经有人工注释，请尽可能保留注释里的有效信息，你也可以增加必要补充说明。\n\n"
         "JSON 格式：\n"
         "{\n"
         "  \"summary\": \"代码功能说明，使用中文\",\n"
@@ -908,6 +1323,7 @@ def _call_qwen_structured_function_entity(filename, function_item):
         "  \"returns\": {\"description\": \"\"}\n"
         "}\n\n"
         f"[文件名]\n{filename}\n\n"
+        f"[函数前人工注释]\n{comment_block}\n\n"
         f"[函数代码]\n{function_item.get('code')}\n"
     )
     text = _call_qwen_text(
@@ -1031,6 +1447,7 @@ def _build_function_item_from_member_method(class_name, method_item):
         },
         'code': _safe_str(method.get('code')) or (f"{signature};" if signature else ''),
         'has_body': _safe_bool(method.get('has_body'), False),
+        '_leading_comment': _safe_str(method.get('_leading_comment')),
     }
 
 def _notify_structuring_progress(progress_callback, stage, detail):
@@ -1518,6 +1935,137 @@ def _reset_repository_index_storage(user_id):
     )
 
 
+def _count_repository_index_items(user_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM repository_function_chunks WHERE user_id = %s) AS function_count,
+                    (SELECT COUNT(*) FROM repository_class_metadata WHERE user_id = %s) AS class_count
+                """,
+                (int(user_id), int(user_id)),
+            )
+            row = cursor.fetchone() or {}
+            return (
+                max(0, _safe_int(row.get('function_count'), 0)),
+                max(0, _safe_int(row.get('class_count'), 0)),
+            )
+    finally:
+        conn.close()
+
+
+def _delete_repository_index_for_file(user_id, repo_file_id=None, filename=''):
+    use_repo_file_id = _safe_int(repo_file_id, 0)
+    use_filename = _safe_str(filename)
+    if use_repo_file_id <= 0 and not use_filename:
+        return
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if use_repo_file_id > 0 and use_filename:
+                where_clause = "user_id = %s AND (repo_file_id = %s OR filename = %s)"
+                where_params = (int(user_id), int(use_repo_file_id), use_filename)
+            elif use_repo_file_id > 0:
+                where_clause = "user_id = %s AND repo_file_id = %s"
+                where_params = (int(user_id), int(use_repo_file_id))
+            else:
+                where_clause = "user_id = %s AND filename = %s"
+                where_params = (int(user_id), use_filename)
+
+            cursor.execute(
+                f"SELECT chunk_id FROM repository_function_chunks WHERE {where_clause}",
+                where_params,
+            )
+            rows = cursor.fetchall() or []
+            chunk_ids = [str((row or {}).get('chunk_id') or '').strip() for row in rows]
+            chunk_ids = [cid for cid in chunk_ids if cid]
+            if chunk_ids:
+                placeholders = ','.join(['%s'] * len(chunk_ids))
+                cursor.execute(
+                    f"DELETE FROM repository_chunk_embeddings WHERE user_id = %s AND chunk_id IN ({placeholders})",
+                    tuple([int(user_id)] + chunk_ids),
+                )
+            cursor.execute(
+                f"DELETE FROM repository_function_chunks WHERE {where_clause}",
+                where_params,
+            )
+            cursor.execute(
+                f"DELETE FROM repository_class_metadata WHERE {where_clause}",
+                where_params,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _rebuild_faiss_index_from_db(user_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT c.chunk_id, e.embedding_model, e.vector_json
+                FROM repository_function_chunks c
+                INNER JOIN repository_chunk_embeddings e
+                  ON e.user_id = c.user_id AND e.chunk_id = c.chunk_id
+                WHERE c.user_id = %s
+                ORDER BY c.id ASC
+                """,
+                (int(user_id),),
+            )
+            rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+
+    if not rows:
+        _write_faiss_index(
+            user_id=user_id,
+            chunk_ids=[],
+            embeddings=np.zeros((0, 0), dtype=np.float32),
+            embedding_model='',
+        )
+        return ''
+
+    chunk_ids = []
+    vectors = []
+    embedding_model = ''
+    for row in rows:
+        chunk_id = _safe_str((row or {}).get('chunk_id'))
+        vector_json = (row or {}).get('vector_json')
+        if not chunk_id:
+            continue
+        try:
+            vector = json.loads(vector_json) if vector_json else None
+        except Exception:
+            continue
+        if not isinstance(vector, list) or not vector:
+            continue
+        chunk_ids.append(chunk_id)
+        vectors.append(vector)
+        if not embedding_model:
+            embedding_model = _safe_str((row or {}).get('embedding_model'))
+
+    if not chunk_ids:
+        _write_faiss_index(
+            user_id=user_id,
+            chunk_ids=[],
+            embeddings=np.zeros((0, 0), dtype=np.float32),
+            embedding_model='',
+        )
+        return ''
+
+    _write_faiss_index(
+        user_id=user_id,
+        chunk_ids=chunk_ids,
+        embeddings=np.asarray(vectors, dtype=np.float32),
+        embedding_model=embedding_model,
+    )
+    return embedding_model
+
+
 
 def _insert_repository_class_metadata_item(user_id, cls):
     conn = get_db_connection()
@@ -1645,10 +2193,12 @@ def _format_repository_progress_message(stage, detail=''):
     return f"[stage:{stage_key}]"
 
 
-def run_repository_index_job(user_id, job_id):
+def run_repository_index_job(user_id, job_id, file_id=None):
     ensure_repository_index_tables()
     user_id = int(user_id)
     job_id = int(job_id)
+    target_file_id = _safe_int(file_id, 0) if file_id is not None else 0
+    single_file_mode = target_file_id > 0
 
     if not _try_mark_repository_index_job_running(job_id):
         return {
@@ -1661,7 +2211,9 @@ def run_repository_index_job(user_id, job_id):
     try:
         if _is_repository_index_job_cancel_requested(job_id):
             raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-        files = _load_user_repository_files(user_id)
+        files = _load_user_repository_files(user_id, file_id=target_file_id if single_file_mode else None)
+        if single_file_mode and not files:
+            raise RuntimeError(f'文件不存在或无权限，无法重建索引（file_id={target_file_id}）。')
         total_files = len(files)
         update_repository_index_job(
             job_id,
@@ -1677,15 +2229,51 @@ def run_repository_index_job(user_id, job_id):
         embedding_map = {}
         embedding_model = _embedding_model_name()
         parse_errors = []
-        update_repository_index_job(
-            job_id,
-            progress_message=_format_repository_progress_message('prepare', '正在清理旧索引数据。'),
-        )
-        _reset_repository_index_storage(user_id)
-        update_repository_index_job(
-            job_id,
-            progress_message=_format_repository_progress_message('prepare', '旧索引已清理，开始结构化与向量化。'),
-        )
+        base_chunks = 0
+        base_classes = 0
+        if single_file_mode:
+            target_file = files[0]
+            update_repository_index_job(
+                job_id,
+                progress_message=_format_repository_progress_message(
+                    'prepare',
+                    f"正在清理文件旧索引：{_safe_str(target_file.get('filename'))}",
+                ),
+            )
+            _delete_repository_index_for_file(
+                user_id=user_id,
+                repo_file_id=target_file.get('id'),
+                filename=target_file.get('filename'),
+            )
+            embedding_model_from_db = _rebuild_faiss_index_from_db(user_id)
+            if _safe_str(embedding_model_from_db):
+                embedding_model = _safe_str(embedding_model_from_db)
+            base_chunks, base_classes = _count_repository_index_items(user_id)
+            update_repository_index_job(
+                job_id,
+                progress_message=_format_repository_progress_message(
+                    'prepare',
+                    '目标文件旧索引已清理，开始重建该文件结构化与向量化。',
+                ),
+                total_chunks=base_chunks,
+                total_classes=base_classes,
+            )
+        else:
+            update_repository_index_job(
+                job_id,
+                progress_message=_format_repository_progress_message('prepare', '正在清理旧索引数据。'),
+            )
+            _reset_repository_index_storage(user_id)
+            update_repository_index_job(
+                job_id,
+                progress_message=_format_repository_progress_message('prepare', '旧索引已清理，开始结构化与向量化。'),
+            )
+
+        def _current_total_chunks():
+            return int(base_chunks + len(all_functions))
+
+        def _current_total_classes():
+            return int(base_classes + len(all_classes))
 
         for idx, file_item in enumerate(files, start=1):
             if _is_repository_index_job_cancel_requested(job_id):
@@ -1696,8 +2284,8 @@ def run_repository_index_job(user_id, job_id):
                     job_id,
                     progress_message=_format_repository_progress_message(stage, f"{filename} - {detail}"),
                     processed_files=idx - 1,
-                    total_chunks=len(all_functions),
-                    total_classes=len(all_classes),
+                    total_chunks=_current_total_chunks(),
+                    total_classes=_current_total_classes(),
                 )
 
             _report_file_progress('file_prepare', '开始处理文件')
@@ -1716,7 +2304,7 @@ def run_repository_index_job(user_id, job_id):
                         if cn and cn not in class_map:
                             class_map[cn] = cls
 
-                    classes_total_preview = len(all_classes) + len(file_classes_snapshot or [])
+                    classes_total_preview = _current_total_classes() + len(file_classes_snapshot or [])
                     update_repository_index_job(
                         job_id,
                         progress_message=_format_repository_progress_message(
@@ -1724,7 +2312,7 @@ def run_repository_index_job(user_id, job_id):
                             f"{filename} - {_build_vectorizing_target_message(normalized_func)}",
                         ),
                         processed_files=idx - 1,
-                        total_chunks=len(all_functions),
+                        total_chunks=_current_total_chunks(),
                         total_classes=classes_total_preview,
                     )
                     text = _build_embedding_input(normalized_func, class_map)
@@ -1745,7 +2333,7 @@ def run_repository_index_job(user_id, job_id):
                             ),
                         ),
                         processed_files=idx - 1,
-                        total_chunks=len(all_functions),
+                        total_chunks=_current_total_chunks(),
                         total_classes=classes_total_preview,
                     )
                     _insert_repository_function_embedding_item(
@@ -1772,8 +2360,8 @@ def run_repository_index_job(user_id, job_id):
                         job_id,
                         progress_message=_format_repository_progress_message('embedding', f"{filename} - {detail}"),
                         processed_files=idx - 1,
-                        total_chunks=len(all_functions),
-                        total_classes=len(all_classes),
+                        total_chunks=_current_total_chunks(),
+                        total_classes=_current_total_classes(),
                     )
 
                 for class_idx, cls in enumerate(file_classes, start=1):
@@ -1785,34 +2373,38 @@ def run_repository_index_job(user_id, job_id):
                             f"{filename} - 写入类元数据 {class_idx}/{len(file_classes)}：{cls_name}",
                         ),
                         processed_files=idx - 1,
-                        total_chunks=len(all_functions),
-                        total_classes=len(all_classes),
+                        total_chunks=_current_total_chunks(),
+                        total_classes=_current_total_classes(),
                     )
                     _insert_repository_class_metadata_item(user_id=user_id, cls=cls)
                     all_classes.append(cls)
 
                 if _is_repository_index_job_cancel_requested(job_id):
                     raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-                vectors = _build_cumulative_embeddings(all_functions, embedding_map)
                 update_repository_index_job(
                     job_id,
                     progress_message=_format_repository_progress_message('persist', f"{filename} - 正在刷新向量索引（FAISS）"),
                     processed_files=idx - 1,
-                    total_chunks=len(all_functions),
-                    total_classes=len(all_classes),
+                    total_chunks=_current_total_chunks(),
+                    total_classes=_current_total_classes(),
                 )
-                _write_faiss_index(
-                    user_id=user_id,
-                    chunk_ids=[f['chunk_id'] for f in all_functions],
-                    embeddings=vectors,
-                    embedding_model=embedding_model,
-                )
+                if single_file_mode:
+                    model_from_db = _rebuild_faiss_index_from_db(user_id)
+                    if _safe_str(model_from_db):
+                        embedding_model = _safe_str(model_from_db)
+                else:
+                    vectors = _build_cumulative_embeddings(all_functions, embedding_map)
+                    _write_faiss_index(
+                        user_id=user_id,
+                        chunk_ids=[f['chunk_id'] for f in all_functions],
+                        embeddings=vectors,
+                        embedding_model=embedding_model,
+                    )
             except Exception as exc:
                 parse_errors.append(f"{filename}: {str(exc)}")
                 if _is_repository_index_job_cancel_requested(job_id):
                     raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
                 try:
-                    vectors = _build_cumulative_embeddings(all_functions, embedding_map)
                     update_repository_index_job(
                         job_id,
                         progress_message=_format_repository_progress_message(
@@ -1820,28 +2412,34 @@ def run_repository_index_job(user_id, job_id):
                             f"{filename} - 文件处理失败，正在刷新已完成向量索引",
                         ),
                         processed_files=idx - 1,
-                        total_chunks=len(all_functions),
-                        total_classes=len(all_classes),
+                        total_chunks=_current_total_chunks(),
+                        total_classes=_current_total_classes(),
                     )
-                    _write_faiss_index(
-                        user_id=user_id,
-                        chunk_ids=[f['chunk_id'] for f in all_functions],
-                        embeddings=vectors,
-                        embedding_model=embedding_model,
-                    )
+                    if single_file_mode:
+                        model_from_db = _rebuild_faiss_index_from_db(user_id)
+                        if _safe_str(model_from_db):
+                            embedding_model = _safe_str(model_from_db)
+                    else:
+                        vectors = _build_cumulative_embeddings(all_functions, embedding_map)
+                        _write_faiss_index(
+                            user_id=user_id,
+                            chunk_ids=[f['chunk_id'] for f in all_functions],
+                            embeddings=vectors,
+                            embedding_model=embedding_model,
+                        )
                 except Exception as sync_exc:
                     parse_errors.append(f"{filename}: 刷新 FAISS 失败：{str(sync_exc)}")
 
             update_repository_index_job(
                 job_id,
                 processed_files=idx,
-                total_chunks=len(all_functions),
-                total_classes=len(all_classes),
+                total_chunks=_current_total_chunks(),
+                total_classes=_current_total_classes(),
                 progress_message=_format_repository_progress_message(
                     'file_done',
                     (
                         f'已完成文件 {idx}/{total_files}：{filename}；'
-                        f'累计函数 {len(all_functions)}，类 {len(all_classes)}'
+                        f'累计函数 {_current_total_chunks()}，类 {_current_total_classes()}'
                     ),
                 ),
             )
@@ -1860,8 +2458,8 @@ def run_repository_index_job(user_id, job_id):
                 status='failed',
                 processed_files=len(files),
                 total_files=len(files),
-                total_chunks=len(all_functions),
-                total_classes=len(all_classes),
+                total_chunks=_current_total_chunks(),
+                total_classes=_current_total_classes(),
                 finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 error_message=warn_msg,
                 progress_message=_format_repository_progress_message(
@@ -1876,8 +2474,8 @@ def run_repository_index_job(user_id, job_id):
                 'warnings': parse_errors,
                 'partial': True,
                 'files': len(files),
-                'chunks': len(all_functions),
-                'classes': len(all_classes),
+                'chunks': _current_total_chunks(),
+                'classes': _current_total_classes(),
                 'embedding_model': embedding_model,
             }
 
@@ -1886,8 +2484,8 @@ def run_repository_index_job(user_id, job_id):
             status='success',
             processed_files=len(files),
             total_files=len(files),
-            total_chunks=len(all_functions),
-            total_classes=len(all_classes),
+            total_chunks=_current_total_chunks(),
+            total_classes=_current_total_classes(),
             finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             error_message=warn_msg or None,
             progress_message=_format_repository_progress_message('completed', '结构化整理与向量化已完成。'),
@@ -1896,8 +2494,8 @@ def run_repository_index_job(user_id, job_id):
             'success': True,
             'job_id': job_id,
             'files': len(files),
-            'chunks': len(all_functions),
-            'classes': len(all_classes),
+            'chunks': _current_total_chunks(),
+            'classes': _current_total_classes(),
             'embedding_model': embedding_model,
             'warnings': parse_errors,
         }
