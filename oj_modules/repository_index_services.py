@@ -4,10 +4,7 @@
 import hashlib
 import json
 import os
-import subprocess
-import tempfile
 import uuid
-from bisect import bisect_right
 from datetime import datetime
 
 import numpy as np
@@ -86,127 +83,7 @@ class RepositoryIndexJobCancelled(Exception):
 
 
 def ensure_repository_index_tables():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS repository_index_jobs (
-                    id BIGINT NOT NULL AUTO_INCREMENT,
-                    user_id INT NOT NULL,
-                    status VARCHAR(16) NOT NULL DEFAULT 'queued',
-                    total_files INT NOT NULL DEFAULT 0,
-                    processed_files INT NOT NULL DEFAULT 0,
-                    total_chunks INT NOT NULL DEFAULT 0,
-                    total_classes INT NOT NULL DEFAULT 0,
-                    error_message TEXT NULL,
-                    progress_message TEXT NULL,
-                    task_id VARCHAR(64) NULL,
-                    cancel_requested TINYINT(1) NOT NULL DEFAULT 0,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    finished_at DATETIME NULL,
-                    PRIMARY KEY (id),
-                    KEY idx_repository_index_jobs_user_id (user_id),
-                    KEY idx_repository_index_jobs_status (status),
-                    CONSTRAINT fk_repository_index_jobs_user
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS repository_function_chunks (
-                    id BIGINT NOT NULL AUTO_INCREMENT,
-                    chunk_id VARCHAR(64) NOT NULL,
-                    user_id INT NOT NULL,
-                    repo_file_id INT NULL,
-                    filename VARCHAR(255) NOT NULL,
-                    language VARCHAR(32) NOT NULL DEFAULT 'cpp',
-                    kind VARCHAR(32) NOT NULL DEFAULT 'function',
-                    qualified_name VARCHAR(255) NOT NULL,
-                    class_name VARCHAR(255) NULL,
-                    access_modifier VARCHAR(16) NULL,
-                    signature TEXT NOT NULL,
-                    summary TEXT NULL,
-                    return_type VARCHAR(255) NULL,
-                    start_line INT NOT NULL DEFAULT 1,
-                    end_line INT NOT NULL DEFAULT 1,
-                    source_hash VARCHAR(64) NOT NULL,
-                    code LONGTEXT NOT NULL,
-                    params_json LONGTEXT NULL,
-                    returns_json LONGTEXT NULL,
-                    json_data LONGTEXT NOT NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id),
-                    UNIQUE KEY uk_repository_function_chunks_chunk_id (chunk_id),
-                    KEY idx_repository_function_chunks_user_file (user_id, filename),
-                    KEY idx_repository_function_chunks_user_qname (user_id, qualified_name),
-                    CONSTRAINT fk_repository_function_chunks_user
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS repository_class_metadata (
-                    id BIGINT NOT NULL AUTO_INCREMENT,
-                    class_id VARCHAR(64) NOT NULL,
-                    user_id INT NOT NULL,
-                    repo_file_id INT NULL,
-                    filename VARCHAR(255) NOT NULL,
-                    kind VARCHAR(16) NOT NULL DEFAULT 'class',
-                    class_name VARCHAR(255) NOT NULL,
-                    qualified_name VARCHAR(255) NOT NULL,
-                    source_hash VARCHAR(64) NOT NULL,
-                    bases_json LONGTEXT NULL,
-                    members_json LONGTEXT NULL,
-                    json_data LONGTEXT NOT NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id),
-                    UNIQUE KEY uk_repository_class_metadata_class_id (class_id),
-                    KEY idx_repository_class_metadata_user_class (user_id, class_name),
-                    KEY idx_repository_class_metadata_user_qname (user_id, qualified_name),
-                    CONSTRAINT fk_repository_class_metadata_user
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS repository_chunk_embeddings (
-                    id BIGINT NOT NULL AUTO_INCREMENT,
-                    chunk_id VARCHAR(64) NOT NULL,
-                    user_id INT NOT NULL,
-                    embedding_model VARCHAR(128) NOT NULL,
-                    vector_dim INT NOT NULL,
-                    vector_json LONGTEXT NOT NULL,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id),
-                    UNIQUE KEY uk_repository_chunk_embeddings_user_chunk (user_id, chunk_id),
-                    KEY idx_repository_chunk_embeddings_user_chunk (user_id, chunk_id),
-                    CONSTRAINT fk_repository_chunk_embeddings_user
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-                """
-            )
-            cursor.execute("SHOW COLUMNS FROM repository_index_jobs LIKE 'task_id'")
-            if not cursor.fetchone():
-                cursor.execute("ALTER TABLE repository_index_jobs ADD COLUMN task_id VARCHAR(64) NULL")
-            cursor.execute("SHOW COLUMNS FROM repository_index_jobs LIKE 'cancel_requested'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE repository_index_jobs "
-                    "ADD COLUMN cancel_requested TINYINT(1) NOT NULL DEFAULT 0"
-                )
-            cursor.execute("SHOW COLUMNS FROM repository_index_jobs LIKE 'progress_message'")
-            if not cursor.fetchone():
-                cursor.execute("ALTER TABLE repository_index_jobs ADD COLUMN progress_message TEXT NULL")
-        conn.commit()
-    finally:
-        conn.close()
+    return
 
 
 def _safe_int(value, default=0):
@@ -519,54 +396,6 @@ def _load_user_repository_files(user_id):
     return result
 
 
-def _build_line_starts(text):
-    starts = [0]
-    for idx, ch in enumerate(str(text or '')):
-        if ch == '\n':
-            starts.append(idx + 1)
-    return starts
-
-
-def _offset_to_line(line_starts, offset):
-    try:
-        pos = int(offset)
-    except Exception:
-        return 0
-    if pos < 0:
-        return 0
-    return bisect_right(line_starts, pos)
-
-
-def _range_offsets_from_node(node):
-    if not isinstance(node, dict):
-        return None, None
-    rng = node.get('range') if isinstance(node.get('range'), dict) else {}
-    begin = rng.get('begin') if isinstance(rng.get('begin'), dict) else {}
-    end = rng.get('end') if isinstance(rng.get('end'), dict) else {}
-    if begin.get('offset') is None or end.get('offset') is None:
-        return None, None
-    start = int(begin.get('offset'))
-    tok_len = end.get('tokLen')
-    try:
-        tok_len = max(1, int(tok_len))
-    except Exception:
-        tok_len = 1
-    stop = int(end.get('offset')) + tok_len
-    return max(0, start), max(0, stop)
-
-
-def _extract_text_by_offsets(text, start, stop):
-    raw = str(text or '')
-    if start is None or stop is None:
-        return ''
-    n = len(raw)
-    a = max(0, min(n, int(start)))
-    b = max(0, min(n, int(stop)))
-    if b <= a:
-        return ''
-    return raw[a:b]
-
-
 def _get_cpp_tree_sitter_parser():
     parser = _tree_sitter_parser_cache.get('cpp')
     if parser is not None:
@@ -609,177 +438,6 @@ def _ts_find_descendants(node, target_types):
     for sub in _ts_iter_nodes(node):
         if sub.type in target_types:
             yield sub
-
-
-def _ts_parse_issue_score(root_node):
-    if root_node is None:
-        return 10**9
-    error_nodes = 0
-    missing_nodes = 0
-    for node in _ts_iter_nodes(root_node):
-        if _safe_str(node.type) == 'ERROR':
-            error_nodes += 1
-        if bool(getattr(node, 'is_missing', False)):
-            missing_nodes += 1
-    has_error = 1 if bool(getattr(root_node, 'has_error', False)) else 0
-    return has_error * 1_000_000 + error_nodes * 1_000 + missing_nodes
-
-
-def _ts_find_matching_brace(chars, start_idx):
-    n = len(chars)
-    if start_idx < 0 or start_idx >= n or chars[start_idx] != '{':
-        return None
-    depth = 0
-    i = start_idx
-    in_line_comment = False
-    in_block_comment = False
-    in_double_quote = False
-    in_single_quote = False
-
-    while i < n:
-        ch = chars[i]
-        nxt = chars[i + 1] if i + 1 < n else ''
-
-        if in_line_comment:
-            if ch == '\n':
-                in_line_comment = False
-            i += 1
-            continue
-        if in_block_comment:
-            if ch == '*' and nxt == '/':
-                in_block_comment = False
-                i += 2
-                continue
-            i += 1
-            continue
-        if in_double_quote:
-            if ch == '\\':
-                i += 2
-                continue
-            if ch == '"':
-                in_double_quote = False
-            i += 1
-            continue
-        if in_single_quote:
-            if ch == '\\':
-                i += 2
-                continue
-            if ch == "'":
-                in_single_quote = False
-            i += 1
-            continue
-
-        if ch == '/' and nxt == '/':
-            in_line_comment = True
-            i += 2
-            continue
-        if ch == '/' and nxt == '*':
-            in_block_comment = True
-            i += 2
-            continue
-        if ch == '"':
-            in_double_quote = True
-            i += 1
-            continue
-        if ch == "'":
-            in_single_quote = True
-            i += 1
-            continue
-
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                return i
-
-        i += 1
-    return None
-
-
-def _ts_mask_default_brace_initializers_for_parse(source_text):
-    text = str(source_text or '')
-    if '= {' not in text and '={' not in text:
-        return text, False
-    chars = list(text)
-    n = len(chars)
-    i = 0
-    changed = False
-    in_line_comment = False
-    in_block_comment = False
-    in_double_quote = False
-    in_single_quote = False
-
-    while i < n:
-        ch = chars[i]
-        nxt = chars[i + 1] if i + 1 < n else ''
-
-        if in_line_comment:
-            if ch == '\n':
-                in_line_comment = False
-            i += 1
-            continue
-        if in_block_comment:
-            if ch == '*' and nxt == '/':
-                in_block_comment = False
-                i += 2
-                continue
-            i += 1
-            continue
-        if in_double_quote:
-            if ch == '\\':
-                i += 2
-                continue
-            if ch == '"':
-                in_double_quote = False
-            i += 1
-            continue
-        if in_single_quote:
-            if ch == '\\':
-                i += 2
-                continue
-            if ch == "'":
-                in_single_quote = False
-            i += 1
-            continue
-
-        if ch == '/' and nxt == '/':
-            in_line_comment = True
-            i += 2
-            continue
-        if ch == '/' and nxt == '*':
-            in_block_comment = True
-            i += 2
-            continue
-        if ch == '"':
-            in_double_quote = True
-            i += 1
-            continue
-        if ch == "'":
-            in_single_quote = True
-            i += 1
-            continue
-
-        if ch == '=':
-            j = i + 1
-            while j < n and chars[j].isspace():
-                j += 1
-            if j < n and chars[j] == '{':
-                end = _ts_find_matching_brace(chars, j)
-                if end is not None:
-                    k = end + 1
-                    while k < n and chars[k].isspace():
-                        k += 1
-                    if k < n and chars[k] in (',', ')'):
-                        chars[j] = '0'
-                        for idx in range(j + 1, end + 1):
-                            chars[idx] = ' '
-                        changed = True
-                        i = end + 1
-                        continue
-        i += 1
-
-    return ''.join(chars), changed
 
 
 def _ts_nearest_ancestor_of_types(node, target_types):
@@ -888,15 +546,20 @@ def _ts_extract_param_items(parameter_list_node, source_bytes):
     if parameter_list_node is None:
         return params
     for param_decl in parameter_list_node.children:
-        if param_decl.type != 'parameter_declaration':
+        if param_decl.type not in (
+            'parameter_declaration',
+            'optional_parameter_declaration',
+            'variadic_parameter_declaration',
+        ):
             continue
         param_text = _ts_compact_text(_ts_node_text(source_bytes, param_decl))
         if (not param_text) or (param_text == 'void'):
             continue
+        param_text_no_default = _safe_str(param_text.split('=', 1)[0])
         param_name = ''
         for id_node in _ts_find_descendants(param_decl, {'identifier', 'field_identifier'}):
             param_name = _ts_compact_text(_ts_node_text(source_bytes, id_node))
-        param_type = param_text
+        param_type = param_text_no_default
         if param_name and param_type.endswith(param_name):
             param_type = _safe_str(param_type[:len(param_type) - len(param_name)])
         params.append({
@@ -908,6 +571,29 @@ def _ts_extract_param_items(parameter_list_node, source_bytes):
     return params
 
 
+def _ts_build_signature_from_callable_node(callable_node, source_bytes):
+    node = callable_node
+    if node is None:
+        return ''
+
+    # Build signature directly from syntax nodes before the function body,
+    # avoiding fragile text truncation when default args contain braces.
+    if node.type == 'function_definition':
+        parts = []
+        for child in node.children:
+            if child.type in ('compound_statement', 'try_statement'):
+                break
+            text = _ts_compact_text(_ts_node_text(source_bytes, child))
+            if text:
+                parts.append(text)
+        return _safe_str(' '.join(parts))
+
+    text = _ts_compact_text(_ts_node_text(source_bytes, node))
+    if node.type == 'field_declaration' and text.endswith(';'):
+        text = _safe_str(text[:-1])
+    return text
+
+
 def _ts_build_method_item_from_node(method_node, source_bytes, class_name, access_text, has_body):
     declarator_node = _ts_find_first_descendant(method_node, {'function_declarator'})
     param_list_node = _ts_find_first_descendant(declarator_node, {'parameter_list'}) if declarator_node else None
@@ -916,7 +602,7 @@ def _ts_build_method_item_from_node(method_node, source_bytes, class_name, acces
     if not method_name:
         return None
     code_text = _ts_node_text(source_bytes, method_node)
-    signature = _extract_signature_from_code(code_text) or _ts_compact_text(code_text)
+    signature = _ts_build_signature_from_callable_node(method_node, source_bytes) or _ts_compact_text(code_text)
     kind = 'method'
     short_class = _safe_str(effective_class.split('::')[-1]) if effective_class else ''
     if method_name.startswith('~'):
@@ -949,24 +635,8 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
     source = str(content or '')
     source_bytes = source.encode('utf-8', errors='replace')
     parser = _get_cpp_tree_sitter_parser()
-    parse_source = source
-    parse_bytes = source_bytes
-    tree = parser.parse(parse_bytes)
+    tree = parser.parse(source_bytes)
     root = tree.root_node
-
-    # tree-sitter-cpp may recover with MISSING nodes on some default arg "{}" patterns.
-    # Retry with an equal-length masked source to keep byte offsets stable.
-    if bool(getattr(root, 'has_error', False)):
-        masked_source, changed = _ts_mask_default_brace_initializers_for_parse(parse_source)
-        if changed:
-            masked_bytes = masked_source.encode('utf-8', errors='replace')
-            masked_tree = parser.parse(masked_bytes)
-            masked_root = masked_tree.root_node
-            if _ts_parse_issue_score(masked_root) < _ts_parse_issue_score(root):
-                parse_source = masked_source
-                parse_bytes = masked_bytes
-                tree = masked_tree
-                root = masked_root
 
     classes = []
     functions = []
@@ -1146,7 +816,7 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
         elif class_name:
             kind = 'method'
         code_text = _ts_node_text(source_bytes, node)
-        signature = _extract_signature_from_code(code_text) or _ts_compact_text(code_text)
+        signature = _ts_build_signature_from_callable_node(node, source_bytes) or _ts_compact_text(code_text)
         return_type = _return_type_from_signature(signature, node_name, kind)
         start_line = _ts_line_of(node)
         end_line = _ts_end_line_of(node)
@@ -1173,57 +843,6 @@ def _extract_classes_and_functions_from_treesitter(filename, content):
     return classes, functions
 
 
-def _node_source_file(node):
-    if not isinstance(node, dict):
-        return ''
-
-    def _extract_file(loc_obj):
-        if not isinstance(loc_obj, dict):
-            return ''
-        direct = _safe_str(loc_obj.get('file'))
-        if direct:
-            return os.path.abspath(direct)
-        for key in ('spellingLoc', 'expansionLoc', 'presumedLoc', 'includedFrom'):
-            nested = loc_obj.get(key) if isinstance(loc_obj.get(key), dict) else {}
-            nested_file = _safe_str(nested.get('file'))
-            if nested_file:
-                return os.path.abspath(nested_file)
-        return ''
-
-    loc = node.get('loc') if isinstance(node.get('loc'), dict) else {}
-    src = _extract_file(loc)
-    if src:
-        return src
-    rng = node.get('range') if isinstance(node.get('range'), dict) else {}
-    begin = rng.get('begin') if isinstance(rng.get('begin'), dict) else {}
-    src = _extract_file(begin)
-    if src:
-        return src
-    end = rng.get('end') if isinstance(rng.get('end'), dict) else {}
-    src = _extract_file(end)
-    if src:
-        return src
-    return ''
-
-
-def _node_belongs_to_source(node, source_path, source_content_length=0):
-    src = _node_source_file(node)
-    expected = os.path.abspath(str(source_path or ''))
-    if src:
-        return os.path.abspath(src) == expected
-
-    # Some AST nodes omit file path; only keep those whose offsets are
-    # inside the current source text to avoid pulling in system headers.
-    start, stop = _range_offsets_from_node(node)
-    try:
-        text_len = max(0, int(source_content_length or 0))
-    except Exception:
-        text_len = 0
-    if start is None or stop is None or text_len <= 0:
-        return False
-    return 0 <= int(start) <= text_len and 0 <= int(stop) <= text_len and int(stop) > int(start)
-
-
 def _iter_ast_nodes(node):
     if not isinstance(node, dict):
         return
@@ -1232,99 +851,6 @@ def _iter_ast_nodes(node):
         if isinstance(child, dict):
             for sub in _iter_ast_nodes(child):
                 yield sub
-
-
-def _node_has_body(node):
-    if not isinstance(node, dict):
-        return False
-    for child in (node.get('inner') or []):
-        if not isinstance(child, dict):
-            continue
-        if child.get('kind') in ('CompoundStmt', 'CXXTryStmt'):
-            return True
-    return False
-
-
-def _node_param_items(node):
-    params = []
-    for child in (node.get('inner') or []):
-        if not isinstance(child, dict) or child.get('kind') != 'ParmVarDecl':
-            continue
-        params.append({
-            'name': _safe_str(child.get('name')),
-            'type': _safe_str((child.get('type') or {}).get('qualType')),
-            'default_value': None,
-            'description': '',
-        })
-    return params
-
-
-def _type_suffix_from_qual_type(qual_type):
-    text = _safe_str(qual_type)
-    pos = text.find(')')
-    if pos < 0:
-        return ''
-    return _safe_str(text[pos + 1:])
-
-
-def _return_type_from_qual_type(qual_type):
-    text = _safe_str(qual_type)
-    if ' (' not in text:
-        return ''
-    return _safe_str(text.split(' (', 1)[0])
-
-
-def _build_signature_from_ast_node(node):
-    kind = _safe_str(node.get('kind'))
-    name = _safe_str(node.get('name'))
-    params = _node_param_items(node)
-    parts = []
-    for param in params:
-        ptype = _safe_str(param.get('type'))
-        pname = _safe_str(param.get('name'))
-        if ptype and pname:
-            parts.append(f"{ptype} {pname}")
-        elif ptype:
-            parts.append(ptype)
-        elif pname:
-            parts.append(pname)
-    params_text = ', '.join(parts)
-    qual_type = _safe_str((node.get('type') or {}).get('qualType'))
-    suffix = _type_suffix_from_qual_type(qual_type)
-
-    if kind in ('CXXConstructorDecl', 'CXXDestructorDecl'):
-        signature = f"{name}({params_text})"
-    else:
-        ret_type = _return_type_from_qual_type(qual_type)
-        if ret_type:
-            signature = f"{ret_type} {name}({params_text})"
-        else:
-            signature = f"{name}({params_text})"
-    signature = _safe_str(signature)
-    if suffix:
-        signature = _safe_str(f"{signature} {suffix}")
-    return signature
-
-
-def _extract_signature_from_code(code_text):
-    raw = str(code_text or '')
-    if not raw:
-        return ''
-    brace_idx = raw.find('{')
-    if brace_idx >= 0:
-        head = raw[:brace_idx]
-    else:
-        semi_idx = raw.find(';')
-        head = raw[:semi_idx] if semi_idx >= 0 else raw
-    head = _safe_str(' '.join(str(head).replace('\n', ' ').replace('\t', ' ').split()))
-    if not head:
-        return ''
-    close_idx = head.rfind(')')
-    if close_idx > 0:
-        colon_idx = head.find(':', close_idx)
-        if colon_idx > close_idx:
-            head = _safe_str(head[:close_idx + 1])
-    return head
 
 
 def _return_type_from_signature(signature, node_name, func_kind):
@@ -1364,271 +890,6 @@ def _build_member_variable_decl_for_prompt(member):
     if m_name:
         return f"{access}: {m_name};"
     return ''
-
-
-def _extract_classes_from_clang_ast(ast_root, source_path, content):
-    line_starts = _build_line_starts(content)
-    source_len = len(str(content or ''))
-    classes = []
-    class_id_to_name = {}
-    seen_ids = set()
-
-    for node in _iter_ast_nodes(ast_root):
-        if not isinstance(node, dict):
-            continue
-        kind = _safe_str(node.get('kind'))
-        if kind not in ('CXXRecordDecl', 'RecordDecl'):
-            continue
-        if not _node_belongs_to_source(node, source_path, source_content_length=source_len):
-            continue
-        if _safe_bool(node.get('isImplicit'), False):
-            continue
-        if not _safe_bool(node.get('completeDefinition'), False):
-            continue
-        class_name = _safe_str(node.get('name'))
-        if not class_name:
-            continue
-
-        class_id = _safe_str(node.get('id'))
-        if class_id and class_id in seen_ids:
-            continue
-        if class_id:
-            seen_ids.add(class_id)
-
-        class_kind = _safe_str(node.get('tagUsed') or node.get('kind')).lower()
-        if class_kind not in ('class', 'struct'):
-            class_kind = 'class'
-        qualified_name = class_name
-        if class_id:
-            class_id_to_name[class_id] = qualified_name
-
-        bases = []
-        for base in (node.get('bases') or []):
-            if not isinstance(base, dict):
-                continue
-            base_name = _safe_str((base.get('type') or {}).get('qualType'))
-            if not base_name:
-                continue
-            access = _normalize_access(base.get('access'), default='public') or 'public'
-            bases.append({
-                'base_name': base_name,
-                'access': access,
-                'is_virtual': _safe_bool(base.get('isVirtual'), False),
-            })
-
-        default_access = 'private' if class_kind == 'class' else 'public'
-        current_access = default_access
-        members_vars = []
-        members_methods = []
-        member_var_decls = []
-        member_method_decls = []
-
-        for child in (node.get('inner') or []):
-            if not isinstance(child, dict):
-                continue
-            child_kind = _safe_str(child.get('kind'))
-            if child_kind == 'AccessSpecDecl':
-                current_access = _normalize_access(child.get('access'), default=current_access) or current_access
-                continue
-
-            if child_kind == 'FieldDecl':
-                start, stop = _range_offsets_from_node(child)
-                line_no = _offset_to_line(line_starts, start)
-                item = {
-                    'name': _safe_str(child.get('name')),
-                    'type': _safe_str((child.get('type') or {}).get('qualType')),
-                    'class_name': class_name,
-                    'access': _normalize_access(current_access, default=default_access) or default_access,
-                    'is_static': _safe_bool(child.get('storageClass') == 'static', False),
-                    'line': max(0, int(line_no or 0)),
-                }
-                if item['name']:
-                    members_vars.append(item)
-                    decl = _build_member_variable_decl_for_prompt(item)
-                    if decl:
-                        member_var_decls.append(decl)
-                continue
-
-            if child_kind not in ('CXXMethodDecl', 'CXXConstructorDecl', 'CXXDestructorDecl'):
-                continue
-            if _safe_bool(child.get('isImplicit'), False):
-                continue
-
-            start, stop = _range_offsets_from_node(child)
-            start_line = _offset_to_line(line_starts, start)
-            end_line = _offset_to_line(line_starts, max(start if start is not None else 0, (stop or 0) - 1))
-            code = _extract_text_by_offsets(content, start, stop)
-            signature = _extract_signature_from_code(code) or _build_signature_from_ast_node(child)
-            method_name = _safe_str(child.get('name'))
-            qual_type = _safe_str((child.get('type') or {}).get('qualType'))
-            method_kind = 'method'
-            if child_kind == 'CXXConstructorDecl':
-                method_kind = 'constructor'
-            elif child_kind == 'CXXDestructorDecl':
-                method_kind = 'destructor'
-            elif method_name.startswith('operator'):
-                method_kind = 'operator'
-            return_type = _return_type_from_signature(signature, method_name, method_kind)
-            if (not return_type) and (method_kind not in ('constructor', 'destructor')):
-                return_type = _return_type_from_qual_type(qual_type)
-            method_item = {
-                'kind': method_kind,
-                'name': method_name,
-                'qualified_name': f"{qualified_name}::{method_name}" if method_name else qualified_name,
-                'signature': signature,
-                'return_type': return_type,
-                'params': _node_param_items(child),
-                'access': _normalize_access(current_access, default=default_access) or default_access,
-                'is_static': _safe_bool(child.get('storageClass') == 'static', False),
-                'is_virtual': _safe_bool(child.get('isVirtual'), False),
-                'is_const': ' const' in f" {_safe_str(_type_suffix_from_qual_type(qual_type))}",
-                'is_pure_virtual': _safe_bool(child.get('isPure'), False),
-                'start_line': max(0, int(start_line or 0)),
-                'end_line': max(0, int(end_line or 0)),
-                'has_body': _node_has_body(child),
-                'code': code,
-            }
-            members_methods.append(method_item)
-            decl = _build_member_method_decl_for_prompt(method_item)
-            if decl:
-                member_method_decls.append(decl)
-
-        class_payload = {
-            'class_name': class_name,
-            'qualified_name': qualified_name,
-            'kind': class_kind,
-            'bases': bases,
-            'member_variables': members_vars,
-            'member_methods': members_methods,
-            '_prompt_member_variable_decls': member_var_decls,
-            '_prompt_member_method_decls': member_method_decls,
-            '_clang_decl_id': class_id,
-        }
-        classes.append(class_payload)
-
-    return classes, class_id_to_name
-
-
-def _extract_functions_from_clang_ast(ast_root, source_path, content, class_id_to_name):
-    line_starts = _build_line_starts(content)
-    source_len = len(str(content or ''))
-    functions = []
-    seen = set()
-
-    for node in _iter_ast_nodes(ast_root):
-        if not isinstance(node, dict):
-            continue
-        kind = _safe_str(node.get('kind'))
-        if kind not in ('FunctionDecl', 'CXXMethodDecl', 'CXXConstructorDecl', 'CXXDestructorDecl', 'CXXConversionDecl'):
-            continue
-        if not _node_belongs_to_source(node, source_path, source_content_length=source_len):
-            continue
-        if _safe_bool(node.get('isImplicit'), False):
-            continue
-        if not _node_has_body(node):
-            continue
-
-        start, stop = _range_offsets_from_node(node)
-        code = _extract_text_by_offsets(content, start, stop)
-        if not _safe_str(code):
-            continue
-
-        node_name = _safe_str(node.get('name'))
-        if not node_name:
-            continue
-
-        class_name = ''
-        parent_id = _safe_str(node.get('parentDeclContextId'))
-        if parent_id:
-            class_name = _safe_str(class_id_to_name.get(parent_id))
-        if '(lambda' in class_name:
-            continue
-
-        if kind == 'FunctionDecl':
-            func_kind = 'function'
-        elif kind == 'CXXMethodDecl':
-            func_kind = 'operator' if node_name.startswith('operator') else 'method'
-        elif kind == 'CXXConstructorDecl':
-            func_kind = 'constructor'
-        elif kind == 'CXXDestructorDecl':
-            func_kind = 'destructor'
-        else:
-            func_kind = 'operator'
-
-        signature = _extract_signature_from_code(code) or _build_signature_from_ast_node(node)
-        qual_type = _safe_str((node.get('type') or {}).get('qualType'))
-        return_type = _return_type_from_signature(signature, node_name, func_kind)
-        if (not return_type) and (func_kind not in ('constructor', 'destructor')):
-            return_type = _return_type_from_qual_type(qual_type)
-        qualified_name = f"{class_name}::{node_name}" if class_name else node_name
-        if not qualified_name:
-            continue
-
-        start_line = _offset_to_line(line_starts, start)
-        end_line = _offset_to_line(line_starts, max(start if start is not None else 0, (stop or 0) - 1))
-        dedupe_key = (func_kind, node_name, signature, int(start_line or 0), int(end_line or 0))
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-
-        functions.append({
-            'kind': func_kind,
-            'qualified_name': qualified_name,
-            'class_name': class_name,
-            'access': _normalize_access(node.get('access'), default=''),
-            'signature': signature,
-            'params': _node_param_items(node),
-            'returns': {
-                'type': return_type,
-                'description': '',
-            },
-            'summary': '',
-            'location': {
-                'start_line': max(0, int(start_line or 0)),
-                'end_line': max(0, int(end_line or 0)),
-            },
-            'code': code,
-        })
-    return functions
-
-
-def _run_clang_ast_dump(filename, content):
-    ext = os.path.splitext(str(filename or ''))[1].lower()
-    if ext not in _ALLOWED_REPO_EXTENSIONS:
-        ext = '.cpp'
-    lang = _detect_language_from_filename(filename)
-    clang_lang = 'c' if lang == 'c' else 'c++'
-    std_flag = '-std=c11' if lang == 'c' else '-std=c++17'
-
-    with tempfile.TemporaryDirectory(prefix='repo_clang_ast_') as tmp_dir:
-        source_path = os.path.join(tmp_dir, f'source{ext}')
-        with open(source_path, 'w', encoding='utf-8', errors='replace') as f:
-            f.write(str(content or ''))
-        cmd = [
-            'clang',
-            '-Xclang', '-ast-dump=json',
-            '-fsyntax-only',
-            '-x', clang_lang,
-            std_flag,
-            '-Wno-everything',
-            source_path,
-        ]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        stdout = str(proc.stdout or '').strip()
-        stderr_raw = str(proc.stderr or '')
-        stderr = stderr_raw if len(stderr_raw) <= 400 else (stderr_raw[:400] + '...')
-        if not stdout:
-            raise RuntimeError(f'clang AST 解析失败：{filename}；stderr={stderr}')
-        try:
-            ast_data = json.loads(stdout)
-        except Exception as exc:
-            raise RuntimeError(f'clang AST JSON 解析失败：{filename}；stderr={stderr}') from exc
-        return ast_data, source_path
 
 
 def _call_qwen_structured_function_entity(filename, function_item):
@@ -1771,19 +1032,6 @@ def _build_function_item_from_member_method(class_name, method_item):
         'code': _safe_str(method.get('code')) or (f"{signature};" if signature else ''),
         'has_body': _safe_bool(method.get('has_body'), False),
     }
-
-
-def _function_identity_key(function_item):
-    item = function_item if isinstance(function_item, dict) else {}
-    qname = _safe_str(item.get('qualified_name'))
-    simple_name = qname.split('::')[-1] if qname else ''
-    signature = _safe_str(item.get('signature'))
-    kind = _safe_str(item.get('kind'))
-    location = item.get('location') if isinstance(item.get('location'), dict) else {}
-    start_line = _safe_int(location.get('start_line'), _safe_int(item.get('start_line'), 0))
-    end_line = _safe_int(location.get('end_line'), _safe_int(item.get('end_line'), start_line))
-    return (kind, simple_name, signature, int(start_line), int(end_line))
-
 
 def _notify_structuring_progress(progress_callback, stage, detail):
     if not callable(progress_callback):

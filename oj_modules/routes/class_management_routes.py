@@ -49,31 +49,7 @@ def allowed_grade_file(filename):
 
 
 def create_final_exam_scores_table():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-                CREATE TABLE IF NOT EXISTS final_exam_scores (
-                    id INT PRIMARY KEY AUTO_INCREMENT,
-                    class_en VARCHAR(32),
-                    student_id VARCHAR(64),
-                    regular_score FLOAT,
-                    final_score FLOAT,
-                    UNIQUE KEY uniq_class_student (class_en, student_id)
-                ) CHARACTER SET utf8mb4;
-            """
-            cursor.execute(sql)
-            try:
-                cursor.execute("ALTER TABLE final_exam_scores ADD COLUMN regular_score FLOAT")
-            except Exception:
-                pass
-            try:
-                cursor.execute("ALTER TABLE final_exam_scores ADD COLUMN final_score FLOAT")
-            except Exception:
-                pass
-        conn.commit()
-    finally:
-        conn.close()
+    return
 
 
 @class_management_bp.route('/admin/upload_exam_scores', methods=['POST'])
