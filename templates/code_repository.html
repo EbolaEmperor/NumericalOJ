@@ -54,6 +54,9 @@
                             <span id="fileModified" class="text-danger ms-2 d-none">*</span>
                         </div>
                         <div class="btn-group">
+                            <button id="rebuildCurrentFileIndexBtn" type="button" class="btn btn-outline-warning btn-sm" onclick="rebuildCurrentFileIndex()" disabled>
+                                <i class="fas fa-redo"></i> 重建索引
+                            </button>
                             <button type="button" class="btn btn-success btn-sm" onclick="saveFile()">
                                 <i class="fas fa-save"></i> 保存
                             </button>
@@ -262,6 +265,7 @@ let codeMirrorEditor = null;
 let currentIndexJobId = null;
 let indexStatusTimer = null;
 let isStartingIndexBuild = false;
+let isStartingFileRebuild = false;
 
 const repositoryIndexStageLabelMap = {
     prepare: '准备阶段',
@@ -466,6 +470,7 @@ function openFile(fileId, filename) {
                 document.querySelector(`[data-file-id="${fileId}"]`).classList.add('active');
                 
                 updateModifiedStatus();
+                updateCurrentFileRebuildButtonState();
             } else {
                 showAlert('error', data.message);
             }
@@ -502,6 +507,7 @@ function closeFile() {
     document.querySelectorAll('.file-item').forEach(item => {
         item.classList.remove('active');
     });
+    updateCurrentFileRebuildButtonState();
 }
 
 // 保存文件
@@ -709,6 +715,74 @@ function startStructuredIndexBuild() {
         if (btn) {
             btn.disabled = false;
         }
+    });
+}
+
+function updateCurrentFileRebuildButtonState() {
+    const btn = document.getElementById('rebuildCurrentFileIndexBtn');
+    if (!btn) {
+        return;
+    }
+    btn.disabled = !(Number.isFinite(Number(currentFileId)) && Number(currentFileId) > 0) || isStartingFileRebuild;
+}
+
+function rebuildCurrentFileIndex() {
+    const fileId = Number(currentFileId || 0);
+    if (!Number.isFinite(fileId) || fileId <= 0) {
+        showAlert('error', '请先打开一个文件');
+        return;
+    }
+    if (isStartingFileRebuild) {
+        return;
+    }
+    isStartingFileRebuild = true;
+    updateCurrentFileRebuildButtonState();
+
+    const startRebuild = (forceRestart) => fetch('/api/repository/index/rebuild_file', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            file_id: fileId,
+            force_restart: !!forceRestart
+        })
+    })
+    .then(response => response.json());
+
+    startRebuild(false)
+    .then(data => {
+        if (data && data.need_confirm) {
+            const confirmed = window.confirm('上一个整理任务正在运行，是否终止？');
+            if (!confirmed) {
+                return null;
+            }
+            return startRebuild(true);
+        }
+        return data || null;
+    })
+    .then(data => {
+        if (!data) {
+            return;
+        }
+        if (!data.success) {
+            showAlert('error', data.message || '启动单文件索引重建失败');
+            return;
+        }
+        currentIndexJobId = data.job_id;
+        try {
+            localStorage.setItem('repositoryIndexJobId', String(currentIndexJobId));
+        } catch (e) {}
+        showAlert('success', data.message || '单文件索引重建任务已启动');
+        pollIndexJobStatus(currentIndexJobId);
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '启动单文件索引重建失败');
+    })
+    .finally(() => {
+        isStartingFileRebuild = false;
+        updateCurrentFileRebuildButtonState();
     });
 }
 

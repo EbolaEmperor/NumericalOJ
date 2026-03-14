@@ -304,6 +304,87 @@ def build_repository_index():
         return jsonify(success=False, message=f"启动结构化整理失败: {str(e)}"), 500
 
 
+@repository_bp.route('/api/repository/index/rebuild_file', methods=['POST'])
+def rebuild_repository_index_for_file():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    if _repository_build_index_task is None:
+        return jsonify(success=False, message="结构化整理任务未初始化"), 500
+
+    try:
+        payload = request.get_json(silent=True) or {}
+        file_id = int(payload.get('file_id') or 0)
+        force_restart = bool(payload.get('force_restart'))
+        if file_id <= 0:
+            return jsonify(success=False, message='file_id 非法'), 400
+
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, filename
+                    FROM user_code_repository
+                    WHERE user_id = %s AND id = %s
+                    LIMIT 1
+                    """,
+                    (int(user['id']), int(file_id)),
+                )
+                target_file = cursor.fetchone()
+        finally:
+            conn.close()
+
+        if not target_file:
+            return jsonify(success=False, message='文件不存在或无权限'), 404
+
+        active_job = get_latest_active_repository_index_job(user_id=user['id'])
+        if active_job and not force_restart:
+            return jsonify(
+                success=False,
+                need_confirm=True,
+                active_job_id=int(active_job['id']),
+                message='上一个整理任务正在运行，是否终止？',
+            ), 409
+
+        cancelled_job_id = None
+        if active_job and force_restart:
+            cancelled_job_id = int(active_job['id'])
+            cancelled = request_cancel_repository_index_job(
+                job_id=cancelled_job_id,
+                user_id=user['id'],
+                reason='用户确认终止上一个整理任务并重启。',
+            )
+            task_id = str((cancelled or {}).get('task_id') or '').strip()
+            if task_id:
+                try:
+                    _repository_build_index_task.app.control.revoke(task_id, terminate=True, signal='SIGTERM')
+                except Exception:
+                    pass
+
+        job_id = create_repository_index_job(user['id'])
+        async_result = _repository_build_index_task.delay(user['id'], job_id, int(file_id))
+        update_repository_index_job(
+            job_id,
+            task_id=str(async_result.id),
+            cancel_requested=0,
+        )
+        message = f"已开始重建文件索引：{target_file['filename']}"
+        if cancelled_job_id is not None:
+            message = f'已终止任务 #{cancelled_job_id}，并开始重建文件索引：{target_file["filename"]}'
+        return jsonify(
+            success=True,
+            message=message,
+            job_id=job_id,
+            task_id=async_result.id,
+            file_id=int(file_id),
+            filename=target_file['filename'],
+            replaced_job_id=cancelled_job_id,
+        )
+    except Exception as e:
+        return jsonify(success=False, message=f"启动单文件索引重建失败: {str(e)}"), 500
+
+
 @repository_bp.route('/api/repository/index/status/<int:job_id>', methods=['GET'])
 def get_repository_index_status(job_id):
     user = current_user()
