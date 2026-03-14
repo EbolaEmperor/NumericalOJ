@@ -1314,7 +1314,7 @@ def _call_qwen_structured_function_entity(filename, function_item):
         "2. 只允许输出这些字段：summary, params, returns。\n"
         "3. params 仅输出 name 和 description；returns 仅输出 description。\n"
         "4. 不要改动参数名，不要虚构参数。\n"
-        "5. summary 必须使用中文，必须描述该函数实际行为，不要输出“代码片段不完整/签名不匹配”等元描述。\n"
+        "5. summary 必须使用中文，描述函数的功能用途，如果算法比较特别可以说一下它适用的场景，但绝对不描述内部实现方式。如果已经有人工注释，就尽可能用人工注释的原话去描述。\n"
         "6. 如果代码里已经有人工注释，请尽可能保留注释里的有效信息，你也可以增加必要补充说明。\n\n"
         "JSON 格式：\n"
         "{\n"
