@@ -475,41 +475,7 @@ def ensure_agent_runs_table():
     global _agent_runs_table_ready
     if _agent_runs_table_ready:
         return
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_task_runs (
-                    id BIGINT NOT NULL AUTO_INCREMENT,
-                    task_id VARCHAR(64) NOT NULL,
-                    problem_id INT DEFAULT NULL,
-                    problem_title VARCHAR(255) DEFAULT NULL,
-                    requested_by VARCHAR(50) DEFAULT NULL,
-                    status VARCHAR(32) NOT NULL DEFAULT 'Pending',
-                    message TEXT,
-                    rounds_run INT NOT NULL DEFAULT 0,
-                    max_rounds INT NOT NULL DEFAULT 0,
-                    best_score INT NOT NULL DEFAULT 0,
-                    final_submission_id INT DEFAULT NULL,
-                    latest_submission_id INT DEFAULT NULL,
-                    attempts_json LONGTEXT,
-                    events_json LONGTEXT,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id),
-                    UNIQUE KEY uniq_task_id (task_id),
-                    KEY idx_agent_runs_status_updated (status, updated_at),
-                    KEY idx_agent_runs_problem_updated (problem_id, updated_at),
-                    KEY idx_agent_runs_user_updated (requested_by, updated_at)
-                ) CHARACTER SET utf8mb4
-                """
-            )
-        conn.commit()
-        _agent_runs_table_ready = True
-    finally:
-        conn.close()
+    _agent_runs_table_ready = True
 
 
 def _safe_int(value, default=0):
@@ -707,22 +673,7 @@ def ensure_settings_table():
     global _settings_table_ready
     if _settings_table_ready:
         return
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS site_settings (
-                    k VARCHAR(64) PRIMARY KEY,
-                    v VARCHAR(255)
-                ) CHARACTER SET utf8mb4
-                """
-            )
-        conn.commit()
-        _settings_table_ready = True
-    finally:
-        conn.close()
+    _settings_table_ready = True
 
 
 def get_setting(key, default=None):
