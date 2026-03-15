@@ -55,7 +55,7 @@
         <iframe
           id="agentSubmissionFrame"
           class="{% if not latest_submission_id %}d-none{% endif %}"
-          src="{% if latest_submission_id %}{{ url_for('submission.submission_detail', submission_id=latest_submission_id) }}{% endif %}"
+          src="{% if latest_submission_id %}{{ url_for('submission.submission_detail', submission_id=latest_submission_id, embed=1) }}{% endif %}"
           title="Submission Details">
         </iframe>
       </div>
@@ -309,13 +309,31 @@
       eventsEl.appendChild(frag);
     }
 
+    function buildSubmissionDetailUrl(submissionId, embedded, extraParams) {
+      const id = Number(submissionId || 0);
+      if (!id) return '';
+      const params = new URLSearchParams();
+      if (embedded) params.set('embed', '1');
+      if (extraParams && typeof extraParams === 'object') {
+        Object.keys(extraParams).forEach(function (key) {
+          if (!key) return;
+          const value = extraParams[key];
+          if (value === undefined || value === null || value === '') return;
+          params.set(key, String(value));
+        });
+      }
+      const query = params.toString();
+      return '/submission_detail/' + id + (query ? ('?' + query) : '');
+    }
+
     function syncSubmissionFrame(submissionId) {
       if (!submissionId) return;
       if (submissionId === currentSubmissionId) return;
 
       currentSubmissionId = submissionId;
-      const targetUrl = '/submission_detail/' + submissionId;
-      frameEl.src = targetUrl;
+      const frameUrl = buildSubmissionDetailUrl(submissionId, true);
+      const targetUrl = buildSubmissionDetailUrl(submissionId, false);
+      frameEl.src = frameUrl;
       frameEl.classList.remove('d-none');
       placeholderEl.classList.add('d-none');
 
@@ -329,8 +347,8 @@
 
     function refreshSubmissionFrame(submissionId) {
       if (!submissionId || !frameEl) return;
-      const targetUrl = '/submission_detail/' + submissionId;
-      const refreshedUrl = targetUrl + '?agent_refresh=' + Date.now();
+      const targetUrl = buildSubmissionDetailUrl(submissionId, false);
+      const refreshedUrl = buildSubmissionDetailUrl(submissionId, true, { agent_refresh: Date.now() });
       frameEl.src = refreshedUrl;
       frameEl.classList.remove('d-none');
       placeholderEl.classList.add('d-none');

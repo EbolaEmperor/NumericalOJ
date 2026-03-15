@@ -523,7 +523,10 @@ def _build_conversation_messages(
         "请自行决策并调用工具迭代解题。",
         "系统已把用户代码仓库文件复制到你的工作目录；你只能在工作目录内读写文件。",
         "目标：产出能通过评测的代码。",
-        "要求：1. 不要臆造文件或评测结果。 2. 题目给的提示非常重要，请优先满足。 3. 如果提交后没有获得满分，必须在本地复现错误、编译、运行，决不允许编辑完直接再提交。",
+        "要求：1. 不要臆造文件或评测结果。 2. 题目给的提示以及用户追加的提示非常重要，请优先满足。 3. 如果提交后没有获得满分，必须在本地复现错误、编译、运行，决不允许编辑完直接再提交。",
+        "强制流程：任意一次 submit_evaluation 未满分后，下一次 submit_evaluation 前，必须先本地复现失败并验证修复，禁止跳过本地验证直接再提交。",
+        "当题意、算法细节或库函数语义不确定时，调用联网搜索工具查证。",
+        "当需要复杂的公式推导/数值校验时，请用 python 写程序去算，不要自己猜。",
         f"硬性约束：最多只能调用 {_AGENT_SUBMIT_LIMIT} 次 submit_evaluation；"
         f"第 {_AGENT_SUBMIT_LIMIT} 次返回后若仍未通过，任务会被强制终止并判定失败。",
         "完成条件：submit_evaluation 返回的评测状态为 Accepted。",
@@ -1009,12 +1012,15 @@ def _build_agent_react_tools():
     ]
 
 
-def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=None):
+def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=None, extra_prompt=""):
     lang = (problem.get("lang") or "matlab").lower()
     initial_code = (problem.get("initial_code") or "").strip()
     title = str(problem.get("title", "") or "").strip()
     content = str(problem.get("content", "") or "").strip()
     hint_lines = _dedupe_keep_order(core_hints or [])[:8]
+    user_extra_prompt = str(extra_prompt or "").strip()
+    if len(user_extra_prompt) > 4000:
+        user_extra_prompt = user_extra_prompt[:4000]
     lines = [
         "你是一个解题 Agent，你需要为在线评测系统完成编程题并通过评测。",
         "你首先需要获取：",
@@ -1044,6 +1050,14 @@ def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=Non
             "在你决策的过程中，请首先考虑这些提示，确保提示里的每条内容你都做到了。我重复一遍这些提示：",
             hint_text,
         ])
+    if user_extra_prompt:
+        lines.extend([
+            "",
+            "下面是用户追加的额外提示词，这些提示词可能包含用户对题目的理解、解题思路建议、测试用例信息等重要内容，请务必仔细阅读并优先满足：",
+            user_extra_prompt,
+            "我将这些内容再重复一遍，请确保你都考虑到了：",
+            user_extra_prompt,
+        ])
     lines.extend([
         "",
         f"你的工作目录是：{workspace_dir}",
@@ -1056,13 +1070,6 @@ def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=Non
         "3. 根据题意创建必要的输入文件，如果你的测试程序不需要输入，则跳过此步。",
         "4. 编译运行你的测试程序，确保能够编译通过，且能够正确通过测试。如果无法通过，重复 1-4 步，直到能够通过自己写的测试。",
         "5. 调用 submit_evaluation 提交评测；系统会提交你的主代码文件以及它依赖的所有头文件，不会提交你自己写的测试代码。",
-        "当你提交后，发现没有获得满分时，严禁修改代码后直接再交，严禁修改代码后直接再交，严禁修改代码后直接再交！你必须：",
-        "1. 分析错误原因，尝试写一个测试代码来复现错误。",
-        "2. 编译、运行测试代码，看到底为什么错了。",
-        "3. 修复你的程序，直到能通过你自己新写的测试代码为止。",
-        "4. 重新提交。",
-        "当遇到不理解的问题时，请及时调用联网搜索工具搜索相关信息。",
-        "当遇到难以计算的公式时，请用 sympy 写一个小程序来计算。",
         "",
     ])
     if lang in ("python", "py"):
@@ -1071,10 +1078,11 @@ def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=Non
     elif lang in ("matlab", "octave"):
         lines.append("系统没有 MATLAB 环境，但提供了 octave 环境，请用 octave 来代替执行 MATLAB 代码。")
         lines.append("")
-    lines.append(
-        f"你最多只能调用 {_AGENT_SUBMIT_LIMIT} 次 submit_evaluation，"
-        f"若 {_AGENT_SUBMIT_LIMIT} 次还没成功，你会被强制终止并判定失败。"
-    )
+    if user_extra_prompt:
+        lines.extend([
+            "最后再次强调用户追加的额外提示词，请务必仔细阅读并优先满足：",
+            user_extra_prompt,
+        ])
     return "\n".join(lines).strip()
 
 

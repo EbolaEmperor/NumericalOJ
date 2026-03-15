@@ -11,18 +11,22 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
         return existing
 
     @celery_app.task(bind=True, name=AGENT_SOLVE_TASK_NAME, time_limit=1800, soft_time_limit=1680)
-    def agent_solve_problem(self, problem_id, requested_by):
+    def agent_solve_problem(self, problem_id, requested_by, extra_prompt=""):
         task_id = str((getattr(getattr(self, "request", None), "id", None) or "")).strip()
         if not task_id:
             task_id = f"unknown-{int(time.time())}"
 
         submit_limit = _AGENT_SUBMIT_LIMIT
+        use_extra_prompt = str(extra_prompt or "").strip()
+        if len(use_extra_prompt) > 4000:
+            use_extra_prompt = use_extra_prompt[:4000]
 
         state = {
             "task_id": task_id,
             "problem_id": int(problem_id),
             "problem_title": "",
             "requested_by": requested_by,
+            "extra_prompt": use_extra_prompt,
             "status": "Running",
             "message": "Agent 任务启动中",
             "round": 0,
@@ -64,6 +68,13 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             problem_id=problem.get("id"),
             problem_title=problem.get("title"),
         )
+        if use_extra_prompt:
+            _push_agent_event(
+                state,
+                f"检测到额外提示词，长度={len(use_extra_prompt)} 字符",
+                event_type="extra_prompt",
+                details={"extra_prompt": use_extra_prompt},
+            )
 
         attempts = []
         final_submission_id = None
@@ -140,6 +151,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 workspace_dir=workspace_dir,
                 main_code_path=main_code_path,
                 core_hints=core_hints,
+                extra_prompt=use_extra_prompt,
             ),
         }]
         tools = _build_agent_react_tools()

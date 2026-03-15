@@ -1,4 +1,4 @@
-{% extends "layout.html" %}
+{% extends layout_template if layout_template is defined else "layout.html" %}
 {% block title %}提交详情 - {{ super() }}{% endblock %}
 {% block content %}
 {% set lang_label = 

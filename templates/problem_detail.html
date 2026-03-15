@@ -23,7 +23,13 @@
       </div>
       {% if user and user.is_admin == 1 %}
       <div class="problem-admin-actions mt-2">
-        <button type="button" class="btn btn-outline-primary" id="btnAgentSolve" title="AI Agent 自动解题">
+        <button
+          type="button"
+          class="btn btn-outline-primary"
+          id="btnAgentSolve"
+          title="AI Agent 自动解题"
+          data-bs-toggle="modal"
+          data-bs-target="#agentSolveModal">
           <i class="fas fa-robot me-1"></i> 解题
         </button>
         {% if problem.type == 1 %}
@@ -176,6 +182,35 @@
 </div>
 
 {% if user and user.is_admin == 1 %}
+<div class="modal fade" id="agentSolveModal" tabindex="-1" aria-labelledby="agentSolveModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="agentSolveModalLabel">
+          <i class="fas fa-robot me-2"></i>解题 Agent
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-0">
+          <label for="agentSolveExtraPrompt" class="form-label">额外提示词</label>
+          <textarea
+            class="form-control"
+            id="agentSolveExtraPrompt"
+            rows="6"
+            placeholder="例如：优先使用双指针；注意边界 n=1；尽量给出 O(n log n) 做法。"></textarea>
+          <div class="form-text">可选。会原样传给解题 Agent 作为补充约束（最长 4000 字）。</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-outline-primary" id="btnStartAgentSolve">
+          <i class="fas fa-play me-2"></i>启动 Agent
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 {% if problem.type == 1 %}
 <div class="modal fade" id="agentGenerateDataModal" tabindex="-1" aria-labelledby="agentGenerateDataModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg">
@@ -538,13 +573,26 @@
     var progressBar = document.getElementById("rejudgeProgressBar");
     var progressDetail = document.getElementById("rejudgeProgressDetail");
 
-    document.getElementById('btnAgentSolve')?.addEventListener('click', function() {
+    document.getElementById('btnStartAgentSolve')?.addEventListener('click', function() {
+      var extraPromptEl = document.getElementById('agentSolveExtraPrompt');
+      var extraPrompt = (extraPromptEl && extraPromptEl.value) ? extraPromptEl.value.trim() : '';
+      if (extraPrompt.length > 4000) {
+        alert('额外提示词最长 4000 字');
+        return;
+      }
+
       const btn = this;
       const originalHtml = btn.innerHTML;
       btn.disabled = true;
       btn.innerHTML = '<i class="fas fa-spinner fa-spin me"></i>';
 
-      fetch("{{ url_for('problem_core.admin_agent_solve_problem', problem_id=problem.id) }}", { method: "POST" })
+      fetch("{{ url_for('problem_core.admin_agent_solve_problem', problem_id=problem.id) }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          extra_prompt: extraPrompt
+        })
+      })
         .then(res => res.json())
         .then(data => {
           btn.disabled = false;
@@ -552,6 +600,11 @@
           if (!data.success) {
             alert("启动失败：" + (data.message || "未知错误"));
             return;
+          }
+          var solveModalEl = document.getElementById('agentSolveModal');
+          if (solveModalEl) {
+            var solveModal = bootstrap.Modal.getInstance(solveModalEl);
+            if (solveModal) solveModal.hide();
           }
           if (data.view_url) {
             window.location.href = data.view_url;
@@ -565,6 +618,16 @@
           alert("请求失败，请稍后再试");
         });
     });
+
+    var solveModalEl = document.getElementById('agentSolveModal');
+    if (solveModalEl) {
+      solveModalEl.addEventListener('show.bs.modal', function() {
+        var extraPromptEl = document.getElementById('agentSolveExtraPrompt');
+        if (extraPromptEl && !extraPromptEl.value) {
+          extraPromptEl.value = '';
+        }
+      });
+    }
 
     document.getElementById('btnStartAgentGenerateData')?.addEventListener('click', function() {
       var countEl = document.getElementById('agentTestPointCount');
