@@ -700,12 +700,18 @@ def admin_agent_solve_problem(problem_id):
     if _agent_solve_problem_task is None:
         return jsonify(success=False, message='Agent 任务未初始化'), 500
 
+    payload = request.get_json(silent=True) or {}
+    extra_prompt = str(payload.get('extra_prompt') or '').strip()
+    if len(extra_prompt) > 4000:
+        extra_prompt = extra_prompt[:4000]
+
     task_id = uuid4().hex
     pending_state = {
         "task_id": task_id,
         "problem_id": int(problem.get("id") or problem_id),
         "problem_title": problem.get("title"),
         "requested_by": user.get("username"),
+        "extra_prompt": extra_prompt,
         "status": "Pending",
         "message": "任务排队中",
         "round": 0,
@@ -724,7 +730,7 @@ def admin_agent_solve_problem(problem_id):
     upsert_agent_run_snapshot(pending_state)
 
     try:
-        _agent_solve_problem_task.apply_async(args=(problem_id, user['username']), task_id=task_id)
+        _agent_solve_problem_task.apply_async(args=(problem_id, user['username'], extra_prompt), task_id=task_id)
     except Exception as e:
         pending_state["status"] = "Failed"
         pending_state["message"] = f"任务入队失败：{e}"

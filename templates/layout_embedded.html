@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Numerical OJ{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$','$$'], ['\\[','\\]']]
+      }
+    };
+  </script>
+  <script src="{{ url_for('static', filename='vendor/mathjax/tex-mml-chtml.js') }}"></script>
+</head>
+<body>
+  <div class="{% block content_container_class %}container-fluid mt-2 px-2{% endblock %}">
+    {% block content %}{% endblock %}
+  </div>
+  <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+</body>
+</html>

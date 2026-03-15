@@ -187,6 +187,9 @@ def submission_detail(submission_id):
     if not user:
         return redirect(url_for('auth.login'))
 
+    embed_raw = str(request.args.get('embed') or request.args.get('embedded') or '').strip().lower()
+    embedded = embed_raw in ('1', 'true', 'yes', 'on')
+
     submission = get_submission_by_id(submission_id)
     if not submission:
         return "<h3>提交记录不存在</h3>"
@@ -219,6 +222,8 @@ def submission_detail(submission_id):
         submission=submission,
         test_points=submission['test_points'],
         user=user,
+        embedded=embedded,
+        layout_template='layout_embedded.html' if embedded else 'layout.html',
         plang=plang,
         problem=problem,
         cached_ai_code_marks=cached_ai_code_marks,
