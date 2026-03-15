@@ -300,6 +300,19 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             top_k=arguments.get("top_k", _AGENT_REPOSITORY_KNN_TOP_K),
                         )
                         tool_result = {"success": True, **search_result}
+                    elif func_name == "web_search":
+                        search_result = _tool_web_search(
+                            query=arguments.get("query", ""),
+                            limit=arguments.get("limit", 5),
+                            engines=arguments.get("engines"),
+                        )
+                        tool_result = {"success": True, **search_result}
+                    elif func_name == "web_fetch_content":
+                        fetch_result = _tool_web_fetch_content(
+                            url=arguments.get("url", ""),
+                            max_chars=arguments.get("max_chars", 30000),
+                        )
+                        tool_result = {"success": True, **fetch_result}
                     elif func_name == "submit_evaluation":
                         source_path = str(arguments.get("source_path") or runtime.get("main_code_path") or "").strip()
                         if not source_path:

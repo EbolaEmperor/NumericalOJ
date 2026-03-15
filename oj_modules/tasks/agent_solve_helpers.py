@@ -14,6 +14,10 @@ from oj_modules.ai_utils import analyze_submission_output_image_against_problem
 from oj_modules.db_services import (
     get_db_connection,
 )
+from oj_modules.modelscope_web_search_mcp import (
+    web_fetch_content_via_modelscope_mcp,
+    web_search_via_modelscope_mcp,
+)
 from oj_modules.repository_index_services import encode_texts_with_qwen_embedding, search_repository_chunks
 from oj_modules.tasks.agent_shared import *
 
@@ -450,6 +454,21 @@ def _tool_search_useful_code(user_id, description, top_k=None):
         "vector_db_backend": knn_result.get("vector_db_backend"),
         "hits": hits,
     }
+
+
+def _tool_web_search(query, limit=None, engines=None):
+    return web_search_via_modelscope_mcp(
+        query=query,
+        limit=limit,
+        engines=engines,
+    )
+
+
+def _tool_web_fetch_content(url, max_chars=None):
+    return web_fetch_content_via_modelscope_mcp(
+        url=url,
+        max_chars=max_chars,
+    )
 
 
 def _analyze_submission_output_image_for_agent(problem, submission_id, test_points):
@@ -941,6 +960,41 @@ def _build_agent_react_tools():
         {
             "type": "function",
             "function": {
+                "name": "web_search",
+                "description": "联网搜索工具，返回网页标题、URL、摘要。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索关键词"},
+                        "limit": {"type": "integer", "description": "结果数量，默认 5，最大 50"},
+                        "engines": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "搜索引擎列表，国内网络建议 [\"baidu\"] 或 [\"csdn\", \"juejin\"]",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_fetch_content",
+                "description": "根据 URL 获取网页正文内容，用于阅读搜索结果详情。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "要抓取的网页 URL"},
+                        "max_chars": {"type": "integer", "description": "正文最大字符数，默认 30000"},
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "submit_evaluation",
                 "description": "从工作目录读取代码并提交评测。系统会提交你的主代码文件以及它依赖的所有头文件，不会提交你自己写的测试代码。",
                 "parameters": {
@@ -1007,6 +1061,8 @@ def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=Non
         "2. 编译、运行测试代码，看到底为什么错了。",
         "3. 修复你的程序，直到能通过你自己新写的测试代码为止。",
         "4. 重新提交。",
+        "当遇到不理解的问题时，请及时调用联网搜索工具搜索相关信息。",
+        "当遇到难以计算的公式时，请用 sympy 写一个小程序来计算。",
         "",
     ])
     if lang in ("python", "py"):
