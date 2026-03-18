@@ -40,6 +40,7 @@ _submission_snapshot_rds = None
 _submission_snapshot_ttl_seconds = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 _problem_written_mode_column_ready = False
 _problem_written_model_column_ready = False
+_problem_written_prompt_column_ready = False
 
 _QWEN_TEXT_MODEL_KEY = str(QWEN_TEXT_MODEL or "").strip().lower()
 _AI_TUTOR_MODEL_KEY = str(AI_TUTOR_MODEL or "").strip().lower()
@@ -286,9 +287,38 @@ def ensure_problem_written_grading_model_column():
         _problem_written_model_column_ready = True
 
 
+def ensure_problem_written_grading_prompt_column():
+    global _problem_written_prompt_column_ready
+    if _problem_written_prompt_column_ready:
+        return
+
+    success = False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM problems LIKE 'written_grading_prompt'")
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    ALTER TABLE problems
+                    ADD COLUMN written_grading_prompt TEXT NULL
+                    """
+                )
+                conn.commit()
+            success = True
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    if success:
+        _problem_written_prompt_column_ready = True
+
+
 def ensure_problem_written_grading_columns():
     ensure_problem_written_grading_mode_column()
     ensure_problem_written_grading_model_column()
+    ensure_problem_written_grading_prompt_column()
 
 
 def init_submission_snapshot_cache(redis_client, ttl_seconds=None):
@@ -856,7 +886,7 @@ def get_all_problems():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,written_grading_mode,written_grading_model FROM problems ORDER BY id ASC"
+            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,written_grading_mode,written_grading_model,written_grading_prompt FROM problems ORDER BY id ASC"
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -868,7 +898,7 @@ def get_problem(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model FROM problems WHERE id=%s"
+            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model,written_grading_prompt FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -880,7 +910,7 @@ def get_problem_title(problem_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model FROM problems WHERE id=%s"
+            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model,written_grading_prompt FROM problems WHERE id=%s"
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -899,6 +929,7 @@ def create_problem(
     submission_limit=10,
     written_grading_mode=1,
     written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+    written_grading_prompt='',
 ):
     ensure_problem_written_grading_columns()
     conn = get_db_connection()
@@ -906,18 +937,20 @@ def create_problem(
         max_score = (0 if int(type) == 1 else 5)
         use_written_mode = 1
         use_written_model = _DEFAULT_WRITTEN_GRADING_MODEL
+        use_written_prompt = ""
         if int(type) == 2:
             try:
                 use_written_mode = int(written_grading_mode)
             except Exception:
                 use_written_mode = 1
-            if use_written_mode not in (1, 2):
+            if use_written_mode not in (1, 2, 3):
                 use_written_mode = 1
             use_written_model = normalize_written_grading_model(written_grading_model)
+            use_written_prompt = str(written_grading_prompt or "").strip()
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems
-                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit, written_grading_mode, written_grading_model)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit, written_grading_mode, written_grading_model, written_grading_prompt)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(
                 sql,
                 (
@@ -933,6 +966,7 @@ def create_problem(
                     submission_limit,
                     use_written_mode,
                     use_written_model,
+                    use_written_prompt,
                 ),
             )
         conn.commit()
@@ -1018,6 +1052,7 @@ def update_problem(
     new_submission_limit=None,
     new_written_grading_mode=None,
     new_written_grading_model=None,
+    new_written_grading_prompt=None,
 ):
     ensure_problem_written_grading_columns()
     conn = get_db_connection()
@@ -1028,15 +1063,18 @@ def update_problem(
                 mode_val = int(new_written_grading_mode)
             except Exception:
                 mode_val = 1
-            if mode_val not in (1, 2):
+            if mode_val not in (1, 2, 3):
                 mode_val = 1
         model_val = None
         if new_written_grading_model is not None:
             model_val = normalize_written_grading_model(new_written_grading_model)
+        prompt_val = None
+        if new_written_grading_prompt is not None:
+            prompt_val = str(new_written_grading_prompt or "").strip()
         with conn.cursor() as cursor:
             sql = """UPDATE problems
                      SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s, submission_limit=%s,
-                         written_grading_mode=%s, written_grading_model=%s
+                         written_grading_mode=%s, written_grading_model=%s, written_grading_prompt=%s
                      WHERE id=%s"""
             cursor.execute(
                 sql,
@@ -1051,6 +1089,7 @@ def update_problem(
                     new_submission_limit,
                     mode_val if mode_val is not None else 1,
                     model_val if model_val is not None else _DEFAULT_WRITTEN_GRADING_MODEL,
+                    prompt_val if prompt_val is not None else "",
                     problem_id,
                 ),
             )
@@ -1064,16 +1103,9 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
     try:
         problem = get_problem(problem_id)
         problem_type = problem['type']
-        invalidated_submission_ids = []
 
         if problem_type == 2:
             with conn.cursor() as cursor:
-                test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
-                sql = "SELECT id FROM submissions WHERE username=%s AND problem_id=%s AND status='Pending'"
-                cursor.execute(sql, (username, problem_id))
-                invalidated_submission_ids = [row['id'] for row in cursor.fetchall()]
-                sql = "UPDATE submissions SET status='Unaccepted' WHERE username=%s AND problem_id=%s"
-                cursor.execute(sql, (username, problem_id))
                 sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
                 cursor.execute(sql, (username, problem_id))
                 total_submissions = cursor.fetchone()['COUNT(*)']
@@ -1107,8 +1139,6 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
         conn.commit()
         if not subid:
             raise RuntimeError("create_submission: failed to get valid submission id")
-        for sid in invalidated_submission_ids:
-            refresh_submission_status_snapshot(sid)
         refresh_submission_status_snapshot(subid)
         return subid
     finally:

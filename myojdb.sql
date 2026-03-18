@@ -169,6 +169,7 @@ CREATE TABLE `problems` (
   `submission_limit` int DEFAULT '10',
   `written_grading_mode` tinyint NOT NULL DEFAULT '1',
   `written_grading_model` varchar(32) NOT NULL DEFAULT '',
+  `written_grading_prompt` text,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

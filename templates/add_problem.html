@@ -72,6 +72,7 @@
         <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode">
           <option value="1" selected>OCR + 文本批改</option>
           <option value="2">直接批改图片</option>
+          <option value="3">tex 文本批改</option>
         </select>
       </div>
       <div class="col-md-6">
@@ -84,6 +85,17 @@
           <option value="{{ model_option }}" {% if model_option == default_written_model %}selected{% endif %}>{{ model_option }}</option>
           {% endfor %}
         </select>
+      </div>
+      <div class="col-12">
+        <label for="writtenGradingPromptInput" class="form-label">
+          <i class="fas fa-list-check me-2"></i> 评分标准
+        </label>
+        <textarea
+          class="form-control"
+          id="writtenGradingPromptInput"
+          name="written_grading_prompt"
+          rows="6"
+          placeholder="例如：步骤完整性 2 分、关键结论正确性 2 分、表达规范性 1 分；若缺失边界条件，最多给 4 分。">{{ default_written_grading_prompt or '' }}</textarea>
       </div>
     </div>
   </div>

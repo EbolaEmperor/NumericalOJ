@@ -1055,9 +1055,20 @@ def submit_solution(problem_id):
                 return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
             filename = secure_filename(f"file_{file.filename}")
 
-            if not filename.lower().endswith('.pdf'):
-                flash(f'错误：{filename} 不是 PDF 文件', 'danger')
-                return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+            try:
+                written_mode = int(problem.get('written_grading_mode') or 1)
+            except Exception:
+                written_mode = 1
+
+            lower_filename = filename.lower()
+            if written_mode == 3:
+                if not lower_filename.endswith('.zip'):
+                    flash(f'错误：{filename} 不是 ZIP 文件（tex 文本批改模式仅支持 .zip）', 'danger')
+                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+            else:
+                if not lower_filename.endswith('.pdf'):
+                    flash(f'错误：{filename} 不是 PDF 文件', 'danger')
+                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
             submission_id = create_submission(
                 problem_id=problem_id,

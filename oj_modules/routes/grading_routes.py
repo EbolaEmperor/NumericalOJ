@@ -7,6 +7,7 @@ from flask import Blueprint, flash, jsonify, request, send_file, session, url_fo
 
 from oj_modules.db_services import (
     get_db_connection,
+    get_problem,
     get_submission_by_id,
     get_user_by_username,
     update_submission_status,
@@ -32,6 +33,47 @@ def is_admin(user):
     return user and user.get('is_admin') == 1
 
 
+def _find_written_submission_pdf(submission, problem):
+    if not submission or not problem:
+        return None
+
+    try:
+        written_mode = int(problem.get('written_grading_mode') or 1)
+    except Exception:
+        written_mode = 1
+
+    submission_id = submission.get('id')
+    upload_dir = os.path.join('uploads', str(submission_id))
+    if not submission_id or not os.path.isdir(upload_dir):
+        return None
+
+    if written_mode == 3:
+        test_points = submission.get('test_points')
+        source_filename = ""
+        if isinstance(test_points, list) and test_points:
+            source_filename = os.path.basename(str(test_points[0] or "").strip())
+        if source_filename:
+            source_base, _ = os.path.splitext(source_filename)
+            if source_base:
+                pdf_path = os.path.join(upload_dir, f"{source_base}.pdf")
+                if os.path.isfile(pdf_path):
+                    return pdf_path
+        try:
+            for name in sorted(os.listdir(upload_dir)):
+                if str(name).lower().endswith('.pdf'):
+                    path = os.path.join(upload_dir, name)
+                    if os.path.isfile(path):
+                        return path
+        except Exception:
+            return None
+        return None
+
+    file_path = get_file_path_for_submission(submission_id)
+    if file_path and os.path.isfile(file_path):
+        return file_path
+    return None
+
+
 @grading_bp.route('/download_submission_file/<int:submission_id>')
 def download_submission_file(submission_id):
     submission = get_submission_by_id(submission_id)
@@ -41,7 +83,8 @@ def download_submission_file(submission_id):
     if submission['problem_type'] != 2:
         return "不是书面作业题", 400
 
-    file_path = get_file_path_for_submission(submission_id)
+    problem = get_problem(submission.get('problem_id'))
+    file_path = _find_written_submission_pdf(submission, problem)
     if not file_path or not os.path.exists(file_path):
         return "文件不存在", 404
 

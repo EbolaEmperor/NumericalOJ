@@ -112,6 +112,7 @@
         </div>
       </form>
     {% elif problem.type == 2 %}
+      {% set written_mode = (problem.written_grading_mode or 1)|int %}
       <form method="POST" action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <label for="file" class="form-label mb-0"><i class="fas fa-file-alt me-2"></i> 上传文件</label>
@@ -139,11 +140,17 @@
 
         <div class="card">
           <div class="card-body">
-            <input class="form-control" type="file" id="file" name="file" accept=".pdf" required>
-            <div class="form-text">请上传 pdf 文件。</div>
+            <input class="form-control" type="file" id="file" name="file" {% if written_mode == 3 %}accept=".zip"{% else %}accept=".pdf"{% endif %} required>
+            <div class="form-text">
+              {% if written_mode == 3 %}
+                请上传 zip 文件，压缩包内必须包含 main.tex 及其依赖文件。
+              {% else %}
+                请上传 pdf 文件。
+              {% endif %}
+            </div>
           </div>
         </div>
-        <p class="text-danger">注意：书面作业以最后一次提交为准，点击提交后，之前的提交都作废！</p>
+        <p class="text-muted">提示：书面作业可多次提交，以历史最高分计入成绩。</p>
       </form>
     {% endif %}
 

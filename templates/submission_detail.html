@@ -69,10 +69,22 @@
     <!-- 书面作业题目：不显示代码和测试点 -->
     <div class="card">
       <div class="card-body p-0">
-        <div id="pdfViewer" style="width: 100%; height: 580px;"></div>
+        <div id="pdfViewer" style="width: 100%; height: 580px; position: relative;">
+          <iframe
+            id="pdfInlineFrame"
+            title="submission-pdf"
+            class="w-100 h-100 border-0 d-none"
+            referrerpolicy="no-referrer"></iframe>
+          <div
+            id="pdfViewerHint"
+            class="d-flex align-items-center justify-content-center text-muted"
+            style="width: 100%; height: 100%;">
+            正在加载 PDF...
+          </div>
+        </div>
       </div>
     </div>
-    {% if (problem.written_grading_mode or 1) != 2 %}
+    {% if (problem.written_grading_mode or 1) == 1 %}
     <div class="card mt-3">
       <div class="card-header py-2">
         <strong><i class="fas fa-file-code me-2"></i>LaTeX 转写结果</strong>
@@ -698,30 +710,96 @@
 </script>
 {% else %}
 <script>
-  // PDF.js 渲染
+  // 原生 PDF 内嵌渲染（避免 pdf.js 在中文字体映射上的兼容问题）
   var url = "{{ url_for('grading.download_submission_file', submission_id=submission.id) }}";
-  var pdfViewer = document.getElementById('pdfViewer');
-  if (window.pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "{{ url_for('static', filename='vendor/pdfjs/pdf.worker.min.js') }}";
+  var statusTextEl = document.getElementById('submissionStatusText');
+  var pdfIframeEl = document.getElementById('pdfInlineFrame');
+  var pdfHintEl = document.getElementById('pdfViewerHint');
+  var pdfLoaded = false;
+
+  function isWrittenSubmissionJudging() {
+    if (!statusTextEl) return false;
+    var st = String(statusTextEl.textContent || '').trim();
+    return st === 'Pending' || st === 'Waiting' || st === 'Running';
   }
 
-  pdfjsLib.getDocument(url).promise.then(function(pdf) {
-    var containerWidth = pdfViewer.clientWidth;
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      pdf.getPage(pageNum).then(function(page) {
-        var scale = containerWidth / page.getViewport({ scale: 1 }).width;
-        var viewport = page.getViewport({ scale: scale * 2 });
-        var canvas = document.createElement('canvas');
-        var context = canvas.getContext('2d');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        pdfViewer.appendChild(canvas);
-        page.render({ canvasContext: context, viewport: viewport }).promise.then(function() {
-          var ratio = containerWidth / canvas.width;
-          canvas.style.width = containerWidth + 'px';
-          canvas.style.height = (canvas.height * ratio) + 'px';
-        });
-      });
+  function setPdfHint(text, isError) {
+    if (!pdfHintEl) return;
+    pdfHintEl.classList.remove('text-danger', 'text-muted');
+    pdfHintEl.classList.add(isError ? 'text-danger' : 'text-muted');
+    pdfHintEl.textContent = text || '';
+    pdfHintEl.classList.remove('d-none');
+    if (pdfIframeEl) {
+      pdfIframeEl.classList.add('d-none');
+    }
+  }
+
+  function showPdf() {
+    if (!pdfIframeEl) return;
+    pdfLoaded = true;
+    pdfIframeEl.src = url + "?v=" + Date.now();
+    pdfIframeEl.classList.remove('d-none');
+    if (pdfHintEl) {
+      pdfHintEl.classList.add('d-none');
+    }
+  }
+
+  function tryLoadPdf(attempt) {
+    fetch(url, { method: 'HEAD', cache: 'no-store' }).then(function(resp) {
+      if (resp && resp.ok) {
+        showPdf();
+        return;
+      }
+      if (isWrittenSubmissionJudging() && attempt < 180) {
+        setPdfHint('PDF 生成中，请稍候...', false);
+        setTimeout(function() { tryLoadPdf(attempt + 1); }, 1000);
+        return;
+      }
+      setPdfHint('暂无可渲染的 PDF（可能是编译失败）。', true);
+    }).catch(function() {
+      if (isWrittenSubmissionJudging() && attempt < 180) {
+        setTimeout(function() { tryLoadPdf(attempt + 1); }, 1000);
+        return;
+      }
+      if (!pdfLoaded) {
+        setPdfHint('PDF 加载失败，请稍后刷新。', true);
+      }
+    });
+  }
+
+  if (pdfIframeEl) {
+    pdfIframeEl.addEventListener('load', function() {
+      pdfLoaded = true;
+      if (pdfHintEl) {
+        pdfHintEl.classList.add('d-none');
+      }
+    });
+    pdfIframeEl.addEventListener('error', function() {
+      if (!pdfLoaded) {
+        setPdfHint('PDF 渲染失败。', true);
+      }
+    });
+  }
+
+  if (isWrittenSubmissionJudging()) {
+    setPdfHint('PDF 生成中，请稍候...', false);
+    tryLoadPdf(0);
+  } else {
+    fetch(url, { method: 'HEAD', cache: 'no-store' }).then(function(resp) {
+      if (resp && resp.ok) {
+        showPdf();
+      } else {
+        setPdfHint('暂无可渲染的 PDF（可能是编译失败）。', true);
+      }
+    }).catch(function() {
+      setPdfHint('PDF 加载失败，请稍后刷新。', true);
+    });
+  }
+
+  // 已加载后若服务端刷新了 PDF，允许手动刷新时获取最新。
+  window.addEventListener('focus', function() {
+    if (!pdfLoaded || isWrittenSubmissionJudging()) {
+      tryLoadPdf(0);
     }
   });
 </script>
