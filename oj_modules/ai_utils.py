@@ -70,6 +70,18 @@ _WRITTEN_GRADING_MODEL_SPECS = {
     f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking": (str(AI_TUTOR_MODEL or "").strip(), True, "dashscope"),
 }
 _DEFAULT_WRITTEN_GRADING_MODEL_SPEC = f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
+DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
+    "1) 5 分（满分）必须同时满足：\n"
+    "- 关键结论都有明确推导，不跳步；\n"
+    "- 使用的定理/性质有对应条件并且已验证；\n"
+    "- 涉及最值/取等时，明确说明可达性或取等条件；\n"
+    "- 记号、逻辑链条完整，无明显歧义。\n"
+    "2) 只要出现以下任一情况，最高只能 4 分：\n"
+    "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
+    "- 缺少条件验证、边界讨论、取等条件说明；\n"
+    "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
+    "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。"
+)
 _CONTROL_ESCAPE_TO_LATEX_PREFIX = {
     "\n": "n",
     "\t": "t",
@@ -721,22 +733,15 @@ def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec
     api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
     problem_title = (problem or {}).get('title', '')
     problem_content = (problem or {}).get('content', '')
+    written_grading_prompt = str((problem or {}).get('written_grading_prompt') or '').strip()
+    rules_title = "【教师自定义评分规则】" if written_grading_prompt else "【硬性评分规则】"
+    rules_text = written_grading_prompt if written_grading_prompt else DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
     prompt = (
         "你是严谨的数学书面作业阅卷老师，请从“证明严谨性”角度评分。\n"
         "只允许输出 JSON，不要输出任何额外文字。\n\n"
-        "【硬性评分规则】\n"
-        "1) 5 分（满分）必须同时满足：\n"
-        "- 关键结论都有明确推导，不跳步；\n"
-        "- 使用的定理/性质有对应条件并且已验证；\n"
-        "- 涉及最值/取等时，明确说明可达性或取等条件；\n"
-        "- 记号、逻辑链条完整，无明显歧义。\n"
-        "2) 只要出现以下任一情况，最高只能 4 分：\n"
-        "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
-        "- 缺少条件验证、边界讨论、取等条件说明；\n"
-        "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
-        "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
-        "5) 若 JSON 字符串中包含 LaTeX 命令，反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
+        f"{rules_title}\n"
+        f"{rules_text}\n\n"
         "【输出 JSON 格式】\n"
         "{\"score\": <0-5 的数字>, \"deductions\": [\"扣分原因1\", \"扣分原因2\"], \"comment\": \"总体评语\"}\n\n"
         f"【题目标题】\n{problem_title}\n\n"
@@ -772,22 +777,15 @@ def evaluate_written_homework_with_ai_from_images(
 
     problem_title = (problem or {}).get('title', '')
     problem_content = (problem or {}).get('content', '')
+    written_grading_prompt = str((problem or {}).get('written_grading_prompt') or '').strip()
+    rules_title = "【教师自定义评分规则】" if written_grading_prompt else "【硬性评分规则】"
+    rules_text = written_grading_prompt if written_grading_prompt else DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
     prompt = (
         "你是严谨的数学书面作业阅卷老师。你将收到题面文本和学生作业图片，请直接根据图片内容完成评分。\n"
         "只允许输出 JSON，不要输出任何额外文字。\n\n"
-        "【硬性评分规则】\n"
-        "1) 5 分（满分）必须同时满足：\n"
-        "- 关键结论都有明确推导，不跳步；\n"
-        "- 使用的定理/性质有对应条件并且已验证；\n"
-        "- 涉及最值/取等时，明确说明可达性或取等条件；\n"
-        "- 记号、逻辑链条完整，无明显歧义。\n"
-        "2) 只要出现以下任一情况，最高只能 4 分：\n"
-        "- 关键步骤仅口头说明（如“显然”“易得”）但无必要推导；\n"
-        "- 缺少条件验证、边界讨论、取等条件说明；\n"
-        "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
-        "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。\n\n"
-        "5) 若 JSON 字符串中包含 LaTeX 命令，反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
+        f"{rules_title}\n"
+        f"{rules_text}\n\n"
         "【输出 JSON 格式】\n"
         "{\"score\": <0-5 的数字>, \"deductions\": [\"扣分原因1\", \"扣分原因2\"], \"comment\": \"总体评语\"}\n\n"
         f"【题目标题】\n{problem_title}\n\n"

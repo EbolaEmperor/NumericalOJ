@@ -9,6 +9,7 @@ from flask import Blueprint, flash, jsonify, redirect, render_template, request,
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from config import AI_TUTOR_MODEL, QWEN_TEXT_MODEL
+from oj_modules.ai_utils import DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
 from oj_modules.db_services import (
     create_problem,
@@ -39,6 +40,7 @@ _WRITTEN_GRADING_MODEL_OPTIONS = [
 ]
 if _DEFAULT_WRITTEN_GRADING_MODEL and _DEFAULT_WRITTEN_GRADING_MODEL not in _WRITTEN_GRADING_MODEL_OPTIONS:
     _WRITTEN_GRADING_MODEL_OPTIONS.insert(0, _DEFAULT_WRITTEN_GRADING_MODEL)
+_DEFAULT_WRITTEN_GRADING_PROMPT = DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
 
 def current_user():
@@ -84,12 +86,19 @@ def parse_written_grading_mode_from_form(form, default=1):
         mode = int(raw)
     except Exception:
         mode = int(default)
-    return mode if mode in (1, 2) else int(default)
+    return mode if mode in (1, 2, 3) else int(default)
 
 
 def parse_written_grading_model_from_form(form, default=_DEFAULT_WRITTEN_GRADING_MODEL):
     raw = str(form.get('written_grading_model', default) or default).strip().lower()
     return normalize_written_grading_model(raw, default=default)
+
+
+def parse_written_grading_prompt_from_form(form):
+    text = str(form.get('written_grading_prompt') or '').strip()
+    if len(text) > 12000:
+        text = text[:12000]
+    return text
 
 
 @admin_problem_bp.route('/admin/add_problem', methods=['GET', 'POST'])
@@ -107,6 +116,7 @@ def add_problem():
         problem_type = request.form.get('type')
         written_grading_mode = parse_written_grading_mode_from_form(request.form, default=1)
         written_grading_model = parse_written_grading_model_from_form(request.form, default=_DEFAULT_WRITTEN_GRADING_MODEL)
+        written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
         lang = (request.form.get('lang') or 'matlab').strip().lower()
         time_limit_ms = parse_time_limit_ms_from_form(request.form)
         submission_limit = int(request.form.get('submission_limit', 10))
@@ -118,6 +128,7 @@ def add_problem():
                 error_message="标题和内容不能为空",
                 written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
                 default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+                default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
             )
 
         create_problem(
@@ -132,6 +143,7 @@ def add_problem():
             submission_limit,
             written_grading_mode,
             written_grading_model,
+            written_grading_prompt,
         )
         return redirect(url_for('problem_core.problem_list'))
 
@@ -141,6 +153,7 @@ def add_problem():
         error_message=None,
         written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
         default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+        default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
     )
 
 
@@ -171,6 +184,7 @@ def edit_problem(problem_id):
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)
         default_model = problem.get('written_grading_model', _DEFAULT_WRITTEN_GRADING_MODEL)
         new_written_grading_model = parse_written_grading_model_from_form(request.form, default=default_model)
+        new_written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
 
         if not new_title or not new_content:
             return render_template(
@@ -194,6 +208,7 @@ def edit_problem(problem_id):
             new_submission_limit,
             new_written_grading_mode,
             new_written_grading_model,
+            new_written_grading_prompt,
         )
         return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 

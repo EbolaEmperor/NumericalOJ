@@ -213,7 +213,7 @@ def submission_detail(submission_id):
             written_grading_mode = 1
         file_path = f"uploads/{submission['username']}_{submission['problem_id']}_*"
         submission['file_url'] = file_path
-        if written_grading_mode != 2:
+        if written_grading_mode == 1:
             submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
             submission_latex_html = _render_written_markdown_to_html(submission_latex_text)
 
@@ -302,7 +302,7 @@ def submission_status_stream(submission_id):
                     except Exception:
                         written_mode = 1
                 payload['written_grading_mode'] = written_mode
-                if written_mode != 2:
+                if written_mode == 1:
                     latex_text, latex_error = _load_written_submission_latex_and_error(row)
                     payload['written_latex_text'] = latex_text
                     payload['written_latex_html'] = _render_written_markdown_to_html(latex_text)
