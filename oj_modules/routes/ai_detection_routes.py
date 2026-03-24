@@ -299,6 +299,23 @@ def run_user_detection(username):
     })
 
 
+@ai_detection_bp.route('/admin/ai_detection/api/summary')
+def api_summary():
+    user, err = _require_admin()
+    if err:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+    summary = get_ai_detection_dashboard_summary()
+    # Convert to JSON-serialisable form
+    return jsonify({'success': True, 'summary': {
+        'level_counts': summary.get('level_counts', {}),
+        'flagged_users': summary.get('flagged_users', []),
+        'problem_stats': [
+            {**p, 'problem_title': _strip_problem_title_tags(p.get('problem_title', ''))}
+            for p in summary.get('problem_stats', [])
+        ],
+    }})
+
+
 @ai_detection_bp.route('/admin/ai_detection/api/tasks')
 def api_tasks():
     user, err = _require_admin()
@@ -308,3 +325,31 @@ def api_tasks():
     for t in tasks:
         t['type_label'] = TASK_TYPE_LABELS.get(t.get('task_type', ''), t.get('task_type', ''))
     return jsonify({'success': True, 'tasks': tasks})
+
+
+@ai_detection_bp.route('/admin/ai_detection/api/stop/<task_id>', methods=['POST'])
+def stop_task(task_id):
+    user, err = _require_admin()
+    if err:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+
+    import time
+    from oj_modules.ai_detection.task_tracker import _load, _save
+
+    # Revoke in Celery (terminate running worker process)
+    try:
+        task_ref = _detect_single_task or _detect_batch_task or _detect_user_task or _detect_filtered_task
+        if task_ref is not None:
+            task_ref.app.control.revoke(task_id, terminate=True, signal='SIGTERM')
+    except Exception:
+        pass
+
+    # Mark stopped in Redis regardless
+    data = _load(task_id) or {'task_id': task_id}
+    if data.get('status') in ('running', 'pending'):
+        data['status'] = 'failed'
+        data['error'] = '管理员手动停止'
+        data['finished_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        _save(task_id, data)
+
+    return jsonify({'success': True})

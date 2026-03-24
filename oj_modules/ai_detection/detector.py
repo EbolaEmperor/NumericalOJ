@@ -7,15 +7,14 @@ Combines LLM detection and behavioral analysis into a final risk score.
 """
 
 import json
-import traceback
 
 from oj_modules.ai_detection.llm_detector import detect_with_llm
 from oj_modules.ai_detection.behavior_detector import detect_behavior
 
 
-# Weights for combining signals
-W_LLM = 0.65
-W_BEHAVIOR = 0.35
+# Behavior is an additive bonus on top of LLM score, not a diluting factor.
+# final = min(1.0, llm_score + behavior_score * W_BEHAVIOR_BONUS)
+W_BEHAVIOR_BONUS = 0.3
 
 # Risk level thresholds
 RISK_HIGH = 0.7
@@ -64,12 +63,8 @@ def run_detection(submission, problem):
     }
 
     # --- LLM Detection ---
-    llm_result = None
-    try:
-        llm_result = detect_with_llm(code, problem_content)
-    except Exception as e:
-        print(f"[AI Detection] LLM detection error for submission {submission_id}: {e}")
-        traceback.print_exc()
+    # Let LLMDetectionFailed propagate — caller should not upsert a 0.0 record.
+    llm_result = detect_with_llm(code, problem_content)
 
     if llm_result:
         result["llm_score"] = round(llm_result["score"], 4)
@@ -92,20 +87,14 @@ def run_detection(submission, problem):
         )[:4000]
 
     # --- Score Fusion ---
-    scores = []
-    weights = []
+    # LLM score is the base; behavior is an additive bonus (never dilutes).
+    llm = result["llm_score"]
+    beh = result["behavior_score"] or 0.0
 
-    if result["llm_score"] is not None:
-        scores.append(result["llm_score"])
-        weights.append(W_LLM)
-
-    if result["behavior_score"] is not None:
-        scores.append(result["behavior_score"])
-        weights.append(W_BEHAVIOR)
-
-    if weights:
-        total_w = sum(weights)
-        final = sum(s * w for s, w in zip(scores, weights)) / total_w
+    if llm is not None:
+        final = min(1.0, llm + beh * W_BEHAVIOR_BONUS)
+    elif beh > 0:
+        final = beh * W_BEHAVIOR_BONUS
     else:
         final = 0.0
 

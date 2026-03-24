@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Redis-based task state tracker for AI detection tasks.
+Task state tracker for AI detection tasks.
 
-Each task run is stored as a JSON hash in Redis with a TTL of 48h.
-A sorted set keyed by submit-timestamp keeps the 50 most recent task IDs.
+Primary store : Redis (48h TTL) — fast polling by frontend.
+Secondary store: MySQL           — persistent, survives Redis flushes.
 """
 
 import json
@@ -54,34 +54,47 @@ def _task_key(task_id):
 
 def _save(task_id, data):
     rds = _get_redis()
-    if rds is None:
-        return
+    if rds is not None:
+        try:
+            rds.setex(_task_key(task_id), _TASK_TTL_SECONDS, json.dumps(data, ensure_ascii=False))
+        except Exception:
+            pass
+    # Always persist to MySQL
     try:
-        rds.setex(_task_key(task_id), _TASK_TTL_SECONDS, json.dumps(data, ensure_ascii=False))
-    except Exception:
-        pass
+        from oj_modules.db_services import upsert_ai_detection_task
+        upsert_ai_detection_task(data)
+    except Exception as e:
+        print(f"[AI Detection] MySQL task persist error: {e}")
 
 
 def _load(task_id):
     rds = _get_redis()
-    if rds is None:
-        return None
+    if rds is not None:
+        try:
+            raw = rds.get(_task_key(task_id))
+            if raw:
+                return json.loads(raw)
+        except Exception:
+            pass
+    # Fall back to MySQL
     try:
-        raw = rds.get(_task_key(task_id))
-        return json.loads(raw) if raw else None
+        from oj_modules.db_services import get_ai_detection_tasks
+        rows = get_ai_detection_tasks(limit=200)
+        for r in rows:
+            if r.get('task_id') == task_id:
+                return r
     except Exception:
-        return None
+        pass
+    return None
 
 
 def record_task_submitted(task_id, task_type, params_summary=""):
     """Called from the route after .delay(), before the worker picks it up."""
     rds = _get_redis()
-    if rds is None:
-        return
     ts = time.time()
     data = {
         "task_id": task_id,
-        "task_type": task_type,       # filtered / batch / user / single
+        "task_type": task_type,
         "params_summary": params_summary,
         "status": "pending",
         "submitted_at": _now_str(),
@@ -93,15 +106,15 @@ def record_task_submitted(task_id, task_type, params_summary=""):
         "error": None,
     }
     _save(task_id, data)
-    try:
-        rds.zadd(_RECENT_TASKS_KEY, {task_id: ts})
-        # Keep only the most recent N tasks in the sorted set
-        count = rds.zcard(_RECENT_TASKS_KEY)
-        if count > _RECENT_TASKS_MAX:
-            rds.zremrangebyrank(_RECENT_TASKS_KEY, 0, count - _RECENT_TASKS_MAX - 1)
-        rds.expire(_RECENT_TASKS_KEY, _TASK_TTL_SECONDS)
-    except Exception:
-        pass
+    if rds is not None:
+        try:
+            rds.zadd(_RECENT_TASKS_KEY, {task_id: ts})
+            count = rds.zcard(_RECENT_TASKS_KEY)
+            if count > _RECENT_TASKS_MAX:
+                rds.zremrangebyrank(_RECENT_TASKS_KEY, 0, count - _RECENT_TASKS_MAX - 1)
+            rds.expire(_RECENT_TASKS_KEY, _TASK_TTL_SECONDS)
+        except Exception:
+            pass
 
 
 def record_task_running(task_id, total=None):
@@ -116,7 +129,7 @@ def record_task_running(task_id, total=None):
 
 
 def record_task_progress(task_id, processed, total=None):
-    """Called periodically inside the task loop."""
+    """Called after each completed detection."""
     data = _load(task_id)
     if data is None:
         return
@@ -146,21 +159,27 @@ def record_task_failed(task_id, error_msg):
 
 
 def get_recent_tasks(limit=20):
-    """Return up to `limit` most recent task dicts, newest first."""
+    """Return up to `limit` most recent task dicts, newest first.
+    Reads from Redis when available, falls back to MySQL."""
     rds = _get_redis()
-    if rds is None:
-        return []
+    if rds is not None:
+        try:
+            task_ids = rds.zrevrange(_RECENT_TASKS_KEY, 0, limit - 1)
+            if task_ids:
+                tasks = []
+                for tid in task_ids:
+                    data = _load(tid)
+                    if data:
+                        tasks.append(data)
+                return tasks
+        except Exception:
+            pass
+    # Redis unavailable or empty — read from MySQL
     try:
-        # Highest scores (most recent timestamps) first
-        task_ids = rds.zrevrange(_RECENT_TASKS_KEY, 0, limit - 1)
+        from oj_modules.db_services import get_ai_detection_tasks
+        return get_ai_detection_tasks(limit=limit)
     except Exception:
         return []
-    tasks = []
-    for tid in task_ids:
-        data = _load(tid)
-        if data:
-            tasks.append(data)
-    return tasks
 
 
 # Human-readable labels for task types

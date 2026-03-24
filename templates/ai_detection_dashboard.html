@@ -231,28 +231,29 @@
 </div>
 
 {# ---- Summary Cards ---- #}
-<div class="row mb-4 g-3">
+<div class="row mb-4 g-3" id="summaryCards">
   <div class="col-md-4">
     <div class="card stat-card border-danger text-center p-3">
-      <h2 class="text-danger mb-0">{{ summary.level_counts.get('high', 0) }}</h2>
+      <h2 class="text-danger mb-0" id="cntHigh">{{ summary.level_counts.get('high', 0) }}</h2>
       <small class="text-muted">High Risk</small>
     </div>
   </div>
   <div class="col-md-4">
     <div class="card stat-card border-warning text-center p-3">
-      <h2 class="text-warning mb-0">{{ summary.level_counts.get('medium', 0) }}</h2>
+      <h2 class="text-warning mb-0" id="cntMedium">{{ summary.level_counts.get('medium', 0) }}</h2>
       <small class="text-muted">Medium Risk</small>
     </div>
   </div>
   <div class="col-md-4">
     <div class="card stat-card border-success text-center p-3">
-      <h2 class="text-success mb-0">{{ summary.level_counts.get('low', 0) }}</h2>
+      <h2 class="text-success mb-0" id="cntLow">{{ summary.level_counts.get('low', 0) }}</h2>
       <small class="text-muted">Low Risk</small>
     </div>
   </div>
 </div>
 
 {# ---- Flagged Users ---- #}
+<div id="flaggedUsersSection">
 {% if summary.flagged_users %}
 <h6 class="mb-2">需关注的学生</h6>
 <div class="table-responsive mb-4">
@@ -263,7 +264,7 @@
         <th>最高分</th><th>平均分</th><th>操作</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="flaggedUsersBody">
       {% for u in summary.flagged_users %}
       <tr>
         <td><a href="{{ url_for('ai_detection.student_detail', username=u.username) }}">{{ u.username }}</a></td>
@@ -283,8 +284,10 @@
   </table>
 </div>
 {% endif %}
+</div>
 
 {# ---- Problem Stats ---- #}
+<div id="problemStatsSection">
 {% if summary.problem_stats %}
 <h6 class="mb-2">各题目检测概况</h6>
 <div class="table-responsive">
@@ -294,7 +297,7 @@
         <th>题目</th><th>检测数</th><th>High</th><th>Medium</th><th>平均分</th><th>操作</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="problemStatsBody">
       {% for p in summary.problem_stats %}
       <tr>
         <td>
@@ -317,8 +320,9 @@
   </table>
 </div>
 {% elif not summary.flagged_users %}
-  <div class="text-muted mt-2">暂无检测数据。先通过上方筛选器选择记录，然后点击「开始检测」。</div>
+  <div class="text-muted mt-2" id="noDataMsg">暂无检测数据。先通过上方筛选器选择记录，然后点击「开始检测」。</div>
 {% endif %}
+</div>
 
 {# ---- Running Tasks Panel (bottom) ---- #}
 <div id="tasksPanel" class="mt-4" style="display:none">
@@ -333,6 +337,7 @@
           <th style="width:160px">进度</th>
           <th style="width:145px">提交时间</th>
           <th style="width:145px">完成时间</th>
+          <th style="width:60px"></th>
         </tr>
       </thead>
       <tbody id="tasksBody"></tbody>
@@ -485,7 +490,103 @@ function _renderProgress(t) {
   </div>`;
 }
 
+function stopTask(taskId, btn) {
+  if (!confirm('确认强制停止该任务？')) return;
+  btn.disabled = true;
+  btn.textContent = '停止中…';
+  fetch('/admin/ai_detection/api/stop/' + taskId, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        refreshTasks();
+      } else {
+        btn.disabled = false;
+        btn.textContent = '停止';
+        alert('停止失败：' + (data.message || '未知错误'));
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.textContent = '停止';
+      alert('请求失败：' + err);
+    });
+}
+
+function refreshSummary() {
+  fetch('/admin/ai_detection/api/summary')
+    .then(r => r.json())
+    .then(data => {
+      if (!data.success) return;
+      const s = data.summary;
+
+      // Update risk counters
+      const high = document.getElementById('cntHigh');
+      const med  = document.getElementById('cntMedium');
+      const low  = document.getElementById('cntLow');
+      if (high) high.textContent = s.level_counts.high   || 0;
+      if (med)  med.textContent  = s.level_counts.medium || 0;
+      if (low)  low.textContent  = s.level_counts.low    || 0;
+
+      // Update flagged users table
+      const usersSection = document.getElementById('flaggedUsersSection');
+      if (usersSection) {
+        if (s.flagged_users && s.flagged_users.length > 0) {
+          let html = '<h6 class="mb-2">需关注的学生</h6><div class="table-responsive mb-4">' +
+            '<table class="table table-sm table-hover align-middle"><thead class="table-light"><tr>' +
+            '<th>学生</th><th>总检测数</th><th>High</th><th>Medium</th><th>最高分</th><th>平均分</th><th>操作</th>' +
+            '</tr></thead><tbody>';
+          s.flagged_users.forEach(u => {
+            html += `<tr>` +
+              `<td><a href="/admin/ai_detection/student/${escHtml(u.username)}">${escHtml(u.username)}</a></td>` +
+              `<td>${u.total_detections}</td>` +
+              `<td><span class="risk-high">${u.high_count}</span></td>` +
+              `<td><span class="risk-medium">${u.medium_count}</span></td>` +
+              `<td>${(u.max_score||0).toFixed(2)}</td>` +
+              `<td>${(u.avg_score||0).toFixed(2)}</td>` +
+              `<td><button class="btn btn-outline-primary btn-sm" onclick="runUserDetection('${escHtml(u.username)}')"><i class="fas fa-sync-alt"></i></button></td>` +
+              `</tr>`;
+          });
+          html += '</tbody></table></div>';
+          usersSection.innerHTML = html;
+        } else {
+          usersSection.innerHTML = '';
+        }
+      }
+
+      // Update problem stats table
+      const problemSection = document.getElementById('problemStatsSection');
+      if (problemSection) {
+        if (s.problem_stats && s.problem_stats.length > 0) {
+          let html = '<h6 class="mb-2">各题目检测概况</h6><div class="table-responsive">' +
+            '<table class="table table-sm table-hover align-middle"><thead class="table-light"><tr>' +
+            '<th>题目</th><th>检测数</th><th>High</th><th>Medium</th><th>平均分</th><th>操作</th>' +
+            '</tr></thead><tbody>';
+          s.problem_stats.forEach(p => {
+            const title = escHtml(p.problem_title || '题目 #' + p.problem_id);
+            html += `<tr>` +
+              `<td><a href="/admin/ai_detection/problem/${p.problem_id}">${title}</a></td>` +
+              `<td>${p.total_detections}</td>` +
+              `<td><span class="risk-high">${p.high_count}</span></td>` +
+              `<td><span class="risk-medium">${p.medium_count}</span></td>` +
+              `<td>${(p.avg_score||0).toFixed(2)}</td>` +
+              `<td><button class="btn btn-outline-primary btn-sm" onclick="runBatchDetection(${p.problem_id})"><i class="fas fa-sync-alt"></i></button></td>` +
+              `</tr>`;
+          });
+          html += '</tbody></table></div>';
+          problemSection.innerHTML = html;
+        } else {
+          const noMsg = document.getElementById('noDataMsg');
+          if (!noMsg && s.flagged_users && s.flagged_users.length === 0) {
+            problemSection.innerHTML = '<div class="text-muted mt-2">暂无检测数据。先通过上方筛选器选择记录，然后点击「开始检测」。</div>';
+          }
+        }
+      }
+    })
+    .catch(() => {});
+}
+
 let _pollTimer = null;
+let _wasRunning = false;
 
 function refreshTasks() {
   fetch('/admin/ai_detection/api/tasks')
@@ -493,14 +594,21 @@ function refreshTasks() {
     .then(data => {
       if (!data.success || !data.tasks || data.tasks.length === 0) {
         document.getElementById('tasksPanel').style.display = 'none';
+        if (_wasRunning) refreshSummary();   // tasks just all disappeared
+        _wasRunning = false;
         return;
       }
       document.getElementById('tasksPanel').style.display = '';
       const tbody = document.getElementById('tasksBody');
       tbody.innerHTML = '';
       let hasRunning = false;
+
       data.tasks.forEach(t => {
-        if (t.status === 'running' || t.status === 'pending') hasRunning = true;
+        const active = t.status === 'running' || t.status === 'pending';
+        if (active) hasRunning = true;
+        const stopBtn = active
+          ? `<button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:.75em" onclick="stopTask('${escHtml(t.task_id)}', this)">停止</button>`
+          : '';
         const tr = document.createElement('tr');
         tr.innerHTML =
           `<td>${escHtml(t.type_label || t.task_type || '')}</td>` +
@@ -508,10 +616,15 @@ function refreshTasks() {
           `<td>${_statusBadge[t.status] || escHtml(t.status)}</td>` +
           `<td>${_renderProgress(t)}</td>` +
           `<td class="text-muted">${escHtml(t.submitted_at || '')}</td>` +
-          `<td class="text-muted">${escHtml(t.finished_at || '-')}</td>`;
+          `<td class="text-muted">${escHtml(t.finished_at || '-')}</td>` +
+          `<td>${stopBtn}</td>`;
         tbody.appendChild(tr);
       });
-      // Auto-poll only while tasks are running; stop when all done
+
+      // Refresh summary whenever running→idle transition occurs
+      if (_wasRunning && !hasRunning) refreshSummary();
+      _wasRunning = hasRunning;
+
       if (hasRunning) {
         if (!_pollTimer) _pollTimer = setInterval(refreshTasks, 3000);
       } else {
@@ -521,7 +634,8 @@ function refreshTasks() {
     .catch(() => {});
 }
 
-// Initial load and start polling
+// Initial load
 refreshTasks();
+refreshSummary();
 </script>
 {% endblock %}
