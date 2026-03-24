@@ -11,6 +11,7 @@ from oj_modules.tasks.agent_tasks import (
     subscribe_agent_run_events,
 )
 from oj_modules.tasks.repository_index_tasks import register_repository_index_build_task
+from oj_modules.tasks.ai_detection_tasks import register_ai_detection_tasks
 
 __all__ = [
     "register_evaluate_submission_task",
@@ -18,6 +19,7 @@ __all__ = [
     "register_agent_solve_problem_task",
     "register_agent_generate_testdata_task",
     "register_repository_index_build_task",
+    "register_ai_detection_tasks",
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",

@@ -86,7 +86,12 @@
               Agent 任务
             </a>
           </li>
-          
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('ai_detection.dashboard') }}">
+              <i class="fas fa-shield-alt me-2"></i>
+              AI 检测
+            </a>
+          </li>
         {% endif %}
       </ul>
       <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
@@ -193,6 +198,12 @@
           <a class="nav-link" href="{{ url_for('problem_core.admin_agent_tasks') }}">
             <i class="fas fa-robot me-2"></i>
             Agent 任务
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('ai_detection.dashboard') }}">
+            <i class="fas fa-shield-alt me-2"></i>
+            AI 检测
           </a>
         </li>
       {% endif %}

@@ -1387,3 +1387,348 @@ def update_submission_evaluation(submission_id, test_point_statuses, score, stat
     finally:
         conn.close()
     refresh_submission_status_snapshot(submission_id)
+
+
+###############################################################################
+#  AI Detection Results
+###############################################################################
+
+_ai_detection_table_ready = False
+
+
+def ensure_ai_detection_table():
+    global _ai_detection_table_ready
+    if _ai_detection_table_ready:
+        return
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS `ai_detection_results` (
+                    `id` bigint NOT NULL AUTO_INCREMENT,
+                    `submission_id` int NOT NULL,
+                    `username` varchar(50) NOT NULL,
+                    `problem_id` int NOT NULL,
+                    `llm_score` float DEFAULT NULL,
+                    `llm_evidence` text,
+                    `behavior_score` float DEFAULT NULL,
+                    `behavior_detail` text,
+                    `final_score` float NOT NULL,
+                    `risk_level` varchar(16) NOT NULL DEFAULT 'low',
+                    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_ai_detection_submission` (`submission_id`),
+                    KEY `idx_ai_detection_username_problem` (`username`, `problem_id`),
+                    KEY `idx_ai_detection_risk_level` (`risk_level`, `final_score`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+        conn.commit()
+        _ai_detection_table_ready = True
+    except Exception:
+        _ai_detection_table_ready = True
+    finally:
+        conn.close()
+
+
+def upsert_ai_detection_result(result):
+    """Insert or update an AI detection result. Uses REPLACE INTO on unique submission_id."""
+    ensure_ai_detection_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "REPLACE INTO ai_detection_results "
+                "(submission_id, username, problem_id, "
+                " llm_score, llm_evidence, behavior_score, behavior_detail, "
+                " final_score, risk_level) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    result["submission_id"],
+                    result["username"],
+                    result["problem_id"],
+                    result.get("llm_score"),
+                    result.get("llm_evidence"),
+                    result.get("behavior_score"),
+                    result.get("behavior_detail"),
+                    result["final_score"],
+                    result["risk_level"],
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ai_detection_result_by_submission(submission_id):
+    ensure_ai_detection_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM ai_detection_results WHERE submission_id=%s",
+                (submission_id,),
+            )
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def get_ai_detection_results_for_problem(problem_id, risk_level=None):
+    """Get all detection results for a problem, optionally filtered by risk level."""
+    ensure_ai_detection_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if risk_level:
+                cursor.execute(
+                    "SELECT d.*, s.code, s.status AS submission_status, s.score AS submission_score "
+                    "FROM ai_detection_results d "
+                    "LEFT JOIN submissions s ON d.submission_id = s.id "
+                    "WHERE d.problem_id=%s AND d.risk_level=%s "
+                    "ORDER BY d.final_score DESC",
+                    (problem_id, risk_level),
+                )
+            else:
+                cursor.execute(
+                    "SELECT d.*, s.code, s.status AS submission_status, s.score AS submission_score "
+                    "FROM ai_detection_results d "
+                    "LEFT JOIN submissions s ON d.submission_id = s.id "
+                    "WHERE d.problem_id=%s "
+                    "ORDER BY d.final_score DESC",
+                    (problem_id,),
+                )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_ai_detection_results_for_user(username):
+    """Get all detection results for a user."""
+    ensure_ai_detection_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT d.*, s.status AS submission_status, s.score AS submission_score, "
+                "       p.title AS problem_title "
+                "FROM ai_detection_results d "
+                "LEFT JOIN submissions s ON d.submission_id = s.id "
+                "LEFT JOIN problems p ON d.problem_id = p.id "
+                "WHERE d.username=%s "
+                "ORDER BY d.created_at DESC",
+                (username,),
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_ai_detection_dashboard_summary():
+    """Get summary statistics for the detection dashboard."""
+    ensure_ai_detection_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT risk_level, COUNT(*) AS cnt "
+                "FROM ai_detection_results "
+                "GROUP BY risk_level"
+            )
+            level_counts = {row["risk_level"]: row["cnt"] for row in cursor.fetchall()}
+
+            cursor.execute(
+                "SELECT d.username, "
+                "       COUNT(*) AS total_detections, "
+                "       SUM(CASE WHEN d.risk_level='high' THEN 1 ELSE 0 END) AS high_count, "
+                "       SUM(CASE WHEN d.risk_level='medium' THEN 1 ELSE 0 END) AS medium_count, "
+                "       MAX(d.final_score) AS max_score, "
+                "       AVG(d.final_score) AS avg_score "
+                "FROM ai_detection_results d "
+                "GROUP BY d.username "
+                "HAVING high_count > 0 OR medium_count > 0 "
+                "ORDER BY high_count DESC, avg_score DESC"
+            )
+            flagged_users = cursor.fetchall()
+
+            cursor.execute(
+                "SELECT d.problem_id, p.title AS problem_title, "
+                "       COUNT(*) AS total_detections, "
+                "       SUM(CASE WHEN d.risk_level='high' THEN 1 ELSE 0 END) AS high_count, "
+                "       SUM(CASE WHEN d.risk_level='medium' THEN 1 ELSE 0 END) AS medium_count, "
+                "       AVG(d.final_score) AS avg_score "
+                "FROM ai_detection_results d "
+                "LEFT JOIN problems p ON d.problem_id = p.id "
+                "GROUP BY d.problem_id, p.title "
+                "ORDER BY high_count DESC, avg_score DESC"
+            )
+            problem_stats = cursor.fetchall()
+
+            return {
+                "level_counts": level_counts,
+                "flagged_users": flagged_users,
+                "problem_stats": problem_stats,
+            }
+    finally:
+        conn.close()
+
+
+def _representative_submission_sql():
+    """
+    Sub-query that selects one representative submission per (username, problem_id):
+    the *last* submission among those with the *highest* score.
+    """
+    return (
+        "SELECT s.id, s.problem_id, s.username, s.code, s.score, "
+        "       s.status, s.created_at "
+        "FROM submissions s "
+        "INNER JOIN ("
+        "  SELECT username, problem_id, MAX(score) AS max_score "
+        "  FROM submissions "
+        "  WHERE problem_type=1 "
+        "  GROUP BY username, problem_id"
+        ") ms ON s.username = ms.username "
+        "        AND s.problem_id = ms.problem_id "
+        "        AND s.score = ms.max_score "
+        "INNER JOIN ("
+        "  SELECT MAX(sub.id) AS rep_id "
+        "  FROM submissions sub "
+        "  INNER JOIN ("
+        "    SELECT username, problem_id, MAX(score) AS max_score "
+        "    FROM submissions "
+        "    WHERE problem_type=1 "
+        "    GROUP BY username, problem_id"
+        "  ) ms2 ON sub.username = ms2.username "
+        "           AND sub.problem_id = ms2.problem_id "
+        "           AND sub.score = ms2.max_score "
+        "  GROUP BY sub.username, sub.problem_id"
+        ") rep ON s.id = rep.rep_id"
+    )
+
+
+def get_undetected_submissions_for_problem(problem_id, lang="matlab"):
+    """
+    Per user, pick the representative submission (last among max-score)
+    that hasn't been analyzed yet.
+    """
+    ensure_ai_detection_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = (
+                "SELECT r.id, r.problem_id, r.username, r.code, r.score, "
+                "       r.status, r.created_at "
+                "FROM (" + _representative_submission_sql() + ") r "
+                "LEFT JOIN ai_detection_results d ON r.id = d.submission_id "
+                "WHERE r.problem_id=%s AND d.id IS NULL "
+                "ORDER BY r.id ASC"
+            )
+            cursor.execute(sql, (problem_id,))
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_undetected_submissions_for_user(username):
+    """
+    For a given user, across all MATLAB problems, pick the representative
+    submission per problem that hasn't been analyzed yet.
+    """
+    ensure_ai_detection_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = (
+                "SELECT r.id, r.problem_id, r.username, r.code, r.score, "
+                "       r.status, r.created_at "
+                "FROM (" + _representative_submission_sql() + ") r "
+                "LEFT JOIN ai_detection_results d ON r.id = d.submission_id "
+                "JOIN problems p ON r.problem_id = p.id "
+                "WHERE r.username=%s AND p.lang='matlab' AND d.id IS NULL "
+                "ORDER BY r.id ASC"
+            )
+            cursor.execute(sql, (username,))
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_filtered_submissions_for_detection(
+    class_en=None, username=None, problem_id=None,
+    submission_id=None, score_min=None, score_max=None,
+    deduplicate=True, lang='matlab',
+):
+    """
+    Flexibly filter submissions for AI detection.
+
+    Parameters
+    ----------
+    class_en      : only submissions from users in this class
+    username      : exact username match
+    problem_id    : specific problem
+    submission_id : specific submission ID
+    score_min/max : score range (inclusive)
+    deduplicate   : if True, per (username, problem_id) keep only the
+                    last submission among those with the highest score
+    lang          : problem language filter (default 'matlab')
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            need_class = bool(class_en)
+            joins = "JOIN problems p ON s.problem_id = p.id "
+            if need_class:
+                joins += (
+                    "JOIN users _u ON _u.username = s.username "
+                    "JOIN user_class_map _ucm ON _ucm.user_id = _u.id "
+                )
+
+            conditions = ["s.problem_type = 1", "p.lang = %s"]
+            params = [lang]
+
+            if need_class:
+                conditions.append("_ucm.class_en = %s")
+                params.append(class_en)
+            if username:
+                conditions.append("s.username = %s")
+                params.append(username)
+            if problem_id:
+                conditions.append("s.problem_id = %s")
+                params.append(int(problem_id))
+            if submission_id:
+                conditions.append("s.id = %s")
+                params.append(int(submission_id))
+            if score_min is not None:
+                conditions.append("s.score >= %s")
+                params.append(int(score_min))
+            if score_max is not None:
+                conditions.append("s.score <= %s")
+                params.append(int(score_max))
+
+            sql = (
+                "SELECT s.id, s.problem_id, s.username, s.code, s.score, "
+                "       s.status, s.created_at, p.title AS problem_title "
+                "FROM submissions s " + joins +
+                "WHERE " + " AND ".join(conditions) +
+                " ORDER BY s.id ASC"
+            )
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    if not deduplicate:
+        return rows
+
+    # Python-side dedup: per (username, problem_id) keep max score then latest id
+    best = {}
+    for row in rows:
+        key = (row['username'], row['problem_id'])
+        prev = best.get(key)
+        if prev is None:
+            best[key] = row
+        elif row['score'] > prev['score'] or (
+            row['score'] == prev['score'] and row['id'] > prev['id']
+        ):
+            best[key] = row
+
+    return list(best.values())
