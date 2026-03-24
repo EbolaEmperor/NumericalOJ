@@ -1732,3 +1732,101 @@ def get_filtered_submissions_for_detection(
             best[key] = row
 
     return list(best.values())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  AI Detection Task persistence (MySQL)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def ensure_ai_detection_tasks_table():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_detection_tasks (
+                    task_id      VARCHAR(64)  NOT NULL PRIMARY KEY,
+                    task_type    VARCHAR(32)  DEFAULT NULL,
+                    params_summary TEXT       DEFAULT NULL,
+                    status       VARCHAR(16)  NOT NULL DEFAULT 'pending',
+                    submitted_at DATETIME     DEFAULT NULL,
+                    started_at   DATETIME     DEFAULT NULL,
+                    finished_at  DATETIME     DEFAULT NULL,
+                    total        INT          DEFAULT NULL,
+                    processed    INT          NOT NULL DEFAULT 0,
+                    error        TEXT         DEFAULT NULL,
+                    INDEX idx_adt_submitted (submitted_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_ai_detection_task(data: dict):
+    """Insert or update a task record. data keys mirror the Redis task dict."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO ai_detection_tasks
+                    (task_id, task_type, params_summary, status,
+                     submitted_at, started_at, finished_at, total, processed, error)
+                VALUES
+                    (%(task_id)s, %(task_type)s, %(params_summary)s, %(status)s,
+                     %(submitted_at)s, %(started_at)s, %(finished_at)s,
+                     %(total)s, %(processed)s, %(error)s)
+                ON DUPLICATE KEY UPDATE
+                    status        = VALUES(status),
+                    started_at    = VALUES(started_at),
+                    finished_at   = VALUES(finished_at),
+                    total         = VALUES(total),
+                    processed     = VALUES(processed),
+                    error         = VALUES(error)
+            """, {
+                'task_id':        data.get('task_id'),
+                'task_type':      data.get('task_type'),
+                'params_summary': data.get('params_summary'),
+                'status':         data.get('status', 'pending'),
+                'submitted_at':   data.get('submitted_at'),
+                'started_at':     data.get('started_at'),
+                'finished_at':    data.get('finished_at'),
+                'total':          data.get('total'),
+                'processed':      data.get('processed') or 0,
+                'error':          data.get('error'),
+            })
+        conn.commit()
+    except Exception as e:
+        print(f'[AI Detection] upsert_ai_detection_task error: {e}')
+    finally:
+        conn.close()
+
+
+def get_ai_detection_tasks(limit=20):
+    """Return the most recent `limit` task rows from MySQL, newest first."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM ai_detection_tasks "
+                "ORDER BY submitted_at DESC LIMIT %s",
+                (limit,)
+            )
+            rows = cursor.fetchall()
+        for r in rows:
+            # Convert datetime objects to strings for JSON compatibility
+            for col in ('submitted_at', 'started_at', 'finished_at'):
+                if r.get(col) and not isinstance(r[col], str):
+                    r[col] = r[col].strftime('%Y-%m-%d %H:%M:%S')
+        return rows
+    finally:
+        conn.close()
+
+
+def truncate_ai_detection_tasks():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("TRUNCATE TABLE ai_detection_tasks")
+        conn.commit()
+    finally:
+        conn.close()
