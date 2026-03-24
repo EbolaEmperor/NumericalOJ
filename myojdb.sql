@@ -616,4 +616,30 @@ CREATE TABLE `repository_chunk_embeddings` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
+--
+-- Table structure for table `ai_detection_results`
+--
+
+DROP TABLE IF EXISTS `ai_detection_results`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `ai_detection_results` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `submission_id` int NOT NULL,
+  `username` varchar(50) NOT NULL,
+  `problem_id` int NOT NULL,
+  `llm_score` float DEFAULT NULL,
+  `llm_evidence` text,
+  `behavior_score` float DEFAULT NULL,
+  `behavior_detail` text,
+  `final_score` float NOT NULL,
+  `risk_level` varchar(16) NOT NULL DEFAULT 'low',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_ai_detection_submission` (`submission_id`),
+  KEY `idx_ai_detection_username_problem` (`username`, `problem_id`),
+  KEY `idx_ai_detection_risk_level` (`risk_level`, `final_score`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
 -- Dump completed on 2025-08-20 11:12:51
