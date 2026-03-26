@@ -19,12 +19,14 @@ from oj_modules.db_services import (
     get_agent_run_by_task_id,
     get_agent_runs_paginated,
     get_db_connection,
+    get_latest_written_submission,
     get_problem,
     get_remaining_submissions,
     get_submission_summaries_by_user_and_problem,
     get_user_classes,
     get_user_by_username,
     increment_submission_count,
+    overwrite_written_submission,
     upsert_agent_run_snapshot,
 )
 from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
@@ -1070,6 +1072,24 @@ def submit_solution(problem_id):
                     flash(f'错误：{filename} 不是 PDF 文件', 'danger')
                     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
+            # 纯人工批改：覆盖上一次提交
+            if written_mode == 4:
+                existing = get_latest_written_submission(user['username'], problem_id)
+                if existing:
+                    submission_id = existing['id']
+                    # 清空旧文件
+                    old_folder = os.path.join('uploads', str(submission_id))
+                    if os.path.isdir(old_folder):
+                        import shutil
+                        shutil.rmtree(old_folder)
+                    os.makedirs(old_folder)
+                    file.save(os.path.join(old_folder, filename))
+                    overwrite_written_submission(submission_id, filename)
+                    if user['is_admin'] != 1:
+                        increment_submission_count(user['username'], problem_id)
+                    return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                # 首次提交：走普通 INSERT 流程（下方）
+
             submission_id = create_submission(
                 problem_id=problem_id,
                 problem_title=problem['title'],
@@ -1089,12 +1109,13 @@ def submit_solution(problem_id):
             file_path = os.path.join(upload_folder, filename)
             file.save(file_path)
 
-            try:
-                if _transcribe_written_homework_task is None:
-                    raise RuntimeError("自动评分任务未初始化")
-                _transcribe_written_homework_task.delay(submission_id)
-            except Exception as e:
-                flash(f'文件已提交，但自动评分任务入队失败：{str(e)}', 'warning')
+            if written_mode != 4:
+                try:
+                    if _transcribe_written_homework_task is None:
+                        raise RuntimeError("自动评分任务未初始化")
+                    _transcribe_written_homework_task.delay(submission_id)
+                except Exception as e:
+                    flash(f'文件已提交，但自动评分任务入队失败：{str(e)}', 'warning')
 
             return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 

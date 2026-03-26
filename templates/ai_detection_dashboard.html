@@ -201,7 +201,15 @@
       </div>
     </div>
 
-    <div class="col-md-6 d-flex align-items-end gap-2">
+    <div class="col-md-3">
+      <label class="form-label form-label-sm">检测模型</label>
+      <select id="f_model" class="form-select form-select-sm">
+        <option value="qwen">Qwen3.5-Plus（默认）</option>
+        {# matlab-ai-detect 选项由 JS 动态插入（仅在 API 已配置时显示）#}
+      </select>
+    </div>
+
+    <div class="col-md-3 d-flex align-items-end gap-2">
       <button class="btn btn-outline-secondary btn-sm" onclick="previewFilter()">
         <i class="fas fa-search me-1"></i> 预览
       </button>
@@ -337,7 +345,7 @@
           <th style="width:160px">进度</th>
           <th style="width:145px">提交时间</th>
           <th style="width:145px">完成时间</th>
-          <th style="width:60px"></th>
+          <th style="width:100px"></th>
         </tr>
       </thead>
       <tbody id="tasksBody"></tbody>
@@ -348,6 +356,10 @@
 {% endif %} {# end view #}
 
 <script>
+function _getModelId() {
+  return document.getElementById('f_model')?.value || 'qwen';
+}
+
 function _getFilters() {
   return {
     class_en:      document.getElementById('f_class')?.value || '',
@@ -357,7 +369,28 @@ function _getFilters() {
     score_min:     document.getElementById('f_score_min')?.value || '',
     score_max:     document.getElementById('f_score_max')?.value || '',
     deduplicate:   document.getElementById('f_deduplicate')?.checked ? '1' : '0',
+    model_id:      _getModelId(),
   };
+}
+
+// 检测可用模型，动态插入 matlab-ai-detect 选项
+function _loadAvailableModels() {
+  fetch('/admin/ai_detection/api/available_models')
+    .then(r => r.json())
+    .then(data => {
+      if (!data.success) return;
+      const sel = document.getElementById('f_model');
+      if (!sel) return;
+      (data.models || []).forEach(m => {
+        if (m.id === 'qwen') return;  // 默认选项已在 HTML 中
+        if (!m.available) return;     // 未配置的模型不显示
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.name;
+        sel.appendChild(opt);
+      });
+    })
+    .catch(() => {});
 }
 
 function previewFilter() {
@@ -416,7 +449,8 @@ function previewFilter() {
 function startDetection() {
   const btn = document.getElementById('btnStartDetect');
   const total = btn.textContent.match(/\d+/)?.[0] || '?';
-  if (!confirm(`确认对这 ${total} 条提交记录运行 AI 检测？`)) return;
+  const modelName = document.getElementById('f_model')?.selectedOptions[0]?.text || '';
+  if (!confirm(`确认使用「${modelName}」对这 ${total} 条提交记录运行 AI 检测？`)) return;
   btn.disabled = true;
 
   fetch('/admin/ai_detection/run_filtered', {
@@ -439,7 +473,11 @@ function startDetection() {
 
 function runBatchDetection(problemId) {
   if (!confirm('确认对该题目的代表性提交运行 AI 检测？')) return;
-  fetch('/admin/ai_detection/run/' + problemId, { method: 'POST' })
+  fetch('/admin/ai_detection/run/' + problemId, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model_id: _getModelId()}),
+  })
     .then(r => r.json())
     .then(data => { alert(data.success ? data.message : '失败：' + data.message); })
     .catch(err => alert('请求失败：' + err));
@@ -447,7 +485,11 @@ function runBatchDetection(problemId) {
 
 function runUserDetection(username) {
   if (!confirm('确认对用户 ' + username + ' 的未检测提交运行 AI 检测？')) return;
-  fetch('/admin/ai_detection/run_user/' + username, { method: 'POST' })
+  fetch('/admin/ai_detection/run_user/' + username, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model_id: _getModelId()}),
+  })
     .then(r => r.json())
     .then(data => { alert(data.success ? data.message : '失败：' + data.message); })
     .catch(err => alert('请求失败：' + err));
@@ -488,6 +530,30 @@ function _renderProgress(t) {
     <div class="score-bar flex-grow-1"><div class="score-bar-fill ${colorCls}" style="width:${pct}%"></div></div>
     <small>${processed}/${total}</small>
   </div>`;
+}
+
+function deleteTask(taskId, btn) {
+  if (!confirm('确认删除该任务？\n\n此操作将同时删除该任务产生的所有 AI 检测记录（不影响其他任务的结果）。')) return;
+  btn.disabled = true;
+  btn.textContent = '删除中…';
+  fetch('/admin/ai_detection/api/delete_task/' + taskId, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        refreshTasks();
+        refreshSummary();
+        alert(data.message);
+      } else {
+        btn.disabled = false;
+        btn.textContent = '删除';
+        alert('删除失败：' + (data.message || '未知错误'));
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.textContent = '删除';
+      alert('请求失败：' + err);
+    });
 }
 
 function stopTask(taskId, btn) {
@@ -609,6 +675,9 @@ function refreshTasks() {
         const stopBtn = active
           ? `<button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:.75em" onclick="stopTask('${escHtml(t.task_id)}', this)">停止</button>`
           : '';
+        const delBtn = !active
+          ? `<button class="btn btn-outline-secondary btn-sm py-0 px-1 ms-1" style="font-size:.75em" onclick="deleteTask('${escHtml(t.task_id)}', this)">删除</button>`
+          : '';
         const tr = document.createElement('tr');
         tr.innerHTML =
           `<td>${escHtml(t.type_label || t.task_type || '')}</td>` +
@@ -617,12 +686,12 @@ function refreshTasks() {
           `<td>${_renderProgress(t)}</td>` +
           `<td class="text-muted">${escHtml(t.submitted_at || '')}</td>` +
           `<td class="text-muted">${escHtml(t.finished_at || '-')}</td>` +
-          `<td>${stopBtn}</td>`;
+          `<td>${stopBtn}${delBtn}</td>`;
         tbody.appendChild(tr);
       });
 
-      // Refresh summary whenever running→idle transition occurs
-      if (_wasRunning && !hasRunning) refreshSummary();
+      // Refresh summary on every poll while running, and once more when done
+      if (hasRunning || _wasRunning) refreshSummary();
       _wasRunning = hasRunning;
 
       if (hasRunning) {
@@ -635,6 +704,7 @@ function refreshTasks() {
 }
 
 // Initial load
+_loadAvailableModels();
 refreshTasks();
 refreshSummary();
 </script>

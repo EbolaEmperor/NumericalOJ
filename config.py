@@ -18,6 +18,12 @@ DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 CODING_PLAN_URL = "https://coding.dashscope.aliyuncs.com/v1"
 CODING_PLAN_KEY = "YOUR CODING PLAN API KEY"
 
+# matlab-ai-detect 专用检测模型（本地 vLLM 部署）
+# 模型训练完成、vLLM 启动后将 API_KEY 改为任意非空字符串（vLLM 不校验 key）
+MATLAB_AI_DETECT_API_KEY = "YOUR_MATLAB_AI_DETECT_API_KEY"
+MATLAB_AI_DETECT_URL = "http://127.0.0.1:8000/v1"
+MATLAB_AI_DETECT_MODEL = "matlab-ai-detect"
+
 QWEN_CODER_MODEL = "qwen3-coder-plus"
 QWEN_TEXT_MODEL = "qwen3.5-plus"
 AI_TUTOR_MODEL = "qwen3.5-flash"

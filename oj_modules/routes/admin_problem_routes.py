@@ -86,7 +86,7 @@ def parse_written_grading_mode_from_form(form, default=1):
         mode = int(raw)
     except Exception:
         mode = int(default)
-    return mode if mode in (1, 2, 3) else int(default)
+    return mode if mode in (1, 2, 3, 4) else int(default)
 
 
 def parse_written_grading_model_from_form(form, default=_DEFAULT_WRITTEN_GRADING_MODEL):

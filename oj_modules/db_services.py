@@ -1063,7 +1063,7 @@ def update_problem(
                 mode_val = int(new_written_grading_mode)
             except Exception:
                 mode_val = 1
-            if mode_val not in (1, 2, 3):
+            if mode_val not in (1, 2, 3, 4):
                 mode_val = 1
         model_val = None
         if new_written_grading_model is not None:
@@ -1141,6 +1141,39 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
             raise RuntimeError("create_submission: failed to get valid submission id")
         refresh_submission_status_snapshot(subid)
         return subid
+    finally:
+        conn.close()
+
+
+def get_latest_written_submission(username, problem_id):
+    """Return the most recent submission row for a user+problem, or None."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM submissions WHERE username=%s AND problem_id=%s ORDER BY id DESC LIMIT 1",
+                (username, problem_id),
+            )
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def overwrite_written_submission(submission_id, new_filename):
+    """Reset an existing written submission to Pending with a new filename."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            test_points_str = json.dumps(new_filename, ensure_ascii=False)
+            cursor.execute(
+                """UPDATE submissions
+                      SET test_points=%s, score=0, status='Pending',
+                          created_at=NOW()
+                    WHERE id=%s""",
+                (test_points_str, submission_id),
+            )
+        conn.commit()
+        refresh_submission_status_snapshot(submission_id)
     finally:
         conn.close()
 
@@ -1393,46 +1426,8 @@ def update_submission_evaluation(submission_id, test_point_statuses, score, stat
 #  AI Detection Results
 ###############################################################################
 
-_ai_detection_table_ready = False
-
-
-def ensure_ai_detection_table():
-    global _ai_detection_table_ready
-    if _ai_detection_table_ready:
-        return
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS `ai_detection_results` (
-                    `id` bigint NOT NULL AUTO_INCREMENT,
-                    `submission_id` int NOT NULL,
-                    `username` varchar(50) NOT NULL,
-                    `problem_id` int NOT NULL,
-                    `llm_score` float DEFAULT NULL,
-                    `llm_evidence` text,
-                    `behavior_score` float DEFAULT NULL,
-                    `behavior_detail` text,
-                    `final_score` float NOT NULL,
-                    `risk_level` varchar(16) NOT NULL DEFAULT 'low',
-                    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (`id`),
-                    UNIQUE KEY `uk_ai_detection_submission` (`submission_id`),
-                    KEY `idx_ai_detection_username_problem` (`username`, `problem_id`),
-                    KEY `idx_ai_detection_risk_level` (`risk_level`, `final_score`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-            """)
-        conn.commit()
-        _ai_detection_table_ready = True
-    except Exception:
-        _ai_detection_table_ready = True
-    finally:
-        conn.close()
-
-
 def upsert_ai_detection_result(result):
     """Insert or update an AI detection result. Uses REPLACE INTO on unique submission_id."""
-    ensure_ai_detection_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1440,8 +1435,8 @@ def upsert_ai_detection_result(result):
                 "REPLACE INTO ai_detection_results "
                 "(submission_id, username, problem_id, "
                 " llm_score, llm_evidence, behavior_score, behavior_detail, "
-                " final_score, risk_level) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " final_score, risk_level, task_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     result["submission_id"],
                     result["username"],
@@ -1452,6 +1447,7 @@ def upsert_ai_detection_result(result):
                     result.get("behavior_detail"),
                     result["final_score"],
                     result["risk_level"],
+                    result.get("task_id"),
                 ),
             )
         conn.commit()
@@ -1459,8 +1455,37 @@ def upsert_ai_detection_result(result):
         conn.close()
 
 
+def delete_ai_detection_results_by_task(task_id):
+    """Delete all ai_detection_results rows produced by the given task. Returns deleted count."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM ai_detection_results WHERE task_id = %s",
+                (task_id,),
+            )
+            deleted = cursor.rowcount
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+
+def delete_ai_detection_task(task_id):
+    """Delete a task record from ai_detection_tasks."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM ai_detection_tasks WHERE task_id = %s",
+                (task_id,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_ai_detection_result_by_submission(submission_id):
-    ensure_ai_detection_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1475,7 +1500,6 @@ def get_ai_detection_result_by_submission(submission_id):
 
 def get_ai_detection_results_for_problem(problem_id, risk_level=None):
     """Get all detection results for a problem, optionally filtered by risk level."""
-    ensure_ai_detection_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1504,7 +1528,6 @@ def get_ai_detection_results_for_problem(problem_id, risk_level=None):
 
 def get_ai_detection_results_for_user(username):
     """Get all detection results for a user."""
-    ensure_ai_detection_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1525,7 +1548,6 @@ def get_ai_detection_results_for_user(username):
 
 def get_ai_detection_dashboard_summary():
     """Get summary statistics for the detection dashboard."""
-    ensure_ai_detection_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1610,7 +1632,6 @@ def get_undetected_submissions_for_problem(problem_id, lang="matlab"):
     Per user, pick the representative submission (last among max-score)
     that hasn't been analyzed yet.
     """
-    ensure_ai_detection_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1633,7 +1654,6 @@ def get_undetected_submissions_for_user(username):
     For a given user, across all MATLAB problems, pick the representative
     submission per problem that hasn't been analyzed yet.
     """
-    ensure_ai_detection_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1737,30 +1757,6 @@ def get_filtered_submissions_for_detection(
 # ──────────────────────────────────────────────────────────────────────────────
 #  AI Detection Task persistence (MySQL)
 # ──────────────────────────────────────────────────────────────────────────────
-
-def ensure_ai_detection_tasks_table():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ai_detection_tasks (
-                    task_id      VARCHAR(64)  NOT NULL PRIMARY KEY,
-                    task_type    VARCHAR(32)  DEFAULT NULL,
-                    params_summary TEXT       DEFAULT NULL,
-                    status       VARCHAR(16)  NOT NULL DEFAULT 'pending',
-                    submitted_at DATETIME     DEFAULT NULL,
-                    started_at   DATETIME     DEFAULT NULL,
-                    finished_at  DATETIME     DEFAULT NULL,
-                    total        INT          DEFAULT NULL,
-                    processed    INT          NOT NULL DEFAULT 0,
-                    error        TEXT         DEFAULT NULL,
-                    INDEX idx_adt_submitted (submitted_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-        conn.commit()
-    finally:
-        conn.close()
-
 
 def upsert_ai_detection_task(data: dict):
     """Insert or update a task record. data keys mirror the Redis task dict."""
