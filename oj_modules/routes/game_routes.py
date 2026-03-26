@@ -44,9 +44,10 @@ def ensure_circle_cat_table():
         conn.close()
 
 
-def get_circle_cat_leaderboard(limit=5):
+def get_circle_cat_leaderboard(limit=10):
     limit = max(1, min(int(limit), 50))
-    rows = []
+    win_rows = []
+    fail_rows = []
     conn = None
     try:
         ensure_circle_cat_table()
@@ -62,19 +63,58 @@ def get_circle_cat_leaderboard(limit=5):
                 LIMIT {limit}
                 """
             )
-            rows = cursor.fetchall() or []
+            win_rows = cursor.fetchall() or []
+
+            remaining = max(0, limit - len(win_rows))
+            if remaining > 0:
+                winner_usernames = [row.get('username', '') for row in win_rows if row.get('username')]
+                if winner_usernames:
+                    placeholders = ", ".join(["%s"] * len(winner_usernames))
+                    cursor.execute(
+                        f"""
+                        SELECT username, MAX(created_at) AS last_fail_at
+                        FROM circle_cat_records
+                        WHERE is_win=0
+                          AND username NOT IN ({placeholders})
+                        GROUP BY username
+                        ORDER BY last_fail_at DESC
+                        LIMIT {remaining}
+                        """,
+                        tuple(winner_usernames),
+                    )
+                else:
+                    cursor.execute(
+                        f"""
+                        SELECT username, MAX(created_at) AS last_fail_at
+                        FROM circle_cat_records
+                        WHERE is_win=0
+                        GROUP BY username
+                        ORDER BY last_fail_at DESC
+                        LIMIT {remaining}
+                        """
+                    )
+                fail_rows = cursor.fetchall() or []
     except Exception:
-        rows = []
+        win_rows = []
+        fail_rows = []
     finally:
         if conn is not None:
             conn.close()
 
     leaderboard = []
-    for row in rows:
+    for row in win_rows:
         leaderboard.append(
             {
                 'username': row.get('username', ''),
                 'best_turns': int(row.get('best_turns') or 0),
+                'status': 'win',
+            }
+        )
+    for row in fail_rows:
+        leaderboard.append(
+            {
+                'username': row.get('username', ''),
+                'status': 'lose',
             }
         )
     return leaderboard
@@ -112,7 +152,7 @@ def circle_cat():
     return render_template(
         'circle_cat.html',
         user=current_user(),
-        leaderboard=get_circle_cat_leaderboard(limit=5),
+        leaderboard=get_circle_cat_leaderboard(limit=10),
     )
 
 
@@ -120,7 +160,7 @@ def circle_cat():
 def circle_cat_leaderboard():
     return jsonify({
         'success': True,
-        'leaderboard': get_circle_cat_leaderboard(limit=5),
+        'leaderboard': get_circle_cat_leaderboard(limit=10),
     })
 
 
@@ -131,7 +171,7 @@ def circle_cat_result():
         return jsonify({
             'success': False,
             'message': '未登录，无法记录成绩。',
-            'leaderboard': get_circle_cat_leaderboard(limit=5),
+            'leaderboard': get_circle_cat_leaderboard(limit=10),
         }), 401
 
     data = request.get_json(silent=True) or {}
@@ -150,5 +190,5 @@ def circle_cat_result():
 
     return jsonify({
         'success': True,
-        'leaderboard': get_circle_cat_leaderboard(limit=5),
+        'leaderboard': get_circle_cat_leaderboard(limit=10),
     })
