@@ -150,7 +150,11 @@
             </div>
           </div>
         </div>
+        {% if written_mode == 4 %}
+        <p class="text-muted"><i class="fas fa-info-circle me-1"></i> 纯人工批改：重新提交将覆盖上一次提交，等待老师批改。</p>
+        {% else %}
         <p class="text-muted">提示：书面作业可多次提交，以历史最高分计入成绩。</p>
+        {% endif %}
       </form>
     {% endif %}
 

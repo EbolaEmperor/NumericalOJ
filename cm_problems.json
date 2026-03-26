@@ -1,0 +1,114 @@
+[
+  {
+    "title": "「CM-1」连续开根",
+    "content": "### 题目描述\r\n\r\n计算 $a_1=\\sqrt{5},\\;a_2=\\sqrt{\\sqrt{5}},\\;a_3=\\sqrt{\\sqrt{\\sqrt{5}}},...$ 的极限，要求误差不超过 $10^{-8}$。\r\n\r\n你需要将结果保存在向量 `a` 中，其中 `a(1)=sqrt(5)`, `a(2)=sqrt(sqrt(5))`, ...\r\n\r\n当 $|a_k-a_{k-1}|\\leq 10^{-8}$ 时，结束循环，此时向量 `a` 长度为 $k$。\r\n\r\n### 提示\r\n\r\n你可以使用 `for` 或 `while` 循环，使用 `break` 来退出循环，使用 `abs` 来计算绝对值，使用 `sqrt` 函数来开根。",
+    "initial_code": "% 请修改下面的代码，以实现作业要求。\r\na(1) = sqrt(5);\r\na(2) = sqrt(a(1));\r\n% ...\r\n\r\n\r\n% 下面的代码用于输出答案，请勿修改。\r\ndlmwrite('output.txt', a, 'delimiter', ',');",
+    "lang": "matlab",
+    "time_limit_ms": 500
+  },
+  {
+    "title": "「CM-2」计算 sin 函数",
+    "content": "### 题目描述\r\n\r\n$\\sin x$ 在 $0$ 处的泰勒展开如下：\r\n\r\n$$\r\n\\sin x = \\sum_{i= 0}^\\infty (-1)^i \\frac{x^{2i+1}}{(2i+1)!}\r\n$$ \r\n\r\n请利用它计算 $\\sin x$ 的值，其中 $x$ 是一个输入的浮点数，将结果保存在变量 `sin_x` 中。\r\n\r\n你的答案与精确答案的误差不得超过 $10^{-5}$。\r\n\r\n### 警告\r\n\r\n1. 本题禁止使用库函数 `sin`, `cos` 和 `tan`，如果使用，你的结果将会是 `Forbidden`，并被系统判为零分！\r\n2. 请不要在代码注释里写 `sin`, `cos` 和 `tan`，否则会被误判为使用了上述函数。\r\n\r\n### 提示\r\n\r\n1. 为了确保计算结果精确 ，请取足够多的项进行求和。\r\n2. 泰勒公式对于很大的 $x$ 效果不好，因此，对于比较大的 $x$，建议先用 `mod(x,pi)` 将 $x$ 约束到 $[0,\\pi)$ 区间，再通过诱导公式来计算 $\\sin x$。",
+    "initial_code": "x = importdata(\"input.txt\");\r\n\r\n% 在这里开始写你的代码\r\n\r\n\r\n% 下面的代码用于输出答案，请勿修改或删除\r\ndlmwrite('output.txt', sin_x, 'delimiter', ',');",
+    "lang": "matlab",
+    "time_limit_ms": 2000
+  },
+  {
+    "title": "「CM-4」Gauss 消去法",
+    "content": "### 题目描述\r\n\r\n给定 $n\\times n$ 的矩阵 $\\mathbf{A}$ 以及长为 $n$ 的**列向量** $\\mathbf{b}$，请你求出**列向量** $\\mathbf{x}$，使得：\r\n$$\r\n\\mathbf{Ax}=\\mathbf{b}\r\n$$\r\n\r\n### 编程要求\r\n\r\n你需要实现 `gauss_solve` 函数，该函数接受一个矩阵 `A` 和一个列向量 `b`。\r\n\r\n- 如果方程有唯一解，返回值 `x` 应该是一个长为 $n$ 的列向量。\r\n- 如果方程不存在唯一解，不论是无解还是有无穷多解，请直接令 `x=[]` 并返回。\r\n\r\n请特别注意：\r\n\r\n1. **禁止**使用 `\\` 运算符，禁止使用 `solve`、`lu`、`plu`、`qr`、`rref`、`inv`、`pinv`、`linsolve`、`mldivide`、`mrdivide`、`lsqminnorm` 函数。\r\n2. 请不要在注释里包含上述禁用的函数，否则会被系统误判。\r\n\r\n### 提示\r\n\r\n1. 可以参考《数值计算方法（第二版）》的算法 2.1。\r\n2. 用矩阵向量运算代替 `for` 循环，可以显著提高程序运行速度。\r\n3. 请正确使用句末分号。",
+    "initial_code": "function x = gauss_solve(A, b)\r\n    % 在这里实现你的代码\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 1500
+  },
+  {
+    "title": "「CM-5」LU 分解的原理",
+    "content": "### 题目描述\r\n\r\n给定一个可逆矩阵 $\\mathbf{A}=(a_{ij})$，我们来考虑**不选主元**的 Gauss 消去法过程。算法第一步是把 `A(2:n,1)` 消去，这个步骤可以用矩阵形式表示为：\r\n\r\n$$\r\n\\scriptsize\r\n\\mathbf{E}_1 \\mathbf{A}  = \\begin{bmatrix}\r\n* & * & * & \\cdots & * \\\\\\\\\r\n0 & * & * & \\cdots & * \\\\\\\\\r\n0 & * & * & \\cdots & * \\\\\\\\\r\n\\vdots & \\vdots & \\vdots & \\ddots & \\vdots \\\\\\\\\r\n0 & * & * & \\cdots & * \\\\\\\\\r\n\\end{bmatrix}, \\quad \\text{其中} \\quad\r\n\\mathbf{E}_1 = \\begin{bmatrix}\r\n1 & 0 & 0 & \\cdots & 0 \\\\\\\\\r\n-\\frac{a\\_{21}}{a\\_{11}} & 1 & 0 & \\cdots & 0 \\\\\\\\\r\n-\\frac{a\\_{31}}{a\\_{11}} & 0 & 1 & \\cdots & 0 \\\\\\\\\r\n\\vdots & \\vdots & \\vdots & \\ddots & \\vdots \\\\\\\\\r\n-\\frac{a\\_{n1}}{a\\_{11}} & 0 & 0 & \\cdots & 1\r\n\\end{bmatrix}\r\n$$\r\n\r\n所以说算法第一步可以用下三角矩阵 $\\mathbf{E}_1$ 来表示。\r\n类似地，算法第二步可以用下三角矩阵 $\\mathbf{E}_2$ 来表示……\r\n如此类推，我们得到一列下三角矩阵 $\\mathbf{E}_1,\\mathbf{E}_2,…,\\mathbf{E}_n$，\r\n这些矩阵可以将 $\\mathbf{A}$ 变换为上三角矩阵：\r\n\r\n$$\r\n\\mathbf{E}_n\\cdots \\mathbf{E}_2\\mathbf{E}_1\\mathbf{A} = \\mathbf{U}\r\n$$\r\n\r\n现在，请你实现一个函数 `function E = getGaussTransform(A)`，该函数返回上述变换矩阵的乘积，即：\r\n\r\n$$\r\n\\mathbf{E} = \\mathbf{E}_n\\cdots \\mathbf{E}_2\\mathbf{E}_1\r\n$$\r\n\r\n请保证你的程序时间复杂度不超过 $O(n^3)$。\r\n\r\n### 补充说明\r\n\r\n1. 做一次矩阵乘法的时间复杂度是 $O(n^3)$ 的。\r\n2. MATLAB 的循环语句速度很慢，请尽量减少循环语句的使用。\r\n3. 输入数据保证 $\\mathbf{A}$ 的所有顺序主子式均非零。\r\n4. **禁止**使用 `\\` 运算符，禁止使用 `lu`、`plu`、`rref`、`inv` 、`pinv` 等函数。注意：只要你没有自己实现计算 $\\mathbf{E}_1,…,\\mathbf{E}_n$ 的代码，而是使用了上述或其他类似功能的库函数，**管理员有权将你的成绩设为零分**。\r\n5. 如果显示 `Running` 超过三分钟，请先尝试**重新提交**。如果一直出现这种情况，请向助教求助。",
+    "initial_code": "%% 你可以在这里自定义一些需要用到的函数\r\n\r\nfunction E = getGaussTransform(A)\r\n    % 在这里实现题目要求的函数\r\n\r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 8000
+  },
+  {
+    "title": "「CM-6」PLU 分解的应用",
+    "content": "### 题目描述\r\n\r\n通过**列主元**法 Gauss 消去，我们可以获得这样一种矩阵分解（PLU 分解）：\r\n\r\n$$\r\n\\mathbf{PA}=\\mathbf{LU}\r\n$$\r\n\r\n其中 $\\mathbf{P}$ 是置换矩阵，$\\mathbf{L}$ 是单位下三角矩阵，$\\mathbf{U}$ 是上三角矩阵。\r\n\r\n现在，$\\mathbf{P,L,U}$ 已经给定。你需要实现一个函数 `function x = solveWithPLU(P, L, U, b)` 用于求解方程\r\n\r\n$$\r\n\\mathbf{Ax}=\\mathbf{b}\r\n$$\r\n\r\n该函数的时间复杂度不得超过 $O(n^2)$。\r\n\r\n### 提示\r\n\r\nMATLAB 的循环非常慢，请少写循环语句，尽量用矩阵向量运算代替。",
+    "initial_code": "%% 你可以在这里自定义一些需要用到的函数\r\n\r\nfunction x = solveWithPLU(P, L, U, b)\r\n    % 在这里实现题目要求的函数\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 8000
+  },
+  {
+    "title": "「CM-7」Cholesky 分解（一）",
+    "content": "### 题目描述\r\n\r\n在本题中，您需要实现两个函数。\r\n\r\n第一个函数：`function [L, D] = decompLDL(A)`。这个函数接收一个**正定对称**矩阵 $A$，您需要返回**单位下三角**矩阵 $L$、**对角**矩阵 $D$，使得：\r\n$$\r\nA = LDL^T\r\n$$\r\n\r\n第二个函数：`function x = solveWithLDL(L, D, b)`。这个函数接收由上一个函数计算出来的矩阵 $L,D$，以及一个列向量 $b$。您需要返回一个列向量 $x$，使得：\r\n$$\r\nAx=b\r\n$$\r\n\r\n### 要求\r\n\r\n1. 第一个函数的时间复杂度不超过 $O(n^3)$，第二个函数的时间复杂度不超过 $O(n^2)$。\r\n2. 请使用 **向量化操作** 加速。\r\n3. **禁止**使用 `\\` 运算符，禁止使用 `chol`、`ldl`、`sqrt`、`solve`、`lu`、`plu`、`qr`、`rref`、`inv`、`pinv`、`linsolve`、`mldivide`、`mrdivide`、`lsqminnorm` 等函数。",
+    "initial_code": "function [L, D] = decompLDL(A)\r\n    % 第一个函数\r\nend\r\n\r\n\r\nfunction x = solveWithLDL(L, D, b)\r\n    % 第二个函数\r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 2000
+  },
+  {
+    "title": "「CM-8」最小二乘拟合",
+    "content": "### 题目描述\r\n\r\n给定正整数 $n,m$，其中 $n>2m+1$。再给定**列**向量 $\\mathbf{x}=(x_1,...,x_n)^T$，$\\mathbf{y}=(y_1,...,y_n)^T$，其中 $x_1,...,x_n$ 两两不同。\r\n\r\n定义函数：\r\n$$\r\nf(x) = b_1 + \\sum_{k=1}^m b_{k+1}\\sin(kx) + \\sum_{k=1}^m b_{k+m+1} \\cos(kx).\r\n$$\r\n\r\n请你求出系数 $b_1,...,b_{2m+1}$，使下式的值**最小化**：\r\n$$\r\n\\sum_{k=1}^n |f(x_k) - y_k|^2.\r\n$$\r\n\r\n请将结果保存为一个**列**向量 $\\mathbf{b}=(b_1,...,b_{2m+1})^T$。\r\n\r\n### 要求\r\n\r\n1. 你的程序时间复杂度**不得**超过 $O(n(2m+1)+(2m+1)^3)$。\r\n2. **禁止**使用 `\\` 运算符，禁止使用 `chol`、`ldl`、`sqrt`、`solve`、`lu`、`plu`、`qr`、`rref`、`inv`、`pinv`、`linsolve`、`mldivide`、`mrdivide`、`lsqminnorm` 等函数。\r\n\r\n### 提示 1\r\n\r\n你可以构造一个 $n\\times(2m+1)$ 的矩阵 $\\mathbf{A}$，将上述问题转化为**线性最小二乘**的标准形式：\r\n$$\r\n \\min_{\\mathbf{b}\\in\\mathbb{R}^{2m+1}} \\quad ||\\mathbf{Ab}-\\mathbf{y}||_2\r\n$$\r\n然后通过求解**正则化方程** $\\mathbf{A}^T\\mathbf{Ab}=\\mathbf{A}^T\\mathbf{y}$ 来得到答案。\r\n\r\n### 提示 2\r\n\r\n请尽可能使用 **向量化操作** 来优化程序运行速度，例如：\r\n\r\n1. 借助向量化操作，$LDL^T$ 分解可以只写一重循环。\r\n2. 如果 $B$ 是矩阵（或向量），使用 `sin(B)` 可以直接得到一个矩阵（或向量），相当于对 $B$ 里面每一个元素计算 $\\sin$。\r\n\r\n此外，请注意行末分号的正确使用，行末无分号会产生输出，而输出的耗时很大。",
+    "initial_code": "function b = trigonometricFit(n, m, x, y)\r\n    % 在这里实现你的代码\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 1000
+  },
+  {
+    "title": "「CM-9」SOR 迭代的参数选择",
+    "content": "### `本题只允许提交一次！本题只允许提交一次！`\r\n\r\n在本周学的 SOR 迭代中，我们知道，参数 $\\omega$ 的选择非常重要。我们考虑下面这个分块矩阵：\r\n$$\r\n\\mathbf{A} = \r\n\\begin{bmatrix}\r\n\\mathbf{T} & -\\mathbf{I} & 0 & \\cdots & 0 & 0 \\\\\\\\\r\n-\\mathbf{I} & \\mathbf{T} & -\\mathbf{I} & \\cdots & 0 & 0 \\\\\\\\\r\n0 & -\\mathbf{I} & \\mathbf{T} & \\cdots & 0 & 0\\\\\\\\\r\n\\vdots & \\vdots & \\vdots & \\ddots & \\vdots & \\vdots \\\\\\\\\r\n0 & 0 & 0 & \\cdots & \\mathbf{T} & -\\mathbf{I} \\\\\\\\\r\n0 & 0 & 0 & \\cdots & -\\mathbf{I} & \\mathbf{T}\r\n\\end{bmatrix}\r\n$$\r\n其中，$\\mathbf{I}$ 是 $n\\times n$ 的单位阵，$\\mathbf{T}$ 是 $n\\times n$ 的三对角矩阵，其形式如下：\r\n$$\r\n\\mathbf{T} = \r\n\\begin{bmatrix}\r\n4 & -1 & 0 & \\cdots & 0 & 0 \\\\\\\\\r\n-1 & 4 & -1 & \\cdots & 0 & 0 \\\\\\\\\r\n0 & -1 & 4 & \\cdots & 0 & 0\\\\\\\\\r\n\\vdots & \\vdots & \\vdots & \\ddots & \\vdots & \\vdots \\\\\\\\\r\n0 & 0 & 0 & \\cdots & 4 & -1 \\\\\\\\\r\n0 & 0 & 0 & \\cdots & -1 & 4\r\n\\end{bmatrix}\r\n$$\r\n\r\n在本题中，我们取 $n=20$。\r\n\r\n我们用 SOR 迭代来求解方程 $\\mathbf{Ax=b}$。其中 $\\mathbf{b}$ 是长为 $n^2$ 的列向量，所有元素均为 $1$。\r\nSOR 迭代的代码可以参考：[这里](http://10.72.190.121:2025/forum/thread/6)\r\n\r\n本题的目的非常简单：\r\n\r\n1. 阅读并理解 SOR 迭代的代码，尝试自己实现\r\n2. 在**自己的电脑**上，尝试使用 SOR 迭代求解上述矩阵方程\r\n3. 寻找用 SOR 迭代求解上述矩阵方程的**最佳参数 $\\omega$**\r\n\r\n您只需提交您找到的最佳参数即可，系统会使用您提供的 $\\omega$ 来对上述方程进行 SOR 迭代求解，当达到 $||\\mathbf{b-Ax}||_2\\leq 10^{-6}$ 时，\r\n结束迭代。您的得分将根据迭代次数来决定：\r\n\r\n- 迭代次数 $\\leq 67$ 次，得分为 $6$；\r\n- 迭代次数 $\\leq 80$ 次，得分为 $5$；\r\n- 迭代次数 $\\leq 100$ 次，得分为 $4$；\r\n- 迭代次数 $\\leq 150$ 次，得分为 $3$；\r\n- 迭代次数 $\\leq 200$ 次，得分为 $2$；\r\n- 迭代次数 $\\leq 400$ 次，得分为 $1$；\r\n\r\n注：本次作业得分按 $\\sqrt{10\\cdot (\\text{系统显示分数} +4)}$ 计算，不提交则计 $0$ 分。",
+    "initial_code": "function omega = optimalArg()\r\n    % 将下面的 1.4 改为您找到的最优参数即可，不需要写别的东西\r\n    omega = 1.4;\r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 2000
+  },
+  {
+    "title": "「CM-10」二维离散 Laplace 方程",
+    "content": "下面这个分块矩阵就是著名的 “二维离散 Laplacian 算子”：\r\n$$\r\n\\mathbf{A} = \r\n\\begin{bmatrix}\r\n\\mathbf{T} & -\\mathbf{I} & 0 & \\cdots & 0 & 0 \\\\\\\\\r\n-\\mathbf{I} & \\mathbf{T} & -\\mathbf{I} & \\cdots & 0 & 0 \\\\\\\\\r\n0 & -\\mathbf{I} & \\mathbf{T} & \\cdots & 0 & 0\\\\\\\\\r\n\\vdots & \\vdots & \\vdots & \\ddots & \\vdots & \\vdots \\\\\\\\\r\n0 & 0 & 0 & \\cdots & \\mathbf{T} & -\\mathbf{I} \\\\\\\\\r\n0 & 0 & 0 & \\cdots & -\\mathbf{I} & \\mathbf{T}\r\n\\end{bmatrix}\r\n$$\r\n其中，$\\mathbf{I}$ 是 $n\\times n$ 的单位阵，$\\mathbf{T}$ 是 $n\\times n$ 的三对角矩阵，其形式如下：\r\n$$\r\n\\mathbf{T} = \r\n\\begin{bmatrix}\r\n4 & -1 & 0 & \\cdots & 0 & 0 \\\\\\\\\r\n-1 & 4 & -1 & \\cdots & 0 & 0 \\\\\\\\\r\n0 & -1 & 4 & \\cdots & 0 & 0\\\\\\\\\r\n\\vdots & \\vdots & \\vdots & \\ddots & \\vdots & \\vdots \\\\\\\\\r\n0 & 0 & 0 & \\cdots & 4 & -1 \\\\\\\\\r\n0 & 0 & 0 & \\cdots & -1 & 4\r\n\\end{bmatrix}\r\n$$\r\n\r\n在本题中，您需要求解方程 $\\mathbf{Ax=b}$。本题不限制函数使用，不限制思路，您可以使用任何能想到的手段。\r\n\r\n具体而言，您需要实现一个函数 `x=solveLaplacian(n,b)`，您可以调用 `A=genDiff2(n)` 来获取矩阵 $\\mathbf{A}$，然后求解方程 $\\mathbf{Ax=b}$，并返回结果 $\\mathbf{x}$。\r\n当然，如果您有足够好的方法，您也可以不显式构造矩阵 $\\mathbf{A}$，而是直接求解。\r\n\r\n注意，您的求解结果必须满足 $||\\mathbf{Ax-b}||_2\\leq 10^{-6}$，否则视为答案错误。\r\n\r\n您的得分将由求解效率决定。在 $8$ 秒的时限内：\r\n\r\n- 若解出 $n=30$ 的方程，得 $1$ 分；\r\n- 若解出 $n=60$ 的方程，得 $2$ 分；\r\n- 若解出 $n=125$ 的方程，得 $3$ 分；\r\n- 若解出 $n=250$ 的方程，得 $4$ 分；\r\n- 若解出 $n=500$ 的方程，得 $5$ 分；\r\n- 若解出 $n=800$ 的方程，得 $6$ 分。\r\n\r\n### 提示一\r\n\r\n对于本问题而言，如果使用 PCG 方法，那么 SSOR 迭代算子是一个很好的预处理算子，表达式如下：\r\n\r\n$$\r\nM_{\\text{SSOR}}=\\frac{\\omega}{2-\\omega}\\left(\\frac{1}{\\omega}D-L\\right)D^{-1}\\left(\\frac{1}{\\omega}D-U\\right)\r\n$$\r\n\r\n这里我们假设矩阵 $A$ 被分解为 $A=D-L-U$，其中 $D$ 是对角矩阵，$L$ 是严格下三角矩阵，$U$ 是严格上三角矩阵。您可以使用 `tril` 和 `triu` 函数来获取上三角、下三角部分。\r\n\r\n其中 $\\omega\\in[1,2)$，您可以自行探索 $\\omega$ 的最佳取值。\r\n\r\n### 提示二\r\n\r\nMATLAB 内置了 `pcg` 函数，用法为 `x=pcg(A,b,tol,maxit,M)`，其中 `tol` 是容忍误差，`maxit` 是最大迭代次数，`M` 是预处理算子，例如您可以使用上面的 $M_{\\text{SSOR}}$。\r\n\r\n但是注意，`pcg` 内部会调用 `M\\r` 进行求解，因此直接传入 `M` 会很慢。我们建议您将其写为 $M_{\\text{SSOR}}=M_1M_2$ 的形式，其中 $M_1$ 是下三角阵，$M_2$ 是上三角阵，然后调用 `x=pcg(A,b,tol,maxit,M1,M2)`，这样可以避免函数内部对 `M\\r` 的调用。\r\n\r\n### 关于北太天元\r\n\r\n有同学反应，`genDiff2` 在北太天元里运行会出错，这里提供一个替代方案：\r\n[genDiff2 的替代方案](http://10.72.190.121:2025/forum/thread/7)",
+    "initial_code": "function A = genDiff2(n)\r\n    e = ones(n, 1);\r\n    T = spdiags([-1*e, 4*e, -1*e], [-1, 0, 1], n, n);\r\n    I = eye(n);\r\n    A = kron(I, T) + kron(T, I);\r\nend\r\n\r\nfunction x = solveLaplacian(n, b)\r\n    % 您需要根据题目要求完善这个函数\r\n    A = genDiff2(n);\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 8000
+  },
+  {
+    "title": "「CM-12」特征值求解",
+    "content": "### 题目描述\r\n\r\n您需要实现一个函数 `function e = eigen(A)`，这个函数接收一个 $n\\times n$ 的实对称矩阵 $A$，您需要返回一个 **行向量** $e$，里面包含了 $A$ 的所有特征值。\r\n\r\n注意，如果一个特征值 $\\lambda$ 的重数为 $m$，则 $e$ 里应该包含 $m$ 个 $\\lambda$。也就是说，您返回的 $e$ 一定是长为 $n$ 的行向量。\r\n\r\n您可以按任何顺序将特征值保存在 $e$ 里。\r\n\r\n您需要保证**每一个**特征值与精确值的绝对误差或相对误差都不超过 $10^{-9}$。\r\n\r\n### 禁用函数\r\n\r\n禁止使用所有与 QR 分解、特征值计算、奇异值计算相关的函数，包括但不限于： `qr`、`qrdelete`、`qrinsert`、`qrupdate`、`planerot`、`eig`、`eigs`、`svd`、`svds`、`pageeig`、`pagesvd`、`svdsketch`、`svdappend`、`gsvd`、`ordeig`、`ordqz`、`qz`、`ordschur`、`polyeig`、`hess`、`schur`、`rsf2csf`、`cdf2rdf`、`jordan`、`hermiteForm`、`smithForm`、`charpoly`",
+    "initial_code": "function e = eigen(A)\r\n    % 在这里写你的代码\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 4000
+  },
+  {
+    "title": "「CM-13」Newton 插值法",
+    "content": "### 题目描述\r\n\r\n我们有一个绝妙的函数 $f(x)$，但我们不告诉您！我们只告诉您以下信息：\r\n\r\n1. $f(x)$ 在 $[0,1]$ 区间里具有无穷阶连续导函数\r\n2. $\\left|\\frac{\\text{d}^n}{\\text{d}x^n}f(x)\\right| \\leq 4^n$ 对任意的 $1\\leq n\\leq 17$ 以及 $x\\in[0,1]$ 成立 \r\n3. $f\\left(\\frac{i}{16}\\right)=w_i$，其中 $i=0,...,16$，而 $w=(w_0,w_1,...,w_{16})$ 将作为一个**行向量**传入您的程序\r\n\r\n现在，您需要在不知道这个函数表达式的情况下，求出 $f(z_1),...,f(z_N)$，其中 $z=(z_1,...,z_N)$ 将作为一个**行向量**传入您的程序。\r\n\r\n### 函数接口\r\n\r\n您需要实现一个函数 `function fz = computeFunc(w, z)`，接收的两个行向量如前文所述，返回的 `fz` 是一个向量，向量里是 $f(z_1),...,f(z_N)$ 的值。\r\n\r\n如果您求出的**每一个**值都与我们直接用表达式算出的 $f(z_1),...,f(z_N)$ 相差不超过 $10^{-13}$，则您的答案被认为是正确的。\r\n\r\n### 禁用函数\r\n\r\n禁止使用与插值相关的库函数，包括但不限于 `interp1`、`interp2`、`interp3`、`interpn`、`griddedInterpolant`、`pchip`、`makima`、`spline`、`ppval`、`mkpp`、`unmkpp`、`padecoef`、`interpft`、`vander`、`polyval`",
+    "initial_code": "function fz = computeFunc(w, z)\r\n    % 在这里实现您的函数，请充分利用向量化运算加速\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 4000
+  },
+  {
+    "title": "「CM-14」指数函数的最小二乘拟合",
+    "content": "<center>\r\n<img src=\"http://10.72.188.210:2025/static/images/expFit.png\" style=\"width:400px\"></img>\r\n</center>\r\n\r\n如图所示，如果数据点 $(x_i,y_i)\\;(i=1,...,n)$ 的分布近似指数曲线，则可以考虑用指数函数\r\n\r\n$$\r\ny=be^{ax}\r\n$$\r\n\r\n去拟合数据，按最小二乘原理，$a,b$ 的选取应使得下式尽可能小：\r\n\r\n$$\r\nF(a,b) = \\sum_{i=1}^n (y_i-be^{ax_i})^2\r\n$$\r\n\r\n现在，请你实现一个函数 `function [a, b, minF] = expFit(x, y)`，该函数接收数据点 $x=(x_1,...,x_n)$, $y=(y_1,...,y_n)$（行向量），返回使得 $F(a,b)$ 最小的参数 $a,b$，并返回相应的 $F(a,b)$ 的最小值。\r\n\r\n### 补充说明\r\n\r\n使用对数变换后，用最小二乘法最小化下式即可。\r\n\r\n$$\r\n\\sum_{i=1}^n (\\ln y_i - ax_i - \\ln b)^2\r\n$$\r\n\r\n虽然这样算出来与 $F(a,b)$ 真正的最小值有一定偏差，但不会相差太大，系统仍然会认为你的答案是正确的。",
+    "initial_code": "function [a, b, minF] = expFit(x, y)\r\n    % 在这里写你的代码\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 1000
+  },
+  {
+    "title": "「CM-15」Newton 迭代法",
+    "content": "有函数\r\n\r\n$$\r\nf(x)=e^{\\frac{x^2}{2}}-3\\sin(x)\r\n$$\r\n\r\n试用 Newton 迭代法求该函数的零点。\r\n\r\n### 程序接口\r\n\r\n您需要实现一个函数 `function x = iterNewton(x0)`，它接收一个实数 $x_0$，表示 Newton 迭代法的初值；返回值是一个**向量** $x$，表示**每一步迭代**的结果。\r\n\r\n例如，当 $x_0=0$ 时，您的输出应为 `x=[0, 0.3333333333333333, 0.363763870628984, ...]` （后面的内容省略）。\r\n\r\n假设您返回的 $x=(x_0,...,x_n)$，您必须保证 $|f(x_n)|<10^{-15}$，且 $|f(x_0)|,...,|f(x_{n-1})|\\geq 10^{15}$\r\n\r\n**禁止使用 `fzero`**",
+    "initial_code": "function x = iterNewton(x0)\r\n    % 在这里完成您的程序\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 500
+  },
+  {
+    "title": "「CM-16」LU 分解",
+    "content": "### 题目描述\r\n\r\n给定 $n\\times n$ 的可逆矩阵 $\\mathbf{A}$，保证 $\\mathbf{A}$ 的所有顺序主子式都可逆，求一个**单位下三角**矩阵 $\\mathbf{L}$ 以及一个**上三角**矩阵 $\\mathbf{U}$，使得 $\\mathbf{A}=\\mathbf{LU}$.\r\n\r\n### 编程要求\r\n\r\n你需要实现函数 `lu_decomp`，函数接受一个满足题目描述的矩阵 `A`，返回值是满足题目要求的矩阵 `L` 和 `U`。\r\n\r\n**禁止**使用 `\\` 运算符，禁止使用 `lu`、`plu`、`rref`、`inv` 、`pinv` 函数。\r\n\r\n### 提示\r\n\r\n1. 做一次矩阵乘法的时间复杂度是 $O(n^3)$ 的。\r\n2. MATLAB 的循环语句速度很慢，请尽量减少循环语句的使用。",
+    "initial_code": "function [L, U] = lu_decomp(A)\r\n    % 在这里完成你的代码\r\n    \r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 2000
+  },
+  {
+    "title": "「CM-17」Cholesky 分解（二）",
+    "content": "### 题目要求\r\n\r\n**Step 1.** 在本题中，您首先要把 《Cholesky 分解（一）》中实现的功能整理成一个函数：\r\n\r\n`function x = solve_LDLT(A, b)`\r\n\r\n该函数用于求解方程 $Ax=b$，并且需要通过 $LDL^T$ 分解法来实现。\r\n\r\n**Step 2.** 然后，请您基于 $LL^T$ 分解，再写一个函数\r\n\r\n`function x = solve_LLT(A, b)`\r\n\r\n该函数也用于求解方程 $Ax=b$，并且需要通过 $LL^T$ 分解法来实现。\r\n\r\n**Step 3.** 最后，请您思考：什么样的方程能够让 $LDL^T$ 成功，但 $LL^T$ 失效？基于您的思考，实现这样一个函数：\r\n\r\n`function [A, b, x] = hack_LLT()`\r\n\r\n该函数返回三个变量，表示一个方程 $Ax=b$，这个方程用 $LDL^T$ 方法能够求解成功，但是用 $LL^T$ 方法会求解失败\r\n\r\n### 额外说明\r\n\r\n初始代码中的 `check` 函数说明了评测系统的工作流程，请仔细阅读。\r\n\r\n本题不禁用任何函数。",
+    "initial_code": "function x = solve_LDLT(A, b)\r\n    # 第一个函数\r\nend\r\n\r\nfunction x = solve_LLT(A, b)\r\n    # 第二个函数\r\nend\r\n\r\nfunction [A, b, x] = hack_LLT()\r\n    # 第三个函数\r\nend\r\n\r\n\r\n% 注意：您不能修改下面这个函数\r\nfunction flag = check()\r\n    n = 10;\r\n    A = rand(n, n);\r\n    A = A' * A;       % 随机生成一个正定对称矩阵\r\n    b = sum(A, 1);    % 令 b(i) 等于 A 的第 i 行之和\r\n    % 如果按照上面的定义求解 Ax=b，得到的 x 应该全都是 1\r\n    \r\n    % 接下来，系统首先检测您的前两个函数是否正确\r\n    x1 = solve_LDLT(A, b);\r\n    x2 = solve_LLT(A, b);\r\n    x  = ones(n, 1);\r\n    if norm(x1 - x) > 1e-10 || norm(x2 - x) > 1e-10\r\n        flag = false;\r\n        return;\r\n    end\r\n    \r\n    % 随后，系统检查您的 hack_LLT 所构造的方程是否符合要求\r\n    [A, b, x] = hack_LLT();\r\n    x1 = solve_LDLT(A, b);\r\n    x2 = solve_LLT(A, b);\r\n    % 只有当 LDLT 求解成功、且 LLT 求解失败，才能通过评测\r\n    if norm(x1 - x) < 1e-10 && norm(x2 - x) > 1e-8\r\n        flag = true;\r\n    else\r\n        flag = false;\r\n    end\r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 500
+  },
+  {
+    "title": "「CM-18」三对角方程与追赶法",
+    "content": "### 题目要求\r\n\r\n请实现一个函数，用于求解方程 $Ax=b$，其中矩阵 $A$ 是三对角矩阵，形式如下：\r\n\r\n$$\r\nA = \\begin{bmatrix}\r\na_1 & p_1 & 0 & \\cdots & 0 & 0 \\\\\\\\\r\nq_1 & a_2 & p_2 & \\cdots & 0 & 0 \\\\\\\\\r\n0 & q_2 & a_3 & \\cdots & 0 & 0\\\\\\\\\r\n\\vdots & \\vdots & \\vdots & \\ddots & \\vdots & \\vdots \\\\\\\\\r\n0 & 0 & 0 & \\cdots & a_{n-1} & p_{n-1} \\\\\\\\\r\n0 & 0 & 0 & \\cdots & q_{n-1} & a_n\r\n\\end{bmatrix}\r\n$$\r\n\r\n由于 $A$ 的大部分位置都是 $0$，因此系统不会给你整个 $A$，而是只给您传入一个长为 $n$ 的向量 $a$，以及长为 $n-1$ 的向量 $p,q$。\r\n也就是说，您需要实现这样一个函数：\r\n\r\n`function x = solve_tridiag(a, p, q, b)`\r\n\r\n这个函数返回方程 $Ax=b$ 的求解结果，且时间复杂度不超过 $O(n)$。",
+    "initial_code": "function x = solve_tridiag(a, p, q, b)\r\n    % 在这里实现您的函数\r\nend",
+    "lang": "matlab",
+    "time_limit_ms": 2000
+  }
+]

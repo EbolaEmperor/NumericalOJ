@@ -6,15 +6,19 @@ Admin routes for AI code detection dashboard.
 
 import json
 import re
+from decimal import Decimal
 
 from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
 
 from oj_modules.ai_detection.task_tracker import (
     get_recent_tasks,
     record_task_submitted,
+    delete_task as tracker_delete_task,
     TASK_TYPE_LABELS,
 )
+from oj_modules.ai_detection.llm_detector import get_available_models
 from oj_modules.db_services import (
+    delete_ai_detection_results_by_task,
     get_ai_detection_dashboard_summary,
     get_ai_detection_results_for_problem,
     get_ai_detection_results_for_user,
@@ -96,6 +100,14 @@ def _parse_filters_from_request():
     }
 
 
+def _get_model_id_from_request():
+    """Extract and validate model_id from current request (JSON or form)."""
+    data = request.get_json(silent=True) or request.form
+    model_id = str(data.get('model_id', '') or '').strip()
+    valid = {m['id'] for m in get_available_models() if m['available']}
+    return model_id if model_id in valid else 'qwen'
+
+
 @ai_detection_bp.route('/admin/ai_detection')
 def dashboard():
     user, err = _require_admin()
@@ -161,7 +173,8 @@ def run_filtered_detection():
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
     filters = _parse_filters_from_request()
-    task = _detect_filtered_task.delay(filters)
+    model_id = _get_model_id_from_request()
+    task = _detect_filtered_task.delay(filters, model_id)
     parts = []
     if filters.get('class_en'):   parts.append(f"班级={filters['class_en']}")
     if filters.get('username'):   parts.append(f"用户={filters['username']}")
@@ -254,7 +267,8 @@ def run_batch_detection(problem_id):
     if _detect_batch_task is None:
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
-    task = _detect_batch_task.delay(problem_id)
+    model_id = _get_model_id_from_request()
+    task = _detect_batch_task.delay(problem_id, model_id)
     record_task_submitted(task.id, "batch", f"题目={problem_id} {_strip_problem_title_tags(problem.get('title',''))}")
     return jsonify({
         'success': True,
@@ -272,7 +286,8 @@ def run_single_detection(submission_id):
     if _detect_single_task is None:
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
-    task = _detect_single_task.delay(submission_id)
+    model_id = _get_model_id_from_request()
+    task = _detect_single_task.delay(submission_id, model_id)
     record_task_submitted(task.id, "single", f"提交={submission_id}")
     return jsonify({
         'success': True,
@@ -290,7 +305,8 @@ def run_user_detection(username):
     if _detect_user_task is None:
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
-    task = _detect_user_task.delay(username)
+    model_id = _get_model_id_from_request()
+    task = _detect_user_task.delay(username, model_id)
     record_task_submitted(task.id, "user", f"用户={username}")
     return jsonify({
         'success': True,
@@ -299,21 +315,40 @@ def run_user_detection(username):
     })
 
 
+def _to_json_safe(obj):
+    """Recursively convert Decimal to float/int for JSON serialization."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    if isinstance(obj, dict):
+        return {k: _to_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_json_safe(i) for i in obj]
+    return obj
+
+
+@ai_detection_bp.route('/admin/ai_detection/api/available_models')
+def api_available_models():
+    user, err = _require_admin()
+    if err:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+    return jsonify({'success': True, 'models': get_available_models()})
+
+
 @ai_detection_bp.route('/admin/ai_detection/api/summary')
 def api_summary():
     user, err = _require_admin()
     if err:
         return jsonify({'success': False, 'message': 'Unauthorized'}), 401
     summary = get_ai_detection_dashboard_summary()
-    # Convert to JSON-serialisable form
-    return jsonify({'success': True, 'summary': {
+    payload = {
         'level_counts': summary.get('level_counts', {}),
         'flagged_users': summary.get('flagged_users', []),
         'problem_stats': [
             {**p, 'problem_title': _strip_problem_title_tags(p.get('problem_title', ''))}
             for p in summary.get('problem_stats', [])
         ],
-    }})
+    }
+    return jsonify({'success': True, 'summary': _to_json_safe(payload)})
 
 
 @ai_detection_bp.route('/admin/ai_detection/api/tasks')
@@ -325,6 +360,35 @@ def api_tasks():
     for t in tasks:
         t['type_label'] = TASK_TYPE_LABELS.get(t.get('task_type', ''), t.get('task_type', ''))
     return jsonify({'success': True, 'tasks': tasks})
+
+
+@ai_detection_bp.route('/admin/ai_detection/api/delete_task/<task_id>', methods=['POST'])
+def delete_task(task_id):
+    """Delete a completed task and all AI detection records it produced."""
+    user, err = _require_admin()
+    if err:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+
+    # Refuse to delete a still-running/pending task
+    from oj_modules.ai_detection.task_tracker import _load
+    data = _load(task_id)
+    if data and data.get('status') in ('running', 'pending'):
+        return jsonify({
+            'success': False,
+            'message': '任务仍在运行中，请先停止再删除',
+        }), 400
+
+    # Delete all detection records produced by this task
+    deleted_results = delete_ai_detection_results_by_task(task_id)
+
+    # Remove task from Redis + MySQL
+    tracker_delete_task(task_id)
+
+    return jsonify({
+        'success': True,
+        'deleted_results': deleted_results,
+        'message': f'已删除任务及其产生的 {deleted_results} 条检测记录',
+    })
 
 
 @ai_detection_bp.route('/admin/ai_detection/api/stop/<task_id>', methods=['POST'])

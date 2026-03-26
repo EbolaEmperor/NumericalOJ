@@ -634,11 +634,37 @@ CREATE TABLE `ai_detection_results` (
   `behavior_detail` text,
   `final_score` float NOT NULL,
   `risk_level` varchar(16) NOT NULL DEFAULT 'low',
+  `task_id` varchar(64) DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_ai_detection_submission` (`submission_id`),
   KEY `idx_ai_detection_username_problem` (`username`, `problem_id`),
-  KEY `idx_ai_detection_risk_level` (`risk_level`, `final_score`)
+  KEY `idx_ai_detection_risk_level` (`risk_level`, `final_score`),
+  KEY `idx_ai_detection_task_id` (`task_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+
+--
+-- Table structure for table `ai_detection_tasks`
+--
+
+DROP TABLE IF EXISTS `ai_detection_tasks`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `ai_detection_tasks` (
+  `task_id` varchar(64) NOT NULL,
+  `task_type` varchar(32) DEFAULT NULL,
+  `params_summary` text,
+  `status` varchar(16) NOT NULL DEFAULT 'pending',
+  `submitted_at` datetime DEFAULT NULL,
+  `started_at` datetime DEFAULT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  `total` int DEFAULT NULL,
+  `processed` int NOT NULL DEFAULT '0',
+  `error` text,
+  PRIMARY KEY (`task_id`),
+  KEY `idx_adt_submitted` (`submitted_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

@@ -50,13 +50,25 @@
     <div class="col-md-3">
       <label for="writtenGradingModeSelect" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
       {% set written_mode = (problem.written_grading_mode or 1) %}
-      <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode">
+      <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode" onchange="_toggleAiGradingFields(this.value)">
         <option value="1" {% if written_mode == 1 %}selected{% endif %}>OCR + 文本批改</option>
         <option value="2" {% if written_mode == 2 %}selected{% endif %}>直接批改图片</option>
         <option value="3" {% if written_mode == 3 %}selected{% endif %}>tex 文本批改</option>
+        <option value="4" {% if written_mode == 4 %}selected{% endif %}>纯人工批改</option>
       </select>
+      <script>
+        function _toggleAiGradingFields(mode) {
+          const hide = mode === '4';
+          document.getElementById('writtenGradingModelField').style.display = hide ? 'none' : '';
+          document.getElementById('writtenGradingPromptField').style.display = hide ? 'none' : '';
+        }
+        // 页面加载时根据当前模式初始化
+        document.addEventListener('DOMContentLoaded', function() {
+          _toggleAiGradingFields(document.getElementById('writtenGradingModeSelect').value);
+        });
+      </script>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-3" id="writtenGradingModelField">
       <label for="writtenGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
       {% set written_model = (problem.written_grading_model or default_written_grading_model) %}
       <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
@@ -71,7 +83,7 @@
       <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" min="1" value="{{ sub_limit }}">
     </div>
   </div>
-  <div class="mb-3">
+  <div class="mb-3" id="writtenGradingPromptField">
     <label for="writtenGradingPromptInput" class="form-label">
       <i class="fas fa-list-check me-2"></i> 评分标准
     </label>

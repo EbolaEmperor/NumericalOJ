@@ -182,6 +182,22 @@ def get_recent_tasks(limit=20):
         return []
 
 
+def delete_task(task_id):
+    """Remove a task from Redis and MySQL entirely."""
+    rds = _get_redis()
+    if rds is not None:
+        try:
+            rds.delete(_task_key(task_id))
+            rds.zrem(_RECENT_TASKS_KEY, task_id)
+        except Exception:
+            pass
+    try:
+        from oj_modules.db_services import delete_ai_detection_task
+        delete_ai_detection_task(task_id)
+    except Exception as e:
+        print(f"[AI Detection] delete_task MySQL error: {e}")
+
+
 # Human-readable labels for task types
 TASK_TYPE_LABELS = {
     "filtered": "筛选检测",

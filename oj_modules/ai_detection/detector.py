@@ -29,20 +29,23 @@ def _compute_risk_level(score):
     return "low"
 
 
-def run_detection(submission, problem):
+def run_detection(submission, problem, model_id="qwen", task_id=None):
     """
     Run AI detection on a single submission.
 
     Args:
         submission: dict with keys id, username, problem_id, code, status, score, created_at
         problem: dict with keys id, title, content, lang
+        model_id: LLM model to use ("qwen" or "matlab_ai_detect")
+        task_id: Celery task ID — stored in the result row so the task's records
+                 can be deleted cleanly without touching other tasks' results.
 
     Returns:
         dict with detection results ready for database insertion:
             submission_id, username, problem_id,
             llm_score, llm_evidence,
             behavior_score, behavior_detail,
-            final_score, risk_level
+            final_score, risk_level, task_id
     """
     submission_id = submission["id"]
     username = submission["username"]
@@ -60,11 +63,12 @@ def run_detection(submission, problem):
         "behavior_detail": None,
         "final_score": 0.0,
         "risk_level": "low",
+        "task_id": task_id,
     }
 
     # --- LLM Detection ---
     # Let LLMDetectionFailed propagate — caller should not upsert a 0.0 record.
-    llm_result = detect_with_llm(code, problem_content)
+    llm_result = detect_with_llm(code, problem_content, model_id=model_id)
 
     if llm_result:
         result["llm_score"] = round(llm_result["score"], 4)
