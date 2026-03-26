@@ -24,6 +24,7 @@ from oj_modules.routes.homework_routes import homework_bp, init_homework_module
 from oj_modules.routes.auth_routes import auth_bp
 from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_core_module
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
+from oj_modules.routes.game_routes import game_bp
 from oj_modules.tasks import (
     init_agent_progress_cache,
     register_agent_generate_testdata_task,
@@ -70,6 +71,7 @@ app.register_blueprint(homework_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
+app.register_blueprint(game_bp)
 
 ###############################################################################
 #  站点设置（全局开关）
