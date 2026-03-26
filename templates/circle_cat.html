@@ -1,0 +1,943 @@
+{% extends "layout.html" %}
+{% block title %}围住小猫 - {{ super() }}{% endblock %}
+{% block content_container_class %}container-fluid px-2 px-lg-3 py-3{% endblock %}
+{% block content %}
+<div class="cat-game-shell">
+  <div class="cat-game-layout">
+    <aside class="cat-sidebar">
+      <div class="cat-sidebar-top">
+        <p class="cat-sidebar-kicker">Hex Strategy Mini Game</p>
+        <h1 class="cat-sidebar-title"><i class="fas fa-cat me-2" aria-hidden="true"></i>围住小猫</h1>
+      </div>
+      <button id="newGameBtn" type="button" class="btn btn-dark cat-new-game-btn">
+        <i class="fas fa-rotate-right me-2"></i>新开一局
+      </button>
+      <div id="gameResultBadge" class="cat-result-badge">进行中</div>
+      <div class="cat-stat-panel">
+        <span>回合</span>
+        <strong id="turnCount">0</strong>
+      </div>
+      <p id="statusText" class="cat-status-text"><i class="fas fa-info-circle me-2" aria-hidden="true"></i><span id="statusTextValue">点击棋盘空白格放置障碍。</span></p>
+      <section class="cat-leaderboard">
+        <h2 class="cat-leaderboard-title"><i class="fas fa-trophy me-2" aria-hidden="true"></i>排行榜 Top 5</h2>
+        <ol id="leaderboardList" class="cat-leaderboard-list">
+          {% if leaderboard %}
+            {% for item in leaderboard %}
+            <li class="cat-leaderboard-item">
+              <span class="cat-leaderboard-user">{{ loop.index }}. {{ item.username }}</span>
+              <strong class="cat-leaderboard-score">{{ item.best_turns }} 回合</strong>
+            </li>
+            {% endfor %}
+          {% else %}
+            <li class="cat-leaderboard-empty">暂无通关记录</li>
+          {% endif %}
+        </ol>
+      </section>
+    </aside>
+
+    <section class="cat-board-card">
+      <div id="catBoard" class="cat-board" aria-label="围住小猫游戏棋盘"></div>
+    </section>
+  </div>
+</div>
+
+<style>
+  :root {
+    --cat-page-bg: #f8f9fa;
+    --cat-surface: #ffffff;
+    --cat-border: #dee2e6;
+    --cat-border-strong: #ced4da;
+    --cat-text: #212529;
+    --cat-muted: #6c757d;
+    --cat-accent: #0d6efd;
+    --cat-board-bg: #ffffff;
+    --cat-cell: #f8f9fa;
+    --cat-wall: #6c757d;
+    --cat-cat: #fd7e14;
+    --cat-gap: 6px;
+    --hex-w: var(--cell-size, 54px);
+    --hex-h: calc(var(--hex-w) * 1.154700538);
+    --hex-step-x: calc(var(--hex-w) + var(--cat-gap, 0px));
+    --hex-step-y: calc(var(--hex-step-x) * 0.866025404);
+  }
+
+  .cat-game-shell {
+    color: var(--cat-text);
+    font-family: inherit;
+    background: var(--cat-page-bg);
+    border: 1px solid var(--cat-border);
+    border-radius: 12px;
+    padding: 0.75rem;
+  }
+
+  .cat-game-layout {
+    display: grid;
+    grid-template-columns: minmax(220px, 280px) 1fr;
+    gap: 1rem;
+    align-items: stretch;
+  }
+
+  .cat-sidebar {
+    border-radius: 12px;
+    padding: 1rem;
+    background: var(--cat-surface);
+    border: 1px solid var(--cat-border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+
+  .cat-sidebar-top {
+    text-align: center;
+  }
+
+  .cat-sidebar-kicker {
+    margin: 0 0 0.2rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    color: var(--cat-muted);
+  }
+
+  .cat-sidebar-title {
+    margin: 0;
+    font-size: clamp(1.45rem, 2.2vw, 1.95rem);
+    line-height: 1.15;
+    font-weight: 700;
+  }
+
+  .cat-new-game-btn {
+    width: 100%;
+  }
+
+  .cat-result-badge {
+    text-align: center;
+    padding: 0.68rem 0.9rem;
+    border-radius: 999px;
+    background: #e9ecef;
+    border: 1px solid var(--cat-border);
+    font-weight: 700;
+    color: var(--cat-text);
+  }
+
+  .cat-result-badge.win {
+    background: #d1e7dd;
+    color: #0f5132;
+    border-color: #badbcc;
+  }
+
+  .cat-result-badge.lose {
+    background: #f8d7da;
+    color: #842029;
+    border-color: #f5c2c7;
+  }
+
+  .cat-stat-panel {
+    border-radius: 10px;
+    background: var(--cat-surface);
+    border: 1px solid var(--cat-border);
+    padding: 0.65rem 0.85rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  .cat-stat-panel span {
+    color: var(--cat-muted);
+    font-size: 0.88rem;
+  }
+
+  .cat-stat-panel strong {
+    font-size: 1.2rem;
+    line-height: 1;
+  }
+
+  .cat-status-text {
+    margin: 0.1rem 0 0;
+    font-size: 0.96rem;
+    line-height: 1.45;
+    color: var(--cat-muted);
+  }
+
+  .cat-leaderboard {
+    margin-top: 0.35rem;
+    border-radius: 10px;
+    background: var(--cat-surface);
+    border: 1px solid var(--cat-border);
+    padding: 0.75rem 0.85rem;
+  }
+
+  .cat-leaderboard-title {
+    margin: 0;
+    font-size: 0.92rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--cat-muted);
+  }
+
+  .cat-leaderboard-list {
+    margin: 0.65rem 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .cat-leaderboard-item {
+    border-radius: 10px;
+    background: #f8f9fa;
+    border: 1px solid var(--cat-border);
+    padding: 0.44rem 0.55rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+
+  .cat-leaderboard-user {
+    font-size: 0.92rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cat-leaderboard-score {
+    font-size: 0.86rem;
+    color: var(--cat-accent);
+    white-space: nowrap;
+  }
+
+  .cat-leaderboard-empty {
+    border-radius: 10px;
+    background: #f8f9fa;
+    border: 1px solid var(--cat-border);
+    padding: 0.5rem 0.6rem;
+    font-size: 0.9rem;
+    color: var(--cat-muted);
+  }
+
+  .cat-board-card {
+    border-radius: 12px;
+    background: var(--cat-board-bg);
+    border: 1px solid var(--cat-border);
+    padding: 0.5rem;
+    min-height: calc(100vh - 210px);
+    display: flex;
+  }
+
+  .cat-board {
+    flex: 1;
+    overflow: auto;
+    padding: 0.35rem;
+  }
+
+  .cat-board-row {
+    display: flex;
+    justify-content: center;
+    gap: var(--cat-gap);
+  }
+
+  .cat-board-row + .cat-board-row {
+    margin-top: calc(var(--hex-step-y) - var(--hex-h));
+  }
+
+  .cat-board-row.offset {
+    transform: translateX(calc(var(--hex-step-x) / 2));
+  }
+
+  .cat-cell {
+    width: var(--hex-w);
+    height: var(--hex-h);
+    border: 0;
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    background: var(--cat-cell);
+    position: relative;
+    transition: transform 120ms ease, background 120ms ease;
+    cursor: pointer;
+  }
+
+  .cat-cell:hover:not(:disabled) {
+    transform: translateY(-2px);
+    background: #e9ecef;
+  }
+
+  .cat-cell:disabled {
+    cursor: default;
+  }
+
+  .cat-cell.blocked {
+    background: var(--cat-wall);
+  }
+
+  .cat-cell.cat {
+    background: #ffe5d0;
+  }
+
+  .cat-cell-inner {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+  }
+
+  .cat-rock {
+    width: 52%;
+    height: 52%;
+    border-radius: 40% 55% 48% 42%;
+    background: #adb5bd;
+  }
+
+  .cat-token {
+    font-size: calc(var(--cell-size, 54px) * 0.46);
+    color: var(--cat-cat);
+    transform: translateY(-1px);
+  }
+
+  @media (max-width: 991px) {
+    .cat-game-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .cat-board-card {
+      min-height: calc(100vh - 320px);
+    }
+  }
+
+  @media (max-width: 767px) {
+    .cat-sidebar,
+    .cat-board-card {
+      border-radius: 20px;
+    }
+
+    .cat-board-card {
+      min-height: calc(100vh - 290px);
+      padding: 0.35rem;
+    }
+  }
+</style>
+
+<script>
+  (function () {
+    const BOARD_SIZE = 9;
+    const INITIAL_BLOCKS = 8;
+    const boardEl = document.getElementById('catBoard');
+    const statusTextValueEl = document.getElementById('statusTextValue');
+    const turnCountEl = document.getElementById('turnCount');
+    const resultBadgeEl = document.getElementById('gameResultBadge');
+    const leaderboardListEl = document.getElementById('leaderboardList');
+    const newGameBtn = document.getElementById('newGameBtn');
+
+    const EVEN_ROW_DIRS = [
+      [-1, -1], [-1, 0],
+      [0, -1], [0, 1],
+      [1, -1], [1, 0]
+    ];
+    const ODD_ROW_DIRS = [
+      [-1, 0], [-1, 1],
+      [0, -1], [0, 1],
+      [1, 0], [1, 1]
+    ];
+
+    let board = [];
+    let cat = { row: 4, col: 4 };
+    let turnCount = 0;
+    let gameState = 'playing';
+    let hasSubmittedResult = false;
+    const SEARCH_TIME_BUDGET_MS = 220;
+    const SEARCH_MAX_DEPTH = 3;
+    const MAX_PLAYER_BLOCK_CANDIDATES = 10;
+    const WIN_SCORE = 1000000;
+    const LOSE_SCORE = -1000000;
+
+    function setupBoard() {
+      let ready = false;
+      while (!ready) {
+        board = Array.from({ length: BOARD_SIZE }, function () {
+          return Array.from({ length: BOARD_SIZE }, function () { return 'empty'; });
+        });
+        cat = {
+          row: Math.floor(BOARD_SIZE / 2),
+          col: Math.floor(BOARD_SIZE / 2)
+        };
+        turnCount = 0;
+        gameState = 'playing';
+        hasSubmittedResult = false;
+
+        let placed = 0;
+        while (placed < INITIAL_BLOCKS) {
+          const row = Math.floor(Math.random() * BOARD_SIZE);
+          const col = Math.floor(Math.random() * BOARD_SIZE);
+          if ((row === cat.row && col === cat.col) || board[row][col] === 'blocked') {
+            continue;
+          }
+          board[row][col] = 'blocked';
+          placed += 1;
+        }
+
+        ready = getOpenNeighbors(cat.row, cat.col).length > 0 && !!findShortestPathToEdge(cat.row, cat.col);
+      }
+
+      updateStatus('点击棋盘空白格放置障碍。');
+      updateBadge('进行中');
+      fetchLeaderboard();
+      render();
+    }
+
+    function updateBadge(label, state) {
+      resultBadgeEl.textContent = label;
+      resultBadgeEl.classList.remove('win', 'lose');
+      if (state) {
+        resultBadgeEl.classList.add(state);
+      }
+    }
+
+    function updateStatus(message) {
+      if (statusTextValueEl) {
+        statusTextValueEl.textContent = message;
+      }
+    }
+
+    function renderLeaderboard(items) {
+      if (!leaderboardListEl) {
+        return;
+      }
+      const records = Array.isArray(items) ? items.slice(0, 5) : [];
+      leaderboardListEl.innerHTML = '';
+
+      if (!records.length) {
+        const emptyItem = document.createElement('li');
+        emptyItem.className = 'cat-leaderboard-empty';
+        emptyItem.textContent = '暂无通关记录';
+        leaderboardListEl.appendChild(emptyItem);
+        return;
+      }
+
+      records.forEach(function (item, index) {
+        const row = document.createElement('li');
+        row.className = 'cat-leaderboard-item';
+
+        const user = document.createElement('span');
+        user.className = 'cat-leaderboard-user';
+        user.textContent = String(index + 1) + '. ' + String(item.username || '匿名用户');
+
+        const score = document.createElement('strong');
+        score.className = 'cat-leaderboard-score';
+        score.textContent = String(item.best_turns) + ' 回合';
+
+        row.appendChild(user);
+        row.appendChild(score);
+        leaderboardListEl.appendChild(row);
+      });
+    }
+
+    function fetchLeaderboard() {
+      fetch('/games/circle-cat/leaderboard')
+        .then(function (response) {
+          if (!response.ok) {
+            throw new Error('leaderboard request failed');
+          }
+          return response.json();
+        })
+        .then(function (data) {
+          if (data && Array.isArray(data.leaderboard)) {
+            renderLeaderboard(data.leaderboard);
+          }
+        })
+        .catch(function () {
+          // 排行榜请求失败时保持当前展示，不打断游戏流程
+        });
+    }
+
+    function submitGameResult(state) {
+      if (hasSubmittedResult) {
+        return;
+      }
+      hasSubmittedResult = true;
+      fetch('/games/circle-cat/result', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          state: state,
+          turn_count: turnCount,
+        }),
+      })
+        .then(function (response) {
+          return response.json().catch(function () { return null; });
+        })
+        .then(function (data) {
+          if (data && Array.isArray(data.leaderboard)) {
+            renderLeaderboard(data.leaderboard);
+            return;
+          }
+          fetchLeaderboard();
+        })
+        .catch(function () {
+          fetchLeaderboard();
+        });
+    }
+
+    function inBounds(row, col) {
+      return row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE;
+    }
+
+    function isEdge(row, col) {
+      return row === 0 || col === 0 || row === BOARD_SIZE - 1 || col === BOARD_SIZE - 1;
+    }
+
+    function getNeighbors(row, col) {
+      const dirs = row % 2 === 0 ? EVEN_ROW_DIRS : ODD_ROW_DIRS;
+      return dirs
+        .map(function (delta) {
+          return { row: row + delta[0], col: col + delta[1] };
+        })
+        .filter(function (cell) {
+          return inBounds(cell.row, cell.col);
+        });
+    }
+
+    function nowMs() {
+      if (window.performance && typeof window.performance.now === 'function') {
+        return window.performance.now();
+      }
+      return Date.now();
+    }
+
+    function isTimeout(deadline) {
+      return nowMs() >= deadline;
+    }
+
+    function getOpenNeighborsForState(boardState, row, col, catPos) {
+      return getNeighbors(row, col).filter(function (cell) {
+        return boardState[cell.row][cell.col] !== 'blocked'
+          && !(cell.row === catPos.row && cell.col === catPos.col);
+      });
+    }
+
+    function getOpenNeighbors(row, col) {
+      return getOpenNeighborsForState(board, row, col, cat);
+    }
+
+    function cellKey(row, col) {
+      return row + ',' + col;
+    }
+
+    function findShortestPathToEdgeForState(boardState, startRow, startCol) {
+      const queue = [{ row: startRow, col: startCol }];
+      const visited = new Set([cellKey(startRow, startCol)]);
+      const previous = new Map();
+
+      while (queue.length) {
+        const current = queue.shift();
+        if (!(current.row === startRow && current.col === startCol) && isEdge(current.row, current.col)) {
+          return reconstructPath(previous, current);
+        }
+
+        getNeighbors(current.row, current.col).forEach(function (next) {
+          const key = cellKey(next.row, next.col);
+          if (visited.has(key) || boardState[next.row][next.col] === 'blocked') {
+            return;
+          }
+          visited.add(key);
+          previous.set(key, current);
+          queue.push(next);
+        });
+      }
+
+      return null;
+    }
+
+    function findShortestPathToEdge(startRow, startCol) {
+      return findShortestPathToEdgeForState(board, startRow, startCol);
+    }
+
+    function reconstructPath(previous, target) {
+      const path = [target];
+      let cursor = target;
+      while (previous.has(cellKey(cursor.row, cursor.col))) {
+        cursor = previous.get(cellKey(cursor.row, cursor.col));
+        path.push(cursor);
+      }
+      path.reverse();
+      return path;
+    }
+
+    function estimateEdgeDistance(row, col) {
+      return Math.min(row, col, BOARD_SIZE - 1 - row, BOARD_SIZE - 1 - col);
+    }
+
+    function evaluateCatPosition(boardState, catPos, cachedPath) {
+      if (isEdge(catPos.row, catPos.col)) {
+        return WIN_SCORE;
+      }
+
+      const path = cachedPath || findShortestPathToEdgeForState(boardState, catPos.row, catPos.col);
+      if (!path) {
+        return LOSE_SCORE;
+      }
+
+      const distance = path.length - 1;
+      const openNeighbors = getOpenNeighborsForState(boardState, catPos.row, catPos.col, catPos);
+      let improvingMoves = 0;
+      openNeighbors.forEach(function (neighbor) {
+        const neighborPath = findShortestPathToEdgeForState(boardState, neighbor.row, neighbor.col);
+        if (neighborPath && (neighborPath.length - 1) < distance) {
+          improvingMoves += 1;
+        }
+      });
+
+      return -distance * 130 + openNeighbors.length * 24 + improvingMoves * 34;
+    }
+
+    function orderCatMovesBySafety(boardState, moves) {
+      return moves
+        .slice()
+        .map(function (move) {
+          if (isEdge(move.row, move.col)) {
+            return { move: move, score: WIN_SCORE - 1 };
+          }
+          const path = findShortestPathToEdgeForState(boardState, move.row, move.col);
+          const score = evaluateCatPosition(boardState, move, path);
+          return { move: move, score: score };
+        })
+        .sort(function (left, right) {
+          return right.score - left.score;
+        })
+        .map(function (item) {
+          return item.move;
+        });
+    }
+
+    function collectPlayerBlockCandidates(boardState, catPos, currentPath, deadline) {
+      const candidates = new Map();
+      const beforeDistance = currentPath ? currentPath.length - 1 : 99;
+
+      function addCandidate(row, col, baseScore) {
+        if (!inBounds(row, col)) {
+          return;
+        }
+        if (boardState[row][col] === 'blocked') {
+          return;
+        }
+        if (row === catPos.row && col === catPos.col) {
+          return;
+        }
+        const key = cellKey(row, col);
+        const prev = candidates.get(key);
+        if (prev === undefined || baseScore > prev) {
+          candidates.set(key, baseScore);
+        }
+      }
+
+      if (currentPath) {
+        for (let i = 1; i < currentPath.length && i <= 7; i += 1) {
+          addCandidate(currentPath[i].row, currentPath[i].col, 220 - i * 12);
+        }
+      }
+
+      const ring1 = getOpenNeighborsForState(boardState, catPos.row, catPos.col, catPos);
+      ring1.forEach(function (cell) {
+        addCandidate(cell.row, cell.col, 180);
+        getNeighbors(cell.row, cell.col).forEach(function (next) {
+          addCandidate(next.row, next.col, 120);
+        });
+      });
+
+      if (candidates.size < MAX_PLAYER_BLOCK_CANDIDATES) {
+        for (let row = 0; row < BOARD_SIZE; row += 1) {
+          for (let col = 0; col < BOARD_SIZE; col += 1) {
+            if (Math.abs(row - catPos.row) + Math.abs(col - catPos.col) > 4) {
+              continue;
+            }
+            addCandidate(row, col, 70);
+          }
+        }
+      }
+
+      const scored = [];
+      for (const [key, base] of candidates.entries()) {
+        if (isTimeout(deadline)) {
+          break;
+        }
+        const parts = key.split(',');
+        const row = parseInt(parts[0], 10);
+        const col = parseInt(parts[1], 10);
+        boardState[row][col] = 'blocked';
+        const nextPath = findShortestPathToEdgeForState(boardState, catPos.row, catPos.col);
+        const afterDistance = nextPath ? nextPath.length - 1 : 99;
+        const openAfter = getOpenNeighborsForState(boardState, catPos.row, catPos.col, catPos).length;
+        boardState[row][col] = 'empty';
+        const impactScore = base + (afterDistance - beforeDistance) * 28 + (6 - openAfter) * 8;
+        scored.push({ row: row, col: col, score: impactScore });
+      }
+
+      scored.sort(function (left, right) {
+        return right.score - left.score;
+      });
+      return scored.slice(0, MAX_PLAYER_BLOCK_CANDIDATES);
+    }
+
+    function searchCatTurn(boardState, catPos, depth, alpha, beta, deadline) {
+      if (isTimeout(deadline)) {
+        return evaluateCatPosition(boardState, catPos, null);
+      }
+      if (isEdge(catPos.row, catPos.col)) {
+        return WIN_SCORE - (SEARCH_MAX_DEPTH - depth);
+      }
+
+      const openNeighbors = getOpenNeighborsForState(boardState, catPos.row, catPos.col, catPos);
+      if (!openNeighbors.length) {
+        return LOSE_SCORE + (SEARCH_MAX_DEPTH - depth);
+      }
+      if (depth <= 0) {
+        return evaluateCatPosition(boardState, catPos, null);
+      }
+
+      const orderedMoves = orderCatMovesBySafety(boardState, openNeighbors);
+      let bestScore = LOSE_SCORE;
+      for (let i = 0; i < orderedMoves.length; i += 1) {
+        if (isTimeout(deadline)) {
+          break;
+        }
+        const nextCat = orderedMoves[i];
+        const score = isEdge(nextCat.row, nextCat.col)
+          ? WIN_SCORE - (SEARCH_MAX_DEPTH - depth)
+          : searchPlayerTurn(boardState, nextCat, depth - 1, alpha, beta, deadline);
+
+        if (score > bestScore) {
+          bestScore = score;
+        }
+        if (bestScore > alpha) {
+          alpha = bestScore;
+        }
+        if (alpha >= beta) {
+          break;
+        }
+      }
+      return bestScore;
+    }
+
+    function searchPlayerTurn(boardState, catPos, depth, alpha, beta, deadline) {
+      if (isTimeout(deadline)) {
+        return evaluateCatPosition(boardState, catPos, null);
+      }
+      if (isEdge(catPos.row, catPos.col)) {
+        return WIN_SCORE - (SEARCH_MAX_DEPTH - depth);
+      }
+
+      const currentPath = findShortestPathToEdgeForState(boardState, catPos.row, catPos.col);
+      if (!currentPath) {
+        return LOSE_SCORE + (SEARCH_MAX_DEPTH - depth);
+      }
+      if (depth <= 0) {
+        return evaluateCatPosition(boardState, catPos, currentPath);
+      }
+
+      const candidates = collectPlayerBlockCandidates(boardState, catPos, currentPath, deadline);
+      if (!candidates.length) {
+        return evaluateCatPosition(boardState, catPos, currentPath);
+      }
+
+      let worstScore = WIN_SCORE;
+      for (let i = 0; i < candidates.length; i += 1) {
+        if (isTimeout(deadline)) {
+          break;
+        }
+
+        const candidate = candidates[i];
+        boardState[candidate.row][candidate.col] = 'blocked';
+        const blockedPath = findShortestPathToEdgeForState(boardState, catPos.row, catPos.col);
+        const score = blockedPath
+          ? searchCatTurn(boardState, catPos, depth - 1, alpha, beta, deadline)
+          : LOSE_SCORE + (SEARCH_MAX_DEPTH - depth);
+        boardState[candidate.row][candidate.col] = 'empty';
+
+        if (score < worstScore) {
+          worstScore = score;
+        }
+        if (worstScore < beta) {
+          beta = worstScore;
+        }
+        if (alpha >= beta) {
+          break;
+        }
+      }
+      return worstScore;
+    }
+
+    function chooseStrategicMove(openNeighbors) {
+      if (!openNeighbors.length) {
+        return null;
+      }
+
+      const deadline = nowMs() + SEARCH_TIME_BUDGET_MS;
+      const orderedMoves = orderCatMovesBySafety(board, openNeighbors);
+      let bestMove = orderedMoves[0] || chooseFallbackMove(openNeighbors);
+      if (!bestMove) {
+        return null;
+      }
+
+      for (let depth = 1; depth <= SEARCH_MAX_DEPTH; depth += 1) {
+        if (isTimeout(deadline)) {
+          break;
+        }
+
+        let depthComplete = true;
+        let depthBestMove = bestMove;
+        let depthBestScore = LOSE_SCORE;
+
+        for (let i = 0; i < orderedMoves.length; i += 1) {
+          if (isTimeout(deadline)) {
+            depthComplete = false;
+            break;
+          }
+
+          const move = orderedMoves[i];
+          const score = isEdge(move.row, move.col)
+            ? WIN_SCORE
+            : searchPlayerTurn(board, move, depth - 1, LOSE_SCORE, WIN_SCORE, deadline);
+
+          if (score > depthBestScore) {
+            depthBestScore = score;
+            depthBestMove = move;
+          }
+        }
+
+        if (!depthComplete) {
+          break;
+        }
+        bestMove = depthBestMove;
+      }
+
+      return bestMove;
+    }
+
+    function chooseFallbackMove(openNeighbors) {
+      return openNeighbors
+        .slice()
+        .sort(function (left, right) {
+          return estimateEdgeDistance(left.row, left.col) - estimateEdgeDistance(right.row, right.col);
+        })[0];
+    }
+
+    function endGame(state, message) {
+      gameState = state;
+      updateStatus(message);
+      updateBadge(state === 'win' ? '你赢了' : '小猫跑了', state);
+      submitGameResult(state);
+      render();
+    }
+
+    function isCatSealed() {
+      return !findShortestPathToEdge(cat.row, cat.col);
+    }
+
+    function moveCat() {
+      const openNeighbors = getOpenNeighbors(cat.row, cat.col);
+      if (!openNeighbors.length) {
+        endGame('win', '小猫已经被你彻底围住，无法移动。');
+        return;
+      }
+
+      const nextStep = chooseStrategicMove(openNeighbors) || chooseFallbackMove(openNeighbors);
+      cat = { row: nextStep.row, col: nextStep.col };
+
+      if (isEdge(cat.row, cat.col)) {
+        endGame('lose', '小猫冲到了边缘，成功逃走了。');
+        return;
+      }
+
+      const nextPath = findShortestPathToEdge(cat.row, cat.col);
+      if (!nextPath) {
+        endGame('win', '小猫已经被封死，没有任何逃到边缘的路径。');
+        return;
+      }
+      updateStatus('封锁还在继续。');
+    }
+
+    function handleCellClick(row, col) {
+      if (gameState !== 'playing') {
+        return;
+      }
+      if (board[row][col] === 'blocked' || (row === cat.row && col === cat.col)) {
+        return;
+      }
+
+      board[row][col] = 'blocked';
+      turnCount += 1;
+      if (isCatSealed()) {
+        endGame('win', '小猫已经被封死，没有任何逃到边缘的路径。');
+        return;
+      }
+      moveCat();
+      render();
+    }
+
+    function updateMetrics() {
+      turnCountEl.textContent = String(turnCount);
+
+      const viewportWidth = window.innerWidth;
+      const baseGap = viewportWidth < 576 ? 1 : 2;
+      const boardWidth = boardEl.clientWidth || boardEl.getBoundingClientRect().width || viewportWidth;
+      const available = Math.max(boardWidth - 12, 280);
+      const fitted = Math.floor((available - baseGap * 8.5) / 9.5);
+      const cellSize = Math.max(34, Math.min(fitted, 82));
+
+      const root = document.documentElement;
+      root.style.setProperty('--cat-gap', baseGap + 'px');
+      root.style.setProperty('--cell-size', cellSize + 'px');
+    }
+
+    function render() {
+      updateMetrics();
+
+      boardEl.innerHTML = '';
+      for (let row = 0; row < BOARD_SIZE; row += 1) {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'cat-board-row' + (row % 2 === 1 ? ' offset' : '');
+
+        for (let col = 0; col < BOARD_SIZE; col += 1) {
+          const button = document.createElement('button');
+          const blocked = board[row][col] === 'blocked';
+          const isCatCell = row === cat.row && col === cat.col;
+          button.type = 'button';
+          button.className = 'cat-cell';
+          if (blocked) {
+            button.classList.add('blocked');
+          } else if (isCatCell) {
+            button.classList.add('cat');
+          }
+          button.disabled = blocked || isCatCell || gameState !== 'playing';
+          button.setAttribute(
+            'aria-label',
+            isCatCell ? '小猫当前位置' : blocked ? '障碍物' : '可点击的空格'
+          );
+
+          const inner = document.createElement('span');
+          inner.className = 'cat-cell-inner';
+          if (blocked) {
+            inner.innerHTML = '<span class="cat-rock"></span>';
+          } else if (isCatCell) {
+            inner.innerHTML = '<span class="cat-token"><i class="fas fa-cat"></i></span>';
+          }
+          button.appendChild(inner);
+          button.addEventListener('click', function () {
+            handleCellClick(row, col);
+          });
+
+          rowEl.appendChild(button);
+        }
+
+        boardEl.appendChild(rowEl);
+      }
+    }
+
+    newGameBtn.addEventListener('click', setupBoard);
+    window.addEventListener('resize', render);
+
+    setupBoard();
+  })();
+</script>
+{% endblock %}

@@ -24,10 +24,18 @@
     .offcanvas-end {
       width: 150px !important; /* 调整为你需要的宽度 */
     }
+    .layout-navbar.layout-nav-compact .navbar-brand,
+    .layout-navbar.layout-nav-compact .nav-link,
+    .layout-navbar.layout-nav-compact .nav-link.disabled {
+      font-size: 0.92rem;
+    }
+    .layout-offcanvas-nav.layout-nav-compact .nav-link {
+      font-size: 0.92rem;
+    }
   </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-light bg-light d-none d-lg-block">
+<nav class="navbar navbar-expand-lg navbar-light bg-light d-none d-lg-block layout-navbar">
   <div class="container-fluid">
     <a class="navbar-brand" href="{{ url_for('problem_core.problem_list') }}"><strong>Numerical OJ</strong></a>
     <div class="collapse navbar-collapse">
@@ -37,7 +45,7 @@
         <li class="nav-item">
           <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
             <i class="fas fa-book me-2"></i> <!-- 实心书籍图标 -->
-            题目列表
+            <span data-problem-list-label="desktop">题目列表</span>
           </a>
         </li>
         {% else %}
@@ -64,6 +72,12 @@
           <a class="nav-link" href="{{ url_for('repository.code_repository') }}">
             <i class="fas fa-code me-2"></i>
             代码仓库
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('game.circle_cat') }}">
+            <i class="fas fa-cat me-2"></i>
+            围住小猫
           </a>
         </li>
         {% endif %}
@@ -139,7 +153,7 @@
 </button>
 
 <!-- 侧拉栏：在移动端设备上显示，位置右侧 -->
-<div class="offcanvas offcanvas-end d-lg-none" tabindex="-1" id="offcanvasNavbar" aria-labelledby="offcanvasNavbarLabel">
+<div class="offcanvas offcanvas-end d-lg-none layout-offcanvas-nav" tabindex="-1" id="offcanvasNavbar" aria-labelledby="offcanvasNavbarLabel">
   <div class="offcanvas-header">
     <h5 class="offcanvas-title" id="offcanvasNavbarLabel"><strong>Num OJ</strong></h5>
     <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
@@ -151,7 +165,7 @@
       <li class="nav-item">
         <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
           <i class="fas fa-book me-2"></i> <!-- 实心书籍图标 -->
-          题目列表
+          <span data-problem-list-label="mobile">题目列表</span>
         </a>
       </li>
       {% else %}
@@ -178,6 +192,12 @@
         <a class="nav-link" href="{{ url_for('repository.code_repository') }}">
           <i class="fas fa-code me-2"></i>
           代码仓库
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('game.circle_cat') }}">
+          <i class="fas fa-cat me-2"></i>
+          围住小猫
         </a>
       </li>
       {% endif %}
@@ -384,6 +404,45 @@
 </div>
 
 <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+
+<script>
+(function () {
+  const compactClass = 'layout-nav-compact';
+  const desktopQuery = window.matchMedia('(min-width: 992px)');
+  const mobileQuery = window.matchMedia('(max-width: 991.98px)');
+
+  function bindAdaptiveFont(containerSelector, labelSelector, mediaQuery) {
+    const container = document.querySelector(containerSelector);
+    const label = container ? container.querySelector(labelSelector) : null;
+    if (!container || !label) return;
+
+    function updateFontSize() {
+      container.classList.remove(compactClass);
+      if (!mediaQuery.matches) return;
+      if (label.getClientRects().length > 1) {
+        container.classList.add(compactClass);
+      }
+    }
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateFontSize);
+    } else if (typeof mediaQuery.addListener === 'function') {
+      mediaQuery.addListener(updateFontSize);
+    }
+
+    window.addEventListener('resize', updateFontSize);
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(updateFontSize);
+    }
+
+    updateFontSize();
+  }
+
+  bindAdaptiveFont('.layout-navbar', '[data-problem-list-label="desktop"]', desktopQuery);
+  bindAdaptiveFont('.layout-offcanvas-nav', '[data-problem-list-label="mobile"]', mobileQuery);
+})();
+</script>
 
 {% if user %}
 <script>
