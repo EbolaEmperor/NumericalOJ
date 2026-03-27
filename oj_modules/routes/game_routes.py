@@ -44,8 +44,9 @@ def ensure_circle_cat_table():
         conn.close()
 
 
-def get_circle_cat_leaderboard(limit=10):
-    limit = max(1, min(int(limit), 50))
+def get_circle_cat_leaderboard_page(limit=10, offset=0):
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
     win_rows = []
     fail_rows = []
     conn = None
@@ -60,40 +61,35 @@ def get_circle_cat_leaderboard(limit=10):
                 WHERE is_win=1
                 GROUP BY username
                 ORDER BY best_turns ASC, first_win_at ASC
-                LIMIT {limit}
                 """
             )
             win_rows = cursor.fetchall() or []
 
-            remaining = max(0, limit - len(win_rows))
-            if remaining > 0:
-                winner_usernames = [row.get('username', '') for row in win_rows if row.get('username')]
-                if winner_usernames:
-                    placeholders = ", ".join(["%s"] * len(winner_usernames))
-                    cursor.execute(
-                        f"""
-                        SELECT username, MAX(created_at) AS last_fail_at
-                        FROM circle_cat_records
-                        WHERE is_win=0
-                          AND username NOT IN ({placeholders})
-                        GROUP BY username
-                        ORDER BY last_fail_at DESC
-                        LIMIT {remaining}
-                        """,
-                        tuple(winner_usernames),
-                    )
-                else:
-                    cursor.execute(
-                        f"""
-                        SELECT username, MAX(created_at) AS last_fail_at
-                        FROM circle_cat_records
-                        WHERE is_win=0
-                        GROUP BY username
-                        ORDER BY last_fail_at DESC
-                        LIMIT {remaining}
-                        """
-                    )
-                fail_rows = cursor.fetchall() or []
+            winner_usernames = [row.get('username', '') for row in win_rows if row.get('username')]
+            if winner_usernames:
+                placeholders = ", ".join(["%s"] * len(winner_usernames))
+                cursor.execute(
+                    f"""
+                    SELECT username, MAX(created_at) AS last_fail_at
+                    FROM circle_cat_records
+                    WHERE is_win=0
+                      AND username NOT IN ({placeholders})
+                    GROUP BY username
+                    ORDER BY last_fail_at DESC
+                    """,
+                    tuple(winner_usernames),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT username, MAX(created_at) AS last_fail_at
+                    FROM circle_cat_records
+                    WHERE is_win=0
+                    GROUP BY username
+                    ORDER BY last_fail_at DESC
+                    """
+                )
+            fail_rows = cursor.fetchall() or []
     except Exception:
         win_rows = []
         fail_rows = []
@@ -117,7 +113,21 @@ def get_circle_cat_leaderboard(limit=10):
                 'status': 'lose',
             }
         )
+    total = len(leaderboard)
+    return leaderboard[offset: offset + limit], total
+
+
+def get_circle_cat_leaderboard(limit=10):
+    leaderboard, _ = get_circle_cat_leaderboard_page(limit=limit, offset=0)
     return leaderboard
+
+
+def _parse_positive_int(value, default, minimum=1, maximum=200):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(parsed, maximum))
 
 
 def _parse_turn_count(value):
@@ -158,9 +168,16 @@ def circle_cat():
 
 @game_bp.route('/games/circle-cat/leaderboard')
 def circle_cat_leaderboard():
+    page = _parse_positive_int(request.args.get('page'), default=1, minimum=1, maximum=1000000)
+    limit = _parse_positive_int(request.args.get('limit'), default=10, minimum=1, maximum=200)
+    offset = (page - 1) * limit
+    leaderboard, total = get_circle_cat_leaderboard_page(limit=limit, offset=offset)
     return jsonify({
         'success': True,
-        'leaderboard': get_circle_cat_leaderboard(limit=10),
+        'leaderboard': leaderboard,
+        'total': total,
+        'page': page,
+        'limit': limit,
     })
 
 

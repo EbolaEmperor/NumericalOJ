@@ -19,25 +19,16 @@
           <strong id="turnCount">0</strong>
         </div>
       </div>
-      <p id="statusText" class="cat-status-text"><i class="fas fa-info-circle me-2" aria-hidden="true"></i><span id="statusTextValue">点击棋盘空白格放置障碍。</span></p>
-      <section class="cat-leaderboard cat-leaderboard-desktop">
-        <h2 class="cat-leaderboard-title"><i class="fas fa-trophy me-2" aria-hidden="true"></i>排行榜 Top 10</h2>
-        <ol id="leaderboardListDesktop" class="cat-leaderboard-list" data-leaderboard-list="desktop">
-          {% if leaderboard %}
-            {% for item in leaderboard %}
-            <li class="cat-leaderboard-item">
-              <span class="cat-leaderboard-user">{{ loop.index }}. {{ item.username }}</span>
-              {% if item.status == 'lose' %}
-              <strong class="cat-leaderboard-score fail">失败</strong>
-              {% else %}
-              <strong class="cat-leaderboard-score">{{ item.best_turns }} 回合</strong>
-              {% endif %}
-            </li>
-            {% endfor %}
-          {% else %}
-            <li class="cat-leaderboard-empty">暂无通关记录</li>
-          {% endif %}
-        </ol>
+      <p id="statusText" class="cat-status-text"><i class="fas fa-info-circle me-2" aria-hidden="true"></i><span id="statusTextValue">点击空格放障碍。</span></p>
+      <section class="cat-leaderboard cat-leaderboard-desktop" data-leaderboard-section="desktop">
+        <h2 class="cat-leaderboard-title"><i class="fas fa-trophy me-2" aria-hidden="true"></i>排行榜</h2>
+        <button type="button" class="cat-leaderboard-page-btn" data-leaderboard-nav="up" data-leaderboard-target="desktop" aria-label="上一页" hidden>
+          <i class="fas fa-angle-up" aria-hidden="true"></i>
+        </button>
+        <ol id="leaderboardListDesktop" class="cat-leaderboard-list" data-leaderboard-list="desktop"></ol>
+        <button type="button" class="cat-leaderboard-page-btn" data-leaderboard-nav="down" data-leaderboard-target="desktop" aria-label="下一页" hidden>
+          <i class="fas fa-angle-down" aria-hidden="true"></i>
+        </button>
       </section>
     </aside>
 
@@ -45,24 +36,15 @@
       <div id="catBoard" class="cat-board" aria-label="围住小猫游戏棋盘"></div>
     </section>
 
-    <section class="cat-leaderboard cat-leaderboard-mobile">
+    <section class="cat-leaderboard cat-leaderboard-mobile" data-leaderboard-section="mobile">
       <h2 class="cat-leaderboard-title"><i class="fas fa-trophy me-2" aria-hidden="true"></i>排行榜 Top 10</h2>
-      <ol id="leaderboardListMobile" class="cat-leaderboard-list" data-leaderboard-list="mobile">
-        {% if leaderboard %}
-          {% for item in leaderboard %}
-          <li class="cat-leaderboard-item">
-            <span class="cat-leaderboard-user">{{ loop.index }}. {{ item.username }}</span>
-            {% if item.status == 'lose' %}
-            <strong class="cat-leaderboard-score fail">失败</strong>
-            {% else %}
-            <strong class="cat-leaderboard-score">{{ item.best_turns }} 回合</strong>
-            {% endif %}
-          </li>
-          {% endfor %}
-        {% else %}
-          <li class="cat-leaderboard-empty">暂无通关记录</li>
-        {% endif %}
-      </ol>
+      <button type="button" class="cat-leaderboard-page-btn" data-leaderboard-nav="up" data-leaderboard-target="mobile" aria-label="上一页" hidden>
+        <i class="fas fa-angle-up" aria-hidden="true"></i>
+      </button>
+      <ol id="leaderboardListMobile" class="cat-leaderboard-list" data-leaderboard-list="mobile"></ol>
+      <button type="button" class="cat-leaderboard-page-btn" data-leaderboard-nav="down" data-leaderboard-target="mobile" aria-label="下一页" hidden>
+        <i class="fas fa-angle-down" aria-hidden="true"></i>
+      </button>
     </section>
   </div>
 </div>
@@ -115,9 +97,10 @@
   }
 
   .cat-mobile-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.35rem;
+    align-items: stretch;
   }
 
   .cat-sidebar-top {
@@ -141,16 +124,23 @@
 
   .cat-new-game-btn {
     width: 100%;
+    padding: 0.32rem 0.45rem;
+    font-size: 0.84rem;
+    white-space: nowrap;
   }
 
   .cat-result-badge {
     text-align: center;
-    padding: 0.68rem 0.9rem;
+    padding: 0.3rem 0.4rem;
     border-radius: 999px;
     background: #e9ecef;
     border: 1px solid var(--cat-border);
     font-weight: 700;
     color: var(--cat-text);
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .cat-result-badge.win {
@@ -166,22 +156,24 @@
   }
 
   .cat-stat-panel {
-    border-radius: 10px;
+    border-radius: 8px;
     background: var(--cat-surface);
     border: 1px solid var(--cat-border);
-    padding: 0.65rem 0.85rem;
+    padding: 0.2rem 0.3rem;
     display: flex;
-    justify-content: space-between;
-    align-items: baseline;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
   }
 
   .cat-stat-panel span {
     color: var(--cat-muted);
-    font-size: 0.88rem;
+    font-size: 0.72rem;
+    line-height: 1;
   }
 
   .cat-stat-panel strong {
-    font-size: 1.2rem;
+    font-size: 0.95rem;
     line-height: 1;
   }
 
@@ -199,6 +191,8 @@
     border: 1px solid var(--cat-border);
     padding: 0.45rem 0.55rem;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .cat-leaderboard-title {
@@ -209,12 +203,42 @@
     color: var(--cat-muted);
   }
 
+  .cat-leaderboard-desktop .cat-leaderboard-title {
+    text-align: center;
+    font-size: 0.94rem;
+    margin-bottom: 0.12rem;
+  }
+
   .cat-leaderboard-list {
-    margin: 0.35rem 0 0;
+    margin: 0.35rem 0;
     padding: 0;
     list-style: none;
     display: grid;
     gap: 0.18rem;
+    min-height: 0;
+  }
+
+  .cat-leaderboard-page-btn {
+    margin-top: 0;
+    height: 16px;
+    border-radius: 999px;
+    border: 1px solid var(--cat-border);
+    background: #f8f9fa;
+    color: var(--cat-muted);
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    line-height: 1;
+  }
+
+  .cat-leaderboard-page-btn:hover {
+    background: #e9ecef;
+  }
+
+  .cat-leaderboard-page-btn[hidden] {
+    display: none !important;
   }
 
   .cat-leaderboard-item {
@@ -225,11 +249,58 @@
     display: flex;
     justify-content: space-between;
     gap: 0.35rem;
-    align-items: baseline;
+    align-items: center;
+  }
+
+  .cat-leaderboard-user-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.22rem;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .cat-leaderboard-rank {
+    width: 3.2ch;
+    min-width: 3.2ch;
+    flex: 0 0 3.2ch;
+    padding: 0.04rem 0.32rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 0.75rem;
+    line-height: 1;
+    font-weight: 700;
+    color: #495057;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cat-leaderboard-rank.top-1 {
+    color: #d4a017;
+    background: #fff3cd;
+    border: 1px solid #f6d67a;
+  }
+
+  .cat-leaderboard-rank.top-2 {
+    color: #8f98a3;
+    background: #f1f3f5;
+    border: 1px solid #d9dee3;
+  }
+
+  .cat-leaderboard-rank.top-3 {
+    color: #b87333;
+    background: #f8e9dd;
+    border: 1px solid #e8bf98;
   }
 
   .cat-leaderboard-user {
     font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--cat-text);
+    flex: 1;
+    text-align: left;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -360,6 +431,11 @@
       min-height: 0;
     }
 
+    .cat-leaderboard-desktop {
+      flex: 1;
+      min-height: 0;
+    }
+
     .cat-board-card {
       padding: 0.35rem;
     }
@@ -455,6 +531,7 @@
       border-radius: 8px;
     }
 
+    .cat-leaderboard-rank,
     .cat-leaderboard-user,
     .cat-leaderboard-score {
       font-size: 0.78rem;
@@ -486,8 +563,12 @@
       margin-bottom: 0.16rem;
     }
 
+    .cat-leaderboard-mobile .cat-leaderboard-page-btn {
+      display: none !important;
+    }
+
     .cat-leaderboard-mobile .cat-leaderboard-list {
-      margin-top: 0;
+      margin: 0.35rem 0;
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       grid-template-rows: repeat(5, minmax(0, auto));
@@ -523,7 +604,9 @@
     const statusTextValueEl = document.getElementById('statusTextValue');
     const turnCountEl = document.getElementById('turnCount');
     const resultBadgeEl = document.getElementById('gameResultBadge');
+    const leaderboardSections = Array.from(document.querySelectorAll('[data-leaderboard-section]'));
     const leaderboardListEls = Array.from(document.querySelectorAll('[data-leaderboard-list]'));
+    const leaderboardNavButtons = Array.from(document.querySelectorAll('[data-leaderboard-nav]'));
     const newGameBtn = document.getElementById('newGameBtn');
 
     const EVEN_ROW_DIRS = [
@@ -547,6 +630,10 @@
     const HEX_STEP_Y_RATIO = SQRT3 / 2;
     let boardSize = DESKTOP_BOARD_SIZE;
     let initialBlocks = DESKTOP_INITIAL_BLOCKS;
+    let leaderboardPage = 1;
+    let leaderboardPageSize = 10;
+    let leaderboardTotal = 0;
+    let leaderboardResizeTimer = null;
 
     function isMobileViewport() {
       return window.innerWidth < 992;
@@ -597,10 +684,10 @@
         ready = getOpenNeighbors(cat.row, cat.col).length > 0 && !!findShortestPathToEdge(cat.row, cat.col);
       }
 
-      updateStatus('点击棋盘空白格放置障碍。');
+      updateStatus('点击空格放障碍。');
       updateBadge('进行中');
-      fetchLeaderboard();
       render();
+      refreshLeaderboard(true);
     }
 
     function updateBadge(label, state) {
@@ -617,11 +704,142 @@
       }
     }
 
-    function renderLeaderboard(items) {
+    function parsePx(value) {
+      const parsed = parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function getActiveLeaderboardMode() {
+      return isMobileViewport() ? 'mobile' : 'desktop';
+    }
+
+    function getListColumnCount(listEl) {
+      if (!listEl) {
+        return 1;
+      }
+      const style = window.getComputedStyle(listEl);
+      const template = style.gridTemplateColumns;
+      if (!template || template === 'none') {
+        return 1;
+      }
+      return Math.max(1, template.split(' ').filter(Boolean).length);
+    }
+
+    function measureLeaderboardRowHeight(listEl) {
+      if (!listEl) {
+        return 24;
+      }
+
+      const probe = document.createElement('li');
+      probe.className = 'cat-leaderboard-item';
+      probe.style.visibility = 'hidden';
+      probe.style.position = 'absolute';
+      probe.style.pointerEvents = 'none';
+
+      const userWrap = document.createElement('span');
+      userWrap.className = 'cat-leaderboard-user-wrap';
+
+      const rank = document.createElement('span');
+      rank.className = 'cat-leaderboard-rank';
+      rank.textContent = '88';
+
+      const user = document.createElement('span');
+      user.className = 'cat-leaderboard-user';
+      user.textContent = '测试用户';
+
+      userWrap.appendChild(rank);
+      userWrap.appendChild(user);
+
+      const score = document.createElement('strong');
+      score.className = 'cat-leaderboard-score';
+      score.textContent = '9 回合';
+
+      probe.appendChild(userWrap);
+      probe.appendChild(score);
+      listEl.appendChild(probe);
+
+      const height = probe.getBoundingClientRect().height || probe.offsetHeight || 24;
+      listEl.removeChild(probe);
+      return Math.max(18, Math.ceil(height));
+    }
+
+    function computeLeaderboardPageSize() {
+      const mode = getActiveLeaderboardMode();
+      if (mode === 'mobile') {
+        return 10;
+      }
+      const section = document.querySelector('[data-leaderboard-section="' + mode + '"]');
+      const listEl = document.querySelector('[data-leaderboard-list="' + mode + '"]');
+      if (!section || !listEl) {
+        return 10;
+      }
+
+      const titleEl = section.querySelector('.cat-leaderboard-title');
+      const upBtnEl = section.querySelector('[data-leaderboard-nav="up"]');
+      const downBtnEl = section.querySelector('[data-leaderboard-nav="down"]');
+      const sectionStyle = window.getComputedStyle(section);
+      const listStyle = window.getComputedStyle(listEl);
+      const itemHeight = measureLeaderboardRowHeight(listEl);
+      const rowGap = parsePx(listStyle.rowGap || listStyle.gap);
+      const listMarginY = parsePx(listStyle.marginTop) + parsePx(listStyle.marginBottom);
+      const columns = getListColumnCount(listEl);
+      const paddingY = parsePx(sectionStyle.paddingTop) + parsePx(sectionStyle.paddingBottom);
+      const titleHeight = titleEl ? titleEl.getBoundingClientRect().height : 0;
+      const upHeight = upBtnEl && !upBtnEl.hidden ? upBtnEl.getBoundingClientRect().height + 4 : 0;
+      const downHeight = downBtnEl && !downBtnEl.hidden ? downBtnEl.getBoundingClientRect().height + 4 : 0;
+
+      let availableHeight = section.clientHeight - paddingY - titleHeight - upHeight - downHeight - listMarginY - 8;
+      if (!Number.isFinite(availableHeight) || availableHeight < itemHeight) {
+        const fallbackRatio = isMobileViewport() ? 0.28 : 0.35;
+        availableHeight = Math.max(itemHeight, Math.floor(window.innerHeight * fallbackRatio));
+      }
+
+      const rows = Math.max(1, Math.floor((availableHeight + rowGap) / (itemHeight + rowGap)));
+      return Math.max(1, Math.min(200, rows * columns));
+    }
+
+    function updateLeaderboardNavButtons(total, page, pageSize) {
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const showUp = page > 1;
+      const showDown = page < totalPages;
+
+      leaderboardSections.forEach(function (sectionEl) {
+        const mode = String(sectionEl.getAttribute('data-leaderboard-section') || '');
+        const upBtn = sectionEl.querySelector('[data-leaderboard-nav="up"]');
+        const downBtn = sectionEl.querySelector('[data-leaderboard-nav="down"]');
+        if (mode === 'mobile') {
+          if (upBtn) {
+            upBtn.hidden = true;
+          }
+          if (downBtn) {
+            downBtn.hidden = true;
+          }
+          return;
+        }
+        if (upBtn) {
+          upBtn.hidden = !showUp;
+        }
+        if (downBtn) {
+          downBtn.hidden = !showDown;
+        }
+      });
+    }
+
+    function renderLeaderboard(items, total, page, pageSize) {
       if (!leaderboardListEls.length) {
         return;
       }
-      const records = Array.isArray(items) ? items.slice(0, 10) : [];
+      const records = Array.isArray(items) ? items : [];
+      const safeTotal = Math.max(0, Number(total) || 0);
+      const safePageSize = Math.max(1, Number(pageSize) || leaderboardPageSize || 1);
+      const totalPages = Math.max(1, Math.ceil(safeTotal / safePageSize));
+      const safePage = Math.min(Math.max(1, Number(page) || 1), totalPages);
+      const rankBase = (safePage - 1) * safePageSize;
+
+      leaderboardTotal = safeTotal;
+      leaderboardPage = safePage;
+      leaderboardPageSize = safePageSize;
+      updateLeaderboardNavButtons(leaderboardTotal, leaderboardPage, leaderboardPageSize);
 
       leaderboardListEls.forEach(function (leaderboardListEl) {
         leaderboardListEl.innerHTML = '';
@@ -638,24 +856,49 @@
           const row = document.createElement('li');
           row.className = 'cat-leaderboard-item';
 
+          const rankNo = rankBase + index + 1;
+          const userWrap = document.createElement('span');
+          userWrap.className = 'cat-leaderboard-user-wrap';
+
+          const rank = document.createElement('span');
+          rank.className = 'cat-leaderboard-rank';
+          if (rankNo === 1) {
+            rank.classList.add('top-1');
+          } else if (rankNo === 2) {
+            rank.classList.add('top-2');
+          } else if (rankNo === 3) {
+            rank.classList.add('top-3');
+          }
+          rank.textContent = String(rankNo);
+
           const user = document.createElement('span');
           user.className = 'cat-leaderboard-user';
-          user.textContent = String(index + 1) + '. ' + String(item.username || '匿名用户');
+          user.textContent = String(item.username || '匿名用户');
 
           const score = document.createElement('strong');
           const isLose = String(item.status || '').toLowerCase() === 'lose';
           score.className = isLose ? 'cat-leaderboard-score fail' : 'cat-leaderboard-score';
           score.textContent = isLose ? '失败' : (String(item.best_turns) + ' 回合');
 
-          row.appendChild(user);
+          userWrap.appendChild(rank);
+          userWrap.appendChild(user);
+          row.appendChild(userWrap);
           row.appendChild(score);
           leaderboardListEl.appendChild(row);
         });
       });
     }
 
-    function fetchLeaderboard() {
-      fetch('/games/circle-cat/leaderboard')
+    function fetchLeaderboard(options) {
+      const opts = options || {};
+      const page = Math.max(1, Number(opts.page) || leaderboardPage || 1);
+      const pageSize = Math.max(1, Number(opts.pageSize) || leaderboardPageSize || 1);
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(pageSize),
+      });
+
+      fetch('/games/circle-cat/leaderboard?' + params.toString())
         .then(function (response) {
           if (!response.ok) {
             throw new Error('leaderboard request failed');
@@ -664,12 +907,44 @@
         })
         .then(function (data) {
           if (data && Array.isArray(data.leaderboard)) {
-            renderLeaderboard(data.leaderboard);
+            const responsePage = Math.max(1, Number(data.page) || page);
+            const responseLimit = Math.max(1, Number(data.limit) || pageSize);
+            const responseTotal = Math.max(0, Number(data.total) || data.leaderboard.length || 0);
+            const totalPages = Math.max(1, Math.ceil(responseTotal / responseLimit));
+            if (responsePage > totalPages) {
+              fetchLeaderboard({ page: totalPages, pageSize: responseLimit });
+              return;
+            }
+            renderLeaderboard(data.leaderboard, responseTotal, responsePage, responseLimit);
           }
         })
         .catch(function () {
           // 排行榜请求失败时保持当前展示，不打断游戏流程
         });
+    }
+
+    function refreshLeaderboard(resetPage) {
+      if (isMobileViewport()) {
+        leaderboardPage = 1;
+        leaderboardPageSize = 10;
+        fetchLeaderboard({
+          page: 1,
+          pageSize: 10,
+        });
+        return;
+      }
+      const newPageSize = computeLeaderboardPageSize();
+      if (resetPage) {
+        leaderboardPage = 1;
+      } else if (newPageSize !== leaderboardPageSize) {
+        const firstRank = (leaderboardPage - 1) * leaderboardPageSize + 1;
+        leaderboardPage = Math.max(1, Math.floor((firstRank - 1) / newPageSize) + 1);
+      }
+      leaderboardPageSize = newPageSize;
+      fetchLeaderboard({
+        page: leaderboardPage,
+        pageSize: leaderboardPageSize,
+      });
     }
 
     function submitGameResult(state) {
@@ -690,15 +965,11 @@
         .then(function (response) {
           return response.json().catch(function () { return null; });
         })
-        .then(function (data) {
-          if (data && Array.isArray(data.leaderboard)) {
-            renderLeaderboard(data.leaderboard);
-            return;
-          }
-          fetchLeaderboard();
+        .then(function () {
+          refreshLeaderboard(false);
         })
         .catch(function () {
-          fetchLeaderboard();
+          refreshLeaderboard(false);
         });
     }
 
@@ -925,7 +1196,7 @@
     function moveCat() {
       const openNeighbors = getOpenNeighbors(cat.row, cat.col);
       if (!openNeighbors.length) {
-        endGame('win', '小猫已经被你彻底围住，无法移动。');
+        endGame('win', '小猫动不了了。');
         return;
       }
 
@@ -933,16 +1204,16 @@
       cat = { row: nextStep.row, col: nextStep.col };
 
       if (isEdge(cat.row, cat.col)) {
-        endGame('lose', '小猫冲到了边缘，成功逃走了。');
+        endGame('lose', '小猫逃走了。');
         return;
       }
 
       const nextPath = findShortestPathToEdge(cat.row, cat.col);
       if (!nextPath) {
-        endGame('win', '小猫已经被封死，没有任何逃到边缘的路径。');
+        endGame('win', '小猫已被封死。');
         return;
       }
-      updateStatus('封锁还在继续。');
+      updateStatus('继续封锁。');
     }
 
     function handleCellClick(row, col) {
@@ -956,7 +1227,7 @@
       board[row][col] = 'blocked';
       turnCount += 1;
       if (isCatSealed()) {
-        endGame('win', '小猫已经被封死，没有任何逃到边缘的路径。');
+        endGame('win', '小猫已被封死。');
         return;
       }
       moveCat();
@@ -1044,6 +1315,26 @@
       boardEl.appendChild(boardGridEl);
     }
 
+    leaderboardNavButtons.forEach(function (button) {
+      button.addEventListener('click', function () {
+        const target = String(button.getAttribute('data-leaderboard-target') || '');
+        if (target !== 'desktop' || isMobileViewport()) {
+          return;
+        }
+        const direction = String(button.getAttribute('data-leaderboard-nav') || '');
+        const totalPages = Math.max(1, Math.ceil(leaderboardTotal / leaderboardPageSize));
+        if (direction === 'up' && leaderboardPage > 1) {
+          leaderboardPage -= 1;
+          fetchLeaderboard({ page: leaderboardPage, pageSize: leaderboardPageSize });
+          return;
+        }
+        if (direction === 'down' && leaderboardPage < totalPages) {
+          leaderboardPage += 1;
+          fetchLeaderboard({ page: leaderboardPage, pageSize: leaderboardPageSize });
+        }
+      });
+    });
+
     newGameBtn.addEventListener('click', setupBoard);
     window.addEventListener('resize', function () {
       const config = resolveBoardConfig();
@@ -1052,6 +1343,12 @@
         return;
       }
       render();
+      if (leaderboardResizeTimer) {
+        window.clearTimeout(leaderboardResizeTimer);
+      }
+      leaderboardResizeTimer = window.setTimeout(function () {
+        refreshLeaderboard(false);
+      }, 120);
     });
 
     setupBoard();
