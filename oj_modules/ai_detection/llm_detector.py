@@ -87,12 +87,18 @@ _QWEN_USER_PROMPT_TEMPLATE = """\
 # matlab-ai-detect 专用 Prompt
 # ============================================================
 
-# 该模型使用 RL 训练，不使用 system prompt
-_MATLAB_AI_DETECT_SYSTEM_PROMPT = None
+_MATLAB_AI_DETECT_SYSTEM_PROMPT = """\
+你是一位 MATLAB 代码风格专家，擅长区分 AI 生成代码和人类手写代码。
+
+请对代码进行深入分析，给出你的判断依据，最后以如下格式输出结论：
+<verdict>ai 或 human</verdict><confidence>0.0 到 1.0 之间的置信度数字</confidence>
+
+注意：你的整个回复（分析 + 结论）不得超过 600 字，请保持简洁。"""
 
 _MATLAB_AI_DETECT_USER_PROMPT_TEMPLATE = (
     "请分析以下 MATLAB 代码，判断它是由 AI 生成的还是由人类手写的。\n"
-    "请给出你的分析过程，并将最终答案放在 \\boxed{{}} 中（只填写 ai 或 human）。\n\n"
+    "请给出你的分析过程，并在最后以如下格式输出结论：\n"
+    "<verdict>ai 或 human</verdict><confidence>0.0 到 1.0 之间的置信度数字</confidence>\n\n"
     "```matlab\n{code}\n```"
 )
 
@@ -101,23 +107,39 @@ _MATLAB_AI_DETECT_USER_PROMPT_TEMPLATE = (
 # 响应解析
 # ============================================================
 
-def _parse_boxed_response(text):
+def _parse_verdict_response(text):
     """
     Parse matlab-ai-detect model output.
-    The model outputs a reasoning chain ending with \\boxed{ai} or \\boxed{human}.
+    The model outputs analysis text followed by:
+      <verdict>ai 或 human</verdict><confidence>0.0~1.0</confidence>
+    The analysis text before <verdict> is extracted as evidence.
     Maps: ai -> 1.0, human -> 0.0
     """
     raw = str(text or "").strip()
     if not raw:
         return None
-    match = re.search(r"\\boxed\{(ai|human)\}", raw, re.IGNORECASE)
-    if not match:
+    verdict_match = re.search(r"<verdict>\s*(ai|human)\s*</verdict>", raw, re.IGNORECASE)
+    if not verdict_match:
         return None
-    label = match.group(1).lower()
+    label = verdict_match.group(1).lower()
+    confidence = 0.8  # default if not found
+    conf_match = re.search(r"<confidence>\s*([\d.]+)\s*</confidence>", raw, re.IGNORECASE)
+    if conf_match:
+        try:
+            confidence = max(0.0, min(1.0, float(conf_match.group(1))))
+        except (ValueError, TypeError):
+            pass
+    # Extract analysis text before the <verdict> tag as evidence
+    analysis = raw[:verdict_match.start()].strip()
+    evidence = []
+    if analysis:
+        # Split into non-empty lines, keep up to 5
+        lines = [l.strip() for l in analysis.splitlines() if l.strip()]
+        evidence = lines[:5]
     return {
         "ai_probability": 1.0 if label == "ai" else 0.0,
-        "confidence": 1.0,
-        "evidence": [],
+        "confidence": confidence,
+        "evidence": evidence,
     }
 
 
@@ -298,9 +320,9 @@ def detect_with_llm(code, problem_description="", model_id="qwen"):
         user_prompt = _MATLAB_AI_DETECT_USER_PROMPT_TEMPLATE.format(code=code[:8000])
         return _call_openai_api(
             api_key, base_url, model, system_prompt, user_prompt,
-            response_parser=_parse_boxed_response,
+            response_parser=_parse_verdict_response,
             temperature=0.0,   # RL 模型推理时用贪心解码
-            max_tokens=4096,   # 需要输出完整推理链
+            max_tokens=1024,   # 限制在 600 字以内，1024 token 足够
         )
     else:
         # Default: qwen
