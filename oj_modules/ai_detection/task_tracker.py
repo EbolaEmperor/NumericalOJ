@@ -90,8 +90,6 @@ def _load(task_id):
 
 def record_task_submitted(task_id, task_type, params_summary=""):
     """Called from the route after .delay(), before the worker picks it up."""
-    rds = _get_redis()
-    ts = time.time()
     data = {
         "task_id": task_id,
         "task_type": task_type,
@@ -106,15 +104,6 @@ def record_task_submitted(task_id, task_type, params_summary=""):
         "error": None,
     }
     _save(task_id, data)
-    if rds is not None:
-        try:
-            rds.zadd(_RECENT_TASKS_KEY, {task_id: ts})
-            count = rds.zcard(_RECENT_TASKS_KEY)
-            if count > _RECENT_TASKS_MAX:
-                rds.zremrangebyrank(_RECENT_TASKS_KEY, 0, count - _RECENT_TASKS_MAX - 1)
-            rds.expire(_RECENT_TASKS_KEY, _TASK_TTL_SECONDS)
-        except Exception:
-            pass
 
 
 def record_task_running(task_id, total=None):
@@ -159,22 +148,7 @@ def record_task_failed(task_id, error_msg):
 
 
 def get_recent_tasks(limit=20):
-    """Return up to `limit` most recent task dicts, newest first.
-    Reads from Redis when available, falls back to MySQL."""
-    rds = _get_redis()
-    if rds is not None:
-        try:
-            task_ids = rds.zrevrange(_RECENT_TASKS_KEY, 0, limit - 1)
-            if task_ids:
-                tasks = []
-                for tid in task_ids:
-                    data = _load(tid)
-                    if data:
-                        tasks.append(data)
-                return tasks
-        except Exception:
-            pass
-    # Redis unavailable or empty — read from MySQL
+    """Return up to `limit` most recent task dicts, newest first. Always reads from MySQL."""
     try:
         from oj_modules.db_services import get_ai_detection_tasks
         return get_ai_detection_tasks(limit=limit)
