@@ -3,6 +3,7 @@
 
 import json
 import math
+import os
 import re
 import uuid
 
@@ -19,6 +20,7 @@ from config import (
     REDIS_HOST,
     REDIS_PORT,
 )
+from oj_modules.ai_utils import evaluate_program_output_image_with_ai
 from oj_modules.db_services import (
     get_db_connection,
     insert_user_problem_ac_record_if_absent,
@@ -36,6 +38,101 @@ from oj_modules.db_services import (
 EVALUATE_TASK_NAME = "oj.evaluate_submission"
 _LOCK_TTL_SECONDS = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS))
 _lock_rds = None
+
+
+def _normalize_programming_grading_mode(problem):
+    try:
+        mode = int((problem or {}).get('programming_grading_mode') or 1)
+    except Exception:
+        mode = 1
+    return mode if mode in (1, 2) else 1
+
+
+def _extract_output_image_filename(files_dict, preferred_prefix=None):
+    if not isinstance(files_dict, dict):
+        return False, ""
+
+    image_names = []
+    for key, value in files_dict.items():
+        name = str(key or "").strip()
+        if not name or not value:
+            continue
+        if name in ("stdout", "stderr"):
+            continue
+        lower = name.lower()
+        if lower.endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")):
+            image_names.append(name)
+
+    if preferred_prefix:
+        prefix = str(preferred_prefix).strip()
+        for name in image_names:
+            if name.startswith(prefix):
+                return True, name
+    if image_names:
+        return True, image_names[0]
+    return False, ""
+
+
+def _resolve_saved_output_image_path(sid, filename):
+    clean_sid = str(sid or "").strip()
+    clean_name = os.path.basename(str(filename or "").strip())
+    if not clean_sid or not clean_name:
+        return None
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    cwd = os.getcwd()
+    possible_paths = [
+        os.path.join(project_root, "judger", clean_sid, clean_name),
+        os.path.join(cwd, "judger", clean_sid, clean_name),
+        os.path.join("/tmp", clean_sid, clean_name),
+        os.path.join(cwd, clean_sid, clean_name),
+        os.path.expanduser(os.path.join("~", "oj", "judger", clean_sid, clean_name)),
+    ]
+    seen = set()
+    for raw_path in possible_paths:
+        path = os.path.abspath(os.path.expanduser(raw_path))
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _build_image_mode_comment_from_run_result(run_status, stderr, expected_filename):
+    status_text = str(run_status or "Error").strip() or "Error"
+    stderr_text = str(stderr or "").strip()
+    if status_text == "Accepted":
+        return f"程序运行完成，但未生成要求的输出图片文件 `{expected_filename}`。"
+    if stderr_text:
+        return f"程序未能生成可批改图片。运行状态：{status_text}。\n\n运行信息：\n{stderr_text}"
+    return f"程序未能生成可批改图片。运行状态：{status_text}。"
+
+
+def _normalize_image_mode_test_point_status(run_status, image_grading_score):
+    status_text = str(run_status or "Error").strip() or "Error"
+    if status_text == "Accepted":
+        return "Accepted" if int(image_grading_score or 0) == 1 else "Wrong Answer"
+    return status_text
+
+
+def _finalize_programming_submission(submission, problem_id, test_point_statuses, score, final_status):
+    user = get_user_by_username(submission['username'])
+    if final_status == "Accepted":
+        if insert_user_problem_ac_record_if_absent(user['id'], problem_id):
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cursor:
+                    sql = 'UPDATE problems SET cnt=cnt+1 WHERE id=%s'
+                    cursor.execute(sql, (problem_id,))
+                conn.commit()
+            finally:
+                conn.close()
+            if user['is_admin'] != 1:
+                bump_complete_cnt_for_user_classes(user, problem_id)
+
+    upsert_user_problem_max_score_if_higher(user['id'], problem_id, score)
+    update_submission_evaluation(submission['id'], test_point_statuses, score, final_status)
 
 
 def _get_lock_redis_client():
@@ -183,6 +280,11 @@ def register_evaluate_submission_task(celery_app):
             problem_id = submission['problem_id']
             code = submission['code']
             problem = get_problem(problem_id)
+            programming_grading_mode = _normalize_programming_grading_mode(problem)
+            required_output_image_filename = (
+                str(problem.get('programming_output_filename') or 'output.png').strip()
+                or 'output.png'
+            )
             lang = (problem.get('lang') or 'matlab').strip().lower()
             test_code = problem.get('test_code') or ''
 
@@ -290,16 +392,22 @@ def register_evaluate_submission_task(celery_app):
                     sql = "SELECT testdata FROM problems WHERE id=%s"
                     cursor.execute(sql, (problem_id,))
                     result = cursor.fetchone()
-                    if not result or not result['testdata']:
-                        update_submission_status(submission_id, 'Error')
-                        return
-                    testdata_json = result['testdata']
+                    testdata_json = (result or {}).get('testdata')
             finally:
                 conn.close()
 
-            try:
-                test_cases = json.loads(testdata_json)
-            except json.JSONDecodeError:
+            test_cases = []
+            if testdata_json:
+                try:
+                    parsed_test_cases = json.loads(testdata_json)
+                    if isinstance(parsed_test_cases, list):
+                        test_cases = parsed_test_cases
+                except json.JSONDecodeError:
+                    if programming_grading_mode != 2:
+                        update_submission_status(submission_id, 'Error')
+                        return
+
+            if programming_grading_mode != 2 and not test_cases:
                 update_submission_status(submission_id, 'Error')
                 return
 
@@ -310,6 +418,98 @@ def register_evaluate_submission_task(celery_app):
             time_limit_ns = int(time_limit_ms) * 1000000
             batch_result = None
 
+            if programming_grading_mode == 2:
+                single_case = test_cases[0] if test_cases else {}
+                single_input = ""
+                if isinstance(single_case, dict):
+                    single_input = str(single_case.get("input", "") or "")
+                single_sid = f"eoj-{submission_id}-1"
+                single_payload = {
+                    "code": final_code,
+                    "input": single_input,
+                    "forbidden": fbd_func,
+                    "sid": single_sid,
+                    "timeLimit": time_limit_ns,
+                    "memoryLimit": 512 * 1024 * 1024,
+                    "user_files": user_files,
+                    "outputImageFilename": required_output_image_filename,
+                }
+
+                run_status = "Error"
+                run_stderr = ""
+                run_stdout = ""
+                exec_time = 0
+                has_output_image = False
+                output_image_filename = ""
+                image_grading_score = 0
+                image_comment = ""
+
+                try:
+                    response = requests.post(judge_url, json=single_payload, timeout=60)
+                    response.raise_for_status()
+                    result = response.json()
+                    run_status = str(result.get('status') or 'Error').strip() or 'Error'
+                    files = (result.get('files') or {}) if isinstance(result.get('files'), dict) else {}
+                    run_stderr = str(files.get('stderr') or '').strip()
+                    run_stdout = str(files.get('stdout') or '').strip()
+                    try:
+                        exec_time = int(round(int(result.get('time', "0")) / 1_000_000))
+                    except Exception:
+                        exec_time = 0
+
+                    has_output_image, output_image_filename = _extract_output_image_filename(files, preferred_prefix="output")
+                    if run_status == "Accepted" and has_output_image and output_image_filename:
+                        image_path = _resolve_saved_output_image_path(single_sid, output_image_filename)
+                        if image_path:
+                            image_grading_score, image_comment = evaluate_program_output_image_with_ai(
+                                problem=problem,
+                                student_username=submission.get('username'),
+                                image_path=image_path,
+                            )
+                        else:
+                            image_comment = "程序运行后检测到图片标记，但未在评测目录中找到对应图片文件。"
+                    else:
+                        image_comment = _build_image_mode_comment_from_run_result(
+                            run_status,
+                            run_stderr,
+                            required_output_image_filename,
+                        )
+                except requests.RequestException as e:
+                    image_comment = f"判题服务调用失败：{str(e)}"
+                except Exception as e:
+                    image_comment = f"图片批改失败：{str(e)}"
+
+                image_grading_score = 1 if int(image_grading_score or 0) == 1 else 0
+                tp_status = _normalize_image_mode_test_point_status(run_status, image_grading_score)
+                final_status = "Accepted" if tp_status == "Accepted" else "Unaccepted"
+                test_point_statuses = [{
+                    "status": tp_status,
+                    "stderr": run_stderr,
+                    "stdout": run_stdout[:200] + "..." if len(run_stdout) > 200 else run_stdout,
+                    "comment": str(image_comment or "").strip(),
+                    "time": exec_time,
+                    "has_output_image": has_output_image,
+                    "output_image_filename": output_image_filename,
+                    "test_index": 1,
+                }]
+                set_submission_status_snapshot(
+                    submission_id=submission_id,
+                    username=submission.get('username'),
+                    problem_id=submission.get('problem_id'),
+                    problem_type=submission.get('problem_type'),
+                    status='Running',
+                    score=image_grading_score,
+                    test_points=test_point_statuses,
+                )
+                _finalize_programming_submission(
+                    submission=submission,
+                    problem_id=problem_id,
+                    test_point_statuses=test_point_statuses,
+                    score=image_grading_score,
+                    final_status=final_status,
+                )
+                return
+
             if lang in ['c', 'cpp']:
                 quick_compile_payload = {
                     "code": final_code,
@@ -319,6 +519,7 @@ def register_evaluate_submission_task(celery_app):
                     "timeLimit": 1000000000,
                     "memoryLimit": 512 * 1024 * 1024,
                     "user_files": user_files,
+                    "outputImageFilename": required_output_image_filename,
                 }
     
                 try:
@@ -368,6 +569,7 @@ def register_evaluate_submission_task(celery_app):
                     "timeLimit": time_limit_ns,
                     "memoryLimit": 512 * 1024 * 1024,
                     "user_files": user_files,
+                    "outputImageFilename": required_output_image_filename,
                 }
                 stream_skip_fallback = False
                 stream_judge_url = f'http://localhost:5050/batch-evaluate-stream-{lang}'
@@ -469,17 +671,21 @@ def register_evaluate_submission_task(celery_app):
                             if len(actual_output) > 200:
                                 actual_output = actual_output[:200] + "..."
     
+                            output_image_filename = ""
                             has_output_image = False
                             if 'files' in result and isinstance(result['files'], dict):
-                                if f'output_{idx - 1}.png' in result['files']:
-                                    has_output_image = True
-    
+                                has_output_image, output_image_filename = _extract_output_image_filename(
+                                    result['files'],
+                                    preferred_prefix=f"output_{idx - 1}",
+                                )
+
                             test_point_statuses.append({
                                 "status": status,
                                 "stderr": stderr,
                                 "stdout": actual_output,
                                 "time": exec_time,
                                 "has_output_image": has_output_image,
+                                "output_image_filename": output_image_filename,
                                 "test_index": idx,
                             })
                             set_submission_status_snapshot(
@@ -549,17 +755,21 @@ def register_evaluate_submission_task(celery_app):
                             if len(actual_output) > 200:
                                 actual_output = actual_output[:200] + "..."
     
+                            output_image_filename = ""
                             has_output_image = False
                             if 'files' in result and isinstance(result['files'], dict):
-                                if f'output_{idx - 1}.png' in result['files']:
-                                    has_output_image = True
-    
+                                has_output_image, output_image_filename = _extract_output_image_filename(
+                                    result['files'],
+                                    preferred_prefix=f"output_{idx - 1}",
+                                )
+
                             test_point_statuses.append({
                                 "status": status,
                                 "stderr": stderr,
                                 "stdout": actual_output,
                                 "time": exec_time,
                                 "has_output_image": has_output_image,
+                                "output_image_filename": output_image_filename,
                                 "test_index": idx,
                             })
                             set_submission_status_snapshot(
@@ -631,6 +841,7 @@ def register_evaluate_submission_task(celery_app):
                         "timeLimit": time_limit_ns,
                         "memoryLimit": 512 * 1024 * 1024,
                         "user_files": user_files,
+                        "outputImageFilename": required_output_image_filename,
                     }
     
                     try:
@@ -680,17 +891,21 @@ def register_evaluate_submission_task(celery_app):
                     if len(actual_output) > 200:
                         actual_output = actual_output[:200] + "..."
     
+                    output_image_filename = ""
                     has_output_image = False
                     if 'files' in result and isinstance(result['files'], dict):
-                        if 'output.png' in result['files'] or any(key.endswith('output.png') for key in result['files'].keys()):
-                            has_output_image = True
-    
+                        has_output_image, output_image_filename = _extract_output_image_filename(
+                            result['files'],
+                            preferred_prefix="output",
+                        )
+
                     test_point_statuses.append({
                         "status": status,
                         "stderr": stderr,
                         "stdout": actual_output,
                         "time": exec_time,
                         "has_output_image": has_output_image,
+                        "output_image_filename": output_image_filename,
                         "test_index": idx,
                     })
                     set_submission_status_snapshot(
@@ -704,25 +919,14 @@ def register_evaluate_submission_task(celery_app):
                     )
 
             score = sum(1 for tp in test_point_statuses if tp["status"] == "Accepted")
-            user = get_user_by_username(submission['username'])
-
             final_status = "Accepted" if all_accepted else "Unaccepted"
-            if final_status == "Accepted":
-                if insert_user_problem_ac_record_if_absent(user['id'], problem_id):
-                    conn = get_db_connection()
-                    try:
-                        with conn.cursor() as cursor:
-                            sql = 'UPDATE problems SET cnt=cnt+1 WHERE id=%s'
-                            cursor.execute(sql, (problem_id,))
-                        conn.commit()
-                    finally:
-                        conn.close()
-                    if user['is_admin'] != 1:
-                        bump_complete_cnt_for_user_classes(user, problem_id)
-
-            upsert_user_problem_max_score_if_higher(user['id'], problem_id, score)
-
-            update_submission_evaluation(submission_id, test_point_statuses, score, final_status)
+            _finalize_programming_submission(
+                submission=submission,
+                problem_id=problem_id,
+                test_point_statuses=test_point_statuses,
+                score=score,
+                final_status=final_status,
+            )
         finally:
             _release_submission_lock(lock_client, lock_key, lock_token)
 

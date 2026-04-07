@@ -164,6 +164,11 @@
           <pre id="testPointDetailOutputText" class="tp-detail-pre mb-0"></pre>
         </div>
 
+        <div id="testPointDetailCommentWrap" class="d-none mb-3">
+          <div class="fw-semibold mb-1" id="testPointDetailCommentLabel">评语</div>
+          <pre id="testPointDetailCommentText" class="tp-detail-pre mb-0"></pre>
+        </div>
+
         <div id="testPointDetailImageWrap" class="d-none">
           <div class="fw-semibold mb-2">输出图片</div>
           <img id="testPointDetailImage"
@@ -440,6 +445,9 @@
   const testPointDetailErrorTextEl = document.getElementById('testPointDetailErrorText');
   const testPointDetailOutputWrapEl = document.getElementById('testPointDetailOutputWrap');
   const testPointDetailOutputTextEl = document.getElementById('testPointDetailOutputText');
+  const testPointDetailCommentWrapEl = document.getElementById('testPointDetailCommentWrap');
+  const testPointDetailCommentLabelEl = document.getElementById('testPointDetailCommentLabel');
+  const testPointDetailCommentTextEl = document.getElementById('testPointDetailCommentText');
   const testPointDetailImageWrapEl = document.getElementById('testPointDetailImageWrap');
   const testPointDetailImageEl = document.getElementById('testPointDetailImage');
   const testPointDetailOmniWrapEl = document.getElementById('testPointDetailOmniWrap');
@@ -510,6 +518,9 @@
     if (testPointDetailErrorTextEl) testPointDetailErrorTextEl.textContent = '';
     if (testPointDetailOutputWrapEl) testPointDetailOutputWrapEl.classList.add('d-none');
     if (testPointDetailOutputTextEl) testPointDetailOutputTextEl.textContent = '';
+    if (testPointDetailCommentWrapEl) testPointDetailCommentWrapEl.classList.add('d-none');
+    if (testPointDetailCommentLabelEl) testPointDetailCommentLabelEl.textContent = '评语';
+    if (testPointDetailCommentTextEl) testPointDetailCommentTextEl.textContent = '';
     if (testPointDetailImageWrapEl) testPointDetailImageWrapEl.classList.add('d-none');
     if (testPointDetailImageEl) {
       testPointDetailImageEl.src = '';
@@ -568,6 +579,8 @@
     const statusShort = statusShortName(status);
     const stderr = String(tp.stderr || '').trim();
     const stdout = String(tp.stdout || '').trim();
+    const comment = String(tp.comment || '').trim();
+    const canShowStderr = status !== 'Time Limit Exceeded';
     const canShowStdout = status !== 'Accepted';
     const hasImage = !!tp.has_output_image;
 
@@ -582,7 +595,7 @@
       testPointDetailMetaEl.textContent = `状态：${status} | 运行时间：${formatTime(tp)}`;
     }
 
-    if (stderr) {
+    if (stderr && canShowStderr) {
       testPointDetailErrorWrapEl.classList.remove('d-none');
       testPointDetailErrorTextEl.textContent = stderr;
     } else {
@@ -596,6 +609,16 @@
     } else {
       testPointDetailOutputWrapEl.classList.add('d-none');
       testPointDetailOutputTextEl.textContent = '';
+    }
+
+    if (comment) {
+      testPointDetailCommentWrapEl.classList.remove('d-none');
+      testPointDetailCommentLabelEl.textContent = hasImage ? 'AI 评语' : '评测说明';
+      testPointDetailCommentTextEl.textContent = comment;
+    } else {
+      testPointDetailCommentWrapEl.classList.add('d-none');
+      testPointDetailCommentLabelEl.textContent = '评语';
+      testPointDetailCommentTextEl.textContent = '';
     }
 
     if (hasImage) {
@@ -620,7 +643,7 @@
     renderOmniImageAnalysisForTestPoint(tp, index);
     const hasOmniAnalysisShown = !!(testPointDetailOmniWrapEl && !testPointDetailOmniWrapEl.classList.contains('d-none'));
 
-    if (!stderr && !stdout && !hasImage && !hasOmniAnalysisShown && testPointDetailHintEl) {
+    if (!stderr && !stdout && !comment && !hasImage && !hasOmniAnalysisShown && testPointDetailHintEl) {
       testPointDetailHintEl.textContent = '该测试点暂无更多详情。';
       testPointDetailHintEl.classList.remove('d-none');
     }

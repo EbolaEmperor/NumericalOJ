@@ -6,6 +6,7 @@ import time
 import resource
 import os
 import shlex
+import shutil
 
 app = Flask(__name__)
 
@@ -44,6 +45,7 @@ ALLOWED_IPS = [
 
 # ========== 通用工具 ==========
 SAFE_SID_PATTERN = re.compile(r'^[A-Za-z0-9_\-\.]+$')
+IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
@@ -54,6 +56,46 @@ def sanitize_sid(sid: str) -> str:
         # 用时间戳兜底
         return f"run_{int(time.time()*1000)}"
     return sid
+
+
+def sanitize_output_image_filename(filename: str) -> str:
+    raw = str(filename or "").strip().replace("\\", "/")
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1].strip()
+    if not raw:
+        raw = "output.png"
+    return raw[:255] or "output.png"
+
+
+def capture_output_image_file(sid: str, requested_filename: str, stored_stem: str):
+    requested_name = sanitize_output_image_filename(requested_filename)
+    source_path = os.path.join(sid, requested_name)
+    if not os.path.isfile(source_path):
+        return None
+
+    _, ext = os.path.splitext(requested_name)
+    ext = str(ext or "").lower()
+    if not ext:
+        ext = ".png"
+    if ext not in IMAGE_FILE_EXTENSIONS:
+        return None
+
+    target_filename = f"{stored_stem}{ext}"
+    target_path = os.path.join(sid, target_filename)
+    if os.path.abspath(source_path) == os.path.abspath(target_path):
+        return target_filename
+
+    try:
+        os.replace(source_path, target_path)
+        return target_filename
+    except Exception:
+        pass
+
+    try:
+        shutil.copyfile(source_path, target_path)
+        return target_filename
+    except Exception:
+        return None
 
 def check_forbidden(code_content: str, forbidden_str: str):
     """
@@ -117,7 +159,7 @@ def ndjson_line(data):
     return json.dumps(data, ensure_ascii=False) + "\n"
 
 
-def run_compiled_binary_test_case(sid, case_index, test_case, tle, mle):
+def run_compiled_binary_test_case(sid, case_index, test_case, tle, mle, output_image_filename="output.png"):
     user_input = test_case.get("input", "")
     input_filename = f"{sid}/input_{case_index}.txt"
     output_filename = f"{sid}/output_{case_index}.txt"
@@ -147,19 +189,12 @@ def run_compiled_binary_test_case(sid, case_index, test_case, tle, mle):
     outp = read_output_with_fallback(output_filename, run_res.stdout or "")
 
     # 处理用户程序输出图片，避免覆盖
-    original_image_path = f"{sid}/output.png"
-    renamed_image_path = f"{sid}/output_{case_index}.png"
-    has_output_image = False
-    if os.path.exists(original_image_path):
-        try:
-            subprocess.run(["mv", original_image_path, renamed_image_path], capture_output=True, text=False)
-            has_output_image = True
-        except Exception:
-            try:
-                subprocess.run(["cp", original_image_path, renamed_image_path], capture_output=True, text=False)
-                has_output_image = True
-            except Exception:
-                pass
+    stored_image_filename = capture_output_image_file(
+        sid,
+        output_image_filename,
+        f"output_{case_index}",
+    )
+    has_output_image = bool(stored_image_filename)
 
     status = "Accepted"
     exval = 0
@@ -178,8 +213,8 @@ def run_compiled_binary_test_case(sid, case_index, test_case, tle, mle):
         exval = run_res.returncode
 
     files_dict = {"stdout": outp, "stderr": stderr}
-    if has_output_image:
-        files_dict[f"output_{case_index}.png"] = True
+    if has_output_image and stored_image_filename:
+        files_dict[stored_image_filename] = True
 
     return {
         "test_case_index": case_index,
@@ -208,6 +243,7 @@ def run_hello():
         tle = data.get("timeLimit")  # ns
         mle = (data.get("memoryLimit") or 0) * 10  # 保留你原来的乘 10 逻辑
         forbidden_funcs = data.get("forbidden", "")
+        output_image_filename = data.get("outputImageFilename", "output.png")
 
         # 禁用函数检查
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
@@ -272,9 +308,9 @@ def run_hello():
 
         # 检查是否生成了输出图片
         files_dict = {"stdout": outp, "stderr": stderr}
-        output_image_path = f"{sid}/output.png"
-        if os.path.exists(output_image_path):
-            files_dict["output.png"] = True  # 标记存在图片文件
+        stored_image_filename = capture_output_image_file(sid, output_image_filename, "output")
+        if stored_image_filename:
+            files_dict[stored_image_filename] = True
 
         return jsonify({
             "status": status,
@@ -308,6 +344,7 @@ def run_py():
         tle = data.get("timeLimit")  # ns
         mle = (data.get("memoryLimit") or 0) * 10  # 与其它语言保持一致
         forbidden_funcs = data.get("forbidden", "")
+        output_image_filename = data.get("outputImageFilename", "output.png")
 
         # 禁用函数检查（正则兼容 Python）
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
@@ -380,9 +417,9 @@ def run_py():
 
         # 检查是否生成了输出图片
         files_dict = {"stdout": outp, "stderr": stderr}
-        output_image_path = f"{sid}/output.png"
-        if os.path.exists(output_image_path):
-            files_dict["output.png"] = True  # 标记存在图片文件
+        stored_image_filename = capture_output_image_file(sid, output_image_filename, "output")
+        if stored_image_filename:
+            files_dict[stored_image_filename] = True
 
         return jsonify({
             "status": status,
@@ -416,6 +453,7 @@ def run_c():
         tle = data.get("timeLimit")  # ns
         mle = (data.get("memoryLimit") or 0) * 10  # 与 /run-hello 一致
         forbidden_funcs = data.get("forbidden", "")
+        output_image_filename = data.get("outputImageFilename", "output.png")
 
         # 禁用函数检查（对 C 同样生效）
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
@@ -520,9 +558,9 @@ def run_c():
 
         # 检查是否生成了输出图片
         files_dict = {"stdout": outp, "stderr": stderr}
-        output_image_path = f"{sid}/output.png"
-        if os.path.exists(output_image_path):
-            files_dict["output.png"] = True  # 标记存在图片文件
+        stored_image_filename = capture_output_image_file(sid, output_image_filename, "output")
+        if stored_image_filename:
+            files_dict[stored_image_filename] = True
 
         return jsonify({
             "status": status,
@@ -556,6 +594,7 @@ def run_cpp():
         tle = data.get("timeLimit")  # ns
         mle = (data.get("memoryLimit") or 0) * 10  # 与 /run-hello 一致
         forbidden_funcs = data.get("forbidden", "")
+        output_image_filename = data.get("outputImageFilename", "output.png")
 
         # 禁用函数检查（对 C 同样生效）
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
@@ -660,9 +699,9 @@ def run_cpp():
 
         # 检查是否生成了输出图片
         files_dict = {"stdout": outp, "stderr": stderr}
-        output_image_path = f"{sid}/output.png"
-        if os.path.exists(output_image_path):
-            files_dict["output.png"] = True  # 标记存在图片文件
+        stored_image_filename = capture_output_image_file(sid, output_image_filename, "output")
+        if stored_image_filename:
+            files_dict[stored_image_filename] = True
 
         return jsonify({
             "status": status,
@@ -686,6 +725,7 @@ def batch_evaluate_stream_c():
     mle = (data.get("memoryLimit") or 0) * 10
     forbidden_funcs = data.get("forbidden", "")
     user_files = data.get("user_files", {})
+    output_image_filename = data.get("outputImageFilename", "output.png")
 
     def generate():
         try:
@@ -727,7 +767,7 @@ def batch_evaluate_stream_c():
             yield ndjson_line({"event": "compile", "status": "success", "stderr": ""})
 
             for i, test_case in enumerate(test_cases):
-                result = run_compiled_binary_test_case(sid, i, test_case, tle, mle)
+                result = run_compiled_binary_test_case(sid, i, test_case, tle, mle, output_image_filename=output_image_filename)
                 yield ndjson_line({"event": "test_result", "result": result})
 
             yield ndjson_line({"event": "done", "ok": True})
@@ -752,6 +792,7 @@ def batch_evaluate_stream_cpp():
     mle = (data.get("memoryLimit") or 0) * 10
     forbidden_funcs = data.get("forbidden", "")
     user_files = data.get("user_files", {})
+    output_image_filename = data.get("outputImageFilename", "output.png")
 
     def generate():
         try:
@@ -793,7 +834,7 @@ def batch_evaluate_stream_cpp():
             yield ndjson_line({"event": "compile", "status": "success", "stderr": ""})
 
             for i, test_case in enumerate(test_cases):
-                result = run_compiled_binary_test_case(sid, i, test_case, tle, mle)
+                result = run_compiled_binary_test_case(sid, i, test_case, tle, mle, output_image_filename=output_image_filename)
                 yield ndjson_line({"event": "test_result", "result": result})
 
             yield ndjson_line({"event": "done", "ok": True})
@@ -833,6 +874,7 @@ def batch_evaluate_c():
         mle = (data.get("memoryLimit") or 0) * 10
         forbidden_funcs = data.get("forbidden", "")
         user_files = data.get("user_files", {})
+        output_image_filename = data.get("outputImageFilename", "output.png")
 
         # 禁用函数检查
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
@@ -917,26 +959,12 @@ def batch_evaluate_c():
 
             outp = read_output_with_fallback(output_filename, run_res.stdout or "")
 
-            # 处理用户程序可能输出的图片文件
-            # 如果用户程序输出了 output.png，立即重命名为 output_{i}.png 避免被覆盖
-            original_image_path = f"{sid}/output.png"
-            renamed_image_path = f"{sid}/output_{i}.png"
-            has_output_image = False
-            
-            if os.path.exists(original_image_path):
-                try:
-                    # 重命名图片文件
-                    subprocess.run(["mv", original_image_path, renamed_image_path], 
-                                 capture_output=True, text=False)
-                    has_output_image = True
-                except Exception:
-                    # 重命名失败，尝试复制
-                    try:
-                        subprocess.run(["cp", original_image_path, renamed_image_path], 
-                                     capture_output=True, text=False)
-                        has_output_image = True
-                    except Exception:
-                        pass
+            stored_image_filename = capture_output_image_file(
+                sid,
+                output_image_filename,
+                f"output_{i}",
+            )
+            has_output_image = bool(stored_image_filename)
 
             status = "Accepted"
             exval = 0
@@ -957,8 +985,8 @@ def batch_evaluate_c():
 
             # 检查输出图片
             files_dict = {"stdout": outp, "stderr": stderr}
-            if has_output_image:
-                files_dict[f"output_{i}.png"] = True
+            if has_output_image and stored_image_filename:
+                files_dict[stored_image_filename] = True
 
             test_results.append({
                 "test_case_index": i,
@@ -991,6 +1019,7 @@ def batch_evaluate_cpp():
         mle = (data.get("memoryLimit") or 0) * 10
         forbidden_funcs = data.get("forbidden", "")
         user_files = data.get("user_files", {})
+        output_image_filename = data.get("outputImageFilename", "output.png")
 
         # 禁用函数检查
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
@@ -1075,26 +1104,12 @@ def batch_evaluate_cpp():
 
             outp = read_output_with_fallback(output_filename, run_res.stdout or "")
 
-            # 处理用户程序可能输出的图片文件
-            # 如果用户程序输出了 output.png，立即重命名为 output_{i}.png 避免被覆盖
-            original_image_path = f"{sid}/output.png"
-            renamed_image_path = f"{sid}/output_{i}.png"
-            has_output_image = False
-            
-            if os.path.exists(original_image_path):
-                try:
-                    # 重命名图片文件
-                    subprocess.run(["mv", original_image_path, renamed_image_path], 
-                                 capture_output=True, text=False)
-                    has_output_image = True
-                except Exception:
-                    # 重命名失败，尝试复制
-                    try:
-                        subprocess.run(["cp", original_image_path, renamed_image_path], 
-                                     capture_output=True, text=False)
-                        has_output_image = True
-                    except Exception:
-                        pass
+            stored_image_filename = capture_output_image_file(
+                sid,
+                output_image_filename,
+                f"output_{i}",
+            )
+            has_output_image = bool(stored_image_filename)
 
             status = "Accepted"
             exval = 0
@@ -1115,8 +1130,8 @@ def batch_evaluate_cpp():
 
             # 检查输出图片
             files_dict = {"stdout": outp, "stderr": stderr}
-            if has_output_image:
-                files_dict[f"output_{i}.png"] = True
+            if has_output_image and stored_image_filename:
+                files_dict[stored_image_filename] = True
 
             test_results.append({
                 "test_case_index": i,
