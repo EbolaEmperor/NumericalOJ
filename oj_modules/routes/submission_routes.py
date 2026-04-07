@@ -445,28 +445,50 @@ def get_submission_output_image(submission_id, test_index):
     if submission['username'] != user['username'] and not is_admin(user):
         return jsonify({'error': 'Access denied'}), 403
 
+    preferred_filenames = []
+    test_points = submission.get('test_points') if isinstance(submission.get('test_points'), list) else []
+    if test_points and 0 <= test_index - 1 < len(test_points):
+        tp = test_points[test_index - 1] or {}
+        preferred_name = os.path.basename(str(tp.get('output_image_filename') or '').strip())
+        if preferred_name:
+            preferred_filenames.append(preferred_name)
+    preferred_filenames.extend([
+        f"output_{test_index - 1}.png",
+        f"output_{test_index - 1}.jpg",
+        f"output_{test_index - 1}.jpeg",
+        f"output_{test_index - 1}.webp",
+        f"output_{test_index - 1}.bmp",
+        "output.png",
+        "output.jpg",
+        "output.jpeg",
+        "output.webp",
+        "output.bmp",
+    ])
+
     batch_sid = f"eoj-batch-{submission_id}"
-    batch_image_filename = f"output_{test_index-1}.png"
-
     individual_sid = f"eoj-{submission_id}-{test_index}"
-    individual_image_filename = "output.png"
-
-    possible_paths = [
-        f"/Users/wenchong/code/NumericalOJ/judger/{batch_sid}/{batch_image_filename}",
-        f"./judger/{batch_sid}/{batch_image_filename}",
-        f"/tmp/{batch_sid}/{batch_image_filename}",
-        f"./{batch_sid}/{batch_image_filename}",
-        f"~/oj/judger/{batch_sid}/{batch_image_filename}",
-        f"/Users/wenchong/code/NumericalOJ/judger/{individual_sid}/{individual_image_filename}",
-        f"./judger/{individual_sid}/{individual_image_filename}",
-        f"/tmp/{individual_sid}/{individual_image_filename}",
-        f"./{individual_sid}/{individual_image_filename}",
-        f"~/oj/judger/{individual_sid}/{individual_image_filename}",
+    base_dirs = [
+        "/Users/wenchong/code/NumericalOJ/judger",
+        "./judger",
+        "/tmp",
+        ".",
+        "~/oj/judger",
     ]
+    possible_paths = []
+    seen_names = set()
+    for filename in preferred_filenames:
+        clean_name = str(filename or "").strip()
+        if not clean_name or clean_name in seen_names:
+            continue
+        seen_names.add(clean_name)
+        for base_dir in base_dirs:
+            possible_paths.append(os.path.join(base_dir, batch_sid, clean_name))
+        for base_dir in base_dirs:
+            possible_paths.append(os.path.join(base_dir, individual_sid, clean_name))
 
     for img_path in possible_paths:
         expanded_path = os.path.expanduser(img_path)
         if os.path.exists(expanded_path):
-            return send_file(expanded_path, mimetype='image/png')
+            return send_file(expanded_path)
 
     return jsonify({'error': 'Output image not found'}), 404

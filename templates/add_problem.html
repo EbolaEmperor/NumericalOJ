@@ -61,6 +61,43 @@
     </div>
   </div>
 
+  <div id="programmingGradingFields" class="mb-3">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label for="programmingGradingModeSelect" class="form-label">
+          <i class="fas fa-sliders me-2"></i> 批改模式
+        </label>
+        <select class="form-select" id="programmingGradingModeSelect" name="programming_grading_mode" onchange="_toggleProgrammingImageFields(this.value)">
+          <option value="1" selected>传统交互</option>
+          <option value="2">批改图片</option>
+        </select>
+      </div>
+      <div class="col-md-6 d-none" id="programmingOutputFilenameField">
+        <label for="programmingOutputFilenameInput" class="form-label">
+          <i class="fas fa-image me-2"></i> 输出文件名
+        </label>
+        <input
+          type="text"
+          class="form-control"
+          id="programmingOutputFilenameInput"
+          name="programming_output_filename"
+          value="output.png"
+          placeholder="例如：output.png">
+      </div>
+      <div class="col-12 d-none" id="programmingGradingPromptField">
+        <label for="programmingGradingPromptInput" class="form-label">
+          <i class="fas fa-list-check me-2"></i> 评分标准
+        </label>
+        <textarea
+          class="form-control"
+          id="programmingGradingPromptInput"
+          name="programming_grading_prompt"
+          rows="6"
+          placeholder="例如：图像内容与题意完全一致记 1 分；若缺少关键元素、布局错误、标注错误或未按要求绘图记 0 分。"></textarea>
+      </div>
+    </div>
+  </div>
+
   <!-- 书面作业提示 -->
   <div id="writtenAssignmentFields" class="mb-3" style="display:none;">
     <p>书面作业：学生将通过提交文件来完成作业，老师需要人工批改。</p>
@@ -103,6 +140,12 @@
           const hide = mode === '4';
           document.getElementById('writtenGradingModelField').style.display = hide ? 'none' : '';
           document.getElementById('writtenGradingPromptField').style.display = hide ? 'none' : '';
+        }
+
+        function _toggleProgrammingImageFields(mode) {
+          const isImageMode = mode === '2';
+          document.getElementById('programmingOutputFilenameField').classList.toggle('d-none', !isImageMode);
+          document.getElementById('programmingGradingPromptField').classList.toggle('d-none', !isImageMode);
         }
       </script>
     </div>
@@ -203,12 +246,15 @@
     document.getElementById('programmingFields').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('testLibFields').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('forbiddenFuncDiv').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('programmingGradingFields').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('writtenAssignmentFields').style.display = isProgramming ? 'none' : 'block';
     document.getElementById('langField').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('programmingConfigFields').style.display = isProgramming ? 'flex' : 'none';
   }
   // 立即执行一次，确保初始可见性正确
   syncVisibility();
+  _toggleProgrammingImageFields(document.getElementById('programmingGradingModeSelect').value);
+  _toggleAiGradingFields(document.getElementById('writtenGradingModeSelect').value);
   problemTypeSelect.addEventListener('change', syncVisibility);
 
   langSelect.addEventListener('change', function() {

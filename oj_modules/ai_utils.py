@@ -728,6 +728,87 @@ def _format_written_homework_comment(score, deductions, comment):
     return "\n".join(lines).strip()
 
 
+def _parse_program_output_image_grading_result(response_text):
+    cleaned = _strip_markdown_code_fence_markers(response_text)
+    raw = cleaned.strip()
+    payload = None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        match = re.search(r"\{[\s\S]*\}", raw)
+        if match:
+            try:
+                payload = json.loads(match.group(0))
+            except Exception:
+                payload = None
+    if not isinstance(payload, dict):
+        raise RuntimeError("图片评分模型未返回合法 JSON。")
+
+    score_raw = payload.get("score")
+    if score_raw is None:
+        score_raw = payload.get("result")
+    if score_raw is None:
+        score_raw = payload.get("verdict")
+
+    score = 0
+    if isinstance(score_raw, bool):
+        score = 1 if score_raw else 0
+    else:
+        score_text = str(score_raw or "").strip().lower()
+        if score_text in ("1", "true", "yes", "ac", "accepted", "pass"):
+            score = 1
+
+    comment = payload.get("comment")
+    if comment is None:
+        comment = payload.get("reason")
+    if comment is None:
+        comment = payload.get("评语")
+    comment = str(comment or "").strip()
+    if not comment:
+        comment = "模型未返回评语。"
+    return score, comment
+
+
+def evaluate_program_output_image_with_ai(problem, student_username, image_path):
+    if not image_path or not os.path.isfile(image_path):
+        raise RuntimeError("未找到可用于图片批改的输出图片。")
+
+    api_key = DASHSCOPE_API_KEY
+    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
+        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
+    base_url = _resolve_dashscope_base_url()
+
+    grading_rules = str((problem or {}).get("programming_grading_prompt") or "").strip()
+    if not grading_rules:
+        grading_rules = "仅当图片内容与题目要求完全一致时记 1 分，否则记 0 分。"
+
+    prompt = (
+        "你是编程题图片批改助手。你将收到题目要求、教师评分标准、学生用户名，以及学生程序生成的一张图片。\n"
+        "请严格按照评分标准进行二元评分：只能给 1 分或 0 分。\n"
+        "只允许输出 JSON，不要输出任何额外文字。\n\n"
+        "【输出 JSON 格式】\n"
+        "{\"score\": 0 或 1, \"comment\": \"简洁明确的中文评语\"}\n\n"
+        f"【评分标准】\n{grading_rules}\n\n"
+        f"【学生用户名】\n{str(student_username or '').strip()}\n\n"
+        "【任务要求】\n"
+        "1. 只能依据评分标准和图片本身评分；\n"
+        "2. `score` 只能是 0 或 1；\n"
+        "3. `comment` 要具体说明得分原因或关键不符合点。"
+    )
+    image_data_url = _build_image_data_url(image_path)
+    response_text = _call_qwen_text_with_images(
+        prompt_text=prompt,
+        image_data_urls=[image_data_url],
+        api_key=api_key,
+        base_url=base_url,
+        timeout=180,
+        model=str(QWEN_OMNI_MODEL or QWEN_TEXT_MODEL),
+        enable_thinking=False,
+        resolve_endpoint=False,
+    )
+    return _parse_program_output_image_grading_result(response_text)
+
+
 def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec=_DEFAULT_WRITTEN_GRADING_MODEL_SPEC):
     model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
     api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
@@ -962,7 +1043,7 @@ def _to_bool(value):
     return text in ("1", "true", "yes", "y", "on")
 
 
-def _find_submission_output_image_path(submission_id, test_index):
+def _find_submission_output_image_path(submission_id, test_index, test_points=None):
     try:
         sid = int(submission_id)
         idx = max(1, int(test_index))
@@ -970,24 +1051,50 @@ def _find_submission_output_image_path(submission_id, test_index):
         return None
 
     batch_sid = f"eoj-batch-{sid}"
-    batch_image_filename = f"output_{idx - 1}.png"
     individual_sid = f"eoj-{sid}-{idx}"
-    individual_image_filename = "output.png"
+    preferred_filenames = []
+    points = test_points if isinstance(test_points, list) else []
+    if points and 0 <= idx - 1 < len(points):
+        tp = points[idx - 1] or {}
+        preferred_name = str(tp.get("output_image_filename") or "").strip()
+        if preferred_name:
+            preferred_filenames.append(preferred_name)
+    preferred_filenames.extend([
+        f"output_{idx - 1}.png",
+        f"output_{idx - 1}.jpg",
+        f"output_{idx - 1}.jpeg",
+        f"output_{idx - 1}.webp",
+        f"output_{idx - 1}.bmp",
+        "output.png",
+        "output.jpg",
+        "output.jpeg",
+        "output.webp",
+        "output.bmp",
+    ])
+    ordered_filenames = []
+    seen_names = set()
+    for name in preferred_filenames:
+        cleaned = str(name or "").strip()
+        if not cleaned or cleaned in seen_names:
+            continue
+        seen_names.add(cleaned)
+        ordered_filenames.append(cleaned)
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     cwd = os.getcwd()
-    possible_paths = [
-        os.path.join(project_root, "judger", batch_sid, batch_image_filename),
-        os.path.join(cwd, "judger", batch_sid, batch_image_filename),
-        os.path.join("/tmp", batch_sid, batch_image_filename),
-        os.path.join(cwd, batch_sid, batch_image_filename),
-        os.path.expanduser(os.path.join("~", "oj", "judger", batch_sid, batch_image_filename)),
-        os.path.join(project_root, "judger", individual_sid, individual_image_filename),
-        os.path.join(cwd, "judger", individual_sid, individual_image_filename),
-        os.path.join("/tmp", individual_sid, individual_image_filename),
-        os.path.join(cwd, individual_sid, individual_image_filename),
-        os.path.expanduser(os.path.join("~", "oj", "judger", individual_sid, individual_image_filename)),
+    base_dirs = [
+        os.path.join(project_root, "judger"),
+        os.path.join(cwd, "judger"),
+        "/tmp",
+        cwd,
+        os.path.expanduser(os.path.join("~", "oj", "judger")),
     ]
+    possible_paths = []
+    for filename in ordered_filenames:
+        for base_dir in base_dirs:
+            possible_paths.append(os.path.join(base_dir, batch_sid, filename))
+        for base_dir in base_dirs:
+            possible_paths.append(os.path.join(base_dir, individual_sid, filename))
 
     seen = set()
     for raw_path in possible_paths:
@@ -1075,7 +1182,7 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
     if preferred_idx is None:
         return "", None
 
-    image_path = _find_submission_output_image_path(submission_id, preferred_idx)
+    image_path = _find_submission_output_image_path(submission_id, preferred_idx, points)
     used_idx = preferred_idx
 
     if not image_path:
@@ -1088,7 +1195,7 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
                 test_idx = int((tp or {}).get("test_index") or offset)
             except Exception:
                 test_idx = offset
-            image_path = _find_submission_output_image_path(submission_id, test_idx)
+            image_path = _find_submission_output_image_path(submission_id, test_idx, points)
             if image_path:
                 used_idx = test_idx
                 break

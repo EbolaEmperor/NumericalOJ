@@ -16,6 +16,7 @@ from oj_modules.db_services import (
     get_db_connection,
     get_problem,
     get_user_by_username,
+    normalize_programming_output_filename,
     normalize_written_grading_model,
     update_problem,
 )
@@ -101,6 +102,27 @@ def parse_written_grading_prompt_from_form(form):
     return text
 
 
+def parse_programming_grading_mode_from_form(form, default=1):
+    raw = str(form.get('programming_grading_mode', default) or default).strip()
+    try:
+        mode = int(raw)
+    except Exception:
+        mode = int(default)
+    return mode if mode in (1, 2) else int(default)
+
+
+def parse_programming_output_filename_from_form(form, default="output.png"):
+    raw = str(form.get('programming_output_filename') or default).strip()
+    return normalize_programming_output_filename(raw, default=default)
+
+
+def parse_programming_grading_prompt_from_form(form):
+    text = str(form.get('programming_grading_prompt') or '').strip()
+    if len(text) > 12000:
+        text = text[:12000]
+    return text
+
+
 @admin_problem_bp.route('/admin/add_problem', methods=['GET', 'POST'])
 def add_problem():
     user = current_user()
@@ -114,6 +136,9 @@ def add_problem():
         test_code = request.form.get('test_code', '').strip()
         forbidden_func = request.form.get('forbidden_func', '').strip()
         problem_type = request.form.get('type')
+        programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=1)
+        programming_output_filename = parse_programming_output_filename_from_form(request.form, default="output.png")
+        programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         written_grading_mode = parse_written_grading_mode_from_form(request.form, default=1)
         written_grading_model = parse_written_grading_model_from_form(request.form, default=_DEFAULT_WRITTEN_GRADING_MODEL)
         written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
@@ -141,6 +166,9 @@ def add_problem():
             lang,
             time_limit_ms,
             submission_limit,
+            programming_grading_mode,
+            programming_output_filename,
+            programming_grading_prompt,
             written_grading_mode,
             written_grading_model,
             written_grading_prompt,
@@ -180,6 +208,11 @@ def edit_problem(problem_id):
         else:
             new_time_limit_ms = problem.get('time_limit') or 2000
         new_submission_limit = int(request.form.get('submission_limit', problem.get('submission_limit', 10)))
+        default_programming_mode = problem.get('programming_grading_mode', 1)
+        new_programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=default_programming_mode)
+        default_output_filename = problem.get('programming_output_filename', 'output.png')
+        new_programming_output_filename = parse_programming_output_filename_from_form(request.form, default=default_output_filename)
+        new_programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         default_mode = problem.get('written_grading_mode', 1)
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)
         default_model = problem.get('written_grading_model', _DEFAULT_WRITTEN_GRADING_MODEL)
@@ -206,6 +239,9 @@ def edit_problem(problem_id):
             new_lang,
             new_time_limit_ms,
             new_submission_limit,
+            new_programming_grading_mode,
+            new_programming_output_filename,
+            new_programming_grading_prompt,
             new_written_grading_mode,
             new_written_grading_model,
             new_written_grading_prompt,

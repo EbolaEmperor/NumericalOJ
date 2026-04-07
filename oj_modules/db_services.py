@@ -41,6 +41,9 @@ _submission_snapshot_ttl_seconds = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 _problem_written_mode_column_ready = False
 _problem_written_model_column_ready = False
 _problem_written_prompt_column_ready = False
+_problem_programming_mode_column_ready = False
+_problem_programming_output_filename_column_ready = False
+_problem_programming_prompt_column_ready = False
 
 _QWEN_TEXT_MODEL_KEY = str(QWEN_TEXT_MODEL or "").strip().lower()
 _AI_TUTOR_MODEL_KEY = str(AI_TUTOR_MODEL or "").strip().lower()
@@ -319,6 +322,112 @@ def ensure_problem_written_grading_columns():
     ensure_problem_written_grading_mode_column()
     ensure_problem_written_grading_model_column()
     ensure_problem_written_grading_prompt_column()
+
+
+def normalize_programming_output_filename(value, default="output.png"):
+    text = str(value or "").strip().replace("\\", "/")
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1].strip()
+    if not text:
+        text = str(default or "output.png").strip()
+    if len(text) > 255:
+        text = text[:255]
+    return text or "output.png"
+
+
+def ensure_problem_programming_grading_mode_column():
+    global _problem_programming_mode_column_ready
+    if _problem_programming_mode_column_ready:
+        return
+
+    success = False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_grading_mode'")
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    ALTER TABLE problems
+                    ADD COLUMN programming_grading_mode TINYINT NOT NULL DEFAULT 1
+                    """
+                )
+                conn.commit()
+            success = True
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    if success:
+        _problem_programming_mode_column_ready = True
+
+
+def ensure_problem_programming_output_filename_column():
+    global _problem_programming_output_filename_column_ready
+    if _problem_programming_output_filename_column_ready:
+        return
+
+    success = False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_output_filename'")
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    ALTER TABLE problems
+                    ADD COLUMN programming_output_filename VARCHAR(255) NOT NULL DEFAULT 'output.png'
+                    """
+                )
+                conn.commit()
+            success = True
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    if success:
+        _problem_programming_output_filename_column_ready = True
+
+
+def ensure_problem_programming_grading_prompt_column():
+    global _problem_programming_prompt_column_ready
+    if _problem_programming_prompt_column_ready:
+        return
+
+    success = False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_grading_prompt'")
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    """
+                    ALTER TABLE problems
+                    ADD COLUMN programming_grading_prompt TEXT NULL
+                    """
+                )
+                conn.commit()
+            success = True
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    if success:
+        _problem_programming_prompt_column_ready = True
+
+
+def ensure_problem_programming_grading_columns():
+    ensure_problem_programming_grading_mode_column()
+    ensure_problem_programming_output_filename_column()
+    ensure_problem_programming_grading_prompt_column()
+
+
+def ensure_problem_grading_columns():
+    ensure_problem_written_grading_columns()
+    ensure_problem_programming_grading_columns()
 
 
 def init_submission_snapshot_cache(redis_client, ttl_seconds=None):
@@ -882,11 +991,16 @@ def get_class_by_cn(class_cn):
 
 
 def get_all_problems():
-    ensure_problem_written_grading_columns()
+    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,written_grading_mode,written_grading_model,written_grading_prompt FROM problems ORDER BY id ASC"
+            sql = (
+                "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,"
+                "written_grading_mode,written_grading_model,written_grading_prompt,"
+                "programming_grading_mode,programming_output_filename,programming_grading_prompt "
+                "FROM problems ORDER BY id ASC"
+            )
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -894,11 +1008,16 @@ def get_all_problems():
 
 
 def get_problem(problem_id):
-    ensure_problem_written_grading_columns()
+    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model,written_grading_prompt FROM problems WHERE id=%s"
+            sql = (
+                "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,"
+                "time_limit_ms,submission_limit,written_grading_mode,written_grading_model,written_grading_prompt,"
+                "programming_grading_mode,programming_output_filename,programming_grading_prompt "
+                "FROM problems WHERE id=%s"
+            )
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -906,11 +1025,16 @@ def get_problem(problem_id):
 
 
 def get_problem_title(problem_id):
-    ensure_problem_written_grading_columns()
+    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,written_grading_mode,written_grading_model,written_grading_prompt FROM problems WHERE id=%s"
+            sql = (
+                "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,"
+                "written_grading_mode,written_grading_model,written_grading_prompt,"
+                "programming_grading_mode,programming_output_filename,programming_grading_prompt "
+                "FROM problems WHERE id=%s"
+            )
             cursor.execute(sql, (problem_id,))
             return cursor.fetchone()
     finally:
@@ -927,30 +1051,47 @@ def create_problem(
     lang='matlab',
     time_limit_ms=2000,
     submission_limit=10,
+    programming_grading_mode=1,
+    programming_output_filename='output.png',
+    programming_grading_prompt='',
     written_grading_mode=1,
     written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
     written_grading_prompt='',
 ):
-    ensure_problem_written_grading_columns()
+    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         max_score = (0 if int(type) == 1 else 5)
+        use_programming_mode = 1
+        use_programming_output_filename = "output.png"
+        use_programming_prompt = ""
         use_written_mode = 1
         use_written_model = _DEFAULT_WRITTEN_GRADING_MODEL
         use_written_prompt = ""
-        if int(type) == 2:
+        if int(type) == 1:
+            try:
+                use_programming_mode = int(programming_grading_mode)
+            except Exception:
+                use_programming_mode = 1
+            if use_programming_mode not in (1, 2):
+                use_programming_mode = 1
+            use_programming_output_filename = normalize_programming_output_filename(programming_output_filename)
+            use_programming_prompt = str(programming_grading_prompt or "").strip()
+        elif int(type) == 2:
             try:
                 use_written_mode = int(written_grading_mode)
             except Exception:
                 use_written_mode = 1
-            if use_written_mode not in (1, 2, 3):
+            if use_written_mode not in (1, 2, 3, 4):
                 use_written_mode = 1
             use_written_model = normalize_written_grading_model(written_grading_model)
             use_written_prompt = str(written_grading_prompt or "").strip()
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems
-                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit, written_grading_mode, written_grading_model, written_grading_prompt)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                     (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit,
+                      programming_grading_mode, programming_output_filename, programming_grading_prompt,
+                      written_grading_mode, written_grading_model, written_grading_prompt)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(
                 sql,
                 (
@@ -964,6 +1105,9 @@ def create_problem(
                     max_score,
                     time_limit_ms,
                     submission_limit,
+                    use_programming_mode,
+                    use_programming_output_filename,
+                    use_programming_prompt,
                     use_written_mode,
                     use_written_model,
                     use_written_prompt,
@@ -1050,13 +1194,30 @@ def update_problem(
     new_lang='matlab',
     new_time_limit_ms=None,
     new_submission_limit=None,
+    new_programming_grading_mode=None,
+    new_programming_output_filename=None,
+    new_programming_grading_prompt=None,
     new_written_grading_mode=None,
     new_written_grading_model=None,
     new_written_grading_prompt=None,
 ):
-    ensure_problem_written_grading_columns()
+    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
+        programming_mode_val = None
+        if new_programming_grading_mode is not None:
+            try:
+                programming_mode_val = int(new_programming_grading_mode)
+            except Exception:
+                programming_mode_val = 1
+            if programming_mode_val not in (1, 2):
+                programming_mode_val = 1
+        programming_output_filename_val = None
+        if new_programming_output_filename is not None:
+            programming_output_filename_val = normalize_programming_output_filename(new_programming_output_filename)
+        programming_prompt_val = None
+        if new_programming_grading_prompt is not None:
+            programming_prompt_val = str(new_programming_grading_prompt or "").strip()
         mode_val = None
         if new_written_grading_mode is not None:
             try:
@@ -1074,6 +1235,7 @@ def update_problem(
         with conn.cursor() as cursor:
             sql = """UPDATE problems
                      SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s, submission_limit=%s,
+                         programming_grading_mode=%s, programming_output_filename=%s, programming_grading_prompt=%s,
                          written_grading_mode=%s, written_grading_model=%s, written_grading_prompt=%s
                      WHERE id=%s"""
             cursor.execute(
@@ -1087,6 +1249,9 @@ def update_problem(
                     new_lang,
                     new_time_limit_ms,
                     new_submission_limit,
+                    programming_mode_val if programming_mode_val is not None else 1,
+                    programming_output_filename_val if programming_output_filename_val is not None else "output.png",
+                    programming_prompt_val if programming_prompt_val is not None else "",
                     mode_val if mode_val is not None else 1,
                     model_val if model_val is not None else _DEFAULT_WRITTEN_GRADING_MODEL,
                     prompt_val if prompt_val is not None else "",
