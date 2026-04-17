@@ -84,6 +84,25 @@
           value="output.png"
           placeholder="例如：output.png">
       </div>
+      <div class="col-md-6 d-none" id="programmingGradingModelField">
+        <label for="programmingGradingModelSelect" class="form-label">
+          <i class="fas fa-robot me-2"></i> 批改模型
+        </label>
+        <select class="form-select" id="programmingGradingModelSelect" name="programming_grading_model">
+          {% set default_programming_model = default_programming_grading_model %}
+          {% for model_option in programming_grading_model_options %}
+          <option value="{{ model_option }}" {% if model_option == default_programming_model %}selected{% endif %}>
+            {% if 'vl' in model_option %}
+              Qwen3-VL
+            {% elif 'qwen3.5-plus' in model_option %}
+              Qwen-3.5-plus
+            {% else %}
+              {{ model_option }}
+            {% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
       <div class="col-12 d-none" id="programmingGradingPromptField">
         <label for="programmingGradingPromptInput" class="form-label">
           <i class="fas fa-list-check me-2"></i> 评分标准
@@ -145,6 +164,7 @@
         function _toggleProgrammingImageFields(mode) {
           const isImageMode = mode === '2';
           document.getElementById('programmingOutputFilenameField').classList.toggle('d-none', !isImageMode);
+          document.getElementById('programmingGradingModelField').classList.toggle('d-none', !isImageMode);
           document.getElementById('programmingGradingPromptField').classList.toggle('d-none', !isImageMode);
         }
       </script>

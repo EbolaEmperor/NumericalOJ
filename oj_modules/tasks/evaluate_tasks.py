@@ -448,6 +448,14 @@ def register_evaluate_submission_task(celery_app):
                     response = requests.post(judge_url, json=single_payload, timeout=60)
                     response.raise_for_status()
                     result = response.json()
+                except requests.RequestException as e:
+                    image_comment = f"判题服务调用失败：{str(e)}"
+                    result = None
+                except Exception as e:
+                    image_comment = f"判题结果解析失败：{str(e)}"
+                    result = None
+
+                if result is not None:
                     run_status = str(result.get('status') or 'Error').strip() or 'Error'
                     files = (result.get('files') or {}) if isinstance(result.get('files'), dict) else {}
                     run_stderr = str(files.get('stderr') or '').strip()
@@ -461,11 +469,16 @@ def register_evaluate_submission_task(celery_app):
                     if run_status == "Accepted" and has_output_image and output_image_filename:
                         image_path = _resolve_saved_output_image_path(single_sid, output_image_filename)
                         if image_path:
-                            image_grading_score, image_comment = evaluate_program_output_image_with_ai(
-                                problem=problem,
-                                student_username=submission.get('username'),
-                                image_path=image_path,
-                            )
+                            try:
+                                image_grading_score, image_comment = evaluate_program_output_image_with_ai(
+                                    problem=problem,
+                                    student_username=submission.get('username'),
+                                    image_path=image_path,
+                                )
+                            except requests.RequestException as e:
+                                image_comment = f"图片批改 API 调用失败：{str(e)}"
+                            except Exception as e:
+                                image_comment = f"图片批改失败：{str(e)}"
                         else:
                             image_comment = "程序运行后检测到图片标记，但未在评测目录中找到对应图片文件。"
                     else:
@@ -474,10 +487,6 @@ def register_evaluate_submission_task(celery_app):
                             run_stderr,
                             required_output_image_filename,
                         )
-                except requests.RequestException as e:
-                    image_comment = f"判题服务调用失败：{str(e)}"
-                except Exception as e:
-                    image_comment = f"图片批改失败：{str(e)}"
 
                 image_grading_score = 1 if int(image_grading_score or 0) == 1 else 0
                 tp_status = _normalize_image_mode_test_point_status(run_status, image_grading_score)

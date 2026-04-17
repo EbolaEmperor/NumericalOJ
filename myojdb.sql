@@ -168,6 +168,7 @@ CREATE TABLE `problems` (
   `time_limit_ms` int DEFAULT '2000',
   `submission_limit` int DEFAULT '10',
   `programming_grading_mode` tinyint NOT NULL DEFAULT '1',
+  `programming_grading_model` varchar(32) NOT NULL DEFAULT '',
   `programming_output_filename` varchar(255) NOT NULL DEFAULT 'output.png',
   `programming_grading_prompt` text,
   `written_grading_mode` tinyint NOT NULL DEFAULT '1',

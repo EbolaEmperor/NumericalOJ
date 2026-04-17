@@ -624,7 +624,10 @@
     let cat = { row: 4, col: 4 };
     let turnCount = 0;
     let gameState = 'playing';
+    let gameId = null;
+    let playerMoves = [];
     let hasSubmittedResult = false;
+    let isStartingGame = false;
     const SQRT3 = Math.sqrt(3);
     const HEX_H_RATIO = 2 / SQRT3;
     const HEX_STEP_Y_RATIO = SQRT3 / 2;
@@ -652,42 +655,90 @@
       };
     }
 
-    function setupBoard() {
-      const config = resolveBoardConfig();
-      boardSize = config.size;
-      initialBlocks = config.initialBlocks;
+    function createEmptyBoard(size) {
+      return Array.from({ length: size }, function () {
+        return Array.from({ length: size }, function () { return 'empty'; });
+      });
+    }
 
-      let ready = false;
-      while (!ready) {
-        board = Array.from({ length: boardSize }, function () {
-          return Array.from({ length: boardSize }, function () { return 'empty'; });
+    function requestNewGameConfig(mode) {
+      return fetch('/games/circle-cat/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ mode: mode }),
+      }).then(function (response) {
+        return response.json().catch(function () { return null; }).then(function (data) {
+          if (!response.ok || !data || data.success !== true) {
+            const error = new Error((data && data.message) || '创建对局失败');
+            error.response = data;
+            throw error;
+          }
+          return data;
         });
+      });
+    }
+
+    async function setupBoard() {
+      if (isStartingGame) {
+        return;
+      }
+      isStartingGame = true;
+      newGameBtn.disabled = true;
+      updateStatus('正在生成棋盘...');
+
+      const config = resolveBoardConfig();
+      try {
+        const data = await requestNewGameConfig(isMobileViewport() ? 'mobile' : 'desktop');
+        boardSize = Math.max(1, Number(data.board_size) || config.size);
+        initialBlocks = config.initialBlocks;
+        board = createEmptyBoard(boardSize);
         cat = {
-          row: Math.floor(boardSize / 2),
-          col: Math.floor(boardSize / 2)
+          row: Number(data.cat && data.cat.row),
+          col: Number(data.cat && data.cat.col),
         };
+        (Array.isArray(data.initial_blocked) ? data.initial_blocked : []).forEach(function (cell) {
+          if (!Array.isArray(cell) || cell.length !== 2) {
+            return;
+          }
+          const row = Number(cell[0]);
+          const col = Number(cell[1]);
+          if (inBounds(row, col)) {
+            board[row][col] = 'blocked';
+          }
+        });
         turnCount = 0;
         gameState = 'playing';
+        gameId = data.game_id || null;
+        playerMoves = [];
         hasSubmittedResult = false;
 
-        let placed = 0;
-        while (placed < initialBlocks) {
-          const row = Math.floor(Math.random() * boardSize);
-          const col = Math.floor(Math.random() * boardSize);
-          if ((row === cat.row && col === cat.col) || board[row][col] === 'blocked') {
-            continue;
-          }
-          board[row][col] = 'blocked';
-          placed += 1;
-        }
+        updateStatus('点击空格放障碍。');
+        updateBadge('进行中');
+        render();
+        refreshLeaderboard(true);
+      } catch (error) {
+        boardSize = config.size;
+        initialBlocks = config.initialBlocks;
+        board = createEmptyBoard(boardSize);
+        cat = {
+          row: Math.floor(boardSize / 2),
+          col: Math.floor(boardSize / 2),
+        };
+        turnCount = 0;
+        gameId = null;
+        playerMoves = [];
+        hasSubmittedResult = false;
+        gameState = 'error';
 
-        ready = getOpenNeighbors(cat.row, cat.col).length > 0 && !!findShortestPathToEdge(cat.row, cat.col);
+        updateStatus('棋盘创建失败，请稍后重试。');
+        updateBadge('加载失败');
+        render();
+      } finally {
+        isStartingGame = false;
+        newGameBtn.disabled = false;
       }
-
-      updateStatus('点击空格放障碍。');
-      updateBadge('进行中');
-      render();
-      refreshLeaderboard(true);
     }
 
     function updateBadge(label, state) {
@@ -948,7 +999,7 @@
     }
 
     function submitGameResult(state) {
-      if (hasSubmittedResult) {
+      if (hasSubmittedResult || !gameId) {
         return;
       }
       hasSubmittedResult = true;
@@ -958,8 +1009,8 @@
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          state: state,
-          turn_count: turnCount,
+          game_id: gameId,
+          moves: playerMoves,
         }),
       })
         .then(function (response) {
@@ -1143,41 +1194,67 @@
         return null;
       }
 
-      const dist = stats.dist;
       const pathCount = stats.pathCount;
-      let bestDistance = Infinity;
       let bestBranchCount = -1;
-      const candidates = [];
+      let bestCandidate = null;
+      let bestSortKey = null;
+
+      function isBetterSortKey(left, right) {
+        if (!right) {
+          return true;
+        }
+        for (let i = 0; i < left.length; i += 1) {
+          if (left[i] < right[i]) {
+            return true;
+          }
+          if (left[i] > right[i]) {
+            return false;
+          }
+        }
+        return false;
+      }
 
       openNeighbors.forEach(function (neighbor) {
-        const d = dist[neighbor.row][neighbor.col];
         const c = pathCount[neighbor.row][neighbor.col];
-        if (!Number.isFinite(d) || d !== 1 || c <= 0) {
+        if (c <= 0) {
           return;
         }
-        if (d < bestDistance || (d === bestDistance && c > bestBranchCount)) {
-          bestDistance = d;
+        const sortKey = [
+          -c,
+          estimateEdgeDistance(neighbor.row, neighbor.col),
+          neighbor.row,
+          neighbor.col,
+        ];
+        if (c > bestBranchCount) {
           bestBranchCount = c;
-          candidates.length = 0;
-          candidates.push(neighbor);
+          bestSortKey = sortKey;
+          bestCandidate = neighbor;
           return;
         }
-        if (d === bestDistance && c === bestBranchCount) {
-          candidates.push(neighbor);
+        if (c === bestBranchCount) {
+          if (isBetterSortKey(sortKey, bestSortKey)) {
+            bestSortKey = sortKey;
+            bestCandidate = neighbor;
+          }
         }
       });
 
-      if (!candidates.length) {
-        return null;
-      }
-      return candidates[Math.floor(Math.random() * candidates.length)];
+      return bestCandidate;
     }
 
     function chooseFallbackMove(openNeighbors) {
       return openNeighbors
         .slice()
         .sort(function (left, right) {
-          return estimateEdgeDistance(left.row, left.col) - estimateEdgeDistance(right.row, right.col);
+          const leftEdgeDistance = estimateEdgeDistance(left.row, left.col);
+          const rightEdgeDistance = estimateEdgeDistance(right.row, right.col);
+          if (leftEdgeDistance !== rightEdgeDistance) {
+            return leftEdgeDistance - rightEdgeDistance;
+          }
+          if (left.row !== right.row) {
+            return left.row - right.row;
+          }
+          return left.col - right.col;
         })[0];
     }
 
@@ -1225,6 +1302,7 @@
       }
 
       board[row][col] = 'blocked';
+      playerMoves.push([row, col]);
       turnCount += 1;
       if (isCatSealed()) {
         endGame('win', '小猫已被封死。');

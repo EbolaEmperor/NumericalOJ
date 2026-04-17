@@ -6,10 +6,14 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import tempfile
 import time
+from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPConnection
 
 from config import (
     AI_TUTOR_MODEL,
@@ -82,6 +86,12 @@ DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
     "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
     "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。"
 )
+_SO_BINDTODEVICE = getattr(socket, "SO_BINDTODEVICE", 25)
+_DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC = str(QWEN_OMNI_MODEL or "").strip().lower() or str(QWEN_TEXT_MODEL or "").strip().lower()
+_PROGRAMMING_IMAGE_GRADING_MODEL_SPECS = {
+    str(QWEN_OMNI_MODEL or "").strip().lower(): (str(QWEN_OMNI_MODEL or "").strip(), False, "dashscope"),
+    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "coding_plan"),
+}
 _CONTROL_ESCAPE_TO_LATEX_PREFIX = {
     "\n": "n",
     "\t": "t",
@@ -148,6 +158,49 @@ def _resolve_dashscope_base_url():
     return base_url
 
 
+class _BindInterfaceHTTPAdapter(HTTPAdapter):
+    def __init__(self, interface_name, *args, **kwargs):
+        self._interface_name = str(interface_name or "").strip()
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        socket_options = list(pool_kwargs.get("socket_options") or HTTPConnection.default_socket_options)
+        socket_options.append((
+            socket.SOL_SOCKET,
+            _SO_BINDTODEVICE,
+            self._interface_name.encode("utf-8") + b"\0",
+        ))
+        pool_kwargs["socket_options"] = socket_options
+        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+
+def _get_coding_plan_network_interface(base_url):
+    host = urlparse(str(base_url or "")).hostname
+    coding_plan_host = urlparse(str(CODING_PLAN_URL or "")).hostname
+    if not host or host != coding_plan_host:
+        return ""
+
+    configured_interface = str(os.environ.get("CODING_PLAN_NETWORK_INTERFACE") or "").strip()
+    if configured_interface:
+        return configured_interface
+
+    if os.path.exists("/sys/class/net/ppp0"):
+        return "ppp0"
+    return ""
+
+
+def _post_chat_completions(base_url, headers, payload, timeout):
+    url = f"{str(base_url).rstrip('/')}/chat/completions"
+    network_interface = _get_coding_plan_network_interface(base_url)
+    if not network_interface:
+        return requests.post(url, headers=headers, json=payload, timeout=timeout)
+
+    with requests.Session() as session:
+        adapter = _BindInterfaceHTTPAdapter(network_interface)
+        session.mount("https://", adapter)
+        return session.post(url, headers=headers, json=payload, timeout=timeout)
+
+
 def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base_url=None):
     use_model = str(model or "").strip()
     if use_model in _CODING_PLAN_TARGET_MODELS:
@@ -177,6 +230,14 @@ def _parse_written_grading_model_spec(model_spec):
     return _WRITTEN_GRADING_MODEL_SPECS.get(
         key,
         _WRITTEN_GRADING_MODEL_SPECS[_DEFAULT_WRITTEN_GRADING_MODEL_SPEC],
+    )
+
+
+def _parse_programming_image_grading_model_spec(model_spec):
+    key = str(model_spec or _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC).strip().lower()
+    return _PROGRAMMING_IMAGE_GRADING_MODEL_SPECS.get(
+        key,
+        _PROGRAMMING_IMAGE_GRADING_MODEL_SPECS[_DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC],
     )
 
 
@@ -223,7 +284,8 @@ def _call_qwen_text(
         use_base_url = str(base_url).rstrip('/')
     messages = [{"role": "user", "content": prompt_text}]
 
-    if OpenAI is not None:
+    coding_plan_network_interface = _get_coding_plan_network_interface(use_base_url)
+    if OpenAI is not None and not coding_plan_network_interface:
         try:
             client = OpenAI(api_key=use_api_key, base_url=use_base_url)
             kwargs = {
@@ -263,10 +325,10 @@ def _call_qwen_text(
     }
     if enable_thinking is not None:
         payload["enable_thinking"] = bool(enable_thinking)
-    resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    resp = _post_chat_completions(use_base_url, headers, payload, timeout)
     if resp.status_code >= 400:
         payload.pop("enable_thinking", None)
-        resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+        resp = _post_chat_completions(use_base_url, headers, payload, timeout)
     resp.raise_for_status()
     result = resp.json()
     choices = result.get('choices') or []
@@ -612,7 +674,8 @@ def _call_qwen_text_with_images(
     message_content.append({"type": "text", "text": str(prompt_text or "").strip()})
     messages = [{"role": "user", "content": message_content}]
 
-    if OpenAI is not None:
+    coding_plan_network_interface = _get_coding_plan_network_interface(use_base_url)
+    if OpenAI is not None and not coding_plan_network_interface:
         try:
             client = OpenAI(api_key=use_api_key, base_url=use_base_url)
             kwargs = {
@@ -654,10 +717,10 @@ def _call_qwen_text_with_images(
     }
     if enable_thinking is not None:
         payload["enable_thinking"] = bool(enable_thinking)
-    resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+    resp = _post_chat_completions(use_base_url, headers, payload, timeout)
     if resp.status_code >= 400:
         payload.pop("enable_thinking", None)
-        resp = requests.post(f"{use_base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
+        resp = _post_chat_completions(use_base_url, headers, payload, timeout)
     resp.raise_for_status()
     result = resp.json()
     choices = result.get("choices") or []
@@ -773,17 +836,15 @@ def evaluate_program_output_image_with_ai(problem, student_username, image_path)
     if not image_path or not os.path.isfile(image_path):
         raise RuntimeError("未找到可用于图片批改的输出图片。")
 
-    api_key = DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    base_url = _resolve_dashscope_base_url()
-
     grading_rules = str((problem or {}).get("programming_grading_prompt") or "").strip()
+    programming_grading_model = str((problem or {}).get("programming_grading_model") or _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC).strip().lower()
     if not grading_rules:
         grading_rules = "仅当图片内容与题目要求完全一致时记 1 分，否则记 0 分。"
+    model_name, enable_thinking, route_key = _parse_programming_image_grading_model_spec(programming_grading_model)
+    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
 
     prompt = (
-        "你是编程题图片批改助手。你将收到题目要求、教师评分标准、学生用户名，以及学生程序生成的一张图片。\n"
+        "你是编程题图片批改助手。你将收到教师评分标准、学生用户名，以及学生程序生成的一张图片。\n"
         "请严格按照评分标准进行二元评分：只能给 1 分或 0 分。\n"
         "只允许输出 JSON，不要输出任何额外文字。\n\n"
         "【输出 JSON 格式】\n"
@@ -802,8 +863,8 @@ def evaluate_program_output_image_with_ai(problem, student_username, image_path)
         api_key=api_key,
         base_url=base_url,
         timeout=180,
-        model=str(QWEN_OMNI_MODEL or QWEN_TEXT_MODEL),
-        enable_thinking=False,
+        model=model_name,
+        enable_thinking=enable_thinking,
         resolve_endpoint=False,
     )
     return _parse_program_output_image_grading_result(response_text)

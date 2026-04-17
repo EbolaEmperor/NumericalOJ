@@ -60,6 +60,23 @@
         value="{{ problem.programming_output_filename or 'output.png' }}"
         placeholder="例如：output.png">
     </div>
+    <div class="col-md-4" id="programmingGradingModelField">
+      <label for="programmingGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
+      {% set programming_model = (problem.programming_grading_model or default_programming_grading_model) %}
+      <select class="form-select" id="programmingGradingModelSelect" name="programming_grading_model">
+        {% for model_option in programming_grading_model_options %}
+        <option value="{{ model_option }}" {% if programming_model == model_option %}selected{% endif %}>
+          {% if 'vl' in model_option %}
+            Qwen3-VL
+          {% elif 'qwen3.5-plus' in model_option %}
+            Qwen-3.5-plus
+          {% else %}
+            {{ model_option }}
+          {% endif %}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
   </div>
   <div class="mb-3" id="programmingGradingPromptField">
     <label for="programmingGradingPromptInput" class="form-label">
@@ -179,8 +196,10 @@
   function _toggleProgrammingImageFields(mode) {
     const isImageMode = mode === '2';
     const outputField = document.getElementById('programmingOutputFilenameField');
+    const modelField = document.getElementById('programmingGradingModelField');
     const promptField = document.getElementById('programmingGradingPromptField');
     if (outputField) outputField.style.display = isImageMode ? '' : 'none';
+    if (modelField) modelField.style.display = isImageMode ? '' : 'none';
     if (promptField) promptField.style.display = isImageMode ? '' : 'none';
   }
 
