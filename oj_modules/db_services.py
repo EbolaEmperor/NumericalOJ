@@ -29,6 +29,7 @@ from config import (
     REDIS_HOST,
     REDIS_PORT,
     SUBMISSION_SNAPSHOT_TTL_SECONDS,
+    QWEN_OMNI_MODEL,
 )
 from oj_modules.ai_utils import _normalize_ai_code_issues
 
@@ -42,6 +43,7 @@ _problem_written_mode_column_ready = False
 _problem_written_model_column_ready = False
 _problem_written_prompt_column_ready = False
 _problem_programming_mode_column_ready = False
+_problem_programming_model_column_ready = False
 _problem_programming_output_filename_column_ready = False
 _problem_programming_prompt_column_ready = False
 
@@ -57,6 +59,14 @@ _ALLOWED_WRITTEN_GRADING_MODELS = {
         f"{_QWEN_TEXT_MODEL_KEY}-thinking" if _QWEN_TEXT_MODEL_KEY else "",
         _AI_TUTOR_MODEL_KEY,
         f"{_AI_TUTOR_MODEL_KEY}-thinking" if _AI_TUTOR_MODEL_KEY else "",
+    } if item
+}
+_QWEN_OMNI_MODEL_KEY = str(QWEN_OMNI_MODEL or "").strip().lower()
+_DEFAULT_PROGRAMMING_GRADING_MODEL = _QWEN_OMNI_MODEL_KEY or _QWEN_TEXT_MODEL_KEY
+_ALLOWED_PROGRAMMING_GRADING_MODELS = {
+    item for item in {
+        _QWEN_OMNI_MODEL_KEY,
+        _QWEN_TEXT_MODEL_KEY,
     } if item
 }
 
@@ -335,6 +345,13 @@ def normalize_programming_output_filename(value, default="output.png"):
     return text or "output.png"
 
 
+def normalize_programming_grading_model(value, default=_DEFAULT_PROGRAMMING_GRADING_MODEL):
+    text = str(value or "").strip().lower()
+    if text in _ALLOWED_PROGRAMMING_GRADING_MODELS:
+        return text
+    return str(default or _DEFAULT_PROGRAMMING_GRADING_MODEL).strip().lower()
+
+
 def ensure_problem_programming_grading_mode_column():
     global _problem_programming_mode_column_ready
     if _problem_programming_mode_column_ready:
@@ -361,6 +378,35 @@ def ensure_problem_programming_grading_mode_column():
         conn.close()
     if success:
         _problem_programming_mode_column_ready = True
+
+
+def ensure_problem_programming_grading_model_column():
+    global _problem_programming_model_column_ready
+    if _problem_programming_model_column_ready:
+        return
+
+    success = False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_grading_model'")
+            row = cursor.fetchone()
+            if not row:
+                default_model_sql = normalize_programming_grading_model(_DEFAULT_PROGRAMMING_GRADING_MODEL).replace("'", "''")
+                cursor.execute(
+                    f"""
+                    ALTER TABLE problems
+                    ADD COLUMN programming_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'
+                    """
+                )
+                conn.commit()
+            success = True
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    if success:
+        _problem_programming_model_column_ready = True
 
 
 def ensure_problem_programming_output_filename_column():
@@ -421,6 +467,7 @@ def ensure_problem_programming_grading_prompt_column():
 
 def ensure_problem_programming_grading_columns():
     ensure_problem_programming_grading_mode_column()
+    ensure_problem_programming_grading_model_column()
     ensure_problem_programming_output_filename_column()
     ensure_problem_programming_grading_prompt_column()
 
@@ -998,7 +1045,7 @@ def get_all_problems():
             sql = (
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,"
                 "written_grading_mode,written_grading_model,written_grading_prompt,"
-                "programming_grading_mode,programming_output_filename,programming_grading_prompt "
+                "programming_grading_mode,programming_grading_model,programming_output_filename,programming_grading_prompt "
                 "FROM problems ORDER BY id ASC"
             )
             cursor.execute(sql)
@@ -1015,7 +1062,7 @@ def get_problem(problem_id):
             sql = (
                 "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,"
                 "time_limit_ms,submission_limit,written_grading_mode,written_grading_model,written_grading_prompt,"
-                "programming_grading_mode,programming_output_filename,programming_grading_prompt "
+                "programming_grading_mode,programming_grading_model,programming_output_filename,programming_grading_prompt "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
@@ -1032,7 +1079,7 @@ def get_problem_title(problem_id):
             sql = (
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,"
                 "written_grading_mode,written_grading_model,written_grading_prompt,"
-                "programming_grading_mode,programming_output_filename,programming_grading_prompt "
+                "programming_grading_mode,programming_grading_model,programming_output_filename,programming_grading_prompt "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
@@ -1052,6 +1099,7 @@ def create_problem(
     time_limit_ms=2000,
     submission_limit=10,
     programming_grading_mode=1,
+    programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
     programming_output_filename='output.png',
     programming_grading_prompt='',
     written_grading_mode=1,
@@ -1063,6 +1111,7 @@ def create_problem(
     try:
         max_score = (0 if int(type) == 1 else 5)
         use_programming_mode = 1
+        use_programming_model = _DEFAULT_PROGRAMMING_GRADING_MODEL
         use_programming_output_filename = "output.png"
         use_programming_prompt = ""
         use_written_mode = 1
@@ -1075,6 +1124,7 @@ def create_problem(
                 use_programming_mode = 1
             if use_programming_mode not in (1, 2):
                 use_programming_mode = 1
+            use_programming_model = normalize_programming_grading_model(programming_grading_model)
             use_programming_output_filename = normalize_programming_output_filename(programming_output_filename)
             use_programming_prompt = str(programming_grading_prompt or "").strip()
         elif int(type) == 2:
@@ -1089,9 +1139,9 @@ def create_problem(
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems
                      (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit,
-                      programming_grading_mode, programming_output_filename, programming_grading_prompt,
+                      programming_grading_mode, programming_grading_model, programming_output_filename, programming_grading_prompt,
                       written_grading_mode, written_grading_model, written_grading_prompt)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(
                 sql,
                 (
@@ -1106,6 +1156,7 @@ def create_problem(
                     time_limit_ms,
                     submission_limit,
                     use_programming_mode,
+                    use_programming_model,
                     use_programming_output_filename,
                     use_programming_prompt,
                     use_written_mode,
@@ -1195,6 +1246,7 @@ def update_problem(
     new_time_limit_ms=None,
     new_submission_limit=None,
     new_programming_grading_mode=None,
+    new_programming_grading_model=None,
     new_programming_output_filename=None,
     new_programming_grading_prompt=None,
     new_written_grading_mode=None,
@@ -1212,6 +1264,9 @@ def update_problem(
                 programming_mode_val = 1
             if programming_mode_val not in (1, 2):
                 programming_mode_val = 1
+        programming_model_val = None
+        if new_programming_grading_model is not None:
+            programming_model_val = normalize_programming_grading_model(new_programming_grading_model)
         programming_output_filename_val = None
         if new_programming_output_filename is not None:
             programming_output_filename_val = normalize_programming_output_filename(new_programming_output_filename)
@@ -1235,7 +1290,7 @@ def update_problem(
         with conn.cursor() as cursor:
             sql = """UPDATE problems
                      SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s, submission_limit=%s,
-                         programming_grading_mode=%s, programming_output_filename=%s, programming_grading_prompt=%s,
+                         programming_grading_mode=%s, programming_grading_model=%s, programming_output_filename=%s, programming_grading_prompt=%s,
                          written_grading_mode=%s, written_grading_model=%s, written_grading_prompt=%s
                      WHERE id=%s"""
             cursor.execute(
@@ -1250,6 +1305,7 @@ def update_problem(
                     new_time_limit_ms,
                     new_submission_limit,
                     programming_mode_val if programming_mode_val is not None else 1,
+                    programming_model_val if programming_model_val is not None else _DEFAULT_PROGRAMMING_GRADING_MODEL,
                     programming_output_filename_val if programming_output_filename_val is not None else "output.png",
                     programming_prompt_val if programming_prompt_val is not None else "",
                     mode_val if mode_val is not None else 1,

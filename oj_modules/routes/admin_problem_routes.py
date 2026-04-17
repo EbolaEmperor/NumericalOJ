@@ -8,7 +8,7 @@ import zipfile
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
-from config import AI_TUTOR_MODEL, QWEN_TEXT_MODEL
+from config import AI_TUTOR_MODEL, QWEN_OMNI_MODEL, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
 from oj_modules.db_services import (
@@ -16,6 +16,7 @@ from oj_modules.db_services import (
     get_db_connection,
     get_problem,
     get_user_by_username,
+    normalize_programming_grading_model,
     normalize_programming_output_filename,
     normalize_written_grading_model,
     update_problem,
@@ -42,6 +43,19 @@ _WRITTEN_GRADING_MODEL_OPTIONS = [
 if _DEFAULT_WRITTEN_GRADING_MODEL and _DEFAULT_WRITTEN_GRADING_MODEL not in _WRITTEN_GRADING_MODEL_OPTIONS:
     _WRITTEN_GRADING_MODEL_OPTIONS.insert(0, _DEFAULT_WRITTEN_GRADING_MODEL)
 _DEFAULT_WRITTEN_GRADING_PROMPT = DEFAULT_WRITTEN_GRADING_RULES_TEXT
+_DEFAULT_PROGRAMMING_GRADING_MODEL = (
+    str(QWEN_OMNI_MODEL or '').strip().lower()
+    or str(QWEN_TEXT_MODEL or '').strip().lower()
+)
+_PROGRAMMING_GRADING_MODEL_OPTIONS = [
+    item for item in dict.fromkeys([
+        str(QWEN_OMNI_MODEL or '').strip().lower(),
+        str(QWEN_TEXT_MODEL or '').strip().lower(),
+    ])
+    if item
+]
+if _DEFAULT_PROGRAMMING_GRADING_MODEL and _DEFAULT_PROGRAMMING_GRADING_MODEL not in _PROGRAMMING_GRADING_MODEL_OPTIONS:
+    _PROGRAMMING_GRADING_MODEL_OPTIONS.insert(0, _DEFAULT_PROGRAMMING_GRADING_MODEL)
 
 
 def current_user():
@@ -116,6 +130,11 @@ def parse_programming_output_filename_from_form(form, default="output.png"):
     return normalize_programming_output_filename(raw, default=default)
 
 
+def parse_programming_grading_model_from_form(form, default=_DEFAULT_PROGRAMMING_GRADING_MODEL):
+    raw = str(form.get('programming_grading_model', default) or default).strip().lower()
+    return normalize_programming_grading_model(raw, default=default)
+
+
 def parse_programming_grading_prompt_from_form(form):
     text = str(form.get('programming_grading_prompt') or '').strip()
     if len(text) > 12000:
@@ -137,6 +156,7 @@ def add_problem():
         forbidden_func = request.form.get('forbidden_func', '').strip()
         problem_type = request.form.get('type')
         programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=1)
+        programming_grading_model = parse_programming_grading_model_from_form(request.form, default=_DEFAULT_PROGRAMMING_GRADING_MODEL)
         programming_output_filename = parse_programming_output_filename_from_form(request.form, default="output.png")
         programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         written_grading_mode = parse_written_grading_mode_from_form(request.form, default=1)
@@ -151,6 +171,8 @@ def add_problem():
                 'add_problem.html',
                 user=user,
                 error_message="标题和内容不能为空",
+                programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
+                default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
                 written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
                 default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
                 default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
@@ -167,6 +189,7 @@ def add_problem():
             time_limit_ms,
             submission_limit,
             programming_grading_mode,
+            programming_grading_model,
             programming_output_filename,
             programming_grading_prompt,
             written_grading_mode,
@@ -179,6 +202,8 @@ def add_problem():
         'add_problem.html',
         user=user,
         error_message=None,
+        programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
+        default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
         written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
         default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
         default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
@@ -210,6 +235,8 @@ def edit_problem(problem_id):
         new_submission_limit = int(request.form.get('submission_limit', problem.get('submission_limit', 10)))
         default_programming_mode = problem.get('programming_grading_mode', 1)
         new_programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=default_programming_mode)
+        default_programming_model = problem.get('programming_grading_model', _DEFAULT_PROGRAMMING_GRADING_MODEL)
+        new_programming_grading_model = parse_programming_grading_model_from_form(request.form, default=default_programming_model)
         default_output_filename = problem.get('programming_output_filename', 'output.png')
         new_programming_output_filename = parse_programming_output_filename_from_form(request.form, default=default_output_filename)
         new_programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
@@ -225,6 +252,8 @@ def edit_problem(problem_id):
                 problem=problem,
                 user=user,
                 error_message="标题和内容不能为空",
+                programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
+                default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
                 written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
                 default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
             )
@@ -240,6 +269,7 @@ def edit_problem(problem_id):
             new_time_limit_ms,
             new_submission_limit,
             new_programming_grading_mode,
+            new_programming_grading_model,
             new_programming_output_filename,
             new_programming_grading_prompt,
             new_written_grading_mode,
@@ -253,6 +283,8 @@ def edit_problem(problem_id):
         problem=problem,
         user=user,
         error_message=None,
+        programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
+        default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
         written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
         default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
     )
