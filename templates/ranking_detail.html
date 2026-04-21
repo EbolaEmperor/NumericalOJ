@@ -108,35 +108,6 @@
     {% if tab == 'submit' %}
       {% set max_score = competition.max_score or 100 %}
 
-      <!-- 流程引导 -->
-      <div class="submit-hero mb-3">
-        <div class="submit-hero-row">
-          <div class="submit-hero-step">
-            <div class="submit-hero-step-num">1</div>
-            <div class="submit-hero-step-text">
-              <strong>上传两份文件</strong>
-              <span>答案 .json + 代码 .zip</span>
-            </div>
-          </div>
-          <i class="fas fa-chevron-right submit-hero-arrow"></i>
-          <div class="submit-hero-step">
-            <div class="submit-hero-step-num">2</div>
-            <div class="submit-hero-step-text">
-              <strong>系统评测</strong>
-              <span>系统自动跑分</span>
-            </div>
-          </div>
-          <i class="fas fa-chevron-right submit-hero-arrow"></i>
-          <div class="submit-hero-step">
-            <div class="submit-hero-step-num">3</div>
-            <div class="submit-hero-step-text">
-              <strong>查看得分</strong>
-              <span>最高分计入排行榜</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {% if competition.is_active != 1 %}
         <div class="alert alert-warning mb-4">
           <i class="fas fa-exclamation-triangle me-2"></i>该比赛已下线，无法提交。
@@ -503,6 +474,7 @@
                   <th>代码文件</th>
                   <th style="width:110px;">状态</th>
                   <th style="width:180px;" class="text-end">得分</th>
+                  <th style="width:56px;" class="text-center">操作</th>
                 </tr>
               </thead>
               <tbody id="subTbody">
@@ -561,10 +533,19 @@
                         <span class="text-muted">—</span>
                       {% endif %}
                     </td>
+                    <td class="text-center">
+                      <form method="POST" class="d-inline"
+                            action="{{ url_for('ranking.ranking_delete_submission', competition_id=competition.id, submission_id=s.id) }}"
+                            onsubmit="return confirm('确认删除提交 #{{ s.id }}（{{ s.username }}）？\n此操作无法撤销，该用户的最高分与排行榜将同步更新。');">
+                        <button type="submit" class="sub-delete-btn" title="删除该提交" aria-label="删除提交 #{{ s.id }}">
+                          <i class="fas fa-trash"></i>
+                        </button>
+                      </form>
+                    </td>
                   </tr>
                 {% endfor %}
                 <tr id="subNoMatch" style="display:none;">
-                  <td colspan="7" class="text-muted text-center py-4">
+                  <td colspan="8" class="text-muted text-center py-4">
                     <i class="fas fa-search me-1 opacity-50"></i>没有匹配的用户
                   </td>
                 </tr>
@@ -1198,6 +1179,26 @@
     border-radius: 999px;
     background: linear-gradient(90deg, #22c55e 0%, #4ade80 100%);
     transition: width 0.3s ease;
+  }
+
+  .sub-delete-btn {
+    border: 0;
+    background: transparent;
+    color: #adb5bd;
+    font-size: 0.82rem;
+    padding: 0.3rem 0.55rem;
+    border-radius: 0.35rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
+  }
+  .sub-delete-btn:hover {
+    color: #fff;
+    background: #dc3545;
+  }
+  .sub-delete-btn:focus-visible {
+    outline: 2px solid rgba(220, 53, 69, 0.5);
+    outline-offset: 2px;
   }
 
   /* ==================== 提交作品 ==================== */

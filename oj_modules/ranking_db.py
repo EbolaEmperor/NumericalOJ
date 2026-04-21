@@ -392,6 +392,20 @@ def update_submission_result(submission_id, score, status, grade_details=None, e
         conn.close()
 
 
+def delete_ranking_submission(submission_id):
+    """删除一条提交记录。返回被删除的行数（0 或 1）。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM ranking_submissions WHERE id = %s", (submission_id,))
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
 def get_ranking_submission(submission_id):
     ensure_ranking_tables()
     conn = get_db_connection()
