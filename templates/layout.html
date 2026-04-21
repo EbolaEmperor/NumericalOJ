@@ -75,6 +75,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('ranking.ranking_list') }}">
+            <i class="fas fa-trophy me-2"></i>
+            打榜赛
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link" href="{{ url_for('game.circle_cat') }}">
             <i class="fas fa-cat me-2"></i>
             围住小猫
@@ -192,6 +198,12 @@
         <a class="nav-link" href="{{ url_for('repository.code_repository') }}">
           <i class="fas fa-code me-2"></i>
           代码仓库
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link" href="{{ url_for('ranking.ranking_list') }}">
+          <i class="fas fa-trophy me-2"></i>
+          打榜赛
         </a>
       </li>
       <li class="nav-item">
