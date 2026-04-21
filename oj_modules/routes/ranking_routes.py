@@ -126,6 +126,7 @@ def ranking_create():
     if resp is not None:
         return resp
     title = (request.form.get('title') or '').strip()
+    summary = (request.form.get('summary') or '').strip()[:500] or None
     description = request.form.get('description') or ''
     max_score = request.form.get('max_score') or '100'
     if not title:
@@ -140,6 +141,7 @@ def ranking_create():
         return redirect(url_for('ranking.ranking_list'))
     new_id = create_competition(
         title=title,
+        summary=summary,
         description=description,
         max_score=max_score_int,
         created_by=user.get('username'),
@@ -289,6 +291,7 @@ def ranking_edit(competition_id):
         return redirect(url_for('ranking.ranking_list'))
 
     title = (request.form.get('title') or '').strip()
+    summary = (request.form.get('summary') or '').strip()[:500]
     description = request.form.get('description') or ''
     max_score_raw = request.form.get('max_score')
     is_active_raw = request.form.get('is_active')
@@ -309,6 +312,7 @@ def ranking_edit(competition_id):
     update_competition(
         competition_id,
         title=title,
+        summary=summary,
         description=description,
         max_score=max_score_int,
         is_active=is_active,
