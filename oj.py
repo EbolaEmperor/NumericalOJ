@@ -25,6 +25,7 @@ from oj_modules.routes.auth_routes import auth_bp
 from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_core_module
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
+from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.tasks import (
     init_agent_progress_cache,
     register_agent_generate_testdata_task,
@@ -33,6 +34,7 @@ from oj_modules.tasks import (
     register_evaluate_submission_task,
     register_written_homework_task,
     register_ai_detection_tasks,
+    register_ranking_evaluate_task,
 )
 
 import redis
@@ -72,6 +74,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
 app.register_blueprint(game_bp)
+app.register_blueprint(ranking_bp)
 
 ###############################################################################
 #  站点设置（全局开关）
@@ -125,6 +128,7 @@ agent_solve_problem = register_agent_solve_problem_task(celery, evaluate_submiss
 agent_generate_testdata = register_agent_generate_testdata_task(celery, evaluate_submission)
 build_repository_index = register_repository_index_build_task(celery)
 detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions = register_ai_detection_tasks(celery)
+evaluate_ranking_submission = register_ranking_evaluate_task(celery)
 
 # 初始化重测模块（依赖 Celery、Redis、评测函数）
 init_rejudge_module(celery, rds, evaluate_submission)
@@ -141,6 +145,8 @@ init_problem_core_module(
 init_repository_index_module(build_repository_index)
 # 初始化 AI 检测模块（依赖 Celery 任务）
 init_ai_detection_module(detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions)
+# 初始化打榜赛模块（依赖 Celery 评测任务）
+init_ranking_module(evaluate_ranking_submission)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds)
 # 初始化 agent 运行状态缓存（Redis）

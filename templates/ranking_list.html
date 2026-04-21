@@ -1,0 +1,90 @@
+{% extends "layout.html" %}
+{% block title %}打榜赛 - {{ super() }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h3 class="mb-0"><i class="fas fa-trophy me-2"></i> 打榜赛</h3>
+  {% if user and user.is_admin == 1 %}
+  <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#newCompetitionModal">
+    <i class="fas fa-plus me-1"></i> 创建打榜赛
+  </button>
+  {% endif %}
+</div>
+
+{% if not competitions %}
+  <div class="alert alert-secondary">
+    <i class="fas fa-info-circle me-2"></i>
+    {% if user and user.is_admin == 1 %}
+      当前还没有打榜赛，点击右上角“创建打榜赛”发起一场比赛。
+    {% else %}
+      暂无进行中的打榜赛，敬请期待。
+    {% endif %}
+  </div>
+{% else %}
+  <div class="list-group">
+    {% for comp in competitions %}
+      <a href="{{ url_for('ranking.ranking_detail', competition_id=comp.id) }}"
+         class="list-group-item list-group-item-action">
+        <div class="d-flex w-100 justify-content-between align-items-start">
+          <div class="me-3">
+            <h5 class="mb-1">
+              {{ comp.title }}
+              {% if comp.is_active != 1 %}
+                <span class="badge bg-secondary ms-1">已下线</span>
+              {% endif %}
+            </h5>
+            <div class="text-muted small">
+              <span class="me-3"><i class="fas fa-user-friends me-1"></i> 参赛 {{ comp.participant_count or 0 }} 人</span>
+              <span class="me-3"><i class="fas fa-paper-plane me-1"></i> 提交 {{ comp.submission_count or 0 }} 次</span>
+              <span><i class="fas fa-star me-1"></i> 满分 {{ comp.max_score or 100 }}</span>
+            </div>
+          </div>
+          <div class="text-end text-muted small">
+            <div><i class="fas fa-clock me-1"></i> {{ comp.created_at }}</div>
+            {% if comp.created_by %}
+            <div><i class="fas fa-user me-1"></i> {{ comp.created_by }}</div>
+            {% endif %}
+          </div>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% if user and user.is_admin == 1 %}
+<div class="modal fade" id="newCompetitionModal" tabindex="-1" aria-labelledby="newCompetitionLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="{{ url_for('ranking.ranking_create') }}">
+        <div class="modal-header">
+          <h5 class="modal-title" id="newCompetitionLabel"><i class="fas fa-trophy me-2"></i> 创建打榜赛</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">比赛标题</label>
+            <input type="text" class="form-control" name="title" required maxlength="255" placeholder="例如：2026 春季数值优化打榜赛">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">满分</label>
+            <input type="number" class="form-control" name="max_score" value="100" min="1" max="100000">
+            <div class="form-text">默认 100 分。</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">赛事描述（支持 Markdown）</label>
+            <textarea class="form-control" name="description" rows="6" placeholder="简介、规则、数据说明……"></textarea>
+          </div>
+          <div class="alert alert-secondary small mb-0">
+            创建后，请在比赛详情页的 <strong>编辑比赛</strong> 标签中上传标准答案、评测脚本与附件。
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-outline-primary"><i class="fas fa-check me-1"></i> 创建</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

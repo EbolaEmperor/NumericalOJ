@@ -1,0 +1,493 @@
+{% extends "layout.html" %}
+{% block title %}{{ competition.title }} - 打榜赛 - {{ super() }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center flex-wrap mb-3">
+  <div>
+    <a href="{{ url_for('ranking.ranking_list') }}" class="text-decoration-none me-2">
+      <i class="fas fa-arrow-left me-1"></i> 打榜赛列表
+    </a>
+    <h3 class="d-inline-block mb-0 ms-2">
+      <i class="fas fa-trophy text-warning me-2"></i>{{ competition.title }}
+      {% if competition.is_active != 1 %}
+        <span class="badge bg-secondary ms-1">已下线</span>
+      {% endif %}
+    </h3>
+  </div>
+  <div class="text-muted small">
+    满分 {{ competition.max_score or 100 }} · 创建于 {{ competition.created_at }}
+  </div>
+</div>
+
+<div class="row">
+  <!-- 左侧边栏 -->
+  <div class="col-md-3 col-lg-2 mb-3">
+    <div class="list-group sticky-top" style="top: 1rem;">
+      <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='description') }}"
+         class="list-group-item list-group-item-action {% if tab == 'description' %}active{% endif %}">
+        <i class="fas fa-file-alt me-2"></i> 比赛描述
+      </a>
+      <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='submit') }}"
+         class="list-group-item list-group-item-action {% if tab == 'submit' %}active{% endif %}">
+        <i class="fas fa-paper-plane me-2"></i> 提交作品
+      </a>
+      <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='leaderboard') }}"
+         class="list-group-item list-group-item-action {% if tab == 'leaderboard' %}active{% endif %}">
+        <i class="fas fa-list-ol me-2"></i> 排行榜
+      </a>
+      {% if is_admin %}
+      <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='all_submissions') }}"
+         class="list-group-item list-group-item-action {% if tab == 'all_submissions' %}active{% endif %}">
+        <i class="fas fa-clipboard-list me-2"></i> 所有提交
+      </a>
+      <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='edit') }}"
+         class="list-group-item list-group-item-action {% if tab == 'edit' %}active{% endif %}">
+        <i class="fas fa-pencil-alt me-2"></i> 编辑比赛
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- 右侧内容 -->
+  <div class="col-md-9 col-lg-10">
+
+    {# ========== 比赛描述 ========== #}
+    {% if tab == 'description' %}
+      <div class="card mb-3">
+        <div class="card-header">
+          <i class="fas fa-file-alt me-2"></i> 比赛描述
+        </div>
+        <div class="card-body">
+          {% if rendered_description %}
+            <div class="ranking-description">{{ rendered_description|safe }}</div>
+          {% else %}
+            <p class="text-muted mb-0">暂无比赛描述。</p>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <div><i class="fas fa-paperclip me-2"></i> 相关文件</div>
+          <div class="text-muted small">
+            {% if files %}共 {{ files|length }} 个文件{% else %}暂无附件{% endif %}
+          </div>
+        </div>
+        <div class="list-group list-group-flush">
+          {% if not files %}
+            <div class="list-group-item text-muted">当前没有可下载的附件。</div>
+          {% else %}
+            {% for f in files %}
+              <div class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                  <i class="fas fa-file me-2"></i>{{ f.filename }}
+                  <small class="text-muted ms-2">{{ (f.file_size or 0) // 1024 }} KB · {{ f.uploaded_at }}</small>
+                </div>
+                <a href="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
+                   class="btn btn-sm btn-outline-primary">
+                  <i class="fas fa-download me-1"></i> 下载
+                </a>
+              </div>
+            {% endfor %}
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
+
+    {# ========== 提交作品 ========== #}
+    {% if tab == 'submit' %}
+      <div class="card mb-3">
+        <div class="card-header">
+          <i class="fas fa-paper-plane me-2"></i> 提交作品
+        </div>
+        <div class="card-body">
+          {% if competition.is_active != 1 %}
+            <div class="alert alert-warning mb-0">
+              <i class="fas fa-exclamation-triangle me-2"></i>该比赛已下线，无法提交。
+            </div>
+          {% else %}
+            <form method="POST" enctype="multipart/form-data"
+                  action="{{ url_for('ranking.ranking_submit', competition_id=competition.id) }}">
+              <div class="mb-3">
+                <label class="form-label">
+                  <i class="fas fa-code me-2"></i>答案文件（.json）
+                </label>
+                <input type="file" class="form-control" name="answer_file" accept=".json" required>
+                <div class="form-text">上传您跑出的测试集答案 JSON，后台将据此评测打分。</div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">
+                  <i class="fas fa-file-archive me-2"></i>代码文件（.zip）
+                </label>
+                <input type="file" class="form-control" name="code_file" accept=".zip" required>
+                <div class="form-text">包含用于复现结果的代码及说明文档。仅存档，不参与评测。</div>
+              </div>
+              <button type="submit" class="btn btn-outline-primary">
+                <i class="fas fa-paper-plane me-2"></i> 提交评测
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <div><i class="fas fa-history me-2"></i> 我的历史提交</div>
+          <div class="text-muted small">共 {{ user_submissions|length }} 次</div>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th style="width: 80px;">#</th>
+                <th>提交时间</th>
+                <th>答案文件</th>
+                <th>代码文件</th>
+                <th style="width: 110px;">状态</th>
+                <th style="width: 100px;" class="text-end">得分</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if not user_submissions %}
+                <tr><td colspan="6" class="text-muted text-center py-4">暂无提交记录。</td></tr>
+              {% else %}
+                {% for s in user_submissions %}
+                  <tr>
+                    <td>#{{ s.id }}</td>
+                    <td>{{ s.created_at }}</td>
+                    <td>
+                      {% if s.answer_filename %}
+                        <a href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}" class="text-decoration-none">
+                          <i class="fas fa-file-code me-1"></i>{{ s.answer_filename }}
+                        </a>
+                      {% else %}<span class="text-muted">-</span>{% endif %}
+                    </td>
+                    <td>
+                      {% if s.code_filename %}
+                        <a href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" class="text-decoration-none">
+                          <i class="fas fa-file-archive me-1"></i>{{ s.code_filename }}
+                        </a>
+                      {% else %}<span class="text-muted">-</span>{% endif %}
+                    </td>
+                    <td>
+                      {% if s.status == 'Accepted' %}
+                        <span class="badge bg-success">{{ s.status }}</span>
+                      {% elif s.status == 'Judging' or s.status == 'Pending' %}
+                        <span class="badge bg-info text-dark">{{ s.status }}</span>
+                      {% elif s.status == 'Error' %}
+                        <span class="badge bg-danger">{{ s.status }}</span>
+                      {% else %}
+                        <span class="badge bg-secondary">{{ s.status }}</span>
+                      {% endif %}
+                    </td>
+                    <td class="text-end">
+                      {% if s.score is not none %}
+                        <strong>{{ '%.2f'|format(s.score) }}</strong>
+                      {% else %}
+                        <span class="text-muted">--</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% endif %}
+
+    {# ========== 排行榜 ========== #}
+    {% if tab == 'leaderboard' %}
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <div><i class="fas fa-list-ol me-2"></i> 排行榜</div>
+          <div class="text-muted small">取每位用户的历史最高分；同分并列。</div>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th style="width: 80px;">排名</th>
+                <th>用户名</th>
+                <th style="width: 120px;" class="text-end">最高分</th>
+                <th style="width: 120px;" class="text-end">提交次数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if not leaderboard %}
+                <tr><td colspan="4" class="text-muted text-center py-4">暂无有效成绩。</td></tr>
+              {% else %}
+                {% for row in leaderboard %}
+                  <tr>
+                    <td>
+                      {% if row.rank == 1 %}
+                        <span class="badge bg-warning text-dark"><i class="fas fa-medal me-1"></i>{{ row.rank }}</span>
+                      {% elif row.rank == 2 %}
+                        <span class="badge bg-secondary"><i class="fas fa-medal me-1"></i>{{ row.rank }}</span>
+                      {% elif row.rank == 3 %}
+                        <span class="badge" style="background-color:#cd7f32;color:#fff;"><i class="fas fa-medal me-1"></i>{{ row.rank }}</span>
+                      {% else %}
+                        <span>{{ row.rank }}</span>
+                      {% endif %}
+                    </td>
+                    <td>{{ row.username }}</td>
+                    <td class="text-end"><strong>{{ '%.2f'|format(row.best_score) }}</strong></td>
+                    <td class="text-end text-muted">{{ row.submission_count }}</td>
+                  </tr>
+                {% endfor %}
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% endif %}
+
+    {# ========== 所有提交（管理员） ========== #}
+    {% if tab == 'all_submissions' and is_admin %}
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <div><i class="fas fa-clipboard-list me-2"></i> 所有提交</div>
+          <div class="text-muted small">共 {{ all_submissions|length }} 条</div>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+              <tr>
+                <th style="width: 80px;">#</th>
+                <th>用户</th>
+                <th>提交时间</th>
+                <th>答案文件</th>
+                <th>代码文件</th>
+                <th style="width: 110px;">状态</th>
+                <th style="width: 100px;" class="text-end">得分</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if not all_submissions %}
+                <tr><td colspan="7" class="text-muted text-center py-4">暂无提交记录。</td></tr>
+              {% else %}
+                {% for s in all_submissions %}
+                  <tr>
+                    <td>#{{ s.id }}</td>
+                    <td>{{ s.username }}</td>
+                    <td>{{ s.created_at }}</td>
+                    <td>
+                      {% if s.answer_filename %}
+                        <a href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}" class="text-decoration-none">
+                          <i class="fas fa-file-code me-1"></i>{{ s.answer_filename }}
+                        </a>
+                      {% else %}<span class="text-muted">-</span>{% endif %}
+                    </td>
+                    <td>
+                      {% if s.code_filename %}
+                        <a href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" class="text-decoration-none">
+                          <i class="fas fa-file-archive me-1"></i>{{ s.code_filename }}
+                        </a>
+                      {% else %}<span class="text-muted">-</span>{% endif %}
+                    </td>
+                    <td>
+                      {% if s.status == 'Accepted' %}
+                        <span class="badge bg-success">{{ s.status }}</span>
+                      {% elif s.status == 'Judging' or s.status == 'Pending' %}
+                        <span class="badge bg-info text-dark">{{ s.status }}</span>
+                      {% elif s.status == 'Error' %}
+                        <span class="badge bg-danger">{{ s.status }}</span>
+                      {% else %}
+                        <span class="badge bg-secondary">{{ s.status }}</span>
+                      {% endif %}
+                    </td>
+                    <td class="text-end">
+                      {% if s.score is not none %}
+                        <strong>{{ '%.2f'|format(s.score) }}</strong>
+                      {% else %}
+                        <span class="text-muted">--</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% endif %}
+
+    {# ========== 编辑比赛（管理员） ========== #}
+    {% if tab == 'edit' and is_admin %}
+      <!-- 基本信息 -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="fas fa-pencil-alt me-2"></i> 基本信息</div>
+        <div class="card-body">
+          <form method="POST" action="{{ url_for('ranking.ranking_edit', competition_id=competition.id) }}">
+            <div class="mb-3">
+              <label class="form-label">标题</label>
+              <input type="text" class="form-control" name="title" value="{{ competition.title }}" required maxlength="255">
+            </div>
+            <div class="row mb-3">
+              <div class="col-md-4">
+                <label class="form-label">满分</label>
+                <input type="number" class="form-control" name="max_score" value="{{ competition.max_score or 100 }}" min="1" max="100000">
+              </div>
+              <div class="col-md-4 d-flex align-items-end">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="is_active_switch" name="is_active" value="1" {% if competition.is_active == 1 %}checked{% endif %}>
+                  <label class="form-check-label" for="is_active_switch">对用户公开（上线）</label>
+                </div>
+              </div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">赛事描述（支持 Markdown）</label>
+              <textarea class="form-control" name="description" rows="10">{{ competition.description or '' }}</textarea>
+            </div>
+            <button type="submit" class="btn btn-outline-primary">
+              <i class="fas fa-save me-1"></i> 保存基本信息
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- 标准答案 -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="fas fa-key me-2"></i> 标准答案（.json）</div>
+        <div class="card-body">
+          <div class="mb-3">
+            <strong>当前文件：</strong>
+            {% if competition.reference_answer_name %}
+              <span class="text-success"><i class="fas fa-check-circle me-1"></i>{{ competition.reference_answer_name }}</span>
+            {% else %}
+              <span class="text-danger"><i class="fas fa-times-circle me-1"></i>尚未上传，用户提交将无法评测。</span>
+            {% endif %}
+          </div>
+          <form method="POST" enctype="multipart/form-data"
+                action="{{ url_for('ranking.ranking_upload_reference', competition_id=competition.id) }}">
+            <div class="mb-3">
+              <input type="file" class="form-control" name="reference" accept=".json" required>
+            </div>
+            <button type="submit" class="btn btn-outline-primary">
+              <i class="fas fa-cloud-upload-alt me-1"></i> 上传并替换
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- 评测脚本 -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="fas fa-scroll me-2"></i> 评测脚本（.py，可选）</div>
+        <div class="card-body">
+          <div class="mb-3">
+            <strong>当前脚本：</strong>
+            {% if competition.scoring_script_name %}
+              <span class="text-success"><i class="fas fa-check-circle me-1"></i>{{ competition.scoring_script_name }}</span>
+            {% else %}
+              <span class="text-muted">未上传，使用默认 JSON 对比（数值容差 1e-6）打分。</span>
+            {% endif %}
+          </div>
+          <form method="POST" enctype="multipart/form-data" class="mb-3"
+                action="{{ url_for('ranking.ranking_upload_scoring_script', competition_id=competition.id) }}">
+            <div class="mb-3">
+              <input type="file" class="form-control" name="scoring_script" accept=".py" required>
+            </div>
+            <button type="submit" class="btn btn-outline-primary">
+              <i class="fas fa-cloud-upload-alt me-1"></i> 上传并替换
+            </button>
+          </form>
+          {% if competition.scoring_script_name %}
+          <form method="POST"
+                action="{{ url_for('ranking.ranking_clear_scoring_script', competition_id=competition.id) }}"
+                onsubmit="return confirm('确认清除评测脚本？之后将使用默认评分器。');">
+            <button type="submit" class="btn btn-outline-danger btn-sm">
+              <i class="fas fa-trash me-1"></i> 清除评测脚本
+            </button>
+          </form>
+          {% endif %}
+          <div class="mt-3 small text-muted">
+            脚本约定：<code>python &lt;script&gt; &lt;user_answer.json&gt; &lt;reference.json&gt; &lt;max_score&gt;</code>，
+            在 stdout 打印 JSON <code>{"score": &lt;number&gt;, "details": &lt;可选对象或字符串&gt;}</code>。超时 120 秒。
+          </div>
+        </div>
+      </div>
+
+      <!-- 附件 -->
+      <div class="card mb-3">
+        <div class="card-header"><i class="fas fa-paperclip me-2"></i> 附件</div>
+        <div class="card-body">
+          <form method="POST" enctype="multipart/form-data" class="mb-3"
+                action="{{ url_for('ranking.ranking_upload_attachment', competition_id=competition.id) }}">
+            <div class="row g-2">
+              <div class="col">
+                <input type="file" class="form-control" name="attachment" required>
+              </div>
+              <div class="col-auto">
+                <button type="submit" class="btn btn-outline-primary">
+                  <i class="fas fa-cloud-upload-alt me-1"></i> 上传附件
+                </button>
+              </div>
+            </div>
+          </form>
+          {% if not files %}
+            <p class="text-muted mb-0">暂无附件。</p>
+          {% else %}
+            <div class="list-group">
+              {% for f in files %}
+                <div class="list-group-item d-flex justify-content-between align-items-center">
+                  <div>
+                    <i class="fas fa-file me-2"></i>{{ f.filename }}
+                    <small class="text-muted ms-2">{{ (f.file_size or 0) // 1024 }} KB · {{ f.uploaded_at }}</small>
+                  </div>
+                  <div>
+                    <a href="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
+                       class="btn btn-sm btn-outline-primary me-1">
+                      <i class="fas fa-download"></i>
+                    </a>
+                    <form method="POST" class="d-inline"
+                          action="{{ url_for('ranking.ranking_delete_attachment', competition_id=competition.id, file_id=f.id) }}"
+                          onsubmit="return confirm('删除附件：{{ f.filename }} ?');">
+                      <button type="submit" class="btn btn-sm btn-outline-danger">
+                        <i class="fas fa-trash"></i>
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- 危险区 -->
+      <div class="card border-danger">
+        <div class="card-header text-danger"><i class="fas fa-exclamation-triangle me-2"></i> 危险操作</div>
+        <div class="card-body">
+          <form method="POST"
+                action="{{ url_for('ranking.ranking_delete', competition_id=competition.id) }}"
+                onsubmit="return confirm('删除后将同时清除比赛的全部提交与附件，且无法恢复。确认删除 {{ competition.title }} 吗？');">
+            <button type="submit" class="btn btn-outline-danger">
+              <i class="fas fa-trash me-1"></i> 删除比赛
+            </button>
+          </form>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<style>
+  .ranking-description {
+    line-height: 1.7;
+  }
+  .ranking-description pre {
+    background: #f8f9fa;
+    padding: 0.75rem 1rem;
+    border-radius: 0.375rem;
+  }
+  .ranking-description table {
+    border-collapse: collapse;
+    margin: 0.5rem 0;
+  }
+  .ranking-description table th,
+  .ranking-description table td {
+    border: 1px solid #dee2e6;
+    padding: 0.4rem 0.75rem;
+  }
+</style>
+{% endblock %}
