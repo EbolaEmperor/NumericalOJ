@@ -25,6 +25,7 @@ from oj_modules.ranking_db import (
     create_ranking_submission,
     delete_competition,
     delete_competition_file,
+    delete_ranking_submission,
     get_competition,
     get_competition_file,
     get_leaderboard,
@@ -585,3 +586,28 @@ def download_submission_code(submission_id):
         as_attachment=True,
         download_name=sub.get('code_filename') or os.path.basename(path),
     )
+
+
+@ranking_bp.route('/<int:competition_id>/submission/<int:submission_id>/delete', methods=['POST'])
+def ranking_delete_submission(competition_id, submission_id):
+    """管理员删除一条提交记录及其存档文件。
+
+    排行榜由 MAX(score) 动态聚合，删除本条后下一次渲染即自动反映受影响用户的新最高分。
+    """
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    sub = get_ranking_submission(submission_id)
+    if not sub or sub.get('competition_id') != competition_id:
+        flash('提交记录不存在', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
+
+    username = sub.get('username') or ''
+    # 清理磁盘上的答案 + 代码文件
+    target_dir = submission_dir(submission_id)
+    if os.path.isdir(target_dir):
+        shutil.rmtree(target_dir, ignore_errors=True)
+    # 删除数据库行
+    delete_ranking_submission(submission_id)
+    flash(f'已删除提交 #{submission_id}（用户 {username}）；该用户最高分与排行榜已随之更新。', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
