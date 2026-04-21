@@ -37,6 +37,7 @@ def ensure_ranking_tables():
                 CREATE TABLE IF NOT EXISTS ranking_competitions (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     title VARCHAR(255) NOT NULL,
+                    summary VARCHAR(500) DEFAULT NULL,
                     description MEDIUMTEXT,
                     reference_answer_path VARCHAR(512) DEFAULT NULL,
                     reference_answer_name VARCHAR(255) DEFAULT NULL,
@@ -51,6 +52,12 @@ def ensure_ranking_tables():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            # 兼容：为已存在的老表补加 summary 列
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'summary'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions ADD COLUMN summary VARCHAR(500) DEFAULT NULL AFTER title"
+                )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ranking_competition_files (
@@ -101,7 +108,7 @@ def list_competitions(include_inactive=False):
             if include_inactive:
                 cursor.execute(
                     """
-                    SELECT c.id, c.title, c.description, c.max_score, c.is_active,
+                    SELECT c.id, c.title, c.summary, c.description, c.max_score, c.is_active,
                            c.created_by, c.created_at, c.updated_at,
                            (SELECT COUNT(*) FROM ranking_submissions s WHERE s.competition_id = c.id) AS submission_count,
                            (SELECT COUNT(DISTINCT s.username) FROM ranking_submissions s WHERE s.competition_id = c.id) AS participant_count
@@ -112,7 +119,7 @@ def list_competitions(include_inactive=False):
             else:
                 cursor.execute(
                     """
-                    SELECT c.id, c.title, c.description, c.max_score, c.is_active,
+                    SELECT c.id, c.title, c.summary, c.description, c.max_score, c.is_active,
                            c.created_by, c.created_at, c.updated_at,
                            (SELECT COUNT(*) FROM ranking_submissions s WHERE s.competition_id = c.id) AS submission_count,
                            (SELECT COUNT(DISTINCT s.username) FROM ranking_submissions s WHERE s.competition_id = c.id) AS participant_count
@@ -133,7 +140,7 @@ def get_competition(competition_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, title, description, reference_answer_path, reference_answer_name,
+                SELECT id, title, summary, description, reference_answer_path, reference_answer_name,
                        scoring_script_path, scoring_script_name, max_score, is_active,
                        created_by, created_at, updated_at
                 FROM ranking_competitions
@@ -146,17 +153,17 @@ def get_competition(competition_id):
         conn.close()
 
 
-def create_competition(title, description, max_score, created_by):
+def create_competition(title, description, max_score, created_by, summary=None):
     ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO ranking_competitions (title, description, max_score, created_by)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO ranking_competitions (title, summary, description, max_score, created_by)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (title, description or '', int(max_score or 100), created_by),
+                (title, (summary or None), description or '', int(max_score or 100), created_by),
             )
             new_id = cursor.lastrowid
         conn.commit()
@@ -165,13 +172,16 @@ def create_competition(title, description, max_score, created_by):
         conn.close()
 
 
-def update_competition(competition_id, *, title=None, description=None, max_score=None, is_active=None):
+def update_competition(competition_id, *, title=None, summary=None, description=None, max_score=None, is_active=None):
     ensure_ranking_tables()
     fields = []
     params = []
     if title is not None:
         fields.append("title = %s")
         params.append(title)
+    if summary is not None:
+        fields.append("summary = %s")
+        params.append(summary or None)
     if description is not None:
         fields.append("description = %s")
         params.append(description)
