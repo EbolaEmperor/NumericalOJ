@@ -19,10 +19,12 @@ from oj_modules.db_services import (
     get_agent_run_by_task_id,
     get_agent_runs_paginated,
     get_db_connection,
+    get_last_10_days_counts_from_counter,
     get_latest_written_submission,
     get_problem,
     get_remaining_submissions,
     get_submission_summaries_by_user_and_problem,
+    get_today_submission_total_from_counter,
     get_user_classes,
     get_user_by_username,
     increment_submission_count,
@@ -38,18 +40,10 @@ _evaluate_submission_task = None
 _transcribe_written_homework_task = None
 _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
-_DASHBOARD_STATS_CACHE_TTL_SECONDS = 15
 _USER_CLASSES_CACHE_TTL_SECONDS = 30
 _HOMEWORKS_CACHE_TTL_SECONDS = 10
 _CLASS_GRADES_CACHE_TTL_SECONDS = 20
 _USER_CACHE_TTL_SECONDS = 30
-_dashboard_stats_cache = {
-    "expires_at": 0.0,
-    "total_submissions": 0,
-    "total_accepted": 0,
-    "last_10_days": [],
-    "daily_counts": [],
-}
 _user_classes_cache = {}
 _homeworks_cache = {}
 _class_grades_cache = {}
@@ -432,6 +426,14 @@ def get_homeworks_for_class(user_id, class_en):
 
 
 def get_today_submission_counts():
+    """返回 (total_submissions, total_accepted)。
+
+    total_submissions 走 daily_submission_stats 计数表（含 programming + ranking 两类提交）。
+    total_accepted 仍直接查 submissions 表（仅 programming），单日范围 + idx_submissions_created_status，
+    本身已经很快，没必要也搬到计数表。
+    """
+    total_submissions = get_today_submission_total_from_counter()
+
     today_start = datetime.combine(datetime.today().date(), datetime.min.time())
     tomorrow_start = today_start + timedelta(days=1)
     conn = get_db_connection()
@@ -439,74 +441,18 @@ def get_today_submission_counts():
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT
-                  COUNT(*) AS total_submissions,
-                  SUM(CASE WHEN status = 'Accepted' THEN 1 ELSE 0 END) AS total_accepted
+                SELECT COUNT(*) AS total_accepted
                 FROM submissions
                 WHERE created_at >= %s AND created_at < %s
+                  AND status = 'Accepted'
                 """,
                 (today_start, tomorrow_start),
             )
             row = cursor.fetchone() or {}
-            return int(row.get('total_submissions') or 0), int(row.get('total_accepted') or 0)
+            total_accepted = int(row.get('total_accepted') or 0)
     finally:
         conn.close()
-
-
-def get_last_10_days_submission_counts():
-    today = datetime.today().date()
-    range_start = datetime.combine(today + timedelta(days=-9), datetime.min.time())
-    range_end = datetime.combine(today + timedelta(days=1), datetime.min.time())
-    last_10_days = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(-9, 1)]
-    counts = {day: 0 for day in last_10_days}
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT DATE(created_at) AS day, COUNT(*) AS cnt
-                FROM submissions
-                WHERE created_at >= %s AND created_at < %s
-                GROUP BY DATE(created_at)
-                """,
-                (range_start, range_end),
-            )
-            for row in cursor.fetchall():
-                day_obj = row.get('day')
-                if hasattr(day_obj, 'strftime'):
-                    day_key = day_obj.strftime('%Y-%m-%d')
-                else:
-                    day_key = str(day_obj)
-                if day_key in counts:
-                    counts[day_key] = int(row.get('cnt') or 0)
-    finally:
-        conn.close()
-
-    return last_10_days, [counts[day] for day in last_10_days]
-
-
-def get_dashboard_submission_stats():
-    now_ts = time.time()
-    if now_ts < _dashboard_stats_cache["expires_at"]:
-        return (
-            _dashboard_stats_cache["total_submissions"],
-            _dashboard_stats_cache["total_accepted"],
-            _dashboard_stats_cache["last_10_days"],
-            _dashboard_stats_cache["daily_counts"],
-        )
-
-    total_submissions, total_accepted = get_today_submission_counts()
-    last_10_days, daily_counts = get_last_10_days_submission_counts()
-
-    _dashboard_stats_cache.update({
-        "expires_at": now_ts + _DASHBOARD_STATS_CACHE_TTL_SECONDS,
-        "total_submissions": total_submissions,
-        "total_accepted": total_accepted,
-        "last_10_days": last_10_days,
-        "daily_counts": daily_counts,
-    })
-    return total_submissions, total_accepted, last_10_days, daily_counts
+    return total_submissions, total_accepted
 
 
 def get_submissions_by_user_paginated(username, page=1, per_page=20):
@@ -562,7 +508,8 @@ def problem_list():
     if not user:
         return redirect(url_for('auth.login'))
 
-    total_submissions, total_accepted, last_10_days, daily_counts = get_dashboard_submission_stats()
+    total_submissions, total_accepted = get_today_submission_counts()
+    last_10_days, daily_counts = get_last_10_days_counts_from_counter()
 
     total_grade = 100
 

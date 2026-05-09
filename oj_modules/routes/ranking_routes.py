@@ -9,7 +9,7 @@ import shutil
 
 import markdown
 from flask import (
-    Blueprint, abort, flash, redirect, render_template, request,
+    Blueprint, abort, flash, jsonify, redirect, render_template, request,
     send_file, session, url_for,
 )
 from werkzeug.utils import secure_filename
@@ -30,10 +30,14 @@ from oj_modules.ranking_db import (
     get_competition_file,
     get_leaderboard,
     get_ranking_submission,
+    get_submission_stats,
+    init_submission_elo_state,
     list_all_submissions,
     list_competition_files,
     list_competitions,
+    list_elo_matches_for_submission,
     list_user_submissions,
+    retire_excess_user_submissions,
     submission_dir,
     update_competition,
     update_competition_reference_answer,
@@ -45,18 +49,67 @@ from oj_modules.ranking_db import (
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
 ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'all_submissions', 'edit')
+SUBMISSIONS_PER_PAGE = 50
 ANSWER_MAX_BYTES = 64 * 1024 * 1024        # 64MB
 CODE_ZIP_MAX_BYTES = 128 * 1024 * 1024     # 128MB
 ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024   # 256MB
 SCORING_SCRIPT_MAX_BYTES = 4 * 1024 * 1024 # 4MB
 REFERENCE_MAX_BYTES = 64 * 1024 * 1024     # 64MB
 
+ALLOWED_ANSWER_FORMATS = ('json', 'zip')
+ALLOWED_SCORING_MODES = ('absolute', 'elo')
+
+# ELO 参数取值范围
+ELO_INITIAL_RATING_RANGE = (100.0, 5000.0)
+ELO_K_FACTOR_RANGE = (1.0, 200.0)
+ELO_MAX_MATCHES_RANGE = (1, 10000)
+ELO_MATCH_INTERVAL_RANGE = (5, 3600)
+ELO_INITIAL_BURST_RANGE = (0, 50)
+SCORING_SCRIPT_TIMEOUT_RANGE = (5, 600)
+
+
+def _normalize_answer_format(value, default='json'):
+    fmt = str(value or '').strip().lower()
+    return fmt if fmt in ALLOWED_ANSWER_FORMATS else default
+
+
+def _competition_answer_format(comp):
+    return _normalize_answer_format((comp or {}).get('answer_format'))
+
+
+def _normalize_scoring_mode(value, default='absolute'):
+    mode = str(value or '').strip().lower()
+    return mode if mode in ALLOWED_SCORING_MODES else default
+
+
+def _competition_scoring_mode(comp):
+    return _normalize_scoring_mode((comp or {}).get('scoring_mode'))
+
+
+def _clamp(value, lo, hi):
+    if value is None:
+        return None
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+
+def _page_window(current_page, total_pages, radius=5):
+    start = max(1, current_page - radius)
+    end = min(total_pages, current_page + radius)
+    return list(range(start, end + 1))
+
+
 _evaluate_ranking_task = None
+_elo_initial_burst_task = None
 
 
-def init_ranking_module(evaluate_ranking_task):
-    global _evaluate_ranking_task
+def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None):
+    global _evaluate_ranking_task, _elo_initial_burst_task
     _evaluate_ranking_task = evaluate_ranking_task
+    _elo_initial_burst_task = elo_initial_burst_task
 
 
 def _current_user():
@@ -174,18 +227,36 @@ def ranking_detail(competition_id):
         tab = 'description'
 
     files = list_competition_files(competition_id)
-    rendered_description = _render_description(comp.get('description') or '')
+    # markdown 解析仅在「比赛说明」标签下做；其它标签传空串避免每次切换都要解析一遍。
+    rendered_description = (
+        _render_description(comp.get('description') or '') if tab == 'description' else ''
+    )
 
     user_submissions = []
     all_submissions = []
     leaderboard = []
+    submission_stats = None
+    current_page = 1
+    total_pages = 1
+    page_numbers = []
+    submission_search_q = ''
 
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
     elif tab == 'leaderboard':
         leaderboard = get_leaderboard(competition_id)
     elif tab == 'all_submissions':
-        all_submissions = list_all_submissions(competition_id)
+        submission_search_q = (request.args.get('q') or '').strip()[:50]
+        requested_page = max(1, request.args.get('page', 1, type=int))
+        all_submissions, current_page, total_filtered = list_all_submissions(
+            competition_id,
+            page=requested_page,
+            per_page=SUBMISSIONS_PER_PAGE,
+            username_q=submission_search_q or None,
+        )
+        total_pages = max(1, (total_filtered + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
+        page_numbers = _page_window(current_page, total_pages)
+        submission_stats = get_submission_stats(competition_id)
 
     return render_template(
         'ranking_detail.html',
@@ -198,7 +269,68 @@ def ranking_detail(competition_id):
         user_submissions=user_submissions,
         all_submissions=all_submissions,
         leaderboard=leaderboard,
+        submission_stats=submission_stats,
+        current_page=current_page,
+        total_pages=total_pages,
+        page_numbers=page_numbers,
+        submission_search_q=submission_search_q,
+        submissions_per_page=SUBMISSIONS_PER_PAGE,
     )
+
+
+# ---------- 所有提交（管理员）异步分页 / 搜索 API ----------
+
+@ranking_bp.route('/<int:competition_id>/submissions_json', methods=['GET'])
+def ranking_submissions_json(competition_id):
+    """供「所有提交」标签页的分页与按用户名搜索使用的 AJAX 端点。
+
+    返回 ``rows_html`` / ``pagination_html`` 两段已渲染好的 HTML，由前端直接替换 DOM 内容；
+    服务端是 row 模板的唯一真理源，避免前后端再写一遍。
+    """
+    user = _current_user()
+    if not user:
+        return jsonify({'error': 'unauthorized'}), 401
+    if user.get('is_admin') != 1:
+        return jsonify({'error': 'forbidden'}), 403
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify({'error': 'not_found'}), 404
+
+    q = (request.args.get('q') or '').strip()[:50]
+    requested_page = max(1, request.args.get('page', 1, type=int))
+    per_page = SUBMISSIONS_PER_PAGE
+    rows, page, total = list_all_submissions(
+        competition_id,
+        page=requested_page,
+        per_page=per_page,
+        username_q=q or None,
+    )
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page_numbers = _page_window(page, total_pages)
+
+    is_elo = (str(comp.get('scoring_mode') or 'absolute').lower() == 'elo')
+    max_score = comp.get('max_score') or 100
+
+    rows_html = render_template(
+        '_ranking_submission_rows.html',
+        all_submissions=rows,
+        competition=comp,
+        is_elo=is_elo,
+        max_score=max_score,
+    )
+    pagination_html = render_template(
+        '_ranking_submission_pagination.html',
+        competition=comp,
+        current_page=page,
+        total_pages=total_pages,
+        page_numbers=page_numbers,
+        submission_search_q=q,
+    )
+    return jsonify({
+        'rows_html': rows_html,
+        'pagination_html': pagination_html,
+        'page': page,
+    })
 
 
 # ---------- 用户提交作品 ----------
@@ -217,10 +349,34 @@ def ranking_submit(competition_id):
         flash('该比赛未开放', 'warning')
         return redirect(url_for('ranking.ranking_list'))
 
+    answer_format = _competition_answer_format(comp)
+    answer_ext = '.' + answer_format
+    scoring_mode = _competition_scoring_mode(comp)
+    has_script = bool((comp.get('scoring_script_path') or '').strip())
+
+    base_model_raw = (request.form.get('base_model') or '').strip()
+    if not base_model_raw:
+        flash('请填写基座模型（多个用逗号分隔，例如：deepseek-v4-pro, qwen3.6-plus）', 'danger')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+    if len(base_model_raw) > 500:
+        flash('基座模型字段过长（不超过 500 字）', 'danger')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+    base_model = base_model_raw
+
+    # ZIP 模式必须配套自定义评测脚本（默认 JSON 评分器无法处理 zip）
+    if scoring_mode == 'absolute' and answer_format == 'zip' and not has_script:
+        flash('该比赛答案格式为 ZIP 但管理员尚未上传评测脚本，暂时无法提交。', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+
+    # ELO 模式必须配套评测脚本（用于两两比较）
+    if scoring_mode == 'elo' and not has_script:
+        flash('该比赛为 ELO 评分模式，但管理员尚未上传评测脚本，暂时无法接收提交。', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+
     answer_file = request.files.get('answer_file')
     code_file = request.files.get('code_file')
     if not answer_file or not (answer_file.filename or '').strip():
-        flash('请上传答案文件（.json）', 'danger')
+        flash(f'请上传答案文件（{answer_ext}）', 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
     if not code_file or not (code_file.filename or '').strip():
         flash('请上传代码文件（.zip）', 'danger')
@@ -228,8 +384,8 @@ def ranking_submit(competition_id):
 
     answer_name_raw = answer_file.filename
     code_name_raw = code_file.filename
-    if not answer_name_raw.lower().endswith('.json'):
-        flash('答案文件必须是 .json', 'danger')
+    if not answer_name_raw.lower().endswith(answer_ext):
+        flash(f'答案文件必须是 {answer_ext}', 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
     if not code_name_raw.lower().endswith('.zip'):
         flash('代码文件必须是 .zip', 'danger')
@@ -239,9 +395,9 @@ def ranking_submit(competition_id):
     target_dir = submission_dir(submission_id)
     _ensure_dir(target_dir)
 
-    answer_name = _safe_filename(answer_name_raw, fallback='answer.json')
-    if not answer_name.lower().endswith('.json'):
-        answer_name += '.json'
+    answer_name = _safe_filename(answer_name_raw, fallback=f'answer{answer_ext}')
+    if not answer_name.lower().endswith(answer_ext):
+        answer_name += answer_ext
     code_name = _safe_filename(code_name_raw, fallback='code.zip')
     if not code_name.lower().endswith('.zip'):
         code_name += '.zip'
@@ -265,17 +421,30 @@ def ranking_submit(competition_id):
         flash(str(e), 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
-    update_submission_files(submission_id, answer_name, answer_path, code_name, code_path)
+    update_submission_files(submission_id, answer_name, answer_path, code_name, code_path, base_model=base_model)
 
-    if _evaluate_ranking_task is None:
-        flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
+    if scoring_mode == 'elo':
+        # 初始化 ELO 状态、退役同用户更早提交、调度即时补战
+        initial_rating = float(comp.get('elo_initial_rating') or 1500)
+        init_submission_elo_state(submission_id, initial_rating)
+        retire_excess_user_submissions(competition_id, user.get('username'), keep_count=2)
+        if _elo_initial_burst_task is not None:
+            try:
+                _elo_initial_burst_task.apply_async(
+                    args=[competition_id, submission_id], countdown=3,
+                )
+            except Exception as e:
+                flash(f'已加入 ELO 池，但即时补战入队失败：{e}', 'warning')
+        flash('提交成功，已加入 ELO 对战池，将与池中其他用户的提交两两 PK。', 'success')
     else:
-        try:
-            _evaluate_ranking_task.delay(submission_id)
-        except Exception as e:
-            flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
-
-    flash('提交成功，正在评测中', 'success')
+        if _evaluate_ranking_task is None:
+            flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
+        else:
+            try:
+                _evaluate_ranking_task.delay(submission_id)
+            except Exception as e:
+                flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
+        flash('提交成功，正在评测中', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
 
@@ -296,6 +465,14 @@ def ranking_edit(competition_id):
     description = request.form.get('description') or ''
     max_score_raw = request.form.get('max_score')
     is_active_raw = request.form.get('is_active')
+    answer_format_raw = request.form.get('answer_format')
+    scoring_mode_raw = request.form.get('scoring_mode')
+    elo_initial_rating_raw = request.form.get('elo_initial_rating')
+    elo_k_factor_raw = request.form.get('elo_k_factor')
+    elo_max_matches_raw = request.form.get('elo_max_matches')
+    elo_match_interval_raw = request.form.get('elo_match_interval_seconds')
+    elo_initial_burst_raw = request.form.get('elo_initial_burst')
+    script_timeout_raw = request.form.get('scoring_script_timeout_seconds')
 
     if not title:
         flash('标题不能为空', 'danger')
@@ -310,6 +487,54 @@ def ranking_edit(competition_id):
 
     is_active = 1 if (is_active_raw and str(is_active_raw).lower() in ('1', 'on', 'true', 'yes')) else 0
 
+    old_format = _competition_answer_format(comp)
+    new_format = _normalize_answer_format(answer_format_raw, default=old_format)
+    format_changed = (new_format != old_format)
+
+    old_mode = _competition_scoring_mode(comp)
+    new_mode = _normalize_scoring_mode(scoring_mode_raw, default=old_mode)
+    mode_changed = (new_mode != old_mode)
+
+    # 解析 ELO 参数（缺省继承当前值）
+    def _parse_float(raw, fallback, lo, hi):
+        try:
+            v = float(raw) if raw is not None and str(raw).strip() != '' else float(fallback)
+        except (TypeError, ValueError):
+            v = float(fallback)
+        return _clamp(v, lo, hi)
+
+    def _parse_int(raw, fallback, lo, hi):
+        try:
+            v = int(raw) if raw is not None and str(raw).strip() != '' else int(fallback)
+        except (TypeError, ValueError):
+            v = int(fallback)
+        return int(_clamp(v, lo, hi))
+
+    elo_initial_rating = _parse_float(
+        elo_initial_rating_raw, comp.get('elo_initial_rating') or 1500,
+        ELO_INITIAL_RATING_RANGE[0], ELO_INITIAL_RATING_RANGE[1],
+    )
+    elo_k_factor = _parse_float(
+        elo_k_factor_raw, comp.get('elo_k_factor') or 32,
+        ELO_K_FACTOR_RANGE[0], ELO_K_FACTOR_RANGE[1],
+    )
+    elo_max_matches = _parse_int(
+        elo_max_matches_raw, comp.get('elo_max_matches') or 200,
+        ELO_MAX_MATCHES_RANGE[0], ELO_MAX_MATCHES_RANGE[1],
+    )
+    elo_match_interval = _parse_int(
+        elo_match_interval_raw, comp.get('elo_match_interval_seconds') or 60,
+        ELO_MATCH_INTERVAL_RANGE[0], ELO_MATCH_INTERVAL_RANGE[1],
+    )
+    elo_initial_burst = _parse_int(
+        elo_initial_burst_raw, comp.get('elo_initial_burst') or 5,
+        ELO_INITIAL_BURST_RANGE[0], ELO_INITIAL_BURST_RANGE[1],
+    )
+    script_timeout = _parse_int(
+        script_timeout_raw, comp.get('scoring_script_timeout_seconds') or 120,
+        SCORING_SCRIPT_TIMEOUT_RANGE[0], SCORING_SCRIPT_TIMEOUT_RANGE[1],
+    )
+
     update_competition(
         competition_id,
         title=title,
@@ -317,8 +542,35 @@ def ranking_edit(competition_id):
         description=description,
         max_score=max_score_int,
         is_active=is_active,
+        answer_format=new_format,
+        scoring_mode=new_mode,
+        elo_initial_rating=elo_initial_rating,
+        elo_k_factor=elo_k_factor,
+        elo_max_matches=elo_max_matches,
+        elo_match_interval_seconds=elo_match_interval,
+        elo_initial_burst=elo_initial_burst,
+        scoring_script_timeout_seconds=script_timeout,
     )
-    flash('已保存比赛信息', 'success')
+
+    # 切换答案格式后，旧的标准答案文件后缀已不匹配新格式，自动清理以避免歧义
+    if format_changed:
+        old_ref = (comp.get('reference_answer_path') or '').strip()
+        if old_ref and os.path.isfile(old_ref):
+            try:
+                os.remove(old_ref)
+            except Exception:
+                pass
+        if comp.get('reference_answer_path') or comp.get('reference_answer_name'):
+            update_competition_reference_answer(competition_id, None, None)
+        flash(f'答案格式已切换为 {new_format.upper()}，请重新上传对应的标准答案文件。', 'warning')
+    if mode_changed:
+        flash(
+            f'评分模式已切换为 {"ELO 对战" if new_mode == "elo" else "绝对分"}。'
+            '请注意切换前后的提交记录可能因评分语义不同导致排行榜混合显示。',
+            'warning',
+        )
+    if not format_changed and not mode_changed:
+        flash('已保存比赛信息', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -439,21 +691,24 @@ def ranking_upload_reference(competition_id):
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
 
+    answer_format = _competition_answer_format(comp)
+    answer_ext = '.' + answer_format
+
     f = request.files.get('reference')
     if not f or not (f.filename or '').strip():
-        flash('请选择标准答案文件（.json）', 'danger')
+        flash(f'请选择标准答案文件（{answer_ext}）', 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
-    if not f.filename.lower().endswith('.json'):
-        flash('标准答案必须是 .json 文件', 'danger')
+    if not f.filename.lower().endswith(answer_ext):
+        flash(f'标准答案必须是 {answer_ext} 文件', 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
     target_dir = competition_reference_dir(competition_id)
     _ensure_dir(target_dir)
     # 清理旧的
     old_path = comp.get('reference_answer_path') or ''
-    safe_name = _safe_filename(f.filename, fallback='reference.json')
-    if not safe_name.lower().endswith('.json'):
-        safe_name += '.json'
+    safe_name = _safe_filename(f.filename, fallback=f'reference{answer_ext}')
+    if not safe_name.lower().endswith(answer_ext):
+        safe_name += answer_ext
     target_path = os.path.join(target_dir, safe_name)
     try:
         f.save(target_path)
@@ -538,7 +793,11 @@ def ranking_clear_scoring_script(competition_id):
         except Exception:
             pass
     update_competition_scoring_script(competition_id, None, None)
-    flash('已清除评测脚本（将使用默认 JSON 对比打分）', 'success')
+    fmt = _competition_answer_format(comp)
+    if fmt == 'zip':
+        flash('已清除评测脚本。当前答案格式为 ZIP，缺少脚本将导致用户无法提交，请尽快重新上传。', 'warning')
+    else:
+        flash('已清除评测脚本（将使用默认 JSON 对比打分）', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 

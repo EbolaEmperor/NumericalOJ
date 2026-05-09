@@ -3,8 +3,9 @@
 """
 打榜赛评测 Celery 任务。
 
-仅评测用户上传的答案 JSON 文件，不处理代码压缩包。
-若赛事配置了评测脚本，则以子进程运行脚本；否则使用默认的 JSON 数值对比打分。
+仅评测用户上传的答案文件（JSON 或 ZIP，由比赛配置 answer_format 决定），不处理代码压缩包。
+若赛事配置了评测脚本，则以子进程运行脚本（脚本拿到的是答案文件路径，类型不限）；
+否则仅 JSON 模式可用默认的数值对比打分，ZIP 模式必须配套自定义脚本。
 """
 
 import json
@@ -22,7 +23,7 @@ from oj_modules.ranking_db import (
 
 
 RANKING_EVALUATE_TASK_NAME = "oj.evaluate_ranking_submission"
-SCORING_SCRIPT_TIMEOUT_SECONDS = 120
+DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS = 120
 DEFAULT_NUMERIC_TOLERANCE = 1e-6
 
 
@@ -108,22 +109,23 @@ def _default_grade(user_answer, reference_answer, max_score):
     }
 
 
-def _run_scoring_script(script_path, user_answer_path, reference_answer_path, max_score):
+def _run_scoring_script(script_path, user_answer_path, reference_answer_path, max_score, timeout_seconds=None):
     """
     运行管理员提供的 python 评测脚本。约定：
         python <script> <user_answer_path> <reference_answer_path> <max_score>
     脚本需在 stdout 打印一行 JSON，形如：
         {"score": <number>, "details": <optional object/string>}
     """
+    timeout_s = int(timeout_seconds) if timeout_seconds else DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS
     try:
         proc = subprocess.run(
             [sys.executable, script_path, user_answer_path, reference_answer_path, str(max_score)],
             capture_output=True,
             text=True,
-            timeout=SCORING_SCRIPT_TIMEOUT_SECONDS,
+            timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f'评测脚本执行超时（>{SCORING_SCRIPT_TIMEOUT_SECONDS}s）')
+        raise RuntimeError(f'评测脚本执行超时（>{timeout_s}s）')
 
     if proc.returncode != 0:
         stderr = (proc.stderr or '').strip()[-2000:]
@@ -189,24 +191,40 @@ def _evaluate(submission_id):
         )
         return {'success': False, 'message': '赛事尚未配置标准答案'}
 
-    try:
-        user_answer = _load_json(answer_path)
-    except Exception as e:
-        update_submission_result(
-            submission_id, 0.0, 'Wrong Answer',
-            grade_details=None, error_message=f'用户答案 JSON 解析失败：{e}',
-        )
-        return {'success': False, 'message': '用户答案 JSON 解析失败'}
-
+    answer_format = str(competition.get('answer_format') or 'json').strip().lower()
+    if answer_format not in ('json', 'zip'):
+        answer_format = 'json'
     max_score = int(competition.get('max_score') or 100)
-
     scoring_script = competition.get('scoring_script_path')
+    has_script = bool(scoring_script and os.path.isfile(scoring_script))
+    script_timeout = int(competition.get('scoring_script_timeout_seconds')
+                         or DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS)
+
+    # ZIP 模式下默认 JSON 评分器无法工作，必须配套自定义脚本
+    if answer_format == 'zip' and not has_script:
+        update_submission_result(
+            submission_id, None, 'Error',
+            grade_details=None,
+            error_message='答案格式为 ZIP，但赛事尚未上传自定义评测脚本，无法评测。',
+        )
+        return {'success': False, 'message': 'ZIP 模式缺少自定义评测脚本'}
+
     try:
-        if scoring_script and os.path.isfile(scoring_script):
+        if has_script:
             score, details = _run_scoring_script(
                 scoring_script, answer_path, ref_path, max_score,
+                timeout_seconds=script_timeout,
             )
         else:
+            # 仅 JSON 模式会走到这里
+            try:
+                user_answer = _load_json(answer_path)
+            except Exception as e:
+                update_submission_result(
+                    submission_id, 0.0, 'Wrong Answer',
+                    grade_details=None, error_message=f'用户答案 JSON 解析失败：{e}',
+                )
+                return {'success': False, 'message': '用户答案 JSON 解析失败'}
             reference_answer = _load_json(ref_path)
             score, details = _default_grade(user_answer, reference_answer, max_score)
     except Exception as e:

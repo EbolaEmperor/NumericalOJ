@@ -67,8 +67,13 @@
                 <div class="ranking-stat-label"><i class="fas fa-paper-plane me-1"></i>提交</div>
               </div>
               <div class="ranking-stat">
-                <div class="ranking-stat-value">{{ comp.max_score or 100 }}</div>
-                <div class="ranking-stat-label"><i class="fas fa-star me-1"></i>满分</div>
+                {% if (comp.scoring_mode or 'absolute')|lower == 'elo' %}
+                  <div class="ranking-stat-value">ELO</div>
+                  <div class="ranking-stat-label"><i class="fas fa-chess-knight me-1"></i>动态评分</div>
+                {% else %}
+                  <div class="ranking-stat-value">{{ comp.max_score or 100 }}</div>
+                  <div class="ranking-stat-label"><i class="fas fa-star me-1"></i>满分</div>
+                {% endif %}
               </div>
             </div>
           </div>

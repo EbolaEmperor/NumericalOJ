@@ -13,6 +13,12 @@ from oj_modules.tasks.agent_tasks import (
 from oj_modules.tasks.repository_index_tasks import register_repository_index_build_task
 from oj_modules.tasks.ai_detection_tasks import register_ai_detection_tasks
 from oj_modules.tasks.ranking_evaluate_tasks import register_ranking_evaluate_task
+from oj_modules.tasks.ranking_elo_tasks import (
+    register_ranking_elo_match_task,
+    register_ranking_elo_initial_burst_task,
+    register_ranking_elo_matchmaker_tick_task,
+    seed_elo_matchmaker_tick,
+)
 
 __all__ = [
     "register_evaluate_submission_task",
@@ -22,6 +28,10 @@ __all__ = [
     "register_repository_index_build_task",
     "register_ai_detection_tasks",
     "register_ranking_evaluate_task",
+    "register_ranking_elo_match_task",
+    "register_ranking_elo_initial_burst_task",
+    "register_ranking_elo_matchmaker_tick_task",
+    "seed_elo_matchmaker_tick",
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",

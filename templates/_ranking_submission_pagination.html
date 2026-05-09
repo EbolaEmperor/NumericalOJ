@@ -1,0 +1,29 @@
+{# 分页控件片段。期望变量：competition, current_page, total_pages, page_numbers, submission_search_q #}
+{% if total_pages > 1 %}
+<nav aria-label="提交分页">
+  <ul class="pagination justify-content-center mb-0">
+    {% if current_page > 1 %}
+      <li class="page-item">
+        <a class="page-link" data-page="{{ current_page - 1 }}"
+           href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='all_submissions', page=current_page - 1, q=(submission_search_q or None)) }}">
+          &laquo; 上一页
+        </a>
+      </li>
+    {% endif %}
+    {% for p in page_numbers %}
+      <li class="page-item {% if p == current_page %}active{% endif %}">
+        <a class="page-link" data-page="{{ p }}"
+           href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='all_submissions', page=p, q=(submission_search_q or None)) }}">{{ p }}</a>
+      </li>
+    {% endfor %}
+    {% if current_page < total_pages %}
+      <li class="page-item">
+        <a class="page-link" data-page="{{ current_page + 1 }}"
+           href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='all_submissions', page=current_page + 1, q=(submission_search_q or None)) }}">
+          下一页 &raquo;
+        </a>
+      </li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}

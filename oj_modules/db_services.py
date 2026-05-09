@@ -4,6 +4,7 @@
 import atexit
 import json
 import queue
+import sys
 import threading
 import time
 
@@ -46,6 +47,7 @@ _problem_programming_mode_column_ready = False
 _problem_programming_model_column_ready = False
 _problem_programming_output_filename_column_ready = False
 _problem_programming_prompt_column_ready = False
+_daily_submission_stats_table_ready = False
 
 _QWEN_TEXT_MODEL_KEY = str(QWEN_TEXT_MODEL or "").strip().lower()
 _AI_TUTOR_MODEL_KEY = str(AI_TUTOR_MODEL or "").strip().lower()
@@ -1361,6 +1363,7 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
         if not subid:
             raise RuntimeError("create_submission: failed to get valid submission id")
         refresh_submission_status_snapshot(subid)
+        bump_daily_submission_count()
         return subid
     finally:
         conn.close()
@@ -2047,3 +2050,92 @@ def truncate_ai_detection_tasks():
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------- 每日提交计数器 ----------
+# 首页 "数据统计" 用的按日聚合表，避免每次都全表扫 submissions/ranking_submissions。
+# 写入路径：每条 programming / ranking 提交在 INSERT 之后调用 bump_daily_submission_count()。
+
+def ensure_daily_submission_stats_table():
+    global _daily_submission_stats_table_ready
+    if _daily_submission_stats_table_ready:
+        return
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_submission_stats (
+                    day DATE NOT NULL PRIMARY KEY,
+                    submissions_count INT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                          ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        conn.commit()
+        _daily_submission_stats_table_ready = True
+    finally:
+        conn.close()
+
+
+def bump_daily_submission_count():
+    """Best-effort：捕获所有异常并打印到 stderr，永不向调用方抛出，避免统计表问题阻塞提交写入。"""
+    try:
+        ensure_daily_submission_stats_table()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO daily_submission_stats (day, submissions_count) "
+                    "VALUES (CURDATE(), 1) "
+                    "ON DUPLICATE KEY UPDATE submissions_count = submissions_count + 1"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f'[daily_submission_stats] bump failed: {e}', file=sys.stderr)
+
+
+def get_today_submission_total_from_counter():
+    ensure_daily_submission_stats_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT submissions_count FROM daily_submission_stats WHERE day = CURDATE()"
+            )
+            row = cursor.fetchone()
+            return int((row or {}).get('submissions_count') or 0)
+    finally:
+        conn.close()
+
+
+def get_last_10_days_counts_from_counter():
+    """返回 ``(labels, counts)``：'YYYY-MM-DD' 字符串列表 + 对应整数；缺日补 0。"""
+    from datetime import date, timedelta
+
+    ensure_daily_submission_stats_table()
+    today = date.today()
+    days = [today + timedelta(days=i) for i in range(-9, 1)]
+    labels = [d.strftime('%Y-%m-%d') for d in days]
+    counts_map = {label: 0 for label in labels}
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT day, submissions_count FROM daily_submission_stats "
+                "WHERE day >= %s AND day <= %s",
+                (days[0], days[-1]),
+            )
+            for row in cursor.fetchall() or []:
+                day_obj = row.get('day')
+                key = day_obj.strftime('%Y-%m-%d') if hasattr(day_obj, 'strftime') else str(day_obj)
+                if key in counts_map:
+                    counts_map[key] = int(row.get('submissions_count') or 0)
+    finally:
+        conn.close()
+
+    return labels, [counts_map[label] for label in labels]

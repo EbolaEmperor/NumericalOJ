@@ -35,6 +35,10 @@ from oj_modules.tasks import (
     register_written_homework_task,
     register_ai_detection_tasks,
     register_ranking_evaluate_task,
+    register_ranking_elo_match_task,
+    register_ranking_elo_initial_burst_task,
+    register_ranking_elo_matchmaker_tick_task,
+    seed_elo_matchmaker_tick,
 )
 
 import redis
@@ -129,6 +133,9 @@ agent_generate_testdata = register_agent_generate_testdata_task(celery, evaluate
 build_repository_index = register_repository_index_build_task(celery)
 detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions = register_ai_detection_tasks(celery)
 evaluate_ranking_submission = register_ranking_evaluate_task(celery)
+ranking_elo_match = register_ranking_elo_match_task(celery)
+ranking_elo_initial_burst = register_ranking_elo_initial_burst_task(celery, ranking_elo_match)
+ranking_elo_matchmaker_tick = register_ranking_elo_matchmaker_tick_task(celery, ranking_elo_match)
 
 # 初始化重测模块（依赖 Celery、Redis、评测函数）
 init_rejudge_module(celery, rds, evaluate_submission)
@@ -145,8 +152,10 @@ init_problem_core_module(
 init_repository_index_module(build_repository_index)
 # 初始化 AI 检测模块（依赖 Celery 任务）
 init_ai_detection_module(detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions)
-# 初始化打榜赛模块（依赖 Celery 评测任务）
-init_ranking_module(evaluate_ranking_submission)
+# 初始化打榜赛模块（依赖 Celery 评测任务、ELO 即时补战任务）
+init_ranking_module(evaluate_ranking_submission, ranking_elo_initial_burst)
+# 启动 ELO 匹配 tick 链路（自调度，全局单链）
+seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds)
 # 初始化 agent 运行状态缓存（Redis）
