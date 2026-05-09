@@ -408,6 +408,12 @@
     {# ========== 排行榜 ========== #}
     {% if tab == 'leaderboard' %}
       {% set max_score = competition.max_score or 100 %}
+      {% if is_elo and competition.elo_running != 1 %}
+        <div class="alert alert-info d-flex align-items-center" role="alert">
+          <i class="fas fa-hourglass-half me-2"></i>
+          <span>动态评分尚未启动，请耐心等待……喵～</span>
+        </div>
+      {% endif %}
       <div class="card leaderboard-card">
         <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
           <div class="d-flex align-items-center">
@@ -730,6 +736,8 @@
                   var isElo = (sel.value === 'elo');
                   var blk = document.getElementById('eloParamsBlock');
                   if (blk) blk.style.display = isElo ? '' : 'none';
+                  var run = document.getElementById('eloRunControlBlock');
+                  if (run) run.style.display = isElo ? '' : 'none';
                   document.querySelectorAll('.absolute-only').forEach(function (el) {
                     el.style.display = isElo ? 'none' : '';
                   });
@@ -896,6 +904,47 @@
               {% endfor %}
             </div>
           {% endif %}
+        </div>
+      </div>
+
+      <!-- ELO 运行控制（仅 ELO 模式可见，跟随顶部模式选择实时切换） -->
+      {% set elo_running = (competition.elo_running == 1) %}
+      <div class="card mb-3" id="eloRunControlBlock"
+           {% if edit_mode != 'elo' %}style="display:none;"{% endif %}>
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="fas fa-toggle-on me-2"></i> 动态评分运行控制</span>
+          {% if elo_running %}
+            <span class="badge bg-success"><i class="fas fa-circle me-1"></i> 运行中</span>
+          {% else %}
+            <span class="badge bg-secondary"><i class="far fa-circle me-1"></i> 已停止</span>
+          {% endif %}
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">
+            动态评分启动后，全局匹配 tick 才会为本场赛事调度对战，新提交才会触发即时补战。
+            停止仅冻结分数变化，已有的 ELO 分数与对战历史保留；重置则清空对战历史并把池中提交分数恢复到初始分。
+          </p>
+          <div class="d-flex flex-wrap gap-2">
+            <form method="POST" class="m-0"
+                  action="{{ url_for('ranking.ranking_elo_start', competition_id=competition.id) }}">
+              <button type="submit" class="btn btn-success" {% if elo_running %}disabled title="已经在运行中"{% endif %}>
+                <i class="fas fa-play me-1"></i> 启动动态评分
+              </button>
+            </form>
+            <form method="POST" class="m-0"
+                  action="{{ url_for('ranking.ranking_elo_stop', competition_id=competition.id) }}">
+              <button type="submit" class="btn btn-warning" {% if not elo_running %}disabled title="目前已停止"{% endif %}>
+                <i class="fas fa-pause me-1"></i> 停止动态评分
+              </button>
+            </form>
+            <form method="POST" class="m-0"
+                  action="{{ url_for('ranking.ranking_elo_reset', competition_id=competition.id) }}"
+                  onsubmit="return confirm('重置后将清空本场赛事的全部对战历史，并把池中所有提交的 ELO 分恢复到初始分（{{ '%.0f'|format(competition.elo_initial_rating or 1500) }}）。该操作不可撤销，确认重置吗？');">
+              <button type="submit" class="btn btn-outline-danger">
+                <i class="fas fa-undo me-1"></i> 重置动态评分
+              </button>
+            </form>
+          </div>
         </div>
       </div>
 

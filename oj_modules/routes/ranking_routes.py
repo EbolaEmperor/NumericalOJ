@@ -37,7 +37,9 @@ from oj_modules.ranking_db import (
     list_competitions,
     list_elo_matches_for_submission,
     list_user_submissions,
+    reset_elo_state,
     retire_excess_user_submissions,
+    set_elo_running,
     submission_dir,
     update_competition,
     update_competition_reference_answer,
@@ -571,6 +573,61 @@ def ranking_edit(competition_id):
         )
     if not format_changed and not mode_changed:
         flash('已保存比赛信息', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+
+
+# ---------- 管理员：ELO 运行控制（启动 / 停止 / 重置） ----------
+
+def _require_elo_competition(competition_id):
+    """要求当前用户是管理员且比赛存在且为 ELO 模式。返回 (comp, resp)；resp 非 None 时直接 return。"""
+    user, resp = _require_admin()
+    if resp is not None:
+        return None, resp
+    comp = get_competition(competition_id)
+    if not comp:
+        flash('比赛不存在', 'warning')
+        return None, redirect(url_for('ranking.ranking_list'))
+    if _competition_scoring_mode(comp) != 'elo':
+        flash('该比赛不是 ELO 评分模式', 'warning')
+        return None, redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+    return comp, None
+
+
+@ranking_bp.route('/<int:competition_id>/elo/start', methods=['POST'])
+def ranking_elo_start(competition_id):
+    comp, resp = _require_elo_competition(competition_id)
+    if resp is not None:
+        return resp
+    if not (comp.get('scoring_script_path') or '').strip():
+        flash('尚未上传评测脚本，无法启动动态评分', 'danger')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+    set_elo_running(competition_id, True)
+    flash('动态评分已启动，匹配引擎将在下一次 tick 拉起对战。', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+
+
+@ranking_bp.route('/<int:competition_id>/elo/stop', methods=['POST'])
+def ranking_elo_stop(competition_id):
+    comp, resp = _require_elo_competition(competition_id)
+    if resp is not None:
+        return resp
+    set_elo_running(competition_id, False)
+    flash('动态评分已停止，分数保留；正在排队的对战会被丢弃。', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+
+
+@ranking_bp.route('/<int:competition_id>/elo/reset', methods=['POST'])
+def ranking_elo_reset(competition_id):
+    comp, resp = _require_elo_competition(competition_id)
+    if resp is not None:
+        return resp
+    matches_deleted, submissions_reset = reset_elo_state(competition_id)
+    flash(
+        f'动态评分已重置：清空 {matches_deleted} 场对战历史，'
+        f'{submissions_reset} 份在池提交分数恢复到初始分。'
+        ' 当前为停止状态，需手动启动。',
+        'success',
+    )
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
