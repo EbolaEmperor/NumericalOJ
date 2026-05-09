@@ -84,6 +84,13 @@ def ensure_ranking_tables():
                     "ALTER TABLE ranking_competitions"
                     " ADD COLUMN scoring_script_timeout_seconds INT NOT NULL DEFAULT 120"
                 )
+            # 兼容：为已存在的老表补加 ELO 运行开关（管理员手动启动 / 停止 / 重置）
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'elo_running'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN elo_running TINYINT(1) NOT NULL DEFAULT 0"
+                )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ranking_competition_files (
@@ -214,6 +221,7 @@ def get_competition(competition_id):
                 SELECT id, title, summary, description, answer_format,
                        scoring_mode, elo_initial_rating, elo_k_factor,
                        elo_max_matches, elo_match_interval_seconds, elo_initial_burst,
+                       elo_running,
                        scoring_script_timeout_seconds,
                        reference_answer_path, reference_answer_name,
                        scoring_script_path, scoring_script_name, max_score, is_active,
@@ -527,7 +535,9 @@ def get_ranking_submission(submission_id):
                 """
                 SELECT id, competition_id, username,
                        answer_filename, answer_path, code_filename, code_path,
-                       score, status, grade_details, error_message, created_at
+                       base_model, score, status, grade_details, error_message,
+                       elo_rating, elo_match_count, elo_in_pool,
+                       created_at
                 FROM ranking_submissions
                 WHERE id = %s
                 """,
@@ -777,20 +787,79 @@ def retire_excess_user_submissions(competition_id, username, keep_count=2):
         conn.close()
 
 
+def set_elo_running(competition_id, running):
+    """切换赛事的 ELO 运行开关。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE ranking_competitions SET elo_running = %s WHERE id = %s",
+                (1 if running else 0, int(competition_id)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_elo_state(competition_id):
+    """重置赛事的 ELO 状态：
+      - 把 elo_running 置 0；
+      - 删除该赛事所有对战历史 ranking_elo_matches；
+      - 把该赛事所有"在池中（elo_in_pool=1）"的提交分数 / 对战次数恢复到初始分。
+    返回 (matches_deleted, submissions_reset)。
+    """
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT elo_initial_rating FROM ranking_competitions WHERE id = %s",
+                (int(competition_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return (0, 0)
+            initial_rating = float(row.get('elo_initial_rating') or 1500)
+
+            cursor.execute(
+                "UPDATE ranking_competitions SET elo_running = 0 WHERE id = %s",
+                (int(competition_id),),
+            )
+            cursor.execute(
+                "DELETE FROM ranking_elo_matches WHERE competition_id = %s",
+                (int(competition_id),),
+            )
+            matches_deleted = cursor.rowcount or 0
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET elo_rating = %s, score = %s, elo_match_count = 0
+                WHERE competition_id = %s AND elo_in_pool = 1
+                """,
+                (initial_rating, initial_rating, int(competition_id)),
+            )
+            submissions_reset = cursor.rowcount or 0
+        conn.commit()
+        return (matches_deleted, submissions_reset)
+    finally:
+        conn.close()
+
+
 def list_active_elo_competitions():
-    """所有启用了 ELO 模式且已配置评测脚本、且对外公开的赛事。"""
+    """所有启用了 ELO 模式、已被管理员手动启动、且配置了评测脚本的赛事。"""
     ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, scoring_mode, is_active,
+                SELECT id, scoring_mode, is_active, elo_running,
                        scoring_script_path, scoring_script_timeout_seconds,
                        elo_initial_rating, elo_k_factor, elo_max_matches,
                        elo_match_interval_seconds, elo_initial_burst
                 FROM ranking_competitions
-                WHERE scoring_mode = 'elo' AND is_active = 1
+                WHERE scoring_mode = 'elo' AND is_active = 1 AND elo_running = 1
                   AND scoring_script_path IS NOT NULL AND scoring_script_path <> ''
                 """
             )
@@ -905,33 +974,3 @@ def list_elo_matches_for_submission(submission_id, limit=20):
             return cursor.fetchall() or []
     finally:
         conn.close()
-
-
-def get_elo_pair_match_counts(competition_id):
-    """返回该比赛已发生过的"提交对"对战次数：dict{(min_id, max_id): count}。
-
-    由于一对提交在不同场次中可能以 (A,B) 或 (B,A) 顺序出现在表里，
-    这里用 min/max 归一化键，把两种顺序合并计数。"""
-    ensure_ranking_tables()
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT submission_a_id, submission_b_id, COUNT(*) AS cnt
-                FROM ranking_elo_matches
-                WHERE competition_id = %s
-                GROUP BY submission_a_id, submission_b_id
-                """,
-                (int(competition_id),),
-            )
-            rows = cursor.fetchall() or []
-    finally:
-        conn.close()
-    counts = {}
-    for r in rows:
-        a = int(r['submission_a_id'])
-        b = int(r['submission_b_id'])
-        key = (min(a, b), max(a, b))
-        counts[key] = counts.get(key, 0) + int(r['cnt'])
-    return counts
