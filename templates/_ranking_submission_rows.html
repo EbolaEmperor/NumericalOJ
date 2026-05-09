@@ -1,0 +1,90 @@
+{# 「所有提交」表格的行片段。被主模板首屏 include，也被 submissions_json AJAX 端点重新渲染。 #}
+{# 期望上下文变量：all_submissions, competition, is_elo, max_score #}
+{% if all_submissions %}
+  {% for s in all_submissions %}
+    {% set pct = 0 %}
+    {% if s.score is not none %}
+      {% set pct = (s.score * 100 / max_score)|round(1) %}
+      {% if pct > 100 %}{% set pct = 100 %}{% endif %}
+      {% if pct < 0 %}{% set pct = 0 %}{% endif %}
+    {% endif %}
+    <tr data-username="{{ s.username|lower }}">
+      <td class="sub-id">#{{ s.id }}</td>
+      <td>
+        <div class="sub-user">
+          <span class="sub-user-initial">{{ (s.username or '?')[0]|upper }}</span>
+          <span class="sub-user-name">{{ s.username }}</span>
+        </div>
+      </td>
+      <td class="sub-time">{{ s.created_at }}</td>
+      <td>
+        {% if s.answer_filename %}
+          <a href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}"
+             class="sub-file" title="下载 {{ s.answer_filename }}">
+            <i class="fas fa-file-code"></i><span class="sub-file-name">{{ s.answer_filename }}</span>
+          </a>
+        {% else %}<span class="text-muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if s.code_filename %}
+          <a href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}"
+             class="sub-file" title="下载 {{ s.code_filename }}">
+            <i class="fas fa-file-archive"></i><span class="sub-file-name">{{ s.code_filename }}</span>
+          </a>
+        {% else %}<span class="text-muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if s.status == 'Accepted' %}
+          <span class="sub-status sub-status-ok"><span class="sub-status-dot"></span>通过</span>
+        {% elif s.status == 'Active' %}
+          <span class="sub-status sub-status-ok"><span class="sub-status-dot"></span>对战中</span>
+        {% elif s.status == 'Retired' %}
+          <span class="sub-status sub-status-other"><span class="sub-status-dot"></span>已退役</span>
+        {% elif s.status == 'Judging' %}
+          <span class="sub-status sub-status-info"><span class="sub-status-dot"></span>评测中</span>
+        {% elif s.status == 'Pending' %}
+          <span class="sub-status sub-status-info"><span class="sub-status-dot"></span>待评测</span>
+        {% elif s.status == 'Error' %}
+          <span class="sub-status sub-status-err"><span class="sub-status-dot"></span>异常</span>
+        {% else %}
+          <span class="sub-status sub-status-other"><span class="sub-status-dot"></span>{{ s.status }}</span>
+        {% endif %}
+      </td>
+      <td class="text-end">
+        {% if is_elo %}
+          {% if s.elo_rating is not none %}
+            <div class="sub-score">
+              <div class="sub-score-text"><strong>{{ '%.0f'|format(s.elo_rating) }}</strong><span class="text-muted"> · {{ s.elo_match_count or 0 }} 战</span></div>
+            </div>
+          {% else %}
+            <span class="text-muted">—</span>
+          {% endif %}
+        {% else %}
+          {% if s.score is not none %}
+            <div class="sub-score">
+              <div class="sub-score-text"><strong>{{ '%.2f'|format(s.score) }}</strong><span class="text-muted"> / {{ max_score }}</span></div>
+              <div class="sub-score-bar"><div class="sub-score-fill" style="width: {{ pct }}%"></div></div>
+            </div>
+          {% else %}
+            <span class="text-muted">—</span>
+          {% endif %}
+        {% endif %}
+      </td>
+      <td class="text-center">
+        <form method="POST" class="d-inline"
+              action="{{ url_for('ranking.ranking_delete_submission', competition_id=competition.id, submission_id=s.id) }}"
+              onsubmit="return confirm('确认删除提交 #{{ s.id }}（{{ s.username }}）？\n此操作无法撤销，该用户的最高分与排行榜将同步更新。');">
+          <button type="submit" class="sub-delete-btn" title="删除该提交" aria-label="删除提交 #{{ s.id }}">
+            <i class="fas fa-trash"></i>
+          </button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+{% else %}
+  <tr>
+    <td colspan="8" class="text-muted text-center py-4">
+      <i class="fas fa-search me-1 opacity-50"></i>没有匹配的提交
+    </td>
+  </tr>
+{% endif %}

@@ -15,7 +15,11 @@
     </h3>
   </div>
   <div class="text-muted small">
-    满分 {{ competition.max_score or 100 }} · 创建于 {{ competition.created_at }}
+    {% if (competition.scoring_mode or 'absolute')|lower == 'elo' %}
+      ELO 对战 · 创建于 {{ competition.created_at }}
+    {% else %}
+      满分 {{ competition.max_score or 100 }} · 创建于 {{ competition.created_at }}
+    {% endif %}
   </div>
 </div>
 
@@ -87,6 +91,7 @@
 
   <!-- 右侧内容 -->
   <div class="col-md-9 col-lg-10">
+    {% set is_elo = ((competition.scoring_mode or 'absolute')|lower == 'elo') %}
 
     {# ========== 比赛描述 ========== #}
     {% if tab == 'description' %}
@@ -107,10 +112,32 @@
     {# ========== 提交作品 ========== #}
     {% if tab == 'submit' %}
       {% set max_score = competition.max_score or 100 %}
+      {% set answer_format = (competition.answer_format or 'json')|lower %}
+      {% set answer_ext = '.' ~ answer_format %}
+      {% set scoring_mode = (competition.scoring_mode or 'absolute')|lower %}
+      {% set zip_needs_script = (answer_format == 'zip' and not is_elo and not competition.scoring_script_path) %}
+      {% set elo_needs_script = (is_elo and not competition.scoring_script_path) %}
+      {% set answer_icon = 'fa-file-archive' if answer_format == 'zip' else 'fa-file-code' %}
+
+      {% if is_elo %}
+      <div class="alert alert-info mb-4">
+        <i class="fas fa-chess-knight me-2"></i>
+        <strong>ELO 对战模式：</strong>提交后您的作品将进入对战池，定时与其他用户的提交两两比较，根据胜负调整 ELO 分数。
+        每位用户在池中只保留<strong>最近两份</strong>提交，更早的会自动退役。
+      </div>
+      {% endif %}
 
       {% if competition.is_active != 1 %}
         <div class="alert alert-warning mb-4">
           <i class="fas fa-exclamation-triangle me-2"></i>该比赛已下线，无法提交。
+        </div>
+      {% elif zip_needs_script %}
+        <div class="alert alert-warning mb-4">
+          <i class="fas fa-exclamation-triangle me-2"></i>该比赛答案格式为 ZIP，但管理员尚未上传评测脚本，暂时无法接收提交。
+        </div>
+      {% elif elo_needs_script %}
+        <div class="alert alert-warning mb-4">
+          <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 ELO 模式，但管理员尚未上传评测脚本，暂时无法接收提交。
         </div>
       {% else %}
         <form method="POST" enctype="multipart/form-data"
@@ -120,12 +147,12 @@
           <div class="row g-3">
             <div class="col-md-6">
               <label class="file-drop" data-kind="answer">
-                <input type="file" name="answer_file" accept=".json" required hidden>
+                <input type="file" name="answer_file" accept="{{ answer_ext }}" required hidden>
                 <div class="file-drop-inner">
-                  <i class="fas fa-file-code file-drop-icon file-drop-icon-answer"></i>
+                  <i class="fas {{ answer_icon }} file-drop-icon file-drop-icon-answer"></i>
                   <div class="file-drop-title">答案文件</div>
                   <div class="file-drop-sub">
-                    <span class="file-drop-ext">.json</span>
+                    <span class="file-drop-ext">{{ answer_ext }}</span>
                   </div>
                   <div class="file-drop-hint">点击选择或拖拽到此处</div>
                   <div class="file-drop-selected" hidden>
@@ -157,6 +184,17 @@
               <div class="form-text mt-2 mb-0">用于复现结果的代码与说明文档，仅存档、不参与评测。</div>
             </div>
           </div>
+
+          <div class="mt-4">
+            <label for="rankingBaseModelInput" class="form-label fw-semibold">
+              基座模型 <span class="text-danger">*</span>
+            </label>
+            <input type="text" class="form-control" id="rankingBaseModelInput"
+                   name="base_model" required maxlength="500"
+                   placeholder="例如：deepseek-v4-pro, qwen3.6-plus">
+            <div class="form-text">您本次提交所使用的大模型名称，多个用逗号分隔。</div>
+          </div>
+
           <div class="submit-actions mt-4">
             <button type="submit" class="btn btn-primary submit-cta" id="rankingSubmitBtn" disabled>
               <i class="fas fa-paper-plane me-2"></i>提交评测
@@ -184,7 +222,7 @@
             <span class="history-stat-val">{{ my_total }}</span><span class="history-stat-label">次</span>
           </span>
           <span class="history-stat">
-            <span class="history-stat-val">{% if _hns.has %}{{ '%.2f'|format(_hns.best) }}{% else %}—{% endif %}</span><span class="history-stat-label">最高分</span>
+            <span class="history-stat-val">{% if _hns.has %}{% if is_elo %}{{ '%.0f'|format(_hns.best) }}{% else %}{{ '%.2f'|format(_hns.best) }}{% endif %}{% else %}—{% endif %}</span><span class="history-stat-label">{% if is_elo %}最高 ELO{% else %}最高分{% endif %}</span>
           </span>
         </div>
         {% endif %}
@@ -207,7 +245,7 @@
                   <th>答案文件</th>
                   <th>代码文件</th>
                   <th style="width:110px;">状态</th>
-                  <th style="width:180px;" class="text-end">得分</th>
+                  <th style="width:180px;" class="text-end">{% if is_elo %}ELO{% else %}得分{% endif %}</th>
                 </tr>
               </thead>
               <tbody>
@@ -240,6 +278,10 @@
                     <td>
                       {% if s.status == 'Accepted' %}
                         <span class="sub-status sub-status-ok"><span class="sub-status-dot"></span>通过</span>
+                      {% elif s.status == 'Active' %}
+                        <span class="sub-status sub-status-ok"><span class="sub-status-dot"></span>对战中</span>
+                      {% elif s.status == 'Retired' %}
+                        <span class="sub-status sub-status-other"><span class="sub-status-dot"></span>已退役</span>
                       {% elif s.status == 'Judging' %}
                         <span class="sub-status sub-status-info"><span class="sub-status-dot"></span>评测中</span>
                       {% elif s.status == 'Pending' %}
@@ -251,13 +293,23 @@
                       {% endif %}
                     </td>
                     <td class="text-end">
-                      {% if s.score is not none %}
-                        <div class="sub-score">
-                          <div class="sub-score-text"><strong>{{ '%.2f'|format(s.score) }}</strong><span class="text-muted"> / {{ max_score }}</span></div>
-                          <div class="sub-score-bar"><div class="sub-score-fill" style="width: {{ pct }}%"></div></div>
-                        </div>
+                      {% if is_elo %}
+                        {% if s.elo_rating is not none %}
+                          <div class="sub-score">
+                            <div class="sub-score-text"><strong>{{ '%.0f'|format(s.elo_rating) }}</strong><span class="text-muted"> · {{ s.elo_match_count or 0 }} 战</span></div>
+                          </div>
+                        {% else %}
+                          <span class="text-muted">—</span>
+                        {% endif %}
                       {% else %}
-                        <span class="text-muted">—</span>
+                        {% if s.score is not none %}
+                          <div class="sub-score">
+                            <div class="sub-score-text"><strong>{{ '%.2f'|format(s.score) }}</strong><span class="text-muted"> / {{ max_score }}</span></div>
+                            <div class="sub-score-bar"><div class="sub-score-fill" style="width: {{ pct }}%"></div></div>
+                          </div>
+                        {% else %}
+                          <span class="text-muted">—</span>
+                        {% endif %}
                       {% endif %}
                     </td>
                   </tr>
@@ -281,11 +333,18 @@
           var hint = document.getElementById('rankingSubmitHint');
           if (!btn) return;
           var inputs = document.querySelectorAll('.file-drop input[type=file]');
-          var ok = Array.prototype.every.call(inputs, function (i) {
+          var filesOk = Array.prototype.every.call(inputs, function (i) {
             return i.files && i.files.length > 0;
           });
+          var baseModelInput = document.getElementById('rankingBaseModelInput');
+          var modelOk = baseModelInput ? baseModelInput.value.trim().length > 0 : true;
+          var ok = filesOk && modelOk;
           btn.disabled = !ok;
-          if (hint) hint.textContent = ok ? '一切就绪，点击提交' : '请先选择两个文件';
+          if (hint) {
+            if (!filesOk) hint.textContent = '请先选择两个文件';
+            else if (!modelOk) hint.textContent = '请填写基座模型';
+            else hint.textContent = '一切就绪，点击提交';
+          }
         }
         drops.forEach(function (drop) {
           var inp = drop.querySelector('input[type=file]');
@@ -327,6 +386,10 @@
             });
           });
         });
+        var baseModelInput = document.getElementById('rankingBaseModelInput');
+        if (baseModelInput) {
+          baseModelInput.addEventListener('input', updateSubmit);
+        }
         var form = document.getElementById('rankingSubmitForm');
         if (form) {
           form.addEventListener('submit', function () {
@@ -349,10 +412,10 @@
         <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
           <div class="d-flex align-items-center">
             <i class="fas fa-list-ol me-2 text-warning"></i>
-            <strong>排行榜</strong>
+            <strong>排行榜{% if is_elo %} · ELO{% endif %}</strong>
           </div>
           <div class="text-muted small">
-            共 <strong>{{ leaderboard|length }}</strong> 位选手 · 取每位用户的最高分 · 同分并列
+            共 <strong>{{ leaderboard|length }}</strong> 位选手 · 取每位用户的{% if is_elo %}最高 ELO 分{% else %}最高分{% endif %} · 同分并列
           </div>
         </div>
 
@@ -367,7 +430,12 @@
             {% for row in leaderboard %}
               {% set rank_cls = 'rank-1' if row.rank == 1 else ('rank-2' if row.rank == 2 else ('rank-3' if row.rank == 3 else 'rank-other')) %}
               {% set is_me = user and user.username == row.username %}
-              {% set pct = (row.best_score or 0) * 100.0 / max_score %}
+              {% if is_elo %}
+                {# ELO 进度条按 (rating - 800) / (2400 - 800) 大致映射 #}
+                {% set pct = ((row.best_score or 800) - 800) * 100.0 / 1600.0 %}
+              {% else %}
+                {% set pct = (row.best_score or 0) * 100.0 / max_score %}
+              {% endif %}
               {% if pct < 0 %}{% set pct = 0 %}{% endif %}
               {% if pct > 100 %}{% set pct = 100 %}{% endif %}
               <div class="leaderboard-row {{ rank_cls }}{% if is_me %} is-me{% endif %}">
@@ -385,6 +453,9 @@
                 <div class="lb-user">
                   <div class="lb-username">
                     {{ row.username }}
+                    {% if row.best_base_model %}
+                      <span class="lb-base-model" title="基座模型">{{ row.best_base_model }}</span>
+                    {% endif %}
                     {% if is_me %}<span class="lb-me-badge">我</span>{% endif %}
                   </div>
                   <div class="lb-subs">
@@ -393,8 +464,13 @@
                 </div>
                 <div class="lb-score">
                   <div class="lb-score-text">
-                    <strong>{{ '%.2f'|format(row.best_score) }}</strong>
-                    <span class="text-muted"> / {{ max_score }}</span>
+                    {% if is_elo %}
+                      <strong>{{ '%.0f'|format(row.best_score) }}</strong>
+                      <span class="text-muted"> ELO</span>
+                    {% else %}
+                      <strong>{{ '%.2f'|format(row.best_score) }}</strong>
+                      <span class="text-muted"> / {{ max_score }}</span>
+                    {% endif %}
                   </div>
                   <div class="lb-score-bar">
                     <div class="lb-score-fill" style="width: {{ '%.1f'|format(pct) }}%"></div>
@@ -410,16 +486,11 @@
     {# ========== 所有提交（管理员） ========== #}
     {% if tab == 'all_submissions' and is_admin %}
       {% set max_score = competition.max_score or 100 %}
-      {% set total_subs = all_submissions|length %}
-      {% set unique_users = all_submissions|map(attribute='username')|unique|list|length %}
-      {% set accepted_count = all_submissions|selectattr('status', 'equalto', 'Accepted')|list|length %}
-      {% set _ns = namespace(top=0.0, has_score=false) %}
-      {% for s in all_submissions %}
-        {% if s.score is not none %}
-          {% set _ns.has_score = true %}
-          {% if s.score > _ns.top %}{% set _ns.top = s.score %}{% endif %}
-        {% endif %}
-      {% endfor %}
+      {% set total_subs = (submission_stats.total if submission_stats else 0) %}
+      {% set unique_users = (submission_stats.unique_users if submission_stats else 0) %}
+      {% set accepted_count = (submission_stats.accepted if submission_stats else 0) %}
+      {% set top_score = (submission_stats.top_score if submission_stats else None) %}
+      {% set has_top = (top_score is not none) %}
       {% set acc_rate = (accepted_count * 100.0 / total_subs) if total_subs else 0 %}
 
       <!-- 统计条 -->
@@ -438,7 +509,7 @@
         </div>
         <div class="sub-stat">
           <div class="sub-stat-value">
-            {% if _ns.has_score %}{{ '%.2f'|format(_ns.top) }}<span class="sub-stat-sub"> / {{ max_score }}</span>{% else %}—{% endif %}
+            {% if has_top %}{{ '%.2f'|format(top_score) }}<span class="sub-stat-sub"> / {{ max_score }}</span>{% else %}—{% endif %}
           </div>
           <div class="sub-stat-label"><i class="fas fa-trophy me-1"></i>最高分</div>
         </div>
@@ -448,15 +519,17 @@
       <div class="card submissions-card">
         <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
           <div><i class="fas fa-clipboard-list me-2 text-primary"></i><strong>所有提交</strong></div>
-          {% if all_submissions %}
+          {% if total_subs > 0 %}
           <div class="submissions-search">
             <i class="fas fa-search"></i>
-            <input type="search" id="subSearch" class="form-control form-control-sm" placeholder="按用户名筛选…" autocomplete="off">
+            <input type="search" id="subSearch" class="form-control form-control-sm"
+                   placeholder="按用户名筛选…" autocomplete="off"
+                   value="{{ submission_search_q }}">
           </div>
           {% endif %}
         </div>
 
-        {% if not all_submissions %}
+        {% if total_subs == 0 %}
           <div class="submissions-empty">
             <i class="fas fa-inbox submissions-empty-icon"></i>
             <div class="mt-3 fw-semibold">暂无提交</div>
@@ -473,107 +546,76 @@
                   <th>答案文件</th>
                   <th>代码文件</th>
                   <th style="width:110px;">状态</th>
-                  <th style="width:180px;" class="text-end">得分</th>
+                  <th style="width:180px;" class="text-end">{% if is_elo %}ELO{% else %}得分{% endif %}</th>
                   <th style="width:56px;" class="text-center">操作</th>
                 </tr>
               </thead>
-              <tbody id="subTbody">
-                {% for s in all_submissions %}
-                  {% set pct = 0 %}
-                  {% if s.score is not none %}
-                    {% set pct = (s.score * 100 / max_score)|round(1) %}
-                    {% if pct > 100 %}{% set pct = 100 %}{% endif %}
-                    {% if pct < 0 %}{% set pct = 0 %}{% endif %}
-                  {% endif %}
-                  <tr data-username="{{ s.username|lower }}">
-                    <td class="sub-id">#{{ s.id }}</td>
-                    <td>
-                      <div class="sub-user">
-                        <span class="sub-user-initial">{{ (s.username or '?')[0]|upper }}</span>
-                        <span class="sub-user-name">{{ s.username }}</span>
-                      </div>
-                    </td>
-                    <td class="sub-time">{{ s.created_at }}</td>
-                    <td>
-                      {% if s.answer_filename %}
-                        <a href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}"
-                           class="sub-file" title="下载 {{ s.answer_filename }}">
-                          <i class="fas fa-file-code"></i><span class="sub-file-name">{{ s.answer_filename }}</span>
-                        </a>
-                      {% else %}<span class="text-muted">—</span>{% endif %}
-                    </td>
-                    <td>
-                      {% if s.code_filename %}
-                        <a href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}"
-                           class="sub-file" title="下载 {{ s.code_filename }}">
-                          <i class="fas fa-file-archive"></i><span class="sub-file-name">{{ s.code_filename }}</span>
-                        </a>
-                      {% else %}<span class="text-muted">—</span>{% endif %}
-                    </td>
-                    <td>
-                      {% if s.status == 'Accepted' %}
-                        <span class="sub-status sub-status-ok"><span class="sub-status-dot"></span>通过</span>
-                      {% elif s.status == 'Judging' %}
-                        <span class="sub-status sub-status-info"><span class="sub-status-dot"></span>评测中</span>
-                      {% elif s.status == 'Pending' %}
-                        <span class="sub-status sub-status-info"><span class="sub-status-dot"></span>待评测</span>
-                      {% elif s.status == 'Error' %}
-                        <span class="sub-status sub-status-err"><span class="sub-status-dot"></span>异常</span>
-                      {% else %}
-                        <span class="sub-status sub-status-other"><span class="sub-status-dot"></span>{{ s.status }}</span>
-                      {% endif %}
-                    </td>
-                    <td class="text-end">
-                      {% if s.score is not none %}
-                        <div class="sub-score">
-                          <div class="sub-score-text"><strong>{{ '%.2f'|format(s.score) }}</strong><span class="text-muted"> / {{ max_score }}</span></div>
-                          <div class="sub-score-bar"><div class="sub-score-fill" style="width: {{ pct }}%"></div></div>
-                        </div>
-                      {% else %}
-                        <span class="text-muted">—</span>
-                      {% endif %}
-                    </td>
-                    <td class="text-center">
-                      <form method="POST" class="d-inline"
-                            action="{{ url_for('ranking.ranking_delete_submission', competition_id=competition.id, submission_id=s.id) }}"
-                            onsubmit="return confirm('确认删除提交 #{{ s.id }}（{{ s.username }}）？\n此操作无法撤销，该用户的最高分与排行榜将同步更新。');">
-                        <button type="submit" class="sub-delete-btn" title="删除该提交" aria-label="删除提交 #{{ s.id }}">
-                          <i class="fas fa-trash"></i>
-                        </button>
-                      </form>
-                    </td>
-                  </tr>
-                {% endfor %}
-                <tr id="subNoMatch" style="display:none;">
-                  <td colspan="8" class="text-muted text-center py-4">
-                    <i class="fas fa-search me-1 opacity-50"></i>没有匹配的用户
-                  </td>
-                </tr>
+              <tbody id="subTbody"
+                     data-json-url="{{ url_for('ranking.ranking_submissions_json', competition_id=competition.id) }}"
+                     data-current-page="{{ current_page }}">
+                {% include '_ranking_submission_rows.html' %}
               </tbody>
             </table>
           </div>
         {% endif %}
       </div>
 
-      {% if all_submissions %}
+      {% if total_subs > 0 %}
+      <div id="subPagination" class="submissions-pagination mt-3">
+        {% include '_ranking_submission_pagination.html' %}
+      </div>
+
       <script>
         (function () {
           var input = document.getElementById('subSearch');
           var tbody = document.getElementById('subTbody');
-          var noMatch = document.getElementById('subNoMatch');
-          if (!input || !tbody) return;
-          input.addEventListener('input', function () {
-            var q = (this.value || '').trim().toLowerCase();
-            var rows = tbody.querySelectorAll('tr[data-username]');
-            var shown = 0;
-            rows.forEach(function (r) {
-              var u = r.getAttribute('data-username') || '';
-              var hit = !q || u.indexOf(q) >= 0;
-              r.style.display = hit ? '' : 'none';
-              if (hit) shown++;
+          var paginationEl = document.getElementById('subPagination');
+          if (!tbody) return;
+
+          var jsonUrl = tbody.getAttribute('data-json-url');
+          var currentPage = parseInt(tbody.getAttribute('data-current-page') || '1', 10) || 1;
+          var currentQ = input ? (input.value || '') : '';
+          var debounceTimer = null;
+          var reqToken = 0;
+
+          function loadPage(page, q) {
+            var token = ++reqToken;
+            var url = jsonUrl + '?page=' + encodeURIComponent(page) + '&q=' + encodeURIComponent(q || '');
+            fetch(url, { credentials: 'same-origin' })
+              .then(function (r) {
+                if (!r.ok) throw new Error('http ' + r.status);
+                return r.json();
+              })
+              .then(function (data) {
+                if (token !== reqToken) return;  // 已被新请求覆盖
+                if (typeof data.rows_html === 'string') tbody.innerHTML = data.rows_html;
+                if (paginationEl) paginationEl.innerHTML = data.pagination_html || '';
+                currentPage = data.page || 1;
+                var qs = '?tab=all_submissions&page=' + currentPage + (q ? '&q=' + encodeURIComponent(q) : '');
+                history.replaceState(null, '', window.location.pathname + qs);
+              })
+              .catch(function (e) { console.warn('submissions_json failed:', e); });
+          }
+
+          if (input) {
+            input.addEventListener('input', function () {
+              clearTimeout(debounceTimer);
+              var q = (this.value || '').trim();
+              currentQ = q;
+              debounceTimer = setTimeout(function () {
+                loadPage(1, currentQ);
+              }, 250);
             });
-            if (noMatch) noMatch.style.display = (shown === 0 && q) ? '' : 'none';
-          });
+          }
+          if (paginationEl) {
+            paginationEl.addEventListener('click', function (e) {
+              var a = e.target.closest('a.page-link[data-page]');
+              if (!a) return;
+              e.preventDefault();
+              var p = parseInt(a.getAttribute('data-page'), 10);
+              if (!isNaN(p) && p >= 1) loadPage(p, currentQ);
+            });
+          }
         })();
       </script>
       {% endif %}
@@ -595,18 +637,125 @@
               <textarea class="form-control" name="summary" rows="2" maxlength="500" placeholder="一句话介绍本场打榜赛（展示在列表卡片上，最多 500 字）">{{ competition.summary or '' }}</textarea>
               <div class="form-text">留空则在列表卡片上回退显示赛事描述的开头若干字。</div>
             </div>
+            {% set _mode = (competition.scoring_mode or 'absolute')|lower %}
+            {% set _fmt = (competition.answer_format or 'json')|lower %}
             <div class="row mb-3">
               <div class="col-md-4">
+                <label class="form-label">评分模式</label>
+                <select class="form-select" name="scoring_mode" id="scoringModeSelect">
+                  <option value="absolute" {% if _mode == 'absolute' %}selected{% endif %}>绝对分（用户答案 vs 标准答案）</option>
+                  <option value="elo"      {% if _mode == 'elo'      %}selected{% endif %}>ELO 对战（提交两两 PK）</option>
+                </select>
+              </div>
+              <div class="col-md-4 absolute-only" id="maxScoreField"
+                   {% if _mode == 'elo' %}style="display:none;"{% endif %}>
                 <label class="form-label">满分</label>
                 <input type="number" class="form-control" name="max_score" value="{{ competition.max_score or 100 }}" min="1" max="100000">
+                <div class="form-text">仅在绝对分模式下生效。</div>
               </div>
-              <div class="col-md-4 d-flex align-items-end">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="is_active_switch" name="is_active" value="1" {% if competition.is_active == 1 %}checked{% endif %}>
-                  <label class="form-check-label" for="is_active_switch">对用户公开（上线）</label>
-                </div>
+              <div class="col-md-4">
+                <label class="form-label">答案格式</label>
+                <select class="form-select" name="answer_format">
+                  <option value="json" {% if _fmt == 'json' %}selected{% endif %}>JSON（.json）</option>
+                  <option value="zip"  {% if _fmt == 'zip'  %}selected{% endif %}>ZIP 压缩包（.zip）</option>
+                </select>
+                <div class="form-text">绝对分模式切换后旧的标准答案会被自动清理。</div>
               </div>
             </div>
+
+            <div class="row mb-3">
+              <div class="col-md-4">
+                <label class="form-label">评测脚本超时（秒）</label>
+                <input type="number" class="form-control" id="scoringScriptTimeoutInput"
+                       name="scoring_script_timeout_seconds"
+                       value="{{ competition.scoring_script_timeout_seconds or 120 }}"
+                       min="5" max="600" step="1">
+                <div class="form-text">每次评测脚本调用的最长允许时间，超时即判失败。</div>
+              </div>
+            </div>
+            <div class="mb-3">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="is_active_switch" name="is_active" value="1" {% if competition.is_active == 1 %}checked{% endif %}>
+                <label class="form-check-label" for="is_active_switch">对用户公开（上线）</label>
+              </div>
+            </div>
+
+            <!-- ELO 参数 -->
+            <fieldset class="border rounded p-3 mb-3" id="eloParamsBlock"
+                      {% if _mode != 'elo' %}style="display:none;"{% endif %}>
+              <legend class="float-none w-auto px-2 small fw-semibold text-muted mb-2">
+                <i class="fas fa-chess-knight me-1"></i> ELO 参数
+              </legend>
+              <div class="row g-3">
+                <div class="col-md-4 col-lg-2">
+                  <label class="form-label small">初始分</label>
+                  <input type="number" class="form-control" name="elo_initial_rating"
+                         value="{{ '%.0f'|format(competition.elo_initial_rating or 1500) }}"
+                         min="100" max="5000" step="1">
+                </div>
+                <div class="col-md-4 col-lg-2">
+                  <label class="form-label small">K 因子</label>
+                  <input type="number" class="form-control" name="elo_k_factor"
+                         value="{{ '%.0f'|format(competition.elo_k_factor or 32) }}"
+                         min="1" max="200" step="1">
+                </div>
+                <div class="col-md-4 col-lg-2">
+                  <label class="form-label small">单提交最大对战</label>
+                  <input type="number" class="form-control" name="elo_max_matches"
+                         value="{{ competition.elo_max_matches or 200 }}"
+                         min="1" max="10000" step="1">
+                </div>
+                <div class="col-md-4 col-lg-3">
+                  <label class="form-label small">匹配间隔（秒）</label>
+                  <input type="number" class="form-control" name="elo_match_interval_seconds"
+                         value="{{ competition.elo_match_interval_seconds or 60 }}"
+                         min="5" max="3600" step="1">
+                </div>
+                <div class="col-md-4 col-lg-3">
+                  <label class="form-label small">新提交即时补战</label>
+                  <input type="number" class="form-control" name="elo_initial_burst"
+                         value="{{ competition.elo_initial_burst or 5 }}"
+                         min="0" max="50" step="1">
+                </div>
+              </div>
+              <div class="form-text mt-2">
+                每位用户在池中只保留最近 2 份提交，更早的会自动退役（脚本签名见下方"评测脚本"栏）。
+              </div>
+            </fieldset>
+            <script>
+              (function () {
+                var sel = document.getElementById('scoringModeSelect');
+                if (!sel) return;
+                function applyMode() {
+                  var isElo = (sel.value === 'elo');
+                  var blk = document.getElementById('eloParamsBlock');
+                  if (blk) blk.style.display = isElo ? '' : 'none';
+                  document.querySelectorAll('.absolute-only').forEach(function (el) {
+                    el.style.display = isElo ? 'none' : '';
+                  });
+                  var sigElo = document.getElementById('scriptSignatureElo');
+                  var sigAbs = document.getElementById('scriptSignatureAbsolute');
+                  if (sigElo) sigElo.style.display = isElo ? '' : 'none';
+                  if (sigAbs) sigAbs.style.display = isElo ? 'none' : '';
+                }
+                sel.addEventListener('change', applyMode);
+                applyMode();
+              })();
+              // Real-time timeout reflection in the script signature description
+              (function () {
+                var inp = document.getElementById('scoringScriptTimeoutInput');
+                if (!inp) return;
+                function applyTimeout() {
+                  var v = parseInt(inp.value, 10);
+                  if (!isFinite(v) || v <= 0) v = 120;
+                  document.querySelectorAll('.script-timeout-value').forEach(function (el) {
+                    el.textContent = v;
+                  });
+                }
+                inp.addEventListener('input', applyTimeout);
+                applyTimeout();
+              })();
+            </script>
             <div class="mb-3">
               <label class="form-label">赛事描述（支持 Markdown）</label>
               <textarea class="form-control" name="description" rows="10">{{ competition.description or '' }}</textarea>
@@ -618,9 +767,14 @@
         </div>
       </div>
 
-      <!-- 标准答案 -->
+      {% set edit_fmt = (competition.answer_format or 'json')|lower %}
+      {% set edit_ext = '.' ~ edit_fmt %}
+      {% set edit_mode = (competition.scoring_mode or 'absolute')|lower %}
+
+      {% if edit_mode != 'elo' %}
+      <!-- 标准答案（仅绝对分模式需要） -->
       <div class="card mb-3">
-        <div class="card-header"><i class="fas fa-key me-2"></i> 标准答案（.json）</div>
+        <div class="card-header"><i class="fas fa-key me-2"></i> 标准答案（{{ edit_ext }}）</div>
         <div class="card-body">
           <div class="mb-3">
             <strong>当前文件：</strong>
@@ -633,7 +787,7 @@
           <form method="POST" enctype="multipart/form-data"
                 action="{{ url_for('ranking.ranking_upload_reference', competition_id=competition.id) }}">
             <div class="mb-3">
-              <input type="file" class="form-control" name="reference" accept=".json" required>
+              <input type="file" class="form-control" name="reference" accept="{{ edit_ext }}" required>
             </div>
             <button type="submit" class="btn btn-outline-primary">
               <i class="fas fa-cloud-upload-alt me-1"></i> 上传并替换
@@ -641,15 +795,38 @@
           </form>
         </div>
       </div>
+      {% endif %}{# end edit_mode != 'elo' #}
 
       <!-- 评测脚本 -->
-      <div class="card mb-3">
-        <div class="card-header"><i class="fas fa-scroll me-2"></i> 评测脚本（.py，可选）</div>
+      {% set script_required = (edit_mode == 'elo') or (edit_fmt == 'zip') %}
+      <div class="card mb-3 {% if script_required and not competition.scoring_script_name %}border-warning{% endif %}">
+        <div class="card-header">
+          <i class="fas fa-scroll me-2"></i> 评测脚本（.py{% if script_required %}，必填{% else %}，可选{% endif %}）
+        </div>
         <div class="card-body">
+          <!-- 脚本签名说明：随评分模式切换（前端 JS 实时切换；初始 display 由后端模式决定） -->
+          <div id="scriptSignatureElo" class="alert alert-secondary py-2 px-3 mb-3 small"
+               {% if edit_mode != 'elo' %}style="display:none;"{% endif %}>
+            <div class="fw-semibold mb-1"><i class="fas fa-chess-knight me-1"></i> ELO 模式脚本签名</div>
+            调用方式：<code>python &lt;script&gt; &lt;answer_a&gt; &lt;answer_b&gt;</code><br>
+            stdout 输出：<code>{"winner": 1 | 2, "details": &lt;可选&gt;}</code><br>
+            winner 表示哪一份提交更好。超时 <span class="script-timeout-value">{{ competition.scoring_script_timeout_seconds or 120 }}</span> 秒。
+          </div>
+          <div id="scriptSignatureAbsolute" class="alert alert-secondary py-2 px-3 mb-3 small"
+               {% if edit_mode == 'elo' %}style="display:none;"{% endif %}>
+            <div class="fw-semibold mb-1"><i class="fas fa-balance-scale me-1"></i> 绝对分模式脚本签名</div>
+            调用方式：<code>python &lt;script&gt; &lt;user_answer&gt; &lt;reference&gt; &lt;max_score&gt;</code><br>
+            stdout 输出：<code>{"score": &lt;number&gt;, "details": &lt;可选&gt;}</code><br>
+            超时 <span class="script-timeout-value">{{ competition.scoring_script_timeout_seconds or 120 }}</span> 秒。
+          </div>
           <div class="mb-3">
             <strong>当前脚本：</strong>
             {% if competition.scoring_script_name %}
               <span class="text-success"><i class="fas fa-check-circle me-1"></i>{{ competition.scoring_script_name }}</span>
+            {% elif edit_mode == 'elo' %}
+              <span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>ELO 模式下评测脚本必填（接收两份提交、返回 1 或 2），否则用户无法提交。</span>
+            {% elif edit_fmt == 'zip' %}
+              <span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>ZIP 模式下默认评分器无法工作，必须上传评测脚本，否则用户无法提交。</span>
             {% else %}
               <span class="text-muted">未上传，使用默认 JSON 对比（数值容差 1e-6）打分。</span>
             {% endif %}
@@ -672,10 +849,6 @@
             </button>
           </form>
           {% endif %}
-          <div class="mt-3 small text-muted">
-            脚本约定：<code>python &lt;script&gt; &lt;user_answer.json&gt; &lt;reference.json&gt; &lt;max_score&gt;</code>，
-            在 stdout 打印 JSON <code>{"score": &lt;number&gt;, "details": &lt;可选对象或字符串&gt;}</code>。超时 120 秒。
-          </div>
         </div>
       </div>
 
@@ -844,6 +1017,14 @@
     padding: 0.1rem 0.5rem;
     border-radius: 0.35rem;
     vertical-align: middle;
+  }
+  .lb-base-model {
+    margin-left: 0.45rem;
+    color: #adb5bd;
+    font-size: 0.78rem;
+    font-weight: 400;
+    font-family: "Menlo", "SF Mono", ui-monospace, monospace;
+    vertical-align: baseline;
   }
   .lb-subs {
     font-size: 0.78rem;

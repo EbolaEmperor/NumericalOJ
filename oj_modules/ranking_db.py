@@ -12,7 +12,7 @@
 import os
 import json
 
-from oj_modules.db_services import get_db_connection
+from oj_modules.db_services import bump_daily_submission_count, get_db_connection
 
 
 _ranking_tables_ready = False
@@ -39,6 +39,7 @@ def ensure_ranking_tables():
                     title VARCHAR(255) NOT NULL,
                     summary VARCHAR(500) DEFAULT NULL,
                     description MEDIUMTEXT,
+                    answer_format VARCHAR(8) NOT NULL DEFAULT 'json',
                     reference_answer_path VARCHAR(512) DEFAULT NULL,
                     reference_answer_name VARCHAR(255) DEFAULT NULL,
                     scoring_script_path VARCHAR(512) DEFAULT NULL,
@@ -57,6 +58,31 @@ def ensure_ranking_tables():
             if not cursor.fetchone():
                 cursor.execute(
                     "ALTER TABLE ranking_competitions ADD COLUMN summary VARCHAR(500) DEFAULT NULL AFTER title"
+                )
+            # 兼容：为已存在的老表补加 answer_format 列
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'answer_format'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions ADD COLUMN answer_format VARCHAR(8) NOT NULL DEFAULT 'json' AFTER description"
+                )
+            # 兼容：为已存在的老表补加 ELO 模式相关列
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'scoring_mode'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN scoring_mode VARCHAR(16) NOT NULL DEFAULT 'absolute' AFTER answer_format,"
+                    " ADD COLUMN elo_initial_rating DOUBLE NOT NULL DEFAULT 1500,"
+                    " ADD COLUMN elo_k_factor DOUBLE NOT NULL DEFAULT 32,"
+                    " ADD COLUMN elo_max_matches INT NOT NULL DEFAULT 200,"
+                    " ADD COLUMN elo_match_interval_seconds INT NOT NULL DEFAULT 60,"
+                    " ADD COLUMN elo_initial_burst INT NOT NULL DEFAULT 5"
+                )
+            # 兼容：为已存在的老表补加评测脚本超时列
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'scoring_script_timeout_seconds'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN scoring_script_timeout_seconds INT NOT NULL DEFAULT 120"
                 )
             cursor.execute(
                 """
@@ -81,14 +107,57 @@ def ensure_ranking_tables():
                     answer_path VARCHAR(512) DEFAULT NULL,
                     code_filename VARCHAR(255) DEFAULT NULL,
                     code_path VARCHAR(512) DEFAULT NULL,
+                    base_model VARCHAR(500) DEFAULT NULL,
                     score DOUBLE DEFAULT NULL,
                     status VARCHAR(32) NOT NULL DEFAULT 'Judging',
                     grade_details MEDIUMTEXT,
                     error_message TEXT,
+                    elo_rating DOUBLE DEFAULT NULL,
+                    elo_match_count INT NOT NULL DEFAULT 0,
+                    elo_in_pool TINYINT(1) NOT NULL DEFAULT 0,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     INDEX idx_rs_comp_user (competition_id, username),
                     INDEX idx_rs_comp_score (competition_id, score),
-                    INDEX idx_rs_comp_created (competition_id, created_at)
+                    INDEX idx_rs_comp_created (competition_id, created_at),
+                    INDEX idx_rs_elo_pool (competition_id, elo_in_pool)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            # 兼容：为已存在的老表补加 ELO 列
+            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'elo_rating'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions"
+                    " ADD COLUMN elo_rating DOUBLE DEFAULT NULL,"
+                    " ADD COLUMN elo_match_count INT NOT NULL DEFAULT 0,"
+                    " ADD COLUMN elo_in_pool TINYINT(1) NOT NULL DEFAULT 0,"
+                    " ADD INDEX idx_rs_elo_pool (competition_id, elo_in_pool)"
+                )
+            # 兼容：为已存在的老表补加 base_model 列
+            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'base_model'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions"
+                    " ADD COLUMN base_model VARCHAR(500) DEFAULT NULL AFTER code_path"
+                )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ranking_elo_matches (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    competition_id INT NOT NULL,
+                    submission_a_id INT NOT NULL,
+                    submission_b_id INT NOT NULL,
+                    winner SMALLINT NOT NULL,
+                    rating_a_before DOUBLE NOT NULL,
+                    rating_b_before DOUBLE NOT NULL,
+                    rating_a_after DOUBLE NOT NULL,
+                    rating_b_after DOUBLE NOT NULL,
+                    details MEDIUMTEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_rem_comp_created (competition_id, created_at),
+                    INDEX idx_rem_sub_a (submission_a_id),
+                    INDEX idx_rem_sub_b (submission_b_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
@@ -109,6 +178,7 @@ def list_competitions(include_inactive=False):
                 cursor.execute(
                     """
                     SELECT c.id, c.title, c.summary, c.description, c.max_score, c.is_active,
+                           c.scoring_mode,
                            c.created_by, c.created_at, c.updated_at,
                            (SELECT COUNT(*) FROM ranking_submissions s WHERE s.competition_id = c.id) AS submission_count,
                            (SELECT COUNT(DISTINCT s.username) FROM ranking_submissions s WHERE s.competition_id = c.id) AS participant_count
@@ -120,6 +190,7 @@ def list_competitions(include_inactive=False):
                 cursor.execute(
                     """
                     SELECT c.id, c.title, c.summary, c.description, c.max_score, c.is_active,
+                           c.scoring_mode,
                            c.created_by, c.created_at, c.updated_at,
                            (SELECT COUNT(*) FROM ranking_submissions s WHERE s.competition_id = c.id) AS submission_count,
                            (SELECT COUNT(DISTINCT s.username) FROM ranking_submissions s WHERE s.competition_id = c.id) AS participant_count
@@ -140,7 +211,11 @@ def get_competition(competition_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, title, summary, description, reference_answer_path, reference_answer_name,
+                SELECT id, title, summary, description, answer_format,
+                       scoring_mode, elo_initial_rating, elo_k_factor,
+                       elo_max_matches, elo_match_interval_seconds, elo_initial_burst,
+                       scoring_script_timeout_seconds,
+                       reference_answer_path, reference_answer_name,
                        scoring_script_path, scoring_script_name, max_score, is_active,
                        created_by, created_at, updated_at
                 FROM ranking_competitions
@@ -172,7 +247,11 @@ def create_competition(title, description, max_score, created_by, summary=None):
         conn.close()
 
 
-def update_competition(competition_id, *, title=None, summary=None, description=None, max_score=None, is_active=None):
+def update_competition(competition_id, *, title=None, summary=None, description=None,
+                        max_score=None, is_active=None, answer_format=None,
+                        scoring_mode=None, elo_initial_rating=None, elo_k_factor=None,
+                        elo_max_matches=None, elo_match_interval_seconds=None,
+                        elo_initial_burst=None, scoring_script_timeout_seconds=None):
     ensure_ranking_tables()
     fields = []
     params = []
@@ -191,6 +270,36 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if is_active is not None:
         fields.append("is_active = %s")
         params.append(1 if is_active else 0)
+    if answer_format is not None:
+        fmt = str(answer_format or '').strip().lower()
+        if fmt not in ('json', 'zip'):
+            fmt = 'json'
+        fields.append("answer_format = %s")
+        params.append(fmt)
+    if scoring_mode is not None:
+        mode = str(scoring_mode or '').strip().lower()
+        if mode not in ('absolute', 'elo'):
+            mode = 'absolute'
+        fields.append("scoring_mode = %s")
+        params.append(mode)
+    if elo_initial_rating is not None:
+        fields.append("elo_initial_rating = %s")
+        params.append(float(elo_initial_rating))
+    if elo_k_factor is not None:
+        fields.append("elo_k_factor = %s")
+        params.append(float(elo_k_factor))
+    if elo_max_matches is not None:
+        fields.append("elo_max_matches = %s")
+        params.append(int(elo_max_matches))
+    if elo_match_interval_seconds is not None:
+        fields.append("elo_match_interval_seconds = %s")
+        params.append(int(elo_match_interval_seconds))
+    if elo_initial_burst is not None:
+        fields.append("elo_initial_burst = %s")
+        params.append(int(elo_initial_burst))
+    if scoring_script_timeout_seconds is not None:
+        fields.append("scoring_script_timeout_seconds = %s")
+        params.append(int(scoring_script_timeout_seconds))
     if not fields:
         return
     params.append(competition_id)
@@ -340,12 +449,13 @@ def create_ranking_submission(competition_id, username):
             )
             new_id = cursor.lastrowid
         conn.commit()
+        bump_daily_submission_count()
         return int(new_id)
     finally:
         conn.close()
 
 
-def update_submission_files(submission_id, answer_filename, answer_path, code_filename, code_path):
+def update_submission_files(submission_id, answer_filename, answer_path, code_filename, code_path, base_model=None):
     ensure_ranking_tables()
     conn = get_db_connection()
     try:
@@ -355,10 +465,12 @@ def update_submission_files(submission_id, answer_filename, answer_path, code_fi
                 UPDATE ranking_submissions
                 SET answer_filename = %s, answer_path = %s,
                     code_filename = %s, code_path = %s,
+                    base_model = %s,
                     status = 'Judging'
                 WHERE id = %s
                 """,
-                (answer_filename, answer_path, code_filename, code_path, submission_id),
+                (answer_filename, answer_path, code_filename, code_path,
+                 (base_model or None), submission_id),
             )
         conn.commit()
     finally:
@@ -434,8 +546,10 @@ def list_user_submissions(competition_id, username):
             cursor.execute(
                 """
                 SELECT id, competition_id, username,
-                       answer_filename, code_filename,
-                       score, status, created_at
+                       answer_filename, code_filename, base_model,
+                       score, status,
+                       elo_rating, elo_match_count, elo_in_pool,
+                       created_at
                 FROM ranking_submissions
                 WHERE competition_id = %s AND username = %s
                 ORDER BY created_at DESC, id DESC
@@ -447,23 +561,74 @@ def list_user_submissions(competition_id, username):
         conn.close()
 
 
-def list_all_submissions(competition_id):
+def list_all_submissions(competition_id, *, page=1, per_page=50, username_q=None):
+    """返回 ``(rows, page, total)``。``page`` 在越界时被 clamp 到最后一页（保证只走一次 SELECT）。"""
+    ensure_ranking_tables()
+    page = max(1, int(page or 1))
+    per_page = max(1, int(per_page or 50))
+    q = (username_q or '').strip()
+    where_sql = "WHERE competition_id = %s"
+    params = [int(competition_id)]
+    if q:
+        where_sql += " AND username LIKE %s"
+        params.append(f"%{q}%")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS total FROM ranking_submissions {where_sql}",
+                tuple(params),
+            )
+            total = int((cursor.fetchone() or {}).get('total') or 0)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            if page > total_pages:
+                page = total_pages
+            offset = (page - 1) * per_page
+            cursor.execute(
+                f"""
+                SELECT id, competition_id, username,
+                       answer_filename, code_filename, base_model,
+                       score, status,
+                       elo_rating, elo_match_count, elo_in_pool,
+                       created_at
+                FROM ranking_submissions
+                {where_sql}
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params) + (per_page, offset),
+            )
+            rows = cursor.fetchall() or []
+            return rows, page, total
+    finally:
+        conn.close()
+
+
+def get_submission_stats(competition_id):
     ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, competition_id, username,
-                       answer_filename, code_filename,
-                       score, status, created_at
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(DISTINCT username) AS unique_users,
+                    SUM(CASE WHEN status = 'Accepted' THEN 1 ELSE 0 END) AS accepted,
+                    MAX(score) AS top_score
                 FROM ranking_submissions
                 WHERE competition_id = %s
-                ORDER BY created_at DESC, id DESC
                 """,
-                (competition_id,),
+                (int(competition_id),),
             )
-            return cursor.fetchall() or []
+            row = cursor.fetchone() or {}
+            top_raw = row.get('top_score')
+            return {
+                'total': int(row.get('total') or 0),
+                'unique_users': int(row.get('unique_users') or 0),
+                'accepted': int(row.get('accepted') or 0),
+                'top_score': float(top_raw) if top_raw is not None else None,
+            }
     finally:
         conn.close()
 
@@ -471,6 +636,13 @@ def list_all_submissions(competition_id):
 def get_leaderboard(competition_id):
     """
     返回按每位用户最高分排序的排行榜。分数相同排名一致（标准竞赛并列排名）。
+    每行附带 `best_base_model`：取得最高分那一份提交所填写的基座模型；
+    若该用户的多份提交并列最高分，取最近一次。
+
+    实现：单遍窗口函数。``ROW_NUMBER OVER (PARTITION BY username ORDER BY score DESC,
+    created_at DESC, id DESC)`` 在 rn=1 的位置给出每位用户「最高分中最近一次」那条；
+    同一窗口里再算 ``COUNT/MIN/MAX`` 给出 submission_count / first_submitted_at /
+    best_score，避免历史版本里那条相关子查询带来的 N×扫描。
     """
     ensure_ranking_tables()
     conn = get_db_connection()
@@ -478,14 +650,28 @@ def get_leaderboard(competition_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT username,
-                       MAX(score) AS best_score,
-                       COUNT(*) AS submission_count,
-                       MIN(created_at) AS first_submitted_at
-                FROM ranking_submissions
-                WHERE competition_id = %s AND score IS NOT NULL
-                GROUP BY username
-                ORDER BY best_score DESC, first_submitted_at ASC, username ASC
+                WITH ranked AS (
+                    SELECT
+                        username, score, base_model, created_at, id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY username
+                            ORDER BY score DESC, created_at DESC, id DESC
+                        ) AS rn,
+                        COUNT(*) OVER (PARTITION BY username) AS user_submission_count,
+                        MIN(created_at) OVER (PARTITION BY username) AS user_first_submitted_at,
+                        MAX(score) OVER (PARTITION BY username) AS user_best_score
+                    FROM ranking_submissions
+                    WHERE competition_id = %s AND score IS NOT NULL
+                )
+                SELECT
+                    username,
+                    user_best_score AS best_score,
+                    user_submission_count AS submission_count,
+                    user_first_submitted_at AS first_submitted_at,
+                    base_model AS best_base_model
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY user_best_score DESC, user_first_submitted_at ASC, username ASC
                 """,
                 (competition_id,),
             )
@@ -508,6 +694,7 @@ def get_leaderboard(competition_id):
             'best_score': float(score) if score is not None else None,
             'submission_count': int(row.get('submission_count') or 0),
             'first_submitted_at': row.get('first_submitted_at'),
+            'best_base_model': row.get('best_base_model'),
         })
     return leaderboard
 
@@ -532,3 +719,189 @@ def competition_scoring_dir(competition_id):
 
 def submission_dir(submission_id):
     return os.path.join(RANKING_UPLOAD_ROOT, SUBMISSION_SUBDIR, str(submission_id))
+
+
+# ---------- ELO Mode ----------
+
+def init_submission_elo_state(submission_id, rating):
+    """新提交进入 ELO 池：写入初始分、清零对战次数、置入池标志，状态切换为 Active。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET elo_rating = %s, score = %s,
+                    elo_match_count = 0, elo_in_pool = 1,
+                    status = 'Active'
+                WHERE id = %s
+                """,
+                (float(rating), float(rating), int(submission_id)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def retire_excess_user_submissions(competition_id, username, keep_count=2):
+    """同一用户在某场赛事的池内提交超过 keep_count 份时，把更早的退役。
+    退役提交：elo_in_pool=0，status='Retired'。返回被退役的提交 id 列表。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id FROM ranking_submissions
+                WHERE competition_id = %s AND username = %s AND elo_in_pool = 1
+                ORDER BY created_at DESC, id DESC
+                """,
+                (competition_id, username),
+            )
+            rows = cursor.fetchall() or []
+            ids = [int(r['id']) for r in rows]
+            keep = set(ids[: max(0, int(keep_count))])
+            retire = [i for i in ids if i not in keep]
+            if retire:
+                placeholders = ','.join(['%s'] * len(retire))
+                cursor.execute(
+                    f"UPDATE ranking_submissions"
+                    f" SET elo_in_pool = 0, status = 'Retired'"
+                    f" WHERE id IN ({placeholders})",
+                    tuple(retire),
+                )
+        conn.commit()
+        return retire
+    finally:
+        conn.close()
+
+
+def list_active_elo_competitions():
+    """所有启用了 ELO 模式且已配置评测脚本、且对外公开的赛事。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, scoring_mode, is_active,
+                       scoring_script_path, scoring_script_timeout_seconds,
+                       elo_initial_rating, elo_k_factor, elo_max_matches,
+                       elo_match_interval_seconds, elo_initial_burst
+                FROM ranking_competitions
+                WHERE scoring_mode = 'elo' AND is_active = 1
+                  AND scoring_script_path IS NOT NULL AND scoring_script_path <> ''
+                """
+            )
+            return cursor.fetchall() or []
+    finally:
+        conn.close()
+
+
+def list_eligible_elo_submissions(competition_id, max_matches):
+    """池中、Active、且对战次数还没满的提交。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, username, elo_rating, elo_match_count, answer_path
+                FROM ranking_submissions
+                WHERE competition_id = %s AND elo_in_pool = 1
+                  AND status = 'Active' AND elo_rating IS NOT NULL
+                  AND elo_match_count < %s
+                """,
+                (int(competition_id), int(max_matches)),
+            )
+            return cursor.fetchall() or []
+    finally:
+        conn.close()
+
+
+def get_last_elo_match_time(competition_id):
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT MAX(created_at) AS last_at FROM ranking_elo_matches WHERE competition_id = %s",
+                (int(competition_id),),
+            )
+            row = cursor.fetchone()
+            return (row or {}).get('last_at')
+    finally:
+        conn.close()
+
+
+def record_elo_match(competition_id, sub_a_id, sub_b_id, winner,
+                     rating_a_before, rating_b_before,
+                     rating_a_after, rating_b_after,
+                     details=None, error_message=None):
+    """记录一场 ELO 对战，并在 winner ∈ {1,2} 时更新两份提交的分数与对战次数。
+    调用方应持有按 competition_id 划分的并发锁。"""
+    ensure_ranking_tables()
+    details_text = None
+    if details is not None:
+        if isinstance(details, str):
+            details_text = details
+        else:
+            try:
+                details_text = json.dumps(details, ensure_ascii=False)
+            except Exception:
+                details_text = str(details)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO ranking_elo_matches
+                  (competition_id, submission_a_id, submission_b_id, winner,
+                   rating_a_before, rating_b_before, rating_a_after, rating_b_after,
+                   details, error_message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (int(competition_id), int(sub_a_id), int(sub_b_id), int(winner),
+                 float(rating_a_before), float(rating_b_before),
+                 float(rating_a_after), float(rating_b_after),
+                 details_text, error_message),
+            )
+            if int(winner) in (1, 2):
+                cursor.execute(
+                    "UPDATE ranking_submissions"
+                    " SET elo_rating = %s, score = %s, elo_match_count = elo_match_count + 1"
+                    " WHERE id = %s",
+                    (float(rating_a_after), float(rating_a_after), int(sub_a_id)),
+                )
+                cursor.execute(
+                    "UPDATE ranking_submissions"
+                    " SET elo_rating = %s, score = %s, elo_match_count = elo_match_count + 1"
+                    " WHERE id = %s",
+                    (float(rating_b_after), float(rating_b_after), int(sub_b_id)),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_elo_matches_for_submission(submission_id, limit=20):
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, competition_id, submission_a_id, submission_b_id, winner,
+                       rating_a_before, rating_b_before, rating_a_after, rating_b_after,
+                       details, error_message, created_at
+                FROM ranking_elo_matches
+                WHERE submission_a_id = %s OR submission_b_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (int(submission_id), int(submission_id), int(limit)),
+            )
+            return cursor.fetchall() or []
+    finally:
+        conn.close()
