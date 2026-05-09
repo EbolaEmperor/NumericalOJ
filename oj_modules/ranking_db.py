@@ -905,3 +905,33 @@ def list_elo_matches_for_submission(submission_id, limit=20):
             return cursor.fetchall() or []
     finally:
         conn.close()
+
+
+def get_elo_pair_match_counts(competition_id):
+    """返回该比赛已发生过的"提交对"对战次数：dict{(min_id, max_id): count}。
+
+    由于一对提交在不同场次中可能以 (A,B) 或 (B,A) 顺序出现在表里，
+    这里用 min/max 归一化键，把两种顺序合并计数。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT submission_a_id, submission_b_id, COUNT(*) AS cnt
+                FROM ranking_elo_matches
+                WHERE competition_id = %s
+                GROUP BY submission_a_id, submission_b_id
+                """,
+                (int(competition_id),),
+            )
+            rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+    counts = {}
+    for r in rows:
+        a = int(r['submission_a_id'])
+        b = int(r['submission_b_id'])
+        key = (min(a, b), max(a, b))
+        counts[key] = counts.get(key, 0) + int(r['cnt'])
+    return counts

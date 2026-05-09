@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.ranking_db import (
     get_competition,
+    get_elo_pair_match_counts,
     get_last_elo_match_time,
     get_ranking_submission,
     list_active_elo_competitions,
@@ -50,6 +51,8 @@ GLOBAL_TICK_INTERVAL_SECONDS = 30
 DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS = 120
 DEFAULT_MATCH_LOCK_TTL_SECONDS = 240
 MAX_PAIRS_PER_ROUND = 8
+MAX_PAIR_REMATCHES = 3                # 同一对提交（A,B 与 B,A 视为同一对）最多对战 3 次
+PAIR_PICK_MAX_RETRIES = 8             # 单次选 pair 时遭遇 "已满 3 次" 后允许的重抽次数
 
 
 def _match_lock_ttl(timeout_seconds):
@@ -89,11 +92,24 @@ def _new_ratings(rating_a, rating_b, winner, k):
 
 # ---------- Pair selection ----------
 
-def _pick_partner(eligibles, anchor):
+def _pair_key(id_a, id_b):
+    a, b = int(id_a), int(id_b)
+    return (a, b) if a <= b else (b, a)
+
+
+def _pick_partner(eligibles, anchor, pair_counts=None, max_pair_count=MAX_PAIR_REMATCHES):
+    """从 eligibles 中给 anchor 挑一个搭档。
+    若提供 pair_counts，则把已经对战 >= max_pair_count 次的对子过滤掉。"""
     candidates = [
         s for s in eligibles
         if int(s['id']) != int(anchor['id']) and s['username'] != anchor['username']
     ]
+    if pair_counts is not None and max_pair_count is not None:
+        anchor_id = int(anchor['id'])
+        candidates = [
+            s for s in candidates
+            if pair_counts.get(_pair_key(anchor_id, int(s['id'])), 0) < max_pair_count
+        ]
     if not candidates:
         return None
     anchor_rating = float(anchor.get('elo_rating') or 0)
@@ -105,17 +121,21 @@ def _pick_partner(eligibles, anchor):
     return random.choice(top)
 
 
-def _pick_pair(eligibles):
+def _pick_pair(eligibles, pair_counts=None, max_pair_count=MAX_PAIR_REMATCHES,
+               max_retries=PAIR_PICK_MAX_RETRIES):
+    """挑一对 (A, B)。若 anchor 抽到后所有候选搭档都已和它对战满 max_pair_count 次，
+    重抽 anchor 最多 max_retries 次；仍找不到合法对子则返回 None。"""
     if len(eligibles) < 2:
         return None
     if len({s['username'] for s in eligibles}) < 2:
         return None
     weights = [1.0 / (int(s.get('elo_match_count') or 0) + 1) for s in eligibles]
-    a = random.choices(eligibles, weights=weights, k=1)[0]
-    b = _pick_partner(eligibles, a)
-    if b is None:
-        return None
-    return a, b
+    for _ in range(max(1, int(max_retries))):
+        a = random.choices(eligibles, weights=weights, k=1)[0]
+        b = _pick_partner(eligibles, a, pair_counts=pair_counts, max_pair_count=max_pair_count)
+        if b is not None:
+            return a, b
+    return None
 
 
 # ---------- Scoring script ----------
@@ -273,6 +293,10 @@ def register_ranking_elo_initial_burst_task(celery_app, match_task):
         if not pool:
             return {'success': True, 'scheduled': 0}
 
+        # 同步读取已发生的对战次数，避免对那些已经和该提交对战满 MAX_PAIR_REMATCHES 次的对手再发起。
+        # 调度成功一次也即时把内存里这对 +1。
+        pair_counts = get_elo_pair_match_counts(int(competition_id))
+
         scheduled = 0
         used_ids = set()
         for _ in range(burst):
@@ -280,10 +304,12 @@ def register_ranking_elo_initial_burst_task(celery_app, match_task):
             if not available:
                 # 池小于 burst 数：允许复用
                 available = pool
-            partner = _pick_partner(available, anchor)
+            partner = _pick_partner(available, anchor, pair_counts=pair_counts)
             if partner is None:
                 break
             used_ids.add(int(partner['id']))
+            key = _pair_key(int(submission_id), int(partner['id']))
+            pair_counts[key] = pair_counts.get(key, 0) + 1
             try:
                 match_task.apply_async(
                     args=[int(competition_id), int(submission_id), int(partner['id'])],
@@ -332,18 +358,24 @@ def register_ranking_elo_matchmaker_tick_task(celery_app, match_task):
                 )
                 if len(eligibles) < 2:
                     continue
+                # 读取已发生的对战次数（按 pair 归一化），用于过滤已满 MAX_PAIR_REMATCHES 次的对子。
+                # 同时在本轮里把刚调度过的对子计数 +1，避免本轮内同一对被重抽。
+                pair_counts = get_elo_pair_match_counts(int(comp['id']))
                 n_pairs = max(1, min(MAX_PAIRS_PER_ROUND, len(eligibles) // 2))
                 seen_ids = set()
                 for _ in range(n_pairs):
                     pool = [s for s in eligibles if int(s['id']) not in seen_ids]
                     if len(pool) < 2:
                         pool = eligibles  # 允许复用，但通常不会到这一步
-                    pair = _pick_pair(pool)
+                    pair = _pick_pair(pool, pair_counts=pair_counts)
                     if pair is None:
+                        # 该比赛本轮已经没有"剩余次数 < 3"的合法对子可抽，直接跳过本轮其余配对
                         break
                     a, b = pair
                     seen_ids.add(int(a['id']))
                     seen_ids.add(int(b['id']))
+                    key = _pair_key(int(a['id']), int(b['id']))
+                    pair_counts[key] = pair_counts.get(key, 0) + 1
                     try:
                         match_task.apply_async(
                             args=[int(comp['id']), int(a['id']), int(b['id'])]
