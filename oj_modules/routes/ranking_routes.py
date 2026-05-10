@@ -4,6 +4,7 @@
 打榜赛（Ranking Competition）路由。
 """
 
+import json
 import os
 import shutil
 
@@ -14,6 +15,12 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
+try:
+    import redis as _redis
+except Exception:  # pragma: no cover
+    _redis = None
+
+from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.db_services import get_user_by_username
 from oj_modules.ranking_db import (
     competition_attachments_dir,
@@ -28,12 +35,14 @@ from oj_modules.ranking_db import (
     delete_ranking_submission,
     get_competition,
     get_competition_file,
+    get_competition_match,
     get_leaderboard,
     get_ranking_submission,
     get_submission_stats,
     init_submission_elo_state,
     list_all_submissions,
     list_competition_files,
+    list_competition_matches,
     list_competitions,
     list_elo_matches_for_submission,
     list_user_submissions,
@@ -50,8 +59,16 @@ from oj_modules.ranking_db import (
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
-ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'all_submissions', 'edit')
+ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit')
 SUBMISSIONS_PER_PAGE = 50
+MATCHES_PER_PAGE = 20
+
+# 对战列表 / 详情的 Redis 缓存
+# scope 用于区分 "全部" 和 "与我相关"：scope = '' 或 user:<username>
+ELO_MATCHES_LIST_CACHE_KEY = "ranking:elo:matches_list:{comp}:{scope}:{page}:{per_page}"
+ELO_MATCHES_LIST_CACHE_TTL = 30           # 列表频繁追加新对战，TTL 短一些；可接受最多 30s 旧数据
+ELO_MATCH_DETAIL_CACHE_KEY = "ranking:elo:match_detail:{match_id}"
+ELO_MATCH_DETAIL_CACHE_TTL = 3600         # 单场记录写入后不变（immutable），缓 1 小时
 ANSWER_MAX_BYTES = 64 * 1024 * 1024        # 64MB
 CODE_ZIP_MAX_BYTES = 128 * 1024 * 1024     # 128MB
 ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024   # 256MB
@@ -103,6 +120,85 @@ def _page_window(current_page, total_pages, radius=5):
     start = max(1, current_page - radius)
     end = min(total_pages, current_page + radius)
     return list(range(start, end + 1))
+
+
+def _redis_client():
+    if _redis is None:
+        return None
+    try:
+        return _redis.StrictRedis(
+            host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB),
+            decode_responses=True,
+        )
+    except Exception:
+        return None
+
+
+def _serialize_for_cache(obj):
+    """datetime → str；其余按默认 json 处理。"""
+    return json.dumps(obj, default=str, ensure_ascii=False)
+
+
+def fetch_competition_matches_cached(competition_id, page, per_page, username=None):
+    """先看 Redis，命中返回；未命中查 DB 再回填。
+    username 不为空时只返回该用户参与的对战，cache key 隔离开。
+    返回 (rows, page, total)。"""
+    rds = _redis_client()
+    scope = ('user:' + str(username)) if username else ''
+    cache_key = ELO_MATCHES_LIST_CACHE_KEY.format(
+        comp=int(competition_id), scope=scope, page=int(page), per_page=int(per_page),
+    )
+    if rds is not None:
+        try:
+            cached = rds.get(cache_key)
+            if cached:
+                payload = json.loads(cached)
+                return payload['rows'], int(payload['page']), int(payload['total'])
+        except Exception:
+            pass
+    rows, eff_page, total = list_competition_matches(
+        int(competition_id), page=int(page), per_page=int(per_page), username=username,
+    )
+    if rds is not None:
+        try:
+            rds.set(
+                cache_key,
+                _serialize_for_cache({'rows': rows, 'page': eff_page, 'total': total}),
+                ex=ELO_MATCHES_LIST_CACHE_TTL,
+            )
+        except Exception:
+            pass
+    return rows, eff_page, total
+
+
+def fetch_competition_match_detail_cached(match_id, competition_id):
+    """单场对战详情：缓存 1h。返回 dict 或 None。"""
+    rds = _redis_client()
+    cache_key = ELO_MATCH_DETAIL_CACHE_KEY.format(match_id=int(match_id))
+    if rds is not None:
+        try:
+            cached = rds.get(cache_key)
+            if cached:
+                row = json.loads(cached)
+                # 命中后再校验属于此 comp（防止跨比赛猜 ID）
+                if int(row.get('competition_id') or 0) != int(competition_id):
+                    return None
+                return row
+        except Exception:
+            pass
+    row = get_competition_match(int(match_id), int(competition_id))
+    if not row:
+        return None
+    if rds is not None:
+        try:
+            rds.set(
+                cache_key,
+                _serialize_for_cache(row),
+                ex=ELO_MATCH_DETAIL_CACHE_TTL,
+            )
+        except Exception:
+            pass
+    return row
 
 
 _evaluate_ranking_task = None
@@ -243,11 +339,23 @@ def ranking_detail(competition_id):
     total_pages = 1
     page_numbers = []
     submission_search_q = ''
+    matches = []
+    matches_total = 0
+    matches_mine = False
 
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
     elif tab == 'leaderboard':
         leaderboard = get_leaderboard(competition_id)
+    elif tab == 'matches':
+        requested_page = max(1, request.args.get('page', 1, type=int))
+        matches_mine = str(request.args.get('mine') or '').strip() in ('1', 'true', 'on', 'yes')
+        username_filter = user.get('username') if matches_mine else None
+        matches, current_page, matches_total = fetch_competition_matches_cached(
+            competition_id, requested_page, MATCHES_PER_PAGE, username=username_filter,
+        )
+        total_pages = max(1, (matches_total + MATCHES_PER_PAGE - 1) // MATCHES_PER_PAGE)
+        page_numbers = _page_window(current_page, total_pages)
     elif tab == 'all_submissions':
         submission_search_q = (request.args.get('q') or '').strip()[:50]
         requested_page = max(1, request.args.get('page', 1, type=int))
@@ -278,7 +386,44 @@ def ranking_detail(competition_id):
         page_numbers=page_numbers,
         submission_search_q=submission_search_q,
         submissions_per_page=SUBMISSIONS_PER_PAGE,
+        matches=matches,
+        matches_total=matches_total,
+        matches_mine=matches_mine,
+        matches_per_page=MATCHES_PER_PAGE,
     )
+
+
+# ---------- 对战详情 JSON（公开给登录用户） ----------
+
+@ranking_bp.route('/<int:competition_id>/match/<int:match_id>/details.json', methods=['GET'])
+def ranking_match_details(competition_id, match_id):
+    user, resp = _require_user()
+    if resp is not None:
+        return resp
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify({'success': False, 'message': '比赛不存在'}), 404
+    is_admin = user.get('is_admin') == 1
+    if not is_admin and comp.get('is_active') != 1:
+        return jsonify({'success': False, 'message': '比赛未开放'}), 403
+    row = fetch_competition_match_detail_cached(match_id, competition_id)
+    if not row:
+        return jsonify({'success': False, 'message': '对战记录不存在'}), 404
+    # 只暴露需要的字段；details 可能是 JSON-as-string 也可能就是普通文本
+    return jsonify({
+        'success': True,
+        'id': int(row.get('id')),
+        'created_at': str(row.get('created_at')),
+        'username_a': row.get('username_a'),
+        'username_b': row.get('username_b'),
+        'winner': int(row.get('winner') or 0),
+        'rating_a_before': float(row.get('rating_a_before') or 0),
+        'rating_a_after': float(row.get('rating_a_after') or 0),
+        'rating_b_before': float(row.get('rating_b_before') or 0),
+        'rating_b_after': float(row.get('rating_b_after') or 0),
+        'details': row.get('details'),
+        'error_message': row.get('error_message'),
+    })
 
 
 # ---------- 所有提交（管理员）异步分页 / 搜索 API ----------
