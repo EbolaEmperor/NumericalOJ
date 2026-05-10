@@ -6,7 +6,9 @@
 设计：
   - 每份用户提交在数据库中持有自己的 ELO 评分；用户每次只在池中保留最近 2 份。
   - 全局 tick 任务（self-scheduling，30s 一跳）扫描所有 ELO 模式赛事，
-    挑选若干对 \"对战次数较少 / 分数相近\" 的提交配对进入对战队列。
+    每个赛事每 elo_match_interval_seconds 调度 elo_max_pairs_per_round 对
+    "对战次数较少 / 分数相近" 的提交进入对战队列（默认每个间隔 1 对）；
+    冷却用 Redis 键（SET NX EX）抢占，避免多次 tick 在同一个间隔内重复调度。
   - 用户上传后立即调度一轮 \"初始爆发\"（默认 5 场）让其与池中已有提交快速对战。
   - 单场对战由评测脚本判定：python <script> <answer_a_path> <answer_b_path> →
     stdout 一行 JSON {\"winner\": 1 | 2, \"details\": <可选>}；
@@ -49,7 +51,7 @@ ELO_MATCHMAKER_TICK_TASK_NAME = "oj.ranking_elo_matchmaker_tick"
 GLOBAL_TICK_INTERVAL_SECONDS = 30
 DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS = 120
 DEFAULT_MATCH_LOCK_TTL_SECONDS = 240
-MAX_PAIRS_PER_ROUND = 8
+MAX_PAIRS_PER_ROUND = 8       # 单赛事单 tick 最多调度的对子数（全局上限，防止管理员配置失误）
 
 
 def _match_lock_ttl(timeout_seconds):
@@ -58,6 +60,9 @@ def _match_lock_ttl(timeout_seconds):
 
 TICK_OWNER_KEY = "ranking:elo:tick_owner"
 COMPETITION_LOCK_KEY_FMT = "ranking:elo:comp_lock:{competition_id}"
+# tick 调度对战时占用的冷却键。TTL = elo_match_interval_seconds，
+# 保证一个间隔内只调度一场（下面 matchmaker tick 用 SET NX EX 抢占该键）。
+TICK_COOLDOWN_KEY_FMT = "ranking:elo:tick_cooldown:{competition_id}"
 
 
 def _redis_client():
@@ -326,25 +331,56 @@ def register_ranking_elo_matchmaker_tick_task(celery_app, match_task):
             now_ts = time.time()
             for comp in list_active_elo_competitions():
                 interval = max(5, int(comp.get('elo_match_interval_seconds') or 60))
-                last_at = get_last_elo_match_time(int(comp['id']))
-                if last_at is not None:
+                comp_id = int(comp['id'])
+
+                # 一个间隔内只调度一场：在调度时就 SET NX EX=interval 抢冷却键。
+                # 拿不到键直接跳过；Redis 不可用时退回 DB 时间戳判断（精度差点但不会卡死）。
+                cooldown_key = TICK_COOLDOWN_KEY_FMT.format(competition_id=comp_id)
+                cooldown_ok = None  # None=Redis 不可用; True=本 tick 抢到; False=还在冷却
+                if rds is not None:
                     try:
-                        last_ts = last_at.timestamp()
+                        cooldown_ok = bool(rds.set(cooldown_key, "1", ex=interval, nx=True))
                     except Exception:
-                        last_ts = 0
-                    if now_ts - last_ts < interval:
-                        continue
+                        cooldown_ok = None
+                if cooldown_ok is False:
+                    continue
+                if cooldown_ok is None:
+                    last_at = get_last_elo_match_time(comp_id)
+                    if last_at is not None:
+                        try:
+                            last_ts = last_at.timestamp()
+                        except Exception:
+                            last_ts = 0
+                        if now_ts - last_ts < interval:
+                            continue
+
+                def _release_cooldown():
+                    if cooldown_ok and rds is not None:
+                        try:
+                            rds.delete(cooldown_key)
+                        except Exception:
+                            pass
+
                 eligibles = list_eligible_elo_submissions(
-                    int(comp['id']), int(comp.get('elo_max_matches') or 200)
+                    comp_id, int(comp.get('elo_max_matches') or 200)
                 )
                 if len(eligibles) < 2:
+                    _release_cooldown()
                     continue
-                n_pairs = max(1, min(MAX_PAIRS_PER_ROUND, len(eligibles) // 2))
+
+                # 本轮要调度的对子数：取 (赛事配置, 全局上限, 池规模/2) 三者最小，至少 1。
+                comp_max_pairs = int(comp.get('elo_max_pairs_per_round') or 1)
+                n_pairs = min(
+                    max(1, comp_max_pairs),
+                    MAX_PAIRS_PER_ROUND,
+                    max(1, len(eligibles) // 2),
+                )
                 seen_ids = set()
+                scheduled_any = False
                 for _ in range(n_pairs):
                     pool = [s for s in eligibles if int(s['id']) not in seen_ids]
                     if len(pool) < 2:
-                        pool = eligibles  # 允许复用，但通常不会到这一步
+                        pool = eligibles  # 池小于 n_pairs * 2 时允许复用
                     pair = _pick_pair(pool)
                     if pair is None:
                         break
@@ -352,11 +388,12 @@ def register_ranking_elo_matchmaker_tick_task(celery_app, match_task):
                     seen_ids.add(int(a['id']))
                     seen_ids.add(int(b['id']))
                     try:
-                        match_task.apply_async(
-                            args=[int(comp['id']), int(a['id']), int(b['id'])]
-                        )
+                        match_task.apply_async(args=[comp_id, int(a['id']), int(b['id'])])
+                        scheduled_any = True
                     except Exception:
                         pass
+                if not scheduled_any:
+                    _release_cooldown()
         finally:
             try:
                 self.apply_async(args=[owner_id], countdown=GLOBAL_TICK_INTERVAL_SECONDS)
