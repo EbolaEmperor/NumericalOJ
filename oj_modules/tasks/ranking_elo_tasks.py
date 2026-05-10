@@ -9,7 +9,8 @@
     每个赛事每 elo_match_interval_seconds 调度 elo_max_pairs_per_round 对
     "对战次数较少 / 分数相近" 的提交进入对战队列（默认每个间隔 1 对）；
     冷却用 Redis 键（SET NX EX）抢占，避免多次 tick 在同一个间隔内重复调度。
-  - 用户上传后立即调度一轮 \"初始爆发\"（默认 5 场）让其与池中已有提交快速对战。
+  - 用户上传后立即触发 \"即时补战\"（默认 5 场，串行链式：每场打完、rating 更新
+    之后，再用最新分数现挑下一对手），让新提交逐步收敛到合理分数段。
   - 单场对战由评测脚本判定：python <script> <answer_a_path> <answer_b_path> →
     stdout 一行 JSON {\"winner\": 1 | 2, \"details\": <可选>}；
     脚本中段失败则记录错误、不调整分数。
@@ -21,6 +22,7 @@
 """
 
 import json
+import math
 import os
 import random
 import subprocess
@@ -52,6 +54,8 @@ GLOBAL_TICK_INTERVAL_SECONDS = 30
 DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS = 120
 DEFAULT_MATCH_LOCK_TTL_SECONDS = 240
 MAX_PAIRS_PER_ROUND = 8       # 单赛事单 tick 最多调度的对子数（全局上限，防止管理员配置失误）
+INITIAL_BURST_POLL_SECONDS = 15   # 即时补战串行链等待"上一场已结算"的轮询间隔
+INITIAL_BURST_MAX_DEFERS = 40     # 单一轮等待的最多延期次数（≈ 10 分钟），防止脚本卡死时无限轮询
 
 
 def _match_lock_ttl(timeout_seconds):
@@ -95,7 +99,9 @@ def _new_ratings(rating_a, rating_b, winner, k):
 # ---------- Pair selection ----------
 
 def _pick_partner(eligibles, anchor):
-    """从 eligibles 中给 anchor 挑一个搭档。"""
+    """从 eligibles 中给 anchor 挑一个搭档。
+    候选先按 (|rating 差|, match_count) 排序，再从前 max(3, ceil(10% * 候选数))
+    名中随机抽，避免在大池子里总是匹配几乎相同的几个对手。"""
     candidates = [
         s for s in eligibles
         if int(s['id']) != int(anchor['id']) and s['username'] != anchor['username']
@@ -107,7 +113,9 @@ def _pick_partner(eligibles, anchor):
         abs(float(s.get('elo_rating') or 0) - anchor_rating),
         int(s.get('elo_match_count') or 0),
     ))
-    top = candidates[: min(3, len(candidates))]
+    n = len(candidates)
+    top_k = max(3, math.ceil(n / 10))
+    top = candidates[: min(top_k, n)]
     return random.choice(top)
 
 
@@ -261,7 +269,25 @@ def register_ranking_elo_match_task(celery_app):
 
 def register_ranking_elo_initial_burst_task(celery_app, match_task):
     @celery_app.task(name=ELO_INITIAL_BURST_TASK_NAME, bind=True)
-    def ranking_elo_initial_burst(self, competition_id, submission_id):
+    def ranking_elo_initial_burst(self, competition_id, submission_id,
+                                  remaining=None, last_count=None, defers=0):
+        """串行版即时补战。
+
+        与之前的"一次性把 5 场全排进队列"相反，这个任务每次只调度一场对战，然后
+        把自己重新排到 INITIAL_BURST_POLL_SECONDS 秒之后；下一次触发时先看 anchor
+        的 elo_match_count 有没有相对 last_count 涨过——也就是上一场是否已经结算
+        并更新过 rating——然后再用最新分数现挑下一个对手。
+
+        这样能避免在新提交的初始分附近一次性挑 5 个"分数相近"的人，让中途的对战
+        结果有机会动态影响后续匹配。
+
+        参数:
+            remaining   还要安排几场。第一次由路由传 None，由 comp.elo_initial_burst 初始化。
+            last_count  上一次本任务调度比赛时记下的 anchor.elo_match_count；用来判断
+                        新一场是否已结算。
+            defers      已经在"等待上一场结算"上延期了多少次，超过 INITIAL_BURST_MAX_DEFERS
+                        就强行进入下一轮，防止评测脚本卡住时无限轮询。
+        """
         comp = get_competition(int(competition_id))
         if not comp or str(comp.get('scoring_mode') or '').lower() != 'elo':
             return {'success': False, 'message': '不是 ELO 模式'}
@@ -269,12 +295,34 @@ def register_ranking_elo_initial_burst_task(celery_app, match_task):
             return {'success': False, 'message': '动态评分尚未启动'}
         if not (comp.get('scoring_script_path') or '').strip():
             return {'success': False, 'message': '没有评测脚本'}
-        burst = max(0, int(comp.get('elo_initial_burst') or 5))
-        if burst == 0:
-            return {'success': True, 'scheduled': 0}
+
+        if remaining is None:
+            remaining = max(0, int(comp.get('elo_initial_burst') or 5))
+        remaining = int(remaining)
+        if remaining <= 0:
+            return {'success': True, 'completed': True}
+
         anchor = get_ranking_submission(int(submission_id))
         if not anchor or anchor.get('elo_in_pool') != 1:
             return {'success': False, 'message': '该提交不在 ELO 池中'}
+
+        current_count = int(anchor.get('elo_match_count') or 0)
+
+        # 如果还在等"上一场" 完成且 elo_match_count 没涨，延期再来
+        if last_count is not None and current_count <= int(last_count):
+            if int(defers) < INITIAL_BURST_MAX_DEFERS:
+                try:
+                    self.apply_async(
+                        args=[int(competition_id), int(submission_id),
+                              remaining, int(last_count), int(defers) + 1],
+                        countdown=INITIAL_BURST_POLL_SECONDS,
+                    )
+                except Exception:
+                    pass
+                return {'success': True, 'deferred': True, 'defers': int(defers) + 1}
+            # 等太久了：评测可能卡住或丢失，认账继续往前推
+
+        # 用此时的 anchor.rating 现挑搭档
         pool = list_eligible_elo_submissions(
             int(competition_id), int(comp.get('elo_max_matches') or 200)
         )
@@ -283,28 +331,37 @@ def register_ranking_elo_initial_burst_task(celery_app, match_task):
             if int(s['id']) != int(submission_id) and s['username'] != anchor['username']
         ]
         if not pool:
-            return {'success': True, 'scheduled': 0}
+            return {'success': True, 'scheduled': 0, 'reason': 'pool empty'}
 
-        scheduled = 0
-        used_ids = set()
-        for _ in range(burst):
-            available = [s for s in pool if int(s['id']) not in used_ids]
-            if not available:
-                # 池小于 burst 数：允许复用
-                available = pool
-            partner = _pick_partner(available, anchor)
-            if partner is None:
-                break
-            used_ids.add(int(partner['id']))
+        partner = _pick_partner(pool, anchor)
+        if partner is None:
+            return {'success': True, 'scheduled': 0, 'reason': 'no partner'}
+
+        try:
+            match_task.apply_async(
+                args=[int(competition_id), int(submission_id), int(partner['id'])],
+            )
+        except Exception:
+            pass
+
+        # 安排自己的下一轮：等到 elo_match_count 涨过 current_count 再现挑搭档
+        next_remaining = remaining - 1
+        if next_remaining > 0:
             try:
-                match_task.apply_async(
-                    args=[int(competition_id), int(submission_id), int(partner['id'])],
-                    countdown=2 + scheduled,  # 错开几秒避免锁竞争
+                self.apply_async(
+                    args=[int(competition_id), int(submission_id),
+                          next_remaining, current_count, 0],
+                    countdown=INITIAL_BURST_POLL_SECONDS,
                 )
-                scheduled += 1
             except Exception:
                 pass
-        return {'success': True, 'scheduled': scheduled}
+
+        return {
+            'success': True,
+            'scheduled': 1,
+            'partner_id': int(partner['id']),
+            'remaining_after': next_remaining,
+        }
 
     return ranking_elo_initial_burst
 
