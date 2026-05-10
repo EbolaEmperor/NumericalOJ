@@ -40,6 +40,12 @@
            class="list-group-item list-group-item-action {% if tab == 'leaderboard' %}active{% endif %}">
           <i class="fas fa-list-ol me-2"></i> 排行榜
         </a>
+        {% if (competition.scoring_mode or 'absolute')|lower == 'elo' %}
+        <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}"
+           class="list-group-item list-group-item-action {% if tab == 'matches' %}active{% endif %}">
+          <i class="fas fa-chess me-2"></i> 对战数据
+        </a>
+        {% endif %}
         {% if is_admin %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='all_submissions') }}"
            class="list-group-item list-group-item-action {% if tab == 'all_submissions' %}active{% endif %}">
@@ -487,6 +493,250 @@
           </div>
         {% endif %}
       </div>
+    {% endif %}
+
+    {# ========== 对战数据（ELO 模式公开） ========== #}
+    {% if tab == 'matches' %}
+      <div class="matches-card">
+        <header class="matches-head">
+          <div class="matches-head-title">
+            <div class="matches-eyebrow">Duels · 对战数据</div>
+            <div class="matches-title">
+              <span class="matches-title-number">{{ matches_total }}</span>
+              <span class="matches-title-label">场对决</span>
+              {% if matches_mine %}<span class="matches-scope-tag">You only</span>{% endif %}
+            </div>
+            <div class="matches-meta">
+              {% if competition.elo_running == 1 %}
+                <span class="matches-meta-dot is-live"></span>
+                匹配引擎运行中 · 每 {{ competition.elo_match_interval_seconds or 60 }} 秒一轮
+              {% else %}
+                <span class="matches-meta-dot is-paused"></span>
+                匹配引擎已暂停
+              {% endif %}
+            </div>
+          </div>
+          <nav class="matches-filter" aria-label="过滤">
+            <a class="matches-filter-pill {% if not matches_mine %}is-active{% endif %}"
+               href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}">
+              全部
+            </a>
+            <a class="matches-filter-pill {% if matches_mine %}is-active{% endif %}"
+               href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', mine=1) }}">
+              <i class="fas fa-user-circle me-1"></i>与我相关
+            </a>
+          </nav>
+        </header>
+
+        {% if not matches %}
+          <div class="matches-empty">
+            <div class="matches-empty-icon"><i class="fas fa-chess-board"></i></div>
+            <div class="matches-empty-title">
+              {% if matches_mine %}你还没有踏上擂台{% else %}擂台尚无对决{% endif %}
+            </div>
+            <div class="matches-empty-hint">
+              {% if competition.elo_running != 1 %}
+                动态评分尚未启动，匹配引擎不会调度对战。
+              {% else %}
+                等待匹配引擎调度首场对战，每 {{ competition.elo_match_interval_seconds or 60 }} 秒一轮。
+              {% endif %}
+            </div>
+          </div>
+        {% else %}
+          <div class="matches-list">
+            {% for m in matches %}
+              {% set delta_a = (m.rating_a_after or 0) - (m.rating_a_before or 0) %}
+              {% set delta_b = (m.rating_b_after or 0) - (m.rating_b_before or 0) %}
+              {% set winner = m.winner|int %}
+              {% set ts = (m.created_at or '')|string %}
+              {% set is_me_a = user and m.username_a and m.username_a == user.username %}
+              {% set is_me_b = user and m.username_b and m.username_b == user.username %}
+              <article class="match-row{% if winner == 0 %} is-failed{% endif %}{% if is_me_a or is_me_b %} is-mine{% endif %}">
+                <time class="match-time">
+                  <span class="match-time-date">{{ ts[5:10] if ts|length >= 10 else ts }}</span>
+                  <span class="match-time-clock">{{ ts[11:16] if ts|length >= 16 else '' }}</span>
+                </time>
+
+                <div class="match-side match-side-a {% if winner == 1 %}match-winner{% elif winner == 2 %}match-loser{% endif %}">
+                  <span class="match-username">
+                    {% if is_me_a %}<span class="match-me-tag" aria-hidden="true">YOU</span>{% endif %}
+                    {{ m.username_a or ('sub#' ~ m.submission_a_id) }}
+                  </span>
+                  <span class="match-stats">
+                    <span class="match-rating">{{ '%.0f'|format(m.rating_a_before or 0) }}</span>
+                    <span class="match-delta {% if delta_a > 0 %}is-up{% elif delta_a < 0 %}is-down{% endif %}">{{ '%+.0f'|format(delta_a) }}</span>
+                  </span>
+                </div>
+
+                <div class="match-vs"
+                     {% if winner == 1 %}data-victor="a"{% elif winner == 2 %}data-victor="b"{% elif winner == 0 %}data-victor="none"{% endif %}>
+                  {% if winner == 0 %}
+                    <span class="match-vs-failed" title="评测脚本失败">N/C</span>
+                  {% else %}
+                    <span class="match-vs-badge" title="{% if winner == 1 %}A 胜{% else %}B 胜{% endif %}">
+                      {% if winner == 1 %}
+                        <i class="fas fa-caret-left"></i>
+                      {% else %}
+                        <i class="fas fa-caret-right"></i>
+                      {% endif %}
+                    </span>
+                  {% endif %}
+                </div>
+
+                <div class="match-side match-side-b {% if winner == 2 %}match-winner{% elif winner == 1 %}match-loser{% endif %}">
+                  <span class="match-stats">
+                    <span class="match-delta {% if delta_b > 0 %}is-up{% elif delta_b < 0 %}is-down{% endif %}">{{ '%+.0f'|format(delta_b) }}</span>
+                    <span class="match-rating">{{ '%.0f'|format(m.rating_b_before or 0) }}</span>
+                  </span>
+                  <span class="match-username">
+                    {{ m.username_b or ('sub#' ~ m.submission_b_id) }}
+                    {% if is_me_b %}<span class="match-me-tag" aria-hidden="true">YOU</span>{% endif %}
+                  </span>
+                </div>
+
+                <div class="match-action">
+                  <button type="button" class="match-detail-btn" data-match-id="{{ m.id }}">
+                    <span>详情</span>
+                    <i class="fas fa-arrow-right" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        {% if total_pages > 1 %}
+        <footer class="matches-pagination">
+          <nav aria-label="分页">
+            <ul class="pagination mb-0">
+              <li class="page-item {% if current_page <= 1 %}disabled{% endif %}">
+                <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page-1, mine=(1 if matches_mine else None)) }}" aria-label="上一页">‹</a>
+              </li>
+              {% for p in page_numbers %}
+                <li class="page-item {% if p == current_page %}active{% endif %}">
+                  <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=p, mine=(1 if matches_mine else None)) }}">{{ p }}</a>
+                </li>
+              {% endfor %}
+              <li class="page-item {% if current_page >= total_pages %}disabled{% endif %}">
+                <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page+1, mine=(1 if matches_mine else None)) }}" aria-label="下一页">›</a>
+              </li>
+            </ul>
+          </nav>
+        </footer>
+        {% endif %}
+      </div>
+
+      <!-- 详情 modal -->
+      <div class="modal fade" id="matchDetailModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title"><i class="fas fa-magnifying-glass me-2"></i>对战详情</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <div id="matchDetailLoading" class="text-center text-muted py-4">
+                <i class="fas fa-spinner fa-spin me-2"></i>加载中…
+              </div>
+              <div id="matchDetailError" class="alert alert-danger d-none"></div>
+              <div id="matchDetailContent" class="d-none">
+                <div class="text-muted small mb-2" id="matchDetailMeta"></div>
+                <h6 class="mb-2">评测脚本给出的胜负理由</h6>
+                <pre id="matchDetailVerdict" class="bg-light border rounded p-3 small" style="white-space: pre-wrap; word-break: break-word;"></pre>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var modalEl = document.getElementById('matchDetailModal');
+          if (!modalEl) return;
+          var modal = new bootstrap.Modal(modalEl);
+          var loadingEl = document.getElementById('matchDetailLoading');
+          var errorEl = document.getElementById('matchDetailError');
+          var contentEl = document.getElementById('matchDetailContent');
+          var metaEl = document.getElementById('matchDetailMeta');
+          var verdictEl = document.getElementById('matchDetailVerdict');
+
+          function showState(state) {
+            loadingEl.classList.toggle('d-none', state !== 'loading');
+            errorEl.classList.toggle('d-none', state !== 'error');
+            contentEl.classList.toggle('d-none', state !== 'ok');
+          }
+
+          function renderDetail(data) {
+            var winner = data.winner;
+            var winnerLabel = winner === 1 ? (data.username_a + ' 胜')
+                            : winner === 2 ? (data.username_b + ' 胜')
+                            : '失败';
+            metaEl.textContent =
+              '#' + data.id + ' · ' + data.created_at + ' · ' + winnerLabel;
+
+            var verdict = '';
+            if (data.error_message) {
+              verdict = '【脚本错误】\n' + data.error_message;
+            } else if (data.details === null || data.details === undefined || data.details === '') {
+              verdict = '（评测脚本未输出 details 字段）';
+            } else if (typeof data.details === 'string') {
+              // details 可能是 JSON 字符串，尝试解析后美化
+              try {
+                var parsed = JSON.parse(data.details);
+                if (parsed && typeof parsed === 'object') {
+                  // 优先展示常见的 reason / verdict / explanation 字段
+                  var preferred = parsed.reason || parsed.verdict || parsed.explanation || parsed.justification || parsed.message;
+                  verdict = preferred ? String(preferred) : JSON.stringify(parsed, null, 2);
+                } else {
+                  verdict = String(parsed);
+                }
+              } catch (_) {
+                verdict = data.details;
+              }
+            } else if (typeof data.details === 'object') {
+              var preferred = data.details.reason || data.details.verdict || data.details.explanation || data.details.justification || data.details.message;
+              verdict = preferred ? String(preferred) : JSON.stringify(data.details, null, 2);
+            } else {
+              verdict = String(data.details);
+            }
+            verdictEl.textContent = verdict;
+          }
+
+          var loadedCache = {};   // 客户端再加一层 in-memory 缓存，模态再开同一场不重复请求
+
+          document.querySelectorAll('.match-detail-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var matchId = btn.getAttribute('data-match-id');
+              showState('loading');
+              modal.show();
+              if (loadedCache[matchId]) {
+                renderDetail(loadedCache[matchId]);
+                showState('ok');
+                return;
+              }
+              fetch('{{ url_for("ranking.ranking_match_details", competition_id=competition.id, match_id=0) }}'.replace(/\/0\//, '/' + matchId + '/'))
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                  if (!data.success) {
+                    errorEl.textContent = data.message || '加载失败';
+                    showState('error');
+                    return;
+                  }
+                  loadedCache[matchId] = data;
+                  renderDetail(data);
+                  showState('ok');
+                })
+                .catch(function (e) {
+                  errorEl.textContent = '网络错误：' + (e && e.message || e);
+                  showState('error');
+                });
+            });
+          });
+        })();
+      </script>
     {% endif %}
 
     {# ========== 所有提交（管理员） ========== #}
@@ -989,6 +1239,471 @@
   .ranking-description table td {
     border: 1px solid #dee2e6;
     padding: 0.4rem 0.75rem;
+  }
+
+  /* ==================== 对战数据 ==================== */
+  /*
+   * 设计语境：tournament bracket feed —— 编辑刊物式的对决榜。
+   * 镜像对峙的双方 + 中央贯穿的"决斗线" + 金棕色胜者标记。
+   */
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap');
+
+  .matches-card {
+    --m-ink: #1a1a1f;
+    --m-ink-soft: #5e6470;
+    --m-ink-mute: #94918a;
+    --m-paper: #ffffff;
+    --m-paper-2: #faf8f3;
+    --m-paper-3: #f3f0e8;
+    --m-rule: #e8e6e0;
+    --m-rule-soft: #f1efe9;
+    --m-gold: #c89b30;
+    --m-gold-2: #a67e1e;
+    --m-gold-soft: #f5ecd5;
+    --m-crimson: #b03a2e;
+    --m-crimson-soft: #f6e2dd;
+    --m-emerald: #1f7a4d;
+
+    position: relative;
+    background: var(--m-paper);
+    border: 1px solid var(--m-rule);
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02), 0 14px 36px -28px rgba(60, 50, 30, 0.45);
+    overflow: hidden;
+    font-family: 'Sora', system-ui, -apple-system, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  /* "Arena strip"：顶部 4px 渐变彩条，金 → 焦糖 → 朱赤 */
+  .matches-card::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 4px;
+    background: linear-gradient(90deg, var(--m-gold) 0%, #d96d3e 55%, var(--m-crimson) 100%);
+    z-index: 2;
+  }
+
+  /* ---------- 头部 ---------- */
+  .matches-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 1rem 1.5rem;
+    padding: 1rem 1.4rem 0.85rem;
+    border-bottom: 1px solid var(--m-rule);
+    background: linear-gradient(180deg, #ffffff 0%, #fcfaf5 100%);
+  }
+  .matches-eyebrow {
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--m-crimson);
+    margin-bottom: 0.3rem;
+  }
+  .matches-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    color: var(--m-ink);
+  }
+  .matches-title-number {
+    font-family: 'JetBrains Mono', Menlo, monospace;
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--m-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .matches-title-label {
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--m-ink-soft);
+  }
+  .matches-scope-tag {
+    margin-left: 0.45rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 0.18rem 0.55rem 0.16rem;
+    border: 1px solid var(--m-crimson);
+    color: var(--m-crimson);
+    border-radius: 999px;
+    line-height: 1;
+  }
+  .matches-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--m-ink-soft);
+    letter-spacing: 0.01em;
+  }
+  .matches-meta-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .matches-meta-dot.is-live {
+    background: var(--m-emerald);
+    box-shadow: 0 0 0 0 rgba(31, 122, 77, 0.55);
+    animation: matches-pulse 1.8s ease-out infinite;
+  }
+  .matches-meta-dot.is-paused {
+    background: var(--m-ink-mute);
+  }
+  @keyframes matches-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0.45); }
+    70%  { box-shadow: 0 0 0 6px rgba(31, 122, 77, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0); }
+  }
+
+  /* 过滤切换：磨砂胶囊 + 滑块 */
+  .matches-filter {
+    display: inline-flex;
+    background: var(--m-paper-3);
+    padding: 3px;
+    border: 1px solid var(--m-rule);
+    border-radius: 999px;
+  }
+  .matches-filter-pill {
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.3rem 0.95rem;
+    border-radius: 999px;
+    color: var(--m-ink-soft);
+    text-decoration: none;
+    transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+    line-height: 1.3;
+    border: 1px solid transparent;
+  }
+  .matches-filter-pill:hover { color: var(--m-ink); }
+  .matches-filter-pill.is-active {
+    background: var(--m-ink);
+    color: #fff;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05), 0 6px 14px -6px rgba(0, 0, 0, 0.45);
+  }
+  .matches-filter-pill.is-active:hover { color: #fff; }
+
+  /* ---------- 列表 ---------- */
+  .matches-list {
+    background: var(--m-paper);
+    position: relative;
+  }
+  .match-row {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr) 60px minmax(0, 1fr) 92px;
+    column-gap: 0.7rem;
+    align-items: center;
+    padding: 0.42rem 1.2rem;
+    border-top: 1px solid var(--m-rule-soft);
+    transition: background-color 0.16s ease;
+    position: relative;
+    font-size: 0.92rem;
+  }
+  .match-row:first-child { border-top: 0; }
+  .match-row:hover { background: var(--m-paper-2); }
+  .match-row.is-failed {
+    background: repeating-linear-gradient(
+      135deg,
+      transparent 0 6px,
+      rgba(148, 145, 138, 0.045) 6px 12px
+    );
+  }
+  .match-row.is-failed:hover { background: rgba(148, 145, 138, 0.07); }
+  .match-row.is-mine::after {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--m-crimson);
+  }
+
+  /* 时间：双行 mono */
+  .match-time {
+    display: flex;
+    flex-direction: column;
+    font-family: 'JetBrains Mono', Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+  }
+  .match-time-date {
+    font-size: 0.7rem;
+    color: var(--m-ink-mute);
+    letter-spacing: 0.02em;
+  }
+  .match-time-clock {
+    font-size: 0.85rem;
+    color: var(--m-ink);
+    font-weight: 500;
+  }
+
+  /* 双方对峙容器 */
+  .match-side {
+    display: flex;
+    align-items: baseline;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+  .match-side-a { justify-content: flex-end; padding-right: 0.4rem; }
+  .match-side-b { justify-content: flex-start; padding-left: 0.4rem; }
+
+  .match-username {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--m-ink);
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+  .match-side.match-winner .match-username { color: var(--m-gold-2); }
+  .match-side.match-loser  .match-username { color: var(--m-ink-soft); opacity: 0.78; }
+
+  .match-me-tag {
+    font-size: 0.55rem;
+    letter-spacing: 0.18em;
+    font-weight: 700;
+    padding: 0.13rem 0.36rem 0.11rem;
+    background: var(--m-crimson);
+    color: #fff;
+    border-radius: 3px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  /* 数字组：rating chip + delta */
+  .match-stats {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-family: 'JetBrains Mono', Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  .match-rating {
+    font-size: 0.86rem;
+    font-weight: 500;
+    color: var(--m-ink);
+    padding: 0.1rem 0.45rem 0.06rem;
+    border-radius: 4px;
+    background: var(--m-paper-3);
+    border: 1px solid var(--m-rule);
+    line-height: 1.25;
+  }
+  .match-side.match-winner .match-rating {
+    background: var(--m-gold-soft);
+    border-color: rgba(200, 155, 48, 0.35);
+    color: var(--m-gold-2);
+    box-shadow: 0 1px 0 rgba(200, 155, 48, 0.15);
+  }
+  .match-side.match-loser .match-rating { opacity: 0.65; }
+
+  .match-delta {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--m-ink-mute);
+  }
+  .match-delta.is-up   { color: var(--m-emerald); }
+  .match-delta.is-down { color: var(--m-crimson); opacity: 0.85; }
+
+  /* 中央 VS 列：决斗线 + 圆形徽章 */
+  .match-vs {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    height: 100%;
+  }
+  /* 贯穿的 1px 决斗线，从行顶到行底，被徽章遮断 */
+  .match-vs::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: var(--m-rule);
+    transform: translateX(-50%);
+    z-index: 0;
+  }
+  .match-vs > * { position: relative; z-index: 1; }
+
+  .match-vs-badge {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--m-paper);
+    border: 1.5px solid var(--m-gold);
+    color: var(--m-gold-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    box-shadow:
+      0 0 0 3px var(--m-paper),
+      0 4px 10px -3px rgba(200, 155, 48, 0.35);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .match-row:hover .match-vs-badge {
+    transform: scale(1.12);
+    box-shadow:
+      0 0 0 3px var(--m-paper),
+      0 6px 14px -3px rgba(200, 155, 48, 0.55);
+  }
+
+  .match-vs-failed {
+    font-family: 'Sora', system-ui, sans-serif;
+    font-size: 0.6rem;
+    letter-spacing: 0.18em;
+    font-weight: 700;
+    color: var(--m-ink-mute);
+    background: var(--m-paper);
+    border: 1px solid var(--m-rule);
+    padding: 0.2rem 0.42rem 0.16rem;
+    border-radius: 4px;
+    box-shadow: 0 0 0 3px var(--m-paper);
+  }
+
+  /* 详情按钮：胶囊 + 滑动箭头 */
+  .match-action { text-align: right; }
+  .match-detail-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.34rem;
+    padding: 0.24rem 0.7rem 0.22rem 0.85rem;
+    font-family: 'Sora', system-ui, sans-serif;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--m-ink);
+    background: transparent;
+    border: 1px solid var(--m-rule);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: all 0.16s ease;
+    letter-spacing: 0.01em;
+    line-height: 1.3;
+  }
+  .match-detail-btn i {
+    font-size: 0.65rem;
+    color: var(--m-ink-mute);
+    transition: transform 0.18s ease, color 0.16s ease;
+  }
+  .match-detail-btn:hover {
+    border-color: var(--m-ink);
+    background: var(--m-ink);
+    color: #fff;
+  }
+  .match-detail-btn:hover i {
+    transform: translateX(3px);
+    color: #fff;
+  }
+
+  /* ---------- 空状态 ---------- */
+  .matches-empty {
+    padding: 3.2rem 2rem 3.6rem;
+    text-align: center;
+    color: var(--m-ink-soft);
+    background: linear-gradient(180deg, var(--m-paper) 0%, var(--m-paper-2) 100%);
+  }
+  .matches-empty-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    border: 2px dashed var(--m-rule);
+    color: var(--m-ink-mute);
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+  }
+  .matches-empty-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--m-ink);
+    margin-bottom: 0.35rem;
+  }
+  .matches-empty-hint {
+    font-size: 0.85rem;
+    color: var(--m-ink-soft);
+  }
+
+  /* ---------- 分页 ---------- */
+  .matches-pagination {
+    padding: 0.7rem 1.2rem;
+    border-top: 1px solid var(--m-rule);
+    background: var(--m-paper);
+  }
+  .matches-pagination .pagination {
+    --bs-pagination-padding-x: 0;
+    --bs-pagination-padding-y: 0;
+    margin: 0;
+    gap: 0.3rem;
+    justify-content: center;
+  }
+  .matches-pagination .page-link {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50% !important;
+    border: 1px solid var(--m-rule);
+    font-family: 'Sora', system-ui, sans-serif;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--m-ink);
+    background: transparent;
+    transition: all 0.14s ease;
+    line-height: 1;
+  }
+  .matches-pagination .page-link:hover {
+    background: var(--m-paper-2);
+    border-color: var(--m-ink);
+    color: var(--m-ink);
+    box-shadow: 0 4px 10px -6px rgba(0, 0, 0, 0.3);
+  }
+  .matches-pagination .page-item.active .page-link {
+    background: var(--m-ink);
+    border-color: var(--m-ink);
+    color: #fff;
+    box-shadow: 0 4px 10px -4px rgba(0, 0, 0, 0.4);
+  }
+  .matches-pagination .page-item.disabled .page-link {
+    opacity: 0.32;
+    background: transparent;
+  }
+
+  /* ---------- 移动端：堆叠为 3 行 ---------- */
+  @media (max-width: 768px) {
+    .matches-head { padding: 0.85rem 1rem 0.75rem; }
+    .matches-title-number { font-size: 1.5rem; }
+    .match-row {
+      grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr);
+      grid-template-areas:
+        "time time time"
+        "sa   vs   sb"
+        "act  act  act";
+      row-gap: 0.45rem;
+      padding: 0.7rem 1rem;
+    }
+    .match-time {
+      grid-area: time;
+      flex-direction: row;
+      gap: 0.55rem;
+      align-items: baseline;
+    }
+    .match-side-a { grid-area: sa; }
+    .match-vs     { grid-area: vs; }
+    .match-side-b { grid-area: sb; }
+    .match-action { grid-area: act; text-align: center; padding-top: 0.15rem; }
+    .match-vs::before { top: -0.4rem; bottom: -0.4rem; }
   }
 
   /* ==================== 排行榜 ==================== */

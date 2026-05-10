@@ -966,6 +966,87 @@ def record_elo_match(competition_id, sub_a_id, sub_b_id, winner,
         conn.close()
 
 
+def list_competition_matches(competition_id, *, page=1, per_page=20, username=None):
+    """分页拉某场赛事的对战记录，并 JOIN 出双方用户名，省掉前端再查表。
+    若提供 username，只返回该用户参与的对战（任一方）。
+    返回 (rows, page, total)。created_at DESC 排序，新对战在前。
+    rows 不带 details / error_message —— 这两个走单条详情接口取，以免列表查询拽着大文本。"""
+    ensure_ranking_tables()
+    page = max(1, int(page or 1))
+    per_page = max(1, int(per_page or 20))
+    user_filter_sql = ""
+    extra_params = ()
+    if username:
+        user_filter_sql = " AND (sa.username = %s OR sb.username = %s)"
+        extra_params = (str(username), str(username))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # COUNT(*) 与 SELECT 用同样的 JOIN + 过滤，确保 total 与列表一致
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM ranking_elo_matches m
+                LEFT JOIN ranking_submissions sa ON sa.id = m.submission_a_id
+                LEFT JOIN ranking_submissions sb ON sb.id = m.submission_b_id
+                WHERE m.competition_id = %s{user_filter_sql}
+                """,
+                (int(competition_id),) + extra_params,
+            )
+            total = int((cursor.fetchone() or {}).get('total') or 0)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            if page > total_pages:
+                page = total_pages
+            offset = (page - 1) * per_page
+            cursor.execute(
+                f"""
+                SELECT m.id, m.submission_a_id, m.submission_b_id, m.winner,
+                       m.rating_a_before, m.rating_a_after,
+                       m.rating_b_before, m.rating_b_after,
+                       m.created_at,
+                       sa.username AS username_a,
+                       sb.username AS username_b
+                FROM ranking_elo_matches m
+                LEFT JOIN ranking_submissions sa ON sa.id = m.submission_a_id
+                LEFT JOIN ranking_submissions sb ON sb.id = m.submission_b_id
+                WHERE m.competition_id = %s{user_filter_sql}
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT %s OFFSET %s
+                """,
+                (int(competition_id),) + extra_params + (int(per_page), int(offset)),
+            )
+            rows = cursor.fetchall() or []
+            return rows, page, total
+    finally:
+        conn.close()
+
+
+def get_competition_match(match_id, competition_id):
+    """单场对战详情（含 details / error_message + 双方用户名）。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT m.id, m.competition_id, m.submission_a_id, m.submission_b_id, m.winner,
+                       m.rating_a_before, m.rating_a_after,
+                       m.rating_b_before, m.rating_b_after,
+                       m.details, m.error_message, m.created_at,
+                       sa.username AS username_a,
+                       sb.username AS username_b
+                FROM ranking_elo_matches m
+                LEFT JOIN ranking_submissions sa ON sa.id = m.submission_a_id
+                LEFT JOIN ranking_submissions sb ON sb.id = m.submission_b_id
+                WHERE m.id = %s AND m.competition_id = %s
+                """,
+                (int(match_id), int(competition_id)),
+            )
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
 def list_elo_matches_for_submission(submission_id, limit=20):
     ensure_ranking_tables()
     conn = get_db_connection()
