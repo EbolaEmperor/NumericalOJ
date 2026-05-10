@@ -91,6 +91,13 @@ def ensure_ranking_tables():
                     "ALTER TABLE ranking_competitions"
                     " ADD COLUMN elo_running TINYINT(1) NOT NULL DEFAULT 0"
                 )
+            # 兼容：为已存在的老表补加每个匹配间隔可调度的对子数
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'elo_max_pairs_per_round'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN elo_max_pairs_per_round INT NOT NULL DEFAULT 1"
+                )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ranking_competition_files (
@@ -221,7 +228,7 @@ def get_competition(competition_id):
                 SELECT id, title, summary, description, answer_format,
                        scoring_mode, elo_initial_rating, elo_k_factor,
                        elo_max_matches, elo_match_interval_seconds, elo_initial_burst,
-                       elo_running,
+                       elo_max_pairs_per_round, elo_running,
                        scoring_script_timeout_seconds,
                        reference_answer_path, reference_answer_name,
                        scoring_script_path, scoring_script_name, max_score, is_active,
@@ -259,7 +266,8 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         max_score=None, is_active=None, answer_format=None,
                         scoring_mode=None, elo_initial_rating=None, elo_k_factor=None,
                         elo_max_matches=None, elo_match_interval_seconds=None,
-                        elo_initial_burst=None, scoring_script_timeout_seconds=None):
+                        elo_initial_burst=None, elo_max_pairs_per_round=None,
+                        scoring_script_timeout_seconds=None):
     ensure_ranking_tables()
     fields = []
     params = []
@@ -305,6 +313,9 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if elo_initial_burst is not None:
         fields.append("elo_initial_burst = %s")
         params.append(int(elo_initial_burst))
+    if elo_max_pairs_per_round is not None:
+        fields.append("elo_max_pairs_per_round = %s")
+        params.append(int(elo_max_pairs_per_round))
     if scoring_script_timeout_seconds is not None:
         fields.append("scoring_script_timeout_seconds = %s")
         params.append(int(scoring_script_timeout_seconds))
@@ -857,7 +868,8 @@ def list_active_elo_competitions():
                 SELECT id, scoring_mode, is_active, elo_running,
                        scoring_script_path, scoring_script_timeout_seconds,
                        elo_initial_rating, elo_k_factor, elo_max_matches,
-                       elo_match_interval_seconds, elo_initial_burst
+                       elo_match_interval_seconds, elo_initial_burst,
+                       elo_max_pairs_per_round
                 FROM ranking_competitions
                 WHERE scoring_mode = 'elo' AND is_active = 1 AND elo_running = 1
                   AND scoring_script_path IS NOT NULL AND scoring_script_path <> ''

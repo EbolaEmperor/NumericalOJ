@@ -67,6 +67,7 @@ ELO_K_FACTOR_RANGE = (1.0, 200.0)
 ELO_MAX_MATCHES_RANGE = (1, 10000)
 ELO_MATCH_INTERVAL_RANGE = (5, 3600)
 ELO_INITIAL_BURST_RANGE = (0, 50)
+ELO_MAX_PAIRS_PER_ROUND_RANGE = (1, 8)   # 与 ranking_elo_tasks.MAX_PAIRS_PER_ROUND 保持一致
 SCORING_SCRIPT_TIMEOUT_RANGE = (5, 600)
 
 
@@ -474,6 +475,7 @@ def ranking_edit(competition_id):
     elo_max_matches_raw = request.form.get('elo_max_matches')
     elo_match_interval_raw = request.form.get('elo_match_interval_seconds')
     elo_initial_burst_raw = request.form.get('elo_initial_burst')
+    elo_max_pairs_per_round_raw = request.form.get('elo_max_pairs_per_round')
     script_timeout_raw = request.form.get('scoring_script_timeout_seconds')
 
     if not title:
@@ -532,6 +534,10 @@ def ranking_edit(competition_id):
         elo_initial_burst_raw, comp.get('elo_initial_burst') or 5,
         ELO_INITIAL_BURST_RANGE[0], ELO_INITIAL_BURST_RANGE[1],
     )
+    elo_max_pairs_per_round = _parse_int(
+        elo_max_pairs_per_round_raw, comp.get('elo_max_pairs_per_round') or 1,
+        ELO_MAX_PAIRS_PER_ROUND_RANGE[0], ELO_MAX_PAIRS_PER_ROUND_RANGE[1],
+    )
     script_timeout = _parse_int(
         script_timeout_raw, comp.get('scoring_script_timeout_seconds') or 120,
         SCORING_SCRIPT_TIMEOUT_RANGE[0], SCORING_SCRIPT_TIMEOUT_RANGE[1],
@@ -551,6 +557,7 @@ def ranking_edit(competition_id):
         elo_max_matches=elo_max_matches,
         elo_match_interval_seconds=elo_match_interval,
         elo_initial_burst=elo_initial_burst,
+        elo_max_pairs_per_round=elo_max_pairs_per_round,
         scoring_script_timeout_seconds=script_timeout,
     )
 

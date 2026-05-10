@@ -692,40 +692,47 @@
               <legend class="float-none w-auto px-2 small fw-semibold text-muted mb-2">
                 <i class="fas fa-chess-knight me-1"></i> ELO 参数
               </legend>
-              <div class="row g-3">
-                <div class="col-md-4 col-lg-2">
+              <div class="row g-2 flex-nowrap">
+                <div class="col">
                   <label class="form-label small">初始分</label>
                   <input type="number" class="form-control" name="elo_initial_rating"
                          value="{{ '%.0f'|format(competition.elo_initial_rating or 1500) }}"
                          min="100" max="5000" step="1">
                 </div>
-                <div class="col-md-4 col-lg-2">
+                <div class="col">
                   <label class="form-label small">K 因子</label>
                   <input type="number" class="form-control" name="elo_k_factor"
                          value="{{ '%.0f'|format(competition.elo_k_factor or 32) }}"
                          min="1" max="200" step="1">
                 </div>
-                <div class="col-md-4 col-lg-2">
+                <div class="col">
                   <label class="form-label small">单提交最大对战</label>
                   <input type="number" class="form-control" name="elo_max_matches"
                          value="{{ competition.elo_max_matches or 200 }}"
                          min="1" max="10000" step="1">
                 </div>
-                <div class="col-md-4 col-lg-3">
+                <div class="col">
                   <label class="form-label small">匹配间隔（秒）</label>
                   <input type="number" class="form-control" name="elo_match_interval_seconds"
                          value="{{ competition.elo_match_interval_seconds or 60 }}"
                          min="5" max="3600" step="1">
                 </div>
-                <div class="col-md-4 col-lg-3">
+                <div class="col">
                   <label class="form-label small">新提交即时补战</label>
                   <input type="number" class="form-control" name="elo_initial_burst"
                          value="{{ competition.elo_initial_burst or 5 }}"
                          min="0" max="50" step="1">
                 </div>
+                <div class="col">
+                  <label class="form-label small">每轮匹配对数</label>
+                  <input type="number" class="form-control" name="elo_max_pairs_per_round"
+                         value="{{ competition.elo_max_pairs_per_round or 1 }}"
+                         min="1" max="8" step="1">
+                </div>
               </div>
               <div class="form-text mt-2">
                 每位用户在池中只保留最近 2 份提交，更早的会自动退役（脚本签名见下方"评测脚本"栏）。
+                "每轮匹配对数"控制 matchmaker tick 在每个匹配间隔里同时发起几对对战（默认 1，上限 8）。
               </div>
             </fieldset>
             <script>
