@@ -47,6 +47,7 @@ from oj_modules.ranking_db import (
     list_competitions,
     list_elo_matches_for_submission,
     list_user_submissions,
+    rebuild_elo_history,
     reset_elo_state,
     retire_excess_user_submissions,
     set_elo_running,
@@ -485,6 +486,47 @@ def ranking_delete_match(competition_id, match_id):
         )
     else:
         flash(f'已删除对战 #{int(match_id)}（评测失败的记录，未影响分数）', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
+
+
+# ---------- 管理员：重构历史 rating 轨迹 ----------
+
+@ranking_bp.route('/<int:competition_id>/elo/rebuild', methods=['POST'])
+def ranking_elo_rebuild_history(competition_id):
+    """重新计算该赛事所有现存对战记录中的 before / after rating 快照，并把每份
+    提交的当前 ELO 分数与对战次数同步到重放终态。
+
+    用途：删除若干场对战之后，遗留对战行里的快照（rating_a_before 等）不再与
+    时序逻辑一致，这里通过重放修正。
+    """
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    comp = get_competition(competition_id)
+    if not comp:
+        flash('比赛不存在', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+    if str(comp.get('scoring_mode') or 'absolute').lower() != 'elo':
+        flash('该比赛不是 ELO 模式', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
+
+    result = rebuild_elo_history(int(competition_id))
+    if result is None:
+        flash('比赛不存在或重构失败', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
+
+    _invalidate_competition_match_caches(competition_id)
+
+    flash(
+        '已按时间顺序重放 {n} 场对战，{u} 份提交的 ELO 分数与对战次数已同步到重放终态。'
+        '（初始分 {init:.0f}，K = {k:.0f}）'.format(
+            n=int(result.get('matches_replayed') or 0),
+            u=int(result.get('submissions_updated') or 0),
+            init=float(result.get('initial_rating') or 1500),
+            k=float(result.get('k_factor') or 32),
+        ),
+        'success',
+    )
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
 
 

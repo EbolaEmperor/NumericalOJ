@@ -1069,6 +1069,108 @@ def list_elo_matches_for_submission(submission_id, limit=20):
         conn.close()
 
 
+def rebuild_elo_history(competition_id):
+    """重放该赛事现存的所有 ranking_elo_matches，按 (created_at ASC, id ASC) 顺序
+    重新计算每场的 rating_a_before / after / rating_b_before / after，并把每份
+    提交的当前 elo_rating / score / elo_match_count 同步到重放结束后的值。
+
+    与 reset_elo_state 的区别：
+      - reset_elo_state 删行 + 清零；
+      - 这里保留对战行，只是按现存 winner 走一遍 ELO 公式，修正因 delete_elo_match_
+        and_revert 导致的"历史 rating 快照漂移"。
+
+    返回 dict：matches_replayed / submissions_updated / k_factor / initial_rating。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT elo_initial_rating, elo_k_factor FROM ranking_competitions WHERE id = %s",
+                (int(competition_id),),
+            )
+            comp = cursor.fetchone()
+            if not comp:
+                return None
+            initial_rating = float(comp.get('elo_initial_rating') or 1500)
+            k_factor = float(comp.get('elo_k_factor') or 32)
+
+            # 1. 把所有曾经被 ELO 初始化过的提交先重置到初始分（match_count=0）。
+            #    elo_in_pool / status 不动；已退役的提交也参与重放，因为它们的对战
+            #    历史依然在表里。
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET elo_rating = %s, score = %s, elo_match_count = 0
+                WHERE competition_id = %s AND elo_rating IS NOT NULL
+                """,
+                (initial_rating, initial_rating, int(competition_id)),
+            )
+
+            # 2. 按时间顺序拉所有对战行。
+            cursor.execute(
+                """
+                SELECT id, submission_a_id, submission_b_id, winner
+                FROM ranking_elo_matches
+                WHERE competition_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (int(competition_id),),
+            )
+            matches = cursor.fetchall() or []
+
+            # 3. 在内存里维护"当前 rating"和"match_count"，逐场重放并回写每场快照。
+            current = {}
+            counts = {}
+            for m in matches:
+                a = int(m['submission_a_id'])
+                b = int(m['submission_b_id'])
+                winner = int(m.get('winner') or 0)
+                r_a = current.get(a, initial_rating)
+                r_b = current.get(b, initial_rating)
+                if winner in (1, 2):
+                    e_a = 1.0 / (1.0 + 10.0 ** ((r_b - r_a) / 400.0))
+                    s_a = 1.0 if winner == 1 else 0.0
+                    new_a = r_a + k_factor * (s_a - e_a)
+                    new_b = r_b + k_factor * ((1.0 - s_a) - (1.0 - e_a))
+                    current[a] = new_a
+                    current[b] = new_b
+                    counts[a] = counts.get(a, 0) + 1
+                    counts[b] = counts.get(b, 0) + 1
+                else:
+                    # 评测失败：分数不变，但仍重写快照让 before == after。
+                    new_a = r_a
+                    new_b = r_b
+                cursor.execute(
+                    """
+                    UPDATE ranking_elo_matches
+                    SET rating_a_before = %s, rating_a_after = %s,
+                        rating_b_before = %s, rating_b_after = %s
+                    WHERE id = %s
+                    """,
+                    (float(r_a), float(new_a), float(r_b), float(new_b), int(m['id'])),
+                )
+
+            # 4. 把重放终态写回 ranking_submissions（只更新有变化的提交，避免无谓更新）。
+            for sub_id, rating in current.items():
+                cursor.execute(
+                    """
+                    UPDATE ranking_submissions
+                    SET elo_rating = %s, score = %s, elo_match_count = %s
+                    WHERE id = %s
+                    """,
+                    (float(rating), float(rating), int(counts.get(sub_id, 0)), int(sub_id)),
+                )
+        conn.commit()
+        return {
+            'matches_replayed': len(matches),
+            'submissions_updated': len(current),
+            'k_factor': k_factor,
+            'initial_rating': initial_rating,
+        }
+    finally:
+        conn.close()
+
+
 def delete_elo_match_and_revert(match_id, competition_id):
     """管理员删除一场 ELO 对战，同时把它对两份提交分数和对战次数的影响**从当前值里**撤销。
 

@@ -516,16 +516,29 @@
               {% endif %}
             </div>
           </div>
-          <nav class="matches-filter" aria-label="过滤">
-            <a class="matches-filter-pill {% if not matches_mine %}is-active{% endif %}"
-               href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}">
-              全部
-            </a>
-            <a class="matches-filter-pill {% if matches_mine %}is-active{% endif %}"
-               href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', mine=1) }}">
-              <i class="fas fa-user-circle me-1"></i>与我相关
-            </a>
-          </nav>
+          <div class="matches-head-actions">
+            {% if is_admin and matches %}
+              <form method="POST" class="matches-rebuild-form"
+                    action="{{ url_for('ranking.ranking_elo_rebuild_history', competition_id=competition.id) }}"
+                    onsubmit="return confirm('确认按时间顺序重新计算所有对战的历史 rating 快照，并把每份提交的当前 ELO 同步到重放终态？\n\n这不会删除任何对战行，只是修正因删除操作导致的历史显示错位。');">
+                <button type="submit" class="matches-rebuild-btn"
+                        title="按时间顺序重放现存对战、刷新历史 rating 快照">
+                  <i class="fas fa-wrench" aria-hidden="true"></i>
+                  <span>重构历史轨迹</span>
+                </button>
+              </form>
+            {% endif %}
+            <nav class="matches-filter" aria-label="过滤">
+              <a class="matches-filter-pill {% if not matches_mine %}is-active{% endif %}"
+                 href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}">
+                全部
+              </a>
+              <a class="matches-filter-pill {% if matches_mine %}is-active{% endif %}"
+                 href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', mine=1) }}">
+                <i class="fas fa-user-circle me-1"></i>与我相关
+              </a>
+            </nav>
+          </div>
         </header>
 
         {% if not matches %}
@@ -1376,6 +1389,48 @@
     100% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0); }
   }
 
+  /* matches-head 右侧的过滤栏 + 管理动作 */
+  .matches-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .matches-rebuild-form { display: inline; margin: 0; padding: 0; }
+  .matches-rebuild-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.34rem;
+    padding: 0.32rem 0.85rem;
+    font-family: 'Sora', system-ui, sans-serif;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--m-ink);
+    background: #fff;
+    border: 1px solid var(--m-rule);
+    border-radius: 999px;
+    line-height: 1.3;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+  }
+  .matches-rebuild-btn i {
+    font-size: 0.72rem;
+    color: var(--m-ink-mute);
+    transition: color 0.16s ease;
+  }
+  .matches-rebuild-btn:hover {
+    border-color: var(--m-ink);
+    background: var(--m-ink);
+    color: #fff;
+  }
+  .matches-rebuild-btn:hover i { color: #fff; }
+  .matches-rebuild-btn:focus-visible {
+    outline: 2px solid rgba(0, 0, 0, 0.35);
+    outline-offset: 2px;
+  }
+
   /* 过滤切换：磨砂胶囊 + 滑块 */
   .matches-filter {
     display: inline-flex;
@@ -1410,7 +1465,7 @@
   }
   .match-row {
     display: grid;
-    grid-template-columns: 76px minmax(0, 1fr) 60px minmax(0, 1fr) 92px;
+    grid-template-columns: 76px minmax(0, 1fr) 60px minmax(0, 1fr) 132px;
     column-gap: 0.7rem;
     align-items: center;
     padding: 0.42rem 1.2rem;
@@ -1586,7 +1641,12 @@
   }
 
   /* 详情按钮：胶囊 + 滑动箭头 */
-  .match-action { text-align: right; }
+  .match-action {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.4rem;
+  }
   .match-detail-btn {
     display: inline-flex;
     align-items: center;
@@ -1603,6 +1663,7 @@
     transition: all 0.16s ease;
     letter-spacing: 0.01em;
     line-height: 1.3;
+    white-space: nowrap;
   }
   .match-detail-btn i {
     font-size: 0.65rem;
@@ -1620,7 +1681,6 @@
   }
 
   /* 管理员：删除对战按钮（撤销分数变动） */
-  .match-action { display: inline-flex; align-items: center; gap: 0.4rem; }
   .match-delete-form { display: inline; margin: 0; padding: 0; }
   .match-delete-btn {
     appearance: none;
@@ -1746,8 +1806,31 @@
     .match-side-a { grid-area: sa; }
     .match-vs     { grid-area: vs; }
     .match-side-b { grid-area: sb; }
-    .match-action { grid-area: act; text-align: center; padding-top: 0.15rem; }
+    .match-action {
+      grid-area: act;
+      justify-content: center;
+      padding-top: 0.15rem;
+    }
     .match-vs::before { top: -0.4rem; bottom: -0.4rem; }
+
+    /* 手机端单侧改为纵向堆叠：用户名占满一行不再截断；rating + delta 在下一行 */
+    .match-side {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.2rem;
+    }
+    .match-side-a { padding-right: 0.25rem; align-items: flex-end; }
+    .match-side-b { padding-left: 0.25rem; align-items: flex-start; }
+    .match-username {
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+      word-break: break-word;
+      line-height: 1.25;
+      font-size: 0.92rem;
+    }
+    .match-side-a .match-stats { justify-content: flex-end; }
+    .match-side-b .match-stats { justify-content: flex-start; }
   }
 
   /* ==================== 排行榜 ==================== */
