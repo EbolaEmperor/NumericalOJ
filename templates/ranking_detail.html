@@ -599,6 +599,21 @@
                     <span>详情</span>
                     <i class="fas fa-arrow-right" aria-hidden="true"></i>
                   </button>
+                  {% if is_admin %}
+                    {% if winner == 0 %}
+                      {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？该场为评测失败记录，删除后不会影响双方分数。' %}
+                    {% else %}
+                      {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？\n该场曾让 A {0:+.0f} 分、B {1:+.0f} 分，删除后将在当前 ELO 上撤销这两个变化。'.format(delta_a, delta_b) %}
+                    {% endif %}
+                    <form method="POST" class="match-delete-form"
+                          action="{{ url_for('ranking.ranking_delete_match', competition_id=competition.id, match_id=m.id) }}"
+                          onsubmit="return confirm({{ confirm_text|tojson }});">
+                      <button type="submit" class="match-delete-btn"
+                              title="删除对战并撤销分数变动" aria-label="删除对战 #{{ m.id }}">
+                        <i class="fas fa-trash" aria-hidden="true"></i>
+                      </button>
+                    </form>
+                  {% endif %}
                 </div>
               </article>
             {% endfor %}
@@ -1602,6 +1617,35 @@
   .match-detail-btn:hover i {
     transform: translateX(3px);
     color: #fff;
+  }
+
+  /* 管理员：删除对战按钮（撤销分数变动） */
+  .match-action { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .match-delete-form { display: inline; margin: 0; padding: 0; }
+  .match-delete-btn {
+    appearance: none;
+    border: 1px solid #e6d6d3;
+    background: #fff;
+    color: #b54343;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+  }
+  .match-delete-btn:hover {
+    border-color: #b54343;
+    background: #b54343;
+    color: #fff;
+  }
+  .match-delete-btn:focus-visible {
+    outline: 2px solid rgba(181, 67, 67, 0.4);
+    outline-offset: 2px;
   }
 
   /* ---------- 空状态 ---------- */
