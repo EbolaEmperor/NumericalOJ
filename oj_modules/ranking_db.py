@@ -1067,3 +1067,87 @@ def list_elo_matches_for_submission(submission_id, limit=20):
             return cursor.fetchall() or []
     finally:
         conn.close()
+
+
+def delete_elo_match_and_revert(match_id, competition_id):
+    """管理员删除一场 ELO 对战，同时把它对两份提交分数和对战次数的影响**从当前值里**撤销。
+
+    撤销规则：
+      - 若 winner ∈ {1, 2}（正常结算的对战）：
+            delta_a = rating_a_after - rating_a_before
+            delta_b = rating_b_after - rating_b_before
+            elo_rating_A := elo_rating_A - delta_a；score 跟随；elo_match_count -= 1。
+            B 同理。
+      - 若 winner == 0（评测脚本失败的对战，分数本就没动）：仅删行，不动分数 / 计数。
+
+    全部在一个事务里完成。返回一个 dict 描述本次撤销的内容，便于路由给管理员展示
+    （或者 None 表示没有这条记录）。
+
+    设计取舍：用户的语义是"在当前排行榜分数基础上 -delta"，因此我们故意 **不**
+    重放后续对战来"重写历史"——只是简单地把这一场带来的变化从当前数字里减去。
+    若后续对战引用了某方的中间 rating（作为 rating_before），那些记录里的快照依然
+    保留，但之后再删它们时也是同样的"从当前减 delta"逻辑——多个删除按顺序应用是
+    可交换的（加减法）。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, competition_id, submission_a_id, submission_b_id, winner,
+                       rating_a_before, rating_a_after, rating_b_before, rating_b_after
+                FROM ranking_elo_matches
+                WHERE id = %s AND competition_id = %s
+                """,
+                (int(match_id), int(competition_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.commit()
+                return None
+
+            winner = int(row.get('winner') or 0)
+            sub_a_id = int(row.get('submission_a_id') or 0)
+            sub_b_id = int(row.get('submission_b_id') or 0)
+            delta_a = 0.0
+            delta_b = 0.0
+            if winner in (1, 2):
+                delta_a = float(row.get('rating_a_after') or 0) - float(row.get('rating_a_before') or 0)
+                delta_b = float(row.get('rating_b_after') or 0) - float(row.get('rating_b_before') or 0)
+                # 撤销 A：分数 -= delta_a，对战次数 -= 1（不低于 0），score 同步 elo_rating
+                cursor.execute(
+                    """
+                    UPDATE ranking_submissions
+                    SET elo_rating = elo_rating - %s,
+                        score = elo_rating - %s,
+                        elo_match_count = GREATEST(elo_match_count - 1, 0)
+                    WHERE id = %s
+                    """,
+                    (delta_a, delta_a, sub_a_id),
+                )
+                cursor.execute(
+                    """
+                    UPDATE ranking_submissions
+                    SET elo_rating = elo_rating - %s,
+                        score = elo_rating - %s,
+                        elo_match_count = GREATEST(elo_match_count - 1, 0)
+                    WHERE id = %s
+                    """,
+                    (delta_b, delta_b, sub_b_id),
+                )
+            cursor.execute(
+                "DELETE FROM ranking_elo_matches WHERE id = %s AND competition_id = %s",
+                (int(match_id), int(competition_id)),
+            )
+        conn.commit()
+        return {
+            'match_id': int(match_id),
+            'competition_id': int(competition_id),
+            'winner': winner,
+            'submission_a_id': sub_a_id,
+            'submission_b_id': sub_b_id,
+            'delta_a': delta_a,
+            'delta_b': delta_b,
+        }
+    finally:
+        conn.close()

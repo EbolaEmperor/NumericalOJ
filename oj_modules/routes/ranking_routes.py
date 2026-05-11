@@ -32,6 +32,7 @@ from oj_modules.ranking_db import (
     create_ranking_submission,
     delete_competition,
     delete_competition_file,
+    delete_elo_match_and_revert,
     delete_ranking_submission,
     get_competition,
     get_competition_file,
@@ -393,6 +394,31 @@ def ranking_detail(competition_id):
     )
 
 
+def _invalidate_competition_match_caches(competition_id, match_id=None):
+    """删除/撤销对战后，清掉该赛事的对战列表与详情缓存。
+    列表 key 形如 ranking:elo:matches_list:<comp>:*；详情 key 形如
+    ranking:elo:match_detail:<match_id>。"""
+    rds = _redis_client()
+    if rds is None:
+        return
+    try:
+        list_pattern = ELO_MATCHES_LIST_CACHE_KEY.format(
+            comp=int(competition_id), scope='*', page='*', per_page='*',
+        )
+        for key in rds.scan_iter(match=list_pattern, count=200):
+            try:
+                rds.delete(key)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if match_id is not None:
+        try:
+            rds.delete(ELO_MATCH_DETAIL_CACHE_KEY.format(match_id=int(match_id)))
+        except Exception:
+            pass
+
+
 # ---------- 对战详情 JSON（公开给登录用户） ----------
 
 @ranking_bp.route('/<int:competition_id>/match/<int:match_id>/details.json', methods=['GET'])
@@ -424,6 +450,42 @@ def ranking_match_details(competition_id, match_id):
         'details': row.get('details'),
         'error_message': row.get('error_message'),
     })
+
+
+# ---------- 管理员：删除对战并撤销分数变动 ----------
+
+@ranking_bp.route('/<int:competition_id>/match/<int:match_id>/delete', methods=['POST'])
+def ranking_delete_match(competition_id, match_id):
+    """管理员删除某场 ELO 对战；该对战导致的双方分数变动从当前 rating 里"反加回去"，
+    elo_match_count 也各减 1。winner == 0（评测失败）的对战只删行，不动分数。"""
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    comp = get_competition(competition_id)
+    if not comp:
+        flash('比赛不存在', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+
+    result = delete_elo_match_and_revert(int(match_id), int(competition_id))
+    if result is None:
+        flash('对战记录不存在', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
+
+    _invalidate_competition_match_caches(competition_id, match_id=match_id)
+
+    if int(result.get('winner') or 0) in (1, 2):
+        flash(
+            '已删除对战 #{} ：A 分数 {:+.2f}，B 分数 {:+.2f}，'
+            '已从当前 ELO 中撤销该变化，并把双方对战次数各减 1。'.format(
+                int(match_id),
+                -float(result.get('delta_a') or 0),
+                -float(result.get('delta_b') or 0),
+            ),
+            'success',
+        )
+    else:
+        flash(f'已删除对战 #{int(match_id)}（评测失败的记录，未影响分数）', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
 
 
 # ---------- 所有提交（管理员）异步分页 / 搜索 API ----------
