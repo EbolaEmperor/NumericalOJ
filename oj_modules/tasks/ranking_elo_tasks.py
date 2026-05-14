@@ -12,8 +12,9 @@
   - 用户上传后立即触发 \"即时补战\"（默认 5 场，串行链式：每场打完、rating 更新
     之后，再用最新分数现挑下一对手），让新提交逐步收敛到合理分数段。
   - 单场对战由评测脚本判定：python <script> <answer_a_path> <answer_b_path> →
-    stdout 一行 JSON {\"winner\": 1 | 2, \"details\": <可选>}；
-    脚本中段失败则记录错误、不调整分数。
+    stdout 一行 JSON {\"winner\": 0 | 1 | 2, \"details\": <可选>}；
+    winner=1/2 表示对应一方胜出，winner=0 表示平局（两份提交不分伯仲）。
+    脚本中段失败则记录一条 winner=-1 的占位历史、不调整分数。
 
 并发：
   - Tick 链路通过 Redis 中的 owner key 保证全局只有一条活动链；
@@ -88,8 +89,16 @@ def _expected_score(rating_a, rating_b):
 
 
 def _new_ratings(rating_a, rating_b, winner, k):
+    """winner ∈ {0, 1, 2}：0 = 平局（双方各得 0.5），1 = A 胜，2 = B 胜。
+    传入其它值视为平局以免触发分数突变。"""
+    w = int(winner)
+    if w == 1:
+        s_a = 1.0
+    elif w == 2:
+        s_a = 0.0
+    else:
+        s_a = 0.5
     e_a = _expected_score(rating_a, rating_b)
-    s_a = 1.0 if int(winner) == 1 else 0.0
     return (
         rating_a + k * (s_a - e_a),
         rating_b + k * ((1.0 - s_a) - (1.0 - e_a)),
@@ -136,7 +145,10 @@ def _pick_pair(eligibles):
 # ---------- Scoring script ----------
 
 def _run_scoring_script(script_path, path_a, path_b, timeout_seconds=None):
-    """运行 ELO 评分脚本，返回 (winner∈{1,2}, details_obj_or_str)。失败抛 RuntimeError。"""
+    """运行 ELO 评分脚本，返回 (winner∈{0,1,2}, details_obj_or_str)。
+    winner=1/2 表示一方胜出，winner=0 表示平局。
+    脚本端不允许返回 -1（-1 由后端在脚本异常时落盘，作为"评测失败"占位）。
+    其他取值或脚本本身报错都会抛 RuntimeError。"""
     timeout_s = int(timeout_seconds) if timeout_seconds else DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS
     try:
         proc = subprocess.run(
@@ -174,8 +186,8 @@ def _run_scoring_script(script_path, path_a, path_b, timeout_seconds=None):
         winner_int = int(winner)
     except (TypeError, ValueError):
         winner_int = None
-    if winner_int not in (1, 2):
-        raise RuntimeError(f"评测脚本返回的 winner 非法（应为 1 或 2）：{winner!r}")
+    if winner_int not in (0, 1, 2):
+        raise RuntimeError(f"评测脚本返回的 winner 非法（应为 0=平局 / 1 / 2）：{winner!r}")
     return winner_int, parsed.get('details')
 
 
@@ -235,9 +247,9 @@ def register_ranking_elo_match_task(celery_app):
             try:
                 winner, details = _run_scoring_script(script, answer_a, answer_b, timeout_seconds=script_timeout)
             except Exception as e:
-                # 失败也记录一条对战，但不调整分数（winner=0）
+                # 失败也记录一条对战，但不调整分数（winner=-1，用于和 0=平局 区分）
                 record_elo_match(
-                    int(competition_id), int(submission_a_id), int(submission_b_id), 0,
+                    int(competition_id), int(submission_a_id), int(submission_b_id), -1,
                     rating_a, rating_b, rating_a, rating_b,
                     details=None, error_message=str(e)[:1500],
                 )

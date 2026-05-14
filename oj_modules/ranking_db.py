@@ -175,6 +175,13 @@ def ensure_ranking_tables():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            # 一次性迁移：早期版本用 winner=0 表示"评测脚本失败"，新版本里 0 改为
+            # "平局"，-1 才表示失败。把现存带 error_message 的 winner=0 行搬到 -1，
+            # 避免老数据被新逻辑当成平局误处理。
+            cursor.execute(
+                "UPDATE ranking_elo_matches SET winner = -1"
+                " WHERE winner = 0 AND error_message IS NOT NULL"
+            )
         conn.commit()
         _ranking_tables_ready = True
     finally:
@@ -920,7 +927,9 @@ def record_elo_match(competition_id, sub_a_id, sub_b_id, winner,
                      rating_a_before, rating_b_before,
                      rating_a_after, rating_b_after,
                      details=None, error_message=None):
-    """记录一场 ELO 对战，并在 winner ∈ {1,2} 时更新两份提交的分数与对战次数。
+    """记录一场 ELO 对战，并在 winner ∈ {0,1,2} 时更新两份提交的分数与对战次数。
+    winner 取值：1=A 胜，2=B 胜，0=平局（双方按 ELO 公式各取 s=0.5 调整），
+    -1=评测脚本失败的占位行（分数与计数不变）。
     调用方应持有按 competition_id 划分的并发锁。"""
     ensure_ranking_tables()
     details_text = None
@@ -948,7 +957,7 @@ def record_elo_match(competition_id, sub_a_id, sub_b_id, winner,
                  float(rating_a_after), float(rating_b_after),
                  details_text, error_message),
             )
-            if int(winner) in (1, 2):
+            if int(winner) in (0, 1, 2):
                 cursor.execute(
                     "UPDATE ranking_submissions"
                     " SET elo_rating = %s, score = %s, elo_match_count = elo_match_count + 1"
@@ -1124,12 +1133,20 @@ def rebuild_elo_history(competition_id):
             for m in matches:
                 a = int(m['submission_a_id'])
                 b = int(m['submission_b_id'])
-                winner = int(m.get('winner') or 0)
+                # 注意：winner 可能合法地是 0（平局），不能用 `m.get('winner') or 0`
+                # 兜底，否则 None 会和 0 混淆。这里显式判 None。
+                raw_w = m.get('winner')
+                winner = int(raw_w) if raw_w is not None else -1
                 r_a = current.get(a, initial_rating)
                 r_b = current.get(b, initial_rating)
-                if winner in (1, 2):
+                if winner in (0, 1, 2):
                     e_a = 1.0 / (1.0 + 10.0 ** ((r_b - r_a) / 400.0))
-                    s_a = 1.0 if winner == 1 else 0.0
+                    if winner == 1:
+                        s_a = 1.0
+                    elif winner == 2:
+                        s_a = 0.0
+                    else:
+                        s_a = 0.5
                     new_a = r_a + k_factor * (s_a - e_a)
                     new_b = r_b + k_factor * ((1.0 - s_a) - (1.0 - e_a))
                     current[a] = new_a
@@ -1137,7 +1154,7 @@ def rebuild_elo_history(competition_id):
                     counts[a] = counts.get(a, 0) + 1
                     counts[b] = counts.get(b, 0) + 1
                 else:
-                    # 评测失败：分数不变，但仍重写快照让 before == after。
+                    # 评测失败 (winner=-1)：分数不变，但仍重写快照让 before == after。
                     new_a = r_a
                     new_b = r_b
                 cursor.execute(
@@ -1175,12 +1192,12 @@ def delete_elo_match_and_revert(match_id, competition_id):
     """管理员删除一场 ELO 对战，同时把它对两份提交分数和对战次数的影响**从当前值里**撤销。
 
     撤销规则：
-      - 若 winner ∈ {1, 2}（正常结算的对战）：
+      - 若 winner ∈ {0, 1, 2}（正常结算的对战，含平局）：
             delta_a = rating_a_after - rating_a_before
             delta_b = rating_b_after - rating_b_before
             elo_rating_A := elo_rating_A - delta_a；score 跟随；elo_match_count -= 1。
-            B 同理。
-      - 若 winner == 0（评测脚本失败的对战，分数本就没动）：仅删行，不动分数 / 计数。
+            B 同理。平局时 delta_a / delta_b 可能很小但仍需撤销。
+      - 若 winner == -1（评测脚本失败的对战，分数本就没动）：仅删行，不动分数 / 计数。
 
     全部在一个事务里完成。返回一个 dict 描述本次撤销的内容，便于路由给管理员展示
     （或者 None 表示没有这条记录）。
@@ -1208,12 +1225,13 @@ def delete_elo_match_and_revert(match_id, competition_id):
                 conn.commit()
                 return None
 
-            winner = int(row.get('winner') or 0)
+            raw_w = row.get('winner')
+            winner = int(raw_w) if raw_w is not None else -1
             sub_a_id = int(row.get('submission_a_id') or 0)
             sub_b_id = int(row.get('submission_b_id') or 0)
             delta_a = 0.0
             delta_b = 0.0
-            if winner in (1, 2):
+            if winner in (0, 1, 2):
                 delta_a = float(row.get('rating_a_after') or 0) - float(row.get('rating_a_before') or 0)
                 delta_b = float(row.get('rating_b_after') or 0) - float(row.get('rating_b_before') or 0)
                 # 撤销 A：分数 -= delta_a，对战次数 -= 1（不低于 0），score 同步 elo_rating
