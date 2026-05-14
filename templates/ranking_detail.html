@@ -564,7 +564,7 @@
               {% set ts = (m.created_at or '')|string %}
               {% set is_me_a = user and m.username_a and m.username_a == user.username %}
               {% set is_me_b = user and m.username_b and m.username_b == user.username %}
-              <article class="match-row{% if winner == 0 %} is-failed{% endif %}{% if is_me_a or is_me_b %} is-mine{% endif %}">
+              <article class="match-row{% if winner == -1 %} is-failed{% elif winner == 0 %} is-draw{% endif %}{% if is_me_a or is_me_b %} is-mine{% endif %}">
                 <time class="match-time">
                   <span class="match-time-date">{{ ts[5:10] if ts|length >= 10 else ts }}</span>
                   <span class="match-time-clock">{{ ts[11:16] if ts|length >= 16 else '' }}</span>
@@ -582,9 +582,11 @@
                 </div>
 
                 <div class="match-vs"
-                     {% if winner == 1 %}data-victor="a"{% elif winner == 2 %}data-victor="b"{% elif winner == 0 %}data-victor="none"{% endif %}>
-                  {% if winner == 0 %}
+                     {% if winner == 1 %}data-victor="a"{% elif winner == 2 %}data-victor="b"{% elif winner == 0 %}data-victor="draw"{% elif winner == -1 %}data-victor="none"{% endif %}>
+                  {% if winner == -1 %}
                     <span class="match-vs-failed" title="评测脚本失败">N/C</span>
+                  {% elif winner == 0 %}
+                    <span class="match-vs-draw" title="平局">DRAW</span>
                   {% else %}
                     <span class="match-vs-badge" title="{% if winner == 1 %}A 胜{% else %}B 胜{% endif %}">
                       {% if winner == 1 %}
@@ -613,8 +615,10 @@
                     <i class="fas fa-arrow-right" aria-hidden="true"></i>
                   </button>
                   {% if is_admin %}
-                    {% if winner == 0 %}
+                    {% if winner == -1 %}
                       {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？该场为评测失败记录，删除后不会影响双方分数。' %}
+                    {% elif winner == 0 %}
+                      {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？\n该场为平局，曾让 A {0:+.0f} 分、B {1:+.0f} 分，删除后将在当前 ELO 上撤销这两个变化。'.format(delta_a, delta_b) %}
                     {% else %}
                       {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？\n该场曾让 A {0:+.0f} 分、B {1:+.0f} 分，删除后将在当前 ELO 上撤销这两个变化。'.format(delta_a, delta_b) %}
                     {% endif %}
@@ -701,6 +705,7 @@
             var winner = data.winner;
             var winnerLabel = winner === 1 ? (data.username_a + ' 胜')
                             : winner === 2 ? (data.username_b + ' 胜')
+                            : winner === 0 ? '平局'
                             : '失败';
             metaEl.textContent =
               '#' + data.id + ' · ' + data.created_at + ' · ' + winnerLabel;
@@ -1102,8 +1107,10 @@
                {% if edit_mode != 'elo' %}style="display:none;"{% endif %}>
             <div class="fw-semibold mb-1"><i class="fas fa-chess-knight me-1"></i> ELO 模式脚本签名</div>
             调用方式：<code>python &lt;script&gt; &lt;answer_a&gt; &lt;answer_b&gt;</code><br>
-            stdout 输出：<code>{"winner": 1 | 2, "details": &lt;可选&gt;}</code><br>
-            winner 表示哪一份提交更好。超时 <span class="script-timeout-value">{{ competition.scoring_script_timeout_seconds or 120 }}</span> 秒。
+            stdout 输出：<code>{"winner": 0 | 1 | 2, "details": &lt;可选&gt;}</code><br>
+            <code>winner=1</code> A 胜，<code>winner=2</code> B 胜，<code>winner=0</code> 平局（双方按 ELO 公式各取 0.5 分调整，分高一方略降、分低一方略升）。
+            脚本异常时由后端落 <code>winner=-1</code> 占位，分数不动。
+            超时 <span class="script-timeout-value">{{ competition.scoring_script_timeout_seconds or 120 }}</span> 秒。
           </div>
           <div id="scriptSignatureAbsolute" class="alert alert-secondary py-2 px-3 mb-3 small"
                {% if edit_mode == 'elo' %}style="display:none;"{% endif %}>
@@ -1484,6 +1491,11 @@
     );
   }
   .match-row.is-failed:hover { background: rgba(148, 145, 138, 0.07); }
+  /* 平局：用比失败更显眼的中性灰，跟胜负行有视觉差但不喧宾夺主 */
+  .match-row.is-draw {
+    background: rgba(120, 113, 95, 0.05);
+  }
+  .match-row.is-draw:hover { background: rgba(120, 113, 95, 0.10); }
   .match-row.is-mine::after {
     content: '';
     position: absolute;
@@ -1635,6 +1647,19 @@
     color: var(--m-ink-mute);
     background: var(--m-paper);
     border: 1px solid var(--m-rule);
+    padding: 0.2rem 0.42rem 0.16rem;
+    border-radius: 4px;
+    box-shadow: 0 0 0 3px var(--m-paper);
+  }
+  /* 平局徽章：与 N/C 同结构，颜色更靠近 ink，让"打平"也有点存在感 */
+  .match-vs-draw {
+    font-family: 'Sora', system-ui, sans-serif;
+    font-size: 0.6rem;
+    letter-spacing: 0.18em;
+    font-weight: 700;
+    color: var(--m-ink-soft);
+    background: var(--m-paper);
+    border: 1px solid var(--m-ink-mute);
     padding: 0.2rem 0.42rem 0.16rem;
     border-radius: 4px;
     box-shadow: 0 0 0 3px var(--m-paper);
