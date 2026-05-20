@@ -580,7 +580,7 @@
     const stderr = String(tp.stderr || '').trim();
     const stdout = String(tp.stdout || '').trim();
     const comment = String(tp.comment || '').trim();
-    const canShowStderr = status !== 'Time Limit Exceeded';
+    const canShowStderr = status !== 'Time Limit Exceeded' && status !== 'Accepted';
     const canShowStdout = status !== 'Accepted';
     const hasImage = !!tp.has_output_image;
 
