@@ -10,11 +10,12 @@
   else 'Python' %}
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
 
-<div class="row">
+<div class="problem-detail-page">
+<div class="row problem-detail-row">
   <!-- 隐藏的元数据，避免在 <script> 内直接注入 Jinja -->
   <div id="problemMeta" data-problem-id="{{ problem.id }}" style="display:none"></div>
   <!-- 左侧：题面描述 -->
-  <div class="col-md-6 mb-3">
+  <div class="col-md-6 mb-3 problem-col-left">
     <div class="problem-header mb-3">
       <div class="problem-title-row">
         <h2 class="mb-0 problem-title-singleline" id="problemTitleHeading">
@@ -53,13 +54,13 @@
       {% endif %}
     </div>
 
-    <div class="my-3">
+    <div class="problem-content my-3">
       {{ rendered_content|safe }}
     </div>
   </div>
 
   <!-- 右侧：提交作业 -->
-  <div class="col-md-6">
+  <div class="col-md-6 problem-col-right">
     {% if problem.type == 1 %}
       <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
         <div class="d-flex justify-content-between align-items-end mb-2">
@@ -190,6 +191,7 @@
       </div>
     {% endif %}
   </div>
+</div>
 </div>
 
 {% if user and user.is_admin == 1 %}
@@ -378,6 +380,109 @@
 {% endif %}
 
 <style>
+  /* ===== 双栏布局：右栏吸顶，左栏跟随页面滚动 ===== */
+  .problem-detail-page {
+    --noj-navbar-h: 56px;
+    --noj-sticky-gap: 16px;
+  }
+  @media (min-width: 769px) {
+    .problem-detail-row {
+      align-items: flex-start;
+    }
+    .problem-col-right {
+      position: sticky;
+      top: calc(var(--noj-navbar-h) + var(--noj-sticky-gap));
+      align-self: flex-start;
+      max-height: calc(100vh - var(--noj-navbar-h) - var(--noj-sticky-gap) * 2);
+      overflow-y: auto;
+      padding-right: 6px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+    }
+    .problem-col-right::-webkit-scrollbar {
+      width: 6px;
+    }
+    .problem-col-right::-webkit-scrollbar-thumb {
+      background-color: rgba(0, 0, 0, 0.18);
+      border-radius: 3px;
+    }
+    .problem-col-right::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(0, 0, 0, 0.32);
+    }
+  }
+
+  /* ===== 题面内容：表格 / pre / blockquote ===== */
+  .problem-content {
+    line-height: 1.65;
+  }
+  .problem-content table {
+    margin: 1rem auto;
+    border-collapse: collapse;
+    border: 1px solid #dee2e6;
+    background: #fff;
+    max-width: 100%;
+  }
+  .problem-content table th,
+  .problem-content table td {
+    border: 1px solid #dee2e6;
+    padding: 0.5rem 0.85rem;
+    text-align: center;
+    vertical-align: middle;
+  }
+  .problem-content table thead th {
+    background: #f5f6f8;
+    font-weight: 600;
+    color: #1f2328;
+  }
+  .problem-content table tbody tr:nth-child(odd) {
+    background: #fafbfc;
+  }
+  .problem-content pre {
+    background: #f6f8fa;
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    overflow-x: auto;
+  }
+  .problem-content code {
+    background: #f3f4f6;
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+    font-size: 0.92em;
+  }
+  .problem-content pre code {
+    background: transparent;
+    padding: 0;
+  }
+  .problem-content blockquote {
+    border-left: 3px solid #d0d7de;
+    color: #57606a;
+    padding: 0.25rem 0.9rem;
+    margin: 0.75rem 0;
+    background: #f9fafb;
+  }
+  .problem-content img {
+    max-width: 100%;
+  }
+
+  /* ===== 按钮：统一圆角 / 内边距 / 过渡 ===== */
+  .problem-detail-page .btn {
+    font-weight: 500;
+    border-radius: 6px;
+    padding: 0.4rem 0.85rem;
+    transition: background-color 0.12s ease, color 0.12s ease,
+                border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .problem-detail-page .btn:focus,
+  .problem-detail-page .btn:focus-visible {
+    box-shadow: 0 0 0 0.18rem rgba(0, 0, 0, 0.08);
+  }
+  .problem-detail-page .btn-sm {
+    padding: 0.25rem 0.6rem;
+    border-radius: 5px;
+  }
+
+  /* ===== 题目标题与管理员动作栏 ===== */
   .problem-header {
     width: 100%;
   }
@@ -410,11 +515,22 @@
       gap: 8px;
     }
   }
+
+  /* ===== 状态徽章 ===== */
   .badge.accepted { background-color: rgb(36, 180, 77); color: white; }
   .badge.unaccepted { background-color: rgb(226, 23, 60); color: white; }
   .badge.pending, .badge.waiting, .badge.running { background-color: lightblue; color: black; }
   .badge.compile-error { background-color: #ff9800; color: white; }
   .badge.undefined-status { background-color: gray; color: white; }
+  .badge {
+    padding: 0.5em 0.75em;
+    border-radius: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+  }
+  .badge i { margin-right: 0.3em; }
+
+  /* ===== 代码区标题 / 编辑器 ===== */
   .code-label-wrap {
     display: flex;
     flex-direction: column;
@@ -439,9 +555,29 @@
     }
   }
   @media (max-width: 768px) { #codeMirrorContainer .CodeMirror { height: 300px; } }
-  @media (min-width: 769px) { #codeMirrorContainer .CodeMirror { height: 500px; } }
-  .badge { padding: 0.5em 0.75em; border-radius: 0.25rem; display: inline-flex; align-items: center; }
-  .badge i { margin-right: 0.3em; }
+  @media (min-width: 769px) { #codeMirrorContainer .CodeMirror { height: 460px; } }
+  .problem-col-right .card {
+    border-color: #e1e4e8;
+    border-radius: 6px;
+  }
+  .problem-col-right .card .CodeMirror {
+    border-radius: 6px;
+  }
+
+  /* ===== 最近提交列表 ===== */
+  .problem-col-right .list-group-item {
+    border-color: #e1e4e8;
+  }
+  .problem-col-right .list-group-item:first-child {
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+  }
+  .problem-col-right .list-group-item:last-child {
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
+  }
+
+  /* ===== 学生端代码动作按钮（移动端贴满）===== */
   @media (max-width: 768px) {
     .student-code-actions {
       display: flex;
