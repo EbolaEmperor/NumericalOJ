@@ -39,6 +39,80 @@ print(f"[Judger] OJ Root Path: {OJ_ROOT_PATH}")
 print(f"[Judger] Library Path: {LIBRARY_PATH}")
 print(f"[Judger] Library Path exists: {os.path.exists(LIBRARY_PATH)}")
 
+
+# ========== Intel MKL 检测 ==========
+def _detect_mkl_root():
+    """优先 MKLROOT 环境变量，否则尝试 oneAPI 默认安装路径"""
+    mklroot = os.environ.get("MKLROOT")
+    if mklroot and os.path.isdir(mklroot):
+        return mklroot
+    for candidate in ("/opt/intel/oneapi/mkl/latest", "/opt/intel/mkl"):
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def _build_mkl_flags():
+    """返回 (compile_flags, link_flags)；找不到 MKL 时返回 ([], [])"""
+    root = _detect_mkl_root()
+    if not root:
+        return [], []
+    include_dir = os.path.join(root, "include")
+    if not os.path.isdir(include_dir):
+        return [], []
+    lib_dir = None
+    for sub in ("lib/intel64", "lib"):
+        candidate = os.path.join(root, sub)
+        if os.path.isdir(candidate):
+            lib_dir = candidate
+            break
+    if not lib_dir:
+        return [], []
+    compile_flags = ["-m64", f"-I{include_dir}"]
+    # Sequential / LP64 链接组合，与 Intel Link Line Advisor 推荐的 gcc 选项一致
+    link_flags = [
+        f"-L{lib_dir}",
+        f"-Wl,-rpath,{lib_dir}",
+        "-Wl,--no-as-needed",
+        "-lmkl_intel_lp64",
+        "-lmkl_sequential",
+        "-lmkl_core",
+        "-lpthread",
+        "-ldl",
+    ]
+    return compile_flags, link_flags
+
+
+MKL_ROOT = _detect_mkl_root()
+MKL_COMPILE_FLAGS, MKL_LINK_FLAGS = _build_mkl_flags()
+print(f"[Judger] MKL Root: {MKL_ROOT}")
+print(f"[Judger] MKL Compile Flags: {MKL_COMPILE_FLAGS}")
+print(f"[Judger] MKL Link Flags: {MKL_LINK_FLAGS}")
+
+
+def build_c_compile_cmd(source, output, compile_timeout_sec=30):
+    cmd = ["timeout", f"{compile_timeout_sec}s",
+           "gcc", "-O2", "-pipe", "-s", "-std=c11"]
+    if os.path.exists(LIBRARY_PATH):
+        cmd.extend(["-I", LIBRARY_PATH])
+    cmd.extend(MKL_COMPILE_FLAGS)
+    cmd.extend([source, "-o", output])
+    cmd.extend(MKL_LINK_FLAGS)
+    cmd.append("-lm")
+    return cmd
+
+
+def build_cpp_compile_cmd(source, output, compile_timeout_sec=30):
+    cmd = ["timeout", f"{compile_timeout_sec}s",
+           "g++", "-O2", "-pipe", "-s", "-std=c++20"]
+    if os.path.exists(LIBRARY_PATH):
+        cmd.extend(["-I", LIBRARY_PATH])
+    cmd.extend(MKL_COMPILE_FLAGS)
+    cmd.extend([source, "-o", output])
+    cmd.extend(MKL_LINK_FLAGS)
+    cmd.append("-lm")
+    return cmd
+
 ALLOWED_IPS = [
     "127.0.0.1"
 ]
@@ -487,15 +561,7 @@ def run_c():
                     f.write(content)
 
         # ===== 编译 =====
-        compile_timeout_sec = 30
-        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
-                       "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11"]
-        
-        # 添加库路径（如果存在）
-        if os.path.exists(LIBRARY_PATH):
-            compile_cmd.extend(["-I", LIBRARY_PATH])
-        
-        compile_cmd.extend(["main.c", "-o", "a.out"])
+        compile_cmd = build_c_compile_cmd("main.c", "a.out")
         compile_res = subprocess.run(
             compile_cmd,
             cwd=sid,
@@ -628,15 +694,7 @@ def run_cpp():
                     f.write(content)
 
         # ===== 编译 =====
-        compile_timeout_sec = 30
-        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
-                       "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20"]
-        
-        # 添加库路径（如果存在）
-        if os.path.exists(LIBRARY_PATH):
-            compile_cmd.extend(["-I", LIBRARY_PATH])
-        
-        compile_cmd.extend(["main.cpp", "-o", "a.out"])
+        compile_cmd = build_cpp_compile_cmd("main.cpp", "a.out")
         compile_res = subprocess.run(
             compile_cmd,
             cwd=sid,
@@ -744,11 +802,7 @@ def batch_evaluate_stream_c():
                     with open(f"{sid}/{filename}", "w", encoding="utf-8") as f:
                         f.write(content)
 
-            compile_timeout_sec = 30
-            compile_cmd = ["timeout", f"{compile_timeout_sec}s", "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11"]
-            if os.path.exists(LIBRARY_PATH):
-                compile_cmd.extend(["-I", LIBRARY_PATH])
-            compile_cmd.extend(["main.c", "-o", "a.out"])
+            compile_cmd = build_c_compile_cmd("main.c", "a.out")
 
             compile_res = subprocess.run(
                 compile_cmd,
@@ -811,11 +865,7 @@ def batch_evaluate_stream_cpp():
                     with open(f"{sid}/{filename}", "w", encoding="utf-8") as f:
                         f.write(content)
 
-            compile_timeout_sec = 30
-            compile_cmd = ["timeout", f"{compile_timeout_sec}s", "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20"]
-            if os.path.exists(LIBRARY_PATH):
-                compile_cmd.extend(["-I", LIBRARY_PATH])
-            compile_cmd.extend(["main.cpp", "-o", "a.out"])
+            compile_cmd = build_cpp_compile_cmd("main.cpp", "a.out")
 
             compile_res = subprocess.run(
                 compile_cmd,
@@ -900,14 +950,7 @@ def batch_evaluate_c():
                     f.write(content)
 
         # ===== 编译（只编译一次）=====
-        compile_timeout_sec = 30
-        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
-                       "gcc", "-O2", "-pipe", "-s", "-lm", "-std=c11"]
-        
-        if os.path.exists(LIBRARY_PATH):
-            compile_cmd.extend(["-I", LIBRARY_PATH])
-        
-        compile_cmd.extend(["main.c", "-o", "a.out"])
+        compile_cmd = build_c_compile_cmd("main.c", "a.out")
         compile_res = subprocess.run(
             compile_cmd,
             cwd=sid,
@@ -1045,14 +1088,7 @@ def batch_evaluate_cpp():
                     f.write(content)
 
         # ===== 编译（只编译一次）=====
-        compile_timeout_sec = 30
-        compile_cmd = ["timeout", f"{compile_timeout_sec}s",
-                       "g++", "-O2", "-pipe", "-s", "-lm", "-std=c++20"]
-        
-        if os.path.exists(LIBRARY_PATH):
-            compile_cmd.extend(["-I", LIBRARY_PATH])
-        
-        compile_cmd.extend(["main.cpp", "-o", "a.out"])
+        compile_cmd = build_cpp_compile_cmd("main.cpp", "a.out")
         compile_res = subprocess.run(
             compile_cmd,
             cwd=sid,
