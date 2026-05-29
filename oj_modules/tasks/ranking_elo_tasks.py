@@ -193,86 +193,115 @@ def _run_scoring_script(script_path, path_a, path_b, timeout_seconds=None):
 
 # ---------- Match task ----------
 
+# ELO 分数写回用的短锁：只串行化“读分→算分→写回”这一小段（毫秒级），
+# 评测脚本本身在锁外并行运行，让一轮里多场对战可以完全并行。
+RATING_WRITE_LOCK_TTL_SECONDS = 30
+RATING_WRITE_LOCK_MAX_WAIT_SECONDS = 25
+
+
+def _acquire_rating_write_lock(rds, key):
+    """自旋抢占短写锁（写回极快、竞争极低）。返回 token（成功）或 None
+    （Redis 不可用或等待超时——退化为不加锁写回；这种情况极罕见且影响有限，
+    远好于此前“评测脚本全程串行”导致的卡顿）。"""
+    if rds is None:
+        return None
+    token = uuid.uuid4().hex
+    waited = 0.0
+    while waited < RATING_WRITE_LOCK_MAX_WAIT_SECONDS:
+        try:
+            if rds.set(key, token, nx=True, ex=RATING_WRITE_LOCK_TTL_SECONDS):
+                return token
+        except Exception:
+            return None
+        time.sleep(0.05)
+        waited += 0.05
+    return None
+
+
+def _release_rating_write_lock(rds, key, token):
+    if rds is None or not token:
+        return
+    try:
+        rds.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] "
+            "then return redis.call('del', KEYS[1]) else return 0 end",
+            1, key, token,
+        )
+    except Exception:
+        pass
+
+
 def register_ranking_elo_match_task(celery_app):
     @celery_app.task(name=ELO_MATCH_TASK_NAME, bind=True)
     def evaluate_ranking_elo_match(self, competition_id, submission_a_id, submission_b_id):
-        rds = _redis_client()
-        lock_key = COMPETITION_LOCK_KEY_FMT.format(competition_id=int(competition_id))
-        # 锁 TTL 在拿到 competition 之前先用一个保守值；之后实际读到 timeout 后通常足够覆盖
-        if rds is not None:
-            if not rds.set(lock_key, "1", ex=DEFAULT_MATCH_LOCK_TTL_SECONDS, nx=True):
-                # 锁未拿到，稍后重排
-                try:
-                    self.apply_async(
-                        args=[int(competition_id), int(submission_a_id), int(submission_b_id)],
-                        countdown=3,
-                    )
-                except Exception:
-                    pass
-                return {'success': False, 'requeued': True}
-        try:
-            comp = get_competition(int(competition_id))
-            if not comp or str(comp.get('scoring_mode') or '').lower() != 'elo':
-                return {'success': False, 'message': '不是 ELO 模式'}
-            if int(comp.get('elo_running') or 0) != 1:
-                # 管理员已停止 / 重置：丢弃这场对战，不写入历史
-                return {'success': False, 'message': '动态评分已停止'}
-            script = (comp.get('scoring_script_path') or '').strip()
-            if not script or not os.path.isfile(script):
-                return {'success': False, 'message': '评测脚本缺失'}
-            sub_a = get_ranking_submission(int(submission_a_id))
-            sub_b = get_ranking_submission(int(submission_b_id))
-            if not sub_a or not sub_b:
-                return {'success': False, 'message': '提交不存在'}
-            if sub_a.get('competition_id') != int(competition_id) or sub_b.get('competition_id') != int(competition_id):
-                return {'success': False, 'message': '提交不属于此比赛'}
-            if sub_a.get('username') == sub_b.get('username'):
-                return {'success': False, 'message': '同一用户提交不应对战'}
-            answer_a = sub_a.get('answer_path') or ''
-            answer_b = sub_b.get('answer_path') or ''
-            if not (answer_a and os.path.isfile(answer_a) and answer_b and os.path.isfile(answer_b)):
-                return {'success': False, 'message': '答案文件缺失'}
+        competition_id = int(competition_id)
+        submission_a_id = int(submission_a_id)
+        submission_b_id = int(submission_b_id)
 
-            initial_rating = float(comp.get('elo_initial_rating') or 1500)
+        # ===== 校验（无锁，多场对战完全并行）=====
+        comp = get_competition(competition_id)
+        if not comp or str(comp.get('scoring_mode') or '').lower() != 'elo':
+            return {'success': False, 'message': '不是 ELO 模式'}
+        if int(comp.get('elo_running') or 0) != 1:
+            # 管理员已停止 / 重置：丢弃这场对战，不写入历史
+            return {'success': False, 'message': '动态评分已停止'}
+        script = (comp.get('scoring_script_path') or '').strip()
+        if not script or not os.path.isfile(script):
+            return {'success': False, 'message': '评测脚本缺失'}
+        sub_a = get_ranking_submission(submission_a_id)
+        sub_b = get_ranking_submission(submission_b_id)
+        if not sub_a or not sub_b:
+            return {'success': False, 'message': '提交不存在'}
+        if sub_a.get('competition_id') != competition_id or sub_b.get('competition_id') != competition_id:
+            return {'success': False, 'message': '提交不属于此比赛'}
+        if sub_a.get('username') == sub_b.get('username'):
+            return {'success': False, 'message': '同一用户提交不应对战'}
+        answer_a = sub_a.get('answer_path') or ''
+        answer_b = sub_b.get('answer_path') or ''
+        if not (answer_a and os.path.isfile(answer_a) and answer_b and os.path.isfile(answer_b)):
+            return {'success': False, 'message': '答案文件缺失'}
+
+        initial_rating = float(comp.get('elo_initial_rating') or 1500)
+        k = float(comp.get('elo_k_factor') or 32)
+        script_timeout = int(comp.get('scoring_script_timeout_seconds') or DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS)
+
+        # ===== 运行评测脚本（无锁，多场对战完全并行）=====
+        try:
+            winner, details = _run_scoring_script(script, answer_a, answer_b, timeout_seconds=script_timeout)
+        except Exception as e:
+            # 脚本异常：落一条 winner=-1 占位行、不调分（仅插入历史，不存在分数竞争，无需串行）
             rating_a = float(sub_a.get('elo_rating') if sub_a.get('elo_rating') is not None else initial_rating)
             rating_b = float(sub_b.get('elo_rating') if sub_b.get('elo_rating') is not None else initial_rating)
-            script_timeout = int(comp.get('scoring_script_timeout_seconds') or DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS)
-            # 若用户设置的超时较长，重新延长一下锁 TTL，避免锁过期后并行重叠
-            if rds is not None:
-                try:
-                    rds.expire(lock_key, _match_lock_ttl(script_timeout))
-                except Exception:
-                    pass
+            record_elo_match(
+                competition_id, submission_a_id, submission_b_id, -1,
+                rating_a, rating_b, rating_a, rating_b,
+                details=None, error_message=str(e)[:1500],
+            )
+            return {'success': False, 'message': f'评测脚本异常：{e}'}
 
-            try:
-                winner, details = _run_scoring_script(script, answer_a, answer_b, timeout_seconds=script_timeout)
-            except Exception as e:
-                # 失败也记录一条对战，但不调整分数（winner=-1，用于和 0=平局 区分）
-                record_elo_match(
-                    int(competition_id), int(submission_a_id), int(submission_b_id), -1,
-                    rating_a, rating_b, rating_a, rating_b,
-                    details=None, error_message=str(e)[:1500],
-                )
-                return {'success': False, 'message': f'评测脚本异常：{e}'}
-
-            k = float(comp.get('elo_k_factor') or 32)
+        # ===== 仅“读分→算分→写回”串行（短锁；锁内重读最新分数，避免并行脏写覆盖）=====
+        rds = _redis_client()
+        lock_key = COMPETITION_LOCK_KEY_FMT.format(competition_id=competition_id)
+        token = _acquire_rating_write_lock(rds, lock_key)
+        try:
+            fresh_a = get_ranking_submission(submission_a_id) or sub_a
+            fresh_b = get_ranking_submission(submission_b_id) or sub_b
+            rating_a = float(fresh_a.get('elo_rating') if fresh_a.get('elo_rating') is not None else initial_rating)
+            rating_b = float(fresh_b.get('elo_rating') if fresh_b.get('elo_rating') is not None else initial_rating)
             new_a, new_b = _new_ratings(rating_a, rating_b, winner, k)
             record_elo_match(
-                int(competition_id), int(submission_a_id), int(submission_b_id), winner,
+                competition_id, submission_a_id, submission_b_id, winner,
                 rating_a, rating_b, new_a, new_b, details=details,
             )
-            return {
-                'success': True,
-                'winner': winner,
-                'rating_a_before': rating_a, 'rating_a_after': new_a,
-                'rating_b_before': rating_b, 'rating_b_after': new_b,
-            }
         finally:
-            if rds is not None:
-                try:
-                    rds.delete(lock_key)
-                except Exception:
-                    pass
+            _release_rating_write_lock(rds, lock_key, token)
+
+        return {
+            'success': True,
+            'winner': winner,
+            'rating_a_before': rating_a, 'rating_a_after': new_a,
+            'rating_b_before': rating_b, 'rating_b_after': new_b,
+        }
 
     return evaluate_ranking_elo_match
 
