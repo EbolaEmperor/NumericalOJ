@@ -312,24 +312,19 @@ def register_ranking_elo_initial_burst_task(celery_app, match_task):
     @celery_app.task(name=ELO_INITIAL_BURST_TASK_NAME, bind=True)
     def ranking_elo_initial_burst(self, competition_id, submission_id,
                                   remaining=None, last_count=None, defers=0):
-        """串行版即时补战。
+        """并行版即时补战：新提交进池后，一次性给它安排 elo_initial_burst 场对战，
+        全部并行调度，不再一场一场等上一场结算。
 
-        与之前的"一次性把 5 场全排进队列"相反，这个任务每次只调度一场对战，然后
-        把自己重新排到 INITIAL_BURST_POLL_SECONDS 秒之后；下一次触发时先看 anchor
-        的 elo_match_count 有没有相对 last_count 涨过——也就是上一场是否已经结算
-        并更新过 rating——然后再用最新分数现挑下一个对手。
+        对战本身在 worker 池上并行执行，ELO 分数写回由短锁串行（见
+        evaluate_ranking_elo_match：锁内重读最新分数），所以并行安全——锚点分数会
+        随各场陆续结算被后续写回逐步收敛。
 
-        这样能避免在新提交的初始分附近一次性挑 5 个"分数相近"的人，让中途的对战
-        结果有机会动态影响后续匹配。
-
-        参数:
-            remaining   还要安排几场。第一次由路由传 None，由 comp.elo_initial_burst 初始化。
-            last_count  上一次本任务调度比赛时记下的 anchor.elo_match_count；用来判断
-                        新一场是否已结算。
-            defers      已经在"等待上一场结算"上延期了多少次，超过 INITIAL_BURST_MAX_DEFERS
-                        就强行进入下一轮，防止评测脚本卡住时无限轮询。
+        参数 remaining/last_count/defers 仅为兼容旧的串行链式调用签名而保留；本实现
+        不再自我重排，直接一次性把全部补战排进队列。
         """
-        comp = get_competition(int(competition_id))
+        competition_id = int(competition_id)
+        submission_id = int(submission_id)
+        comp = get_competition(competition_id)
         if not comp or str(comp.get('scoring_mode') or '').lower() != 'elo':
             return {'success': False, 'message': '不是 ELO 模式'}
         if int(comp.get('elo_running') or 0) != 1:
@@ -337,72 +332,45 @@ def register_ranking_elo_initial_burst_task(celery_app, match_task):
         if not (comp.get('scoring_script_path') or '').strip():
             return {'success': False, 'message': '没有评测脚本'}
 
-        if remaining is None:
-            remaining = max(0, int(comp.get('elo_initial_burst') or 5))
-        remaining = int(remaining)
-        if remaining <= 0:
-            return {'success': True, 'completed': True}
+        n = int(remaining) if remaining is not None else int(comp.get('elo_initial_burst') or 5)
+        n = max(0, n)
+        if n <= 0:
+            return {'success': True, 'completed': True, 'scheduled': 0}
 
-        anchor = get_ranking_submission(int(submission_id))
+        anchor = get_ranking_submission(submission_id)
         if not anchor or anchor.get('elo_in_pool') != 1:
             return {'success': False, 'message': '该提交不在 ELO 池中'}
 
-        current_count = int(anchor.get('elo_match_count') or 0)
-
-        # 如果还在等"上一场" 完成且 elo_match_count 没涨，延期再来
-        if last_count is not None and current_count <= int(last_count):
-            if int(defers) < INITIAL_BURST_MAX_DEFERS:
-                try:
-                    self.apply_async(
-                        args=[int(competition_id), int(submission_id),
-                              remaining, int(last_count), int(defers) + 1],
-                        countdown=INITIAL_BURST_POLL_SECONDS,
-                    )
-                except Exception:
-                    pass
-                return {'success': True, 'deferred': True, 'defers': int(defers) + 1}
-            # 等太久了：评测可能卡住或丢失，认账继续往前推
-
-        # 用此时的 anchor.rating 现挑搭档
         pool = list_eligible_elo_submissions(
-            int(competition_id), int(comp.get('elo_max_matches') or 200)
+            competition_id, int(comp.get('elo_max_matches') or 200)
         )
         pool = [
             s for s in pool
-            if int(s['id']) != int(submission_id) and s['username'] != anchor['username']
+            if int(s['id']) != submission_id and s['username'] != anchor['username']
         ]
         if not pool:
             return {'success': True, 'scheduled': 0, 'reason': 'pool empty'}
 
-        partner = _pick_partner(pool, anchor)
-        if partner is None:
-            return {'success': True, 'scheduled': 0, 'reason': 'no partner'}
-
-        try:
-            match_task.apply_async(
-                args=[int(competition_id), int(submission_id), int(partner['id'])],
-            )
-        except Exception:
-            pass
-
-        # 安排自己的下一轮：等到 elo_match_count 涨过 current_count 再现挑搭档
-        next_remaining = remaining - 1
-        if next_remaining > 0:
+        # 一次性挑 n 个不同的对手并行调度（每个都在锚点当前分附近、带随机性）
+        scheduled = 0
+        seen_ids = set()
+        for _ in range(n):
+            candidates = [s for s in pool if int(s['id']) not in seen_ids]
+            if not candidates:
+                break
+            partner = _pick_partner(candidates, anchor)
+            if partner is None:
+                break
+            seen_ids.add(int(partner['id']))
             try:
-                self.apply_async(
-                    args=[int(competition_id), int(submission_id),
-                          next_remaining, current_count, 0],
-                    countdown=INITIAL_BURST_POLL_SECONDS,
+                match_task.apply_async(
+                    args=[competition_id, submission_id, int(partner['id'])],
                 )
+                scheduled += 1
             except Exception:
                 pass
 
-        return {
-            'success': True,
-            'scheduled': 1,
-            'partner_id': int(partner['id']),
-            'remaining_after': next_remaining,
-        }
+        return {'success': True, 'scheduled': scheduled}
 
     return ranking_elo_initial_burst
 
