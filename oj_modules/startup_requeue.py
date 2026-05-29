@@ -37,6 +37,8 @@ from oj_modules.tasks.evaluate_tasks import clear_submission_lock, has_submissio
 _STARTUP_REQUEUE_STAGGER_SECONDS = 1
 PENDING_REQUEUE_WATCHDOG_TASK_NAME = "oj.pending_requeue_watchdog"
 _PENDING_REQUEUE_OWNER_KEY = "submission:pending_requeue:owner"
+_PENDING_REQUEUE_SEED_LOCK_KEY = "submission:pending_requeue:seed_lock"
+_PENDING_REQUEUE_RUN_LOCK_KEY = "submission:pending_requeue:run_lock"
 _PENDING_REQUEUE_ITEM_KEY_FMT = "submission:{submission_id}:pending_requeue"
 _PENDING_REQUEUE_INTERVAL_SECONDS = 300
 _PENDING_REQUEUE_OWNER_TTL_SECONDS = _PENDING_REQUEUE_INTERVAL_SECONDS * 3
@@ -287,6 +289,7 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
     @celery_app.task(name=PENDING_REQUEUE_WATCHDOG_TASK_NAME, bind=True)
     def pending_requeue_watchdog(self, owner_id):
         redis_client = _redis_client()
+        run_lock_acquired = False
         if redis_client is not None:
             try:
                 current = redis_client.get(_PENDING_REQUEUE_OWNER_KEY)
@@ -304,6 +307,14 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
                         owner_id,
                         ex=_PENDING_REQUEUE_OWNER_TTL_SECONDS,
                     )
+                run_lock_acquired = bool(redis_client.set(
+                    _PENDING_REQUEUE_RUN_LOCK_KEY,
+                    owner_id,
+                    ex=max(60, _PENDING_REQUEUE_INTERVAL_SECONDS - 5),
+                    nx=True,
+                ))
+                if not run_lock_acquired:
+                    return {'success': True, 'reason': 'pending requeue already running'}
             except Exception:
                 pass
 
@@ -328,16 +339,31 @@ def seed_pending_requeue_watchdog(redis_client, watchdog_task):
     if watchdog_task is None:
         return
     try:
-        owner_id = uuid.uuid4().hex
         if redis_client is None:
+            owner_id = uuid.uuid4().hex
             watchdog_task.apply_async(args=[owner_id], countdown=30)
             return
+
+        if not redis_client.set(
+            _PENDING_REQUEUE_SEED_LOCK_KEY,
+            "1",
+            ex=60,
+            nx=True,
+        ):
+            return
+
+        owner_id = redis_client.get(_PENDING_REQUEUE_OWNER_KEY)
+        if owner_id:
+            watchdog_task.apply_async(args=[owner_id], countdown=30)
+            return
+
+        new_owner_id = uuid.uuid4().hex
         if redis_client.set(
             _PENDING_REQUEUE_OWNER_KEY,
-            owner_id,
+            new_owner_id,
             ex=_PENDING_REQUEUE_OWNER_TTL_SECONDS,
             nx=True,
         ):
-            watchdog_task.apply_async(args=[owner_id], countdown=30)
+            watchdog_task.apply_async(args=[new_owner_id], countdown=30)
     except Exception:
         pass
