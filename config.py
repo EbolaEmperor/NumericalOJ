@@ -21,6 +21,11 @@ MATLAB_AI_DETECT_API_KEY = "YOUR_MATLAB_AI_DETECT_API_KEY"
 MATLAB_AI_DETECT_URL = "http://127.0.0.1:8000/v1"
 MATLAB_AI_DETECT_MODEL = "matlab-ai-detect"
 
+MIMO_URL_OPENAI = "https://token-plan-cn.xiaomimimo.com/v1"
+MIMO_URL_ANTHROPIC = "https://token-plan-cn.xiaomimimo.com/anthropic"
+MIMO_API_KEY = "YOUR_MIMO_API_KEY"
+MIMO_MODEL = "mimo-v2.5-pro"
+
 QWEN_CODER_MODEL = "qwen3-coder-plus"
 QWEN_TEXT_MODEL = "qwen3.5-plus"
 AI_TUTOR_MODEL = "qwen3.5-flash"
