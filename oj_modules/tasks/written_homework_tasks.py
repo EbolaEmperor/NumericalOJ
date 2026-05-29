@@ -50,6 +50,22 @@ _TEX_HAS_CJK_SETUP_PATTERN = re.compile(
 _TEX_MISSING_CHAR_PATTERN = re.compile(r"Missing character: There is no .*?\(U\+([0-9A-Fa-f]{4,6})\)")
 
 
+def _is_deterministic_written_input_error(error):
+    text = str(error or "")
+    markers = (
+        "Failed to load document",
+        "Data format error",
+        "No such file",
+        "not a zip file",
+        "File is not a zip file",
+        "BadZipFile",
+        "ZIP 中未找到 main.tex",
+        "提交的 TeX 文本为空",
+        "转写得到的 LaTeX 为空",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _read_text_file_safe(path, max_chars=300000):
     if not path or not os.path.isfile(path):
         return ""
@@ -306,7 +322,8 @@ def register_written_homework_task(celery_app):
         file_path = get_file_path_for_submission(submission_id)
         if not file_path or not os.path.exists(file_path):
             print(f"[LaTeX OCR] submission={submission_id} 文件不存在: {file_path}")
-            update_submission_status(submission_id, 'Pending')
+            update_submission_score_and_comment(submission_id, 0, "提交文件不存在，无法自动评分，按规则记 0 分。")
+            update_submission_status(submission_id, 'Unaccepted')
             return
 
         upload_folder = os.path.dirname(file_path)
@@ -488,6 +505,7 @@ def register_written_homework_task(celery_app):
         except Exception as e:
             if isinstance(e, _MYSQL_RETRY_ERRORS):
                 raise
+            deterministic_input_error = _is_deterministic_written_input_error(e)
             error_filename = f"{os.path.splitext(uploaded_filename)[0]}_latex_error.txt"
             error_path = os.path.join(upload_folder, error_filename)
             try:
@@ -497,8 +515,16 @@ def register_written_homework_task(celery_app):
             except Exception:
                 pass
             try:
-                update_submission_comment(submission_id, f"AI 自动评分失败：{str(e)}")
-                update_submission_status(submission_id, 'Pending')
+                if deterministic_input_error:
+                    update_submission_score_and_comment(
+                        submission_id,
+                        0,
+                        f"提交文件无法解析或格式不符合要求：{str(e)}",
+                    )
+                    update_submission_status(submission_id, 'Unaccepted')
+                else:
+                    update_submission_comment(submission_id, f"AI 自动评分失败：{str(e)}")
+                    update_submission_status(submission_id, 'Pending')
             except Exception:
                 pass
             print(f"[LaTeX OCR] submission={submission_id} 转写或评分失败: {e}")
