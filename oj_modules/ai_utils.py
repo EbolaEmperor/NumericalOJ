@@ -6,20 +6,14 @@ import json
 import mimetypes
 import os
 import re
-import socket
 import tempfile
 import time
-from urllib.parse import urlparse
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.connection import HTTPConnection
 
 from config import (
     AI_TUTOR_MODEL,
     AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT,
-    CODING_PLAN_KEY,
-    CODING_PLAN_URL,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     LATEX_OCR_MAX_IMAGES_PER_REQUEST,
@@ -63,13 +57,9 @@ def _strip_markdown_code_fence_markers(text):
     return "\n".join(cleaned_lines).strip()
 
 
-_CODING_PLAN_TARGET_MODELS = {
-    str(QWEN_TEXT_MODEL or "").strip(),
-    str(QWEN_CODER_MODEL or "").strip(),
-}
 _WRITTEN_GRADING_MODEL_SPECS = {
-    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "coding_plan"),
-    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking": (str(QWEN_TEXT_MODEL or "").strip(), True, "coding_plan"),
+    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "dashscope"),
+    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking": (str(QWEN_TEXT_MODEL or "").strip(), True, "dashscope"),
     str(AI_TUTOR_MODEL or "").strip().lower(): (str(AI_TUTOR_MODEL or "").strip(), False, "dashscope"),
     f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking": (str(AI_TUTOR_MODEL or "").strip(), True, "dashscope"),
 }
@@ -86,11 +76,10 @@ DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
     "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
     "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。"
 )
-_SO_BINDTODEVICE = getattr(socket, "SO_BINDTODEVICE", 25)
 _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC = str(QWEN_OMNI_MODEL or "").strip().lower() or str(QWEN_TEXT_MODEL or "").strip().lower()
 _PROGRAMMING_IMAGE_GRADING_MODEL_SPECS = {
     str(QWEN_OMNI_MODEL or "").strip().lower(): (str(QWEN_OMNI_MODEL or "").strip(), False, "dashscope"),
-    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "coding_plan"),
+    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "dashscope"),
 }
 _CONTROL_ESCAPE_TO_LATEX_PREFIX = {
     "\n": "n",
@@ -158,60 +147,13 @@ def _resolve_dashscope_base_url():
     return base_url
 
 
-class _BindInterfaceHTTPAdapter(HTTPAdapter):
-    def __init__(self, interface_name, *args, **kwargs):
-        self._interface_name = str(interface_name or "").strip()
-        super().__init__(*args, **kwargs)
-
-    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
-        socket_options = list(pool_kwargs.get("socket_options") or HTTPConnection.default_socket_options)
-        socket_options.append((
-            socket.SOL_SOCKET,
-            _SO_BINDTODEVICE,
-            self._interface_name.encode("utf-8") + b"\0",
-        ))
-        pool_kwargs["socket_options"] = socket_options
-        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
-
-
-def _get_coding_plan_network_interface(base_url):
-    host = urlparse(str(base_url or "")).hostname
-    coding_plan_host = urlparse(str(CODING_PLAN_URL or "")).hostname
-    if not host or host != coding_plan_host:
-        return ""
-
-    configured_interface = str(os.environ.get("CODING_PLAN_NETWORK_INTERFACE") or "").strip()
-    if configured_interface:
-        return configured_interface
-
-    if os.path.exists("/sys/class/net/ppp0"):
-        return "ppp0"
-    return ""
-
-
 def _post_chat_completions(base_url, headers, payload, timeout):
     url = f"{str(base_url).rstrip('/')}/chat/completions"
-    network_interface = _get_coding_plan_network_interface(base_url)
-    if not network_interface:
-        return requests.post(url, headers=headers, json=payload, timeout=timeout)
-
-    with requests.Session() as session:
-        adapter = _BindInterfaceHTTPAdapter(network_interface)
-        session.mount("https://", adapter)
-        return session.post(url, headers=headers, json=payload, timeout=timeout)
+    return requests.post(url, headers=headers, json=payload, timeout=timeout)
 
 
 def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base_url=None):
-    use_model = str(model or "").strip()
-    if use_model in _CODING_PLAN_TARGET_MODELS:
-        api_key = CODING_PLAN_KEY
-        base_url = CODING_PLAN_URL
-        if _is_invalid_secret(api_key):
-            raise RuntimeError("未配置 CODING_PLAN_KEY。")
-        if not str(base_url or "").strip():
-            raise RuntimeError("未配置 CODING_PLAN_URL。")
-        return str(api_key).strip(), str(base_url).rstrip('/')
-
+    # coding-plan 已移除：所有模型一律走普通 DashScope（compatible-mode）端点。
     api_key = fallback_api_key
     if api_key is None:
         api_key = DASHSCOPE_API_KEY
@@ -242,16 +184,7 @@ def _parse_programming_image_grading_model_spec(model_spec):
 
 
 def _resolve_endpoint_for_written_grading_route(route_key):
-    route = str(route_key or "").strip().lower()
-    if route == "coding_plan":
-        api_key = CODING_PLAN_KEY
-        base_url = CODING_PLAN_URL
-        if _is_invalid_secret(api_key):
-            raise RuntimeError("未配置 CODING_PLAN_KEY。")
-        if not str(base_url or "").strip():
-            raise RuntimeError("未配置 CODING_PLAN_URL。")
-        return str(api_key).strip(), str(base_url).rstrip('/')
-
+    # coding-plan 已移除：route_key 保留兼容，但一律解析到普通 DashScope 端点。
     api_key = DASHSCOPE_API_KEY
     base_url = _resolve_dashscope_base_url()
     if _is_invalid_secret(api_key):
@@ -284,8 +217,7 @@ def _call_qwen_text(
         use_base_url = str(base_url).rstrip('/')
     messages = [{"role": "user", "content": prompt_text}]
 
-    coding_plan_network_interface = _get_coding_plan_network_interface(use_base_url)
-    if OpenAI is not None and not coding_plan_network_interface:
+    if OpenAI is not None:
         try:
             client = OpenAI(api_key=use_api_key, base_url=use_base_url)
             kwargs = {
@@ -674,8 +606,7 @@ def _call_qwen_text_with_images(
     message_content.append({"type": "text", "text": str(prompt_text or "").strip()})
     messages = [{"role": "user", "content": message_content}]
 
-    coding_plan_network_interface = _get_coding_plan_network_interface(use_base_url)
-    if OpenAI is not None and not coding_plan_network_interface:
+    if OpenAI is not None:
         try:
             client = OpenAI(api_key=use_api_key, base_url=use_base_url)
             kwargs = {

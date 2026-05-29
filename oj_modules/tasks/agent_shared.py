@@ -8,8 +8,6 @@ import time
 import requests
 
 from config import (
-    CODING_PLAN_KEY,
-    CODING_PLAN_URL,
     AGENT_CONTEXT_KEEP_ROUNDS,
     AGENT_CONTEXT_MAX_CHARS,
     AGENT_CONTEXT_SUMMARY_INPUT_MAX_CHARS,
@@ -256,28 +254,13 @@ def _compact_summary(summary):
     }
 
 
-_CODING_PLAN_TARGET_MODELS = {
-    str(QWEN_TEXT_MODEL or "").strip(),
-    str(QWEN_CODER_MODEL or "").strip(),
-}
-
-
 def _is_invalid_secret(value):
     text = str(value or "").strip()
     return (not text) or ("YOUR" in text.upper())
 
 
 def _resolve_chat_endpoint_for_model(model):
-    use_model = str(model or "").strip()
-    if use_model in _CODING_PLAN_TARGET_MODELS:
-        api_key = CODING_PLAN_KEY
-        base_url = CODING_PLAN_URL
-        if _is_invalid_secret(api_key):
-            raise RuntimeError("未配置 CODING_PLAN_KEY。")
-        if not str(base_url or "").strip():
-            raise RuntimeError("未配置 CODING_PLAN_URL。")
-        return str(api_key).strip(), str(base_url).rstrip("/")
-
+    # coding-plan 已移除：所有模型一律走普通 DashScope（compatible-mode）端点。
     api_key = DASHSCOPE_API_KEY
     if _is_invalid_secret(api_key):
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
