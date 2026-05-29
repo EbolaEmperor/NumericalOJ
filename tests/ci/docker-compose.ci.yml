@@ -33,8 +33,8 @@ services:
       redis:
         condition: service_healthy
     environment:
-      # 设为 /tmp（而非 /tmp/judger_runs）：submission_output_image 端点在 /tmp/<sid>/ 下找图片
-      JUDGER_RUN_ROOT: /tmp
+      # 不再覆盖 JUDGER_RUN_ROOT：判题运行目录用内置默认 <OJ_ROOT>/judger（容器内 /app/judger），
+      # 不在 tmp 下；submission_output_image 端点通过 judger_core.run_dir_for 解析同一目录。
       # judger_core 在 import 时读取 MKLROOT；指向下面挂入的宿主 oneAPI MKL
       MKLROOT: /opt/intel/oneapi/mkl/latest
     volumes:

@@ -44,3 +44,6 @@ test-results/
 # ===== 本地配置 / 运行时目录 =====
 tmp/
 uploads/
+# 判题运行目录（JUDGER_RUN_ROOT 默认 <OJ_ROOT>/judger）：每次评测的 eoj-* 子目录是
+# 临时产物，不入库；judger/ 下手动维护的文件（如 baltaTest.md）照常跟踪。
+judger/eoj-*/
