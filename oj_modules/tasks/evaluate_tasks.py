@@ -191,6 +191,22 @@ def _release_submission_lock(client, key, token):
         pass
 
 
+def clear_submission_lock(submission_id):
+    """无条件清除某条提交的评测幂等锁。
+
+    仅用于进程启动时的重新入队：此时 Celery worker 都是刚启动的，不存在真正在
+    评测中的任务，残留的 submission:{id}:lock 必然是上次进程被杀留下的“僵尸锁”。
+    清掉它，重新入队的任务才能拿到锁正常重跑（否则会被幂等逻辑跳过）。
+    """
+    client = _get_lock_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(_submission_lock_key(submission_id))
+    except Exception:
+        pass
+
+
 def compare_float_strings(str1, str2, tolerance=1e-5):
     split_pattern = r'[\s,]+'
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
+
 from flask import Flask, redirect, url_for, session
 from celery import Celery
 
@@ -40,6 +42,7 @@ from oj_modules.tasks import (
     register_ranking_elo_matchmaker_tick_task,
     seed_elo_matchmaker_tick,
 )
+from oj_modules.startup_requeue import requeue_pending_on_startup
 
 import redis
 
@@ -165,5 +168,18 @@ init_agent_progress_cache(rds)
 #  班级管理
 ###############################################################################
 if __name__ == '__main__':
+    # 启动时把数据库里残留的 pending/评测中任务重新入队（重启后队列会清空）。
+    # 仅在真正提供服务的进程里执行一次：
+    #   - Celery worker 以 `oj.celery` 方式 import 本模块，__name__ != '__main__'，
+    #     不会进入这里；
+    #   - debug 模式下 Werkzeug reloader 会让父子两个进程都跑 __main__，用
+    #     WERKZEUG_RUN_MAIN 守卫，只在真正服务的子进程里跑一次。
+    if (not app.debug) or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        requeue_pending_on_startup(
+            evaluate_task=evaluate_submission,
+            written_task=transcribe_written_homework_to_latex,
+            ranking_task=evaluate_ranking_submission,
+            elo_initial_burst_task=ranking_elo_initial_burst,
+        )
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

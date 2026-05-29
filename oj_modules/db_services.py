@@ -75,7 +75,7 @@ _ALLOWED_PROGRAMMING_GRADING_MODELS = {
 
 def _create_raw_mysql_connection():
     return pymysql.connect(
-        host='localhost',
+        host='127.0.0.1',
         user=MYSQL_USERNAME,
         password=MYSQL_PASSWORD,
         database='myojdb',
@@ -1516,6 +1516,28 @@ def get_submission_by_id(submission_id):
                     json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
                 ]
             return submission
+    finally:
+        conn.close()
+
+
+def get_incomplete_submissions():
+    """返回所有尚未完成评测的提交（程序题 + 书面作业），用于进程启动时重新入队。
+
+    status ∈ ('Pending', 'Waiting', 'Running')：
+      - Pending/Waiting：已创建但从未开始评测（队列在重启时丢失）；
+      - Running：重启那一刻正评测到一半、被杀掉的任务。
+    返回每行的 id / problem_type / status，按 id 升序（早提交先评）。
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = (
+                "SELECT id, problem_type, status FROM submissions "
+                "WHERE status IN ('Pending', 'Waiting', 'Running') "
+                "ORDER BY id ASC"
+            )
+            cursor.execute(sql)
+            return cursor.fetchall()
     finally:
         conn.close()
 

@@ -566,6 +566,35 @@ def get_ranking_submission(submission_id):
         conn.close()
 
 
+def get_incomplete_ranking_submissions():
+    """返回所有卡在 'Judging' 的打榜赛提交，用于进程启动时重新入队。
+
+    'Judging' = 文件已上传、评测任务已入队，但重启时丢失。连带返回所属比赛的
+    scoring_mode 与 elo_initial_rating，便于按模式分派：
+      - 绝对分模式：重新 .delay() 给评测任务；
+      - ELO 模式：补做入池（init_submission_elo_state -> Active）+ 补发 initial-burst。
+    'Pending'（尚未上传文件，无可评内容）与 'Active' ELO（已由 matchmaker tick 接管）
+    不在此列。
+    """
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT s.id, s.competition_id, s.status,
+                       c.scoring_mode, c.elo_initial_rating
+                FROM ranking_submissions s
+                JOIN ranking_competitions c ON c.id = s.competition_id
+                WHERE s.status = 'Judging'
+                ORDER BY s.id ASC
+                """
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
 def list_user_submissions(competition_id, username):
     ensure_ranking_tables()
     conn = get_db_connection()
