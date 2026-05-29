@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import zipfile
 
+import pymysql
+
 from config import AI_TUTOR_MODEL, EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import (
     evaluate_written_homework_with_ai,
@@ -35,6 +37,11 @@ _DEFAULT_WRITTEN_GRADING_MODEL_SPEC = (
 )
 _WRITTEN_TASK_TIME_LIMIT = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS))
 _WRITTEN_TASK_SOFT_TIME_LIMIT = max(30, _WRITTEN_TASK_TIME_LIMIT - 60)
+_MYSQL_RETRY_ERRORS = (
+    pymysql.err.OperationalError,
+    pymysql.err.InterfaceError,
+    pymysql.err.InternalError,
+)
 _TEX_BEGIN_DOCUMENT_PATTERN = re.compile(r"\\begin\{document\}", flags=re.IGNORECASE)
 _TEX_HAS_CJK_SETUP_PATTERN = re.compile(
     r"\\usepackage(?:\[[^\]]*\])?\{[^}]*?(?:xeCJK|ctex|CJKutf8)[^}]*\}|\\documentclass(?:\[[^\]]*\])?\{ctex[^}]*\}",
@@ -278,10 +285,15 @@ def register_written_homework_task(celery_app):
 
     @celery_app.task(
         name=WRITTEN_TASK_NAME,
+        bind=True,
         time_limit=_WRITTEN_TASK_TIME_LIMIT,
         soft_time_limit=_WRITTEN_TASK_SOFT_TIME_LIMIT,
+        autoretry_for=_MYSQL_RETRY_ERRORS,
+        retry_backoff=True,
+        retry_jitter=True,
+        retry_kwargs={'max_retries': 3},
     )
-    def transcribe_written_homework_to_latex(submission_id):
+    def transcribe_written_homework_to_latex(self, submission_id):
         """
         书面作业 LaTeX 转写 + AI 评分任务（异步）。
         """
@@ -474,6 +486,8 @@ def register_written_homework_task(celery_app):
                     f"score={score}, status={new_status}, markdown={markdown_path}"
                 )
         except Exception as e:
+            if isinstance(e, _MYSQL_RETRY_ERRORS):
+                raise
             error_filename = f"{os.path.splitext(uploaded_filename)[0]}_latex_error.txt"
             error_path = os.path.join(upload_folder, error_filename)
             try:

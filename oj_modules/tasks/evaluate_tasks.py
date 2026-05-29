@@ -8,6 +8,7 @@ import re
 import uuid
 
 import requests
+import pymysql
 
 from oj_modules import judger_core as core
 
@@ -40,6 +41,11 @@ from oj_modules.db_services import (
 EVALUATE_TASK_NAME = "oj.evaluate_submission"
 _LOCK_TTL_SECONDS = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS))
 _lock_rds = None
+_MYSQL_RETRY_ERRORS = (
+    pymysql.err.OperationalError,
+    pymysql.err.InterfaceError,
+    pymysql.err.InternalError,
+)
 
 
 def _normalize_programming_grading_mode(problem):
@@ -259,8 +265,17 @@ def register_evaluate_submission_task(celery_app):
     if existing:
         return existing
 
-    @celery_app.task(name=EVALUATE_TASK_NAME, time_limit=300, soft_time_limit=240)
-    def evaluate_submission(submission_id):
+    @celery_app.task(
+        name=EVALUATE_TASK_NAME,
+        bind=True,
+        time_limit=300,
+        soft_time_limit=240,
+        autoretry_for=_MYSQL_RETRY_ERRORS,
+        retry_backoff=True,
+        retry_jitter=True,
+        retry_kwargs={'max_retries': 3},
+    )
+    def evaluate_submission(self, submission_id):
         submission = get_submission_by_id(submission_id)
         if not submission:
             return
