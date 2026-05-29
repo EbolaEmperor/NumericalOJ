@@ -459,33 +459,52 @@ def ranking_match_details(competition_id, match_id):
 def ranking_delete_match(competition_id, match_id):
     """管理员删除某场 ELO 对战；该对战导致的双方分数变动从当前 rating 里"反加回去"，
     elo_match_count 也各减 1。winner == 0（评测失败）的对战只删行，不动分数。"""
+    wants_json = (
+        request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        or 'application/json' in (request.headers.get('Accept') or '')
+    )
     user, resp = _require_admin()
     if resp is not None:
+        if wants_json:
+            return jsonify({'success': False, 'message': '需要管理员权限'}), 403
         return resp
     comp = get_competition(competition_id)
     if not comp:
+        if wants_json:
+            return jsonify({'success': False, 'message': '比赛不存在'}), 404
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
 
     result = delete_elo_match_and_revert(int(match_id), int(competition_id))
     if result is None:
+        if wants_json:
+            return jsonify({'success': False, 'message': '对战记录不存在'}), 404
         flash('对战记录不存在', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
 
     _invalidate_competition_match_caches(competition_id, match_id=match_id)
 
     if int(result.get('winner') or 0) in (1, 2):
-        flash(
+        msg = (
             '已删除对战 #{} ：A 分数 {:+.2f}，B 分数 {:+.2f}，'
             '已从当前 ELO 中撤销该变化，并把双方对战次数各减 1。'.format(
                 int(match_id),
                 -float(result.get('delta_a') or 0),
                 -float(result.get('delta_b') or 0),
-            ),
-            'success',
+            )
         )
     else:
-        flash(f'已删除对战 #{int(match_id)}（评测失败的记录，未影响分数）', 'success')
+        msg = f'已删除对战 #{int(match_id)}（评测失败的记录，未影响分数）'
+
+    if wants_json:
+        return jsonify({
+            'success': True,
+            'winner': int(result.get('winner') or 0),
+            'delta_a': float(result.get('delta_a') or 0),
+            'delta_b': float(result.get('delta_b') or 0),
+            'message': msg,
+        })
+    flash(msg, 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
 
 
@@ -582,6 +601,50 @@ def ranking_submissions_json(competition_id):
         'rows_html': rows_html,
         'pagination_html': pagination_html,
         'page': page,
+    })
+
+
+# ---------- 对战数据：分页 AJAX 局部刷新（删除后保持当前页用） ----------
+
+@ranking_bp.route('/<int:competition_id>/matches_json', methods=['GET'])
+def ranking_matches_json(competition_id):
+    """对战数据标签页的 AJAX 端点：返回某一页对战列表 + 分页的已渲染 HTML 片段。
+    管理员删除某场对战后，前端据此就地刷新「当前页」，不跳回第 1 页。"""
+    user = _current_user()
+    if not user:
+        return jsonify({'error': 'unauthorized'}), 401
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify({'error': 'not_found'}), 404
+    is_admin = user.get('is_admin') == 1
+    if not is_admin and comp.get('is_active') != 1:
+        return jsonify({'error': 'forbidden'}), 403
+
+    requested_page = max(1, request.args.get('page', 1, type=int))
+    matches_mine = str(request.args.get('mine') or '').strip() in ('1', 'true', 'on', 'yes')
+    username_filter = user.get('username') if matches_mine else None
+    matches, current_page, matches_total = fetch_competition_matches_cached(
+        competition_id, requested_page, MATCHES_PER_PAGE, username=username_filter,
+    )
+    total_pages = max(1, (matches_total + MATCHES_PER_PAGE - 1) // MATCHES_PER_PAGE)
+    page_numbers = _page_window(current_page, total_pages)
+
+    html = render_template(
+        '_ranking_matches_inner.html',
+        matches=matches,
+        competition=comp,
+        user=user,
+        is_admin=is_admin,
+        matches_mine=matches_mine,
+        current_page=current_page,
+        total_pages=total_pages,
+        page_numbers=page_numbers,
+    )
+    return jsonify({
+        'html': html,
+        'total': matches_total,
+        'page': current_page,
+        'total_pages': total_pages,
     })
 
 

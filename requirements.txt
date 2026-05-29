@@ -1,0 +1,13 @@
+flask
+celery
+redis
+pymysql
+werkzeug
+requests
+numpy
+pillow
+openpyxl
+markdown
+pygments
+openai
+httpx

@@ -33,6 +33,11 @@ from config import (
     SUBMISSION_SNAPSHOT_TTL_SECONDS,
     QWEN_OMNI_MODEL,
 )
+import config as _config
+# CI / 多环境可通过 config 覆盖 MySQL 连接目标；生产 config.py 未定义这些键时回退到历史默认值。
+_MYSQL_HOST = getattr(_config, 'MYSQL_HOST', '127.0.0.1')
+_MYSQL_PORT = int(getattr(_config, 'MYSQL_PORT', 3306))
+_MYSQL_DB = getattr(_config, 'MYSQL_DB', 'myojdb')
 from oj_modules.ai_utils import _normalize_ai_code_issues
 
 
@@ -76,10 +81,11 @@ _ALLOWED_PROGRAMMING_GRADING_MODELS = {
 
 def _create_raw_mysql_connection():
     return pymysql.connect(
-        host='127.0.0.1',
+        host=_MYSQL_HOST,
+        port=_MYSQL_PORT,
         user=MYSQL_USERNAME,
         password=MYSQL_PASSWORD,
-        database='myojdb',
+        database=_MYSQL_DB,
         charset='utf8mb4',
         connect_timeout=int(MYSQL_CONNECT_TIMEOUT),
         cursorclass=pymysql.cursors.DictCursor,

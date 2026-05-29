@@ -1,0 +1,10 @@
+# Build context excludes (used by tests/ci/Dockerfile; context is repo root).
+.git
+__pycache__
+*.pyc
+tmp/
+uploads/
+static/
+competitions/
+docs/
+test-results/

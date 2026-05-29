@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# 在 test 容器内逐个模块顺序跑 pytest，逐模块打印结果 + JUnit XML，任一失败整体非零退出。
+set -u
+
+cd /app
+mkdir -p test-results /tmp/judger_runs
+
+# 逐模块有序列表（unit → db → integration）
+MODULES=(
+  "tests/unit"
+  "tests/db"
+  "tests/integration/test_judging_smoke.py"
+  "tests/integration/test_auth.py"
+  "tests/integration/test_problem_core.py"
+  "tests/integration/test_submission.py"
+  "tests/integration/test_admin_problem.py"
+  "tests/integration/test_admin_user.py"
+  "tests/integration/test_homework.py"
+  "tests/integration/test_class_management.py"
+  "tests/integration/test_ranking.py"
+  "tests/integration/test_repository.py"
+  "tests/integration/test_ai_detection.py"
+  "tests/integration/test_forum.py"
+  "tests/integration/test_grading.py"
+  "tests/integration/test_rejudge.py"
+  "tests/integration/test_games.py"
+  "tests/integration/test_ai_tutor.py"
+)
+
+declare -a NAMES
+declare -a RESULTS
+overall=0
+
+echo "=================== NumericalOJ CI 开始 ==================="
+for mod in "${MODULES[@]}"; do
+  [ -e "$mod" ] || { echo "跳过(不存在): $mod"; continue; }
+  safe=$(echo "$mod" | tr '/.' '__')
+  echo ""
+  echo "------- 运行模块: $mod -------"
+  python3 -m pytest "$mod" -v --timeout=180 \
+      --junitxml="test-results/${safe}.xml"
+  rc=$?
+  NAMES+=("$mod")
+  if [ $rc -eq 0 ]; then RESULTS+=("✅ PASS"); else RESULTS+=("❌ FAIL($rc)"); overall=1; fi
+done
+
+echo ""
+echo "=================== 汇总 ==================="
+for i in "${!NAMES[@]}"; do
+  printf "%-45s %s\n" "${NAMES[$i]}" "${RESULTS[$i]}"
+done
+echo "==========================================="
+[ $overall -eq 0 ] && echo "全部通过 ✅" || echo "存在失败 ❌"
+exit $overall
