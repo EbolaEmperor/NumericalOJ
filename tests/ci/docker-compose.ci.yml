@@ -1,0 +1,44 @@
+services:
+  mysql:
+    image: mysql:8.0
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ci_root_password
+      MYSQL_DATABASE: myojdb
+    volumes:
+      - ../../myojdb.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pci_root_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  test:
+    build:
+      context: ../..
+      dockerfile: tests/ci/Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 设为 /tmp（而非 /tmp/judger_runs）：submission_output_image 端点在 /tmp/<sid>/ 下找图片
+      JUDGER_RUN_ROOT: /tmp
+      # judger_core 在 import 时读取 MKLROOT；指向下面挂入的宿主 oneAPI MKL
+      MKLROOT: /opt/intel/oneapi/mkl/latest
+    volumes:
+      - ../../test-results:/app/test-results
+      # 复用宿主已装的 Intel oneAPI MKL（与生产判题同一份），只读挂入容器
+      - /opt/intel/oneapi/mkl:/opt/intel/oneapi/mkl:ro
+    command: ["bash", "tests/ci/run-ci.sh"]

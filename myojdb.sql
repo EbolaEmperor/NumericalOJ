@@ -418,7 +418,7 @@ UNLOCK TABLES;
 
 LOCK TABLES `problems` WRITE;
 /*!40000 ALTER TABLE `problems` DISABLE KEYS */;
-INSERT INTO `problems` VALUES (1,'Hello World','# Hello World 问题
+INSERT INTO `problems` (`id`,`title`,`content`,`initial_code`,`testdata`,`cnt`,`forbidden_func`,`type`,`lang`,`max_score`,`test_code`,`time_limit_ms`) VALUES (1,'Hello World','# Hello World 问题
 
 这是一个简单的示例问题，用于测试系统功能。
 
