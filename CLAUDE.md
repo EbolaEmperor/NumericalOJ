@@ -18,7 +18,7 @@ The README (`README.md`) is in Chinese and is mostly deployment-focused.
 
 ## Running the system
 
-There are **three** processes; all three must run together for the app to work end-to-end:
+There are **two** processes; both must run together for the app to work end-to-end:
 
 ```bash
 # 1. Web app (Flask, port 2025) — serves UI + API, registers Celery tasks
@@ -28,17 +28,13 @@ supervisord -c web.conf
 
 # 2. Celery workers — judging + AI agents, two queues
 supervisord -c celery.conf
-# Equivalent: celery -A oj.celery worker -Q celery   (judging)
+# Equivalent: celery -A oj.celery worker -Q celery   (judging + in-process sandbox)
 #             celery -A oj.celery worker -Q agent -c 1  (AI agents)
-
-# 3. Sandboxed code-execution service (Flask, port 5050)
-cd judger && python3 app.py
-# or: cd judger && supervisord -c judger.conf
 
 # Plus: redis-server (broker + caches), mysqld (myojdb)
 ```
 
-The web app expects both Redis (`REDIS_HOST/PORT/DB` in `config.py`) and the judger reachable at `http://localhost:5050` from the Celery `celery` queue worker. The IP whitelist in `judger/app.py` (`ALLOWED_IPS`) is `127.0.0.1` only — the judger must run on the same host as Celery.
+The sandboxed code execution runs **in-process inside the Celery `celery`-queue worker** (`oj_modules/judger_core.py`, called directly by `evaluate_tasks.py`) — there is no longer a separate judger HTTP service on port 5050. The web app only needs Redis (`REDIS_HOST/PORT/DB` in `config.py`) reachable. Because the sandbox shells out to `gcc`/`g++`/`python3`/`octave`, the Celery worker host must have those toolchains (and Intel MKL, if used); run dirs live under `JUDGER_RUN_ROOT` (default `<OJ_ROOT>/tmp/judger_runs`).
 
 DB bootstrap: `mysql -u root -p -e "CREATE DATABASE myojdb CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;" && mysql -u root -p myojdb < myojdb.sql`. Default admin is `admin` / `admin123`.
 
@@ -49,8 +45,8 @@ There is no test suite, lint config, or build step. Sanity-check changes with `p
 When the user asks you to deploy, follow this procedure end-to-end. Don't push code to `why-server` unless deployment is explicitly requested.
 
 1. **Sync the local code to `why-server:/home/ebola/oj/`.** The canonical command lives in `.claude/settings.local.json` — it's an `rsync -avz` that already excludes `config.py`, `static/`, `__pycache__`, `.git`, `tmp/`, and `uploads/`. Use that command (or an equivalent `scp` for individual files); never copy the whole tree without those exclusions.
-2. **Find and kill the existing supervisord processes** on the remote host: run `ps aux | grep "supervisor"` over SSH, identify the PIDs of the three running supervisords (one per conf file), and kill them.
-3. **Restart the three supervisord groups** in this order: `judger.conf`, `web.conf`, `celery.conf`. Each is launched as `supervisord -c <name>.conf` from `/home/ebola/oj/` (and `judger.conf` from `/home/ebola/oj/judger/`).
+2. **Find and kill the existing supervisord processes** on the remote host: run `ps aux | grep "supervisor"` over SSH, identify the PIDs of the two app supervisords (`web.conf`, `celery.conf`), and kill them. Leave the system supervisord (`/etc/supervisor/supervisord.conf`, owned by `root`) alone. The old `judger.conf` group no longer exists; if a stale judger supervisord / `judger/app.py` is still running from a previous deploy, kill it too. **Kill by explicit PID, not `pkill -f <pattern>`** — a `pkill -f` pattern can match the very SSH shell running it and abort the command midway.
+3. **Restart the two supervisord groups** in this order: `web.conf`, then `celery.conf`. Each is launched as `supervisord -c <name>.conf` from `/home/ebola/oj/`.
 
 ### Frontend-only fast path
 
@@ -79,7 +75,7 @@ The default `rsync` command in `.claude/settings.local.json` already excludes `c
 
 ### Two-process boundary (important)
 
-The code-execution sandbox is a **separate Flask service** (`judger/app.py`, port 5050) that the main app calls over HTTP. Endpoints: `/run-hello` (Octave/MATLAB), `/run-c`, `/run-cpp`, `/run-py` for one-shot runs; `/batch-evaluate-{c,cpp}` and streaming NDJSON variants `/batch-evaluate-stream-{c,cpp}` compile once and run many test points. Sandboxing is `coreutils timeout` + `RLIMIT_CPU` + `RLIMIT_AS`, plus a regex-based forbidden-function filter (`check_forbidden`) on user code. The C/C++ compilers add `-I <OJ_ROOT>/library` for shared headers; per-submission user header files arrive in the `user_files` field and are written into the run directory.
+The code-execution sandbox is an **in-process library** (`oj_modules/judger_core.py`) that the Celery `celery`-queue worker calls directly from `evaluate_tasks.py`. (It used to be a separate Flask service on port 5050 with an `ALLOWED_IPS` whitelist; that service was removed.) API: `run_single(language, data)` for one-shot Octave/C/C++/Python runs; `batch_evaluate_stream(language, data)` — a **generator** yielding `compile` / `test_result` / `done` events, the in-process replacement for the old NDJSON stream that preserves live per-test-point snapshot updates; and `batch_evaluate(language, data)` (non-stream). The `data` and result dicts keep the same field shape as the old HTTP payloads. Sandboxing is `coreutils timeout` + `RLIMIT_CPU` + `RLIMIT_AS` (set in a `preexec_fn`, which works in Celery prefork — forked — workers), plus a regex-based forbidden-function filter (`check_forbidden`) on user code. The C/C++ compilers add `-I <OJ_ROOT>/library` for shared headers; per-submission user header files arrive in the `user_files` field and are written into the run directory (`JUDGER_RUN_ROOT/<sid>`).
 
 ### Web app composition (`oj.py`)
 
@@ -96,7 +92,7 @@ The `register → init` pattern is load-bearing: route modules **do not import C
 
 - `oj_modules/db_services.py` (~2k lines) — the catch-all DB layer. Owns a hand-rolled MySQL connection pool (`_PooledConnectionProxy`) configured via `MYSQL_POOL_*`; **always use `get_db_connection()` from here, never construct pymysql connections directly**, otherwise the pool semantics break. Also lazy-creates and migrates a few columns/tables on first access (the `_*_ready` flags).
 - `oj_modules/ai_utils.py` — DashScope wrappers, prompts, image-aware grading helpers, response normalization. Anything that talks to Qwen models lives here.
-- `oj_modules/tasks/` — Celery task definitions. `evaluate_tasks.py` is the judging pipeline (uses HTTP to the judger). `agent_solve_task.py`, `agent_generate_testdata_task.py`, `agent_solve_helpers.py`, `agent_generate_helpers.py`, `agent_shared.py` implement the multi-round AI agents. `written_homework_tasks.py` does LaTeX OCR + grading. `ai_detection_tasks.py` runs the AI-code detector. `repository_index_tasks.py` builds FAISS indexes for the user-library repository. `ranking_evaluate_tasks.py` is the ranking-competition judge.
+- `oj_modules/tasks/` — Celery task definitions. `evaluate_tasks.py` is the judging pipeline (runs the sandbox in-process via `oj_modules/judger_core.py`). `agent_solve_task.py`, `agent_generate_testdata_task.py`, `agent_solve_helpers.py`, `agent_generate_helpers.py`, `agent_shared.py` implement the multi-round AI agents. `written_homework_tasks.py` does LaTeX OCR + grading. `ai_detection_tasks.py` runs the AI-code detector. `repository_index_tasks.py` builds FAISS indexes for the user-library repository. `ranking_evaluate_tasks.py` is the ranking-competition judge.
 - `oj_modules/ai_detection/` — orchestration for AI-generated-code detection (LLM-based + behavioral signals) with `detector.py` combining them. Final score = `min(1.0, llm_score + behavior_score * 0.3)`.
 - `oj_modules/repository_index_services.py` — FAISS-backed vector search over user-library code chunks; embeddings via Qwen `text-embedding-v4`.
 - `oj_modules/ranking_db.py` — ranking-competition data layer.
@@ -115,8 +111,8 @@ MySQL schema lives in `myojdb.sql`. Core tables: `users`, `class_table`, `user_c
 ## Conventions worth knowing
 
 - The repo's working language is Chinese: most user-visible strings, status names, and a lot of comments are in Chinese. Keep that style when editing UI / templates / messages.
-- Forbidden-function checking happens in **two places**: server-side problem config sends a comma-separated list to the judger which regex-matches `<func>(`, and the judger has special-cased the literal `\` for Octave. If you add a language, mirror this contract.
-- Time limits are passed in **nanoseconds**; memory limits arrive in bytes and the judger multiplies by 10 internally before applying `RLIMIT_AS` (legacy quirk — keep it consistent across `/run-*` endpoints).
+- Forbidden-function checking: the problem's comma-separated forbidden list is passed to `judger_core.check_forbidden`, which regex-matches `<func>(` (and special-cases the literal `\` for Octave). If you add a language, mirror this contract.
+- Time limits are passed in **nanoseconds**; memory limits arrive in bytes and `judger_core` multiplies by 10 internally before applying `RLIMIT_AS` (legacy quirk — keep it consistent across the `run_*` / `batch_*` functions).
 - The competitions material under `competitions/` is gitignored; treat it as scratch / dataset work, not part of the deployed app.
 - `.codex/skills/matlab-problem-setter/` is a Codex skill for scaffolding MATLAB problem packages — useful as a reference for the expected problem-package structure (`problem.md`, `data/*.in`/`*.out`, `interactor.m`, `template.m`, `solution.m`, `config.json`), even when working from Claude Code.
 - `fix-tools/` holds one-off SQL scripts for data repair; not run automatically.
