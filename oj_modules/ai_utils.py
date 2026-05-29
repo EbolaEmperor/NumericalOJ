@@ -155,7 +155,7 @@ def _post_chat_completions(base_url, headers, payload, timeout):
 
 
 def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base_url=None):
-    # coding-plan 已移除：所有模型一律走普通 DashScope（compatible-mode）端点。
+    # 所有模型一律走普通 DashScope（compatible-mode）端点。
     api_key = fallback_api_key
     if api_key is None:
         api_key = DASHSCOPE_API_KEY
@@ -186,7 +186,7 @@ def _parse_programming_image_grading_model_spec(model_spec):
 
 
 def _resolve_endpoint_for_written_grading_route(route_key):
-    # coding-plan 已移除：route_key 保留兼容，但一律解析到普通 DashScope 端点。
+    # route_key 保留兼容，但一律解析到普通 DashScope 端点。
     api_key = DASHSCOPE_API_KEY
     base_url = _resolve_dashscope_base_url()
     if _is_invalid_secret(api_key):

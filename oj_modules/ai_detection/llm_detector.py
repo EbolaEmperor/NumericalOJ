@@ -325,7 +325,7 @@ def detect_with_llm(code, problem_description="", model_id="qwen"):
             max_tokens=1024,   # 限制在 600 字以内，1024 token 足够
         )
     else:
-        # Default: qwen（coding-plan 已移除，改走普通 DashScope）
+        # Default: qwen（普通 DashScope）
         if _is_invalid_secret(DASHSCOPE_API_KEY):
             print("[AI Detection] DASHSCOPE_API_KEY not configured, skipping LLM detection")
             return None

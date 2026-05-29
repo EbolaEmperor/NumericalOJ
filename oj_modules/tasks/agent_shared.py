@@ -260,7 +260,7 @@ def _is_invalid_secret(value):
 
 
 def _resolve_chat_endpoint_for_model(model):
-    # coding-plan 已移除：所有模型一律走普通 DashScope（compatible-mode）端点。
+    # 所有模型一律走普通 DashScope（compatible-mode）端点。
     api_key = DASHSCOPE_API_KEY
     if _is_invalid_secret(api_key):
         raise RuntimeError("未配置 DASHSCOPE_API_KEY。")

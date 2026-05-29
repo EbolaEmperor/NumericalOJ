@@ -66,7 +66,7 @@ The default `rsync` command in `.claude/settings.local.json` already excludes `c
 `config.py` is **tracked in git as a template with placeholder values** — fill in MySQL credentials, mail SMTP, and DashScope (Aliyun Qwen) keys before the app will work. There is no separate `.env`. Keys to know:
 
 - `MYSQL_*`, `REDIS_*` — infra.
-- `DASHSCOPE_*`, `CODING_PLAN_*`, `QWEN_*_MODEL`, `AI_TUTOR_MODEL` — Aliyun DashScope endpoints used everywhere AI is involved (tutor feedback, written-homework grading, agent solver, embeddings).
+- `DASHSCOPE_*`, `QWEN_*_MODEL`, `AI_TUTOR_MODEL` — Aliyun DashScope endpoints used everywhere AI is involved (tutor feedback, written-homework grading, agent solver, embeddings).
 - `MATLAB_AI_DETECT_*` — points at a self-hosted vLLM-served fine-tuned detector for MATLAB AI-generated code.
 - `REPOSITORY_*` — vector-search config for the user-library repository (FAISS index under `tmp/repository_vector_index`).
 - `AGENT_*` — limits for the problem-solving / test-data-generation agents (max rounds, submit limit, context size, memory).

@@ -39,11 +39,10 @@
 
 ## 系统架构
 
-整套系统由 **三个进程** + Redis + MySQL 组成，三个进程必须同时运行：
+整套系统由 **两个进程** + Redis + MySQL 组成，两个进程必须同时运行：
 
 1. **Web 服务**（`oj.py`，Flask，端口 `2025`）：承载所有 UI 与 API，并注册 Celery 任务。
-2. **Celery Worker**：分为两个队列——`celery`（判题、AIGC 检测、向量索引等）与 `agent`（AI 智能体，限制并发为 1）。
-3. **判题沙箱服务**（`judger/app.py`，Flask，端口 `5050`）：使用 `timeout` + `RLIMIT_CPU` / `RLIMIT_AS` 隔离运行用户代码，并在编译/执行前进行禁用函数过滤。仅允许 `127.0.0.1` 访问，必须与 Celery worker 部署在同一主机。
+2. **Celery Worker**：分为两个队列——`celery`（判题、AIGC 检测、向量索引等）与 `agent`（AI 智能体，限制并发为 1）。判题沙箱已集成到 `celery` 队列 worker 内部，由 `oj_modules/judger_core.py` 直接调用，使用 `timeout` + `RLIMIT_CPU` / `RLIMIT_AS` 隔离运行用户代码，并在编译/执行前进行禁用函数过滤。
 
 Redis 同时承担 Celery broker/backend、提交快照缓存、评测幂等锁、智能体进度与事件流。MySQL 库为 `myojdb`，所有持久化数据（用户、题目、提交、班级、AC 记录、智能体运行、论坛、AIGC 检测结果、用户代码仓库与向量索引元数据等）均存放于此。
 
@@ -94,9 +93,7 @@ MAIL_PASSWORD = 'your_smtp_authorize_code'
 # 阿里云 DashScope（AI 助教、智能体、书面作业评分、向量嵌入等）
 DASHSCOPE_APP_ID = 'your_dashscope_app_id'
 DASHSCOPE_API_KEY = 'your_dashscope_api_key'
-
-# Coding Plan（用于 AI 编程相关接口）
-CODING_PLAN_KEY = 'your_coding_plan_api_key'
+DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 
 # Redis
 REDIS_HOST = '127.0.0.1'
@@ -117,11 +114,6 @@ REDIS_DB = 0
 ```bash
 # Redis（如未启动）
 redis-server
-
-# 判题沙箱（端口 5050）
-cd judger
-supervisord -c judger.conf
-cd ..
 
 # Web 服务（端口 2025）
 supervisord -c web.conf
@@ -148,8 +140,8 @@ supervisord -c celery.conf
 - `oj.py`：Flask 入口，注册所有蓝图与 Celery 任务。
 - `oj_modules/routes/`：按功能划分的路由模块（题目、提交、作业、班级、排行、论坛、小游戏、AIGC 检测、AI 助教等）。
 - `oj_modules/tasks/`：Celery 任务（判题、AI 智能体、书面作业评分、AIGC 检测、向量索引、ELO 撮合等）。
+- `oj_modules/judger_core.py`：集成在 Celery worker 内的判题沙箱核心。
 - `oj_modules/db_services.py`：MySQL 连接池与全部数据库访问入口。
 - `oj_modules/ai_utils.py` / `oj_modules/ai_detection/` / `oj_modules/repository_index_services.py`：AI 与向量检索相关基础设施。
-- `judger/`：独立的代码沙箱服务。
 - `library/`、`user_libraries/`：公共与按用户的 C/C++/MATLAB 头文件库。
 - `templates/`、`static/`：Web 前端模板与静态资源。
