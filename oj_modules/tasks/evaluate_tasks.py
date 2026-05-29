@@ -200,6 +200,14 @@ def _release_submission_lock(client, key, token):
         pass
 
 
+def acquire_submission_lock(submission_id):
+    return _acquire_submission_lock(submission_id)
+
+
+def release_submission_lock(client, key, token):
+    _release_submission_lock(client, key, token)
+
+
 def clear_submission_lock(submission_id):
     """无条件清除某条提交的评测幂等锁。
 
@@ -214,6 +222,17 @@ def clear_submission_lock(submission_id):
         client.delete(_submission_lock_key(submission_id))
     except Exception:
         pass
+
+
+def has_submission_lock(submission_id):
+    """返回某条提交是否仍持有评测幂等锁。"""
+    client = _get_lock_redis_client()
+    if client is None:
+        return False
+    try:
+        return bool(client.exists(_submission_lock_key(submission_id)))
+    except Exception:
+        return False
 
 
 def compare_float_strings(str1, str2, tolerance=1e-5):
