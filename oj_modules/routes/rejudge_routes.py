@@ -24,6 +24,8 @@ _rejudge_task = None
 
 # 时间范围重测共用的进度键（同一时刻只跑一次，足够）
 _TIME_RANGE_PROGRESS_KEY = "rejudge:timerange"
+_TIME_RANGE_MAX_TOTAL = 500
+_REJUDGE_STAGGER_SECONDS = 1
 
 
 def current_user():
@@ -90,13 +92,11 @@ def _enqueue_rejudge(submissions, progress_key, clear_running_lock=False):
             clear_submission_lock(sub["id"])
         update_submission_status(sub["id"], "Pending")
 
-    chain_tasks = None
-    for sub in submissions:
-        task = _rejudge_task.si(sub["id"], progress_key)
-        chain_tasks = task if chain_tasks is None else (chain_tasks | task)
-
-    if chain_tasks is not None:
-        chain_tasks.apply_async()
+    for idx, sub in enumerate(submissions):
+        _rejudge_task.apply_async(
+            args=[sub["id"], progress_key],
+            countdown=idx * _REJUDGE_STAGGER_SECONDS,
+        )
 
 
 @rejudge_bp.route('/admin/rejudge_problem/<int:problem_id>', methods=['POST'])
@@ -149,6 +149,24 @@ def _normalize_dt(raw):
     return None
 
 
+def _format_dt(value):
+    if not value:
+        return ""
+    try:
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    except AttributeError:
+        return str(value)
+
+
+def _summarize_time_range_rows(rows):
+    created_values = [row.get("created_at") for row in rows if row.get("created_at")]
+    return {
+        "total": len(rows),
+        "min_created_at": _format_dt(min(created_values)) if created_values else "",
+        "max_created_at": _format_dt(max(created_values)) if created_values else "",
+    }
+
+
 @rejudge_bp.route('/admin/rejudge_time_range', methods=['POST'])
 def rejudge_time_range():
     user = current_user()
@@ -169,6 +187,37 @@ def rejudge_time_range():
     submissions = get_submissions_in_time_range(start, end)
     if not submissions:
         return jsonify(success=False, message="该时间范围内没有提交"), 400
+
+    summary = _summarize_time_range_rows(submissions)
+    print(
+        "[TimeRangeRejudge] "
+        f"user={user.get('username')} start={start} end={end} "
+        f"total={summary['total']} min={summary['min_created_at']} max={summary['max_created_at']}"
+    )
+
+    confirm_total = payload.get("confirm_total")
+    try:
+        confirm_total = int(confirm_total)
+    except (TypeError, ValueError):
+        confirm_total = None
+
+    if confirm_total != len(submissions):
+        return jsonify(
+            success=True,
+            preview=True,
+            too_many=(len(submissions) > _TIME_RANGE_MAX_TOTAL),
+            max_total=_TIME_RANGE_MAX_TOTAL,
+            start=start,
+            end=end,
+            **summary,
+        )
+
+    if len(submissions) > _TIME_RANGE_MAX_TOTAL:
+        return jsonify(
+            success=False,
+            message=f"单次时间范围重测最多允许 {_TIME_RANGE_MAX_TOTAL} 条提交，请缩小时间范围",
+            **summary,
+        ), 400
 
     _enqueue_rejudge(submissions, _TIME_RANGE_PROGRESS_KEY, clear_running_lock=True)
     return jsonify(success=True, message="已开始重测", total=len(submissions))

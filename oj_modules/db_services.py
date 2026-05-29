@@ -1545,14 +1545,14 @@ def get_incomplete_submissions():
 def get_submissions_in_time_range(start, end):
     """返回 created_at 落在 [start, end] 内的所有提交（用于按时间范围重测）。
 
-    返回每行的 id / problem_type / status，按 id 升序。
+    返回每行的 id / problem_type / status / created_at，按 id 升序。
     start/end 为 'YYYY-MM-DD HH:MM:SS' 字符串。
     """
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql = (
-                "SELECT id, problem_type, status FROM submissions "
+                "SELECT id, problem_type, status, created_at FROM submissions "
                 "WHERE created_at BETWEEN %s AND %s "
                 "ORDER BY id ASC"
             )

@@ -281,6 +281,19 @@
 
     if (!startBtn) return;
 
+    function submitRejudgeRequest(start, end, confirmTotal) {
+      var payload = { start: start, end: end };
+      if (typeof confirmTotal === "number") {
+        payload.confirm_total = confirmTotal;
+      }
+
+      return fetch("{{ url_for('rejudge.rejudge_time_range') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }).then(function(res) { return res.json(); });
+    }
+
     startBtn.addEventListener("click", function() {
       var start = (startInput.value || "").trim();
       var end = (endInput.value || "").trim();
@@ -292,36 +305,66 @@
         alert("起始时间不能晚于结束时间");
         return;
       }
-      if (!confirm("确认重测该时间范围内的所有提交吗？")) return;
-
       startBtn.disabled = true;
-      fetch("{{ url_for('rejudge.rejudge_time_range') }}", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start: start, end: end })
-      })
-        .then(function(res) { return res.json(); })
+      submitRejudgeRequest(start, end)
         .then(function(data) {
-          startBtn.disabled = false;
           if (!data.success) {
+            startBtn.disabled = false;
             alert("重测失败：" + data.message);
             return;
           }
+          if (data.preview) {
+            if (data.too_many) {
+              startBtn.disabled = false;
+              alert(
+                "该时间范围命中 " + data.total + " 条提交，超过单次上限 " + data.max_total +
+                " 条。\n实际命中时间：" + data.min_created_at + " ~ " + data.max_created_at +
+                "\n请缩小时间范围后再重测。"
+              );
+              return;
+            }
+            var ok = confirm(
+              "该时间范围将重测 " + data.total + " 条提交。\n" +
+              "实际命中时间：" + data.min_created_at + " ~ " + data.max_created_at + "\n\n" +
+              "确认开始重测吗？"
+            );
+            if (!ok) {
+              startBtn.disabled = false;
+              return;
+            }
+            return submitRejudgeRequest(start, end, data.total).then(function(confirmData) {
+              startBtn.disabled = false;
+              if (!confirmData.success) {
+                alert("重测失败：" + confirmData.message);
+                return;
+              }
+              if (confirmData.preview) {
+                alert("提交数量已变化，请重新确认时间范围。");
+                return;
+              }
+              showProgress(confirmData.total || data.total || 0);
+            });
+          }
 
-          var formModal = bootstrap.Modal.getInstance(document.getElementById("timeRangeRejudgeModal"));
-          if (formModal) formModal.hide();
-          var progressModal = new bootstrap.Modal(document.getElementById("timeRangeRejudgeProgressModal"));
-          progressModal.show();
-
-          updateProgress(0, 0, data.total || 0);
-          if (progressTimer) clearInterval(progressTimer);
-          progressTimer = setInterval(checkProgress, 1500);
+          startBtn.disabled = false;
+          showProgress(data.total || 0);
         })
         .catch(function() {
           startBtn.disabled = false;
           alert("请求失败，请稍后再试");
         });
     });
+
+    function showProgress(total) {
+      var formModal = bootstrap.Modal.getInstance(document.getElementById("timeRangeRejudgeModal"));
+      if (formModal) formModal.hide();
+      var progressModal = new bootstrap.Modal(document.getElementById("timeRangeRejudgeProgressModal"));
+      progressModal.show();
+
+      updateProgress(0, 0, total);
+      if (progressTimer) clearInterval(progressTimer);
+      progressTimer = setInterval(checkProgress, 1500);
+    }
   })();
 </script>
 {% endif %}
