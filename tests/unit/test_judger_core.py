@@ -186,6 +186,31 @@ def test_set_run_limits_skips_as_when_mem_zero(monkeypatch):
     assert as_calls == []
 
 
+# ============== JUDGER_RUN_ROOT 默认位置 ==============
+def test_default_run_root_is_oj_root_judger_not_tmp(monkeypatch):
+    """默认运行根必须是 <OJ_ROOT>/judger，且不再经过 tmp/。
+
+    回归守护：判题运行目录从 tmp/judger_runs 迁到 <OJ_ROOT>/judger 后，
+    若有人改回 tmp 或拼错子目录，这个断言会立刻失败。环境变量 JUDGER_RUN_ROOT
+    仍可覆盖，这里清空它以验证“内置默认值”。
+    """
+    monkeypatch.delenv("JUDGER_RUN_ROOT", raising=False)
+    import importlib
+    reloaded = importlib.reload(judger_core)
+    try:
+        expected = os.path.join(reloaded.OJ_ROOT_PATH, "judger")
+        assert reloaded.JUDGER_RUN_ROOT == expected
+        # 关键：运行根不得落在 tmp 下
+        norm = os.path.normpath(reloaded.JUDGER_RUN_ROOT)
+        assert (os.sep + "tmp" + os.sep) not in norm + os.sep
+        assert not norm.endswith(os.sep + "tmp")
+        # 子目录形如 <OJ_ROOT>/judger/eoj-batch-123
+        d = reloaded.run_dir_for("eoj-batch-123")
+        assert d == os.path.join(expected, "eoj-batch-123")
+    finally:
+        importlib.reload(judger_core)
+
+
 # ============== run_dir_for ==============
 def test_run_dir_for_under_run_root_no_creation(tmp_path, monkeypatch):
     # 把运行根指到临时目录，确认拼接正确且不创建

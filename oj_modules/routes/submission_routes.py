@@ -11,6 +11,8 @@ import markdown
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, stream_with_context, url_for
 
+from oj_modules import judger_core
+
 from oj_modules.db_services import (
     get_cached_ai_code_marks_for_submission,
     get_latest_submission_code_by_user_and_problem,
@@ -467,8 +469,11 @@ def get_submission_output_image(submission_id, test_index):
 
     batch_sid = f"eoj-batch-{submission_id}"
     individual_sid = f"eoj-{submission_id}-{test_index}"
-    base_dirs = [
-        "/Users/wenchong/code/NumericalOJ/judger",
+    # The judger writes run dirs under JUDGER_RUN_ROOT (judger_core.run_dir_for);
+    # that is where the captured output image actually lives. Resolve it via the
+    # same source of truth the judging side uses, so this route stays correct if
+    # JUDGER_RUN_ROOT is overridden. The remaining dirs are legacy fallbacks.
+    legacy_base_dirs = [
         "./judger",
         "/tmp",
         ".",
@@ -481,10 +486,10 @@ def get_submission_output_image(submission_id, test_index):
         if not clean_name or clean_name in seen_names:
             continue
         seen_names.add(clean_name)
-        for base_dir in base_dirs:
-            possible_paths.append(os.path.join(base_dir, batch_sid, clean_name))
-        for base_dir in base_dirs:
-            possible_paths.append(os.path.join(base_dir, individual_sid, clean_name))
+        for sid in (batch_sid, individual_sid):
+            possible_paths.append(os.path.join(judger_core.run_dir_for(sid), clean_name))
+            for base_dir in legacy_base_dirs:
+                possible_paths.append(os.path.join(base_dir, sid, clean_name))
 
     for img_path in possible_paths:
         expanded_path = os.path.expanduser(img_path)

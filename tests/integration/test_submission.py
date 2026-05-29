@@ -305,3 +305,70 @@ def test_submit_generates_output_image_and_served(client, admin_login, monkeypat
     img = client.get(f'/submission_output_image/{sid}/1')
     assert img.status_code == 200, img.get_data(as_text=True)
     assert img.get_data()[:8] == b'\x89PNG\r\n\x1a\n'
+
+
+@pytest.mark.judger
+def test_output_image_served_from_oj_root_judger_not_tmp(client, admin_login, monkeypatch):
+    """端到端回归：真实评测产出 output.png 后，前端图片端点必须能从
+    <OJ_ROOT>/judger（而非 tmp）下取到图片。
+
+    这条专门守护“判题运行目录迁出 tmp”的改动：评测把图片写到
+    judger_core.run_dir_for(sid)（默认 <OJ_ROOT>/judger/<sid>），而
+    submission_output_image 端点也必须经由同一 run_dir_for 解析——两侧解耦
+    任何一处都会让前端 404。这里完全不 mock 取图路径，直接打前端 HTTP 端点。
+    """
+    import oj
+    import oj_modules.routes.problem_core_routes as pcm
+    import oj_modules.tasks.evaluate_tasks as et
+    from oj_modules import judger_core
+
+    # 运行根必须是 <OJ_ROOT>/judger，且不在 tmp 下（先验证配置本身）
+    run_root = os.path.normpath(judger_core.JUDGER_RUN_ROOT)
+    assert run_root.endswith(os.sep + 'judger'), run_root
+    assert (os.sep + 'tmp' + os.sep) not in run_root + os.sep
+    assert not run_root.endswith(os.sep + 'tmp')
+
+    pid = h.make_problem(title='图片题-judger根', lang='python', type=1)
+    conn = db.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE problems SET programming_grading_mode=2, "
+                "programming_output_filename='output.png' WHERE id=%s", (pid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(et, 'evaluate_program_output_image_with_ai',
+                        lambda **k: (1, '图片符合要求'), raising=False)
+
+    captured = {}
+
+    class _FakeTask:
+        def delay(self, sid):
+            captured['sid'] = sid
+
+        def apply_async(self, args=None, **k):
+            captured['sid'] = (args or [None])[0]
+
+    monkeypatch.setattr(pcm, '_evaluate_submission_task', _FakeTask())
+
+    r = client.post(f'/submit/{pid}', data={'code': _PNG_CODE})
+    assert r.status_code in (301, 302)
+    sid = captured.get('sid')
+    assert sid, '提交未触发评测任务入队'
+
+    # 真实沙箱评测：运行代码 → 生成并捕获 output.png 到 <OJ_ROOT>/judger/<sid>/
+    oj.evaluate_submission.apply(args=[sid]).get()
+
+    # 图片确实落在新运行根下（<OJ_ROOT>/judger/...），且路径不含 tmp 段
+    run_dir = judger_core.run_dir_for(f'eoj-{sid}-1')
+    img_on_disk = os.path.join(run_dir, 'output.png')
+    assert os.path.isfile(img_on_disk), f'图片未落在新运行根: {img_on_disk}'
+    assert os.path.normpath(run_dir).startswith(run_root)
+    assert (os.sep + 'tmp' + os.sep) not in os.path.normpath(run_dir) + os.sep
+
+    # 通过前端 HTTP 端点取图：不 mock 取图逻辑，验证 200 + 有效 PNG
+    img = client.get(f'/submission_output_image/{sid}/1')
+    assert img.status_code == 200, img.get_data(as_text=True)
+    assert img.get_data()[:8] == b'\x89PNG\r\n\x1a\n'

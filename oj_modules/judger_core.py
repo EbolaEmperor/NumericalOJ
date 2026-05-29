@@ -48,11 +48,12 @@ def get_oj_root_path():
 OJ_ROOT_PATH = get_oj_root_path()
 LIBRARY_PATH = os.path.join(OJ_ROOT_PATH, "library")
 
-# 判题运行目录的根；每次评测在其下建立以 sid 命名的子目录（编译产物 / 输入输出 / 图片）。
-# 可用环境变量 JUDGER_RUN_ROOT 覆盖；默认放在 OJ_ROOT/tmp/judger_runs（tmp/ 不入库）。
+# 判题运行目录的根；每次评测在其下建立以 sid 命名的子目录（编译产物 / 输入输出 / 图片），
+# 例如 <OJ_ROOT>/judger/eoj-batch-123/。
+# 可用环境变量 JUDGER_RUN_ROOT 覆盖；默认放在 OJ_ROOT/judger（运行子目录 judger/eoj-* 不入库）。
 JUDGER_RUN_ROOT = (
     str(os.environ.get("JUDGER_RUN_ROOT") or "").strip()
-    or os.path.join(OJ_ROOT_PATH, "tmp", "judger_runs")
+    or os.path.join(OJ_ROOT_PATH, "judger")
 )
 
 

@@ -3,7 +3,8 @@
 set -u
 
 cd /app
-mkdir -p test-results /tmp/judger_runs
+# 判题运行根用内置默认 <OJ_ROOT>/judger（/app/judger）；不再预建 /tmp/judger_runs。
+mkdir -p test-results judger
 
 # 逐模块有序列表（unit → db → integration）
 MODULES=(
