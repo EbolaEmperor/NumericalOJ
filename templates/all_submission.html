@@ -2,7 +2,12 @@
 {% block title %} 提交记录 - {{ super() }}{% endblock %}
 {% block content %}
 {% if user.is_admin %}
-<h2><i class="fas fa-chart-pie me-2"></i> 所有提交记录</h2>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h2 class="mb-0"><i class="fas fa-chart-pie me-2"></i> 所有提交记录</h2>
+  <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#timeRangeRejudgeModal">
+    <i class="fas fa-redo-alt me-2"></i>重测
+  </button>
+</div>
 {% else %}
 <h2><i class="fas fa-chart-pie me-2"></i> {{ user['username'] }} 的提交记录</h2>
 {% endif %}
@@ -144,6 +149,64 @@
   {% endfor %}
 </div>
 
+{% if user.is_admin %}
+<div class="modal fade" id="timeRangeRejudgeModal" tabindex="-1" aria-labelledby="timeRangeRejudgeLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="timeRangeRejudgeLabel">
+          <i class="fas fa-redo-alt me-2"></i>按时间范围重测
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="rejudgeStartTime" class="form-label">起始时间</label>
+          <input type="datetime-local" class="form-control" id="rejudgeStartTime">
+        </div>
+        <div class="mb-0">
+          <label for="rejudgeEndTime" class="form-label">结束时间</label>
+          <input type="datetime-local" class="form-control" id="rejudgeEndTime">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-outline-danger" id="btnStartTimeRangeRejudge">
+          <i class="fas fa-play me-2"></i>开始重测
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="timeRangeRejudgeProgressModal" tabindex="-1" aria-labelledby="timeRangeRejudgeProgressLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="timeRangeRejudgeProgressLabel">重测进度</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="progress mb-2">
+          <div
+            class="progress-bar progress-bar-striped progress-bar-animated"
+            role="progressbar"
+            id="timeRangeRejudgeProgressBar"
+            style="width: 0%;"
+            aria-valuenow="0"
+            aria-valuemin="0"
+            aria-valuemax="100">0%</div>
+        </div>
+        <p class="small text-muted mb-0" id="timeRangeRejudgeProgressDetail">尚未开始</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <hr/>
 
 <style>
@@ -178,5 +241,89 @@
       text-align: center;
   }
 </style>
+
+{% if user.is_admin %}
+<script>
+  (function() {
+    var startBtn = document.getElementById("btnStartTimeRangeRejudge");
+    var startInput = document.getElementById("rejudgeStartTime");
+    var endInput = document.getElementById("rejudgeEndTime");
+    var progressBar = document.getElementById("timeRangeRejudgeProgressBar");
+    var progressDetail = document.getElementById("timeRangeRejudgeProgressDetail");
+    var progressTimer = null;
+
+    function updateProgress(percent, done, total) {
+      progressBar.style.width = percent + "%";
+      progressBar.setAttribute("aria-valuenow", percent);
+      progressBar.textContent = percent + "%";
+      progressDetail.textContent = "已完成 " + done + " / " + total;
+    }
+
+    function checkProgress() {
+      fetch("{{ url_for('rejudge.rejudge_time_range_status') }}")
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (!data.success) {
+            if (progressTimer) {
+              clearInterval(progressTimer);
+              progressTimer = null;
+            }
+            return;
+          }
+          updateProgress(data.progress, data.done, data.total);
+          if (data.progress >= 100 && progressTimer) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+          }
+        })
+        .catch(function() {});
+    }
+
+    if (!startBtn) return;
+
+    startBtn.addEventListener("click", function() {
+      var start = (startInput.value || "").trim();
+      var end = (endInput.value || "").trim();
+      if (!start || !end) {
+        alert("请选择起始时间和结束时间");
+        return;
+      }
+      if (start > end) {
+        alert("起始时间不能晚于结束时间");
+        return;
+      }
+      if (!confirm("确认重测该时间范围内的所有提交吗？")) return;
+
+      startBtn.disabled = true;
+      fetch("{{ url_for('rejudge.rejudge_time_range') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ start: start, end: end })
+      })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          startBtn.disabled = false;
+          if (!data.success) {
+            alert("重测失败：" + data.message);
+            return;
+          }
+
+          var formModal = bootstrap.Modal.getInstance(document.getElementById("timeRangeRejudgeModal"));
+          if (formModal) formModal.hide();
+          var progressModal = new bootstrap.Modal(document.getElementById("timeRangeRejudgeProgressModal"));
+          progressModal.show();
+
+          updateProgress(0, 0, data.total || 0);
+          if (progressTimer) clearInterval(progressTimer);
+          progressTimer = setInterval(checkProgress, 1500);
+        })
+        .catch(function() {
+          startBtn.disabled = false;
+          alert("请求失败，请稍后再试");
+        });
+    });
+  })();
+</script>
+{% endif %}
 
 {% endblock %}

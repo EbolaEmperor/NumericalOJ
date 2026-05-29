@@ -140,8 +140,8 @@ ranking_elo_match = register_ranking_elo_match_task(celery)
 ranking_elo_initial_burst = register_ranking_elo_initial_burst_task(celery, ranking_elo_match)
 ranking_elo_matchmaker_tick = register_ranking_elo_matchmaker_tick_task(celery, ranking_elo_match)
 
-# 初始化重测模块（依赖 Celery、Redis、评测函数）
-init_rejudge_module(celery, rds, evaluate_submission)
+# 初始化重测模块（依赖 Celery、Redis、程序题评测 + 书面作业转写评分任务）
+init_rejudge_module(celery, rds, evaluate_submission, transcribe_written_homework_to_latex)
 # 初始化作业管理模块（依赖 Celery、Redis）
 init_homework_module(celery, rds, rds_binary)
 # 初始化题目核心模块（依赖 Celery 任务）
