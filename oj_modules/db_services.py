@@ -1551,13 +1551,13 @@ def get_incomplete_submissions():
     status ∈ ('Pending', 'Waiting', 'Running')：
       - Pending/Waiting：已创建但从未开始评测（队列在重启时丢失）；
       - Running：重启那一刻正评测到一半、被杀掉的任务。
-    返回每行的 id / problem_type / status，按 id 升序（早提交先评）。
+    返回每行的 id / problem_type / status / created_at，按 id 升序（早提交先评）。
     """
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql = (
-                "SELECT id, problem_type, status FROM submissions "
+                "SELECT id, problem_type, status, created_at FROM submissions "
                 "WHERE status IN ('Pending', 'Waiting', 'Running') "
                 "ORDER BY id ASC"
             )

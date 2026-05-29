@@ -105,7 +105,7 @@ MySQL schema lives in `myojdb.sql`. Core tables: `users`, `class_table`, `user_c
 
 ### Cache and locks (Redis)
 
-- DB `0` (configurable) holds: Celery broker/backend, submission status snapshots (`SUBMISSION_SNAPSHOT_TTL_SECONDS`), evaluation locks (`EVALUATE_SUBMISSION_LOCK_TTL_SECONDS`, prevents double-judging on retry), agent run progress + pubsub event streams.
+- DB `0` (configurable) holds: Celery broker/backend, submission status snapshots (`SUBMISSION_SNAPSHOT_TTL_SECONDS`), evaluation locks (`EVALUATE_SUBMISSION_LOCK_TTL_SECONDS`, prevents double-judging on retry), the self-scheduling Pending requeue watchdog owner/items, agent run progress + pubsub event streams.
 - A second binary-decoded client `rds_binary` is used for cached ZIP / binary blobs (e.g., bulk homework downloads).
 
 ## Conventions worth knowing

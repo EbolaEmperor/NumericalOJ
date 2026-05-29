@@ -27,6 +27,7 @@ from oj_modules.grading_services import (
     update_submission_comment,
     update_submission_score_and_comment,
 )
+from oj_modules.tasks.evaluate_tasks import acquire_submission_lock, release_submission_lock
 
 
 WRITTEN_TASK_NAME = "oj.transcribe_written_homework_to_latex"
@@ -317,19 +318,44 @@ def register_written_homework_task(celery_app):
         if not submission or submission.get('problem_type') != 2:
             return
 
-        update_submission_status(submission_id, 'Running')
-
-        file_path = get_file_path_for_submission(submission_id)
-        if not file_path or not os.path.exists(file_path):
-            print(f"[LaTeX OCR] submission={submission_id} 文件不存在: {file_path}")
-            update_submission_score_and_comment(submission_id, 0, "提交文件不存在，无法自动评分，按规则记 0 分。")
-            update_submission_status(submission_id, 'Unaccepted')
+        lock_client, lock_key, lock_token = acquire_submission_lock(submission_id)
+        if lock_client is not None and lock_token is None:
+            print(f"[Idempotency] Skip duplicate written grading for submission_id={submission_id}")
             return
-
-        upload_folder = os.path.dirname(file_path)
-        uploaded_filename = os.path.basename(file_path)
+        if lock_client is None:
+            print(f"[Idempotency] Redis lock unavailable, run written grading without lock for submission_id={submission_id}")
 
         try:
+            submission = get_submission_by_id(submission_id)
+        except Exception:
+            release_submission_lock(lock_client, lock_key, lock_token)
+            raise
+        if not submission or submission.get('problem_type') != 2:
+            release_submission_lock(lock_client, lock_key, lock_token)
+            return
+        if submission.get('status') not in ('Pending', 'Waiting', 'Running'):
+            print(
+                f"[Idempotency] Skip written grading for submission_id={submission_id}, "
+                f"status={submission.get('status')}"
+            )
+            release_submission_lock(lock_client, lock_key, lock_token)
+            return
+
+        upload_folder = ""
+        uploaded_filename = f"submission_{submission_id}"
+        try:
+            update_submission_status(submission_id, 'Running')
+
+            file_path = get_file_path_for_submission(submission_id)
+            if not file_path or not os.path.exists(file_path):
+                print(f"[LaTeX OCR] submission={submission_id} 文件不存在: {file_path}")
+                update_submission_score_and_comment(submission_id, 0, "提交文件不存在，无法自动评分，按规则记 0 分。")
+                update_submission_status(submission_id, 'Unaccepted')
+                return
+
+            upload_folder = os.path.dirname(file_path)
+            uploaded_filename = os.path.basename(file_path)
+
             problem = get_problem(submission['problem_id'])
             if not problem:
                 raise RuntimeError("题目不存在，无法自动评分。")
@@ -528,5 +554,7 @@ def register_written_homework_task(celery_app):
             except Exception:
                 pass
             print(f"[LaTeX OCR] submission={submission_id} 转写或评分失败: {e}")
+        finally:
+            release_submission_lock(lock_client, lock_key, lock_token)
 
     return transcribe_written_homework_to_latex

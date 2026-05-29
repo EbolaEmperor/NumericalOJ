@@ -44,7 +44,7 @@
 1. **Web 服务**（`oj.py`，Flask，端口 `2025`）：承载所有 UI 与 API，并注册 Celery 任务。
 2. **Celery Worker**：分为两个队列——`celery`（判题、AIGC 检测、向量索引等）与 `agent`（AI 智能体，限制并发为 1）。判题沙箱已集成到 `celery` 队列 worker 内部，由 `oj_modules/judger_core.py` 直接调用，使用 `timeout` + `RLIMIT_CPU` / `RLIMIT_AS` 隔离运行用户代码，并在编译/执行前进行禁用函数过滤。
 
-Redis 同时承担 Celery broker/backend、提交快照缓存、评测幂等锁、智能体进度与事件流。MySQL 库为 `myojdb`，所有持久化数据（用户、题目、提交、班级、AC 记录、智能体运行、论坛、AIGC 检测结果、用户代码仓库与向量索引元数据等）均存放于此。
+Redis 同时承担 Celery broker/backend、提交快照缓存、评测幂等锁、Pending 自动回收守护、智能体进度与事件流。MySQL 库为 `myojdb`，所有持久化数据（用户、题目、提交、班级、AC 记录、智能体运行、论坛、AIGC 检测结果、用户代码仓库与向量索引元数据等）均存放于此。
 
 ## 环境要求
 

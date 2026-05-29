@@ -42,7 +42,11 @@ from oj_modules.tasks import (
     register_ranking_elo_matchmaker_tick_task,
     seed_elo_matchmaker_tick,
 )
-from oj_modules.startup_requeue import requeue_pending_on_startup
+from oj_modules.startup_requeue import (
+    requeue_pending_on_startup,
+    register_pending_requeue_watchdog_task,
+    seed_pending_requeue_watchdog,
+)
 
 import redis
 
@@ -139,6 +143,11 @@ evaluate_ranking_submission = register_ranking_evaluate_task(celery)
 ranking_elo_match = register_ranking_elo_match_task(celery)
 ranking_elo_initial_burst = register_ranking_elo_initial_burst_task(celery, ranking_elo_match)
 ranking_elo_matchmaker_tick = register_ranking_elo_matchmaker_tick_task(celery, ranking_elo_match)
+pending_requeue_watchdog = register_pending_requeue_watchdog_task(
+    celery,
+    evaluate_submission,
+    transcribe_written_homework_to_latex,
+)
 
 # 初始化重测模块（依赖 Celery、Redis、程序题评测 + 书面作业转写评分任务）
 init_rejudge_module(celery, rds, evaluate_submission, transcribe_written_homework_to_latex)
@@ -159,6 +168,8 @@ init_ai_detection_module(detect_single_submission, detect_batch_for_problem, det
 init_ranking_module(evaluate_ranking_submission, ranking_elo_initial_burst)
 # 启动 ELO 匹配 tick 链路（自调度，全局单链）
 seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
+# 启动 Pending 自动回收链路（自调度，全局单链）
+seed_pending_requeue_watchdog(rds, pending_requeue_watchdog)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds)
 # 初始化 agent 运行状态缓存（Redis）
