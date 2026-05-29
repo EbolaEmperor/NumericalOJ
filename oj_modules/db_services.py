@@ -3,6 +3,7 @@
 
 import atexit
 import json
+import os
 import queue
 import sys
 import threading
@@ -124,9 +125,32 @@ class _MySQLConnectionPool:
         self._lock = threading.Lock()
         self._created = 0
         self._conn_birth = {}
+        self._pid = os.getpid()
 
         self._warm_up()
         atexit.register(self.close_idle_connections)
+
+    def _ensure_fork_safe(self):
+        """Celery prefork 子进程不能复用父进程打开的 MySQL socket。"""
+        current_pid = os.getpid()
+        if current_pid == self._pid:
+            return
+
+        with self._lock:
+            if current_pid == self._pid:
+                return
+            while not self._idle.empty():
+                try:
+                    conn = self._idle.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._conn_birth.clear()
+            self._created = 0
+            self._pid = current_pid
 
     def _warm_up(self):
         target = self._min_size
@@ -175,6 +199,7 @@ class _MySQLConnectionPool:
             return new_conn
 
     def acquire(self):
+        self._ensure_fork_safe()
         conn = None
         with self._lock:
             if not self._idle.empty():
@@ -187,7 +212,7 @@ class _MySQLConnectionPool:
             try:
                 conn = self._idle.get(timeout=self._wait_timeout)
             except queue.Empty as e:
-                raise RuntimeError("MySQL 连接池耗尽，请稍后重试") from e
+                raise pymysql.err.OperationalError(1040, "MySQL 连接池耗尽，请稍后重试") from e
 
         prepared = self._prepare_for_checkout(conn)
         with self._lock:

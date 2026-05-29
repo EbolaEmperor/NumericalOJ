@@ -15,6 +15,8 @@ import subprocess
 import sys
 import traceback
 
+import pymysql
+
 from oj_modules.ranking_db import (
     get_competition,
     get_ranking_submission,
@@ -25,6 +27,11 @@ from oj_modules.ranking_db import (
 RANKING_EVALUATE_TASK_NAME = "oj.evaluate_ranking_submission"
 DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS = 120
 DEFAULT_NUMERIC_TOLERANCE = 1e-6
+_MYSQL_RETRY_ERRORS = (
+    pymysql.err.OperationalError,
+    pymysql.err.InterfaceError,
+    pymysql.err.InternalError,
+)
 
 
 def _load_json(path):
@@ -252,11 +259,20 @@ def _evaluate(submission_id):
 
 
 def register_ranking_evaluate_task(celery_app):
-    @celery_app.task(name=RANKING_EVALUATE_TASK_NAME, bind=True)
+    @celery_app.task(
+        name=RANKING_EVALUATE_TASK_NAME,
+        bind=True,
+        autoretry_for=_MYSQL_RETRY_ERRORS,
+        retry_backoff=True,
+        retry_jitter=True,
+        retry_kwargs={'max_retries': 3},
+    )
     def evaluate_ranking_submission(self, submission_id):
         try:
             return _evaluate(int(submission_id))
         except Exception as e:
+            if isinstance(e, _MYSQL_RETRY_ERRORS):
+                raise
             # 捕获再抛出，以便 Celery 正常记录异常
             try:
                 update_submission_result(
