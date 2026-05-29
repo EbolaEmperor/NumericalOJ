@@ -9,6 +9,8 @@ import uuid
 
 import requests
 
+from oj_modules import judger_core as core
+
 try:
     import redis
 except Exception:
@@ -82,6 +84,7 @@ def _resolve_saved_output_image_path(sid, filename):
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     cwd = os.getcwd()
     possible_paths = [
+        os.path.join(core.run_dir_for(clean_sid), clean_name),
         os.path.join(project_root, "judger", clean_sid, clean_name),
         os.path.join(cwd, "judger", clean_sid, clean_name),
         os.path.join("/tmp", clean_sid, clean_name),
@@ -349,7 +352,6 @@ def register_evaluate_submission_task(celery_app):
                         + code
                         + "\n%user_code_end_fuck_hahaha_fuck\n"
                     )
-                judge_url = 'http://localhost:5050/run-hello'
 
             elif lang == 'c':
                 if test_code and "%%user_code_here" in test_code:
@@ -365,7 +367,6 @@ def register_evaluate_submission_task(celery_app):
                         + code
                         + "\n/*user_code_end_fuck_hahaha_fuck*/\n"
                     )
-                judge_url = 'http://localhost:5050/run-c'
 
             elif lang == 'cpp':
                 if test_code and "%%user_code_here" in test_code:
@@ -381,7 +382,6 @@ def register_evaluate_submission_task(celery_app):
                         + code
                         + "\n/*user_code_end_fuck_hahaha_fuck*/\n"
                     )
-                judge_url = 'http://localhost:5050/run-cpp'
 
             elif lang in ['python', 'py']:
                 if test_code and "%%user_code_here" in test_code:
@@ -397,7 +397,6 @@ def register_evaluate_submission_task(celery_app):
                         + code
                         + "\n#user_code_end_fuck_hahaha_fuck\n"
                     )
-                judge_url = 'http://localhost:5050/run-py'
             else:
                 update_submission_status(submission_id, 'Error')
                 return
@@ -461,14 +460,9 @@ def register_evaluate_submission_task(celery_app):
                 image_comment = ""
 
                 try:
-                    response = requests.post(judge_url, json=single_payload, timeout=60)
-                    response.raise_for_status()
-                    result = response.json()
-                except requests.RequestException as e:
-                    image_comment = f"判题服务调用失败：{str(e)}"
-                    result = None
+                    result = core.run_single(lang, single_payload)
                 except Exception as e:
-                    image_comment = f"判题结果解析失败：{str(e)}"
+                    image_comment = f"判题失败：{str(e)}"
                     result = None
 
                 if result is not None:
@@ -548,12 +542,7 @@ def register_evaluate_submission_task(celery_app):
                 }
     
                 try:
-                    quick_response = requests.post(
-                        f'http://localhost:5050/run-{lang}',
-                        json=quick_compile_payload,
-                        timeout=15,
-                    )
-                    quick_result = quick_response.json()
+                    quick_result = core.run_single(lang, quick_compile_payload)
     
                     if quick_result.get('status') == 'Compile Error':
                         compile_stderr = quick_result.get('files', {}).get('stderr', 'Compile Error')
@@ -582,10 +571,9 @@ def register_evaluate_submission_task(celery_app):
                         update_submission_evaluation(submission_id, test_point_statuses, 0, 'Compile Error')
                         return
     
-                except requests.RequestException:
+                except Exception:
                     pass
     
-                batch_judge_url = f'http://localhost:5050/batch-evaluate-{lang}'
                 batch_payload = {
                     "code": final_code,
                     "test_cases": test_cases,
@@ -597,25 +585,9 @@ def register_evaluate_submission_task(celery_app):
                     "outputImageFilename": required_output_image_filename,
                 }
                 stream_skip_fallback = False
-                stream_judge_url = f'http://localhost:5050/batch-evaluate-stream-{lang}'
                 try:
-                    stream_response = requests.post(
-                        stream_judge_url,
-                        json=batch_payload,
-                        stream=True,
-                        timeout=(10, 240),
-                    )
-                    stream_response.raise_for_status()
-    
                     stream_handled = False
-                    for raw_line in stream_response.iter_lines(decode_unicode=True):
-                        if not raw_line:
-                            continue
-                        try:
-                            evt = json.loads(raw_line)
-                        except Exception:
-                            continue
-    
+                    for evt in core.batch_evaluate_stream(lang, batch_payload):
                         event_type = evt.get("event")
                         if event_type == "compile":
                             compile_status = evt.get("status")
@@ -731,8 +703,8 @@ def register_evaluate_submission_task(celery_app):
                     if stream_handled:
                         stream_skip_fallback = True
                         batch_result = {"compile_result": {"status": "success"}, "stream_mode": True}
-                except requests.RequestException as e:
-                    print(f"[Warning] Stream batch evaluation failed for submission {submission_id}: {str(e)}")
+                except Exception as e:
+                    print(f"[Warning] In-process stream batch evaluation failed for submission {submission_id}: {str(e)}")
     
                 if not stream_skip_fallback:
                     if test_point_statuses:
@@ -748,10 +720,8 @@ def register_evaluate_submission_task(celery_app):
                             test_points=[],
                         )
                     try:
-                        response = requests.post(batch_judge_url, json=batch_payload, timeout=120)
-                        response.raise_for_status()
-                        batch_result = response.json()
-                    except requests.RequestException as e:
+                        batch_result = core.batch_evaluate(lang, batch_payload)
+                    except Exception as e:
                         print(f"[Warning] Batch evaluation failed for submission {submission_id}: {str(e)}")
                         batch_result = None
     
@@ -870,10 +840,8 @@ def register_evaluate_submission_task(celery_app):
                     }
     
                     try:
-                        response = requests.post(judge_url, json=payload, timeout=15)
-                        response.raise_for_status()
-                        result = response.json()
-                    except requests.RequestException:
+                        result = core.run_single(lang, payload)
+                    except Exception:
                         test_point_statuses.append({"status": "Error"})
                         all_accepted = False
                         set_submission_status_snapshot(

@@ -24,6 +24,8 @@ from config import (
     QWEN_TEXT_MODEL,
 )
 
+from oj_modules import judger_core
+
 try:
     from openai import OpenAI
 except ImportError:
@@ -1075,6 +1077,7 @@ def _find_submission_output_image_path(submission_id, test_index, test_points=No
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     cwd = os.getcwd()
     base_dirs = [
+        judger_core.JUDGER_RUN_ROOT,
         os.path.join(project_root, "judger"),
         os.path.join(cwd, "judger"),
         "/tmp",
