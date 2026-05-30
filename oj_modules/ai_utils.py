@@ -410,10 +410,31 @@ def render_pdf_to_images(pdf_path, output_dir):
     return image_paths
 
 
+# 视觉模型（Qwen-VL / Omni）可稳定接受的图片 MIME；其余格式（bmp/gif/tiff 等）
+# 在发送前就地无损转成 PNG，避免模型拒收导致图片题 AI 批改失败。
+_VISION_SAFE_IMAGE_MIME = {'image/png', 'image/jpeg', 'image/webp'}
+
+
 def _build_image_data_url(image_path):
     mime_type, _ = mimetypes.guess_type(image_path)
     if not mime_type:
         mime_type = 'image/png'
+
+    # 非视觉模型友好的格式（典型如 BMP）转成 PNG 再发；任何失败都回退到原始字节，
+    # 绝不让转码本身打断批改流程。
+    if mime_type not in _VISION_SAFE_IMAGE_MIME:
+        try:
+            import io
+            from PIL import Image
+            with Image.open(image_path) as im:
+                converted = im.convert('RGBA') if im.mode in ('P', 'LA') else im.convert('RGB')
+                buf = io.BytesIO()
+                converted.save(buf, format='PNG')
+            encoded = base64.b64encode(buf.getvalue()).decode('utf-8')
+            return f"data:image/png;base64,{encoded}"
+        except Exception as e:
+            print(f"[Image Analysis] {mime_type} 转 PNG 失败，回退原始字节: {e}")
+
     with open(image_path, 'rb') as f:
         encoded = base64.b64encode(f.read()).decode('utf-8')
     return f"data:{mime_type};base64,{encoded}"

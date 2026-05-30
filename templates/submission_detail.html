@@ -381,8 +381,10 @@
     modalImage.alt = imageTitle;
     modalLabel.textContent = imageTitle;
     downloadBtn.href = imageSrc;
-    downloadBtn.download = imageTitle + '.png';
-    
+    // 不强制 .png 扩展名：后端按真实文件类型（含 bmp）设置 Content-Disposition 下载名，
+    // 这里用空字符串让浏览器采用服务端给出的文件名，避免把 bmp 误存成 .png。
+    downloadBtn.download = '';
+
     imageModal.show();
   }
 </script>
