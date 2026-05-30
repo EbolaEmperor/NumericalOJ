@@ -494,6 +494,10 @@ def get_submission_output_image(submission_id, test_index):
     for img_path in possible_paths:
         expanded_path = os.path.expanduser(img_path)
         if os.path.exists(expanded_path):
-            return send_file(expanded_path)
+            # 用真实文件名（含正确扩展名，如 .bmp）作为下载名，并让 Flask 按扩展名
+            # 推断 Content-Type，保证 bmp 等非 png 格式也能正确显示/下载。
+            download_name = f"submission_{submission_id}_test_{test_index}" \
+                + os.path.splitext(expanded_path)[1]
+            return send_file(expanded_path, download_name=download_name)
 
     return jsonify({'error': 'Output image not found'}), 404
