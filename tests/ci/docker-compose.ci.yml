@@ -41,4 +41,8 @@ services:
       - ../../test-results:/app/test-results
       # 复用宿主已装的 Intel oneAPI MKL（与生产判题同一份），只读挂入容器
       - /opt/intel/oneapi/mkl:/opt/intel/oneapi/mkl:ro
+      # 线上生产 config.py 只读挂入（绝不写库）：run-ci.sh 会把其中的真实 AI key
+      # 合并进 /app/config.py，让 CI 用线上 API 跑真实 AI 链路。缺这个文件时
+      # run-ci.sh 自动回退到占位符配置（AI live 测试 skip），不影响其余测试。
+      - /home/ebola/oj/config.py:/run/prod_config.py:ro
     command: ["bash", "tests/ci/run-ci.sh"]

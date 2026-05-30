@@ -229,11 +229,15 @@ def admin_login(login):
 
 # ---- AI / SMTP 防护：默认 mock 掉所有网络 AI 接缝，单测可再覆盖 ----
 @pytest.fixture(autouse=True)
-def mock_ai(monkeypatch):
+def mock_ai(monkeypatch, request):
+    # 带 live_ai 标记的用例要打真实 AI 接口，不 mock 这三个调用接缝；其余
+    # 用例（绝大多数）仍 mock，保持快速与确定。SMTP / embedding 始终 mock。
+    live_ai = request.node.get_closest_marker('live_ai') is not None
     import oj_modules.ai_utils as ai
-    monkeypatch.setattr(ai, '_call_qwen_text', lambda *a, **k: '{}', raising=False)
-    monkeypatch.setattr(ai, '_call_qwen_text_with_images', lambda *a, **k: '{}', raising=False)
-    monkeypatch.setattr(ai, '_call_qwen_omni_with_image', lambda *a, **k: '{}', raising=False)
+    if not live_ai:
+        monkeypatch.setattr(ai, '_call_qwen_text', lambda *a, **k: '{}', raising=False)
+        monkeypatch.setattr(ai, '_call_qwen_text_with_images', lambda *a, **k: '{}', raising=False)
+        monkeypatch.setattr(ai, '_call_qwen_omni_with_image', lambda *a, **k: '{}', raising=False)
     try:
         import oj_modules.repository_index_services as ris
         import numpy as np
@@ -270,3 +274,13 @@ def mock_ai(monkeypatch):
             pass
     monkeypatch.setattr(smtplib, 'SMTP_SSL', _FakeSMTP, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _skip_live_ai_without_keys(request):
+    """带 live_ai 标记的用例只在 OJ_LIVE_AI=1（CI 注入线上 key 后）时真跑；
+    否则自动 skip——本地或无 key 环境不会因缺真实 API 而失败。"""
+    if request.node.get_closest_marker('live_ai') is None:
+        return
+    if os.environ.get('OJ_LIVE_AI') != '1':
+        pytest.skip('需要真实 AI 配置（设置 OJ_LIVE_AI=1，CI 会注入线上 key）')

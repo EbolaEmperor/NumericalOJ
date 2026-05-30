@@ -22,7 +22,9 @@ RUN set -eux; \
         libopenblas-dev liblapacke-dev \
         coreutils \
         default-mysql-client \
-        ca-certificates; \
+        ca-certificates \
+        texlive-xetex texlive-latex-recommended texlive-fonts-recommended \
+        texlive-lang-chinese fonts-noto-cjk latexmk; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
