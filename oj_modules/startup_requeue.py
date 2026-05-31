@@ -223,12 +223,13 @@ def _requeue_programming_submissions(evaluate_task, written_task):
     return requeued
 
 
-def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task):
+def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_judge_task=None):
     """重新入队卡在 'Judging' 的打榜赛提交。
 
     - 绝对分模式：直接 .delay() 给评测任务；
     - ELO 模式：正式带入对战池（init_submission_elo_state -> Active）并补发
       initial-burst；池中 Active 的提交由已重新 seed 的 matchmaker tick 接管。
+    - Agent 评测模式：重新 .apply_async() 给 Agent 评测任务。
     """
     requeued = 0
     try:
@@ -244,7 +245,11 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task):
         if sub_id is None:
             continue
         try:
-            if scoring_mode == 'elo':
+            if scoring_mode == 'agent_judge':
+                if agent_judge_task is not None:
+                    agent_judge_task.apply_async(args=[sub_id], countdown=_startup_countdown(requeued))
+                    requeued += 1
+            elif scoring_mode == 'elo':
                 initial_rating = float(row.get('elo_initial_rating') or 1500)
                 init_submission_elo_state(sub_id, initial_rating)
                 if elo_initial_burst_task is not None:
@@ -263,11 +268,11 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task):
 
 
 def requeue_pending_on_startup(*, evaluate_task, written_task,
-                               ranking_task, elo_initial_burst_task):
+                               ranking_task, elo_initial_burst_task, agent_judge_task=None):
     """启动时扫描 MySQL 并重新入队所有未完成任务（程序题 / 书面作业 / 打榜赛）。"""
     try:
         prog = _requeue_programming_submissions(evaluate_task, written_task)
-        rank = _requeue_ranking_submissions(ranking_task, elo_initial_burst_task)
+        rank = _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_judge_task)
         print(
             f"[StartupRequeue] 启动重新入队完成："
             f"程序题/书面作业 {prog} 条，打榜赛 {rank} 条。"
