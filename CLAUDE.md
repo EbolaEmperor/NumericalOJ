@@ -26,10 +26,11 @@ python3 oj.py
 # or under supervisord:
 supervisord -c web.conf
 
-# 2. Celery workers — judging + AI agents, two queues
+# 2. Celery workers — judging + AI agents + Agent-as-Judge, three queues
 supervisord -c celery.conf
 # Equivalent: celery -A oj.celery worker -Q celery   (judging + in-process sandbox)
 #             celery -A oj.celery worker -Q agent -c 1  (AI agents)
+#             celery -A oj.celery worker -Q judge -c 2  (打榜赛 Agent-as-Judge, runs Docker containers)
 
 # Plus: redis-server (broker + caches), mysqld (myojdb)
 ```
@@ -47,6 +48,10 @@ When the user asks you to deploy, follow this procedure end-to-end. Don't push c
 1. **Sync the local code to `why-server:/home/ebola/oj/`.** The canonical command lives in `.claude/settings.local.json` — it's an `rsync -avz` that already excludes `config.py`, `static/`, `__pycache__`, `.git`, `tmp/`, and `uploads/`. Use that command (or an equivalent `scp` for individual files); never copy the whole tree without those exclusions.
 2. **Find and kill the existing supervisord processes** on the remote host: run `ps aux | grep "supervisor"` over SSH, identify the PIDs of the two app supervisords (`web.conf`, `celery.conf`), and kill them. Leave the system supervisord (`/etc/supervisor/supervisord.conf`, owned by `root`) alone. The old `judger.conf` group no longer exists; if a stale judger supervisord / `judger/app.py` is still running from a previous deploy, kill it too. **Kill by explicit PID, not `pkill -f <pattern>`** — a `pkill -f` pattern can match the very SSH shell running it and abort the command midway.
 3. **Restart the two supervisord groups** in this order: `web.conf`, then `celery.conf`. Each is launched as `supervisord -c <name>.conf` from `/home/ebola/oj/`.
+
+### Agent-as-Judge image (打榜赛 `agent_judge` mode)
+
+The `agent_judge` ranking mode judges submissions inside a prebuilt Docker image (`numericaloj-agent-judge:latest`) that bundles the `claude` CLI + toolchain. `rsync` does **not** rebuild it — after changing `docker/agent_judge/*`, rebuild once on the host: `docker build -t numericaloj-agent-judge:latest docker/agent_judge`. The `celery_agent_judge` worker (`-Q judge`) in `celery.conf` runs `docker run` per submission; the host must have Docker and the worker user must be in the `docker` group. Do **not** add `--cap-drop ALL` to that `docker run` — it removes `CAP_DAC_OVERRIDE`, breaking both result-file writes and in-container `apt`. Per-competition model creds (base_url / api_key / model) live in MySQL, not `config.py`; the `AGENT_JUDGE_*` infra knobs are read via `getattr(config, ...)` defaults so the remote `config.py` needs no edits.
 
 ### Frontend-only fast path
 
