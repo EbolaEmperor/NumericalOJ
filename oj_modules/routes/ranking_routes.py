@@ -10,8 +10,8 @@ import shutil
 
 import markdown
 from flask import (
-    Blueprint, abort, flash, jsonify, redirect, render_template, request,
-    send_file, session, url_for,
+    Blueprint, Response, abort, flash, jsonify, redirect, render_template, request,
+    send_file, session, stream_with_context, url_for,
 )
 from werkzeug.utils import secure_filename
 
@@ -56,12 +56,21 @@ from oj_modules.ranking_db import (
     update_competition_reference_answer,
     update_competition_scoring_script,
     update_submission_files,
+    update_submission_result,
 )
+from oj_modules.ranking_agent_judge_db import (
+    build_judge_snapshot,
+    clear_judge_results,
+    list_competition_rules,
+    replace_competition_rules,
+)
+from oj_modules.ranking_agent_judge import max_score as _aj_max_score
+from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_events
 
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
-ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit')
+ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit', 'judge')
 SUBMISSIONS_PER_PAGE = 50
 MATCHES_PER_PAGE = 20
 
@@ -78,7 +87,7 @@ SCORING_SCRIPT_MAX_BYTES = 4 * 1024 * 1024 # 4MB
 REFERENCE_MAX_BYTES = 64 * 1024 * 1024     # 64MB
 
 ALLOWED_ANSWER_FORMATS = ('json', 'zip')
-ALLOWED_SCORING_MODES = ('absolute', 'elo')
+ALLOWED_SCORING_MODES = ('absolute', 'elo', 'agent_judge')
 
 # ELO 参数取值范围
 ELO_INITIAL_RATING_RANGE = (100.0, 5000.0)
@@ -205,12 +214,14 @@ def fetch_competition_match_detail_cached(match_id, competition_id):
 
 _evaluate_ranking_task = None
 _elo_initial_burst_task = None
+_agent_judge_task = None
 
 
-def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None):
-    global _evaluate_ranking_task, _elo_initial_burst_task
+def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None):
+    global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task
     _evaluate_ranking_task = evaluate_ranking_task
     _elo_initial_burst_task = elo_initial_burst_task
+    _agent_judge_task = agent_judge_task
 
 
 def _current_user():
@@ -345,8 +356,18 @@ def ranking_detail(competition_id):
     matches_total = 0
     matches_mine = False
 
+    is_agent_judge = _competition_scoring_mode(comp) == 'agent_judge'
+    judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
+    agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
+    judge_snapshot = None
+
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
+    elif tab == 'judge' and is_agent_judge:
+        # 展示当前用户最近一次提交的评分细则（含实时进展）
+        my_subs = list_user_submissions(competition_id, user.get('username'))
+        if my_subs:
+            judge_snapshot = build_judge_snapshot(my_subs[0]['id'])
     elif tab == 'leaderboard':
         leaderboard = get_leaderboard(competition_id)
     elif tab == 'matches':
@@ -392,6 +413,9 @@ def ranking_detail(competition_id):
         matches_total=matches_total,
         matches_mine=matches_mine,
         matches_per_page=MATCHES_PER_PAGE,
+        judge_rules=judge_rules,
+        agent_judge_api_key_set=agent_judge_api_key_set,
+        judge_snapshot=judge_snapshot,
     )
 
 
@@ -678,6 +702,49 @@ def ranking_submit(competition_id):
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
     base_model = base_model_raw
 
+    # Agent 评测模式：只需上传代码 zip（不需要 answer 文件），但要求已配置模型与规则
+    if scoring_mode == 'agent_judge':
+        if not all([(comp.get('agent_judge_base_url') or '').strip(),
+                    (comp.get('agent_judge_api_key') or '').strip(),
+                    (comp.get('agent_judge_model') or '').strip()]):
+            flash('该比赛为 Agent 评测模式，但管理员尚未完成模型配置，暂时无法提交。', 'warning')
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        if not list_competition_rules(competition_id):
+            flash('该比赛尚未设置评分规则，暂时无法提交。', 'warning')
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        code_file = request.files.get('code_file')
+        if not code_file or not (code_file.filename or '').strip():
+            flash('请上传代码文件（.zip）', 'danger')
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        if not (code_file.filename or '').lower().endswith('.zip'):
+            flash('代码文件必须是 .zip', 'danger')
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        submission_id = create_ranking_submission(competition_id, user.get('username'))
+        target_dir = submission_dir(submission_id)
+        _ensure_dir(target_dir)
+        code_name = _safe_filename(code_file.filename, fallback='code.zip')
+        if not code_name.lower().endswith('.zip'):
+            code_name += '.zip'
+        code_path = os.path.join(target_dir, code_name)
+        try:
+            code_file.save(code_path)
+            if os.path.getsize(code_path) > CODE_ZIP_MAX_BYTES:
+                raise ValueError(f'代码文件超过 {CODE_ZIP_MAX_BYTES // (1024*1024)}MB 限制')
+        except Exception as e:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            flash(f'文件保存失败：{e}', 'danger')
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        update_submission_files(submission_id, None, None, code_name, code_path, base_model=base_model)
+        if _agent_judge_task is None:
+            flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
+        else:
+            try:
+                _agent_judge_task.delay(submission_id)
+            except Exception as e:
+                flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
+        flash('提交成功，Agent 评测进行中，可在"评分细则"查看实时进展。', 'success')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='judge'))
+
     # ZIP 模式必须配套自定义评测脚本（默认 JSON 评分器无法处理 zip）
     if scoring_mode == 'absolute' and answer_format == 'zip' and not has_script:
         flash('该比赛答案格式为 ZIP 但管理员尚未上传评测脚本，暂时无法提交。', 'warning')
@@ -855,6 +922,21 @@ def ranking_edit(competition_id):
         SCORING_SCRIPT_TIMEOUT_RANGE[0], SCORING_SCRIPT_TIMEOUT_RANGE[1],
     )
 
+    # Agent 评测配置：base_url / model 直接保存；api_key 留空表示不变；timeout 范围 60~7200
+    aj_base_url = request.form.get('agent_judge_base_url')
+    aj_model = request.form.get('agent_judge_model')
+    aj_timeout_raw = request.form.get('agent_judge_timeout_seconds')
+    aj_api_key_raw = request.form.get('agent_judge_api_key')
+    aj_api_key = None
+    if aj_api_key_raw is not None and str(aj_api_key_raw).strip() != '':
+        aj_api_key = str(aj_api_key_raw).strip()
+    aj_timeout = None
+    if aj_timeout_raw is not None and str(aj_timeout_raw).strip() != '':
+        try:
+            aj_timeout = int(_clamp(int(aj_timeout_raw), 60, 7200))
+        except (TypeError, ValueError):
+            aj_timeout = None
+
     update_competition(
         competition_id,
         title=title,
@@ -871,6 +953,10 @@ def ranking_edit(competition_id):
         elo_initial_burst=elo_initial_burst,
         elo_max_pairs_per_round=elo_max_pairs_per_round,
         scoring_script_timeout_seconds=script_timeout,
+        agent_judge_base_url=(aj_base_url if aj_base_url is not None else None),
+        agent_judge_model=(aj_model if aj_model is not None else None),
+        agent_judge_api_key=aj_api_key,
+        agent_judge_timeout_seconds=aj_timeout,
     )
 
     # 切换答案格式后，旧的标准答案文件后缀已不匹配新格式，自动清理以避免歧义
@@ -893,6 +979,137 @@ def ranking_edit(competition_id):
     if not format_changed and not mode_changed:
         flash('已保存比赛信息', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+
+
+# ---------- 管理员：Agent 评测规则保存（AJAX） ----------
+
+@ranking_bp.route('/<int:competition_id>/agent_judge/rules', methods=['POST'])
+def ranking_save_judge_rules(competition_id):
+    user, resp = _require_admin()
+    if resp is not None:
+        return jsonify({'success': False, 'message': '需要管理员权限'}), 403
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify({'success': False, 'message': '比赛不存在'}), 404
+    payload = request.get_json(silent=True) or {}
+    rules_in = payload.get('rules')
+    if not isinstance(rules_in, list):
+        return jsonify({'success': False, 'message': '规则格式非法'}), 400
+    # 归一：rule_id 按顺序 1..n，dependencies 为前端给出的 rule_id 列表
+    rules = []
+    for idx, r in enumerate(rules_in):
+        rules.append({
+            'rule_id': int(r.get('rule_id') or (idx + 1)),
+            'rule_text': (r.get('rule_text') or '').strip(),
+            'value': r.get('value'),
+            'dependencies': r.get('dependencies') or [],
+        })
+    try:
+        normalized = replace_competition_rules(competition_id, rules)
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    # 同步 max_score = 规则分值之和（至少为 1，满足满分正整数约束）
+    try:
+        update_competition(competition_id, max_score=max(1, int(round(_aj_max_score(normalized)))))
+    except Exception:
+        pass
+    return jsonify({'success': True, 'count': len(normalized),
+                    'max_score': _aj_max_score(normalized)})
+
+
+# ---------- Agent 评测：实时进展 SSE + 管理员重测 ----------
+
+@ranking_bp.route('/<int:competition_id>/judge_stream/<int:submission_id>')
+def ranking_judge_stream(competition_id, submission_id):
+    user, resp = _require_user()
+    if resp is not None:
+        return resp
+    sub = get_ranking_submission(submission_id)
+    if not sub or int(sub.get('competition_id')) != competition_id:
+        return Response('not found', status=404)
+
+    def _encode(name, payload):
+        return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        import time as _t
+        snap = get_judge_progress_snapshot(submission_id) or build_judge_snapshot(submission_id)
+        if snap is None:
+            yield _encode('error', {'error': 'not found'})
+            return
+        yield _encode('progress', snap)
+        if snap.get('status') not in ('Judging', 'Pending'):
+            yield _encode('done', snap)
+            return
+        start = _t.time()
+        pubsub = subscribe_judge_run_events(submission_id)
+        if pubsub is None:
+            last = json.dumps(snap, ensure_ascii=False)
+            while True:
+                s = build_judge_snapshot(submission_id)
+                cur = json.dumps(s, ensure_ascii=False) if s else last
+                if cur != last:
+                    yield _encode('progress', s)
+                    last = cur
+                if s and s.get('status') not in ('Judging', 'Pending'):
+                    yield _encode('done', s)
+                    return
+                if _t.time() - start > 3600:
+                    yield _encode('timeout', s or snap)
+                    return
+                _t.sleep(2)
+        try:
+            while True:
+                msg = pubsub.get_message(timeout=15.0)
+                if _t.time() - start > 3600:
+                    yield _encode('timeout', build_judge_snapshot(submission_id) or snap)
+                    return
+                if not msg:
+                    yield ": keepalive\n\n"
+                    continue
+                if msg.get('type') != 'message':
+                    continue
+                raw = msg.get('data')
+                if isinstance(raw, bytes):
+                    raw = raw.decode('utf-8', 'ignore')
+                try:
+                    s = json.loads(raw)
+                except Exception:
+                    continue
+                yield _encode('progress', s)
+                if s.get('status') not in ('Judging', 'Pending'):
+                    yield _encode('done', s)
+                    return
+        finally:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+                             'Connection': 'keep-alive'})
+
+
+@ranking_bp.route('/<int:competition_id>/submission/<int:submission_id>/rejudge_agent', methods=['POST'])
+def ranking_rejudge_agent(competition_id, submission_id):
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    sub = get_ranking_submission(submission_id)
+    if not sub or int(sub.get('competition_id')) != competition_id:
+        flash('提交不存在', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
+    clear_judge_results(submission_id)
+    update_submission_result(submission_id, None, 'Judging', grade_details=None, error_message=None)
+    if _agent_judge_task is not None:
+        try:
+            _agent_judge_task.delay(submission_id)
+        except Exception as e:
+            flash(f'重测入队失败：{e}', 'warning')
+    flash('已触发重新评测', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
 
 
 # ---------- 管理员：ELO 运行控制（启动 / 停止 / 重置） ----------
