@@ -971,8 +971,10 @@ def ranking_edit(competition_id):
             update_competition_reference_answer(competition_id, None, None)
         flash(f'答案格式已切换为 {new_format.upper()}，请重新上传对应的标准答案文件。', 'warning')
     if mode_changed:
+        _mode_label = {'elo': 'ELO 对战', 'agent_judge': 'Agent 评测',
+                       'absolute': '标准答案评分'}.get(new_mode, '标准答案评分')
         flash(
-            f'评分模式已切换为 {"ELO 对战" if new_mode == "elo" else "绝对分"}。'
+            f'评分模式已切换为 {_mode_label}。'
             '请注意切换前后的提交记录可能因评分语义不同导致排行榜混合显示。',
             'warning',
         )
