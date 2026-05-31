@@ -1,0 +1,56 @@
+{# 提交卡片宏：被「我的历史提交」与「所有提交」复用。扁平化设计（无阴影/渐变）。
+   参数：s=提交记录, competition, is_elo, is_agent_judge, max_score,
+        show_user=是否显示用户名(管理员视图), show_delete=是否显示删除(管理员视图) #}
+{% macro render_sub_card(s, competition, is_elo, is_agent_judge, max_score, show_user, show_delete) %}
+  {% set st = s.status %}
+  {% set scls = 's-ok' if st in ['Accepted', 'Active'] else ('s-info' if st in ['Judging', 'Pending'] else ('s-err' if st == 'Error' else 's-muted')) %}
+  {% set slabel = {'Accepted': '通过', 'Active': '对战中', 'Retired': '已退役', 'Judging': '评测中', 'Pending': '待评测', 'Error': '异常'}.get(st, st) %}
+  {% set pct = 0 %}
+  {% if s.score is not none and max_score %}
+    {% set pct = (s.score * 100 / max_score)|round(1) %}
+    {% if pct > 100 %}{% set pct = 100 %}{% elif pct < 0 %}{% set pct = 0 %}{% endif %}
+  {% endif %}
+  <div class="aj-sub {{ scls }}" data-username="{{ (s.username or '')|lower }}">
+    <div class="aj-sub-r1">
+      <div class="aj-sub-idu">
+        {% if show_user %}
+        <span class="aj-sub-user"><span class="aj-sub-ava">{{ (s.username or '?')[0]|upper }}</span><span class="aj-sub-uname">{{ s.username }}</span></span>
+        {% endif %}
+        <span class="aj-sub-id">#{{ s.id }}</span>
+        <span class="aj-st {{ scls }}"><span class="d"></span>{{ slabel }}</span>
+      </div>
+      <div class="aj-sub-score">
+        {% if is_elo %}
+          {% if s.elo_rating is not none %}<b>{{ '%.0f'|format(s.elo_rating) }}</b><span> · {{ s.elo_match_count or 0 }} 战</span>{% else %}<span>—</span>{% endif %}
+        {% else %}
+          {% if s.score is not none %}<b>{{ '%.2f'|format(s.score) }}</b><span> / {{ max_score }}</span>{% else %}<span>—</span>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+    {% if not is_elo and s.score is not none %}<div class="aj-bar"><i style="width: {{ pct }}%"></i></div>{% endif %}
+    <div class="aj-sub-r2">
+      <div class="aj-sub-meta">
+        <span class="aj-time">{{ s.created_at }}</span>
+        {% if s.base_model %}<span class="aj-chip" title="基座模型">{{ s.base_model }}</span>{% endif %}
+        {% if s.answer_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}" title="下载 {{ s.answer_filename }}"><i class="fas fa-file-code"></i>答案</a>{% endif %}
+        {% if s.code_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" title="下载 {{ s.code_filename }}"><i class="fas fa-file-archive"></i>代码</a>{% endif %}
+      </div>
+      <div class="aj-acts">
+        {% if is_agent_judge %}
+        <button type="button" class="aj-detail judge-detail-btn"
+                data-submission-id="{{ s.id }}" data-created-at="{{ s.created_at }}"
+                data-stream-url="{{ url_for('ranking.ranking_judge_stream', competition_id=competition.id, submission_id=s.id) }}">
+          <i class="fas fa-list-check"></i>评分详情
+        </button>
+        {% endif %}
+        {% if show_delete %}
+        <form method="POST" class="d-inline"
+              action="{{ url_for('ranking.ranking_delete_submission', competition_id=competition.id, submission_id=s.id) }}"
+              onsubmit="return confirm('确认删除提交 #{{ s.id }}（{{ s.username }}）？\n此操作无法撤销，该用户的最高分与排行榜将同步更新。');">
+          <button type="submit" class="aj-del" title="删除该提交" aria-label="删除提交 #{{ s.id }}"><i class="fas fa-trash"></i></button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endmacro %}
