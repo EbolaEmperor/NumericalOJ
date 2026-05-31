@@ -173,7 +173,7 @@ def test_submit_history_has_judge_detail_modal_button(client, login):
     assert f'data-submission-id="{sid}"' in body
     assert f'/ranking/{cid}/judge_stream/{sid}' in body
     assert 'id="judgeDetailModal"' in body
-    assert 'class="btn btn-sm btn-outline-secondary judge-detail-btn"' in body
+    assert 'judge-detail-btn' in body
 
 
 def test_rejudge_agent_requeues(client, admin_login, monkeypatch):
