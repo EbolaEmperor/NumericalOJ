@@ -191,14 +191,12 @@ def build_judge_snapshot(submission_id):
         rid = r['rule_id']
         c = computed.get(rid, {'effective': aj.EFF_PENDING, 'score': 0.0})
         evidence = evidence_by_id.get(rid, '')
+        # 仅存 markdown 源（rule_text / evidence）；HTML 在前端请求时实时渲染（见 render_snapshot_html）
         rule_payloads.append({
             'rule_id': rid, 'rule_text': r['rule_text'], 'value': float(r['value']),
             'dependencies': r['dependencies'],
             'effective': c['effective'], 'score': c['score'],
             'evidence': evidence,
-            # 预渲染 Markdown + LaTeX（前端注入 HTML 后由 MathJax 排版）
-            'rule_html': aj.render_md_math(r['rule_text']),
-            'evidence_html': aj.render_md_math(evidence),
         })
     timed_out = False
     gd = submission.get('grade_details')

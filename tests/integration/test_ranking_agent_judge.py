@@ -176,6 +176,24 @@ def test_submit_history_has_judge_detail_modal_button(client, login):
     assert 'judge-detail-btn' in body
 
 
+def test_judge_stream_renders_markdown_at_serve_time(client, login):
+    # 证据存 markdown 源，SSE 下发时实时渲染为 HTML（修复旧提交证据显示源码的 bug）
+    h.make_user('ajmd')
+    cid = _make_aj_comp()
+    login('ajmd')
+    sid = ranking_db.create_ranking_submission(cid, 'ajmd')
+    ranking_db.update_submission_files(sid, None, None, 'c.zip', '/tmp/c', base_model='m')
+    ajdb.upsert_judge_result(sid, 1, 'pass', 'pass', 10.0, '## 证据\n- **要点**')
+    ranking_db.update_submission_result(sid, 10.0, 'Accepted',
+                                        grade_details={'total_score': 10, 'max_score': 30})
+    r = client.get(f'/ranking/{cid}/judge_stream/{sid}')
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    # 下发的快照里 evidence 已渲染（heading + 列表 + 加粗），而非原始 ## 源码
+    assert '<h2' in body and '<strong>' in body
+    assert 'evidence_html' in body
+
+
 def test_rejudge_agent_requeues(client, admin_login, monkeypatch):
     cid = _make_aj_comp()
     sid = ranking_db.create_ranking_submission(cid, 'admin')

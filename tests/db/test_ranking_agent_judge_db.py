@@ -74,6 +74,21 @@ def test_build_snapshot_live_and_gate(client):
     assert snap['status'] == 'Judging'
 
 
+def test_build_snapshot_stores_raw_markdown_not_html(client):
+    cid = _make_comp()
+    ajdb.replace_competition_rules(cid, [
+        {'rule_id': 1, 'rule_text': '**规则一**', 'value': 10, 'dependencies': []},
+    ])
+    sid = ranking_db.create_ranking_submission(cid, 'u1')
+    ajdb.upsert_judge_result(sid, 1, 'pass', 'pass', 10.0, '## 证据标题\n- 步骤')
+    snap = ajdb.build_judge_snapshot(sid)
+    r = snap['rules'][0]
+    # 只存 markdown 源，不持久化渲染后的 HTML
+    assert r['evidence'] == '## 证据标题\n- 步骤'
+    assert 'evidence_html' not in r
+    assert 'rule_html' not in r
+
+
 def test_clear_results(client):
     cid = _make_comp()
     sid = ranking_db.create_ranking_submission(cid, 'u1')
