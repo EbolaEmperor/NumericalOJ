@@ -1229,62 +1229,66 @@
 
       <!-- 评分规则 -->
       <style>
-        .aj-rules { --gold:#f5c518; --gold-d:#d4a017; --ink:#212529; --muted:#6c757d;
-                    --line:#ececec; --paper:#faf8f3; --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
-        .aj-rules-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:.85rem; }
+        /* 评分规则编辑器：扁平化设计——纯色、描边，无阴影、无渐变 */
+        .aj-rules { --gold:#f5c518; --gold-d:#b8910f; --gold-bg:#fef6d8; --gold-line:#ecd98c;
+                    --ink:#1f2329; --muted:#70757c; --line:#e4e4e7; --paper:#fbfaf6; --green:#1f7a4d;
+                    --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
+        .aj-rules-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:.9rem; }
         .aj-rules-head .aj-count { font-size:.8rem; color:var(--muted); }
         .aj-total { font-family:var(--mono); font-size:.78rem; font-weight:600; color:var(--gold-d);
-                    background:linear-gradient(180deg,#fff8e5,#fdedc4); border:1px solid #f0d89a;
-                    border-radius:999px; padding:.18rem .7rem; letter-spacing:.02em; white-space:nowrap; }
+                    background:var(--gold-bg); border:1px solid var(--gold-line);
+                    border-radius:4px; padding:.22rem .6rem; letter-spacing:.02em; white-space:nowrap; }
         .aj-total b { font-size:.95rem; }
-        .aj-rule { position:relative; background:#fff; border:1px solid var(--line); border-radius:12px;
-                   padding:.85rem .95rem .85rem 1.15rem; margin-bottom:.7rem; overflow:hidden;
-                   transition:box-shadow .18s ease, border-color .18s ease, transform .18s ease;
-                   animation:ajRuleIn .32s cubic-bezier(.2,.7,.3,1) both; }
-        .aj-rule::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
-                           background:linear-gradient(180deg,var(--gold),var(--gold-d)); }
-        .aj-rule:hover { box-shadow:0 6px 20px -10px rgba(180,140,20,.45); border-color:#ead999; transform:translateY(-1px); }
-        @keyframes ajRuleIn { from{opacity:0; transform:translateY(7px);} to{opacity:1; transform:translateY(0);} }
+        .aj-rule { position:relative; background:#fff; border:1px solid var(--line); border-left:3px solid var(--gold);
+                   border-radius:6px; padding:.85rem .95rem .85rem 1.05rem; margin-bottom:.6rem;
+                   transition:border-color .15s ease; animation:ajRuleIn .25s ease both; }
+        .aj-rule:hover { border-color:var(--gold-line); border-left-color:var(--gold); }
+        @keyframes ajRuleIn { from{opacity:0;} to{opacity:1;} }
         .aj-rule-top { display:flex; align-items:flex-start; gap:.7rem; }
-        .aj-no { flex:0 0 auto; width:30px; height:30px; margin-top:.1rem; border-radius:50%;
+        .aj-no { flex:0 0 auto; width:28px; height:28px; margin-top:.15rem; border-radius:4px;
                  display:grid; place-items:center; font-family:var(--mono); font-weight:700; font-size:.82rem;
-                 color:#5b4708; background:radial-gradient(circle at 32% 28%,#ffe9a8,var(--gold));
-                 box-shadow:0 2px 6px -1px rgba(212,160,23,.55); }
-        .aj-desc { flex:1 1 auto; border:1px solid var(--line); border-radius:9px; resize:vertical;
-                   min-height:48px; padding:.5rem .65rem; font-size:.92rem; line-height:1.5; color:var(--ink);
-                   background:var(--paper); transition:border-color .15s,background .15s,box-shadow .15s; }
-        .aj-desc:focus { outline:none; background:#fff; border-color:var(--gold);
-                         box-shadow:0 0 0 3px rgba(245,197,24,.18); }
-        .aj-val { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:.18rem; }
-        .aj-val label { font-size:.66rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0; }
-        .aj-val .aj-val-box { display:flex; align-items:center; gap:.25rem; }
-        .aj-val input { width:74px; text-align:right; font-family:var(--mono); font-weight:600; font-size:.95rem;
-                        border:1px solid var(--line); border-radius:8px; padding:.3rem .45rem; color:var(--ink); }
-        .aj-val input:focus { outline:none; border-color:var(--gold); box-shadow:0 0 0 3px rgba(245,197,24,.18); }
-        .aj-val .aj-unit { font-size:.72rem; color:var(--muted); }
+                 color:#5b4708; background:var(--gold); }
+        /* 文本编辑框：扁平填充面，聚焦仅靠描边变化 */
+        .aj-desc { flex:1 1 auto; border:1px solid var(--line); border-radius:5px; resize:none; overflow:hidden;
+                   min-height:46px; padding:.55rem .7rem; font-size:.92rem; line-height:1.55; color:var(--ink);
+                   background:var(--paper); transition:border-color .15s, background .15s; }
+        .aj-desc::placeholder { color:#b3b3b8; }
+        .aj-desc:focus { outline:none; background:#fff; border-color:var(--gold); }
+        /* 分值步进器：扁平分段控件，原生上下箭头隐藏 */
+        .aj-val { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:.22rem; }
+        .aj-val label { font-size:.64rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0; }
+        .aj-stepper { display:flex; align-items:stretch; border:1px solid var(--line); border-radius:5px; overflow:hidden; }
+        .aj-step { border:none; background:#f4f4f5; color:var(--muted); width:26px; font-size:1rem; line-height:1;
+                   cursor:pointer; transition:background .12s, color .12s; }
+        .aj-step:hover { background:var(--gold); color:#5b4708; }
+        .aj-step:active { background:var(--gold-d); color:#fff; }
+        .aj-stepper input { width:50px; text-align:center; border:none; border-left:1px solid var(--line);
+                            border-right:1px solid var(--line); font-family:var(--mono); font-weight:600;
+                            font-size:.92rem; padding:.32rem .2rem; color:var(--ink); background:#fff; -moz-appearance:textfield; }
+        .aj-stepper input::-webkit-outer-spin-button, .aj-stepper input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+        .aj-stepper input:focus { outline:none; background:var(--gold-bg); }
         .aj-del { flex:0 0 auto; border:none; background:transparent; color:#c2b7a0; cursor:pointer;
-                  width:28px; height:28px; border-radius:7px; transition:.15s; margin-top:.05rem; }
-        .aj-del:hover { color:#b03a2e; background:rgba(176,58,46,.1); }
-        .aj-deps { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.7rem 0 0 calc(30px + .7rem); }
+                  width:28px; height:28px; border-radius:4px; transition:.12s; margin-top:.1rem; }
+        .aj-del:hover { color:#b03a2e; background:#f8e9e7; }
+        .aj-deps { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.7rem 0 0 calc(28px + .7rem); }
         .aj-deps-label { font-size:.7rem; letter-spacing:.04em; color:var(--muted); margin-right:.1rem; }
         .aj-pill { font-family:var(--mono); font-size:.74rem; line-height:1; cursor:pointer; user-select:none;
-                   border:1px solid #e0d9c6; background:#fcfaf4; color:#8a7f63; border-radius:999px;
-                   padding:.32rem .6rem; transition:.14s; }
+                   border:1px solid var(--line); background:#fff; color:#8a7f63; border-radius:4px;
+                   padding:.34rem .6rem; transition:.12s; }
         .aj-pill:hover { border-color:var(--gold-d); color:var(--gold-d); }
-        .aj-pill.on { background:linear-gradient(180deg,#ffe9a8,var(--gold)); border-color:var(--gold-d);
-                      color:#5b4708; font-weight:600; box-shadow:0 1px 4px -1px rgba(212,160,23,.5); }
+        .aj-pill.on { background:var(--gold); border-color:var(--gold); color:#5b4708; font-weight:600; }
         .aj-pill.on::before { content:'\2713'; margin-right:.25rem; }
         .aj-add { width:100%; display:flex; align-items:center; justify-content:center; gap:.45rem;
-                  border:1.5px dashed #e3d9bf; background:transparent; color:#9a8c66; border-radius:12px;
-                  padding:.7rem; font-size:.88rem; font-weight:500; cursor:pointer; transition:.16s; }
-        .aj-add:hover { border-color:var(--gold); color:var(--gold-d); background:var(--paper); }
+                  border:1px dashed #d8d2bf; background:transparent; color:#9a8c66; border-radius:6px;
+                  padding:.7rem; font-size:.88rem; font-weight:500; cursor:pointer; transition:.14s; }
+        .aj-add:hover { border-color:var(--gold); color:var(--gold-d); background:var(--gold-bg); }
         .aj-empty { text-align:center; color:#b7ad95; padding:1.4rem 0 .4rem; font-size:.9rem; }
         .aj-foot { display:flex; align-items:center; gap:.75rem; margin-top:1.1rem;
-                   padding-top:.9rem; border-top:1px dashed var(--line); }
-        .aj-save { background:linear-gradient(180deg,#2f9e57,#1f7a4d); border:none; color:#fff; font-weight:600;
-                   border-radius:9px; padding:.5rem 1.1rem; font-size:.9rem; cursor:pointer; transition:.16s; }
-        .aj-save:hover { filter:brightness(1.06); box-shadow:0 5px 16px -6px rgba(31,122,77,.6); }
-        .aj-save:active { transform:translateY(1px); }
+                   padding-top:.9rem; border-top:1px solid var(--line); }
+        .aj-save { background:var(--green); border:none; color:#fff; font-weight:600;
+                   border-radius:5px; padding:.5rem 1.1rem; font-size:.9rem; cursor:pointer; transition:background .14s; }
+        .aj-save:hover { background:#196b42; }
+        .aj-save:active { background:#155c39; }
         @media (max-width:640px){ .aj-rule-top{flex-wrap:wrap;} .aj-val{align-items:flex-start;} .aj-deps{margin-left:0;} }
       </style>
       <div class="card mb-3 agent-judge-only" id="agentJudgeRulesCard"
@@ -1326,6 +1330,7 @@
           document.getElementById('rulesTotalValue').textContent = (Math.round(t * 100) / 100);
           document.getElementById('rulesCountLabel').textContent = '共 ' + rules.length + ' 条规则';
         }
+        function grow(t) { if (!t) return; t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
         function render() {
           reindex();
           editor.innerHTML = '';
@@ -1340,18 +1345,20 @@
               : '';
             var card = document.createElement('div');
             card.className = 'aj-rule';
-            card.style.animationDelay = (idx * 0.035) + 's';
+            card.style.animationDelay = (idx * 0.03) + 's';
             card.innerHTML =
               '<div class="aj-rule-top">' +
                 '<div class="aj-no">' + r.rule_id + '</div>' +
                 '<textarea class="aj-desc" data-text="' + idx + '" rows="2" placeholder="用自然语言描述这条评分规则……"></textarea>' +
-                '<div class="aj-val"><label>分值</label><div class="aj-val-box">' +
-                  '<input type="number" min="0" step="0.5" data-val="' + idx + '" value="' + (r.value || 0) + '"><span class="aj-unit">分</span>' +
+                '<div class="aj-val"><label>分值</label><div class="aj-stepper">' +
+                  '<button type="button" class="aj-step" data-step="-1" data-i="' + idx + '" tabindex="-1">−</button>' +
+                  '<input type="number" min="0" step="0.5" data-val="' + idx + '" value="' + (r.value || 0) + '">' +
+                  '<button type="button" class="aj-step" data-step="1" data-i="' + idx + '" tabindex="-1">+</button>' +
                 '</div></div>' +
                 '<button type="button" class="aj-del" data-del="' + idx + '" title="删除规则"><i class="fas fa-trash-can"></i></button>' +
               '</div>' + depsRow;
             editor.appendChild(card);
-            card.querySelector('[data-text]').value = r.rule_text || '';
+            var ta = card.querySelector('[data-text]'); ta.value = r.rule_text || ''; grow(ta);
           });
           if (!rules.length) {
             editor.innerHTML = '<div class="aj-empty"><i class="fas fa-list-check mb-2 d-block" style="font-size:1.4rem;opacity:.5;"></i>还没有评分规则，点击下方「添加规则」开始。</div>';
@@ -1364,10 +1371,22 @@
             b.onclick = function () { rules.splice(parseInt(b.dataset.del, 10), 1); render(); };
           });
           editor.querySelectorAll('[data-text]').forEach(function (t) {
-            t.oninput = function () { rules[parseInt(t.dataset.text, 10)].rule_text = t.value; };
+            t.oninput = function () { rules[parseInt(t.dataset.text, 10)].rule_text = t.value; grow(t); };
           });
           editor.querySelectorAll('[data-val]').forEach(function (v) {
-            v.oninput = function () { rules[parseInt(v.dataset.val, 10)].value = parseFloat(v.value) || 0; refreshStats(); };
+            v.oninput = function () {
+              var val = parseFloat(v.value); if (!isFinite(val) || val < 0) val = 0;
+              rules[parseInt(v.dataset.val, 10)].value = val; refreshStats();
+            };
+          });
+          editor.querySelectorAll('.aj-step').forEach(function (b) {
+            b.onclick = function () {
+              var i = parseInt(b.dataset.i, 10), d = parseInt(b.dataset.step, 10);
+              var nv = Math.max(0, (parseFloat(rules[i].value) || 0) + d);
+              rules[i].value = nv;
+              var inp = editor.querySelector('[data-val="' + i + '"]'); if (inp) inp.value = nv;
+              refreshStats();
+            };
           });
           editor.querySelectorAll('[data-dep-toggle]').forEach(function (p) {
             p.onclick = function () {
