@@ -968,13 +968,14 @@
                 <input type="number" class="form-control" name="max_score" value="{{ competition.max_score or 100 }}" min="1" max="100000">
                 <div class="form-text">仅在绝对分模式下生效。</div>
               </div>
-              <div class="col-md-4">
+              <div class="col-md-4 answer-format-field" id="answerFormatField"
+                   {% if _mode == 'agent_judge' %}style="display:none;"{% endif %}>
                 <label class="form-label">答案格式</label>
                 <select class="form-select" name="answer_format">
                   <option value="json" {% if _fmt == 'json' %}selected{% endif %}>JSON（.json）</option>
                   <option value="zip"  {% if _fmt == 'zip'  %}selected{% endif %}>ZIP 压缩包（.zip）</option>
                 </select>
-                <div class="form-text">绝对分模式切换后旧的标准答案会被自动清理。</div>
+                <div class="form-text">Agent 评测模式下无需配置（固定上传代码 zip）；其它模式切换格式后旧标准答案会被清理。</div>
               </div>
             </div>
 
@@ -1069,6 +1070,10 @@
                     el.style.display = isAgent ? 'none' : '';
                   });
                   document.querySelectorAll('.script-timeout-row').forEach(function (el) {
+                    el.style.display = isAgent ? 'none' : '';
+                  });
+                  // 答案格式在 Agent 评测下固定为代码 zip，无需选择
+                  document.querySelectorAll('.answer-format-field').forEach(function (el) {
                     el.style.display = isAgent ? 'none' : '';
                   });
                   var sigElo = document.getElementById('scriptSignatureElo');
