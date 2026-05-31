@@ -1228,21 +1228,80 @@
       </div>
 
       <!-- 评分规则 -->
+      <style>
+        .aj-rules { --gold:#f5c518; --gold-d:#d4a017; --ink:#212529; --muted:#6c757d;
+                    --line:#ececec; --paper:#faf8f3; --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
+        .aj-rules-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:.85rem; }
+        .aj-rules-head .aj-count { font-size:.8rem; color:var(--muted); }
+        .aj-total { font-family:var(--mono); font-size:.78rem; font-weight:600; color:var(--gold-d);
+                    background:linear-gradient(180deg,#fff8e5,#fdedc4); border:1px solid #f0d89a;
+                    border-radius:999px; padding:.18rem .7rem; letter-spacing:.02em; white-space:nowrap; }
+        .aj-total b { font-size:.95rem; }
+        .aj-rule { position:relative; background:#fff; border:1px solid var(--line); border-radius:12px;
+                   padding:.85rem .95rem .85rem 1.15rem; margin-bottom:.7rem; overflow:hidden;
+                   transition:box-shadow .18s ease, border-color .18s ease, transform .18s ease;
+                   animation:ajRuleIn .32s cubic-bezier(.2,.7,.3,1) both; }
+        .aj-rule::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
+                           background:linear-gradient(180deg,var(--gold),var(--gold-d)); }
+        .aj-rule:hover { box-shadow:0 6px 20px -10px rgba(180,140,20,.45); border-color:#ead999; transform:translateY(-1px); }
+        @keyframes ajRuleIn { from{opacity:0; transform:translateY(7px);} to{opacity:1; transform:translateY(0);} }
+        .aj-rule-top { display:flex; align-items:flex-start; gap:.7rem; }
+        .aj-no { flex:0 0 auto; width:30px; height:30px; margin-top:.1rem; border-radius:50%;
+                 display:grid; place-items:center; font-family:var(--mono); font-weight:700; font-size:.82rem;
+                 color:#5b4708; background:radial-gradient(circle at 32% 28%,#ffe9a8,var(--gold));
+                 box-shadow:0 2px 6px -1px rgba(212,160,23,.55); }
+        .aj-desc { flex:1 1 auto; border:1px solid var(--line); border-radius:9px; resize:vertical;
+                   min-height:48px; padding:.5rem .65rem; font-size:.92rem; line-height:1.5; color:var(--ink);
+                   background:var(--paper); transition:border-color .15s,background .15s,box-shadow .15s; }
+        .aj-desc:focus { outline:none; background:#fff; border-color:var(--gold);
+                         box-shadow:0 0 0 3px rgba(245,197,24,.18); }
+        .aj-val { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:.18rem; }
+        .aj-val label { font-size:.66rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0; }
+        .aj-val .aj-val-box { display:flex; align-items:center; gap:.25rem; }
+        .aj-val input { width:74px; text-align:right; font-family:var(--mono); font-weight:600; font-size:.95rem;
+                        border:1px solid var(--line); border-radius:8px; padding:.3rem .45rem; color:var(--ink); }
+        .aj-val input:focus { outline:none; border-color:var(--gold); box-shadow:0 0 0 3px rgba(245,197,24,.18); }
+        .aj-val .aj-unit { font-size:.72rem; color:var(--muted); }
+        .aj-del { flex:0 0 auto; border:none; background:transparent; color:#c2b7a0; cursor:pointer;
+                  width:28px; height:28px; border-radius:7px; transition:.15s; margin-top:.05rem; }
+        .aj-del:hover { color:#b03a2e; background:rgba(176,58,46,.1); }
+        .aj-deps { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.7rem 0 0 calc(30px + .7rem); }
+        .aj-deps-label { font-size:.7rem; letter-spacing:.04em; color:var(--muted); margin-right:.1rem; }
+        .aj-pill { font-family:var(--mono); font-size:.74rem; line-height:1; cursor:pointer; user-select:none;
+                   border:1px solid #e0d9c6; background:#fcfaf4; color:#8a7f63; border-radius:999px;
+                   padding:.32rem .6rem; transition:.14s; }
+        .aj-pill:hover { border-color:var(--gold-d); color:var(--gold-d); }
+        .aj-pill.on { background:linear-gradient(180deg,#ffe9a8,var(--gold)); border-color:var(--gold-d);
+                      color:#5b4708; font-weight:600; box-shadow:0 1px 4px -1px rgba(212,160,23,.5); }
+        .aj-pill.on::before { content:'\2713'; margin-right:.25rem; }
+        .aj-add { width:100%; display:flex; align-items:center; justify-content:center; gap:.45rem;
+                  border:1.5px dashed #e3d9bf; background:transparent; color:#9a8c66; border-radius:12px;
+                  padding:.7rem; font-size:.88rem; font-weight:500; cursor:pointer; transition:.16s; }
+        .aj-add:hover { border-color:var(--gold); color:var(--gold-d); background:var(--paper); }
+        .aj-empty { text-align:center; color:#b7ad95; padding:1.4rem 0 .4rem; font-size:.9rem; }
+        .aj-foot { display:flex; align-items:center; gap:.75rem; margin-top:1.1rem;
+                   padding-top:.9rem; border-top:1px dashed var(--line); }
+        .aj-save { background:linear-gradient(180deg,#2f9e57,#1f7a4d); border:none; color:#fff; font-weight:600;
+                   border-radius:9px; padding:.5rem 1.1rem; font-size:.9rem; cursor:pointer; transition:.16s; }
+        .aj-save:hover { filter:brightness(1.06); box-shadow:0 5px 16px -6px rgba(31,122,77,.6); }
+        .aj-save:active { transform:translateY(1px); }
+        @media (max-width:640px){ .aj-rule-top{flex-wrap:wrap;} .aj-val{align-items:flex-start;} .aj-deps{margin-left:0;} }
+      </style>
       <div class="card mb-3 agent-judge-only" id="agentJudgeRulesCard"
            {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span><i class="fas fa-list-check me-2"></i> 评分规则</span>
-          <span class="small text-muted">总分：<span id="rulesTotalValue">0</span></span>
-        </div>
-        <div class="card-body">
-          <p class="text-muted small mb-3">每条规则用自然语言描述、设分值、可选依赖（前置规则）。依赖即评分门槛：前置规则不通过则本规则记 0 分。满分自动等于各规则分值之和。</p>
+        <div class="card-header"><i class="fas fa-list-check me-2"></i> 评分规则</div>
+        <div class="card-body aj-rules">
+          <div class="aj-rules-head">
+            <span class="aj-count" id="rulesCountLabel">共 0 条规则</span>
+            <span class="aj-total">满分 <b id="rulesTotalValue">0</b> 分</span>
+          </div>
           <div id="rulesEditor"></div>
-          <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="addRuleBtn">
-            <i class="fas fa-plus me-1"></i> 添加规则
+          <button type="button" class="aj-add" id="addRuleBtn">
+            <i class="fas fa-plus"></i> 添加规则
           </button>
-          <div class="mt-3">
-            <button type="button" class="btn btn-primary" id="saveRulesBtn"><i class="fas fa-save me-1"></i> 保存规则</button>
-            <span class="ms-2 small" id="saveRulesHint"></span>
+          <div class="aj-foot">
+            <button type="button" class="aj-save" id="saveRulesBtn"><i class="fas fa-save me-1"></i> 保存规则</button>
+            <span class="small" id="saveRulesHint"></span>
           </div>
         </div>
       </div>
@@ -1260,29 +1319,44 @@
         });
         function reindex() { rules.forEach(function (r, i) { r.rule_id = i + 1; }); }
         function totalValue() { return rules.reduce(function (s, r) { return s + (parseFloat(r.value) || 0); }, 0); }
+        function esc(s) { return (s || '').replace(/[&<>"]/g, function (c) {
+          return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+        function refreshStats() {
+          var t = totalValue();
+          document.getElementById('rulesTotalValue').textContent = (Math.round(t * 100) / 100);
+          document.getElementById('rulesCountLabel').textContent = '共 ' + rules.length + ' 条规则';
+        }
         function render() {
           reindex();
           editor.innerHTML = '';
           rules.forEach(function (r, idx) {
+            var pills = rules.filter(function (_, j) { return j !== idx; }).map(function (o) {
+              var on = r.dependencies.indexOf(o.rule_id) >= 0 ? ' on' : '';
+              return '<span class="aj-pill' + on + '" data-dep-toggle="' + idx + '" data-dep-id="' + o.rule_id + '">规则 ' + o.rule_id + '</span>';
+            }).join('');
+            var depsRow = rules.length > 1
+              ? '<div class="aj-deps"><span class="aj-deps-label">前置依赖</span>' +
+                (pills || '<span class="aj-deps-label">（无其它规则）</span>') + '</div>'
+              : '';
             var card = document.createElement('div');
-            card.className = 'border rounded p-2 mb-2';
-            var depOpts = rules.filter(function (_, j) { return j !== idx; })
-              .map(function (o) {
-                var sel = r.dependencies.indexOf(o.rule_id) >= 0 ? 'selected' : '';
-                return '<option value="' + o.rule_id + '" ' + sel + '>规则 ' + o.rule_id + '</option>';
-              }).join('');
+            card.className = 'aj-rule';
+            card.style.animationDelay = (idx * 0.035) + 's';
             card.innerHTML =
-              '<div class="d-flex justify-content-between align-items-center mb-1"><strong>规则 ' + r.rule_id + '</strong>' +
-              '<button type="button" class="btn btn-sm btn-outline-danger" data-del="' + idx + '"><i class="fas fa-trash"></i></button></div>' +
-              '<textarea class="form-control" rows="2" data-text="' + idx + '" placeholder="自然语言规则描述"></textarea>' +
-              '<div class="row mt-2"><div class="col-md-4"><label class="form-label small mb-1">分值</label>' +
-              '<input type="number" class="form-control" min="0" step="0.5" data-val="' + idx + '" value="' + (r.value || 0) + '"></div>' +
-              '<div class="col-md-8"><label class="form-label small mb-1">依赖（前置规则，可多选）</label>' +
-              '<select class="form-select" multiple size="3" data-dep="' + idx + '">' + depOpts + '</select></div></div>';
+              '<div class="aj-rule-top">' +
+                '<div class="aj-no">' + r.rule_id + '</div>' +
+                '<textarea class="aj-desc" data-text="' + idx + '" rows="2" placeholder="用自然语言描述这条评分规则……"></textarea>' +
+                '<div class="aj-val"><label>分值</label><div class="aj-val-box">' +
+                  '<input type="number" min="0" step="0.5" data-val="' + idx + '" value="' + (r.value || 0) + '"><span class="aj-unit">分</span>' +
+                '</div></div>' +
+                '<button type="button" class="aj-del" data-del="' + idx + '" title="删除规则"><i class="fas fa-trash-can"></i></button>' +
+              '</div>' + depsRow;
             editor.appendChild(card);
             card.querySelector('[data-text]').value = r.rule_text || '';
           });
-          document.getElementById('rulesTotalValue').textContent = totalValue();
+          if (!rules.length) {
+            editor.innerHTML = '<div class="aj-empty"><i class="fas fa-list-check mb-2 d-block" style="font-size:1.4rem;opacity:.5;"></i>还没有评分规则，点击下方「添加规则」开始。</div>';
+          }
+          refreshStats();
           bind();
         }
         function bind() {
@@ -1293,37 +1367,37 @@
             t.oninput = function () { rules[parseInt(t.dataset.text, 10)].rule_text = t.value; };
           });
           editor.querySelectorAll('[data-val]').forEach(function (v) {
-            v.oninput = function () {
-              rules[parseInt(v.dataset.val, 10)].value = parseFloat(v.value) || 0;
-              document.getElementById('rulesTotalValue').textContent = totalValue();
-            };
+            v.oninput = function () { rules[parseInt(v.dataset.val, 10)].value = parseFloat(v.value) || 0; refreshStats(); };
           });
-          editor.querySelectorAll('[data-dep]').forEach(function (s) {
-            s.onchange = function () {
-              var i = parseInt(s.dataset.dep, 10);
-              rules[i].dependencies = Array.prototype.map.call(s.selectedOptions, function (o) { return parseInt(o.value, 10); });
+          editor.querySelectorAll('[data-dep-toggle]').forEach(function (p) {
+            p.onclick = function () {
+              var i = parseInt(p.dataset.depToggle, 10), id = parseInt(p.dataset.depId, 10);
+              var arr = rules[i].dependencies, pos = arr.indexOf(id);
+              if (pos >= 0) { arr.splice(pos, 1); p.classList.remove('on'); }
+              else { arr.push(id); p.classList.add('on'); }
             };
           });
         }
         document.getElementById('addRuleBtn').onclick = function () {
           rules.push({rule_id: rules.length + 1, rule_text: '', value: 0, dependencies: []}); render();
+          var last = editor.querySelector('.aj-rule:last-child .aj-desc'); if (last) last.focus();
         };
         document.getElementById('saveRulesBtn').onclick = function () {
           var hint = document.getElementById('saveRulesHint');
-          hint.textContent = '保存中…'; hint.className = 'ms-2 small text-muted';
+          hint.textContent = '保存中…'; hint.className = 'small text-muted';
           fetch(window.__SAVE_RULES_URL__, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({rules: rules})
           }).then(function (r) { return r.json().then(function (b) { return {ok: r.ok, b: b}; }); })
             .then(function (res) {
               if (res.ok && res.b.success) {
-                hint.textContent = '已保存 ' + res.b.count + ' 条，总分 ' + res.b.max_score;
-                hint.className = 'ms-2 small text-success';
+                hint.textContent = '✓ 已保存 ' + res.b.count + ' 条规则，满分 ' + res.b.max_score + ' 分';
+                hint.className = 'small text-success';
               } else {
                 hint.textContent = '保存失败：' + (res.b.message || '未知错误');
-                hint.className = 'ms-2 small text-danger';
+                hint.className = 'small text-danger';
               }
-            }).catch(function (e) { hint.textContent = '网络错误：' + e; hint.className = 'ms-2 small text-danger'; });
+            }).catch(function (e) { hint.textContent = '网络错误：' + e; hint.className = 'small text-danger'; });
         };
         render();
       })();
