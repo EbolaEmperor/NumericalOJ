@@ -166,11 +166,6 @@
           <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 Agent 评测模式，但管理员尚未完成模型配置或评分规则设置，暂时无法接收提交。
         </div>
       {% else %}
-        {% if competition.is_active != 1 %}
-        <div class="alert alert-info mb-4">
-          <i class="fas fa-user-shield me-2"></i>该比赛已下线，仅管理员可提交（用于自测 / 补测）。
-        </div>
-        {% endif %}
         <form method="POST" enctype="multipart/form-data"
               action="{{ url_for('ranking.ranking_submit', competition_id=competition.id) }}"
               id="rankingSubmitForm"
