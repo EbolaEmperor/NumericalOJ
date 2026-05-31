@@ -129,6 +129,33 @@ def test_build_rules_json_shape():
     assert out[1] == {'rule_id': 2, 'rule': '规则2', 'value': 20.0, 'dependence': [1]}
 
 
+# ---- render_md_math ----
+def test_render_md_bold_and_code():
+    out = aj.render_md_math('**粗体** 与 `code`')
+    assert '<strong>粗体</strong>' in out
+    assert '<code>code</code>' in out
+
+
+def test_render_md_preserves_inline_latex():
+    out = aj.render_md_math('误差 $L^2$ 约为 $a_b$，应当收敛')
+    # 行内公式原样保留（含下划线不被当作 markdown 斜体），交给 MathJax
+    assert '$L^2$' in out
+    assert '$a_b$' in out
+    assert '<em>' not in out
+
+
+def test_render_md_preserves_display_latex_and_escapes_lt():
+    out = aj.render_md_math(r'收敛阶：$$ \|e\|_{L^2} \le C h^2 $$ 其中 $a < b$')
+    assert r'\|e\|_{L^2} \le C h^2' in out
+    # 行内 $a < b$ 的 < 被转义，避免破坏 HTML；MathJax 仍能从 textContent 读取
+    assert '$a &lt; b$' in out
+
+
+def test_render_md_empty():
+    assert aj.render_md_math('') == ''
+    assert aj.render_md_math(None) == ''
+
+
 # ---- build_prompt ----
 def test_build_prompt_mentions_files_and_gate():
     p = aj.build_prompt('我的打榜赛')

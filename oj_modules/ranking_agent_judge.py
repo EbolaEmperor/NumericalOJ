@@ -7,7 +7,9 @@
   - 依赖即评分门槛：被依赖规则的 effective ∈ {failed, skipped, error} → 本规则 skipped(0 分)；
   - live 阶段未上报的规则为 pending；finalize 时仍未上报的判 error(0 分)。
 """
+import html as _html
 import json
+import re
 
 RESULT_PASS = 'pass'
 RESULT_FAILED = 'failed'
@@ -163,6 +165,49 @@ def build_rules_json(rules):
     return [{'rule_id': r['rule_id'], 'rule': r['rule_text'],
              'value': float(r['value']), 'dependence': list(r['dependencies'])}
             for r in rules]
+
+
+# 数学公式分隔符：先于 markdown 提取，避免 markdown 把 \( $ _ * 等吃掉，再原样还原供 MathJax 排版。
+_MATH_PATTERNS = (
+    re.compile(r'\$\$.+?\$\$', re.S),                 # $$ ... $$（块级）
+    re.compile(r'\\\[.+?\\\]', re.S),                 # \[ ... \]（块级）
+    re.compile(r'\\\(.+?\\\)', re.S),                 # \( ... \)（行内）
+    re.compile(r'(?<!\$)\$(?!\$)(?:\\\$|[^$\n])+?\$'),  # $ ... $（行内，单行，排除 $$）
+)
+_MATH_TOKEN_RE = re.compile(r'@@MJXMATH(\d+)@@')
+
+
+def render_md_math(text):
+    """把含 Markdown + LaTeX 的文本渲染为 HTML。
+    先把数学公式片段抽出占位，跑 Markdown，再把公式原样（HTML 转义后）还原，
+    由前端 MathJax 排版。返回可直接 innerHTML 的 HTML 字符串。"""
+    if not text:
+        return ''
+    try:
+        import markdown as _markdown
+    except Exception:
+        # markdown 不可用时退化为转义纯文本（保留换行）
+        return _html.escape(str(text)).replace('\n', '<br>')
+    text = str(text)
+    stash = []
+
+    def _protect(m):
+        stash.append(m.group(0))
+        return '@@MJXMATH%d@@' % (len(stash) - 1)
+
+    for pat in _MATH_PATTERNS:
+        text = pat.sub(_protect, text)
+    try:
+        out = _markdown.markdown(
+            text, extensions=['extra', 'nl2br', 'sane_lists'], output_format='html5')
+    except Exception:
+        out = _html.escape(text).replace('\n', '<br>')
+
+    def _restore(m):
+        # 还原为转义后的公式文本：浏览器显示原始 $...$，MathJax 读取 textContent 排版
+        return _html.escape(stash[int(m.group(1))])
+
+    return _MATH_TOKEN_RE.sub(_restore, out)
 
 
 def build_prompt(competition_title):

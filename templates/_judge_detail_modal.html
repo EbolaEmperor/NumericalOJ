@@ -72,16 +72,16 @@
         '<div class="d-flex justify-content-between align-items-start gap-3">' +
         '<div><span class="badge me-2" style="color:' + b[1] + ';background:' + b[2] + ';border-radius:4px;">' + b[0] + '</span>' +
         '<strong>规则 ' + r.rule_id + '</strong> <span class="text-muted small">(' + r.value + ' 分)</span>' +
-        '<div class="small mt-1">' + esc(r.rule_text) + '</div></div>' +
+        '<div class="aj-md small mt-1">' + (r.rule_html || esc(r.rule_text)) + '</div></div>' +
         '<div class="text-end fw-semibold" style="white-space:nowrap;">' + (r.score || 0) + ' 分</div></div>';
-      var ev = r.evidence
+      var ev = (r.evidence_html || r.evidence)
         ? '<details class="mt-2"><summary class="small text-muted">评分证据</summary>' +
-          '<pre class="small p-2 mt-1 mb-0" style="white-space:pre-wrap;word-break:break-word;background:#f8f9fa;border-radius:6px;">' +
-          esc(r.evidence) + '</pre></details>'
+          '<div class="aj-md aj-evi small p-2 mt-1 mb-0">' + (r.evidence_html || esc(r.evidence)) + '</div></details>'
         : '';
       div.innerHTML = head + ev;
       rulesBox.appendChild(div);
     });
+    if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([rulesBox]).catch(function () {}); }
   }
   function openJudgeModal(btn) {
     var m = getModal();
