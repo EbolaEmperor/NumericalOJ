@@ -178,6 +178,25 @@ def test_admin_can_submit_to_inactive_competition(client, admin_login, monkeypat
     assert len(ranking_db.list_user_submissions(cid, 'admin')) == 1
 
 
+def test_save_agent_config_preserves_description_summary_and_online(client, admin_login):
+    # 专用端点只改 Agent 配置，不应清空描述/摘要/上线状态（原 bug：经 /edit 保存会清空）
+    cid = _make_aj_comp()  # description='desc', summary='s', is_active=1, api_key='k-123'
+    r = client.post(f'/ranking/{cid}/agent_judge/config', data={
+        'agent_judge_base_url': 'https://gw2/anthropic',
+        'agent_judge_model': 'mimo-v2.5-pro',
+        'agent_judge_api_key': '',            # 留空 → 不变
+        'agent_judge_timeout_seconds': '600',
+    })
+    assert r.status_code in (301, 302)
+    comp = ranking_db.get_competition(cid)
+    assert comp['description'] == 'desc'
+    assert comp['summary'] == 's'
+    assert int(comp['is_active']) == 1
+    assert comp['agent_judge_base_url'] == 'https://gw2/anthropic'
+    assert comp['agent_judge_api_key'] == 'k-123'   # 留空未覆盖
+    assert int(comp['agent_judge_timeout_seconds']) == 600
+
+
 def test_non_admin_blocked_on_inactive_competition(client, login, monkeypatch):
     h.make_user('inactstud')
     cid = _make_aj_comp()
