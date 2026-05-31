@@ -153,8 +153,15 @@ def _prepare_workspace(submission, competition, rules):
     # rules.json
     with open(os.path.join(ws, 'rules.json'), 'w', encoding='utf-8') as f:
         json.dump(aj.build_rules_json(rules), f, ensure_ascii=False, indent=2)
-    # result.jsonl 预创建
-    open(os.path.join(ws, 'result.jsonl'), 'w').close()
+    # result.jsonl 预创建；放开工作目录与该文件权限，确保容器内进程可写（防御受限能力场景）
+    rpath = os.path.join(ws, 'result.jsonl')
+    open(rpath, 'w').close()
+    try:
+        for d, _dirs, _files in os.walk(ws):
+            os.chmod(d, 0o777)
+        os.chmod(rpath, 0o666)
+    except Exception:
+        pass
     return ws
 
 
@@ -165,7 +172,10 @@ def _run_container_and_tail(submission_id, ws, competition, rules, timeout_s):
     container_name = f'aj_{submission_id}'
     docker_args = [
         'docker', 'run', '--rm', '-d', '--name', container_name,
-        '--cap-drop', 'ALL', '--pids-limit', JUDGE_PIDS_LIMIT,
+        # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
+        # 既无法写宿主属主(非 root)的挂载文件(result.jsonl)、也无法 apt 装包。
+        # 用 Docker 默认能力集 + 非特权 + pids/内存/CPU 限制 + 仅挂载本提交工作目录做隔离。
+        '--pids-limit', JUDGE_PIDS_LIMIT,
         '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
         '-v', f'{ws}:/workspace', '-w', '/workspace',
         '-e', 'IS_SANDBOX=1',
