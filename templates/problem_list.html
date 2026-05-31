@@ -132,7 +132,7 @@
                           {% endif %}
                         {% endif %}
                         <span class="d-inline-block" style="width: 1em;"></span>
-                        <i class="fas fa-trophy me-2"></i> {{ hw.max_score if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score }}{% endif %}
+                        <i class="fas fa-trophy me-2"></i> {% if hw.kind == 'ranking' %}{{ hw.max_score | int if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score | int }}{% endif %}{% else %}{{ hw.max_score if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score }}{% endif %}{% endif %}
                       </div>
                     </div>
                   </li>
@@ -207,7 +207,7 @@
                       {% endif %}
                     {% endif %}
                     <span class="d-inline-block" style="width: 1em;"></span>
-                    <i class="fas fa-trophy me-2"></i> {{ hw.max_score if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score }}{% endif %}
+                    <i class="fas fa-trophy me-2"></i> {% if hw.kind == 'ranking' %}{{ hw.max_score | int if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score | int }}{% endif %}{% else %}{{ hw.max_score if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score }}{% endif %}{% endif %}
                   </div>
                 </div>
               </li>
