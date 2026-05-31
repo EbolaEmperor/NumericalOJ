@@ -978,7 +978,8 @@
               </div>
             </div>
 
-            <div class="row mb-3">
+            <div class="row mb-3 script-timeout-row" id="scriptTimeoutRow"
+                 {% if _mode == 'agent_judge' %}style="display:none;"{% endif %}>
               <div class="col-md-4">
                 <label class="form-label">评测脚本超时（秒）</label>
                 <input type="number" class="form-control" id="scoringScriptTimeoutInput"
@@ -1063,8 +1064,11 @@
                   document.querySelectorAll('.agent-judge-only').forEach(function (el) {
                     el.style.display = isAgent ? '' : 'none';
                   });
-                  // 评测脚本卡片在 Agent 模式下无意义，隐藏
+                  // 评测脚本卡片 + 评测脚本超时栏在 Agent 模式下无意义，隐藏
                   document.querySelectorAll('.script-card').forEach(function (el) {
+                    el.style.display = isAgent ? 'none' : '';
+                  });
+                  document.querySelectorAll('.script-timeout-row').forEach(function (el) {
                     el.style.display = isAgent ? 'none' : '';
                   });
                   var sigElo = document.getElementById('scriptSignatureElo');
