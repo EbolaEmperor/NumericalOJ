@@ -169,6 +169,11 @@ def _run_container_and_tail(submission_id, ws, competition, rules, timeout_s):
         '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
         '-v', f'{ws}:/workspace', '-w', '/workspace',
         '-e', 'IS_SANDBOX=1',
+        # 关闭 claude 的非必要外联（遥测/自动更新/错误上报），否则在受限容器内会卡住
+        '-e', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1',
+        '-e', 'DISABLE_TELEMETRY=1',
+        '-e', 'DISABLE_AUTOUPDATER=1',
+        '-e', 'DISABLE_ERROR_REPORTING=1',
         '-e', 'AJ_PROMPT',
         '-e', f'ANTHROPIC_BASE_URL={competition.get("agent_judge_base_url") or ""}',
         '-e', f'ANTHROPIC_AUTH_TOKEN={competition.get("agent_judge_api_key") or ""}',
