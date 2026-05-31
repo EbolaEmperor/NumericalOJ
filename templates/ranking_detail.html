@@ -143,6 +143,15 @@
       .aj-del { border:none; background:transparent; color:#c2b7a0; cursor:pointer; width:28px; height:28px; border-radius:5px; transition:.12s; }
       .aj-del:hover { color:var(--err); background:#f8e9e7; }
       .aj-subs-empty { text-align:center; color:#aaa; padding:1.8rem 0; }
+      /* 规则/证据的 Markdown 渲染内容 */
+      .aj-md { line-height:1.65; word-break:break-word; }
+      .aj-md > :first-child { margin-top:0; } .aj-md > :last-child { margin-bottom:0; }
+      .aj-md pre { background:#f6f7f9; border:1px solid #e6e6e9; border-radius:6px; padding:.55rem .7rem; overflow:auto; margin:.5rem 0; }
+      .aj-md code { background:#f1f1f3; padding:.05rem .3rem; border-radius:3px; font-size:.92em; }
+      .aj-md pre code { background:transparent; padding:0; }
+      .aj-md table { border-collapse:collapse; margin:.5rem 0; } .aj-md th,.aj-md td { border:1px solid #e0e0e3; padding:.25rem .5rem; }
+      .aj-md blockquote { border-left:3px solid #e0d9bf; margin:.5rem 0; padding:.1rem .8rem; color:#6c757d; }
+      .aj-evi { background:#f8f9fa; border-radius:6px; }
     </style>
 
     {# ========== 比赛描述 ========== #}
@@ -479,16 +488,16 @@
               '<div><span class="badge me-2" style="color:' + b[1] +
               ';background:' + b[2] + ';border-radius:999px;">' + b[0] + '</span>' +
               '<strong>规则 ' + r.rule_id + '</strong> <span class="text-muted small">(' + r.value + ' 分)</span>' +
-              '<div class="small mt-1">' + esc(r.rule_text) + '</div></div>' +
+              '<div class="aj-md small mt-1">' + (r.rule_html || esc(r.rule_text)) + '</div></div>' +
               '<div class="text-end fw-semibold" style="white-space:nowrap;">' + (r.score || 0) + ' 分</div></div>';
-            var ev = r.evidence
+            var ev = (r.evidence_html || r.evidence)
               ? '<details class="mt-2"><summary class="small text-muted">评分证据</summary>' +
-                '<pre class="small p-2 mt-1 mb-0" style="white-space:pre-wrap;background:#f8f9fa;border-radius:6px;">' +
-                esc(r.evidence) + '</pre></details>'
+                '<div class="aj-md aj-evi small p-2 mt-1 mb-0">' + (r.evidence_html || esc(r.evidence)) + '</div></details>'
               : '';
             div.innerHTML = head + ev;
             rulesBox.appendChild(div);
           });
+          if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([rulesBox]).catch(function () {}); }
         }
         function openJudgeModal(btn) {
           if (!btn || !judgeModal) return;
