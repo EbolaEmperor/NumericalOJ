@@ -179,7 +179,12 @@ def build_prompt(competition_title):
         '依赖门槛：对于一条评分规则，如果它的 dependence 里有任何一条前置规则不通过，'
         '那么这条规则的得分直接设为 0，result 记为 failed，并在 evidence 里注明'
         '"因前置规则未通过"。\n\n'
-        '每评测完一条规则，就调用一次命令 report <rule_id> <pass|failed> "<evidence>"，'
-        '把该条结果写入 result.jsonl。evidence 要写清楚你是如何运行参赛者代码、'
-        '如何判断是否满足规则的，给出能让参赛者信服的证据。请对每一条规则都恰好 report 一次。'
+        '每评测完一条规则，就调用一次命令 report 把该条结果写入 result.jsonl。'
+        '为避免证据中的引号、括号、花括号、换行被 shell 截断，请务必用 here-doc 通过标准输入传入证据，'
+        '格式如下（AJEOF 之间可以是任意多行、含任意字符的证据）：\n'
+        "    report <rule_id> <pass|failed> <<'AJEOF'\n"
+        '    在这里写这条规则的评分证据，可多行，可包含引号/括号/代码片段等任意字符\n'
+        '    AJEOF\n'
+        'evidence 要写清楚你是如何运行参赛者代码、如何判断是否满足规则的，给出能让参赛者信服的、完整的证据'
+        '（不要为了简短而省略关键步骤或输出）。请对每一条规则都恰好 report 一次。'
     )
