@@ -40,6 +40,12 @@
            class="list-group-item list-group-item-action {% if tab == 'leaderboard' %}active{% endif %}">
           <i class="fas fa-list-ol me-2"></i> 排行榜
         </a>
+        {% if (competition.scoring_mode or 'absolute')|lower == 'agent_judge' %}
+        <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='judge') }}"
+           class="list-group-item list-group-item-action {% if tab == 'judge' %}active{% endif %}">
+          <i class="fas fa-list-check me-2"></i> 评分细则
+        </a>
+        {% endif %}
         {% if (competition.scoring_mode or 'absolute')|lower == 'elo' %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}"
            class="list-group-item list-group-item-action {% if tab == 'matches' %}active{% endif %}">
@@ -124,12 +130,21 @@
       {% set zip_needs_script = (answer_format == 'zip' and not is_elo and not competition.scoring_script_path) %}
       {% set elo_needs_script = (is_elo and not competition.scoring_script_path) %}
       {% set answer_icon = 'fa-file-archive' if answer_format == 'zip' else 'fa-file-code' %}
+      {% set is_agent_judge = (scoring_mode == 'agent_judge') %}
+      {% set agent_judge_not_ready = (is_agent_judge and (not competition.agent_judge_base_url or not agent_judge_api_key_set or not competition.agent_judge_model or (judge_rules|length == 0))) %}
 
       {% if is_elo %}
       <div class="alert alert-info mb-4">
         <i class="fas fa-chess-knight me-2"></i>
         <strong>ELO 对战模式：</strong>提交后您的作品将进入对战池，定时与其他用户的提交两两比较，根据胜负调整 ELO 分数。
         每位用户在池中只保留<strong>最近两份</strong>提交，更早的会自动退役。
+      </div>
+      {% endif %}
+      {% if is_agent_judge %}
+      <div class="alert alert-info mb-4">
+        <i class="fas fa-robot me-2"></i>
+        <strong>Agent 评测模式：</strong>只需上传<strong>代码压缩包</strong>。提交后评测系统会在隔离容器内逐条核对评分规则并运行你的代码，
+        可在<strong>「评分细则」</strong>页查看实时进展与评分证据。
       </div>
       {% endif %}
 
@@ -145,12 +160,17 @@
         <div class="alert alert-warning mb-4">
           <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 ELO 模式，但管理员尚未上传评测脚本，暂时无法接收提交。
         </div>
+      {% elif agent_judge_not_ready %}
+        <div class="alert alert-warning mb-4">
+          <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 Agent 评测模式，但管理员尚未完成模型配置或评分规则设置，暂时无法接收提交。
+        </div>
       {% else %}
         <form method="POST" enctype="multipart/form-data"
               action="{{ url_for('ranking.ranking_submit', competition_id=competition.id) }}"
               id="rankingSubmitForm"
               class="submit-form mb-4">
           <div class="row g-3">
+            {% if not is_agent_judge %}
             <div class="col-md-6">
               <label class="file-drop" data-kind="answer">
                 <input type="file" name="answer_file" accept="{{ answer_ext }}" required hidden>
@@ -170,7 +190,8 @@
               </label>
               <div class="form-text mt-2 mb-0">您跑出的测试集答案，后台据此评测打分。</div>
             </div>
-            <div class="col-md-6">
+            {% endif %}
+            <div class="{{ 'col-md-12' if is_agent_judge else 'col-md-6' }}">
               <label class="file-drop" data-kind="code">
                 <input type="file" name="code_file" accept=".zip" required hidden>
                 <div class="file-drop-inner">
@@ -187,7 +208,9 @@
                   </div>
                 </div>
               </label>
-              <div class="form-text mt-2 mb-0">用于复现结果的代码与说明文档，仅存档、不参与评测。</div>
+              <div class="form-text mt-2 mb-0">
+                {% if is_agent_judge %}参赛代码压缩包，评测系统将在容器内运行并据评分规则逐条判定。{% else %}用于复现结果的代码与说明文档，仅存档、不参与评测。{% endif %}
+              </div>
             </div>
           </div>
 
@@ -347,7 +370,7 @@
           var ok = filesOk && modelOk;
           btn.disabled = !ok;
           if (hint) {
-            if (!filesOk) hint.textContent = '请先选择两个文件';
+            if (!filesOk) hint.textContent = '请先选择文件';
             else if (!modelOk) hint.textContent = '请填写基座模型';
             else hint.textContent = '一切就绪，点击提交';
           }
@@ -683,6 +706,91 @@
       </script>
     {% endif %}
 
+    {# ========== 评分细则（Agent 评测，实时） ========== #}
+    {% if tab == 'judge' %}
+      <div class="card ranking-card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="fas fa-list-check me-2 text-warning"></i> 评分细则</span>
+          <span class="small text-muted">得分
+            <span class="fw-semibold" id="judgeTotal">{{ judge_snapshot.total_score if judge_snapshot else 0 }}</span>
+            / <span id="judgeMax">{{ judge_snapshot.max_score if judge_snapshot else 0 }}</span>
+          </span>
+        </div>
+        <div class="card-body">
+          {% if not judge_snapshot %}
+            <div class="text-muted text-center py-5">
+              <i class="fas fa-inbox fa-2x mb-2 d-block"></i>
+              你还没有提交。提交代码后，这里会实时显示逐条评分进展与证据。
+            </div>
+          {% else %}
+            <div class="progress mb-3" style="height:6px;background:#f1f3f5;border-radius:999px;">
+              <div class="progress-bar" id="judgeBar" role="progressbar"
+                   style="height:6px;border-radius:999px;background:linear-gradient(90deg,#22c55e,#16a34a);
+                          width: {{ (judge_snapshot.total_score / judge_snapshot.max_score * 100) if judge_snapshot.max_score else 0 }}%;"></div>
+            </div>
+            <div id="judgeRules"></div>
+          {% endif %}
+        </div>
+      </div>
+      {% if judge_snapshot %}
+      <script>
+        window.__JUDGE_SNAPSHOT__ = {{ judge_snapshot|tojson }};
+        window.__JUDGE_STREAM_URL__ = "{{ url_for('ranking.ranking_judge_stream', competition_id=competition.id, submission_id=judge_snapshot.submission_id) }}";
+      </script>
+      <script>
+      (function () {
+        var box = document.getElementById('judgeRules');
+        if (!box) return;
+        var BADGE = {
+          pass: ['通过', '#1f7a4d', 'rgba(34,197,94,0.14)'],
+          failed: ['未通过', '#b03a2e', 'rgba(220,53,69,0.14)'],
+          skipped: ['依赖跳过', '#6c757d', 'rgba(108,117,125,0.14)'],
+          error: ['异常', '#b07340', 'rgba(224,151,97,0.18)'],
+          pending: ['待评测', '#0d6efd', 'rgba(13,110,253,0.10)']
+        };
+        function esc(s) { return (s || '').replace(/[&<>]/g, function (c) {
+          return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]; }); }
+        function render(snap) {
+          document.getElementById('judgeTotal').textContent = snap.total_score;
+          document.getElementById('judgeMax').textContent = snap.max_score;
+          var bar = document.getElementById('judgeBar');
+          if (bar && snap.max_score) bar.style.width = (snap.total_score / snap.max_score * 100) + '%';
+          box.innerHTML = '';
+          (snap.rules || []).forEach(function (r) {
+            var b = BADGE[r.effective] || BADGE.pending;
+            var div = document.createElement('div');
+            div.className = 'border rounded p-3 mb-2';
+            var head =
+              '<div class="d-flex justify-content-between align-items-start">' +
+              '<div class="pe-3"><span class="badge me-2" style="color:' + b[1] +
+              ';background:' + b[2] + ';border-radius:999px;">' + b[0] + '</span>' +
+              '<strong>规则 ' + r.rule_id + '</strong> <span class="text-muted small">(' + r.value + ' 分)</span>' +
+              '<div class="small mt-1">' + esc(r.rule_text) + '</div></div>' +
+              '<div class="text-end fw-semibold" style="white-space:nowrap;">' + r.score + ' 分</div></div>';
+            var ev = r.evidence
+              ? '<details class="mt-2"><summary class="small text-muted">评分证据</summary>' +
+                '<pre class="small p-2 mt-1 mb-0" style="white-space:pre-wrap;background:#f8f9fa;border-radius:6px;">' +
+                esc(r.evidence) + '</pre></details>'
+              : '';
+            div.innerHTML = head + ev;
+            box.appendChild(div);
+          });
+        }
+        render(window.__JUDGE_SNAPSHOT__);
+        if (['Judging', 'Pending'].indexOf(window.__JUDGE_SNAPSHOT__.status) >= 0) {
+          try {
+            var es = new EventSource(window.__JUDGE_STREAM_URL__);
+            es.addEventListener('progress', function (e) { render(JSON.parse(e.data)); });
+            es.addEventListener('done', function (e) { render(JSON.parse(e.data)); es.close(); });
+            es.addEventListener('timeout', function () { es.close(); });
+            es.addEventListener('error', function () { es.close(); });
+          } catch (err) { /* EventSource 不可用时静默 */ }
+        }
+      })();
+      </script>
+      {% endif %}
+    {% endif %}
+
     {# ========== 所有提交（管理员） ========== #}
     {% if tab == 'all_submissions' and is_admin %}
       {% set max_score = competition.max_score or 100 %}
@@ -843,8 +951,9 @@
               <div class="col-md-4">
                 <label class="form-label">评分模式</label>
                 <select class="form-select" name="scoring_mode" id="scoringModeSelect">
-                  <option value="absolute" {% if _mode == 'absolute' %}selected{% endif %}>绝对分（用户答案 vs 标准答案）</option>
-                  <option value="elo"      {% if _mode == 'elo'      %}selected{% endif %}>ELO 对战（提交两两 PK）</option>
+                  <option value="absolute"    {% if _mode == 'absolute'    %}selected{% endif %}>绝对分（用户答案 vs 标准答案）</option>
+                  <option value="elo"         {% if _mode == 'elo'         %}selected{% endif %}>ELO 对战（提交两两 PK）</option>
+                  <option value="agent_judge" {% if _mode == 'agent_judge' %}selected{% endif %}>Agent 评测（规则逐条判定）</option>
                 </select>
               </div>
               <div class="col-md-4 absolute-only" id="maxScoreField"
@@ -935,17 +1044,27 @@
                 if (!sel) return;
                 function applyMode() {
                   var isElo = (sel.value === 'elo');
+                  var isAgent = (sel.value === 'agent_judge');
                   var blk = document.getElementById('eloParamsBlock');
                   if (blk) blk.style.display = isElo ? '' : 'none';
                   var run = document.getElementById('eloRunControlBlock');
                   if (run) run.style.display = isElo ? '' : 'none';
+                  // 绝对分专属字段：仅在绝对分模式显示（ELO / Agent 均隐藏）
                   document.querySelectorAll('.absolute-only').forEach(function (el) {
-                    el.style.display = isElo ? 'none' : '';
+                    el.style.display = (isElo || isAgent) ? 'none' : '';
+                  });
+                  // Agent 评测专属卡片：仅在 Agent 模式显示
+                  document.querySelectorAll('.agent-judge-only').forEach(function (el) {
+                    el.style.display = isAgent ? '' : 'none';
+                  });
+                  // 评测脚本卡片在 Agent 模式下无意义，隐藏
+                  document.querySelectorAll('.script-card').forEach(function (el) {
+                    el.style.display = isAgent ? 'none' : '';
                   });
                   var sigElo = document.getElementById('scriptSignatureElo');
                   var sigAbs = document.getElementById('scriptSignatureAbsolute');
                   if (sigElo) sigElo.style.display = isElo ? '' : 'none';
-                  if (sigAbs) sigAbs.style.display = isElo ? 'none' : '';
+                  if (sigAbs) sigAbs.style.display = (isElo || isAgent) ? 'none' : '';
                 }
                 sel.addEventListener('change', applyMode);
                 applyMode();
@@ -1008,7 +1127,8 @@
 
       <!-- 评测脚本 -->
       {% set script_required = (edit_mode == 'elo') or (edit_fmt == 'zip') %}
-      <div class="card mb-3 {% if script_required and not competition.scoring_script_name %}border-warning{% endif %}">
+      <div class="card mb-3 script-card {% if script_required and not competition.scoring_script_name %}border-warning{% endif %}"
+           {% if edit_mode == 'agent_judge' %}style="display:none;"{% endif %}>
         <div class="card-header">
           <i class="fas fa-scroll me-2"></i> 评测脚本（.py{% if script_required %}，必填{% else %}，可选{% endif %}）
         </div>
@@ -1062,6 +1182,145 @@
           {% endif %}
         </div>
       </div>
+
+      <!-- Agent 评测设置 -->
+      <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
+           {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
+        <div class="card-header"><i class="fas fa-robot me-2"></i> Agent 评测设置</div>
+        <div class="card-body">
+          <form method="POST" action="{{ url_for('ranking.ranking_edit', competition_id=competition.id) }}">
+            <input type="hidden" name="title" value="{{ competition.title }}">
+            <input type="hidden" name="scoring_mode" value="agent_judge">
+            <input type="hidden" name="max_score" value="{{ competition.max_score or 1 }}">
+            <div class="mb-3">
+              <label class="form-label">Anthropic 兼容 Base URL <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" name="agent_judge_base_url"
+                     value="{{ competition.agent_judge_base_url or '' }}"
+                     placeholder="如：https://token-plan-cn.xiaomimimo.com/anthropic">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">API Key <span class="text-danger">*</span></label>
+              <input type="password" class="form-control" name="agent_judge_api_key" autocomplete="new-password"
+                     placeholder="{% if agent_judge_api_key_set %}已配置（留空则不变）{% else %}请输入 API Key{% endif %}">
+            </div>
+            <div class="row">
+              <div class="col-md-8 mb-3">
+                <label class="form-label">模型名 <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" name="agent_judge_model"
+                       value="{{ competition.agent_judge_model or '' }}" placeholder="如：mimo-v2.5-pro">
+              </div>
+              <div class="col-md-4 mb-3">
+                <label class="form-label">整体超时（秒）</label>
+                <input type="number" class="form-control" name="agent_judge_timeout_seconds"
+                       value="{{ competition.agent_judge_timeout_seconds or 1800 }}" min="60" max="7200" step="1">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-outline-primary"><i class="fas fa-save me-1"></i> 保存 Agent 设置</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- 评分规则 -->
+      <div class="card mb-3 agent-judge-only" id="agentJudgeRulesCard"
+           {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="fas fa-list-check me-2"></i> 评分规则</span>
+          <span class="small text-muted">总分：<span id="rulesTotalValue">0</span></span>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">每条规则用自然语言描述、设分值、可选依赖（前置规则）。依赖即评分门槛：前置规则不通过则本规则记 0 分。满分自动等于各规则分值之和。</p>
+          <div id="rulesEditor"></div>
+          <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="addRuleBtn">
+            <i class="fas fa-plus me-1"></i> 添加规则
+          </button>
+          <div class="mt-3">
+            <button type="button" class="btn btn-primary" id="saveRulesBtn"><i class="fas fa-save me-1"></i> 保存规则</button>
+            <span class="ms-2 small" id="saveRulesHint"></span>
+          </div>
+        </div>
+      </div>
+      <script>
+        window.__JUDGE_RULES__ = {{ judge_rules|tojson }};
+        window.__SAVE_RULES_URL__ = "{{ url_for('ranking.ranking_save_judge_rules', competition_id=competition.id) }}";
+      </script>
+      <script>
+      (function () {
+        var editor = document.getElementById('rulesEditor');
+        if (!editor) return;
+        var rules = (window.__JUDGE_RULES__ || []).map(function (r) {
+          return {rule_id: r.rule_id, rule_text: r.rule_text, value: r.value,
+                  dependencies: (r.dependencies || []).slice()};
+        });
+        function reindex() { rules.forEach(function (r, i) { r.rule_id = i + 1; }); }
+        function totalValue() { return rules.reduce(function (s, r) { return s + (parseFloat(r.value) || 0); }, 0); }
+        function render() {
+          reindex();
+          editor.innerHTML = '';
+          rules.forEach(function (r, idx) {
+            var card = document.createElement('div');
+            card.className = 'border rounded p-2 mb-2';
+            var depOpts = rules.filter(function (_, j) { return j !== idx; })
+              .map(function (o) {
+                var sel = r.dependencies.indexOf(o.rule_id) >= 0 ? 'selected' : '';
+                return '<option value="' + o.rule_id + '" ' + sel + '>规则 ' + o.rule_id + '</option>';
+              }).join('');
+            card.innerHTML =
+              '<div class="d-flex justify-content-between align-items-center mb-1"><strong>规则 ' + r.rule_id + '</strong>' +
+              '<button type="button" class="btn btn-sm btn-outline-danger" data-del="' + idx + '"><i class="fas fa-trash"></i></button></div>' +
+              '<textarea class="form-control" rows="2" data-text="' + idx + '" placeholder="自然语言规则描述"></textarea>' +
+              '<div class="row mt-2"><div class="col-md-4"><label class="form-label small mb-1">分值</label>' +
+              '<input type="number" class="form-control" min="0" step="0.5" data-val="' + idx + '" value="' + (r.value || 0) + '"></div>' +
+              '<div class="col-md-8"><label class="form-label small mb-1">依赖（前置规则，可多选）</label>' +
+              '<select class="form-select" multiple size="3" data-dep="' + idx + '">' + depOpts + '</select></div></div>';
+            editor.appendChild(card);
+            card.querySelector('[data-text]').value = r.rule_text || '';
+          });
+          document.getElementById('rulesTotalValue').textContent = totalValue();
+          bind();
+        }
+        function bind() {
+          editor.querySelectorAll('[data-del]').forEach(function (b) {
+            b.onclick = function () { rules.splice(parseInt(b.dataset.del, 10), 1); render(); };
+          });
+          editor.querySelectorAll('[data-text]').forEach(function (t) {
+            t.oninput = function () { rules[parseInt(t.dataset.text, 10)].rule_text = t.value; };
+          });
+          editor.querySelectorAll('[data-val]').forEach(function (v) {
+            v.oninput = function () {
+              rules[parseInt(v.dataset.val, 10)].value = parseFloat(v.value) || 0;
+              document.getElementById('rulesTotalValue').textContent = totalValue();
+            };
+          });
+          editor.querySelectorAll('[data-dep]').forEach(function (s) {
+            s.onchange = function () {
+              var i = parseInt(s.dataset.dep, 10);
+              rules[i].dependencies = Array.prototype.map.call(s.selectedOptions, function (o) { return parseInt(o.value, 10); });
+            };
+          });
+        }
+        document.getElementById('addRuleBtn').onclick = function () {
+          rules.push({rule_id: rules.length + 1, rule_text: '', value: 0, dependencies: []}); render();
+        };
+        document.getElementById('saveRulesBtn').onclick = function () {
+          var hint = document.getElementById('saveRulesHint');
+          hint.textContent = '保存中…'; hint.className = 'ms-2 small text-muted';
+          fetch(window.__SAVE_RULES_URL__, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({rules: rules})
+          }).then(function (r) { return r.json().then(function (b) { return {ok: r.ok, b: b}; }); })
+            .then(function (res) {
+              if (res.ok && res.b.success) {
+                hint.textContent = '已保存 ' + res.b.count + ' 条，总分 ' + res.b.max_score;
+                hint.className = 'ms-2 small text-success';
+              } else {
+                hint.textContent = '保存失败：' + (res.b.message || '未知错误');
+                hint.className = 'ms-2 small text-danger';
+              }
+            }).catch(function (e) { hint.textContent = '网络错误：' + e; hint.className = 'ms-2 small text-danger'; });
+        };
+        render();
+      })();
+      </script>
 
       <!-- 附件 -->
       <div class="card mb-3">
