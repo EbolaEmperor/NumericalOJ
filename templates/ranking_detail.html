@@ -40,12 +40,6 @@
            class="list-group-item list-group-item-action {% if tab == 'leaderboard' %}active{% endif %}">
           <i class="fas fa-list-ol me-2"></i> 排行榜
         </a>
-        {% if (competition.scoring_mode or 'absolute')|lower == 'agent_judge' %}
-        <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='judge') }}"
-           class="list-group-item list-group-item-action {% if tab == 'judge' %}active{% endif %}">
-          <i class="fas fa-list-check me-2"></i> 评分细则
-        </a>
-        {% endif %}
         {% if (competition.scoring_mode or 'absolute')|lower == 'elo' %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}"
            class="list-group-item list-group-item-action {% if tab == 'matches' %}active{% endif %}">
@@ -144,7 +138,7 @@
       <div class="alert alert-info mb-4">
         <i class="fas fa-robot me-2"></i>
         <strong>Agent 评测模式：</strong>只需上传<strong>代码压缩包</strong>。提交后评测系统会在隔离容器内逐条核对评分规则并运行你的代码，
-        可在<strong>「评分细则」</strong>页查看实时进展与评分证据。
+        可在<strong>「我的历史提交」</strong>中点击<strong>查看详情</strong>查看实时进展与评分证据。
       </div>
       {% endif %}
 
@@ -276,6 +270,7 @@
                   <th>代码文件</th>
                   <th style="width:110px;">状态</th>
                   <th style="width:180px;" class="text-end">{% if is_elo %}ELO{% else %}得分{% endif %}</th>
+                  {% if is_agent_judge %}<th style="width:86px;" class="text-end">详情</th>{% endif %}
                 </tr>
               </thead>
               <tbody>
@@ -342,6 +337,17 @@
                         {% endif %}
                       {% endif %}
                     </td>
+                    {% if is_agent_judge %}
+                    <td class="text-end">
+                      <button type="button"
+                              class="btn btn-sm btn-outline-secondary judge-detail-btn"
+                              data-submission-id="{{ s.id }}"
+                              data-created-at="{{ s.created_at }}"
+                              data-stream-url="{{ url_for('ranking.ranking_judge_stream', competition_id=competition.id, submission_id=s.id) }}">
+                        <i class="fas fa-list-check me-1"></i>详情
+                      </button>
+                    </td>
+                    {% endif %}
                   </tr>
                 {% endfor %}
               </tbody>
@@ -349,6 +355,42 @@
           </div>
         {% endif %}
       </div>
+
+      {% if is_agent_judge %}
+      <div class="modal fade" id="judgeDetailModal" tabindex="-1" aria-labelledby="judgeDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="judgeDetailModalLabel">
+                  <i class="fas fa-list-check me-2 text-warning"></i>评分细则
+                </h5>
+                <div class="text-muted small" id="judgeModalMeta"></div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="small text-muted" id="judgeModalStatus">正在连接评测进度…</span>
+                <span class="small text-muted">得分
+                  <span class="fw-semibold" id="judgeModalTotal">0</span>
+                  / <span id="judgeModalMax">0</span>
+                </span>
+              </div>
+              <div class="progress mb-3" style="height:6px;background:#f1f3f5;border-radius:999px;">
+                <div class="progress-bar" id="judgeModalBar" role="progressbar"
+                     style="height:6px;border-radius:999px;background:#16a34a;width:0%;"></div>
+              </div>
+              <div id="judgeModalRules">
+                <div class="text-muted text-center py-5">
+                  <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
 
       <script>
       (function () {
@@ -429,6 +471,117 @@
               btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>提交中…';
             }
           });
+        }
+        var judgeModalEl = document.getElementById('judgeDetailModal');
+        var judgeModal = (judgeModalEl && window.bootstrap) ? new bootstrap.Modal(judgeModalEl) : null;
+        var judgeSource = null;
+        var BADGE = {
+          pass: ['通过', '#1f7a4d', 'rgba(34,197,94,0.14)'],
+          failed: ['未通过', '#b03a2e', 'rgba(220,53,69,0.14)'],
+          skipped: ['依赖跳过', '#6c757d', 'rgba(108,117,125,0.14)'],
+          error: ['异常', '#b07340', 'rgba(224,151,97,0.18)'],
+          pending: ['待评测', '#0d6efd', 'rgba(13,110,253,0.10)']
+        };
+        var STATUS = {
+          Accepted: '评测完成',
+          Error: '评测异常',
+          Judging: '评测中',
+          Pending: '待评测'
+        };
+        function closeJudgeStream() {
+          if (judgeSource) {
+            judgeSource.close();
+            judgeSource = null;
+          }
+        }
+        function esc(s) {
+          return (s || '').replace(/[&<>]/g, function (c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c];
+          });
+        }
+        function renderJudgeSnapshot(snap) {
+          var total = document.getElementById('judgeModalTotal');
+          var max = document.getElementById('judgeModalMax');
+          var status = document.getElementById('judgeModalStatus');
+          var bar = document.getElementById('judgeModalBar');
+          var rulesBox = document.getElementById('judgeModalRules');
+          if (total) total.textContent = snap.total_score || 0;
+          if (max) max.textContent = snap.max_score || 0;
+          if (status) {
+            status.textContent = (STATUS[snap.status] || snap.status || '评测状态未知') +
+              (snap.timed_out ? ' · 已超时，保留已有得分' : '');
+          }
+          if (bar) {
+            var pct = snap.max_score ? (snap.total_score / snap.max_score * 100) : 0;
+            bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+          }
+          if (!rulesBox) return;
+          if (!snap.rules || !snap.rules.length) {
+            rulesBox.innerHTML = '<div class="text-muted text-center py-5">暂无评分规则。</div>';
+            return;
+          }
+          rulesBox.innerHTML = '';
+          snap.rules.forEach(function (r) {
+            var b = BADGE[r.effective] || BADGE.pending;
+            var div = document.createElement('div');
+            div.className = 'border rounded p-3 mb-2';
+            var head =
+              '<div class="d-flex justify-content-between align-items-start gap-3">' +
+              '<div><span class="badge me-2" style="color:' + b[1] +
+              ';background:' + b[2] + ';border-radius:999px;">' + b[0] + '</span>' +
+              '<strong>规则 ' + r.rule_id + '</strong> <span class="text-muted small">(' + r.value + ' 分)</span>' +
+              '<div class="small mt-1">' + esc(r.rule_text) + '</div></div>' +
+              '<div class="text-end fw-semibold" style="white-space:nowrap;">' + (r.score || 0) + ' 分</div></div>';
+            var ev = r.evidence
+              ? '<details class="mt-2"><summary class="small text-muted">评分证据</summary>' +
+                '<pre class="small p-2 mt-1 mb-0" style="white-space:pre-wrap;background:#f8f9fa;border-radius:6px;">' +
+                esc(r.evidence) + '</pre></details>'
+              : '';
+            div.innerHTML = head + ev;
+            rulesBox.appendChild(div);
+          });
+        }
+        function openJudgeModal(btn) {
+          if (!btn || !judgeModal) return;
+          closeJudgeStream();
+          var sid = btn.getAttribute('data-submission-id') || '';
+          var createdAt = btn.getAttribute('data-created-at') || '';
+          var streamUrl = btn.getAttribute('data-stream-url');
+          var meta = document.getElementById('judgeModalMeta');
+          var status = document.getElementById('judgeModalStatus');
+          var rulesBox = document.getElementById('judgeModalRules');
+          var bar = document.getElementById('judgeModalBar');
+          document.getElementById('judgeModalTotal').textContent = '0';
+          document.getElementById('judgeModalMax').textContent = '0';
+          if (bar) bar.style.width = '0%';
+          if (meta) meta.textContent = '#' + sid + (createdAt ? ' · ' + createdAt : '');
+          if (status) status.textContent = '正在连接评测进度…';
+          if (rulesBox) {
+            rulesBox.innerHTML = '<div class="text-muted text-center py-5">' +
+              '<span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…</div>';
+          }
+          judgeModal.show();
+          if (!streamUrl || !window.EventSource) {
+            if (status) status.textContent = '当前浏览器不支持实时进度，请刷新页面后重试。';
+            return;
+          }
+          judgeSource = new EventSource(streamUrl);
+          judgeSource.addEventListener('progress', function (e) { renderJudgeSnapshot(JSON.parse(e.data)); });
+          judgeSource.addEventListener('done', function (e) { renderJudgeSnapshot(JSON.parse(e.data)); closeJudgeStream(); });
+          judgeSource.addEventListener('timeout', function () {
+            if (status) status.textContent = '实时连接超时，请关闭弹窗后重试。';
+            closeJudgeStream();
+          });
+          judgeSource.addEventListener('error', function () {
+            if (status) status.textContent = '实时连接中断，请关闭弹窗后重试。';
+            closeJudgeStream();
+          });
+        }
+        document.querySelectorAll('.judge-detail-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () { openJudgeModal(btn); });
+        });
+        if (judgeModalEl) {
+          judgeModalEl.addEventListener('hidden.bs.modal', closeJudgeStream);
         }
         updateSubmit();
       })();
@@ -705,91 +858,6 @@
           });
         })();
       </script>
-    {% endif %}
-
-    {# ========== 评分细则（Agent 评测，实时） ========== #}
-    {% if tab == 'judge' %}
-      <div class="card ranking-card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span><i class="fas fa-list-check me-2 text-warning"></i> 评分细则</span>
-          <span class="small text-muted">得分
-            <span class="fw-semibold" id="judgeTotal">{{ judge_snapshot.total_score if judge_snapshot else 0 }}</span>
-            / <span id="judgeMax">{{ judge_snapshot.max_score if judge_snapshot else 0 }}</span>
-          </span>
-        </div>
-        <div class="card-body">
-          {% if not judge_snapshot %}
-            <div class="text-muted text-center py-5">
-              <i class="fas fa-inbox fa-2x mb-2 d-block"></i>
-              你还没有提交。提交代码后，这里会实时显示逐条评分进展与证据。
-            </div>
-          {% else %}
-            <div class="progress mb-3" style="height:6px;background:#f1f3f5;border-radius:999px;">
-              <div class="progress-bar" id="judgeBar" role="progressbar"
-                   style="height:6px;border-radius:999px;background:linear-gradient(90deg,#22c55e,#16a34a);
-                          width: {{ (judge_snapshot.total_score / judge_snapshot.max_score * 100) if judge_snapshot.max_score else 0 }}%;"></div>
-            </div>
-            <div id="judgeRules"></div>
-          {% endif %}
-        </div>
-      </div>
-      {% if judge_snapshot %}
-      <script>
-        window.__JUDGE_SNAPSHOT__ = {{ judge_snapshot|tojson }};
-        window.__JUDGE_STREAM_URL__ = "{{ url_for('ranking.ranking_judge_stream', competition_id=competition.id, submission_id=judge_snapshot.submission_id) }}";
-      </script>
-      <script>
-      (function () {
-        var box = document.getElementById('judgeRules');
-        if (!box) return;
-        var BADGE = {
-          pass: ['通过', '#1f7a4d', 'rgba(34,197,94,0.14)'],
-          failed: ['未通过', '#b03a2e', 'rgba(220,53,69,0.14)'],
-          skipped: ['依赖跳过', '#6c757d', 'rgba(108,117,125,0.14)'],
-          error: ['异常', '#b07340', 'rgba(224,151,97,0.18)'],
-          pending: ['待评测', '#0d6efd', 'rgba(13,110,253,0.10)']
-        };
-        function esc(s) { return (s || '').replace(/[&<>]/g, function (c) {
-          return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]; }); }
-        function render(snap) {
-          document.getElementById('judgeTotal').textContent = snap.total_score;
-          document.getElementById('judgeMax').textContent = snap.max_score;
-          var bar = document.getElementById('judgeBar');
-          if (bar && snap.max_score) bar.style.width = (snap.total_score / snap.max_score * 100) + '%';
-          box.innerHTML = '';
-          (snap.rules || []).forEach(function (r) {
-            var b = BADGE[r.effective] || BADGE.pending;
-            var div = document.createElement('div');
-            div.className = 'border rounded p-3 mb-2';
-            var head =
-              '<div class="d-flex justify-content-between align-items-start">' +
-              '<div class="pe-3"><span class="badge me-2" style="color:' + b[1] +
-              ';background:' + b[2] + ';border-radius:999px;">' + b[0] + '</span>' +
-              '<strong>规则 ' + r.rule_id + '</strong> <span class="text-muted small">(' + r.value + ' 分)</span>' +
-              '<div class="small mt-1">' + esc(r.rule_text) + '</div></div>' +
-              '<div class="text-end fw-semibold" style="white-space:nowrap;">' + r.score + ' 分</div></div>';
-            var ev = r.evidence
-              ? '<details class="mt-2"><summary class="small text-muted">评分证据</summary>' +
-                '<pre class="small p-2 mt-1 mb-0" style="white-space:pre-wrap;background:#f8f9fa;border-radius:6px;">' +
-                esc(r.evidence) + '</pre></details>'
-              : '';
-            div.innerHTML = head + ev;
-            box.appendChild(div);
-          });
-        }
-        render(window.__JUDGE_SNAPSHOT__);
-        if (['Judging', 'Pending'].indexOf(window.__JUDGE_SNAPSHOT__.status) >= 0) {
-          try {
-            var es = new EventSource(window.__JUDGE_STREAM_URL__);
-            es.addEventListener('progress', function (e) { render(JSON.parse(e.data)); });
-            es.addEventListener('done', function (e) { render(JSON.parse(e.data)); es.close(); });
-            es.addEventListener('timeout', function () { es.close(); });
-            es.addEventListener('error', function () { es.close(); });
-          } catch (err) { /* EventSource 不可用时静默 */ }
-        }
-      })();
-      </script>
-      {% endif %}
     {% endif %}
 
     {# ========== 所有提交（管理员） ========== #}

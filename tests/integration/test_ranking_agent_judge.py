@@ -150,6 +150,32 @@ def test_judge_stream_emits_done_for_finished(client, login):
     assert 'event: done' in body
 
 
+def test_judge_stream_blocks_other_users_submission(client, login):
+    h.make_user('owner')
+    h.make_user('viewer')
+    cid = _make_aj_comp()
+    sid = ranking_db.create_ranking_submission(cid, 'owner')
+    ranking_db.update_submission_files(sid, None, None, 'c.zip', '/tmp/c', base_model='m')
+    login('viewer')
+    r = client.get(f'/ranking/{cid}/judge_stream/{sid}')
+    assert r.status_code == 403
+
+
+def test_submit_history_has_judge_detail_modal_button(client, login):
+    h.make_user('ajhist')
+    cid = _make_aj_comp()
+    sid = ranking_db.create_ranking_submission(cid, 'ajhist')
+    ranking_db.update_submission_files(sid, None, None, 'c.zip', '/tmp/c', base_model='m')
+    login('ajhist')
+    r = client.get(f'/ranking/{cid}/?tab=submit')
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200
+    assert f'data-submission-id="{sid}"' in body
+    assert f'/ranking/{cid}/judge_stream/{sid}' in body
+    assert 'id="judgeDetailModal"' in body
+    assert 'class="btn btn-sm btn-outline-secondary judge-detail-btn"' in body
+
+
 def test_rejudge_agent_requeues(client, admin_login, monkeypatch):
     cid = _make_aj_comp()
     sid = ranking_db.create_ranking_submission(cid, 'admin')

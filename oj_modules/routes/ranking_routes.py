@@ -70,7 +70,7 @@ from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_ev
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
-ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit', 'judge')
+ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit')
 SUBMISSIONS_PER_PAGE = 50
 MATCHES_PER_PAGE = 20
 
@@ -359,15 +359,9 @@ def ranking_detail(competition_id):
     is_agent_judge = _competition_scoring_mode(comp) == 'agent_judge'
     judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
-    judge_snapshot = None
 
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
-    elif tab == 'judge' and is_agent_judge:
-        # 展示当前用户最近一次提交的评分细则（含实时进展）
-        my_subs = list_user_submissions(competition_id, user.get('username'))
-        if my_subs:
-            judge_snapshot = build_judge_snapshot(my_subs[0]['id'])
     elif tab == 'leaderboard':
         leaderboard = get_leaderboard(competition_id)
     elif tab == 'matches':
@@ -415,7 +409,6 @@ def ranking_detail(competition_id):
         matches_per_page=MATCHES_PER_PAGE,
         judge_rules=judge_rules,
         agent_judge_api_key_set=agent_judge_api_key_set,
-        judge_snapshot=judge_snapshot,
     )
 
 
@@ -742,8 +735,8 @@ def ranking_submit(competition_id):
                 _agent_judge_task.delay(submission_id)
             except Exception as e:
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
-        flash('提交成功，Agent 评测进行中，可在"评分细则"查看实时进展。', 'success')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='judge'))
+        flash('提交成功，Agent 评测进行中，可在"我的历史提交"点击"查看详情"查看实时进展。', 'success')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     # ZIP 模式必须配套自定义评测脚本（默认 JSON 评分器无法处理 zip）
     if scoring_mode == 'absolute' and answer_format == 'zip' and not has_script:
@@ -1066,6 +1059,8 @@ def ranking_judge_stream(competition_id, submission_id):
     sub = get_ranking_submission(submission_id)
     if not sub or int(sub.get('competition_id')) != competition_id:
         return Response('not found', status=404)
+    if user.get('is_admin') != 1 and sub.get('username') != user.get('username'):
+        return Response('forbidden', status=403)
 
     def _encode(name, payload):
         return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
