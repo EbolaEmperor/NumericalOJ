@@ -1019,6 +1019,43 @@ def ranking_save_judge_rules(competition_id):
                     'max_score': _aj_max_score(normalized)})
 
 
+# ---------- 管理员：Agent 评测模型配置（专用端点，仅改 agent_judge_* 字段） ----------
+
+@ranking_bp.route('/<int:competition_id>/agent_judge/config', methods=['POST'])
+def ranking_save_agent_config(competition_id):
+    """仅更新 Agent 评测的 base_url / api_key / model / 整体超时；
+    不触碰标题、摘要、描述、上线状态等其它字段（避免被部分表单清空）。"""
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    comp = get_competition(competition_id)
+    if not comp:
+        flash('比赛不存在', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+    base_url = request.form.get('agent_judge_base_url')
+    model = request.form.get('agent_judge_model')
+    api_key_raw = request.form.get('agent_judge_api_key')
+    timeout_raw = request.form.get('agent_judge_timeout_seconds')
+    api_key = None
+    if api_key_raw is not None and str(api_key_raw).strip() != '':
+        api_key = str(api_key_raw).strip()
+    timeout = None
+    if timeout_raw is not None and str(timeout_raw).strip() != '':
+        try:
+            timeout = int(_clamp(int(timeout_raw), 60, 7200))
+        except (TypeError, ValueError):
+            timeout = None
+    update_competition(
+        competition_id,
+        agent_judge_base_url=(base_url if base_url is not None else None),
+        agent_judge_model=(model if model is not None else None),
+        agent_judge_api_key=api_key,
+        agent_judge_timeout_seconds=timeout,
+    )
+    flash('已保存 Agent 评测设置', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+
+
 # ---------- Agent 评测：实时进展 SSE + 管理员重测 ----------
 
 @ranking_bp.route('/<int:competition_id>/judge_stream/<int:submission_id>')

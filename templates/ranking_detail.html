@@ -1203,10 +1203,7 @@
            {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
         <div class="card-header"><i class="fas fa-robot me-2"></i> Agent 评测设置</div>
         <div class="card-body">
-          <form method="POST" action="{{ url_for('ranking.ranking_edit', competition_id=competition.id) }}">
-            <input type="hidden" name="title" value="{{ competition.title }}">
-            <input type="hidden" name="scoring_mode" value="agent_judge">
-            <input type="hidden" name="max_score" value="{{ competition.max_score or 1 }}">
+          <form method="POST" action="{{ url_for('ranking.ranking_save_agent_config', competition_id=competition.id) }}">
             <div class="mb-3">
               <label class="form-label">Anthropic 兼容 Base URL <span class="text-danger">*</span></label>
               <input type="text" class="form-control" name="agent_judge_base_url"
