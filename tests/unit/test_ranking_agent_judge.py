@@ -156,6 +156,24 @@ def test_render_md_empty():
     assert aj.render_md_math(None) == ''
 
 
+def test_render_md_loosens_tight_lists():
+    # LLM 紧凑 markdown：段落后紧跟 - 列表（无空行）应渲染成 <ul>
+    out = aj.render_md_math('配置如下：\n- 第一项\n- 第二项')
+    assert out.count('<li>') == 2 and '<ul>' in out
+
+
+def test_render_snapshot_html_adds_html_fields_without_mutating():
+    snap = {'submission_id': 1, 'status': 'Accepted',
+            'rules': [{'rule_id': 1, 'rule_text': '**粗体规则**', 'evidence': '## 标题\n- a'}]}
+    out = aj.render_snapshot_html(snap)
+    r = out['rules'][0]
+    assert '<strong>粗体规则</strong>' in r['rule_html']
+    assert '<h2' in r['evidence_html']
+    # 原对象不被改动（不持久化 HTML）
+    assert 'rule_html' not in snap['rules'][0]
+    assert r['evidence'] == '## 标题\n- a'  # 原始 markdown 仍在
+
+
 # ---- build_prompt ----
 def test_build_prompt_mentions_files_and_gate():
     p = aj.build_prompt('我的打榜赛')

@@ -65,6 +65,7 @@ from oj_modules.ranking_agent_judge_db import (
     replace_competition_rules,
 )
 from oj_modules.ranking_agent_judge import max_score as _aj_max_score
+from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
 from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_events
 
 
@@ -1065,6 +1066,9 @@ def ranking_judge_stream(competition_id, submission_id):
         return Response('forbidden', status=403)
 
     def _encode(name, payload):
+        # 快照在下发前实时渲染 Markdown/LaTeX（仅传输时渲染，不持久化 HTML）
+        if name in ('progress', 'done', 'timeout') and isinstance(payload, dict):
+            payload = _render_snapshot_html(payload)
         return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     @stream_with_context

@@ -175,6 +175,29 @@ _MATH_PATTERNS = (
     re.compile(r'(?<!\$)\$(?!\$)(?:\\\$|[^$\n])+?\$'),  # $ ... $（行内，单行，排除 $$）
 )
 _MATH_TOKEN_RE = re.compile(r'@@MJXMATH(\d+)@@')
+_FENCE_RE = re.compile(r'^\s*(```|~~~)')
+_LIST_ITEM_RE = re.compile(r'^\s*([-*+]|\d+[.)])\s+')
+
+
+def _loosen_markdown(text):
+    """在列表/代码块前补空行：LLM 生成的紧凑 markdown 常无空行分隔，python-markdown
+    需要空行才把 `- ...` 识别为列表。代码块内部不处理。"""
+    lines = text.split('\n')
+    out = []
+    in_fence = False
+    for line in lines:
+        if _FENCE_RE.match(line):
+            if not in_fence and out and out[-1].strip() != '':
+                out.append('')          # 开围栏前补空行
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if not in_fence and _LIST_ITEM_RE.match(line):
+            prev = out[-1] if out else ''
+            if prev.strip() != '' and not _LIST_ITEM_RE.match(prev):
+                out.append('')          # 列表块前补空行
+        out.append(line)
+    return '\n'.join(out)
 
 
 def render_md_math(text):
@@ -197,6 +220,7 @@ def render_md_math(text):
 
     for pat in _MATH_PATTERNS:
         text = pat.sub(_protect, text)
+    text = _loosen_markdown(text)
     try:
         out = _markdown.markdown(
             text, extensions=['extra', 'nl2br', 'sane_lists'], output_format='html5')
@@ -208,6 +232,23 @@ def render_md_math(text):
         return _html.escape(stash[int(m.group(1))])
 
     return _MATH_TOKEN_RE.sub(_restore, out)
+
+
+def render_snapshot_html(snap):
+    """在「前端请求时」把快照里每条规则的 rule_text / evidence（markdown 源）实时渲染为 HTML，
+    返回浅拷贝（不改原对象，不持久化）。供 SSE 端点在下发前调用。"""
+    if not isinstance(snap, dict):
+        return snap
+    rules = snap.get('rules') or []
+    rendered = []
+    for r in rules:
+        rr = dict(r)
+        rr['rule_html'] = render_md_math(r.get('rule_text'))
+        rr['evidence_html'] = render_md_math(r.get('evidence'))
+        rendered.append(rr)
+    out = dict(snap)
+    out['rules'] = rendered
+    return out
 
 
 def build_prompt(competition_title):
