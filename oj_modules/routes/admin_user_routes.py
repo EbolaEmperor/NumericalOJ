@@ -396,7 +396,7 @@ def add_class_ajax():
             cursor.execute(sql, (class_en, class_cn))
         conn.commit()
         with conn.cursor() as cursor:
-            sql = f"CREATE TABLE {class_en}(id INT PRIMARY KEY AUTO_INCREMENT, problem_id INT, ddl DATETIME, complete_cnt INT, problem_title TEXT);"
+            sql = f"CREATE TABLE {class_en}(id INT PRIMARY KEY AUTO_INCREMENT, problem_id INT, ddl DATETIME, complete_cnt INT, problem_title TEXT, ranking_competition_id INT DEFAULT NULL);"
             cursor.execute(sql)
         conn.commit()
     except Exception as e:

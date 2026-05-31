@@ -1048,6 +1048,23 @@ def get_all_classes_except_admin():
         conn.close()
 
 
+def ensure_class_homework_columns(class_en):
+    """给班级动态表 C<class_en> 惰性补加 ranking_competition_id 列（幂等）。
+    用于支持把「打榜赛」布置为作业——该列非空表示该作业行是一个打榜赛而非题目。
+    不做进程内缓存：作业列表查询本身已带缓存，且 SHOW COLUMNS 很廉价，避免班级表被重建后误判。"""
+    if not class_en or not str(class_en).replace('_', '').isalnum():
+        return
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"SHOW COLUMNS FROM `{class_en}` LIKE 'ranking_competition_id'")
+            if not cursor.fetchone():
+                cursor.execute(f"ALTER TABLE `{class_en}` ADD COLUMN ranking_competition_id INT DEFAULT NULL")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_class_by_en(class_en):
     conn = get_db_connection()
     try:

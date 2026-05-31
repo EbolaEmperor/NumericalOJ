@@ -10,7 +10,9 @@ from flask import Blueprint, flash, jsonify, redirect, render_template, request,
 
 from oj_modules.db_services import (
     CLASS_ADJUST_FLAG_KEY,
+    ensure_class_homework_columns,
     get_all_classes_except_admin,
+    get_all_problems,
     get_class_by_en,
     get_db_connection,
     get_problem,
@@ -18,6 +20,7 @@ from oj_modules.db_services import (
     get_user_by_username,
     set_setting,
 )
+from oj_modules.ranking_db import get_competition, list_competitions
 from oj_modules.repository_services import extract_includes_from_code, get_user_repository_files_by_names
 
 
@@ -331,6 +334,7 @@ def admin_homework():
 
     homework_list = []
     if selected_class:
+        ensure_class_homework_columns(selected_class)
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
@@ -338,18 +342,36 @@ def admin_homework():
                 cursor.execute(sql)
                 homework_list = cursor.fetchall()
                 for hw in homework_list:
-                    problem = get_problem(hw['problem_id'])
-                    hw['problem_title'] = problem['title'] if problem else '未知题目'
+                    if hw.get('ranking_competition_id'):
+                        hw['is_ranking'] = True
+                        # ranking 作业：沿用入库时存的比赛标题（problem_title 列）
+                        if not hw.get('problem_title'):
+                            hw['problem_title'] = '未知打榜赛'
+                    else:
+                        hw['is_ranking'] = False
+                        problem = get_problem(hw['problem_id'])
+                        hw['problem_title'] = problem['title'] if problem else '未知题目'
         except pymysql.Error as e:
             flash(f'数据库错误: {str(e)}', 'danger')
         finally:
             conn.close()
+
+    all_problems = [{'id': p['id'], 'title': p['title']} for p in (get_all_problems() or [])]
+    try:
+        all_competitions = [
+            {'id': c['id'], 'title': c['title'], 'scoring_mode': c.get('scoring_mode')}
+            for c in (list_competitions(include_inactive=True) or [])
+        ]
+    except Exception:
+        all_competitions = []
 
     return render_template(
         'admin_homework.html',
         classes=classes,
         selected_class=selected_class,
         homework_list=homework_list,
+        all_problems=all_problems,
+        all_competitions=all_competitions,
         user=user,
     )
 
@@ -404,37 +426,56 @@ def admin_add_homework():
         return redirect(url_for('homework.admin_homework'))
 
     class_en = request.form.get('class_en')
-    problem_id = request.form.get('problem_id')
     ddl = request.form.get('ddl')
+    problem_id = (request.form.get('problem_id') or '').strip()
+    ranking_competition_id = (request.form.get('ranking_competition_id') or '').strip()
 
-    if not all([class_en, problem_id, ddl]):
+    if not class_en or not ddl:
         flash('缺少必要参数', 'danger')
         return redirect(url_for('homework.admin_homework', sclass=class_en))
+    # 题目 / 打榜赛 必须恰好二选一
+    if bool(problem_id) == bool(ranking_competition_id):
+        flash('请选择一项作业内容：题目 或 打榜赛', 'danger')
+        return redirect(url_for('homework.admin_homework', sclass=class_en))
+    if not get_class_by_en(class_en):
+        flash('班级不存在', 'danger')
+        return redirect(url_for('homework.admin_homework'))
 
+    ensure_class_homework_columns(class_en)
     try:
-        problem_id = int(problem_id)
-        problem = get_problem_title(problem_id)
-        if not problem:
-            flash('题目不存在', 'danger')
-            return redirect(url_for('homework.admin_homework', sclass=class_en))
-
-        if not get_class_by_en(class_en):
-            flash('班级不存在', 'danger')
-            return redirect(url_for('homework.admin_homework'))
+        if problem_id:
+            try:
+                pid = int(problem_id)
+            except ValueError:
+                flash('题目ID必须是数字', 'danger')
+                return redirect(url_for('homework.admin_homework', sclass=class_en))
+            problem = get_problem_title(pid)
+            if not problem:
+                flash('题目不存在', 'danger')
+                return redirect(url_for('homework.admin_homework', sclass=class_en))
+            col, val, title = 'problem_id', pid, problem['title']
+        else:
+            try:
+                cid = int(ranking_competition_id)
+            except ValueError:
+                flash('打榜赛ID非法', 'danger')
+                return redirect(url_for('homework.admin_homework', sclass=class_en))
+            comp = get_competition(cid)
+            if not comp:
+                flash('打榜赛不存在', 'danger')
+                return redirect(url_for('homework.admin_homework', sclass=class_en))
+            col, val, title = 'ranking_competition_id', cid, comp['title']
 
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
-                sql = f"INSERT INTO {class_en} (problem_id, ddl, complete_cnt, problem_title) VALUES (%s, %s, 0, %s)"
-                cursor.execute(sql, (problem_id, ddl, problem['title']))
+                sql = f"INSERT INTO {class_en} ({col}, ddl, complete_cnt, problem_title) VALUES (%s, %s, 0, %s)"
+                cursor.execute(sql, (val, ddl, title))
             conn.commit()
             _invalidate_problem_list_cache_for_class(class_en)
             flash('作业添加成功', 'success')
         finally:
             conn.close()
-
-    except ValueError:
-        flash('题目ID必须是数字', 'danger')
     except pymysql.Error as e:
         flash(f'数据库错误: {str(e)}', 'danger')
 

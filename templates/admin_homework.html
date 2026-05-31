@@ -66,8 +66,8 @@
         <tbody>
           {% for hw in homework_list %}
           <tr>
-            <td>{{ hw.problem_id }}</td>
-            <td>{{ hw.problem_title }}</td>
+            <td>{% if hw.is_ranking %}<span class="text-muted">#{{ hw.ranking_competition_id }}</span>{% else %}{{ hw.problem_id }}{% endif %}</td>
+            <td>{% if hw.is_ranking %}<span class="badge bg-warning text-dark me-1">打榜赛</span>{% endif %}{{ hw.problem_title }}</td>
             <td>{{ hw.ddl.strftime('%Y-%m-%d %H:%M') if hw.ddl else '未设置' }}</td>
             <td>{{ hw.complete_cnt }}</td>
             <td>
@@ -131,12 +131,26 @@
         <h5 class="modal-title">布置新作业</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST" action="{{ url_for('homework.admin_add_homework') }}">
+      <form method="POST" action="{{ url_for('homework.admin_add_homework') }}" id="addHomeworkForm">
         <input type="hidden" name="class_en" value="{{ selected_class }}">
+        <input type="hidden" name="problem_id" id="hwProblemId">
+        <input type="hidden" name="ranking_competition_id" id="hwCompId">
         <div class="modal-body">
           <div class="mb-3">
-            <label class="form-label">题目ID</label>
-            <input type="number" class="form-control" name="problem_id" required>
+            <label class="form-label d-block">作业类型</label>
+            <div class="btn-group" role="group">
+              <input type="radio" class="btn-check" name="hwtype" id="hwTypeProblem" value="problem" checked>
+              <label class="btn btn-outline-primary btn-sm" for="hwTypeProblem">题目</label>
+              <input type="radio" class="btn-check" name="hwtype" id="hwTypeRanking" value="ranking">
+              <label class="btn btn-outline-primary btn-sm" for="hwTypeRanking">打榜赛</label>
+            </div>
+          </div>
+          <div class="mb-3 position-relative">
+            <label class="form-label" id="hwSearchLabel">选择题目</label>
+            <input type="text" class="form-control" id="hwSearch" autocomplete="off" placeholder="按编号或标题搜索…">
+            <div id="hwDropdown" class="list-group position-absolute w-100 shadow-sm"
+                 style="z-index:1080; max-height:240px; overflow:auto; display:none;"></div>
+            <div class="form-text" id="hwPicked"></div>
           </div>
           <div class="mb-3">
             <label class="form-label">截止时间</label>
@@ -145,12 +159,71 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="btn btn-primary">确认添加</button>
+          <button type="submit" class="btn btn-primary" id="hwSubmitBtn" disabled>确认添加</button>
         </div>
       </form>
     </div>
   </div>
 </div>
+
+<script>
+  window.__HW_PROBLEMS__ = {{ all_problems|tojson }};
+  window.__HW_COMPETITIONS__ = {{ all_competitions|tojson }};
+</script>
+<script>
+(function () {
+  var form = document.getElementById('addHomeworkForm'); if (!form) return;
+  var search = document.getElementById('hwSearch');
+  var dropdown = document.getElementById('hwDropdown');
+  var picked = document.getElementById('hwPicked');
+  var hidProblem = document.getElementById('hwProblemId');
+  var hidComp = document.getElementById('hwCompId');
+  var submitBtn = document.getElementById('hwSubmitBtn');
+  var label = document.getElementById('hwSearchLabel');
+  function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function curType(){ var r = document.querySelector('input[name=hwtype]:checked'); return r ? r.value : 'problem'; }
+  function curList(){ return curType()==='ranking' ? (window.__HW_COMPETITIONS__||[]) : (window.__HW_PROBLEMS__||[]); }
+  function clearPick(){ hidProblem.value=''; hidComp.value=''; picked.textContent=''; submitBtn.disabled=true; }
+  function applyType(){
+    clearPick(); search.value='';
+    var isR = curType()==='ranking';
+    label.textContent = isR ? '选择打榜赛' : '选择题目';
+    search.placeholder = '按编号或标题搜索' + (isR ? '打榜赛' : '题目') + '…';
+    renderDropdown('');
+  }
+  function renderDropdown(q){
+    q = (q||'').trim().toLowerCase();
+    var items = curList().filter(function(it){
+      return (''+it.id).indexOf(q) >= 0 || (it.title||'').toLowerCase().indexOf(q) >= 0;
+    }).slice(0, 50);
+    if (!items.length){ dropdown.style.display='none'; dropdown.innerHTML=''; return; }
+    dropdown.innerHTML = items.map(function(it){
+      return '<button type="button" class="list-group-item list-group-item-action py-2" data-id="'+it.id+'">' +
+             '<span class="text-muted me-2">#'+it.id+'</span>' + escapeHtml(it.title||'') + '</button>';
+    }).join('');
+    dropdown.style.display='block';
+    Array.prototype.forEach.call(dropdown.querySelectorAll('[data-id]'), function(b){
+      b.onclick = function(){
+        var id = b.getAttribute('data-id');
+        if (curType()==='ranking'){ hidComp.value=id; hidProblem.value=''; }
+        else { hidProblem.value=id; hidComp.value=''; }
+        search.value = b.textContent.trim();
+        picked.textContent = '已选择：' + b.textContent.trim();
+        submitBtn.disabled=false; dropdown.style.display='none';
+      };
+    });
+  }
+  search.addEventListener('input', function(){ clearPick(); renderDropdown(this.value); });
+  search.addEventListener('focus', function(){ renderDropdown(this.value); });
+  document.addEventListener('click', function(e){
+    if (!dropdown.contains(e.target) && e.target !== search) dropdown.style.display='none';
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('input[name=hwtype]'), function(r){
+    r.addEventListener('change', applyType);
+  });
+  applyType();
+})();
+</script>
 
 <!-- 上传期末成绩模态框 -->
 <div class="modal fade" id="uploadExamModal" tabindex="-1">
