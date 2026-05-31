@@ -4,6 +4,11 @@
 FROM node:20-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
+# 关闭 claude CLI 的非必要外联（遥测/自动更新/错误上报）——受限容器内若开启会卡住
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    DISABLE_TELEMETRY=1 \
+    DISABLE_AUTOUPDATER=1 \
+    DISABLE_ERROR_REPORTING=1
 
 # 换国内镜像源，容器内 apt 更稳（why-server 在国内）
 RUN sed -i 's@deb.debian.org@mirrors.aliyun.com@g; s@security.debian.org@mirrors.aliyun.com@g' \
