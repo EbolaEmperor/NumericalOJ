@@ -41,6 +41,8 @@ from oj_modules.tasks import (
     register_ranking_elo_initial_burst_task,
     register_ranking_elo_matchmaker_tick_task,
     seed_elo_matchmaker_tick,
+    register_ranking_agent_judge_task,
+    init_judge_progress_cache,
 )
 from oj_modules.startup_requeue import (
     requeue_pending_on_startup,
@@ -132,6 +134,7 @@ celery = Celery('oj',
 celery.conf.task_routes = {
     'oj.agent.solve_problem': {'queue': 'agent'},
     'oj.agent.generate_testdata': {'queue': 'agent'},
+    'oj.ranking_agent_judge': {'queue': 'judge'},
 }
 evaluate_submission = register_evaluate_submission_task(celery)
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
@@ -143,6 +146,7 @@ evaluate_ranking_submission = register_ranking_evaluate_task(celery)
 ranking_elo_match = register_ranking_elo_match_task(celery)
 ranking_elo_initial_burst = register_ranking_elo_initial_burst_task(celery, ranking_elo_match)
 ranking_elo_matchmaker_tick = register_ranking_elo_matchmaker_tick_task(celery, ranking_elo_match)
+evaluate_ranking_agent_judge = register_ranking_agent_judge_task(celery)
 pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     celery,
     evaluate_submission,
@@ -164,8 +168,8 @@ init_problem_core_module(
 init_repository_index_module(build_repository_index)
 # 初始化 AI 检测模块（依赖 Celery 任务）
 init_ai_detection_module(detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions)
-# 初始化打榜赛模块（依赖 Celery 评测任务、ELO 即时补战任务）
-init_ranking_module(evaluate_ranking_submission, ranking_elo_initial_burst)
+# 初始化打榜赛模块（依赖 Celery 评测任务、ELO 即时补战任务、Agent 评测任务）
+init_ranking_module(evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge)
 # 启动 ELO 匹配 tick 链路（自调度，全局单链）
 seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
 # 启动 Pending 自动回收链路（自调度，全局单链）
@@ -174,6 +178,8 @@ seed_pending_requeue_watchdog(rds, pending_requeue_watchdog)
 init_submission_snapshot_cache(rds)
 # 初始化 agent 运行状态缓存（Redis）
 init_agent_progress_cache(rds)
+# 初始化打榜赛 Agent 评测进度缓存（Redis）
+init_judge_progress_cache(rds)
 
 ###############################################################################
 #  班级管理
@@ -191,6 +197,7 @@ if __name__ == '__main__':
             written_task=transcribe_written_homework_to_latex,
             ranking_task=evaluate_ranking_submission,
             elo_initial_burst_task=ranking_elo_initial_burst,
+            agent_judge_task=evaluate_ranking_agent_judge,
         )
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

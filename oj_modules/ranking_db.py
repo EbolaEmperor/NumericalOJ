@@ -98,6 +98,16 @@ def ensure_ranking_tables():
                     "ALTER TABLE ranking_competitions"
                     " ADD COLUMN elo_max_pairs_per_round INT NOT NULL DEFAULT 1"
                 )
+            # 兼容：为已存在的老表补加 Agent 评测模式相关列
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'agent_judge_base_url'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN agent_judge_base_url VARCHAR(512) DEFAULT NULL,"
+                    " ADD COLUMN agent_judge_api_key VARCHAR(512) DEFAULT NULL,"
+                    " ADD COLUMN agent_judge_model VARCHAR(128) DEFAULT NULL,"
+                    " ADD COLUMN agent_judge_timeout_seconds INT NOT NULL DEFAULT 1800"
+                )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ranking_competition_files (
@@ -237,6 +247,8 @@ def get_competition(competition_id):
                        elo_max_matches, elo_match_interval_seconds, elo_initial_burst,
                        elo_max_pairs_per_round, elo_running,
                        scoring_script_timeout_seconds,
+                       agent_judge_base_url, agent_judge_api_key,
+                       agent_judge_model, agent_judge_timeout_seconds,
                        reference_answer_path, reference_answer_name,
                        scoring_script_path, scoring_script_name, max_score, is_active,
                        created_by, created_at, updated_at
@@ -274,7 +286,9 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         scoring_mode=None, elo_initial_rating=None, elo_k_factor=None,
                         elo_max_matches=None, elo_match_interval_seconds=None,
                         elo_initial_burst=None, elo_max_pairs_per_round=None,
-                        scoring_script_timeout_seconds=None):
+                        scoring_script_timeout_seconds=None,
+                        agent_judge_base_url=None, agent_judge_api_key=None,
+                        agent_judge_model=None, agent_judge_timeout_seconds=None):
     ensure_ranking_tables()
     fields = []
     params = []
@@ -301,7 +315,7 @@ def update_competition(competition_id, *, title=None, summary=None, description=
         params.append(fmt)
     if scoring_mode is not None:
         mode = str(scoring_mode or '').strip().lower()
-        if mode not in ('absolute', 'elo'):
+        if mode not in ('absolute', 'elo', 'agent_judge'):
             mode = 'absolute'
         fields.append("scoring_mode = %s")
         params.append(mode)
@@ -326,6 +340,18 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if scoring_script_timeout_seconds is not None:
         fields.append("scoring_script_timeout_seconds = %s")
         params.append(int(scoring_script_timeout_seconds))
+    if agent_judge_base_url is not None:
+        fields.append("agent_judge_base_url = %s")
+        params.append((str(agent_judge_base_url).strip() or None))
+    if agent_judge_api_key is not None:
+        fields.append("agent_judge_api_key = %s")
+        params.append((str(agent_judge_api_key).strip() or None))
+    if agent_judge_model is not None:
+        fields.append("agent_judge_model = %s")
+        params.append((str(agent_judge_model).strip() or None))
+    if agent_judge_timeout_seconds is not None:
+        fields.append("agent_judge_timeout_seconds = %s")
+        params.append(int(agent_judge_timeout_seconds))
     if not fields:
         return
     params.append(competition_id)

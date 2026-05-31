@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""report <rule_id> <pass|failed> "<evidence>" —— 追加一行 JSON 到 /workspace/result.jsonl。
+用 flock 防止并发交错（claude 一般串行调用，仍加锁更稳）。"""
+import json
+import sys
+
+RESULT_PATH = '/workspace/result.jsonl'
+
+
+def main(argv):
+    if len(argv) < 3:
+        sys.stderr.write('usage: report <rule_id> <pass|failed> [evidence]\n')
+        return 2
+    try:
+        rule_id = int(argv[1])
+    except ValueError:
+        sys.stderr.write('rule_id 必须是整数\n')
+        return 2
+    result = argv[2].strip().lower()
+    if result not in ('pass', 'failed'):
+        sys.stderr.write('result 必须是 pass 或 failed\n')
+        return 2
+    evidence = argv[3] if len(argv) > 3 else ''
+    line = json.dumps({'rule_id': rule_id, 'result': result, 'evidence': evidence},
+                      ensure_ascii=False)
+    try:
+        import fcntl
+        with open(RESULT_PATH, 'a', encoding='utf-8') as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(line + '\n')
+            f.flush()
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception as e:
+        sys.stderr.write(f'写入失败：{e}\n')
+        return 1
+    print(f'reported rule {rule_id}: {result}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

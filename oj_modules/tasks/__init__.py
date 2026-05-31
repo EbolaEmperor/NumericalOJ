@@ -19,6 +19,12 @@ from oj_modules.tasks.ranking_elo_tasks import (
     register_ranking_elo_matchmaker_tick_task,
     seed_elo_matchmaker_tick,
 )
+from oj_modules.tasks.ranking_agent_judge_tasks import (
+    register_ranking_agent_judge_task,
+    init_judge_progress_cache,
+    subscribe_judge_run_events,
+    get_judge_progress_snapshot,
+)
 
 __all__ = [
     "register_evaluate_submission_task",
@@ -32,6 +38,10 @@ __all__ = [
     "register_ranking_elo_initial_burst_task",
     "register_ranking_elo_matchmaker_tick_task",
     "seed_elo_matchmaker_tick",
+    "register_ranking_agent_judge_task",
+    "init_judge_progress_cache",
+    "subscribe_judge_run_events",
+    "get_judge_progress_snapshot",
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",
