@@ -162,3 +162,32 @@ def test_rejudge_agent_requeues(client, admin_login, monkeypatch):
     assert len(fake.delay_calls) == 1
     assert ajdb.list_judge_results(sid) == []
     assert ranking_db.get_ranking_submission(sid)['status'] == 'Judging'
+
+
+def test_admin_can_submit_to_inactive_competition(client, admin_login, monkeypatch):
+    # 已下线比赛 + 评分配置正确 → 管理员仍可提交
+    cid = _make_aj_comp()
+    ranking_db.update_competition(cid, is_active=0)
+    fake = _FakeTask()
+    monkeypatch.setattr(ranking_routes, '_agent_judge_task', fake)
+    r = client.post(f'/ranking/{cid}/submit',
+                    data={'base_model': 'm', 'code_file': _zip()},
+                    content_type='multipart/form-data')
+    assert r.status_code in (301, 302)
+    assert len(fake.delay_calls) == 1
+    assert len(ranking_db.list_user_submissions(cid, 'admin')) == 1
+
+
+def test_non_admin_blocked_on_inactive_competition(client, login, monkeypatch):
+    h.make_user('inactstud')
+    cid = _make_aj_comp()
+    ranking_db.update_competition(cid, is_active=0)
+    login('inactstud')
+    fake = _FakeTask()
+    monkeypatch.setattr(ranking_routes, '_agent_judge_task', fake)
+    r = client.post(f'/ranking/{cid}/submit',
+                    data={'base_model': 'm', 'code_file': _zip()},
+                    content_type='multipart/form-data')
+    assert r.status_code in (301, 302)
+    assert fake.delay_calls == []
+    assert ranking_db.list_user_submissions(cid, 'inactstud') == []
