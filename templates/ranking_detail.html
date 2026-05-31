@@ -1114,9 +1114,9 @@
       {% set edit_ext = '.' ~ edit_fmt %}
       {% set edit_mode = (competition.scoring_mode or 'absolute')|lower %}
 
-      {% if edit_mode != 'elo' %}
-      <!-- 标准答案（仅绝对分模式需要） -->
-      <div class="card mb-3">
+      {% if edit_mode == 'absolute' %}
+      <!-- 标准答案（仅标准答案评分模式需要；ELO / Agent 评测均不需要） -->
+      <div class="card mb-3 absolute-only">
         <div class="card-header"><i class="fas fa-key me-2"></i> 标准答案（{{ edit_ext }}）</div>
         <div class="card-body">
           <div class="mb-3">
@@ -1138,7 +1138,7 @@
           </form>
         </div>
       </div>
-      {% endif %}{# end edit_mode != 'elo' #}
+      {% endif %}{# end edit_mode == 'absolute' #}
 
       <!-- 评测脚本 -->
       {% set script_required = (edit_mode == 'elo') or (edit_fmt == 'zip') %}
