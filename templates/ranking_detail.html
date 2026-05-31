@@ -148,7 +148,8 @@
       </div>
       {% endif %}
 
-      {% if competition.is_active != 1 %}
+      {# 已下线比赛：普通用户无法提交（且本身也进不来本页）；管理员在评分配置正确时仍可提交（自测/补测）。 #}
+      {% if competition.is_active != 1 and not is_admin %}
         <div class="alert alert-warning mb-4">
           <i class="fas fa-exclamation-triangle me-2"></i>该比赛已下线，无法提交。
         </div>
@@ -165,6 +166,11 @@
           <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 Agent 评测模式，但管理员尚未完成模型配置或评分规则设置，暂时无法接收提交。
         </div>
       {% else %}
+        {% if competition.is_active != 1 %}
+        <div class="alert alert-info mb-4">
+          <i class="fas fa-user-shield me-2"></i>该比赛已下线，仅管理员可提交（用于自测 / 补测）。
+        </div>
+        {% endif %}
         <form method="POST" enctype="multipart/form-data"
               action="{{ url_for('ranking.ranking_submit', competition_id=competition.id) }}"
               id="rankingSubmitForm"
@@ -951,9 +957,9 @@
               <div class="col-md-4">
                 <label class="form-label">评分模式</label>
                 <select class="form-select" name="scoring_mode" id="scoringModeSelect">
-                  <option value="absolute"    {% if _mode == 'absolute'    %}selected{% endif %}>绝对分（用户答案 vs 标准答案）</option>
-                  <option value="elo"         {% if _mode == 'elo'         %}selected{% endif %}>ELO 对战（提交两两 PK）</option>
-                  <option value="agent_judge" {% if _mode == 'agent_judge' %}selected{% endif %}>Agent 评测（规则逐条判定）</option>
+                  <option value="absolute"    {% if _mode == 'absolute'    %}selected{% endif %}>标准答案评分</option>
+                  <option value="elo"         {% if _mode == 'elo'         %}selected{% endif %}>ELO 对战</option>
+                  <option value="agent_judge" {% if _mode == 'agent_judge' %}selected{% endif %}>Agent 评测</option>
                 </select>
               </div>
               <div class="col-md-4 absolute-only" id="maxScoreField"
