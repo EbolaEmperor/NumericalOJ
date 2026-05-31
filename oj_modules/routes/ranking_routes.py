@@ -599,12 +599,14 @@ def ranking_submissions_json(competition_id):
     is_elo = (str(comp.get('scoring_mode') or 'absolute').lower() == 'elo')
     max_score = comp.get('max_score') or 100
 
+    is_agent_judge = (str(comp.get('scoring_mode') or 'absolute').lower() == 'agent_judge')
     rows_html = render_template(
         '_ranking_submission_rows.html',
         all_submissions=rows,
         competition=comp,
         is_elo=is_elo,
         max_score=max_score,
+        is_agent_judge=is_agent_judge,
     )
     pagination_html = render_template(
         '_ranking_submission_pagination.html',

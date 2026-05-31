@@ -98,6 +98,52 @@
   <!-- 右侧内容 -->
   <div class="col-md-9 col-lg-10">
     {% set is_elo = ((competition.scoring_mode or 'absolute')|lower == 'elo') %}
+    {% set is_agent_judge = ((competition.scoring_mode or 'absolute')|lower == 'agent_judge') %}
+    {% from '_ranking_sub_card.html' import render_sub_card %}
+
+    <style>
+      /* 提交卡片：扁平化（纯色 + 描边，无阴影/渐变），左缘按状态着色 */
+      .aj-subs { --gold:#f5c518; --gold-d:#b8910f; --ink:#1f2329; --muted:#70757c; --line:#e6e6e9;
+                 --ok:#1f7a4d; --info:#2563cb; --err:#b03a2e; --gray:#9aa0a6;
+                 --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace;
+                 display:flex; flex-direction:column; gap:.55rem; }
+      .aj-sub { background:#fff; border:1px solid var(--line); border-left:3px solid var(--gray);
+                border-radius:6px; padding:.7rem .85rem; transition:border-color .14s ease; animation:ajSubIn .2s ease both; }
+      .aj-sub:hover { border-color:#d3d3d8; }
+      .aj-sub.s-ok{ border-left-color:var(--ok);} .aj-sub.s-info{ border-left-color:var(--info);}
+      .aj-sub.s-err{ border-left-color:var(--err);} .aj-sub.s-muted{ border-left-color:var(--gray);}
+      @keyframes ajSubIn { from{opacity:0;} to{opacity:1;} }
+      .aj-sub-r1 { display:flex; align-items:center; justify-content:space-between; gap:.75rem; }
+      .aj-sub-idu { display:flex; align-items:center; gap:.55rem; min-width:0; flex-wrap:wrap; }
+      .aj-sub-id { font-family:var(--mono); font-size:.78rem; font-weight:600; color:var(--muted); }
+      .aj-sub-user { display:inline-flex; align-items:center; gap:.4rem; min-width:0; }
+      .aj-sub-ava { width:24px; height:24px; border-radius:5px; background:#f1efe6; color:#8a7f63;
+                    display:grid; place-items:center; font-family:var(--mono); font-size:.76rem; font-weight:700; flex:0 0 auto; }
+      .aj-sub-uname { font-weight:600; color:var(--ink); font-size:.9rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:160px; }
+      .aj-st { display:inline-flex; align-items:center; gap:.35rem; font-size:.76rem; font-weight:500; padding:.16rem .5rem; border-radius:4px; white-space:nowrap; }
+      .aj-st .d { width:6px; height:6px; border-radius:50%; }
+      .aj-st.s-ok { color:var(--ok); background:#e9f3ec; } .aj-st.s-ok .d{ background:var(--ok); }
+      .aj-st.s-info { color:var(--info); background:#e8f0fb; } .aj-st.s-info .d{ background:var(--info); }
+      .aj-st.s-err { color:var(--err); background:#f8e9e7; } .aj-st.s-err .d{ background:var(--err); }
+      .aj-st.s-muted { color:var(--muted); background:#f1f1f3; } .aj-st.s-muted .d{ background:var(--gray); }
+      .aj-sub-score { font-family:var(--mono); text-align:right; white-space:nowrap; }
+      .aj-sub-score b { font-size:1.02rem; color:var(--ink); } .aj-sub-score span { color:var(--muted); font-size:.78rem; }
+      .aj-bar { height:4px; background:#f0f0f2; border-radius:999px; margin:.5rem 0 .1rem; overflow:hidden; }
+      .aj-bar > i { display:block; height:100%; background:var(--gold); }
+      .aj-sub-r2 { display:flex; align-items:center; justify-content:space-between; gap:.6rem; flex-wrap:wrap; margin-top:.5rem; }
+      .aj-sub-meta { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; font-size:.77rem; color:var(--muted); }
+      .aj-time { font-family:var(--mono); }
+      .aj-chip { font-size:.72rem; color:#8a7f63; background:#faf7ee; border:1px solid #ece2c6; border-radius:4px; padding:.06rem .42rem; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .aj-file { display:inline-flex; align-items:center; gap:.3rem; color:#5a6470; text-decoration:none; }
+      .aj-file:hover { color:var(--gold-d); }
+      .aj-acts { display:flex; align-items:center; gap:.45rem; }
+      .aj-detail { display:inline-flex; align-items:center; gap:.32rem; border:1px solid var(--line); background:#fff;
+                   color:#5a6470; font-size:.77rem; border-radius:5px; padding:.28rem .6rem; cursor:pointer; transition:.12s; }
+      .aj-detail:hover { border-color:var(--gold); color:var(--gold-d); background:#fffdf3; }
+      .aj-del { border:none; background:transparent; color:#c2b7a0; cursor:pointer; width:28px; height:28px; border-radius:5px; transition:.12s; }
+      .aj-del:hover { color:var(--err); background:#f8e9e7; }
+      .aj-subs-empty { text-align:center; color:#aaa; padding:1.8rem 0; }
+    </style>
 
     {# ========== 比赛描述 ========== #}
     {% if tab == 'description' %}
@@ -132,13 +178,6 @@
         <i class="fas fa-chess-knight me-2"></i>
         <strong>ELO 对战模式：</strong>提交后您的作品将进入对战池，定时与其他用户的提交两两比较，根据胜负调整 ELO 分数。
         每位用户在池中只保留<strong>最近两份</strong>提交，更早的会自动退役。
-      </div>
-      {% endif %}
-      {% if is_agent_judge %}
-      <div class="alert alert-info mb-4">
-        <i class="fas fa-robot me-2"></i>
-        <strong>Agent 评测模式：</strong>只需上传<strong>代码压缩包</strong>。提交后评测系统会在隔离容器内逐条核对评分规则并运行你的代码，
-        可在<strong>「我的历史提交」</strong>中点击<strong>查看详情</strong>查看实时进展与评分证据。
       </div>
       {% endif %}
 
@@ -203,9 +242,7 @@
                   </div>
                 </div>
               </label>
-              <div class="form-text mt-2 mb-0">
-                {% if is_agent_judge %}参赛代码压缩包，评测系统将在容器内运行并据评分规则逐条判定。{% else %}用于复现结果的代码与说明文档，仅存档、不参与评测。{% endif %}
-              </div>
+              {% if not is_agent_judge %}<div class="form-text mt-2 mb-0">用于复现结果的代码与说明文档，仅存档、不参与评测。</div>{% endif %}
             </div>
           </div>
 
@@ -252,109 +289,21 @@
         {% endif %}
       </div>
 
-      <div class="card submissions-card">
-        {% if not user_submissions %}
+      {% if not user_submissions %}
+        <div class="card submissions-card">
           <div class="submissions-empty">
             <i class="fas fa-inbox submissions-empty-icon"></i>
             <div class="mt-3 fw-semibold">暂无提交</div>
             <div class="text-muted small mt-1">提交作品后，这里会显示每次评测结果。</div>
           </div>
-        {% else %}
-          <div class="table-responsive">
-            <table class="table submissions-table mb-0 align-middle">
-              <thead>
-                <tr>
-                  <th style="width:72px;">#</th>
-                  <th style="width:160px;">提交时间</th>
-                  <th>答案文件</th>
-                  <th>代码文件</th>
-                  <th style="width:110px;">状态</th>
-                  <th style="width:180px;" class="text-end">{% if is_elo %}ELO{% else %}得分{% endif %}</th>
-                  {% if is_agent_judge %}<th style="width:86px;" class="text-end">详情</th>{% endif %}
-                </tr>
-              </thead>
-              <tbody>
-                {% for s in user_submissions %}
-                  {% set pct = 0 %}
-                  {% if s.score is not none %}
-                    {% set pct = (s.score * 100 / max_score)|round(1) %}
-                    {% if pct > 100 %}{% set pct = 100 %}{% endif %}
-                    {% if pct < 0 %}{% set pct = 0 %}{% endif %}
-                  {% endif %}
-                  <tr>
-                    <td class="sub-id">#{{ s.id }}</td>
-                    <td class="sub-time">{{ s.created_at }}</td>
-                    <td>
-                      {% if s.answer_filename %}
-                        <a href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}"
-                           class="sub-file" title="下载 {{ s.answer_filename }}">
-                          <i class="fas fa-file-code"></i><span class="sub-file-name">{{ s.answer_filename }}</span>
-                        </a>
-                      {% else %}<span class="text-muted">—</span>{% endif %}
-                    </td>
-                    <td>
-                      {% if s.code_filename %}
-                        <a href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}"
-                           class="sub-file" title="下载 {{ s.code_filename }}">
-                          <i class="fas fa-file-archive"></i><span class="sub-file-name">{{ s.code_filename }}</span>
-                        </a>
-                      {% else %}<span class="text-muted">—</span>{% endif %}
-                    </td>
-                    <td>
-                      {% if s.status == 'Accepted' %}
-                        <span class="sub-status sub-status-ok"><span class="sub-status-dot"></span>通过</span>
-                      {% elif s.status == 'Active' %}
-                        <span class="sub-status sub-status-ok"><span class="sub-status-dot"></span>对战中</span>
-                      {% elif s.status == 'Retired' %}
-                        <span class="sub-status sub-status-other"><span class="sub-status-dot"></span>已退役</span>
-                      {% elif s.status == 'Judging' %}
-                        <span class="sub-status sub-status-info"><span class="sub-status-dot"></span>评测中</span>
-                      {% elif s.status == 'Pending' %}
-                        <span class="sub-status sub-status-info"><span class="sub-status-dot"></span>待评测</span>
-                      {% elif s.status == 'Error' %}
-                        <span class="sub-status sub-status-err"><span class="sub-status-dot"></span>异常</span>
-                      {% else %}
-                        <span class="sub-status sub-status-other"><span class="sub-status-dot"></span>{{ s.status }}</span>
-                      {% endif %}
-                    </td>
-                    <td class="text-end">
-                      {% if is_elo %}
-                        {% if s.elo_rating is not none %}
-                          <div class="sub-score">
-                            <div class="sub-score-text"><strong>{{ '%.0f'|format(s.elo_rating) }}</strong><span class="text-muted"> · {{ s.elo_match_count or 0 }} 战</span></div>
-                          </div>
-                        {% else %}
-                          <span class="text-muted">—</span>
-                        {% endif %}
-                      {% else %}
-                        {% if s.score is not none %}
-                          <div class="sub-score">
-                            <div class="sub-score-text"><strong>{{ '%.2f'|format(s.score) }}</strong><span class="text-muted"> / {{ max_score }}</span></div>
-                            <div class="sub-score-bar"><div class="sub-score-fill" style="width: {{ pct }}%"></div></div>
-                          </div>
-                        {% else %}
-                          <span class="text-muted">—</span>
-                        {% endif %}
-                      {% endif %}
-                    </td>
-                    {% if is_agent_judge %}
-                    <td class="text-end">
-                      <button type="button"
-                              class="btn btn-sm btn-outline-secondary judge-detail-btn"
-                              data-submission-id="{{ s.id }}"
-                              data-created-at="{{ s.created_at }}"
-                              data-stream-url="{{ url_for('ranking.ranking_judge_stream', competition_id=competition.id, submission_id=s.id) }}">
-                        <i class="fas fa-list-check me-1"></i>详情
-                      </button>
-                    </td>
-                    {% endif %}
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        {% endif %}
-      </div>
+        </div>
+      {% else %}
+        <div class="aj-subs">
+          {% for s in user_submissions %}
+            {{ render_sub_card(s, competition, is_elo, is_agent_judge, max_score, false, false) }}
+          {% endfor %}
+        </div>
+      {% endif %}
 
       {% if is_agent_judge %}
       <div class="modal fade" id="judgeDetailModal" tabindex="-1" aria-labelledby="judgeDetailModalLabel" aria-hidden="true">
@@ -892,50 +841,36 @@
         </div>
       </div>
 
-      <!-- 主卡片 -->
-      <div class="card submissions-card">
-        <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-          <div><i class="fas fa-clipboard-list me-2 text-primary"></i><strong>所有提交</strong></div>
-          {% if total_subs > 0 %}
-          <div class="submissions-search">
-            <i class="fas fa-search"></i>
-            <input type="search" id="subSearch" class="form-control form-control-sm"
-                   placeholder="按用户名筛选…" autocomplete="off"
-                   value="{{ submission_search_q }}">
-          </div>
-          {% endif %}
+      <!-- 工具条 -->
+      <div class="submissions-toolbar d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">
+        <div class="fw-semibold"><i class="fas fa-clipboard-list me-2 text-primary"></i>所有提交</div>
+        {% if total_subs > 0 %}
+        <div class="submissions-search">
+          <i class="fas fa-search"></i>
+          <input type="search" id="subSearch" class="form-control form-control-sm"
+                 placeholder="按用户名筛选…" autocomplete="off"
+                 value="{{ submission_search_q }}">
         </div>
+        {% endif %}
+      </div>
 
-        {% if total_subs == 0 %}
+      {% if is_agent_judge %}{% include '_judge_detail_modal.html' %}{% endif %}
+
+      {% if total_subs == 0 %}
+        <div class="card submissions-card">
           <div class="submissions-empty">
             <i class="fas fa-inbox submissions-empty-icon"></i>
             <div class="mt-3 fw-semibold">暂无提交</div>
             <div class="text-muted small mt-1">尚未有选手提交作品。</div>
           </div>
-        {% else %}
-          <div class="table-responsive">
-            <table class="table submissions-table mb-0 align-middle">
-              <thead>
-                <tr>
-                  <th style="width:72px;">#</th>
-                  <th>用户</th>
-                  <th style="width:160px;">提交时间</th>
-                  <th>答案文件</th>
-                  <th>代码文件</th>
-                  <th style="width:110px;">状态</th>
-                  <th style="width:180px;" class="text-end">{% if is_elo %}ELO{% else %}得分{% endif %}</th>
-                  <th style="width:56px;" class="text-center">操作</th>
-                </tr>
-              </thead>
-              <tbody id="subTbody"
-                     data-json-url="{{ url_for('ranking.ranking_submissions_json', competition_id=competition.id) }}"
-                     data-current-page="{{ current_page }}">
-                {% include '_ranking_submission_rows.html' %}
-              </tbody>
-            </table>
-          </div>
-        {% endif %}
-      </div>
+        </div>
+      {% else %}
+        <div id="subTbody" class="aj-subs"
+             data-json-url="{{ url_for('ranking.ranking_submissions_json', competition_id=competition.id) }}"
+             data-current-page="{{ current_page }}">
+          {% include '_ranking_submission_rows.html' %}
+        </div>
+      {% endif %}
 
       {% if total_subs > 0 %}
       <div id="subPagination" class="submissions-pagination mt-3">
