@@ -99,7 +99,7 @@
                           {% endif %}
                         {% endif %}
                         <span class="fw-bold student-hw-title">{{ loop.index }}.</span>
-                        <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a>
+                        {% if hw.kind == 'ranking' %}<a href="{{ url_for('ranking.ranking_detail', competition_id=hw.competition_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a><span class="badge bg-warning text-dark ms-2" style="font-weight:500;">打榜赛</span>{% else %}<a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a>{% endif %}
                         {% if not hw.is_completed %}
                           {% set remaining = (hw.ddl - now).total_seconds() %}
                           <div class="student-hw-ddl-mobile d-md-none">
@@ -132,7 +132,7 @@
                           {% endif %}
                         {% endif %}
                         <span class="d-inline-block" style="width: 1em;"></span>
-                        <i class="fas fa-trophy me-2"></i> {{ hw.max_score if hw.max_score is not none else 0 }} / {{ hw.total_score or 0 }}
+                        <i class="fas fa-trophy me-2"></i> {{ hw.max_score if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score }}{% endif %}
                       </div>
                     </div>
                   </li>
@@ -174,7 +174,7 @@
                       {% endif %}
                     {% endif %}
                     <span class="fw-bold student-hw-title">{{ loop.index }}.</span>
-                    <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a>
+                    {% if hw.kind == 'ranking' %}<a href="{{ url_for('ranking.ranking_detail', competition_id=hw.competition_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a><span class="badge bg-warning text-dark ms-2" style="font-weight:500;">打榜赛</span>{% else %}<a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id) }}" class="ms-2 text-decoration-none student-hw-title">{{ hw.problem_title }}</a>{% endif %}
                     {% if not hw.is_completed %}
                       {% set remaining = (hw.ddl - now).total_seconds() %}
                       <div class="student-hw-ddl-mobile d-md-none">
@@ -207,7 +207,7 @@
                       {% endif %}
                     {% endif %}
                     <span class="d-inline-block" style="width: 1em;"></span>
-                    <i class="fas fa-trophy me-2"></i> {{ hw.max_score or 0 }} / {{ hw.total_score or 0 }}
+                    <i class="fas fa-trophy me-2"></i> {{ hw.max_score if hw.max_score is not none else 0 }}{% if hw.total_score is not none %} / {{ hw.total_score }}{% endif %}
                   </div>
                 </div>
               </li>

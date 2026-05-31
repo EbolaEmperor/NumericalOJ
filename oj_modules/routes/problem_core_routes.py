@@ -15,6 +15,7 @@ from werkzeug.utils import secure_filename
 from oj_modules.db_services import (
     can_submit,
     create_submission,
+    ensure_class_homework_columns,
     get_all_problems,
     get_agent_run_by_task_id,
     get_agent_runs_paginated,
@@ -218,9 +219,10 @@ def get_user_classes_cached(user_id):
     return classes
 
 
-def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
+def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=None):
     """
     批量读取多个班级作业，并一次性补齐题目标题、AC 状态、最高分。
+    支持两类作业：题目（problem_id）与打榜赛（ranking_competition_id）。
     返回: {class_en: [hw, ...]}
     """
     result = {cls: [] for cls in class_en_list}
@@ -233,6 +235,15 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
     if cached and now_ts < cached["expires_at"]:
         return cached["value"]
 
+    # 保证各班表已有 ranking_competition_id 列、打榜赛相关表已建（惰性、幂等）
+    for cls in class_en_list:
+        ensure_class_homework_columns(cls)
+    try:
+        from oj_modules.ranking_db import ensure_ranking_tables
+        ensure_ranking_tables()
+    except Exception:
+        pass
+
     db_cursor = cursor
     conn = None
     try:
@@ -244,7 +255,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
         union_params = []
         for cls in class_en_list:
             union_parts.append(
-                f"SELECT %s AS class_en, id, problem_id, ddl, complete_cnt FROM `{cls}`"
+                f"SELECT %s AS class_en, id, problem_id, ranking_competition_id, ddl, complete_cnt FROM `{cls}`"
             )
             union_params.append(cls)
         if not union_parts:
@@ -253,16 +264,25 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
         union_sql = " UNION ALL ".join(union_parts)
         db_cursor.execute(
             f"""
-            SELECT t.class_en, t.id, t.problem_id, t.ddl, t.complete_cnt,
+            SELECT t.class_en, t.id, t.problem_id, t.ranking_competition_id, t.ddl, t.complete_cnt,
                    p.title AS problem_title, p.max_score AS total_score,
-                   ar.is_ac, ms.score AS user_score
+                   ar.is_ac, ms.score AS user_score,
+                   rc.title AS rk_title, rc.max_score AS rk_total, rc.scoring_mode AS rk_mode,
+                   rk.rk_best
             FROM ({union_sql}) t
             LEFT JOIN problems p ON p.id = t.problem_id
             LEFT JOIN ac_record ar ON ar.userid=%s AND ar.problem_id = t.problem_id
             LEFT JOIN max_score ms ON ms.userid=%s AND ms.problem_id = t.problem_id
+            LEFT JOIN ranking_competitions rc ON rc.id = t.ranking_competition_id
+            LEFT JOIN (
+                SELECT competition_id, MAX(score) AS rk_best
+                FROM ranking_submissions
+                WHERE username=%s AND score IS NOT NULL
+                GROUP BY competition_id
+            ) rk ON rk.competition_id = t.ranking_competition_id
             ORDER BY t.class_en ASC, t.id ASC
             """,
-            tuple(union_params + [user_id, user_id]),
+            tuple(union_params + [user_id, user_id, username]),
         )
         homework_rows = db_cursor.fetchall()
 
@@ -270,25 +290,46 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None):
             cls = row["class_en"]
             if cls not in result:
                 continue
-            pid = row["problem_id"]
-            try:
-                pid = int(pid)
-            except Exception:
-                pass
-            hw = {
-                "id": row["id"],
-                "problem_id": pid,
-                "ddl": row["ddl"],
-                "complete_cnt": row["complete_cnt"],
-                "problem_title": row.get("problem_title"),
-                "total_score": row.get("total_score"),
-                "is_completed": (row.get("is_ac") == 1),
-                "max_score": row.get("user_score"),
-            }
+            rcid = row.get("ranking_competition_id")
+            if rcid:
+                best = row.get("rk_best")
+                is_elo = (row.get("rk_mode") == "elo")
+                hw = {
+                    "id": row["id"],
+                    "kind": "ranking",
+                    "competition_id": int(rcid),
+                    "problem_id": None,
+                    "ddl": row["ddl"],
+                    "complete_cnt": row["complete_cnt"],
+                    "problem_title": row.get("rk_title") or row.get("problem_title") or f"打榜赛 {rcid}",
+                    "total_score": (None if is_elo else row.get("rk_total")),
+                    "is_completed": (best is not None),
+                    "max_score": best,
+                    "has_submission": (best is not None),
+                }
+            else:
+                pid = row["problem_id"]
+                try:
+                    pid = int(pid)
+                except Exception:
+                    pass
+                hw = {
+                    "id": row["id"],
+                    "kind": "problem",
+                    "problem_id": pid,
+                    "ddl": row["ddl"],
+                    "complete_cnt": row["complete_cnt"],
+                    "problem_title": row.get("problem_title"),
+                    "total_score": row.get("total_score"),
+                    "is_completed": (row.get("is_ac") == 1),
+                    "max_score": row.get("user_score"),
+                }
             result[cls].append(hw)
 
         for cls, hw_list in result.items():
             for hw in hw_list:
+                if hw.get("kind") == "ranking":
+                    continue
                 pid = hw["problem_id"]
                 hw["problem_title"] = (
                     hw.get("problem_title") if hw.get("problem_title") else f"Problem {pid}"
@@ -382,7 +423,7 @@ def get_homeworks_and_grades_map(user_id, student_id, class_en_list):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            homeworks_map = _get_homeworks_for_classes(user_id, class_en_list, cursor=cursor)
+            homeworks_map = _get_homeworks_for_classes(user_id, class_en_list, cursor=cursor, username=student_id)
             grades_map = get_class_grades_map(student_id, class_en_list, cursor=cursor)
     finally:
         conn.close()
@@ -395,10 +436,13 @@ def get_homeworks(user):
     if not class_tables:
         return []
 
-    homeworks_by_class = _get_homeworks_for_classes(user['id'], class_tables)
+    homeworks_by_class = _get_homeworks_for_classes(user['id'], class_tables, username=user.get('username'))
     merged = {}
     for cls in class_tables:
         for hw in homeworks_by_class.get(cls, []):
+            # 本函数仅用于题目访问/DDL 判定，跳过打榜赛作业行
+            if hw.get('kind') == 'ranking' or hw.get('problem_id') is None:
+                continue
             pid = hw['problem_id']
             existing = merged.get(pid)
             if existing is None:
