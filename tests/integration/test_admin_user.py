@@ -363,11 +363,13 @@ def test_add_class_duplicate_cn_400(client, admin_login):
 
 
 def test_add_class_illegal_chars_fail(client, admin_login):
-    # 源码 `re.match(...) is False` 恒为 False（match 返回 None/Match，永不为 False），
-    # 故 regex 分支永不触发；非法字符 'a-b' → 'Ca-b' → CREATE TABLE 语法错误 → 500。
+    # 修复后：班级名校验真正生效（re.fullmatch），非法字符在拼进 CREATE TABLE 前即被拒，
+    # 返回 400 + 校验文案，而不再是过去「非法名漏进 SQL 导致 500」的脏行为。
     resp = client.post('/admin/add_class_ajax',
                        data={'class_en': 'a-b', 'class_cn': '带横线的班'})
-    assert resp.status_code == 500
-    assert resp.get_json()['success'] is False
+    assert resp.status_code == 400
+    j = resp.get_json()
+    assert j['success'] is False
+    assert '字母' in j['message']  # 「必须仅由大小写字母、数字、下划线构成」
     # 非法名不应残留物理表
     assert not _table_exists('Ca-b')

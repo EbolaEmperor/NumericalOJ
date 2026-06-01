@@ -11,6 +11,7 @@ import hashlib
 import pytest
 
 from oj_modules import db_services as db
+from oj_modules.security_utils import verify_password
 from tests.conftest import ADMIN_USERNAME, ADMIN_PASSWORD
 
 
@@ -138,8 +139,9 @@ def test_register_success(client):
     user = db.get_user_by_username('fresh_user')
     assert user is not None
     assert user['email'] == email
-    # 密码以 sha256(无盐) 存储
-    assert user['password_hash'] == _sha256('secret-pw')
+    # 密码以带盐慢哈希存储（不再是无盐 sha256），且能正确校验。
+    assert user['password_hash'] != _sha256('secret-pw')
+    assert verify_password(user['password_hash'], 'secret-pw')[0] is True
 
 
 def test_register_duplicate_username(client):
@@ -193,8 +195,8 @@ def test_change_password(client, login):
     assert r.status_code in (301, 302)
     assert '/problems' in r.headers.get('Location', '')
 
-    # 密码已更新；验证码记录被删除
-    assert _password_hash_of(ADMIN_USERNAME) == _sha256('brand-new-pw')
+    # 密码已更新（带盐慢哈希，可校验）；验证码记录被删除
+    assert verify_password(_password_hash_of(ADMIN_USERNAME), 'brand-new-pw')[0] is True
     assert _code_for('admin@example.com') is None
 
 
@@ -243,8 +245,8 @@ def test_forgot_password_flow(client):
     assert r.status_code in (301, 302)
     assert '/login' in r.headers.get('Location', '')
 
-    # 密码已重置；验证码记录被删除
-    assert _password_hash_of(ADMIN_USERNAME) == _sha256('reset-pw-123')
+    # 密码已重置（带盐慢哈希，可校验）；验证码记录被删除
+    assert verify_password(_password_hash_of(ADMIN_USERNAME), 'reset-pw-123')[0] is True
     assert _code_for(email) is None
 
 
