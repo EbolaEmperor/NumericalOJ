@@ -61,7 +61,7 @@
       {% for r in results %}
       <tr>
         <td><a href="{{ url_for('ai_detection.student_detail', username=r.username) }}">{{ r.username }}</a></td>
-        <td><a href="{{ url_for('submission.submission_detail', submission_id=r.submission_id) }}" target="_blank">#{{ r.submission_id }}</a></td>
+        <td><a href="{{ url_for('submission.submission_detail', submission_id=r.submission_id) }}" target="_blank" rel="noopener noreferrer">#{{ r.submission_id }}</a></td>
         <td>
           {% if r.submission_status == 'Accepted' %}
             <span class="badge bg-success">AC</span>
@@ -116,7 +116,7 @@
   <div class="detection-card risk-border-{{ r.risk_level }} mb-3">
     <div class="d-flex justify-content-between align-items-start">
       <div>
-        <strong><a href="{{ url_for('submission.submission_detail', submission_id=r.submission_id) }}" target="_blank">#{{ r.submission_id }}</a></strong>
+        <strong><a href="{{ url_for('submission.submission_detail', submission_id=r.submission_id) }}" target="_blank" rel="noopener noreferrer">#{{ r.submission_id }}</a></strong>
         &mdash; {{ strip_tags(r.problem_title or '') }}
         <span class="badge badge-{{ r.risk_level }} text-white ms-2">{{ r.risk_level }}</span>
       </div>
@@ -424,7 +424,7 @@ function previewFilter() {
       (data.samples || []).forEach(r => {
         const tr = document.createElement('tr');
         tr.innerHTML =
-          `<td><a href="/submission_detail/${r.id}" target="_blank">#${r.id}</a></td>` +
+          `<td><a href="/submission_detail/${r.id}" target="_blank" rel="noopener noreferrer">#${r.id}</a></td>` +
           `<td>${escHtml(r.username)}</td>` +
           `<td>${escHtml(r.problem_title || r.problem_id)}</td>` +
           `<td>${r.score}</td>` +

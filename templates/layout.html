@@ -41,6 +41,7 @@
       box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
     }
   </style>
+  {% block head %}{% endblock %}
 </head>
 <body>
 <nav class="navbar navbar-expand-lg navbar-light bg-light d-none d-lg-block layout-navbar layout-nav-compact">
@@ -758,5 +759,6 @@
 </script>
 {% endif %}
 
+{% block scripts %}{% endblock %}
 </body>
 </html>
