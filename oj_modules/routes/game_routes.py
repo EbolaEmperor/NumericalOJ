@@ -21,11 +21,7 @@ _EVEN_ROW_DIRS = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
 _ODD_ROW_DIRS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def ensure_circle_cat_tables():

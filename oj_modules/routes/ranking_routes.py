@@ -22,6 +22,8 @@ except Exception:  # pragma: no cover
 
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.db_services import get_user_by_username
+from oj_modules.markdown_utils import sanitize_html
+from oj_modules.security_utils import rate_limit_hit
 from oj_modules.ranking_db import (
     competition_attachments_dir,
     competition_dir,
@@ -216,13 +218,20 @@ def fetch_competition_match_detail_cached(match_id, competition_id):
 _evaluate_ranking_task = None
 _elo_initial_burst_task = None
 _agent_judge_task = None
+# Redis 客户端（提交限流）。由 oj.py 注入；为空时 fail-open。
+_rds = None
+# 打榜赛提交（尤其 agent_judge 每次起一个 Docker 评测）成本高，按用户+比赛限流。
+_RANK_SUBMIT_MAX_PER_WINDOW = 10
+_RANK_SUBMIT_WINDOW = 300
 
 
-def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None):
-    global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task
+def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None, redis_client=None):
+    global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task, _rds
     _evaluate_ranking_task = evaluate_ranking_task
     _elo_initial_burst_task = elo_initial_burst_task
     _agent_judge_task = agent_judge_task
+    if redis_client is not None:
+        _rds = redis_client
 
 
 def _current_user():
@@ -265,10 +274,10 @@ def _ensure_dir(path):
 def _render_description(text):
     if not text:
         return ''
-    return markdown.markdown(
+    return sanitize_html(markdown.markdown(
         text,
-        extensions=['extra', 'md_in_html', 'fenced_code', 'tables'],
-    )
+        extensions=['extra', 'fenced_code', 'tables'],
+    ))
 
 
 # ---------- 列表页 ----------
@@ -683,6 +692,18 @@ def ranking_submit(competition_id):
     if not is_admin and comp.get('is_active') != 1:
         flash('该比赛未开放', 'warning')
         return redirect(url_for('ranking.ranking_list'))
+
+    # 提交限流（管理员豁免）：防止刷量耗尽 Docker 评测队列、主机资源与付费 token 预算。
+    if not is_admin:
+        allowed, retry = rate_limit_hit(
+            _rds,
+            f"rank:submit:{competition_id}:{user.get('username')}",
+            _RANK_SUBMIT_MAX_PER_WINDOW,
+            _RANK_SUBMIT_WINDOW,
+        )
+        if not allowed:
+            flash(f'提交过于频繁，请 {retry} 秒后再试', 'warning')
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     answer_format = _competition_answer_format(comp)
     answer_ext = '.' + answer_format

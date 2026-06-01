@@ -7,16 +7,13 @@ import markdown
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
 from oj_modules.db_services import get_db_connection, get_user_by_username
+from oj_modules.markdown_utils import sanitize_html
 
 
 forum_bp = Blueprint('forum', __name__)
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def get_today_forum_counts():
@@ -50,21 +47,28 @@ def get_today_forum_counts():
 def get_last_10_days_forum_counts():
     today = datetime.today().date()
     last_10_days = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(-9, 1)]
-    counts = {}
+    counts = {day: 0 for day in last_10_days}
 
+    # 单条范围查询 + GROUP BY 取代过去的 10 次 COUNT；WHERE 用 created_at 范围（非 DATE() 包列），
+    # 可命中 idx_forum_replies_created 索引。
+    start_dt = datetime.combine(today + timedelta(days=-9), datetime.min.time())
+    end_dt = datetime.combine(today + timedelta(days=1), datetime.min.time())
     conn = get_db_connection()
     try:
-        for day in last_10_days:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) FROM forum_replies
-                    WHERE DATE(created_at) = %s
-                    """,
-                    (day,),
-                )
-                count = cursor.fetchone()['COUNT(*)']
-                counts[day] = count
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DATE(created_at) AS d, COUNT(*) AS c
+                FROM forum_replies
+                WHERE created_at >= %s AND created_at < %s
+                GROUP BY DATE(created_at)
+                """,
+                (start_dt, end_dt),
+            )
+            for row in cursor.fetchall():
+                key = row['d'].strftime('%Y-%m-%d') if hasattr(row['d'], 'strftime') else str(row['d'])
+                if key in counts:
+                    counts[key] = row['c']
     finally:
         conn.close()
 
@@ -72,8 +76,9 @@ def get_last_10_days_forum_counts():
 
 
 def render_markdown_with_highlighting(text):
-    md = markdown.Markdown(extensions=['fenced_code', 'codehilite', 'extra', 'md_in_html', 'tables'])
-    return md.convert(text)
+    # 去掉 md_in_html（最易透传裸 HTML 的扩展），并对输出做白名单消毒，防存储型 XSS。
+    md = markdown.Markdown(extensions=['fenced_code', 'codehilite', 'extra', 'tables'])
+    return sanitize_html(md.convert(text))
 
 
 @forum_bp.route('/forum')

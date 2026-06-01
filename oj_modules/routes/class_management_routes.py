@@ -33,15 +33,7 @@ def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
         pass
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
-
-
-def is_admin(user):
-    return user and user.get('is_admin') == 1
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def allowed_grade_file(filename):

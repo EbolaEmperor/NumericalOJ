@@ -33,6 +33,7 @@ from oj_modules.db_services import (
     upsert_agent_run_snapshot,
 )
 from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
+from oj_modules.markdown_utils import sanitize_html
 
 
 problem_core_bp = Blueprint('problem_core', __name__)
@@ -654,13 +655,13 @@ def problem_detail(problem_id):
             flash('无权限访问该题目', 'danger')
             return redirect(url_for('problem_core.problem_list'))
 
-    rendered_content = markdown.markdown(
+    rendered_content = sanitize_html(markdown.markdown(
         problem['content'],
-        extensions=['extra', 'md_in_html', 'fenced_code', 'tables'],
-    )
+        extensions=['extra', 'fenced_code', 'tables'],
+    ))
 
-    submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id)
-    last_submissions = submissions[:3]
+    # 题目详情页只展示最近 3 条提交，直接用 LIMIT 取，避免把该用户该题的全部提交拉进内存。
+    last_submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id, limit=3)
     initial_code = problem.get('initial_code', '')
 
     submission_limit = problem.get('submission_limit', 10)

@@ -38,15 +38,7 @@ def _strip_problem_title_tags(title):
     return text if text else original
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
-
-
-def is_admin(user):
-    return user and user.get('is_admin') == 1
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def _read_text_file_safe(path, max_chars=200000):

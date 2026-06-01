@@ -43,11 +43,7 @@ def init_repository_index_module(repository_build_index_task):
         pass
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 @repository_bp.route('/code_repository')

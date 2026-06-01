@@ -14,6 +14,7 @@ from oj_modules.db_services import (
     get_problem_title,
     get_user_by_id,
     get_user_by_username,
+    safe_table_name,
     upsert_user_problem_max_score,
 )
 
@@ -30,15 +31,7 @@ def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
         pass
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
-
-
-def is_admin(user):
-    return user and user.get('is_admin') == 1
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 @admin_user_bp.route('/admin/users')
@@ -194,7 +187,7 @@ def edit_user_ajax():
 
     except Exception as e:
         conn.rollback()
-        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500
     finally:
         conn.close()
 
@@ -272,7 +265,7 @@ def get_user_grades():
         return jsonify({'success': True, 'grades': grades})
 
     except Exception as e:
-        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500
     finally:
         conn.close()
 
@@ -317,7 +310,7 @@ def update_user_grade():
         return jsonify({'success': True, 'message': '成绩更新成功'})
 
     except Exception as e:
-        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500
 
 
 @admin_user_bp.route('/admin/problem_scores/<int:problem_id>')
@@ -361,7 +354,7 @@ def get_problem_scores(problem_id):
             })
 
     except Exception as e:
-        return jsonify({'success': False, 'message': f'数据库错误: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500
     finally:
         conn.close()
 
@@ -373,7 +366,8 @@ def add_class_ajax():
         return jsonify({'success': False, 'message': '无权限'}), 403
 
     class_en = request.form.get('class_en', '').strip()
-    if re.match('^[a-zA-Z0-9_]+$', class_en) is False:
+    # 注意：re.match 返回 Match/None，绝不会等于 False，旧写法 `is False` 是永远不成立的死代码。
+    if not re.fullmatch(r'[A-Za-z0-9_]+', class_en):
         return jsonify({'success': False, 'message': '班级英文名必须仅由大小写字母、数字、下划线构成'}), 400
     class_en = f"C{class_en}"
     class_cn = request.form.get('class_cn', '').strip()
@@ -396,7 +390,7 @@ def add_class_ajax():
             cursor.execute(sql, (class_en, class_cn))
         conn.commit()
         with conn.cursor() as cursor:
-            sql = f"CREATE TABLE {class_en}(id INT PRIMARY KEY AUTO_INCREMENT, problem_id INT, ddl DATETIME, complete_cnt INT, problem_title TEXT, ranking_competition_id INT DEFAULT NULL);"
+            sql = f"CREATE TABLE {safe_table_name(class_en)}(id INT PRIMARY KEY AUTO_INCREMENT, problem_id INT, ddl DATETIME, complete_cnt INT, problem_title TEXT, ranking_competition_id INT DEFAULT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;"
             cursor.execute(sql)
         conn.commit()
     except Exception as e:
