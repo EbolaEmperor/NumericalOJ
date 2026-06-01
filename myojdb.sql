@@ -223,6 +223,12 @@ CREATE TABLE `submissions` (
 ALTER TABLE submissions ADD INDEX idx_submissions_user_problem_id (username, problem_id, id);
 ALTER TABLE submissions ADD INDEX idx_submissions_user_id (username, id);
 ALTER TABLE submissions ADD INDEX idx_submissions_created_status (created_at, status);
+-- 按题目检索/重判（避免全表扫）；以及待批改书面作业查询 status+problem_type
+ALTER TABLE submissions ADD INDEX idx_submissions_problem_id (problem_id, id);
+ALTER TABLE submissions ADD INDEX idx_submissions_status_type (status, problem_type, id);
+-- 论坛按天统计：created_at 范围查询用得上（查询侧已改为范围条件而非 DATE() 包列）
+ALTER TABLE forum_replies ADD INDEX idx_forum_replies_created (created_at);
+ALTER TABLE forum_threads ADD INDEX idx_forum_threads_created (created_at);
 
 --
 -- Table structure for table `agent_task_runs`
@@ -288,7 +294,7 @@ DROP TABLE IF EXISTS `users`;
 CREATE TABLE `users` (
   `id` int NOT NULL AUTO_INCREMENT,
   `username` varchar(50) NOT NULL,
-  `password_hash` char(64) NOT NULL,
+  `password_hash` varchar(255) NOT NULL,
   `is_admin` tinyint(1) NOT NULL DEFAULT '0',
   `email` text,
   `class` text,
