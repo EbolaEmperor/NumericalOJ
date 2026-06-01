@@ -44,6 +44,7 @@ from oj_modules.ranking_db import (
     list_active_elo_competitions,
     list_eligible_elo_submissions,
     record_elo_match,
+    record_elo_match_locked,
 )
 
 
@@ -284,14 +285,12 @@ def register_ranking_elo_match_task(celery_app):
         lock_key = COMPETITION_LOCK_KEY_FMT.format(competition_id=competition_id)
         token = _acquire_rating_write_lock(rds, lock_key)
         try:
-            fresh_a = get_ranking_submission(submission_a_id) or sub_a
-            fresh_b = get_ranking_submission(submission_b_id) or sub_b
-            rating_a = float(fresh_a.get('elo_rating') if fresh_a.get('elo_rating') is not None else initial_rating)
-            rating_b = float(fresh_b.get('elo_rating') if fresh_b.get('elo_rating') is not None else initial_rating)
-            new_a, new_b = _new_ratings(rating_a, rating_b, winner, k)
-            record_elo_match(
+            # 正确性由 DB 行级 FOR UPDATE 保证：即便没拿到 Redis 写锁（Redis 抖动/抢锁超时），
+            # 也在事务内重读最新分数再算分写回，不会与并发对战互相覆盖（丢更新）。
+            rating_a, rating_b, new_a, new_b = record_elo_match_locked(
                 competition_id, submission_a_id, submission_b_id, winner,
-                rating_a, rating_b, new_a, new_b, details=details,
+                initial_rating, lambda ra, rb: _new_ratings(ra, rb, winner, k),
+                details=details,
             )
         finally:
             _release_rating_write_lock(rds, lock_key, token)
