@@ -5,6 +5,7 @@ import atexit
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -42,17 +43,30 @@ from oj_modules.ai_utils import _normalize_ai_code_issues
 
 
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
+
+# 每个班级对应一张以「班级英文名」命名的动态表，多处 SQL 需要把表名拼进语句。
+# 表名无法用占位符参数化，因此用统一白名单校验作为防 SQL 注入的最后防线：
+# 所有把班级/动态表名拼进 SQL 的地方都必须先经过 safe_table_name()。
+_VALID_TABLE_NAME_RE = re.compile(r'^[A-Za-z0-9_]+$')
+
+
+def safe_table_name(name):
+    """校验动态表名仅由字母、数字、下划线构成；非法时抛 ValueError。
+
+    防止把用户/管理员可控的班级英文名直接拼进 SQL 造成注入。所有动态表名拼接点
+    （CREATE/SELECT/UPDATE/INSERT/DELETE/ALTER ... {table}）都应先调用本函数。
+    """
+    s = '' if name is None else str(name)
+    if not _VALID_TABLE_NAME_RE.match(s):
+        raise ValueError(f"非法的表名: {name!r}")
+    return s
+
+
 _settings_table_ready = False
 _agent_runs_table_ready = False
 _submission_snapshot_rds = None
 _submission_snapshot_ttl_seconds = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
-_problem_written_mode_column_ready = False
-_problem_written_model_column_ready = False
-_problem_written_prompt_column_ready = False
-_problem_programming_mode_column_ready = False
-_problem_programming_model_column_ready = False
-_problem_programming_output_filename_column_ready = False
-_problem_programming_prompt_column_ready = False
+# problems 表惰性补列的「已补加」缓存改用 _ensured_problem_columns 集合（见 _ensure_problem_column）。
 _daily_submission_stats_table_ready = False
 
 _QWEN_TEXT_MODEL_KEY = str(QWEN_TEXT_MODEL or "").strip().lower()
@@ -268,33 +282,36 @@ def get_db_connection():
     return _db_pool.acquire()
 
 
-def ensure_problem_written_grading_mode_column():
-    global _problem_written_mode_column_ready
-    if _problem_written_mode_column_ready:
-        return
+# problems 表的惰性补列：以下若干 ensure_* 函数结构完全一致，统一收敛到一个 helper，
+# 用一个集合做进程内「已补加」缓存，取代过去每列一个 _*_ready 全局标志。
+_ensured_problem_columns = set()
 
-    success = False
+
+def _ensure_problem_column(column, add_column_sql):
+    """惰性给 problems 表补加某列（幂等 + 进程内缓存）。只读/迁移异常时静默跳过，
+    后续查询仍按默认值处理。column 仅来自代码内常量，add_column_sql 为完整 ALTER 语句。"""
+    if column in _ensured_problem_columns:
+        return
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE 'written_grading_mode'")
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute(
-                    """
-                    ALTER TABLE problems
-                    ADD COLUMN written_grading_mode TINYINT NOT NULL DEFAULT 1
-                    """
-                )
+            cursor.execute("SHOW COLUMNS FROM problems LIKE %s", (column,))
+            if not cursor.fetchone():
+                cursor.execute(add_column_sql)
                 conn.commit()
-            success = True
+        _ensured_problem_columns.add(column)
     except Exception:
-        # 兼容只读或迁移过程中的异常；后续查询仍可按默认模式处理。
+        # 兼容只读或迁移过程中的异常；后续查询仍可按默认值处理。
         pass
     finally:
         conn.close()
-    if success:
-        _problem_written_mode_column_ready = True
+
+
+def ensure_problem_written_grading_mode_column():
+    _ensure_problem_column(
+        'written_grading_mode',
+        "ALTER TABLE problems ADD COLUMN written_grading_mode TINYINT NOT NULL DEFAULT 1",
+    )
 
 
 def normalize_written_grading_model(value, default=_DEFAULT_WRITTEN_GRADING_MODEL):
@@ -305,60 +322,18 @@ def normalize_written_grading_model(value, default=_DEFAULT_WRITTEN_GRADING_MODE
 
 
 def ensure_problem_written_grading_model_column():
-    global _problem_written_model_column_ready
-    if _problem_written_model_column_ready:
-        return
-
-    success = False
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE 'written_grading_model'")
-            row = cursor.fetchone()
-            if not row:
-                default_model_sql = normalize_written_grading_model(_DEFAULT_WRITTEN_GRADING_MODEL).replace("'", "''")
-                cursor.execute(
-                    f"""
-                    ALTER TABLE problems
-                    ADD COLUMN written_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'
-                    """
-                )
-                conn.commit()
-            success = True
-    except Exception:
-        pass
-    finally:
-        conn.close()
-    if success:
-        _problem_written_model_column_ready = True
+    default_model_sql = normalize_written_grading_model(_DEFAULT_WRITTEN_GRADING_MODEL).replace("'", "''")
+    _ensure_problem_column(
+        'written_grading_model',
+        f"ALTER TABLE problems ADD COLUMN written_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'",
+    )
 
 
 def ensure_problem_written_grading_prompt_column():
-    global _problem_written_prompt_column_ready
-    if _problem_written_prompt_column_ready:
-        return
-
-    success = False
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE 'written_grading_prompt'")
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute(
-                    """
-                    ALTER TABLE problems
-                    ADD COLUMN written_grading_prompt TEXT NULL
-                    """
-                )
-                conn.commit()
-            success = True
-    except Exception:
-        pass
-    finally:
-        conn.close()
-    if success:
-        _problem_written_prompt_column_ready = True
+    _ensure_problem_column(
+        'written_grading_prompt',
+        "ALTER TABLE problems ADD COLUMN written_grading_prompt TEXT NULL",
+    )
 
 
 def ensure_problem_written_grading_columns():
@@ -386,116 +361,32 @@ def normalize_programming_grading_model(value, default=_DEFAULT_PROGRAMMING_GRAD
 
 
 def ensure_problem_programming_grading_mode_column():
-    global _problem_programming_mode_column_ready
-    if _problem_programming_mode_column_ready:
-        return
-
-    success = False
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_grading_mode'")
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute(
-                    """
-                    ALTER TABLE problems
-                    ADD COLUMN programming_grading_mode TINYINT NOT NULL DEFAULT 1
-                    """
-                )
-                conn.commit()
-            success = True
-    except Exception:
-        pass
-    finally:
-        conn.close()
-    if success:
-        _problem_programming_mode_column_ready = True
+    _ensure_problem_column(
+        'programming_grading_mode',
+        "ALTER TABLE problems ADD COLUMN programming_grading_mode TINYINT NOT NULL DEFAULT 1",
+    )
 
 
 def ensure_problem_programming_grading_model_column():
-    global _problem_programming_model_column_ready
-    if _problem_programming_model_column_ready:
-        return
-
-    success = False
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_grading_model'")
-            row = cursor.fetchone()
-            if not row:
-                default_model_sql = normalize_programming_grading_model(_DEFAULT_PROGRAMMING_GRADING_MODEL).replace("'", "''")
-                cursor.execute(
-                    f"""
-                    ALTER TABLE problems
-                    ADD COLUMN programming_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'
-                    """
-                )
-                conn.commit()
-            success = True
-    except Exception:
-        pass
-    finally:
-        conn.close()
-    if success:
-        _problem_programming_model_column_ready = True
+    default_model_sql = normalize_programming_grading_model(_DEFAULT_PROGRAMMING_GRADING_MODEL).replace("'", "''")
+    _ensure_problem_column(
+        'programming_grading_model',
+        f"ALTER TABLE problems ADD COLUMN programming_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'",
+    )
 
 
 def ensure_problem_programming_output_filename_column():
-    global _problem_programming_output_filename_column_ready
-    if _problem_programming_output_filename_column_ready:
-        return
-
-    success = False
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_output_filename'")
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute(
-                    """
-                    ALTER TABLE problems
-                    ADD COLUMN programming_output_filename VARCHAR(255) NOT NULL DEFAULT 'output.png'
-                    """
-                )
-                conn.commit()
-            success = True
-    except Exception:
-        pass
-    finally:
-        conn.close()
-    if success:
-        _problem_programming_output_filename_column_ready = True
+    _ensure_problem_column(
+        'programming_output_filename',
+        "ALTER TABLE problems ADD COLUMN programming_output_filename VARCHAR(255) NOT NULL DEFAULT 'output.png'",
+    )
 
 
 def ensure_problem_programming_grading_prompt_column():
-    global _problem_programming_prompt_column_ready
-    if _problem_programming_prompt_column_ready:
-        return
-
-    success = False
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE 'programming_grading_prompt'")
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute(
-                    """
-                    ALTER TABLE problems
-                    ADD COLUMN programming_grading_prompt TEXT NULL
-                    """
-                )
-                conn.commit()
-            success = True
-    except Exception:
-        pass
-    finally:
-        conn.close()
-    if success:
-        _problem_programming_prompt_column_ready = True
+    _ensure_problem_column(
+        'programming_grading_prompt',
+        "ALTER TABLE problems ADD COLUMN programming_grading_prompt TEXT NULL",
+    )
 
 
 def ensure_problem_programming_grading_columns():
@@ -1052,14 +943,16 @@ def ensure_class_homework_columns(class_en):
     """给班级动态表 C<class_en> 惰性补加 ranking_competition_id 列（幂等）。
     用于支持把「打榜赛」布置为作业——该列非空表示该作业行是一个打榜赛而非题目。
     不做进程内缓存：作业列表查询本身已带缓存，且 SHOW COLUMNS 很廉价，避免班级表被重建后误判。"""
-    if not class_en or not str(class_en).replace('_', '').isalnum():
+    try:
+        tbl = safe_table_name(class_en)
+    except ValueError:
         return
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(f"SHOW COLUMNS FROM `{class_en}` LIKE 'ranking_competition_id'")
+            cursor.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE 'ranking_competition_id'")
             if not cursor.fetchone():
-                cursor.execute(f"ALTER TABLE `{class_en}` ADD COLUMN ranking_competition_id INT DEFAULT NULL")
+                cursor.execute(f"ALTER TABLE `{tbl}` ADD COLUMN ranking_competition_id INT DEFAULT NULL")
         conn.commit()
     finally:
         conn.close()
@@ -1370,11 +1263,11 @@ def update_problem(
 
 
 def create_submission(problem_id, problem_title, username, code, score, test_points):
+    # 先在获取连接前查好题目，避免占着连接再去 get_db_connection() 形成嵌套占用、放大连接池压力。
+    problem = get_problem(problem_id)
+    problem_type = problem['type']
     conn = get_db_connection()
     try:
-        problem = get_problem(problem_id)
-        problem_type = problem['type']
-
         if problem_type == 2:
             with conn.cursor() as cursor:
                 sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
@@ -1383,11 +1276,11 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
                 if total_submissions == 0:
                     user = get_user_by_username(username)
                     if user["is_admin"] != 1:
-                        class_en = user["class"]
-                        sql = f"UPDATE {class_en} SET complete_cnt=complete_cnt+1 WHERE problem_id={problem_id}"
-                        cursor.execute(sql)
-                    sql = f"UPDATE problems SET cnt=cnt+1 WHERE id={problem_id}"
-                    cursor.execute(sql)
+                        class_en = safe_table_name(user["class"])
+                        sql = f"UPDATE {class_en} SET complete_cnt=complete_cnt+1 WHERE problem_id=%s"
+                        cursor.execute(sql, (problem_id,))
+                    sql = "UPDATE problems SET cnt=cnt+1 WHERE id=%s"
+                    cursor.execute(sql, (problem_id,))
             conn.commit()
 
         subid = None
@@ -1470,9 +1363,10 @@ def get_submissions_by_user_and_problem(username, problem_id):
         conn.close()
 
 
-def get_submission_summaries_by_user_and_problem(username, problem_id):
+def get_submission_summaries_by_user_and_problem(username, problem_id, limit=None):
     """
     仅返回列表页展示所需字段，避免把 code/test_points 大字段拉出。
+    limit 不为空时只取最近 N 条（题目详情页只展示最近几条，无需拉全部）。
     """
     conn = get_db_connection()
     try:
@@ -1483,7 +1377,11 @@ def get_submission_summaries_by_user_and_problem(username, problem_id):
                 WHERE username=%s AND problem_id=%s
                 ORDER BY id DESC
             """
-            cursor.execute(sql, (username, problem_id))
+            params = (username, problem_id)
+            if limit is not None:
+                sql += " LIMIT %s"
+                params = (username, problem_id, int(limit))
+            cursor.execute(sql, params)
             return cursor.fetchall()
     finally:
         conn.close()
