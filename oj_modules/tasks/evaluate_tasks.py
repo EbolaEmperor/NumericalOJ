@@ -10,6 +10,8 @@ import uuid
 import requests
 import pymysql
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from oj_modules import judger_core as core
 
 try:
@@ -29,6 +31,7 @@ from oj_modules.db_services import (
     insert_user_problem_ac_record_if_absent,
     get_problem,
     get_submission_by_id,
+    safe_table_name,
     set_submission_status_snapshot,
     get_user_classes,
     get_user_by_username,
@@ -265,7 +268,10 @@ def bump_complete_cnt_for_user_classes(user, problem_id):
     conn = get_db_connection()
     try:
         for cls in classes:
-            class_en = cls['class_en']
+            try:
+                class_en = safe_table_name(cls['class_en'])
+            except ValueError:
+                continue
             with conn.cursor() as cursor:
                 cursor.execute(f"SELECT id FROM {class_en} WHERE problem_id=%s", (problem_id,))
                 row = cursor.fetchone()
@@ -332,6 +338,11 @@ def register_evaluate_submission_task(celery_app):
 
             problem_id = submission['problem_id']
             code = submission['code']
+            # 安全：用户代码若混入评测包裹标记串，会截断禁用函数检查的扫描区间从而绕过过滤。
+            # 包裹前先剥离这些标记串，使标记不可被用户伪造。
+            for _marker in ("here_is_user_code_fuck_fuck_fuck_hahaha", "user_code_end_fuck_hahaha_fuck"):
+                if _marker in code:
+                    code = code.replace(_marker, "")
             problem = get_problem(problem_id)
             programming_grading_mode = _normalize_programming_grading_mode(problem)
             required_output_image_filename = (
@@ -954,7 +965,19 @@ def register_evaluate_submission_task(celery_app):
                 score=score,
                 final_status=final_status,
             )
+        except SoftTimeLimitExceeded:
+            # 软超时（先于硬 time_limit 触发）：标记 Error 并让 finally 正常释放锁，
+            # 避免被硬超时 SIGKILL 导致锁泄露、提交长期卡在 Running。
+            try:
+                update_submission_status(submission_id, 'Error')
+            except Exception:
+                pass
         finally:
+            # 清理本次提交的运行目录临时产物（保留输出图片），兜底磁盘增长。
+            try:
+                core.cleanup_run_artifacts_for_submission(submission_id)
+            except Exception:
+                pass
             _release_submission_lock(lock_client, lock_key, lock_token)
 
     return evaluate_submission
