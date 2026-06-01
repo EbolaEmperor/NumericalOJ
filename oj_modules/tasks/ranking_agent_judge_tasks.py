@@ -3,6 +3,7 @@
 """打榜赛 Agent-as-Judge 评测任务：起 Docker 容器跑 claude，tail result.jsonl 实时回传。"""
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import time
@@ -122,7 +123,11 @@ def _safe_extract_zip(zip_path, dest_dir):
 
 
 def _prepare_workspace(submission, competition, rules):
-    """准备宿主工作目录，返回绝对路径。"""
+    """准备宿主工作目录，返回 (绝对路径, 随机结果文件名)。
+
+    结果文件名随机生成，仅通过提示词/AJ_RESULT_FILE 告知评测 Agent；参赛者代码无法预先猜到该
+    文件名，从而无法把伪造的 pass 结果写进去（防止刷满分）。不再把工作目录/结果文件改为 world-writable
+    —— 容器内 root + 默认能力集（含 CAP_DAC_OVERRIDE）足以写宿主属主的挂载文件。"""
     sid = submission['id']
     ws = os.path.realpath(os.path.join(JUDGE_WORKSPACE_ROOT, str(sid)))
     if os.path.isdir(ws):
@@ -153,28 +158,24 @@ def _prepare_workspace(submission, competition, rules):
     # rules.json
     with open(os.path.join(ws, 'rules.json'), 'w', encoding='utf-8') as f:
         json.dump(aj.build_rules_json(rules), f, ensure_ascii=False, indent=2)
-    # result.jsonl 预创建；放开工作目录与该文件权限，确保容器内进程可写（防御受限能力场景）
-    rpath = os.path.join(ws, 'result.jsonl')
-    open(rpath, 'w').close()
-    try:
-        for d, _dirs, _files in os.walk(ws):
-            os.chmod(d, 0o777)
-        os.chmod(rpath, 0o666)
-    except Exception:
-        pass
-    return ws
+    # 随机结果文件名，预创建空文件（不放开 world 权限）
+    result_name = f'result_{secrets.token_hex(16)}.jsonl'
+    open(os.path.join(ws, result_name), 'w').close()
+    return ws, result_name
 
 
-def _run_container_and_tail(submission_id, ws, competition, rules, timeout_s):
-    """起 docker 容器跑 claude，tail result.jsonl，逐条 upsert + 广播。
+def _run_container_and_tail(submission_id, ws, result_name, competition, rules, timeout_s):
+    """起 docker 容器跑 claude，tail 随机结果文件，逐条 upsert + 广播。
     返回 (timed_out, container_ok)。可被集成测试整体 monkeypatch。"""
-    prompt = aj.build_prompt(competition.get('title'))
+    prompt = aj.build_prompt(competition.get('title'), result_name)
     container_name = f'aj_{submission_id}'
     docker_args = [
         'docker', 'run', '--rm', '-d', '--name', container_name,
         # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
-        # 既无法写宿主属主(非 root)的挂载文件(result.jsonl)、也无法 apt 装包。
+        # 既无法写宿主属主(非 root)的挂载文件、也无法 apt 装包。
         # 用 Docker 默认能力集 + 非特权 + pids/内存/CPU 限制 + 仅挂载本提交工作目录做隔离。
+        # no-new-privileges：禁止容器内进程通过 setuid 提权。
+        '--security-opt', 'no-new-privileges',
         '--pids-limit', JUDGE_PIDS_LIMIT,
         '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
         '-v', f'{ws}:/workspace', '-w', '/workspace',
@@ -185,6 +186,8 @@ def _run_container_and_tail(submission_id, ws, competition, rules, timeout_s):
         '-e', 'DISABLE_AUTOUPDATER=1',
         '-e', 'DISABLE_ERROR_REPORTING=1',
         '-e', 'AJ_PROMPT',
+        # report 命令据此写入随机结果文件名；参赛者代码无法预先猜到。
+        '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
         '-e', f'ANTHROPIC_BASE_URL={competition.get("agent_judge_base_url") or ""}',
         '-e', f'ANTHROPIC_AUTH_TOKEN={competition.get("agent_judge_api_key") or ""}',
         '-e', f'ANTHROPIC_API_KEY={competition.get("agent_judge_api_key") or ""}',
@@ -201,7 +204,7 @@ def _run_container_and_tail(submission_id, ws, competition, rules, timeout_s):
     except Exception:
         return (False, False)
 
-    result_path = os.path.join(ws, 'result.jsonl')
+    result_path = os.path.join(ws, result_name)
     rule_ids = {r['rule_id'] for r in rules}
     seen = set()
     start = time.time()
@@ -256,6 +259,12 @@ def _finalize(submission_id, rules, timed_out, container_ok):
     if not container_ok and not raw_by_id:
         update_submission_result(submission_id, None, 'Error', grade_details=None,
                                  error_message='评测容器启动失败')
+    elif not raw_by_id:
+        # 容器跑了但没有任何规则结果上报：基本是模型端故障 / Agent 崩溃 / 超时未产出，
+        # 判为 Error 而非 Accepted 0 分，避免在基础设施异常时把选手误判 0 分污染榜单（可重测）。
+        update_submission_result(submission_id, None, 'Error', grade_details=None,
+                                 error_message=('评测超时且未产出任何结果' if timed_out
+                                                else '评测未产出任何结果（模型或 Agent 异常）'))
     else:
         details = {'total_score': total, 'max_score': maxs, 'timed_out': timed_out,
                    'rules': [{'rule_id': rid, 'effective': c['effective'], 'score': c['score']}
@@ -282,8 +291,9 @@ def _judge(submission_id):
         _publish_snapshot(submission_id)
         return {'success': True, 'score': 0.0}
     timeout_s = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT)
-    ws = _prepare_workspace(submission, competition, rules)
-    timed_out, container_ok = _run_container_and_tail(submission_id, ws, competition, rules, timeout_s)
+    ws, result_name = _prepare_workspace(submission, competition, rules)
+    timed_out, container_ok = _run_container_and_tail(
+        submission_id, ws, result_name, competition, rules, timeout_s)
     _finalize(submission_id, rules, timed_out, container_ok)
     return {'success': True}
 

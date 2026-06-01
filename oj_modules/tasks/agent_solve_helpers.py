@@ -29,11 +29,9 @@ except Exception:
     _AGENT_REPOSITORY_KNN_SCORE_THRESHOLD = 0.0
 _READ_FILE_HARD_LIMIT_BYTES = 10 * 1024
 
-def _truncate_text(value, limit=300):
-    text = str(value or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "..."
+
+# 注意：_truncate_text 已由 `from agent_shared import *` 引入（与此处定义完全一致），
+# 不再重复定义，避免同名函数 shadow 造成的维护歧义。
 
 
 def _truncate_block_text(value, limit=12000):
