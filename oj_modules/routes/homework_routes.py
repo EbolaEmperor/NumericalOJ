@@ -18,6 +18,7 @@ from oj_modules.db_services import (
     get_problem,
     get_problem_title,
     get_user_by_username,
+    safe_table_name,
     set_setting,
 )
 from oj_modules.ranking_db import get_competition, list_competitions
@@ -40,15 +41,7 @@ def _invalidate_problem_list_cache_for_class(class_en):
         pass
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
-
-
-def is_admin(user):
-    return user and user.get('is_admin') == 1
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def init_homework_module(celery_app, redis_client, redis_binary_client):
@@ -72,7 +65,7 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                 conn = get_db_connection()
                 try:
                     with conn.cursor() as cursor:
-                        cursor.execute(f"SELECT problem_id FROM {selected_class} ORDER BY id ASC")
+                        cursor.execute(f"SELECT problem_id FROM {safe_table_name(selected_class)} ORDER BY id ASC")
                         homework_problems = cursor.fetchall()
                 finally:
                     conn.close()
@@ -338,7 +331,7 @@ def admin_homework():
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
-                sql = f"SELECT * FROM {selected_class} ORDER BY id ASC"
+                sql = f"SELECT * FROM {safe_table_name(selected_class)} ORDER BY id ASC"
                 cursor.execute(sql)
                 homework_list = cursor.fetchall()
                 for hw in homework_list:
@@ -352,7 +345,7 @@ def admin_homework():
                         problem = get_problem(hw['problem_id'])
                         hw['problem_title'] = problem['title'] if problem else '未知题目'
         except pymysql.Error as e:
-            flash(f'数据库错误: {str(e)}', 'danger')
+            flash(f'数据库操作失败，请稍后再试', 'danger')
         finally:
             conn.close()
 
@@ -407,13 +400,13 @@ def admin_update_ddl():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = f"UPDATE {class_en} SET ddl=%s WHERE id=%s"
+            sql = f"UPDATE {safe_table_name(class_en)} SET ddl=%s WHERE id=%s"
             cursor.execute(sql, (new_ddl, homework_id))
         conn.commit()
         _invalidate_problem_list_cache_for_class(class_en)
         return jsonify(success=True, message='DDL更新成功')
     except pymysql.Error as e:
-        return jsonify(success=False, message=f'数据库错误: {str(e)}'), 500
+        return jsonify(success=False, message=f'数据库操作失败，请稍后再试'), 500
     finally:
         conn.close()
 
@@ -469,7 +462,7 @@ def admin_add_homework():
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
-                sql = f"INSERT INTO {class_en} ({col}, ddl, complete_cnt, problem_title) VALUES (%s, %s, 0, %s)"
+                sql = f"INSERT INTO {safe_table_name(class_en)} ({col}, ddl, complete_cnt, problem_title) VALUES (%s, %s, 0, %s)"
                 cursor.execute(sql, (val, ddl, title))
             conn.commit()
             _invalidate_problem_list_cache_for_class(class_en)
@@ -477,7 +470,7 @@ def admin_add_homework():
         finally:
             conn.close()
     except pymysql.Error as e:
-        flash(f'数据库错误: {str(e)}', 'danger')
+        flash(f'数据库操作失败，请稍后再试', 'danger')
 
     return redirect(url_for('homework.admin_homework', sclass=class_en))
 
@@ -501,14 +494,14 @@ def admin_delete_homework():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = f"DELETE FROM {class_en} WHERE id=%s"
+            sql = f"DELETE FROM {safe_table_name(class_en)} WHERE id=%s"
             cursor.execute(sql, (homework_id,))
         conn.commit()
         _invalidate_problem_list_cache_for_class(class_en)
         flash("删除成功", "success")
         return jsonify(success=True, message="删除成功")
     except pymysql.Error as e:
-        return jsonify(success=False, message=f"数据库错误: {str(e)}"), 500
+        return jsonify(success=False, message=f"数据库操作失败，请稍后再试"), 500
     finally:
         conn.close()
 
@@ -530,7 +523,7 @@ def export_scores():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT problem_id FROM {selected_class} ORDER BY id ASC")
+            cursor.execute(f"SELECT problem_id FROM {safe_table_name(selected_class)} ORDER BY id ASC")
             rows = cursor.fetchall()
             problem_ids = [r['problem_id'] for r in rows]
     finally:

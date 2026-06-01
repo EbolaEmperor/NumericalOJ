@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import os
+import secrets
 
-from flask import Flask, redirect, url_for, session
+from flask import Flask, jsonify, redirect, render_template, request, url_for, session
+from werkzeug.exceptions import HTTPException
 from celery import Celery
 
 # config.py
 from config import *
+import config as _cfg
 from oj_modules.db_services import (
     get_user_by_username,
     init_submission_snapshot_cache,
@@ -18,12 +21,12 @@ from oj_modules.routes.admin_problem_routes import admin_problem_bp
 from oj_modules.routes.repository_routes import repository_bp, init_repository_index_module
 from oj_modules.routes.forum_routes import forum_bp
 from oj_modules.routes.grading_routes import grading_bp
-from oj_modules.routes.ai_routes import ai_bp
+from oj_modules.routes.ai_routes import ai_bp, init_ai_module
 from oj_modules.routes.class_management_routes import class_management_bp
 from oj_modules.routes.rejudge_routes import rejudge_bp, init_rejudge_module
 from oj_modules.routes.admin_user_routes import admin_user_bp
 from oj_modules.routes.homework_routes import homework_bp, init_homework_module
-from oj_modules.routes.auth_routes import auth_bp
+from oj_modules.routes.auth_routes import auth_bp, init_auth_module
 from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_core_module
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
@@ -62,10 +65,48 @@ rds_binary = redis.StrictRedis(
     decode_responses=False,
 )
 
+def _load_secret_key():
+    """会话签名密钥来源（按优先级）：
+    1. config.py 的 SECRET_KEY（生产 config.py 不被 rsync 覆盖，建议在此设置固定值）；
+    2. <OJ_ROOT>/tmp/secret_key 文件（首次自动生成并持久化，跨重启稳定、且不入 git）。
+    绝不再使用历史硬编码常量，否则任何人都能伪造管理员会话 cookie。"""
+    key = getattr(_cfg, 'SECRET_KEY', None)
+    if key:
+        return key
+    key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'secret_key')
+    try:
+        with open(key_path, 'r') as f:
+            saved = f.read().strip()
+        if saved:
+            return saved
+    except FileNotFoundError:
+        pass
+    new_key = secrets.token_hex(32)
+    try:
+        os.makedirs(os.path.dirname(key_path), exist_ok=True)
+        with open(key_path, 'w') as f:
+            f.write(new_key)
+        os.chmod(key_path, 0o600)
+    except Exception:
+        pass
+    return new_key
+
+
 app = Flask(__name__)
-app.secret_key = 'some_secret_key_for_session'
-app.config['DEBUG'] = True
+app.secret_key = _load_secret_key()
+# DEBUG 默认关闭：生产环境绝不能开 Werkzeug 交互式调试器（源码/变量泄露 + RCE 控制台）。
+# 本地开发可在 config.py 设 FLASK_DEBUG = True。
+app.config['DEBUG'] = bool(getattr(_cfg, 'FLASK_DEBUG', False))
+# 即便 DEBUG 关闭也保留模板热重载，保证「scp 模板即生效」的前端快速路径不受影响。
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
+# 会话 Cookie 加固：HttpOnly 防 JS 窃取；SameSite=Lax 阻断跨站 POST CSRF；
+# Secure 仅在 HTTPS 下回传（默认关闭以兼容内网 HTTP，部署 HTTPS 后可在 config.py 置 True）。
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=bool(getattr(_cfg, 'SESSION_COOKIE_SECURE', False)),
+)
 
 # Celery 配置
 _REDIS_URL = f"redis://{REDIS_HOST}:{int(REDIS_PORT)}/{int(REDIS_DB)}"
@@ -100,17 +141,53 @@ def inject_globals():
     except Exception:
         return { 'class_adjust_enabled': True }
 
+
+# 默认 CSP：考虑到现有页面大量内联脚本/样式与本地打包资源，采用「不破坏现网」的宽松策略，
+# 但仍通过 object-src/frame-ancestors/base-uri 缓解点击劫持与 base 标签劫持。可在 config.py
+# 用 CONTENT_SECURITY_POLICY 覆盖以逐步收紧。
+_DEFAULT_CSP = (
+    "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; "
+    "img-src 'self' data: blob: https:; "
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
+)
+_CONTENT_SECURITY_POLICY = getattr(_cfg, 'CONTENT_SECURITY_POLICY', _DEFAULT_CSP)
+
+
+@app.errorhandler(Exception)
+def _handle_unexpected_error(e):
+    # HTTP 异常（404/403/abort 等）按原样返回，保持各自语义。
+    if isinstance(e, HTTPException):
+        return e
+    # 其余为未处理异常：服务端记录完整堆栈，对外只返回通用文案，绝不泄露堆栈/SQL 片段。
+    try:
+        app.logger.exception('未处理的服务器错误')
+    except Exception:
+        pass
+    accept = request.headers.get('Accept', '') or ''
+    wants_json = ('application/json' in accept and 'text/html' not in accept) \
+        or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    if wants_json:
+        return jsonify(success=False, message='服务器内部错误，请稍后再试'), 500
+    try:
+        return render_template('error.html', message='服务器内部错误，请稍后再试'), 500
+    except Exception:
+        return '服务器内部错误，请稍后再试', 500
+
+
+@app.after_request
+def _set_security_headers(resp):
+    # 这些响应头不破坏现有功能，提供基础纵深防御。
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+    resp.headers.setdefault('Referrer-Policy', 'same-origin')
+    if _CONTENT_SECURITY_POLICY:
+        resp.headers.setdefault('Content-Security-Policy', _CONTENT_SECURITY_POLICY)
+    return resp
+
 ###############################################################################
 #  会话 / 权限
 ###############################################################################
-def current_user():
-    """
-    返回当前登录用户的完整记录(包含 is_admin 字段),或 None
-    """
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
+from oj_modules.auth_helpers import current_user  # 统一会话/权限实现
 
 ###############################################################################
 #  路由
@@ -136,6 +213,11 @@ celery.conf.task_routes = {
     'oj.agent.generate_testdata': {'queue': 'agent'},
     'oj.ranking_agent_judge': {'queue': 'judge'},
 }
+# 任务执行完才 ack：worker 崩溃/被硬超时 SIGKILL 时，消息不会丢失而是重新投递。
+# 配合各任务的 Redis 幂等锁，重投不会导致重复评测；reject_on_worker_lost 让「worker 丢失」
+# 的任务被重新入队而非静默丢弃。（各任务 wall-clock 上限远小于 broker 可见性超时，安全。）
+celery.conf.task_acks_late = True
+celery.conf.task_reject_on_worker_lost = True
 evaluate_submission = register_evaluate_submission_task(celery)
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
 agent_solve_problem = register_agent_solve_problem_task(celery, evaluate_submission)
@@ -169,11 +251,15 @@ init_repository_index_module(build_repository_index)
 # 初始化 AI 检测模块（依赖 Celery 任务）
 init_ai_detection_module(detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions)
 # 初始化打榜赛模块（依赖 Celery 评测任务、ELO 即时补战任务、Agent 评测任务）
-init_ranking_module(evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge)
+init_ranking_module(evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge, redis_client=rds)
 # 启动 ELO 匹配 tick 链路（自调度，全局单链）
 seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
 # 启动 Pending 自动回收链路（自调度，全局单链）
 seed_pending_requeue_watchdog(rds, pending_requeue_watchdog)
+# 初始化认证模块（登录/发码限流依赖 Redis）
+init_auth_module(rds)
+# 初始化 AI 模块（/ask_ai、ask_ai_code_marks 限流依赖 Redis）
+init_ai_module(rds)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds)
 # 初始化 agent 运行状态缓存（Redis）

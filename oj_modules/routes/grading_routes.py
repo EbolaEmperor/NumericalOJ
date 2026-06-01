@@ -22,15 +22,7 @@ from oj_modules.grading_services import (
 grading_bp = Blueprint('grading', __name__)
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
-
-
-def is_admin(user):
-    return user and user.get('is_admin') == 1
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def _find_written_submission_pdf(submission, problem):
@@ -76,9 +68,17 @@ def _find_written_submission_pdf(submission, problem):
 
 @grading_bp.route('/download_submission_file/<int:submission_id>')
 def download_submission_file(submission_id):
+    user = current_user()
+    if not user:
+        return "请先登录", 401
+
     submission = get_submission_by_id(submission_id)
     if not submission:
         return "提交记录不存在", 404
+
+    # 仅提交者本人或管理员可下载，防止越权枚举他人书面作业 PDF。
+    if submission.get('username') != user['username'] and not is_admin(user):
+        return "无权访问", 403
 
     if submission['problem_type'] != 2:
         return "不是书面作业题", 400

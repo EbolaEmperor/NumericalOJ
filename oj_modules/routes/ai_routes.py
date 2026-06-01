@@ -18,20 +18,26 @@ from oj_modules.db_services import (
     save_submission_ai_code_marks_json,
 )
 from oj_modules.repository_services import extract_includes_from_code, get_user_repository_files_by_names
+from oj_modules.security_utils import rate_limit_hit
 
 
 ai_bp = Blueprint('ai', __name__)
 
+# Redis 客户端（限流）。由 oj.py 的 init_ai_module 注入；为空时限流 fail-open。
+_rds = None
+# AI 辅导/标注是昂贵的 LLM 调用，按用户限流。
+_ASK_AI_MAX_PER_WINDOW = 20
+_ASK_AI_WINDOW = 300
+_MARKS_MAX_PER_WINDOW = 15
+_MARKS_WINDOW = 300
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
+
+def init_ai_module(redis_client):
+    global _rds
+    _rds = redis_client
 
 
-def is_admin(user):
-    return user and user.get('is_admin') == 1
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def generate_completion_stream(prompt, model="Qwen3"):
@@ -151,6 +157,11 @@ def ask_ai_code_marks():
         if cached_result:
             return jsonify(**cached_result, source='cache')
 
+    # 仅在需要真正生成（缓存未命中或 force_refresh 绕过缓存）时限流，避免被反复刷生成昂贵标注。
+    allowed, retry = rate_limit_hit(_rds, f"ai:marks:{user['username']}", _MARKS_MAX_PER_WINDOW, _MARKS_WINDOW)
+    if not allowed:
+        return jsonify(success=False, message=f"请求过于频繁，请 {retry} 秒后再试"), 429
+
     test_points = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in (submission.get("test_points") or [])])
 
     included_files = extract_includes_from_code(user_code)
@@ -203,22 +214,36 @@ def ask_ai():
     if not data:
         return jsonify(success=False, message="缺少请求体"), 400
 
-    problem_id = data.get('problem_id', '')
-    problem = get_problem(problem_id)
-    problem_content = problem['content']
-    user_code = data.get('user_code', '').strip()
-    sid = data.get('submission_id', '')
-    submission = get_submission_by_id(sid)
-    test_points = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in submission["test_points"]])
-
-    if not problem_content:
-        return jsonify(success=False, message="缺少题目内容"), 400
-    if not user_code:
-        return jsonify(success=False, message="缺少用户代码"), 400
-
     user = current_user()
     if not user:
         return jsonify(success=False, message="未登录"), 401
+
+    problem_id = data.get('problem_id', '')
+    problem = get_problem(problem_id)
+    if not problem:
+        return jsonify(success=False, message="题目不存在"), 404
+    problem_content = problem.get('content') or ''
+    if not problem_content:
+        return jsonify(success=False, message="缺少题目内容"), 400
+
+    user_code = (data.get('user_code') or '').strip()
+    if not user_code:
+        return jsonify(success=False, message="缺少用户代码"), 400
+
+    sid = data.get('submission_id', '')
+    submission = get_submission_by_id(sid)
+    if not submission:
+        return jsonify(success=False, message="提交记录不存在"), 404
+    # 仅本人或管理员可对该提交发起 AI 辅导，避免越权读取他人提交/题面。
+    if submission.get('username') != user['username'] and not is_admin(user):
+        return jsonify(success=False, message="无权访问该提交"), 403
+
+    # 限流：AI 辅导是昂贵的流式调用，限制每用户频率，避免刷爆 DashScope 配额与 Web 进程。
+    allowed, retry = rate_limit_hit(_rds, f"ai:ask:{user['username']}", _ASK_AI_MAX_PER_WINDOW, _ASK_AI_WINDOW)
+    if not allowed:
+        return jsonify(success=False, message=f"请求过于频繁，请 {retry} 秒后再试"), 429
+
+    test_points = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in (submission.get("test_points") or [])])
 
     included_files = extract_includes_from_code(user_code)
     repository_files = {}

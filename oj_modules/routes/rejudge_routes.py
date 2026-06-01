@@ -28,15 +28,7 @@ _TIME_RANGE_MAX_TOTAL = 500
 _REJUDGE_STAGGER_SECONDS = 1
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
-
-
-def is_admin(user):
-    return user and user.get('is_admin') == 1
+from oj_modules.auth_helpers import current_user, is_admin
 
 
 def init_rejudge_module(celery_app, redis_client, evaluate_submission_func, transcribe_written_func=None):

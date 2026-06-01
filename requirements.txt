@@ -9,5 +9,6 @@ pillow
 openpyxl
 markdown
 pygments
+bleach
 openai
 httpx
