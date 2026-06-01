@@ -10,9 +10,12 @@
          AJEOF
 用 flock 防止并发交错（claude 一般串行调用，仍加锁更稳）。"""
 import json
+import os
 import sys
 
-RESULT_PATH = '/workspace/result.jsonl'
+# 结果文件名每次评测随机生成（参赛者代码无法预先猜到），经 AJ_RESULT_FILE 注入；
+# 回退到历史固定路径以兼容旧调用。
+RESULT_PATH = os.environ.get('AJ_RESULT_FILE') or '/workspace/result.jsonl'
 
 
 def main(argv):

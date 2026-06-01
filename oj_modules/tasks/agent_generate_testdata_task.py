@@ -29,7 +29,7 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
             "status": "Running",
             "message": "数据生成 Agent 启动中",
             "round": 0,
-            "max_rounds": 0,
+            "max_rounds": max(1, int(AGENT_MAX_ROUNDS or 32)),
             "best_score": 0,
             "latest_submission_id": None,
             "final_submission_id": None,
@@ -124,6 +124,16 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
             while True:
                 round_idx += 1
                 state["round"] = round_idx
+                # 强制最大轮数上限，避免无限循环烧 worker/token。
+                if round_idx > state["max_rounds"]:
+                    msg = f"已达最大轮数 {state['max_rounds']}，数据生成 Agent 停止"
+                    _push_agent_event(state, msg, level="warning", status="Failed")
+                    return {
+                        "success": False,
+                        "message": msg,
+                        "task_id": task_id,
+                        "attempts": attempts,
+                    }
                 before_chars = _conversation_total_chars(conversation)
                 trimmed_conversation = _trim_conversation_by_budget(
                     conversation,

@@ -36,7 +36,9 @@ _DEFAULT_WRITTEN_GRADING_MODEL_SPEC = (
     if str(QWEN_TEXT_MODEL or "").strip()
     else f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking"
 )
-_WRITTEN_TASK_TIME_LIMIT = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS))
+# 硬超时必须小于幂等锁 TTL（EVALUATE_SUBMISSION_LOCK_TTL_SECONDS），否则锁会先于任务过期，
+# 导致重投的副本拿到锁并重复评分（重复计费 AI）。这里预留 120s，使「锁存活 > 任务时限」。
+_WRITTEN_TASK_TIME_LIMIT = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS) - 120)
 _WRITTEN_TASK_SOFT_TIME_LIMIT = max(30, _WRITTEN_TASK_TIME_LIMIT - 60)
 _MYSQL_RETRY_ERRORS = (
     pymysql.err.OperationalError,
