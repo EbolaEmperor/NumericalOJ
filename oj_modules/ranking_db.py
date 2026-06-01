@@ -1030,6 +1030,77 @@ def record_elo_match(competition_id, sub_a_id, sub_b_id, winner,
         conn.close()
 
 
+def record_elo_match_locked(competition_id, sub_a_id, sub_b_id, winner,
+                            initial_rating, compute_new_ratings,
+                            details=None, error_message=None):
+    """原子地记录一场 ELO 对战：在单个事务里对两条提交行加 FOR UPDATE 行锁、重读最新 elo_rating，
+    调用 compute_new_ratings(rating_a, rating_b) -> (new_a, new_b) 算分后写回并插入历史。
+
+    这样即便不依赖 Redis 写锁，并发对战也不会读到同一旧分而互相覆盖（丢更新）。两行按 id 升序加锁，
+    避免与反向对战死锁。compute_new_ratings 由调用方提供，保持 ELO 公式单一实现。
+    返回 (rating_a_before, rating_b_before, rating_a_after, rating_b_after)。"""
+    ensure_ranking_tables()
+    details_text = None
+    if details is not None:
+        if isinstance(details, str):
+            details_text = details
+        else:
+            try:
+                details_text = json.dumps(details, ensure_ascii=False)
+            except Exception:
+                details_text = str(details)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            lo, hi = sorted((int(sub_a_id), int(sub_b_id)))
+            cursor.execute(
+                "SELECT id, elo_rating FROM ranking_submissions"
+                " WHERE id IN (%s, %s) ORDER BY id FOR UPDATE",
+                (lo, hi),
+            )
+            rows = {int(r['id']): r for r in cursor.fetchall()}
+
+            def _rating(sid):
+                r = rows.get(int(sid))
+                v = r.get('elo_rating') if r else None
+                return float(v) if v is not None else float(initial_rating)
+
+            rating_a = _rating(sub_a_id)
+            rating_b = _rating(sub_b_id)
+            new_a, new_b = compute_new_ratings(rating_a, rating_b)
+            new_a = float(new_a)
+            new_b = float(new_b)
+
+            cursor.execute(
+                """
+                INSERT INTO ranking_elo_matches
+                  (competition_id, submission_a_id, submission_b_id, winner,
+                   rating_a_before, rating_b_before, rating_a_after, rating_b_after,
+                   details, error_message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (int(competition_id), int(sub_a_id), int(sub_b_id), int(winner),
+                 rating_a, rating_b, new_a, new_b, details_text, error_message),
+            )
+            if int(winner) in (0, 1, 2):
+                cursor.execute(
+                    "UPDATE ranking_submissions"
+                    " SET elo_rating = %s, score = %s, elo_match_count = elo_match_count + 1"
+                    " WHERE id = %s",
+                    (new_a, new_a, int(sub_a_id)),
+                )
+                cursor.execute(
+                    "UPDATE ranking_submissions"
+                    " SET elo_rating = %s, score = %s, elo_match_count = elo_match_count + 1"
+                    " WHERE id = %s",
+                    (new_b, new_b, int(sub_b_id)),
+                )
+        conn.commit()
+        return rating_a, rating_b, new_a, new_b
+    finally:
+        conn.close()
+
+
 def list_competition_matches(competition_id, *, page=1, per_page=20, username=None):
     """分页拉某场赛事的对战记录，并 JOIN 出双方用户名，省掉前端再查表。
     若提供 username，只返回该用户参与的对战（任一方）。

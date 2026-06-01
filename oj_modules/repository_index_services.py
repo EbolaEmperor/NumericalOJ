@@ -1893,7 +1893,6 @@ def _write_faiss_index(user_id, chunk_ids, embeddings, embedding_model):
 
     index = faiss.IndexFlatIP(dim)
     index.add(vectors)
-    faiss.write_index(index, paths['index'])
 
     meta = {
         'embedding_model': str(embedding_model or ''),
@@ -1902,8 +1901,16 @@ def _write_faiss_index(user_id, chunk_ids, embeddings, embedding_model):
         'chunk_ids': list(chunk_ids),
         'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
-    with open(paths['meta'], 'w', encoding='utf-8') as f:
+
+    # 原子写：先写到临时文件再 os.replace 落位，避免并发读者（web/agent 进程）读到半成品；
+    # 索引文件先落位、meta 后落位（meta 作为“提交”标记）。配合 _load 的一致性校验自愈短暂错配。
+    index_tmp = paths['index'] + '.tmp'
+    meta_tmp = paths['meta'] + '.tmp'
+    faiss.write_index(index, index_tmp)
+    with open(meta_tmp, 'w', encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False)
+    os.replace(index_tmp, paths['index'])
+    os.replace(meta_tmp, paths['meta'])
 
 
 def _load_faiss_index(user_id):
@@ -1914,6 +1921,13 @@ def _load_faiss_index(user_id):
     index = faiss.read_index(paths['index'])
     with open(paths['meta'], 'r', encoding='utf-8') as f:
         meta = json.load(f)
+    # 一致性校验：索引向量数与 meta 中 chunk_ids 数不一致，说明读到了写入过程中的瞬时错配
+    # （或半成品），视为“尚未就绪”，让调用方回退（DB 检索/空结果），下次读取即自愈。
+    try:
+        if int(index.ntotal) != len(meta.get('chunk_ids') or []):
+            return None, None
+    except Exception:
+        return None, None
     return index, meta
 
 
@@ -2032,6 +2046,8 @@ def _rebuild_faiss_index_from_db(user_id):
     chunk_ids = []
     vectors = []
     embedding_model = ''
+    expected_dim = None
+    skipped_dim_mismatch = 0
     for row in rows:
         chunk_id = _safe_str((row or {}).get('chunk_id'))
         vector_json = (row or {}).get('vector_json')
@@ -2043,10 +2059,22 @@ def _rebuild_faiss_index_from_db(user_id):
             continue
         if not isinstance(vector, list) or not vector:
             continue
+        # 维度一致性：embedding 模型/维度变更后，DB 里可能混有不同维度的旧向量；
+        # 若直接 np.asarray 会因 ragged 数组报错。这里以首个向量维度为准，跳过维度不一致者，
+        # 用一致子集重建（下次完整重索引会按当前模型重算全部向量）。
+        if expected_dim is None:
+            expected_dim = len(vector)
+        elif len(vector) != expected_dim:
+            skipped_dim_mismatch += 1
+            continue
         chunk_ids.append(chunk_id)
         vectors.append(vector)
         if not embedding_model:
             embedding_model = _safe_str((row or {}).get('embedding_model'))
+
+    if skipped_dim_mismatch:
+        print(f"[repository_index] 从 DB 重建索引：跳过 {skipped_dim_mismatch} 个维度不一致的向量"
+              f"（可能因 embedding 模型变更，建议触发一次完整重索引）。")
 
     if not chunk_ids:
         _write_faiss_index(
