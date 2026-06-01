@@ -39,7 +39,19 @@ The sandboxed code execution runs **in-process inside the Celery `celery`-queue 
 
 DB bootstrap: `mysql -u root -p -e "CREATE DATABASE myojdb CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;" && mysql -u root -p myojdb < myojdb.sql`. Default admin is `admin` / `admin123`.
 
-There is no test suite, lint config, or build step. Sanity-check changes with `python3 -m py_compile <file>` (the existing `.claude/settings.local.json` allowlists this pattern across the codebase).
+There **is** a pytest suite under `tests/` (`tests/unit`, `tests/db`, `tests/integration`, plus `tests/ci` infra) with `pytest.ini` and `tests/conftest.py` (DB-resetting fixtures). Always sanity-check changes with `python3 -m py_compile <file>`, and run the relevant tests before deploying:
+
+- Infra-free pure-logic tests run anywhere: `pytest tests/unit/test_judger_core.py tests/unit/test_security_regression.py tests/unit/test_grading_and_compare.py tests/unit/test_sandbox_limits.py`.
+- `tests/integration/test_judging_smoke.py` (marked `@pytest.mark.judger`) needs a host with `gcc`/`g++`/`python3`/`octave`; it now also covers real CE/RE/TLE/Forbidden verdicts.
+- `tests/db` and most of `tests/integration` need MySQL + Redis; the full suite runs via the Docker-Compose runner in `tests/ci/` (`tests/ci/run-on-why-server.sh`). A lightweight GitHub Actions gate (`.github/workflows/ci.yml`) runs `compileall` + the infra-free unit tests on every push/PR.
+
+There is no separate lint config or build step.
+
+Cross-cutting helpers added during the 2026 hardening pass — prefer these over re-implementing:
+- `oj_modules/auth_helpers.py` — single source of `current_user`/`is_admin` + `login_required`/`admin_required` decorators (don't re-define per route module; `problem_core_routes` keeps a memoized variant on purpose).
+- `oj_modules/security_utils.py` — `hash_password`/`verify_password` (werkzeug KDF, verify-then-rehash of legacy sha256) and `rate_limit_hit`/`cooldown_active` (Redis, fail-open).
+- `oj_modules/markdown_utils.py` — `sanitize_html`/`render_markdown` (bleach allowlist, regex-scrub fallback). Every Markdown sink rendered with `| safe` MUST pass through `sanitize_html`.
+- `oj_modules/db_services.py::safe_table_name(name)` — MUST wrap any class/dynamic table name interpolated into SQL (the per-class-table f-string pattern).
 
 ## Deployment to why-server
 
@@ -74,7 +86,17 @@ The default `rsync` command in `.claude/settings.local.json` already excludes `c
 - `DASHSCOPE_*`, `QWEN_*_MODEL`, `AI_TUTOR_MODEL` — Aliyun DashScope endpoints used everywhere AI is involved (tutor feedback, written-homework grading, agent solver, embeddings).
 - `MATLAB_AI_DETECT_*` — points at a self-hosted vLLM-served fine-tuned detector for MATLAB AI-generated code.
 - `REPOSITORY_*` — vector-search config for the user-library repository (FAISS index under `tmp/repository_vector_index`).
-- `AGENT_*` — limits for the problem-solving / test-data-generation agents (max rounds, submit limit, context size, memory).
+- `AGENT_*` — limits for the problem-solving / test-data-generation agents (max rounds, submit limit, context size, memory). `AGENT_MAX_ROUNDS` is now actually enforced in the agent ReAct loops.
+
+**Optional hardening knobs (all read via `getattr(config, ...)` / env with safe defaults — the remote `config.py` needs no edits):**
+- `SECRET_KEY` (config) — Flask session-signing key. If absent, a random key is generated and persisted to `tmp/secret_key` (gitignored, stable across restarts). The old hardcoded key is gone.
+- `FLASK_DEBUG` (config, default `False`) — never enable in production (Werkzeug debugger = RCE). Templates still hot-reload via `TEMPLATES_AUTO_RELOAD` even with debug off, so the frontend fast-path still works.
+- `SESSION_COOKIE_SECURE` (config, default `False`) — set `True` once served over HTTPS. `HttpOnly` + `SameSite=Lax` are always on.
+- `CONTENT_SECURITY_POLICY` (config) — overrides the default permissive CSP set in `oj.py`'s `after_request`.
+- `JUDGER_RLIMIT_NPROC` / `JUDGER_RLIMIT_FSIZE_BYTES` / `JUDGER_GUARD_TIMEOUT_BUFFER_SEC` (env) — sandbox fork-bomb / disk-fill / Python-timeout-backstop tuning.
+- `JUDGER_OCTAVE_RLIMIT_AS` (env, default off) — Octave gets CPU/NPROC/FSIZE limits unconditionally, but `RLIMIT_AS` is opt-in (it historically broke Octave/MKL virtual-memory reservations). Verify Octave's virtual footprint before enabling.
+
+Note: after editing `docker/agent_judge/report` (now reads the random result path from `AJ_RESULT_FILE`), rebuild the agent-judge image (`docker build -t numericaloj-agent-judge:latest docker/agent_judge`).
 
 ## Architecture
 

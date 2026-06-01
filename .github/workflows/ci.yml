@@ -1,0 +1,41 @@
+name: CI
+
+# 轻量 CI 门禁：每次 push / PR 都跑。
+# - compile：对全部 Python 文件做 py_compile（零依赖、必过的语法门禁）。
+# - unit：安装依赖后跑「无需 MySQL/Redis/编译器」的纯逻辑单测。
+# 需要真实 gcc/g++/octave/MySQL/Redis 的完整集成测试见 tests/ci/（Docker Compose，在 why-server 上跑）。
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: py_compile all sources
+        run: |
+          python -m compileall -q oj.py oj_modules tests
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-timeout
+      - name: Run infra-free unit tests
+        run: |
+          python -m pytest -q \
+            tests/unit/test_judger_core.py \
+            tests/unit/test_security_regression.py \
+            tests/unit/test_grading_and_compare.py \
+            tests/unit/test_sandbox_limits.py

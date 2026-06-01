@@ -1,0 +1,43 @@
+# 本地版 CI compose：与 docker-compose.ci.yml 等价，但去掉 why-server 专属的两处宿主绑定挂载
+# （/opt/intel/oneapi/mkl 与 /home/ebola/oj/config.py），便于在开发机（无 MKL、无线上 config）上
+# 跑完整 CI。MKL 相关用例会因 MKLROOT 未设而自动 skip；AI live 用例因无 prod_config 而自动 skip。
+#
+# 用法：
+#   docker compose -f tests/ci/docker-compose.local.yml up --build --abort-on-container-exit --exit-code-from test
+services:
+  mysql:
+    image: mysql:8.0
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ci_root_password
+      MYSQL_DATABASE: myojdb
+    volumes:
+      - ../../myojdb.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pci_root_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  test:
+    build:
+      context: ../..
+      dockerfile: tests/ci/Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../test-results:/app/test-results
+    command: ["bash", "tests/ci/run-ci.sh"]
