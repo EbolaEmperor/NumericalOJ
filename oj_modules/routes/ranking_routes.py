@@ -6,6 +6,7 @@
 
 import json
 import os
+import secrets
 import shutil
 
 import markdown
@@ -20,8 +21,11 @@ try:
 except Exception:  # pragma: no cover
     _redis = None
 
+import config as _cfg
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
-from oj_modules.db_services import get_user_by_username
+from oj_modules.db_services import (
+    get_all_classes_except_admin, get_user_by_username, get_users_in_classes,
+)
 from oj_modules.markdown_utils import sanitize_html
 from oj_modules.security_utils import rate_limit_hit
 from oj_modules.ranking_db import (
@@ -53,6 +57,7 @@ from oj_modules.ranking_db import (
     reset_elo_state,
     retire_excess_user_submissions,
     set_elo_running,
+    set_submission_status,
     submission_dir,
     update_competition,
     update_competition_reference_answer,
@@ -69,13 +74,21 @@ from oj_modules.ranking_agent_judge_db import (
 from oj_modules.ranking_agent_judge import max_score as _aj_max_score
 from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
 from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_events
+from oj_modules.tasks import get_probe_job
+from oj_modules.tasks.ranking_batch_pull_tasks import (
+    PLACEHOLDER as BATCH_PLACEHOLDER, USERNAME_RE as BATCH_USERNAME_RE, build_repo_url,
+)
 
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
-ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit')
+ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit', 'batch_eval')
 SUBMISSIONS_PER_PAGE = 50
 MATCHES_PER_PAGE = 20
+# 「批量评测」标签页预填的 Git 仓库标准命名示例（可在 config.py 覆盖）。
+BATCH_DEFAULT_TEMPLATE = getattr(
+    _cfg, 'RANKING_BATCH_DEFAULT_TEMPLATE', 'gitea@10.72.190.121:<username>/FinalProject.git',
+)
 
 # 对战列表 / 详情的 Redis 缓存
 # scope 用于区分 "全部" 和 "与我相关"：scope = '' 或 user:<username>
@@ -218,6 +231,8 @@ def fetch_competition_match_detail_cached(match_id, competition_id):
 _evaluate_ranking_task = None
 _elo_initial_burst_task = None
 _agent_judge_task = None
+_batch_probe_task = None
+_batch_run_task = None
 # Redis 客户端（提交限流）。由 oj.py 注入；为空时 fail-open。
 _rds = None
 # 打榜赛提交（尤其 agent_judge 每次起一个 Docker 评测）成本高，按用户+比赛限流。
@@ -225,11 +240,15 @@ _RANK_SUBMIT_MAX_PER_WINDOW = 10
 _RANK_SUBMIT_WINDOW = 300
 
 
-def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None, redis_client=None):
+def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None,
+                        redis_client=None, batch_probe_task=None, batch_run_task=None):
     global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task, _rds
+    global _batch_probe_task, _batch_run_task
     _evaluate_ranking_task = evaluate_ranking_task
     _elo_initial_burst_task = elo_initial_burst_task
     _agent_judge_task = agent_judge_task
+    _batch_probe_task = batch_probe_task
+    _batch_run_task = batch_run_task
     if redis_client is not None:
         _rds = redis_client
 
@@ -345,7 +364,7 @@ def ranking_detail(competition_id):
     tab = (request.args.get('tab') or 'description').strip().lower()
     if tab not in ALLOWED_TABS:
         tab = 'description'
-    if tab in ('all_submissions', 'edit') and not is_admin:
+    if tab in ('all_submissions', 'edit', 'batch_eval') and not is_admin:
         tab = 'description'
 
     files = list_competition_files(competition_id)
@@ -369,6 +388,14 @@ def ranking_detail(competition_id):
     is_agent_judge = _competition_scoring_mode(comp) == 'agent_judge'
     judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
+
+    # 「批量评测」仅对 Agent 评测模式开放
+    if tab == 'batch_eval' and not is_agent_judge:
+        tab = 'description'
+
+    batch_classes = []
+    if tab == 'batch_eval':
+        batch_classes = get_all_classes_except_admin()
 
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
@@ -419,6 +446,8 @@ def ranking_detail(competition_id):
         matches_per_page=MATCHES_PER_PAGE,
         judge_rules=judge_rules,
         agent_judge_api_key_set=agent_judge_api_key_set,
+        batch_classes=batch_classes,
+        batch_default_template=BATCH_DEFAULT_TEMPLATE,
     )
 
 
@@ -752,6 +781,8 @@ def ranking_submit(competition_id):
             flash(f'文件保存失败：{e}', 'danger')
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
         update_submission_files(submission_id, None, None, code_name, code_path, base_model=base_model)
+        # agent_judge：入队即置「等待评测(Queued)」，被评测 worker 取到执行时才转「评测中」。
+        set_submission_status(submission_id, 'Queued')
         if _agent_judge_task is None:
             flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
         else:
@@ -845,6 +876,134 @@ def ranking_submit(competition_id):
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
         flash('提交成功，正在评测中', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+
+
+# ---------- 管理员：批量评测（按 Git 仓库批量拉取参赛者代码） ----------
+
+def _admin_json_guard():
+    """JSON 接口的「登录 + 管理员」校验。返回 (user, None) 或 (None, (resp, code))。"""
+    user = _current_user()
+    if not user:
+        return None, (jsonify(success=False, message='请先登录'), 401)
+    if user.get('is_admin') != 1:
+        return None, (jsonify(success=False, message='需要管理员权限'), 403)
+    return user, None
+
+
+def _require_admin_agent_judge(competition_id):
+    """批量评测公共校验：管理员 + 比赛存在 + agent_judge 模式。
+    返回 (comp, None) 或 (None, (resp, code))。"""
+    user, err = _admin_json_guard()
+    if err is not None:
+        return None, err
+    comp = get_competition(competition_id)
+    if not comp:
+        return None, (jsonify(success=False, message='比赛不存在或已被删除'), 404)
+    if _competition_scoring_mode(comp) != 'agent_judge':
+        return None, (jsonify(success=False, message='仅「Agent 评测」模式支持批量评测'), 400)
+    return comp, None
+
+
+@ranking_bp.route('/<int:competition_id>/batch_eval/probe', methods=['POST'])
+def ranking_batch_probe_start(competition_id):
+    """启动一次仓库探测任务：枚举所选班级名单，逐个把 <username> 替换为用户名后
+    用 git ls-remote 并发探测。返回 job_id，前端轮询 probe_status。"""
+    comp, err = _require_admin_agent_judge(competition_id)
+    if err is not None:
+        return err
+    if _batch_probe_task is None:
+        return jsonify(success=False, message='批量评测任务未初始化，请联系管理员'), 500
+    data = request.get_json(silent=True) or {}
+    classes = data.get('classes') or []
+    template = (data.get('template') or '').strip()
+    if not isinstance(classes, list):
+        classes = []
+    classes = [str(c).strip() for c in classes if str(c).strip()][:50]
+    if not classes:
+        return jsonify(success=False, message='请至少选择一个班级'), 400
+    if BATCH_PLACEHOLDER not in template:
+        return jsonify(success=False, message=f'仓库命名必须包含 {BATCH_PLACEHOLDER} 占位符'), 400
+    if len(template) > 500:
+        return jsonify(success=False, message='仓库命名过长（不超过 500 字）'), 400
+    job_id = secrets.token_hex(8)
+    try:
+        _batch_probe_task.delay(job_id, competition_id, classes, template)
+    except Exception as e:
+        return jsonify(success=False, message=f'任务入队失败：{e}'), 500
+    return jsonify(success=True, job_id=job_id)
+
+
+@ranking_bp.route('/<int:competition_id>/batch_eval/probe_status', methods=['GET'])
+def ranking_batch_probe_status(competition_id):
+    comp, err = _require_admin_agent_judge(competition_id)
+    if err is not None:
+        return err
+    job_id = (request.args.get('job') or '').strip()
+    if not job_id:
+        return jsonify(success=False, message='缺少 job 参数'), 400
+    job = get_probe_job(job_id)
+    if job is None:
+        # 任务可能尚未开始写入进度，按「排队中」返回，前端继续轮询。
+        return jsonify(success=True, state='queued', total=0, checked=0, found=[], skipped=0, truncated=False)
+    return jsonify(
+        success=True,
+        state=job.get('state', 'running'),
+        total=int(job.get('total') or 0),
+        checked=int(job.get('checked') or 0),
+        found=job.get('found') or [],
+        skipped=int(job.get('skipped') or 0),
+        truncated=bool(job.get('truncated')),
+    )
+
+
+@ranking_bp.route('/<int:competition_id>/batch_eval/create', methods=['POST'])
+def ranking_batch_create(competition_id):
+    """对管理员勾选的仓库，入队一个「串行批量处理」任务：由后台逐个拉取 / 创建提交 / 入队评测。
+
+    不在此处预创建提交、也不并发拉取——所有仓库交给单个 ``ranking_batch_run`` 任务一个一个地处理
+    （每个：拉取重试≤3 → 创建并校验，失败删档重试≤3 → 入队评测 → sleep 1s）。
+    """
+    comp, err = _require_admin_agent_judge(competition_id)
+    if err is not None:
+        return err
+    if _batch_run_task is None:
+        return jsonify(success=False, message='批量评测任务未初始化，请联系管理员'), 500
+    if not list_competition_rules(competition_id):
+        return jsonify(success=False, message='该比赛尚未设置评分规则，无法评测'), 400
+    if not all([(comp.get('agent_judge_base_url') or '').strip(),
+                (comp.get('agent_judge_api_key') or '').strip(),
+                (comp.get('agent_judge_model') or '').strip()]):
+        return jsonify(success=False, message='该比赛尚未完成 Agent 评测模型配置'), 400
+    data = request.get_json(silent=True) or {}
+    template = (data.get('template') or '').strip()
+    usernames = data.get('usernames') or []
+    if BATCH_PLACEHOLDER not in template:
+        return jsonify(success=False, message=f'仓库命名必须包含 {BATCH_PLACEHOLDER} 占位符'), 400
+    if len(template) > 500:
+        return jsonify(success=False, message='仓库命名过长（不超过 500 字）'), 400
+    if not isinstance(usernames, list) or not usernames:
+        return jsonify(success=False, message='请至少勾选一个仓库'), 400
+
+    seen = set()
+    items = []
+    invalid = []
+    for raw in usernames[:1000]:
+        uname = str(raw).strip()
+        if not uname or uname in seen:
+            continue
+        seen.add(uname)
+        if not BATCH_USERNAME_RE.match(uname) or not get_user_by_username(uname):
+            invalid.append(uname)
+            continue
+        items.append({'username': uname, 'url': build_repo_url(template, uname)})
+
+    if not items:
+        return jsonify(success=False, message='没有可处理的有效仓库', invalid=invalid), 400
+    try:
+        _batch_run_task.delay(competition_id, items)
+    except Exception as e:
+        return jsonify(success=False, message=f'任务入队失败：{e}'), 500
+    return jsonify(success=True, queued=len(items), invalid=invalid)
 
 
 # ---------- 管理员：编辑比赛 ----------
