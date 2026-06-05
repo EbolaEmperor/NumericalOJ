@@ -939,6 +939,34 @@ def get_all_classes_except_admin():
         conn.close()
 
 
+def get_users_in_classes(class_en_list):
+    """返回选定班级（``class_en`` 列表）中的全部非管理员用户，按用户去重。
+
+    一名学生即便同时属于多个被选班级，也只返回一行。每行：
+    ``{'user_id', 'username', 'class_cn'}``（``class_cn`` 取该用户在 users 表上的主班级名，
+    仅用于界面展示）。``class_en_list`` 为空或全部非法时返回 ``[]``。
+    """
+    cleaned = [str(c).strip() for c in (class_en_list or []) if str(c).strip()]
+    if not cleaned:
+        return []
+    placeholders = ','.join(['%s'] * len(cleaned))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = (
+                "SELECT DISTINCT u.id AS user_id, u.username AS username, "
+                "       u.class_cn AS class_cn "
+                "FROM users u "
+                "JOIN user_class_map ucm ON ucm.user_id = u.id "
+                f"WHERE ucm.class_en IN ({placeholders}) AND u.is_admin = 0 "
+                "ORDER BY u.username ASC"
+            )
+            cursor.execute(sql, tuple(cleaned))
+            return cursor.fetchall() or []
+    finally:
+        conn.close()
+
+
 def ensure_class_homework_columns(class_en):
     """给班级动态表 C<class_en> 惰性补加 ranking_competition_id 列（幂等）。
     用于支持把「打榜赛」布置为作业——该列非空表示该作业行是一个打榜赛而非题目。

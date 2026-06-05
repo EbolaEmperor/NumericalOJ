@@ -46,6 +46,8 @@ from oj_modules.tasks import (
     seed_elo_matchmaker_tick,
     register_ranking_agent_judge_task,
     init_judge_progress_cache,
+    register_ranking_batch_tasks,
+    init_batch_progress_cache,
 )
 from oj_modules.startup_requeue import (
     requeue_pending_on_startup,
@@ -229,6 +231,10 @@ ranking_elo_match = register_ranking_elo_match_task(celery)
 ranking_elo_initial_burst = register_ranking_elo_initial_burst_task(celery, ranking_elo_match)
 ranking_elo_matchmaker_tick = register_ranking_elo_matchmaker_tick_task(celery, ranking_elo_match)
 evaluate_ranking_agent_judge = register_ranking_agent_judge_task(celery)
+# 打榜赛「批量评测」：探测仓库 + 串行批量拉取/创建（拉取完成后接力 Agent 评测）
+ranking_batch_probe, ranking_batch_run = register_ranking_batch_tasks(
+    celery, evaluate_ranking_agent_judge,
+)
 pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     celery,
     evaluate_submission,
@@ -250,8 +256,12 @@ init_problem_core_module(
 init_repository_index_module(build_repository_index)
 # 初始化 AI 检测模块（依赖 Celery 任务）
 init_ai_detection_module(detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions)
-# 初始化打榜赛模块（依赖 Celery 评测任务、ELO 即时补战任务、Agent 评测任务）
-init_ranking_module(evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge, redis_client=rds)
+# 初始化打榜赛模块（依赖 Celery 评测任务、ELO 即时补战任务、Agent 评测任务、批量评测任务）
+init_ranking_module(
+    evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge,
+    redis_client=rds,
+    batch_probe_task=ranking_batch_probe, batch_run_task=ranking_batch_run,
+)
 # 启动 ELO 匹配 tick 链路（自调度，全局单链）
 seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
 # 启动 Pending 自动回收链路（自调度，全局单链）
@@ -266,6 +276,8 @@ init_submission_snapshot_cache(rds)
 init_agent_progress_cache(rds)
 # 初始化打榜赛 Agent 评测进度缓存（Redis）
 init_judge_progress_cache(rds)
+# 初始化打榜赛「批量评测」探测进度缓存（Redis）
+init_batch_progress_cache(rds)
 
 ###############################################################################
 #  班级管理
