@@ -349,6 +349,8 @@ def ranking_detail(competition_id):
         tab = 'description'
 
     files = list_competition_files(competition_id)
+    for _f in files:   # 标注可直接预览的图片/视频，模板据此显示「播放/查看」按钮
+        _f['media_kind'] = _attachment_media_kind(_f.get('filename'))
     # markdown 解析仅在「比赛说明」标签下做；其它标签传空串避免每次切换都要解析一遍。
     rendered_description = (
         _render_description(comp.get('description') or '') if tab == 'description' else ''
@@ -1317,6 +1319,28 @@ def ranking_delete_attachment(competition_id, file_id):
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
+# 可在浏览器里直接预览（图片/视频）的扩展名 -> 显式 MIME。仅白名单类型允许 inline 展示，且强制
+# nosniff，避免上传的任意文件被浏览器当 HTML/SVG 在本站点 origin 下执行（存储型 XSS）。
+# SVG 故意不在其列（可内嵌 <script>，直接打开 URL 会执行）。
+_INLINE_MEDIA_MIME = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+    '.mp4': 'video/mp4', '.webm': 'video/webm', '.ogv': 'video/ogg',
+    '.ogg': 'video/ogg', '.mov': 'video/quicktime', '.m4v': 'video/x-m4v',
+}
+_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+
+
+def _attachment_media_kind(filename):
+    """按扩展名判断附件能否在浏览器里直接预览：返回 'image' / 'video' / None。"""
+    ext = os.path.splitext((filename or '').lower())[1]
+    if ext in _IMAGE_EXTS:
+        return 'image'
+    if ext in _INLINE_MEDIA_MIME:   # 余下白名单均为视频
+        return 'video'
+    return None
+
+
 @ranking_bp.route('/<int:competition_id>/attachment/<int:file_id>/download', methods=['GET'])
 def ranking_download_attachment(competition_id, file_id):
     user, resp = _require_user()
@@ -1328,10 +1352,25 @@ def ranking_download_attachment(competition_id, file_id):
     stored = rec.get('stored_path') or ''
     if not stored or not os.path.isfile(stored):
         abort(404)
+    filename = rec.get('filename') or os.path.basename(stored)
+    ext = os.path.splitext(filename.lower())[1]
+    # inline=1：图片/视频在线预览（供查看器/播放器内联加载）。仅白名单类型，显式 MIME + nosniff
+    # 防止被当 HTML 执行；conditional=True 让 send_file 支持 Range 请求，视频可拖动进度。
+    # 非白名单或未带 inline 一律按附件下载（沿用原行为）。
+    if request.args.get('inline') == '1' and ext in _INLINE_MEDIA_MIME:
+        resp = send_file(
+            os.path.abspath(stored),
+            mimetype=_INLINE_MEDIA_MIME[ext],
+            as_attachment=False,
+            download_name=filename,
+            conditional=True,
+        )
+        resp.headers['X-Content-Type-Options'] = 'nosniff'
+        return resp
     return send_file(
         os.path.abspath(stored),
         as_attachment=True,
-        download_name=rec.get('filename') or os.path.basename(stored),
+        download_name=filename,
     )
 
 
