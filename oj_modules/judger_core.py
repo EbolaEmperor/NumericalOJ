@@ -22,6 +22,7 @@ prefork 子进程里同样有效）+ 基于正则的禁用函数过滤；内存�
 """
 
 import json
+import math
 import os
 import re
 import resource
@@ -45,6 +46,12 @@ _RLIMIT_NPROC_ABS = int(os.environ.get("JUDGER_RLIMIT_NPROC_ABS") or 0)
 _RLIMIT_FSIZE_BYTES = int(os.environ.get("JUDGER_RLIMIT_FSIZE_BYTES") or (256 * 1024 * 1024))
 # Python 级超时兜底相对 coreutils timeout 的额外缓冲秒数（确保 timeout 先动作，Python 仅兜底）。
 _GUARD_TIMEOUT_BUFFER_SEC = float(os.environ.get("JUDGER_GUARD_TIMEOUT_BUFFER_SEC") or 5.0)
+# RLIMIT_CPU 限的是「进程累计 CPU 秒（所有线程之和）」，不是墙钟。多线程运行时（典型如 Octave/MATLAB
+# 的 BLAS/MKL：仅启动就要 ~4 CPU-秒、跨数十线程在百毫秒墙钟内烧完）若按墙钟 TLE 设 CPU 上限会被
+# 秒杀——这正是 2026-06-06 Octave「全 Nonzero Exit」的根因。合法上限 ≈ 核数 × ⌈墙钟TLE⌉ + 启动余量
+# （进程在墙钟 TLE 内最多用满所有核），墙钟仍由 coreutils timeout 兜底；此处只作逃逸进程的 CPU backstop。
+_CPU_COUNT = max(1, (os.cpu_count() or 1))
+_RLIMIT_CPU_STARTUP_BUFFER_SEC = int(os.environ.get("JUDGER_RLIMIT_CPU_STARTUP_BUFFER_SEC") or 30)
 
 
 # ========== OJ 根目录 / 头文件库路径 ==========
@@ -306,7 +313,8 @@ def _compute_nproc_limit():
 def set_run_limits(cpu_seconds: float, mem_bytes: int, apply_as: bool = True):
     """
     作为 preexec_fn：对子进程设置 rlimit。
-    - CPU 限时：RLIMIT_CPU（秒，向上取整）
+    - CPU 限时：RLIMIT_CPU（累计 CPU 秒）= 核数 × ⌈墙钟TLE⌉ + 启动余量（见模块顶部说明）；
+      多线程运行时不能按墙钟 TLE 设上限，否则 Octave/MKL 启动即被秒杀。墙钟由 coreutils timeout 兜底。
     - 地址空间：RLIMIT_AS（Byte，apply_as=False 时跳过，用于 Octave）
     - 进程数：RLIMIT_NPROC（防 fork 炸弹）= 当前 UID 基线 + 余量（见模块顶部说明）
     - 输出文件大小：RLIMIT_FSIZE（防写满磁盘）
@@ -317,10 +325,12 @@ def set_run_limits(cpu_seconds: float, mem_bytes: int, apply_as: bool = True):
     不在 fork 后的子进程里扫 /proc（多线程进程 fork 后做重活有死锁风险）。
     """
     nproc_limit = _compute_nproc_limit()
+    # RLIMIT_CPU 按多线程合法上限计：进程在墙钟 TLE 内最多用满所有核，再加启动余量（覆盖 Octave/MATLAB
+    # 运行时的多线程启动开销）。比墙钟 timeout 宽松，仅作逃逸进程的 CPU backstop，不会误杀合法多线程运行。
+    cpu_soft = max(1, math.ceil(cpu_seconds)) * _CPU_COUNT + _RLIMIT_CPU_STARTUP_BUFFER_SEC
+    cpu_hard = cpu_soft + 1
 
     def _setter():
-        cpu_soft = max(1, int(cpu_seconds))
-        cpu_hard = cpu_soft + 1
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_soft, cpu_hard))
 
         if apply_as and mem_bytes and mem_bytes > 0:

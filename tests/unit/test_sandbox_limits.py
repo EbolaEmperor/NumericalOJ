@@ -76,6 +76,25 @@ def test_nproc_absolute_override(monkeypatch):
     assert nproc and nproc[0] == (777, 777)
 
 
+def test_cpu_limit_is_multithread_aware(monkeypatch):
+    """回归（2026-06-06 Octave 全 Nonzero Exit）：RLIMIT_CPU 限的是进程「累计 CPU 秒（所有线程
+    之和）」。Octave/MATLAB 的 BLAS/MKL 仅启动就要 ~4 CPU-秒（跨数十线程在百毫秒墙钟内烧完），
+    若按墙钟 TLE(=1s) 设 1 秒 CPU 上限会被秒杀。CPU 上限必须按 核数 × ⌈墙钟⌉ + 启动余量 计，
+    远高于旧实现的 max(1,int(秒))=1。墙钟仍由 coreutils timeout 兜底。"""
+    rec = _RecordingSetrlimit()
+    monkeypatch.setattr(resource, "setrlimit", rec)
+    monkeypatch.setattr(judger_core, "_current_uid_task_count", lambda: 100)
+    judger_core.set_run_limits(1.1, 4096)()
+    cpu = [c[1] for c in rec.calls if c[0] == resource.RLIMIT_CPU]
+    assert cpu, "应设置 RLIMIT_CPU"
+    soft, hard = cpu[0]
+    # 必须高于 Octave ~4 CPU-秒的启动开销（旧实现是 1，必被秒杀）
+    assert soft > 4
+    # 按 核数 × ⌈1.1⌉(=2) + 启动余量 计
+    assert soft == judger_core._CPU_COUNT * 2 + judger_core._RLIMIT_CPU_STARTUP_BUFFER_SEC
+    assert hard > soft
+
+
 def test_guard_timeout_exceeds_coreutils():
     # Python 兜底超时必须大于 coreutils 超时，保证 coreutils 先动作
     assert judger_core._guard_timeout(2.0) > 2.0

@@ -146,7 +146,8 @@ def test_set_run_limits_cpu_and_mem(monkeypatch):
     rec = _RecordingSetrlimit()
     monkeypatch.setattr(resource, "setrlimit", rec)
 
-    # 源码用 int() 截断（非 ceil）：int(2.3)=2 → soft=2, hard=3
+    # RLIMIT_CPU 限的是累计 CPU 秒（所有线程之和），按 核数 × ⌈墙钟⌉ + 启动余量 计，
+    # 以容纳 Octave/MKL 多线程启动（否则按墙钟 TLE 设上限会被秒杀）。⌈2.3⌉=3。
     setter = judger_core.set_run_limits(2.3, 4096)
     setter()
 
@@ -154,8 +155,9 @@ def test_set_run_limits_cpu_and_mem(monkeypatch):
     as_calls = [c for c in rec.calls if c[0] == resource.RLIMIT_AS]
     assert len(cpu_calls) == 1
     cpu_soft, cpu_hard = cpu_calls[0][1]
-    assert cpu_soft == 2
-    assert cpu_hard == 3
+    expected = 3 * judger_core._CPU_COUNT + judger_core._RLIMIT_CPU_STARTUP_BUFFER_SEC
+    assert cpu_soft == expected
+    assert cpu_hard == expected + 1
     # mem_bytes > 0 → 设置 RLIMIT_AS
     assert len(as_calls) == 1
     assert as_calls[0][1] == (4096, 4096)
@@ -165,13 +167,14 @@ def test_set_run_limits_cpu_min_one(monkeypatch):
     rec = _RecordingSetrlimit()
     monkeypatch.setattr(resource, "setrlimit", rec)
 
-    # cpu_seconds < 1 → soft 兜底为 1，hard=2
+    # cpu_seconds < 1 → 墙钟向上取整兜底为 1；soft = 1 × 核数 + 启动余量
     setter = judger_core.set_run_limits(0.4, 0)
     setter()
 
     cpu_calls = [c for c in rec.calls if c[0] == resource.RLIMIT_CPU]
     assert len(cpu_calls) == 1
-    assert cpu_calls[0][1] == (1, 2)
+    expected = 1 * judger_core._CPU_COUNT + judger_core._RLIMIT_CPU_STARTUP_BUFFER_SEC
+    assert cpu_calls[0][1] == (expected, expected + 1)
 
 
 def test_set_run_limits_skips_as_when_mem_zero(monkeypatch):
