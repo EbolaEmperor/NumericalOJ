@@ -556,6 +556,26 @@ def update_submission_result(submission_id, score, status, grade_details=None, e
         conn.close()
 
 
+def set_submission_status(submission_id, status):
+    """只更新提交状态（不动 score/grade_details/error_message）。
+
+    用于 agent_judge 的「等待评测(Queued) → 评测中(Judging)」状态切换：提交入队时置
+    'Queued'，真正被评测 worker 取到开始执行时置 'Judging'。这样在 judge 并发上限（2）已满时，
+    排队中的提交显示「等待评测」，而非误报「评测中」。
+    """
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE ranking_submissions SET status = %s WHERE id = %s",
+                (status, submission_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def delete_ranking_submission(submission_id):
     """删除一条提交记录。返回被删除的行数（0 或 1）。"""
     ensure_ranking_tables()
@@ -593,9 +613,10 @@ def get_ranking_submission(submission_id):
 
 
 def get_incomplete_ranking_submissions():
-    """返回所有卡在 'Judging' 的打榜赛提交，用于进程启动时重新入队。
+    """返回所有卡在 'Judging' / 'Queued' 的打榜赛提交，用于进程启动时重新入队。
 
-    'Judging' = 文件已上传、评测任务已入队，但重启时丢失。连带返回所属比赛的
+    'Judging' = 文件已上传、评测任务已入队，但重启时丢失。'Queued' = agent_judge 已入队但
+    评测 worker 并发已满、尚未开始（重启后队列清空，同样需要补入队）。连带返回所属比赛的
     scoring_mode 与 elo_initial_rating，便于按模式分派：
       - 绝对分模式：重新 .delay() 给评测任务；
       - ELO 模式：补做入池（init_submission_elo_state -> Active）+ 补发 initial-burst。
@@ -612,7 +633,7 @@ def get_incomplete_ranking_submissions():
                        c.scoring_mode, c.elo_initial_rating
                 FROM ranking_submissions s
                 JOIN ranking_competitions c ON c.id = s.competition_id
-                WHERE s.status = 'Judging'
+                WHERE s.status IN ('Judging', 'Queued')
                 ORDER BY s.id ASC
                 """
             )

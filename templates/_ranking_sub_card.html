@@ -4,7 +4,7 @@
 {% macro render_sub_card(s, competition, is_elo, is_agent_judge, max_score, show_user, show_delete) %}
   {% set st = s.status %}
   {% set scls = 's-ok' if st in ['Accepted', 'Active'] else ('s-info' if st in ['Judging', 'Pending'] else ('s-err' if st == 'Error' else 's-muted')) %}
-  {% set slabel = {'Accepted': '通过', 'Active': '对战中', 'Retired': '已退役', 'Judging': '评测中', 'Pending': '待评测', 'Error': '异常'}.get(st, st) %}
+  {% set slabel = {'Accepted': '通过', 'Active': '对战中', 'Retired': '已退役', 'Judging': '评测中', 'Queued': '等待评测', 'Pending': '待评测', 'Error': '异常'}.get(st, st) %}
   {% set pct = 0 %}
   {% if s.score is not none and max_score %}
     {% set pct = (s.score * 100 / max_score)|round(1) %}
