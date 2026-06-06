@@ -83,6 +83,17 @@
               <div class="sidebar-file-row" title="{{ f.filename }} · {{ size_long }}">
                 <span class="sidebar-file-name">{{ f.filename }}</span>
                 <span class="sidebar-file-size">{{ size_short }}</span>
+                {% if f.media_kind %}
+                <button type="button" class="sidebar-file-dl rk-media-btn"
+                        title="{{ '播放' if f.media_kind == 'video' else '查看' }} {{ f.filename }}"
+                        aria-label="{{ '播放' if f.media_kind == 'video' else '查看' }} {{ f.filename }}"
+                        data-media-url="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}?inline=1"
+                        data-media-dl="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
+                        data-media-kind="{{ f.media_kind }}"
+                        data-media-name="{{ f.filename }}">
+                  <i class="fas {{ 'fa-play' if f.media_kind == 'video' else 'fa-eye' }}"></i>
+                </button>
+                {% endif %}
                 <a href="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
                    class="sidebar-file-dl" title="下载 {{ f.filename }}" aria-label="下载 {{ f.filename }}">
                   <i class="fas fa-download"></i>
@@ -1462,6 +1473,16 @@
                     <small class="text-muted ms-2">{{ (f.file_size or 0) // 1024 }} KB · {{ f.uploaded_at }}</small>
                   </div>
                   <div>
+                    {% if f.media_kind %}
+                    <button type="button" class="btn btn-sm btn-outline-primary me-1 rk-media-btn"
+                            title="{{ '播放' if f.media_kind == 'video' else '查看' }} {{ f.filename }}"
+                            data-media-url="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}?inline=1"
+                            data-media-dl="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
+                            data-media-kind="{{ f.media_kind }}"
+                            data-media-name="{{ f.filename }}">
+                      <i class="fas {{ 'fa-play' if f.media_kind == 'video' else 'fa-eye' }}"></i>
+                    </button>
+                    {% endif %}
                     <a href="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
                        class="btn btn-sm btn-outline-primary me-1">
                       <i class="fas fa-download"></i>
@@ -2373,6 +2394,18 @@
     background: #0d6efd;
     color: #fff;
   }
+  /* 附件「播放/查看」按钮：复用 .sidebar-file-dl 外观（与下载同为蓝色），作为 <button> 需重置原生样式 */
+  button.rk-media-btn { border: 0; padding: 0; cursor: pointer; background: transparent; }
+  /* 图片/视频预览器 */
+  #rkMediaViewer .modal-body { background: #0b0b0d; padding: 0.5rem; min-height: 120px; }
+  #rkMediaViewer .rk-media-img,
+  #rkMediaViewer .rk-media-video {
+    max-width: 100%;
+    max-height: 78vh;
+    width: auto; height: auto;
+    object-fit: contain;
+    border-radius: 0.25rem;
+  }
 
   /* ==================== 所有提交 ==================== */
   .submissions-stats {
@@ -2782,4 +2815,66 @@
     font-size: 0.75rem;
   }
 </style>
+
+<!-- 附件图片/视频预览器（图片查看器 + 视频播放器） -->
+<div class="modal fade" id="rkMediaViewer" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-xl">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h5 class="modal-title text-truncate" style="max-width: 70%;">
+          <i class="fas fa-photo-film me-2"></i><span id="rkMediaTitle"></span>
+        </h5>
+        <div class="ms-auto d-flex align-items-center gap-2">
+          <a id="rkMediaDownload" class="btn btn-sm btn-outline-primary" href="#" download>
+            <i class="fas fa-download me-1"></i>下载
+          </a>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+      </div>
+      <div class="modal-body text-center">
+        <img id="rkMediaImg" class="rk-media-img" alt="" style="display:none;">
+        <video id="rkMediaVideo" class="rk-media-video" controls preload="metadata" playsinline style="display:none;"></video>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var el = document.getElementById('rkMediaViewer');
+  if (!el || !window.bootstrap) return;
+  var modal = new bootstrap.Modal(el);
+  var img = document.getElementById('rkMediaImg');
+  var vid = document.getElementById('rkMediaVideo');
+  var titleEl = document.getElementById('rkMediaTitle');
+  var dlEl = document.getElementById('rkMediaDownload');
+
+  function reset() {
+    try { vid.pause(); } catch (e) {}
+    img.style.display = 'none'; img.removeAttribute('src');
+    vid.style.display = 'none'; vid.removeAttribute('src'); vid.load();
+  }
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.rk-media-btn');
+    if (!btn) return;
+    e.preventDefault();
+    var url = btn.getAttribute('data-media-url');
+    var kind = btn.getAttribute('data-media-kind');
+    var name = btn.getAttribute('data-media-name') || '';
+    var dl = btn.getAttribute('data-media-dl') || url;
+    reset();
+    titleEl.textContent = name;
+    dlEl.setAttribute('href', dl);
+    if (kind === 'video') {
+      vid.src = url; vid.style.display = '';
+    } else {
+      img.src = url; img.alt = name; img.style.display = '';
+    }
+    modal.show();
+  });
+
+  // 关闭时停止播放、释放资源（视频继续后台下载会浪费带宽）
+  el.addEventListener('hidden.bs.modal', reset);
+})();
+</script>
 {% endblock %}
