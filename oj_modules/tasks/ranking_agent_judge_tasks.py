@@ -19,7 +19,7 @@ from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules import ranking_agent_judge as aj
 from oj_modules.ranking_db import (
     get_competition, get_ranking_submission, list_competition_files,
-    submission_dir, update_submission_result,
+    set_submission_status, submission_dir, update_submission_result,
 )
 from oj_modules.ranking_agent_judge_db import (
     build_judge_snapshot, clear_judge_results, list_competition_rules,
@@ -277,6 +277,9 @@ def _judge(submission_id):
     submission = get_ranking_submission(submission_id)
     if not submission:
         return {'success': False, 'message': '提交不存在'}
+    # 评测 worker 已取到本任务并开始执行 → 置「评测中」。在此之前（入队后、被取到前）提交为
+    # 'Queued'（等待评测）。judge 队列 worker 并发上限为 2，故同时最多 2 个显示「评测中」，其余排队显示「等待评测」。
+    set_submission_status(submission_id, 'Judging')
     competition = get_competition(submission.get('competition_id'))
     if not competition:
         update_submission_result(submission_id, None, 'Error', error_message='比赛不存在')

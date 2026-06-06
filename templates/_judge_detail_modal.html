@@ -48,7 +48,7 @@
     error: ['异常', '#b07340', '#fbf0e3'],
     pending: ['待评测', '#2563cb', '#e8f0fb']
   };
-  var STATUS = { Accepted: '评测完成', Error: '评测异常', Judging: '评测中', Pending: '待评测' };
+  var STATUS = { Accepted: '评测完成', Error: '评测异常', Judging: '评测中', Queued: '等待评测', Pending: '待评测' };
   function closeJudgeStream() { if (judgeSource) { judgeSource.close(); judgeSource = null; } }
   function esc(s) { return (s || '').replace(/[&<>]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]; }); }
   function renderJudgeSnapshot(snap) {

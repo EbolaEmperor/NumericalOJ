@@ -51,6 +51,12 @@
            class="list-group-item list-group-item-action {% if tab == 'all_submissions' %}active{% endif %}">
           <i class="fas fa-clipboard-list me-2"></i> 所有提交
         </a>
+        {% if (competition.scoring_mode or 'absolute')|lower == 'agent_judge' %}
+        <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='batch_eval') }}"
+           class="list-group-item list-group-item-action {% if tab == 'batch_eval' %}active{% endif %}">
+          <i class="fas fa-layer-group me-2"></i> 批量评测
+        </a>
+        {% endif %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='edit') }}"
            class="list-group-item list-group-item-action {% if tab == 'edit' %}active{% endif %}">
           <i class="fas fa-pencil-alt me-2"></i> 编辑比赛
@@ -455,6 +461,7 @@
           Accepted: '评测完成',
           Error: '评测异常',
           Judging: '评测中',
+          Queued: '等待评测',
           Pending: '待评测'
         };
         function closeJudgeStream() {
@@ -951,6 +958,373 @@
         })();
       </script>
       {% endif %}
+    {% endif %}
+
+    {# ========== 批量评测（管理员 · 仅 Agent 评测） ========== #}
+    {% if tab == 'batch_eval' and is_admin and is_agent_judge %}
+      <style>
+        .bm-wrap{
+          --ink:#18181b; --ink-2:#52525b; --muted:#a1a1aa; --faint:#d4d4d8;
+          --line:#e7e7ea; --line-2:#f3f3f5; --bg:#ffffff; --bg-2:#fafafa;
+          --mono:ui-monospace,'SF Mono','Menlo','Consolas',monospace;
+          color:var(--ink); max-width:1000px;
+        }
+        .bm-wrap *{ box-sizing:border-box; }
+        /* —— 居中初始态（点击「查询」前的 hero） —— */
+        .bm-wrap.is-hero{ max-width:none; display:flex; flex-direction:column; justify-content:center;
+          min-height:max(400px, calc(100vh - 250px)); }
+        .bm-stage{ width:100%; }
+        .bm-title{ display:none; }
+        .bm-wrap.is-hero .bm-stage{ max-width:720px; margin:0 auto; text-align:center; }
+        .bm-wrap.is-hero .bm-title{ display:block; font-size:1.8rem; font-weight:600;
+          letter-spacing:.22em; color:var(--ink); margin:0 0 1.9rem; padding-left:.22em; }
+        .bm-wrap.is-hero .bm-bar{ justify-content:center; }
+        .bm-wrap.is-hero .bm-note{ text-align:center; }
+        .bm-wrap.is-hero .bm-input{ flex:1 1 420px; }
+        .bm-wrap.is-hero .bm-input input{ padding:.82rem 0; }
+        .bm-wrap.is-hero .bm-go{ padding:.6rem 1.7rem; }
+        .bm-wrap.is-hero .bm-status{ text-align:center; }
+        /* —— control row —— */
+        .bm-bar{ display:flex; align-items:stretch; gap:.55rem; flex-wrap:wrap; }
+        .bm-input{ flex:1 1 340px; min-width:240px; display:flex; align-items:center;
+          border:1px solid var(--line); border-radius:9px; padding:0 .85rem; background:var(--bg); transition:border-color .15s; }
+        .bm-input:focus-within{ border-color:var(--ink); }
+        .bm-input input{ flex:1 1 auto; min-width:0; border:0; outline:0; background:transparent;
+          font-family:var(--mono); font-size:.85rem; color:var(--ink); padding:.7rem 0; letter-spacing:-.01em; }
+        .bm-input input::placeholder{ color:var(--muted); }
+        .bm-go{ flex:0 0 auto; border:1px solid var(--ink); background:var(--ink); color:#fff;
+          font-size:.85rem; padding:.5rem 1.5rem; border-radius:9px; cursor:pointer; transition:opacity .15s; }
+        .bm-go:hover:not(:disabled){ opacity:.82; }
+        .bm-go:disabled{ opacity:.38; cursor:not-allowed; }
+        /* —— class dropdown —— */
+        .bm-dd{ position:relative; flex:0 0 auto; }
+        .bm-dd-trigger{ height:100%; display:flex; align-items:center; gap:.7rem; cursor:pointer; background:var(--bg);
+          border:1px solid var(--line); border-radius:9px; padding:.5rem .9rem; font-size:.85rem; color:var(--ink);
+          min-width:148px; transition:border-color .15s; }
+        .bm-dd-trigger:hover{ border-color:var(--faint); }
+        .bm-dd.open .bm-dd-trigger{ border-color:var(--ink); }
+        .bm-dd-label{ flex:1 1 auto; white-space:nowrap; }
+        .bm-dd-label.is-empty{ color:var(--muted); }
+        .bm-dd-label b{ font-family:var(--mono); font-weight:600; }
+        .bm-dd-caret{ color:var(--muted); font-size:.66rem; transition:transform .2s ease; }
+        .bm-dd.open .bm-dd-caret{ transform:rotate(180deg); }
+        .bm-dd-panel{ position:absolute; z-index:40; top:calc(100% + .4rem); left:0; min-width:248px;
+          background:var(--bg); border:1px solid var(--line); border-radius:11px; overflow:hidden; text-align:left; }
+        .bm-dd-search{ display:flex; align-items:center; gap:.5rem; padding:.55rem .85rem; border-bottom:1px solid var(--line-2); color:var(--muted); }
+        .bm-dd-search input{ flex:1 1 auto; min-width:0; border:0; outline:0; background:transparent; font-size:.82rem; color:var(--ink); }
+        .bm-dd-list{ max-height:262px; overflow:auto; padding:.25rem; }
+        .bm-dd-list::-webkit-scrollbar{ width:9px; } .bm-dd-list::-webkit-scrollbar-thumb{ background:#e7e7ea; border-radius:99px; border:3px solid var(--bg); }
+        .bm-opt{ display:flex; align-items:center; gap:.6rem; padding:.5rem .6rem; border-radius:7px; cursor:pointer; margin:0; }
+        .bm-opt:hover{ background:var(--bg-2); }
+        .bm-opt-cn{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.85rem; text-align:left; }
+        .bm-opt.hide{ display:none; }
+        .bm-dd-foot{ display:flex; align-items:center; gap:1.1rem; padding:.55rem .85rem; border-top:1px solid var(--line-2); }
+        .bm-dd-foot button{ border:0; background:transparent; color:var(--ink-2); font-size:.78rem; cursor:pointer; padding:0; }
+        .bm-dd-foot button:hover{ color:var(--ink); }
+        .bm-dd-done{ margin-left:auto; font-weight:600; }
+        /* —— minimal checkbox —— */
+        .bm-check{ -webkit-appearance:none; appearance:none; width:1rem; height:1rem; border:1px solid var(--faint);
+          border-radius:4px; background:var(--bg); cursor:pointer; position:relative; flex:0 0 auto; transition:.12s; margin:0; }
+        .bm-check:checked{ background:var(--ink); border-color:var(--ink); }
+        .bm-check:checked::after{ content:""; position:absolute; left:.3rem; top:.12rem; width:.26rem; height:.5rem;
+          border:solid #fff; border-width:0 1.5px 1.5px 0; transform:rotate(45deg); }
+        /* —— note —— */
+        .bm-note{ margin-top:.8rem; font-size:.78rem; color:var(--muted); }
+        .bm-tok{ font-family:var(--mono); color:var(--ink-2); background:var(--bg-2); border:1px solid var(--line);
+          padding:.04rem .35rem; border-radius:4px; font-size:.74rem; }
+        /* —— progress —— */
+        .bm-progress{ margin-top:1.15rem; height:1px; background:var(--line); position:relative; overflow:hidden; }
+        .bm-fill{ position:absolute; top:0; bottom:0; left:0; width:0%; background:var(--ink); transition:width .4s ease; }
+        .bm-fill.is-indet{ width:28%; animation:bmIndet 1.1s ease-in-out infinite; }
+        @keyframes bmIndet{ 0%{ left:-28%; } 100%{ left:100%; } }
+        .bm-status{ margin-top:.6rem; font-family:var(--mono); font-size:.76rem; color:var(--muted); }
+        /* —— results —— */
+        .bm-results{ margin-top:2rem; }
+        .bm-results-bar{ display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;
+          padding-bottom:.95rem; border-bottom:1px solid var(--line); margin-bottom:1.2rem; }
+        .bm-count{ font-size:.95rem; font-weight:600; }
+        .bm-count b{ font-family:var(--mono); }
+        .bm-count i{ color:var(--muted); font-weight:400; font-size:.82rem; font-style:normal; margin-left:.15rem; }
+        .bm-actions{ display:flex; align-items:center; gap:1.2rem; }
+        .bm-selall{ border:0; background:transparent; color:var(--ink-2); font-size:.82rem; cursor:pointer; padding:0; }
+        .bm-selall:hover{ color:var(--ink); }
+        .bm-selcount{ font-family:var(--mono); font-size:.8rem; color:var(--muted); }
+        .bm-create{ border:1px solid var(--ink); background:var(--ink); color:#fff; font-size:.82rem;
+          padding:.46rem 1.15rem; border-radius:9px; cursor:pointer; transition:opacity .15s; }
+        .bm-create:hover:not(:disabled){ opacity:.82; }
+        .bm-create:disabled{ opacity:.3; cursor:not-allowed; }
+        /* —— card grid —— */
+        .bm-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(232px,1fr)); gap:.7rem; }
+        .bm-card{ position:relative; border:1px solid var(--line); border-radius:11px; padding:.9rem 1rem; cursor:pointer;
+          background:var(--bg); transition:border-color .14s; user-select:none; animation:bmCard .3s ease both; }
+        .bm-card:hover{ border-color:var(--faint); }
+        .bm-card.is-sel{ border-color:var(--ink); }
+        .bm-card-check{ position:absolute; top:.85rem; right:.85rem; width:1rem; height:1rem; border:1px solid var(--faint); border-radius:4px; transition:.12s; }
+        .bm-card.is-sel .bm-card-check{ background:var(--ink); border-color:var(--ink); }
+        .bm-card.is-sel .bm-card-check::after{ content:""; position:absolute; left:.3rem; top:.12rem; width:.26rem; height:.5rem; border:solid #fff; border-width:0 1.5px 1.5px 0; transform:rotate(45deg); }
+        .bm-card-user{ font-family:var(--mono); font-size:.92rem; font-weight:600; letter-spacing:-.01em; padding-right:1.5rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .bm-card-cls{ font-size:.76rem; color:var(--ink-2); margin-top:.45rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .bm-card-url{ font-family:var(--mono); font-size:.7rem; color:var(--muted); margin-top:.75rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        @keyframes bmCard{ from{ opacity:0; transform:translateY(4px);} to{ opacity:1; transform:none;} }
+        /* —— pager —— */
+        .bm-pager-bar{ display:flex; align-items:center; justify-content:space-between; margin-top:1.4rem; min-height:1.9rem; }
+        .bm-pageinfo{ font-family:var(--mono); font-size:.76rem; color:var(--muted); }
+        .bm-pager{ display:flex; gap:.2rem; }
+        .bm-pager button{ font-family:var(--mono); font-size:.78rem; min-width:1.9rem; height:1.9rem; border:1px solid transparent;
+          background:transparent; color:var(--ink-2); border-radius:7px; cursor:pointer; transition:.12s; }
+        .bm-pager button:hover:not(:disabled):not(.active){ background:var(--bg-2); color:var(--ink); }
+        .bm-pager button.active{ border-color:var(--line); color:var(--ink); font-weight:600; }
+        .bm-pager button:disabled{ opacity:.32; cursor:default; }
+        /* —— flash / empty —— */
+        .bm-createmsg:not(:empty){ margin-bottom:1.1rem; }
+        .bm-flash{ font-size:.82rem; padding:.6rem .85rem; border:1px solid var(--line); border-radius:9px; color:var(--ink-2); }
+        .bm-flash a{ color:var(--ink); text-decoration:underline; }
+        .bm-empty{ padding:3rem 1rem; text-align:center; color:var(--muted); font-size:.85rem; }
+        @media (prefers-reduced-motion: reduce){ .bm-card,.bm-fill{ animation:none !important; transition:none !important; } }
+      </style>
+
+      <div class="bm-wrap is-hero"
+           data-probe-url="{{ url_for('ranking.ranking_batch_probe_start', competition_id=competition.id) }}"
+           data-status-url="{{ url_for('ranking.ranking_batch_probe_status', competition_id=competition.id) }}"
+           data-create-url="{{ url_for('ranking.ranking_batch_create', competition_id=competition.id) }}"
+           data-all-subs-url="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='all_submissions') }}">
+
+        <div class="bm-stage">
+        <div class="bm-title"><i class="fas fa-layer-group" style="margin-right:.55rem;font-size:.9em"></i>批量评测</div>
+        <div class="bm-bar">
+          {% if batch_classes %}
+          <div class="bm-dd" id="bmClassDrop">
+            <button type="button" class="bm-dd-trigger" id="bmClassTrigger" aria-haspopup="listbox" aria-expanded="false">
+              <span class="bm-dd-label is-empty" id="bmClassLabel">选择班级</span>
+              <i class="fas fa-chevron-down bm-dd-caret"></i>
+            </button>
+            <div class="bm-dd-panel" id="bmClassPanel" role="listbox" aria-multiselectable="true" hidden>
+              <div class="bm-dd-search">
+                <i class="fas fa-magnifying-glass" style="font-size:.76rem"></i>
+                <input type="text" id="bmClassSearch" placeholder="搜索" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="bm-dd-list" id="bmClassList">
+                {% for c in batch_classes %}
+                <label class="bm-opt" data-name="{{ c.class_cn }} {{ c.class_en }}">
+                  <input type="checkbox" class="bm-cls-cb bm-check" value="{{ c.class_en }}">
+                  <span class="bm-opt-cn">{{ c.class_cn }}</span>
+                </label>
+                {% endfor %}
+                <div class="bm-empty" id="bmClassNoMatch" style="padding:1rem" hidden>无匹配</div>
+              </div>
+              <div class="bm-dd-foot">
+                <button type="button" id="bmClassAll">全选</button>
+                <button type="button" id="bmClassNone">清空</button>
+                <button type="button" class="bm-dd-done" id="bmClassDone">完成</button>
+              </div>
+            </div>
+          </div>
+          {% endif %}
+          <div class="bm-input">
+            <input type="text" id="bmTemplate" maxlength="500" spellcheck="false" autocomplete="off" autocapitalize="off"
+                   value="{{ batch_default_template }}" placeholder="gitea@10.72.190.121:&lt;username&gt;/FinalProject.git">
+          </div>
+          <button type="button" class="bm-go" id="bmGo"><i class="fas fa-magnifying-glass" style="margin-right:.45rem"></i>查询</button>
+        </div>
+
+        <div class="bm-note"><span class="bm-tok">&lt;username&gt;</span> 替换为学生用户名</div>
+
+        <div class="bm-progress" id="bmProgress" hidden><div class="bm-fill" id="bmFill"></div></div>
+        <div class="bm-status" id="bmStatus" hidden></div>
+        </div>
+
+        <div class="bm-results" id="bmResults" hidden>
+          <div class="bm-results-bar">
+            <div class="bm-count"><b id="bmCount">0</b><i>个仓库</i></div>
+            <div class="bm-actions">
+              <button type="button" class="bm-selall" id="bmSelAll">全选</button>
+              <span class="bm-selcount" id="bmSelCount">已选 0</span>
+              <button type="button" class="bm-create" id="bmCreate" disabled>批量创建提交</button>
+            </div>
+          </div>
+          <div class="bm-createmsg" id="bmCreateMsg"></div>
+          <div class="bm-grid" id="bmGrid"></div>
+          <div class="bm-empty" id="bmEmpty" hidden>无仓库</div>
+          <div class="bm-pager-bar">
+            <span class="bm-pageinfo" id="bmPageInfo"></span>
+            <div class="bm-pager" id="bmPager"></div>
+          </div>
+        </div>
+      </div>
+
+      <script>
+      (function () {
+        var wrap = document.querySelector('.bm-wrap');
+        if (!wrap) return;
+        var probeUrl = wrap.getAttribute('data-probe-url');
+        var statusUrl = wrap.getAttribute('data-status-url');
+        var createUrl = wrap.getAttribute('data-create-url');
+        var allSubsUrl = wrap.getAttribute('data-all-subs-url');
+        var PER_PAGE = 20;
+        var state = { found: [], selected: {}, page: 1, polling: false };
+        var $ = function (id) { return document.getElementById(id); };
+
+        var goBtn = $('bmGo'), tmplEl = $('bmTemplate'), progress = $('bmProgress'), fill = $('bmFill'), statusEl = $('bmStatus');
+        var results = $('bmResults'), countEl = $('bmCount'), gridEl = $('bmGrid'), emptyEl = $('bmEmpty');
+        var pagerEl = $('bmPager'), pageInfoEl = $('bmPageInfo'), selAllBtn = $('bmSelAll'), selCountEl = $('bmSelCount');
+        var createBtn = $('bmCreate'), createMsg = $('bmCreateMsg'), labelEl = $('bmClassLabel');
+
+        function clsChecks() { return Array.prototype.slice.call(document.querySelectorAll('.bm-cls-cb')); }
+        function selectedClasses() { return clsChecks().filter(function (c) { return c.checked; }).map(function (c) { return c.value; }); }
+        function updateLabel() {
+          var n = selectedClasses().length;
+          if (!labelEl) return;
+          if (n === 0) { labelEl.textContent = '选择班级'; labelEl.classList.add('is-empty'); }
+          else { labelEl.classList.remove('is-empty'); labelEl.innerHTML = '已选 <b>' + n + '</b>'; }
+        }
+
+        var ddRoot = $('bmClassDrop'), ddTrigger = $('bmClassTrigger'), ddPanel = $('bmClassPanel'),
+            ddSearch = $('bmClassSearch'), ddDone = $('bmClassDone'), ddNoMatch = $('bmClassNoMatch');
+        function ddOpen() { if (!ddRoot) return; ddRoot.classList.add('open'); if (ddPanel) ddPanel.hidden = false; if (ddTrigger) ddTrigger.setAttribute('aria-expanded', 'true'); if (ddSearch) setTimeout(function () { ddSearch.focus(); }, 0); }
+        function ddClose() { if (!ddRoot) return; ddRoot.classList.remove('open'); if (ddPanel) ddPanel.hidden = true; if (ddTrigger) ddTrigger.setAttribute('aria-expanded', 'false'); }
+        if (ddTrigger) ddTrigger.addEventListener('click', function (e) { e.stopPropagation(); if (ddRoot.classList.contains('open')) ddClose(); else ddOpen(); });
+        if (ddPanel) ddPanel.addEventListener('click', function (e) { e.stopPropagation(); });
+        document.addEventListener('click', ddClose);
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') ddClose(); });
+        if (ddDone) ddDone.addEventListener('click', ddClose);
+        clsChecks().forEach(function (c) { c.addEventListener('change', updateLabel); });
+        if ($('bmClassAll')) $('bmClassAll').addEventListener('click', function () { clsChecks().forEach(function (c) { var o = c.closest('.bm-opt'); if (!o || !o.classList.contains('hide')) c.checked = true; }); updateLabel(); });
+        if ($('bmClassNone')) $('bmClassNone').addEventListener('click', function () { clsChecks().forEach(function (c) { c.checked = false; }); updateLabel(); });
+        if (ddSearch) ddSearch.addEventListener('input', function () {
+          var q = (this.value || '').trim().toLowerCase(), shown = 0;
+          Array.prototype.slice.call(document.querySelectorAll('#bmClassList .bm-opt')).forEach(function (o) {
+            var hit = (q === '' || (o.getAttribute('data-name') || '').toLowerCase().indexOf(q) !== -1);
+            o.classList.toggle('hide', !hit); if (hit) shown++;
+          });
+          if (ddNoMatch) ddNoMatch.hidden = (shown > 0);
+        });
+        updateLabel();
+
+        function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (m) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]; }); }
+        function selCount() { return Object.keys(state.selected).length; }
+        function updateSelUI() {
+          var n = selCount();
+          if (selCountEl) selCountEl.textContent = '已选 ' + n;
+          if (createBtn) createBtn.disabled = (n === 0);
+          if (selAllBtn) selAllBtn.textContent = (state.found.length > 0 && n === state.found.length) ? '取消全选' : '全选';
+        }
+
+        function renderPage() {
+          var total = state.found.length, pages = Math.max(1, Math.ceil(total / PER_PAGE));
+          if (state.page > pages) state.page = pages;
+          var start = (state.page - 1) * PER_PAGE, slice = state.found.slice(start, start + PER_PAGE);
+          gridEl.innerHTML = slice.map(function (r, i) {
+            var sel = state.selected[r.username];
+            return '<div class="bm-card' + (sel ? ' is-sel' : '') + '" data-u="' + escapeHtml(r.username) + '" style="animation-delay:' + (Math.min(i, 16) * 16) + 'ms">' +
+              '<div class="bm-card-check"></div>' +
+              '<div class="bm-card-user">' + escapeHtml(r.username) + '</div>' +
+              '<div class="bm-card-cls">' + escapeHtml(r.class_cn || '') + '</div>' +
+              '<div class="bm-card-url">' + escapeHtml(r.url) + '</div>' +
+              '</div>';
+          }).join('');
+          Array.prototype.slice.call(gridEl.querySelectorAll('.bm-card')).forEach(function (card) {
+            card.addEventListener('click', function () {
+              var u = this.getAttribute('data-u');
+              if (state.selected[u]) { delete state.selected[u]; this.classList.remove('is-sel'); }
+              else { state.selected[u] = true; this.classList.add('is-sel'); }
+              updateSelUI();
+            });
+          });
+          var btns = [];
+          function pbtn(label, page, disabled, active) { return '<button type="button" class="' + (active ? 'active' : '') + '"' + (disabled ? ' disabled' : '') + ' data-page="' + page + '">' + label + '</button>'; }
+          if (pages > 1) {
+            btns.push(pbtn('‹', state.page - 1, state.page <= 1, false));
+            var win = 2, from = Math.max(1, state.page - win), to = Math.min(pages, state.page + win);
+            if (from > 1) { btns.push(pbtn('1', 1, false, state.page === 1)); if (from > 2) btns.push('<button type="button" disabled>…</button>'); }
+            for (var p = from; p <= to; p++) btns.push(pbtn(String(p), p, false, p === state.page));
+            if (to < pages) { if (to < pages - 1) btns.push('<button type="button" disabled>…</button>'); btns.push(pbtn(String(pages), pages, false, state.page === pages)); }
+            btns.push(pbtn('›', state.page + 1, state.page >= pages, false));
+          }
+          pagerEl.innerHTML = btns.join('');
+          pageInfoEl.textContent = total === 0 ? '' : ('第 ' + state.page + ' / ' + pages + ' 页');
+        }
+        if (pagerEl) pagerEl.addEventListener('click', function (e) {
+          var b = e.target.closest('button[data-page]'); if (!b || b.disabled) return;
+          var p = parseInt(b.getAttribute('data-page'), 10);
+          if (!isNaN(p) && p >= 1) { state.page = p; renderPage(); }
+        });
+        if (selAllBtn) selAllBtn.addEventListener('click', function () {
+          if (state.found.length > 0 && selCount() === state.found.length) state.selected = {};
+          else state.found.forEach(function (r) { state.selected[r.username] = true; });
+          renderPage(); updateSelUI();
+        });
+
+        function renderFound() {
+          countEl.textContent = state.found.length;
+          if (state.found.length === 0) { emptyEl.hidden = false; gridEl.hidden = true; }
+          else { emptyEl.hidden = true; gridEl.hidden = false; renderPage(); }
+          updateSelUI();
+        }
+
+        function setProgress(pct, indet) { if (!fill) return; fill.classList.toggle('is-indet', !!indet); if (!indet) fill.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
+        function setStatus(t) { if (!statusEl) return; statusEl.hidden = !t; statusEl.textContent = t || ''; }
+
+        function poll(jobId) {
+          fetch(statusUrl + '?job=' + encodeURIComponent(jobId), { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (!d.success) { setStatus(d.message || '查询失败'); goBtn.disabled = false; state.polling = false; return; }
+              state.found = (d.found || []); renderFound();
+              if (d.state === 'done') {
+                setProgress(100, false);
+                var ex = []; if (d.skipped) ex.push('跳过 ' + d.skipped); if (d.truncated) ex.push('已截断');
+                setStatus(state.found.length + ' / ' + (d.total || 0) + (ex.length ? '（' + ex.join('，') + '）' : ''));
+                if (results) results.hidden = false;
+                setTimeout(function () { if (progress) progress.hidden = true; }, 600);
+                goBtn.disabled = false; state.polling = false;
+              } else {
+                if (d.total > 0) setProgress((d.checked || 0) / d.total * 100, false); else setProgress(0, true);
+                setStatus((d.state === 'queued' ? '排队中' : '探测中') + ' ' + (d.checked || 0) + (d.total ? ' / ' + d.total : ''));
+                setTimeout(function () { poll(jobId); }, 1200);
+              }
+            })
+            .catch(function () { setStatus('网络错误'); goBtn.disabled = false; state.polling = false; });
+        }
+
+        if (goBtn) goBtn.addEventListener('click', function () {
+          if (state.polling) return;
+          var classes = selectedClasses(), template = (tmplEl.value || '').trim();
+          if (classes.length === 0) { setStatus('请选择班级'); return; }
+          if (template.indexOf('<username>') === -1) { setStatus('需包含 <username>'); return; }
+          wrap.classList.remove('is-hero');   // 收起居中态，控件归位到顶部
+          state.found = []; state.selected = {}; state.page = 1; createMsg.innerHTML = '';
+          if (results) results.hidden = true;
+          if (progress) progress.hidden = false; setProgress(0, true);
+          goBtn.disabled = true; state.polling = true; setStatus('提交中');
+          fetch(probeUrl, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ classes: classes, template: template })
+          }).then(function (r) { return r.json(); })
+            .then(function (d) { if (!d.success) { setStatus(d.message || '查询失败'); goBtn.disabled = false; state.polling = false; return; } poll(d.job_id); })
+            .catch(function () { setStatus('网络错误'); goBtn.disabled = false; state.polling = false; });
+        });
+
+        if (createBtn) createBtn.addEventListener('click', function () {
+          var usernames = Object.keys(state.selected); if (usernames.length === 0) return;
+          var template = (tmplEl.value || '').trim();
+          if (!window.confirm('确认对 ' + usernames.length + ' 个仓库批量创建提交并评测？')) return;
+          createBtn.disabled = true; createMsg.innerHTML = '<div class="bm-flash">创建中…</div>';
+          fetch(createUrl, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ template: template, usernames: usernames })
+          }).then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (!d.success) { createMsg.innerHTML = '<div class="bm-flash">' + escapeHtml(d.message || '创建失败') + '</div>'; createBtn.disabled = false; return; }
+              var inv = (d.invalid && d.invalid.length) ? ('，跳过 ' + d.invalid.length) : '';
+              createMsg.innerHTML = '<div class="bm-flash">已开始批量处理 ' + d.queued + ' 个仓库（后台逐个拉取并评测）' + inv + ' · <a href="' + allSubsUrl + '">所有提交</a></div>';
+              state.selected = {}; renderPage(); updateSelUI();
+            })
+            .catch(function () { createMsg.innerHTML = '<div class="bm-flash">网络错误</div>'; createBtn.disabled = false; });
+        });
+      })();
+      </script>
     {% endif %}
 
     {# ========== 编辑比赛（管理员） ========== #}
