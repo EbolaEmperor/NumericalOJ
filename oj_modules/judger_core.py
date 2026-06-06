@@ -32,9 +32,16 @@ import time
 
 
 # 进程数 / 输出文件大小限制：防 fork 炸弹与写满磁盘。
-# 注意 RLIMIT_NPROC 是按真实 UID 统计「全系统」的进程/线程数，过低会误伤多线程的合法运行
-# （如 Octave/MKL）；默认给足 256，且可用环境变量覆盖，远端 config.py 无需改动。
-_RLIMIT_NPROC = int(os.environ.get("JUDGER_RLIMIT_NPROC") or 256)
+# RLIMIT_NPROC 是按「真实 UID 全系统」统计进程/线程数的（fork 时内核拿该 UID 现存任务数与限制比较）。
+# 判题与 web/celery 跑在同一个 UID 下，该 UID 的常驻线程（worker 池 + MKL/Octave + web，乃至误留在
+# 机器上的其它进程）可能多达数百。若把 NPROC 设成一个固定小绝对值（历史上是 256），一旦该 UID 现存
+# 线程数超过它，沙箱子进程的任何 fork 都会 EAGAIN——所有提交判 Runtime Error，判题整体瘫痪
+# （2026-06-06 线上事故根因）。因此默认改为「当前 UID 基线 + 余量」：
+#   - 永远高于当前基线 → 合法运行（含 MKL/Octave 多线程）能正常 fork；
+#   - 余量封顶 → 用户代码最多再 fork 余量个进程，仍能挡住 fork 炸弹。
+# JUDGER_RLIMIT_NPROC_HEADROOM 调余量；JUDGER_RLIMIT_NPROC_ABS 设非 0 时强制回退到固定绝对值（逃生阀）。
+_RLIMIT_NPROC_HEADROOM = int(os.environ.get("JUDGER_RLIMIT_NPROC_HEADROOM") or 1024)
+_RLIMIT_NPROC_ABS = int(os.environ.get("JUDGER_RLIMIT_NPROC_ABS") or 0)
 _RLIMIT_FSIZE_BYTES = int(os.environ.get("JUDGER_RLIMIT_FSIZE_BYTES") or (256 * 1024 * 1024))
 # Python 级超时兜底相对 coreutils timeout 的额外缓冲秒数（确保 timeout 先动作，Python 仅兜底）。
 _GUARD_TIMEOUT_BUFFER_SEC = float(os.environ.get("JUDGER_GUARD_TIMEOUT_BUFFER_SEC") or 5.0)
@@ -259,16 +266,58 @@ def read_output_with_fallback(output_filename: str, captured_stdout: str):
 _OCTAVE_APPLY_RLIMIT_AS = (os.environ.get("JUDGER_OCTAVE_RLIMIT_AS") or "0").strip().lower() not in ("0", "false", "no", "")
 
 
+def _current_uid_task_count():
+    """统计当前真实 UID 在「全系统」的线程(任务)总数——RLIMIT_NPROC 正是按此口径计数。
+    通过扫描 /proc/<pid>/task 实现。读不到（如非 Linux，无 /proc）返回 None，调用方据此
+    放弃施加 NPROC 限制（宁可不限，也不要因基线测不准而误杀合法运行）。"""
+    try:
+        uid = os.getuid()
+    except AttributeError:
+        return None  # 非 POSIX
+    total = 0
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + entry).st_uid != uid:
+                continue
+            total += len(os.listdir("/proc/" + entry + "/task"))
+        except OSError:
+            # 进程在扫描间隙退出 / 无权限：跳过
+            continue
+    return total
+
+
+def _compute_nproc_limit():
+    """计算本次运行要施加的 RLIMIT_NPROC 硬上限。
+    返回 None 表示「不施加」（基线测不准时 fail-open）。"""
+    if _RLIMIT_NPROC_ABS:
+        return _RLIMIT_NPROC_ABS
+    base = _current_uid_task_count()
+    if not base:
+        return None
+    return base + _RLIMIT_NPROC_HEADROOM
+
+
 def set_run_limits(cpu_seconds: float, mem_bytes: int, apply_as: bool = True):
     """
     作为 preexec_fn：对子进程设置 rlimit。
     - CPU 限时：RLIMIT_CPU（秒，向上取整）
     - 地址空间：RLIMIT_AS（Byte，apply_as=False 时跳过，用于 Octave）
-    - 进程数：RLIMIT_NPROC（防 fork 炸弹）
+    - 进程数：RLIMIT_NPROC（防 fork 炸弹）= 当前 UID 基线 + 余量（见模块顶部说明）
     - 输出文件大小：RLIMIT_FSIZE（防写满磁盘）
     - core dump：RLIMIT_CORE=0
     配合 start_new_session=True（子进程自成会话/进程组），超时后可整组击杀。
+
+    NPROC 上限在「父进程」此处先算好（扫 /proc 安全），再由 preexec_fn 闭包应用；
+    不在 fork 后的子进程里扫 /proc（多线程进程 fork 后做重活有死锁风险）。
     """
+    nproc_limit = _compute_nproc_limit()
+
     def _setter():
         cpu_soft = max(1, int(cpu_seconds))
         cpu_hard = cpu_soft + 1
@@ -278,10 +327,11 @@ def set_run_limits(cpu_seconds: float, mem_bytes: int, apply_as: bool = True):
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
 
         # 以下限制设置失败不应阻断运行（不同平台/权限差异），逐个 try。
-        try:
-            resource.setrlimit(resource.RLIMIT_NPROC, (_RLIMIT_NPROC, _RLIMIT_NPROC))
-        except (ValueError, OSError):
-            pass
+        if nproc_limit and nproc_limit > 0:
+            try:
+                resource.setrlimit(resource.RLIMIT_NPROC, (nproc_limit, nproc_limit))
+            except (ValueError, OSError):
+                pass
         try:
             resource.setrlimit(resource.RLIMIT_FSIZE, (_RLIMIT_FSIZE_BYTES, _RLIMIT_FSIZE_BYTES))
         except (ValueError, OSError):
