@@ -183,7 +183,14 @@ def _reset_db():
         conn.close()
 
 
-@pytest.fixture(scope='session', autouse=True)
+def _is_infra_free_test(request):
+    """tests/unit/ 下均为纯逻辑单测，不连 MySQL/Redis。GitHub Actions 的 unit 门禁也不
+    提供这些基础设施，故这些用例必须能在无 DB 环境下运行——不能被 autouse 的 DB 重置拖垮。"""
+    path = str(getattr(request.node, "fspath", "")).replace("\\", "/")
+    return "/tests/unit/" in path
+
+
+@pytest.fixture(scope='session')
 def _infra():
     _wait_for_mysql()
     _ensure_schema()
@@ -208,7 +215,14 @@ def client(app):
 
 
 @pytest.fixture(autouse=True)
-def db_reset(_infra):
+def db_reset(request):
+    # 纯逻辑单测（tests/unit/）跳过基础设施等待与 DB 重置，使其在无 MySQL/Redis 的环境也能跑
+    # （修复 CI unit 门禁每次推送都因连不上 MySQL 超时失败、误报邮件）。其余测试照常 reset。
+    # 注：显式请求 client/app 的用例仍会经 app→_infra 按需拉起基础设施，不受此影响。
+    if _is_infra_free_test(request):
+        yield
+        return
+    request.getfixturevalue('_infra')
     _reset_db()
     yield
 
