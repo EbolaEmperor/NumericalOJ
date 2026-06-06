@@ -17,6 +17,8 @@ class _RecordingSetrlimit:
 def test_set_run_limits_sets_nproc_and_fsize(monkeypatch):
     rec = _RecordingSetrlimit()
     monkeypatch.setattr(resource, "setrlimit", rec)
+    # 给定可测的 UID 基线，保证 NPROC 被施加（非 Linux 无 /proc 时基线为 None）
+    monkeypatch.setattr(judger_core, "_current_uid_task_count", lambda: 100)
     judger_core.set_run_limits(1.0, 4096)()
     whichs = {c[0] for c in rec.calls}
     assert resource.RLIMIT_NPROC in whichs   # 防 fork 炸弹
@@ -28,12 +30,50 @@ def test_set_run_limits_sets_nproc_and_fsize(monkeypatch):
 def test_set_run_limits_apply_as_false_skips_as(monkeypatch):
     rec = _RecordingSetrlimit()
     monkeypatch.setattr(resource, "setrlimit", rec)
+    monkeypatch.setattr(judger_core, "_current_uid_task_count", lambda: 100)
     judger_core.set_run_limits(1.0, 4096, apply_as=False)()
     as_calls = [c for c in rec.calls if c[0] == resource.RLIMIT_AS]
     assert as_calls == []                    # Octave 路径默认不施加 RLIMIT_AS
     # 但 CPU/NPROC/FSIZE 仍施加
     assert any(c[0] == resource.RLIMIT_CPU for c in rec.calls)
     assert any(c[0] == resource.RLIMIT_NPROC for c in rec.calls)
+
+
+def test_nproc_limit_is_relative_to_baseline(monkeypatch):
+    """回归（2026-06-06 线上事故）：RLIMIT_NPROC 必须按「当前 UID 基线 + 余量」设置，
+    且严格高于基线。旧实现写死 256，当 ebola UID 常驻线程（泄漏的 Chrome + worker + web）
+    超过 256 时，沙箱内 timeout fork 用户程序一律 EAGAIN，判题整体瘫痪。"""
+    rec = _RecordingSetrlimit()
+    monkeypatch.setattr(resource, "setrlimit", rec)
+    monkeypatch.setattr(judger_core, "_current_uid_task_count", lambda: 400)
+    monkeypatch.setattr(judger_core, "_RLIMIT_NPROC_ABS", 0)
+    judger_core.set_run_limits(1.0, 4096)()
+    nproc = [c[1] for c in rec.calls if c[0] == resource.RLIMIT_NPROC]
+    assert nproc, "应设置 RLIMIT_NPROC"
+    soft, hard = nproc[0]
+    assert soft > 400                                       # 关键：高于基线，合法 fork 不被误杀
+    assert soft == 400 + judger_core._RLIMIT_NPROC_HEADROOM
+
+
+def test_nproc_limit_skipped_when_baseline_unknown(monkeypatch):
+    """无法读取 /proc 统计基线时（如非 Linux 开发机），宁可不设 NPROC 也不误杀合法运行。"""
+    rec = _RecordingSetrlimit()
+    monkeypatch.setattr(resource, "setrlimit", rec)
+    monkeypatch.setattr(judger_core, "_current_uid_task_count", lambda: None)
+    monkeypatch.setattr(judger_core, "_RLIMIT_NPROC_ABS", 0)
+    judger_core.set_run_limits(1.0, 4096)()
+    assert not [c for c in rec.calls if c[0] == resource.RLIMIT_NPROC]
+    assert any(c[0] == resource.RLIMIT_CPU for c in rec.calls)   # 其它限制仍照常
+
+
+def test_nproc_absolute_override(monkeypatch):
+    """显式设了绝对值（JUDGER_RLIMIT_NPROC_ABS）时按绝对值，作为运维逃生阀。"""
+    rec = _RecordingSetrlimit()
+    monkeypatch.setattr(resource, "setrlimit", rec)
+    monkeypatch.setattr(judger_core, "_RLIMIT_NPROC_ABS", 777)
+    judger_core.set_run_limits(1.0, 4096)()
+    nproc = [c[1] for c in rec.calls if c[0] == resource.RLIMIT_NPROC]
+    assert nproc and nproc[0] == (777, 777)
 
 
 def test_guard_timeout_exceeds_coreutils():

@@ -93,7 +93,7 @@ The default `rsync` command in `.claude/settings.local.json` already excludes `c
 - `FLASK_DEBUG` (config, default `False`) — never enable in production (Werkzeug debugger = RCE). Templates still hot-reload via `TEMPLATES_AUTO_RELOAD` even with debug off, so the frontend fast-path still works.
 - `SESSION_COOKIE_SECURE` (config, default `False`) — set `True` once served over HTTPS. `HttpOnly` + `SameSite=Lax` are always on.
 - `CONTENT_SECURITY_POLICY` (config) — overrides the default permissive CSP set in `oj.py`'s `after_request`.
-- `JUDGER_RLIMIT_NPROC` / `JUDGER_RLIMIT_FSIZE_BYTES` / `JUDGER_GUARD_TIMEOUT_BUFFER_SEC` (env) — sandbox fork-bomb / disk-fill / Python-timeout-backstop tuning.
+- `JUDGER_RLIMIT_NPROC_HEADROOM` (env, default 1024) / `JUDGER_RLIMIT_NPROC_ABS` (env, default 0=off) / `JUDGER_RLIMIT_FSIZE_BYTES` / `JUDGER_GUARD_TIMEOUT_BUFFER_SEC` (env) — sandbox fork-bomb / disk-fill / Python-timeout-backstop tuning. **`RLIMIT_NPROC` is per-real-UID system-wide**, and judging shares the `ebola` UID with web/celery/MKL threads, so the cap is set to *current UID task count + HEADROOM* (never a fixed small absolute — a fixed 256 caused the 2026-06-06 outage when the UID's live thread count exceeded it and every sandbox `fork()` got EAGAIN). `_ABS` forces a fixed absolute value as an escape hatch.
 - `JUDGER_OCTAVE_RLIMIT_AS` (env, default off) — Octave gets CPU/NPROC/FSIZE limits unconditionally, but `RLIMIT_AS` is opt-in (it historically broke Octave/MKL virtual-memory reservations). Verify Octave's virtual footprint before enabling.
 
 Note: after editing `docker/agent_judge/report` (now reads the random result path from `AJ_RESULT_FILE`), rebuild the agent-judge image (`docker build -t numericaloj-agent-judge:latest docker/agent_judge`).
