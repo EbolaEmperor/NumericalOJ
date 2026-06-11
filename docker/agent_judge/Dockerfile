@@ -10,13 +10,24 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_ERROR_REPORTING=1
 
-# 换国内镜像源，容器内 apt 更稳（why-server 在国内）
+# 换国内镜像源，容器内 apt 更稳（why-server 在国内）；并启用 non-free（Intel MKL 在 non-free）
 RUN sed -i 's@deb.debian.org@mirrors.aliyun.com@g; s@security.debian.org@mirrors.aliyun.com@g' \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+    && sed -i 's@^Components: .*@Components: main contrib non-free non-free-firmware@' \
         /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
 
+# 工具链 + 数值计算库（OpenBLAS / Intel MKL / LAPACK(E) / Eigen3）+ Python 科学计算常用包。
+# Python 包走 apt（python3-*）：与系统 BLAS/LAPACK 链接、避免 PEP668 externally-managed 报错。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv build-essential gcc g++ make \
+        python3 python3-pip python3-venv build-essential gcc g++ gfortran make \
         git curl ca-certificates octave \
+        libopenblas-dev liblapack-dev liblapacke-dev libeigen3-dev intel-mkl \
+        python3-numpy python3-scipy python3-pandas python3-matplotlib python3-sympy \
+    && rm -rf /var/lib/apt/lists/*
+
+# texlive-full 体积很大（~5GB）、装得慢，单独成一层（便于缓存、失败不连累上层）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        texlive-full \
     && rm -rf /var/lib/apt/lists/*
 
 # pip / npm 国内镜像

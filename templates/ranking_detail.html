@@ -197,13 +197,23 @@
       {% set elo_needs_script = (is_elo and not competition.scoring_script_path) %}
       {% set answer_icon = 'fa-file-archive' if answer_format == 'zip' else 'fa-file-code' %}
       {% set is_agent_judge = (scoring_mode == 'agent_judge') %}
-      {% set agent_judge_not_ready = (is_agent_judge and (not competition.agent_judge_base_url or not agent_judge_api_key_set or not competition.agent_judge_model or (judge_rules|length == 0))) %}
+      {% set agent_judge_not_ready = (is_agent_judge and not agent_judge_ready) %}
 
       {% if is_elo %}
       <div class="alert alert-info mb-4">
         <i class="fas fa-chess-knight me-2"></i>
         <strong>ELO 对战模式：</strong>提交后您的作品将进入对战池，定时与其他用户的提交两两比较，根据胜负调整 ELO 分数。
         每位用户在池中只保留<strong>最近两份</strong>提交，更早的会自动退役。
+      </div>
+      {% endif %}
+
+      {% if submit_quota %}
+      <div class="rank-quota mb-4">
+        <span>本轮可提交 <strong>{{ submit_quota.remaining }}</strong> / {{ submit_quota.limit }} 次</span>
+        <span class="rank-quota-sep">·</span>
+        <span>每 48 小时刷新</span>
+        <span class="rank-quota-sep">·</span>
+        <span>下次刷新 {{ submit_quota.next_reset.strftime('%Y-%m-%d %H:%M') }}</span>
       </div>
       {% endif %}
 
@@ -224,6 +234,206 @@
         <div class="alert alert-warning mb-4">
           <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 Agent 评测模式，但管理员尚未完成模型配置或评分规则设置，暂时无法接收提交。
         </div>
+      {% else %}
+      {% if is_agent_judge and submission_method == 'git' %}
+        {# ===== Git 提交方式（扁平 / 无阴影 / 克制配色） ===== #}
+        <style>
+          .gitsub{--gs-ink:#15171c;--gs-muted:#6b7280;--gs-faint:#9aa1ab;--gs-line:#e7e9ec;
+                  --gs-surf:#fbfbfc;--gs-ok:#1d7a55;--gs-no:#b04438;
+                  --gs-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+                  border:1px solid var(--gs-line);border-radius:12px;padding:22px 22px 24px;
+                  margin-bottom:1.5rem;background:#fff;}
+          .gitsub-head{display:flex;align-items:baseline;gap:10px;margin-bottom:16px;}
+          .gitsub-head h3{font-size:1.02rem;font-weight:650;color:var(--gs-ink);margin:0;letter-spacing:.01em;}
+          .gitsub-head span{font-size:.78rem;color:var(--gs-faint);}
+          .gitsub-repo{display:flex;align-items:center;gap:12px;border:1px solid var(--gs-line);
+                       border-radius:9px;background:var(--gs-surf);padding:11px 13px;}
+          .gitsub-repo .k{font-size:.66rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+                          color:var(--gs-faint);white-space:nowrap;}
+          .gitsub-repo .u{flex:1;font-family:var(--gs-mono);font-size:.86rem;color:var(--gs-ink);
+                          word-break:break-all;line-height:1.4;}
+          .gitsub-copy{border:none;background:transparent;color:var(--gs-faint);cursor:pointer;
+                       padding:4px 6px;border-radius:6px;transition:color .15s,background .15s;font-size:.85rem;}
+          .gitsub-copy:hover{color:var(--gs-ink);background:#eef0f2;}
+          .gitsub-copy.ok{color:var(--gs-ok);}
+          .gitsub-actions{margin-top:16px;}
+          .gitsub-btn{display:inline-flex;align-items:center;gap:8px;font-size:.9rem;font-weight:560;
+                      border-radius:9px;padding:9px 20px;cursor:pointer;transition:all .15s;border:1px solid transparent;}
+          .gitsub-btn:disabled{cursor:default;opacity:.55;}
+          .gitsub-btn-ghost{background:#fff;border-color:var(--gs-ink);color:var(--gs-ink);}
+          .gitsub-btn-ghost:not(:disabled):hover{background:var(--gs-ink);color:#fff;}
+          .gitsub-btn-solid{background:var(--gs-ink);color:#fff;}
+          .gitsub-btn-solid:not(:disabled):hover{background:#000;}
+          .gitsub-spin{width:13px;height:13px;border:2px solid currentColor;border-top-color:transparent;
+                       border-radius:50%;display:inline-block;animation:gitsubspin .6s linear infinite;}
+          @keyframes gitsubspin{to{transform:rotate(360deg);}}
+          .gitsub-result{margin-top:18px;border-top:1px solid var(--gs-line);padding-top:18px;
+                         animation:gitsubin .28s ease both;}
+          @keyframes gitsubin{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+          .gitsub-status{display:flex;align-items:center;gap:8px;font-size:.9rem;font-weight:600;margin-bottom:14px;}
+          .gitsub-status .dot{width:8px;height:8px;border-radius:50%;flex:none;}
+          .gitsub-status.ok{color:var(--gs-ok);} .gitsub-status.ok .dot{background:var(--gs-ok);}
+          .gitsub-status.no{color:var(--gs-no);} .gitsub-status.no .dot{background:var(--gs-no);}
+          .gitsub-commit{display:grid;grid-template-columns:auto 1fr;gap:7px 16px;align-items:baseline;}
+          .gitsub-commit .ck{font-size:.66rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+                             color:var(--gs-faint);white-space:nowrap;}
+          .gitsub-commit .cv{font-size:.88rem;color:var(--gs-ink);line-height:1.5;word-break:break-word;}
+          .gitsub-commit .cv.mono{font-family:var(--gs-mono);font-size:.82rem;}
+          .gitsub-commit .subj{font-weight:600;}
+          .gitsub-commit .body{white-space:pre-wrap;color:var(--gs-muted);font-size:.82rem;line-height:1.6;
+                               border-left:2px solid var(--gs-line);padding-left:12px;margin-top:2px;}
+          .gitsub-confirm{margin-top:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+          .gitsub-confirm-hint{font-size:.84rem;color:var(--gs-muted);}
+          .gitsub-confirm-hint.ok{color:var(--gs-ok);} .gitsub-confirm-hint.no{color:var(--gs-no);}
+          .gitsub-note{margin-top:16px;font-size:.86rem;color:var(--gs-muted);}
+        </style>
+        <div class="gitsub"
+             data-check-url="{{ url_for('ranking.ranking_check_repo', competition_id=competition.id) }}"
+             data-submit-url="{{ url_for('ranking.ranking_git_submit', competition_id=competition.id) }}"
+             {% if submit_quota %}data-remaining="{{ submit_quota.remaining }}"{% endif %}>
+          <div class="gitsub-head">
+            <h3>Git 提交</h3><span>从你的仓库拉取最新代码并评测</span>
+          </div>
+          <div class="gitsub-repo">
+            <span class="k">仓库</span>
+            <code class="u" id="gitsubUrl">{{ git_repo_url or '' }}</code>
+            {% if git_repo_url %}
+            <button type="button" class="gitsub-copy" id="gitsubCopy" title="复制地址" aria-label="复制仓库地址">
+              <i class="fas fa-copy"></i>
+            </button>
+            {% endif %}
+          </div>
+          {% if not git_repo_url %}
+            <div class="gitsub-note">管理员尚未配置 Git 仓库标准命名，暂时无法提交。</div>
+          {% else %}
+            <div class="gitsub-actions">
+              <button type="button" class="gitsub-btn gitsub-btn-ghost" id="gitsubCheckBtn">
+                <span class="gitsub-spin" id="gitsubCheckSpin" hidden></span>
+                <span id="gitsubCheckLabel">检查仓库</span>
+              </button>
+            </div>
+            <div class="gitsub-result" id="gitsubResult" hidden></div>
+            <div class="gitsub-confirm" id="gitsubConfirm" hidden>
+              <button type="button" class="gitsub-btn gitsub-btn-solid" id="gitsubSubmitBtn">
+                <span class="gitsub-spin" id="gitsubSubmitSpin" hidden></span>
+                <span id="gitsubSubmitLabel">确认提交</span>
+              </button>
+              <span class="gitsub-confirm-hint" id="gitsubConfirmHint"></span>
+            </div>
+          {% endif %}
+        </div>
+        <script>
+        (function () {
+          var root = document.querySelector('.gitsub');
+          if (!root) return;
+          var checkUrl = root.getAttribute('data-check-url');
+          var submitUrl = root.getAttribute('data-submit-url');
+          var remainAttr = root.getAttribute('data-remaining');
+          var remaining = (remainAttr === null) ? null : parseInt(remainAttr, 10);
+          var checkBtn = document.getElementById('gitsubCheckBtn');
+          var checkSpin = document.getElementById('gitsubCheckSpin');
+          var checkLabel = document.getElementById('gitsubCheckLabel');
+          var resultEl = document.getElementById('gitsubResult');
+          var confirmEl = document.getElementById('gitsubConfirm');
+          var submitBtn = document.getElementById('gitsubSubmitBtn');
+          var submitSpin = document.getElementById('gitsubSubmitSpin');
+          var submitLabel = document.getElementById('gitsubSubmitLabel');
+          var confirmHint = document.getElementById('gitsubConfirmHint');
+          var copyBtn = document.getElementById('gitsubCopy');
+          var urlEl = document.getElementById('gitsubUrl');
+
+          function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+          function fmtDate(iso){
+            if(!iso) return '';
+            var d=new Date(iso); if(isNaN(d.getTime())) return esc(iso);
+            var p=function(n){return (n<10?'0':'')+n;};
+            var s=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+            var diff=(Date.now()-d.getTime())/1000, rel='';
+            if(diff>=0){
+              if(diff<60) rel='刚刚'; else if(diff<3600) rel=Math.floor(diff/60)+' 分钟前';
+              else if(diff<86400) rel=Math.floor(diff/3600)+' 小时前';
+              else if(diff<2592000) rel=Math.floor(diff/86400)+' 天前';
+            }
+            return s+(rel?('　·　'+rel):'');
+          }
+
+          if (copyBtn && urlEl) copyBtn.addEventListener('click', function(){
+            var t=(urlEl.textContent||'').trim(); if(!t) return;
+            var done=function(){copyBtn.classList.add('ok');copyBtn.innerHTML='<i class="fas fa-check"></i>';
+              setTimeout(function(){copyBtn.classList.remove('ok');copyBtn.innerHTML='<i class="fas fa-copy"></i>';},1400);};
+            if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,function(){});}
+            else{var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();
+                 try{document.execCommand('copy');done();}catch(e){}document.body.removeChild(ta);}
+          });
+
+          function setChecking(on){
+            checkBtn.disabled=on; checkSpin.hidden=!on; checkLabel.textContent=on?'检查中':'检查仓库';
+          }
+          function renderResult(d){
+            var html='';
+            if(d.exists && d.info){
+              html+='<div class="gitsub-status ok"><span class="dot"></span>仓库已找到 · 最新提交</div>';
+              html+='<div class="gitsub-commit">';
+              html+='<span class="ck">提交</span><span class="cv subj">'+esc(d.info.subject||'(无标题)')+'</span>';
+              html+='<span class="ck">哈希</span><span class="cv mono">'+esc(d.info.short||'')+'</span>';
+              html+='<span class="ck">作者</span><span class="cv">'+esc(d.info.author||'')+'</span>';
+              html+='<span class="ck">时间</span><span class="cv">'+fmtDate(d.info.date_iso)+'</span>';
+              if(d.info.body&&d.info.body.trim())
+                html+='<span class="ck">说明</span><span class="cv"><span class="body">'+esc(d.info.body)+'</span></span>';
+              html+='</div>';
+            } else if(d.exists){
+              html+='<div class="gitsub-status ok"><span class="dot"></span>仓库已找到</div>';
+              html+='<div class="gitsub-note">'+esc(d.message||'仓库存在，但还没有任何提交。')+'</div>';
+            } else {
+              html+='<div class="gitsub-status no"><span class="dot"></span>未找到仓库</div>';
+              html+='<div class="gitsub-note">'+esc(d.message||'无法访问该仓库，请确认已创建并具备读取权限。')+'</div>';
+            }
+            resultEl.innerHTML=html; resultEl.hidden=false;
+            // 仅当仓库存在且有提交时才允许确认提交
+            if(d.exists && d.info){
+              confirmEl.hidden=false;
+              if(remaining!==null && !isNaN(remaining) && remaining<=0){
+                submitBtn.disabled=true; confirmHint.className='gitsub-confirm-hint no';
+                confirmHint.textContent='本轮提交次数已用完';
+              } else { submitBtn.disabled=false; confirmHint.className='gitsub-confirm-hint'; confirmHint.textContent=''; }
+            } else { confirmEl.hidden=true; }
+          }
+
+          checkBtn.addEventListener('click', function(){
+            setChecking(true); resultEl.hidden=true; confirmEl.hidden=true;
+            fetch(checkUrl,{method:'POST',credentials:'same-origin',
+              headers:{'X-Requested-With':'XMLHttpRequest'}})
+              .then(function(r){return r.json();})
+              .then(function(d){ setChecking(false);
+                if(!d.success){ resultEl.innerHTML='<div class="gitsub-status no"><span class="dot"></span>'+
+                  esc(d.message||'检查失败')+'</div>'; resultEl.hidden=false; confirmEl.hidden=true; return; }
+                renderResult(d);
+              })
+              .catch(function(){ setChecking(false);
+                resultEl.innerHTML='<div class="gitsub-status no"><span class="dot"></span>网络错误，请重试</div>';
+                resultEl.hidden=false; confirmEl.hidden=true; });
+          });
+
+          submitBtn.addEventListener('click', function(){
+            submitBtn.disabled=true; submitSpin.hidden=false; submitLabel.textContent='提交中';
+            confirmHint.className='gitsub-confirm-hint'; confirmHint.textContent='';
+            fetch(submitUrl,{method:'POST',credentials:'same-origin',
+              headers:{'X-Requested-With':'XMLHttpRequest'}})
+              .then(function(r){return r.json();})
+              .then(function(d){
+                submitSpin.hidden=true;
+                if(!d.success){ submitLabel.textContent='确认提交'; submitBtn.disabled=false;
+                  confirmHint.className='gitsub-confirm-hint no'; confirmHint.textContent=d.message||'提交失败'; return; }
+                submitLabel.textContent='已提交'; checkBtn.disabled=true;
+                confirmHint.className='gitsub-confirm-hint ok';
+                confirmHint.textContent=(d.message||'已提交，正在评测')+'，即将刷新…';
+                setTimeout(function(){ window.location.href=window.location.pathname+'?tab=submit'; },1600);
+              })
+              .catch(function(){ submitSpin.hidden=true; submitLabel.textContent='确认提交'; submitBtn.disabled=false;
+                confirmHint.className='gitsub-confirm-hint no'; confirmHint.textContent='网络错误，请重试'; });
+          });
+        })();
+        </script>
       {% else %}
         <form method="POST" enctype="multipart/form-data"
               action="{{ url_for('ranking.ranking_submit', competition_id=competition.id) }}"
@@ -289,6 +499,7 @@
             <span class="submit-hint ms-3 text-muted small" id="rankingSubmitHint">请先选择两个文件</span>
           </div>
         </form>
+      {% endif %}{# git vs zip 提交方式 #}
       {% endif %}
 
       <!-- 我的历史提交 -->
@@ -1382,6 +1593,53 @@
                 <div class="form-text">每次评测脚本调用的最长允许时间，超时即判失败。</div>
               </div>
             </div>
+            <!-- Agent 评测：提交方式（ZIP 上传 / Git 拉取） -->
+            {% set _smethod = (competition.submission_method or 'zip')|lower %}
+            <div class="row mb-3 agent-judge-only" id="submissionMethodRow"
+                 {% if _mode != 'agent_judge' %}style="display:none;"{% endif %}>
+              <div class="col-md-4">
+                <label class="form-label">提交方式</label>
+                <select class="form-select" name="submission_method" id="submissionMethodSelect">
+                  <option value="zip" {% if _smethod == 'zip' %}selected{% endif %}>上传 ZIP 压缩包</option>
+                  <option value="git" {% if _smethod == 'git' %}selected{% endif %}>Git 仓库拉取</option>
+                </select>
+                <div class="form-text">仅 Agent 评测模式可选。</div>
+              </div>
+              <div class="col-md-8" id="gitFormatField" {% if _smethod != 'git' %}style="display:none;"{% endif %}>
+                <label class="form-label">Git 仓库标准命名</label>
+                <input type="text" class="form-control" name="git_format"
+                       value="{{ competition.git_format or '' }}"
+                       placeholder="gitea@10.72.190.121:&lt;username&gt;/FinalProject.git">
+                <div class="form-text">用 <code>&lt;username&gt;</code> 占位学生学号；学生提交页会显示替换后的本人仓库地址。</div>
+              </div>
+            </div>
+            <script>
+              (function(){
+                var ms=document.getElementById('submissionMethodSelect');
+                var gf=document.getElementById('gitFormatField');
+                if(!ms||!gf) return;
+                function ap(){ gf.style.display=(ms.value==='git')?'':'none'; }
+                ms.addEventListener('change',ap); ap();
+              })();
+            </script>
+
+            <!-- 每 48 小时提交次数限制 -->
+            <div class="row mb-3">
+              <div class="col-md-4">
+                <label class="form-label">每 48 小时提交次数</label>
+                <input type="number" class="form-control" name="submit_limit_per_window"
+                       value="{{ competition.submit_limit_per_window if competition.submit_limit_per_window else '' }}"
+                       min="0" max="100000" step="1" placeholder="留空 / 0 = 不限制">
+                <div class="form-text">每位用户每 48 小时可提交的次数；留空或 0 表示不限制，窗口到点自动刷新。</div>
+              </div>
+              <div class="col-md-8 d-flex align-items-center">
+                <div class="form-check mt-3">
+                  <input class="form-check-input" type="checkbox" id="resetLimitWindow" name="reset_limit_window" value="1">
+                  <label class="form-check-label" for="resetLimitWindow">保存时立即刷新所有人的配额（重新开始 48 小时）</label>
+                </div>
+              </div>
+            </div>
+
             <div class="mb-3">
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="is_active_switch" name="is_active" value="1" {% if competition.is_active == 1 %}checked{% endif %}>
@@ -1502,6 +1760,19 @@
         </div>
       </div>
 
+      {% if competition.submit_limit_per_window %}
+      <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+        <form method="POST" action="{{ url_for('ranking.ranking_reset_submit_limit', competition_id=competition.id) }}" class="m-0">
+          <button type="submit" class="btn btn-outline-secondary btn-sm">
+            <i class="fas fa-sync-alt me-1"></i> 立即刷新提交次数（重置本轮 48 小时配额）
+          </button>
+        </form>
+        {% if competition.limit_window_start %}
+        <span class="text-muted small">当前配额窗口起点：{{ competition.limit_window_start.strftime('%Y-%m-%d %H:%M') }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+
       {% set edit_fmt = (competition.answer_format or 'json')|lower %}
       {% set edit_ext = '.' ~ edit_fmt %}
       {% set edit_mode = (competition.scoring_mode or 'absolute')|lower %}
@@ -1590,39 +1861,149 @@
         </div>
       </div>
 
-      <!-- Agent 评测设置 -->
+      <!-- Agent 评测模型端点池（多个 url+key，各带并发上限） -->
+      <style>
+        .aje { --ink:#1f2329; --muted:#70757c; --line:#e4e4e7; --paper:#fbfaf6;
+               --blue:#2563eb; --blue-d:#1d4ed8; --green:#1f7a4d;
+               --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
+        .aje-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:.9rem; flex-wrap:wrap; gap:.5rem; }
+        .aje-count { font-size:.8rem; color:var(--muted); }
+        .aje-total { font-family:var(--mono); font-size:.78rem; font-weight:600; color:var(--blue-d);
+                     background:#eef2ff; border:1px solid #c7d2fe; border-radius:4px; padding:.22rem .6rem; }
+        .aje-total b { font-size:.95rem; }
+        .aje-row { background:#fff; border:1px solid var(--line); border-left:3px solid var(--blue);
+                   border-radius:6px; padding:.8rem .9rem; margin-bottom:.6rem; animation:ajeIn .2s ease both; }
+        .aje-row.off { border-left-color:#c7c9cf; opacity:.65; }
+        @keyframes ajeIn { from{opacity:0;} to{opacity:1;} }
+        .aje-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
+        .aje-field label { font-size:.64rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 .15rem; display:block; }
+        .aje-field input { width:100%; border:1px solid var(--line); border-radius:5px; padding:.45rem .6rem;
+                           font-size:.88rem; color:var(--ink); background:var(--paper); }
+        .aje-field input:focus { outline:none; background:#fff; border-color:var(--blue); }
+        .aje-field input.mono { font-family:var(--mono); }
+        .aje-rowfoot { display:flex; align-items:flex-end; gap:1rem; margin-top:.6rem; }
+        .aje-check { display:flex; align-items:center; gap:.4rem; font-size:.82rem; color:var(--muted); cursor:pointer; padding-bottom:.45rem; }
+        .aje-del { margin-left:auto; border:none; background:transparent; color:#c2b7a0; cursor:pointer;
+                   width:28px; height:28px; border-radius:4px; }
+        .aje-del:hover { color:#b03a2e; background:#f8e9e7; }
+        .aje-add { width:100%; display:flex; align-items:center; justify-content:center; gap:.45rem;
+                   border:1px dashed #cdd5e6; background:transparent; color:#6d7fa6; border-radius:6px;
+                   padding:.7rem; font-size:.88rem; font-weight:500; cursor:pointer; }
+        .aje-add:hover { border-color:var(--blue); color:var(--blue-d); background:#eef2ff; }
+        .aje-empty { text-align:center; color:#a9b0c0; padding:1.2rem 0 .4rem; font-size:.9rem; }
+        .aje-foot { display:flex; align-items:center; gap:.75rem; margin-top:1rem; padding-top:.9rem; border-top:1px solid var(--line); flex-wrap:wrap; }
+        .aje-timeout { display:flex; align-items:center; gap:.4rem; font-size:.82rem; color:var(--muted); }
+        .aje-timeout input { width:90px; border:1px solid var(--line); border-radius:5px; padding:.35rem .5rem; font-family:var(--mono); }
+        .aje-save { background:var(--green); border:none; color:#fff; font-weight:600; border-radius:5px; padding:.5rem 1.1rem; font-size:.9rem; cursor:pointer; }
+        .aje-save:hover { background:#196b42; }
+        @media (max-width:640px){ .aje-grid{ grid-template-columns:1fr; } }
+      </style>
       <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
            {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
-        <div class="card-header"><i class="fas fa-robot me-2"></i> Agent 评测设置</div>
-        <div class="card-body">
-          <form method="POST" action="{{ url_for('ranking.ranking_save_agent_config', competition_id=competition.id) }}">
-            <div class="mb-3">
-              <label class="form-label">Anthropic 兼容 Base URL <span class="text-danger">*</span></label>
-              <input type="text" class="form-control" name="agent_judge_base_url"
-                     value="{{ competition.agent_judge_base_url or '' }}"
-                     placeholder="如：https://token-plan-cn.xiaomimimo.com/anthropic">
-            </div>
-            <div class="mb-3">
-              <label class="form-label">API Key <span class="text-danger">*</span></label>
-              <input type="password" class="form-control" name="agent_judge_api_key" autocomplete="new-password"
-                     placeholder="{% if agent_judge_api_key_set %}已配置（留空则不变）{% else %}请输入 API Key{% endif %}">
-            </div>
-            <div class="row">
-              <div class="col-md-8 mb-3">
-                <label class="form-label">模型名 <span class="text-danger">*</span></label>
-                <input type="text" class="form-control" name="agent_judge_model"
-                       value="{{ competition.agent_judge_model or '' }}" placeholder="如：mimo-v2.5-pro">
-              </div>
-              <div class="col-md-4 mb-3">
-                <label class="form-label">整体超时（秒）</label>
-                <input type="number" class="form-control" name="agent_judge_timeout_seconds"
-                       value="{{ competition.agent_judge_timeout_seconds or 1800 }}" min="60" max="7200" step="1">
-              </div>
-            </div>
-            <button type="submit" class="btn btn-outline-primary"><i class="fas fa-save me-1"></i> 保存 Agent 设置</button>
-          </form>
+        <div class="card-header"><i class="fas fa-robot me-2"></i> Agent 评测模型端点</div>
+        <div class="card-body aje">
+          <div class="aje-head">
+            <span class="aje-count" id="ajeCountLabel">共 0 个端点</span>
+            <span class="aje-total">总并发 <b id="ajeTotalValue">0</b></span>
+          </div>
+          <div id="ajeEditor"></div>
+          <button type="button" class="aje-add" id="ajeAddBtn"><i class="fas fa-plus"></i> 添加端点</button>
+          <div class="aje-foot">
+            <span class="aje-timeout">单次评测超时
+              <input type="number" id="ajeTimeout" min="60" max="7200" step="1"
+                     value="{{ competition.agent_judge_timeout_seconds or 1800 }}"> 秒</span>
+            <button type="button" class="aje-save" id="ajeSaveBtn"><i class="fas fa-save me-1"></i> 保存端点</button>
+            <span class="small" id="ajeHint"></span>
+          </div>
         </div>
       </div>
+      <script>
+        window.__AJ_ENDPOINTS__ = {{ aj_endpoints|tojson }};
+        window.__SAVE_AJ_ENDPOINTS_URL__ = "{{ url_for('ranking.ranking_save_agent_endpoints', competition_id=competition.id) }}";
+      </script>
+      <script>
+      (function () {
+        var editor = document.getElementById('ajeEditor');
+        if (!editor) return;
+        function fromServer(list){
+          return (list || []).map(function (e) {
+            return {id: e.id, base_url: e.base_url || '', model: e.model || '',
+                    concurrency_limit: e.concurrency_limit || 1, enabled: !!e.enabled,
+                    has_key: !!e.has_key, api_key: ''};
+          });
+        }
+        var eps = fromServer(window.__AJ_ENDPOINTS__);
+        function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+        function totalConc(){ return eps.reduce(function(s,e){ return s + (e.enabled ? (parseInt(e.concurrency_limit)||0) : 0); }, 0); }
+        function updateHead(){
+          document.getElementById('ajeCountLabel').textContent = '共 ' + eps.length + ' 个端点';
+          document.getElementById('ajeTotalValue').textContent = totalConc();
+        }
+        function render(){
+          if (!eps.length){ editor.innerHTML = '<div class="aje-empty">还没有端点，点下方「添加端点」。Agent 评测要求至少配置一个启用端点。</div>'; updateHead(); return; }
+          var h = '';
+          eps.forEach(function(e, i){
+            var keyPh = e.has_key ? '已配置（留空保持不变）' : '请输入 API Key';
+            h += '<div class="aje-row' + (e.enabled ? '' : ' off') + '" data-i="' + i + '">' +
+              '<div class="aje-grid">' +
+                '<div class="aje-field" style="grid-column:1 / -1;"><label>Base URL</label>' +
+                  '<input class="mono" type="text" data-f="base_url" value="' + esc(e.base_url) + '" placeholder="https://.../anthropic"></div>' +
+                '<div class="aje-field"><label>API Key</label>' +
+                  '<input class="mono" type="password" data-f="api_key" autocomplete="new-password" value="" placeholder="' + esc(keyPh) + '"></div>' +
+                '<div class="aje-field"><label>模型（可留空）</label>' +
+                  '<input type="text" data-f="model" value="' + esc(e.model) + '" placeholder="默认模型"></div>' +
+              '</div>' +
+              '<div class="aje-rowfoot">' +
+                '<div class="aje-field" style="max-width:150px;"><label>并发上限</label>' +
+                  '<input type="number" data-f="concurrency_limit" min="1" max="64" value="' + (parseInt(e.concurrency_limit)||1) + '"></div>' +
+                '<label class="aje-check"><input type="checkbox" data-f="enabled"' + (e.enabled ? ' checked' : '') + '> 启用</label>' +
+                '<button type="button" class="aje-del" data-del="' + i + '" title="删除端点"><i class="fas fa-trash-can"></i></button>' +
+              '</div>' +
+            '</div>';
+          });
+          editor.innerHTML = h; bind(); updateHead();
+        }
+        function bind(){
+          editor.querySelectorAll('[data-f]').forEach(function(inp){
+            var row = inp.closest('[data-i]'); var i = parseInt(row.getAttribute('data-i'),10);
+            var f = inp.getAttribute('data-f');
+            var ev = (inp.type === 'checkbox' || inp.type === 'number') ? 'change' : 'input';
+            inp.addEventListener(ev, function(){
+              if (f === 'enabled'){ eps[i].enabled = inp.checked; row.classList.toggle('off', !inp.checked); updateHead(); }
+              else if (f === 'concurrency_limit'){ eps[i].concurrency_limit = parseInt(inp.value)||1; updateHead(); }
+              else { eps[i][f] = inp.value; }
+            });
+          });
+          editor.querySelectorAll('[data-del]').forEach(function(b){
+            b.addEventListener('click', function(){ eps.splice(parseInt(b.getAttribute('data-del'),10),1); render(); });
+          });
+        }
+        document.getElementById('ajeAddBtn').addEventListener('click', function(){
+          eps.push({id:null, base_url:'', model:'', concurrency_limit:1, enabled:true, has_key:false, api_key:''});
+          render();
+        });
+        document.getElementById('ajeSaveBtn').addEventListener('click', function(){
+          var hint = document.getElementById('ajeHint');
+          var payload = { timeout_seconds: parseInt(document.getElementById('ajeTimeout').value)||1800,
+            endpoints: eps.map(function(e){ return {id:e.id, base_url:(e.base_url||'').trim(),
+              api_key:(e.api_key||'').trim(), model:(e.model||'').trim(),
+              concurrency_limit: parseInt(e.concurrency_limit)||1, enabled: e.enabled }; }) };
+          hint.style.color = '#70757c'; hint.textContent = '保存中…';
+          fetch(window.__SAVE_AJ_ENDPOINTS_URL__, {
+            method:'POST', credentials:'same-origin',
+            headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+            body: JSON.stringify(payload)
+          }).then(function(r){return r.json();}).then(function(d){
+            if (!d.success){ hint.style.color='#b03a2e'; hint.textContent = d.message || '保存失败'; return; }
+            hint.style.color='#1f7a4d';
+            hint.textContent = '已保存：' + d.count + ' 个端点（启用 ' + d.enabled + '，总并发 ' + d.total_concurrency + '）';
+            eps = fromServer(d.endpoints);   // 用服务端回传刷新（含新 id/has_key），保证下次保存能保留未改动的 key
+            render();
+          }).catch(function(){ hint.style.color='#b03a2e'; hint.textContent='网络错误'; });
+        });
+        render();
+      })();
+      </script>
 
       <!-- 评分规则 -->
       <style>

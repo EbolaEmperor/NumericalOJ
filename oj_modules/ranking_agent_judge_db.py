@@ -51,10 +51,125 @@ def ensure_agent_judge_tables():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            # 每比赛的多模型端点池：每个端点 (base_url, api_key, model) 各自带并发上限。
+            # 判题时按端点分别用 Redis 槽位限流，从而把 agent 评测并发提升到「各端点上限之和」。
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ranking_agent_judge_endpoints (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    competition_id INT NOT NULL,
+                    base_url VARCHAR(512) NOT NULL,
+                    api_key VARCHAR(512) NOT NULL,
+                    model VARCHAR(128) DEFAULT NULL,
+                    concurrency_limit INT NOT NULL DEFAULT 1,
+                    enabled TINYINT(1) NOT NULL DEFAULT 1,
+                    ordering INT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_aje_comp (competition_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
         conn.commit()
         _aj_tables_ready = True
     finally:
         conn.close()
+
+
+def list_agent_judge_endpoints(competition_id, enabled_only=False):
+    """返回某比赛的 agent 评测端点列表（含 api_key 明文，仅供判题侧使用）。
+    enabled_only=True 时只返回启用的端点。按 ordering, id 排序。"""
+    ensure_agent_judge_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = ("SELECT id, base_url, api_key, model, concurrency_limit, enabled, ordering "
+                   "FROM ranking_agent_judge_endpoints WHERE competition_id = %s")
+            if enabled_only:
+                sql += " AND enabled = 1"
+            sql += " ORDER BY ordering ASC, id ASC"
+            cursor.execute(sql, (competition_id,))
+            rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        out.append({
+            'id': int(r['id']),
+            'base_url': r['base_url'] or '',
+            'api_key': r['api_key'] or '',
+            'model': (r.get('model') or ''),
+            'concurrency_limit': int(r['concurrency_limit'] or 1),
+            'enabled': int(r['enabled'] or 0),
+            'ordering': int(r['ordering'] or 0),
+        })
+    return out
+
+
+def save_agent_judge_endpoints(competition_id, items):
+    """整体替换某比赛的端点列表。校验在事务外，失败抛 ValueError（不动 DB）。
+
+    items 中每项：{id?, base_url, api_key, model, concurrency_limit, enabled}。
+    api_key 留空且带已存在的 id → 沿用旧 key（前端编辑器不回显明文）；
+    api_key 留空且无对应 id → 报错（新端点必须填 key）。返回归一化后的列表。"""
+    ensure_agent_judge_tables()
+    if not isinstance(items, list):
+        raise ValueError('端点格式非法')
+    existing = {e['id']: e['api_key'] for e in list_agent_judge_endpoints(competition_id)}
+    normalized = []
+    for idx, it in enumerate(items):
+        if not isinstance(it, dict):
+            raise ValueError('端点格式非法')
+        base_url = str(it.get('base_url') or '').strip()
+        if not base_url:
+            raise ValueError('端点 URL 不能为空')
+        if not (base_url.startswith('http://') or base_url.startswith('https://')):
+            raise ValueError(f'端点 URL 必须以 http(s):// 开头：{base_url[:60]}')
+        if len(base_url) > 512:
+            raise ValueError('端点 URL 过长（不超过 512 字）')
+        eid = it.get('id')
+        try:
+            eid = int(eid) if eid not in (None, '', 'null') else None
+        except (TypeError, ValueError):
+            eid = None
+        key_in = str(it.get('api_key') or '').strip()
+        if key_in:
+            api_key = key_in
+        elif eid is not None and existing.get(eid):
+            api_key = existing[eid]          # 沿用旧 key（编辑器未改动该行 key）
+        else:
+            raise ValueError('新端点必须填写 API Key')
+        if len(api_key) > 512:
+            raise ValueError('API Key 过长（不超过 512 字）')
+        model = (str(it.get('model') or '').strip() or None)
+        if model and len(model) > 128:
+            raise ValueError('模型名过长（不超过 128 字）')
+        try:
+            climit = int(it.get('concurrency_limit'))
+        except (TypeError, ValueError):
+            climit = 1
+        climit = max(1, min(64, climit))
+        ev = it.get('enabled')
+        enabled = 1 if (ev is True or str(ev).strip().lower() in ('1', 'true', 'on', 'yes')) else 0
+        # 不去重：同一厂商(同 url)可能有多个账号 → 不同 api_key，应允许并存（各自独立并发槽位）。
+        normalized.append({'base_url': base_url, 'api_key': api_key, 'model': model,
+                           'concurrency_limit': climit, 'enabled': enabled, 'ordering': idx})
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM ranking_agent_judge_endpoints WHERE competition_id = %s",
+                           (competition_id,))
+            for e in normalized:
+                cursor.execute(
+                    "INSERT INTO ranking_agent_judge_endpoints"
+                    " (competition_id, base_url, api_key, model, concurrency_limit, enabled, ordering)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (competition_id, e['base_url'], e['api_key'], e['model'],
+                     e['concurrency_limit'], e['enabled'], e['ordering']),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return normalized
 
 
 def replace_competition_rules(competition_id, rules):

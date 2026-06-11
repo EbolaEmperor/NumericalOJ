@@ -146,6 +146,53 @@ def repo_exists(url):
     return False, (lines[0].strip() if lines else f'git 退出码 {proc.returncode}')
 
 
+def repo_last_commit(url):
+    """浅克隆仓库并取最后一条 commit 的信息。返回 ``(exists, info, message)``：
+
+    - ``exists``：仓库是否存在/可访问；
+    - ``info``：成功时为 ``{'hash','short','author','date_iso','subject','body'}``，否则 ``None``；
+    - ``message``：失败原因（成功时为 ``'ok'``）。
+
+    用 ``git clone --depth 1`` 而非 ``ls-remote``，以便拿到提交的作者/时间/标题等明细。
+    """
+    if not url or url.startswith('-'):
+        return False, None, '非法的仓库地址'
+    tmp = tempfile.mkdtemp(prefix='rankcheck_')
+    clone_dir = os.path.join(tmp, 'repo')
+    try:
+        ok, err = _clone_to_dir(url, clone_dir)
+        if not ok:
+            return False, None, err
+        try:
+            sep = '\x1f'  # 单元分隔符，避免与提交内容里的字符冲突
+            fmt = sep.join(['%H', '%h', '%an', '%aI', '%s', '%b'])
+            proc = subprocess.run(
+                ['git', '-C', clone_dir, 'log', '-1', '--pretty=format:' + fmt],
+                env=_git_env(), capture_output=True, text=True, timeout=GIT_LSREMOTE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return True, None, '读取提交信息超时'
+        except Exception as e:  # pragma: no cover
+            return True, None, f'读取提交信息失败：{str(e)[:200]}'
+        if proc.returncode != 0:
+            # 克隆成功但没有提交（空仓库）
+            return True, None, '仓库为空（无任何提交）'
+        parts = (proc.stdout or '').split(sep)
+        while len(parts) < 6:
+            parts.append('')
+        info = {
+            'hash': parts[0].strip(),
+            'short': parts[1].strip(),
+            'author': parts[2].strip(),
+            'date_iso': parts[3].strip(),
+            'subject': parts[4].strip(),
+            'body': parts[5].strip(),
+        }
+        return True, info, 'ok'
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _zip_tree(src_dir, zip_path):
     """把 ``src_dir`` 下的内容打包为 zip（排除 ``.git`` 与符号链接），文件位于 zip 根部，
     从而 Agent 评测解包后直接落在 ``submission/`` 下（与手工上传 zip 行为一致）。"""

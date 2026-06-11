@@ -11,6 +11,7 @@
 
 import os
 import json
+from datetime import datetime, timedelta
 
 from oj_modules.db_services import bump_daily_submission_count, get_db_connection
 
@@ -22,6 +23,25 @@ ATTACHMENT_SUBDIR = 'attachments'
 REFERENCE_SUBDIR = 'reference'
 SCORING_SUBDIR = 'scoring'
 SUBMISSION_SUBDIR = 'submissions'
+
+# 打榜赛「每窗口提交次数限制」的窗口固定为 48 小时，到点自动刷新；管理员也可手动刷新。
+RANK_LIMIT_WINDOW_SECONDS = 48 * 3600
+
+
+def quota_window_bounds(anchor, now, window_seconds=RANK_LIMIT_WINDOW_SECONDS):
+    """纯函数：给定窗口锚点 anchor 与当前时间 now，返回当前固定窗口的
+    (window_start, next_reset)。窗口自 anchor 起每 window_seconds 固定推进一格。
+    anchor 为空或在未来时，窗口从 anchor/now 起算。无副作用，便于单测。"""
+    win = timedelta(seconds=window_seconds)
+    if anchor is None:
+        return now, now + win
+    elapsed = (now - anchor).total_seconds()
+    if elapsed < 0:
+        start = anchor
+    else:
+        k = int(elapsed // window_seconds)
+        start = anchor + win * k
+    return start, start + win
 
 
 def ensure_ranking_tables():
@@ -107,6 +127,22 @@ def ensure_ranking_tables():
                     " ADD COLUMN agent_judge_api_key VARCHAR(512) DEFAULT NULL,"
                     " ADD COLUMN agent_judge_model VARCHAR(128) DEFAULT NULL,"
                     " ADD COLUMN agent_judge_timeout_seconds INT NOT NULL DEFAULT 1800"
+                )
+            # 兼容：每 48 小时窗口提交次数限制（NULL/<=0 表示不限制）+ 窗口锚点
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'submit_limit_per_window'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN submit_limit_per_window INT DEFAULT NULL,"
+                    " ADD COLUMN limit_window_start DATETIME DEFAULT NULL"
+                )
+            # 兼容：Agent 评测打榜赛的提交方式（zip 上传 / git 拉取）+ git 仓库命名模板
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'submission_method'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN submission_method VARCHAR(8) NOT NULL DEFAULT 'zip',"
+                    " ADD COLUMN git_format VARCHAR(512) DEFAULT NULL"
                 )
             cursor.execute(
                 """
@@ -249,6 +285,8 @@ def get_competition(competition_id):
                        scoring_script_timeout_seconds,
                        agent_judge_base_url, agent_judge_api_key,
                        agent_judge_model, agent_judge_timeout_seconds,
+                       submit_limit_per_window, limit_window_start,
+                       submission_method, git_format,
                        reference_answer_path, reference_answer_name,
                        scoring_script_path, scoring_script_name, max_score, is_active,
                        created_by, created_at, updated_at
@@ -288,7 +326,9 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         elo_initial_burst=None, elo_max_pairs_per_round=None,
                         scoring_script_timeout_seconds=None,
                         agent_judge_base_url=None, agent_judge_api_key=None,
-                        agent_judge_model=None, agent_judge_timeout_seconds=None):
+                        agent_judge_model=None, agent_judge_timeout_seconds=None,
+                        submit_limit_per_window=None, set_limit_window_now=False,
+                        submission_method=None, git_format=None):
     ensure_ranking_tables()
     fields = []
     params = []
@@ -352,6 +392,25 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if agent_judge_timeout_seconds is not None:
         fields.append("agent_judge_timeout_seconds = %s")
         params.append(int(agent_judge_timeout_seconds))
+    if submit_limit_per_window is not None:
+        try:
+            v = int(submit_limit_per_window)
+        except (TypeError, ValueError):
+            v = 0
+        fields.append("submit_limit_per_window = %s")
+        params.append(v if v > 0 else None)   # NULL/<=0 表示不限制
+    if set_limit_window_now:
+        # 用数据库 NOW() 作为窗口锚点，与 ranking_submissions.created_at 同源、避免时区漂移
+        fields.append("limit_window_start = NOW()")
+    if submission_method is not None:
+        method = str(submission_method or '').strip().lower()
+        if method not in ('zip', 'git'):
+            method = 'zip'
+        fields.append("submission_method = %s")
+        params.append(method)
+    if git_format is not None:
+        fields.append("git_format = %s")
+        params.append((str(git_format).strip() or None))
     if not fields:
         return
     params.append(competition_id)
@@ -365,6 +424,60 @@ def update_competition(competition_id, *, title=None, summary=None, description=
         conn.commit()
     finally:
         conn.close()
+
+
+def reset_competition_limit_window(competition_id):
+    """管理员手动刷新：把窗口锚点设为当前时刻，相当于立刻开启新一轮 48 小时配额。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE ranking_competitions SET limit_window_start = NOW() WHERE id = %s",
+                (competition_id,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_submission_quota(competition_id, username, comp=None):
+    """返回某用户在当前 48 小时窗口内的提交配额：
+    {'limit', 'used', 'remaining', 'window_start', 'next_reset'}；
+    未设置限制（NULL/<=0）时返回 None（表示不限制）。"""
+    ensure_ranking_tables()
+    if comp is None:
+        comp = get_competition(competition_id)
+    if not comp:
+        return None
+    raw = comp.get('submit_limit_per_window')
+    try:
+        limit = int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0:
+        return None
+    anchor = comp.get('limit_window_start') or comp.get('created_at')
+    window_start, next_reset = quota_window_bounds(anchor, datetime.now())
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS c FROM ranking_submissions"
+                " WHERE competition_id = %s AND username = %s AND created_at >= %s",
+                (competition_id, username, window_start),
+            )
+            row = cursor.fetchone() or {}
+            used = int(row.get('c') or 0)
+    finally:
+        conn.close()
+    return {
+        'limit': limit,
+        'used': used,
+        'remaining': max(0, limit - used),
+        'window_start': window_start,
+        'next_reset': next_reset,
+    }
 
 
 def update_competition_reference_answer(competition_id, stored_path, original_name):
