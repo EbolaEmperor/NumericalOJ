@@ -32,6 +32,7 @@ from oj_modules.ranking_db import (
     init_submission_elo_state,
 )
 from oj_modules.tasks.evaluate_tasks import clear_submission_lock, has_submission_lock
+from oj_modules.tasks.ranking_agent_judge_tasks import clear_all_judge_slots, clear_judge_lock
 
 
 _STARTUP_REQUEUE_STAGGER_SECONDS = 1
@@ -238,6 +239,14 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_jud
         print(f"[StartupRequeue] 查询未完成打榜赛提交失败：{e}")
         return 0
 
+    # 启动时（约定所有 worker 已死）清掉残留的 agent 评测端点槽位僵尸键，给重排一个干净基线。
+    try:
+        _cleared = clear_all_judge_slots()
+        if _cleared:
+            print(f"[StartupRequeue] 清理残留 agent 评测端点槽位 {_cleared} 个。")
+    except Exception:
+        pass
+
     for row in rows:
         sub_id = row.get('id')
         competition_id = row.get('competition_id')
@@ -247,6 +256,7 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_jud
         try:
             if scoring_mode == 'agent_judge':
                 if agent_judge_task is not None:
+                    clear_judge_lock(sub_id)   # 清僵尸幂等锁，否则重排任务会被挡住、提交卡死
                     agent_judge_task.apply_async(args=[sub_id], countdown=_startup_countdown(requeued))
                     requeued += 1
             elif scoring_mode == 'elo':

@@ -3,6 +3,7 @@
 """打榜赛 Agent-as-Judge 评测任务：起 Docker 容器跑 claude，tail result.jsonl 实时回传。"""
 import json
 import os
+import random
 import secrets
 import shutil
 import subprocess
@@ -14,6 +15,12 @@ try:
 except Exception:  # pragma: no cover
     _redis = None
 
+try:
+    from celery.exceptions import MaxRetriesExceededError
+except Exception:  # pragma: no cover
+    class MaxRetriesExceededError(Exception):
+        pass
+
 import config as _cfg
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules import ranking_agent_judge as aj
@@ -22,8 +29,8 @@ from oj_modules.ranking_db import (
     set_submission_status, submission_dir, update_submission_result,
 )
 from oj_modules.ranking_agent_judge_db import (
-    build_judge_snapshot, clear_judge_results, list_competition_rules,
-    list_judge_results, upsert_judge_result,
+    build_judge_snapshot, clear_judge_results, list_agent_judge_endpoints,
+    list_competition_rules, list_judge_results, upsert_judge_result,
 )
 
 RANKING_AGENT_JUDGE_TASK_NAME = 'oj.ranking_agent_judge'
@@ -37,6 +44,12 @@ JUDGE_CPU_LIMIT = str(getattr(_cfg, 'AGENT_JUDGE_CPU_LIMIT', '2'))
 JUDGE_PIDS_LIMIT = str(getattr(_cfg, 'AGENT_JUDGE_PIDS_LIMIT', '512'))
 JUDGE_POLL_INTERVAL = float(getattr(_cfg, 'AGENT_JUDGE_RESULT_POLL_INTERVAL', 1.5))
 JUDGE_PROGRESS_TTL = int(getattr(_cfg, 'AGENT_JUDGE_PROGRESS_TTL', 21600))
+# 多端点并发：未配置端点池时，回退用比赛单端点 + 这个默认并发上限（沿用旧 -c 2 的语义）。
+JUDGE_LEGACY_CONCURRENCY = max(1, int(getattr(_cfg, 'AGENT_JUDGE_CONCURRENCY', 2)))
+# 所有端点都满时，任务延迟重排（back-pressure）的基准秒数 + 上限重试次数 + 槽位 TTL 余量。
+JUDGE_QUEUE_RETRY_BASE = max(2, int(getattr(_cfg, 'AGENT_JUDGE_QUEUE_RETRY_SECONDS', 8)))
+JUDGE_MAX_QUEUE_RETRIES = max(1, int(getattr(_cfg, 'AGENT_JUDGE_MAX_QUEUE_RETRIES', 2000)))
+JUDGE_SLOT_TTL_BUFFER = max(60, int(getattr(_cfg, 'AGENT_JUDGE_SLOT_TTL_BUFFER', 600)))
 
 _judge_rds = None
 
@@ -110,6 +123,92 @@ def _publish_snapshot(submission_id):
     return snap
 
 
+# ---------- 多端点选择与 Redis 槽位限流 ----------
+
+def _resolve_endpoints(competition_id, competition=None):
+    """返回该比赛**启用的**判题端点（dict: id, base_url, api_key, model, concurrency_limit）。
+    要求至少配置一个启用端点；为空则返回 []（判题侧据此置 Error）。不再回退到旧的比赛单端点字段。"""
+    try:
+        eps = list_agent_judge_endpoints(competition_id, enabled_only=True)
+    except Exception:
+        eps = []
+    return [{'id': e['id'], 'base_url': e['base_url'], 'api_key': e['api_key'],
+             'model': e.get('model') or '',
+             'concurrency_limit': max(1, int(e.get('concurrency_limit') or 1))}
+            for e in eps]
+
+
+def _slot_key(endpoint_id, i):
+    return f'aj:ep:{endpoint_id}:slot:{i}'
+
+
+_RELEASE_LUA = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('del', KEYS[1]) else return 0 end")
+
+
+def _acquire_endpoint_slot(client, endpoints, submission_id, ttl):
+    """在某端点上抢一个并发槽位（Redis SET NX EX，crash 安全靠 TTL 自动释放）。
+    返回 (endpoint, slot_key, token)；所有端点都满返回 (None, None, None)。
+    Redis 不可用时 fail-open：返回第一个端点、slot_key=None（退化为仅受 celery -c 限制）。"""
+    if not endpoints:
+        return None, None, None
+    if client is None:
+        return endpoints[0], None, None
+    order = list(endpoints)
+    random.shuffle(order)                       # 打散，把负载摊到各端点
+    token = f'{submission_id}:{secrets.token_hex(4)}'
+    for ep in order:
+        limit = max(1, int(ep.get('concurrency_limit') or 1))
+        for i in range(limit):
+            key = _slot_key(ep['id'], i)
+            try:
+                if client.set(key, token, nx=True, ex=int(ttl)):
+                    return ep, key, token
+            except Exception:
+                return ep, None, None            # Redis 出错 → fail-open 用该端点
+    return None, None, None
+
+
+def _release_slot(client, slot_key, token):
+    if client is None or not slot_key:
+        return
+    try:
+        client.eval(_RELEASE_LUA, 1, slot_key, token)   # CAS 释放，避免误删他人槽位
+    except Exception:
+        pass
+
+
+def clear_judge_lock(submission_id):
+    """删除某提交的 agent 评测幂等锁。进程重启重排前调用：上次被杀的 worker 会留下
+    僵尸锁（TTL 内有效），不清的话重排任务 set(nx) 失败、直接返回，提交会一直卡住。"""
+    client = _ensure_judge_redis()
+    if client is None:
+        return
+    try:
+        client.delete(f'ranking:judge:lock:{int(submission_id)}')
+    except Exception:
+        pass
+
+
+def clear_all_judge_slots():
+    """删除所有端点并发槽位（aj:ep:*:slot:*）。进程启动时（按部署约定所有 worker 均已死）
+    残留槽位都是僵尸，清掉以免新评测被假「满」挡住而反复重排。返回清理条数。"""
+    client = _ensure_judge_redis()
+    if client is None:
+        return 0
+    n = 0
+    try:
+        for key in client.scan_iter(match='aj:ep:*:slot:*', count=200):
+            try:
+                client.delete(key)
+                n += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return n
+
+
 def _safe_extract_zip(zip_path, dest_dir):
     """安全解包 zip：跳过绝对路径/越界条目。"""
     os.makedirs(dest_dir, exist_ok=True)
@@ -164,9 +263,15 @@ def _prepare_workspace(submission, competition, rules):
     return ws, result_name
 
 
-def _run_container_and_tail(submission_id, ws, result_name, competition, rules, timeout_s):
+def _run_container_and_tail(submission_id, ws, result_name, competition, rules, timeout_s,
+                            endpoint=None):
     """起 docker 容器跑 claude，tail 随机结果文件，逐条 upsert + 广播。
-    返回 (timed_out, container_ok)。可被集成测试整体 monkeypatch。"""
+    返回 (timed_out, container_ok)。可被集成测试整体 monkeypatch。
+    endpoint：本次使用的模型端点（base_url/api_key/model）；为空时回退到比赛单端点字段。"""
+    ep = endpoint or {}
+    base_url = ep.get('base_url') or competition.get('agent_judge_base_url') or ''
+    api_key = ep.get('api_key') or competition.get('agent_judge_api_key') or ''
+    model = ep.get('model') or competition.get('agent_judge_model') or ''
     prompt = aj.build_prompt(competition.get('title'), result_name)
     container_name = f'aj_{submission_id}'
     docker_args = [
@@ -188,14 +293,14 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
         '-e', 'AJ_PROMPT',
         # report 命令据此写入随机结果文件名；参赛者代码无法预先猜到。
         '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
-        '-e', f'ANTHROPIC_BASE_URL={competition.get("agent_judge_base_url") or ""}',
-        '-e', f'ANTHROPIC_AUTH_TOKEN={competition.get("agent_judge_api_key") or ""}',
-        '-e', f'ANTHROPIC_API_KEY={competition.get("agent_judge_api_key") or ""}',
-        '-e', f'ANTHROPIC_MODEL={competition.get("agent_judge_model") or ""}',
+        '-e', f'ANTHROPIC_BASE_URL={base_url}',
+        '-e', f'ANTHROPIC_AUTH_TOKEN={api_key}',
+        '-e', f'ANTHROPIC_API_KEY={api_key}',
+        '-e', f'ANTHROPIC_MODEL={model}',
         JUDGE_IMAGE,
         'bash', '-lc',
         'claude -p "$AJ_PROMPT" --dangerously-skip-permissions '
-        '--model "$ANTHROPIC_MODEL" --add-dir /workspace || true',
+        '${ANTHROPIC_MODEL:+--model "$ANTHROPIC_MODEL"} --add-dir /workspace || true',
     ]
     run_env = dict(os.environ, AJ_PROMPT=prompt)
     try:
@@ -273,7 +378,7 @@ def _finalize(submission_id, rules, timed_out, container_ok):
     _publish_snapshot(submission_id)
 
 
-def _judge(submission_id):
+def _judge(submission_id, endpoint=None):
     submission = get_ranking_submission(submission_id)
     if not submission:
         return {'success': False, 'message': '提交不存在'}
@@ -296,7 +401,7 @@ def _judge(submission_id):
     timeout_s = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT)
     ws, result_name = _prepare_workspace(submission, competition, rules)
     timed_out, container_ok = _run_container_and_tail(
-        submission_id, ws, result_name, competition, rules, timeout_s)
+        submission_id, ws, result_name, competition, rules, timeout_s, endpoint)
     _finalize(submission_id, rules, timed_out, container_ok)
     return {'success': True}
 
@@ -304,29 +409,73 @@ def _judge(submission_id):
 def register_ranking_agent_judge_task(celery_app):
     @celery_app.task(name=RANKING_AGENT_JUDGE_TASK_NAME, bind=True)
     def evaluate_ranking_agent_judge(self, submission_id):
+        sid = int(submission_id)
         client = _ensure_judge_redis()
-        lock_key = f'ranking:judge:lock:{submission_id}'
-        token = str(self.request.id or submission_id)
+        submission = get_ranking_submission(sid)
+        if not submission:
+            return {'success': False, 'message': '提交不存在'}
+        competition = get_competition(submission.get('competition_id'))
+        if not competition:
+            update_submission_result(sid, None, 'Error', error_message='比赛不存在')
+            _publish_snapshot(sid)
+            return {'success': False, 'message': '比赛不存在'}
+
+        # 选端点：优先端点池，回退比赛单端点；都没有则判 Error（避免无限重排）。
+        endpoints = _resolve_endpoints(competition['id'], competition)
+        if not endpoints:
+            update_submission_result(sid, None, 'Error',
+                                     error_message='未配置 Agent 评测端点（请在比赛设置里添加模型端点）')
+            _publish_snapshot(sid)
+            return {'success': False, 'message': '未配置评测端点'}
+
+        # 抢端点并发槽位；全满 → 延迟重排（提交保持「等待评测」，不占用 worker）。
+        ttl = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT) + JUDGE_SLOT_TTL_BUFFER
+        ep, slot_key, slot_token = _acquire_endpoint_slot(client, endpoints, sid, ttl)
+        if ep is None:
+            countdown = JUDGE_QUEUE_RETRY_BASE + random.randint(0, JUDGE_QUEUE_RETRY_BASE)
+            try:
+                self.retry(countdown=countdown, max_retries=JUDGE_MAX_QUEUE_RETRIES)
+            except MaxRetriesExceededError:
+                update_submission_result(sid, None, 'Error',
+                                         error_message='评测排队超时：所有模型端点持续繁忙，请稍后重测')
+                _publish_snapshot(sid)
+                return {'success': False, 'message': '端点持续繁忙'}
+
+        # 已拿到槽位 → 取幂等锁（防同一提交被并发重复评测）。
+        lock_key = f'ranking:judge:lock:{sid}'
+        lock_token = str(self.request.id or sid)
+        got_lock = True
         if client is not None:
             try:
-                if not client.set(lock_key, token, nx=True, ex=7200):
-                    return {'success': False, 'message': '已有评测在进行'}
+                # 锁 TTL 与槽位 TTL 对齐（timeout+buffer）：worker 被硬杀时，僵尸锁与槽位同时过期，
+                # 不会出现「槽位已放、锁还占着」的窗口；正常完成则在 finally 主动释放。
+                got_lock = bool(client.set(lock_key, lock_token, nx=True, ex=int(ttl)))
             except Exception:
-                pass
+                got_lock = True
+        if not got_lock:
+            _release_slot(client, slot_key, slot_token)
+            return {'success': False, 'message': '已有评测在进行'}
         try:
-            return _judge(int(submission_id))
+            # 幂等复查：拿到锁后再读一次状态。acks_late=True 下，worker 被杀的任务会被 broker
+            # 重投，同时 startup_requeue 也会补入队 —— 两条恢复消息并发时由锁互斥（只一条评测），
+            # 但「顺序」到达（前者评完释放锁后后者才跑）会重复评测。这里若发现已判到终态就跳过，
+            # 彻底消除顺序重投导致的重复评测；正常提交('Queued')、重测('Judging') 均为非终态，不受影响。
+            fresh = get_ranking_submission(sid)
+            if fresh and str(fresh.get('status')) in ('Accepted', 'Error'):
+                return {'success': True, 'message': '已完成，跳过重复评测'}
+            return _judge(sid, ep)
         except Exception as e:
             try:
-                update_submission_result(int(submission_id), None, 'Error',
-                                         error_message=f'评测任务异常：{e}')
-                _publish_snapshot(int(submission_id))
+                update_submission_result(sid, None, 'Error', error_message=f'评测任务异常：{e}')
+                _publish_snapshot(sid)
             except Exception:
                 pass
             raise
         finally:
-            if client is not None:
+            _release_slot(client, slot_key, slot_token)
+            if client is not None and got_lock:
                 try:
-                    if client.get(lock_key) == token:
+                    if client.get(lock_key) == lock_token:
                         client.delete(lock_key)
                 except Exception:
                     pass

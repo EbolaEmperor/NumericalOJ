@@ -45,6 +45,7 @@ from oj_modules.ranking_db import (
     get_competition_match,
     get_leaderboard,
     get_ranking_submission,
+    get_submission_quota,
     get_submission_stats,
     init_submission_elo_state,
     list_all_submissions,
@@ -54,6 +55,7 @@ from oj_modules.ranking_db import (
     list_elo_matches_for_submission,
     list_user_submissions,
     rebuild_elo_history,
+    reset_competition_limit_window,
     reset_elo_state,
     retire_excess_user_submissions,
     set_elo_running,
@@ -68,8 +70,10 @@ from oj_modules.ranking_db import (
 from oj_modules.ranking_agent_judge_db import (
     build_judge_snapshot,
     clear_judge_results,
+    list_agent_judge_endpoints,
     list_competition_rules,
     replace_competition_rules,
+    save_agent_judge_endpoints,
 )
 from oj_modules.ranking_agent_judge import max_score as _aj_max_score
 from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
@@ -77,6 +81,7 @@ from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_ev
 from oj_modules.tasks import get_probe_job
 from oj_modules.tasks.ranking_batch_pull_tasks import (
     PLACEHOLDER as BATCH_PLACEHOLDER, USERNAME_RE as BATCH_USERNAME_RE, build_repo_url,
+    repo_last_commit,
 )
 
 
@@ -131,6 +136,14 @@ def _normalize_scoring_mode(value, default='absolute'):
 
 def _competition_scoring_mode(comp):
     return _normalize_scoring_mode((comp or {}).get('scoring_mode'))
+
+
+def _agent_judge_endpoint_ready(competition_id, comp):
+    """Agent 评测是否就绪：要求端点池中至少有一个**启用**端点（不再回退旧的单端点字段）。"""
+    try:
+        return bool(list_agent_judge_endpoints(competition_id, enabled_only=True))
+    except Exception:
+        return False
 
 
 def _clamp(value, lo, hi):
@@ -390,6 +403,18 @@ def ranking_detail(competition_id):
     is_agent_judge = _competition_scoring_mode(comp) == 'agent_judge'
     judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
+    # Agent 评测端点池（编辑器用；api_key 不回传明文，仅给 has_key 标记）+ 就绪标志
+    aj_endpoints = []
+    agent_judge_ready = False
+    if is_agent_judge:
+        try:
+            _raw_eps = list_agent_judge_endpoints(competition_id)
+        except Exception:
+            _raw_eps = []
+        aj_endpoints = [{'id': e['id'], 'base_url': e['base_url'], 'model': e['model'],
+                         'concurrency_limit': e['concurrency_limit'], 'enabled': e['enabled'],
+                         'has_key': bool(e['api_key'])} for e in _raw_eps]
+        agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
 
     # 「批量评测」仅对 Agent 评测模式开放
     if tab == 'batch_eval' and not is_agent_judge:
@@ -399,8 +424,23 @@ def ranking_detail(competition_id):
     if tab == 'batch_eval':
         batch_classes = get_all_classes_except_admin()
 
+    # Agent 评测打榜赛的提交方式（zip 上传 / git 拉取）
+    submission_method = (comp.get('submission_method') or 'zip').strip().lower()
+    if submission_method not in ('zip', 'git'):
+        submission_method = 'zip'
+
+    submit_quota = None
+    git_repo_url = None
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
+        if not is_admin:
+            submit_quota = get_submission_quota(competition_id, user.get('username'), comp=comp)
+        # git 提交方式：把标准命名里的 <username> 换成本人学号，算出本人仓库地址
+        if is_agent_judge and submission_method == 'git':
+            uname = (user.get('username') or '').strip()
+            tmpl = (comp.get('git_format') or '').strip()
+            if tmpl and BATCH_USERNAME_RE.match(uname):
+                git_repo_url = build_repo_url(tmpl, uname)
     elif tab == 'leaderboard':
         leaderboard = get_leaderboard(competition_id)
     elif tab == 'matches':
@@ -434,6 +474,7 @@ def ranking_detail(competition_id):
         tab=tab,
         rendered_description=rendered_description,
         user_submissions=user_submissions,
+        submit_quota=submit_quota,
         all_submissions=all_submissions,
         leaderboard=leaderboard,
         submission_stats=submission_stats,
@@ -448,8 +489,12 @@ def ranking_detail(competition_id):
         matches_per_page=MATCHES_PER_PAGE,
         judge_rules=judge_rules,
         agent_judge_api_key_set=agent_judge_api_key_set,
+        aj_endpoints=aj_endpoints,
+        agent_judge_ready=agent_judge_ready,
         batch_classes=batch_classes,
         batch_default_template=BATCH_DEFAULT_TEMPLATE,
+        submission_method=submission_method,
+        git_repo_url=git_repo_url,
     )
 
 
@@ -735,6 +780,15 @@ def ranking_submit(competition_id):
         if not allowed:
             flash(f'提交过于频繁，请 {retry} 秒后再试', 'warning')
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        # 每 48 小时窗口提交次数限制（管理员豁免）
+        quota = get_submission_quota(competition_id, user.get('username'), comp=comp)
+        if quota is not None and quota['remaining'] <= 0:
+            flash(
+                f"本轮提交次数已用完（每 48 小时上限 {quota['limit']} 次），"
+                f"将于 {quota['next_reset']:%Y-%m-%d %H:%M} 刷新。",
+                'warning',
+            )
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     answer_format = _competition_answer_format(comp)
     answer_ext = '.' + answer_format
@@ -752,10 +806,8 @@ def ranking_submit(competition_id):
 
     # Agent 评测模式：只需上传代码 zip（不需要 answer 文件），但要求已配置模型与规则
     if scoring_mode == 'agent_judge':
-        if not all([(comp.get('agent_judge_base_url') or '').strip(),
-                    (comp.get('agent_judge_api_key') or '').strip(),
-                    (comp.get('agent_judge_model') or '').strip()]):
-            flash('该比赛为 Agent 评测模式，但管理员尚未完成模型配置，暂时无法提交。', 'warning')
+        if not _agent_judge_endpoint_ready(competition_id, comp):
+            flash('该比赛为 Agent 评测模式，但管理员尚未配置模型端点，暂时无法提交。', 'warning')
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
         if not list_competition_rules(competition_id):
             flash('该比赛尚未设置评分规则，暂时无法提交。', 'warning')
@@ -880,6 +932,89 @@ def ranking_submit(competition_id):
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
 
+# ---------- git 提交方式：学生检查自己的仓库 / 确认提交 ----------
+
+def _user_git_repo_context(competition_id):
+    """git 提交方式公共校验：登录用户 + 比赛存在 + agent_judge + git 方式 + 已配置命名。
+    仓库地址由「标准命名」中的 <username> 替换为**本人**用户名得到（不接受前端传入），
+    天然无注入风险。返回 (user, comp, url, None) 或 (None, None, None, (resp, code))。"""
+    user = _current_user()
+    if not user:
+        return None, None, None, (jsonify(success=False, message='请先登录'), 401)
+    comp = get_competition(competition_id)
+    if not comp:
+        return None, None, None, (jsonify(success=False, message='比赛不存在或已被删除'), 404)
+    is_admin = user.get('is_admin') == 1
+    if not is_admin and comp.get('is_active') != 1:
+        return None, None, None, (jsonify(success=False, message='该比赛未开放'), 403)
+    if _competition_scoring_mode(comp) != 'agent_judge':
+        return None, None, None, (jsonify(success=False, message='该比赛不支持 git 提交'), 400)
+    method = (comp.get('submission_method') or 'zip').strip().lower()
+    if method != 'git':
+        return None, None, None, (jsonify(success=False, message='该比赛未启用 git 提交方式'), 400)
+    uname = (user.get('username') or '').strip()
+    tmpl = (comp.get('git_format') or '').strip()
+    if not tmpl or BATCH_PLACEHOLDER not in tmpl:
+        return None, None, None, (jsonify(success=False, message='管理员尚未配置 git 仓库标准命名'), 400)
+    if not BATCH_USERNAME_RE.match(uname):
+        return None, None, None, (jsonify(success=False, message='你的用户名不符合 git 仓库命名要求'), 400)
+    return user, comp, build_repo_url(tmpl, uname), None
+
+
+@ranking_bp.route('/<int:competition_id>/check_repo', methods=['POST'])
+def ranking_check_repo(competition_id):
+    """学生检查自己的 git 仓库：返回是否存在 + 最后一条 commit 的明细（JSON）。"""
+    user, comp, url, err = _user_git_repo_context(competition_id)
+    if err is not None:
+        return err
+    # 轻量限流：检查仓库会起 git 子进程，防止狂点
+    allowed, retry = rate_limit_hit(
+        _rds, f"rank:checkrepo:{competition_id}:{user.get('username')}", 20, 60,
+    )
+    if not allowed:
+        return jsonify(success=False, message=f'操作过于频繁，请 {retry} 秒后再试'), 429
+    exists, info, message = repo_last_commit(url)
+    return jsonify(success=True, exists=bool(exists), url=url, info=info, message=message)
+
+
+@ranking_bp.route('/<int:competition_id>/git_submit', methods=['POST'])
+def ranking_git_submit(competition_id):
+    """学生确认 git 提交：复用批量评测逻辑，入队一次单仓库的拉取 / 创建提交 / 评测（JSON）。"""
+    user, comp, url, err = _user_git_repo_context(competition_id)
+    if err is not None:
+        return err
+    if _batch_run_task is None:
+        return jsonify(success=False, message='评测任务未初始化，请联系管理员'), 500
+    if not list_competition_rules(competition_id):
+        return jsonify(success=False, message='该比赛尚未设置评分规则，暂时无法提交'), 400
+    if not _agent_judge_endpoint_ready(competition_id, comp):
+        return jsonify(success=False, message='管理员尚未配置 Agent 评测模型端点，暂时无法提交'), 400
+
+    is_admin = user.get('is_admin') == 1
+    if not is_admin:
+        allowed, retry = rate_limit_hit(
+            _rds, f"rank:submit:{competition_id}:{user.get('username')}",
+            _RANK_SUBMIT_MAX_PER_WINDOW, _RANK_SUBMIT_WINDOW,
+        )
+        if not allowed:
+            return jsonify(success=False, message=f'提交过于频繁，请 {retry} 秒后再试'), 429
+        quota = get_submission_quota(competition_id, user.get('username'), comp=comp)
+        if quota is not None and quota['remaining'] <= 0:
+            return jsonify(
+                success=False,
+                message=(f"本轮提交次数已用完（每 48 小时上限 {quota['limit']} 次），"
+                         f"将于 {quota['next_reset']:%Y-%m-%d %H:%M} 刷新"),
+            ), 429
+
+    items = [{'username': user.get('username'), 'url': url}]
+    try:
+        _batch_run_task.delay(competition_id, items)
+    except Exception as e:
+        return jsonify(success=False, message=f'提交入队失败：{e}'), 500
+    return jsonify(success=True,
+                   message='已提交：系统正在拉取你的仓库并评测，稍后可在「我的历史提交」查看进展。')
+
+
 # ---------- 管理员：批量评测（按 Git 仓库批量拉取参赛者代码） ----------
 
 def _admin_json_guard():
@@ -972,10 +1107,8 @@ def ranking_batch_create(competition_id):
         return jsonify(success=False, message='批量评测任务未初始化，请联系管理员'), 500
     if not list_competition_rules(competition_id):
         return jsonify(success=False, message='该比赛尚未设置评分规则，无法评测'), 400
-    if not all([(comp.get('agent_judge_base_url') or '').strip(),
-                (comp.get('agent_judge_api_key') or '').strip(),
-                (comp.get('agent_judge_model') or '').strip()]):
-        return jsonify(success=False, message='该比赛尚未完成 Agent 评测模型配置'), 400
+    if not _agent_judge_endpoint_ready(competition_id, comp):
+        return jsonify(success=False, message='该比赛尚未配置 Agent 评测模型端点'), 400
     data = request.get_json(silent=True) or {}
     template = (data.get('template') or '').strip()
     usernames = data.get('usernames') or []
@@ -1034,6 +1167,10 @@ def ranking_edit(competition_id):
     elo_initial_burst_raw = request.form.get('elo_initial_burst')
     elo_max_pairs_per_round_raw = request.form.get('elo_max_pairs_per_round')
     script_timeout_raw = request.form.get('scoring_script_timeout_seconds')
+    submit_limit_raw = request.form.get('submit_limit_per_window')
+    reset_limit_window_raw = request.form.get('reset_limit_window')
+    submission_method_raw = request.form.get('submission_method')
+    git_format_raw = request.form.get('git_format')
 
     if not title:
         flash('标题不能为空', 'danger')
@@ -1115,6 +1252,27 @@ def ranking_edit(competition_id):
         except (TypeError, ValueError):
             aj_timeout = None
 
+    # 每 48 小时窗口提交次数限制：空/0 表示不限制；范围 0~100000
+    submit_limit = None
+    if submit_limit_raw is not None:
+        try:
+            submit_limit = int(submit_limit_raw) if str(submit_limit_raw).strip() != '' else 0
+        except (TypeError, ValueError):
+            submit_limit = 0
+        submit_limit = int(_clamp(submit_limit, 0, 100000))
+    # 是否重置窗口锚点：勾选「立即刷新」，或首次设置正限制且尚无锚点
+    reset_window = str(reset_limit_window_raw or '').strip().lower() in ('1', 'on', 'true', 'yes')
+    set_window_now = reset_window or (
+        submit_limit is not None and submit_limit > 0 and not comp.get('limit_window_start')
+    )
+
+    # Agent 评测提交方式（zip 上传 / git 拉取）+ git 仓库标准命名（含 <username> 占位符）
+    submission_method = None
+    if submission_method_raw is not None:
+        m = str(submission_method_raw).strip().lower()
+        submission_method = m if m in ('zip', 'git') else 'zip'
+    git_format = git_format_raw if git_format_raw is not None else None
+
     update_competition(
         competition_id,
         title=title,
@@ -1135,6 +1293,10 @@ def ranking_edit(competition_id):
         agent_judge_model=(aj_model if aj_model is not None else None),
         agent_judge_api_key=aj_api_key,
         agent_judge_timeout_seconds=aj_timeout,
+        submit_limit_per_window=submit_limit,
+        set_limit_window_now=set_window_now,
+        submission_method=submission_method,
+        git_format=git_format,
     )
 
     # 切换答案格式后，旧的标准答案文件后缀已不匹配新格式，自动清理以避免歧义
@@ -1158,6 +1320,22 @@ def ranking_edit(competition_id):
         )
     if not format_changed and not mode_changed:
         flash('已保存比赛信息', 'success')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+
+
+# ---------- 管理员：手动刷新提交次数配额窗口 ----------
+
+@ranking_bp.route('/<int:competition_id>/reset_submit_limit', methods=['POST'])
+def ranking_reset_submit_limit(competition_id):
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    comp = get_competition(competition_id)
+    if not comp:
+        flash('比赛不存在', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+    reset_competition_limit_window(competition_id)
+    flash('已手动刷新提交次数限制：所有用户的本轮（48 小时）配额已立即重置。', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -1232,6 +1410,43 @@ def ranking_save_agent_config(competition_id):
     )
     flash('已保存 Agent 评测设置', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+
+
+@ranking_bp.route('/<int:competition_id>/agent_judge/endpoints', methods=['POST'])
+def ranking_save_agent_endpoints(competition_id):
+    """保存某比赛的 Agent 评测端点池（多个 模型 url + api_key，各带并发上限）+ 整体超时。
+
+    JSON：{timeout_seconds?, endpoints:[{id?, base_url, api_key, model, concurrency_limit, enabled}]}。
+    实际 agent 评测并发 = 各启用端点 concurrency_limit 之和（由判题侧 Redis 槽位限流，改完即生效、无需重启）。"""
+    user, err = _admin_json_guard()
+    if err is not None:
+        return err
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify(success=False, message='比赛不存在或已被删除'), 404
+    payload = request.get_json(silent=True) or {}
+    endpoints = payload.get('endpoints')
+    timeout_raw = payload.get('timeout_seconds')
+    if timeout_raw is not None and str(timeout_raw).strip() != '':
+        try:
+            update_competition(competition_id,
+                               agent_judge_timeout_seconds=int(_clamp(int(timeout_raw), 60, 7200)))
+        except (TypeError, ValueError):
+            pass
+    try:
+        save_agent_judge_endpoints(
+            competition_id, endpoints if isinstance(endpoints, list) else [])
+    except ValueError as e:
+        return jsonify(success=False, message=str(e)), 400
+    # 重新读取（拿到新 id），回传脱敏列表（api_key 只给 has_key 标记）
+    saved = list_agent_judge_endpoints(competition_id)
+    masked = [{'id': e['id'], 'base_url': e['base_url'], 'model': e['model'],
+               'concurrency_limit': e['concurrency_limit'], 'enabled': e['enabled'],
+               'has_key': bool(e['api_key'])} for e in saved]
+    total_conc = sum(e['concurrency_limit'] for e in saved if e['enabled'])
+    return jsonify(success=True, count=len(saved),
+                   enabled=sum(1 for e in saved if e['enabled']),
+                   total_concurrency=total_conc, endpoints=masked)
 
 
 # ---------- Agent 评测：实时进展 SSE + 管理员重测 ----------
