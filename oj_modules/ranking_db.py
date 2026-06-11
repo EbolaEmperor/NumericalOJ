@@ -11,6 +11,7 @@
 
 import os
 import json
+import shutil
 from datetime import datetime, timedelta
 
 from oj_modules.db_services import bump_daily_submission_count, get_db_connection
@@ -315,6 +316,120 @@ def create_competition(title, description, max_score, created_by, summary=None):
             new_id = cursor.lastrowid
         conn.commit()
         return int(new_id)
+    finally:
+        conn.close()
+
+
+# 复制比赛时，自增/时间戳列不照搬（由数据库生成）。
+_COMPETITION_COPY_EXCLUDE_COLS = {'id', 'created_at', 'updated_at'}
+_COMPETITION_COPY_TITLE_SUFFIX = '（副本）'
+
+
+def copy_competition(src_id, *, created_by=None):
+    """把一个打榜赛**仅复制配置**为一个新的「非公开」副本，返回新比赛 id。
+
+    复制：ranking_competitions 行（is_active=0、标题追加「（副本）」）
+          + ranking_judge_rules + ranking_competition_files（含物理附件文件）
+          + ranking_agent_judge_endpoints。
+    绝不复制：ranking_submissions / ranking_judge_results / ranking_elo_matches（学生数据）。
+
+    所有库写在单事务内，任何异常整体回滚；物理附件只往新比赛目录写，失败则清掉新目录。
+    绝不修改源比赛或任何既有数据（只读源 + 只新增）。
+    """
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    created_comp_dir = None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM ranking_competitions WHERE id = %s", (int(src_id),))
+            comp = cursor.fetchone()
+            if not comp:
+                raise ValueError(f'源比赛 {src_id} 不存在')
+            cursor.execute(
+                "SELECT rule_id, rule_text, value, dependencies, ordering "
+                "FROM ranking_judge_rules WHERE competition_id = %s ORDER BY ordering, rule_id",
+                (int(src_id),),
+            )
+            rules = cursor.fetchall() or []
+            cursor.execute(
+                "SELECT filename, stored_path, file_size "
+                "FROM ranking_competition_files WHERE competition_id = %s ORDER BY id",
+                (int(src_id),),
+            )
+            files = cursor.fetchall() or []
+            cursor.execute(
+                "SELECT base_url, api_key, model, concurrency_limit, enabled, ordering "
+                "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
+                (int(src_id),),
+            )
+            endpoints = cursor.fetchall() or []
+
+            # —— 1) 复制比赛主行（is_active=0 不公开、标题追加后缀、created_by 记为复制者）——
+            cols = [c for c in comp.keys() if c not in _COMPETITION_COPY_EXCLUDE_COLS]
+            new_title = (str(comp.get('title') or '') + _COMPETITION_COPY_TITLE_SUFFIX)[:255]
+            vals = []
+            for c in cols:
+                v = comp[c]
+                if c == 'is_active':
+                    v = 0
+                elif c == 'title':
+                    v = new_title
+                elif c == 'created_by' and created_by is not None:
+                    v = created_by
+                vals.append(v)
+            collist = ','.join('`' + c + '`' for c in cols)
+            placeholders = ','.join(['%s'] * len(cols))
+            cursor.execute(
+                f"INSERT INTO ranking_competitions ({collist}) VALUES ({placeholders})", vals)
+            new_id = int(cursor.lastrowid)
+
+            # —— 2) 复制附件（物理文件 + 行）到新比赛自己的目录 ——
+            if files:
+                dest_dir = competition_attachments_dir(new_id)
+                created_comp_dir = competition_dir(new_id)
+                os.makedirs(dest_dir, exist_ok=True)
+                for f in files:
+                    sp, fn = f.get('stored_path'), f.get('filename')
+                    if sp and os.path.isfile(sp):
+                        dp = os.path.join(dest_dir, os.path.basename(sp))
+                        shutil.copy2(sp, dp)
+                    else:
+                        dp = os.path.join(dest_dir, fn or 'attachment')
+                    cursor.execute(
+                        "INSERT INTO ranking_competition_files "
+                        "(competition_id, filename, stored_path, file_size) VALUES (%s, %s, %s, %s)",
+                        (new_id, fn, dp, int(f.get('file_size') or 0)),
+                    )
+
+            # —— 3) 复制评测规则 ——
+            for r in rules:
+                cursor.execute(
+                    "INSERT INTO ranking_judge_rules "
+                    "(competition_id, rule_id, rule_text, value, dependencies, ordering) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (new_id, r['rule_id'], r['rule_text'], r['value'], r['dependencies'], r['ordering']),
+                )
+
+            # —— 4) 复制 Agent 评测端点（含 api_key）——
+            for e in endpoints:
+                cursor.execute(
+                    "INSERT INTO ranking_agent_judge_endpoints "
+                    "(competition_id, base_url, api_key, model, concurrency_limit, enabled, ordering) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (new_id, e['base_url'], e['api_key'], e['model'],
+                     e['concurrency_limit'], e['enabled'], e['ordering']),
+                )
+        conn.commit()
+        return new_id
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        # 仅清理本次为新比赛新建的目录（防止物理文件残留），绝不碰其它路径。
+        if created_comp_dir and os.path.isdir(created_comp_dir) and '/competitions/' in created_comp_dir:
+            shutil.rmtree(created_comp_dir, ignore_errors=True)
+        raise
     finally:
         conn.close()
 
