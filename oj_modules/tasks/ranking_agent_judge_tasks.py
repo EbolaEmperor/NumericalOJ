@@ -263,19 +263,52 @@ def _prepare_workspace(submission, competition, rules):
     return ws, result_name
 
 
+def _dump_container_claude(container_name, ws):
+    """容器回收前，把容器内 ~/.claude（claude 的会话/transcript 目录）docker cp 到宿主
+    <ws>/submission/.claude，供事后归因。尽力而为：源不存在或 cp 失败都静默跳过，不影响判题。
+    注意：docker cp 可作用于「已退出但未删除」的容器，这正是去掉 --rm 的原因。"""
+    dest_dir = os.path.join(ws, 'submission')
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except Exception:
+        return
+    dest = os.path.join(dest_dir, '.claude')
+    # 目标已存在先删，避免 docker cp 把 .claude 套进已有的 .claude/ 里。
+    if os.path.exists(dest):
+        shutil.rmtree(dest, ignore_errors=True)
+    # 容器内 claude 家目录为 /root（镜像默认 root 用户）；保险再退一个 /workspace。
+    for src in ('/root/.claude', '/workspace/.claude'):
+        try:
+            r = subprocess.run(['docker', 'cp', f'{container_name}:{src}', dest_dir],
+                               capture_output=True, text=True, timeout=60)
+            if r.returncode == 0 and os.path.isdir(dest):
+                return
+        except Exception:
+            pass
+
+
 def _run_container_and_tail(submission_id, ws, result_name, competition, rules, timeout_s,
                             endpoint=None):
     """起 docker 容器跑 claude，tail 随机结果文件，逐条 upsert + 广播。
     返回 (timed_out, container_ok)。可被集成测试整体 monkeypatch。
-    endpoint：本次使用的模型端点（base_url/api_key/model）；为空时回退到比赛单端点字段。"""
+    容器回收前会把容器内 ~/.claude（会话/transcript）docker cp 到宿主 <ws>/submission/.claude，
+    便于事后归因。endpoint：本次使用的模型端点（base_url/api_key/model）；为空时回退到比赛单端点字段。"""
     ep = endpoint or {}
     base_url = ep.get('base_url') or competition.get('agent_judge_base_url') or ''
     api_key = ep.get('api_key') or competition.get('agent_judge_api_key') or ''
     model = ep.get('model') or competition.get('agent_judge_model') or ''
     prompt = aj.build_prompt(competition.get('title'), result_name)
     container_name = f'aj_{submission_id}'
+    # 同名残留容器（上次 worker 被杀留下的孤儿、或异常未清的旧容器）先强制清掉，否则下面
+    # docker run 同名会冲突。去掉 --rm 后（容器退出不再自动删），这一步尤其必要。
+    try:
+        subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
+    except Exception:
+        pass
     docker_args = [
-        'docker', 'run', '--rm', '-d', '--name', container_name,
+        # 不再用 --rm：容器退出后保留，给「回收前 docker cp 出 ~/.claude」留窗口；改由本函数
+        # finally 中的 docker rm -f 统一回收（覆盖正常退出/超时/异常各路径）。
+        'docker', 'run', '-d', '--name', container_name,
         # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
         # 既无法写宿主属主(非 root)的挂载文件、也无法 apt 装包。
         # 用 Docker 默认能力集 + 非特权 + pids/内存/CPU 限制 + 仅挂载本提交工作目录做隔离。
@@ -307,6 +340,11 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
         subprocess.run(docker_args, check=True, capture_output=True, text=True,
                        env=run_env, timeout=120)
     except Exception:
+        # 启动失败：清掉可能的半残同名容器后返回。
+        try:
+            subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
+        except Exception:
+            pass
         return (False, False)
 
     result_path = os.path.join(ws, result_name)
@@ -314,37 +352,45 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     seen = set()
     start = time.time()
     timed_out = False
-    while True:
-        try:
-            with open(result_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-        except Exception:
-            lines = []
-        for line in lines:
-            parsed = aj.parse_result_line(line)
-            if not parsed or parsed['rule_id'] not in rule_ids or parsed['rule_id'] in seen:
-                continue
-            seen.add(parsed['rule_id'])
-            raw = parsed['result']
-            upsert_judge_result(submission_id, parsed['rule_id'], raw, raw,
-                                0.0, parsed['evidence'])
-            _publish_snapshot(submission_id)
-        try:
-            running = subprocess.run(
-                ['docker', 'inspect', '-f', '{{.State.Running}}', container_name],
-                capture_output=True, text=True, timeout=15).stdout.strip()
-        except Exception:
-            running = 'false'
-        if running != 'true':
-            break
-        if time.time() - start > timeout_s:
-            timed_out = True
+    try:
+        while True:
             try:
-                subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                with open(result_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
             except Exception:
-                pass
-            break
-        time.sleep(JUDGE_POLL_INTERVAL)
+                lines = []
+            for line in lines:
+                parsed = aj.parse_result_line(line)
+                if not parsed or parsed['rule_id'] not in rule_ids or parsed['rule_id'] in seen:
+                    continue
+                seen.add(parsed['rule_id'])
+                raw = parsed['result']
+                upsert_judge_result(submission_id, parsed['rule_id'], raw, raw,
+                                    0.0, parsed['evidence'])
+                _publish_snapshot(submission_id)
+            try:
+                running = subprocess.run(
+                    ['docker', 'inspect', '-f', '{{.State.Running}}', container_name],
+                    capture_output=True, text=True, timeout=15).stdout.strip()
+            except Exception:
+                running = 'false'
+            if running != 'true':
+                break
+            if time.time() - start > timeout_s:
+                timed_out = True
+                try:
+                    subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+                break
+            time.sleep(JUDGE_POLL_INTERVAL)
+    finally:
+        # 回收容器前，先把容器内 ~/.claude 拉到宿主 submission 目录（事后归因），再统一回收。
+        _dump_container_claude(container_name, ws)
+        try:
+            subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
+        except Exception:
+            pass
     return (timed_out, True)
 
 
