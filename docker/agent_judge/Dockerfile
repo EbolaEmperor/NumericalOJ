@@ -34,6 +34,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple || true \
     && npm config set registry https://registry.npmmirror.com
 
+# ============ 评测高频依赖（基于线上 1800+ 份学生提交的 import/requirements 统计）============
+# OCR / 媒体 / PDF 运行期二进制 + 常见图形运行库（opencv / easyocr / paddle 需要 libGL/glib）。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim \
+        ffmpeg poppler-utils \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 学生高频 Python 包（pip，--break-system-packages 绕过 PEP668 externally-managed）。
+# numpy/scipy/pandas/matplotlib/sympy 已由 apt 装好并链接系统 BLAS，pip 识别为已满足、不重复装。
+# 覆盖：LLM/API 客户端、成像、天文、各类 PDF/OCR 库、常用工具。
+RUN pip3 install --no-cache-dir --break-system-packages \
+        openai anthropic dashscope google-genai httpx requests tenacity \
+        tqdm python-dotenv ipython pytest redis filelock \
+        pillow opencv-python-headless imageio imageio-ffmpeg \
+        scikit-learn scikit-image \
+        astropy astroquery \
+        pymupdf pypdf pypdf2 pdfplumber pdfminer.six beautifulsoup4 lxml \
+        pytesseract
+
+# 重 ML / OCR 栈：每个单独成 best-effort 层（装失败不连累上层与镜像构建）。
+# 注意：easyocr / paddleocr 的模型权重仍在首次评测时按需下载，这里只预装 Python 包本体。
+RUN pip3 install --no-cache-dir --break-system-packages torch torchvision \
+        || echo "WARN: torch/torchvision 预装失败（best-effort，评测时可现装）"
+RUN pip3 install --no-cache-dir --break-system-packages easyocr \
+        || echo "WARN: easyocr 预装失败（best-effort）"
+RUN pip3 install --no-cache-dir --break-system-packages paddlepaddle paddleocr \
+        || echo "WARN: paddlepaddle/paddleocr 预装失败（best-effort）"
+RUN pip3 install --no-cache-dir --break-system-packages rapidocr-onnxruntime onnxruntime \
+        || echo "WARN: rapidocr-onnxruntime 预装失败（best-effort）"
+
+# 关键收尾：把 numpy 钉回 <2。上面的 pip 依赖（torch/paddle 等）会顺带把 numpy 升到 2.x，
+# 而 apt 的 numpy/pandas/matplotlib 是按 numpy 1.x ABI 编译的，被 numpy2 一升就崩
+# （“numpy.dtype size changed / _ARRAY_API not found”）。numpy 1.26 是全栈公约数：
+# torch/paddle/easyocr/opencv/sklearn 均兼容，且让 apt 的 pandas/matplotlib 恢复可用。
+RUN pip3 install --no-cache-dir --break-system-packages --force-reinstall "numpy<2"
+
 # 预装 claude CLI（关键：不放进评测关键路径）
 RUN npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com
 
