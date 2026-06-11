@@ -37,6 +37,7 @@ _WRITTEN_GRADING_MODEL_OPTIONS = [
         str(QWEN_TEXT_MODEL or "").strip().lower(),
         f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking" if str(AI_TUTOR_MODEL or "").strip() else "",
         str(AI_TUTOR_MODEL or "").strip().lower(),
+        "mimo",  # MIMO（xiaomimimo OpenAI 兼容端点）
     ])
     if item
 ]

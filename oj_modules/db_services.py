@@ -81,6 +81,7 @@ _ALLOWED_WRITTEN_GRADING_MODELS = {
         f"{_QWEN_TEXT_MODEL_KEY}-thinking" if _QWEN_TEXT_MODEL_KEY else "",
         _AI_TUTOR_MODEL_KEY,
         f"{_AI_TUTOR_MODEL_KEY}-thinking" if _AI_TUTOR_MODEL_KEY else "",
+        "mimo",   # MIMO（xiaomimimo OpenAI 兼容端点）
     } if item
 }
 _QWEN_OMNI_MODEL_KEY = str(QWEN_OMNI_MODEL or "").strip().lower()
@@ -1304,9 +1305,23 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
                 if total_submissions == 0:
                     user = get_user_by_username(username)
                     if user["is_admin"] != 1:
-                        class_en = safe_table_name(user["class"])
-                        sql = f"UPDATE {class_en} SET complete_cnt=complete_cnt+1 WHERE problem_id=%s"
-                        cursor.execute(sql, (problem_id,))
+                        # 班级以 user_class_map 为权威来源（users.class 单列可能为空/过期——恢复后的
+                        # 学生班级关系保存在 user_class_map 里；旧代码直接读 user["class"]=None，
+                        # 会让 safe_table_name(None) 抛错、整份提交 500，而管理员走不到这分支故不受影响）。
+                        # 对学生所在、且包含本题的班级表各自 complete_cnt+1（不含本题的班级表 0 行命中）。
+                        cursor.execute(
+                            "SELECT class_en FROM user_class_map WHERE user_id=%s", (user["id"],))
+                        class_list = [r["class_en"] for r in (cursor.fetchall() or []) if r.get("class_en")]
+                        if not class_list and (user.get("class") or "").strip():
+                            class_list = [user["class"].strip()]   # 退回旧的单班字段
+                        for cen in class_list:
+                            try:
+                                tbl = safe_table_name(cen)
+                                cursor.execute(
+                                    f"UPDATE {tbl} SET complete_cnt=complete_cnt+1 WHERE problem_id=%s",
+                                    (problem_id,))
+                            except Exception:
+                                pass   # 班级名异常/班级表缺失不影响提交本身
                     sql = "UPDATE problems SET cnt=cnt+1 WHERE id=%s"
                     cursor.execute(sql, (problem_id,))
             conn.commit()

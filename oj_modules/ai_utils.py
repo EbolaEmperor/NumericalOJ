@@ -20,6 +20,9 @@ from config import (
     LATEX_OCR_MAX_IMAGES_PER_REQUEST,
     LATEX_OCR_STREAM_EMIT_INTERVAL,
     LATEX_OCR_STREAM_EMIT_MIN_DELTA,
+    MIMO_API_KEY,
+    MIMO_MODEL,
+    MIMO_URL_OPENAI,
     QWEN_CODER_MODEL,
     QWEN_OMNI_MODEL,
     QWEN_TEXT_MODEL,
@@ -65,6 +68,9 @@ _WRITTEN_GRADING_MODEL_SPECS = {
     f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking": (str(QWEN_TEXT_MODEL or "").strip(), True, "dashscope"),
     str(AI_TUTOR_MODEL or "").strip().lower(): (str(AI_TUTOR_MODEL or "").strip(), False, "dashscope"),
     f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking": (str(AI_TUTOR_MODEL or "").strip(), True, "dashscope"),
+    # MIMO（xiaomimimo OpenAI 兼容端点）。enable_thinking 设为 None：不向普通 OpenAI 端点发送
+    # DashScope 专有的 thinking 参数，避免被拒。
+    "mimo": (str(MIMO_MODEL or "mimo-v2.5-pro").strip(), None, "mimo"),
 }
 _DEFAULT_WRITTEN_GRADING_MODEL_SPEC = f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
 DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
@@ -187,7 +193,15 @@ def _parse_programming_image_grading_model_spec(model_spec):
 
 
 def _resolve_endpoint_for_written_grading_route(route_key):
-    # route_key 保留兼容，但一律解析到普通 DashScope 端点。
+    # route_key=='mimo' → 走 MIMO（xiaomimimo）的 OpenAI 兼容端点；其余一律 DashScope。
+    if str(route_key or "").strip().lower() == "mimo":
+        api_key = MIMO_API_KEY
+        base_url = str(MIMO_URL_OPENAI or "").strip()
+        if _is_invalid_secret(api_key):
+            raise RuntimeError("未配置 MIMO_API_KEY。")
+        if not base_url:
+            raise RuntimeError("未配置 MIMO_URL_OPENAI。")
+        return str(api_key).strip(), base_url.rstrip('/')
     api_key = DASHSCOPE_API_KEY
     base_url = _resolve_dashscope_base_url()
     if _is_invalid_secret(api_key):
