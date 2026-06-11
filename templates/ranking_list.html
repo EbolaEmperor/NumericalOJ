@@ -34,6 +34,7 @@
   <div class="row g-3 ranking-grid">
     {% for comp in competitions %}
       <div class="col-12 col-md-6 col-lg-4">
+        <div class="ranking-card-wrap">
         <a href="{{ url_for('ranking.ranking_detail', competition_id=comp.id) }}"
            class="ranking-card {% if comp.is_active != 1 %}is-inactive{% endif %}">
           <div class="ranking-card-body">
@@ -89,6 +90,16 @@
             {% endif %}
           </div>
         </a>
+        {% if user and user.is_admin == 1 %}
+        <button type="button" class="ranking-card-copy"
+                title="复制为非公开副本"
+                data-bs-toggle="modal" data-bs-target="#copyCompetitionModal"
+                data-copy-url="{{ url_for('ranking.ranking_copy', competition_id=comp.id) }}"
+                data-comp-title="{{ comp.title }}">
+          <i class="far fa-copy"></i>
+        </button>
+        {% endif %}
+        </div>
       </div>
     {% endfor %}
   </div>
@@ -129,6 +140,33 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
           <button type="submit" class="btn btn-primary"><i class="fas fa-check me-1"></i> 创建</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if user and user.is_admin == 1 %}
+<div class="modal fade" id="copyCompetitionModal" tabindex="-1" aria-labelledby="copyCompetitionLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form method="POST" id="copyCompetitionForm" action="">
+        <div class="modal-header">
+          <h5 class="modal-title" id="copyCompetitionLabel"><i class="far fa-copy me-2"></i> 复制打榜赛</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <p class="mb-2">确认复制比赛 <strong id="copyCompetitionTitle"></strong> 吗？</p>
+          <div class="alert alert-secondary small mb-0">
+            将生成一个 <strong>非公开</strong> 的副本（标题自动追加「（副本）」）：仅复制比赛
+            <strong>配置</strong>——描述、评测规则、附件与模型端点；<strong>不</strong>复制提交记录与排行榜。
+            副本默认为下线状态，可在编辑页调整后再上线。
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary"><i class="far fa-copy me-1"></i> 复制为非公开副本</button>
         </div>
       </form>
     </div>
@@ -272,5 +310,61 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* 管理员：卡片角上的复制按钮（仅图标，悬停变金色表示选中） */
+  .ranking-card-wrap {
+    position: relative;
+    height: 100%;
+  }
+  .ranking-card-copy {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    z-index: 6;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid #f1e6c0;
+    border-radius: 50%;
+    background: #ffffff;
+    color: #b0a98f;
+    font-size: 0.82rem;
+    line-height: 1;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+    opacity: 0.9;
+    cursor: pointer;
+    transition: color 0.18s ease, background-color 0.18s ease,
+                transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+  }
+  .ranking-card-copy:hover,
+  .ranking-card-copy:focus {
+    color: #fff;
+    background: #eab308;
+    border-color: #eab308;
+    opacity: 1;
+    transform: scale(1.12);
+    box-shadow: 0 4px 12px rgba(234, 179, 8, 0.4);
+    outline: none;
+  }
 </style>
+
+{% if user and user.is_admin == 1 %}
+<script>
+  (function () {
+    var modal = document.getElementById('copyCompetitionModal');
+    if (!modal) return;
+    modal.addEventListener('show.bs.modal', function (event) {
+      var btn = event.relatedTarget;
+      if (!btn) return;
+      var form = document.getElementById('copyCompetitionForm');
+      var titleEl = document.getElementById('copyCompetitionTitle');
+      if (form) form.setAttribute('action', btn.getAttribute('data-copy-url') || '');
+      if (titleEl) titleEl.textContent = btn.getAttribute('data-comp-title') || '';
+    });
+  })();
+</script>
+{% endif %}
 {% endblock %}

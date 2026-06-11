@@ -33,6 +33,7 @@ from oj_modules.ranking_db import (
     competition_dir,
     competition_reference_dir,
     competition_scoring_dir,
+    copy_competition,
     create_competition,
     create_competition_file,
     create_ranking_submission,
@@ -356,6 +357,26 @@ def ranking_create():
     )
     flash('已创建打榜赛', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=new_id, tab='edit'))
+
+
+@ranking_bp.route('/<int:competition_id>/copy', methods=['POST'])
+def ranking_copy(competition_id):
+    """管理员把一个打榜赛仅复制配置为一个「非公开」副本（不含提交记录与排行榜）。"""
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    comp = get_competition(competition_id)
+    if not comp:
+        flash('比赛不存在', 'danger')
+        return redirect(url_for('ranking.ranking_list'))
+    try:
+        new_id = copy_competition(competition_id, created_by=user.get('username'))
+    except Exception as e:
+        flash(f'复制失败：{e}', 'danger')
+        return redirect(url_for('ranking.ranking_list'))
+    flash(f'已复制为非公开副本《{comp.get("title")}（副本）》（#{new_id}），当前为下线状态，'
+          f'可进入编辑后再上线。', 'success')
+    return redirect(url_for('ranking.ranking_list'))
 
 
 # ---------- 详情页（带侧边栏标签） ----------
