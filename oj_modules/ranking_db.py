@@ -201,6 +201,14 @@ def ensure_ranking_tables():
                     "ALTER TABLE ranking_submissions"
                     " ADD COLUMN base_model VARCHAR(500) DEFAULT NULL AFTER code_path"
                 )
+            # 兼容：补加 source 列，区分提交来源（'self'=学生自交、'batch'=管理员批量拉取）。
+            # 默认 'self'：历史行与学生自交都按 self 计入配额；只有批量创建标 'batch' 不计配额。
+            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'source'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions"
+                    " ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'self'"
+                )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ranking_elo_matches (
@@ -228,6 +236,28 @@ def ensure_ranking_tables():
             cursor.execute(
                 "UPDATE ranking_elo_matches SET winner = -1"
                 " WHERE winner = 0 AND error_message IS NOT NULL"
+            )
+            # 申诉表：学生对某条提交的评分申诉；管理员在「申诉处理」标签里审阅、回复、驳回/处理。
+            # UNIQUE(submission_id)：一条提交一条申诉记录，重复申诉用 upsert 重开为 pending。
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ranking_appeals (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    competition_id INT NOT NULL,
+                    submission_id INT NOT NULL,
+                    username VARCHAR(50) NOT NULL,
+                    reason TEXT NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                    admin_response MEDIUMTEXT,
+                    admin_username VARCHAR(50),
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                          ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_ra_sub (submission_id),
+                    INDEX idx_ra_comp_status (competition_id, status),
+                    INDEX idx_ra_comp_created (competition_id, created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
             )
         conn.commit()
         _ranking_tables_ready = True
@@ -577,9 +607,11 @@ def get_submission_quota(competition_id, username, comp=None):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # 只数学生自交（source='self'）：管理员批量拉取（source='batch'）不占用学生配额。
             cursor.execute(
                 "SELECT COUNT(*) AS c FROM ranking_submissions"
-                " WHERE competition_id = %s AND username = %s AND created_at >= %s",
+                " WHERE competition_id = %s AND username = %s AND created_at >= %s"
+                " AND source = 'self'",
                 (competition_id, username, window_start),
             )
             row = cursor.fetchone() or {}
@@ -715,17 +747,20 @@ def delete_competition_file(file_id):
 
 # ---------- Submissions ----------
 
-def create_ranking_submission(competition_id, username):
+def create_ranking_submission(competition_id, username, source='self'):
+    """新建一条打榜赛提交。source：'self'=学生自交（计入 48h 配额）、
+    'batch'=管理员批量拉取（不计入学生配额）。"""
     ensure_ranking_tables()
+    src = 'batch' if str(source or '').strip().lower() == 'batch' else 'self'
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO ranking_submissions (competition_id, username, status)
-                VALUES (%s, %s, 'Pending')
+                INSERT INTO ranking_submissions (competition_id, username, status, source)
+                VALUES (%s, %s, 'Pending', %s)
                 """,
-                (competition_id, username),
+                (competition_id, username, src),
             )
             new_id = cursor.lastrowid
         conn.commit()
@@ -1644,5 +1679,143 @@ def delete_elo_match_and_revert(match_id, competition_id):
             'delta_a': delta_a,
             'delta_b': delta_b,
         }
+    finally:
+        conn.close()
+
+
+# ---------- 申诉（Appeals） ----------
+
+def create_appeal(competition_id, submission_id, username, reason):
+    """学生发起一条评分申诉。硬性一次：一份提交只能申诉一次。
+    若该提交已存在申诉记录（任何状态）→ 不覆盖、不重开，返回 0；否则插入并返回新行 id。
+    UNIQUE(submission_id) + INSERT IGNORE 保证并发下也只会有一条。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT IGNORE INTO ranking_appeals
+                    (competition_id, submission_id, username, reason, status)
+                VALUES (%s, %s, %s, %s, 'pending')
+                """,
+                (int(competition_id), int(submission_id), username, reason),
+            )
+            new_id = cursor.lastrowid if cursor.rowcount == 1 else 0
+        conn.commit()
+        return int(new_id or 0)
+    finally:
+        conn.close()
+
+
+def get_appeal(appeal_id):
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM ranking_appeals WHERE id = %s", (int(appeal_id),))
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def get_appeal_by_submission(submission_id):
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM ranking_appeals WHERE submission_id = %s",
+                           (int(submission_id),))
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def list_appeals(competition_id, *, page=1, per_page=50, status_q=None, username_q=None):
+    """分页列出某比赛的申诉，LEFT JOIN 提交以带出 score/状态/基座模型供卡片展示。
+    返回 (rows, page, total)。"""
+    ensure_ranking_tables()
+    page = max(1, int(page or 1))
+    per_page = max(1, int(per_page or 50))
+    where = ["a.competition_id = %s"]
+    params = [int(competition_id)]
+    if status_q in ('pending', 'rejected', 'resolved'):
+        where.append("a.status = %s")
+        params.append(status_q)
+    if username_q:
+        where.append("a.username LIKE %s")
+        params.append('%' + str(username_q) + '%')
+    where_sql = " AND ".join(where)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS c FROM ranking_appeals a WHERE {where_sql}", params)
+            total = int((cursor.fetchone() or {}).get('c') or 0)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            if page > total_pages:
+                page = total_pages
+            offset = (page - 1) * per_page
+            cursor.execute(
+                f"""
+                SELECT a.id, a.competition_id, a.submission_id, a.username, a.reason,
+                       a.status, a.admin_response, a.admin_username,
+                       a.created_at, a.updated_at,
+                       rs.score AS sub_score, rs.status AS sub_status, rs.base_model
+                FROM ranking_appeals a
+                LEFT JOIN ranking_submissions rs ON rs.id = a.submission_id
+                WHERE {where_sql}
+                ORDER BY a.created_at DESC, a.id DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [per_page, offset],
+            )
+            rows = cursor.fetchall() or []
+        return rows, page, total
+    finally:
+        conn.close()
+
+
+def get_appeal_stats(competition_id):
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status = 'pending'  THEN 1 ELSE 0 END) AS pending,
+                    SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+                    SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) AS resolved
+                FROM ranking_appeals
+                WHERE competition_id = %s
+                """,
+                (int(competition_id),),
+            )
+            row = cursor.fetchone() or {}
+            return {
+                'total': int(row.get('total') or 0),
+                'pending': int(row.get('pending') or 0),
+                'rejected': int(row.get('rejected') or 0),
+                'resolved': int(row.get('resolved') or 0),
+            }
+    finally:
+        conn.close()
+
+
+def resolve_appeal(appeal_id, status, admin_response, admin_username):
+    """管理员处理（'resolved'）或驳回（'rejected'）申诉，写入回复与处理人。"""
+    status = 'resolved' if str(status).strip().lower() == 'resolved' else 'rejected'
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE ranking_appeals SET status=%s, admin_response=%s, admin_username=%s"
+                " WHERE id=%s",
+                (status, (admin_response or ''), admin_username, int(appeal_id)),
+            )
+        conn.commit()
     finally:
         conn.close()

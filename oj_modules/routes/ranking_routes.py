@@ -34,6 +34,7 @@ from oj_modules.ranking_db import (
     competition_reference_dir,
     competition_scoring_dir,
     copy_competition,
+    create_appeal,
     create_competition,
     create_competition_file,
     create_ranking_submission,
@@ -41,6 +42,9 @@ from oj_modules.ranking_db import (
     delete_competition_file,
     delete_elo_match_and_revert,
     delete_ranking_submission,
+    get_appeal,
+    get_appeal_by_submission,
+    get_appeal_stats,
     get_competition,
     get_competition_file,
     get_competition_match,
@@ -49,6 +53,7 @@ from oj_modules.ranking_db import (
     get_submission_quota,
     get_submission_stats,
     init_submission_elo_state,
+    list_appeals,
     list_all_submissions,
     list_competition_files,
     list_competition_matches,
@@ -58,6 +63,7 @@ from oj_modules.ranking_db import (
     rebuild_elo_history,
     reset_competition_limit_window,
     reset_elo_state,
+    resolve_appeal,
     retire_excess_user_submissions,
     set_elo_running,
     set_submission_status,
@@ -69,6 +75,7 @@ from oj_modules.ranking_db import (
     update_submission_result,
 )
 from oj_modules.ranking_agent_judge_db import (
+    apply_rule_overrides,
     build_judge_snapshot,
     clear_judge_results,
     list_agent_judge_endpoints,
@@ -88,7 +95,7 @@ from oj_modules.tasks.ranking_batch_pull_tasks import (
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
-ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'edit', 'batch_eval')
+ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'appeals', 'edit', 'batch_eval')
 SUBMISSIONS_PER_PAGE = 50
 MATCHES_PER_PAGE = 20
 # 「批量评测」标签页预填的 Git 仓库标准命名示例（可在 config.py 覆盖）。
@@ -398,7 +405,10 @@ def ranking_detail(competition_id):
     tab = (request.args.get('tab') or 'description').strip().lower()
     if tab not in ALLOWED_TABS:
         tab = 'description'
-    if tab in ('all_submissions', 'edit', 'batch_eval') and not is_admin:
+    if tab in ('all_submissions', 'appeals', 'edit', 'batch_eval') and not is_admin:
+        tab = 'description'
+    # 「申诉处理」仅 Agent 评测模式 + 管理员
+    if tab == 'appeals' and _competition_scoring_mode(comp) != 'agent_judge':
         tab = 'description'
 
     files = list_competition_files(competition_id)
@@ -411,6 +421,8 @@ def ranking_detail(competition_id):
 
     user_submissions = []
     all_submissions = []
+    all_appeals = []
+    appeal_stats = None
     leaderboard = []
     submission_stats = None
     current_page = 1
@@ -485,6 +497,19 @@ def ranking_detail(competition_id):
         total_pages = max(1, (total_filtered + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
         page_numbers = _page_window(current_page, total_pages)
         submission_stats = get_submission_stats(competition_id)
+    elif tab == 'appeals':
+        submission_search_q = (request.args.get('q') or '').strip()[:50]
+        requested_page = max(1, request.args.get('page', 1, type=int))
+        all_appeals, current_page, total_filtered = list_appeals(
+            competition_id,
+            page=requested_page,
+            per_page=SUBMISSIONS_PER_PAGE,
+            status_q=(request.args.get('status') or '').strip().lower() or None,
+            username_q=submission_search_q or None,
+        )
+        total_pages = max(1, (total_filtered + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
+        page_numbers = _page_window(current_page, total_pages)
+        appeal_stats = get_appeal_stats(competition_id)
 
     return render_template(
         'ranking_detail.html',
@@ -497,6 +522,8 @@ def ranking_detail(competition_id):
         user_submissions=user_submissions,
         submit_quota=submit_quota,
         all_submissions=all_submissions,
+        all_appeals=all_appeals,
+        appeal_stats=appeal_stats,
         leaderboard=leaderboard,
         submission_stats=submission_stats,
         current_page=current_page,
@@ -1568,6 +1595,158 @@ def ranking_rejudge_agent(competition_id, submission_id):
             flash(f'重测入队失败：{e}', 'warning')
     flash('已触发重新评测', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
+
+
+# ---------- 申诉：学生发起 + 管理员审阅/处理 ----------
+
+@ranking_bp.route('/<int:competition_id>/submission/<int:submission_id>/appeal', methods=['POST'])
+def ranking_submit_appeal(competition_id, submission_id):
+    """学生在「评分详情」里发起申诉。返回 JSON。"""
+    user, resp = _require_user()
+    if resp is not None:
+        return jsonify({'ok': False, 'message': '请先登录'}), 401
+    sub = get_ranking_submission(submission_id)
+    if not sub or int(sub.get('competition_id')) != competition_id:
+        return jsonify({'ok': False, 'message': '提交不存在'}), 404
+    is_admin = user.get('is_admin') == 1
+    if not is_admin and (sub.get('username') or '') != (user.get('username') or ''):
+        return jsonify({'ok': False, 'message': '只能对自己的提交申诉'}), 403
+    # 硬性一次：该提交已存在申诉（任何状态）→ 不能再申诉
+    if get_appeal_by_submission(submission_id):
+        return jsonify({'ok': False, 'already': True,
+                        'message': '该提交已申诉过，每份提交只能申诉一次。'}), 409
+    reason = (request.form.get('reason') or '').strip()
+    if not reason:
+        return jsonify({'ok': False, 'message': '请填写申诉意见'}), 400
+    reason = reason[:4000]
+    try:
+        new_id = create_appeal(competition_id, submission_id, sub.get('username') or user.get('username'), reason)
+    except Exception as e:
+        return jsonify({'ok': False, 'message': f'提交失败：{e}'}), 500
+    if not new_id:
+        return jsonify({'ok': False, 'already': True,
+                        'message': '该提交已申诉过，每份提交只能申诉一次。'}), 409
+    return jsonify({'ok': True, 'status': 'pending', 'message': '申诉已提交，请等待管理员处理。'})
+
+
+@ranking_bp.route('/<int:competition_id>/submission/<int:submission_id>/appeal_status', methods=['GET'])
+def ranking_appeal_status(competition_id, submission_id):
+    """学生/管理员查询某提交的申诉状态（用于评分详情弹窗里回显结果）。"""
+    user, resp = _require_user()
+    if resp is not None:
+        return jsonify({'ok': False}), 401
+    sub = get_ranking_submission(submission_id)
+    if not sub or int(sub.get('competition_id')) != competition_id:
+        return jsonify({'ok': False}), 404
+    is_admin = user.get('is_admin') == 1
+    if not is_admin and (sub.get('username') or '') != (user.get('username') or ''):
+        return jsonify({'ok': False}), 403
+    a = get_appeal_by_submission(submission_id)
+    if not a:
+        return jsonify({'ok': True, 'has_appeal': False})
+    labels = {'pending': '待处理', 'rejected': '已驳回', 'resolved': '已处理'}
+    return jsonify({
+        'ok': True,
+        'has_appeal': True,
+        'status': a.get('status'),
+        'status_label': labels.get(a.get('status'), a.get('status')),
+        'reason': a.get('reason') or '',
+        'admin_response': a.get('admin_response') or '',
+    })
+
+
+@ranking_bp.route('/<int:competition_id>/appeals_json', methods=['GET'])
+def ranking_appeals_json(competition_id):
+    """「申诉处理」标签页的分页/筛选 AJAX（返回已渲染的 rows/pagination HTML）。"""
+    user = _current_user()
+    if not user:
+        return jsonify({'error': 'unauthorized'}), 401
+    if user.get('is_admin') != 1:
+        return jsonify({'error': 'forbidden'}), 403
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify({'error': 'not_found'}), 404
+    q = (request.args.get('q') or '').strip()[:50]
+    status_q = (request.args.get('status') or '').strip().lower() or None
+    requested_page = max(1, request.args.get('page', 1, type=int))
+    rows, page, total = list_appeals(
+        competition_id, page=requested_page, per_page=SUBMISSIONS_PER_PAGE,
+        status_q=status_q, username_q=q or None,
+    )
+    total_pages = max(1, (total + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
+    page_numbers = _page_window(page, total_pages)
+    rows_html = render_template('_ranking_appeal_rows.html', all_appeals=rows, competition=comp)
+    pagination_html = render_template(
+        '_ranking_submission_pagination.html',
+        competition=comp, current_page=page, total_pages=total_pages,
+        page_numbers=page_numbers, submission_search_q=q, tab='appeals',
+    )
+    return jsonify({'rows_html': rows_html, 'pagination_html': pagination_html, 'page': page})
+
+
+@ranking_bp.route('/<int:competition_id>/appeal/<int:appeal_id>/review', methods=['GET'])
+def ranking_appeal_review(competition_id, appeal_id):
+    """管理员申诉审阅页：左=可编辑评分详情，右=申诉意见+回复+驳回/处理+重测。"""
+    user, resp = _require_admin()
+    if resp is not None:
+        return resp
+    comp = get_competition(competition_id)
+    if not comp:
+        flash('比赛不存在', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+    appeal = get_appeal(appeal_id)
+    if not appeal or int(appeal.get('competition_id')) != competition_id:
+        flash('申诉记录不存在', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='appeals'))
+    submission = get_ranking_submission(appeal.get('submission_id'))
+    snapshot = build_judge_snapshot(appeal.get('submission_id')) or {}
+    if snapshot:
+        snapshot = _render_snapshot_html(snapshot)
+    return render_template(
+        'ranking_appeal_review.html',
+        user=user, is_admin=True, competition=comp,
+        appeal=appeal, submission=submission, snapshot=snapshot,
+    )
+
+
+@ranking_bp.route('/<int:competition_id>/appeal/<int:appeal_id>/handle', methods=['POST'])
+def ranking_appeal_handle(competition_id, appeal_id):
+    """管理员「驳回」/「处理」提交：把暂存的规则状态覆盖 + 回复 + 申诉状态一并写库。
+    只有这个路由（点击驳回/处理）才写库；preview/编辑都在前端暂存。"""
+    user, resp = _require_admin()
+    if resp is not None:
+        return jsonify({'ok': False, 'message': '需要管理员权限'}), 403
+    appeal = get_appeal(appeal_id)
+    if not appeal or int(appeal.get('competition_id')) != competition_id:
+        return jsonify({'ok': False, 'message': '申诉记录不存在'}), 404
+    data = request.get_json(silent=True) or {}
+    decision = 'resolved' if str(data.get('decision') or '').strip().lower() == 'resolved' else 'rejected'
+    admin_response = (data.get('admin_response') or '').strip()[:8000]
+    overrides = data.get('overrides') or {}
+    submission_id = appeal.get('submission_id')
+    try:
+        # 1) 若有规则状态改动 → 写 ranking_judge_results 并回写提交分数（保留 timed_out 标记）
+        if isinstance(overrides, dict) and overrides:
+            total, maxs, payloads = apply_rule_overrides(submission_id, overrides)
+            timed_out = False
+            sub = get_ranking_submission(submission_id)
+            gd = (sub or {}).get('grade_details')
+            if gd:
+                try:
+                    parsed = json.loads(gd) if isinstance(gd, str) else gd
+                    timed_out = bool(parsed.get('timed_out')) if isinstance(parsed, dict) else False
+                except Exception:
+                    timed_out = False
+            details = {'total_score': total, 'max_score': maxs, 'timed_out': timed_out, 'rules': payloads}
+            update_submission_result(submission_id, total, 'Accepted', grade_details=details)
+        # 2) 写申诉状态 + 回复
+        resolve_appeal(appeal_id, decision, admin_response, user.get('username'))
+    except Exception as e:
+        return jsonify({'ok': False, 'message': f'处理失败：{e}'}), 500
+    return jsonify({
+        'ok': True,
+        'redirect': url_for('ranking.ranking_detail', competition_id=competition_id, tab='appeals'),
+    })
 
 
 # ---------- 管理员：ELO 运行控制（启动 / 停止 / 重置） ----------

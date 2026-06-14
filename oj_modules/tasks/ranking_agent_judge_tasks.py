@@ -332,6 +332,13 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
         '-e', f'ANTHROPIC_MODEL={model}',
         JUDGE_IMAGE,
         'bash', '-lc',
+        # 启动 claude 前先 apt-get update：镜像各 apt 层都清空了 /var/lib/apt/lists，判题时
+        # apt-get install 会报「Unable to locate package」；这里只重建包索引（不做 upgrade，避免
+        # 拖慢/扰动已固定的包版本），使判题 Agent 能按需现装环境包（如 xvfb/x11 等无头 GUI 依赖）。
+        # DEBIAN_FRONTEND=noninteractive 也会被 claude 继承，其后续 apt-get install 同样不卡交互。
+        # 失败不阻断（|| true），随后照常启动 claude；apt 输出落到容器内 /tmp（随容器回收丢弃）。
+        'export DEBIAN_FRONTEND=noninteractive; '
+        'apt-get update >/tmp/aj_apt_setup.log 2>&1 || true; '
         'claude -p "$AJ_PROMPT" --dangerously-skip-permissions '
         '${ANTHROPIC_MODEL:+--model "$ANTHROPIC_MODEL"} --add-dir /workspace || true',
     ]

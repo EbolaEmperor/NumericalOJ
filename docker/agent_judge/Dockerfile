@@ -65,6 +65,24 @@ RUN pip3 install --no-cache-dir --break-system-packages paddlepaddle paddleocr \
 RUN pip3 install --no-cache-dir --break-system-packages rapidocr-onnxruntime onnxruntime \
         || echo "WARN: rapidocr-onnxruntime 预装失败（best-effort）"
 
+# ============ 无头 GUI / Web 交互演示测试栈 ============
+# 用于「实时交互演示」类规则（Tkinter/Qt GUI、Flask/Web 演示）：判题 Agent 在无头容器里
+# 可用 xvfb-run 跑 GUI、用 headless chromium + selenium/playwright 驱动 Web 演示，并用 scrot 截图验证。
+# fonts-wqy-zenhei：让 GUI/浏览器能正确渲染中文标签。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb x11-utils xauth python3-tk scrot fonts-wqy-zenhei \
+        chromium chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
+
+# Web 自动化 Python 驱动：selenium 走上面的 apt chromium/chromedriver；pyvirtualdisplay 便于
+# 在代码里临时拉起 Xvfb 虚拟显示。
+RUN pip3 install --no-cache-dir --break-system-packages selenium pyvirtualdisplay
+
+# playwright 自带浏览器，单独 best-effort 层（下载失败不连累上层）。
+RUN pip3 install --no-cache-dir --break-system-packages playwright \
+        && playwright install chromium \
+        || echo "WARN: playwright/浏览器 预装失败（best-effort，评测时可现装）"
+
 # 关键收尾：把 numpy 钉回 <2。上面的 pip 依赖（torch/paddle 等）会顺带把 numpy 升到 2.x，
 # 而 apt 的 numpy/pandas/matplotlib 是按 numpy 1.x ABI 编译的，被 numpy2 一升就崩
 # （“numpy.dtype size changed / _ARRAY_API not found”）。numpy 1.26 是全栈公约数：

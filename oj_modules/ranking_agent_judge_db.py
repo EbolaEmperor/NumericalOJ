@@ -330,3 +330,53 @@ def build_judge_snapshot(submission_id):
         'rules': rule_payloads,
         'last_updated': _format_now(),
     }
+
+
+def apply_rule_overrides(submission_id, overrides):
+    """申诉处理「提交」时落库：把管理员手动设置的规则 effective 写入 ranking_judge_results。
+
+    overrides: {rule_id(int): 'pass'|'failed'|'skipped'}。仅覆盖管理员动过的规则
+    （effective 直接采用管理员所选，score = 满分 if pass else 0，raw/evidence 保留），
+    其它规则保持原状。返回 (total_score, max_score, rule_payloads)，供调用方回写提交分数。
+    与系统计分口径一致：score 为二元（满分/0），总分 = 各规则 score 之和。
+    """
+    submission = get_ranking_submission(submission_id)
+    if not submission:
+        return 0.0, 0.0, []
+    competition_id = submission.get('competition_id')
+    rules = list_competition_rules(competition_id) or []
+    current = {int(r['rule_id']): r for r in (list_judge_results(submission_id) or [])}
+    norm = {}
+    for k, v in (overrides or {}).items():
+        try:
+            rid = int(k)
+        except (TypeError, ValueError):
+            continue
+        eff = str(v or '').strip().lower()
+        if eff in (aj.EFF_PASS, aj.EFF_FAILED, aj.EFF_SKIPPED):
+            norm[rid] = eff
+
+    total = 0.0
+    max_total = 0.0
+    payloads = []
+    for r in rules:
+        rid = int(r['rule_id'])
+        value = float(r['value'])
+        max_total += value
+        cur = current.get(rid, {})
+        if rid in norm:
+            eff = norm[rid]
+            score = value if eff == aj.EFF_PASS else 0.0
+            upsert_judge_result(
+                submission_id, rid,
+                cur.get('raw_result'), eff, score, cur.get('evidence') or '',
+            )
+        else:
+            eff = cur.get('effective_result') or aj.EFF_PENDING
+            try:
+                score = float(cur.get('score') or 0)
+            except (TypeError, ValueError):
+                score = 0.0
+        total += score
+        payloads.append({'rule_id': rid, 'effective': eff, 'score': score})
+    return total, max_total, payloads
