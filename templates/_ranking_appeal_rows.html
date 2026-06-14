@@ -1,0 +1,10 @@
+{# 「申诉处理」卡片片段。被主模板首屏 include，也被 appeals_json AJAX 端点重新渲染。
+   期望上下文变量：all_appeals, competition #}
+{% from '_ranking_appeal_card.html' import render_appeal_card %}
+{% if all_appeals %}
+  {% for a in all_appeals %}
+    {{ render_appeal_card(a, competition) }}
+  {% endfor %}
+{% else %}
+  <div class="aj-subs-empty"><i class="fas fa-search me-1 opacity-50"></i>没有匹配的申诉</div>
+{% endif %}

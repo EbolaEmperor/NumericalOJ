@@ -282,7 +282,8 @@ def _create_submission_with_retry(competition_id, username, zip_path, pull_err, 
     for _attempt in range(CREATE_RETRY):
         sid = None
         try:
-            sid = create_ranking_submission(competition_id, username)
+            # source='batch'：管理员批量拉取，不占用学生的 48h 自交配额。
+            sid = create_ranking_submission(competition_id, username, source='batch')
             if not sid:
                 continue
             if zip_path:

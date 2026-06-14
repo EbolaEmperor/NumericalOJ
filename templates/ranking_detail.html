@@ -52,6 +52,10 @@
           <i class="fas fa-clipboard-list me-2"></i> 所有提交
         </a>
         {% if (competition.scoring_mode or 'absolute')|lower == 'agent_judge' %}
+        <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='appeals') }}"
+           class="list-group-item list-group-item-action {% if tab == 'appeals' %}active{% endif %}">
+          <i class="fas fa-gavel me-2"></i> 申诉处理
+        </a>
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='batch_eval') }}"
            class="list-group-item list-group-item-action {% if tab == 'batch_eval' %}active{% endif %}">
           <i class="fas fa-layer-group me-2"></i> 批量评测
@@ -553,7 +557,12 @@
                 </h5>
                 <div class="text-muted small" id="judgeModalMeta"></div>
               </div>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+              <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-warning" id="appealToggle">
+                  <i class="fas fa-gavel me-1"></i>我要申诉
+                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+              </div>
             </div>
             <div class="modal-body">
               <div class="d-flex justify-content-between align-items-center mb-2">
@@ -566,6 +575,26 @@
               <div class="progress mb-3" style="height:6px;background:#f1f3f5;border-radius:999px;">
                 <div class="progress-bar" id="judgeModalBar" role="progressbar"
                      style="height:6px;border-radius:999px;background:#16a34a;width:0%;"></div>
+              </div>
+              <div id="appealPanel" class="border rounded p-3 mb-3" style="display:none;background:#fffdf6;border-color:#f0e2b8 !important;">
+                <div id="appealInputArea">
+                  <label class="form-label small text-muted mb-1"><i class="fas fa-comment-dots me-1"></i>申诉意见（说明你认为评分有误的地方）</label>
+                  <textarea id="appealReason" class="form-control mb-2" rows="3" maxlength="4000" placeholder="例如：规则 X 我已实现并能正常运行，截图见 …"></textarea>
+                  <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-sm btn-warning" id="appealSubmit"><i class="fas fa-paper-plane me-1"></i>提交申诉</button>
+                    <span class="small" id="appealMsg"></span>
+                  </div>
+                  <div class="small text-muted mt-1">每份提交只能申诉一次，请一次说清楚。</div>
+                </div>
+                <div id="appealStatusArea" style="display:none;">
+                  <div class="mb-2"><span class="small text-muted me-1"><i class="fas fa-gavel me-1"></i>申诉状态：</span><span class="fw-semibold" id="appealStatusLabel"></span></div>
+                  <div class="small text-muted mb-1">你的申诉意见：</div>
+                  <div class="aj-evi small p-2 mb-2" id="appealStatusReason" style="white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid #eee;border-radius:.4rem;"></div>
+                  <div id="appealReplyWrap" style="display:none;">
+                    <div class="small text-muted mb-1">管理员回复：</div>
+                    <div class="aj-evi small p-2 mb-0" id="appealStatusReply" style="white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid #eee;border-radius:.4rem;"></div>
+                  </div>
+                </div>
               </div>
               <div id="judgeModalRules">
                 <div class="text-muted text-center py-5">
@@ -661,6 +690,30 @@
         var judgeModalEl = document.getElementById('judgeDetailModal');
         var judgeModal = (judgeModalEl && window.bootstrap) ? new bootstrap.Modal(judgeModalEl) : null;
         var judgeSource = null;
+        var currentAppealUrl = '';
+        var currentAppealStatusUrl = '';
+        function renderAppealState(d) {
+          var inp = document.getElementById('appealInputArea');
+          var st = document.getElementById('appealStatusArea');
+          var toggle = document.getElementById('appealToggle');
+          if (d && d.has_appeal) {
+            if (inp) inp.style.display = 'none';
+            if (st) st.style.display = 'block';
+            var lbl = document.getElementById('appealStatusLabel');
+            if (lbl) lbl.textContent = d.status_label || d.status || '';
+            var rs = document.getElementById('appealStatusReason');
+            if (rs) rs.textContent = d.reason || '';
+            var rw = document.getElementById('appealReplyWrap');
+            var rp = document.getElementById('appealStatusReply');
+            if (d.admin_response) { if (rw) rw.style.display = 'block'; if (rp) rp.textContent = d.admin_response; }
+            else { if (rw) rw.style.display = 'none'; }
+            if (toggle) toggle.innerHTML = '<i class="fas fa-gavel me-1"></i>申诉状态';
+          } else {
+            if (inp) inp.style.display = 'block';
+            if (st) st.style.display = 'none';
+            if (toggle) toggle.innerHTML = '<i class="fas fa-gavel me-1"></i>我要申诉';
+          }
+        }
         var BADGE = {
           pass: ['通过', '#1f7a4d', 'rgba(34,197,94,0.14)'],
           failed: ['未通过', '#b03a2e', 'rgba(220,53,69,0.14)'],
@@ -732,6 +785,21 @@
           if (!btn || !judgeModal) return;
           closeJudgeStream();
           var sid = btn.getAttribute('data-submission-id') || '';
+          currentAppealUrl = btn.getAttribute('data-appeal-url') || '';
+          currentAppealStatusUrl = btn.getAttribute('data-appeal-status-url') || '';
+          var apPanel = document.getElementById('appealPanel');
+          var apMsg0 = document.getElementById('appealMsg');
+          var apReason0 = document.getElementById('appealReason');
+          if (apPanel) apPanel.style.display = 'none';
+          if (apMsg0) { apMsg0.textContent = ''; apMsg0.className = 'small'; }
+          if (apReason0) apReason0.value = '';
+          renderAppealState({ has_appeal: false });   // 默认输入区，状态查询返回后纠正
+          if (currentAppealStatusUrl) {
+            fetch(currentAppealStatusUrl, { credentials: 'same-origin' })
+              .then(function (r) { return r.json(); })
+              .then(function (d) { if (d && d.ok) renderAppealState(d); })
+              .catch(function () {});
+          }
           var createdAt = btn.getAttribute('data-created-at') || '';
           var streamUrl = btn.getAttribute('data-stream-url');
           var meta = document.getElementById('judgeModalMeta');
@@ -766,6 +834,50 @@
         }
         document.querySelectorAll('.judge-detail-btn').forEach(function (btn) {
           btn.addEventListener('click', function () { openJudgeModal(btn); });
+        });
+        var appealToggle = document.getElementById('appealToggle');
+        if (appealToggle) appealToggle.addEventListener('click', function () {
+          var ap = document.getElementById('appealPanel');
+          if (ap) ap.style.display = (ap.style.display === 'none' || !ap.style.display) ? 'block' : 'none';
+          var apReason = document.getElementById('appealReason');
+          if (ap && ap.style.display === 'block' && apReason) apReason.focus();
+        });
+        var appealSubmit = document.getElementById('appealSubmit');
+        if (appealSubmit) appealSubmit.addEventListener('click', function () {
+          var apReason = document.getElementById('appealReason');
+          var apMsg = document.getElementById('appealMsg');
+          var reason = ((apReason && apReason.value) || '').trim();
+          if (!reason) { if (apMsg) { apMsg.textContent = '请填写申诉意见'; apMsg.className = 'small text-danger'; } return; }
+          if (!currentAppealUrl) { if (apMsg) { apMsg.textContent = '无法定位提交，请刷新重试'; apMsg.className = 'small text-danger'; } return; }
+          appealSubmit.disabled = true;
+          if (apMsg) { apMsg.textContent = '提交中…'; apMsg.className = 'small text-muted'; }
+          var body = new URLSearchParams(); body.append('reason', reason);
+          fetch(currentAppealUrl, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString()
+          })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (res) {
+              appealSubmit.disabled = false;
+              if (res.ok && res.d && res.d.ok) {
+                renderAppealState({ has_appeal: true, status: 'pending', status_label: '待处理',
+                                    reason: reason, admin_response: '' });
+              } else if (res.d && res.d.already) {
+                if (currentAppealStatusUrl) {
+                  fetch(currentAppealStatusUrl, { credentials: 'same-origin' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) { if (d && d.ok) renderAppealState(d); }).catch(function () {});
+                }
+                if (apMsg) { apMsg.textContent = (res.d.message || '该提交已申诉过'); apMsg.className = 'small text-warning'; }
+              } else {
+                if (apMsg) { apMsg.textContent = ((res.d && res.d.message) || '提交失败'); apMsg.className = 'small text-danger'; }
+              }
+            })
+            .catch(function () {
+              appealSubmit.disabled = false;
+              if (apMsg) { apMsg.textContent = '网络错误，请重试'; apMsg.className = 'small text-danger'; }
+            });
         });
         if (judgeModalEl) {
           judgeModalEl.addEventListener('hidden.bs.modal', closeJudgeStream);
@@ -1166,6 +1278,92 @@
               if (!isNaN(p) && p >= 1) loadPage(p, currentQ);
             });
           }
+        })();
+      </script>
+      {% endif %}
+    {% endif %}
+
+    {# ========== 申诉处理（管理员 · 仅 Agent 评测） ========== #}
+    {% if tab == 'appeals' and is_admin %}
+      {% set ap_total = (appeal_stats.total if appeal_stats else 0) %}
+      {% set ap_pending = (appeal_stats.pending if appeal_stats else 0) %}
+      {% set ap_rejected = (appeal_stats.rejected if appeal_stats else 0) %}
+      {% set ap_resolved = (appeal_stats.resolved if appeal_stats else 0) %}
+
+      <!-- 统计条 -->
+      <div class="submissions-stats mb-3">
+        <div class="sub-stat"><div class="sub-stat-value">{{ ap_total }}</div><div class="sub-stat-label"><i class="fas fa-gavel me-1"></i>总申诉</div></div>
+        <div class="sub-stat"><div class="sub-stat-value">{{ ap_pending }}</div><div class="sub-stat-label"><i class="fas fa-hourglass-half me-1"></i>待处理</div></div>
+        <div class="sub-stat"><div class="sub-stat-value">{{ ap_resolved }}</div><div class="sub-stat-label"><i class="fas fa-check-circle me-1"></i>已处理</div></div>
+        <div class="sub-stat"><div class="sub-stat-value">{{ ap_rejected }}</div><div class="sub-stat-label"><i class="fas fa-ban me-1"></i>已驳回</div></div>
+      </div>
+
+      <!-- 工具条 -->
+      <div class="submissions-toolbar d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">
+        <div class="fw-semibold"><i class="fas fa-gavel me-2 text-primary"></i>申诉处理</div>
+        {% if ap_total > 0 %}
+        <div class="submissions-search">
+          <i class="fas fa-search"></i>
+          <input type="search" id="apSearch" class="form-control form-control-sm"
+                 placeholder="按用户名筛选…" autocomplete="off" value="{{ submission_search_q }}">
+        </div>
+        {% endif %}
+      </div>
+
+      {% if ap_total == 0 %}
+        <div class="card submissions-card">
+          <div class="submissions-empty">
+            <i class="fas fa-inbox submissions-empty-icon"></i>
+            <div class="mt-3 fw-semibold">暂无申诉</div>
+            <div class="text-muted small mt-1">还没有学生发起申诉。</div>
+          </div>
+        </div>
+      {% else %}
+        <div id="apTbody" class="aj-subs"
+             data-json-url="{{ url_for('ranking.ranking_appeals_json', competition_id=competition.id) }}"
+             data-current-page="{{ current_page }}">
+          {% include '_ranking_appeal_rows.html' %}
+        </div>
+      {% endif %}
+
+      {% if ap_total > 0 %}
+      <div id="apPagination" class="submissions-pagination mt-3">
+        {% include '_ranking_submission_pagination.html' %}
+      </div>
+      <script>
+        (function () {
+          var input = document.getElementById('apSearch');
+          var tbody = document.getElementById('apTbody');
+          var paginationEl = document.getElementById('apPagination');
+          if (!tbody) return;
+          var jsonUrl = tbody.getAttribute('data-json-url');
+          var currentQ = input ? (input.value || '') : '';
+          var debounceTimer = null, reqToken = 0;
+          function loadPage(page, q) {
+            var token = ++reqToken;
+            var url = jsonUrl + '?page=' + encodeURIComponent(page) + '&q=' + encodeURIComponent(q || '');
+            fetch(url, { credentials: 'same-origin' })
+              .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+              .then(function (data) {
+                if (token !== reqToken) return;
+                if (typeof data.rows_html === 'string') tbody.innerHTML = data.rows_html;
+                if (paginationEl) paginationEl.innerHTML = data.pagination_html || '';
+                var qs = '?tab=appeals&page=' + (data.page || 1) + (q ? '&q=' + encodeURIComponent(q) : '');
+                history.replaceState(null, '', window.location.pathname + qs);
+              })
+              .catch(function (e) { console.warn('appeals_json failed:', e); });
+          }
+          if (input) input.addEventListener('input', function () {
+            clearTimeout(debounceTimer);
+            var q = (this.value || '').trim(); currentQ = q;
+            debounceTimer = setTimeout(function () { loadPage(1, currentQ); }, 250);
+          });
+          if (paginationEl) paginationEl.addEventListener('click', function (e) {
+            var a = e.target.closest('a.page-link[data-page]');
+            if (!a) return; e.preventDefault();
+            var p = parseInt(a.getAttribute('data-page'), 10);
+            if (!isNaN(p) && p >= 1) loadPage(p, currentQ);
+          });
         })();
       </script>
       {% endif %}

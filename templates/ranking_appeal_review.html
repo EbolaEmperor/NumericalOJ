@@ -1,0 +1,214 @@
+{% extends "layout.html" %}
+{% block title %}申诉处理 · 提交 #{{ appeal.submission_id }} - {{ super() }}{% endblock %}
+
+{% block content %}
+{% set rules = snapshot.rules if snapshot and snapshot.rules else [] %}
+{% set BADGE = {
+  'pass':    ['通过',    '#1f7a4d', 'rgba(34,197,94,0.14)'],
+  'failed':  ['未通过',  '#b03a2e', 'rgba(220,53,69,0.14)'],
+  'skipped': ['依赖跳过','#6c757d', 'rgba(108,117,125,0.14)'],
+  'error':   ['异常',    '#b07340', 'rgba(224,151,97,0.18)'],
+  'pending': ['待评测',  '#0d6efd', 'rgba(13,110,253,0.10)']
+} %}
+
+<div class="ap-head d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <div>
+    <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='appeals') }}"
+       class="btn btn-sm btn-outline-secondary"><i class="fas fa-arrow-left me-1"></i>返回申诉列表</a>
+    <span class="ms-2 fw-semibold"><i class="fas fa-gavel me-2 text-warning"></i>申诉处理</span>
+    <span class="text-muted ms-2 small">提交 #{{ appeal.submission_id }} · {{ appeal.username }}</span>
+  </div>
+  <div class="small text-muted">申诉时间：{{ appeal.created_at }}</div>
+</div>
+
+<div class="ap-grid">
+  {# ===== 左：评分详情（可编辑规则状态） ===== #}
+  <div class="ap-left" id="apLeft">
+    <div class="ap-left-head d-flex justify-content-between align-items-center mb-2">
+      <span class="fw-semibold"><i class="fas fa-list-check me-2 text-warning"></i>评分详情</span>
+      <span class="small text-muted">得分
+        <span class="fw-semibold" id="apTotal">{{ '%.0f'|format(snapshot.total_score or 0) }}</span>
+        / <span id="apMax">{{ '%.0f'|format(snapshot.max_score or 0) }}</span>
+      </span>
+    </div>
+    <div class="small text-muted mb-2">点击规则左侧状态标签可切换 <b>通过 → 未通过 → 依赖跳过</b>；改动暂存，<b>点击右侧「驳回」或「处理」后才写入</b>。</div>
+    <div id="apRules">
+      {% if not rules %}
+        <div class="text-muted text-center py-5">暂无评分规则或评测结果。</div>
+      {% else %}
+        {% for r in rules %}
+          {% set b = BADGE.get(r.effective, BADGE['pending']) %}
+          <div class="ap-rule border rounded p-3 mb-2" data-rule-id="{{ r.rule_id }}"
+               data-value="{{ r.value }}" data-eff="{{ r.effective }}">
+            <div class="d-flex justify-content-between align-items-start gap-3">
+              <div>
+                <span class="badge ap-rule-status me-2" role="button" tabindex="0"
+                      title="点击切换：通过 → 未通过 → 依赖跳过"
+                      style="cursor:pointer;color:{{ b[1] }};background:{{ b[2] }};border-radius:999px;">{{ b[0] }}</span>
+                <strong>规则 {{ r.rule_id }}</strong>
+                <span class="text-muted small">({{ r.value }} 分)</span>
+                <div class="aj-md small mt-1">{{ (r.rule_html or r.rule_text) | safe }}</div>
+              </div>
+              <div class="text-end fw-semibold ap-rule-score" style="white-space:nowrap;">{{ '%.0f'|format(r.score or 0) }} 分</div>
+            </div>
+            {% if r.evidence_html or r.evidence %}
+            <details class="mt-2"><summary class="small text-muted">评分证据</summary>
+              <div class="aj-md aj-evi small p-2 mt-1 mb-0">{{ (r.evidence_html or r.evidence) | safe }}</div>
+            </details>
+            {% endif %}
+          </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+
+  {# ===== 右：申诉意见 + 回复 + 驳回/处理/重测（悬浮、独立滚动） ===== #}
+  <aside class="ap-right" id="apRight">
+    <div class="ap-right-inner">
+      <div class="fw-semibold mb-2"><i class="fas fa-comment-dots me-2 text-primary"></i>用户申诉意见</div>
+      <div class="ap-reason mb-3">{{ appeal.reason }}</div>
+
+      {% if appeal.status != 'pending' %}
+      <div class="alert alert-secondary small py-2 mb-3">
+        当前状态：<b>{{ {'rejected':'已驳回','resolved':'已处理'}.get(appeal.status, appeal.status) }}</b>
+        {% if appeal.admin_username %}（处理人：{{ appeal.admin_username }}）{% endif %}
+      </div>
+      {% endif %}
+
+      <label class="form-label small text-muted mb-1">回复意见</label>
+      <textarea id="apReply" class="form-control mb-3" rows="5"
+                placeholder="给该同学的处理说明…">{{ appeal.admin_response or '' }}</textarea>
+
+      <div class="d-flex gap-2 mb-2">
+        <button type="button" class="btn btn-outline-danger flex-fill" id="apReject"
+                data-decision="rejected"><i class="fas fa-ban me-1"></i>驳回</button>
+        <button type="button" class="btn btn-success flex-fill" id="apResolve"
+                data-decision="resolved"><i class="fas fa-check me-1"></i>处理</button>
+      </div>
+      <div class="small text-muted mb-3">「驳回」「处理」都会把左侧暂存的规则改动写入数据库。</div>
+
+      <form method="POST" class="d-grid"
+            action="{{ url_for('ranking.ranking_rejudge_agent', competition_id=competition.id, submission_id=appeal.submission_id) }}"
+            onsubmit="return confirm('确认重新评测提交 #{{ appeal.submission_id }}？\n将清空当前评分结果并重新跑 Agent 评测。');">
+        <button type="submit" class="btn btn-outline-secondary"><i class="fas fa-rotate me-1"></i>重测</button>
+      </form>
+    </div>
+  </aside>
+</div>
+
+<style>
+  .ap-grid { display:flex; gap:1rem; align-items:flex-start; }
+  .ap-left { flex:1 1 auto; min-width:0; max-height:calc(100vh - 150px); overflow-y:auto; padding-right:.25rem; }
+  .ap-right { flex:0 0 360px; position:sticky; top:1rem; max-height:calc(100vh - 150px); overflow-y:auto; }
+  .ap-right-inner { background:#fff; border:1px solid #e9ecef; border-radius:.75rem; padding:1rem; }
+  .ap-reason { white-space:pre-wrap; word-break:break-word; background:#f8f9fa; border:1px solid #eef0f2;
+               border-radius:.5rem; padding:.6rem .75rem; font-size:.9rem; line-height:1.6; max-height:30vh; overflow-y:auto; }
+  .ap-rule-status:hover { filter:brightness(0.96); }
+  .ap-rule.dirty { border-color:#f0c36d; box-shadow:0 0 0 2px rgba(234,179,8,0.15); }
+  @media (max-width: 860px) {
+    .ap-grid { flex-direction:column; }
+    .ap-right { flex-basis:auto; width:100%; position:static; max-height:none; }
+    .ap-left { max-height:none; }
+  }
+</style>
+
+<script>
+(function () {
+  var ORDER = ['pass', 'failed', 'skipped'];
+  var BADGE = {
+    pass:    ['通过', '#1f7a4d', 'rgba(34,197,94,0.14)'],
+    failed:  ['未通过', '#b03a2e', 'rgba(220,53,69,0.14)'],
+    skipped: ['依赖跳过', '#6c757d', 'rgba(108,117,125,0.14)'],
+    error:   ['异常', '#b07340', 'rgba(224,151,97,0.18)'],
+    pending: ['待评测', '#0d6efd', 'rgba(13,110,253,0.10)']
+  };
+  var handleUrl = "{{ url_for('ranking.ranking_appeal_handle', competition_id=competition.id, appeal_id=appeal.id) }}";
+  var staged = {};                 // rule_id -> 'pass'|'failed'|'skipped'（仅改动过的）
+  var state = {};                  // rule_id -> {value, eff, score}
+
+  document.querySelectorAll('.ap-rule').forEach(function (row) {
+    var rid = row.getAttribute('data-rule-id');
+    var value = parseFloat(row.getAttribute('data-value')) || 0;
+    var eff = row.getAttribute('data-eff') || 'pending';
+    var score = (eff === 'pass') ? value : 0;
+    state[rid] = { value: value, eff: eff, score: score };
+  });
+
+  function fmt(n) { return (Math.round(n * 100) / 100).toString(); }
+
+  function recomputeTotal() {
+    var t = 0;
+    Object.keys(state).forEach(function (k) { t += state[k].score; });
+    var el = document.getElementById('apTotal');
+    if (el) el.textContent = fmt(t);
+  }
+
+  function applyRow(row, eff) {
+    var rid = row.getAttribute('data-rule-id');
+    var s = state[rid];
+    s.eff = eff;
+    s.score = (eff === 'pass') ? s.value : 0;
+    var b = BADGE[eff] || BADGE.pending;
+    var badge = row.querySelector('.ap-rule-status');
+    if (badge) { badge.textContent = b[0]; badge.style.color = b[1]; badge.style.background = b[2]; }
+    var sc = row.querySelector('.ap-rule-score');
+    if (sc) sc.textContent = fmt(s.score) + ' 分';
+    row.classList.add('dirty');
+    recomputeTotal();
+  }
+
+  function cycle(row) {
+    var rid = row.getAttribute('data-rule-id');
+    var cur = state[rid].eff;
+    var i = ORDER.indexOf(cur);
+    var next = (i < 0) ? 'pass' : ORDER[(i + 1) % ORDER.length];
+    staged[rid] = next;
+    applyRow(row, next);
+  }
+
+  document.querySelectorAll('.ap-rule-status').forEach(function (badge) {
+    var row = badge.closest('.ap-rule');
+    badge.addEventListener('click', function () { cycle(row); });
+    badge.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cycle(row); }
+    });
+  });
+
+  var busy = false;
+  function commit(decision) {
+    if (busy) return;
+    busy = true;
+    var reject = document.getElementById('apReject');
+    var resolve = document.getElementById('apResolve');
+    if (reject) reject.disabled = true;
+    if (resolve) resolve.disabled = true;
+    var reply = document.getElementById('apReply');
+    fetch(handleUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        decision: decision,
+        admin_response: reply ? reply.value : '',
+        overrides: staged
+      })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) { window.location.href = d.redirect; }
+        else { alert((d && d.message) || '处理失败'); busy = false; if (reject) reject.disabled = false; if (resolve) resolve.disabled = false; }
+      })
+      .catch(function () { alert('网络错误，请重试'); busy = false; if (reject) reject.disabled = false; if (resolve) resolve.disabled = false; });
+  }
+
+  var rj = document.getElementById('apReject');
+  var rs = document.getElementById('apResolve');
+  if (rj) rj.addEventListener('click', function () { commit('rejected'); });
+  if (rs) rs.addEventListener('click', function () { commit('resolved'); });
+
+  if (window.MathJax && MathJax.typesetPromise) {
+    MathJax.typesetPromise([document.getElementById('apRules')]).catch(function () {});
+  }
+})();
+</script>
+{% endblock %}
