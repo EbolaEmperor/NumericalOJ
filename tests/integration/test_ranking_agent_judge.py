@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """agent_judge 集成测试：提交分派、规则保存、配置编辑、SSE 快照。"""
 import io
+import os
 
 import pytest
 
+from oj_modules import db_services as db
 from oj_modules import ranking_db
 from oj_modules import ranking_agent_judge_db as ajdb
 from oj_modules.routes import ranking_routes
@@ -19,6 +21,15 @@ class _FakeTask:
         return None
 
 
+class _FakeApplyAsyncTask:
+    def __init__(self):
+        self.apply_async_calls = []
+
+    def apply_async(self, *a, **k):
+        self.apply_async_calls.append((a, k))
+        return None
+
+
 def _make_aj_comp(configured=True, with_rules=True):
     cid = ranking_db.create_competition(title='AJ赛', description='desc', max_score=100,
                                         created_by='admin', summary='s')
@@ -27,12 +38,31 @@ def _make_aj_comp(configured=True, with_rules=True):
         fields.update(agent_judge_base_url='https://x/anthropic',
                       agent_judge_api_key='k-123', agent_judge_model='mimo-v2.5-pro')
     ranking_db.update_competition(cid, **fields)
+    if configured:
+        ajdb.save_agent_judge_endpoints(cid, [{
+            'harness': 'claude_code',
+            'base_url': 'https://x/anthropic',
+            'api_key': 'k-123',
+            'model': 'mimo-v2.5-pro',
+            'concurrency_limit': 1,
+            'enabled': True,
+        }])
     if with_rules:
         ajdb.replace_competition_rules(cid, [
             {'rule_id': 1, 'rule_text': '能运行', 'value': 10, 'dependencies': []},
             {'rule_id': 2, 'rule_text': '输出正确', 'value': 20, 'dependencies': [1]},
         ])
     return cid
+
+
+def _set_rank_created_at(sid, value):
+    conn = db.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE ranking_submissions SET created_at=%s WHERE id=%s", (value, sid))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _zip(name='code.zip', content=b'PK\x03\x04'):
@@ -52,7 +82,7 @@ def test_submit_agent_judge_enqueues_task(client, login, monkeypatch):
     assert len(fake.delay_calls) == 1
     subs = ranking_db.list_user_submissions(cid, 'ajstud')
     assert len(subs) == 1
-    assert subs[0]['status'] == 'Judging'
+    assert subs[0]['status'] == 'Queued'
     assert (subs[0].get('answer_path') in (None, ''))
 
 
@@ -205,7 +235,7 @@ def test_rejudge_agent_requeues(client, admin_login, monkeypatch):
     assert r.status_code in (301, 302)
     assert len(fake.delay_calls) == 1
     assert ajdb.list_judge_results(sid) == []
-    assert ranking_db.get_ranking_submission(sid)['status'] == 'Judging'
+    assert ranking_db.get_ranking_submission(sid)['status'] == 'Queued'
 
 
 def test_admin_can_submit_to_inactive_competition(client, admin_login, monkeypatch):
@@ -254,3 +284,122 @@ def test_non_admin_blocked_on_inactive_competition(client, login, monkeypatch):
     assert r.status_code in (301, 302)
     assert fake.delay_calls == []
     assert ranking_db.list_user_submissions(cid, 'inactstud') == []
+
+
+def test_ranking_bulk_rejudge_filter_combines_time_user_status(client, admin_login):
+    cid = _make_aj_comp()
+    sid_ok = ranking_db.create_ranking_submission(cid, 'bulk_owner')
+    sid_err = ranking_db.create_ranking_submission(cid, 'bulk_owner')
+    sid_wait = ranking_db.create_ranking_submission(cid, 'bulk_owner')
+    sid_other = ranking_db.create_ranking_submission(cid, 'bulk_other')
+    ranking_db.update_submission_result(sid_ok, 10.0, 'Accepted')
+    ranking_db.update_submission_result(sid_err, None, 'Error')
+    ranking_db.set_submission_status(sid_wait, 'Queued')
+    ranking_db.update_submission_result(sid_other, 9.0, 'Accepted')
+    _set_rank_created_at(sid_ok, '2026-03-01 10:00:00')
+    _set_rank_created_at(sid_err, '2026-03-01 10:01:00')
+    _set_rank_created_at(sid_wait, '2026-03-01 10:02:00')
+    _set_rank_created_at(sid_other, '2026-03-01 10:03:00')
+
+    r = client.post(f'/ranking/{cid}/bulk_rejudge/filter', json={
+        'start': '2026-03-01T00:00',
+        'end': '2026-03-02T00:00',
+        'username': 'bulk_owner',
+        'statuses': ['accepted', 'abnormal'],
+    })
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data['success'] is True
+    assert data['too_many'] is False
+    ids = [row['id'] for row in data['submissions']]
+    assert ids == [sid_err, sid_ok]
+    assert sid_wait not in ids
+    assert sid_other not in ids
+
+
+def test_ranking_bulk_rejudge_start_enqueues_creator_task(client, admin_login, monkeypatch):
+    cid = _make_aj_comp()
+    sid1 = ranking_db.create_ranking_submission(cid, 'bulk_start')
+    sid2 = ranking_db.create_ranking_submission(cid, 'bulk_start')
+    fake = _FakeApplyAsyncTask()
+    saved = {}
+
+    def fake_save(job_id, payload):
+        saved[job_id] = dict(payload)
+
+    monkeypatch.setattr(ranking_routes, '_bulk_rejudge_task', fake)
+    monkeypatch.setattr(ranking_routes, 'save_bulk_rejudge_job', fake_save)
+
+    r = client.post(f'/ranking/{cid}/bulk_rejudge/start',
+                    json={'submission_ids': [sid1, sid2, sid1, 'bad', -1]})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data['success'] is True
+    assert data['total'] == 2
+    assert data['interval_seconds'] == ranking_routes._BULK_REJUDGE_INTERVAL_SECONDS
+    assert len(fake.apply_async_calls) == 1
+    assert data['job_id'] in saved
+    assert saved[data['job_id']]['total'] == 2
+    assert saved[data['job_id']]['processed'] == 0
+
+    _, kwargs = fake.apply_async_calls[0]
+    assert kwargs['args'] == [cid, [sid1, sid2], data['job_id'], 'admin']
+
+
+def test_ranking_bulk_rejudge_status_reads_progress(client, admin_login, monkeypatch):
+    cid = _make_aj_comp()
+    job = {
+        'competition_id': cid,
+        'status': 'finished',
+        'total': 2,
+        'processed': 2,
+        'requeued': 2,
+        'created': 0,
+        'failed': 0,
+        'progress': 100,
+        'requeued_ids': [101, 102],
+        'created_ids': [],
+    }
+    monkeypatch.setattr(ranking_routes, 'get_bulk_rejudge_job', lambda job_id: job)
+    r = client.get(f'/ranking/{cid}/bulk_rejudge/status/job123')
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data['success'] is True
+    assert data['done'] is True
+    assert data['requeued'] == 2
+    assert data['requeued_ids'] == [101, 102]
+    assert data['created'] == 0
+    assert data['progress'] == 100
+
+
+def test_clone_ranking_submission_for_rejudge_copies_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cid = _make_aj_comp()
+    sid = ranking_db.create_ranking_submission(cid, 'bulk_clone')
+    src_dir = ranking_db.submission_dir(sid)
+    os.makedirs(src_dir, exist_ok=True)
+    answer_path = os.path.join(src_dir, 'answer.json')
+    code_path = os.path.join(src_dir, 'code.zip')
+    with open(answer_path, 'w', encoding='utf-8') as f:
+        f.write('{"score": 1}\n')
+    with open(code_path, 'wb') as f:
+        f.write(b'PK\x03\x04')
+    ranking_db.update_submission_files(
+        sid, 'answer.json', answer_path, 'code.zip', code_path, base_model='m',
+    )
+    ranking_db.update_submission_result(sid, 10.0, 'Accepted')
+
+    new_id, _ = ranking_db.clone_ranking_submission_for_rejudge(
+        sid, competition_id=cid, status='Queued',
+    )
+    cloned = ranking_db.get_ranking_submission(new_id)
+    assert cloned['id'] != sid
+    assert cloned['competition_id'] == cid
+    assert cloned['username'] == 'bulk_clone'
+    assert cloned['status'] == 'Queued'
+    assert cloned['score'] is None
+    assert cloned['base_model'] == 'm'
+    assert os.path.isfile(cloned['answer_path'])
+    assert os.path.isfile(cloned['code_path'])
+    assert cloned['answer_path'] != answer_path
+    assert cloned['code_path'] != code_path

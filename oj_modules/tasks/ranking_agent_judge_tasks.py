@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""打榜赛 Agent-as-Judge 评测任务：起 Docker 容器跑 claude，tail result.jsonl 实时回传。"""
+"""打榜赛 Agent-as-Judge 评测任务：起 Docker 容器跑所选 harness，tail result.jsonl 实时回传。"""
 import json
 import os
 import random
@@ -8,6 +8,8 @@ import secrets
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 import zipfile
 
 try:
@@ -16,9 +18,11 @@ except Exception:  # pragma: no cover
     _redis = None
 
 try:
-    from celery.exceptions import MaxRetriesExceededError
+    from celery.exceptions import MaxRetriesExceededError, Retry
 except Exception:  # pragma: no cover
     class MaxRetriesExceededError(Exception):
+        pass
+    class Retry(Exception):
         pass
 
 import config as _cfg
@@ -26,11 +30,15 @@ from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules import ranking_agent_judge as aj
 from oj_modules.ranking_db import (
     get_competition, get_ranking_submission, list_competition_files,
-    set_submission_status, submission_dir, update_submission_result,
+    set_agent_judge_task_id, set_submission_status_for_attempt,
+    submission_dir, update_submission_result_for_attempt,
 )
 from oj_modules.ranking_agent_judge_db import (
-    build_judge_snapshot, clear_judge_results, list_agent_judge_endpoints,
-    list_competition_rules, list_judge_results, upsert_judge_result,
+    DEFAULT_OPENCODE_GO_BASE_URL, DEFAULT_OPENCODE_GO_MODEL,
+    HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE,
+    build_judge_snapshot, clear_judge_results_for_attempt,
+    list_agent_judge_endpoints, list_competition_rules, list_judge_results,
+    set_agent_judge_endpoint_enabled, upsert_judge_result_for_attempt,
 )
 
 RANKING_AGENT_JUDGE_TASK_NAME = 'oj.ranking_agent_judge'
@@ -50,8 +58,17 @@ JUDGE_LEGACY_CONCURRENCY = max(1, int(getattr(_cfg, 'AGENT_JUDGE_CONCURRENCY', 2
 JUDGE_QUEUE_RETRY_BASE = max(2, int(getattr(_cfg, 'AGENT_JUDGE_QUEUE_RETRY_SECONDS', 8)))
 JUDGE_MAX_QUEUE_RETRIES = max(1, int(getattr(_cfg, 'AGENT_JUDGE_MAX_QUEUE_RETRIES', 2000)))
 JUDGE_SLOT_TTL_BUFFER = max(60, int(getattr(_cfg, 'AGENT_JUDGE_SLOT_TTL_BUFFER', 600)))
+JUDGE_HELLO_RETRIES = 5
+JUDGE_HELLO_TIMEOUT_SECONDS = max(1.0, float(getattr(_cfg, 'AGENT_JUDGE_HELLO_TIMEOUT_SECONDS', 8.0)))
+JUDGE_HELLO_RETRY_SLEEP_SECONDS = max(0.0, float(getattr(_cfg, 'AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS', 1.0)))
+OPENCODE_GO_HELLO_MODEL = 'opencode-go/deepseek-v4-flash'
+OPENCODE_HELLO_TIMEOUT_SECONDS = max(
+    JUDGE_HELLO_TIMEOUT_SECONDS,
+    float(getattr(_cfg, 'AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS', 30.0)),
+)
 
 _judge_rds = None
+_TERMINAL_STATUSES = {'Accepted', 'Error'}
 
 
 def init_judge_progress_cache(redis_client):
@@ -123,6 +140,66 @@ def _publish_snapshot(submission_id):
     return snap
 
 
+def _normalize_attempt_id(attempt_id):
+    text = str(attempt_id or '').strip()
+    return text or None
+
+
+def _attempt_matches(submission, attempt_id):
+    current = _normalize_attempt_id((submission or {}).get('judge_attempt_id'))
+    expected = _normalize_attempt_id(attempt_id)
+    return current == expected
+
+
+def is_completed_agent_judge_submission(submission, competition=None, rules=None):
+    """判断 Agent 评测是否已有完整结果。
+
+    score=0 也可能是合法完成结果；必须同时有 grade_details，且已有规则结果集合
+    与当前比赛规则集合完全一致，才把 Queued/Judging 视为已完成但状态被污染。
+    """
+    if not submission:
+        return False
+    if str(submission.get('status') or '') in _TERMINAL_STATUSES:
+        return True
+    if submission.get('score') is None or not submission.get('grade_details'):
+        return False
+    try:
+        sid = int(submission.get('id'))
+        competition_id = int(submission.get('competition_id'))
+    except Exception:
+        return False
+    if rules is None:
+        rules = list_competition_rules(competition_id)
+    rule_ids = {int(r.get('rule_id')) for r in (rules or []) if r.get('rule_id') is not None}
+    if not rule_ids:
+        return False
+    rows = list_judge_results(sid)
+    result_ids = {int(r.get('rule_id')) for r in (rows or []) if r.get('rule_id') is not None}
+    return result_ids == rule_ids
+
+
+def _task_should_skip(submission, attempt_id, competition=None, rules=None):
+    if not submission:
+        return True, '提交不存在'
+    if not _attempt_matches(submission, attempt_id):
+        return True, '旧评测 attempt，跳过'
+    if is_completed_agent_judge_submission(submission, competition=competition, rules=rules):
+        return True, '已完成，跳过重复评测'
+    return False, ''
+
+
+def _attempt_still_current(submission_id, attempt_id):
+    submission = get_ranking_submission(submission_id)
+    return bool(submission and _attempt_matches(submission, attempt_id))
+
+
+def _write_error_for_attempt(submission_id, attempt_id, error_message):
+    return update_submission_result_for_attempt(
+        submission_id, attempt_id, None, 'Error',
+        grade_details=None, error_message=error_message,
+    )
+
+
 # ---------- 多端点选择与 Redis 槽位限流 ----------
 
 def _resolve_endpoints(competition_id, competition=None):
@@ -132,7 +209,8 @@ def _resolve_endpoints(competition_id, competition=None):
         eps = list_agent_judge_endpoints(competition_id, enabled_only=True)
     except Exception:
         eps = []
-    return [{'id': e['id'], 'base_url': e['base_url'], 'api_key': e['api_key'],
+    return [{'id': e['id'], 'harness': e.get('harness') or HARNESS_CLAUDE_CODE,
+             'base_url': e['base_url'], 'api_key': e['api_key'],
              'model': e.get('model') or '',
              'concurrency_limit': max(1, int(e.get('concurrency_limit') or 1))}
             for e in eps]
@@ -178,6 +256,171 @@ def _release_slot(client, slot_key, token):
         pass
 
 
+# ---------- 端点连通性预检 ----------
+
+def _append_api_path(base_url, path):
+    base = str(base_url or '').strip().rstrip('/')
+    if not base:
+        return ''
+    suffix = '/' + str(path or '').strip('/')
+    if base.endswith(suffix):
+        return base
+    if suffix.startswith('/v1/') and base.endswith('/v1'):
+        return base + suffix[len('/v1'):]
+    return base + suffix
+
+
+def _hello_probe_request(endpoint):
+    harness = str(endpoint.get('harness') or HARNESS_CLAUDE_CODE).strip().lower()
+    base_url = str(endpoint.get('base_url') or '').strip()
+    api_key = str(endpoint.get('api_key') or '').strip()
+    model = str(endpoint.get('model') or '').strip()
+    if not base_url or not api_key or not model:
+        return None, '端点 URL、API Key 或模型为空'
+
+    if harness == HARNESS_CLAUDE_CODE:
+        payload = {
+            'model': model,
+            'max_tokens': 8,
+            'messages': [{'role': 'user', 'content': 'hello'}],
+        }
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': api_key,
+            'anthropic-version': '2023-06-01',
+        }
+        url = _append_api_path(base_url, '/v1/messages')
+    else:
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'max_tokens': 8,
+        }
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {api_key}',
+        }
+        url = _append_api_path(base_url, '/v1/chat/completions')
+
+    body = json.dumps(payload).encode('utf-8')
+    return urllib.request.Request(url, data=body, headers=headers, method='POST'), None
+
+
+def _opencode_probe_config_content():
+    return json.dumps({
+        '$schema': 'https://opencode.ai/config.json',
+        'model': OPENCODE_GO_HELLO_MODEL,
+        'small_model': OPENCODE_GO_HELLO_MODEL,
+        'enabled_providers': ['opencode-go'],
+        'provider': {
+            'opencode-go': {
+                'options': {
+                    'apiKey': '{env:OPENCODE_API_KEY}',
+                },
+            },
+        },
+    }, ensure_ascii=False)
+
+
+def _probe_opencode_once(endpoint):
+    api_key = str(endpoint.get('api_key') or '').strip()
+    if not api_key:
+        return False, 'OpenCode Go API Key 为空'
+    container_name = 'aj_opencode_probe_%s_%s' % (
+        str(endpoint.get('id') or 'x').replace('-', '_'),
+        secrets.token_hex(4),
+    )
+    try:
+        env = os.environ.copy()
+        env['OPENCODE_API_KEY'] = api_key
+        env['OPENCODE_CONFIG_CONTENT'] = _opencode_probe_config_content()
+        r = subprocess.run(
+            [
+                'docker', 'run', '--rm', '--name', container_name,
+                '--security-opt', 'no-new-privileges',
+                '--cap-drop', 'ALL',
+                '--pids-limit', '128',
+                '--memory', '512m',
+                '--cpus', '1',
+                '--read-only',
+                '--tmpfs', '/tmp:rw,nosuid,size=128m',
+                # 探针只用容器内 tmpfs 和环境变量注入配置；不挂载 OJ 代码、提交目录或 Docker socket。
+                '-e', 'OPENCODE_API_KEY',
+                '-e', 'OPENCODE_CONFIG_CONTENT',
+                '-e', 'HOME=/tmp/opencode_home',
+                '-e', 'XDG_CONFIG_HOME=/tmp/opencode_config',
+                '-e', 'XDG_DATA_HOME=/tmp/opencode_data',
+                '-e', 'XDG_STATE_HOME=/tmp/opencode_state',
+                '-e', 'XDG_CACHE_HOME=/tmp/opencode_cache',
+                JUDGE_IMAGE,
+                'bash', '-lc',
+                'mkdir -p /tmp/opencode_work /tmp/opencode_home /tmp/opencode_config '
+                '/tmp/opencode_data /tmp/opencode_state /tmp/opencode_cache && '
+                f'cd /tmp/opencode_work && opencode run --model {OPENCODE_GO_HELLO_MODEL} hello',
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=OPENCODE_HELLO_TIMEOUT_SECONDS,
+        )
+        if r.returncode == 0:
+            return True, 'ok'
+        msg = (r.stderr or r.stdout or f'opencode exited {r.returncode}').strip()
+        return False, msg[:200]
+    except subprocess.TimeoutExpired:
+        try:
+            subprocess.run(['docker', 'rm', '-f', container_name],
+                           capture_output=True, text=True, timeout=10)
+        except Exception:
+            pass
+        return False, 'opencode hello 超时'
+    except FileNotFoundError:
+        return False, 'Docker CLI 不存在'
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def _probe_endpoint_once(endpoint):
+    harness = str(endpoint.get('harness') or HARNESS_CLAUDE_CODE).strip().lower()
+    if harness == HARNESS_OPENCODE:
+        return _probe_opencode_once(endpoint)
+    req, err = _hello_probe_request(endpoint)
+    if err:
+        return False, err
+    try:
+        with urllib.request.urlopen(req, timeout=JUDGE_HELLO_TIMEOUT_SECONDS) as resp:
+            code = int(getattr(resp, 'status', resp.getcode()))
+            if 200 <= code < 300:
+                return True, 'ok'
+            return False, f'HTTP {code}'
+    except urllib.error.HTTPError as e:
+        return False, f'HTTP {getattr(e, "code", "error")}'
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def _probe_endpoint(endpoint, attempts=None):
+    tries = max(1, int(attempts or JUDGE_HELLO_RETRIES))
+    last_error = ''
+    for i in range(tries):
+        ok, msg = _probe_endpoint_once(endpoint)
+        if ok:
+            return True, msg
+        last_error = msg or 'unknown error'
+        if i + 1 < tries and JUDGE_HELLO_RETRY_SLEEP_SECONDS > 0:
+            time.sleep(JUDGE_HELLO_RETRY_SLEEP_SECONDS)
+    return False, last_error
+
+
+def _disable_unhealthy_endpoint(endpoint, reason):
+    try:
+        set_agent_judge_endpoint_enabled(int(endpoint.get('id')), False)
+    except Exception:
+        pass
+    eid = endpoint.get('id')
+    print(f'[agent_judge] disabled endpoint {eid} after hello probe failures: {reason}', flush=True)
+
+
 def clear_judge_lock(submission_id):
     """删除某提交的 agent 评测幂等锁。进程重启重排前调用：上次被杀的 worker 会留下
     僵尸锁（TTL 内有效），不清的话重排任务 set(nx) 失败、直接返回，提交会一直卡住。"""
@@ -186,6 +429,8 @@ def clear_judge_lock(submission_id):
         return
     try:
         client.delete(f'ranking:judge:lock:{int(submission_id)}')
+        for key in client.scan_iter(match=f'ranking:judge:lock:{int(submission_id)}:*', count=50):
+            client.delete(key)
     except Exception:
         pass
 
@@ -207,6 +452,27 @@ def clear_all_judge_slots():
     except Exception:
         pass
     return n
+
+
+def _retry_queued_submission(task, submission_id, attempt_id=None,
+                             message='所有模型端点并发均已满，重新排队'):
+    submission = get_ranking_submission(submission_id)
+    skip, skip_msg = _task_should_skip(submission, attempt_id)
+    if skip:
+        return {'success': True, 'message': skip_msg}
+    if set_submission_status_for_attempt(submission_id, attempt_id, 'Queued') <= 0:
+        return {'success': True, 'message': '旧评测 attempt，跳过'}
+    _publish_snapshot(submission_id)
+    countdown = JUDGE_QUEUE_RETRY_BASE + random.randint(0, JUDGE_QUEUE_RETRY_BASE)
+    try:
+        task.retry(countdown=countdown, max_retries=JUDGE_MAX_QUEUE_RETRIES)
+    except MaxRetriesExceededError:
+        _write_error_for_attempt(
+            submission_id, attempt_id, '评测排队超时：所有模型端点持续繁忙，请稍后重测',
+        )
+        _publish_snapshot(submission_id)
+        return {'success': False, 'message': '端点持续繁忙'}
+    return {'success': False, 'message': message}
 
 
 def _safe_extract_zip(zip_path, dest_dir):
@@ -263,40 +529,69 @@ def _prepare_workspace(submission, competition, rules):
     return ws, result_name
 
 
-def _dump_container_claude(container_name, ws):
-    """容器回收前，把容器内 ~/.claude（claude 的会话/transcript 目录）docker cp 到宿主
-    <ws>/submission/.claude，供事后归因。尽力而为：源不存在或 cp 失败都静默跳过，不影响判题。
-    注意：docker cp 可作用于「已退出但未删除」的容器，这正是去掉 --rm 的原因。"""
+def _dump_container_harness_state(container_name, ws, harness=HARNESS_CLAUDE_CODE):
+    """容器回收前，把所选 Agent Harness 的会话目录 docker cp 到宿主 submission 目录。
+    尽力而为：源不存在或 cp 失败都静默跳过，不影响判题。docker cp 可作用于「已退出但未删除」
+    的容器，这正是去掉 --rm 的原因。"""
     dest_dir = os.path.join(ws, 'submission')
     try:
         os.makedirs(dest_dir, exist_ok=True)
     except Exception:
         return
-    dest = os.path.join(dest_dir, '.claude')
-    # 目标已存在先删，避免 docker cp 把 .claude 套进已有的 .claude/ 里。
+    harness = str(harness or HARNESS_CLAUDE_CODE).strip().lower()
+    if harness == HARNESS_CODEX:
+        sources = [('/workspace/.codex', '.codex'), ('/root/.codex', '.codex'),
+                   ('/tmp/aj_codex_home', '.codex')]
+        dest_name = '.codex'
+    elif harness == HARNESS_OPENCODE:
+        sources = [('/workspace/.opencode', '.opencode'),
+                   ('/root/.local/share/opencode', '.opencode'),
+                   ('/tmp/aj_opencode_home/.local/share/opencode', '.opencode')]
+        dest_name = '.opencode'
+    else:
+        sources = [('/root/.claude', '.claude'), ('/workspace/.claude', '.claude')]
+        dest_name = '.claude'
+    dest = os.path.join(dest_dir, dest_name)
+    # 目标已存在先删，避免 docker cp 把目录套进已有目录里。
     if os.path.exists(dest):
         shutil.rmtree(dest, ignore_errors=True)
-    # 容器内 claude 家目录为 /root（镜像默认 root 用户）；保险再退一个 /workspace。
-    for src in ('/root/.claude', '/workspace/.claude'):
+    for src, expected_name in sources:
         try:
             r = subprocess.run(['docker', 'cp', f'{container_name}:{src}', dest_dir],
                                capture_output=True, text=True, timeout=60)
-            if r.returncode == 0 and os.path.isdir(dest):
+            copied = os.path.join(dest_dir, os.path.basename(src))
+            if r.returncode == 0 and os.path.isdir(copied):
+                if copied != dest:
+                    if os.path.exists(dest):
+                        shutil.rmtree(dest, ignore_errors=True)
+                    os.replace(copied, dest)
+                return
+            if r.returncode == 0 and os.path.isdir(os.path.join(dest_dir, expected_name)):
                 return
         except Exception:
             pass
 
 
+def _dump_container_claude(container_name, ws):
+    """兼容旧单测/调用名：拷出 Claude Code 会话目录。"""
+    return _dump_container_harness_state(container_name, ws, HARNESS_CLAUDE_CODE)
+
+
 def _run_container_and_tail(submission_id, ws, result_name, competition, rules, timeout_s,
-                            endpoint=None):
-    """起 docker 容器跑 claude，tail 随机结果文件，逐条 upsert + 广播。
+                            endpoint=None, attempt_id=None):
+    """起 docker 容器跑所选 Agent Harness，tail 随机结果文件，逐条 upsert + 广播。
     返回 (timed_out, container_ok)。可被集成测试整体 monkeypatch。
-    容器回收前会把容器内 ~/.claude（会话/transcript）docker cp 到宿主 <ws>/submission/.claude，
-    便于事后归因。endpoint：本次使用的模型端点（base_url/api_key/model）；为空时回退到比赛单端点字段。"""
+    容器回收前会按 harness 把会话/transcript 目录 docker cp 到宿主 <ws>/submission/.claude、
+    .codex 或 .opencode，便于事后归因。endpoint：本次使用的模型端点
+    （harness/base_url/api_key/model）；为空时回退到比赛单端点字段。"""
     ep = endpoint or {}
+    harness = ep.get('harness') or HARNESS_CLAUDE_CODE
     base_url = ep.get('base_url') or competition.get('agent_judge_base_url') or ''
     api_key = ep.get('api_key') or competition.get('agent_judge_api_key') or ''
     model = ep.get('model') or competition.get('agent_judge_model') or ''
+    if harness == HARNESS_OPENCODE:
+        base_url = base_url or DEFAULT_OPENCODE_GO_BASE_URL
+        model = model or DEFAULT_OPENCODE_GO_MODEL
     prompt = aj.build_prompt(competition.get('title'), result_name)
     container_name = f'aj_{submission_id}'
     # 同名残留容器（上次 worker 被杀留下的孤儿、或异常未清的旧容器）先强制清掉，否则下面
@@ -306,7 +601,7 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     except Exception:
         pass
     docker_args = [
-        # 不再用 --rm：容器退出后保留，给「回收前 docker cp 出 ~/.claude」留窗口；改由本函数
+        # 不再用 --rm：容器退出后保留，给「回收前 docker cp 出 harness 会话目录」留窗口；改由本函数
         # finally 中的 docker rm -f 统一回收（覆盖正常退出/超时/异常各路径）。
         'docker', 'run', '-d', '--name', container_name,
         # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
@@ -324,12 +619,19 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
         '-e', 'DISABLE_AUTOUPDATER=1',
         '-e', 'DISABLE_ERROR_REPORTING=1',
         '-e', 'AJ_PROMPT',
+        '-e', f'AJ_HARNESS={harness}',
         # report 命令据此写入随机结果文件名；参赛者代码无法预先猜到。
         '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
         '-e', f'ANTHROPIC_BASE_URL={base_url}',
         '-e', f'ANTHROPIC_AUTH_TOKEN={api_key}',
         '-e', f'ANTHROPIC_API_KEY={api_key}',
         '-e', f'ANTHROPIC_MODEL={model}',
+        '-e', f'OPENAI_BASE_URL={base_url}',
+        '-e', f'OPENAI_API_KEY={api_key}',
+        '-e', f'OPENAI_MODEL={model}',
+        '-e', f'OPENCODE_BASE_URL={base_url}',
+        '-e', f'OPENCODE_API_KEY={api_key}',
+        '-e', f'OPENCODE_MODEL={model}',
         JUDGE_IMAGE,
         'bash', '-lc',
         # 启动 claude 前先 apt-get update：镜像各 apt 层都清空了 /var/lib/apt/lists，判题时
@@ -339,8 +641,7 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
         # 失败不阻断（|| true），随后照常启动 claude；apt 输出落到容器内 /tmp（随容器回收丢弃）。
         'export DEBIAN_FRONTEND=noninteractive; '
         'apt-get update >/tmp/aj_apt_setup.log 2>&1 || true; '
-        'claude -p "$AJ_PROMPT" --dangerously-skip-permissions '
-        '${ANTHROPIC_MODEL:+--model "$ANTHROPIC_MODEL"} --add-dir /workspace || true',
+        'run_harness || true',
     ]
     run_env = dict(os.environ, AJ_PROMPT=prompt)
     try:
@@ -361,6 +662,12 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     timed_out = False
     try:
         while True:
+            if not _attempt_still_current(submission_id, attempt_id):
+                try:
+                    subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+                return (False, True)
             try:
                 with open(result_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
@@ -372,8 +679,15 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
                     continue
                 seen.add(parsed['rule_id'])
                 raw = parsed['result']
-                upsert_judge_result(submission_id, parsed['rule_id'], raw, raw,
-                                    0.0, parsed['evidence'])
+                affected = upsert_judge_result_for_attempt(
+                    submission_id, attempt_id, parsed['rule_id'], raw, raw, 0.0, parsed['evidence'],
+                )
+                if affected <= 0:
+                    try:
+                        subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                    except Exception:
+                        pass
+                    return (False, True)
                 _publish_snapshot(submission_id)
             try:
                 running = subprocess.run(
@@ -392,8 +706,8 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
                 break
             time.sleep(JUDGE_POLL_INTERVAL)
     finally:
-        # 回收容器前，先把容器内 ~/.claude 拉到宿主 submission 目录（事后归因），再统一回收。
-        _dump_container_claude(container_name, ws)
+        # 回收容器前，先把所选 harness 的会话目录拉到宿主 submission 目录（事后归因），再统一回收。
+        _dump_container_harness_state(container_name, ws, harness)
         try:
             subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
         except Exception:
@@ -401,8 +715,10 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     return (timed_out, True)
 
 
-def _finalize(submission_id, rules, timed_out, container_ok):
+def _finalize(submission_id, rules, timed_out, container_ok, attempt_id=None):
     """终态：拓扑重算 effective+score，回写 effective、提交分数与状态，广播 done。"""
+    if not _attempt_still_current(submission_id, attempt_id):
+        return {'success': True, 'message': '旧评测 attempt，跳过 finalize'}
     raw_rows = list_judge_results(submission_id)
     raw_by_id = {int(r['rule_id']): r.get('raw_result') for r in raw_rows
                  if r.get('raw_result') in (aj.RESULT_PASS, aj.RESULT_FAILED)}
@@ -410,74 +726,94 @@ def _finalize(submission_id, rules, timed_out, container_ok):
     computed = aj.compute_results(rules, raw_by_id, finalize=True) if rules else {}
     for rid, c in computed.items():
         raw = raw_by_id.get(rid)
-        upsert_judge_result(submission_id, rid, raw, c['effective'], c['score'],
-                            evidence_by_id.get(rid, ''))
+        upsert_judge_result_for_attempt(
+            submission_id, attempt_id, rid, raw, c['effective'], c['score'],
+            evidence_by_id.get(rid, ''),
+        )
     total = aj.total_score(computed)
     maxs = aj.max_score(rules) if rules else 0.0
     if not container_ok and not raw_by_id:
-        update_submission_result(submission_id, None, 'Error', grade_details=None,
-                                 error_message='评测容器启动失败')
+        _write_error_for_attempt(submission_id, attempt_id, '评测容器启动失败')
     elif not raw_by_id:
         # 容器跑了但没有任何规则结果上报：基本是模型端故障 / Agent 崩溃 / 超时未产出，
         # 判为 Error 而非 Accepted 0 分，避免在基础设施异常时把选手误判 0 分污染榜单（可重测）。
-        update_submission_result(submission_id, None, 'Error', grade_details=None,
-                                 error_message=('评测超时且未产出任何结果' if timed_out
-                                                else '评测未产出任何结果（模型或 Agent 异常）'))
+        _write_error_for_attempt(
+            submission_id, attempt_id,
+            ('评测超时且未产出任何结果' if timed_out else '评测未产出任何结果（模型或 Agent 异常）'),
+        )
     else:
         details = {'total_score': total, 'max_score': maxs, 'timed_out': timed_out,
                    'rules': [{'rule_id': rid, 'effective': c['effective'], 'score': c['score']}
                              for rid, c in computed.items()]}
-        update_submission_result(submission_id, total, 'Accepted', grade_details=details)
+        update_submission_result_for_attempt(
+            submission_id, attempt_id, total, 'Accepted', grade_details=details,
+        )
     _publish_snapshot(submission_id)
+    return {'success': True}
 
 
-def _judge(submission_id, endpoint=None):
+def _judge(submission_id, endpoint=None, attempt_id=None):
     submission = get_ranking_submission(submission_id)
     if not submission:
         return {'success': False, 'message': '提交不存在'}
+    skip, skip_msg = _task_should_skip(submission, attempt_id)
+    if skip:
+        return {'success': True, 'message': skip_msg}
     # 评测 worker 已取到本任务并开始执行 → 置「评测中」。在此之前（入队后、被取到前）提交为
     # 'Queued'（等待评测）。judge 队列 worker 并发上限为 2，故同时最多 2 个显示「评测中」，其余排队显示「等待评测」。
-    set_submission_status(submission_id, 'Judging')
+    if set_submission_status_for_attempt(submission_id, attempt_id, 'Judging') <= 0:
+        return {'success': True, 'message': '旧评测 attempt，跳过'}
     competition = get_competition(submission.get('competition_id'))
     if not competition:
-        update_submission_result(submission_id, None, 'Error', error_message='比赛不存在')
+        _write_error_for_attempt(submission_id, attempt_id, '比赛不存在')
         return {'success': False, 'message': '比赛不存在'}
     rules = list_competition_rules(competition['id'])
-    clear_judge_results(submission_id)
+    clear_judge_results_for_attempt(submission_id, attempt_id)
     _publish_snapshot(submission_id)
     if not rules:
-        update_submission_result(submission_id, 0.0, 'Accepted',
-                                 grade_details={'total_score': 0, 'max_score': 0,
-                                                'note': '未配置评分规则'})
+        update_submission_result_for_attempt(
+            submission_id, attempt_id, 0.0, 'Accepted',
+            grade_details={'total_score': 0, 'max_score': 0, 'note': '未配置评分规则'},
+        )
         _publish_snapshot(submission_id)
         return {'success': True, 'score': 0.0}
     timeout_s = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT)
     ws, result_name = _prepare_workspace(submission, competition, rules)
     timed_out, container_ok = _run_container_and_tail(
-        submission_id, ws, result_name, competition, rules, timeout_s, endpoint)
-    _finalize(submission_id, rules, timed_out, container_ok)
+        submission_id, ws, result_name, competition, rules, timeout_s, endpoint, attempt_id)
+    _finalize(submission_id, rules, timed_out, container_ok, attempt_id)
     return {'success': True}
 
 
 def register_ranking_agent_judge_task(celery_app):
     @celery_app.task(name=RANKING_AGENT_JUDGE_TASK_NAME, bind=True)
-    def evaluate_ranking_agent_judge(self, submission_id):
+    def evaluate_ranking_agent_judge(self, submission_id, attempt_id=None):
         sid = int(submission_id)
+        attempt_id = _normalize_attempt_id(attempt_id)
         client = _ensure_judge_redis()
         submission = get_ranking_submission(sid)
         if not submission:
             return {'success': False, 'message': '提交不存在'}
+        skip, skip_msg = _task_should_skip(submission, attempt_id)
+        if skip:
+            return {'success': True, 'message': skip_msg}
+        try:
+            set_agent_judge_task_id(sid, attempt_id, self.request.id)
+        except Exception:
+            pass
         competition = get_competition(submission.get('competition_id'))
         if not competition:
-            update_submission_result(sid, None, 'Error', error_message='比赛不存在')
+            _write_error_for_attempt(sid, attempt_id, '比赛不存在')
             _publish_snapshot(sid)
             return {'success': False, 'message': '比赛不存在'}
+        skip, skip_msg = _task_should_skip(submission, attempt_id, competition=competition)
+        if skip:
+            return {'success': True, 'message': skip_msg}
 
         # 选端点：优先端点池，回退比赛单端点；都没有则判 Error（避免无限重排）。
         endpoints = _resolve_endpoints(competition['id'], competition)
         if not endpoints:
-            update_submission_result(sid, None, 'Error',
-                                     error_message='未配置 Agent 评测端点（请在比赛设置里添加模型端点）')
+            _write_error_for_attempt(sid, attempt_id, '未配置 Agent 评测端点（请在比赛设置里添加模型端点）')
             _publish_snapshot(sid)
             return {'success': False, 'message': '未配置评测端点'}
 
@@ -485,17 +821,10 @@ def register_ranking_agent_judge_task(celery_app):
         ttl = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT) + JUDGE_SLOT_TTL_BUFFER
         ep, slot_key, slot_token = _acquire_endpoint_slot(client, endpoints, sid, ttl)
         if ep is None:
-            countdown = JUDGE_QUEUE_RETRY_BASE + random.randint(0, JUDGE_QUEUE_RETRY_BASE)
-            try:
-                self.retry(countdown=countdown, max_retries=JUDGE_MAX_QUEUE_RETRIES)
-            except MaxRetriesExceededError:
-                update_submission_result(sid, None, 'Error',
-                                         error_message='评测排队超时：所有模型端点持续繁忙，请稍后重测')
-                _publish_snapshot(sid)
-                return {'success': False, 'message': '端点持续繁忙'}
+            return _retry_queued_submission(self, sid, attempt_id)
 
         # 已拿到槽位 → 取幂等锁（防同一提交被并发重复评测）。
-        lock_key = f'ranking:judge:lock:{sid}'
+        lock_key = f'ranking:judge:lock:{sid}:{attempt_id or "legacy"}'
         lock_token = str(self.request.id or sid)
         got_lock = True
         if client is not None:
@@ -508,18 +837,46 @@ def register_ranking_agent_judge_task(celery_app):
         if not got_lock:
             _release_slot(client, slot_key, slot_token)
             return {'success': False, 'message': '已有评测在进行'}
+        failed_endpoint_ids = set()
         try:
-            # 幂等复查：拿到锁后再读一次状态。acks_late=True 下，worker 被杀的任务会被 broker
-            # 重投，同时 startup_requeue 也会补入队 —— 两条恢复消息并发时由锁互斥（只一条评测），
-            # 但「顺序」到达（前者评完释放锁后后者才跑）会重复评测。这里若发现已判到终态就跳过，
-            # 彻底消除顺序重投导致的重复评测；正常提交('Queued')、重测('Judging') 均为非终态，不受影响。
-            fresh = get_ranking_submission(sid)
-            if fresh and str(fresh.get('status')) in ('Accepted', 'Error'):
-                return {'success': True, 'message': '已完成，跳过重复评测'}
-            return _judge(sid, ep)
+            while True:
+                # 幂等复查：拿到锁后再读一次状态。acks_late=True 下，worker 被杀的任务会被 broker
+                # 重投，同时 startup_requeue 也会补入队 —— 两条恢复消息并发时由锁互斥（只一条评测），
+                # 但「顺序」到达（前者评完释放锁后后者才跑）会重复评测。这里若发现已判到终态就跳过，
+                # 彻底消除顺序重投导致的重复评测；Queued/Judging 均为非终态，不受影响。
+                fresh = get_ranking_submission(sid)
+                skip, skip_msg = _task_should_skip(fresh, attempt_id, competition=competition)
+                if skip:
+                    return {'success': True, 'message': skip_msg}
+
+                ok, probe_msg = _probe_endpoint(ep)
+                if ok:
+                    return _judge(sid, ep, attempt_id)
+
+                failed_endpoint_ids.add(int(ep.get('id')))
+                _disable_unhealthy_endpoint(ep, probe_msg)
+                _release_slot(client, slot_key, slot_token)
+                slot_key = None
+                slot_token = None
+
+                endpoints = [e for e in _resolve_endpoints(competition['id'], competition)
+                             if int(e.get('id')) not in failed_endpoint_ids]
+                if not endpoints:
+                    _write_error_for_attempt(
+                        sid, attempt_id,
+                        '所有 Agent 评测端点 hello 预检失败，已自动关闭；请检查端点配置后重测',
+                    )
+                    _publish_snapshot(sid)
+                    return {'success': False, 'message': '所有端点预检失败'}
+
+                ep, slot_key, slot_token = _acquire_endpoint_slot(client, endpoints, sid, ttl)
+                if ep is None:
+                    return _retry_queued_submission(self, sid, attempt_id)
+        except Retry:
+            raise
         except Exception as e:
             try:
-                update_submission_result(sid, None, 'Error', error_message=f'评测任务异常：{e}')
+                _write_error_for_attempt(sid, attempt_id, f'评测任务异常：{e}')
                 _publish_snapshot(sid)
             except Exception:
                 pass

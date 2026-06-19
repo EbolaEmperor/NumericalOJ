@@ -76,7 +76,7 @@ MODELSCOPE_WEB_SEARCH_MCP_TOOL_NAME = "search"
 MODELSCOPE_WEB_SEARCH_DEFAULT_ENGINES = ["baidu"]
 MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS = 90
 
-# 打榜赛 Agent-as-Judge 评测（Docker + claude CLI）
+# 打榜赛 Agent-as-Judge 评测（Docker + Agent Harness CLI）
 # 代码侧均用 getattr(config, ..., 默认值) 读取，远端 config.py 可不改即用以下默认。
 AGENT_JUDGE_DOCKER_IMAGE = "numericaloj-agent-judge:latest"
 AGENT_JUDGE_WORKSPACE_ROOT = "ranking_uploads/judge_workspace"

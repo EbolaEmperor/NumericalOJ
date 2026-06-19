@@ -36,8 +36,9 @@ import config as _cfg
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.db_services import get_users_in_classes
 from oj_modules.ranking_db import (
+    begin_agent_judge_attempt,
     create_ranking_submission, delete_ranking_submission, get_ranking_submission,
-    set_submission_status, submission_dir, update_submission_files, update_submission_result,
+    set_agent_judge_task_id, submission_dir, update_submission_files, update_submission_result,
 )
 
 PROBE_TASK_NAME = 'oj.ranking_batch_probe'
@@ -293,12 +294,13 @@ def _create_submission_with_retry(competition_id, username, zip_path, pull_err, 
                 code_path = os.path.join(target_dir, code_name)
                 shutil.copy(zip_path, code_path)
                 update_submission_files(sid, None, None, code_name, code_path, base_model=None)
-                set_submission_status(sid, 'Queued')   # 等待评测（被 worker 取到执行时转 Judging）
+                attempt_id = begin_agent_judge_attempt(sid, status='Queued', reset_result=True)
                 sub = get_ranking_submission(sid)       # 校验：行存在 + code_path 落盘成功
                 if not sub or not sub.get('code_path') or not os.path.isfile(sub.get('code_path')):
                     raise RuntimeError('提交创建校验失败（code_path 缺失）')
                 if agent_judge_task is not None:
-                    agent_judge_task.delay(sid)
+                    async_result = agent_judge_task.apply_async(args=[sid, attempt_id])
+                    set_agent_judge_task_id(sid, attempt_id, async_result.id)
             else:
                 update_submission_result(sid, None, 'Error',
                                          error_message=(pull_err or 'git clone 失败')[:300])

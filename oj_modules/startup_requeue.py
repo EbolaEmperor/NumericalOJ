@@ -28,11 +28,17 @@ from oj_modules.db_services import (
     update_submission_status,
 )
 from oj_modules.ranking_db import (
+    begin_agent_judge_attempt,
     get_incomplete_ranking_submissions,
     init_submission_elo_state,
+    set_agent_judge_task_id,
 )
 from oj_modules.tasks.evaluate_tasks import clear_submission_lock, has_submission_lock
-from oj_modules.tasks.ranking_agent_judge_tasks import clear_all_judge_slots, clear_judge_lock
+from oj_modules.tasks.ranking_agent_judge_tasks import (
+    clear_all_judge_slots,
+    clear_judge_lock,
+    is_completed_agent_judge_submission,
+)
 
 
 _STARTUP_REQUEUE_STAGGER_SECONDS = 1
@@ -256,8 +262,18 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_jud
         try:
             if scoring_mode == 'agent_judge':
                 if agent_judge_task is not None:
+                    if is_completed_agent_judge_submission(row):
+                        continue
+                    attempt_id = row.get('judge_attempt_id')
+                    if not attempt_id:
+                        attempt_id = begin_agent_judge_attempt(
+                            sub_id, status='Queued', reset_result=False,
+                        )
                     clear_judge_lock(sub_id)   # 清僵尸幂等锁，否则重排任务会被挡住、提交卡死
-                    agent_judge_task.apply_async(args=[sub_id], countdown=_startup_countdown(requeued))
+                    async_result = agent_judge_task.apply_async(
+                        args=[sub_id, attempt_id], countdown=_startup_countdown(requeued),
+                    )
+                    set_agent_judge_task_id(sub_id, attempt_id, async_result.id)
                     requeued += 1
             elif scoring_mode == 'elo':
                 initial_rating = float(row.get('elo_initial_rating') or 1500)

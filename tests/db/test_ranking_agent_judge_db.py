@@ -95,3 +95,19 @@ def test_clear_results(client):
     ajdb.upsert_judge_result(sid, 1, 'pass', 'pass', 1.0, '')
     ajdb.clear_judge_results(sid)
     assert ajdb.list_judge_results(sid) == []
+
+
+def test_agent_judge_endpoints_store_harness_and_opencode_defaults(client):
+    cid = _make_comp()
+    ajdb.save_agent_judge_endpoints(cid, [
+        {'harness': 'codex', 'base_url': 'https://gw/openai/v1', 'api_key': 'k1',
+         'model': 'gpt-5.4', 'concurrency_limit': 3, 'enabled': True},
+        {'harness': 'opencode', 'base_url': '', 'api_key': 'k2',
+         'model': '', 'concurrency_limit': 2, 'enabled': True},
+    ])
+    eps = ajdb.list_agent_judge_endpoints(cid)
+    assert eps[0]['harness'] == 'codex'
+    assert eps[0]['base_url'] == 'https://gw/openai/v1'
+    assert eps[1]['harness'] == 'opencode'
+    assert eps[1]['base_url'] == ajdb.DEFAULT_OPENCODE_GO_BASE_URL
+    assert eps[1]['model'] == ajdb.DEFAULT_OPENCODE_GO_MODEL

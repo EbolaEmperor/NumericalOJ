@@ -30,6 +30,12 @@ from oj_modules.tasks.ranking_batch_pull_tasks import (
     init_batch_progress_cache,
     get_probe_job,
 )
+from oj_modules.tasks.ranking_bulk_rejudge_tasks import (
+    register_ranking_bulk_rejudge_task,
+    init_bulk_rejudge_progress_cache,
+    get_bulk_rejudge_job,
+    save_bulk_rejudge_job,
+)
 
 __all__ = [
     "register_evaluate_submission_task",
@@ -50,6 +56,10 @@ __all__ = [
     "register_ranking_batch_tasks",
     "init_batch_progress_cache",
     "get_probe_job",
+    "register_ranking_bulk_rejudge_task",
+    "init_bulk_rejudge_progress_cache",
+    "get_bulk_rejudge_job",
+    "save_bulk_rejudge_job",
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",

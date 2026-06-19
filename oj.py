@@ -48,6 +48,8 @@ from oj_modules.tasks import (
     init_judge_progress_cache,
     register_ranking_batch_tasks,
     init_batch_progress_cache,
+    register_ranking_bulk_rejudge_task,
+    init_bulk_rejudge_progress_cache,
 )
 from oj_modules.startup_requeue import (
     requeue_pending_on_startup,
@@ -235,6 +237,12 @@ evaluate_ranking_agent_judge = register_ranking_agent_judge_task(celery)
 ranking_batch_probe, ranking_batch_run = register_ranking_batch_tasks(
     celery, evaluate_ranking_agent_judge,
 )
+ranking_bulk_rejudge = register_ranking_bulk_rejudge_task(
+    celery,
+    evaluate_ranking_submission,
+    agent_judge_task=evaluate_ranking_agent_judge,
+    elo_initial_burst_task=ranking_elo_initial_burst,
+)
 pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     celery,
     evaluate_submission,
@@ -261,6 +269,7 @@ init_ranking_module(
     evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge,
     redis_client=rds,
     batch_probe_task=ranking_batch_probe, batch_run_task=ranking_batch_run,
+    bulk_rejudge_task=ranking_bulk_rejudge,
 )
 # 启动 ELO 匹配 tick 链路（自调度，全局单链）
 seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
@@ -278,6 +287,8 @@ init_agent_progress_cache(rds)
 init_judge_progress_cache(rds)
 # 初始化打榜赛「批量评测」探测进度缓存（Redis）
 init_batch_progress_cache(rds)
+# 初始化打榜赛「批量重测」进度缓存（Redis）
+init_bulk_rejudge_progress_cache(rds)
 
 ###############################################################################
 #  班级管理

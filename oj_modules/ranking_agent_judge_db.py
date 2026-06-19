@@ -10,6 +10,18 @@ from oj_modules import ranking_agent_judge as aj
 
 _aj_tables_ready = False
 
+HARNESS_CLAUDE_CODE = 'claude_code'
+HARNESS_CODEX = 'codex'
+HARNESS_OPENCODE = 'opencode'
+ALLOWED_AGENT_HARNESSES = (HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE)
+DEFAULT_OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
+DEFAULT_OPENCODE_GO_MODEL = 'mimo-v2.5-pro'
+
+
+def normalize_agent_harness(value):
+    harness = str(value or '').strip().lower().replace('-', '_')
+    return harness if harness in ALLOWED_AGENT_HARNESSES else HARNESS_CLAUDE_CODE
+
 
 def ensure_agent_judge_tables():
     global _aj_tables_ready
@@ -58,6 +70,7 @@ def ensure_agent_judge_tables():
                 CREATE TABLE IF NOT EXISTS ranking_agent_judge_endpoints (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     competition_id INT NOT NULL,
+                    harness VARCHAR(32) NOT NULL DEFAULT 'claude_code',
                     base_url VARCHAR(512) NOT NULL,
                     api_key VARCHAR(512) NOT NULL,
                     model VARCHAR(128) DEFAULT NULL,
@@ -69,6 +82,12 @@ def ensure_agent_judge_tables():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            cursor.execute("SHOW COLUMNS FROM ranking_agent_judge_endpoints LIKE 'harness'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_agent_judge_endpoints"
+                    " ADD COLUMN harness VARCHAR(32) NOT NULL DEFAULT 'claude_code' AFTER competition_id"
+                )
         conn.commit()
         _aj_tables_ready = True
     finally:
@@ -82,7 +101,7 @@ def list_agent_judge_endpoints(competition_id, enabled_only=False):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = ("SELECT id, base_url, api_key, model, concurrency_limit, enabled, ordering "
+            sql = ("SELECT id, harness, base_url, api_key, model, concurrency_limit, enabled, ordering "
                    "FROM ranking_agent_judge_endpoints WHERE competition_id = %s")
             if enabled_only:
                 sql += " AND enabled = 1"
@@ -95,6 +114,7 @@ def list_agent_judge_endpoints(competition_id, enabled_only=False):
     for r in rows:
         out.append({
             'id': int(r['id']),
+            'harness': normalize_agent_harness(r.get('harness')),
             'base_url': r['base_url'] or '',
             'api_key': r['api_key'] or '',
             'model': (r.get('model') or ''),
@@ -105,10 +125,27 @@ def list_agent_judge_endpoints(competition_id, enabled_only=False):
     return out
 
 
+def set_agent_judge_endpoint_enabled(endpoint_id, enabled):
+    """启用/关闭单个 Agent 评测端点。返回受影响行数。"""
+    ensure_agent_judge_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE ranking_agent_judge_endpoints SET enabled = %s WHERE id = %s",
+                (1 if enabled else 0, int(endpoint_id)),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
 def save_agent_judge_endpoints(competition_id, items):
     """整体替换某比赛的端点列表。校验在事务外，失败抛 ValueError（不动 DB）。
 
-    items 中每项：{id?, base_url, api_key, model, concurrency_limit, enabled}。
+    items 中每项：{id?, harness, base_url, api_key, model, concurrency_limit, enabled}。
     api_key 留空且带已存在的 id → 沿用旧 key（前端编辑器不回显明文）；
     api_key 留空且无对应 id → 报错（新端点必须填 key）。返回归一化后的列表。"""
     ensure_agent_judge_tables()
@@ -119,7 +156,10 @@ def save_agent_judge_endpoints(competition_id, items):
     for idx, it in enumerate(items):
         if not isinstance(it, dict):
             raise ValueError('端点格式非法')
+        harness = normalize_agent_harness(it.get('harness'))
         base_url = str(it.get('base_url') or '').strip()
+        if harness == HARNESS_OPENCODE and not base_url:
+            base_url = DEFAULT_OPENCODE_GO_BASE_URL
         if not base_url:
             raise ValueError('端点 URL 不能为空')
         if not (base_url.startswith('http://') or base_url.startswith('https://')):
@@ -141,6 +181,8 @@ def save_agent_judge_endpoints(competition_id, items):
         if len(api_key) > 512:
             raise ValueError('API Key 过长（不超过 512 字）')
         model = (str(it.get('model') or '').strip() or None)
+        if harness == HARNESS_OPENCODE and not model:
+            model = DEFAULT_OPENCODE_GO_MODEL
         if model and len(model) > 128:
             raise ValueError('模型名过长（不超过 128 字）')
         try:
@@ -151,7 +193,7 @@ def save_agent_judge_endpoints(competition_id, items):
         ev = it.get('enabled')
         enabled = 1 if (ev is True or str(ev).strip().lower() in ('1', 'true', 'on', 'yes')) else 0
         # 不去重：同一厂商(同 url)可能有多个账号 → 不同 api_key，应允许并存（各自独立并发槽位）。
-        normalized.append({'base_url': base_url, 'api_key': api_key, 'model': model,
+        normalized.append({'harness': harness, 'base_url': base_url, 'api_key': api_key, 'model': model,
                            'concurrency_limit': climit, 'enabled': enabled, 'ordering': idx})
     conn = get_db_connection()
     try:
@@ -161,9 +203,9 @@ def save_agent_judge_endpoints(competition_id, items):
             for e in normalized:
                 cursor.execute(
                     "INSERT INTO ranking_agent_judge_endpoints"
-                    " (competition_id, base_url, api_key, model, concurrency_limit, enabled, ordering)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    (competition_id, e['base_url'], e['api_key'], e['model'],
+                    " (competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, ordering)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (competition_id, e['harness'], e['base_url'], e['api_key'], e['model'],
                      e['concurrency_limit'], e['enabled'], e['ordering']),
                 )
         conn.commit()
@@ -252,6 +294,36 @@ def upsert_judge_result(submission_id, rule_id, raw_result, effective_result, sc
         conn.close()
 
 
+def upsert_judge_result_for_attempt(submission_id, attempt_id, rule_id,
+                                    raw_result, effective_result, score, evidence):
+    """只在 submission 当前 attempt 未变化时写入规则结果，返回受影响行数。"""
+    ensure_agent_judge_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO ranking_judge_results
+                    (submission_id, rule_id, raw_result, effective_result, score, evidence)
+                SELECT %s, %s, %s, %s, %s, %s
+                FROM ranking_submissions
+                WHERE id = %s AND judge_attempt_id <=> %s
+                ON DUPLICATE KEY UPDATE
+                    raw_result = VALUES(raw_result),
+                    effective_result = VALUES(effective_result),
+                    score = VALUES(score),
+                    evidence = VALUES(evidence)
+                """,
+                (submission_id, rule_id, raw_result, effective_result, float(score or 0),
+                 (evidence or ''), submission_id, attempt_id),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
 def list_judge_results(submission_id):
     ensure_agent_judge_tables()
     conn = get_db_connection()
@@ -283,6 +355,28 @@ def clear_judge_results(submission_id):
         conn.close()
 
 
+def clear_judge_results_for_attempt(submission_id, attempt_id):
+    """只在 submission 当前 attempt 未变化时清空规则结果，返回受影响行数。"""
+    ensure_agent_judge_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE r
+                FROM ranking_judge_results r
+                JOIN ranking_submissions s ON s.id = r.submission_id
+                WHERE r.submission_id = %s AND s.judge_attempt_id <=> %s
+                """,
+                (submission_id, attempt_id),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
 def _format_now():
     return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
@@ -299,7 +393,7 @@ def build_judge_snapshot(submission_id):
                  if r.get('raw_result') in (aj.RESULT_PASS, aj.RESULT_FAILED)}
     evidence_by_id = {int(r['rule_id']): (r.get('evidence') or '') for r in raw_rows}
     status = submission.get('status')
-    finalize = status not in ('Judging', 'Pending')
+    finalize = status not in ('Judging', 'Pending', 'Queued')
     computed = aj.compute_results(rules, raw_by_id, finalize=finalize) if rules else {}
     rule_payloads = []
     for r in rules:

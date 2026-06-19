@@ -8,6 +8,8 @@ import json
 import os
 import secrets
 import shutil
+import uuid
+from datetime import datetime
 
 import markdown
 from flask import (
@@ -45,6 +47,7 @@ from oj_modules.ranking_db import (
     get_appeal,
     get_appeal_by_submission,
     get_appeal_stats,
+    begin_agent_judge_attempt,
     get_competition,
     get_competition_file,
     get_competition_match,
@@ -53,6 +56,7 @@ from oj_modules.ranking_db import (
     get_submission_quota,
     get_submission_stats,
     init_submission_elo_state,
+    list_submissions_for_bulk_rejudge,
     list_appeals,
     list_all_submissions,
     list_competition_files,
@@ -66,6 +70,7 @@ from oj_modules.ranking_db import (
     resolve_appeal,
     retire_excess_user_submissions,
     set_elo_running,
+    set_agent_judge_task_id,
     set_submission_status,
     submission_dir,
     update_competition,
@@ -87,6 +92,7 @@ from oj_modules.ranking_agent_judge import max_score as _aj_max_score
 from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
 from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_events
 from oj_modules.tasks import get_probe_job
+from oj_modules.tasks import get_bulk_rejudge_job, save_bulk_rejudge_job
 from oj_modules.tasks.ranking_batch_pull_tasks import (
     PLACEHOLDER as BATCH_PLACEHOLDER, USERNAME_RE as BATCH_USERNAME_RE, build_repo_url,
     repo_last_commit,
@@ -187,6 +193,69 @@ def _serialize_for_cache(obj):
     return json.dumps(obj, default=str, ensure_ascii=False)
 
 
+def _normalize_dt(raw):
+    text = str(raw or '').strip().replace('T', ' ')
+    if not text:
+        return None
+    for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return datetime.strptime(text, fmt).strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            pass
+    return None
+
+
+def _format_dt(value):
+    if not value:
+        return ''
+    try:
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+    except AttributeError:
+        return str(value)
+
+
+def _normalize_bulk_status_groups(raw_groups):
+    if raw_groups is None:
+        return []
+    if isinstance(raw_groups, str):
+        raw_groups = [raw_groups]
+    groups = []
+    for item in raw_groups:
+        key = str(item or '').strip().lower()
+        if key in ('judging', 'waiting', 'accepted', 'abnormal') and key not in groups:
+            groups.append(key)
+    return groups
+
+
+def _parse_submission_ids(raw_ids):
+    ids = []
+    seen = set()
+    if not isinstance(raw_ids, list):
+        return ids
+    for item in raw_ids:
+        try:
+            sid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if sid > 0 and sid not in seen:
+            seen.add(sid)
+            ids.append(sid)
+    return ids
+
+
+def _serialize_bulk_ranking_submission(row, is_elo=False):
+    score = row.get('elo_rating') if is_elo else row.get('score')
+    return {
+        'id': int(row.get('id') or 0),
+        'username': row.get('username') or '',
+        'status': row.get('status') or '',
+        'score': score,
+        'elo_match_count': int(row.get('elo_match_count') or 0),
+        'base_model': row.get('base_model') or '',
+        'created_at': _format_dt(row.get('created_at')),
+    }
+
+
 def fetch_competition_matches_cached(competition_id, page, per_page, username=None):
     """先看 Redis，命中返回；未命中查 DB 再回填。
     username 不为空时只返回该用户参与的对战，cache key 隔离开。
@@ -254,22 +323,28 @@ _elo_initial_burst_task = None
 _agent_judge_task = None
 _batch_probe_task = None
 _batch_run_task = None
+_bulk_rejudge_task = None
 # Redis 客户端（提交限流）。由 oj.py 注入；为空时 fail-open。
 _rds = None
 # 打榜赛提交（尤其 agent_judge 每次起一个 Docker 评测）成本高，按用户+比赛限流。
 _RANK_SUBMIT_MAX_PER_WINDOW = 10
 _RANK_SUBMIT_WINDOW = 300
+_BULK_REJUDGE_MAX_FILTER_RESULTS = 1000
+_BULK_REJUDGE_MAX_SELECTED = 500
+_BULK_REJUDGE_INTERVAL_SECONDS = 2
 
 
 def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None,
-                        redis_client=None, batch_probe_task=None, batch_run_task=None):
+                        redis_client=None, batch_probe_task=None, batch_run_task=None,
+                        bulk_rejudge_task=None):
     global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task, _rds
-    global _batch_probe_task, _batch_run_task
+    global _batch_probe_task, _batch_run_task, _bulk_rejudge_task
     _evaluate_ranking_task = evaluate_ranking_task
     _elo_initial_burst_task = elo_initial_burst_task
     _agent_judge_task = agent_judge_task
     _batch_probe_task = batch_probe_task
     _batch_run_task = batch_run_task
+    _bulk_rejudge_task = bulk_rejudge_task
     if redis_client is not None:
         _rds = redis_client
 
@@ -444,7 +519,8 @@ def ranking_detail(competition_id):
             _raw_eps = list_agent_judge_endpoints(competition_id)
         except Exception:
             _raw_eps = []
-        aj_endpoints = [{'id': e['id'], 'base_url': e['base_url'], 'model': e['model'],
+        aj_endpoints = [{'id': e['id'], 'harness': e.get('harness') or 'claude_code',
+                         'base_url': e['base_url'], 'model': e['model'],
                          'concurrency_limit': e['concurrency_limit'], 'enabled': e['enabled'],
                          'has_key': bool(e['api_key'])} for e in _raw_eps]
         agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
@@ -757,6 +833,147 @@ def ranking_submissions_json(competition_id):
     })
 
 
+@ranking_bp.route('/<int:competition_id>/bulk_rejudge/filter', methods=['POST'])
+def ranking_bulk_rejudge_filter(competition_id):
+    user = _current_user()
+    if not user:
+        return jsonify(success=False, message='请先登录'), 401
+    if user.get('is_admin') != 1:
+        return jsonify(success=False, message='无权限'), 403
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify(success=False, message='比赛不存在或已被删除'), 404
+
+    payload = request.get_json(silent=True) or request.form
+    start = _normalize_dt(payload.get('start'))
+    end = _normalize_dt(payload.get('end'))
+    if start and end and start > end:
+        return jsonify(success=False, message='起始时间不能晚于结束时间'), 400
+    username_q = str(payload.get('username') or '').strip()
+    status_groups = _normalize_bulk_status_groups(
+        payload.get('statuses') or payload.get('status_groups'),
+    )
+
+    rows, total = list_submissions_for_bulk_rejudge(
+        competition_id,
+        start=start,
+        end=end,
+        username_q=username_q,
+        status_groups=status_groups,
+        limit=_BULK_REJUDGE_MAX_FILTER_RESULTS + 1,
+    )
+    too_many = len(rows) > _BULK_REJUDGE_MAX_FILTER_RESULTS
+    if too_many:
+        rows = rows[:_BULK_REJUDGE_MAX_FILTER_RESULTS]
+    is_elo = (_competition_scoring_mode(comp) == 'elo')
+    return jsonify(
+        success=True,
+        submissions=[_serialize_bulk_ranking_submission(row, is_elo=is_elo) for row in rows],
+        total=total,
+        shown=len(rows),
+        too_many=too_many,
+        max_results=_BULK_REJUDGE_MAX_FILTER_RESULTS,
+        max_selected=_BULK_REJUDGE_MAX_SELECTED,
+    )
+
+
+@ranking_bp.route('/<int:competition_id>/bulk_rejudge/start', methods=['POST'])
+def ranking_bulk_rejudge_start(competition_id):
+    user = _current_user()
+    if not user:
+        return jsonify(success=False, message='请先登录'), 401
+    if user.get('is_admin') != 1:
+        return jsonify(success=False, message='无权限'), 403
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify(success=False, message='比赛不存在或已被删除'), 404
+    if _bulk_rejudge_task is None:
+        return jsonify(success=False, message='批量重测任务未初始化'), 500
+
+    payload = request.get_json(silent=True) or request.form
+    source_ids = _parse_submission_ids(payload.get('submission_ids'))
+    if not source_ids:
+        return jsonify(success=False, message='请选择要重测的提交'), 400
+    if len(source_ids) > _BULK_REJUDGE_MAX_SELECTED:
+        return jsonify(
+            success=False,
+            message=f'单次最多重测 {_BULK_REJUDGE_MAX_SELECTED} 条提交，请缩小筛选范围',
+        ), 400
+
+    invalid_ids = []
+    valid_ids = []
+    for sid in source_ids:
+        sub = get_ranking_submission(sid)
+        if not sub or int(sub.get('competition_id') or 0) != int(competition_id):
+            invalid_ids.append(sid)
+        else:
+            valid_ids.append(sid)
+    if invalid_ids:
+        return jsonify(
+            success=False,
+            message='包含不存在或不属于本比赛的提交：' + ', '.join(str(x) for x in invalid_ids[:10]),
+        ), 400
+
+    job_id = uuid.uuid4().hex
+    now_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    save_bulk_rejudge_job(job_id, {
+        'status': 'queued',
+        'competition_id': int(competition_id),
+        'total': len(valid_ids),
+        'processed': 0,
+        'requeued': 0,
+        'created': 0,
+        'failed': 0,
+        'progress': 0,
+        'requeued_ids': [],
+        'created_ids': [],
+        'started_by': user.get('username') or '',
+        'started_at': now_text,
+        'interval_seconds': _BULK_REJUDGE_INTERVAL_SECONDS,
+    })
+    _bulk_rejudge_task.apply_async(
+        args=[int(competition_id), valid_ids, job_id, user.get('username') or ''],
+    )
+    return jsonify(
+        success=True,
+        message='已开始重新入队原提交',
+        job_id=job_id,
+        total=len(valid_ids),
+        interval_seconds=_BULK_REJUDGE_INTERVAL_SECONDS,
+    )
+
+
+@ranking_bp.route('/<int:competition_id>/bulk_rejudge/status/<job_id>', methods=['GET'])
+def ranking_bulk_rejudge_status(competition_id, job_id):
+    user = _current_user()
+    if not user:
+        return jsonify(success=False, message='请先登录'), 401
+    if user.get('is_admin') != 1:
+        return jsonify(success=False, message='无权限'), 403
+    job = get_bulk_rejudge_job(str(job_id or '').strip())
+    if not job or int(job.get('competition_id') or 0) != int(competition_id):
+        return jsonify(success=False, message='任务不存在或已过期'), 404
+
+    total = int(job.get('total') or 0)
+    processed = int(job.get('processed') or 0)
+    progress = int(job.get('progress') or (processed / max(1, total) * 100))
+    return jsonify(
+        success=True,
+        status=job.get('status') or 'queued',
+        total=total,
+        processed=processed,
+        requeued=int(job.get('requeued') or job.get('created') or 0),
+        created=int(job.get('created') or 0),
+        failed=int(job.get('failed') or 0),
+        progress=progress,
+        done=(total > 0 and processed >= total and job.get('status') == 'finished'),
+        requeued_ids=job.get('requeued_ids') or job.get('created_ids') or [],
+        created_ids=job.get('created_ids') or [],
+        last_error=job.get('last_error') or '',
+        interval_seconds=job.get('interval_seconds') or _BULK_REJUDGE_INTERVAL_SECONDS,
+    )
+
+
 # ---------- 对战数据：分页 AJAX 局部刷新（删除后保持当前页用） ----------
 
 @ranking_bp.route('/<int:competition_id>/matches_json', methods=['GET'])
@@ -884,12 +1101,13 @@ def ranking_submit(competition_id):
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
         update_submission_files(submission_id, None, None, code_name, code_path, base_model=base_model)
         # agent_judge：入队即置「等待评测(Queued)」，被评测 worker 取到执行时才转「评测中」。
-        set_submission_status(submission_id, 'Queued')
+        attempt_id = begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
         if _agent_judge_task is None:
             flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
         else:
             try:
-                _agent_judge_task.delay(submission_id)
+                async_result = _agent_judge_task.apply_async(args=[submission_id, attempt_id])
+                set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
         flash('提交成功，Agent 评测进行中，可在"我的历史提交"点击"查看详情"查看实时进展。', 'success')
@@ -1464,7 +1682,7 @@ def ranking_save_agent_config(competition_id):
 def ranking_save_agent_endpoints(competition_id):
     """保存某比赛的 Agent 评测端点池（多个 模型 url + api_key，各带并发上限）+ 整体超时。
 
-    JSON：{timeout_seconds?, endpoints:[{id?, base_url, api_key, model, concurrency_limit, enabled}]}。
+    JSON：{timeout_seconds?, endpoints:[{id?, harness, base_url, api_key, model, concurrency_limit, enabled}]}。
     实际 agent 评测并发 = 各启用端点 concurrency_limit 之和（由判题侧 Redis 槽位限流，改完即生效、无需重启）。"""
     user, err = _admin_json_guard()
     if err is not None:
@@ -1488,7 +1706,8 @@ def ranking_save_agent_endpoints(competition_id):
         return jsonify(success=False, message=str(e)), 400
     # 重新读取（拿到新 id），回传脱敏列表（api_key 只给 has_key 标记）
     saved = list_agent_judge_endpoints(competition_id)
-    masked = [{'id': e['id'], 'base_url': e['base_url'], 'model': e['model'],
+    masked = [{'id': e['id'], 'harness': e.get('harness') or 'claude_code',
+               'base_url': e['base_url'], 'model': e['model'],
                'concurrency_limit': e['concurrency_limit'], 'enabled': e['enabled'],
                'has_key': bool(e['api_key'])} for e in saved]
     total_conc = sum(e['concurrency_limit'] for e in saved if e['enabled'])
@@ -1524,7 +1743,7 @@ def ranking_judge_stream(competition_id, submission_id):
             yield _encode('error', {'error': 'not found'})
             return
         yield _encode('progress', snap)
-        if snap.get('status') not in ('Judging', 'Pending'):
+        if snap.get('status') not in ('Judging', 'Pending', 'Queued'):
             yield _encode('done', snap)
             return
         start = _t.time()
@@ -1537,7 +1756,7 @@ def ranking_judge_stream(competition_id, submission_id):
                 if cur != last:
                     yield _encode('progress', s)
                     last = cur
-                if s and s.get('status') not in ('Judging', 'Pending'):
+                if s and s.get('status') not in ('Judging', 'Pending', 'Queued'):
                     yield _encode('done', s)
                     return
                 if _t.time() - start > 3600:
@@ -1563,7 +1782,7 @@ def ranking_judge_stream(competition_id, submission_id):
                 except Exception:
                     continue
                 yield _encode('progress', s)
-                if s.get('status') not in ('Judging', 'Pending'):
+                if s.get('status') not in ('Judging', 'Pending', 'Queued'):
                     yield _encode('done', s)
                     return
         finally:
@@ -1587,10 +1806,11 @@ def ranking_rejudge_agent(competition_id, submission_id):
         flash('提交不存在', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
     clear_judge_results(submission_id)
-    update_submission_result(submission_id, None, 'Judging', grade_details=None, error_message=None)
+    attempt_id = begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
     if _agent_judge_task is not None:
         try:
-            _agent_judge_task.delay(submission_id)
+            async_result = _agent_judge_task.apply_async(args=[submission_id, attempt_id])
+            set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
         except Exception as e:
             flash(f'重测入队失败：{e}', 'warning')
     flash('已触发重新评测', 'success')

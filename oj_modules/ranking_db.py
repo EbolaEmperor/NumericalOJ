@@ -12,6 +12,7 @@
 import os
 import json
 import shutil
+import uuid
 from datetime import datetime, timedelta
 
 from oj_modules.db_services import bump_daily_submission_count, get_db_connection
@@ -171,6 +172,9 @@ def ensure_ranking_tables():
                     base_model VARCHAR(500) DEFAULT NULL,
                     score DOUBLE DEFAULT NULL,
                     status VARCHAR(32) NOT NULL DEFAULT 'Judging',
+                    judge_attempt_id VARCHAR(36) DEFAULT NULL,
+                    judge_task_id VARCHAR(64) DEFAULT NULL,
+                    judge_heartbeat_at TIMESTAMP NULL DEFAULT NULL,
                     grade_details MEDIUMTEXT,
                     error_message TEXT,
                     elo_rating DOUBLE DEFAULT NULL,
@@ -180,6 +184,8 @@ def ensure_ranking_tables():
                     INDEX idx_rs_comp_user (competition_id, username),
                     INDEX idx_rs_comp_score (competition_id, score),
                     INDEX idx_rs_comp_created (competition_id, created_at),
+                    INDEX idx_rs_judge_attempt (judge_attempt_id),
+                    INDEX idx_rs_judge_task (judge_task_id),
                     INDEX idx_rs_elo_pool (competition_id, elo_in_pool)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
@@ -208,6 +214,38 @@ def ensure_ranking_tables():
                 cursor.execute(
                     "ALTER TABLE ranking_submissions"
                     " ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'self'"
+                )
+            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'judge_attempt_id'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions"
+                    " ADD COLUMN judge_attempt_id VARCHAR(36) DEFAULT NULL AFTER status"
+                )
+            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'judge_task_id'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions"
+                    " ADD COLUMN judge_task_id VARCHAR(64) DEFAULT NULL AFTER judge_attempt_id"
+                )
+            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'judge_heartbeat_at'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions"
+                    " ADD COLUMN judge_heartbeat_at TIMESTAMP NULL DEFAULT NULL AFTER judge_task_id"
+                )
+            cursor.execute(
+                "SHOW INDEX FROM ranking_submissions WHERE Key_name = 'idx_rs_judge_attempt'"
+            )
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions ADD INDEX idx_rs_judge_attempt (judge_attempt_id)"
+                )
+            cursor.execute(
+                "SHOW INDEX FROM ranking_submissions WHERE Key_name = 'idx_rs_judge_task'"
+            )
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_submissions ADD INDEX idx_rs_judge_task (judge_task_id)"
                 )
             cursor.execute(
                 """
@@ -388,7 +426,7 @@ def copy_competition(src_id, *, created_by=None):
             )
             files = cursor.fetchall() or []
             cursor.execute(
-                "SELECT base_url, api_key, model, concurrency_limit, enabled, ordering "
+                "SELECT harness, base_url, api_key, model, concurrency_limit, enabled, ordering "
                 "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
                 (int(src_id),),
             )
@@ -444,9 +482,9 @@ def copy_competition(src_id, *, created_by=None):
             for e in endpoints:
                 cursor.execute(
                     "INSERT INTO ranking_agent_judge_endpoints "
-                    "(competition_id, base_url, api_key, model, concurrency_limit, enabled, ordering) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    (new_id, e['base_url'], e['api_key'], e['model'],
+                    "(competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, ordering) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (new_id, e.get('harness') or 'claude_code', e['base_url'], e['api_key'], e['model'],
                      e['concurrency_limit'], e['enabled'], e['ordering']),
                 )
         conn.commit()
@@ -839,6 +877,227 @@ def set_submission_status(submission_id, status):
         conn.close()
 
 
+def begin_agent_judge_attempt(submission_id, status='Queued', reset_result=False):
+    """为一次 Agent-as-Judge 评测生成新的 attempt，并返回 attempt_id。
+
+    管理员重测会先清空旧规则结果，再调用本函数把当前提交切到新的 attempt；
+    旧 Celery 消息即使之后醒来，也会因 attempt 不匹配而 no-op。
+    """
+    ensure_ranking_tables()
+    attempt_id = str(uuid.uuid4())
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if reset_result:
+                cursor.execute(
+                    """
+                    UPDATE ranking_submissions
+                    SET status = %s,
+                        score = NULL,
+                        grade_details = NULL,
+                        error_message = NULL,
+                        judge_attempt_id = %s,
+                        judge_task_id = NULL,
+                        judge_heartbeat_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (status, attempt_id, submission_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE ranking_submissions
+                    SET status = %s,
+                        judge_attempt_id = %s,
+                        judge_task_id = NULL,
+                        judge_heartbeat_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (status, attempt_id, submission_id),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return attempt_id
+
+
+def set_agent_judge_task_id(submission_id, attempt_id, task_id):
+    """记录当前 attempt 对应的 Celery task id。仅用于诊断和启动恢复判断。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET judge_task_id = %s, judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND judge_attempt_id <=> %s
+                """,
+                (str(task_id or '')[:64] or None, submission_id, attempt_id),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
+def set_submission_status_for_attempt(submission_id, attempt_id, status):
+    """只在 attempt 仍是当前 attempt 时更新状态，返回受影响行数。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET status = %s, judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND judge_attempt_id <=> %s
+                """,
+                (status, submission_id, attempt_id),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
+def update_submission_result_for_attempt(submission_id, attempt_id, score, status,
+                                         grade_details=None, error_message=None):
+    """只在 attempt 仍是当前 attempt 时写入终态，返回受影响行数。"""
+    ensure_ranking_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            details_text = None
+            if grade_details is not None:
+                if isinstance(grade_details, str):
+                    details_text = grade_details
+                else:
+                    try:
+                        details_text = json.dumps(grade_details, ensure_ascii=False)
+                    except Exception:
+                        details_text = str(grade_details)
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET score = %s,
+                    status = %s,
+                    grade_details = %s,
+                    error_message = %s,
+                    judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND judge_attempt_id <=> %s
+                """,
+                (score, status, details_text, error_message, submission_id, attempt_id),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    finally:
+        conn.close()
+
+
+def _copy_submission_artifact(src_path, src_name, target_dir):
+    """复制打榜赛提交文件到新的提交目录；源路径为空时保留为空。"""
+    if not src_path:
+        return src_name, None
+    if not os.path.isfile(src_path):
+        raise FileNotFoundError(f"提交文件不存在：{src_path}")
+    filename = src_name or os.path.basename(src_path)
+    os.makedirs(target_dir, exist_ok=True)
+    dst_path = os.path.join(target_dir, filename)
+    shutil.copy2(src_path, dst_path)
+    return filename, dst_path
+
+
+def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id=None, status='Judging'):
+    """复制一条打榜赛提交为新的管理员重测提交。
+
+    只复制提交记录和落盘文件，不计入学生 48 小时提交配额；新提交的评测入队由调用方负责。
+    """
+    ensure_ranking_tables()
+    new_status = status if status in ('Pending', 'Queued', 'Judging') else 'Judging'
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, competition_id, username,
+                       answer_filename, answer_path, code_filename, code_path,
+                       base_model
+                FROM ranking_submissions
+                WHERE id = %s
+                """,
+                (int(source_submission_id),),
+            )
+            source = cursor.fetchone()
+            if not source:
+                raise ValueError(f"source ranking submission {source_submission_id} not found")
+            if competition_id is not None and int(source.get('competition_id')) != int(competition_id):
+                raise ValueError("source submission does not belong to this competition")
+
+            cursor.execute(
+                """
+                INSERT INTO ranking_submissions
+                    (competition_id, username, answer_filename, code_filename, base_model,
+                     score, status, grade_details, error_message,
+                     elo_rating, elo_match_count, elo_in_pool, source)
+                VALUES (%s, %s, %s, %s, %s,
+                        NULL, %s, NULL, NULL,
+                        NULL, 0, 0, 'batch')
+                """,
+                (
+                    source['competition_id'],
+                    source.get('username') or '',
+                    source.get('answer_filename'),
+                    source.get('code_filename'),
+                    source.get('base_model'),
+                    new_status,
+                ),
+            )
+            new_id = cursor.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    if not new_id:
+        raise RuntimeError("clone_ranking_submission_for_rejudge: failed to get valid submission id")
+
+    target_dir = submission_dir(new_id)
+    try:
+        answer_name, answer_path = _copy_submission_artifact(
+            source.get('answer_path'), source.get('answer_filename'), target_dir,
+        )
+        code_name, code_path = _copy_submission_artifact(
+            source.get('code_path'), source.get('code_filename'), target_dir,
+        )
+    except Exception as e:
+        try:
+            update_submission_result(new_id, None, 'Error', error_message=str(e)[:1000])
+        except Exception:
+            pass
+        raise
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET answer_filename = %s, answer_path = %s,
+                    code_filename = %s, code_path = %s
+                WHERE id = %s
+                """,
+                (answer_name, answer_path, code_name, code_path, new_id),
+            )
+        conn.commit()
+        bump_daily_submission_count()
+        return int(new_id), source
+    finally:
+        conn.close()
+
+
 def delete_ranking_submission(submission_id):
     """删除一条提交记录。返回被删除的行数（0 或 1）。"""
     ensure_ranking_tables()
@@ -863,6 +1122,7 @@ def get_ranking_submission(submission_id):
                 SELECT id, competition_id, username,
                        answer_filename, answer_path, code_filename, code_path,
                        base_model, score, status, grade_details, error_message,
+                       judge_attempt_id, judge_task_id, judge_heartbeat_at,
                        elo_rating, elo_match_count, elo_in_pool,
                        created_at
                 FROM ranking_submissions
@@ -893,6 +1153,8 @@ def get_incomplete_ranking_submissions():
             cursor.execute(
                 """
                 SELECT s.id, s.competition_id, s.status,
+                       s.score, s.grade_details,
+                       s.judge_attempt_id, s.judge_task_id, s.judge_heartbeat_at,
                        c.scoring_mode, c.elo_initial_rating
                 FROM ranking_submissions s
                 JOIN ranking_competitions c ON c.id = s.competition_id
@@ -967,6 +1229,90 @@ def list_all_submissions(competition_id, *, page=1, per_page=50, username_q=None
             )
             rows = cursor.fetchall() or []
             return rows, page, total
+    finally:
+        conn.close()
+
+
+def _bulk_status_condition(status_groups):
+    groups = []
+    for item in status_groups or []:
+        key = str(item or '').strip().lower()
+        if key in ('judging', 'waiting', 'accepted', 'abnormal') and key not in groups:
+            groups.append(key)
+
+    conditions = []
+    params = []
+    status_sets = {
+        'judging': ('Judging',),
+        'waiting': ('Queued', 'Pending'),
+        'accepted': ('Accepted', 'Active', 'Retired'),
+    }
+    normal_statuses = ('Queued', 'Pending', 'Judging', 'Accepted', 'Active', 'Retired')
+    for group in groups:
+        if group in status_sets:
+            values = status_sets[group]
+            conditions.append("status IN (" + ",".join(["%s"] * len(values)) + ")")
+            params.extend(values)
+        elif group == 'abnormal':
+            conditions.append("status NOT IN (" + ",".join(["%s"] * len(normal_statuses)) + ")")
+            params.extend(normal_statuses)
+    if not conditions:
+        return "", []
+    return "(" + " OR ".join(conditions) + ")", params
+
+
+def list_submissions_for_bulk_rejudge(competition_id, *, start=None, end=None,
+                                      username_q=None, status_groups=None, limit=1001):
+    """按管理员批量重测筛选条件返回 ``(rows, total)``。"""
+    ensure_ranking_tables()
+    conditions = ["competition_id = %s"]
+    params = [int(competition_id)]
+    if start:
+        conditions.append("created_at >= %s")
+        params.append(start)
+    if end:
+        conditions.append("created_at <= %s")
+        params.append(end)
+    q = (username_q or '').strip()
+    if q:
+        conditions.append("username LIKE %s")
+        params.append(f"%{q}%")
+    status_sql, status_params = _bulk_status_condition(status_groups or [])
+    if status_sql:
+        conditions.append(status_sql)
+        params.extend(status_params)
+
+    where_sql = "WHERE " + " AND ".join(conditions)
+    count_params = tuple(params)
+    query_params = list(params)
+    limit_sql = ""
+    if limit:
+        limit_sql = " LIMIT %s"
+        query_params.append(int(limit))
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS total FROM ranking_submissions {where_sql}",
+                count_params,
+            )
+            total = int((cursor.fetchone() or {}).get('total') or 0)
+            cursor.execute(
+                f"""
+                SELECT id, competition_id, username,
+                       answer_filename, code_filename, base_model,
+                       score, status,
+                       elo_rating, elo_match_count, elo_in_pool,
+                       created_at
+                FROM ranking_submissions
+                {where_sql}
+                ORDER BY created_at DESC, id DESC
+                {limit_sql}
+                """,
+                tuple(query_params),
+            )
+            return cursor.fetchall() or [], total
     finally:
         conn.close()
 

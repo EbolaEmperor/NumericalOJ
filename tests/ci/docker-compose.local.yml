@@ -1,6 +1,5 @@
-# 本地版 CI compose：与 docker-compose.ci.yml 等价，但去掉 why-server 专属的两处宿主绑定挂载
-# （/opt/intel/oneapi/mkl 与 /home/ebola/oj/config.py），便于在开发机（无 MKL、无线上 config）上
-# 跑完整 CI。MKL 相关用例会因 MKLROOT 未设而自动 skip；AI live 用例因无 prod_config 而自动 skip。
+# 本地/非生产 CI compose：不挂载生产路径，便于在开发机或独立 CI 服务器上
+# 跑完整 CI。MKL 相关用例会因 MKLROOT 未设而自动 skip；AI live 用例默认 skip。
 #
 # 用法：
 #   docker compose -f tests/ci/docker-compose.local.yml up --build --abort-on-container-exit --exit-code-from test
