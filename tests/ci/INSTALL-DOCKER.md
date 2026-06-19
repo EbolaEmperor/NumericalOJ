@@ -1,6 +1,6 @@
-# 在 why-server 安装 Docker（一次性）
+# 在 why-server 安装 Docker（历史记录）
 
-> 仅在**首次为某台主机配置 CI**时需要看本文档。日常使用 CI 见同目录 [`README.md`](./README.md)。
+> 这是历史安装记录和 Docker 排错参考，不是 CI 运行说明。**CI/test 禁止在 `why-server` / host `computing` 上运行**；日常使用 CI 见同目录 [`README.md`](./README.md)，并只能在本地或非生产服务器运行。
 >
 > 这是在 why-server 上首次安装 Docker Engine + Compose 插件的完整、可复现命令序列。所有命令通过 `ssh why-server '...'` 在本机发起，远程用户为 `ebola`（可 sudo，但需密码）。下文中 sudo 密码一律以 `<sudo-password>` 表示。
 >
@@ -92,6 +92,6 @@ active
    排查发现 `registry-1.docker.io` 在本机只解析出 IPv6 地址，且 IPv4/IPv6 直连 `https://registry-1.docker.io/v2/` 均超时——本机无法直连 Docker Hub。
    逐个探测镜像源，只有 `https://docker.m.daocloud.io/v2/` 返回 401（正常的“需鉴权”，即可达），其余（dockerproxy / 网易 / 腾讯 / ustc 等）均超时。
    **解决**：在 `/etc/docker/daemon.json` 配置 `registry-mirrors: ["https://docker.m.daocloud.io"]`，`systemctl restart docker` 后 `hello-world` 拉取成功。
-   > 影响：CI 镜像 `tests/ci/docker-compose.ci.yml` 用到的 `mysql:8.0`、`redis:7`、`debian:12-slim` 等基础镜像也都将经由该镜像源拉取——这一步是 CI 能在 why-server 跑起来的前提。
+   > 历史影响：当时 CI 镜像用到的 `mysql:8.0`、`redis:7`、`debian:12-slim` 等基础镜像也会经由该镜像源拉取。该记录不表示现在允许在 `why-server` 上运行 CI/test。
 
 7. **构建镜像时 apt / pip 同样走 IPv6 会失败**：`tests/ci/Dockerfile` 内构建测试镜像时，`apt-get`（装 octave 等）与 `pip3 install`（装 faiss 等）也会遇到同样的国际源 IPv6 问题。Dockerfile 已内置应对：强制 apt 走 IPv4 + 切清华 Debian 镜像、`pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple`。换主机时若网络环境不同，可相应调整。

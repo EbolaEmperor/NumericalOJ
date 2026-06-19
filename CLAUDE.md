@@ -41,9 +41,21 @@ DB bootstrap: `mysql -u root -p -e "CREATE DATABASE myojdb CHARACTER SET utf8mb4
 
 There **is** a pytest suite under `tests/` (`tests/unit`, `tests/db`, `tests/integration`, plus `tests/ci` infra) with `pytest.ini` and `tests/conftest.py` (DB-resetting fixtures). Always sanity-check changes with `python3 -m py_compile <file>`, and run the relevant tests before deploying:
 
-- Infra-free pure-logic tests run anywhere: `pytest tests/unit/test_judger_core.py tests/unit/test_security_regression.py tests/unit/test_grading_and_compare.py tests/unit/test_sandbox_limits.py`.
-- `tests/integration/test_judging_smoke.py` (marked `@pytest.mark.judger`) needs a host with `gcc`/`g++`/`python3`/`octave`; it now also covers real CE/RE/TLE/Forbidden verdicts.
-- `tests/db` and most of `tests/integration` need MySQL + Redis; the full suite runs via the Docker-Compose runner in `tests/ci/` (`tests/ci/run-on-why-server.sh`). A lightweight GitHub Actions gate (`.github/workflows/ci.yml`) runs `compileall` + the infra-free unit tests on every push/PR.
+- Infra-free pure-logic tests can run on local/dev machines, but **never on `why-server` / host `computing`**: `pytest tests/unit/test_judger_core.py tests/unit/test_security_regression.py tests/unit/test_grading_and_compare.py tests/unit/test_sandbox_limits.py`.
+- `tests/integration/test_judging_smoke.py` (marked `@pytest.mark.judger`) needs a non-production host with `gcc`/`g++`/`python3`/`octave`; it now also covers real CE/RE/TLE/Forbidden verdicts.
+- `tests/db` and most of `tests/integration` need MySQL + Redis and must run only on a local machine or another non-production server with clearly disposable services.
+- CI/full-suite test runs, including anything under `tests/ci/`, are **forbidden on `why-server` / host `computing`**. If they must be run manually, run them locally or on a separate non-production server; never use the production host as a CI runner. A lightweight GitHub Actions gate (`.github/workflows/ci.yml`) runs `compileall` + the infra-free unit tests on every push/PR.
+
+### Data safety boundary
+
+There has been a real production incident where unit tests were run directly on `why-server` (the production host's own hostname is `computing`) and the production database was cleared. Avoid repeating this class of failure:
+
+- **Never run any tests on `why-server` / host `computing`, including infra-free unit tests, DB tests, integration tests, smoke tests, CI scripts, Docker-Compose test runners, or isolated test containers.** The production host is for serving the app and explicit deploy/ops work only, not for verification runs.
+- **Never run `pytest` in the production checkout (`why-server:/home/ebola/oj/`) or in any shell that is using the production `config.py`, production MySQL database (`myojdb`), or production Redis.** The test fixtures can reset tables and must be treated as destructive when pointed at live services.
+- **Never run DB-resetting tests, integration tests, migrations, seed scripts, SQL imports, or repair scripts against production data unless the user explicitly asks for that exact production operation.** Before any such command, confirm the hostname, working directory, config file, database host, database name, and Redis target.
+- **CI tests must not run on `why-server` / host `computing`, even if they claim to use isolated infrastructure.** Do not invoke `tests/ci/run-on-why-server.sh` or any equivalent test runner on the production host; move the test to a local/dev machine or a separate CI runner instead.
+- **Read-only production inspection is allowed; production writes are not implicit.** Safe production operations are limited to read-only SQL (`SELECT`, `SHOW`, `EXPLAIN`), log inspection, process inspection, and the explicit deploy procedure. Any production data write, delete, truncate, import, migration, or script with side effects requires explicit user approval and a backup/rollback plan.
+- **Before running a command that might touch data, prove it is not production.** If the target cannot be clearly identified as local, containerized, disposable, or backed up, stop and ask instead of guessing.
 
 There is no separate lint config or build step.
 
@@ -63,7 +75,7 @@ When the user asks you to deploy, follow this procedure end-to-end. Don't push c
 
 ### Agent-as-Judge image (打榜赛 `agent_judge` mode)
 
-The `agent_judge` ranking mode judges submissions inside a prebuilt Docker image (`numericaloj-agent-judge:latest`) that bundles the `claude` CLI + toolchain. `rsync` does **not** rebuild it — after changing `docker/agent_judge/*`, rebuild once on the host: `docker build -t numericaloj-agent-judge:latest docker/agent_judge`. The `celery_agent_judge` worker (`-Q judge`) in `celery.conf` runs `docker run` per submission; the host must have Docker and the worker user must be in the `docker` group. Do **not** add `--cap-drop ALL` to that `docker run` — it removes `CAP_DAC_OVERRIDE`, breaking both result-file writes and in-container `apt`. Per-competition model creds (base_url / api_key / model) live in MySQL, not `config.py`; the `AGENT_JUDGE_*` infra knobs are read via `getattr(config, ...)` defaults so the remote `config.py` needs no edits.
+The `agent_judge` ranking mode judges submissions inside a prebuilt Docker image (`numericaloj-agent-judge:latest`) that bundles the Agent Harness CLIs (`claude`, `codex`, `opencode`) + toolchain. `rsync` does **not** rebuild it — after changing `docker/agent_judge/*`, rebuild once on the host: `docker build -t numericaloj-agent-judge:latest docker/agent_judge`. The `celery_agent_judge` worker (`-Q judge`, local config keeps the production concurrency at `-c 16`) runs `docker run` per submission; the host must have Docker and the worker user must be in the `docker` group. Do **not** add `--cap-drop ALL` to that `docker run` — it removes `CAP_DAC_OVERRIDE`, breaking both result-file writes and in-container `apt`. Per-competition model creds (harness / base_url / api_key / model) live in MySQL, not `config.py`; the `AGENT_JUDGE_*` infra knobs are read via `getattr(config, ...)` defaults so the remote `config.py` needs no edits.
 
 ### Frontend-only fast path
 
@@ -97,7 +109,7 @@ The default `rsync` command in `.claude/settings.local.json` already excludes `c
 - `JUDGER_RLIMIT_CPU_STARTUP_BUFFER_SEC` (env, default 30) — **`RLIMIT_CPU` caps *aggregate* CPU-seconds across all threads, not wall-clock.** A multithreaded runtime (Octave/MATLAB BLAS/MKL needs ~4 CPU-s of multi-thread work just to start) blows past a wall-clock-sized CPU cap in milliseconds, so the cap is computed as `cpu_count × ⌈wall_TLE⌉ + STARTUP_BUFFER` — a loose backstop above the legitimate ceiling, with the coreutils `timeout` (wall-clock) as the real bound. A fixed `RLIMIT_CPU = wall_TLE` caused the 2026-06-06 Octave "all Nonzero Exit Status" outage (every octave submission SIGKILLed at startup).
 - `JUDGER_OCTAVE_RLIMIT_AS` (env, default off) — Octave gets CPU (multithread-aware, see above) / NPROC / FSIZE limits, but `RLIMIT_AS` is opt-in (it historically broke Octave/MKL virtual-memory reservations). Verify Octave's virtual footprint before enabling.
 
-Note: after editing `docker/agent_judge/report` (now reads the random result path from `AJ_RESULT_FILE`), rebuild the agent-judge image (`docker build -t numericaloj-agent-judge:latest docker/agent_judge`).
+Note: after editing `docker/agent_judge/report` or `docker/agent_judge/run_harness`, rebuild the agent-judge image (`docker build -t numericaloj-agent-judge:latest docker/agent_judge`).
 
 ## Architecture
 

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """真实 AI 链路集成测试（打线上 DashScope/Qwen 接口）。
 
-这些用例带 ``live_ai`` 标记：只有 ``OJ_LIVE_AI=1`` 时才真跑（CI 在 why-server 上
-把线上 config.py 的真实 AI key 注入容器后置位）；本地或无 key 环境自动 skip。
+这些用例带 ``live_ai`` 标记：只有 ``OJ_LIVE_AI=1`` 时才真跑；常规 CI 默认使用占位
+AI 配置并自动 skip。需要验证真实 AI 服务时，使用单独的非生产配置和专门流程，不要在
+why-server / host computing 上运行，也不要把生产 config.py 注入测试容器。
 覆盖三条之前只被 mock、从未真实验证过的链路：
 
 1. 询问 AI 助教（``/ask_ai_code_marks``）——真实代码标注。

@@ -1194,14 +1194,91 @@
       <!-- 工具条 -->
       <div class="submissions-toolbar d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">
         <div class="fw-semibold"><i class="fas fa-clipboard-list me-2 text-primary"></i>所有提交</div>
-        {% if total_subs > 0 %}
-        <div class="submissions-search">
-          <i class="fas fa-search"></i>
-          <input type="search" id="subSearch" class="form-control form-control-sm"
-                 placeholder="按用户名筛选…" autocomplete="off"
-                 value="{{ submission_search_q }}">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <button type="button"
+                  class="rk-bulk-open"
+                  data-bs-toggle="modal"
+                  data-bs-target="#rankingBulkRejudgeModal"
+                  {% if total_subs == 0 %}disabled{% endif %}>
+            <i class="fas fa-rotate-right"></i><span>批量重测</span>
+          </button>
+          {% if total_subs > 0 %}
+          <div class="submissions-search">
+            <i class="fas fa-search"></i>
+            <input type="search" id="subSearch" class="form-control form-control-sm"
+                   placeholder="按用户名筛选…" autocomplete="off"
+                   value="{{ submission_search_q }}">
+          </div>
+          {% endif %}
         </div>
-        {% endif %}
+      </div>
+
+      <div class="modal fade rk-bulk-modal" id="rankingBulkRejudgeModal" tabindex="-1" aria-labelledby="rankingBulkRejudgeLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content"
+               data-filter-url="{{ url_for('ranking.ranking_bulk_rejudge_filter', competition_id=competition.id) }}"
+               data-start-url="{{ url_for('ranking.ranking_bulk_rejudge_start', competition_id=competition.id) }}"
+               data-status-url-template="{{ url_for('ranking.ranking_bulk_rejudge_status', competition_id=competition.id, job_id='__JOB_ID__') }}"
+               data-is-elo="{{ 1 if is_elo else 0 }}">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="rankingBulkRejudgeLabel">批量重测</h5>
+                <div class="rk-bulk-subtitle">在原提交记录上清空旧结果并重新入队，按评测队列并发限制执行。</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <div class="rk-bulk-filters">
+                <label class="rk-bulk-field">
+                  <span>起始时间</span>
+                  <input type="datetime-local" id="rkBulkStart">
+                </label>
+                <label class="rk-bulk-field">
+                  <span>结束时间</span>
+                  <input type="datetime-local" id="rkBulkEnd">
+                </label>
+                <label class="rk-bulk-field">
+                  <span>用户</span>
+                  <input type="text" id="rkBulkUsername" placeholder="用户名包含">
+                </label>
+                <button type="button" class="rk-bulk-filter-btn" id="rkBulkFilterBtn">
+                  <i class="fas fa-filter"></i><span>筛选</span>
+                </button>
+              </div>
+
+              <div class="rk-bulk-statuses" aria-label="状态筛选">
+                <label><input type="checkbox" class="rk-bulk-status" value="judging"><span>评测中</span></label>
+                <label><input type="checkbox" class="rk-bulk-status" value="waiting"><span>等待评测</span></label>
+                <label><input type="checkbox" class="rk-bulk-status" value="accepted"><span>通过</span></label>
+                <label><input type="checkbox" class="rk-bulk-status" value="abnormal"><span>异常</span></label>
+              </div>
+
+              <div class="rk-bulk-result-head">
+                <div id="rkBulkSummary">设置筛选条件后点击筛选。</div>
+                <div class="rk-bulk-select">
+                  <label><input type="checkbox" id="rkBulkMaster" disabled><span>全选</span></label>
+                </div>
+              </div>
+
+              <div class="rk-bulk-results" id="rkBulkResults" aria-live="polite">
+                <div class="rk-bulk-empty">暂无筛选结果</div>
+              </div>
+
+              <div class="rk-bulk-progress d-none" id="rkBulkProgressWrap">
+                <div class="rk-bulk-progress-track">
+                  <div class="rk-bulk-progress-bar" id="rkBulkProgressBar" style="width:0%">0%</div>
+                </div>
+                <div class="rk-bulk-progress-text" id="rkBulkProgressText">尚未开始</div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="rk-bulk-secondary" data-bs-dismiss="modal">关闭</button>
+              <button type="button" class="rk-bulk-primary" id="rkBulkStartBtn" disabled>
+                <i class="fas fa-play"></i><span>确认重测</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       {% if is_agent_judge %}{% include '_judge_detail_modal.html' %}{% endif %}
@@ -1278,9 +1355,236 @@
               if (!isNaN(p) && p >= 1) loadPage(p, currentQ);
             });
           }
+          window.__rankingReloadSubmissions = function () {
+            loadPage(currentPage, currentQ);
+          };
         })();
       </script>
       {% endif %}
+
+      <script>
+        (function () {
+          var modal = document.getElementById('rankingBulkRejudgeModal');
+          if (!modal) return;
+          var content = modal.querySelector('.modal-content');
+          var filterUrl = content.getAttribute('data-filter-url');
+          var startUrl = content.getAttribute('data-start-url');
+          var statusUrlTemplate = content.getAttribute('data-status-url-template');
+          var isElo = content.getAttribute('data-is-elo') === '1';
+
+          var startInput = document.getElementById('rkBulkStart');
+          var endInput = document.getElementById('rkBulkEnd');
+          var usernameInput = document.getElementById('rkBulkUsername');
+          var filterBtn = document.getElementById('rkBulkFilterBtn');
+          var master = document.getElementById('rkBulkMaster');
+          var results = document.getElementById('rkBulkResults');
+          var summary = document.getElementById('rkBulkSummary');
+          var startBtn = document.getElementById('rkBulkStartBtn');
+          var progressWrap = document.getElementById('rkBulkProgressWrap');
+          var progressBar = document.getElementById('rkBulkProgressBar');
+          var progressText = document.getElementById('rkBulkProgressText');
+          var timer = null;
+          var state = { rows: [], selected: new Set(), maxSelected: 500, tooMany: false, running: false, jobId: null };
+
+          var statusLabel = {
+            Accepted: '通过', Active: '对战中', Retired: '已退役',
+            Judging: '评测中', Queued: '等待评测', Pending: '待评测', Error: '异常'
+          };
+
+          function esc(v) {
+            return String(v == null ? '' : v)
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+          }
+          function selectedStatuses() {
+            return Array.prototype.slice.call(modal.querySelectorAll('.rk-bulk-status:checked'))
+              .map(function (el) { return el.value; });
+          }
+          function scoreText(row) {
+            if (row.score === null || row.score === undefined || row.score === '') return '—';
+            var n = Number(row.score);
+            if (!Number.isFinite(n)) return String(row.score);
+            return isElo ? String(Math.round(n)) : n.toFixed(2);
+          }
+          function statusClass(status) {
+            if (status === 'Accepted' || status === 'Active') return 'ok';
+            if (status === 'Judging' || status === 'Queued' || status === 'Pending') return 'info';
+            if (status === 'Error') return 'err';
+            return 'muted';
+          }
+          function updateSummary() {
+            var count = state.selected.size;
+            var total = state.rows.length;
+            var over = count > state.maxSelected;
+            startBtn.disabled = state.running || state.tooMany || count === 0 || over;
+            master.disabled = state.running || state.tooMany || total === 0;
+            master.checked = total > 0 && count === total;
+            master.indeterminate = count > 0 && count < total;
+            if (state.tooMany) return;
+            if (over) summary.textContent = '已选择 ' + count + ' 条，超过单次上限 ' + state.maxSelected + ' 条。';
+            else if (total > 0) summary.textContent = '筛选出 ' + total + ' 条，已选择 ' + count + ' 条。';
+            else summary.textContent = '暂无筛选结果。';
+          }
+          function renderRows() {
+            if (!state.rows.length) {
+              results.innerHTML = '<div class="rk-bulk-empty">暂无筛选结果</div>';
+              updateSummary();
+              return;
+            }
+            results.innerHTML = state.rows.map(function (row) {
+              var id = Number(row.id);
+              var checked = state.selected.has(id) ? ' checked' : '';
+              var disabled = state.running || state.tooMany ? ' disabled' : '';
+              var label = statusLabel[row.status] || row.status || '-';
+              return '<div class="rk-bulk-row">' +
+                '<label class="rk-bulk-check"><input type="checkbox" class="rk-bulk-row-check" data-id="' + id + '"' + checked + disabled + '><span>#' + id + '</span></label>' +
+                '<div class="rk-bulk-cell rk-user">' + esc(row.username || '') + '</div>' +
+                '<div class="rk-bulk-pill ' + statusClass(row.status) + '">' + esc(label) + '</div>' +
+                '<div class="rk-bulk-cell rk-score">' + esc(scoreText(row)) + '</div>' +
+                '<div class="rk-bulk-cell rk-model">' + esc(row.base_model || '—') + '</div>' +
+                '<div class="rk-bulk-cell rk-time">' + esc(row.created_at || '') + '</div>' +
+                '</div>';
+            }).join('');
+            updateSummary();
+          }
+          function filterPayload() {
+            return {
+              start: (startInput.value || '').trim(),
+              end: (endInput.value || '').trim(),
+              username: (usernameInput.value || '').trim(),
+              statuses: selectedStatuses()
+            };
+          }
+          function setProgress(pct, processed, total, requeued, failed) {
+            pct = Math.max(0, Math.min(100, Number(pct) || 0));
+            progressBar.style.width = pct + '%';
+            progressBar.textContent = pct + '%';
+            progressText.textContent = '重测入队进度 ' + processed + ' / ' + total + '，已入队 ' + requeued + '，失败 ' + failed;
+          }
+          function poll() {
+            if (!state.jobId) return;
+            var url = statusUrlTemplate.replace('__JOB_ID__', encodeURIComponent(state.jobId));
+            fetch(url, { credentials: 'same-origin' })
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                if (!data.success) return;
+                setProgress(data.progress || 0, data.processed || 0, data.total || 0,
+                  data.requeued || data.created || 0, data.failed || 0);
+                if (data.done) {
+                  state.running = false;
+                  filterBtn.disabled = false;
+                  if (timer) clearInterval(timer);
+                  timer = null;
+                  progressBar.classList.add('is-done');
+                  progressText.textContent += '。重测已入队，原提交将按队列并发限制重新评测。';
+                  state.selected.clear();
+                  renderRows();
+                  if (typeof window.__rankingReloadSubmissions === 'function') {
+                    window.__rankingReloadSubmissions();
+                  }
+                }
+              })
+              .catch(function () {});
+          }
+
+          results.addEventListener('change', function (e) {
+            var cb = e.target.closest('.rk-bulk-row-check');
+            if (!cb) return;
+            var id = Number(cb.getAttribute('data-id'));
+            if (!id) return;
+            if (cb.checked) state.selected.add(id);
+            else state.selected.delete(id);
+            updateSummary();
+          });
+          master.addEventListener('change', function () {
+            state.selected.clear();
+            if (master.checked) {
+              state.rows.forEach(function (row) { state.selected.add(Number(row.id)); });
+            }
+            renderRows();
+          });
+          filterBtn.addEventListener('click', function () {
+            var payload = filterPayload();
+            if (payload.start && payload.end && payload.start > payload.end) {
+              window.alert('起始时间不能晚于结束时间');
+              return;
+            }
+            filterBtn.disabled = true;
+            startBtn.disabled = true;
+            summary.textContent = '筛选中...';
+            fetch(filterUrl, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                filterBtn.disabled = false;
+                if (!data.success) {
+                  state.rows = [];
+                  state.selected.clear();
+                  summary.textContent = data.message || '筛选失败';
+                  renderRows();
+                  return;
+                }
+                state.rows = data.submissions || [];
+                state.selected.clear();
+                state.maxSelected = data.max_selected || state.maxSelected;
+                state.tooMany = !!data.too_many;
+                if (state.tooMany) {
+                  summary.textContent = '命中 ' + data.total + ' 条，超过显示上限 ' + data.max_results + ' 条，请缩小筛选范围。';
+                } else {
+                  summary.textContent = '筛选出 ' + state.rows.length + ' 条，已选择 0 条。';
+                }
+                renderRows();
+              })
+              .catch(function () {
+                filterBtn.disabled = false;
+                summary.textContent = '筛选请求失败';
+              });
+          });
+          startBtn.addEventListener('click', function () {
+            var ids = Array.from(state.selected);
+            if (!ids.length || ids.length > state.maxSelected) return;
+            var ok = window.confirm('将在原提交记录上重测 ' + ids.length + ' 条提交，入队间隔为 2 秒。确认开始吗？');
+            if (!ok) return;
+            state.running = true;
+            filterBtn.disabled = true;
+            startBtn.disabled = true;
+            master.disabled = true;
+            progressWrap.classList.remove('d-none');
+            progressBar.classList.remove('is-done');
+            setProgress(0, 0, ids.length, 0, 0);
+            fetch(startUrl, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ submission_ids: ids })
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                if (!data.success) {
+                  state.running = false;
+                  filterBtn.disabled = false;
+                  progressText.textContent = data.message || '启动失败';
+                  updateSummary();
+                  return;
+                }
+                state.jobId = data.job_id;
+                if (timer) clearInterval(timer);
+                timer = setInterval(poll, 1000);
+                poll();
+              })
+              .catch(function () {
+                state.running = false;
+                filterBtn.disabled = false;
+                progressText.textContent = '启动请求失败';
+                updateSummary();
+              });
+          });
+        })();
+      </script>
     {% endif %}
 
     {# ========== 申诉处理（管理员 · 仅 Agent 评测） ========== #}
@@ -2061,57 +2365,425 @@
 
       <!-- Agent 评测模型端点池（多个 url+key，各带并发上限） -->
       <style>
-        .aje { --ink:#1f2329; --muted:#70757c; --line:#e4e4e7; --paper:#fbfaf6;
-               --blue:#2563eb; --blue-d:#1d4ed8; --green:#1f7a4d;
-               --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
-        .aje-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:.9rem; flex-wrap:wrap; gap:.5rem; }
-        .aje-count { font-size:.8rem; color:var(--muted); }
-        .aje-total { font-family:var(--mono); font-size:.78rem; font-weight:600; color:var(--blue-d);
-                     background:#eef2ff; border:1px solid #c7d2fe; border-radius:4px; padding:.22rem .6rem; }
-        .aje-total b { font-size:.95rem; }
-        .aje-row { background:#fff; border:1px solid var(--line); border-left:3px solid var(--blue);
-                   border-radius:6px; padding:.8rem .9rem; margin-bottom:.6rem; animation:ajeIn .2s ease both; }
-        .aje-row.off { border-left-color:#c7c9cf; opacity:.65; }
-        @keyframes ajeIn { from{opacity:0;} to{opacity:1;} }
-        .aje-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
-        .aje-field label { font-size:.64rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 .15rem; display:block; }
-        .aje-field input { width:100%; border:1px solid var(--line); border-radius:5px; padding:.45rem .6rem;
-                           font-size:.88rem; color:var(--ink); background:var(--paper); }
-        .aje-field input:focus { outline:none; background:#fff; border-color:var(--blue); }
-        .aje-field input.mono { font-family:var(--mono); }
-        .aje-rowfoot { display:flex; align-items:flex-end; gap:1rem; margin-top:.6rem; }
-        .aje-check { display:flex; align-items:center; gap:.4rem; font-size:.82rem; color:var(--muted); cursor:pointer; padding-bottom:.45rem; }
-        .aje-del { margin-left:auto; border:none; background:transparent; color:#c2b7a0; cursor:pointer;
-                   width:28px; height:28px; border-radius:4px; }
-        .aje-del:hover { color:#b03a2e; background:#f8e9e7; }
-        .aje-add { width:100%; display:flex; align-items:center; justify-content:center; gap:.45rem;
-                   border:1px dashed #cdd5e6; background:transparent; color:#6d7fa6; border-radius:6px;
-                   padding:.7rem; font-size:.88rem; font-weight:500; cursor:pointer; }
-        .aje-add:hover { border-color:var(--blue); color:var(--blue-d); background:#eef2ff; }
-        .aje-empty { text-align:center; color:#a9b0c0; padding:1.2rem 0 .4rem; font-size:.9rem; }
-        .aje-foot { display:flex; align-items:center; gap:.75rem; margin-top:1rem; padding-top:.9rem; border-top:1px solid var(--line); flex-wrap:wrap; }
-        .aje-timeout { display:flex; align-items:center; gap:.4rem; font-size:.82rem; color:var(--muted); }
-        .aje-timeout input { width:90px; border:1px solid var(--line); border-radius:5px; padding:.35rem .5rem; font-family:var(--mono); }
-        .aje-save { background:var(--green); border:none; color:#fff; font-weight:600; border-radius:5px; padding:.5rem 1.1rem; font-size:.9rem; cursor:pointer; }
-        .aje-save:hover { background:#196b42; }
-        @media (max-width:640px){ .aje-grid{ grid-template-columns:1fr; } }
+        .aje,
+        .aje-modal {
+          --ink:#24282f;
+          --muted:#68707a;
+          --line:#dfe4ea;
+          --line-strong:#c4cad2;
+          --paper:#f7f8fa;
+          --green:#2f5d50;
+          --red:#9a3f3f;
+          --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace;
+          color:var(--ink);
+        }
+        .aje-shell { border:1px solid var(--line); background:#fff; border-radius:8px; overflow:hidden; }
+        .aje-head {
+          display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; flex-wrap:wrap;
+          padding:1rem 1.05rem; border-bottom:1px solid var(--line); background:var(--paper);
+        }
+        .aje-title { font-size:.9rem; font-weight:700; letter-spacing:.02em; color:var(--ink); }
+        .aje-meta { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }
+        .aje-count, .aje-total {
+          display:inline-flex; align-items:baseline; gap:.35rem; border:1px solid var(--line-strong);
+          background:#fff; color:var(--muted); font-size:.76rem; line-height:1; padding:.38rem .55rem;
+          border-radius:6px; font-family:var(--mono);
+        }
+        .aje-total b { color:var(--ink); font-size:.92rem; }
+        .aje-grid {
+          display:grid;
+          grid-template-columns:repeat(3, minmax(0, 1fr));
+          gap:.85rem;
+          padding:1rem;
+          background:#fff;
+        }
+        .aje-card {
+          min-width:0;
+          border:1px solid var(--line);
+          border-radius:8px;
+          background:#fff;
+          padding:.85rem;
+          display:flex;
+          flex-direction:column;
+          gap:.5rem;
+          transition:border-color .15s ease, background-color .15s ease;
+        }
+        .aje-card:hover { border-color:var(--line-strong); background:#fcfcfd; }
+        .aje-card.off { background:#fafafa; color:#8a929b; }
+        .aje-card-top { display:flex; align-items:center; justify-content:space-between; gap:.6rem; }
+        .aje-harness {
+          display:inline-flex; align-items:center; gap:.4rem;
+          font-weight:700; font-size:.86rem; color:var(--ink); min-width:0;
+        }
+        .aje-harness i { color:#7a828c; }
+        .aje-state {
+          border:1px solid #bcd2c9; background:#f2f7f5; color:var(--green);
+          border-radius:999px; padding:.16rem .5rem; font-size:.7rem; font-weight:700; white-space:nowrap;
+        }
+        .aje-card.off .aje-state { border-color:#d7dce2; background:#fff; color:#7a828c; }
+        .aje-card-main { min-height:52px; }
+        .aje-model {
+          font-size:.95rem; font-weight:700; color:var(--ink);
+          white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        }
+        .aje-url {
+          margin-top:.22rem;
+          color:var(--muted);
+          font-family:var(--mono);
+          font-size:.76rem;
+          white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        }
+        .aje-card-meta { display:flex; align-items:center; flex-wrap:wrap; gap:.35rem; }
+        .aje-chip {
+          display:inline-flex; align-items:center; gap:.28rem;
+          border:1px solid var(--line);
+          border-radius:6px;
+          padding:.22rem .45rem;
+          color:#4e5661;
+          background:var(--paper);
+          font-size:.74rem;
+          line-height:1.1;
+        }
+        .aje-edit-btn, .aje-add, .aje-save, .aje-modal-apply, .aje-modal-delete {
+          display:inline-flex; align-items:center; justify-content:center; gap:.38rem;
+          border-radius:7px;
+          border:1px solid var(--line-strong);
+          background:#fff;
+          color:var(--ink);
+          padding:.4rem .72rem;
+          font-size:.82rem;
+          cursor:pointer;
+          transition:border-color .15s ease, background-color .15s ease, color .15s ease;
+        }
+        .aje-edit-btn {
+          width:30px;
+          height:30px;
+          padding:0;
+          margin-left:auto;
+          flex:0 0 auto;
+        }
+        .aje-edit-btn:hover, .aje-add:hover { border-color:#9aa3ad; background:var(--paper); }
+        .aje-empty {
+          grid-column:1 / -1;
+          text-align:center;
+          color:var(--muted);
+          padding:1.6rem 1rem;
+          font-size:.88rem;
+          border:1px dashed var(--line-strong);
+          border-radius:8px;
+          background:#fbfcfd;
+        }
+        .aje-foot { display:flex; align-items:center; justify-content:space-between; gap:.75rem; padding:.9rem 1rem; border-top:1px solid var(--line); background:var(--paper); flex-wrap:wrap; }
+        .aje-foot-left { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
+        .aje-timeout { display:flex; align-items:center; gap:.45rem; font-size:.82rem; color:var(--muted); }
+        .aje-timeout input { width:92px; height:32px; border:1px solid var(--line-strong); border-radius:7px; padding:.28rem .45rem; font-family:var(--mono); background:#fff; }
+        .aje-actions { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
+        .aje-save, .aje-modal-apply { background:var(--green); border-color:var(--green); color:#fff; font-weight:700; }
+        .aje-save:hover { background:#274f44; border-color:#274f44; }
+        .aje-modal-delete { color:var(--red); border-color:#d9bcbc; }
+        .aje-modal-delete:hover { background:#fbf5f5; }
+        #ajeHint { color:var(--muted); }
+        .aje-modal .modal-dialog { max-width:760px; }
+        .aje-modal .modal-content {
+          border:1px solid var(--line-strong);
+          border-radius:10px;
+          box-shadow:none;
+          overflow:hidden;
+          color:var(--ink);
+        }
+        .aje-modal .modal-header {
+          border-color:var(--line);
+          background:#fbfcfd;
+          padding:.95rem 1.05rem;
+        }
+        .aje-modal .modal-title { font-size:1rem; font-weight:750; letter-spacing:0; }
+        .aje-modal .modal-body { padding:1rem 1.05rem 1.05rem; background:#fff; }
+        .aje-modal .modal-footer {
+          border-color:var(--line);
+          background:#fbfcfd;
+          padding:.8rem 1.05rem;
+          gap:.7rem;
+        }
+        .aje-modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:.9rem; }
+        .aje-modal-field { display:flex; flex-direction:column; gap:.34rem; margin:0; min-width:0; }
+        .aje-modal-field.full { grid-column:1 / -1; }
+        .aje-modal-field span {
+          color:var(--muted); font-size:.74rem; font-weight:700;
+        }
+        .aje-modal-field input {
+          width:100%;
+          height:38px;
+          border:1px solid #b9c1cb;
+          border-radius:8px;
+          padding:.45rem .6rem;
+          color:var(--ink);
+          background:#fff;
+          font-size:.86rem;
+          line-height:1.2;
+          transition:border-color .15s ease, background-color .15s ease;
+        }
+        .aje-modal-field input:hover { border-color:#9da7b2; }
+        .aje-modal-field input:focus {
+          outline:none;
+          border-color:#687484;
+          background:#fff;
+        }
+        .aje-modal-field .mono { font-family:var(--mono); font-size:.78rem; }
+        .aje-harness-picker { position:relative; }
+        .aje-harness-trigger {
+          width:100%;
+          height:38px;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap:.6rem;
+          border:1px solid #b9c1cb;
+          border-radius:8px;
+          background:#fff;
+          color:var(--ink);
+          padding:.45rem .58rem;
+          font-size:.86rem;
+          line-height:1.2;
+          cursor:pointer;
+          transition:border-color .15s ease, background-color .15s ease;
+        }
+        .aje-harness-trigger:hover,
+        .aje-harness-picker.open .aje-harness-trigger { border-color:#687484; background:#fbfcfd; }
+        .aje-harness-trigger-main { display:inline-flex; align-items:center; gap:.46rem; min-width:0; }
+        .aje-harness-trigger-main span { color:var(--ink); font-size:.86rem; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .aje-harness-trigger-main i { width:16px; color:#69727d; text-align:center; }
+        .aje-harness-caret { color:#69727d; font-size:.76rem; transition:transform .15s ease; }
+        .aje-harness-picker.open .aje-harness-caret { transform:rotate(180deg); }
+        .aje-harness-menu {
+          position:absolute;
+          z-index:1060;
+          top:calc(100% + 6px);
+          left:0;
+          right:0;
+          display:none;
+          margin:0;
+          padding:.28rem;
+          list-style:none;
+          border:1px solid #b9c1cb;
+          border-radius:8px;
+          background:#fff;
+        }
+        .aje-harness-picker.open .aje-harness-menu { display:block; }
+        .aje-harness-option {
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap:.65rem;
+          width:100%;
+          border:0;
+          border-radius:6px;
+          background:transparent;
+          color:var(--ink);
+          padding:.5rem .55rem;
+          text-align:left;
+          cursor:pointer;
+        }
+        .aje-harness-option:hover,
+        .aje-harness-option.active { background:#f3f5f7; }
+        .aje-harness-option-main { display:flex; align-items:center; gap:.48rem; min-width:0; }
+        .aje-harness-option-main i { width:16px; color:#69727d; text-align:center; }
+        .aje-harness-option .aje-harness-option-name {
+          display:block;
+          color:var(--ink);
+          font-size:.86rem;
+          font-weight:650;
+          line-height:1.15;
+        }
+        .aje-harness-option .aje-harness-option-desc {
+          display:block;
+          margin-top:.12rem;
+          color:var(--muted);
+          font-size:.72rem;
+          font-weight:500;
+          line-height:1.2;
+        }
+        .aje-harness-option-check { color:var(--green); opacity:0; }
+        .aje-harness-option.active .aje-harness-option-check { opacity:1; }
+        .aje-modal-note {
+          color:var(--muted);
+          font-size:.78rem;
+          margin-top:.08rem;
+          line-height:1.45;
+        }
+        .aje-modal-check {
+          display:flex;
+          align-items:center;
+          gap:.5rem;
+          color:var(--ink);
+          font-size:.86rem;
+          margin:.1rem 0 0;
+          padding:.55rem .65rem;
+          border:1px solid var(--line);
+          border-radius:8px;
+          background:#fbfcfd;
+        }
+        .aje-modal-check input { accent-color:var(--green); }
+        .aje-modal-check.full { grid-column:1 / -1; }
+        .aje-modal-footer-actions { display:flex; gap:.55rem; align-items:center; flex-wrap:wrap; }
+        .aje-modal-cancel {
+          display:inline-flex;
+          align-items:center;
+          justify-content:center;
+          min-height:36px;
+          border:1px solid var(--line-strong);
+          border-radius:7px;
+          background:#fff;
+          color:#374151;
+          padding:.42rem .8rem;
+          font-size:.84rem;
+          line-height:1.2;
+        }
+        .aje-modal-cancel:hover { background:#f3f5f7; border-color:#9aa3ad; }
+        .aje-modal-apply {
+          min-height:36px;
+          background:var(--green);
+          border-color:var(--green);
+          color:#fff;
+          padding:.42rem .9rem;
+        }
+        .aje-modal-apply:hover { background:#274f44; border-color:#274f44; color:#fff; }
+        .aje-modal-delete { min-height:36px; background:#fff; }
+        @media (max-width:1100px){
+          .aje-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width:680px){
+          .aje-grid { grid-template-columns:1fr; }
+          .aje-modal-grid { grid-template-columns:1fr; }
+          .aje-modal-field.full { grid-column:auto; }
+          .aje-modal-check.full { grid-column:auto; }
+          .aje-modal .modal-footer { align-items:stretch !important; }
+          .aje-modal-footer-actions,
+          .aje-modal-delete { width:100%; }
+          .aje-modal-footer-actions > button { flex:1 1 0; }
+        }
       </style>
       <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
            {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
         <div class="card-header"><i class="fas fa-robot me-2"></i> Agent 评测模型端点</div>
         <div class="card-body aje">
-          <div class="aje-head">
-            <span class="aje-count" id="ajeCountLabel">共 0 个端点</span>
-            <span class="aje-total">总并发 <b id="ajeTotalValue">0</b></span>
+          <div class="aje-shell">
+            <div class="aje-head">
+              <div>
+                <div class="aje-title">端点池</div>
+                <div class="small text-muted mt-1">模型端点只负责创建评测任务，实际执行仍由 judge worker 队列限流。</div>
+              </div>
+              <div class="aje-meta">
+                <span class="aje-count" id="ajeCountLabel">0 个端点</span>
+                <span class="aje-total">并发 <b id="ajeTotalValue">0</b></span>
+              </div>
+            </div>
+            <div id="ajeEditor" class="aje-grid"></div>
+            <div class="aje-foot">
+              <div class="aje-foot-left">
+                <button type="button" class="aje-add" id="ajeAddBtn"><i class="fas fa-plus"></i> 添加端点</button>
+                <span class="aje-timeout">单次评测超时
+                  <input type="number" id="ajeTimeout" min="60" max="7200" step="1"
+                         value="{{ competition.agent_judge_timeout_seconds or 1800 }}"> 秒</span>
+              </div>
+              <div class="aje-actions">
+                <span class="small" id="ajeHint"></span>
+                <button type="button" class="aje-save" id="ajeSaveBtn"><i class="fas fa-save me-1"></i> 保存端点</button>
+              </div>
+            </div>
           </div>
-          <div id="ajeEditor"></div>
-          <button type="button" class="aje-add" id="ajeAddBtn"><i class="fas fa-plus"></i> 添加端点</button>
-          <div class="aje-foot">
-            <span class="aje-timeout">单次评测超时
-              <input type="number" id="ajeTimeout" min="60" max="7200" step="1"
-                     value="{{ competition.agent_judge_timeout_seconds or 1800 }}"> 秒</span>
-            <button type="button" class="aje-save" id="ajeSaveBtn"><i class="fas fa-save me-1"></i> 保存端点</button>
-            <span class="small" id="ajeHint"></span>
+        </div>
+      </div>
+      <div class="modal fade aje-modal" id="ajeEditModal" tabindex="-1" aria-labelledby="ajeEditModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="ajeEditModalLabel">编辑端点</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <div class="aje-modal-grid">
+                <label class="aje-modal-field">
+                  <span>Agent Harness</span>
+                  <input type="hidden" id="ajeEditHarness" value="claude_code">
+                  <div class="aje-harness-picker" id="ajeHarnessPicker">
+                    <button type="button" class="aje-harness-trigger" id="ajeHarnessTrigger"
+                            aria-haspopup="listbox" aria-expanded="false">
+                      <span class="aje-harness-trigger-main">
+                        <i class="fas fa-robot" id="ajeHarnessIcon"></i>
+                        <span id="ajeHarnessLabel">Claude Code</span>
+                      </span>
+                      <i class="fas fa-chevron-down aje-harness-caret"></i>
+                    </button>
+                    <div class="aje-harness-menu" id="ajeHarnessMenu" role="listbox" aria-label="Agent Harness">
+                      <button type="button" class="aje-harness-option active" role="option"
+                              aria-selected="true" data-harness-value="claude_code">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-robot"></i>
+                          <span>
+                            <span class="aje-harness-option-name">Claude Code</span>
+                            <span class="aje-harness-option-desc">Anthropic 兼容端点</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                      <button type="button" class="aje-harness-option" role="option"
+                              aria-selected="false" data-harness-value="codex">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-code"></i>
+                          <span>
+                            <span class="aje-harness-option-name">Codex</span>
+                            <span class="aje-harness-option-desc">OpenAI 兼容端点</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                      <button type="button" class="aje-harness-option" role="option"
+                              aria-selected="false" data-harness-value="opencode">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-terminal"></i>
+                          <span>
+                            <span class="aje-harness-option-name">opencode</span>
+                            <span class="aje-harness-option-desc">Go 订阅，仅需 API Key</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                    </div>
+                  </div>
+                </label>
+                <label class="aje-modal-field">
+                  <span>并发上限</span>
+                  <input type="number" id="ajeEditConcurrency" min="1" max="64" step="1">
+                </label>
+                <label class="aje-modal-field full" id="ajeEditBaseUrlWrap">
+                  <span id="ajeEditBaseUrlLabel">Base URL</span>
+                  <input class="mono" type="text" id="ajeEditBaseUrl" placeholder="https://.../anthropic">
+                </label>
+                <div class="aje-modal-field full" id="ajeEditOpenCodeNote" style="display:none;">
+                  <span>Base URL</span>
+                  <div class="aje-modal-note">opencode 默认使用 Go 订阅端点，只需要填写 API Key。</div>
+                </div>
+                <label class="aje-modal-field full">
+                  <span>API Key</span>
+                  <input class="mono" type="password" id="ajeEditApiKey" autocomplete="new-password">
+                  <div class="aje-modal-note" id="ajeEditKeyHint"></div>
+                </label>
+                <label class="aje-modal-field full">
+                  <span>模型（可留空）</span>
+                  <input type="text" id="ajeEditModel" placeholder="默认模型">
+                </label>
+                <label class="aje-modal-check full">
+                  <input type="checkbox" id="ajeEditEnabled"> 启用这个端点
+                </label>
+              </div>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+              <button type="button" class="aje-modal-delete" id="ajeEditDelete"><i class="fas fa-trash-can"></i> 删除端点</button>
+              <div class="aje-modal-footer-actions">
+                <button type="button" class="aje-modal-cancel" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="aje-modal-apply" id="ajeEditApply"><i class="fas fa-check"></i> 应用修改</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -2123,9 +2795,30 @@
       (function () {
         var editor = document.getElementById('ajeEditor');
         if (!editor) return;
+        var modalEl = document.getElementById('ajeEditModal');
+        var modal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
+        var editIndex = null;
+        var editHarness = document.getElementById('ajeEditHarness');
+        var harnessPicker = document.getElementById('ajeHarnessPicker');
+        var harnessTrigger = document.getElementById('ajeHarnessTrigger');
+        var harnessMenu = document.getElementById('ajeHarnessMenu');
+        var harnessLabelEl = document.getElementById('ajeHarnessLabel');
+        var harnessIconEl = document.getElementById('ajeHarnessIcon');
+        var editBaseUrlWrap = document.getElementById('ajeEditBaseUrlWrap');
+        var editBaseUrlLabel = document.getElementById('ajeEditBaseUrlLabel');
+        var editBaseUrl = document.getElementById('ajeEditBaseUrl');
+        var editOpenCodeNote = document.getElementById('ajeEditOpenCodeNote');
+        var editApiKey = document.getElementById('ajeEditApiKey');
+        var editKeyHint = document.getElementById('ajeEditKeyHint');
+        var editModel = document.getElementById('ajeEditModel');
+        var editConcurrency = document.getElementById('ajeEditConcurrency');
+        var editEnabled = document.getElementById('ajeEditEnabled');
+        var editDelete = document.getElementById('ajeEditDelete');
+        var editApply = document.getElementById('ajeEditApply');
         function fromServer(list){
           return (list || []).map(function (e) {
-            return {id: e.id, base_url: e.base_url || '', model: e.model || '',
+            return {id: e.id, harness: e.harness || 'claude_code',
+                    base_url: e.base_url || '', model: e.model || '',
                     concurrency_limit: e.concurrency_limit || 1, enabled: !!e.enabled,
                     has_key: !!e.has_key, api_key: ''};
           });
@@ -2133,57 +2826,166 @@
         var eps = fromServer(window.__AJ_ENDPOINTS__);
         function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
         function totalConc(){ return eps.reduce(function(s,e){ return s + (e.enabled ? (parseInt(e.concurrency_limit)||0) : 0); }, 0); }
+        function defaultEndpoint(){
+          return {id:null, harness:'claude_code', base_url:'', model:'', concurrency_limit:1, enabled:true, has_key:false, api_key:''};
+        }
+        function harnessLabel(h){
+          if (h === 'codex') return 'Codex';
+          if (h === 'opencode') return 'opencode';
+          return 'Claude Code';
+        }
+        function harnessIcon(h){
+          if (h === 'codex') return 'fa-code';
+          if (h === 'opencode') return 'fa-terminal';
+          return 'fa-robot';
+        }
+        function setHarnessMenuOpen(open){
+          if (!harnessPicker || !harnessTrigger) return;
+          harnessPicker.classList.toggle('open', !!open);
+          harnessTrigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+        function updateHarnessPicker(){
+          var h = editHarness.value || 'claude_code';
+          if (harnessLabelEl) harnessLabelEl.textContent = harnessLabel(h);
+          if (harnessIconEl) harnessIconEl.className = 'fas ' + harnessIcon(h);
+          if (harnessMenu) {
+            harnessMenu.querySelectorAll('[data-harness-value]').forEach(function(opt){
+              var active = opt.getAttribute('data-harness-value') === h;
+              opt.classList.toggle('active', active);
+              opt.setAttribute('aria-selected', active ? 'true' : 'false');
+            });
+          }
+        }
+        function setHarnessValue(h){
+          editHarness.value = h || 'claude_code';
+          updateHarnessPicker();
+          applyHarnessMode();
+          setHarnessMenuOpen(false);
+        }
+        function modelText(e){
+          if ((e.model || '').trim()) return e.model;
+          return (e.harness === 'opencode') ? 'Go 订阅默认模型' : '默认模型';
+        }
+        function endpointText(e){
+          if (e.harness === 'opencode') return 'Go 订阅默认端点';
+          return (e.base_url || '').trim() || '未填写 Base URL';
+        }
+        function keyText(e){
+          if ((e.api_key || '').trim()) return '新 Key 待保存';
+          return e.has_key ? 'Key 已配置' : 'Key 未配置';
+        }
         function updateHead(){
-          document.getElementById('ajeCountLabel').textContent = '共 ' + eps.length + ' 个端点';
+          document.getElementById('ajeCountLabel').textContent = eps.length + ' 个端点';
           document.getElementById('ajeTotalValue').textContent = totalConc();
         }
         function render(){
           if (!eps.length){ editor.innerHTML = '<div class="aje-empty">还没有端点，点下方「添加端点」。Agent 评测要求至少配置一个启用端点。</div>'; updateHead(); return; }
           var h = '';
           eps.forEach(function(e, i){
-            var keyPh = e.has_key ? '已配置（留空保持不变）' : '请输入 API Key';
-            h += '<div class="aje-row' + (e.enabled ? '' : ' off') + '" data-i="' + i + '">' +
-              '<div class="aje-grid">' +
-                '<div class="aje-field" style="grid-column:1 / -1;"><label>Base URL</label>' +
-                  '<input class="mono" type="text" data-f="base_url" value="' + esc(e.base_url) + '" placeholder="https://.../anthropic"></div>' +
-                '<div class="aje-field"><label>API Key</label>' +
-                  '<input class="mono" type="password" data-f="api_key" autocomplete="new-password" value="" placeholder="' + esc(keyPh) + '"></div>' +
-                '<div class="aje-field"><label>模型（可留空）</label>' +
-                  '<input type="text" data-f="model" value="' + esc(e.model) + '" placeholder="默认模型"></div>' +
+            var harness = e.harness || 'claude_code';
+            h += '<div class="aje-card' + (e.enabled ? '' : ' off') + '" data-i="' + i + '">' +
+              '<div class="aje-card-top">' +
+                '<div class="aje-harness"><i class="fas ' + harnessIcon(harness) + '"></i><span>' + esc(harnessLabel(harness)) + '</span></div>' +
+                '<span class="aje-state">' + (e.enabled ? '启用' : '停用') + '</span>' +
               '</div>' +
-              '<div class="aje-rowfoot">' +
-                '<div class="aje-field" style="max-width:150px;"><label>并发上限</label>' +
-                  '<input type="number" data-f="concurrency_limit" min="1" max="64" value="' + (parseInt(e.concurrency_limit)||1) + '"></div>' +
-                '<label class="aje-check"><input type="checkbox" data-f="enabled"' + (e.enabled ? ' checked' : '') + '> 启用</label>' +
-                '<button type="button" class="aje-del" data-del="' + i + '" title="删除端点"><i class="fas fa-trash-can"></i></button>' +
+              '<div class="aje-card-main">' +
+                '<div class="aje-model" title="' + esc(modelText(e)) + '">' + esc(modelText(e)) + '</div>' +
+                '<div class="aje-url" title="' + esc(endpointText(e)) + '">' + esc(endpointText(e)) + '</div>' +
+              '</div>' +
+              '<div class="aje-card-meta">' +
+                '<span class="aje-chip"><i class="fas fa-gauge-high"></i>并发 ' + (parseInt(e.concurrency_limit)||1) + '</span>' +
+                '<span class="aje-chip"><i class="fas fa-key"></i>' + esc(keyText(e)) + '</span>' +
+                (!e.id ? '<span class="aje-chip"><i class="fas fa-circle-plus"></i>未保存</span>' : '') +
+                '<button type="button" class="aje-edit-btn" data-edit="' + i + '" title="编辑端点" aria-label="编辑端点"><i class="fas fa-pen"></i></button>' +
               '</div>' +
             '</div>';
           });
-          editor.innerHTML = h; bind(); updateHead();
+          editor.innerHTML = h;
+          updateHead();
         }
-        function bind(){
-          editor.querySelectorAll('[data-f]').forEach(function(inp){
-            var row = inp.closest('[data-i]'); var i = parseInt(row.getAttribute('data-i'),10);
-            var f = inp.getAttribute('data-f');
-            var ev = (inp.type === 'checkbox' || inp.type === 'number') ? 'change' : 'input';
-            inp.addEventListener(ev, function(){
-              if (f === 'enabled'){ eps[i].enabled = inp.checked; row.classList.toggle('off', !inp.checked); updateHead(); }
-              else if (f === 'concurrency_limit'){ eps[i].concurrency_limit = parseInt(inp.value)||1; updateHead(); }
-              else { eps[i][f] = inp.value; }
-            });
-          });
-          editor.querySelectorAll('[data-del]').forEach(function(b){
-            b.addEventListener('click', function(){ eps.splice(parseInt(b.getAttribute('data-del'),10),1); render(); });
+        function applyHarnessMode(){
+          var h = editHarness.value || 'claude_code';
+          var isOpenCode = h === 'opencode';
+          editBaseUrlWrap.style.display = isOpenCode ? 'none' : '';
+          editOpenCodeNote.style.display = isOpenCode ? '' : 'none';
+          editBaseUrlLabel.textContent = h === 'codex' ? 'Base URL（OpenAI 兼容）' : 'Base URL（Anthropic 兼容）';
+          editBaseUrl.placeholder = h === 'codex' ? 'https://.../v1' : 'https://.../anthropic';
+          editModel.placeholder = isOpenCode ? 'Go 订阅默认模型' : '默认模型';
+        }
+        function openEditor(index){
+          editIndex = (typeof index === 'number') ? index : null;
+          var e = editIndex === null ? defaultEndpoint() : eps[editIndex];
+          document.getElementById('ajeEditModalLabel').textContent = editIndex === null ? '添加端点' : '编辑端点';
+          editHarness.value = e.harness || 'claude_code';
+          editBaseUrl.value = e.base_url || '';
+          editApiKey.value = e.api_key || '';
+          editApiKey.placeholder = e.has_key ? '已配置（留空保持不变）' : '请输入 API Key';
+          editKeyHint.textContent = e.has_key ? '已保存的 API Key 不会回显；留空表示保持不变。' : '保存前请填写 API Key。';
+          editModel.value = e.model || '';
+          editConcurrency.value = parseInt(e.concurrency_limit) || 1;
+          editEnabled.checked = !!e.enabled;
+          editDelete.style.display = editIndex === null ? 'none' : '';
+          updateHarnessPicker();
+          applyHarnessMode();
+          if (modal) modal.show();
+        }
+        editor.addEventListener('click', function(ev){
+          var btn = ev.target.closest('[data-edit]');
+          if (!btn) return;
+          openEditor(parseInt(btn.getAttribute('data-edit'), 10));
+        });
+        if (harnessTrigger) {
+          harnessTrigger.addEventListener('click', function(ev){
+            ev.stopPropagation();
+            setHarnessMenuOpen(!(harnessPicker && harnessPicker.classList.contains('open')));
           });
         }
-        document.getElementById('ajeAddBtn').addEventListener('click', function(){
-          eps.push({id:null, base_url:'', model:'', concurrency_limit:1, enabled:true, has_key:false, api_key:''});
+        if (harnessMenu) {
+          harnessMenu.addEventListener('click', function(ev){
+            var opt = ev.target.closest('[data-harness-value]');
+            if (!opt) return;
+            setHarnessValue(opt.getAttribute('data-harness-value'));
+          });
+        }
+        document.addEventListener('click', function(ev){
+          if (harnessPicker && !harnessPicker.contains(ev.target)) setHarnessMenuOpen(false);
+        });
+        if (modalEl) {
+          modalEl.addEventListener('hidden.bs.modal', function(){ setHarnessMenuOpen(false); });
+        }
+        editApply.addEventListener('click', function(){
+          var h = editHarness.value || 'claude_code';
+          var old = editIndex === null ? defaultEndpoint() : eps[editIndex];
+          var next = {
+            id: old.id || null,
+            harness: h,
+            base_url: h === 'opencode' ? '' : (editBaseUrl.value || '').trim(),
+            model: (editModel.value || '').trim(),
+            concurrency_limit: Math.max(1, parseInt(editConcurrency.value, 10) || 1),
+            enabled: !!editEnabled.checked,
+            has_key: !!old.has_key || !!(editApiKey.value || '').trim(),
+            api_key: (editApiKey.value || '').trim()
+          };
+          if (editIndex === null) eps.push(next);
+          else eps[editIndex] = next;
           render();
+          if (modal) modal.hide();
+        });
+        editDelete.addEventListener('click', function(){
+          if (editIndex === null) return;
+          if (!window.confirm('确认从端点列表中移除这个端点？点击「保存端点」后才会写入。')) return;
+          eps.splice(editIndex, 1);
+          render();
+          if (modal) modal.hide();
+        });
+        document.getElementById('ajeAddBtn').addEventListener('click', function(){
+          openEditor(null);
         });
         document.getElementById('ajeSaveBtn').addEventListener('click', function(){
           var hint = document.getElementById('ajeHint');
           var payload = { timeout_seconds: parseInt(document.getElementById('ajeTimeout').value)||1800,
-            endpoints: eps.map(function(e){ return {id:e.id, base_url:(e.base_url||'').trim(),
+            endpoints: eps.map(function(e){ return {id:e.id, harness:e.harness || 'claude_code',
+              base_url:(e.base_url||'').trim(),
               api_key:(e.api_key||'').trim(), model:(e.model||'').trim(),
               concurrency_limit: parseInt(e.concurrency_limit)||1, enabled: e.enabled }; }) };
           hint.style.color = '#70757c'; hint.textContent = '保存中…';
@@ -3419,6 +4221,244 @@
   .submissions-search input:focus {
     border-color: #86b7fe;
     box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15);
+  }
+
+  .rk-bulk-open,
+  .rk-bulk-filter-btn,
+  .rk-bulk-primary,
+  .rk-bulk-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.42rem;
+    border-radius: 6px;
+    border: 1px solid #d9dde3;
+    background: #fff;
+    color: #272b31;
+    font-size: 0.82rem;
+    line-height: 1.2;
+    min-height: 32px;
+    padding: 0.42rem 0.78rem;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  }
+  .rk-bulk-open:hover:not(:disabled),
+  .rk-bulk-filter-btn:hover:not(:disabled),
+  .rk-bulk-secondary:hover:not(:disabled) {
+    border-color: #aeb4bd;
+    background: #f7f8fa;
+  }
+  .rk-bulk-open:disabled,
+  .rk-bulk-filter-btn:disabled,
+  .rk-bulk-primary:disabled,
+  .rk-bulk-secondary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .rk-bulk-primary,
+  .rk-bulk-filter-btn {
+    border-color: #1f2329;
+    background: #1f2329;
+    color: #fff;
+  }
+  .rk-bulk-primary:hover:not(:disabled),
+  .rk-bulk-filter-btn:hover:not(:disabled) {
+    border-color: #343941;
+    background: #343941;
+  }
+  .rk-bulk-modal .modal-content {
+    border: 1px solid #d9dde3;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+  .rk-bulk-modal .modal-header,
+  .rk-bulk-modal .modal-footer {
+    border-color: #eceff3;
+  }
+  .rk-bulk-modal .modal-title {
+    font-size: 1rem;
+    font-weight: 650;
+    color: #1f2329;
+  }
+  .rk-bulk-subtitle {
+    color: #6b7280;
+    font-size: 0.78rem;
+    margin-top: 0.2rem;
+  }
+  .rk-bulk-filters {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+    gap: 0.65rem;
+    align-items: end;
+  }
+  .rk-bulk-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+    margin: 0;
+  }
+  .rk-bulk-field span {
+    color: #5f6670;
+    font-size: 0.74rem;
+    font-weight: 600;
+  }
+  .rk-bulk-field input {
+    min-height: 34px;
+    border: 1px solid #d9dde3;
+    border-radius: 6px;
+    padding: 0.42rem 0.58rem;
+    color: #1f2329;
+    background: #fff;
+    font-size: 0.84rem;
+  }
+  .rk-bulk-field input:focus {
+    outline: none;
+    border-color: #1f2329;
+  }
+  .rk-bulk-statuses {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.85rem;
+  }
+  .rk-bulk-statuses label,
+  .rk-bulk-select label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.36rem;
+    margin: 0;
+    border: 1px solid #dfe3e8;
+    border-radius: 6px;
+    background: #fff;
+    color: #3d444d;
+    font-size: 0.8rem;
+    padding: 0.34rem 0.55rem;
+  }
+  .rk-bulk-statuses input,
+  .rk-bulk-select input,
+  .rk-bulk-check input {
+    accent-color: #1f2329;
+  }
+  .rk-bulk-result-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    align-items: center;
+    margin-top: 1rem;
+    color: #5f6670;
+    font-size: 0.8rem;
+  }
+  .rk-bulk-results {
+    margin-top: 0.55rem;
+    border: 1px solid #dfe3e8;
+    border-radius: 8px;
+    overflow: auto;
+    max-height: 430px;
+    background: #fff;
+  }
+  .rk-bulk-empty {
+    padding: 2rem 1rem;
+    text-align: center;
+    color: #8a929d;
+    font-size: 0.86rem;
+  }
+  .rk-bulk-row {
+    display: grid;
+    grid-template-columns: 94px minmax(90px, 1fr) 86px 78px minmax(120px, 1.25fr) 150px;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.7rem;
+    border-top: 1px solid #eef1f4;
+    min-width: 760px;
+  }
+  .rk-bulk-row:first-child { border-top: 0; }
+  .rk-bulk-row:hover { background: #fafbfc; }
+  .rk-bulk-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    color: #4b5563;
+  }
+  .rk-bulk-cell {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #3d444d;
+    font-size: 0.82rem;
+  }
+  .rk-bulk-cell.rk-score,
+  .rk-bulk-cell.rk-time {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .rk-bulk-cell.rk-model {
+    color: #6b7280;
+  }
+  .rk-bulk-pill {
+    justify-self: start;
+    border-radius: 4px;
+    padding: 0.18rem 0.45rem;
+    font-size: 0.74rem;
+    font-weight: 600;
+    border: 1px solid #dfe3e8;
+    color: #5f6670;
+    background: #f8f9fa;
+  }
+  .rk-bulk-pill.ok { color: #1f6f49; border-color: #bedacb; background: #edf6f1; }
+  .rk-bulk-pill.info { color: #255c99; border-color: #c9d9eb; background: #eff5fb; }
+  .rk-bulk-pill.err { color: #a13a34; border-color: #e4c4c1; background: #faf0ef; }
+  .rk-bulk-progress {
+    margin-top: 1rem;
+    border: 1px solid #dfe3e8;
+    border-radius: 8px;
+    padding: 0.75rem;
+    background: #fafbfc;
+  }
+  .rk-bulk-progress-track {
+    height: 18px;
+    background: #eef1f4;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .rk-bulk-progress-bar {
+    height: 100%;
+    min-width: 34px;
+    background: #1f2329;
+    color: #fff;
+    text-align: center;
+    font-size: 0.72rem;
+    line-height: 18px;
+    transition: width 0.2s ease;
+  }
+  .rk-bulk-progress-bar.is-done {
+    background: #2f6b4f;
+  }
+  .rk-bulk-progress-text {
+    margin-top: 0.45rem;
+    color: #5f6670;
+    font-size: 0.8rem;
+  }
+  @media (max-width: 900px) {
+    .rk-bulk-filters {
+      grid-template-columns: 1fr 1fr;
+    }
+    .rk-bulk-filter-btn {
+      grid-column: span 2;
+    }
+  }
+  @media (max-width: 560px) {
+    .rk-bulk-filters {
+      grid-template-columns: 1fr;
+    }
+    .rk-bulk-filter-btn {
+      grid-column: auto;
+    }
+    .rk-bulk-result-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
   }
 
   .submissions-empty {

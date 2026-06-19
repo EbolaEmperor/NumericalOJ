@@ -1,4 +1,4 @@
-# 打榜赛 Agent-as-Judge 评测镜像：预装 claude CLI + 常见工具链 + report 命令。
+# 打榜赛 Agent-as-Judge 评测镜像：预装 Agent Harness CLI + 常见工具链 + report 命令。
 # 构建（在 why-server 上一次性执行）：
 #   docker build -t numericaloj-agent-judge:latest docker/agent_judge
 FROM node:20-bookworm
@@ -89,11 +89,18 @@ RUN pip3 install --no-cache-dir --break-system-packages playwright \
 # torch/paddle/easyocr/opencv/sklearn 均兼容，且让 apt 的 pandas/matplotlib 恢复可用。
 RUN pip3 install --no-cache-dir --break-system-packages --force-reinstall "numpy<2"
 
-# 预装 claude CLI（关键：不放进评测关键路径）
-RUN npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com
+# 预装 Agent Harness CLI（关键：不放进评测关键路径）
+RUN npm install -g \
+        @anthropic-ai/claude-code \
+        @openai/codex \
+        opencode-ai \
+        @ai-sdk/openai-compatible \
+        @ai-sdk/anthropic \
+        --registry=https://registry.npmmirror.com
 
 # report 上报命令
 COPY report /usr/local/bin/report
-RUN chmod +x /usr/local/bin/report
+COPY run_harness /usr/local/bin/run_harness
+RUN chmod +x /usr/local/bin/report /usr/local/bin/run_harness
 
 WORKDIR /workspace
