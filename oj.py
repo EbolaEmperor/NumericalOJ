@@ -247,6 +247,7 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     celery,
     evaluate_submission,
     transcribe_written_homework_to_latex,
+    agent_judge_task=evaluate_ranking_agent_judge,
 )
 
 # 初始化重测模块（依赖 Celery、Redis、程序题评测 + 书面作业转写评分任务）
@@ -273,8 +274,6 @@ init_ranking_module(
 )
 # 启动 ELO 匹配 tick 链路（自调度，全局单链）
 seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
-# 启动 Pending 自动回收链路（自调度，全局单链）
-seed_pending_requeue_watchdog(rds, pending_requeue_watchdog)
 # 初始化认证模块（登录/发码限流依赖 Redis）
 init_auth_module(rds)
 # 初始化 AI 模块（/ask_ai、ask_ai_code_marks 限流依赖 Redis）
@@ -307,6 +306,14 @@ if __name__ == '__main__':
             ranking_task=evaluate_ranking_submission,
             elo_initial_burst_task=ranking_elo_initial_burst,
             agent_judge_task=evaluate_ranking_agent_judge,
+        )
+        # 启动 Pending 自动回收链路（自调度，全局单链）。重启恢复完成后换新 owner，
+        # 让旧 watchdog ETA 消息即使醒来，也因 owner 不匹配而 no-op。
+        seed_pending_requeue_watchdog(
+            rds,
+            pending_requeue_watchdog,
+            reset_owner=True,
+            countdown=180,
         )
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

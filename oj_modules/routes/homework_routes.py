@@ -73,7 +73,16 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                     update_export_progress(task_id, 'error', 0, 1, '该班级没有布置任何作业')
                     return None
 
-                problem_ids = [p['problem_id'] for p in homework_problems]
+                problem_ids = [p['problem_id'] for p in homework_problems if p.get('problem_id') is not None]
+                if not problem_ids:
+                    update_export_progress(
+                        task_id,
+                        'error',
+                        0,
+                        1,
+                        '该班级没有可导出查重的普通题作业（打榜赛暂不查重）',
+                    )
+                    return None
 
                 problems_map = {}
                 conn = get_db_connection()
@@ -520,29 +529,66 @@ def export_scores():
     if not class_info:
         return "班级不存在", 404
 
+    ensure_class_homework_columns(selected_class)
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT problem_id FROM {safe_table_name(selected_class)} ORDER BY id ASC")
-            rows = cursor.fetchall()
-            problem_ids = [r['problem_id'] for r in rows]
+            cursor.execute(
+                f"""
+                SELECT hw.id,
+                       hw.problem_id,
+                       hw.ranking_competition_id,
+                       hw.problem_title,
+                       rc.title AS ranking_title
+                FROM {safe_table_name(selected_class)} hw
+                LEFT JOIN ranking_competitions rc ON rc.id = hw.ranking_competition_id
+                ORDER BY hw.id ASC
+                """
+            )
+            homework_rows = cursor.fetchall()
     finally:
         conn.close()
 
-    if not problem_ids:
+    if not homework_rows:
         return "该班级没有布置任何作业", 404
 
+    score_columns = []
+    for hw in homework_rows:
+        problem_id = hw.get('problem_id')
+        ranking_competition_id = hw.get('ranking_competition_id')
+        if problem_id is not None:
+            score_columns.append({
+                'kind': 'problem',
+                'id': int(problem_id),
+                'title': None,
+            })
+        elif ranking_competition_id is not None:
+            title = hw.get('problem_title') or hw.get('ranking_title') or f"打榜赛 {ranking_competition_id}"
+            score_columns.append({
+                'kind': 'ranking',
+                'id': int(ranking_competition_id),
+                'title': title,
+            })
+
+    if not score_columns:
+        return "该班级没有可导出的作业", 404
+
+    problem_ids = [c['id'] for c in score_columns if c['kind'] == 'problem']
+    ranking_competition_ids = [c['id'] for c in score_columns if c['kind'] == 'ranking']
+
     problem_titles = {}
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            fmt = ','.join(['%s'] * len(problem_ids))
-            cursor.execute(f"SELECT id, title FROM problems WHERE id IN ({fmt})", problem_ids)
-            for p in cursor.fetchall():
-                title = p['title'].encode('gbk', errors='replace').decode('gbk')
-                problem_titles[p['id']] = title
-    finally:
-        conn.close()
+    if problem_ids:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                fmt = ','.join(['%s'] * len(problem_ids))
+                cursor.execute(f"SELECT id, title FROM problems WHERE id IN ({fmt})", problem_ids)
+                for p in cursor.fetchall():
+                    title = p['title'].encode('gbk', errors='replace').decode('gbk')
+                    problem_titles[int(p['id'])] = title
+        finally:
+            conn.close()
 
     conn = get_db_connection()
     try:
@@ -595,10 +641,41 @@ def export_scores():
     import codecs
     import csv
 
+    ranking_score_map = {}
+    if ranking_competition_ids:
+        usernames = [s['username'] for s in students]
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                username_placeholders = ','.join(['%s'] * len(usernames))
+                cid_placeholders = ','.join(['%s'] * len(ranking_competition_ids))
+                cursor.execute(
+                    f"""
+                    SELECT username, competition_id, MAX(score) AS score
+                    FROM ranking_submissions
+                    WHERE username IN ({username_placeholders})
+                      AND competition_id IN ({cid_placeholders})
+                      AND score IS NOT NULL
+                    GROUP BY username, competition_id
+                    """,
+                    tuple(usernames + ranking_competition_ids),
+                )
+                for row in cursor.fetchall():
+                    ranking_score_map.setdefault(row['username'], {})[int(row['competition_id'])] = row['score']
+        finally:
+            conn.close()
+
     output = BytesIO()
     writer = csv.writer(codecs.getwriter('gbk')(output))
 
-    headers = ['用户名'] + [problem_titles[pid] for pid in problem_ids] + ['总分']
+    column_titles = []
+    for col in score_columns:
+        if col['kind'] == 'problem':
+            column_titles.append(problem_titles.get(col['id']) or f"题目 {col['id']}")
+        else:
+            column_titles.append(col['title'])
+
+    headers = ['用户名'] + column_titles + ['总分']
     writer.writerow([h.encode('gbk', 'replace').decode('gbk') for h in headers])
 
     for stu in students:
@@ -607,8 +684,12 @@ def export_scores():
         total = 0
 
         ms = max_score_map.get(uid, {})
-        for pid in problem_ids:
-            score = ms.get(pid, 0) if ms else 0
+        ranking_scores = ranking_score_map.get(stu['username'], {})
+        for col in score_columns:
+            if col['kind'] == 'problem':
+                score = ms.get(col['id'], 0) if ms else 0
+            else:
+                score = ranking_scores.get(col['id'], 0) if ranking_scores else 0
             score = score or 0
             total += score
             row.append(str(score))

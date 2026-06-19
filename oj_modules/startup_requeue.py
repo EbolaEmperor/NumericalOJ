@@ -14,6 +14,7 @@
 正在评测的 Running 提交造成重复评测；现行部署流程不会出现这种情况。
 """
 
+import json
 import uuid
 from datetime import datetime
 
@@ -42,21 +43,33 @@ from oj_modules.tasks.ranking_agent_judge_tasks import (
 
 
 _STARTUP_REQUEUE_STAGGER_SECONDS = 1
+_AGENT_JUDGE_RECOVERY_BASE_DELAY_SECONDS = 10
+_AGENT_JUDGE_ORPHAN_REQUEUE_AFTER_SECONDS = 15 * 60
 PENDING_REQUEUE_WATCHDOG_TASK_NAME = "oj.pending_requeue_watchdog"
 _PENDING_REQUEUE_OWNER_KEY = "submission:pending_requeue:owner"
 _PENDING_REQUEUE_SEED_LOCK_KEY = "submission:pending_requeue:seed_lock"
 _PENDING_REQUEUE_RUN_LOCK_KEY = "submission:pending_requeue:run_lock"
 _PENDING_REQUEUE_ITEM_KEY_FMT = "submission:{submission_id}:pending_requeue"
+_RANKING_REQUEUE_ITEM_KEY_FMT = "ranking_submission:{submission_id}:pending_requeue"
+_AGENT_JUDGE_STARTUP_GUARD_KEY = "ranking:agent_judge:startup_recovery_guard"
+_AGENT_JUDGE_TASK_NAME = "oj.ranking_agent_judge"
+_BROKER_PURGE_TASK_NAMES = {_AGENT_JUDGE_TASK_NAME, PENDING_REQUEUE_WATCHDOG_TASK_NAME}
 _PENDING_REQUEUE_INTERVAL_SECONDS = 300
 _PENDING_REQUEUE_OWNER_TTL_SECONDS = _PENDING_REQUEUE_INTERVAL_SECONDS * 3
 _PENDING_REQUEUE_GRACE_SECONDS = 180
 _PENDING_REQUEUE_ITEM_TTL_SECONDS = 600
 _PENDING_REQUEUE_MAX_PER_TICK = 50
+_AGENT_JUDGE_STARTUP_GUARD_SECONDS = 20 * 60
 
 
 def _startup_countdown(index):
     """启动恢复任务错峰入队，避免大量 worker 同时打到 MySQL 连接池。"""
     return max(0, int(index or 0)) * _STARTUP_REQUEUE_STAGGER_SECONDS
+
+
+def _agent_judge_recovery_countdown(index):
+    """Agent 评测恢复任务稍后再投递，给新提交的即时任务保留队首优先级。"""
+    return _AGENT_JUDGE_RECOVERY_BASE_DELAY_SECONDS + _startup_countdown(index)
 
 
 def _redis_client():
@@ -74,16 +87,16 @@ def _redis_client():
 
 
 def _submission_age_seconds(row, now=None):
-    created_at = (row or {}).get('created_at')
-    if not created_at:
+    timestamp = (row or {}).get('judge_heartbeat_at') or (row or {}).get('created_at')
+    if not timestamp:
         return None
     if now is None:
         now = datetime.now()
 
-    if isinstance(created_at, datetime):
-        value = created_at
+    if isinstance(timestamp, datetime):
+        value = timestamp
     else:
-        text = str(created_at).strip()
+        text = str(timestamp).strip()
         value = None
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
             try:
@@ -105,24 +118,239 @@ def _old_enough_for_watchdog(row):
     return age_seconds is None or age_seconds >= _PENDING_REQUEUE_GRACE_SECONDS
 
 
-def _claim_watchdog_requeue(redis_client, submission_id):
+def _claim_watchdog_requeue(redis_client, submission_id, *,
+                            key_fmt=_PENDING_REQUEUE_ITEM_KEY_FMT):
     if redis_client is None:
         return True
-    key = _PENDING_REQUEUE_ITEM_KEY_FMT.format(submission_id=int(submission_id))
+    key = key_fmt.format(submission_id=int(submission_id))
     try:
         return bool(redis_client.set(key, "1", ex=_PENDING_REQUEUE_ITEM_TTL_SECONDS, nx=True))
     except Exception:
         return True
 
 
-def _release_watchdog_requeue_claim(redis_client, submission_id):
+def _release_watchdog_requeue_claim(redis_client, submission_id, *,
+                                    key_fmt=_PENDING_REQUEUE_ITEM_KEY_FMT):
     if redis_client is None:
         return
-    key = _PENDING_REQUEUE_ITEM_KEY_FMT.format(submission_id=int(submission_id))
+    key = key_fmt.format(submission_id=int(submission_id))
     try:
         redis_client.delete(key)
     except Exception:
         pass
+
+
+def _decode_broker_message(raw):
+    value = raw
+    for _ in range(4):
+        if isinstance(value, bytes):
+            try:
+                value = value.decode('utf-8')
+            except Exception:
+                return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except Exception:
+                return None
+            continue
+        if isinstance(value, list) and value:
+            value = value[0]
+            continue
+        break
+    return value if isinstance(value, dict) else None
+
+
+def _is_agent_judge_broker_message(raw):
+    msg = _decode_broker_message(raw)
+    if not msg:
+        return False
+    headers = msg.get('headers') or {}
+    return headers.get('task') in _BROKER_PURGE_TASK_NAMES
+
+
+def _broker_list_keys(redis_client):
+    """返回 Redis broker 中所有 list 队列键，覆盖 Celery priority 子队列。"""
+    if redis_client is None:
+        return []
+    keys = []
+    try:
+        for key in redis_client.scan_iter(count=500):
+            try:
+                if redis_client.type(key) == 'list':
+                    keys.append(key)
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[StartupRequeue] 扫描 Redis broker list 键失败：{e}")
+    return keys
+
+
+def _purge_agent_judge_broker_messages(redis_client):
+    """受控重启恢复前，丢弃 Redis broker 里的旧 Agent Judge retry/投递消息。
+
+    DB 是 Agent Judge 的恢复源。重启时如果保留旧 Celery retry/ETA/unacked 消息，
+    它们会和新 attempt 竞争，导致新入队任务被旧消息刷新/跳过。这里只精确删除
+    `oj.ranking_agent_judge`，不清普通评测队列和 Celery backend。
+    """
+    if redis_client is None:
+        return {'ready': 0, 'unacked': 0, 'claims': 0}
+
+    removed_ready = 0
+    removed_unacked = 0
+    removed_claims = 0
+    removed_ready_by_key = {}
+
+    for queue_key in _broker_list_keys(redis_client):
+        try:
+            items = redis_client.lrange(queue_key, 0, -1)
+            if not items:
+                continue
+            kept = []
+            removed_for_key = 0
+            for raw in items:
+                if _is_agent_judge_broker_message(raw):
+                    removed_for_key += 1
+                    removed_ready += 1
+                else:
+                    kept.append(raw)
+            if removed_for_key:
+                pipe = redis_client.pipeline()
+                pipe.delete(queue_key)
+                if kept:
+                    pipe.rpush(queue_key, *kept)
+                pipe.execute()
+                removed_ready_by_key[str(queue_key)] = removed_for_key
+        except Exception as e:
+            print(f"[StartupRequeue] 清理 broker 队列 {queue_key} 失败：{e}")
+
+    try:
+        pipe = redis_client.pipeline()
+        for delivery_tag, raw in redis_client.hscan_iter('unacked', count=200):
+            if not _is_agent_judge_broker_message(raw):
+                continue
+            pipe.hdel('unacked', delivery_tag)
+            pipe.zrem('unacked_index', delivery_tag)
+            removed_unacked += 1
+        if removed_unacked:
+            pipe.execute()
+    except Exception as e:
+        print(f"[StartupRequeue] 清理 judge unacked 队列失败：{e}")
+
+    try:
+        keys = list(redis_client.scan_iter(match='ranking_submission:*:pending_requeue', count=200))
+        if keys:
+            removed_claims = len(keys)
+            redis_client.delete(*keys)
+    except Exception as e:
+        print(f"[StartupRequeue] 清理打榜赛重排抢占键失败：{e}")
+
+    try:
+        redis_client.setex(
+            _AGENT_JUDGE_STARTUP_GUARD_KEY,
+            _AGENT_JUDGE_STARTUP_GUARD_SECONDS,
+            '1',
+        )
+    except Exception:
+        pass
+
+    if removed_ready or removed_unacked or removed_claims:
+        print(
+            f"[StartupRequeue] 清理旧 Agent Judge broker 消息："
+            f"ready {removed_ready} 条，unacked {removed_unacked} 条，"
+            f"requeue-claim {removed_claims} 条。"
+        )
+    return {
+        'ready': removed_ready,
+        'unacked': removed_unacked,
+        'claims': removed_claims,
+        'ready_by_key': removed_ready_by_key,
+    }
+
+
+def _active_agent_judge_submission_ids(redis_client):
+    """从 Redis 幂等锁和端点槽位里收集仍在运行的 Agent 评测提交。"""
+    if redis_client is None:
+        return set()
+    active_ids = set()
+    try:
+        for key in redis_client.scan_iter(match='ranking:judge:lock:*', count=200):
+            parts = str(key or '').split(':')
+            if len(parts) >= 4:
+                try:
+                    active_ids.add(int(parts[3]))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        for key in redis_client.scan_iter(match='aj:ep:*:slot:*', count=200):
+            try:
+                value = redis_client.get(key)
+            except Exception:
+                value = None
+            sid_text = str(value or '').split(':', 1)[0].strip()
+            if sid_text:
+                try:
+                    active_ids.add(int(sid_text))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return active_ids
+
+
+def _task_result_ready(task, task_id):
+    """Celery backend 已有终态结果，说明这条 DB 记录不该继续停在 Queued/Judging。"""
+    task_id = str(task_id or '').strip()
+    if not task or not task_id:
+        return False
+    try:
+        return bool(task.AsyncResult(task_id).ready())
+    except Exception:
+        return False
+
+
+def _agent_judge_orphaned(row, active_submission_ids, agent_judge_task):
+    """判断 Agent 评测记录是否已经没有对应的活任务。"""
+    try:
+        sub_id = int(row.get('id'))
+    except Exception:
+        return False
+    if sub_id in active_submission_ids:
+        return False
+
+    age_seconds = _submission_age_seconds(row)
+    if age_seconds is None or age_seconds < _AGENT_JUDGE_ORPHAN_REQUEUE_AFTER_SECONDS:
+        return False
+
+    if _task_result_ready(agent_judge_task, row.get('judge_task_id')):
+        return True
+
+    status = str(row.get('status') or '').strip()
+    if status == 'Judging':
+        return True
+    if status == 'Queued' and not row.get('judge_task_id'):
+        return True
+    return False
+
+
+def _enqueue_agent_judge_recovery(agent_judge_task, row, *, requeue_index):
+    """在同一条 ranking_submissions 记录上刷新 attempt 并重新投递评测任务。"""
+    if agent_judge_task is None:
+        return False
+    sub_id = row.get('id')
+    if sub_id is None:
+        return False
+
+    attempt_id = begin_agent_judge_attempt(sub_id, status='Queued', reset_result=False)
+    clear_judge_lock(sub_id)
+    async_result = agent_judge_task.apply_async(
+        args=[sub_id, attempt_id],
+        countdown=_agent_judge_recovery_countdown(requeue_index),
+    )
+    set_agent_judge_task_id(sub_id, attempt_id, async_result.id)
+    return True
 
 
 def _requeue_stale_pending_submissions(evaluate_task, written_task, *, source):
@@ -264,17 +492,10 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_jud
                 if agent_judge_task is not None:
                     if is_completed_agent_judge_submission(row):
                         continue
-                    attempt_id = row.get('judge_attempt_id')
-                    if not attempt_id:
-                        attempt_id = begin_agent_judge_attempt(
-                            sub_id, status='Queued', reset_result=False,
-                        )
-                    clear_judge_lock(sub_id)   # 清僵尸幂等锁，否则重排任务会被挡住、提交卡死
-                    async_result = agent_judge_task.apply_async(
-                        args=[sub_id, attempt_id], countdown=_startup_countdown(requeued),
-                    )
-                    set_agent_judge_task_id(sub_id, attempt_id, async_result.id)
-                    requeued += 1
+                    if _enqueue_agent_judge_recovery(
+                        agent_judge_task, row, requeue_index=requeued,
+                    ):
+                        requeued += 1
             elif scoring_mode == 'elo':
                 initial_rating = float(row.get('elo_initial_rating') or 1500)
                 init_submission_elo_state(sub_id, initial_rating)
@@ -293,10 +514,84 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_jud
     return requeued
 
 
+def _requeue_orphaned_agent_judge_submissions(agent_judge_task):
+    """周期性回收 DB 停在 Queued/Judging、但已没有活任务的 Agent 评测记录。"""
+    if agent_judge_task is None:
+        return 0
+
+    redis_client = _redis_client()
+    if redis_client is not None:
+        try:
+            if redis_client.exists(_AGENT_JUDGE_STARTUP_GUARD_KEY):
+                return 0
+        except Exception:
+            pass
+    active_submission_ids = _active_agent_judge_submission_ids(redis_client)
+    requeued = 0
+    skipped_active = 0
+    skipped_claimed = 0
+
+    try:
+        rows = get_incomplete_ranking_submissions()
+    except Exception as e:
+        print(f"[PendingRequeue] 查询未完成打榜赛提交失败：{e}")
+        return 0
+
+    for row in rows:
+        if requeued >= _PENDING_REQUEUE_MAX_PER_TICK:
+            break
+        if str(row.get('scoring_mode') or '').strip().lower() != 'agent_judge':
+            continue
+        sub_id = row.get('id')
+        if sub_id is None:
+            continue
+        if is_completed_agent_judge_submission(row):
+            continue
+        if int(sub_id) in active_submission_ids:
+            skipped_active += 1
+            continue
+        if not _agent_judge_orphaned(row, active_submission_ids, agent_judge_task):
+            continue
+        if not _claim_watchdog_requeue(
+            redis_client,
+            sub_id,
+            key_fmt=_RANKING_REQUEUE_ITEM_KEY_FMT,
+        ):
+            skipped_claimed += 1
+            continue
+
+        try:
+            if _enqueue_agent_judge_recovery(
+                agent_judge_task, row, requeue_index=requeued,
+            ):
+                requeued += 1
+            else:
+                _release_watchdog_requeue_claim(
+                    redis_client,
+                    sub_id,
+                    key_fmt=_RANKING_REQUEUE_ITEM_KEY_FMT,
+                )
+        except Exception as e:
+            _release_watchdog_requeue_claim(
+                redis_client,
+                sub_id,
+                key_fmt=_RANKING_REQUEUE_ITEM_KEY_FMT,
+            )
+            print(f"[PendingRequeue] 打榜赛 Agent 评测 #{sub_id} 重新入队失败：{e}")
+
+    if requeued or skipped_active or skipped_claimed:
+        print(
+            f"[PendingRequeue] agent_judge 扫描完成：重新入队 {requeued} 条，"
+            f"跳过活跃任务 {skipped_active} 条，跳过已抢占 {skipped_claimed} 条。"
+        )
+    return requeued
+
+
 def requeue_pending_on_startup(*, evaluate_task, written_task,
                                ranking_task, elo_initial_burst_task, agent_judge_task=None):
     """启动时扫描 MySQL 并重新入队所有未完成任务（程序题 / 书面作业 / 打榜赛）。"""
     try:
+        _purge_agent_judge_broker_messages(_redis_client())
         prog = _requeue_programming_submissions(evaluate_task, written_task)
         rank = _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_judge_task)
         print(
@@ -307,7 +602,8 @@ def requeue_pending_on_startup(*, evaluate_task, written_task,
         print(f"[StartupRequeue] 启动重新入队异常（已忽略，不影响启动）：{e}")
 
 
-def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_task):
+def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_task,
+                                           agent_judge_task=None):
     """注册周期性 Pending 回收任务。
 
     不依赖 celery beat：任务运行结束前会自我调度下一跳，和 ELO matchmaker 一样用
@@ -349,30 +645,52 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
             except Exception:
                 pass
 
+        requeued = 0
+        agent_requeued = 0
         try:
             requeued = _requeue_stale_pending_submissions(
                 evaluate_task,
                 written_task,
                 source='watchdog',
             )
+            agent_requeued = _requeue_orphaned_agent_judge_submissions(agent_judge_task)
         finally:
             try:
                 self.apply_async(args=[owner_id], countdown=_PENDING_REQUEUE_INTERVAL_SECONDS)
             except Exception:
                 pass
-        return {'success': True, 'requeued': requeued}
+        return {
+            'success': True,
+            'requeued': requeued,
+            'agent_judge_requeued': agent_requeued,
+        }
 
     return pending_requeue_watchdog
 
 
-def seed_pending_requeue_watchdog(redis_client, watchdog_task):
+def seed_pending_requeue_watchdog(redis_client, watchdog_task, *,
+                                  reset_owner=False, countdown=30):
     """启动一条全局唯一的 Pending 回收链。多次/多进程调用安全。"""
     if watchdog_task is None:
         return
     try:
         if redis_client is None:
             owner_id = uuid.uuid4().hex
-            watchdog_task.apply_async(args=[owner_id], countdown=30)
+            watchdog_task.apply_async(args=[owner_id], countdown=countdown)
+            return
+
+        if reset_owner:
+            owner_id = uuid.uuid4().hex
+            try:
+                redis_client.delete(_PENDING_REQUEUE_SEED_LOCK_KEY, _PENDING_REQUEUE_RUN_LOCK_KEY)
+            except Exception:
+                pass
+            redis_client.set(
+                _PENDING_REQUEUE_OWNER_KEY,
+                owner_id,
+                ex=_PENDING_REQUEUE_OWNER_TTL_SECONDS,
+            )
+            watchdog_task.apply_async(args=[owner_id], countdown=countdown)
             return
 
         if not redis_client.set(
@@ -385,7 +703,7 @@ def seed_pending_requeue_watchdog(redis_client, watchdog_task):
 
         owner_id = redis_client.get(_PENDING_REQUEUE_OWNER_KEY)
         if owner_id:
-            watchdog_task.apply_async(args=[owner_id], countdown=30)
+            watchdog_task.apply_async(args=[owner_id], countdown=countdown)
             return
 
         new_owner_id = uuid.uuid4().hex
@@ -395,6 +713,6 @@ def seed_pending_requeue_watchdog(redis_client, watchdog_task):
             ex=_PENDING_REQUEUE_OWNER_TTL_SECONDS,
             nx=True,
         ):
-            watchdog_task.apply_async(args=[new_owner_id], countdown=30)
+            watchdog_task.apply_async(args=[new_owner_id], countdown=countdown)
     except Exception:
         pass
