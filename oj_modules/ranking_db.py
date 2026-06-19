@@ -943,7 +943,12 @@ def set_agent_judge_task_id(submission_id, attempt_id, task_id):
 
 
 def set_submission_status_for_attempt(submission_id, attempt_id, status):
-    """只在 attempt 仍是当前 attempt 时更新状态，返回受影响行数。"""
+    """只在 attempt 仍是当前 attempt 时更新状态，返回匹配行数。
+
+    PyMySQL 默认 rowcount 是 changed rows；当状态本来就是目标值且 heartbeat
+    落在同一秒时，UPDATE 会返回 0。这里再查一次 attempt 是否仍匹配，避免把
+    “无改动”误判成“旧 attempt”。
+    """
     ensure_ranking_tables()
     conn = get_db_connection()
     try:
@@ -957,6 +962,18 @@ def set_submission_status_for_attempt(submission_id, attempt_id, status):
                 (status, submission_id, attempt_id),
             )
             affected = cursor.rowcount
+            if not affected:
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM ranking_submissions
+                    WHERE id = %s AND judge_attempt_id <=> %s
+                    LIMIT 1
+                    """,
+                    (submission_id, attempt_id),
+                )
+                if cursor.fetchone():
+                    affected = 1
         conn.commit()
         return int(affected or 0)
     finally:
@@ -1155,11 +1172,20 @@ def get_incomplete_ranking_submissions():
                 SELECT s.id, s.competition_id, s.status,
                        s.score, s.grade_details,
                        s.judge_attempt_id, s.judge_task_id, s.judge_heartbeat_at,
+                       s.created_at,
                        c.scoring_mode, c.elo_initial_rating
                 FROM ranking_submissions s
                 JOIN ranking_competitions c ON c.id = s.competition_id
                 WHERE s.status IN ('Judging', 'Queued')
-                ORDER BY s.id ASC
+                ORDER BY
+                    CASE
+                        WHEN s.created_at IS NOT NULL
+                         AND s.created_at >= (NOW() - INTERVAL 24 HOUR)
+                        THEN 0
+                        ELSE 1
+                    END ASC,
+                    s.created_at ASC,
+                    s.id ASC
                 """
             )
             return cursor.fetchall()
