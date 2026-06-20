@@ -1,4 +1,0 @@
-interface:
-  display_name: "MATLAB 出题人"
-  short_description: "Generate complete MATLAB problem packages"
-  default_prompt: "Use $matlab-problem-setter to turn a brief idea into a complete MATLAB problem package."

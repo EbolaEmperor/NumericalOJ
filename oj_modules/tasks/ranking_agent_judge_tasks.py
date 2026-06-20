@@ -200,6 +200,56 @@ def _write_error_for_attempt(submission_id, attempt_id, error_message):
     )
 
 
+def _fake_agent_judge_enabled():
+    raw = os.getenv('NUMOJ_FAKE_AGENT_JUDGE')
+    if raw is None:
+        raw = getattr(_cfg, 'NUMOJ_FAKE_AGENT_JUDGE', False)
+    return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _fake_agent_judge_full_score(competition, rules):
+    if rules:
+        total = 0.0
+        for rule in rules:
+            try:
+                total += float(rule.get('value') or 0)
+            except (TypeError, ValueError):
+                pass
+        if total > 0:
+            return total
+    try:
+        score = float((competition or {}).get('max_score') or 100)
+    except (TypeError, ValueError):
+        score = 100.0
+    return max(0.0, score)
+
+
+def _finish_fake_agent_judge(submission_id, attempt_id, competition):
+    """本地限额测试用假评测：不探活端点、不启动 Docker、不启动 agent。"""
+    if set_submission_status_for_attempt(submission_id, attempt_id, 'Judging') <= 0:
+        return {'success': True, 'message': '旧评测 attempt，跳过'}
+    rules = list_competition_rules(competition['id']) if competition else []
+    clear_judge_results_for_attempt(submission_id, attempt_id)
+    score = _fake_agent_judge_full_score(competition, rules)
+    evidence = '本地假评测：模拟排队结束后直接给满分。'
+    for rule in rules:
+        upsert_judge_result_for_attempt(
+            submission_id, attempt_id, rule.get('rule_id'),
+            'yes', 'yes', rule.get('value') or 0, evidence,
+        )
+    update_submission_result_for_attempt(
+        submission_id, attempt_id, score, 'Accepted',
+        grade_details={
+            'total_score': score,
+            'max_score': score,
+            'fake_agent_judge': True,
+            'note': evidence,
+        },
+    )
+    _publish_snapshot(submission_id)
+    return {'success': True, 'fake_agent_judge': True, 'score': score}
+
+
 # ---------- 多端点选择与 Redis 槽位限流 ----------
 
 def _resolve_endpoints(competition_id, competition=None):
@@ -809,6 +859,9 @@ def register_ranking_agent_judge_task(celery_app):
         skip, skip_msg = _task_should_skip(submission, attempt_id, competition=competition)
         if skip:
             return {'success': True, 'message': skip_msg}
+
+        if _fake_agent_judge_enabled():
+            return _finish_fake_agent_judge(sid, attempt_id, competition)
 
         # 选端点：优先端点池，回退比赛单端点；都没有则判 Error（避免无限重排）。
         endpoints = _resolve_endpoints(competition['id'], competition)
