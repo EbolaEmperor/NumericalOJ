@@ -2576,9 +2576,19 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--code-zip", required=True)
     pa.add_argument("--answer-file")
     pa.set_defaults(func=ranking_submit_zip)
-    pa = rs.add_parser("git")
+    pa = rs.add_parser(
+        "git",
+        help="Git-based ranking submission: run check first, then submit",
+        description=(
+            "Use when the ranking competition is configured for Git submission. "
+            "Run check first, then submit. "
+            "Run `ranking git <competition_id> check` first to verify the server-derived "
+            "repository URL and latest commit, then run `ranking git <competition_id> submit`. "
+            "Do not pass a repository URL; NumOJ derives it from the competition Git rule and your username."
+        ),
+    )
     pa.add_argument("competition_id", type=int)
-    pa.add_argument("action", choices=["check", "submit"])
+    pa.add_argument("action", choices=["check", "submit"], help="check repository visibility first; submit queues the checked repository for evaluation")
     pa.set_defaults(func=ranking_git_submit)
 
     return p

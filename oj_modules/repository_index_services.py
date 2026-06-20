@@ -83,7 +83,54 @@ class RepositoryIndexJobCancelled(Exception):
 
 
 def ensure_repository_index_tables():
-    return
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS repository_index_jobs (
+                    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'queued',
+                    total_files INT NOT NULL DEFAULT 0,
+                    processed_files INT NOT NULL DEFAULT 0,
+                    total_chunks INT NOT NULL DEFAULT 0,
+                    total_classes INT NOT NULL DEFAULT 0,
+                    error_message TEXT NULL,
+                    progress_message TEXT NULL,
+                    task_id VARCHAR(191) NULL,
+                    cancel_requested TINYINT(1) NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    finished_at DATETIME NULL,
+                    KEY idx_repository_index_jobs_user_id (user_id),
+                    KEY idx_repository_index_jobs_status (status),
+                    KEY idx_repository_index_jobs_active (user_id, status, cancel_requested)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                """
+            )
+            cursor.execute(
+                """
+                SELECT column_name AS name
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'repository_index_jobs'
+                  AND column_name IN ('progress_message', 'task_id', 'cancel_requested')
+                """
+            )
+            existing = {row["name"] for row in cursor.fetchall()}
+            if "progress_message" not in existing:
+                cursor.execute("ALTER TABLE repository_index_jobs ADD COLUMN progress_message TEXT NULL AFTER error_message")
+            if "task_id" not in existing:
+                cursor.execute("ALTER TABLE repository_index_jobs ADD COLUMN task_id VARCHAR(191) NULL AFTER progress_message")
+            if "cancel_requested" not in existing:
+                cursor.execute(
+                    "ALTER TABLE repository_index_jobs "
+                    "ADD COLUMN cancel_requested TINYINT(1) NOT NULL DEFAULT 0 AFTER task_id"
+                )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _safe_int(value, default=0):

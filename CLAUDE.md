@@ -39,21 +39,21 @@ The sandboxed code execution runs **in-process inside the Celery `celery`-queue 
 
 DB bootstrap: `mysql -u root -p -e "CREATE DATABASE myojdb CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;" && mysql -u root -p myojdb < myojdb.sql`. Default admin is `admin` / `admin123`.
 
-There **is** a pytest suite under `tests/` (`tests/unit`, `tests/db`, `tests/integration`, plus `tests/ci` infra) with `pytest.ini` and `tests/conftest.py` (DB-resetting fixtures). Always sanity-check changes with `python3 -m py_compile <file>`, and run the relevant tests before deploying:
+There **is** a pytest suite under `tests/` (`tests/unit`, `tests/db`, `tests/e2e`, plus `tests/ci` infra) with `pytest.ini` and `tests/conftest.py` (DB-resetting fixtures). Always sanity-check changes with `python3 -m py_compile <file>`, and run the relevant tests before deploying:
 
 - Infra-free pure-logic tests can run on local/dev machines, but **never on `why-server` / host `computing`**: `pytest tests/unit/test_judger_core.py tests/unit/test_security_regression.py tests/unit/test_grading_and_compare.py tests/unit/test_sandbox_limits.py`.
-- `tests/integration/test_judging_smoke.py` (marked `@pytest.mark.judger`) needs a non-production host with `gcc`/`g++`/`python3`/`octave`; it now also covers real CE/RE/TLE/Forbidden verdicts.
-- `tests/db` and most of `tests/integration` need MySQL + Redis and must run only on a local machine or another non-production server with clearly disposable services.
+- `tests/db` needs MySQL + Redis and must run only on a local machine or another non-production server with clearly disposable services.
+- `tests/e2e/` is the CLI-driven end-to-end path: each file starts a local Flask service against disposable MySQL/Redis and drives real HTTP routes through `skills/numoj-admin/scripts/numoj_admin.py` and `skills/numoj-user/scripts/numoj_user.py`, split by auth, problem/submission, homework/class, repository/forum, ranking, AI-detection, and help-matrix scenarios. It must run only on a local machine or another non-production server.
 - CI/full-suite test runs, including anything under `tests/ci/`, are **forbidden on `why-server` / host `computing`**. If they must be run manually, run them locally or on a separate non-production server; never use the production host as a CI runner. A lightweight GitHub Actions gate (`.github/workflows/ci.yml`) runs `compileall` + the infra-free unit tests on every push/PR.
 
 ### Data safety boundary
 
 There has been a real production incident where unit tests were run directly on `why-server` (the production host's own hostname is `computing`) and the production database was cleared. Avoid repeating this class of failure:
 
-- **Never run any tests on `why-server` / host `computing`, including infra-free unit tests, DB tests, integration tests, smoke tests, CI scripts, Docker-Compose test runners, or isolated test containers.** The production host is for serving the app and explicit deploy/ops work only, not for verification runs.
+- **Never run any tests on `why-server` / host `computing`, including infra-free unit tests, DB tests, CLI e2e smoke tests, CI scripts, Docker-Compose test runners, or isolated test containers.** The production host is for serving the app and explicit deploy/ops work only, not for verification runs.
 - **Never run `pytest` in the production checkout (`why-server:/home/ebola/oj/`) or in any shell that is using the production `config.py`, production MySQL database (`myojdb`), or production Redis.** The test fixtures can reset tables and must be treated as destructive when pointed at live services.
-- **Never run DB-resetting tests, integration tests, migrations, seed scripts, SQL imports, or repair scripts against production data unless the user explicitly asks for that exact production operation.** Before any such command, confirm the hostname, working directory, config file, database host, database name, and Redis target.
-- **CI tests must not run on `why-server` / host `computing`, even if they claim to use isolated infrastructure.** Do not invoke `tests/ci/run-on-why-server.sh` or any equivalent test runner on the production host; move the test to a local/dev machine or a separate CI runner instead.
+- **Never run DB-resetting tests, CLI e2e smoke tests, migrations, seed scripts, SQL imports, or repair scripts against production data unless the user explicitly asks for that exact production operation.** Before any such command, confirm the hostname, working directory, config file, database host, database name, and Redis target.
+- **CI tests must not run on `why-server` / host `computing`, even if they claim to use isolated infrastructure.** There is intentionally no remote-run helper script; run tests only from a local/dev machine or a separate CI runner.
 - **Read-only production inspection is allowed; production writes are not implicit.** Safe production operations are limited to read-only SQL (`SELECT`, `SHOW`, `EXPLAIN`), log inspection, process inspection, and the explicit deploy procedure. Any production data write, delete, truncate, import, migration, or script with side effects requires explicit user approval and a backup/rollback plan.
 - **Before running a command that might touch data, prove it is not production.** If the target cannot be clearly identified as local, containerized, disposable, or backed up, stop and ask instead of guessing.
 

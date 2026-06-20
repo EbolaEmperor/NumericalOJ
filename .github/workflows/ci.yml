@@ -3,7 +3,8 @@ name: CI
 # 轻量 CI 门禁：每次 push / PR 都跑。
 # - compile：对全部 Python 文件做 py_compile（零依赖、必过的语法门禁）。
 # - unit：安装依赖后跑「无需 MySQL/Redis/编译器」的纯逻辑单测。
-# 需要真实 gcc/g++/octave/MySQL/Redis 的完整集成测试见 tests/ci/（Docker Compose，在 why-server 上跑）。
+# 需要真实 gcc/g++/octave/MySQL/Redis 的完整 CLI e2e 测试见 tests/ci/
+# （Docker Compose，只能在本地或非生产服务器运行，禁止在 why-server/computing 上跑）。
 
 on:
   push:

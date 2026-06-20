@@ -89,7 +89,7 @@ python3 scripts/numoj_user.py ranking leaderboard 1 --limit 10
 python3 scripts/numoj_user.py ranking appeal-status 1 123
 ```
 
-Use Git submission when the competition enables it:
+Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:
 
 ```bash
 python3 scripts/numoj_user.py ranking git 1 check
