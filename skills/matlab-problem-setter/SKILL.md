@@ -1,6 +1,6 @@
 ---
 name: matlab-problem-setter
-description: Turn a brief MATLAB problem idea into a complete programming-problem package with `problem.md`, paired `data/*.in` and `data/*.out`, `interactor.m`, `template.m`, `solution.m`, and `config.json`. Use when Codex needs to 出 MATLAB 题, 生成 MATLAB 算法题, or expand a rough topic, target algorithm, difficulty, data scale, or forbidden-function list into a full runnable judging package.
+description: Turn a brief MATLAB problem idea into a complete programming-problem package with `problem.md`, paired `data/*.in` and `data/*.out`, `interactor.m`, `template.m`, `solution.m`, and `config.json`. Use when the user wants to 出 MATLAB 题, 生成 MATLAB 算法题, create/author a MATLAB or Octave programming problem, build a judging package for a MATLAB algorithm task, or expand a rough topic, target algorithm, difficulty, data scale, or forbidden-function list into a full runnable judging package.
 ---
 
 # MATLAB Problem Setter
