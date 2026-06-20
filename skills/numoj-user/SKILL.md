@@ -43,13 +43,17 @@ For a different NumOJ instance, set the address through `init --base-url <url>` 
 
 ## Command Areas
 
-- `auth`: login status and local token cleanup.
+- `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
+- `site`: inspect the home route and its login/problem-list redirect.
 - `me`: view own classes, join/leave/set primary class, view own submissions, and summarize visible grades from submission history.
-- `problem`: submit programming code or written-homework PDF/ZIP files.
-- `submission`: list personal submissions, list submissions for one problem, inspect status/detail, and fetch last submitted code.
-- `ranking`: submit ranking competitions by upload or Git, view personal ranking submissions, view leaderboards, and download own visible ranking submission files.
+- `problem`: list problems, view problem details, open submit pages, and submit programming code or written-homework PDF/ZIP files.
+- `submission`: list personal submissions, list submissions for one problem, inspect status/detail/stream, fetch last submitted code, and download output images.
+- `forum`: list forum threads, view threads, open the new-thread page, create threads, and reply.
+- `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository page, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
+- `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
+- `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams, submit/check appeals, and download own visible ranking submission files.
 
-This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
+This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
 
 ## Examples
 
@@ -57,8 +61,10 @@ Submit a programming problem:
 
 ```bash
 python3 scripts/numoj_user.py problem submit 42 --code-file solution.m
+python3 scripts/numoj_user.py problem list --limit 10
 python3 scripts/numoj_user.py submission problem 42 --limit 5
 python3 scripts/numoj_user.py submission status 123
+python3 scripts/numoj_user.py submission stream 123 --max-lines 10
 ```
 
 Submit a written problem:
@@ -80,6 +86,7 @@ Submit and inspect a ranking competition:
 python3 scripts/numoj_user.py ranking submit 1 --base-model "qwen3" --answer-file answer.json --code-zip code.zip
 python3 scripts/numoj_user.py ranking my-submissions 1 --limit 5
 python3 scripts/numoj_user.py ranking leaderboard 1 --limit 10
+python3 scripts/numoj_user.py ranking appeal-status 1 123
 ```
 
 Use Git submission when the competition enables it:
@@ -87,4 +94,11 @@ Use Git submission when the competition enables it:
 ```bash
 python3 scripts/numoj_user.py ranking git 1 check
 python3 scripts/numoj_user.py ranking git 1 submit
+```
+
+Use the code repository:
+
+```bash
+python3 scripts/numoj_user.py repository files
+python3 scripts/numoj_user.py repository save --filename helper.hpp --content-file helper.hpp
 ```
