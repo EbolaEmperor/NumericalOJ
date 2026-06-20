@@ -38,6 +38,7 @@ from oj_modules.db_services import get_users_in_classes
 from oj_modules.ranking_db import (
     begin_agent_judge_attempt,
     create_ranking_submission, delete_ranking_submission, get_ranking_submission,
+    RankingSubmissionQuotaExceeded,
     set_agent_judge_task_id, submission_dir, update_submission_files, update_submission_result,
 )
 
@@ -273,18 +274,23 @@ def _pull_and_zip(url, zip_path):
     return False, (last_err or '拉取失败')
 
 
-def _create_submission_with_retry(competition_id, username, zip_path, pull_err, agent_judge_task):
+def _create_submission_with_retry(competition_id, username, zip_path, pull_err, agent_judge_task,
+                                  source='batch'):
     """创建提交并校验，失败则删除已建提交后重试，至多 CREATE_RETRY 次。
 
     - 拉取成功（zip_path 有效）：落盘 zip → 置 'Queued'（等待评测）→ 入队 Agent 评测；
     - 拉取失败（zip_path=None）：建一条 'Error' 提交记录该用户拉取失败，便于核对。
     返回 (ok, submission_id|None)。
     """
+    src = 'self' if str(source or '').strip().lower() == 'self' else 'batch'
     for _attempt in range(CREATE_RETRY):
         sid = None
         try:
-            # source='batch'：管理员批量拉取，不占用学生的 48h 自交配额。
-            sid = create_ranking_submission(competition_id, username, source='batch')
+            # source='batch'：管理员批量拉取，不占用学生的 48h 自交配额；
+            # source='self'：学生 git 提交，占用配额并走数据库侧原子限额。
+            sid = create_ranking_submission(
+                competition_id, username, source=src, enforce_quota=(src == 'self'),
+            )
             if not sid:
                 continue
             if zip_path:
@@ -308,6 +314,8 @@ def _create_submission_with_retry(competition_id, username, zip_path, pull_err, 
                 if not sub or sub.get('status') != 'Error':
                     raise RuntimeError('提交创建校验失败')
             return True, sid
+        except RankingSubmissionQuotaExceeded:
+            return False, None
         except Exception:
             # 删掉这次没建成功的提交（行 + 落盘文件），然后重试
             if sid:
@@ -324,7 +332,7 @@ def _create_submission_with_retry(competition_id, username, zip_path, pull_err, 
     return False, None
 
 
-def _process_one(competition_id, username, url, agent_judge_task):
+def _process_one(competition_id, username, url, agent_judge_task, source='batch'):
     """串行处理单个仓库：拉取(重试) → 创建提交(校验+重试) → 入队评测。"""
     tmp = tempfile.mkdtemp(prefix='rankrun_')
     zip_path = os.path.join(tmp, 'code.zip')
@@ -332,6 +340,7 @@ def _process_one(competition_id, username, url, agent_judge_task):
         ok, err = _pull_and_zip(url, zip_path)
         _create_submission_with_retry(
             competition_id, username, zip_path if ok else None, err, agent_judge_task,
+            source=source,
         )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -409,10 +418,11 @@ def register_ranking_batch_tasks(celery_app, agent_judge_task=None):
                 continue
             username = str(it.get('username') or '').strip()
             url = str(it.get('url') or '').strip()
+            source = 'self' if str(it.get('source') or '').strip().lower() == 'self' else 'batch'
             if not username or not USERNAME_RE.match(username) or not url:
                 continue
             try:
-                _process_one(competition_id, username, url, agent_judge_task)
+                _process_one(competition_id, username, url, agent_judge_task, source=source)
             except Exception:
                 pass
             done += 1

@@ -1,0 +1,6 @@
+interface:
+  display_name: "NumOJ Admin"
+  short_description: "NumOJ 管理员现有接口自动化操作"
+  default_prompt: "Use $numoj-admin to manage NumOJ administrator tasks through the bundled CLI."
+policy:
+  allow_implicit_invocation: true
