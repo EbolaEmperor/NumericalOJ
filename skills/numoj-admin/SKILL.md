@@ -115,3 +115,10 @@ python3 scripts/numoj_admin.py ranking my-submissions 1 --limit 5
 python3 scripts/numoj_admin.py ranking leaderboard 1 --limit 10
 python3 scripts/numoj_admin.py ranking appeals 1 --status open
 ```
+
+For Git-based ranking submissions, do not provide a Git URL. NumOJ derives it from the competition's Git rule and the logged-in username. Check first, then submit:
+
+```bash
+python3 scripts/numoj_admin.py ranking git 1 check
+python3 scripts/numoj_admin.py ranking git 1 submit
+```

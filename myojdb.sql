@@ -526,12 +526,16 @@ CREATE TABLE `repository_index_jobs` (
   `total_chunks` int NOT NULL DEFAULT '0',
   `total_classes` int NOT NULL DEFAULT '0',
   `error_message` text,
+  `progress_message` text,
+  `task_id` varchar(191) DEFAULT NULL,
+  `cancel_requested` tinyint(1) NOT NULL DEFAULT '0',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `finished_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_repository_index_jobs_user_id` (`user_id`),
   KEY `idx_repository_index_jobs_status` (`status`),
+  KEY `idx_repository_index_jobs_active` (`user_id`,`status`,`cancel_requested`),
   CONSTRAINT `fk_repository_index_jobs_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

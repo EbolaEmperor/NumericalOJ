@@ -1,6 +1,6 @@
 # NumericalOJ Docker CI
 
-本目录是 NumericalOJ 的容器化测试配置：在 **独立 MySQL + Redis + 真实判题工具链（gcc/g++/python3/octave）** 的隔离环境中逐模块跑 pytest。
+本目录是 NumericalOJ 的容器化测试配置：在 **独立 MySQL + Redis + 真实判题工具链（gcc/g++/python3/octave）** 的隔离环境中逐模块跑 pytest。端到端验证统一走 `tests/e2e/`：先启动本地 Flask 服务，再通过 `numoj-admin` / `numoj-user` CLI 操作真实 HTTP 路由；测试按 auth、problem/submission、homework/class、repository/forum、ranking、AI detection 和 help matrix 分类拆分。
 
 **CI/test 绝对禁止在 `why-server` 上运行。** `why-server` 是本地 SSH config 里的生产主机别名，该主机自己的 hostname 是 `computing`；两者都视为同一台生产主机。生产主机只能用于生产部署和明确的运维操作；即使使用 Docker、独立目录、独立容器、独立 MySQL/Redis，也不能把它作为 CI runner。需要手动跑 CI 时，只能在本地开发机或另一台非生产服务器上运行。
 
@@ -45,28 +45,17 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 
 如果本机资源不足，可以把 CI 跑在另一台明确的非生产服务器上。禁止使用 `why-server` / host `computing`。
 
-可以使用历史遗留脚本 `run-on-why-server.sh`，但必须显式指定非生产目标；脚本会拒绝空目标、`why-server` 和远端 hostname 为 `computing` 的目标：
+不要使用仓库脚本自动同步并远程运行测试；这类脚本容易被误指向生产主机。需要在非生产服务器上跑时，手动把代码放到该服务器的独立目录，然后在那台服务器本地执行：
 
 ```bash
-REMOTE=dev-ci-host \
-REMOTE_DIR=/home/me/oj-ci \
-bash tests/ci/run-on-why-server.sh
+docker compose -f tests/ci/docker-compose.local.yml up --build --abort-on-container-exit --exit-code-from test
 ```
 
-脚本会：
+跑完后在同一目录清理测试容器和数据卷：
 
-1. 用 `rsync --delete` 把本机代码同步到 `REMOTE_DIR`。
-2. 在远端运行 `docker compose -f tests/ci/docker-compose.local.yml up --build --abort-on-container-exit --exit-code-from test`。
-3. 把远端 `test-results/` 拉回本机 `./test-results/`。
-4. 执行 `docker compose ... down -v --remove-orphans` 清理测试容器和数据卷。
-
-可覆盖的环境变量：
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `REMOTE` | 无 | 必填，必须是非生产 SSH 目标主机 |
-| `REMOTE_DIR` | `/home/ebola/oj-ci` | 远端独立 CI 目录；在非生产服务器上可改成任意专用目录 |
-| `COMPOSE_FILE` | `tests/ci/docker-compose.local.yml` | 远端使用的 compose 文件；默认不挂载生产路径 |
+```bash
+docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
+```
 
 ---
 
@@ -76,10 +65,10 @@ CI 已 `up --build` 至少一次后，可在同一台本地或非生产服务器
 
 ```bash
 docker compose -f tests/ci/docker-compose.local.yml run --rm test \
-    python3 -m pytest tests/integration/test_auth.py -v
+    python3 -m pytest tests/e2e -v
 
 docker compose -f tests/ci/docker-compose.local.yml run --rm test \
-    python3 -m pytest tests/integration/test_submission.py::test_submission_status_json -v
+    python3 -m pytest tests/e2e/test_ranking_cli.py::test_ranking_agent_judge_git_check_submit_and_batch_admin -v
 ```
 
 把路径换成 `tests/unit`、`tests/db` 等即可。仍然禁止在 `why-server` / host `computing` 上执行这些命令。
@@ -93,7 +82,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
   =================== 汇总 ===================
   tests/unit                                    PASS
   tests/db                                      PASS
-  tests/integration/test_auth.py                FAIL(1)
+  tests/e2e                                     PASS
   ...
   ===========================================
   ```
@@ -109,8 +98,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 | `docker-compose.local.yml` | 推荐的本地/非生产 CI compose 文件；编排独立 `mysql`、`redis`、`test`，不挂载生产路径。 |
 | `docker-compose.ci.yml` | 历史主机专用 compose 文件，包含宿主 MKL 挂载；日常 CI 优先使用 `docker-compose.local.yml`，且任何 compose 文件都不能在 `why-server` / host `computing` 上运行。 |
 | `config.ci.py` | 自包含 CI 配置。MySQL/Redis 指向 compose 服务名 `mysql`/`redis`；AI/SMTP 使用测试占位值，测试中网络 AI 通常 mock 或 skip。 |
-| `run-ci.sh` | 在 `test` 容器内逐模块顺序跑 pytest（unit -> db -> integration 各文件），逐模块打印结果并写 JUnit XML；任一模块失败则整体非零退出。 |
-| `run-on-why-server.sh` | 历史遗留的远程编排脚本。现在只允许显式指定非生产 `REMOTE`，并会拒绝 `why-server` / host `computing`。 |
+| `run-ci.sh` | 在 `test` 容器内逐模块顺序跑 pytest（unit -> db -> CLI e2e），逐模块打印结果并写 JUnit XML；任一模块失败则整体非零退出。 |
 | `INSTALL-DOCKER.md` | Docker 安装记录和排错参考；不要把 `why-server` / `computing` 作为 CI 运行目标。 |
 
 构建上下文排除项在仓库根的 `.dockerignore`，用于减少 Docker build 上下文。

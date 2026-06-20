@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """共享 fixtures：基础设施就绪、DB 重置+种子、Flask client、登录、AI/SMTP mock。
 
+端到端 smoke 不再使用 Flask test_client 直打路由；统一放在 tests/e2e，
+由本地 Flask 服务 + numoj-admin / numoj-user CLI 驱动。
+
 要点：
 - import db_services 即连 MySQL；oj.py import 时跑 seed_*。因此先确保 infra，再在
   monkeypatch 掉 seed_* 之后 import oj。

@@ -11,27 +11,11 @@ mkdir -p test-results judger
 export OJ_LIVE_AI=0
 echo ">>> CI 使用占位符 AI 配置，AI live 测试将 skip (OJ_LIVE_AI=0)"
 
-# 逐模块有序列表（unit → db → integration）
+# 逐模块有序列表（unit → db → CLI e2e）
 MODULES=(
   "tests/unit"
   "tests/db"
-  "tests/integration/test_judging_smoke.py"
-  "tests/integration/test_auth.py"
-  "tests/integration/test_problem_core.py"
-  "tests/integration/test_submission.py"
-  "tests/integration/test_admin_problem.py"
-  "tests/integration/test_admin_user.py"
-  "tests/integration/test_homework.py"
-  "tests/integration/test_class_management.py"
-  "tests/integration/test_ranking.py"
-  "tests/integration/test_repository.py"
-  "tests/integration/test_ai_detection.py"
-  "tests/integration/test_forum.py"
-  "tests/integration/test_grading.py"
-  "tests/integration/test_rejudge.py"
-  "tests/integration/test_games.py"
-  "tests/integration/test_ai_tutor.py"
-  "tests/integration/test_live_ai.py"
+  "tests/e2e"
 )
 
 declare -a NAMES
