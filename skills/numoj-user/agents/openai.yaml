@@ -1,6 +1,6 @@
 interface:
   display_name: "NumOJ User"
-  short_description: "NumOJ 普通用户提交与记录查询工具"
-  default_prompt: "Use $numoj-user to submit NumOJ problems and ranking competitions as a regular user."
+  short_description: "NumOJ 普通用户完整 CLI"
+  default_prompt: "Use $numoj-user to submit, browse, inspect, and manage regular-user NumOJ workflows."
 policy:
   allow_implicit_invocation: true
