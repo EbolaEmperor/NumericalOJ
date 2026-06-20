@@ -69,6 +69,7 @@ from oj_modules.ranking_db import (
     reset_elo_state,
     resolve_appeal,
     retire_excess_user_submissions,
+    RankingSubmissionQuotaExceeded,
     set_elo_running,
     set_agent_judge_task_id,
     set_submission_status,
@@ -158,6 +159,31 @@ def _agent_judge_endpoint_ready(competition_id, comp):
         return bool(list_agent_judge_endpoints(competition_id, enabled_only=True))
     except Exception:
         return False
+
+
+def _submission_quota_message(quota):
+    return (
+        f"本轮提交次数已用完（每 48 小时上限 {quota['limit']} 次），"
+        f"将于 {quota['next_reset']:%Y-%m-%d %H:%M} 刷新。"
+    )
+
+
+def _fake_agent_judge_enabled():
+    raw = os.getenv('NUMOJ_FAKE_AGENT_JUDGE')
+    if raw is None:
+        raw = getattr(_cfg, 'NUMOJ_FAKE_AGENT_JUDGE', False)
+    return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _fake_agent_judge_delay_seconds():
+    raw = os.getenv('NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS')
+    if raw is None:
+        raw = getattr(_cfg, 'NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS', 3600)
+    try:
+        delay = int(float(raw))
+    except (TypeError, ValueError):
+        delay = 3600
+    return max(0, delay)
 
 
 def _clamp(value, lo, hi):
@@ -1048,11 +1074,7 @@ def ranking_submit(competition_id):
         # 每 48 小时窗口提交次数限制（管理员豁免）
         quota = get_submission_quota(competition_id, user.get('username'), comp=comp)
         if quota is not None and quota['remaining'] <= 0:
-            flash(
-                f"本轮提交次数已用完（每 48 小时上限 {quota['limit']} 次），"
-                f"将于 {quota['next_reset']:%Y-%m-%d %H:%M} 刷新。",
-                'warning',
-            )
+            flash(_submission_quota_message(quota), 'warning')
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     answer_format = _competition_answer_format(comp)
@@ -1071,10 +1093,11 @@ def ranking_submit(competition_id):
 
     # Agent 评测模式：只需上传代码 zip（不需要 answer 文件），但要求已配置模型与规则
     if scoring_mode == 'agent_judge':
-        if not _agent_judge_endpoint_ready(competition_id, comp):
+        fake_agent_judge = _fake_agent_judge_enabled()
+        if not fake_agent_judge and not _agent_judge_endpoint_ready(competition_id, comp):
             flash('该比赛为 Agent 评测模式，但管理员尚未配置模型端点，暂时无法提交。', 'warning')
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
-        if not list_competition_rules(competition_id):
+        if not fake_agent_judge and not list_competition_rules(competition_id):
             flash('该比赛尚未设置评分规则，暂时无法提交。', 'warning')
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
         code_file = request.files.get('code_file')
@@ -1084,7 +1107,13 @@ def ranking_submit(competition_id):
         if not (code_file.filename or '').lower().endswith('.zip'):
             flash('代码文件必须是 .zip', 'danger')
             return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
-        submission_id = create_ranking_submission(competition_id, user.get('username'))
+        try:
+            submission_id = create_ranking_submission(
+                competition_id, user.get('username'), enforce_quota=not is_admin,
+            )
+        except RankingSubmissionQuotaExceeded as e:
+            flash(_submission_quota_message(e.quota), 'warning')
+            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
         target_dir = submission_dir(submission_id)
         _ensure_dir(target_dir)
         code_name = _safe_filename(code_file.filename, fallback='code.zip')
@@ -1106,7 +1135,10 @@ def ranking_submit(competition_id):
             flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
         else:
             try:
-                async_result = _agent_judge_task.apply_async(args=[submission_id, attempt_id])
+                task_kwargs = {'args': [submission_id, attempt_id]}
+                if fake_agent_judge:
+                    task_kwargs['countdown'] = _fake_agent_judge_delay_seconds()
+                async_result = _agent_judge_task.apply_async(**task_kwargs)
                 set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
@@ -1141,7 +1173,13 @@ def ranking_submit(competition_id):
         flash('代码文件必须是 .zip', 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
-    submission_id = create_ranking_submission(competition_id, user.get('username'))
+    try:
+        submission_id = create_ranking_submission(
+            competition_id, user.get('username'), enforce_quota=not is_admin,
+        )
+    except RankingSubmissionQuotaExceeded as e:
+        flash(_submission_quota_message(e.quota), 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
     target_dir = submission_dir(submission_id)
     _ensure_dir(target_dir)
 
@@ -1268,11 +1306,10 @@ def ranking_git_submit(competition_id):
         if quota is not None and quota['remaining'] <= 0:
             return jsonify(
                 success=False,
-                message=(f"本轮提交次数已用完（每 48 小时上限 {quota['limit']} 次），"
-                         f"将于 {quota['next_reset']:%Y-%m-%d %H:%M} 刷新"),
+                message=_submission_quota_message(quota),
             ), 429
 
-    items = [{'username': user.get('username'), 'url': url}]
+    items = [{'username': user.get('username'), 'url': url, 'source': 'self'}]
     try:
         _batch_run_task.delay(competition_id, items)
     except Exception as e:

@@ -30,6 +30,14 @@ SUBMISSION_SUBDIR = 'submissions'
 RANK_LIMIT_WINDOW_SECONDS = 48 * 3600
 
 
+class RankingSubmissionQuotaExceeded(Exception):
+    """Raised when a self-submission would exceed the current ranking quota window."""
+
+    def __init__(self, quota):
+        self.quota = quota
+        super().__init__('ranking submission quota exceeded')
+
+
 def quota_window_bounds(anchor, now, window_seconds=RANK_LIMIT_WINDOW_SECONDS):
     """纯函数：给定窗口锚点 anchor 与当前时间 now，返回当前固定窗口的
     (window_start, next_reset)。窗口自 anchor 起每 window_seconds 固定推进一格。
@@ -665,6 +673,38 @@ def get_submission_quota(competition_id, username, comp=None):
     }
 
 
+def _submission_limit_from_comp(comp):
+    raw = (comp or {}).get('submit_limit_per_window')
+    try:
+        limit = int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        limit = 0
+    return max(0, limit)
+
+
+def _ranking_submission_quota_with_cursor(cursor, competition_id, username, comp, now):
+    limit = _submission_limit_from_comp(comp)
+    if limit <= 0:
+        return None
+    anchor = comp.get('limit_window_start') or comp.get('created_at')
+    window_start, next_reset = quota_window_bounds(anchor, now)
+    cursor.execute(
+        "SELECT COUNT(*) AS c FROM ranking_submissions"
+        " WHERE competition_id = %s AND username = %s AND created_at >= %s"
+        " AND source = 'self'",
+        (competition_id, username, window_start),
+    )
+    row = cursor.fetchone() or {}
+    used = int(row.get('c') or 0)
+    return {
+        'limit': limit,
+        'used': used,
+        'remaining': max(0, limit - used),
+        'window_start': window_start,
+        'next_reset': next_reset,
+    }
+
+
 def update_competition_reference_answer(competition_id, stored_path, original_name):
     ensure_ranking_tables()
     conn = get_db_connection()
@@ -785,14 +825,39 @@ def delete_competition_file(file_id):
 
 # ---------- Submissions ----------
 
-def create_ranking_submission(competition_id, username, source='self'):
+def create_ranking_submission(competition_id, username, source='self', enforce_quota=False):
     """新建一条打榜赛提交。source：'self'=学生自交（计入 48h 配额）、
-    'batch'=管理员批量拉取（不计入学生配额）。"""
+    'batch'=管理员批量拉取（不计入学生配额）。
+
+    当 enforce_quota=True 且 source='self' 时，使用同一事务里的 ``SELECT ... FOR UPDATE``
+    锁住比赛行，重新计算当前窗口用量并插入提交，避免并发请求同时通过前置 COUNT 检查。
+    """
     ensure_ranking_tables()
     src = 'batch' if str(source or '').strip().lower() == 'batch' else 'self'
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            if enforce_quota and src == 'self':
+                cursor.execute(
+                    """
+                    SELECT id, submit_limit_per_window, limit_window_start, created_at
+                    FROM ranking_competitions
+                    WHERE id = %s
+                    FOR UPDATE
+                    """,
+                    (competition_id,),
+                )
+                comp = cursor.fetchone()
+                if comp:
+                    cursor.execute("SELECT NOW() AS now")
+                    now_row = cursor.fetchone() or {}
+                    now = now_row.get('now') or datetime.now()
+                    quota = _ranking_submission_quota_with_cursor(
+                        cursor, competition_id, username, comp, now,
+                    )
+                    if quota is not None and quota['remaining'] <= 0:
+                        conn.rollback()
+                        raise RankingSubmissionQuotaExceeded(quota)
             cursor.execute(
                 """
                 INSERT INTO ranking_submissions (competition_id, username, status, source)
@@ -804,6 +869,12 @@ def create_ranking_submission(competition_id, username, source='self'):
         conn.commit()
         bump_daily_submission_count()
         return int(new_id)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
