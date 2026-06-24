@@ -35,7 +35,6 @@ def get_oj_root_path():
 
 
 OJ_ROOT_PATH = get_oj_root_path()
-LIBRARY_PATH = os.path.join(OJ_ROOT_PATH, "library")
 
 JUDGER_RUN_ROOT = (
     str(os.environ.get("JUDGER_RUN_ROOT") or "").strip()
@@ -233,12 +232,6 @@ def reap_stale_run_dirs(ttl_seconds):
     return removed
 
 
-def _library_mounts():
-    """返回 library 目录的只读挂载配置（如果存在）。"""
-    if os.path.isdir(LIBRARY_PATH):
-        return [(LIBRARY_PATH, "/opt/library")]
-    return []
-
 
 def _timeout_sec_from_ns(time_limit_ns, factor=1.2):
     """将纳秒时间限制转换为秒（带 factor 余量），最小 1 秒。"""
@@ -282,7 +275,6 @@ def run_octave(data):
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
-        extra_ro_mounts=_library_mounts(),
     )
     exec_time = time.perf_counter_ns() - start_time
 
@@ -350,7 +342,6 @@ def run_py(data):
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
-        extra_ro_mounts=_library_mounts(),
     )
     exec_time = time.perf_counter_ns() - start_time
 
@@ -428,7 +419,6 @@ def _run_compiled_single(data, language):
         compile_cmd,
         run_dir=run_dir,
         timeout_sec=45,
-        extra_ro_mounts=_library_mounts(),
     )
     if compile_res.returncode != 0:
         stderr = compile_res.stderr or ""
@@ -452,7 +442,6 @@ def _run_compiled_single(data, language):
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
-        extra_ro_mounts=_library_mounts(),
     )
     exec_time = time.perf_counter_ns() - start_time
 
@@ -532,7 +521,7 @@ def _batch_evaluate_stream(data, language):
 
         _write_user_files(run_dir, user_files)
 
-        with ContainerSession(run_dir=run_dir, extra_ro_mounts=_library_mounts()) as session:
+        with ContainerSession(run_dir=run_dir) as session:
             # Compile
             compile_res = session.exec(compile_cmd, timeout_sec=45)
             if compile_res.returncode != 0:
