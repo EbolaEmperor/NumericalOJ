@@ -89,11 +89,13 @@ def test_forum_pages_threads_and_replies(cli, unique_suffix):
     assert created["success"] is True
     thread_id = find_forum_thread_id(cli, title)
 
-    assert title in cli.user_json("forum", "list")["text"]
-    assert title in cli.user_json("forum", "thread", str(thread_id))["text"]
+    forum_list = cli.user_json("forum", "list")
+    assert any(thread["title"] == title for thread in forum_list["threads"])
+    assert cli.user_json("forum", "thread", str(thread_id))["thread"]["title"] == title
     assert cli.user_json("forum", "reply", str(thread_id), "--content", "reply by user")["success"] is True
     assert cli.user_json("forum", "reply-thread", str(thread_id), "--content", "reply on thread")["success"] is True
 
     assert cli.admin_json("forum", "new-page")["success"] is True
-    assert title in cli.admin_json("forum", "list")["text"]
+    admin_forum_list = cli.admin_json("forum", "list")
+    assert any(thread["title"] == title for thread in admin_forum_list["threads"])
     assert cli.admin_json("forum", "reply", str(thread_id), "--content", "reply by admin")["success"] is True

@@ -784,7 +784,21 @@ def ensure_settings_table():
     global _settings_table_ready
     if _settings_table_ready:
         return
-    _settings_table_ready = True
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS site_settings (
+                    k VARCHAR(191) NOT NULL PRIMARY KEY,
+                    v TEXT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        conn.commit()
+        _settings_table_ready = True
+    finally:
+        conn.close()
 
 
 def get_setting(key, default=None):

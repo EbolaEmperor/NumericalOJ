@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from flask import Blueprint, request
+
+from oj_modules.api.helpers import (
+    apply_limit,
+    clamp_limit,
+    clamp_page,
+    json_error,
+    json_success,
+    page_numbers,
+    public_problem,
+    public_user,
+)
+from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.db_services import (
+    get_cached_ai_code_marks_for_submission,
+    get_problem,
+    get_submission_by_id,
+    get_submission_summaries_by_user_and_problem_paginated,
+)
+from oj_modules.routes.problem_core_routes import (
+    get_all_submissions_paginated,
+    get_submissions_by_user_paginated,
+)
+from oj_modules.routes.submission_routes import (
+    _load_written_submission_latex_and_error,
+    _render_written_markdown_to_html,
+    _strip_problem_title_tags,
+)
+
+
+submission_api_bp = Blueprint("submission_api", __name__, url_prefix="/api")
+
+
+def _decorate_submission_summary(row):
+    out = dict(row or {})
+    out["display_problem_title"] = _strip_problem_title_tags(out.get("problem_title"))
+    out["is_ac"] = out.get("status") == "Accepted"
+    out["detail_url"] = f"/submission_detail/{out.get('id')}"
+    return out
+
+
+def _submission_detail_payload(submission):
+    return {
+        "id": submission.get("id"),
+        "username": submission.get("username"),
+        "problem_id": submission.get("problem_id"),
+        "problem_title": _strip_problem_title_tags(submission.get("problem_title")),
+        "problem_type": submission.get("problem_type"),
+        "code": submission.get("code") or "",
+        "status": submission.get("status"),
+        "score": submission.get("score"),
+        "created_at": submission.get("created_at"),
+        "test_points": submission.get("test_points") if isinstance(submission.get("test_points"), list) else [],
+    }
+
+
+@submission_api_bp.route("/submissions", methods=["GET"])
+def submissions():
+    user = current_user()
+    if not user:
+        return json_error("请先登录", 401)
+
+    page = clamp_page(request.args.get("page", 1))
+    limit = clamp_limit(request.args.get("limit"), default=None)
+    per_page = 20
+
+    if user.get("is_admin"):
+        rows, total_pages = get_all_submissions_paginated(page=page, per_page=per_page)
+        scope = "all"
+    else:
+        rows, total_pages = get_submissions_by_user_paginated(user["username"], page=page, per_page=per_page)
+        scope = "mine"
+
+    decorated = [_decorate_submission_summary(row) for row in rows]
+    visible = apply_limit(decorated, limit)
+    return json_success(
+        user=public_user(user),
+        scope=scope,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+        page_numbers=page_numbers(page, total_pages, radius=10),
+        submission_ids=[row["id"] for row in visible],
+        submissions=visible,
+        count=len(visible),
+    )
+
+
+@submission_api_bp.route("/problems/<int:problem_id>/submissions", methods=["GET"])
+def problem_submissions(problem_id):
+    user = current_user()
+    if not user:
+        return json_error("请先登录", 401)
+
+    page = clamp_page(request.args.get("page", 1))
+    limit = clamp_limit(request.args.get("limit"), default=None)
+    per_page = 30
+    rows, total_pages = get_submission_summaries_by_user_and_problem_paginated(
+        user["username"], problem_id, page=page, per_page=per_page
+    )
+    decorated = [_decorate_submission_summary(row) for row in rows]
+    visible = apply_limit(decorated, limit)
+    return json_success(
+        user=public_user(user),
+        problem_id=problem_id,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+        page_numbers=page_numbers(page, total_pages, radius=8),
+        submission_ids=[row["id"] for row in visible],
+        submissions=visible,
+        count=len(visible),
+    )
+
+
+@submission_api_bp.route("/submissions/<int:submission_id>", methods=["GET"])
+def submission_detail(submission_id):
+    user = current_user()
+    if not user:
+        return json_error("请先登录", 401)
+
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return json_error("提交记录不存在", 404)
+    if submission.get("username") != user.get("username") and not is_admin(user):
+        return json_error("无权查看他人提交", 403)
+
+    raw_problem = get_problem(submission.get("problem_id"))
+    problem = public_problem(raw_problem)
+    plang = ((raw_problem or {}).get("lang") or "matlab").lower()
+    cached_ai_code_marks = None
+    if submission.get("problem_type") == 1:
+        cached_ai_code_marks = get_cached_ai_code_marks_for_submission(submission)
+
+    submission_latex_text = ""
+    submission_latex_error = ""
+    submission_latex_html = ""
+    written_grading_mode = 1
+    if raw_problem and raw_problem.get("type") == 2:
+        try:
+            written_grading_mode = int(raw_problem.get("written_grading_mode") or 1)
+        except Exception:
+            written_grading_mode = 1
+        if written_grading_mode == 1:
+            submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
+            submission_latex_html = _render_written_markdown_to_html(submission_latex_text)
+
+    return json_success(
+        user=public_user(user),
+        submission=_submission_detail_payload(submission),
+        test_points=submission.get("test_points") or [],
+        problem=problem,
+        plang=plang,
+        cached_ai_code_marks=cached_ai_code_marks,
+        submission_latex_text=submission_latex_text,
+        submission_latex_error=submission_latex_error,
+        submission_latex_html=submission_latex_html,
+        written_submission={
+            "show_latex_transcription": bool(raw_problem and raw_problem.get("type") == 2 and written_grading_mode == 1),
+        },
+    )

@@ -9,12 +9,28 @@ import pytest
 
 from tests.e2e.conftest import (
     add_problem_homework,
+    assert_no_json_leaks,
     create_problem,
     create_problem_with_homework,
     create_regular_user,
     get_user_id,
     write_testdata_zip,
 )
+
+
+PROBLEM_SECRET_KEYS = {
+    "programming_grading_mode",
+    "programming_grading_model",
+    "programming_grading_prompt",
+    "programming_output_filename",
+    "written_grading_mode",
+    "written_grading_model",
+    "written_grading_prompt",
+    "test_code",
+    "testdata",
+    "forbidden_func",
+    "ai_code_marks_json",
+}
 
 
 @pytest.mark.e2e
@@ -25,11 +41,34 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
     assert cli.init_user(username)["success"] is True
 
     title = f"CLI Problem {unique_suffix}"
-    problem_id, _ = create_problem_with_homework(cli, title, submission_limit=5)
+    secret_terms = (f"secret-model-{unique_suffix}", f"secret-output-{unique_suffix}.png", f"secret-prompt-{unique_suffix}")
+    problem_id, _ = create_problem_with_homework(
+        cli,
+        title,
+        submission_limit=5,
+        extra=[
+            "--programming-grading-model",
+            secret_terms[0],
+            "--programming-output-filename",
+            secret_terms[1],
+            "--programming-grading-prompt",
+            secret_terms[2],
+            "--test-code",
+            f"secret-test-code-{unique_suffix}",
+            "--forbidden-func",
+            f"secret-forbidden-{unique_suffix}",
+        ],
+    )
 
     assert cli.admin_json("problem", "create-form")["success"] is True
-    assert title in cli.admin_json("problem", "detail", str(problem_id))["text"]
-    assert title in cli.user_json("problem", "detail", str(problem_id))["text"]
+    assert cli.admin_json("problem", "detail", str(problem_id))["problem"]["title"] == title
+    user_problem_detail = cli.user_json("problem", "detail", str(problem_id))
+    assert user_problem_detail["problem"]["title"] == title
+    assert_no_json_leaks(
+        user_problem_detail,
+        forbidden_keys=PROBLEM_SECRET_KEYS,
+        forbidden_terms=secret_terms,
+    )
     assert cli.user_json("problem", "submit-page", str(problem_id))["success"] is True
 
     edited_title = f"{title} Edited"
@@ -46,7 +85,7 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
         "--submission-limit",
         "5",
     )["success"] is True
-    assert edited_title in cli.admin_json("problem", "detail", str(problem_id), "--max-chars", "5000")["text"]
+    assert cli.admin_json("problem", "detail", str(problem_id), "--max-chars", "5000")["problem"]["title"] == edited_title
     assert cli.admin_json("problem", "edit-form", str(problem_id))["success"] is True
 
     testdata_zip = write_testdata_zip(tmp_path / "testdata.zip")
@@ -59,7 +98,27 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
     sid = int(submission_two["submission_id"])
 
     assert cli.user_json("submission", "status", str(sid)).get("id") in (None, sid)
-    assert cli.user_json("submission", "detail", str(sid)).get("id") == sid
+    user_submission_detail = cli.user_json("submission", "detail", str(sid))
+    assert user_submission_detail["submission"]["id"] == sid
+    assert_no_json_leaks(
+        user_submission_detail,
+        forbidden_keys=PROBLEM_SECRET_KEYS,
+        forbidden_terms=secret_terms,
+    )
+    from oj_modules.db_services import save_submission_ai_code_marks_json
+
+    assert save_submission_ai_code_marks_json(
+        sid,
+        {
+            "issues": [],
+            "summary": "cached marks",
+            "code_used": "print('hello')",
+            "generated_at": "2026-01-01T00:00:00Z",
+        },
+    )
+    marks = cli.user_json("ai", "marks", "--submission-id", str(sid))
+    assert marks["success"] is True
+    assert marks["source"] == "cache"
     assert cli.user_json("submission", "list", "--limit", "5")["count"] >= 2
     assert cli.user_json("submission", "problem", str(problem_id), "--limit", "5")["count"] >= 2
     assert cli.user_json("submission", "last-code", str(problem_id))["success"] is True
@@ -72,7 +131,7 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
     assert "status" in admin_status
     admin_submission = cli.admin_json("problem", "submit", str(problem_id), "--code", "print('admin')")
     assert "submission_id" in admin_submission
-    assert cli.admin_json("submission", "detail", str(sid)).get("id") == sid
+    assert cli.admin_json("submission", "detail", str(sid))["submission"]["id"] == sid
     assert cli.admin_json("submission", "list", "--limit", "5")["count"] >= 2
     assert cli.admin_json("submission", "problem", str(problem_id), "--limit", "5")["count"] >= 1
     assert cli.admin_json("submission", "last-code", str(problem_id))["success"] is True

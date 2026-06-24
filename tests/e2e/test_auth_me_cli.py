@@ -16,7 +16,7 @@ from tests.e2e.conftest import (
 
 
 @pytest.mark.e2e
-def test_admin_and_user_auth_pages_login_status_and_logout(cli, unique_suffix):
+def test_admin_and_user_login_status_logout_and_login_gate(cli, unique_suffix, tmp_path):
     username = f"cli_auth_{unique_suffix}"
     create_regular_user(username=username, password="pw123456")
 
@@ -28,16 +28,11 @@ def test_admin_and_user_auth_pages_login_status_and_logout(cli, unique_suffix):
     assert cli.admin_json("site", "home")["success"] is True
     assert cli.user_json("site", "home")["success"] is True
 
-    for command in (
-        ("auth", "login-page"),
-        ("auth", "register-page"),
-        ("auth", "forgot-page"),
-        ("auth", "forgot-page", "--step", "verify", "--email", f"{username}@example.com"),
-    ):
-        assert cli.user_json(*command)["success"] is True
-
-    assert cli.user_json("auth", "send-code", "--email", f"{username}@example.com")["success"] is False
-    assert cli.user_json("auth", "forgot-request", "--email", f"missing_{unique_suffix}@example.com")["success"] is True
+    anonymous_cfg = tmp_path / "anonymous.json"
+    anonymous_cfg.write_text(json.dumps({"base_url": cli.base_url}), encoding="utf-8")
+    gated = cli.run(USER_CLI, anonymous_cfg, "site", "home", check=False)
+    assert gated.returncode == 2
+    assert "CLI requires login" in gated.stderr
 
     assert cli.user_json("auth", "logout")["success"] is True
     saved = json.loads(Path(cli.user_config).read_text(encoding="utf-8"))
@@ -45,77 +40,29 @@ def test_admin_and_user_auth_pages_login_status_and_logout(cli, unique_suffix):
 
 
 @pytest.mark.e2e
-def test_register_forgot_reset_and_change_password(cli, unique_suffix, tmp_path):
+def test_logged_in_change_password(cli, unique_suffix, tmp_path):
     assert cli.init_admin()["success"] is True
 
-    registered = f"cli_registered_{unique_suffix}"
-    registered_email = f"{registered}@example.com"
-    seed_verification_code(registered_email, "654321")
-    register_cfg = tmp_path / "register.json"
+    username = f"cli_change_{unique_suffix}"
+    email = f"{username}@example.com"
+    create_regular_user(username=username, password="oldpass123", email=email)
+    user_cfg = tmp_path / "change.json"
     assert cli.run(
         USER_CLI,
-        register_cfg,
-        "--base-url",
-        cli.base_url,
-        "auth",
-        "register",
-        "--username",
-        registered,
-        "--password",
-        "oldpass123",
-        "--email",
-        registered_email,
-        "--code",
-        "654321",
-        "--class-en",
-        "Cclass1",
-    ).json()["success"] is True
-
-    assert cli.run(
-        USER_CLI,
-        tmp_path / "registered.json",
+        user_cfg,
         "init",
         "--base-url",
         cli.base_url,
         "-u",
-        registered,
+        username,
         "-p",
         "oldpass123",
     ).json()["success"] is True
 
-    seed_verification_code(registered_email, "777777")
+    seed_verification_code(email, "888888")
     assert cli.run(
         USER_CLI,
-        register_cfg,
-        "--base-url",
-        cli.base_url,
-        "auth",
-        "forgot-reset",
-        "--email",
-        registered_email,
-        "--code",
-        "777777",
-        "--new-password",
-        "newpass123",
-    ).json()["success"] is True
-
-    reset_cfg = tmp_path / "reset.json"
-    assert cli.run(
-        USER_CLI,
-        reset_cfg,
-        "init",
-        "--base-url",
-        cli.base_url,
-        "-u",
-        registered,
-        "-p",
-        "newpass123",
-    ).json()["success"] is True
-
-    seed_verification_code(registered_email, "888888")
-    assert cli.run(
-        USER_CLI,
-        reset_cfg,
+        user_cfg,
         "auth",
         "change-password",
         "--code",
@@ -130,7 +77,7 @@ def test_register_forgot_reset_and_change_password(cli, unique_suffix, tmp_path)
         "--base-url",
         cli.base_url,
         "-u",
-        registered,
+        username,
         "-p",
         "finalpass123",
     ).json()["success"] is True

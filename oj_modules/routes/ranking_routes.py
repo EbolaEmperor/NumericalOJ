@@ -1081,6 +1081,10 @@ def ranking_submit(competition_id):
     answer_ext = '.' + answer_format
     scoring_mode = _competition_scoring_mode(comp)
     has_script = bool((comp.get('scoring_script_path') or '').strip())
+    submission_method = (comp.get('submission_method') or 'zip').strip().lower()
+    if submission_method == 'git':
+        flash('该比赛启用 Git 提交方式，请使用 Git 提交。', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     base_model_raw = (request.form.get('base_model') or '').strip()
     if not base_model_raw:

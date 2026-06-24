@@ -20,13 +20,6 @@ USER_COMMAND_PATHS = [
     ["auth", "login"],
     ["auth", "logout"],
     ["auth", "status"],
-    ["auth", "login-page"],
-    ["auth", "send-code"],
-    ["auth", "register-page"],
-    ["auth", "register"],
-    ["auth", "forgot-page"],
-    ["auth", "forgot-request"],
-    ["auth", "forgot-reset"],
     ["auth", "send-password-code"],
     ["auth", "change-password"],
     ["me"],
@@ -71,8 +64,6 @@ USER_COMMAND_PATHS = [
     ["repository", "classes"],
     ["ai"],
     ["ai", "marks"],
-    ["ai", "ask"],
-    ["ai", "ac"],
     ["ranking"],
     ["ranking", "list"],
     ["ranking", "detail"],
@@ -216,3 +207,37 @@ def test_git_ranking_help_tells_users_to_check_first():
         )
         assert completed.returncode == 0
         assert "check first" in normalize_ws(completed.stdout)
+
+
+@pytest.mark.e2e
+def test_ai_marks_help_only_accepts_submission_id():
+    for script in (USER_CLI, ADMIN_CLI):
+        completed = subprocess.run(
+            [sys.executable, str(script), "ai", "marks", "--help"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+        assert completed.returncode == 0
+        assert "--submission-id" in completed.stdout
+        assert "--force-refresh" in completed.stdout
+        assert "--problem-id" not in completed.stdout
+        assert "--code" not in completed.stdout
+        assert "--code-file" not in completed.stdout
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("command", ["ask", "ac"])
+def test_retired_ai_commands_are_unavailable(command):
+    for script in (USER_CLI, ADMIN_CLI):
+        completed = subprocess.run(
+            [sys.executable, str(script), "ai", command, "--help"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+        assert completed.returncode != 0
