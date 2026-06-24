@@ -150,7 +150,6 @@ def test_docker_oom_kill_returns_mle(monkeypatch):
 
     monkeypatch.setattr("oj_modules.judger_core.run_in_container", fake_run_in_container)
     monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", "/tmp/test_jr")
-    monkeypatch.setattr(judger_core, "LIBRARY_PATH", "/nonexistent")
 
     data = {
         "sid": "test-oom",

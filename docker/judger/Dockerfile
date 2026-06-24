@@ -13,11 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-full \
     coreutils \
     ca-certificates \
+    libopenblas-dev \
+    libeigen3-dev \
+    liblapacke-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
     numpy scipy matplotlib pandas sympy pillow networkx scikit-learn requests openpyxl
+
+RUN mkdir -p /opt/library
 
 RUN useradd -m -s /bin/false runner
 
