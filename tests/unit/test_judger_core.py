@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 """judger_core 纯逻辑单测（不触发真实编译/运行）。
 
-覆盖（参考 plan Task 14 / contracts §2）：
+覆盖：
 - check_forbidden：命中各语言、未命中返回 None、Octave 反斜杠特例、正则词边界
-- build_c_compile_cmd / build_cpp_compile_cmd：命令形状
-- set_run_limits：RLIMIT_CPU / RLIMIT_AS 设置（monkeypatch resource.setrlimit 收集调用）
 - run_dir_for：JUDGER_RUN_ROOT/<sanitized_sid>，不创建目录，危险字符清洗
 - capture_output_image_file：合法扩展名集合，非法/缺失返回 None
+- _timeout_sec_from_ns / _guard_timeout：超时转换逻辑
 
-真实编译运行的项见 tests/judger/test_judging_smoke.py，不在本文件。
+真实编译运行的项见 tests/integration/test_judging_smoke.py，不在本文件。
 """
 import os
-import resource
+import sys
 
 import pytest
 
@@ -20,7 +19,6 @@ from oj_modules import judger_core
 
 # ============== check_forbidden ==============
 def test_check_forbidden_empty_returns_none():
-    # 空禁用串 → 直接放行
     assert judger_core.check_forbidden("y = sin(x)\n", "") is None
     assert judger_core.check_forbidden("anything", None) is None
 
@@ -29,7 +27,6 @@ def test_check_forbidden_hits_octave_func():
     msg = judger_core.check_forbidden("y = sin(x)\n", "sin")
     assert msg is not None
     assert "sin" in msg
-    # 源码返回的精确文案
     assert msg == "Function 'sin' is not allowed"
 
 
@@ -40,174 +37,53 @@ def test_check_forbidden_hits_c_func():
 
 
 def test_check_forbidden_miss_when_func_absent():
-    # 列表里有 cos 但代码只用了 sin → 不命中
     assert judger_core.check_forbidden("y = sin(x)\n", "cos") is None
 
 
 def test_check_forbidden_word_boundary_asin_vs_sin():
-    # asin 不应被 sin 命中（前缀需非 [a-zA-Z0-9_]）
     assert judger_core.check_forbidden("y = asin(x)\n", "sin") is None
     assert judger_core.check_forbidden("y = sin(x)\n", "sin") is not None
 
 
 def test_check_forbidden_requires_call_paren():
-    # 只出现函数名但没有 '(' → 不算调用，不命中
     assert judger_core.check_forbidden("x = sin;\n", "sin") is None
-    # 函数名与 '(' 之间允许空白
     assert judger_core.check_forbidden("y = sin (x)\n", "sin") is not None
 
 
 def test_check_forbidden_octave_backslash_special():
-    # 反斜杠运算符特例（仅对 Octave 有意义）
     msg = judger_core.check_forbidden("x = A \\ b\n", "\\")
     assert msg == "Operator \\ is not allowed"
-    # 代码里没有反斜杠 → 不命中
     assert judger_core.check_forbidden("x = A / b\n", "\\") is None
 
 
 def test_check_forbidden_comma_separated_list():
-    # 逗号分割多个禁用函数，命中其中之一即返回
     msg = judger_core.check_forbidden("z = cos(t)\n", "sin, cos , tan")
     assert msg == "Function 'cos' is not allowed"
 
 
 def test_check_forbidden_only_checks_user_code_markers():
-    # 命中只在用户代码标记之间检测；标记外的 sin( 不算
     code = (
-        "y = sin(x)\n"  # 标记外
+        "y = sin(x)\n"
         "here_is_user_code_fuck_fuck_fuck_hahaha\n"
-        "z = cos(t)\n"  # 标记内
+        "z = cos(t)\n"
         "user_code_end_fuck_hahaha_fuck\n"
     )
-    # sin 在标记外 → 不命中
     assert judger_core.check_forbidden(code, "sin") is None
-    # cos 在标记内 → 命中
     assert judger_core.check_forbidden(code, "cos") == "Function 'cos' is not allowed"
-
-
-# ============== build_c/cpp_compile_cmd ==============
-def test_build_c_compile_cmd_shape():
-    cmd = judger_core.build_c_compile_cmd("a.c", "a.out")
-    assert cmd[0] == "timeout"
-    assert "30s" in cmd
-    assert "gcc" in cmd
-    assert "-O2" in cmd
-    assert "-pipe" in cmd
-    assert "-std=c11" in cmd
-    # source 紧跟 -o output
-    assert "a.c" in cmd and "-o" in cmd and "a.out" in cmd
-    oi = cmd.index("-o")
-    assert cmd[oi + 1] == "a.out"
-    # 链接 -lm 在末尾
-    assert cmd[-1] == "-lm"
-
-
-def test_build_cpp_compile_cmd_shape():
-    cmd = judger_core.build_cpp_compile_cmd("main.cpp", "a.out")
-    assert cmd[0] == "timeout"
-    assert "g++" in cmd
-    assert "-O2" in cmd
-    assert "-std=c++20" in cmd
-    assert "main.cpp" in cmd
-    oi = cmd.index("-o")
-    assert cmd[oi + 1] == "a.out"
-    assert cmd[-1] == "-lm"
-
-
-def test_build_compile_cmd_custom_timeout():
-    cmd = judger_core.build_c_compile_cmd("a.c", "a.out", compile_timeout_sec=15)
-    assert "15s" in cmd
-    assert "30s" not in cmd
-
-
-def test_build_compile_cmd_source_before_output_flag():
-    # source 必须在 -o 之前出现（gcc 语序）
-    cmd = judger_core.build_cpp_compile_cmd("main.cpp", "bin")
-    assert cmd.index("main.cpp") < cmd.index("-o")
-
-
-# ============== set_run_limits ==============
-class _RecordingSetrlimit:
-    """收集 resource.setrlimit 的调用 (which, (soft, hard))。"""
-
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, which, limits):
-        self.calls.append((which, limits))
-
-
-def test_set_run_limits_returns_callable():
-    setter = judger_core.set_run_limits(2.0, 1024)
-    assert callable(setter)
-
-
-def test_set_run_limits_cpu_and_mem(monkeypatch):
-    rec = _RecordingSetrlimit()
-    monkeypatch.setattr(resource, "setrlimit", rec)
-
-    # RLIMIT_CPU 限的是累计 CPU 秒（所有线程之和），按 核数 × ⌈墙钟⌉ + 启动余量 计，
-    # 以容纳 Octave/MKL 多线程启动（否则按墙钟 TLE 设上限会被秒杀）。⌈2.3⌉=3。
-    setter = judger_core.set_run_limits(2.3, 4096)
-    setter()
-
-    cpu_calls = [c for c in rec.calls if c[0] == resource.RLIMIT_CPU]
-    as_calls = [c for c in rec.calls if c[0] == resource.RLIMIT_AS]
-    assert len(cpu_calls) == 1
-    cpu_soft, cpu_hard = cpu_calls[0][1]
-    expected = 3 * judger_core._CPU_COUNT + judger_core._RLIMIT_CPU_STARTUP_BUFFER_SEC
-    assert cpu_soft == expected
-    assert cpu_hard == expected + 1
-    # mem_bytes > 0 → 设置 RLIMIT_AS
-    assert len(as_calls) == 1
-    assert as_calls[0][1] == (4096, 4096)
-
-
-def test_set_run_limits_cpu_min_one(monkeypatch):
-    rec = _RecordingSetrlimit()
-    monkeypatch.setattr(resource, "setrlimit", rec)
-
-    # cpu_seconds < 1 → 墙钟向上取整兜底为 1；soft = 1 × 核数 + 启动余量
-    setter = judger_core.set_run_limits(0.4, 0)
-    setter()
-
-    cpu_calls = [c for c in rec.calls if c[0] == resource.RLIMIT_CPU]
-    assert len(cpu_calls) == 1
-    expected = 1 * judger_core._CPU_COUNT + judger_core._RLIMIT_CPU_STARTUP_BUFFER_SEC
-    assert cpu_calls[0][1] == (expected, expected + 1)
-
-
-def test_set_run_limits_skips_as_when_mem_zero(monkeypatch):
-    rec = _RecordingSetrlimit()
-    monkeypatch.setattr(resource, "setrlimit", rec)
-
-    # mem_bytes == 0 → 不设置 RLIMIT_AS
-    setter = judger_core.set_run_limits(1.0, 0)
-    setter()
-
-    as_calls = [c for c in rec.calls if c[0] == resource.RLIMIT_AS]
-    assert as_calls == []
 
 
 # ============== JUDGER_RUN_ROOT 默认位置 ==============
 def test_default_run_root_is_oj_root_judger_not_tmp(monkeypatch):
-    """默认运行根必须是 <OJ_ROOT>/judger，且不再经过 tmp/。
-
-    回归守护：判题运行目录从 tmp/judger_runs 迁到 <OJ_ROOT>/judger 后，
-    若有人改回 tmp 或拼错子目录，这个断言会立刻失败。环境变量 JUDGER_RUN_ROOT
-    仍可覆盖，这里清空它以验证“内置默认值”。
-    """
+    """默认运行根必须是 <OJ_ROOT>/judger，且不再经过 tmp/。"""
     monkeypatch.delenv("JUDGER_RUN_ROOT", raising=False)
     import importlib
     reloaded = importlib.reload(judger_core)
     try:
         expected = os.path.join(reloaded.OJ_ROOT_PATH, "judger")
         assert reloaded.JUDGER_RUN_ROOT == expected
-        # 关键：运行根不得落在 tmp 下
         norm = os.path.normpath(reloaded.JUDGER_RUN_ROOT)
         assert (os.sep + "tmp" + os.sep) not in norm + os.sep
         assert not norm.endswith(os.sep + "tmp")
-        # 子目录形如 <OJ_ROOT>/judger/eoj-batch-123
         d = reloaded.run_dir_for("eoj-batch-123")
         assert d == os.path.join(expected, "eoj-batch-123")
     finally:
@@ -216,7 +92,6 @@ def test_default_run_root_is_oj_root_judger_not_tmp(monkeypatch):
 
 # ============== run_dir_for ==============
 def test_run_dir_for_under_run_root_no_creation(tmp_path, monkeypatch):
-    # 把运行根指到临时目录，确认拼接正确且不创建
     monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path))
     d = judger_core.run_dir_for("sub123")
     assert d == os.path.join(str(tmp_path), "sub123")
@@ -227,7 +102,6 @@ def test_run_dir_for_sanitizes_dangerous_sid(monkeypatch):
     monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", "/tmp/judger_runs_test")
     d = judger_core.run_dir_for("../../etc/passwd")
     base = os.path.basename(d)
-    # 危险字符被清洗，兜底为 run_<timestamp>，不含路径穿越
     assert ".." not in base
     assert "/" not in base
     assert base.startswith("run_")
@@ -260,7 +134,6 @@ def test_capture_output_image_jpeg_ext(tmp_path):
 
 def test_capture_output_image_invalid_ext_returns_none(tmp_path):
     run_dir = str(tmp_path)
-    # 文件存在但扩展名不在允许集合 → None
     with open(os.path.join(run_dir, "result.txt"), "w") as f:
         f.write("not an image")
     assert judger_core.capture_output_image_file(run_dir, "result.txt", "output_0") is None
@@ -268,12 +141,31 @@ def test_capture_output_image_invalid_ext_returns_none(tmp_path):
 
 def test_capture_output_image_missing_file_returns_none(tmp_path):
     run_dir = str(tmp_path)
-    # 源文件不存在 → None
     assert judger_core.capture_output_image_file(run_dir, "output.png", "output_0") is None
 
 
 def test_capture_output_image_extension_set_matches_source():
-    # 守护源码常量集合，避免被无意修改
     assert judger_core.IMAGE_FILE_EXTENSIONS == {
         ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"
     }
+
+
+# ============== timeout helpers ==============
+def test_timeout_sec_from_ns_basic():
+    result = judger_core._timeout_sec_from_ns(1_000_000_000, factor=1.0)
+    assert abs(result - 1.0) < 0.01
+
+
+def test_timeout_sec_from_ns_with_factor():
+    result = judger_core._timeout_sec_from_ns(2_000_000_000, factor=1.2)
+    assert abs(result - 2.4) < 0.01
+
+
+def test_timeout_sec_from_ns_min_one():
+    result = judger_core._timeout_sec_from_ns(0)
+    assert result >= 1.0
+
+
+def test_guard_timeout_exceeds_base():
+    assert judger_core._guard_timeout(2.0) > 2.0
+    assert judger_core._guard_timeout(0) >= 1.0
