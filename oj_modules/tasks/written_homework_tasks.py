@@ -4,7 +4,6 @@
 import os
 import re
 import shutil
-import subprocess
 import zipfile
 
 import pymysql
@@ -90,28 +89,27 @@ def _write_text_file_safe(path, content):
 
 
 def _run_cmd(cmd, cwd, timeout_seconds):
+    """在 Docker 容器中执行 TeX 编译命令。cwd 挂载为容器 /sandbox。"""
+    from oj_modules.docker_sandbox import run_in_container
     try:
-        proc = subprocess.run(
+        timeout_sec = max(10, int(timeout_seconds)) + 10
+        result = run_in_container(
             cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=max(10, int(timeout_seconds)),
-            check=False,
+            run_dir=cwd,
+            timeout_sec=timeout_sec,
         )
-    except FileNotFoundError:
-        return False, f"命令不存在：{cmd[0]}"
-    except subprocess.TimeoutExpired:
-        return False, f"命令超时：{' '.join(cmd)}"
     except Exception as e:
         return False, f"命令执行失败（{' '.join(cmd)}）：{e}"
 
-    stdout = str(proc.stdout or "").strip()
-    stderr = str(proc.stderr or "").strip()
+    if result.returncode == 124:
+        return False, f"命令超时：{' '.join(cmd)}"
+
+    stdout = str(result.stdout or "").strip()
+    stderr = str(result.stderr or "").strip()
     log = "\n".join(part for part in [stdout, stderr] if part).strip()
-    if proc.returncode != 0:
+    if result.returncode != 0:
         if not log:
-            log = f"命令失败（returncode={proc.returncode}）：{' '.join(cmd)}"
+            log = f"命令失败（returncode={result.returncode}）：{' '.join(cmd)}"
         return False, log
     return True, log
 
