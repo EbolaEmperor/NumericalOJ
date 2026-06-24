@@ -174,12 +174,13 @@ def create_thread():
                 sql = """INSERT INTO forum_threads (title, content, user_id)
                          VALUES (%s, %s, %s)"""
                 cursor.execute(sql, (title, content, user['id']))
+                thread_id = cursor.lastrowid
             conn.commit()
             flash('帖子创建成功', 'success')
         finally:
             conn.close()
 
-        return redirect(url_for('forum.forum_index'))
+        return redirect(url_for('forum.view_thread', thread_id=thread_id))
 
     return render_template('create_thread.html', user=user)
 

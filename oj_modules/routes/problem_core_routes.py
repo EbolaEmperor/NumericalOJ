@@ -500,6 +500,120 @@ def get_today_submission_counts():
     return total_submissions, total_accepted
 
 
+def build_problem_list_context(user):
+    """
+    组装题库页的完整数据上下文。
+    HTML 页面和 JSON API 共用这里，避免 CLI 再从模板 HTML 里反向解析信息。
+    """
+    total_submissions, total_accepted = get_today_submission_counts()
+    last_10_days, daily_counts = get_last_10_days_counts_from_counter()
+
+    context = {
+        "user": user,
+        "total_submissions": total_submissions,
+        "total_accepted": total_accepted,
+        "total_grade": 100,
+        "last_10_days": last_10_days,
+        "daily_counts": daily_counts,
+    }
+
+    if user['is_admin'] == 1:
+        context["problems"] = get_all_problems()
+        context["view_mode"] = "admin"
+        return context
+
+    classes = get_user_classes_cached(user['id'])
+    now_ts = datetime.now()
+    context["now"] = now_ts
+    context["classes"] = classes
+
+    if not classes:
+        context["homeworks"] = []
+        context["view_mode"] = "student_empty"
+        return context
+
+    if len(classes) == 1:
+        cls = classes[0]['class_en']
+        homeworks_map, grades_map = get_homeworks_and_grades_map(user['id'], user['username'], [cls])
+        context.update({
+            "homeworks": homeworks_map.get(cls, []),
+            "single_class_en": cls,
+            "single_class_cn": classes[0]['class_cn'],
+            "class_grades": grades_map.get(cls),
+            "view_mode": "student_single_class",
+        })
+        return context
+
+    class_en_list = [c['class_en'] for c in classes]
+    class_homeworks_map, class_grades_map = get_homeworks_and_grades_map(
+        user['id'],
+        user['username'],
+        class_en_list,
+    )
+
+    homeworks_by_class = []
+    for c in classes:
+        items = class_homeworks_map.get(c['class_en'], [])
+        grades = class_grades_map.get(c['class_en'])
+        homeworks_by_class.append({
+            "class_en": c['class_en'],
+            "class_cn": c['class_cn'],
+            "is_primary": c['is_primary'],
+            "hw_list": items,
+            "grades": grades,
+        })
+
+    context["homeworks_by_class"] = homeworks_by_class
+    context["view_mode"] = "student_multi_class"
+    return context
+
+
+def build_problem_detail_context(user, problem_id):
+    """
+    组装题目详情页的完整数据上下文。
+    返回 (context, error_code)，error_code 为 not_found / forbidden / None。
+    """
+    problem = get_problem(problem_id)
+    if not problem:
+        return None, "not_found"
+
+    if user['is_admin'] != 1:
+        homeworks = get_homeworks(user)
+        if not any(hw['problem_id'] == problem_id for hw in homeworks):
+            return None, "forbidden"
+
+    rendered_content = sanitize_html(markdown.markdown(
+        problem['content'],
+        extensions=['extra', 'fenced_code', 'tables'],
+    ))
+
+    # 题目详情页只展示最近 3 条提交，直接用 LIMIT 取，避免把该用户该题的全部提交拉进内存。
+    last_submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id, limit=3)
+    initial_code = problem.get('initial_code', '')
+
+    submission_limit = problem.get('submission_limit', 10)
+    remaining_submissions = (
+        get_remaining_submissions(user['username'], problem_id, submission_limit)
+        if user['is_admin'] != 1
+        else None
+    )
+    can_submit_flag = (
+        can_submit(user['username'], problem_id, submission_limit)
+        if user['is_admin'] != 1
+        else True
+    )
+
+    return {
+        "problem": problem,
+        "rendered_content": rendered_content,
+        "user": user,
+        "last_submissions": last_submissions,
+        "initial_code": initial_code,
+        "remaining_submissions": remaining_submissions,
+        "can_submit": can_submit_flag,
+    }, None
+
+
 def get_submissions_by_user_paginated(username, page=1, per_page=20):
     conn = get_db_connection()
     try:
@@ -553,90 +667,8 @@ def problem_list():
     if not user:
         return redirect(url_for('auth.login'))
 
-    total_submissions, total_accepted = get_today_submission_counts()
-    last_10_days, daily_counts = get_last_10_days_counts_from_counter()
-
-    total_grade = 100
-
-    if user['is_admin'] == 1:
-        problems = get_all_problems()
-        return render_template(
-            'problem_list.html',
-            problems=problems,
-            user=user,
-            total_submissions=total_submissions,
-            total_accepted=total_accepted,
-            total_grade=total_grade,
-            last_10_days=last_10_days,
-            daily_counts=daily_counts,
-        )
-
-    classes = get_user_classes_cached(user['id'])
-    now_ts = datetime.now()
-
-    if not classes:
-        return render_template(
-            'problem_list.html',
-            homeworks=[],
-            user=user,
-            now=now_ts,
-            total_submissions=total_submissions,
-            total_accepted=total_accepted,
-            total_grade=total_grade,
-            last_10_days=last_10_days,
-            daily_counts=daily_counts,
-        )
-
-    if len(classes) == 1:
-        cls = classes[0]['class_en']
-        homeworks_map, grades_map = get_homeworks_and_grades_map(user['id'], user['username'], [cls])
-        homeworks = homeworks_map.get(cls, [])
-        class_grades = grades_map.get(cls)
-        return render_template(
-            'problem_list.html',
-            homeworks=homeworks,
-            user=user,
-            now=now_ts,
-            total_submissions=total_submissions,
-            total_accepted=total_accepted,
-            total_grade=total_grade,
-            last_10_days=last_10_days,
-            daily_counts=daily_counts,
-            single_class_en=cls,
-            single_class_cn=classes[0]['class_cn'],
-            class_grades=class_grades,
-        )
-
-    class_en_list = [c['class_en'] for c in classes]
-    class_homeworks_map, class_grades_map = get_homeworks_and_grades_map(
-        user['id'],
-        user['username'],
-        class_en_list,
-    )
-
-    homeworks_by_class = []
-    for c in classes:
-        items = class_homeworks_map.get(c['class_en'], [])
-        grades = class_grades_map.get(c['class_en'])
-        homeworks_by_class.append({
-            "class_en": c['class_en'],
-            "class_cn": c['class_cn'],
-            "is_primary": c['is_primary'],
-            "hw_list": items,
-            "grades": grades,
-        })
-
-    return render_template(
-        'problem_list.html',
-        homeworks_by_class=homeworks_by_class,
-        user=user,
-        now=now_ts,
-        total_submissions=total_submissions,
-        total_accepted=total_accepted,
-        total_grade=total_grade,
-        last_10_days=last_10_days,
-        daily_counts=daily_counts,
-    )
+    context = build_problem_list_context(user)
+    return render_template('problem_list.html', **context)
 
 
 @problem_core_bp.route('/problem/<int:problem_id>', methods=['GET'])
@@ -645,39 +677,14 @@ def problem_detail(problem_id):
     if not user:
         return redirect(url_for('auth.login'))
 
-    problem = get_problem(problem_id)
-    if not problem:
+    context, error_code = build_problem_detail_context(user, problem_id)
+    if error_code == "not_found":
         return "<h3>题目不存在</h3>"
+    if error_code == "forbidden":
+        flash('无权限访问该题目', 'danger')
+        return redirect(url_for('problem_core.problem_list'))
 
-    if user['is_admin'] != 1:
-        homeworks = get_homeworks(user)
-        if not any(hw['problem_id'] == problem_id for hw in homeworks):
-            flash('无权限访问该题目', 'danger')
-            return redirect(url_for('problem_core.problem_list'))
-
-    rendered_content = sanitize_html(markdown.markdown(
-        problem['content'],
-        extensions=['extra', 'fenced_code', 'tables'],
-    ))
-
-    # 题目详情页只展示最近 3 条提交，直接用 LIMIT 取，避免把该用户该题的全部提交拉进内存。
-    last_submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id, limit=3)
-    initial_code = problem.get('initial_code', '')
-
-    submission_limit = problem.get('submission_limit', 10)
-    remaining_submissions = get_remaining_submissions(user['username'], problem_id, submission_limit) if user['is_admin'] != 1 else None
-    can_submit_flag = can_submit(user['username'], problem_id, submission_limit) if user['is_admin'] != 1 else True
-
-    return render_template(
-        'problem_detail.html',
-        problem=problem,
-        rendered_content=rendered_content,
-        user=user,
-        last_submissions=last_submissions,
-        initial_code=initial_code,
-        remaining_submissions=remaining_submissions,
-        can_submit=can_submit_flag,
-    )
+    return render_template('problem_detail.html', **context)
 
 
 @problem_core_bp.route('/admin/agent_solve_problem/<int:problem_id>', methods=['POST'])

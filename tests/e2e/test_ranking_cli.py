@@ -9,12 +9,41 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.conftest import (
+    assert_no_json_leaks,
     create_local_git_repo,
     create_regular_user,
     get_ranking_appeal_id,
     ranking_id_from_create,
     write_zip,
 )
+
+
+RANKING_SECRET_KEYS = {
+    "agent_judge_api_key",
+    "agent_judge_api_key_set",
+    "agent_judge_base_url",
+    "agent_judge_model",
+    "agent_judge_timeout_seconds",
+    "reference_answer_path",
+    "reference_answer_name",
+    "scoring_script_path",
+    "scoring_script_name",
+    "git_format",
+    "judge_rules",
+    "aj_endpoints",
+    "batch_default_template",
+    "api_key",
+    "elo_initial_rating",
+    "elo_k_factor",
+    "elo_max_matches",
+    "elo_match_interval_seconds",
+    "elo_initial_burst",
+    "elo_max_pairs_per_round",
+    "elo_running",
+    "elo_rating",
+    "elo_match_count",
+    "elo_in_pool",
+}
 
 
 def _create_ranking(cli, title: str) -> int:
@@ -47,8 +76,12 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
 
     ranking_id = _create_ranking(cli, f"CLI Ranking {unique_suffix}")
     assert cli.admin_json("ranking", "detail", str(ranking_id), "--tab", "edit")["success"] is True
-    assert cli.user_json("ranking", "detail", str(ranking_id))["success"] is True
-    assert cli.user_json("ranking", "list", "--limit", "10")["count"] >= 1
+    user_detail = cli.user_json("ranking", "detail", str(ranking_id))
+    assert user_detail["success"] is True
+    assert_no_json_leaks(user_detail, forbidden_keys=RANKING_SECRET_KEYS)
+    user_list = cli.user_json("ranking", "list", "--limit", "10")
+    assert user_list["count"] >= 1
+    assert_no_json_leaks(user_list, forbidden_keys=RANKING_SECRET_KEYS)
 
     attachment = tmp_path / "attachment.txt"
     attachment.write_text("attachment", encoding="utf-8")
@@ -70,7 +103,7 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
     answer = tmp_path / "answer.json"
     answer.write_text('{"answer": 1}', encoding="utf-8")
     code_zip = write_zip(tmp_path / "code.zip", {"main.py": "print(1)\n"})
-    assert cli.user_json(
+    submit_payload = cli.user_json(
         "ranking",
         "submit",
         str(ranking_id),
@@ -80,17 +113,24 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
         str(code_zip),
         "--answer-file",
         str(answer),
-    )["success"] is True
+    )
+    assert submit_payload["success"] is True
+    assert "submission_id" in submit_payload
 
     mine = cli.user_json("ranking", "my-submissions", str(ranking_id), "--limit", "5")
+    assert_no_json_leaks(mine, forbidden_keys=RANKING_SECRET_KEYS)
     submission_ids = _ranking_submission_ids(mine)
     assert len(submission_ids) == 1
     sid = submission_ids[0]
     assert cli.admin_json("ranking", "submissions", str(ranking_id), "--username", username)["count"] == 1
     assert cli.admin_json("ranking", "bulk-filter", str(ranking_id), "--username", username)["success"] is True
     assert cli.admin_json("ranking", "bulk-start", str(ranking_id), "--submission-ids", str(sid))["success"] is True
-    assert cli.user_json("ranking", "leaderboard", str(ranking_id))["success"] is True
-    assert cli.user_json("ranking", "matches", str(ranking_id))["total"] == 0
+    leaderboard = cli.user_json("ranking", "leaderboard", str(ranking_id))
+    assert leaderboard["success"] is True
+    assert_no_json_leaks(leaderboard, forbidden_keys=RANKING_SECRET_KEYS)
+    matches = cli.user_json("ranking", "matches", str(ranking_id))
+    assert matches["total"] == 0
+    assert_no_json_leaks(matches, forbidden_keys=RANKING_SECRET_KEYS)
 
     downloaded_answer = cli.user_json("ranking", "download-submission", str(sid), "answer", "-o", str(tmp_path))
     downloaded_code = cli.admin_json("ranking", "download-submission", str(sid), "code", "-o", str(tmp_path))
@@ -101,7 +141,7 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
     assert cli.user_json("ranking", "appeal-status", str(ranking_id), str(sid))["has_appeal"] is True
     appeal_id = get_ranking_appeal_id(sid)
     appeals = cli.admin_json("ranking", "appeals", str(ranking_id))
-    assert "rows_html" in appeals
+    assert any(int(row["id"]) == appeal_id for row in appeals["appeals"])
     assert cli.admin_json("ranking", "appeal-review", str(ranking_id), str(appeal_id))["success"] is True
     assert cli.admin_json(
         "ranking",
@@ -221,6 +261,29 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
         "--timeout-seconds",
         "60",
     )["success"] is True
+    admin_detail = cli.admin_json("ranking", "detail", str(ranking_id), "--tab", "edit")
+    assert admin_detail["success"] is True
+    assert admin_detail["aj_endpoints"]
+    assert admin_detail["judge_rules"]
+
+    user_detail = cli.user_json("ranking", "detail", str(ranking_id), "--tab", "submit")
+    assert user_detail["success"] is True
+    assert user_detail["git_repo_url"] == f"file://{user_repo}"
+    assert_no_json_leaks(
+        user_detail,
+        forbidden_keys=RANKING_SECRET_KEYS,
+        forbidden_terms=("http://127.0.0.1:9", "local-only", "fake", "Works", "<username>"),
+    )
+    rejected_zip = cli.user_json(
+        "ranking",
+        "submit",
+        str(ranking_id),
+        "--base-model",
+        "baseline",
+        "--code-zip",
+        str(write_zip(tmp_path / "git_rejected.zip", {"main.py": "print(1)\n"})),
+    )
+    assert rejected_zip["success"] is False
 
     git_help = cli.user("ranking", "git", "--help").text
     assert "check" in git_help and "submit" in git_help
@@ -279,7 +342,7 @@ def test_ranking_agent_judge_48h_submission_limit(cli, unique_suffix, tmp_path):
         "--code-zip",
         str(code_zip),
     )
-    assert blocked["success"] is True
+    assert blocked["success"] is False
     mine = cli.user_json("ranking", "my-submissions", str(ranking_id), "--limit", "10")
     assert mine["count"] == 3
     assert cli.admin_json("ranking", "reset-limit", str(ranking_id))["success"] is True

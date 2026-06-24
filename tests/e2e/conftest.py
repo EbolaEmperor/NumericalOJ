@@ -82,6 +82,17 @@ def _wait_for_http(proc: subprocess.Popen[str], url: str, timeout: float = 60.0)
     pytest.fail(f"Local Flask server did not become ready: {last_error}")
 
 
+def _terminate_process(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
 @pytest.fixture
 def local_numoj_server() -> str:
     _assert_disposable_environment()
@@ -91,7 +102,7 @@ def local_numoj_server() -> str:
     env["OJ_LIVE_AI"] = "0"
     env["NUMOJ_FAKE_AGENT_JUDGE"] = "1"
     env["NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS"] = "3600"
-    proc = subprocess.Popen(
+    web_proc = subprocess.Popen(
         [sys.executable, "-B", "oj.py"],
         cwd=ROOT,
         env=env,
@@ -99,16 +110,37 @@ def local_numoj_server() -> str:
         stderr=subprocess.STDOUT,
         text=True,
     )
+    celery_proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "celery",
+            "-A",
+            "oj.celery",
+            "worker",
+            "--loglevel=warning",
+            "-Q",
+            "celery",
+            "--pool=solo",
+            "--concurrency=1",
+        ],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
     try:
-        _wait_for_http(proc, f"{BASE_URL}/login")
+        _wait_for_http(web_proc, f"{BASE_URL}/login")
+        if celery_proc.poll() is not None:
+            output = ""
+            if celery_proc.stdout is not None:
+                output = celery_proc.stdout.read()
+            pytest.fail(f"Local Celery worker exited early with {celery_proc.returncode}:\n{output}")
         yield BASE_URL
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=10)
+        _terminate_process(celery_proc)
+        _terminate_process(web_proc)
 
 
 class CliResult:
@@ -364,8 +396,9 @@ def create_problem_with_homework(
     *,
     submission_limit: int = 10,
     class_en: str = "Cclass1",
+    extra: Optional[list[str]] = None,
 ) -> tuple[int, str]:
-    problem_id = create_problem(cli, title, submission_limit=submission_limit)
+    problem_id = create_problem(cli, title, submission_limit=submission_limit, extra=extra)
     homework_id = add_problem_homework(cli, problem_id, title, class_en=class_en)
     return problem_id, homework_id
 
@@ -380,6 +413,30 @@ def write_zip(path: Path, files: dict[str, str]) -> Path:
 
 def write_testdata_zip(path: Path) -> Path:
     return write_zip(path, {"1.in": "", "1.out": "hello"})
+
+
+def assert_no_json_leaks(payload: Any, *, forbidden_keys: set[str], forbidden_terms: tuple[str, ...] = ()) -> None:
+    key_hits: list[str] = []
+    term_hits: list[str] = []
+
+    def walk(value: Any, path: str = "$") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}"
+                if key in forbidden_keys:
+                    key_hits.append(child_path)
+                walk(child, child_path)
+        elif isinstance(value, list):
+            for idx, child in enumerate(value):
+                walk(child, f"{path}[{idx}]")
+        elif isinstance(value, str):
+            for term in forbidden_terms:
+                if term in value:
+                    term_hits.append(f"{path}: {term}")
+
+    walk(payload)
+    assert not key_hits, f"Forbidden JSON keys leaked: {key_hits}"
+    assert not term_hits, f"Forbidden JSON terms leaked: {term_hits}"
 
 
 def create_local_git_repo(path: Path) -> Path:

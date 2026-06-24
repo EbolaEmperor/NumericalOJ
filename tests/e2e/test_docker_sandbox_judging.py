@@ -8,6 +8,8 @@ Requires Docker with the numericaloj-judger:latest image available.
 from __future__ import annotations
 
 import time
+import shutil
+import subprocess
 
 import pytest
 
@@ -40,6 +42,22 @@ SOLUTIONS = {
 }
 
 
+def _require_docker_judger_image() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI is not available for sandbox judging e2e.")
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", "numericaloj-judger:latest"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("Docker judger image numericaloj-judger:latest is not available.")
+
+
 def _wait_for_verdict(cli, submission_id: int, timeout: float = 60.0) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -56,15 +74,19 @@ class TestDockerSandboxJudging:
     """Verify that Docker-based judging works for all supported languages."""
 
     def test_cpp_hello_world(self, cli, tmp_path):
+        _require_docker_judger_image()
         self._run_hello_world(cli, tmp_path, "cpp")
 
     def test_c_hello_world(self, cli, tmp_path):
+        _require_docker_judger_image()
         self._run_hello_world(cli, tmp_path, "c")
 
     def test_python_hello_world(self, cli, tmp_path):
+        _require_docker_judger_image()
         self._run_hello_world(cli, tmp_path, "python")
 
     def test_octave_hello_world(self, cli, tmp_path):
+        _require_docker_judger_image()
         self._run_hello_world(cli, tmp_path, "matlab")
 
     def _run_hello_world(self, cli, tmp_path, lang_key: str):

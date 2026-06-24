@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import html as html_lib
 import json
 import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 try:
@@ -77,14 +76,6 @@ def save_config(path: Path, cfg: Dict[str, Any]) -> None:
         pass
 
 
-def strip_html(markup: str) -> str:
-    markup = re.sub(r"(?is)<script\b.*?</script>", " ", markup)
-    markup = re.sub(r"(?is)<style\b.*?</style>", " ", markup)
-    text = re.sub(r"(?s)<[^>]+>", " ", markup)
-    text = html_lib.unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def content_disposition_filename(header: str) -> Optional[str]:
     if not header:
         return None
@@ -148,82 +139,29 @@ def print_or_save_response(resp: requests.Response, *, output: Optional[str] = N
 def print_redirect_response(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> None:
     ensure_ok(resp)
     location = resp.headers.get("Location", "")
+    redirected = 300 <= resp.status_code < 400
+    if not redirected:
+        if response_is_json(resp):
+            output_json(resp.json())
+            return
+        output_json(
+            {
+                "success": False,
+                "status": resp.status_code,
+                "location": location,
+                "message": "服务器返回了表单页面而不是成功跳转；操作未完成。",
+            }
+        )
+        return
     payload: Dict[str, Any] = {"success": True, "status": resp.status_code, "location": location}
     if id_pattern and location:
         match = re.search(id_pattern, location)
         if match:
             payload[id_name] = int(match.group(1))
+        else:
+            payload["success"] = False
+            payload["message"] = f"服务器跳转成功，但未从 Location 中解析到 {id_name}"
     output_json(payload)
-
-
-def html_summary(
-    resp: requests.Response,
-    *,
-    source: str,
-    output: Optional[str] = None,
-    max_chars: int = 2000,
-    extra: Optional[Dict[str, Any]] = None,
-) -> None:
-    ensure_ok(resp, allow_redirect=False)
-    if output:
-        print_or_save_response(resp, output=output, allow_redirect=False)
-        return
-    text = strip_html(resp.text)
-    payload: Dict[str, Any] = {
-        "success": True,
-        "source": source,
-        "status": resp.status_code,
-        "text": text[: max(0, max_chars)],
-        "truncated": len(text) > max_chars,
-    }
-    if extra:
-        payload.update(extra)
-    output_json(payload)
-
-
-def extract_anchors(markup: str) -> List[Dict[str, str]]:
-    anchors: List[Dict[str, str]] = []
-    for match in re.finditer(r"<a\b([^>]*)>(.*?)</a>", markup, flags=re.I | re.S):
-        href = html_attr(match.group(1), "href")
-        if not href:
-            continue
-        anchors.append({"href": href, "text": strip_html(match.group(2))})
-    return anchors
-
-
-def html_attr(block: str, attr: str) -> Optional[str]:
-    match = re.search(rf'\b{re.escape(attr)}=(["\'])(.*?)\1', block, flags=re.S)
-    return html_lib.unescape(match.group(2)) if match else None
-
-
-def parse_problem_links(markup: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    seen = set()
-    for anchor in extract_anchors(markup):
-        match = re.search(r"/problem/(\d+)", anchor["href"])
-        if not match:
-            continue
-        problem_id = int(match.group(1))
-        if problem_id in seen:
-            continue
-        seen.add(problem_id)
-        rows.append({"id": problem_id, "title": anchor["text"], "url": anchor["href"]})
-    return rows
-
-
-def parse_ranking_links(markup: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    seen = set()
-    for anchor in extract_anchors(markup):
-        match = re.search(r"/ranking/(\d+)/?(?:[?#].*)?$", anchor["href"])
-        if not match:
-            continue
-        competition_id = int(match.group(1))
-        if competition_id in seen:
-            continue
-        seen.add(competition_id)
-        rows.append({"id": competition_id, "title": anchor["text"], "url": anchor["href"]})
-    return rows
 
 
 def print_stream_lines(resp: requests.Response, *, max_lines: int) -> None:
@@ -261,102 +199,12 @@ def close_files(files: Dict[str, Tuple[str, Any]]) -> None:
             pass
 
 
-def unique_ints(values: Iterable[str]) -> List[int]:
-    seen = set()
-    out: List[int] = []
-    for raw in values:
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if value not in seen:
-            seen.add(value)
-            out.append(value)
-    return out
-
-
-def extract_submission_ids(markup: str) -> List[int]:
-    return unique_ints(re.findall(r"/submission_detail/(\d+)", markup))
-
-
-def extract_div_blocks_by_class(markup: str, class_token: str) -> List[str]:
-    open_re = re.compile(r'<div\b[^>]*\bclass=(["\'])(.*?)\1[^>]*>', flags=re.I | re.S)
-    tag_re = re.compile(r"</?div\b[^>]*>", flags=re.I | re.S)
-    blocks: List[str] = []
-    for match in open_re.finditer(markup):
-        if class_token not in html_lib.unescape(match.group(2)).split():
-            continue
-        depth = 1
-        for tag in tag_re.finditer(markup, match.end()):
-            if tag.group(0).startswith("</"):
-                depth -= 1
-            else:
-                depth += 1
-            if depth == 0:
-                blocks.append(markup[match.start():tag.end()])
-                break
-    return blocks
-
-
-def parse_ranking_submission_cards(markup: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for block in extract_div_blocks_by_class(markup, "aj-sub"):
-        id_match = re.search(r'class=(["\'])aj-sub-id\1[^>]*>\s*#(\d+)', block, flags=re.I | re.S)
-        if not id_match:
-            continue
-        status_match = re.search(r'class=(["\'])aj-st\b[^"\']*\1[^>]*>.*?</span>\s*(.*?)</span>', block, flags=re.I | re.S)
-        score_match = re.search(r'class=(["\'])aj-sub-score\1[^>]*>(.*?)</div>', block, flags=re.I | re.S)
-        time_match = re.search(r'class=(["\'])aj-time\1[^>]*>(.*?)</span>', block, flags=re.I | re.S)
-        rows.append(
-            {
-                "id": int(id_match.group(2)),
-                "status": strip_html(status_match.group(2)) if status_match else None,
-                "score": strip_html(score_match.group(2)) if score_match else None,
-                "created_at": strip_html(time_match.group(2)) if time_match else None,
-            }
-        )
-    return rows
-
-
-def parse_leaderboard(markup: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for block in extract_div_blocks_by_class(markup, "leaderboard-row"):
-        rank_match = re.search(r'class=(["\'])lb-rank(?:-num)?\1[^>]*>(.*?)</', block, flags=re.I | re.S)
-        username_match = re.search(r'class=(["\'])lb-username\1[^>]*>(.*?)</div>', block, flags=re.I | re.S)
-        score_match = re.search(r'class=(["\'])lb-score-text\1[^>]*>(.*?)</div>', block, flags=re.I | re.S)
-        rows.append(
-            {
-                "rank": strip_html(rank_match.group(2)) if rank_match else None,
-                "username": strip_html(username_match.group(2)) if username_match else None,
-                "score": strip_html(score_match.group(2)) if score_match else None,
-            }
-        )
-    return rows
-
-
-def parse_submission_rows(markup: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for block in re.findall(r'<div class="list-group-item d-flex align-items-center">(.*?)</div>\s*</div>', markup, flags=re.I | re.S):
-        sid_match = re.search(r"/submission_detail/(\d+)", block)
-        if not sid_match:
-            continue
-        status_match = re.search(r'<span class="badge[^"]*">\s*(.*?)\s*</span>', block, flags=re.I | re.S)
-        cells = re.findall(r'<div class="flex-fill[^"]*"[^>]*>(.*?)</div>', block, flags=re.I | re.S)
-        rows.append(
-            {
-                "id": int(sid_match.group(1)),
-                "status": strip_html(status_match.group(1)) if status_match else None,
-                "score": strip_html(cells[2]) if len(cells) > 2 else None,
-                "problem": strip_html(cells[3]) if len(cells) > 3 else None,
-            }
-        )
-    return rows
-
-
-def client_from_args(args: argparse.Namespace) -> NumOJClient:
+def client_from_args(args: argparse.Namespace, *, require_auth: bool = True) -> NumOJClient:
     cfg = load_config(args.config)
     if args.base_url:
         cfg["base_url"] = normalize_base_url(args.base_url)
+    if require_auth and not (cfg.get("cookies") or {}).get("session"):
+        raise CliError("CLI requires login. Run init or auth login first.")
     return NumOJClient(cfg, timeout=args.timeout)
 
 
@@ -389,7 +237,7 @@ def logout(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
     if cfg.get("cookies"):
         try:
-            client_from_args(args).request("GET", "/logout")
+            client_from_args(args, require_auth=False).request("GET", "/logout")
         except Exception:
             pass
     cfg.pop("cookies", None)
@@ -399,7 +247,17 @@ def logout(args: argparse.Namespace) -> None:
 
 def status(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
-    client = client_from_args(args)
+    if not (cfg.get("base_url") or args.base_url):
+        output_json(
+            {
+                "authenticated": False,
+                "base_url": None,
+                "username": cfg.get("username"),
+                "status": None,
+            }
+        )
+        return
+    client = client_from_args(args, require_auth=False)
     resp = client.request("GET", "/me/classes")
     output_json(
         {
@@ -411,62 +269,8 @@ def status(args: argparse.Namespace) -> None:
     )
 
 
-def auth_login_page(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", "/login")
-    html_summary(resp, source="/login", output=args.output, max_chars=args.max_chars)
-
-
 def site_home(args: argparse.Namespace) -> None:
     resp = client_from_args(args).request("GET", "/")
-    print_redirect_response(resp)
-
-
-def auth_send_code(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("POST", "/send_code", data={"email": args.email})
-    print_or_save_response(resp)
-
-
-def auth_register_page(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", "/register")
-    html_summary(resp, source="/register", output=args.output, max_chars=args.max_chars)
-
-
-def auth_register(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request(
-        "POST",
-        "/register",
-        data={
-            "username": args.username,
-            "password": args.password,
-            "email": args.email,
-            "verification_code": args.code,
-            "class": args.class_en,
-        },
-    )
-    print_redirect_response(resp)
-
-
-def auth_forgot_page(args: argparse.Namespace) -> None:
-    params: Dict[str, Any] = {"step": args.step}
-    if args.email:
-        params["email"] = args.email
-    resp = client_from_args(args).request("GET", "/forgot_password", params=params)
-    html_summary(resp, source="/forgot_password", output=args.output, max_chars=args.max_chars)
-
-
-def auth_forgot_request(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("POST", "/forgot_password", params={"step": "email"}, data={"email": args.email})
-    print_redirect_response(resp)
-
-
-def auth_forgot_reset(args: argparse.Namespace) -> None:
-    confirm = args.confirm_password or args.new_password
-    resp = client_from_args(args).request(
-        "POST",
-        "/forgot_password",
-        params={"step": "verify", "email": args.email},
-        data={"code": args.code, "new_password": args.new_password, "confirm_password": confirm},
-    )
     print_redirect_response(resp)
 
 
@@ -505,39 +309,20 @@ def me_set_primary_class(args: argparse.Namespace) -> None:
     print_or_save_response(resp)
 
 
-def fetch_submission_status(client: NumOJClient, submission_id: int) -> Dict[str, Any]:
-    resp = client.request("GET", f"/submission_status/{submission_id}")
-    if resp.status_code >= 400 or not response_is_json(resp):
-        return {"id": submission_id, "detail_url": f"/submission_detail/{submission_id}", "status_error": resp.status_code}
-    data = resp.json()
-    data["id"] = submission_id
-    data["detail_url"] = f"/submission_detail/{submission_id}"
-    return data
-
-
-def submissions_from_page(client: NumOJClient, path: str, *, params: Optional[Dict[str, Any]] = None, limit: Optional[int] = None) -> None:
-    resp = client.request("GET", path, params=params)
-    ensure_ok(resp, allow_redirect=False)
-    ids = extract_submission_ids(resp.text)
-    if limit is not None:
-        ids = ids[: max(0, limit)]
-    output_json(
-        {
-            "success": True,
-            "source": path,
-            "count": len(ids),
-            "submission_ids": ids,
-            "submissions": [fetch_submission_status(client, sid) for sid in ids],
-        }
-    )
-
-
 def submission_list(args: argparse.Namespace) -> None:
-    submissions_from_page(client_from_args(args), "/my_submissions", params={"page": args.page}, limit=args.limit)
+    params: Dict[str, Any] = {"page": args.page}
+    if args.limit is not None:
+        params["limit"] = args.limit
+    resp = client_from_args(args).request("GET", "/api/submissions", params=params)
+    print_or_save_response(resp)
 
 
 def submission_problem_list(args: argparse.Namespace) -> None:
-    submissions_from_page(client_from_args(args), f"/submissionslist/{args.problem_id}", params={"page": args.page}, limit=args.limit)
+    params: Dict[str, Any] = {"page": args.page}
+    if args.limit is not None:
+        params["limit"] = args.limit
+    resp = client_from_args(args).request("GET", f"/api/problems/{args.problem_id}/submissions", params=params)
+    print_or_save_response(resp)
 
 
 def submission_status_cmd(args: argparse.Namespace) -> None:
@@ -556,7 +341,8 @@ def submission_detail(args: argparse.Namespace) -> None:
         resp = client.request("GET", f"/submission_detail/{args.submission_id}")
         print_or_save_response(resp, output=args.output, allow_redirect=False)
     else:
-        output_json(fetch_submission_status(client, args.submission_id))
+        resp = client.request("GET", f"/api/submissions/{args.submission_id}")
+        print_or_save_response(resp)
 
 
 def submission_last_code(args: argparse.Namespace) -> None:
@@ -573,13 +359,14 @@ def me_grades(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     best: Dict[str, Dict[str, Any]] = {}
     for page in range(1, args.pages + 1):
-        resp = client.request("GET", "/my_submissions", params={"page": page})
+        resp = client.request("GET", "/api/submissions", params={"page": page})
         ensure_ok(resp, allow_redirect=False)
-        rows = parse_submission_rows(resp.text)
+        payload = resp.json() if response_is_json(resp) else {}
+        rows = payload.get("submissions") or []
         if not rows:
             break
         for row in rows:
-            problem = row.get("problem") or f"submission:{row['id']}"
+            problem = row.get("display_problem_title") or row.get("problem_title") or f"submission:{row['id']}"
             try:
                 score_value = float(str(row.get("score") or "0"))
             except ValueError:
@@ -592,30 +379,28 @@ def me_grades(args: argparse.Namespace) -> None:
 
 def problem_list(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/problems")
+    params: Dict[str, Any] = {}
+    if args.limit is not None:
+        params["limit"] = args.limit
+    resp = client.request("GET", "/api/problems", params=params)
     if args.output:
         print_or_save_response(resp, output=args.output, allow_redirect=False)
         return
-    ensure_ok(resp, allow_redirect=False)
-    problems = parse_problem_links(resp.text)
-    if args.limit is not None:
-        problems = problems[: max(0, args.limit)]
-    html_summary(
-        resp,
-        source="/problems",
-        max_chars=args.max_chars,
-        extra={"problems": problems, "count": len(problems)},
-    )
+    print_or_save_response(resp)
 
 
 def problem_detail(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", f"/problem/{args.problem_id}")
-    html_summary(resp, source=f"/problem/{args.problem_id}", output=args.output, max_chars=args.max_chars)
+    client = client_from_args(args)
+    path = f"/problem/{args.problem_id}" if args.output else f"/api/problems/{args.problem_id}"
+    resp = client.request("GET", path)
+    print_or_save_response(resp, output=args.output, allow_redirect=False)
 
 
 def problem_submit_page(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", f"/submit/{args.problem_id}")
-    html_summary(resp, source=f"/submit/{args.problem_id}", output=args.output, max_chars=args.max_chars)
+    client = client_from_args(args)
+    path = f"/submit/{args.problem_id}" if args.output else f"/api/problems/{args.problem_id}/submit-context"
+    resp = client.request("GET", path)
+    print_or_save_response(resp, output=args.output, allow_redirect=False)
 
 
 def problem_submit(args: argparse.Namespace) -> None:
@@ -633,18 +418,19 @@ def problem_submit(args: argparse.Namespace) -> None:
 
 
 def forum_list(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", "/forum")
-    html_summary(resp, source="/forum", output=args.output, max_chars=args.max_chars)
+    resp = client_from_args(args).request("GET", "/forum" if args.output else "/api/forum")
+    print_or_save_response(resp, output=args.output, allow_redirect=False)
 
 
 def forum_thread(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", f"/forum/thread/{args.thread_id}")
-    html_summary(resp, source=f"/forum/thread/{args.thread_id}", output=args.output, max_chars=args.max_chars)
+    path = f"/forum/thread/{args.thread_id}" if args.output else f"/api/forum/threads/{args.thread_id}"
+    resp = client_from_args(args).request("GET", path)
+    print_or_save_response(resp, output=args.output, allow_redirect=False)
 
 
 def forum_new_page(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", "/forum/new")
-    html_summary(resp, source="/forum/new", output=args.output, max_chars=args.max_chars)
+    resp = client_from_args(args).request("GET", "/forum/new" if args.output else "/api/forum/new-context")
+    print_or_save_response(resp, output=args.output, allow_redirect=False)
 
 
 def forum_new(args: argparse.Namespace) -> None:
@@ -663,8 +449,8 @@ def forum_reply_thread(args: argparse.Namespace) -> None:
 
 
 def repository_page(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("GET", "/code_repository")
-    html_summary(resp, source="/code_repository", output=args.output, max_chars=args.max_chars)
+    resp = client_from_args(args).request("GET", "/code_repository" if args.output else "/api/repository/context")
+    print_or_save_response(resp, output=args.output, allow_redirect=False)
 
 
 def repository_files(args: argparse.Namespace) -> None:
@@ -748,56 +534,37 @@ def repository_classes(args: argparse.Namespace) -> None:
 
 def ai_code_marks(args: argparse.Namespace) -> None:
     payload = {
-        "problem_id": args.problem_id,
         "submission_id": args.submission_id,
-        "user_code": read_code_arg(args),
         "force_refresh": bool(args.force_refresh),
     }
     resp = client_from_args(args).request("POST", "/ask_ai_code_marks", json=payload)
     print_or_save_response(resp)
 
 
-def ai_ask(args: argparse.Namespace) -> None:
-    payload = {"problem_id": args.problem_id, "submission_id": args.submission_id, "user_code": read_code_arg(args)}
-    resp = client_from_args(args).request("POST", "/ask_ai", json=payload)
-    print_or_save_response(resp, output=args.output)
-
-
-def ai_for_ac(args: argparse.Namespace) -> None:
-    payload = {"problem_id": args.problem_id, "user_code": read_code_arg(args)}
-    resp = client_from_args(args).request("POST", "/ask_ai_for_ac", json=payload)
-    print_or_save_response(resp, output=args.output)
-
-
 def ranking_list(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/ranking/")
+    params: Dict[str, Any] = {}
+    if args.limit is not None:
+        params["limit"] = args.limit
+    resp = client.request("GET", "/ranking/" if args.output else "/api/ranking/competitions", params=None if args.output else params)
     if args.output:
         print_or_save_response(resp, output=args.output, allow_redirect=False)
         return
-    ensure_ok(resp, allow_redirect=False)
-    competitions = parse_ranking_links(resp.text)
-    if args.limit is not None:
-        competitions = competitions[: max(0, args.limit)]
-    html_summary(
-        resp,
-        source="/ranking/",
-        max_chars=args.max_chars,
-        extra={"competitions": competitions, "count": len(competitions)},
-    )
+    print_or_save_response(resp)
 
 
 def ranking_detail(args: argparse.Namespace) -> None:
     params = {"tab": args.tab} if args.tab else None
-    resp = client_from_args(args).request("GET", f"/ranking/{args.competition_id}/", params=params)
-    html_summary(resp, source=f"/ranking/{args.competition_id}/", output=args.output, max_chars=args.max_chars)
+    path = f"/ranking/{args.competition_id}/" if args.output else f"/api/ranking/competitions/{args.competition_id}"
+    resp = client_from_args(args).request("GET", path, params=params)
+    print_or_save_response(resp, output=args.output, allow_redirect=False)
 
 
 def ranking_matches(args: argparse.Namespace) -> None:
     params: Dict[str, Any] = {"page": args.page}
     if args.mine:
         params["mine"] = "1"
-    resp = client_from_args(args).request("GET", f"/ranking/{args.competition_id}/matches_json", params=params)
+    resp = client_from_args(args).request("GET", f"/api/ranking/competitions/{args.competition_id}/matches", params=params)
     print_or_save_response(resp)
 
 
@@ -806,8 +573,24 @@ def ranking_match_detail(args: argparse.Namespace) -> None:
     print_or_save_response(resp)
 
 
+def _ranking_submission_ids(client: NumOJClient, competition_id: int) -> set[int]:
+    resp = client.request("GET", f"/api/ranking/competitions/{competition_id}/my-submissions")
+    if resp.status_code >= 400 or not response_is_json(resp):
+        return set()
+    try:
+        payload = resp.json()
+    except Exception:
+        return set()
+    return {
+        int(row["id"])
+        for row in (payload.get("submissions") or [])
+        if row.get("id") is not None
+    }
+
+
 def ranking_submit(args: argparse.Namespace) -> None:
     client = client_from_args(args)
+    before_ids = _ranking_submission_ids(client, args.competition_id)
     files = {"code_file": require_file(args.code_zip)}
     data = {"base_model": args.base_model}
     if args.answer_file:
@@ -816,7 +599,20 @@ def ranking_submit(args: argparse.Namespace) -> None:
         resp = client.request("POST", f"/ranking/{args.competition_id}/submit", data=data, files=files)
     finally:
         close_files(files)
-    print_or_save_response(resp)
+    ensure_ok(resp)
+    after_ids = _ranking_submission_ids(client, args.competition_id)
+    new_ids = sorted(after_ids - before_ids)
+    location = resp.headers.get("Location", "")
+    payload: Dict[str, Any] = {
+        "success": bool(new_ids),
+        "status": resp.status_code,
+        "location": location,
+    }
+    if new_ids:
+        payload["submission_id"] = new_ids[-1]
+    else:
+        payload["message"] = "提交请求完成，但没有产生新的提交记录。请检查比赛提交方式、配额或表单错误。"
+    output_json(payload)
 
 
 def ranking_git(args: argparse.Namespace) -> None:
@@ -827,22 +623,20 @@ def ranking_git(args: argparse.Namespace) -> None:
 
 def ranking_my_submissions(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/", params={"tab": "submit"})
-    ensure_ok(resp, allow_redirect=False)
-    rows = parse_ranking_submission_cards(resp.text)
+    params: Dict[str, Any] = {}
     if args.limit is not None:
-        rows = rows[: max(0, args.limit)]
-    output_json({"success": True, "competition_id": args.competition_id, "submissions": rows, "count": len(rows)})
+        params["limit"] = args.limit
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/my-submissions", params=params)
+    print_or_save_response(resp)
 
 
 def ranking_leaderboard(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/", params={"tab": "leaderboard"})
-    ensure_ok(resp, allow_redirect=False)
-    rows = parse_leaderboard(resp.text)
+    params: Dict[str, Any] = {}
     if args.limit is not None:
-        rows = rows[: max(0, args.limit)]
-    output_json({"success": True, "competition_id": args.competition_id, "leaderboard": rows, "count": len(rows)})
+        params["limit"] = args.limit
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/leaderboard", params=params)
+    print_or_save_response(resp)
 
 
 def ranking_download_submission(args: argparse.Namespace) -> None:
@@ -903,39 +697,6 @@ def build_parser() -> argparse.ArgumentParser:
     pa.set_defaults(func=logout)
     pa = auth_sub.add_parser("status")
     pa.set_defaults(func=status)
-    pa = auth_sub.add_parser("login-page")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
-    pa.set_defaults(func=auth_login_page)
-    pa = auth_sub.add_parser("send-code")
-    pa.add_argument("--email", required=True)
-    pa.set_defaults(func=auth_send_code)
-    pa = auth_sub.add_parser("register-page")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
-    pa.set_defaults(func=auth_register_page)
-    pa = auth_sub.add_parser("register")
-    pa.add_argument("--username", required=True)
-    pa.add_argument("--password", required=True)
-    pa.add_argument("--email", required=True)
-    pa.add_argument("--code", required=True)
-    pa.add_argument("--class-en", required=True)
-    pa.set_defaults(func=auth_register)
-    pa = auth_sub.add_parser("forgot-page")
-    pa.add_argument("--step", choices=["email", "verify"], default="email")
-    pa.add_argument("--email")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
-    pa.set_defaults(func=auth_forgot_page)
-    pa = auth_sub.add_parser("forgot-request")
-    pa.add_argument("--email", required=True)
-    pa.set_defaults(func=auth_forgot_request)
-    pa = auth_sub.add_parser("forgot-reset")
-    pa.add_argument("--email", required=True)
-    pa.add_argument("--code", required=True)
-    pa.add_argument("--new-password", required=True)
-    pa.add_argument("--confirm-password")
-    pa.set_defaults(func=auth_forgot_reset)
     pa = auth_sub.add_parser("send-password-code")
     pa.set_defaults(func=auth_send_password_code)
     pa = auth_sub.add_parser("change-password")
@@ -1098,28 +859,9 @@ def build_parser() -> argparse.ArgumentParser:
     ai = sub.add_parser("ai")
     ai_sub = ai.add_subparsers(dest="cmd", required=True)
     pa = ai_sub.add_parser("marks")
-    pa.add_argument("--problem-id", type=int, required=True)
     pa.add_argument("--submission-id", type=int, required=True)
-    ag = pa.add_mutually_exclusive_group(required=True)
-    ag.add_argument("--code", help="source code text, or @file")
-    ag.add_argument("--code-file")
     pa.add_argument("--force-refresh", action="store_true")
     pa.set_defaults(func=ai_code_marks)
-    pa = ai_sub.add_parser("ask")
-    pa.add_argument("--problem-id", type=int, required=True)
-    pa.add_argument("--submission-id", type=int, required=True)
-    ag = pa.add_mutually_exclusive_group(required=True)
-    ag.add_argument("--code", help="source code text, or @file")
-    ag.add_argument("--code-file")
-    pa.add_argument("-o", "--output")
-    pa.set_defaults(func=ai_ask)
-    pa = ai_sub.add_parser("ac")
-    pa.add_argument("--problem-id", type=int, required=True)
-    ag = pa.add_mutually_exclusive_group(required=True)
-    ag.add_argument("--code", help="source code text, or @file")
-    ag.add_argument("--code-file")
-    pa.add_argument("-o", "--output")
-    pa.set_defaults(func=ai_for_ac)
 
     ranking = sub.add_parser("ranking")
     rank_sub = ranking.add_subparsers(dest="cmd", required=True)

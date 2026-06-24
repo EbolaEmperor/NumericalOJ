@@ -1487,21 +1487,20 @@
     });
   }
 
-  function requestAiIssueMarks(userCode, requestToken) {
+  function requestAiIssueMarks(requestToken) {
     fetch('{{ url_for("ai.ask_ai_code_marks") }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        problem_id: {{ submission.problem_id }},
-        submission_id: {{ submission.id }},
-        user_code: userCode
+        submission_id: {{ submission.id }}
       })
     })
     .then(r => r.json())
     .then(data => {
       if (requestToken !== aiIssueRequestToken) return;
       setAskAiBtnLoading(false);
-      const displayCode = (data && typeof data.code_used === 'string') ? data.code_used : (userCode || '');
+      const fallbackCode = submissionCodeEditor ? (submissionCodeEditor.getValue() || '') : '';
+      const displayCode = (data && typeof data.code_used === 'string') ? data.code_used : fallbackCode;
       const ok = !!(data && data.success);
       const issues = (ok && Array.isArray(data.issues)) ? data.issues : [];
       const summary = ok && data.summary ? String(data.summary) : '';
@@ -1536,7 +1535,8 @@
       if (requestToken !== aiIssueRequestToken) return;
       setAskAiBtnLoading(false);
       clearAiIssueMarkers();
-      submissionCodeEditor.setValue(userCode || '');
+      const currentCode = submissionCodeEditor ? (submissionCodeEditor.getValue() || '') : '';
+      submissionCodeEditor.setValue(currentCode);
       submissionCodeEditor.refresh();
       setAiStatus(`问题标注失败：${err}`, 'danger');
     });
@@ -1550,8 +1550,7 @@
     setAskAiBtnLoading(true);
     setAiStatus('AI 正在定位问题代码，请稍候...', 'info');
 
-    const userCode = submissionCodeEditor.getValue() || '';
-    requestAiIssueMarks(userCode, requestToken);
+    requestAiIssueMarks(requestToken);
   }
 
   // 点击询问 AI 按钮后的逻辑

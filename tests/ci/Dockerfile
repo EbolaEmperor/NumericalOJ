@@ -22,6 +22,7 @@ RUN set -eux; \
         libopenblas-dev liblapacke-dev \
         coreutils \
         default-mysql-client \
+        git \
         ca-certificates \
         texlive-xetex texlive-latex-recommended texlive-fonts-recommended \
         texlive-lang-chinese fonts-noto-cjk latexmk; \

@@ -31,6 +31,7 @@ from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
+from oj_modules.api import API_BLUEPRINTS
 from oj_modules.tasks import (
     init_agent_progress_cache,
     register_agent_generate_testdata_task,
@@ -133,6 +134,8 @@ app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
 app.register_blueprint(game_bp)
 app.register_blueprint(ranking_bp)
+for _api_bp in API_BLUEPRINTS:
+    app.register_blueprint(_api_bp)
 
 ###############################################################################
 #  站点设置（全局开关）
@@ -276,7 +279,7 @@ init_ranking_module(
 seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
 # 初始化认证模块（登录/发码限流依赖 Redis）
 init_auth_module(rds)
-# 初始化 AI 模块（/ask_ai、ask_ai_code_marks 限流依赖 Redis）
+# 初始化 AI 模块（ask_ai_code_marks 限流依赖 Redis）
 init_ai_module(rds)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds)
