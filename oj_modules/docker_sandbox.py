@@ -33,11 +33,14 @@ def _image():
 
 
 def _mem_limit():
-    return getattr(_get_config(), "JUDGER_DOCKER_MEM_LIMIT", "512m")
+    return getattr(_get_config(), "JUDGER_DOCKER_MEM_LIMIT", "1g")
 
 
 def _cpu_limit():
-    return getattr(_get_config(), "JUDGER_DOCKER_CPU_LIMIT", "1")
+    # 默认 2 核（而非 1）：Octave 的 gnuplot 出图会拉起独立 gnuplot 子进程，单核下
+    # octave↔gnuplot 抢同一核、冷启动严重 thrash（实测 diag79 单核冷跑 15s、热跑
+    # ~1.5s 高方差；给到 2 核后稳定 ~1.53s）。带绘图 interactor 的题在 1 核下必 TLE。
+    return getattr(_get_config(), "JUDGER_DOCKER_CPU_LIMIT", "2")
 
 
 def _pids_limit():
@@ -46,6 +49,31 @@ def _pids_limit():
 
 def _network():
     return getattr(_get_config(), "JUDGER_DOCKER_NETWORK", "none")
+
+
+def _thread_env_flags():
+    """限制 BLAS/OpenMP/MKL 线程数与容器 CPU 配额一致。
+
+    容器是 `--cpus N`（默认 1），而 OpenBLAS/OpenMP/MKL 默认按**宿主机物理核数**
+    开线程（本机 40 核）。线程数远超 CPU 配额会造成严重的线程超额争抢：实测
+    `eig(800)` 在 `--cpus 1` 下从 0.07s 退化到 124s，导致一切线性代数密集的
+    Octave/C/C++ 题必 TLE。这里把线程数钉到 CPU 配额，单线程 BLAS 反而最快。
+    """
+    try:
+        n = max(1, int(float(_cpu_limit())))
+    except (TypeError, ValueError):
+        n = 1
+    val = str(n)
+    flags = []
+    for var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        flags.extend(["-e", f"{var}={val}"])
+    # Octave 的 gnuplot toolkit：默认交互终端在 headless 容器里建立 octave↔gnuplot
+    # 管道时极慢且高方差（实测 make_plot 6~19s，把带绘图 interactor 的题全拖 TLE）。
+    # 把默认终端设为廉价的 'dumb'（ASCII），交互式 drawnow 几乎零成本；而 print('-dpng')
+    # 仍会单独切到 png 终端真正出图，output.png 不受影响（实测 19s → ~1.7s）。
+    flags.extend(["-e", "GNUTERM=dumb"])
+    return flags
 
 
 class _RunResult:
@@ -79,6 +107,7 @@ def run_in_container(cmd, *, run_dir, input_text="", timeout_sec=30, extra_ro_mo
         "--pids-limit", _pids_limit(),
         "--read-only",
         "--tmpfs", "/tmp:size=64m",
+        *_thread_env_flags(),
         "-v", f"{os.path.abspath(run_dir)}:/sandbox:rw",
         "--user", "runner",
         "-w", "/sandbox",
@@ -137,6 +166,7 @@ class ContainerSession:
             "--pids-limit", _pids_limit(),
             "--read-only",
             "--tmpfs", "/tmp:size=64m",
+            *_thread_env_flags(),
             "-v", f"{self._run_dir}:/sandbox:rw",
             "--user", "runner",
             "-w", "/sandbox",

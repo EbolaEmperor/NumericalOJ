@@ -47,6 +47,40 @@ SAFE_SID_PATTERN = re.compile(r'^[A-Za-z0-9_\-\.]+$')
 IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 
 
+# ========== C/C++ 编译命令 ==========
+# 数值库题（题面所谓"评测环境已配置好编译链接参数"）依赖 Intel MKL。镜像内通过
+# /opt/mkl/{include,lib} 软链统一暴露 MKL（屏蔽 oneAPI 版本目录差异，见 Dockerfile）。
+# Sequential / LP64 链接组合，与 Intel Link Line Advisor 推荐的 gcc 选项一致；MKL 同时
+# 提供 Fortran 原生符号（dsyev_ 等）、CBLAS（cblas_*）、LAPACKE（LAPACKE_*），因此用
+# <mkl.h> 或通用 <cblas.h>/<lapacke.h> 头的解法都能解析符号。否则数值库题必 CE。
+# -Wl,--no-as-needed 确保即使目标文件未直接引用也保留这些库；-ldl/-lpthread/-lm 兜底。
+MKL_INCLUDE_DIR = "/opt/mkl/include"
+MKL_LIB_DIR = "/opt/mkl/lib"
+MKL_COMPILE_FLAGS = ["-m64", "-I", MKL_INCLUDE_DIR]
+MKL_LINK_FLAGS = [
+    "-L", MKL_LIB_DIR,
+    f"-Wl,-rpath,{MKL_LIB_DIR}",
+    "-Wl,--no-as-needed",
+    "-lmkl_intel_lp64", "-lmkl_sequential", "-lmkl_core",
+    "-lpthread", "-ldl", "-lm",
+]
+
+
+def build_compile_cmd(language, compile_timeout_sec=30):
+    """构造 C/C++ 容器内编译命令（含 MKL 编译/链接参数）。"""
+    if language == "cpp":
+        cmd = ["timeout", f"{compile_timeout_sec}s", "g++", "-O2", "-pipe", "-s", "-std=c++20"]
+        src = "main.cpp"
+    else:
+        cmd = ["timeout", f"{compile_timeout_sec}s", "gcc", "-O2", "-pipe", "-s", "-std=c11"]
+        src = "main.c"
+    cmd.extend(["-I", "/opt/library"])
+    cmd.extend(MKL_COMPILE_FLAGS)
+    cmd.extend([src, "-o", "a.out"])
+    cmd.extend(MKL_LINK_FLAGS)
+    return cmd
+
+
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
@@ -63,9 +97,19 @@ def run_dir_for(sid: str) -> str:
 
 
 def _prepare_run_dir(sid: str) -> str:
-    """把 sid 落到 JUDGER_RUN_ROOT 下的绝对运行目录并确保存在。"""
+    """把 sid 落到 JUDGER_RUN_ROOT 下的绝对运行目录并确保存在。
+
+    run_dir 由本进程（宿主用户，如 uid 1004）创建，但容器内以非特权用户
+    runner（uid 1000）运行，需要在该目录里创建 output.txt / a.out 等结果文件。
+    宿主与容器 uid 不一致时，0755 目录会导致容器写入 Permission denied，
+    故放宽为 0777（run_dir 为每次评测的一次性临时目录，判题后即清理）。
+    """
     run_dir = run_dir_for(sid)
     ensure_dir(run_dir)
+    try:
+        os.chmod(run_dir, 0o777)
+    except OSError:
+        pass
     return run_dir
 
 
@@ -265,6 +309,8 @@ def run_octave(data):
 
     with open(os.path.join(run_dir, "a.m"), "w", encoding="utf-8") as f:
         f.write(code_content)
+    with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
+        f.write(user_input)
 
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.1)
     container_cmd = ["timeout", f"{timeLim_sec}s", "octave", "a.m"]
@@ -332,6 +378,8 @@ def run_py(data):
 
     with open(os.path.join(run_dir, "main.py"), "w", encoding="utf-8") as f:
         f.write(code_content)
+    with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
+        f.write(user_input)
 
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
     container_cmd = ["timeout", f"{timeLim_sec}s", "python3", "-I", "-u", "main.py"]
@@ -400,17 +448,16 @@ def _run_compiled_single(data, language):
 
     if language == "cpp":
         src_name = "main.cpp"
-        compile_cmd = ["timeout", "30s", "g++", "-O2", "-pipe", "-s", "-std=c++20",
-                       "-I", "/opt/library", "main.cpp", "-o", "a.out", "-lm"]
         compile_err_cap = 3000
     else:
         src_name = "main.c"
-        compile_cmd = ["timeout", "30s", "gcc", "-O2", "-pipe", "-s", "-std=c11",
-                       "-I", "/opt/library", "main.c", "-o", "a.out", "-lm"]
         compile_err_cap = 300
+    compile_cmd = build_compile_cmd(language)
 
     with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
         f.write(code_content)
+    with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
+        f.write(user_input)
 
     _write_user_files(run_dir, user_files)
 
@@ -507,14 +554,11 @@ def _batch_evaluate_stream(data, language):
 
         if language == "cpp":
             src_name = "main.cpp"
-            compile_cmd = ["timeout", "30s", "g++", "-O2", "-pipe", "-s", "-std=c++20",
-                           "-I", "/opt/library", "main.cpp", "-o", "a.out", "-lm"]
             compile_err_cap = 3000
         else:
             src_name = "main.c"
-            compile_cmd = ["timeout", "30s", "gcc", "-O2", "-pipe", "-s", "-std=c11",
-                           "-I", "/opt/library", "main.c", "-o", "a.out", "-lm"]
             compile_err_cap = 300
+        compile_cmd = build_compile_cmd(language)
 
         with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
             f.write(code_content)
@@ -537,6 +581,8 @@ def _batch_evaluate_stream(data, language):
             # Run each test case
             for i, test_case in enumerate(test_cases):
                 user_input = test_case.get("input", "")
+                with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
+                    f.write(user_input)
                 timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
                 run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
 
@@ -585,6 +631,104 @@ def _batch_evaluate_stream(data, language):
         yield {"event": "done", "ok": False}
 
 
+# ========== 批量评测：解释型语言（Octave / Python），单容器多测试点 ==========
+def _batch_evaluate_script_stream(data, language):
+    """解释型语言（Octave/Python）批量评测生成器。
+
+    每份提交只起 **一个常驻容器**（ContainerSession），逐测试点 `docker exec`
+    运行脚本，避免每个测试点都 `docker run` 带来的容器启动开销与 docker 守护
+    进程争抢（这是 Octave 题在容器化后必然 TLE 的根因）。计时只包住单次
+    `session.exec`（容器内脚本启动+运行），**不含** 容器一次性启动开销，
+    与旧的进程内模型时间语义保持一致。
+    """
+    code_content = data.get("code", "")
+    test_cases = data.get("test_cases", [])
+    tle = data.get("timeLimit")  # ns
+    forbidden_funcs = data.get("forbidden", "")
+    output_image_filename = data.get("outputImageFilename", "output.png")
+
+    try:
+        forbid_msg = check_forbidden(code_content, forbidden_funcs)
+        if forbid_msg:
+            yield {"event": "compile", "status": "forbidden", "stderr": forbid_msg}
+            yield {"event": "done", "ok": False}
+            return
+
+        run_dir = _prepare_run_dir(data.get("sid", ""))
+
+        if language in ("matlab", "octave", "hello"):
+            src_name = "a.m"
+            factor = 1.1
+            run_status_nonzero = "Nonzero Exit Status"
+            make_cmd = lambda t: ["timeout", f"{t}s", "octave", "a.m"]
+        else:  # python
+            src_name = "main.py"
+            factor = 1.2
+            run_status_nonzero = "Runtime Error"
+            make_cmd = lambda t: ["timeout", f"{t}s", "python3", "-I", "-u", "main.py"]
+
+        with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
+            f.write(code_content)
+
+        # 解释型语言无编译步骤，直接报告编译成功以复用上层 stream 处理逻辑。
+        yield {"event": "compile", "status": "success", "stderr": ""}
+
+        with ContainerSession(run_dir=run_dir) as session:
+            for i, test_case in enumerate(test_cases):
+                user_input = test_case.get("input", "")
+                with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
+                    f.write(user_input)
+
+                timeLim_sec = _timeout_sec_from_ns(tle, factor=factor)
+                run_cmd = make_cmd(timeLim_sec)
+
+                start_time = time.perf_counter_ns()
+                run_res = session.exec(
+                    run_cmd, input_text=user_input, timeout_sec=_guard_timeout(timeLim_sec),
+                )
+                exec_time = time.perf_counter_ns() - start_time
+
+                output_filename = os.path.join(run_dir, "output.txt")
+                outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+
+                status = "Accepted"
+                exval = 0
+                stderr = run_res.stderr or ""
+                if len(stderr) > 300:
+                    stderr = stderr[:300] + "..."
+
+                if exec_time > (tle or 0):
+                    status = "Time Limit Exceeded"
+                    exval = 9
+                elif run_res.returncode == 137:
+                    status = "Memory Limit Exceeded"
+                    exval = 10
+                elif run_res.returncode != 0:
+                    status = run_status_nonzero
+                    exval = run_res.returncode
+
+                files_dict = {"stdout": outp, "stderr": stderr}
+                stored_image_filename = capture_output_image_file(
+                    run_dir, output_image_filename, f"output_{i}",
+                )
+                if stored_image_filename:
+                    files_dict[stored_image_filename] = True
+
+                yield {"event": "test_result", "result": {
+                    "test_case_index": i,
+                    "status": status,
+                    "exitStatus": exval,
+                    "files": files_dict,
+                    "time": exec_time,
+                    "memory": 0,
+                }}
+
+        yield {"event": "done", "ok": True}
+    except Exception as e:
+        yield {"event": "error", "message": f"Failed to stream script batch evaluate {language}: {str(e)}"}
+        yield {"event": "done", "ok": False}
+
+
 # ========== 对外分派 ==========
 def run_single(language, data):
     """单次运行分派。language: matlab/octave、c、cpp、py/python。"""
@@ -601,12 +745,20 @@ def run_single(language, data):
 
 
 def batch_evaluate_stream(language, data):
-    """流式批量评测分派（生成器）。language: c、cpp。"""
+    """流式批量评测分派（生成器）。
+
+    c/cpp：编译一次 + 逐测试点运行（_batch_evaluate_stream）。
+    matlab/octave、python：常驻容器逐测试点 exec（_batch_evaluate_script_stream）。
+    """
     lang = str(language or "").strip().lower()
     if lang in ("cpp", "c++"):
         return _batch_evaluate_stream(data, "cpp")
     if lang == "c":
         return _batch_evaluate_stream(data, "c")
+    if lang in ("matlab", "octave", "hello"):
+        return _batch_evaluate_script_stream(data, "octave")
+    if lang in ("py", "python", "python3"):
+        return _batch_evaluate_script_stream(data, "python")
     raise ValueError(f"batch_evaluate_stream: 不支持的语言 {language!r}")
 
 

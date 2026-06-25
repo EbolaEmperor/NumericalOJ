@@ -574,7 +574,7 @@ def register_evaluate_submission_task(celery_app):
                 )
                 return
 
-            if lang in ['c', 'cpp']:
+            if lang in ['c', 'cpp', 'matlab', 'python', 'py']:
                 quick_compile_payload = {
                     "code": final_code,
                     "input": "",
@@ -587,8 +587,10 @@ def register_evaluate_submission_task(celery_app):
                 }
     
                 try:
-                    quick_result = core.run_single(lang, quick_compile_payload)
-    
+                    # 仅 c/cpp 需要预编译探测；解释型语言（matlab/python）无编译步骤，
+                    # 跳过以免多跑一次容器，直接进入常驻容器批量评测。
+                    quick_result = core.run_single(lang, quick_compile_payload) if lang in ['c', 'cpp'] else {}
+
                     if quick_result.get('status') == 'Compile Error':
                         compile_stderr = quick_result.get('files', {}).get('stderr', 'Compile Error')
                         all_accepted = False
@@ -871,7 +873,7 @@ def register_evaluate_submission_task(celery_app):
                         print(f"[Warning] Falling back to individual evaluation for submission {submission_id}")
                         batch_result = None
 
-            if lang not in ['c', 'cpp'] or not batch_result or batch_result.get('compile_result', {}).get('status') != 'success':
+            if lang not in ['c', 'cpp', 'matlab', 'python', 'py'] or not batch_result or batch_result.get('compile_result', {}).get('status') != 'success':
                 for idx, tc in enumerate(test_cases, start=1):
                     payload = {
                         "code": final_code,
