@@ -7,6 +7,7 @@ Requires Docker with the numericaloj-judger:latest image available.
 
 from __future__ import annotations
 
+import os
 import time
 import shutil
 import subprocess
@@ -42,12 +43,24 @@ SOLUTIONS = {
 }
 
 
+def _judger_image_name() -> str:
+    env_value = os.environ.get("JUDGER_DOCKER_IMAGE")
+    if env_value:
+        return env_value
+    try:
+        import config
+        return getattr(config, "JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
+    except Exception:
+        return "numericaloj-judger:latest"
+
+
 def _require_docker_judger_image() -> None:
     if shutil.which("docker") is None:
         pytest.skip("Docker CLI is not available for sandbox judging e2e.")
+    image = _judger_image_name()
     try:
         subprocess.run(
-            ["docker", "image", "inspect", "numericaloj-judger:latest"],
+            ["docker", "image", "inspect", image],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -55,7 +68,7 @@ def _require_docker_judger_image() -> None:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
-        pytest.skip("Docker judger image numericaloj-judger:latest is not available.")
+        pytest.skip(f"Docker judger image {image} is not available.")
 
 
 def _wait_for_verdict(cli, submission_id: int, timeout: float = 60.0) -> dict:

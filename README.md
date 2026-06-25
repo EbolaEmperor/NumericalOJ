@@ -109,6 +109,29 @@ REDIS_DB = 0
 - `AGENT_*`：AI 智能体的最大轮数、提交上限、上下文与记忆大小等。
 - `MODELSCOPE_WEB_SEARCH_MCP_*`：智能体使用的网页搜索 MCP 工具配置。
 
+### 本机轻量判题镜像
+
+生产判题镜像 `docker/judger/Dockerfile` 包含 Intel oneAPI MKL 和 `texlive-full`，体积较大。本机开发可以构建轻量版：
+
+```bash
+docker build -t numericaloj-judger-lite:latest docker/judger-lite
+```
+
+轻量版不安装 MKL，也不安装 `texlive-full`；TeX 只保留 XeLaTeX、常用 LaTeX 包、中文包、字体和 `latexmk`。切换方式：
+
+```bash
+export JUDGER_DOCKER_IMAGE=numericaloj-judger-lite:latest
+```
+
+或者在本地 `config.py` 中设置：
+
+```python
+JUDGER_DOCKER_IMAGE = "numericaloj-judger-lite:latest"
+JUDGER_NUMERIC_BACKEND = "openblas"
+```
+
+如果镜像名包含 `judger-lite`，C/C++ 编译命令会自动从 MKL 链接切到 OpenBLAS/LAPACKE；生产默认仍使用 MKL。
+
 ### 3. 启动服务
 
 ```bash

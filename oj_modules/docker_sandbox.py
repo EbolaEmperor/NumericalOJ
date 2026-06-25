@@ -11,10 +11,20 @@
 """
 
 import os
+import re
 import subprocess
-import time
 
 _CONFIG = None
+_TIME_MARKER_PREFIX = "__NUMOJ_TIME_NS__="
+_TIME_MARKER_RE = re.compile(r"(?:^|\n)" + re.escape(_TIME_MARKER_PREFIX) + r"(\d+)\s*(?=\n|$)")
+_TIME_WRAPPER_SCRIPT = (
+    'start=$(date +%s%N); '
+    '"$@"; rc=$?; '
+    'end=$(date +%s%N); '
+    'case "$start$end" in *N*) elapsed=0 ;; *) elapsed=$((end-start)) ;; esac; '
+    f'printf "\\n{_TIME_MARKER_PREFIX}%s\\n" "$elapsed" >&2; '
+    'exit "$rc"'
+)
 
 
 def _get_config():
@@ -28,27 +38,34 @@ def _get_config():
     return _CONFIG
 
 
+def _config_value(name, default):
+    env_value = os.environ.get(name)
+    if env_value is not None and str(env_value).strip() != "":
+        return env_value
+    return getattr(_get_config(), name, default)
+
+
 def _image():
-    return getattr(_get_config(), "JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
+    return _config_value("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
 
 
 def _mem_limit():
-    return getattr(_get_config(), "JUDGER_DOCKER_MEM_LIMIT", "1g")
+    return _config_value("JUDGER_DOCKER_MEM_LIMIT", "1g")
 
 
 def _cpu_limit():
     # 默认 2 核（而非 1）：Octave 的 gnuplot 出图会拉起独立 gnuplot 子进程，单核下
     # octave↔gnuplot 抢同一核、冷启动严重 thrash（实测 diag79 单核冷跑 15s、热跑
     # ~1.5s 高方差；给到 2 核后稳定 ~1.53s）。带绘图 interactor 的题在 1 核下必 TLE。
-    return getattr(_get_config(), "JUDGER_DOCKER_CPU_LIMIT", "2")
+    return _config_value("JUDGER_DOCKER_CPU_LIMIT", "2")
 
 
 def _pids_limit():
-    return getattr(_get_config(), "JUDGER_DOCKER_PIDS_LIMIT", "128")
+    return _config_value("JUDGER_DOCKER_PIDS_LIMIT", "128")
 
 
 def _network():
-    return getattr(_get_config(), "JUDGER_DOCKER_NETWORK", "none")
+    return _config_value("JUDGER_DOCKER_NETWORK", "none")
 
 
 def _thread_env_flags():
@@ -77,15 +94,30 @@ def _thread_env_flags():
 
 
 class _RunResult:
-    __slots__ = ("returncode", "stdout", "stderr")
+    __slots__ = ("returncode", "stdout", "stderr", "elapsed_ns")
 
-    def __init__(self, returncode, stdout, stderr):
+    def __init__(self, returncode, stdout, stderr, elapsed_ns=None):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+        self.elapsed_ns = elapsed_ns
 
 
-def run_in_container(cmd, *, run_dir, input_text="", timeout_sec=30, extra_ro_mounts=None):
+def _wrap_timed_cmd(cmd):
+    return ["/bin/sh", "-c", _TIME_WRAPPER_SCRIPT, "numoj-timer"] + list(cmd)
+
+
+def _strip_timing_marker(stderr):
+    text = stderr or ""
+    matches = list(_TIME_MARKER_RE.finditer(text))
+    if not matches:
+        return text, None
+    elapsed_ns = int(matches[-1].group(1))
+    cleaned = _TIME_MARKER_RE.sub("", text)
+    return cleaned, elapsed_ns
+
+
+def run_in_container(cmd, *, run_dir, input_text="", timeout_sec=30, extra_ro_mounts=None, measure_time=False):
     """在一次性 Docker 容器中执行命令。
 
     Args:
@@ -94,6 +126,7 @@ def run_in_container(cmd, *, run_dir, input_text="", timeout_sec=30, extra_ro_mo
         input_text: 传入容器 stdin 的文本
         timeout_sec: Python 侧超时（秒）
         extra_ro_mounts: 额外只读挂载列表，每项为 (host_path, container_path)
+        measure_time: True 时在容器内部测量命令 wall time，不包含 docker run 启动耗时
 
     Returns:
         _RunResult(returncode, stdout, stderr)
@@ -119,7 +152,7 @@ def run_in_container(cmd, *, run_dir, input_text="", timeout_sec=30, extra_ro_mo
                 docker_cmd.extend(["-v", f"{os.path.abspath(host_path)}:{container_path}:ro"])
 
     docker_cmd.append(_image())
-    docker_cmd.extend(cmd)
+    docker_cmd.extend(_wrap_timed_cmd(cmd) if measure_time else cmd)
 
     try:
         proc = subprocess.Popen(
@@ -130,14 +163,20 @@ def run_in_container(cmd, *, run_dir, input_text="", timeout_sec=30, extra_ro_mo
             text=True,
         )
         stdout, stderr = proc.communicate(input=input_text, timeout=timeout_sec)
-        return _RunResult(proc.returncode, stdout or "", stderr or "")
+        elapsed_ns = None
+        if measure_time:
+            stderr, elapsed_ns = _strip_timing_marker(stderr or "")
+        return _RunResult(proc.returncode, stdout or "", stderr or "", elapsed_ns)
     except subprocess.TimeoutExpired:
         proc.kill()
         try:
             stdout, stderr = proc.communicate(timeout=5)
         except Exception:
             stdout, stderr = "", ""
-        return _RunResult(124, stdout or "", stderr or "")
+        elapsed_ns = None
+        if measure_time:
+            stderr, elapsed_ns = _strip_timing_marker(stderr or "")
+        return _RunResult(124, stdout or "", stderr or "", elapsed_ns)
     except Exception as e:
         return _RunResult(-1, "", str(e))
 
@@ -202,7 +241,7 @@ class ContainerSession:
             self._container_id = None
         return False
 
-    def exec(self, cmd, *, input_text="", timeout_sec=30):
+    def exec(self, cmd, *, input_text="", timeout_sec=30, workdir=None, measure_time=False):
         """在容器内执行命令。
 
         Returns:
@@ -211,7 +250,11 @@ class ContainerSession:
         if not self._container_id:
             raise RuntimeError("Container session not started")
 
-        docker_cmd = ["docker", "exec", "-i", self._container_id] + list(cmd)
+        docker_cmd = ["docker", "exec", "-i"]
+        if workdir:
+            docker_cmd.extend(["-w", str(workdir)])
+        docker_cmd.append(self._container_id)
+        docker_cmd.extend(_wrap_timed_cmd(cmd) if measure_time else list(cmd))
 
         try:
             proc = subprocess.Popen(
@@ -222,13 +265,19 @@ class ContainerSession:
                 text=True,
             )
             stdout, stderr = proc.communicate(input=input_text, timeout=timeout_sec)
-            return _RunResult(proc.returncode, stdout or "", stderr or "")
+            elapsed_ns = None
+            if measure_time:
+                stderr, elapsed_ns = _strip_timing_marker(stderr or "")
+            return _RunResult(proc.returncode, stdout or "", stderr or "", elapsed_ns)
         except subprocess.TimeoutExpired:
             proc.kill()
             try:
                 stdout, stderr = proc.communicate(timeout=5)
             except Exception:
                 stdout, stderr = "", ""
-            return _RunResult(124, stdout or "", stderr or "")
+            elapsed_ns = None
+            if measure_time:
+                stderr, elapsed_ns = _strip_timing_marker(stderr or "")
+            return _RunResult(124, stdout or "", stderr or "", elapsed_ns)
         except Exception as e:
             return _RunResult(-1, "", str(e))

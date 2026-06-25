@@ -64,10 +64,56 @@ MKL_LINK_FLAGS = [
     "-lmkl_intel_lp64", "-lmkl_sequential", "-lmkl_core",
     "-lpthread", "-ldl", "-lm",
 ]
+OPENBLAS_LINK_FLAGS = [
+    "-lopenblas", "-llapacke", "-llapack", "-lblas", "-lm",
+]
+
+
+def _config_value(name, default=None):
+    env_value = os.environ.get(name)
+    if env_value is not None and str(env_value).strip() != "":
+        return env_value
+    try:
+        import config as _cfg
+    except ImportError:
+        return default
+    return getattr(_cfg, name, default)
+
+
+def _truthy_config_value(value):
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def _numeric_backend():
+    """返回 C/C++ 数值库后端：mkl / openblas / none。
+
+    生产默认仍是 MKL；本机 lite 镜像名包含 judger-lite 时自动改用
+    OpenBLAS/LAPACKE，避免 lite 镜像因为没有 /opt/mkl 而所有 C/C++ 编译失败。
+    可通过 JUDGER_NUMERIC_BACKEND 显式覆盖。
+    """
+    raw_backend = str(_config_value("JUDGER_NUMERIC_BACKEND", "") or "").strip().lower()
+    if raw_backend in ("mkl", "openblas", "none"):
+        return raw_backend
+
+    legacy_mkl = _config_value("JUDGER_ENABLE_MKL", None)
+    if legacy_mkl is not None:
+        parsed = _truthy_config_value(legacy_mkl)
+        if parsed is not None:
+            return "mkl" if parsed else "openblas"
+
+    image = str(_config_value("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest") or "").lower()
+    if "judger-lite" in image:
+        return "openblas"
+    return "mkl"
 
 
 def build_compile_cmd(language, compile_timeout_sec=30):
-    """构造 C/C++ 容器内编译命令（含 MKL 编译/链接参数）。"""
+    """构造 C/C++ 容器内编译命令。"""
     if language == "cpp":
         cmd = ["timeout", f"{compile_timeout_sec}s", "g++", "-O2", "-pipe", "-s", "-std=c++20"]
         src = "main.cpp"
@@ -75,9 +121,14 @@ def build_compile_cmd(language, compile_timeout_sec=30):
         cmd = ["timeout", f"{compile_timeout_sec}s", "gcc", "-O2", "-pipe", "-s", "-std=c11"]
         src = "main.c"
     cmd.extend(["-I", "/opt/library"])
-    cmd.extend(MKL_COMPILE_FLAGS)
+    backend = _numeric_backend()
+    if backend == "mkl":
+        cmd.extend(MKL_COMPILE_FLAGS)
     cmd.extend([src, "-o", "a.out"])
-    cmd.extend(MKL_LINK_FLAGS)
+    if backend == "mkl":
+        cmd.extend(MKL_LINK_FLAGS)
+    elif backend == "openblas":
+        cmd.extend(OPENBLAS_LINK_FLAGS)
     return cmd
 
 
@@ -140,6 +191,34 @@ def capture_output_image_file(sid: str, requested_filename: str, stored_stem: st
     if os.path.abspath(source_path) == os.path.abspath(target_path):
         return target_filename
 
+    try:
+        os.replace(source_path, target_path)
+        return target_filename
+    except Exception:
+        pass
+
+    try:
+        shutil.copyfile(source_path, target_path)
+        return target_filename
+    except Exception:
+        return None
+
+
+def capture_output_image_file_to_dir(source_dir: str, target_dir: str, requested_filename: str, stored_stem: str):
+    requested_name = sanitize_output_image_filename(requested_filename)
+    source_path = os.path.join(source_dir, requested_name)
+    if not os.path.isfile(source_path):
+        return None
+
+    _, ext = os.path.splitext(requested_name)
+    ext = str(ext or "").lower()
+    if not ext:
+        ext = ".png"
+    if ext not in IMAGE_FILE_EXTENSIONS:
+        return None
+
+    target_filename = f"{stored_stem}{ext}"
+    target_path = os.path.join(target_dir, target_filename)
     try:
         os.replace(source_path, target_path)
         return target_filename
@@ -287,6 +366,20 @@ def _guard_timeout(base_sec):
     return max(1.0, float(base_sec or 0)) + 10.0
 
 
+def _measured_exec_time_ns(result, tle_ns):
+    """返回容器内部测得的运行时间。
+
+    正常路径下由 docker_sandbox 的 shell wrapper 写回 elapsed_ns；如果外层
+    Docker guard 超时导致 wrapper 来不及输出 marker，则把本次运行视作超时。
+    """
+    elapsed_ns = getattr(result, "elapsed_ns", None)
+    if isinstance(elapsed_ns, int) and elapsed_ns >= 0:
+        return elapsed_ns
+    if getattr(result, "returncode", None) == 124 and tle_ns:
+        return int(tle_ns) + 1
+    return 0
+
+
 # ========== 单次运行（Octave / Python / C / C++）==========
 def run_octave(data):
     """Octave/MATLAB 单次运行。"""
@@ -315,14 +408,14 @@ def run_octave(data):
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.1)
     container_cmd = ["timeout", f"{timeLim_sec}s", "octave", "a.m"]
 
-    start_time = time.perf_counter_ns()
     result = run_in_container(
         container_cmd,
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
+        measure_time=True,
     )
-    exec_time = time.perf_counter_ns() - start_time
+    exec_time = _measured_exec_time_ns(result, tle)
 
     output_filename = os.path.join(run_dir, "output.txt")
     outp = read_output_with_fallback(output_filename, result.stdout)
@@ -384,14 +477,14 @@ def run_py(data):
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
     container_cmd = ["timeout", f"{timeLim_sec}s", "python3", "-I", "-u", "main.py"]
 
-    start_time = time.perf_counter_ns()
     result = run_in_container(
         container_cmd,
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
+        measure_time=True,
     )
-    exec_time = time.perf_counter_ns() - start_time
+    exec_time = _measured_exec_time_ns(result, tle)
 
     output_filename = os.path.join(run_dir, "output.txt")
     outp = read_output_with_fallback(output_filename, result.stdout or "")
@@ -483,14 +576,14 @@ def _run_compiled_single(data, language):
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
     run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
 
-    start_time = time.perf_counter_ns()
     run_res = run_in_container(
         run_cmd,
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
+        measure_time=True,
     )
-    exec_time = time.perf_counter_ns() - start_time
+    exec_time = _measured_exec_time_ns(run_res, tle)
 
     output_filename = os.path.join(run_dir, "output.txt")
     outp = read_output_with_fallback(output_filename, run_res.stdout or "")
@@ -586,9 +679,13 @@ def _batch_evaluate_stream(data, language):
                 timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
                 run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
 
-                start_time = time.perf_counter_ns()
-                run_res = session.exec(run_cmd, input_text=user_input, timeout_sec=_guard_timeout(timeLim_sec))
-                exec_time = time.perf_counter_ns() - start_time
+                run_res = session.exec(
+                    run_cmd,
+                    input_text=user_input,
+                    timeout_sec=_guard_timeout(timeLim_sec),
+                    measure_time=True,
+                )
+                exec_time = _measured_exec_time_ns(run_res, tle)
 
                 output_filename = os.path.join(run_dir, f"output_{i}.txt")
                 outp = read_output_with_fallback(output_filename, run_res.stdout or "")
@@ -660,12 +757,12 @@ def _batch_evaluate_script_stream(data, language):
             src_name = "a.m"
             factor = 1.1
             run_status_nonzero = "Nonzero Exit Status"
-            make_cmd = lambda t: ["timeout", f"{t}s", "octave", "a.m"]
+            make_cmd = lambda t: ["timeout", f"{t}s", "octave", "../a.m"]
         else:  # python
             src_name = "main.py"
             factor = 1.2
             run_status_nonzero = "Runtime Error"
-            make_cmd = lambda t: ["timeout", f"{t}s", "python3", "-I", "-u", "main.py"]
+            make_cmd = lambda t: ["timeout", f"{t}s", "python3", "-I", "-u", "../main.py"]
 
         with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
             f.write(code_content)
@@ -676,19 +773,31 @@ def _batch_evaluate_script_stream(data, language):
         with ContainerSession(run_dir=run_dir) as session:
             for i, test_case in enumerate(test_cases):
                 user_input = test_case.get("input", "")
-                with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
+                case_dir = os.path.join(run_dir, f"case_{i}")
+                if os.path.isdir(case_dir):
+                    shutil.rmtree(case_dir, ignore_errors=True)
+                ensure_dir(case_dir)
+                try:
+                    os.chmod(case_dir, 0o777)
+                except OSError:
+                    pass
+
+                with open(os.path.join(case_dir, "input.txt"), "w", encoding="utf-8") as f:
                     f.write(user_input)
 
                 timeLim_sec = _timeout_sec_from_ns(tle, factor=factor)
                 run_cmd = make_cmd(timeLim_sec)
 
-                start_time = time.perf_counter_ns()
                 run_res = session.exec(
-                    run_cmd, input_text=user_input, timeout_sec=_guard_timeout(timeLim_sec),
+                    run_cmd,
+                    input_text=user_input,
+                    timeout_sec=_guard_timeout(timeLim_sec),
+                    workdir=f"/sandbox/case_{i}",
+                    measure_time=True,
                 )
-                exec_time = time.perf_counter_ns() - start_time
+                exec_time = _measured_exec_time_ns(run_res, tle)
 
-                output_filename = os.path.join(run_dir, "output.txt")
+                output_filename = os.path.join(case_dir, "output.txt")
                 outp = read_output_with_fallback(output_filename, run_res.stdout or "")
 
                 status = "Accepted"
@@ -708,11 +817,15 @@ def _batch_evaluate_script_stream(data, language):
                     exval = run_res.returncode
 
                 files_dict = {"stdout": outp, "stderr": stderr}
-                stored_image_filename = capture_output_image_file(
-                    run_dir, output_image_filename, f"output_{i}",
+                stored_image_filename = capture_output_image_file_to_dir(
+                    case_dir, run_dir, output_image_filename, f"output_{i}",
                 )
                 if stored_image_filename:
                     files_dict[stored_image_filename] = True
+                try:
+                    shutil.rmtree(case_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
                 yield {"event": "test_result", "result": {
                     "test_case_index": i,
