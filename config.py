@@ -1,3 +1,28 @@
+import os
+from pathlib import Path
+
+
+def _load_local_env_file():
+    env_path = Path(__file__).resolve().parent / ".env"
+    try:
+        with env_path.open("r", encoding="utf-8") as env_file:
+            for raw_line in env_file:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key.startswith("export "):
+                    key = key[len("export "):].strip()
+                if not key or key in os.environ:
+                    continue
+                os.environ[key] = value.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+
+
+_load_local_env_file()
+
 MAIL_SERVER = 'YOUR SMTP SERVER ADDRESS'
 MAIL_PORT = 465
 MAIL_USERNAME = 'YOUR EMAIL ADDRESS'
@@ -12,7 +37,7 @@ MYSQL_POOL_WAIT_TIMEOUT = 3
 MYSQL_POOL_RECYCLE_SECONDS = 1200
 
 DASHSCOPE_APP_ID = "local-test-app-id"
-DASHSCOPE_API_KEY = "local-test-api-key"
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "local-test-api-key")
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # matlab-ai-detect 专用检测模型（本地 vLLM 部署）
@@ -26,7 +51,7 @@ MIMO_URL_ANTHROPIC = "https://token-plan-cn.xiaomimimo.com/anthropic"
 MIMO_API_KEY = "YOUR_MIMO_API_KEY"
 MIMO_MODEL = "mimo-v2.5-pro"
 
-QWEN_CODER_MODEL = "qwen3-coder-plus"
+QWEN_CODER_MODEL = "qwen3.7-plus-2026-05-26"
 QWEN_TEXT_MODEL = "qwen3.5-plus"
 AI_TUTOR_MODEL = "qwen3.5-flash"
 QWEN_OMNI_MODEL = "qwen3-vl-flash"

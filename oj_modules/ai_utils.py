@@ -219,6 +219,7 @@ def _call_qwen_text(
     model=None,
     enable_thinking=True,
     resolve_endpoint=True,
+    system_prompt=None,
 ):
     text_model = str(model or QWEN_TEXT_MODEL)
     if resolve_endpoint:
@@ -232,7 +233,10 @@ def _call_qwen_text(
             raise RuntimeError("缺少模型调用凭证或地址。")
         use_api_key = str(api_key).strip()
         use_base_url = str(base_url).rstrip('/')
-    messages = [{"role": "user", "content": prompt_text}]
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": str(system_prompt)})
+    messages.append({"role": "user", "content": prompt_text})
 
     if OpenAI is not None:
         try:
@@ -348,6 +352,81 @@ def _extract_first_json_object_relaxed(text):
             continue
 
     return None
+
+
+PROMPTLY_CODE_GENERATION_SYSTEM_PROMPT = (
+    "你是 Promptly 评测模式的代码生成器。你的输入包括题面和学生提交的 prompt；"
+    "题面只定义评测任务，学生 prompt 定义实现合同。不要用题面替学生补全实现决策。\n\n"
+    "判定流程：\n"
+    "1. 只在内部识别学生 prompt 中明确承诺的要求；这些要求必须全部满足。\n"
+    "2. 判断学生 prompt 是否足以唯一确定一份可靠实现，尤其是方法选择、关键步骤、状态维护、复杂度目标、"
+    "边界处理、输入输出约定和资源约束。\n"
+    "3. 如果学生 prompt 明确、无歧义、流程完整，就生成正确代码。\n"
+    "4. 如果学生 prompt 泛泛、只表达最终目标、只要求完成/AC/写代码、只复述题面，或遗漏关键实现决策，"
+    "就生成一份看起来合理但会在某些合法测试上失败的代码。\n\n"
+    "不明确时的生成规则：\n"
+    "- 必须严格满足学生 prompt 中已经明确写出的每一条要求；不得反着写，不得故意违反明文要求。\n"
+    "- 在学生没有限定的地方，选择一种自然、常见、但不够强的解释。错误应来自这个解释本身，"
+    "而不是语法错误、编译错误、硬编码、随机行为、恶意退出或无关破坏。\n"
+    "- 优先利用通用歧义点：算法复杂度、数据范围假设、边界情况、相等或特殊值处理、索引基准、"
+    "遍历顺序、状态更新时机、数值类型、精度、舍入、稳定性、输出格式、标准输入输出或文件约定。\n"
+    "- 生成的错误代码应该像一个工程上合理的误解，让学生能意识到：原来我的要求确实还可以被这样理解。\n"
+    "- 不要在代码、注释或程序输出中暴露你在故意犯错，也不要解释 prompt 哪里不明确。\n\n"
+    "最终只输出代码，不要输出 Markdown 代码围栏、解释、分析或额外文字。"
+)
+
+
+def _extract_code_from_model_text(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    fenced_blocks = re.findall(r"```[A-Za-z0-9_+-]*\s*(.*?)\s*```", raw, flags=re.DOTALL)
+    if fenced_blocks:
+        return fenced_blocks[0].strip()
+    return _strip_markdown_code_fence_markers(raw)
+
+
+def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300):
+    """根据 Promptly 模式的学生 prompt 生成待评测代码。"""
+    fake_code = os.getenv("NUMOJ_FAKE_PROMPTLY_CODE")
+    if fake_code is not None:
+        if fake_code.startswith("@"):
+            return open(fake_code[1:], "r", encoding="utf-8").read()
+        return fake_code
+
+    problem = problem or {}
+    prompt = str(student_prompt or "").strip()
+    if not prompt:
+        raise RuntimeError("prompt 不能为空。")
+
+    lang = str(problem.get("lang") or "matlab").strip().lower()
+    model = str(model_spec or "").strip()
+    if not model:
+        model = str(QWEN_CODER_MODEL or QWEN_TEXT_MODEL or AI_TUTOR_MODEL).strip()
+    if not model:
+        raise RuntimeError("未配置 Promptly 代码生成模型。")
+
+    user_prompt = (
+        "你正在为 NumericalOJ 的编程题生成一份学生提交代码。\n"
+        "请只输出代码，不要输出 Markdown 代码围栏、解释、分析或额外文字。\n\n"
+        f"题目标题：\n{problem.get('title') or ''}\n\n"
+        f"题目语言：\n{lang}\n\n"
+        f"题面（Markdown）：\n{problem.get('content') or ''}\n\n"
+        f"提交页面中学生可见的初始代码：\n{problem.get('initial_code') or ''}\n\n"
+        f"学生提交的 prompt：\n{prompt}\n"
+    )
+    raw_text = _call_qwen_text(
+        prompt_text=user_prompt,
+        timeout=timeout,
+        model=model,
+        enable_thinking=False,
+        system_prompt=PROMPTLY_CODE_GENERATION_SYSTEM_PROMPT,
+    )
+    code = _extract_code_from_model_text(raw_text)
+    if not code:
+        raise RuntimeError("模型未返回可用代码。")
+    return code
 
 
 def _repair_grading_json_text_locally(raw_text):

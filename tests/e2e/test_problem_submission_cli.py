@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pytest
 
@@ -19,7 +20,6 @@ from tests.e2e.conftest import (
 
 
 PROBLEM_SECRET_KEYS = {
-    "programming_grading_mode",
     "programming_grading_model",
     "programming_grading_prompt",
     "programming_output_filename",
@@ -216,4 +216,41 @@ def test_problem_submission_limit_blocks_extra_user_submission(cli, unique_suffi
     submissions = cli.user_json("submission", "problem", str(problem_id), "--limit", "10")
     assert submissions["count"] == 3
     assert set(submissions["submission_ids"]) == set(accepted_ids)
+    assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True
+
+
+@pytest.mark.e2e
+def test_promptly_problem_submit_generates_code(cli, unique_suffix, tmp_path):
+    username = f"cli_promptly_{unique_suffix}"
+    create_regular_user(username=username, password="pw123456")
+    assert cli.init_admin()["success"] is True
+    assert cli.init_user(username)["success"] is True
+
+    title = f"CLI Promptly {unique_suffix}"
+    problem_id, _ = create_problem_with_homework(
+        cli,
+        title,
+        submission_limit=3,
+        extra=["--programming-grading-mode", "3"],
+    )
+    testdata_zip = write_testdata_zip(tmp_path / "promptly_testdata.zip")
+    assert cli.admin_json("problem", "upload-testdata", str(problem_id), str(testdata_zip))["success"] is True
+
+    context = cli.user_json("problem", "submit-page", str(problem_id))
+    assert context["submit"]["input_kind"] == "prompt"
+    prompt_text = "Write a Python program that prints exactly hello."
+    submission = cli.user_json("problem", "submit", str(problem_id), "--prompt", prompt_text)
+    sid = int(submission["submission_id"])
+
+    detail = None
+    for _ in range(40):
+        detail = cli.user_json("submission", "detail", str(sid))
+        if detail["submission"]["code"].strip():
+            break
+        time.sleep(0.25)
+
+    assert detail is not None
+    assert detail["submission"]["generated_from_prompt"] is True
+    assert detail["submission"]["prompt_text"] == prompt_text
+    assert detail["submission"]["code"].strip() == "print('hello')"
     assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True

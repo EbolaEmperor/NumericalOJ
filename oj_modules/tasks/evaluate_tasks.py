@@ -56,7 +56,7 @@ def _normalize_programming_grading_mode(problem):
         mode = int((problem or {}).get('programming_grading_mode') or 1)
     except Exception:
         mode = 1
-    return mode if mode in (1, 2) else 1
+    return mode if mode in (1, 2, 3) else 1
 
 
 def _extract_output_image_filename(files_dict, preferred_prefix=None):

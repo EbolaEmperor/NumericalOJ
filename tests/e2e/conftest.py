@@ -102,6 +102,7 @@ def local_numoj_server() -> str:
     env["OJ_LIVE_AI"] = "0"
     env["NUMOJ_FAKE_AGENT_JUDGE"] = "1"
     env["NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS"] = "3600"
+    env["NUMOJ_FAKE_PROMPTLY_CODE"] = "print('hello')\n"
     web_proc = subprocess.Popen(
         [sys.executable, "-B", "oj.py"],
         cwd=ROOT,
@@ -120,7 +121,7 @@ def local_numoj_server() -> str:
             "worker",
             "--loglevel=warning",
             "-Q",
-            "celery",
+            "celery,agent",
             "--pool=solo",
             "--concurrency=1",
         ],

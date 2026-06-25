@@ -217,6 +217,9 @@ CREATE TABLE `submissions` (
   `status` varchar(16) NOT NULL,
   `problem_title` text,
   `problem_type` int DEFAULT NULL,
+  `prompt_text` longtext,
+  `generated_from_prompt` tinyint NOT NULL DEFAULT '0',
+  `prompt_generation_error` text,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=12497 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

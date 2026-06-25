@@ -242,7 +242,7 @@ def submission_status(submission_id):
         return jsonify({'error': 'Access denied'}), 403
 
     is_judging = (
-        snapshot.get('status') in ['Pending', 'Waiting', 'Running']
+        snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
         or snapshot.get('score') is None
     )
 
@@ -271,7 +271,7 @@ def submission_status_stream(submission_id):
 
     def _build_payload(snapshot):
         is_judging = (
-            snapshot.get('status') in ['Pending', 'Waiting', 'Running']
+            snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
             or snapshot.get('score') is None
         )
         payload = {

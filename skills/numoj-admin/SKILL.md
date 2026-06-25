@@ -59,7 +59,7 @@ For a different NumOJ instance, set the address through `init --base-url <url>` 
 - `ranking`: list/view ranking competitions, submit by upload or Git, inspect personal/all submissions, leaderboard, matches, match details, judge streams, create/edit/delete ranking competitions, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge rules/config/endpoints, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, or launch/stop/delete AIGC detection tasks.
 
-Do not use commands that launch external model/API work, such as agent solving, generated test data, AIGC detection runs, or Agent-as-Judge evaluation, unless the administrator explicitly asks for that action and understands it may call configured model services.
+Do not use commands that launch external model/API work, such as Promptly prompt submissions, agent solving, generated test data, AIGC detection runs, or Agent-as-Judge evaluation, unless the administrator explicitly asks for that action and understands it may call configured model services.
 
 ## Examples
 
@@ -90,6 +90,12 @@ python3 scripts/numoj_admin.py problem submit 42 --code-file solution.m
 python3 scripts/numoj_admin.py submission problem 42 --limit 5
 python3 scripts/numoj_admin.py submission status 123
 python3 scripts/numoj_admin.py submission stream 123 --max-lines 10
+```
+
+Submit a Promptly problem:
+
+```bash
+python3 scripts/numoj_admin.py problem submit 42 --prompt-file prompt.txt
 ```
 
 Assign homework and export scores:
