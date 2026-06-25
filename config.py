@@ -90,8 +90,12 @@ AGENT_JUDGE_PROGRESS_TTL = 21600
 
 # 主站判题 Docker 沙箱配置
 # 代码侧均用 getattr(config, ..., 默认值) 读取，远端 config.py 可不改即用以下默认。
+# 本机轻量镜像可使用：
+#   JUDGER_DOCKER_IMAGE = "numericaloj-judger-lite:latest"
+#   JUDGER_NUMERIC_BACKEND = "openblas"
+# 若镜像名包含 judger-lite，代码会自动把 C/C++ 数值后端从 mkl 切到 openblas。
 JUDGER_DOCKER_IMAGE = "numericaloj-judger:latest"
-JUDGER_DOCKER_MEM_LIMIT = "512m"
-JUDGER_DOCKER_CPU_LIMIT = "1"
+JUDGER_DOCKER_MEM_LIMIT = "1g"
+JUDGER_DOCKER_CPU_LIMIT = "2"
 JUDGER_DOCKER_PIDS_LIMIT = "128"
 JUDGER_DOCKER_NETWORK = "none"

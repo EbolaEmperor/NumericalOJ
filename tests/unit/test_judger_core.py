@@ -132,6 +132,21 @@ def test_capture_output_image_jpeg_ext(tmp_path):
     assert stored == "output_1.jpeg"
 
 
+def test_capture_output_image_from_case_dir_to_parent(tmp_path):
+    source_dir = tmp_path / "case_0"
+    source_dir.mkdir()
+    with open(source_dir / "output.png", "wb") as f:
+        f.write(b"\x89PNG case")
+
+    stored = judger_core.capture_output_image_file_to_dir(
+        str(source_dir), str(tmp_path), "output.png", "output_0"
+    )
+
+    assert stored == "output_0.png"
+    assert os.path.isfile(tmp_path / "output_0.png")
+    assert not os.path.exists(source_dir / "output.png")
+
+
 def test_capture_output_image_invalid_ext_returns_none(tmp_path):
     run_dir = str(tmp_path)
     with open(os.path.join(run_dir, "result.txt"), "w") as f:
@@ -169,3 +184,50 @@ def test_timeout_sec_from_ns_min_one():
 def test_guard_timeout_exceeds_base():
     assert judger_core._guard_timeout(2.0) > 2.0
     assert judger_core._guard_timeout(0) >= 1.0
+
+
+def test_measured_exec_time_uses_container_elapsed():
+    result = type("R", (), {"returncode": 0, "elapsed_ns": 123})()
+    assert judger_core._measured_exec_time_ns(result, 10) == 123
+
+
+def test_measured_exec_time_marks_guard_timeout_as_tle():
+    result = type("R", (), {"returncode": 124, "elapsed_ns": None})()
+    assert judger_core._measured_exec_time_ns(result, 10) == 11
+
+
+# ============== C/C++ compile command numeric backend ==============
+def test_build_compile_cmd_defaults_to_mkl(monkeypatch):
+    monkeypatch.delenv("JUDGER_NUMERIC_BACKEND", raising=False)
+    monkeypatch.delenv("JUDGER_ENABLE_MKL", raising=False)
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
+
+    cmd = judger_core.build_compile_cmd("cpp")
+
+    assert "-I" in cmd
+    assert judger_core.MKL_INCLUDE_DIR in cmd
+    assert "-lmkl_core" in cmd
+    assert "-lopenblas" not in cmd
+
+
+def test_build_compile_cmd_uses_openblas_for_lite_image(monkeypatch):
+    monkeypatch.delenv("JUDGER_NUMERIC_BACKEND", raising=False)
+    monkeypatch.delenv("JUDGER_ENABLE_MKL", raising=False)
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger-lite:latest")
+
+    cmd = judger_core.build_compile_cmd("c")
+
+    assert judger_core.MKL_INCLUDE_DIR not in cmd
+    assert "-lmkl_core" not in cmd
+    assert "-lopenblas" in cmd
+    assert "-llapacke" in cmd
+
+
+def test_build_compile_cmd_numeric_backend_override_none(monkeypatch):
+    monkeypatch.setenv("JUDGER_NUMERIC_BACKEND", "none")
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger-lite:latest")
+
+    cmd = judger_core.build_compile_cmd("cpp")
+
+    assert "-lmkl_core" not in cmd
+    assert "-lopenblas" not in cmd

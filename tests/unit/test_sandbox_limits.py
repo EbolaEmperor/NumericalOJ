@@ -100,6 +100,65 @@ def test_run_in_container_builds_correct_docker_cmd(monkeypatch):
     assert "--pids-limit" in cmd
 
 
+def test_run_in_container_honors_judger_image_env(monkeypatch):
+    captured_cmds = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+        def communicate(self, input=None, timeout=None):
+            return (self.stdout, self.stderr)
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmds.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger-lite:latest")
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(docker_sandbox, "_get_config", lambda: type("C", (), {})())
+
+    docker_sandbox.run_in_container(["true"], run_dir="/tmp/test_run", timeout_sec=10)
+
+    assert "numericaloj-judger-lite:latest" in captured_cmds[0]
+
+
+def test_run_in_container_measure_time_strips_marker(monkeypatch):
+    captured_cmds = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = "ok"
+        stderr = "warning\n__NUMOJ_TIME_NS__=123456\n"
+        def communicate(self, input=None, timeout=None):
+            return (self.stdout, self.stderr)
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmds.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(docker_sandbox, "_get_config", lambda: type("C", (), {})())
+
+    result = docker_sandbox.run_in_container(
+        ["python3", "main.py"],
+        run_dir="/tmp/test_run",
+        timeout_sec=10,
+        measure_time=True,
+    )
+
+    assert result.elapsed_ns == 123456
+    assert result.stderr == "warning"
+    cmd = captured_cmds[0]
+    image_index = cmd.index("numericaloj-judger:latest")
+    assert cmd[image_index + 1:image_index + 4] == ["/bin/sh", "-c", docker_sandbox._TIME_WRAPPER_SCRIPT]
+    assert cmd[-2:] == ["python3", "main.py"]
+
+
 def test_container_session_lifecycle(monkeypatch):
     """Verify ContainerSession starts, execs, and cleans up."""
     calls = []
@@ -134,13 +193,55 @@ def test_container_session_lifecycle(monkeypatch):
     monkeypatch.setattr(docker_sandbox, "_get_config", lambda: type("C", (), {})())
 
     with docker_sandbox.ContainerSession(run_dir="/tmp/test") as session:
-        result = session.exec(["./a.out"], input_text="1 2")
+        result = session.exec(["./a.out"], input_text="1 2", workdir="/sandbox/case_0")
         assert result.returncode == 0
         assert result.stdout == "output"
 
     run_cmds = [c[1] for c in calls if c[0] == "run"]
+    exec_cmds = [c[1] for c in calls if c[0] == "popen"]
     assert any("-d" in cmd for cmd in run_cmds)
     assert any("rm" in cmd and "-f" in cmd for cmd in run_cmds)
+    assert exec_cmds[0][:4] == ["docker", "exec", "-i", "-w"]
+    assert exec_cmds[0][4] == "/sandbox/case_0"
+
+
+def test_container_session_exec_measure_time(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(("run", cmd))
+        result = MagicMock()
+        if "docker" in cmd and "run" in cmd and "-d" in cmd:
+            result.returncode = 0
+            result.stdout = "abc123containerid\n"
+        elif "docker" in cmd and "rm" in cmd:
+            result.returncode = 0
+            result.stdout = ""
+        return result
+
+    class FakeProc:
+        returncode = 0
+        def communicate(self, input=None, timeout=None):
+            return ("output", "__NUMOJ_TIME_NS__=789\n")
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        calls.append(("popen", cmd))
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(docker_sandbox, "_get_config", lambda: type("C", (), {})())
+
+    with docker_sandbox.ContainerSession(run_dir="/tmp/test") as session:
+        result = session.exec(["./a.out"], workdir="/sandbox/case_0", measure_time=True)
+
+    exec_cmd = [c[1] for c in calls if c[0] == "popen"][0]
+    assert result.elapsed_ns == 789
+    assert result.stderr == ""
+    assert exec_cmd[:5] == ["docker", "exec", "-i", "-w", "/sandbox/case_0"]
+    assert exec_cmd[6:9] == ["/bin/sh", "-c", docker_sandbox._TIME_WRAPPER_SCRIPT]
 
 
 def test_docker_oom_kill_returns_mle(monkeypatch):
