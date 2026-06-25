@@ -46,7 +46,7 @@ For a different NumOJ instance, set the address through `init --base-url <url>` 
 - `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
 - `site`: inspect the home route and its login/problem-list redirect.
 - `me`: view own classes, join/leave/set primary class, view own submissions, and summarize visible grades from submission history.
-- `problem`: list problems, view problem details, open submit pages, and submit programming code or written-homework PDF/ZIP files.
+- `problem`: list problems, view problem details, open submit pages, and submit programming code, Promptly prompts, or written-homework PDF/ZIP files.
 - `submission`: list personal submissions, list submissions for one problem, inspect status/detail/stream, fetch last submitted code, and download output images.
 - `forum`: list forum threads, view threads, open the new-thread page, create threads, and reply.
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository page, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
@@ -65,6 +65,12 @@ python3 scripts/numoj_user.py problem list --limit 10
 python3 scripts/numoj_user.py submission problem 42 --limit 5
 python3 scripts/numoj_user.py submission status 123
 python3 scripts/numoj_user.py submission stream 123 --max-lines 10
+```
+
+Submit a Promptly problem:
+
+```bash
+python3 scripts/numoj_user.py problem submit 42 --prompt-file prompt.txt
 ```
 
 Submit a written problem:

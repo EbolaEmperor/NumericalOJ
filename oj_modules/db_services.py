@@ -85,11 +85,16 @@ _ALLOWED_WRITTEN_GRADING_MODELS = {
     } if item
 }
 _QWEN_OMNI_MODEL_KEY = str(QWEN_OMNI_MODEL or "").strip().lower()
+try:
+    _QWEN_CODER_MODEL_KEY = str(getattr(_config, 'QWEN_CODER_MODEL', '') or "").strip().lower()
+except Exception:
+    _QWEN_CODER_MODEL_KEY = ""
 _DEFAULT_PROGRAMMING_GRADING_MODEL = _QWEN_OMNI_MODEL_KEY or _QWEN_TEXT_MODEL_KEY
 _ALLOWED_PROGRAMMING_GRADING_MODELS = {
     item for item in {
         _QWEN_OMNI_MODEL_KEY,
         _QWEN_TEXT_MODEL_KEY,
+        _QWEN_CODER_MODEL_KEY,
     } if item
 }
 
@@ -286,6 +291,7 @@ def get_db_connection():
 # problems 表的惰性补列：以下若干 ensure_* 函数结构完全一致，统一收敛到一个 helper，
 # 用一个集合做进程内「已补加」缓存，取代过去每列一个 _*_ready 全局标志。
 _ensured_problem_columns = set()
+_ensured_submission_columns = set()
 
 
 def _ensure_problem_column(column, add_column_sql):
@@ -303,6 +309,24 @@ def _ensure_problem_column(column, add_column_sql):
         _ensured_problem_columns.add(column)
     except Exception:
         # 兼容只读或迁移过程中的异常；后续查询仍可按默认值处理。
+        pass
+    finally:
+        conn.close()
+
+
+def _ensure_submission_column(column, add_column_sql):
+    """惰性给 submissions 表补加某列（幂等 + 进程内缓存）。"""
+    if column in _ensured_submission_columns:
+        return
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM submissions LIKE %s", (column,))
+            if not cursor.fetchone():
+                cursor.execute(add_column_sql)
+                conn.commit()
+        _ensured_submission_columns.add(column)
+    except Exception:
         pass
     finally:
         conn.close()
@@ -400,6 +424,33 @@ def ensure_problem_programming_grading_columns():
 def ensure_problem_grading_columns():
     ensure_problem_written_grading_columns()
     ensure_problem_programming_grading_columns()
+
+
+def ensure_submission_prompt_columns():
+    ensure_submission_prompt_text_column()
+    ensure_submission_generated_from_prompt_column()
+    ensure_submission_prompt_generation_error_column()
+
+
+def ensure_submission_prompt_text_column():
+    _ensure_submission_column(
+        'prompt_text',
+        "ALTER TABLE submissions ADD COLUMN prompt_text LONGTEXT NULL",
+    )
+
+
+def ensure_submission_generated_from_prompt_column():
+    _ensure_submission_column(
+        'generated_from_prompt',
+        "ALTER TABLE submissions ADD COLUMN generated_from_prompt TINYINT NOT NULL DEFAULT 0",
+    )
+
+
+def ensure_submission_prompt_generation_error_column():
+    _ensure_submission_column(
+        'prompt_generation_error',
+        "ALTER TABLE submissions ADD COLUMN prompt_generation_error TEXT NULL",
+    )
 
 
 def init_submission_snapshot_cache(redis_client, ttl_seconds=None):
@@ -1108,7 +1159,7 @@ def create_problem(
                 use_programming_mode = int(programming_grading_mode)
             except Exception:
                 use_programming_mode = 1
-            if use_programming_mode not in (1, 2):
+            if use_programming_mode not in (1, 2, 3):
                 use_programming_mode = 1
             use_programming_model = normalize_programming_grading_model(programming_grading_model)
             use_programming_output_filename = normalize_programming_output_filename(programming_output_filename)
@@ -1248,7 +1299,7 @@ def update_problem(
                 programming_mode_val = int(new_programming_grading_mode)
             except Exception:
                 programming_mode_val = 1
-            if programming_mode_val not in (1, 2):
+            if programming_mode_val not in (1, 2, 3):
                 programming_mode_val = 1
         programming_model_val = None
         if new_programming_grading_model is not None:
@@ -1305,10 +1356,22 @@ def update_problem(
         conn.close()
 
 
-def create_submission(problem_id, problem_title, username, code, score, test_points):
+def create_submission(
+    problem_id,
+    problem_title,
+    username,
+    code,
+    score,
+    test_points,
+    status="Pending",
+    prompt_text=None,
+    generated_from_prompt=False,
+    prompt_generation_error=None,
+):
     # 先在获取连接前查好题目，避免占着连接再去 get_db_connection() 形成嵌套占用、放大连接池压力。
     problem = get_problem(problem_id)
     problem_type = problem['type']
+    ensure_submission_prompt_columns()
     conn = get_db_connection()
     try:
         if problem_type == 2:
@@ -1343,17 +1406,22 @@ def create_submission(problem_id, problem_title, username, code, score, test_poi
         subid = None
         with conn.cursor() as cursor:
             test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
-            sql = """INSERT INTO submissions (problem_id, username, code, score, test_points, status, problem_title, problem_type)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"""
+            sql = """INSERT INTO submissions
+                     (problem_id, username, code, score, test_points, status, problem_title, problem_type,
+                      prompt_text, generated_from_prompt, prompt_generation_error)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(sql, (
                 problem_id,
                 username,
                 code,
                 score,
                 test_points_str,
-                "Pending",
+                status,
                 problem_title,
                 problem_type,
+                prompt_text,
+                1 if generated_from_prompt else 0,
+                prompt_generation_error,
             ))
             # 需要在 cursor 生命周期内读取 lastrowid，避免偶发拿到无效 id
             subid = cursor.lastrowid
@@ -1526,7 +1594,7 @@ def get_submission_by_id(submission_id):
 def get_incomplete_submissions():
     """返回所有尚未完成评测的提交（程序题 + 书面作业），用于进程启动时重新入队。
 
-    status ∈ ('Pending', 'Waiting', 'Running')：
+    status ∈ ('Pending', 'Waiting', 'Running', 'Generating')：
       - Pending/Waiting：已创建但从未开始评测（队列在重启时丢失）；
       - Running：重启那一刻正评测到一半、被杀掉的任务。
     返回每行的 id / problem_type / status / created_at，按 id 升序（早提交先评）。
@@ -1536,7 +1604,7 @@ def get_incomplete_submissions():
         with conn.cursor() as cursor:
             sql = (
                 "SELECT id, problem_type, status, created_at FROM submissions "
-                "WHERE status IN ('Pending', 'Waiting', 'Running') "
+                "WHERE status IN ('Pending', 'Waiting', 'Running', 'Generating') "
                 "ORDER BY id ASC"
             )
             cursor.execute(sql)
@@ -1685,6 +1753,51 @@ def update_submission_evaluation(submission_id, test_point_statuses, score, stat
                      SET test_points=%s, score=%s, status=%s
                      WHERE id=%s"""
             cursor.execute(sql, (test_points_str, score, status, submission_id))
+        conn.commit()
+    finally:
+        conn.close()
+    refresh_submission_status_snapshot(submission_id)
+
+
+def update_submission_generated_code(submission_id, generated_code, status="Pending"):
+    ensure_submission_prompt_columns()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE submissions
+                   SET code=%s,
+                       generated_from_prompt=1,
+                       prompt_generation_error=NULL,
+                       status=%s,
+                       score=0,
+                       test_points=''
+                 WHERE id=%s
+                """,
+                (generated_code, status, submission_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    refresh_submission_status_snapshot(submission_id)
+
+
+def update_submission_prompt_generation_error(submission_id, error_message, status="Error"):
+    ensure_submission_prompt_columns()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE submissions
+                   SET prompt_generation_error=%s,
+                       status=%s,
+                       score=0
+                 WHERE id=%s
+                """,
+                (str(error_message or "").strip()[:12000], status, submission_id),
+            )
         conn.commit()
     finally:
         conn.close()

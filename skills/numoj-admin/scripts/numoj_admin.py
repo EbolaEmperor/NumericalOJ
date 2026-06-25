@@ -534,13 +534,33 @@ def problem_submit_page(args: argparse.Namespace) -> None:
 
 def problem_submit(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    if args.file:
+    context_resp = client.request("GET", f"/api/problems/{args.problem_id}/submit-context")
+    ensure_ok(context_resp, allow_redirect=False)
+    context = context_resp.json() if response_is_json(context_resp) else {}
+    input_kind = ((context.get("submit") or {}).get("input_kind") or "").strip().lower()
+
+    if input_kind == "file":
+        if not args.file:
+            raise CliError("This problem requires --file.")
+        if args.code or args.code_file or args.prompt or args.prompt_file:
+            raise CliError("This problem accepts a file submission, not code or prompt.")
         files = {"file": require_file(args.file)}
         try:
             resp = client.request("POST", f"/submit/{args.problem_id}", files=files)
         finally:
             close_files(files)
+    elif input_kind == "prompt":
+        if not (args.prompt or args.prompt_file):
+            raise CliError("This Promptly problem requires --prompt or --prompt-file.")
+        if args.file or args.code or args.code_file:
+            raise CliError("This Promptly problem accepts prompt text, not code or file.")
+        prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8") if args.prompt_file else read_text_value(args.prompt)
+        resp = client.request("POST", f"/submit/{args.problem_id}", data={"prompt": prompt})
     else:
+        if not (args.code or args.code_file):
+            raise CliError("This programming problem requires --code or --code-file.")
+        if args.file or args.prompt or args.prompt_file:
+            raise CliError("This programming problem accepts code, not prompt or file.")
         code = Path(args.code_file).expanduser().read_text(encoding="utf-8") if args.code_file else read_text_value(args.code)
         resp = client.request("POST", f"/submit/{args.problem_id}", data={"code": code})
     print_redirect_response(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
@@ -1651,6 +1671,8 @@ def build_parser() -> argparse.ArgumentParser:
     submit_group = pa.add_mutually_exclusive_group(required=True)
     submit_group.add_argument("--code", help="source code text, or @file")
     submit_group.add_argument("--code-file", help="source code file path")
+    submit_group.add_argument("--prompt", help="Promptly submission text, or @file")
+    submit_group.add_argument("--prompt-file", help="Promptly submission file path")
     submit_group.add_argument("--file", help="written-homework PDF/ZIP file path")
     pa.set_defaults(func=problem_submit)
     pa = ps.add_parser("create-form")

@@ -70,6 +70,7 @@
         <select class="form-select" id="programmingGradingModeSelect" name="programming_grading_mode" onchange="_toggleProgrammingImageFields(this.value)">
           <option value="1" selected>传统交互</option>
           <option value="2">批改图片</option>
+          <option value="3">Promptly</option>
         </select>
       </div>
       <div class="col-md-6 d-none" id="programmingOutputFilenameField">
@@ -163,8 +164,9 @@
 
         function _toggleProgrammingImageFields(mode) {
           const isImageMode = mode === '2';
+          const isPromptlyMode = mode === '3';
           document.getElementById('programmingOutputFilenameField').classList.toggle('d-none', !isImageMode);
-          document.getElementById('programmingGradingModelField').classList.toggle('d-none', !isImageMode);
+          document.getElementById('programmingGradingModelField').classList.toggle('d-none', !(isImageMode || isPromptlyMode));
           document.getElementById('programmingGradingPromptField').classList.toggle('d-none', !isImageMode);
         }
       </script>

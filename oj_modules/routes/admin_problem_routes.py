@@ -8,7 +8,7 @@ import zipfile
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
-from config import AI_TUTOR_MODEL, QWEN_OMNI_MODEL, QWEN_TEXT_MODEL
+from config import AI_TUTOR_MODEL, QWEN_CODER_MODEL, QWEN_OMNI_MODEL, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
 from oj_modules.db_services import (
@@ -50,6 +50,7 @@ _DEFAULT_PROGRAMMING_GRADING_MODEL = (
 )
 _PROGRAMMING_GRADING_MODEL_OPTIONS = [
     item for item in dict.fromkeys([
+        str(QWEN_CODER_MODEL or '').strip().lower(),
         str(QWEN_OMNI_MODEL or '').strip().lower(),
         str(QWEN_TEXT_MODEL or '').strip().lower(),
     ])
@@ -115,7 +116,7 @@ def parse_programming_grading_mode_from_form(form, default=1):
         mode = int(raw)
     except Exception:
         mode = int(default)
-    return mode if mode in (1, 2) else int(default)
+    return mode if mode in (1, 2, 3) else int(default)
 
 
 def parse_programming_output_filename_from_form(form, default="output.png"):

@@ -3,6 +3,7 @@
 
 from oj_modules.tasks.evaluate_tasks import register_evaluate_submission_task
 from oj_modules.tasks.written_homework_tasks import register_written_homework_task
+from oj_modules.tasks.promptly_tasks import register_promptly_generate_submission_task
 from oj_modules.tasks.agent_tasks import (
     get_agent_run_snapshot,
     init_agent_progress_cache,
@@ -40,6 +41,7 @@ from oj_modules.tasks.ranking_bulk_rejudge_tasks import (
 __all__ = [
     "register_evaluate_submission_task",
     "register_written_homework_task",
+    "register_promptly_generate_submission_task",
     "register_agent_solve_problem_task",
     "register_agent_generate_testdata_task",
     "register_repository_index_build_task",

@@ -353,7 +353,7 @@ def _enqueue_agent_judge_recovery(agent_judge_task, row, *, requeue_index):
     return True
 
 
-def _requeue_stale_pending_submissions(evaluate_task, written_task, *, source):
+def _requeue_stale_pending_submissions(evaluate_task, written_task, promptly_task=None, *, source):
     """周期性回收仍停在 Pending/Waiting 的提交。
 
     该守护任务用于兜底 MySQL/worker 短暂故障：任务如果失败后把提交留在 Pending，
@@ -381,7 +381,7 @@ def _requeue_stale_pending_submissions(evaluate_task, written_task, *, source):
         status = str(row.get('status') or '').strip()
         problem_type = row.get('problem_type')
 
-        if status in ('Pending', 'Waiting'):
+        if status in ('Pending', 'Waiting', 'Generating'):
             if not _old_enough_for_watchdog(row):
                 skipped_young += 1
                 continue
@@ -402,7 +402,10 @@ def _requeue_stale_pending_submissions(evaluate_task, written_task, *, source):
             skipped_claimed += 1
             continue
 
-        task = written_task if int(problem_type or 0) == 2 else evaluate_task
+        if status == 'Generating':
+            task = promptly_task
+        else:
+            task = written_task if int(problem_type or 0) == 2 else evaluate_task
         if task is None:
             _release_watchdog_requeue_claim(redis_client, sub_id)
             continue
@@ -423,7 +426,7 @@ def _requeue_stale_pending_submissions(evaluate_task, written_task, *, source):
     return requeued
 
 
-def _requeue_programming_submissions(evaluate_task, written_task):
+def _requeue_programming_submissions(evaluate_task, written_task, promptly_task=None):
     """重新入队 submissions 表里未完成的程序题（type 1）/ 书面作业（type 2）提交。"""
     requeued = 0
     try:
@@ -444,7 +447,11 @@ def _requeue_programming_submissions(evaluate_task, written_task):
                 clear_submission_lock(sub_id)
                 update_submission_status(sub_id, 'Pending')
 
-            if problem_type == 2:
+            if status == 'Generating':
+                if promptly_task is not None:
+                    promptly_task.apply_async(args=[sub_id], countdown=_startup_countdown(requeued))
+                    requeued += 1
+            elif problem_type == 2:
                 if written_task is not None:
                     written_task.apply_async(args=[sub_id], countdown=_startup_countdown(requeued))
                     requeued += 1
@@ -587,12 +594,12 @@ def _requeue_orphaned_agent_judge_submissions(agent_judge_task):
     return requeued
 
 
-def requeue_pending_on_startup(*, evaluate_task, written_task,
+def requeue_pending_on_startup(*, evaluate_task, written_task, promptly_task=None,
                                ranking_task, elo_initial_burst_task, agent_judge_task=None):
     """启动时扫描 MySQL 并重新入队所有未完成任务（程序题 / 书面作业 / 打榜赛）。"""
     try:
         _purge_agent_judge_broker_messages(_redis_client())
-        prog = _requeue_programming_submissions(evaluate_task, written_task)
+        prog = _requeue_programming_submissions(evaluate_task, written_task, promptly_task=promptly_task)
         rank = _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_judge_task)
         print(
             f"[StartupRequeue] 启动重新入队完成："
@@ -603,6 +610,7 @@ def requeue_pending_on_startup(*, evaluate_task, written_task,
 
 
 def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_task,
+                                           promptly_task=None,
                                            agent_judge_task=None):
     """注册周期性 Pending 回收任务。
 
@@ -651,6 +659,7 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
             requeued = _requeue_stale_pending_submissions(
                 evaluate_task,
                 written_task,
+                promptly_task=promptly_task,
                 source='watchdog',
             )
             agent_requeued = _requeue_orphaned_agent_judge_submissions(agent_judge_task)

@@ -131,6 +131,8 @@ def problem_detail(problem_id):
     problem = public_problem(raw_problem)
     problem_type = int(raw_problem.get("type") or 1)
     written_mode = int(raw_problem.get("written_grading_mode") or 1)
+    programming_mode = int(raw_problem.get("programming_grading_mode") or 1)
+    submit_input_name = "prompt" if problem_type == 1 and programming_mode == 3 else ("code" if problem_type == 1 else "file")
     return json_success(
         problem=problem,
         rendered_content=context["rendered_content"],
@@ -143,9 +145,14 @@ def problem_detail(problem_id):
             "action": f"/submit/{problem_id}",
             "method": "POST",
             "problem_type": problem_type,
+            "programming_grading_mode": programming_mode if problem_type == 1 else None,
+            "input_name": submit_input_name,
+            "input_kind": "prompt" if submit_input_name == "prompt" else ("code" if submit_input_name == "code" else "file"),
             "accept": None if problem_type == 1 else (".zip" if written_mode == 3 else ".pdf"),
             "help_text": (
-                None
+                "请提交 prompt，后台会先用 prompt 生成代码，再对生成代码进行评测。"
+                if submit_input_name == "prompt"
+                else None
                 if problem_type == 1
                 else (
                     "请上传 zip 文件，压缩包内必须包含 main.tex 及其依赖文件。"
@@ -168,6 +175,11 @@ def _problem_form_options():
         "problem_types": [
             {"value": "1", "label": "编程题"},
             {"value": "2", "label": "书面题"},
+        ],
+        "programming_grading_modes": [
+            {"value": 1, "label": "传统交互"},
+            {"value": 2, "label": "批改图片"},
+            {"value": 3, "label": "Promptly"},
         ],
         "programming_grading_model_options": _PROGRAMMING_GRADING_MODEL_OPTIONS,
         "default_programming_grading_model": _DEFAULT_PROGRAMMING_GRADING_MODEL,
