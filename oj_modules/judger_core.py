@@ -89,6 +89,50 @@ def _truthy_config_value(value):
     return None
 
 
+def _timeout_kill_after_arg():
+    """coreutils timeout 的强制回收宽限。
+
+    Octave/gnuplot 收到 TERM 后可能保存 workspace 或清理子进程；没有 -k 时，
+    timeout 会一直等它退出，导致 TLE 记录时间远大于题目限制。
+    """
+    raw_value = _config_value("JUDGER_TIMEOUT_KILL_AFTER_SEC", 1.0)
+    try:
+        value = max(0.1, float(raw_value))
+    except (TypeError, ValueError):
+        value = 1.0
+    return f"{value:g}s"
+
+
+def _timeout_cmd(limit_sec, *cmd):
+    return ["timeout", "-k", _timeout_kill_after_arg(), f"{limit_sec}s", *cmd]
+
+
+def _octave_plot_warmup_enabled():
+    raw_value = _config_value("JUDGER_OCTAVE_PLOT_WARMUP", True)
+    parsed = _truthy_config_value(raw_value)
+    return True if parsed is None else parsed
+
+
+def _warmup_octave_plot(session):
+    """预热 Octave + gnuplot + fontconfig，不计入任何测试点时间。"""
+    if not _octave_plot_warmup_enabled():
+        return
+    warmup_code = (
+        'graphics_toolkit("gnuplot"); '
+        'figure("visible", "off"); '
+        'plot([0 1], [0 1]); '
+        'print("-dpng", "/tmp/numoj_plot_warmup.png"); '
+        'close all;'
+    )
+    try:
+        session.exec(
+            _timeout_cmd(8, "octave", "--quiet", "--eval", warmup_code),
+            timeout_sec=12,
+        )
+    except Exception:
+        pass
+
+
 def _numeric_backend():
     """返回 C/C++ 数值库后端：mkl / openblas / none。
 
@@ -115,10 +159,10 @@ def _numeric_backend():
 def build_compile_cmd(language, compile_timeout_sec=30):
     """构造 C/C++ 容器内编译命令。"""
     if language == "cpp":
-        cmd = ["timeout", f"{compile_timeout_sec}s", "g++", "-O2", "-pipe", "-s", "-std=c++20"]
+        cmd = _timeout_cmd(compile_timeout_sec, "g++", "-O2", "-pipe", "-s", "-std=c++20")
         src = "main.cpp"
     else:
-        cmd = ["timeout", f"{compile_timeout_sec}s", "gcc", "-O2", "-pipe", "-s", "-std=c11"]
+        cmd = _timeout_cmd(compile_timeout_sec, "gcc", "-O2", "-pipe", "-s", "-std=c11")
         src = "main.c"
     cmd.extend(["-I", "/opt/library"])
     backend = _numeric_backend()
@@ -406,7 +450,7 @@ def run_octave(data):
         f.write(user_input)
 
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.1)
-    container_cmd = ["timeout", f"{timeLim_sec}s", "octave", "a.m"]
+    container_cmd = _timeout_cmd(timeLim_sec, "octave", "a.m")
 
     result = run_in_container(
         container_cmd,
@@ -475,7 +519,7 @@ def run_py(data):
         f.write(user_input)
 
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
-    container_cmd = ["timeout", f"{timeLim_sec}s", "python3", "-I", "-u", "main.py"]
+    container_cmd = _timeout_cmd(timeLim_sec, "python3", "-I", "-u", "main.py")
 
     result = run_in_container(
         container_cmd,
@@ -574,7 +618,7 @@ def _run_compiled_single(data, language):
 
     # Run
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
-    run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
+    run_cmd = _timeout_cmd(timeLim_sec, "./a.out")
 
     run_res = run_in_container(
         run_cmd,
@@ -677,7 +721,7 @@ def _batch_evaluate_stream(data, language):
                 with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
                     f.write(user_input)
                 timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
-                run_cmd = ["timeout", f"{timeLim_sec}s", "./a.out"]
+                run_cmd = _timeout_cmd(timeLim_sec, "./a.out")
 
                 run_res = session.exec(
                     run_cmd,
@@ -757,12 +801,12 @@ def _batch_evaluate_script_stream(data, language):
             src_name = "a.m"
             factor = 1.1
             run_status_nonzero = "Nonzero Exit Status"
-            make_cmd = lambda t: ["timeout", f"{t}s", "octave", "../a.m"]
+            make_cmd = lambda t: _timeout_cmd(t, "octave", "../a.m")
         else:  # python
             src_name = "main.py"
             factor = 1.2
             run_status_nonzero = "Runtime Error"
-            make_cmd = lambda t: ["timeout", f"{t}s", "python3", "-I", "-u", "../main.py"]
+            make_cmd = lambda t: _timeout_cmd(t, "python3", "-I", "-u", "../main.py")
 
         with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
             f.write(code_content)
@@ -771,6 +815,9 @@ def _batch_evaluate_script_stream(data, language):
         yield {"event": "compile", "status": "success", "stderr": ""}
 
         with ContainerSession(run_dir=run_dir) as session:
+            if language in ("matlab", "octave", "hello"):
+                _warmup_octave_plot(session)
+
             for i, test_case in enumerate(test_cases):
                 user_input = test_case.get("input", "")
                 case_dir = os.path.join(run_dir, f"case_{i}")
