@@ -61,6 +61,11 @@ RUN mkdir -p /opt/mkl \
     && echo /opt/mkl/lib > /etc/ld.so.conf.d/mkl.conf \
     && ldconfig
 
+# 判题容器运行时使用 --read-only，fontconfig 不能更新 /var/cache/fontconfig。
+# 在最终字体集合上预生成缓存，避免 Octave/gnuplot 首次 print('-dpng') 扫描字体到数秒级。
+RUN fc-cache -fsv \
+    && chmod -R a+rX /var/cache/fontconfig
+
 RUN mkdir -p /opt/library
 
 RUN useradd -m -s /bin/false runner

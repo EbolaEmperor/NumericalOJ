@@ -90,6 +90,10 @@ def _thread_env_flags():
     # 把默认终端设为廉价的 'dumb'（ASCII），交互式 drawnow 几乎零成本；而 print('-dpng')
     # 仍会单独切到 png 终端真正出图，output.png 不受影响（实测 19s → ~1.7s）。
     flags.extend(["-e", "GNUTERM=dumb"])
+    # 根文件系统只读时 fontconfig 不能写 ~/.cache 或 /var/cache，会在每次 gnuplot
+    # 出图时反复扫描字体并刷出 "No writable cache directories"。镜像内会预生成
+    # /var/cache/fontconfig；这里给运行期新缓存一个 /tmp 兜底，避免画图题回退到慢路径。
+    flags.extend(["-e", "XDG_CACHE_HOME=/tmp/.cache"])
     return flags
 
 
