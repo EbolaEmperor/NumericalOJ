@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -136,23 +137,20 @@ def print_or_save_response(resp: requests.Response, *, output: Optional[str] = N
     print(text if text else json.dumps({"success": True, "status": resp.status_code}))
 
 
-def print_redirect_response(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> None:
+def redirect_response_payload(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> Dict[str, Any]:
     ensure_ok(resp)
     location = resp.headers.get("Location", "")
     redirected = 300 <= resp.status_code < 400
     if not redirected:
         if response_is_json(resp):
-            output_json(resp.json())
-            return
-        output_json(
-            {
-                "success": False,
-                "status": resp.status_code,
-                "location": location,
-                "message": "服务器返回了表单页面而不是成功跳转；操作未完成。",
-            }
-        )
-        return
+            payload = resp.json()
+            return payload if isinstance(payload, dict) else {"success": False, "status": resp.status_code, "response": payload}
+        return {
+            "success": False,
+            "status": resp.status_code,
+            "location": location,
+            "message": "The server returned a form page instead of a success redirect; the operation was not completed.",
+        }
     payload: Dict[str, Any] = {"success": True, "status": resp.status_code, "location": location}
     if id_pattern and location:
         match = re.search(id_pattern, location)
@@ -160,7 +158,12 @@ def print_redirect_response(resp: requests.Response, *, id_pattern: Optional[str
             payload[id_name] = int(match.group(1))
         else:
             payload["success"] = False
-            payload["message"] = f"服务器跳转成功，但未从 Location 中解析到 {id_name}"
+            payload["message"] = f"The server redirect succeeded, but {id_name} could not be parsed from the Location header."
+    return payload
+
+
+def print_redirect_response(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> None:
+    payload = redirect_response_payload(resp, id_pattern=id_pattern, id_name=id_name)
     output_json(payload)
 
 
@@ -330,6 +333,60 @@ def submission_status_cmd(args: argparse.Namespace) -> None:
     print_or_save_response(resp)
 
 
+def wait_promptly_review_result(
+    client: NumOJClient,
+    submission_id: int,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> Dict[str, Any]:
+    deadline = time.time() + max(0.0, float(timeout_seconds))
+    interval = max(0.1, float(poll_interval_seconds))
+    last_status: Dict[str, Any] = {}
+
+    while True:
+        resp = client.request("GET", f"/submission_status/{submission_id}")
+        ensure_ok(resp, allow_redirect=False)
+        payload = resp.json() if response_is_json(resp) else {}
+        last_status = payload if isinstance(payload, dict) else {}
+
+        status = str(last_status.get("status") or "").strip()
+        reply = str(
+            last_status.get("promptly_review_reply")
+            or last_status.get("prompt_generation_error")
+            or ""
+        ).strip()
+        if reply:
+            return {
+                "waited": True,
+                "done": True,
+                "accepted": False,
+                "status": status,
+                "reply": reply,
+                "submission_status": last_status,
+            }
+        if status and status != "Generating":
+            return {
+                "waited": True,
+                "done": True,
+                "accepted": status not in ("Unaccepted", "Error"),
+                "status": status,
+                "reply": "",
+                "submission_status": last_status,
+            }
+        if time.time() >= deadline:
+            return {
+                "waited": True,
+                "done": False,
+                "accepted": None,
+                "timed_out": True,
+                "status": status or None,
+                "reply": "",
+                "submission_status": last_status,
+            }
+        time.sleep(interval)
+
+
 def submission_stream(args: argparse.Namespace) -> None:
     resp = client_from_args(args).request("GET", f"/submission_status_stream/{args.submission_id}", stream=True)
     print_stream_lines(resp, max_lines=args.max_lines)
@@ -434,7 +491,18 @@ def problem_submit(args: argparse.Namespace) -> None:
             raise CliError("This programming problem accepts code, not prompt or file.")
         code = Path(args.code_file).expanduser().read_text(encoding="utf-8") if args.code_file else read_text_value(args.code)
         resp = client.request("POST", f"/submit/{args.problem_id}", data={"code": code})
-    print_redirect_response(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
+    payload = redirect_response_payload(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
+    if input_kind == "prompt" and payload.get("success") and payload.get("submission_id") and getattr(args, "wait_promptly", True):
+        promptly_review = wait_promptly_review_result(
+            client,
+            int(payload["submission_id"]),
+            timeout_seconds=args.wait_timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
+        payload["promptly_review"] = promptly_review
+        if promptly_review.get("reply"):
+            payload["reply"] = promptly_review["reply"]
+    output_json(payload)
 
 
 def forum_list(args: argparse.Namespace) -> None:
@@ -631,7 +699,7 @@ def ranking_submit(args: argparse.Namespace) -> None:
     if new_ids:
         payload["submission_id"] = new_ids[-1]
     else:
-        payload["message"] = "提交请求完成，但没有产生新的提交记录。请检查比赛提交方式、配额或表单错误。"
+        payload["message"] = "The submission request completed, but no new submission record was created. Check the submission method, quota, or form errors."
     output_json(payload)
 
 
@@ -685,274 +753,296 @@ def ranking_appeal_status(args: argparse.Namespace) -> None:
 
 
 def add_common_http_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="config file path")
-    parser.add_argument("--base-url", help="override server base URL")
-    parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout seconds")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to the local CLI config file containing the saved server URL and session cookie.")
+    parser.add_argument("--base-url", help="Override the server URL saved in the config file for this command.")
+    parser.add_argument("--timeout", type=float, default=60.0, help="HTTP request timeout in seconds.")
+
+
+HELP_FORMATTER = argparse.ArgumentDefaultsHelpFormatter
+
+
+def add_cli_parser(subparsers: argparse._SubParsersAction, name: str, description: str, **kwargs: Any) -> argparse.ArgumentParser:
+    kwargs.setdefault("help", description)
+    kwargs.setdefault("description", description)
+    kwargs.setdefault("formatter_class", HELP_FORMATTER)
+    return subparsers.add_parser(name, **kwargs)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="numoj-user", description="NumericalOJ regular-user CLI over existing HTTP routes")
+    p = argparse.ArgumentParser(
+        prog="numoj-user",
+        description="NumericalOJ regular-user CLI over existing HTTP routes.",
+        formatter_class=HELP_FORMATTER,
+    )
     add_common_http_args(p)
     sub = p.add_subparsers(dest="group", required=True)
 
-    pa = sub.add_parser("init", help="first-time setup: save NumOJ URL and user session token")
-    pa.add_argument("--base-url", dest="login_base_url", help="NumOJ URL, e.g. https://oj.example.com or 127.0.0.1:2025")
-    pa.add_argument("-u", "--username")
-    pa.add_argument("-p", "--password")
+    pa = add_cli_parser(sub, "init", "First-time setup: save the NumOJ URL and user session token.")
+    pa.add_argument("--base-url", dest="login_base_url", help="NumOJ server URL, e.g. https://oj.example.com or 127.0.0.1:2025.")
+    pa.add_argument("-u", "--username", help="Username. If omitted, the CLI prompts interactively.")
+    pa.add_argument("-p", "--password", help="Password. If omitted, the CLI prompts without echoing input.")
     pa.set_defaults(func=login, prompt_base_url=True)
 
-    site = sub.add_parser("site")
+    site = add_cli_parser(sub, "site", "Inspect public site routes and login/problem-list redirects.")
     site_sub = site.add_subparsers(dest="cmd", required=True)
-    pa = site_sub.add_parser("home")
+    pa = add_cli_parser(site_sub, "home", "Fetch the site home route and show the response or redirect target.")
     pa.set_defaults(func=site_home)
 
-    auth = sub.add_parser("auth")
+    auth = add_cli_parser(sub, "auth", "Manage CLI authentication and account password actions.")
     auth_sub = auth.add_subparsers(dest="cmd", required=True)
-    pa = auth_sub.add_parser("login")
-    pa.add_argument("--base-url", dest="login_base_url")
-    pa.add_argument("-u", "--username")
-    pa.add_argument("-p", "--password")
+    pa = add_cli_parser(auth_sub, "login", "Log in and save a fresh user session cookie.")
+    pa.add_argument("--base-url", dest="login_base_url", help="NumOJ server URL, e.g. https://oj.example.com.")
+    pa.add_argument("-u", "--username", help="Username. If omitted, the CLI prompts interactively.")
+    pa.add_argument("-p", "--password", help="Password. If omitted, the CLI prompts without echoing input.")
     pa.set_defaults(func=login)
-    pa = auth_sub.add_parser("logout")
+    pa = add_cli_parser(auth_sub, "logout", "Delete the saved local CLI session config.")
     pa.set_defaults(func=logout)
-    pa = auth_sub.add_parser("status")
+    pa = add_cli_parser(auth_sub, "status", "Check whether the saved session is authenticated.")
     pa.set_defaults(func=status)
-    pa = auth_sub.add_parser("send-password-code")
+    pa = add_cli_parser(auth_sub, "send-password-code", "Request a password-change verification code for the current session.")
     pa.set_defaults(func=auth_send_password_code)
-    pa = auth_sub.add_parser("change-password")
-    pa.add_argument("--code", required=True)
-    pa.add_argument("--new-password", required=True)
-    pa.add_argument("--confirm-password")
+    pa = add_cli_parser(auth_sub, "change-password", "Change the current account password using a verification code.")
+    pa.add_argument("--code", required=True, help="Verification code received from the password-code request.")
+    pa.add_argument("--new-password", required=True, help="New password to set for the current account.")
+    pa.add_argument("--confirm-password", help="Confirmation password. Defaults to --new-password when omitted.")
     pa.set_defaults(func=auth_change_password)
 
-    me = sub.add_parser("me")
+    me = add_cli_parser(sub, "me", "Inspect and update data for the currently configured account.")
     me_sub = me.add_subparsers(dest="cmd", required=True)
-    pa = me_sub.add_parser("classes")
+    pa = add_cli_parser(me_sub, "classes", "List classes visible to the current account.")
     pa.set_defaults(func=me_classes)
-    pa = me_sub.add_parser("join-class")
-    pa.add_argument("class_en")
+    pa = add_cli_parser(me_sub, "join-class", "Join a class as the current account.")
+    pa.add_argument("class_en", help="English class identifier, e.g. C2026A.")
     pa.set_defaults(func=me_join_class)
-    pa = me_sub.add_parser("leave-class")
-    pa.add_argument("class_en")
+    pa = add_cli_parser(me_sub, "leave-class", "Leave a class as the current account.")
+    pa.add_argument("class_en", help="English class identifier to leave, e.g. C2026A.")
     pa.set_defaults(func=me_leave_class)
-    pa = me_sub.add_parser("set-primary-class")
-    pa.add_argument("class_en")
+    pa = add_cli_parser(me_sub, "set-primary-class", "Set the current account's primary class.")
+    pa.add_argument("class_en", help="English class identifier to make primary, e.g. C2026A.")
     pa.set_defaults(func=me_set_primary_class)
-    pa = me_sub.add_parser("submissions")
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(me_sub, "submissions", "List submissions for the current account.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=submission_list)
-    pa = me_sub.add_parser("grades")
-    pa.add_argument("--pages", type=int, default=5, help="submission history pages to summarize")
+    pa = add_cli_parser(me_sub, "grades", "Summarize visible grades from recent submission history.")
+    pa.add_argument("--pages", type=int, default=5, help="Number of submission-history pages to summarize.")
     pa.set_defaults(func=me_grades)
 
-    problem = sub.add_parser("problem")
+    problem = add_cli_parser(sub, "problem", "Browse problems and submit code, Promptly prompts, or written-homework files.")
     problem_sub = problem.add_subparsers(dest="cmd", required=True)
-    pa = problem_sub.add_parser("list")
-    pa.add_argument("--limit", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(problem_sub, "list", "List available problems from the problem-list page.")
+    pa.add_argument("--limit", type=int, help="Maximum number of problems to return.")
+    pa.add_argument("-o", "--output", help="Write the raw response or parsed output to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_list)
-    pa = problem_sub.add_parser("detail")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(problem_sub, "detail", "Fetch a problem detail page and summarize or save it.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to inspect.")
+    pa.add_argument("-o", "--output", help="Write the full problem detail HTML to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_detail)
-    pa = problem_sub.add_parser("submit-page")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(problem_sub, "submit-page", "Fetch the submit page for a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose submit page should be fetched.")
+    pa.add_argument("-o", "--output", help="Write the full submit page HTML to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_submit_page)
-    pa = problem_sub.add_parser("submit")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(problem_sub, "submit", "Submit source code, a Promptly prompt, or a written-homework file to a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to submit to.")
     sg = pa.add_mutually_exclusive_group(required=True)
-    sg.add_argument("--code", help="source code text, or @file")
-    sg.add_argument("--code-file", help="source code file path")
-    sg.add_argument("--prompt", help="Promptly submission text, or @file")
-    sg.add_argument("--prompt-file", help="Promptly submission file path")
-    sg.add_argument("--file", help="written-homework PDF/ZIP file path")
+    sg.add_argument("--code", help="Source code text, or @file to read code from a file.")
+    sg.add_argument("--code-file", help="Source code file path.")
+    sg.add_argument("--prompt", help="Promptly submission text, or @file to read the prompt from a file.")
+    sg.add_argument("--prompt-file", help="Promptly submission file path.")
+    sg.add_argument("--file", help="Written-homework PDF or ZIP file path.")
+    pa.add_argument(
+        "--no-wait-promptly",
+        dest="wait_promptly",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help="Return immediately after creating a Promptly submission instead of waiting for prompt review/generation status.",
+    )
+    pa.add_argument("--wait-timeout", type=float, default=60.0, help="Maximum seconds to wait for Promptly review/generation status after a prompt submission.")
+    pa.add_argument("--poll-interval", type=float, default=1.0, help="Seconds between Promptly status polling requests.")
     pa.set_defaults(func=problem_submit)
 
-    submission = sub.add_parser("submission")
+    submission = add_cli_parser(sub, "submission", "Inspect personal submissions, status snapshots, output files, and saved source code.")
     sub_sub = submission.add_subparsers(dest="cmd", required=True)
-    pa = sub_sub.add_parser("list")
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(sub_sub, "list", "List submissions visible to the current user.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=submission_list)
-    pa = sub_sub.add_parser("problem")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(sub_sub, "problem", "List submissions for one problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose submissions should be listed.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=submission_problem_list)
-    pa = sub_sub.add_parser("status")
-    pa.add_argument("submission_id", type=int)
+    pa = add_cli_parser(sub_sub, "status", "Fetch the current JSON status snapshot for a submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID to inspect.")
     pa.set_defaults(func=submission_status_cmd)
-    pa = sub_sub.add_parser("stream")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--max-lines", type=int, default=20)
+    pa = add_cli_parser(sub_sub, "stream", "Fetch recent live evaluation stream lines for a submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID whose stream should be fetched.")
+    pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=submission_stream)
-    pa = sub_sub.add_parser("detail")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("-o", "--output", help="save original HTML detail page instead of JSON status")
+    pa = add_cli_parser(sub_sub, "detail", "Fetch submission details, either as JSON status or the raw HTML detail page.")
+    pa.add_argument("submission_id", type=int, help="Submission ID to inspect.")
+    pa.add_argument("-o", "--output", help="Write the original HTML detail page to this path instead of printing JSON status.")
     pa.set_defaults(func=submission_detail)
-    pa = sub_sub.add_parser("last-code")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(sub_sub, "last-code", "Fetch the current user's last submitted code for a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose latest code should be returned.")
     pa.set_defaults(func=submission_last_code)
-    pa = sub_sub.add_parser("output-image")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("test_index", type=int)
-    pa.add_argument("-o", "--output")
+    pa = add_cli_parser(sub_sub, "output-image", "Download an output image produced by an image-grading submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID that produced the image.")
+    pa.add_argument("test_index", type=int, help="Zero-based or server-defined test-point index of the image to download.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded image. If omitted, a default filename is used.")
     pa.set_defaults(func=submission_output_image)
 
-    forum = sub.add_parser("forum")
+    forum = add_cli_parser(sub, "forum", "Inspect and create forum threads and replies.")
     forum_sub = forum.add_subparsers(dest="cmd", required=True)
-    pa = forum_sub.add_parser("list")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(forum_sub, "list", "List forum threads.")
+    pa.add_argument("-o", "--output", help="Write the full forum list response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_list)
-    pa = forum_sub.add_parser("thread")
-    pa.add_argument("thread_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(forum_sub, "thread", "Fetch one forum thread and its replies.")
+    pa.add_argument("thread_id", type=int, help="Forum thread ID to fetch.")
+    pa.add_argument("-o", "--output", help="Write the full thread response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_thread)
-    pa = forum_sub.add_parser("new-page")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(forum_sub, "new-page", "Fetch the new-thread form page.")
+    pa.add_argument("-o", "--output", help="Write the full new-thread page response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_new_page)
-    pa = forum_sub.add_parser("new")
-    pa.add_argument("--title", required=True)
-    pa.add_argument("--content", required=True, help="text or @file")
+    pa = add_cli_parser(forum_sub, "new", "Create a new forum thread.")
+    pa.add_argument("--title", required=True, help="Thread title.")
+    pa.add_argument("--content", required=True, help="Thread body text, or @file to read it from a file.")
     pa.set_defaults(func=forum_new)
-    pa = forum_sub.add_parser("reply")
-    pa.add_argument("thread_id", type=int)
-    pa.add_argument("--content", required=True, help="text or @file")
+    pa = add_cli_parser(forum_sub, "reply", "Post a reply to a forum thread.")
+    pa.add_argument("thread_id", type=int, help="Thread ID to reply to.")
+    pa.add_argument("--content", required=True, help="Reply body text, or @file to read it from a file.")
     pa.set_defaults(func=forum_reply)
-    pa = forum_sub.add_parser("reply-thread")
-    pa.add_argument("thread_id", type=int)
-    pa.add_argument("--content", required=True, help="text or @file")
+    pa = add_cli_parser(forum_sub, "reply-thread", "Post a reply using the thread-reply route.")
+    pa.add_argument("thread_id", type=int, help="Thread ID to reply to.")
+    pa.add_argument("--content", required=True, help="Reply body text, or @file to read it from a file.")
     pa.set_defaults(func=forum_reply_thread)
 
-    repo = sub.add_parser("repository")
+    repo = add_cli_parser(sub, "repository", "Manage the personal code repository and its vector-search index.")
     repo_sub = repo.add_subparsers(dest="cmd", required=True)
-    pa = repo_sub.add_parser("page")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(repo_sub, "page", "Fetch the repository page.")
+    pa.add_argument("-o", "--output", help="Write the full repository page response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=repository_page)
-    pa = repo_sub.add_parser("files")
+    pa = add_cli_parser(repo_sub, "files", "List files in the current user's repository.")
     pa.set_defaults(func=repository_files)
-    pa = repo_sub.add_parser("get")
-    pa.add_argument("file_id", type=int)
-    pa.add_argument("-o", "--output", help="write file content when the API returns JSON content")
+    pa = add_cli_parser(repo_sub, "get", "Fetch one repository file by ID.")
+    pa.add_argument("file_id", type=int, help="Repository file ID to fetch.")
+    pa.add_argument("-o", "--output", help="Write file content when the API returns JSON content.")
     pa.set_defaults(func=repository_get_file)
-    pa = repo_sub.add_parser("save")
-    pa.add_argument("--filename", required=True)
+    pa = add_cli_parser(repo_sub, "save", "Create or update a repository file.")
+    pa.add_argument("--filename", required=True, help="Repository filename to create or update.")
     content_group = pa.add_mutually_exclusive_group(required=True)
-    content_group.add_argument("--content", help="text or @file")
-    content_group.add_argument("--content-file")
-    pa.add_argument("--file-id", type=int)
+    content_group.add_argument("--content", help="File content text, or @file to read it from a file.")
+    content_group.add_argument("--content-file", help="Path to a local file whose content should be saved.")
+    pa.add_argument("--file-id", type=int, help="Existing repository file ID to update. Omit to create a new file.")
     pa.set_defaults(func=repository_save_file)
-    pa = repo_sub.add_parser("delete")
-    pa.add_argument("file_id", type=int)
+    pa = add_cli_parser(repo_sub, "delete", "Delete a repository file.")
+    pa.add_argument("file_id", type=int, help="Repository file ID to delete.")
     pa.set_defaults(func=repository_delete_file)
-    pa = repo_sub.add_parser("upload")
-    pa.add_argument("file")
+    pa = add_cli_parser(repo_sub, "upload", "Upload a local source file into the repository.")
+    pa.add_argument("file", help="Path to the local file to upload.")
     pa.set_defaults(func=repository_upload)
-    pa = repo_sub.add_parser("build-index")
-    pa.add_argument("--force-restart", action="store_true")
+    pa = add_cli_parser(repo_sub, "build-index", "Start or resume a repository-wide vector-index build.")
+    pa.add_argument("--force-restart", action="store_true", help="Force the server to restart the indexing job if one already exists.")
     pa.set_defaults(func=repository_build_index)
-    pa = repo_sub.add_parser("rebuild-file")
-    pa.add_argument("file_id", type=int)
-    pa.add_argument("--force-restart", action="store_true")
+    pa = add_cli_parser(repo_sub, "rebuild-file", "Rebuild vector-index entries for one repository file.")
+    pa.add_argument("file_id", type=int, help="Repository file ID to re-index.")
+    pa.add_argument("--force-restart", action="store_true", help="Force the server to restart the file indexing job if one already exists.")
     pa.set_defaults(func=repository_rebuild_file)
-    pa = repo_sub.add_parser("index-status")
-    pa.add_argument("job_id", type=int)
+    pa = add_cli_parser(repo_sub, "index-status", "Check status for a repository indexing job.")
+    pa.add_argument("job_id", type=int, help="Indexing job ID returned by build-index or rebuild-file.")
     pa.set_defaults(func=repository_index_status)
-    pa = repo_sub.add_parser("active-status")
+    pa = add_cli_parser(repo_sub, "active-status", "Show currently active repository indexing jobs.")
     pa.set_defaults(func=repository_active_status)
-    pa = repo_sub.add_parser("search")
-    pa.add_argument("--query", required=True)
-    pa.add_argument("--top-k", type=int)
-    pa.add_argument("--score-threshold", type=float)
+    pa = add_cli_parser(repo_sub, "search", "Search indexed repository code using semantic/vector search.")
+    pa.add_argument("--query", required=True, help="Natural-language or code query to search for.")
+    pa.add_argument("--top-k", type=int, help="Maximum number of matching chunks to return.")
+    pa.add_argument("--score-threshold", type=float, help="Minimum similarity score required for returned chunks.")
     pa.set_defaults(func=repository_search)
-    pa = repo_sub.add_parser("classes")
-    pa.add_argument("--limit", type=int, default=300)
+    pa = add_cli_parser(repo_sub, "classes", "List class metadata discovered in indexed repository code.")
+    pa.add_argument("--limit", type=int, default=300, help="Maximum number of class records to return.")
     pa.set_defaults(func=repository_classes)
 
-    ai = sub.add_parser("ai")
+    ai = add_cli_parser(sub, "ai", "Call AI tutor endpoints for submissions.")
     ai_sub = ai.add_subparsers(dest="cmd", required=True)
-    pa = ai_sub.add_parser("marks")
-    pa.add_argument("--submission-id", type=int, required=True)
-    pa.add_argument("--force-refresh", action="store_true")
+    pa = add_cli_parser(ai_sub, "marks", "Fetch AI-generated code marks for one submission.")
+    pa.add_argument("--submission-id", type=int, required=True, help="Submission ID whose AI marks should be fetched.")
+    pa.add_argument("--force-refresh", action="store_true", help="Force the server to refresh cached AI marks.")
     pa.set_defaults(func=ai_code_marks)
 
-    ranking = sub.add_parser("ranking")
+    ranking = add_cli_parser(sub, "ranking", "Use ranking competitions, submissions, matches, leaderboards, and appeals.")
     rank_sub = ranking.add_subparsers(dest="cmd", required=True)
-    pa = rank_sub.add_parser("list")
-    pa.add_argument("--limit", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(rank_sub, "list", "List ranking competitions.")
+    pa.add_argument("--limit", type=int, help="Maximum number of competitions to return.")
+    pa.add_argument("-o", "--output", help="Write the full response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ranking_list)
-    pa = rank_sub.add_parser("detail")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--tab")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(rank_sub, "detail", "Fetch a ranking competition detail page.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to inspect.")
+    pa.add_argument("--tab", help="Optional detail-page tab to request, such as submissions, leaderboard, or settings.")
+    pa.add_argument("-o", "--output", help="Write the full detail response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ranking_detail)
-    pa = rank_sub.add_parser("matches")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--mine", action="store_true")
+    pa = add_cli_parser(rank_sub, "matches", "List ELO or Agent-as-Judge matches for a competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose matches should be listed.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--mine", action="store_true", help="Show only matches involving the current user when supported.")
     pa.set_defaults(func=ranking_matches)
-    pa = rank_sub.add_parser("match-detail")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("match_id", type=int)
+    pa = add_cli_parser(rank_sub, "match-detail", "Fetch details for one ranking match.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the match.")
+    pa.add_argument("match_id", type=int, help="Match ID to inspect.")
     pa.set_defaults(func=ranking_match_detail)
-    pa = rank_sub.add_parser("submit")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--base-model", required=True)
-    pa.add_argument("--code-zip", required=True)
-    pa.add_argument("--answer-file")
+    pa = add_cli_parser(rank_sub, "submit", "Submit a ZIP-based ranking entry.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
+    pa.add_argument("--base-model", required=True, help="Base model name associated with the submission.")
+    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
+    pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
     pa.set_defaults(func=ranking_submit)
-    pa = rank_sub.add_parser(
+    pa = add_cli_parser(
+        rank_sub,
         "git",
-        help="Git-based ranking submission: run check first, then submit",
-        description=(
-            "Use when the ranking competition is configured for Git submission. "
-            "Run check first, then submit. "
+        "Use Git-based ranking submission: run check first, then submit.",
+        epilog=(
             "Run `ranking git <competition_id> check` first to verify the server-derived "
             "repository URL and latest commit, then run `ranking git <competition_id> submit`. "
             "Do not pass a repository URL; NumOJ derives it from the competition Git rule and your username."
         ),
     )
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("action", choices=["check", "submit"], help="check repository visibility first; submit queues the checked repository for evaluation")
+    pa.add_argument("competition_id", type=int, help="Competition ID configured for Git submission.")
+    pa.add_argument("action", choices=["check", "submit"], help="Use check to verify repository visibility; use submit to queue the checked repository for evaluation.")
     pa.set_defaults(func=ranking_git)
-    pa = rank_sub.add_parser("my-submissions")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(rank_sub, "my-submissions", "List the current user's submissions for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose submissions should be listed.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=ranking_my_submissions)
-    pa = rank_sub.add_parser("leaderboard")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(rank_sub, "leaderboard", "Fetch the leaderboard for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose leaderboard should be fetched.")
+    pa.add_argument("--limit", type=int, help="Maximum number of leaderboard rows to return.")
     pa.set_defaults(func=ranking_leaderboard)
-    pa = rank_sub.add_parser("download-submission")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("kind", choices=["answer", "code"])
-    pa.add_argument("-o", "--output")
+    pa = add_cli_parser(rank_sub, "download-submission", "Download the answer file or code archive from a ranking submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID to download from.")
+    pa.add_argument("kind", choices=["answer", "code"], help="Submission artifact to download.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded artifact.")
     pa.set_defaults(func=ranking_download_submission)
-    pa = rank_sub.add_parser("judge-stream")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--max-lines", type=int, default=20)
+    pa = add_cli_parser(rank_sub, "judge-stream", "Fetch recent judge stream lines for a ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID whose judge stream should be fetched.")
+    pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=ranking_judge_stream)
-    pa = rank_sub.add_parser("appeal")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--reason", required=True, help="text or @file")
+    pa = add_cli_parser(rank_sub, "appeal", "Submit an appeal for one ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID being appealed.")
+    pa.add_argument("--reason", required=True, help="Appeal reason text, or @file to read it from a file.")
     pa.set_defaults(func=ranking_submit_appeal)
-    pa = rank_sub.add_parser("appeal-status")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
+    pa = add_cli_parser(rank_sub, "appeal-status", "Fetch appeal status for one ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID whose appeal status should be fetched.")
     pa.set_defaults(func=ranking_appeal_status)
 
     return p

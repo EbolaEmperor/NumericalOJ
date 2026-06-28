@@ -98,6 +98,8 @@ Submit a Promptly problem:
 python3 scripts/numoj_admin.py problem submit 42 --prompt-file prompt.txt
 ```
 
+Promptly submissions wait for the prompt review/generation status by default. If the prompt is rejected by the review model, the command output includes `promptly_review.reply` and a top-level `reply` field with the system feedback. Use `--no-wait-promptly` only when the administrator explicitly wants to return immediately after creating the submission.
+
 Assign homework and export scores:
 
 ```bash

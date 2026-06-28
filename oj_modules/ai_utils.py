@@ -380,12 +380,41 @@ def _format_promptly_example_replies(example_replies):
     return "\n".join(f"{idx}. {text}" for idx, text in enumerate(examples, start=1))
 
 
+def _fake_promptly_review_from_env(prompt):
+    raw_terms = os.getenv("NUMOJ_FAKE_PROMPTLY_REVIEW_REQUIRED_TERMS")
+    if raw_terms is None:
+        return None
+    try:
+        parsed_terms = json.loads(raw_terms)
+    except Exception:
+        parsed_terms = re.split(r"\|\||\n", raw_terms)
+    if isinstance(parsed_terms, str):
+        terms = [parsed_terms]
+    elif isinstance(parsed_terms, (list, tuple)):
+        terms = [str(item or "").strip() for item in parsed_terms]
+    else:
+        terms = []
+    terms = [term for term in terms if term]
+    normalized_prompt = str(prompt or "").lower()
+    nice = all(term.lower() in normalized_prompt for term in terms)
+    if nice:
+        return True, ""
+    reply = (
+        os.getenv("NUMOJ_FAKE_PROMPTLY_REVIEW_REPLY")
+        or "Please provide a clearer algorithm idea before asking AI to generate code."
+    )
+    return False, reply
+
+
 def review_promptly_student_prompt(problem, student_prompt, model_spec=None, timeout=120):
     """Return (nice, reply) for a Promptly student prompt before code generation."""
     problem = problem or {}
     prompt = str(student_prompt or "").strip()
     if not prompt:
         return False, "请先填写解题思路。"
+    fake_review = _fake_promptly_review_from_env(prompt)
+    if fake_review is not None:
+        return fake_review
 
     config = parse_promptly_review_config(problem)
     brief = str(config.get("brief") or "").strip()
