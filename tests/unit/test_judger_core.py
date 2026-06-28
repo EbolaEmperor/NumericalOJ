@@ -200,19 +200,48 @@ def test_measured_exec_time_marks_guard_timeout_as_tle():
 def test_build_compile_cmd_defaults_to_mkl(monkeypatch):
     monkeypatch.delenv("JUDGER_NUMERIC_BACKEND", raising=False)
     monkeypatch.delenv("JUDGER_ENABLE_MKL", raising=False)
+    monkeypatch.setenv("JUDGER_TARGET_ARCH", "x86_64")
     monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
 
     cmd = judger_core.build_compile_cmd("cpp")
 
+    assert "-m64" in cmd
     assert "-I" in cmd
     assert judger_core.MKL_INCLUDE_DIR in cmd
     assert "-lmkl_core" in cmd
     assert "-lopenblas" not in cmd
 
 
+def test_build_compile_cmd_defaults_to_openblas_on_arm(monkeypatch):
+    monkeypatch.delenv("JUDGER_NUMERIC_BACKEND", raising=False)
+    monkeypatch.delenv("JUDGER_ENABLE_MKL", raising=False)
+    monkeypatch.setenv("JUDGER_TARGET_ARCH", "arm64")
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
+
+    cmd = judger_core.build_compile_cmd("cpp")
+
+    assert "-m64" not in cmd
+    assert judger_core.MKL_INCLUDE_DIR not in cmd
+    assert "-lmkl_core" not in cmd
+    assert "-lopenblas" in cmd
+
+
+def test_build_compile_cmd_explicit_mkl_on_arm_omits_m64(monkeypatch):
+    monkeypatch.setenv("JUDGER_NUMERIC_BACKEND", "mkl")
+    monkeypatch.setenv("JUDGER_TARGET_ARCH", "arm64")
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
+
+    cmd = judger_core.build_compile_cmd("cpp")
+
+    assert "-m64" not in cmd
+    assert judger_core.MKL_INCLUDE_DIR in cmd
+    assert "-lmkl_core" in cmd
+
+
 def test_build_compile_cmd_uses_openblas_for_lite_image(monkeypatch):
     monkeypatch.delenv("JUDGER_NUMERIC_BACKEND", raising=False)
     monkeypatch.delenv("JUDGER_ENABLE_MKL", raising=False)
+    monkeypatch.setenv("JUDGER_TARGET_ARCH", "x86_64")
     monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger-lite:latest")
 
     cmd = judger_core.build_compile_cmd("c")
@@ -221,6 +250,31 @@ def test_build_compile_cmd_uses_openblas_for_lite_image(monkeypatch):
     assert "-lmkl_core" not in cmd
     assert "-lopenblas" in cmd
     assert "-llapacke" in cmd
+
+
+def test_build_compile_cmd_lite_image_ignores_explicit_mkl(monkeypatch):
+    monkeypatch.setenv("JUDGER_NUMERIC_BACKEND", "mkl")
+    monkeypatch.setenv("JUDGER_TARGET_ARCH", "x86_64")
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger-lite:latest")
+
+    cmd = judger_core.build_compile_cmd("cpp")
+
+    assert judger_core.MKL_INCLUDE_DIR not in cmd
+    assert "-lmkl_core" not in cmd
+    assert "-lopenblas" in cmd
+
+
+def test_build_compile_cmd_lite_image_ignores_legacy_enable_mkl(monkeypatch):
+    monkeypatch.delenv("JUDGER_NUMERIC_BACKEND", raising=False)
+    monkeypatch.setenv("JUDGER_ENABLE_MKL", "true")
+    monkeypatch.setenv("JUDGER_TARGET_ARCH", "x86_64")
+    monkeypatch.setenv("JUDGER_DOCKER_IMAGE", "numericaloj-judger-lite:latest")
+
+    cmd = judger_core.build_compile_cmd("c")
+
+    assert judger_core.MKL_INCLUDE_DIR not in cmd
+    assert "-lmkl_core" not in cmd
+    assert "-lopenblas" in cmd
 
 
 def test_build_compile_cmd_numeric_backend_override_none(monkeypatch):

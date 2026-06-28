@@ -150,7 +150,7 @@ def problem_detail(problem_id):
             "input_kind": "prompt" if submit_input_name == "prompt" else ("code" if submit_input_name == "code" else "file"),
             "accept": None if problem_type == 1 else (".zip" if written_mode == 3 else ".pdf"),
             "help_text": (
-                "请提交 prompt，后台会先用 prompt 生成代码，再对生成代码进行评测。"
+                "请提交 prompt，说明解题思路、算法或数据结构及关键边界处理；后台会先审查 prompt，通过后生成代码并评测。"
                 if submit_input_name == "prompt"
                 else None
                 if problem_type == 1

@@ -844,7 +844,8 @@
 </script>
 {% endif %}
 
-{% if max_score == 0 and submission.problem_type == 1 %}
+{% set programming_active_statuses = ['Pending', 'Waiting', 'Running', 'Generating'] %}
+{% if max_score == 0 and submission.problem_type == 1 and submission.status in programming_active_statuses %}
 <script>
   // 智能轮询判题状态
   let pollCount = 0;
