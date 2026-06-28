@@ -118,7 +118,7 @@ AGENT_JUDGE_PROGRESS_TTL = 21600
 # 本机轻量镜像可使用：
 #   JUDGER_DOCKER_IMAGE = "numericaloj-judger-lite:latest"
 #   JUDGER_NUMERIC_BACKEND = "openblas"
-# 若镜像名包含 judger-lite，代码会自动把 C/C++ 数值后端从 mkl 切到 openblas。
+# 若镜像名包含 judger-lite，或当前目标架构不是 x86_64，代码会自动把 C/C++ 数值后端从 mkl 切到 openblas。
 JUDGER_DOCKER_IMAGE = "numericaloj-judger:latest"
 JUDGER_DOCKER_MEM_LIMIT = "1g"
 JUDGER_DOCKER_CPU_LIMIT = "2"

@@ -102,7 +102,7 @@
           class="form-control"
           rows="18"
           required
-          placeholder="请描述希望后台生成的程序。"></textarea>
+          placeholder="请描述你的解题思路，包括算法或数据结构、关键步骤、状态更新和边界处理。后台会先审查 prompt，通过后再生成代码并评测。"></textarea>
       </form>
     {% elif problem.type == 1 %}
       <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">

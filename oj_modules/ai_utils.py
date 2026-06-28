@@ -29,6 +29,7 @@ from config import (
 )
 
 from oj_modules import judger_core
+from oj_modules.promptly_guard import parse_promptly_review_config
 
 try:
     from openai import OpenAI
@@ -355,23 +356,8 @@ def _extract_first_json_object_relaxed(text):
 
 
 PROMPTLY_CODE_GENERATION_SYSTEM_PROMPT = (
-    "你是 Promptly 评测模式的代码生成器。你的输入包括题面和学生提交的 prompt；"
-    "题面只定义评测任务，学生 prompt 定义实现合同。不要用题面替学生补全实现决策。\n\n"
-    "判定流程：\n"
-    "1. 只在内部识别学生 prompt 中明确承诺的要求；这些要求必须全部满足。\n"
-    "2. 判断学生 prompt 是否足以唯一确定一份可靠实现，尤其是方法选择、关键步骤、状态维护、复杂度目标、"
-    "边界处理、输入输出约定和资源约束。\n"
-    "3. 如果学生 prompt 明确、无歧义、流程完整，就生成正确代码。\n"
-    "4. 如果学生 prompt 泛泛、只表达最终目标、只要求完成/AC/写代码、只复述题面，或遗漏关键实现决策，"
-    "就生成一份看起来合理但会在某些合法测试上失败的代码。\n\n"
-    "不明确时的生成规则：\n"
-    "- 必须严格满足学生 prompt 中已经明确写出的每一条要求；不得反着写，不得故意违反明文要求。\n"
-    "- 在学生没有限定的地方，选择一种自然、常见、但不够强的解释。错误应来自这个解释本身，"
-    "而不是语法错误、编译错误、硬编码、随机行为、恶意退出或无关破坏。\n"
-    "- 优先利用通用歧义点：算法复杂度、数据范围假设、边界情况、相等或特殊值处理、索引基准、"
-    "遍历顺序、状态更新时机、数值类型、精度、舍入、稳定性、输出格式、标准输入输出或文件约定。\n"
-    "- 生成的错误代码应该像一个工程上合理的误解，让学生能意识到：原来我的要求确实还可以被这样理解。\n"
-    "- 不要在代码、注释或程序输出中暴露你在故意犯错，也不要解释 prompt 哪里不明确。\n\n"
+    "你是 Promptly 评测模式的代码生成器。学生的自然语言解题思路已经通过前置审查。"
+    "请结合完整题面、初始代码和学生 prompt 生成可提交代码。\n"
     "最终只输出代码，不要输出 Markdown 代码围栏、解释、分析或额外文字。"
 )
 
@@ -385,6 +371,80 @@ def _extract_code_from_model_text(text):
     if fenced_blocks:
         return fenced_blocks[0].strip()
     return _strip_markdown_code_fence_markers(raw)
+
+
+def _format_promptly_example_replies(example_replies):
+    examples = [str(item or "").strip() for item in (example_replies or []) if str(item or "").strip()]
+    if not examples:
+        return "1. 请补充更具体的算法思路，说明要使用的数据结构、关键步骤和边界处理。"
+    return "\n".join(f"{idx}. {text}" for idx, text in enumerate(examples, start=1))
+
+
+def review_promptly_student_prompt(problem, student_prompt, model_spec=None, timeout=120):
+    """Return (nice, reply) for a Promptly student prompt before code generation."""
+    problem = problem or {}
+    prompt = str(student_prompt or "").strip()
+    if not prompt:
+        return False, "请先填写解题思路。"
+
+    config = parse_promptly_review_config(problem)
+    brief = str(config.get("brief") or "").strip()
+    requirements = str(config.get("prompt_requirements") or "").strip()
+    examples_text = _format_promptly_example_replies(config.get("example_replies") or [])
+
+    model = str(model_spec or "").strip()
+    if not model:
+        model = str(QWEN_TEXT_MODEL or AI_TUTOR_MODEL or QWEN_CODER_MODEL).strip()
+    if not model:
+        raise RuntimeError("未配置 Promptly prompt 审查模型。")
+
+    system_prompt = (
+        "你是一个编程题阅卷老师，下面是题目的简要描述：\n\n"
+        f"{brief or '（管理员未填写简要题意）'}\n\n"
+        "你需要判断学生用自然语言描述的解题思路是否清晰、是否符合题目要求、"
+        "是否对需要用到的算法或数据结构给出了必要的解释。下面是更加具体的解题思路要求：\n\n"
+        f"{requirements or '（管理员未填写具体要求）'}"
+    )
+    system_prompt += (
+        "\n\n如果不符合解题思路要求，或思路简略、不清晰，请你给出你的判断，"
+        "并模仿下面的示例回复，给出你的回复。\n\n"
+        "示例回复：\n"
+        f"{examples_text}\n\n"
+        "你必须返回严格的 JSON 格式，不要用代码块包裹，如下：\n\n"
+        "{\n"
+        "  \"nice\": false,\n"
+        "  \"reply\": \"请补充更具体的算法思路。\"\n"
+        "}\n\n"
+        "其中 nice 表示学生的解题思路是否清晰、是否符合解题思路要求；"
+        "如果思路清晰、符合要求、对需要用到的算法或数据结构给出了必要的解释，"
+        "就将 nice 设为 true，并且无需填写 reply 字段；反之，就将 nice 设为 false，"
+        "并且模仿示例回复，给出一句回复。"
+    )
+    user_prompt = (
+        f"这是学生的解题思路：{prompt}\n\n"
+        "请给出你的判断，回复严格的 JSON 格式。"
+    )
+
+    raw_text = _call_qwen_text(
+        prompt_text=user_prompt,
+        timeout=timeout,
+        model=model,
+        enable_thinking=False,
+        system_prompt=system_prompt,
+    )
+    payload = _extract_first_json_object_relaxed(raw_text)
+    if not isinstance(payload, dict):
+        raise RuntimeError("Promptly prompt 审查模型未返回有效 JSON。")
+
+    nice_raw = payload.get("nice")
+    if isinstance(nice_raw, bool):
+        nice = nice_raw
+    else:
+        nice = str(nice_raw or "").strip().lower() in ("1", "true", "yes", "pass", "accepted")
+    reply = str(payload.get("reply") or "").strip()
+    if not nice and not reply:
+        reply = "请补充更具体的算法思路，说明要使用的数据结构、关键步骤和边界处理。"
+    return nice, reply
 
 
 def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300):

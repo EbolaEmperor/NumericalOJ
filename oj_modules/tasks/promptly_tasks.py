@@ -5,7 +5,7 @@
 
 from celery.exceptions import SoftTimeLimitExceeded
 
-from oj_modules.ai_utils import generate_promptly_code
+from oj_modules.ai_utils import generate_promptly_code, review_promptly_student_prompt
 from oj_modules.db_services import (
     get_problem,
     get_submission_by_id,
@@ -63,6 +63,16 @@ def register_promptly_generate_submission_task(celery_app, evaluate_submission_t
                 score=0,
                 test_points=[],
             )
+            nice, reply = review_promptly_student_prompt(
+                problem=problem,
+                student_prompt=prompt_text,
+                model_spec=problem.get("programming_grading_model"),
+            )
+            if not nice:
+                message = reply or "请补充更具体的算法思路。"
+                update_submission_prompt_generation_error(submission_id, message, status="Unaccepted")
+                return {"success": False, "message": message}
+
             generated_code = generate_promptly_code(
                 problem=problem,
                 student_prompt=prompt_text,
