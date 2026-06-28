@@ -530,6 +530,7 @@ def _build_submission_status_snapshot_from_row(row, last_updated=None):
     if not row:
         return None
     test_points = _parse_test_points(row.get("test_points"))
+    prompt_generation_error = str(row.get("prompt_generation_error") or "").strip()
     return {
         "id": int(row["id"]),
         "username": row.get("username"),
@@ -537,6 +538,9 @@ def _build_submission_status_snapshot_from_row(row, last_updated=None):
         "problem_type": row.get("problem_type"),
         "status": row.get("status"),
         "score": row.get("score"),
+        "generated_from_prompt": bool(row.get("generated_from_prompt")),
+        "prompt_generation_error": prompt_generation_error,
+        "promptly_review_reply": prompt_generation_error,
         "test_points": test_points,
         "test_points_count": len(test_points),
         "last_updated": last_updated or _format_snapshot_time(),
@@ -584,12 +588,14 @@ def set_submission_status_snapshot(
 
 
 def refresh_submission_status_snapshot(submission_id):
+    ensure_submission_prompt_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, username, problem_id, problem_type, status, score, test_points
+                SELECT id, username, problem_id, problem_type, status, score, test_points,
+                       generated_from_prompt, prompt_generation_error
                 FROM submissions
                 WHERE id=%s
                 """,

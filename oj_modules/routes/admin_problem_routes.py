@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import json
 import os
 import pymysql
 import shutil
@@ -129,7 +130,65 @@ def parse_programming_grading_model_from_form(form, default=_DEFAULT_PROGRAMMING
     return normalize_programming_grading_model(raw, default=default)
 
 
+def _form_has_promptly_review_fields(form):
+    return any(
+        key in form
+        for key in (
+            'promptly_brief',
+            'promptly_prompt_requirements',
+            'promptly_example_reply',
+            'promptly_example_replies',
+            'promptly_example_replies_json',
+        )
+    )
+
+
+def _promptly_examples_from_form(form):
+    examples = []
+    json_raw = str(form.get('promptly_example_replies_json') or '').strip()
+    if not json_raw:
+        json_raw = str(form.get('promptly_example_replies') or '').strip()
+    if json_raw:
+        try:
+            parsed = json.loads(json_raw)
+            if isinstance(parsed, list):
+                examples.extend(str(item or '').strip() for item in parsed)
+            elif isinstance(parsed, str):
+                examples.extend(line.strip() for line in parsed.splitlines())
+        except Exception:
+            examples.extend(line.strip() for line in json_raw.splitlines())
+
+    if hasattr(form, 'getlist'):
+        examples.extend(str(item or '').strip() for item in form.getlist('promptly_example_reply'))
+    else:
+        single = str(form.get('promptly_example_reply') or '').strip()
+        if single:
+            examples.append(single)
+    return [item for item in examples if item]
+
+
+def build_promptly_review_prompt_value(brief='', prompt_requirements='', example_replies=None):
+    payload = {
+        "brief": str(brief or '').strip(),
+        "prompt_requirements": str(prompt_requirements or '').strip(),
+        "example_replies": [
+            str(item or '').strip()
+            for item in (example_replies or [])
+            if str(item or '').strip()
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+
+
 def parse_programming_grading_prompt_from_form(form):
+    if _form_has_promptly_review_fields(form):
+        text = build_promptly_review_prompt_value(
+            brief=form.get('promptly_brief') or '',
+            prompt_requirements=form.get('promptly_prompt_requirements') or '',
+            example_replies=_promptly_examples_from_form(form),
+        )
+        return text[:12000]
+
     text = str(form.get('programming_grading_prompt') or '').strip()
     if len(text) > 12000:
         text = text[:12000]

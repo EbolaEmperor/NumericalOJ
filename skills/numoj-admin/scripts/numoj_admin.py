@@ -190,23 +190,20 @@ def print_or_save_response(
         output_json({"success": True, "status": resp.status_code})
 
 
-def print_redirect_response(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> None:
+def redirect_response_payload(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> Dict[str, Any]:
     ensure_ok(resp)
     location = resp.headers.get("Location", "")
     redirected = 300 <= resp.status_code < 400
     if not redirected:
         if response_is_json(resp):
-            output_json(resp.json())
-            return
-        output_json(
-            {
-                "success": False,
-                "status": resp.status_code,
-                "location": location,
-                "message": "服务器返回了表单页面而不是成功跳转；操作未完成。",
-            }
-        )
-        return
+            payload = resp.json()
+            return payload if isinstance(payload, dict) else {"success": False, "status": resp.status_code, "response": payload}
+        return {
+            "success": False,
+            "status": resp.status_code,
+            "location": location,
+            "message": "The server returned a form page instead of a success redirect; the operation was not completed.",
+        }
     payload: Dict[str, Any] = {"success": True, "status": resp.status_code, "location": location}
     if id_pattern and location:
         match = re.search(id_pattern, location)
@@ -214,7 +211,12 @@ def print_redirect_response(resp: requests.Response, *, id_pattern: Optional[str
             payload[id_name] = int(match.group(1))
         else:
             payload["success"] = False
-            payload["message"] = f"服务器跳转成功，但未从 Location 中解析到 {id_name}"
+            payload["message"] = f"The server redirect succeeded, but {id_name} could not be parsed from the Location header."
+    return payload
+
+
+def print_redirect_response(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> None:
+    payload = redirect_response_payload(resp, id_pattern=id_pattern, id_name=id_name)
     output_json(payload)
 
 
@@ -269,6 +271,91 @@ def current_or_arg(current: Dict[str, Any], form_name: str, value: Any) -> Any:
     if value is not None:
         return read_text_value(value) if isinstance(value, str) else value
     return current.get(form_name, "")
+
+
+def parse_promptly_review_config_value(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        obj = raw
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            obj = {}
+        else:
+            try:
+                parsed = json.loads(text)
+                obj = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                obj = {"brief": text}
+    examples = obj.get("example_replies")
+    if not isinstance(examples, list):
+        examples = obj.get("examples") if isinstance(obj.get("examples"), list) else []
+    return {
+        "brief": str(obj.get("brief") or obj.get("problem_brief") or obj.get("summary") or obj.get("context") or "").strip(),
+        "prompt_requirements": str(obj.get("prompt_requirements") or obj.get("requirements") or obj.get("prompt_rules") or "").strip(),
+        "example_replies": [str(item or "").strip() for item in examples if str(item or "").strip()],
+    }
+
+
+def _promptly_structured_args_present(args: argparse.Namespace) -> bool:
+    return any([
+        getattr(args, "promptly_brief", None) is not None,
+        getattr(args, "promptly_requirements", None) is not None,
+        getattr(args, "promptly_example_reply", None) is not None,
+        getattr(args, "promptly_example_replies_json", None) is not None,
+        bool(getattr(args, "clear_promptly_example_replies", False)),
+    ])
+
+
+def _read_promptly_examples_json(value: str) -> List[str]:
+    parsed = parse_json_value(value)
+    if isinstance(parsed, list):
+        return [str(item or "").strip() for item in parsed if str(item or "").strip()]
+    if isinstance(parsed, str):
+        return [line.strip() for line in parsed.splitlines() if line.strip()]
+    raise CliError("--promptly-example-replies-json must be a JSON array of strings.")
+
+
+def build_promptly_grading_prompt_arg(args: argparse.Namespace, current: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    raw = getattr(args, "programming_grading_prompt", None)
+    has_structured = _promptly_structured_args_present(args)
+    if raw is not None and has_structured:
+        raise CliError("Use either --programming-grading-prompt or structured Promptly options, not both.")
+    if raw is not None:
+        return read_text_value(raw)
+    if not has_structured:
+        return None
+
+    current = current or {}
+    base = current.get("promptly_review_config")
+    if not isinstance(base, dict):
+        base = parse_promptly_review_config_value(current.get("programming_grading_prompt"))
+    config = parse_promptly_review_config_value(base)
+
+    if getattr(args, "promptly_brief", None) is not None:
+        config["brief"] = read_text_value(args.promptly_brief).strip()
+    if getattr(args, "promptly_requirements", None) is not None:
+        config["prompt_requirements"] = read_text_value(args.promptly_requirements).strip()
+
+    if getattr(args, "promptly_example_replies_json", None) is not None:
+        config["example_replies"] = _read_promptly_examples_json(args.promptly_example_replies_json)
+    elif getattr(args, "promptly_example_reply", None) is not None:
+        config["example_replies"] = [
+            read_text_value(item).strip()
+            for item in (args.promptly_example_reply or [])
+            if read_text_value(item).strip()
+        ]
+    elif getattr(args, "clear_promptly_example_replies", False):
+        config["example_replies"] = []
+
+    return json.dumps(
+        {
+            "brief": config.get("brief") or "",
+            "prompt_requirements": config.get("prompt_requirements") or "",
+            "example_replies": config.get("example_replies") or [],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def login(args: argparse.Namespace) -> None:
@@ -469,6 +556,60 @@ def submission_status_cmd(args: argparse.Namespace) -> None:
     print_or_save_response(resp)
 
 
+def wait_promptly_review_result(
+    client: NumOJClient,
+    submission_id: int,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> Dict[str, Any]:
+    deadline = time.time() + max(0.0, float(timeout_seconds))
+    interval = max(0.1, float(poll_interval_seconds))
+    last_status: Dict[str, Any] = {}
+
+    while True:
+        resp = client.request("GET", f"/submission_status/{submission_id}")
+        ensure_ok(resp, allow_redirect=False)
+        payload = resp.json() if response_is_json(resp) else {}
+        last_status = payload if isinstance(payload, dict) else {}
+
+        status = str(last_status.get("status") or "").strip()
+        reply = str(
+            last_status.get("promptly_review_reply")
+            or last_status.get("prompt_generation_error")
+            or ""
+        ).strip()
+        if reply:
+            return {
+                "waited": True,
+                "done": True,
+                "accepted": False,
+                "status": status,
+                "reply": reply,
+                "submission_status": last_status,
+            }
+        if status and status != "Generating":
+            return {
+                "waited": True,
+                "done": True,
+                "accepted": status not in ("Unaccepted", "Error"),
+                "status": status,
+                "reply": "",
+                "submission_status": last_status,
+            }
+        if time.time() >= deadline:
+            return {
+                "waited": True,
+                "done": False,
+                "accepted": None,
+                "timed_out": True,
+                "status": status or None,
+                "reply": "",
+                "submission_status": last_status,
+            }
+        time.sleep(interval)
+
+
 def submission_stream(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request("GET", f"/submission_status_stream/{args.submission_id}", stream=True)
@@ -563,7 +704,18 @@ def problem_submit(args: argparse.Namespace) -> None:
             raise CliError("This programming problem accepts code, not prompt or file.")
         code = Path(args.code_file).expanduser().read_text(encoding="utf-8") if args.code_file else read_text_value(args.code)
         resp = client.request("POST", f"/submit/{args.problem_id}", data={"code": code})
-    print_redirect_response(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
+    payload = redirect_response_payload(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
+    if input_kind == "prompt" and payload.get("success") and payload.get("submission_id") and getattr(args, "wait_promptly", True):
+        promptly_review = wait_promptly_review_result(
+            client,
+            int(payload["submission_id"]),
+            timeout_seconds=args.wait_timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
+        payload["promptly_review"] = promptly_review
+        if promptly_review.get("reply"):
+            payload["reply"] = promptly_review["reply"]
+    output_json(payload)
 
 
 def problem_create_form(args: argparse.Namespace) -> None:
@@ -574,6 +726,9 @@ def problem_create_form(args: argparse.Namespace) -> None:
 
 def problem_create(args: argparse.Namespace) -> None:
     client = client_from_args(args)
+    programming_grading_prompt = build_promptly_grading_prompt_arg(args)
+    if programming_grading_prompt is None:
+        programming_grading_prompt = ""
     data = form_from_pairs(
         [
             ("title", args.title),
@@ -588,7 +743,7 @@ def problem_create(args: argparse.Namespace) -> None:
             ("programming_grading_mode", args.programming_grading_mode),
             ("programming_grading_model", args.programming_grading_model),
             ("programming_output_filename", args.programming_output_filename),
-            ("programming_grading_prompt", read_text_value(args.programming_grading_prompt)),
+            ("programming_grading_prompt", programming_grading_prompt),
             ("written_grading_mode", args.written_grading_mode),
             ("written_grading_model", args.written_grading_model),
             ("written_grading_prompt", read_text_value(args.written_grading_prompt)),
@@ -610,6 +765,7 @@ def problem_edit(args: argparse.Namespace) -> None:
     form_resp = client.request("GET", f"/api/admin/problems/{args.problem_id}/edit-form")
     ensure_ok(form_resp, allow_redirect=False)
     current = (form_resp.json() if response_is_json(form_resp) else {}).get("form") or {}
+    programming_grading_prompt = build_promptly_grading_prompt_arg(args, current)
     data = form_from_pairs(
         [
             ("title", current_or_arg(current, "title", args.title)),
@@ -623,7 +779,7 @@ def problem_edit(args: argparse.Namespace) -> None:
             ("programming_grading_mode", current_or_arg(current, "programming_grading_mode", args.programming_grading_mode)),
             ("programming_grading_model", current_or_arg(current, "programming_grading_model", args.programming_grading_model)),
             ("programming_output_filename", current_or_arg(current, "programming_output_filename", args.programming_output_filename)),
-            ("programming_grading_prompt", current_or_arg(current, "programming_grading_prompt", args.programming_grading_prompt)),
+            ("programming_grading_prompt", programming_grading_prompt if programming_grading_prompt is not None else current.get("programming_grading_prompt", "")),
             ("written_grading_mode", current_or_arg(current, "written_grading_mode", args.written_grading_mode)),
             ("written_grading_model", current_or_arg(current, "written_grading_model", args.written_grading_model)),
             ("written_grading_prompt", current_or_arg(current, "written_grading_prompt", args.written_grading_prompt)),
@@ -1536,7 +1692,7 @@ def ranking_submit_zip(args: argparse.Namespace) -> None:
     if new_ids:
         payload["submission_id"] = new_ids[-1]
     else:
-        payload["message"] = "提交请求完成，但没有产生新的提交记录。请检查比赛提交方式、配额或表单错误。"
+        payload["message"] = "The submission request completed, but no new submission record was created. Check the submission method, quota, or form errors."
     output_json(payload)
 
 
@@ -1548,681 +1704,779 @@ def ranking_git_submit(args: argparse.Namespace) -> None:
 
 
 def add_common_http_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="config file path")
-    parser.add_argument("--base-url", help="override server base URL")
-    parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout seconds")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to the local CLI config file containing the saved server URL and session cookie.")
+    parser.add_argument("--base-url", help="Override the server URL saved in the config file for this command.")
+    parser.add_argument("--timeout", type=float, default=60.0, help="HTTP request timeout in seconds.")
 
 
 def add_text_arg(parser: argparse.ArgumentParser, name: str, **kwargs: Any) -> None:
     parser.add_argument(name, **kwargs)
 
 
+HELP_FORMATTER = argparse.ArgumentDefaultsHelpFormatter
+
+
+def add_cli_parser(subparsers: argparse._SubParsersAction, name: str, description: str, **kwargs: Any) -> argparse.ArgumentParser:
+    kwargs.setdefault("help", description)
+    kwargs.setdefault("description", description)
+    kwargs.setdefault("formatter_class", HELP_FORMATTER)
+    return subparsers.add_parser(name, **kwargs)
+
+
+def add_promptly_review_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--promptly-brief",
+        help=(
+            "Brief problem description for Promptly prompt review, or @file. "
+            "Only the review model sees this; it is used to judge whether the student's idea matches the problem."
+        ),
+    )
+    parser.add_argument(
+        "--promptly-requirements",
+        help=(
+            "Detailed requirements for Promptly prompt review, or @file. "
+            "Use this to require algorithm choices, data structures, state updates, boundary handling, and similar details."
+        ),
+    )
+    parser.add_argument(
+        "--promptly-example-reply",
+        action="append",
+        help=(
+            "Example rejection reply for the Promptly review model to imitate. "
+            "Repeat this option to provide multiple examples; each value may also be @file."
+        ),
+    )
+    parser.add_argument(
+        "--promptly-example-replies-json",
+        help="JSON array of Promptly example rejection replies, or @file. Replaces the current example list.",
+    )
+    parser.add_argument(
+        "--clear-promptly-example-replies",
+        action="store_true",
+        help="When editing, clear Promptly example replies. This only applies when no replacement example list is passed.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="numoj-admin", description="NumericalOJ administrator CLI over existing HTTP routes")
+    p = argparse.ArgumentParser(
+        prog="numoj-admin",
+        description="NumericalOJ administrator CLI over existing HTTP routes.",
+        formatter_class=HELP_FORMATTER,
+    )
     add_common_http_args(p)
     sub = p.add_subparsers(dest="group", required=True)
 
-    pa = sub.add_parser("init", help="first-time setup: save NumOJ URL and administrator session token")
-    pa.add_argument("--base-url", dest="login_base_url", required=False, help="NumOJ URL, e.g. https://oj.example.com or 127.0.0.1:2025")
-    pa.add_argument("-u", "--username", help="administrator username")
-    pa.add_argument("-p", "--password", help="administrator password")
+    pa = add_cli_parser(sub, "init", "First-time setup: save the NumOJ URL and administrator session token.")
+    pa.add_argument("--base-url", dest="login_base_url", required=False, help="NumOJ server URL, e.g. https://oj.example.com or 127.0.0.1:2025.")
+    pa.add_argument("-u", "--username", help="Administrator username. If omitted, the CLI prompts interactively.")
+    pa.add_argument("-p", "--password", help="Administrator password. If omitted, the CLI prompts without echoing input.")
     pa.set_defaults(func=init_cli, prompt_base_url=True)
 
-    site = sub.add_parser("site")
+    site = add_cli_parser(sub, "site", "Inspect public site routes and login/problem-list redirects.")
     sites = site.add_subparsers(dest="cmd", required=True)
-    pa = sites.add_parser("home")
+    pa = add_cli_parser(sites, "home", "Fetch the site home route and show the response or redirect target.")
     pa.set_defaults(func=site_home)
 
-    auth = sub.add_parser("auth")
+    auth = add_cli_parser(sub, "auth", "Manage CLI authentication and account password actions.")
     auth_sub = auth.add_subparsers(dest="cmd", required=True)
-    pa = auth_sub.add_parser("login")
-    pa.add_argument("--base-url", dest="login_base_url", required=False, help="server URL, e.g. https://oj.example.com")
-    pa.add_argument("-u", "--username")
-    pa.add_argument("-p", "--password")
+    pa = add_cli_parser(auth_sub, "login", "Log in and save a fresh administrator session cookie.")
+    pa.add_argument("--base-url", dest="login_base_url", required=False, help="NumOJ server URL, e.g. https://oj.example.com.")
+    pa.add_argument("-u", "--username", help="Administrator username. If omitted, the CLI prompts interactively.")
+    pa.add_argument("-p", "--password", help="Administrator password. If omitted, the CLI prompts without echoing input.")
     pa.set_defaults(func=login)
-    pa = auth_sub.add_parser("logout")
+    pa = add_cli_parser(auth_sub, "logout", "Delete the saved local CLI session config.")
     pa.set_defaults(func=logout)
-    pa = auth_sub.add_parser("status")
+    pa = add_cli_parser(auth_sub, "status", "Check whether the saved session is authenticated and has administrator privileges.")
     pa.set_defaults(func=status)
-    pa = auth_sub.add_parser("send-password-code")
+    pa = add_cli_parser(auth_sub, "send-password-code", "Request a password-change verification code for the current session.")
     pa.set_defaults(func=auth_send_password_code)
-    pa = auth_sub.add_parser("change-password")
-    pa.add_argument("--code", required=True)
-    pa.add_argument("--new-password", required=True)
-    pa.add_argument("--confirm-password")
+    pa = add_cli_parser(auth_sub, "change-password", "Change the current account password using a verification code.")
+    pa.add_argument("--code", required=True, help="Verification code received from the password-code request.")
+    pa.add_argument("--new-password", required=True, help="New password to set for the current account.")
+    pa.add_argument("--confirm-password", help="Confirmation password. Defaults to --new-password when omitted.")
     pa.set_defaults(func=auth_change_password)
 
-    me = sub.add_parser("me")
+    me = add_cli_parser(sub, "me", "Inspect and update data for the currently configured account.")
     mes = me.add_subparsers(dest="cmd", required=True)
-    pa = mes.add_parser("classes")
+    pa = add_cli_parser(mes, "classes", "List classes visible to the current account.")
     pa.set_defaults(func=me_classes)
-    pa = mes.add_parser("join-class")
-    pa.add_argument("class_en")
+    pa = add_cli_parser(mes, "join-class", "Join a class as the current account.")
+    pa.add_argument("class_en", help="English class identifier, e.g. C2026A.")
     pa.set_defaults(func=me_join_class)
-    pa = mes.add_parser("leave-class")
-    pa.add_argument("class_en")
+    pa = add_cli_parser(mes, "leave-class", "Leave a class as the current account.")
+    pa.add_argument("class_en", help="English class identifier to leave, e.g. C2026A.")
     pa.set_defaults(func=me_leave_class)
-    pa = mes.add_parser("set-primary-class")
-    pa.add_argument("class_en")
+    pa = add_cli_parser(mes, "set-primary-class", "Set the current account's primary class.")
+    pa.add_argument("class_en", help="English class identifier to make primary, e.g. C2026A.")
     pa.set_defaults(func=me_set_primary_class)
-    pa = mes.add_parser("grades")
-    pa.add_argument("--user-id", type=int, help="admin-visible user id; omitted means current initialized username")
-    pa.add_argument("--username", help="admin-visible username; defaults to initialized username")
+    pa = add_cli_parser(mes, "grades", "Show grades for the current account or another user visible to the administrator.")
+    pa.add_argument("--user-id", type=int, help="Admin-visible user ID. If omitted, the initialized username is used.")
+    pa.add_argument("--username", help="Admin-visible username. Defaults to the initialized username.")
     pa.set_defaults(func=me_grades)
-    pa = mes.add_parser("submissions")
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(mes, "submissions", "List submissions for the current account.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=submission_list)
 
-    submission = sub.add_parser("submission")
+    submission = add_cli_parser(sub, "submission", "Inspect submissions, status snapshots, generated output files, and saved source code.")
     ss = submission.add_subparsers(dest="cmd", required=True)
-    pa = ss.add_parser("list")
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(ss, "list", "List submissions visible to the current administrator session.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=submission_list)
-    pa = ss.add_parser("problem")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(ss, "problem", "List submissions for one programming or written problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose submissions should be listed.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=submission_problem_list)
-    pa = ss.add_parser("status")
-    pa.add_argument("submission_id", type=int)
+    pa = add_cli_parser(ss, "status", "Fetch the current JSON status snapshot for a submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID to inspect.")
     pa.set_defaults(func=submission_status_cmd)
-    pa = ss.add_parser("stream")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--max-lines", type=int, default=20)
+    pa = add_cli_parser(ss, "stream", "Fetch recent live evaluation stream lines for a submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID whose stream should be fetched.")
+    pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=submission_stream)
-    pa = ss.add_parser("detail")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("-o", "--output", help="save original HTML detail page instead of JSON status")
+    pa = add_cli_parser(ss, "detail", "Fetch submission details, either as JSON status or the raw HTML detail page.")
+    pa.add_argument("submission_id", type=int, help="Submission ID to inspect.")
+    pa.add_argument("-o", "--output", help="Write the original HTML detail page to this path instead of printing JSON status.")
     pa.set_defaults(func=submission_detail_cmd)
-    pa = ss.add_parser("last-code")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(ss, "last-code", "Fetch the current user's last submitted code for a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose latest code should be returned.")
     pa.set_defaults(func=submission_last_code)
-    pa = ss.add_parser("output-image")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("test_index", type=int)
-    pa.add_argument("-o", "--output")
+    pa = add_cli_parser(ss, "output-image", "Download an output image produced by an image-grading submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID that produced the image.")
+    pa.add_argument("test_index", type=int, help="Zero-based or server-defined test-point index of the image to download.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded image. If omitted, a default filename is used.")
     pa.set_defaults(func=submission_output_image)
-    pa = ss.add_parser("download-file")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("-o", "--output")
+    pa = add_cli_parser(ss, "download-file", "Download the original file attached to a written-homework submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID whose uploaded file should be downloaded.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded file. If omitted, a server-provided filename is used.")
     pa.set_defaults(func=submission_download_file)
 
-    problem = sub.add_parser("problem")
+    problem = add_cli_parser(sub, "problem", "Manage problems, submissions, test data, rejudging, and problem-solving agents.")
     ps = problem.add_subparsers(dest="cmd", required=True)
-    pa = ps.add_parser("list")
-    pa.add_argument("--limit", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(ps, "list", "List available problems from the problem-list page.")
+    pa.add_argument("--limit", type=int, help="Maximum number of problems to return.")
+    pa.add_argument("-o", "--output", help="Write the raw response or parsed output to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_list)
-    pa = ps.add_parser("detail")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ps, "detail", "Fetch a problem detail page and summarize or save it.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to inspect.")
+    pa.add_argument("-o", "--output", help="Write the full problem detail HTML to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_detail)
-    pa = ps.add_parser("submit-page")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(ps, "submit-page", "Fetch the submit page for a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose submit page should be fetched.")
+    pa.add_argument("-o", "--output", help="Write the full submit page HTML to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_submit_page)
-    pa = ps.add_parser("submit")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(ps, "submit", "Submit source code, a Promptly prompt, or a written-homework file to a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to submit to.")
     submit_group = pa.add_mutually_exclusive_group(required=True)
-    submit_group.add_argument("--code", help="source code text, or @file")
-    submit_group.add_argument("--code-file", help="source code file path")
-    submit_group.add_argument("--prompt", help="Promptly submission text, or @file")
-    submit_group.add_argument("--prompt-file", help="Promptly submission file path")
-    submit_group.add_argument("--file", help="written-homework PDF/ZIP file path")
+    submit_group.add_argument("--code", help="Source code text, or @file to read code from a file.")
+    submit_group.add_argument("--code-file", help="Source code file path.")
+    submit_group.add_argument("--prompt", help="Promptly submission text, or @file to read the prompt from a file.")
+    submit_group.add_argument("--prompt-file", help="Promptly submission file path.")
+    submit_group.add_argument("--file", help="Written-homework PDF or ZIP file path.")
+    pa.add_argument(
+        "--no-wait-promptly",
+        dest="wait_promptly",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help="Return immediately after creating a Promptly submission instead of waiting for prompt review/generation status.",
+    )
+    pa.add_argument("--wait-timeout", type=float, default=60.0, help="Maximum seconds to wait for Promptly review/generation status after a prompt submission.")
+    pa.add_argument("--poll-interval", type=float, default=1.0, help="Seconds between Promptly status polling requests.")
     pa.set_defaults(func=problem_submit)
-    pa = ps.add_parser("create-form")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ps, "create-form", "Fetch the administrator problem-creation form metadata.")
+    pa.add_argument("-o", "--output", help="Write the raw create-form response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_create_form)
-    pa = ps.add_parser("create")
-    pa.add_argument("--title", required=True)
-    pa.add_argument("--content", required=True, help="text or @markdown-file")
-    pa.add_argument("--type", choices=["1", "2"], default="1")
-    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python"], default="matlab")
-    pa.add_argument("--time-limit-ms", "--time-limit", dest="time_limit", type=int, default=2000, help="time limit in milliseconds")
-    pa.add_argument("--submission-limit", type=int, default=10)
-    pa.add_argument("--initial-code", default="")
-    pa.add_argument("--test-code", default="")
-    pa.add_argument("--forbidden-func", default="")
-    pa.add_argument("--programming-grading-mode", type=int, default=1)
-    pa.add_argument("--programming-grading-model")
-    pa.add_argument("--programming-output-filename")
-    pa.add_argument("--programming-grading-prompt", default="")
-    pa.add_argument("--written-grading-mode", type=int, default=1)
-    pa.add_argument("--written-grading-model")
-    pa.add_argument("--written-grading-prompt", default="")
+    pa = add_cli_parser(ps, "create", "Create a programming or written-homework problem.")
+    pa.add_argument("--title", required=True, help="Problem title.")
+    pa.add_argument("--content", required=True, help="Problem statement Markdown text, or @markdown-file.")
+    pa.add_argument("--type", choices=["1", "2"], default="1", help="Problem type: 1=programming, 2=written homework.")
+    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python"], default="matlab", help="Programming language for programming problems.")
+    pa.add_argument(
+        "--time-limit-ms", "--time-limit",
+        dest="time_limit",
+        type=int,
+        default=2000,
+        help="Per-test-case time limit for programming problems, in milliseconds.",
+    )
+    pa.add_argument("--submission-limit", type=int, default=10, help="Maximum number of submissions allowed per regular student.")
+    pa.add_argument("--initial-code", default="", help="Initial code prefilled on the submit page, or @file.")
+    pa.add_argument("--test-code", default="", help="Helper code for interactive or special judging, or @file. Usually empty for standard problems.")
+    pa.add_argument("--forbidden-func", default="", help="Comma-separated forbidden function names. Matching submissions are judged Forbidden.")
+    pa.add_argument(
+        "--programming-grading-mode",
+        type=int,
+        default=1,
+        help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
+    )
+    pa.add_argument("--programming-grading-model", help="Model identifier for programming image grading or Promptly review/code generation.")
+    pa.add_argument("--programming-output-filename", help="Expected output image filename in programming image-grading mode.")
+    pa.add_argument(
+        "--programming-grading-prompt",
+        help=(
+            "Raw programming grading configuration text, or @file. In image-grading mode this is the rubric; "
+            "in Promptly mode this is the full JSON configuration. Cannot be combined with structured --promptly-* options."
+        ),
+    )
+    add_promptly_review_args(pa)
+    pa.add_argument("--written-grading-mode", type=int, default=1, help="Written grading mode: 1=OCR+text grading, 2=direct image grading, 3=ZIP/LaTeX, 4=manual grading.")
+    pa.add_argument("--written-grading-model", help="Model identifier for AI grading of written homework.")
+    pa.add_argument("--written-grading-prompt", default="", help="Rubric for AI grading of written homework, or @file.")
     pa.set_defaults(func=problem_create)
-    pa = ps.add_parser("edit-form")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ps, "edit-form", "Fetch administrator edit-form metadata for an existing problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose edit form should be fetched.")
+    pa.add_argument("-o", "--output", help="Write the raw edit-form response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_edit_form)
-    pa = ps.add_parser("edit")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("--title")
-    pa.add_argument("--content", help="text or @markdown-file")
-    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python"])
-    pa.add_argument("--time-limit-ms", "--time-limit", dest="time_limit", type=int, help="time limit in milliseconds")
-    pa.add_argument("--submission-limit", type=int)
-    pa.add_argument("--initial-code")
-    pa.add_argument("--test-code")
-    pa.add_argument("--forbidden-func")
-    pa.add_argument("--programming-grading-mode", type=int)
-    pa.add_argument("--programming-grading-model")
-    pa.add_argument("--programming-output-filename")
-    pa.add_argument("--programming-grading-prompt")
-    pa.add_argument("--written-grading-mode", type=int)
-    pa.add_argument("--written-grading-model")
-    pa.add_argument("--written-grading-prompt")
+    pa = add_cli_parser(ps, "edit", "Edit an existing programming or written-homework problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to edit.")
+    pa.add_argument("--title", help="Problem title. Omit to keep the current value.")
+    pa.add_argument("--content", help="Problem statement Markdown text, or @markdown-file. Omit to keep the current value.")
+    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python"], help="Programming language. Omit to keep the current value.")
+    pa.add_argument(
+        "--time-limit-ms", "--time-limit",
+        dest="time_limit",
+        type=int,
+        help="Per-test-case time limit for programming problems, in milliseconds. Omit to keep the current value.",
+    )
+    pa.add_argument("--submission-limit", type=int, help="Maximum submissions allowed per regular student. Omit to keep the current value.")
+    pa.add_argument("--initial-code", help="Initial code prefilled on the submit page, or @file. Omit to keep the current value.")
+    pa.add_argument("--test-code", help="Helper code for interactive or special judging, or @file. Omit to keep the current value.")
+    pa.add_argument("--forbidden-func", help="Comma-separated forbidden function names. Pass an empty string to clear.")
+    pa.add_argument(
+        "--programming-grading-mode",
+        type=int,
+        help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
+    )
+    pa.add_argument("--programming-grading-model", help="Model identifier for programming image grading or Promptly review/code generation.")
+    pa.add_argument("--programming-output-filename", help="Expected output image filename in programming image-grading mode.")
+    pa.add_argument(
+        "--programming-grading-prompt",
+        help=(
+            "Raw programming grading configuration text, or @file. In image-grading mode this is the rubric; "
+            "in Promptly mode this is the full JSON configuration. Cannot be combined with structured --promptly-* options."
+        ),
+    )
+    add_promptly_review_args(pa)
+    pa.add_argument("--written-grading-mode", type=int, help="Written grading mode: 1=OCR+text grading, 2=direct image grading, 3=ZIP/LaTeX, 4=manual grading.")
+    pa.add_argument("--written-grading-model", help="Model identifier for AI grading of written homework.")
+    pa.add_argument("--written-grading-prompt", help="Rubric for AI grading of written homework, or @file.")
     pa.set_defaults(func=problem_edit)
-    pa = ps.add_parser("delete")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(ps, "delete", "Delete a problem by ID.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to delete.")
     pa.set_defaults(func=problem_delete)
-    pa = ps.add_parser("upload-testdata")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("zip")
+    pa = add_cli_parser(ps, "upload-testdata", "Upload a ZIP archive of test data for a programming problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose test data should be replaced or uploaded.")
+    pa.add_argument("zip", help="Path to the ZIP archive containing test data files.")
     pa.set_defaults(func=problem_upload_testdata)
-    pa = ps.add_parser("rejudge")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(ps, "rejudge", "Start a rejudge task for all submissions of one problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to rejudge.")
     pa.set_defaults(func=problem_rejudge)
-    pa = ps.add_parser("rejudge-status")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(ps, "rejudge-status", "Check rejudge progress for one problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose rejudge status should be checked.")
     pa.set_defaults(func=problem_rejudge_status)
-    pa = ps.add_parser("rejudge-time-range")
-    pa.add_argument("--start", required=True, help="YYYY-MM-DDTHH:MM")
-    pa.add_argument("--end", required=True, help="YYYY-MM-DDTHH:MM")
-    pa.add_argument("--confirm-total", type=int)
+    pa = add_cli_parser(ps, "rejudge-time-range", "Start a rejudge task for submissions created within a time range.")
+    pa.add_argument("--start", required=True, help="Inclusive start time, formatted as YYYY-MM-DDTHH:MM.")
+    pa.add_argument("--end", required=True, help="Exclusive end time, formatted as YYYY-MM-DDTHH:MM.")
+    pa.add_argument("--confirm-total", type=int, help="Expected number of affected submissions; the server may require this safety confirmation.")
     pa.set_defaults(func=problem_rejudge_time_range)
-    pa = ps.add_parser("rejudge-time-range-status")
+    pa = add_cli_parser(ps, "rejudge-time-range-status", "Check progress for the most recent time-range rejudge task.")
     pa.set_defaults(func=problem_rejudge_time_range_status)
-    pa = ps.add_parser("agent-run-status")
-    pa.add_argument("task_id")
+    pa = add_cli_parser(ps, "agent-run-status", "Fetch JSON status for a problem-solving or test-data-generation agent task.")
+    pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
     pa.set_defaults(func=problem_agent_run_status)
-    pa = ps.add_parser("agent-run")
-    pa.add_argument("task_id")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ps, "agent-run", "Fetch the HTML page for an agent task run.")
+    pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
+    pa.add_argument("-o", "--output", help="Write the full agent-run HTML to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_agent_run_page)
-    pa = ps.add_parser("agent-run-stream")
-    pa.add_argument("task_id")
-    pa.add_argument("--max-lines", type=int, default=20)
+    pa = add_cli_parser(ps, "agent-run-stream", "Fetch recent stream lines for an agent task run.")
+    pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
+    pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=problem_agent_run_stream)
-    pa = ps.add_parser("agent-tasks")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ps, "agent-tasks", "List recent problem-solving and test-data-generation agent tasks.")
+    pa.add_argument("-o", "--output", help="Write the full agent-task page response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_agent_tasks)
-    pa = ps.add_parser("agent-solve")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("--extra-prompt", default="")
+    pa = add_cli_parser(ps, "agent-solve", "Start an AI agent task to solve a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID for the agent to solve.")
+    pa.add_argument("--extra-prompt", default="", help="Additional instruction text to pass to the problem-solving agent.")
     pa.set_defaults(func=problem_agent_solve)
-    pa = ps.add_parser("agent-generate-data")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("--count", type=int, required=True)
-    pa.add_argument("--standard-code", required=True, help="text or @file")
-    pa.add_argument("--data-requirement", default="")
+    pa = add_cli_parser(ps, "agent-generate-data", "Start an AI agent task to generate test data for a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID for which test data should be generated.")
+    pa.add_argument("--count", type=int, required=True, help="Number of test cases or data files to request from the agent.")
+    pa.add_argument("--standard-code", required=True, help="Reference solution code text, or @file to read it from a file.")
+    pa.add_argument("--data-requirement", default="", help="Additional natural-language requirements for generated test data.")
     pa.set_defaults(func=problem_agent_generate_data)
-    pa = ps.add_parser("scores")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(ps, "scores", "Fetch score records for one problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose scores should be returned.")
     pa.set_defaults(func=problem_scores)
 
-    hw = sub.add_parser("homework")
+    hw = add_cli_parser(sub, "homework", "Manage class homework assignments, exports, exam scores, and class adjustment settings.")
     hs = hw.add_subparsers(dest="cmd", required=True)
-    pa = hs.add_parser("list")
-    pa.add_argument("--class-en")
+    pa = add_cli_parser(hs, "list", "List homework assigned to a class or visible classes.")
+    pa.add_argument("--class-en", help="English class identifier to filter by, e.g. C2026A.")
     pa.set_defaults(func=homework_list)
-    pa = hs.add_parser("add")
-    pa.add_argument("--class-en", required=True)
-    pa.add_argument("--ddl", required=True, help="YYYY-MM-DDTHH:MM or MySQL datetime")
+    pa = add_cli_parser(hs, "add", "Assign a problem or ranking competition as homework for a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier receiving the homework, e.g. C2026A.")
+    pa.add_argument("--ddl", required=True, help="Homework deadline, formatted as YYYY-MM-DDTHH:MM or a MySQL datetime string.")
     group = pa.add_mutually_exclusive_group(required=True)
-    group.add_argument("--problem-id", type=int)
-    group.add_argument("--ranking-competition-id", type=int)
+    group.add_argument("--problem-id", type=int, help="Problem ID to assign as homework.")
+    group.add_argument("--ranking-competition-id", type=int, help="Ranking competition ID to assign as homework.")
     pa.set_defaults(func=homework_add)
-    pa = hs.add_parser("update-ddl")
-    pa.add_argument("--class-en", required=True)
-    pa.add_argument("--homework-id", required=True)
-    pa.add_argument("--ddl", required=True)
+    pa = add_cli_parser(hs, "update-ddl", "Update the deadline for one homework assignment.")
+    pa.add_argument("--class-en", required=True, help="English class identifier that owns the homework.")
+    pa.add_argument("--homework-id", required=True, help="Homework assignment ID to update.")
+    pa.add_argument("--ddl", required=True, help="New deadline, formatted as YYYY-MM-DDTHH:MM or a MySQL datetime string.")
     pa.set_defaults(func=homework_update_ddl)
-    pa = hs.add_parser("delete")
-    pa.add_argument("--class-en", required=True)
-    pa.add_argument("--homework-id", required=True)
+    pa = add_cli_parser(hs, "delete", "Delete one homework assignment from a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier that owns the homework.")
+    pa.add_argument("--homework-id", required=True, help="Homework assignment ID to delete.")
     pa.set_defaults(func=homework_delete)
-    pa = hs.add_parser("export-scores")
-    pa.add_argument("--class-en", required=True)
-    pa.add_argument("-o", "--output")
+    pa = add_cli_parser(hs, "export-scores", "Export homework scores for a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier whose scores should be exported.")
+    pa.add_argument("-o", "--output", help="Path to write the exported score file.")
     pa.set_defaults(func=homework_export_scores)
-    pa = hs.add_parser("export-codes")
-    pa.add_argument("--class-en", required=True)
+    pa = add_cli_parser(hs, "export-codes", "Start an asynchronous export of submitted code for a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier whose submitted code should be exported.")
     pa.set_defaults(func=homework_export_codes)
-    pa = hs.add_parser("export-progress")
-    pa.add_argument("task_id")
+    pa = add_cli_parser(hs, "export-progress", "Check progress for a class code-export task.")
+    pa.add_argument("task_id", help="Export task ID returned by export-codes.")
     pa.set_defaults(func=homework_export_progress)
-    pa = hs.add_parser("download-export")
-    pa.add_argument("task_id")
-    pa.add_argument("-o", "--output")
+    pa = add_cli_parser(hs, "download-export", "Download the archive generated by a class code-export task.")
+    pa.add_argument("task_id", help="Export task ID returned by export-codes.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded archive.")
     pa.set_defaults(func=homework_download_export)
-    pa = hs.add_parser("upload-exam")
-    pa.add_argument("--class-en", required=True)
-    pa.add_argument("file")
+    pa = add_cli_parser(hs, "upload-exam", "Upload a final-exam score file for a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier whose exam scores should be uploaded.")
+    pa.add_argument("file", help="Path to the exam-score file to upload.")
     pa.set_defaults(func=homework_upload_exam)
-    pa = hs.add_parser("class-adjust")
-    pa.add_argument("enabled", type=lambda x: str(x).lower() in ("1", "true", "yes", "on"))
+    pa = add_cli_parser(hs, "class-adjust", "Enable or disable class adjustment mode.")
+    pa.add_argument("enabled", type=lambda x: str(x).lower() in ("1", "true", "yes", "on"), help="Boolean switch: one of 1/0, true/false, yes/no, or on/off.")
     pa.set_defaults(func=class_adjust)
 
-    user = sub.add_parser("user")
+    user = add_cli_parser(sub, "user", "Manage users, classes, memberships, names, and grade overrides.")
     us = user.add_subparsers(dest="cmd", required=True)
-    pa = us.add_parser("list")
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--username")
-    pa.add_argument("--class-en")
+    pa = add_cli_parser(us, "list", "List users with optional username or class filters.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--username", help="Filter by username substring or exact username, depending on server behavior.")
+    pa.add_argument("--class-en", help="Filter by English class identifier.")
     pa.set_defaults(func=user_list)
-    pa = us.add_parser("add-class-type")
-    pa.add_argument("--class-en", required=True, help="without leading C, matching web form behavior")
-    pa.add_argument("--class-cn", required=True)
+    pa = add_cli_parser(us, "add-class-type", "Create a class type entry available for user membership.")
+    pa.add_argument("--class-en", required=True, help="English class code without the leading C, matching the web form behavior.")
+    pa.add_argument("--class-cn", required=True, help="Chinese display name for the class.")
     pa.set_defaults(func=user_add_class_type)
-    pa = us.add_parser("set-primary-class")
-    pa.add_argument("user_id", type=int)
-    pa.add_argument("class_en")
+    pa = add_cli_parser(us, "set-primary-class", "Set a user's primary class.")
+    pa.add_argument("user_id", type=int, help="User ID to update.")
+    pa.add_argument("class_en", help="English class identifier to set as primary.")
     pa.set_defaults(func=user_set_primary_class)
-    pa = us.add_parser("rename")
-    pa.add_argument("user_id", type=int)
-    pa.add_argument("username")
+    pa = add_cli_parser(us, "rename", "Rename a user account.")
+    pa.add_argument("user_id", type=int, help="User ID to rename.")
+    pa.add_argument("username", help="New username.")
     pa.set_defaults(func=user_rename)
-    pa = us.add_parser("add-to-class")
-    pa.add_argument("user_id", type=int)
-    pa.add_argument("class_en")
+    pa = add_cli_parser(us, "add-to-class", "Add a user to a class.")
+    pa.add_argument("user_id", type=int, help="User ID to add.")
+    pa.add_argument("class_en", help="English class identifier to add the user to.")
     pa.set_defaults(func=user_add_to_class)
-    pa = us.add_parser("remove-from-class")
-    pa.add_argument("user_id", type=int)
-    pa.add_argument("class_en")
+    pa = add_cli_parser(us, "remove-from-class", "Remove a user from a class.")
+    pa.add_argument("user_id", type=int, help="User ID to remove.")
+    pa.add_argument("class_en", help="English class identifier to remove from the user.")
     pa.set_defaults(func=user_remove_from_class)
-    pa = us.add_parser("grades")
-    pa.add_argument("user_id", type=int)
+    pa = add_cli_parser(us, "grades", "List all visible grades for a user.")
+    pa.add_argument("user_id", type=int, help="User ID whose grades should be listed.")
     pa.set_defaults(func=user_grades)
-    pa = us.add_parser("update-grade")
-    pa.add_argument("user_id", type=int)
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(us, "update-grade", "Set or clear a manual grade override for a user and problem.")
+    pa.add_argument("user_id", type=int, help="User ID whose grade should be updated.")
+    pa.add_argument("problem_id", type=int, help="Problem ID for the grade update.")
     g = pa.add_mutually_exclusive_group(required=True)
-    g.add_argument("--score", type=int)
-    g.add_argument("--clear", action="store_true")
+    g.add_argument("--score", type=int, help="Score value to set.")
+    g.add_argument("--clear", action="store_true", help="Clear the existing manual grade override.")
     pa.set_defaults(func=user_update_grade)
 
-    grading = sub.add_parser("grading")
+    grading = add_cli_parser(sub, "grading", "Handle manual grading actions for written-homework submissions.")
     gs = grading.add_subparsers(dest="cmd", required=True)
-    pa = gs.add_parser("submit")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--score", type=int, required=True)
-    pa.add_argument("--comment", default="")
+    pa = add_cli_parser(gs, "submit", "Submit a manual grading decision for a written-homework submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID to grade.")
+    pa.add_argument("--score", type=int, required=True, help="Score to assign.")
+    pa.add_argument("--comment", default="", help="Optional grading comment.")
     pa.set_defaults(func=grading_submit)
-    pa = gs.add_parser("next-pending")
-    pa.add_argument("submission_id", type=int)
+    pa = add_cli_parser(gs, "next-pending", "Find the next pending manual-grading submission after the given submission.")
+    pa.add_argument("submission_id", type=int, help="Current submission ID used as the search starting point.")
     pa.set_defaults(func=grading_next_pending)
-    pa = gs.add_parser("invalidate-invalid")
-    pa.add_argument("problem_id", type=int)
+    pa = add_cli_parser(gs, "invalidate-invalid", "Invalidate written-homework submissions marked invalid for one problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose invalid submissions should be invalidated.")
     pa.set_defaults(func=grading_invalidate)
 
-    forum = sub.add_parser("forum")
+    forum = add_cli_parser(sub, "forum", "Inspect and create forum threads and replies.")
     fs = forum.add_subparsers(dest="cmd", required=True)
-    pa = fs.add_parser("list")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(fs, "list", "List forum threads.")
+    pa.add_argument("-o", "--output", help="Write the full forum list response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_list)
-    pa = fs.add_parser("thread")
-    pa.add_argument("thread_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(fs, "thread", "Fetch one forum thread and its replies.")
+    pa.add_argument("thread_id", type=int, help="Forum thread ID to fetch.")
+    pa.add_argument("-o", "--output", help="Write the full thread response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_thread)
-    pa = fs.add_parser("new-page")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(fs, "new-page", "Fetch the new-thread form page.")
+    pa.add_argument("-o", "--output", help="Write the full new-thread page response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_new_page)
-    pa = fs.add_parser("new")
-    pa.add_argument("--title", required=True)
-    pa.add_argument("--content", required=True, help="text or @file")
+    pa = add_cli_parser(fs, "new", "Create a new forum thread.")
+    pa.add_argument("--title", required=True, help="Thread title.")
+    pa.add_argument("--content", required=True, help="Thread body text, or @file to read it from a file.")
     pa.set_defaults(func=forum_new)
-    pa = fs.add_parser("reply")
-    pa.add_argument("thread_id", type=int)
-    pa.add_argument("--content", required=True, help="text or @file")
+    pa = add_cli_parser(fs, "reply", "Post a reply to a forum thread.")
+    pa.add_argument("thread_id", type=int, help="Thread ID to reply to.")
+    pa.add_argument("--content", required=True, help="Reply body text, or @file to read it from a file.")
     pa.set_defaults(func=forum_reply)
-    pa = fs.add_parser("reply-thread")
-    pa.add_argument("thread_id", type=int)
-    pa.add_argument("--content", required=True, help="text or @file")
+    pa = add_cli_parser(fs, "reply-thread", "Post a reply using the thread-reply route.")
+    pa.add_argument("thread_id", type=int, help="Thread ID to reply to.")
+    pa.add_argument("--content", required=True, help="Reply body text, or @file to read it from a file.")
     pa.set_defaults(func=forum_reply_thread)
 
-    repo = sub.add_parser("repository")
+    repo = add_cli_parser(sub, "repository", "Manage the per-user code repository and its vector-search index.")
     repos = repo.add_subparsers(dest="cmd", required=True)
-    pa = repos.add_parser("page")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(repos, "page", "Fetch the repository page.")
+    pa.add_argument("-o", "--output", help="Write the full repository page response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=repository_page)
-    pa = repos.add_parser("files")
+    pa = add_cli_parser(repos, "files", "List files in the current user's repository.")
     pa.set_defaults(func=repository_files)
-    pa = repos.add_parser("get")
-    pa.add_argument("file_id", type=int)
-    pa.add_argument("-o", "--output", help="write file content when the API returns JSON content")
+    pa = add_cli_parser(repos, "get", "Fetch one repository file by ID.")
+    pa.add_argument("file_id", type=int, help="Repository file ID to fetch.")
+    pa.add_argument("-o", "--output", help="Write file content when the API returns JSON content.")
     pa.set_defaults(func=repository_get_file)
-    pa = repos.add_parser("save")
-    pa.add_argument("--filename", required=True)
+    pa = add_cli_parser(repos, "save", "Create or update a repository file.")
+    pa.add_argument("--filename", required=True, help="Repository filename to create or update.")
     content_group = pa.add_mutually_exclusive_group(required=True)
-    content_group.add_argument("--content", help="text or @file")
-    content_group.add_argument("--content-file")
-    pa.add_argument("--file-id", type=int)
+    content_group.add_argument("--content", help="File content text, or @file to read it from a file.")
+    content_group.add_argument("--content-file", help="Path to a local file whose content should be saved.")
+    pa.add_argument("--file-id", type=int, help="Existing repository file ID to update. Omit to create a new file.")
     pa.set_defaults(func=repository_save_file)
-    pa = repos.add_parser("delete")
-    pa.add_argument("file_id", type=int)
+    pa = add_cli_parser(repos, "delete", "Delete a repository file.")
+    pa.add_argument("file_id", type=int, help="Repository file ID to delete.")
     pa.set_defaults(func=repository_delete_file)
-    pa = repos.add_parser("upload")
-    pa.add_argument("file")
+    pa = add_cli_parser(repos, "upload", "Upload a local source file into the repository.")
+    pa.add_argument("file", help="Path to the local file to upload.")
     pa.set_defaults(func=repository_upload)
-    pa = repos.add_parser("build-index")
-    pa.add_argument("--force-restart", action="store_true")
+    pa = add_cli_parser(repos, "build-index", "Start or resume a repository-wide vector-index build.")
+    pa.add_argument("--force-restart", action="store_true", help="Force the server to restart the indexing job if one already exists.")
     pa.set_defaults(func=repository_build_index)
-    pa = repos.add_parser("rebuild-file")
-    pa.add_argument("file_id", type=int)
-    pa.add_argument("--force-restart", action="store_true")
+    pa = add_cli_parser(repos, "rebuild-file", "Rebuild vector-index entries for one repository file.")
+    pa.add_argument("file_id", type=int, help="Repository file ID to re-index.")
+    pa.add_argument("--force-restart", action="store_true", help="Force the server to restart the file indexing job if one already exists.")
     pa.set_defaults(func=repository_rebuild_file)
-    pa = repos.add_parser("index-status")
-    pa.add_argument("job_id", type=int)
+    pa = add_cli_parser(repos, "index-status", "Check status for a repository indexing job.")
+    pa.add_argument("job_id", type=int, help="Indexing job ID returned by build-index or rebuild-file.")
     pa.set_defaults(func=repository_index_status)
-    pa = repos.add_parser("active-status")
+    pa = add_cli_parser(repos, "active-status", "Show currently active repository indexing jobs.")
     pa.set_defaults(func=repository_active_status)
-    pa = repos.add_parser("search")
-    pa.add_argument("--query", required=True)
-    pa.add_argument("--top-k", type=int)
-    pa.add_argument("--score-threshold", type=float)
+    pa = add_cli_parser(repos, "search", "Search indexed repository code using semantic/vector search.")
+    pa.add_argument("--query", required=True, help="Natural-language or code query to search for.")
+    pa.add_argument("--top-k", type=int, help="Maximum number of matching chunks to return.")
+    pa.add_argument("--score-threshold", type=float, help="Minimum similarity score required for returned chunks.")
     pa.set_defaults(func=repository_search)
-    pa = repos.add_parser("classes")
-    pa.add_argument("--limit", type=int, default=300)
+    pa = add_cli_parser(repos, "classes", "List class metadata discovered in indexed repository code.")
+    pa.add_argument("--limit", type=int, default=300, help="Maximum number of class records to return.")
     pa.set_defaults(func=repository_classes)
 
-    tutor = sub.add_parser("ai")
+    tutor = add_cli_parser(sub, "ai", "Call AI tutor endpoints for submissions.")
     tutors = tutor.add_subparsers(dest="cmd", required=True)
-    pa = tutors.add_parser("marks")
-    pa.add_argument("--submission-id", type=int, required=True)
-    pa.add_argument("--force-refresh", action="store_true")
+    pa = add_cli_parser(tutors, "marks", "Fetch AI-generated code marks for one submission.")
+    pa.add_argument("--submission-id", type=int, required=True, help="Submission ID whose AI marks should be fetched.")
+    pa.add_argument("--force-refresh", action="store_true", help="Force the server to refresh cached AI marks.")
     pa.set_defaults(func=ai_code_marks)
 
-    ai = sub.add_parser("ai-detection")
+    ai = add_cli_parser(sub, "ai-detection", "Inspect and run AI-generated-code detection tasks.")
     ais = ai.add_subparsers(dest="cmd", required=True)
-    pa = ais.add_parser("dashboard")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ais, "dashboard", "Fetch the administrator AI-detection dashboard page.")
+    pa.add_argument("-o", "--output", help="Write the full dashboard response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ai_detection_page)
-    pa = ais.add_parser("problem-page")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ais, "problem-page", "Fetch the AI-detection page for one problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to inspect.")
+    pa.add_argument("-o", "--output", help="Write the full problem AI-detection page to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ai_detection_problem_page)
-    pa = ais.add_parser("student-page")
-    pa.add_argument("username")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(ais, "student-page", "Fetch the AI-detection page for one student.")
+    pa.add_argument("username", help="Username to inspect.")
+    pa.add_argument("-o", "--output", help="Write the full student AI-detection page to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ai_detection_student_page)
-    for name, func in (("preview", ai_preview), ("run-filtered", ai_run_filtered)):
-        pa = ais.add_parser(name)
-        pa.add_argument("--class-en")
-        pa.add_argument("--username")
-        pa.add_argument("--problem-id", type=int)
-        pa.add_argument("--submission-id", type=int)
-        pa.add_argument("--score-min", type=float)
-        pa.add_argument("--score-max", type=float)
-        pa.add_argument("--deduplicate", action="store_true", default=None)
-        pa.add_argument("--model")
-        pa.set_defaults(func=func)
-    pa = ais.add_parser("run-problem")
-    pa.add_argument("problem_id", type=int)
-    pa.add_argument("--model")
-    pa.set_defaults(func=ai_run_problem)
-    pa = ais.add_parser("run-single")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--model")
-    pa.set_defaults(func=ai_run_single)
-    pa = ais.add_parser("run-user")
-    pa.add_argument("username")
-    pa.add_argument("--model")
-    pa.set_defaults(func=ai_run_user)
-    for name, path in (
-        ("summary", "/admin/ai_detection/api/summary"),
-        ("tasks", "/admin/ai_detection/api/tasks"),
-        ("models", "/admin/ai_detection/api/available_models"),
+    for name, func, description in (
+        ("preview", ai_preview, "Preview submissions matching AI-detection filters without starting a detection task."),
+        ("run-filtered", ai_run_filtered, "Start an AI-detection task for submissions matching filters."),
     ):
-        pa = ais.add_parser(name)
+        pa = add_cli_parser(ais, name, description)
+        pa.add_argument("--class-en", help="Filter by English class identifier.")
+        pa.add_argument("--username", help="Filter by username.")
+        pa.add_argument("--problem-id", type=int, help="Filter by problem ID.")
+        pa.add_argument("--submission-id", type=int, help="Filter by a single submission ID.")
+        pa.add_argument("--score-min", type=float, help="Minimum existing AI-detection score to include.")
+        pa.add_argument("--score-max", type=float, help="Maximum existing AI-detection score to include.")
+        pa.add_argument("--deduplicate", action="store_true", default=None, help="Ask the server to keep only one candidate per user/problem when supported.")
+        pa.add_argument("--model", help="Detection model identifier to use.")
+        pa.set_defaults(func=func)
+    pa = add_cli_parser(ais, "run-problem", "Start AI-detection for all relevant submissions of one problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to scan.")
+    pa.add_argument("--model", help="Detection model identifier to use.")
+    pa.set_defaults(func=ai_run_problem)
+    pa = add_cli_parser(ais, "run-single", "Start AI-detection for one submission.")
+    pa.add_argument("submission_id", type=int, help="Submission ID to scan.")
+    pa.add_argument("--model", help="Detection model identifier to use.")
+    pa.set_defaults(func=ai_run_single)
+    pa = add_cli_parser(ais, "run-user", "Start AI-detection for submissions from one user.")
+    pa.add_argument("username", help="Username whose submissions should be scanned.")
+    pa.add_argument("--model", help="Detection model identifier to use.")
+    pa.set_defaults(func=ai_run_user)
+    for name, path, description in (
+        ("summary", "/admin/ai_detection/api/summary", "Fetch AI-detection summary metrics."),
+        ("tasks", "/admin/ai_detection/api/tasks", "List recent AI-detection tasks."),
+        ("models", "/admin/ai_detection/api/available_models", "List AI-detection models available on the server."),
+    ):
+        pa = add_cli_parser(ais, name, description)
         pa.set_defaults(func=ai_api_get, path=path)
-    pa = ais.add_parser("task")
-    pa.add_argument("action", choices=["stop", "delete"])
-    pa.add_argument("task_id")
+    pa = add_cli_parser(ais, "task", "Stop or delete an AI-detection task.")
+    pa.add_argument("action", choices=["stop", "delete"], help="Task operation to perform.")
+    pa.add_argument("task_id", help="AI-detection task ID.")
     pa.set_defaults(func=ai_task_post)
 
-    rk = sub.add_parser("ranking")
+    rk = add_cli_parser(sub, "ranking", "Manage ranking competitions, submissions, judging, appeals, and Agent-as-Judge settings.")
     rs = rk.add_subparsers(dest="cmd", required=True)
-    pa = rs.add_parser("list")
-    pa.add_argument("--limit", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=2000)
+    pa = add_cli_parser(rs, "list", "List ranking competitions.")
+    pa.add_argument("--limit", type=int, help="Maximum number of competitions to return.")
+    pa.add_argument("-o", "--output", help="Write the full response to this file.")
+    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ranking_list)
-    pa = rs.add_parser("detail")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--tab")
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(rs, "detail", "Fetch a ranking competition detail page.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to inspect.")
+    pa.add_argument("--tab", help="Optional detail-page tab to request, such as submissions, leaderboard, or settings.")
+    pa.add_argument("-o", "--output", help="Write the full detail response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ranking_detail)
-    pa = rs.add_parser("create")
-    pa.add_argument("--title", required=True)
-    pa.add_argument("--summary", default="")
-    pa.add_argument("--description", default="")
-    pa.add_argument("--max-score", type=int, default=100)
+    pa = add_cli_parser(rs, "create", "Create a ranking competition.")
+    pa.add_argument("--title", required=True, help="Competition title.")
+    pa.add_argument("--summary", default="", help="Short competition summary.")
+    pa.add_argument("--description", default="", help="Full competition description, or @file if supported by the server-side route.")
+    pa.add_argument("--max-score", type=int, default=100, help="Maximum displayed score for the competition.")
     pa.set_defaults(func=ranking_create)
-    pa = rs.add_parser("copy")
-    pa.add_argument("competition_id", type=int)
+    pa = add_cli_parser(rs, "copy", "Copy an existing ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to copy.")
     pa.set_defaults(func=ranking_copy)
-    pa = rs.add_parser("edit")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--title")
-    pa.add_argument("--summary")
-    pa.add_argument("--description")
-    pa.add_argument("--max-score", type=int)
+    pa = add_cli_parser(rs, "edit", "Edit ranking competition settings.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to edit.")
+    pa.add_argument("--title", help="New competition title.")
+    pa.add_argument("--summary", help="New short competition summary.")
+    pa.add_argument("--description", help="New full competition description.")
+    pa.add_argument("--max-score", type=int, help="New maximum displayed score.")
     active_group = pa.add_mutually_exclusive_group()
-    active_group.add_argument("--active", dest="active", action="store_true", default=None)
-    active_group.add_argument("--inactive", dest="active", action="store_false")
-    pa.add_argument("--answer-format", choices=["json", "zip"])
-    pa.add_argument("--scoring-mode", choices=["absolute", "elo", "agent_judge"])
-    pa.add_argument("--script-timeout", type=int)
-    pa.add_argument("--submit-limit", type=int)
-    pa.add_argument("--reset-limit-window", action="store_true")
-    pa.add_argument("--submission-method", choices=["zip", "git"])
-    pa.add_argument("--git-format")
-    pa.add_argument("--elo-initial-rating", type=float)
-    pa.add_argument("--elo-k-factor", type=float)
-    pa.add_argument("--elo-max-matches", type=int)
-    pa.add_argument("--elo-match-interval", type=int)
-    pa.add_argument("--elo-initial-burst", type=int)
-    pa.add_argument("--elo-max-pairs-per-round", type=int)
-    pa.add_argument("--agent-timeout", type=int)
+    active_group.add_argument("--active", dest="active", action="store_true", default=None, help="Mark the competition as active.")
+    active_group.add_argument("--inactive", dest="active", action="store_false", default=None, help="Mark the competition as inactive.")
+    pa.add_argument("--answer-format", choices=["json", "zip"], help="Expected answer format for submissions.")
+    pa.add_argument("--scoring-mode", choices=["absolute", "elo", "agent_judge"], help="Scoring mode used by the competition.")
+    pa.add_argument("--script-timeout", type=int, help="Timeout in seconds for scoring-script execution.")
+    pa.add_argument("--submit-limit", type=int, help="Maximum number of submissions allowed in the active limit window.")
+    pa.add_argument("--reset-limit-window", action="store_true", help="Reset the per-user submission-limit window.")
+    pa.add_argument("--submission-method", choices=["zip", "git"], help="Submission method accepted by the competition.")
+    pa.add_argument("--git-format", help="Git repository URL format or rule used to derive participant repositories.")
+    pa.add_argument("--elo-initial-rating", type=float, help="Initial ELO rating assigned to new submissions.")
+    pa.add_argument("--elo-k-factor", type=float, help="ELO K-factor used when updating ratings.")
+    pa.add_argument("--elo-max-matches", type=int, help="Maximum number of ELO matches per submission.")
+    pa.add_argument("--elo-match-interval", type=int, help="Interval in seconds between automatic ELO match rounds.")
+    pa.add_argument("--elo-initial-burst", type=int, help="Number of initial ELO matches to schedule quickly for a new submission.")
+    pa.add_argument("--elo-max-pairs-per-round", type=int, help="Maximum number of ELO match pairs generated per scheduler round.")
+    pa.add_argument("--agent-timeout", type=int, help="Timeout in seconds for Agent-as-Judge evaluation.")
     pa.set_defaults(func=ranking_edit)
-    pa = rs.add_parser("delete")
-    pa.add_argument("competition_id", type=int)
+    pa = add_cli_parser(rs, "delete", "Delete a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to delete.")
     pa.set_defaults(func=ranking_delete)
-    pa = rs.add_parser("upload-attachment")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("file")
+    pa = add_cli_parser(rs, "upload-attachment", "Upload a participant-visible attachment for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID receiving the attachment.")
+    pa.add_argument("file", help="Path to the attachment file.")
     pa.set_defaults(func=ranking_upload_attachment)
-    pa = rs.add_parser("delete-attachment")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("file_id", type=int)
+    pa = add_cli_parser(rs, "delete-attachment", "Delete a ranking competition attachment.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the attachment.")
+    pa.add_argument("file_id", type=int, help="Attachment file ID to delete.")
     pa.set_defaults(func=ranking_delete_attachment)
-    pa = rs.add_parser("download-attachment")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("file_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--inline", action="store_true")
+    pa = add_cli_parser(rs, "download-attachment", "Download a ranking competition attachment.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the attachment.")
+    pa.add_argument("file_id", type=int, help="Attachment file ID to download.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded attachment.")
+    pa.add_argument("--inline", action="store_true", help="Request inline display semantics from the server when supported.")
     pa.set_defaults(func=ranking_download_attachment)
-    pa = rs.add_parser("upload-reference")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("file")
+    pa = add_cli_parser(rs, "upload-reference", "Upload a reference answer file for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID receiving the reference answer.")
+    pa.add_argument("file", help="Path to the reference answer file.")
     pa.set_defaults(func=ranking_upload_reference)
-    pa = rs.add_parser("upload-script")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("file")
+    pa = add_cli_parser(rs, "upload-script", "Upload a scoring script for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID receiving the scoring script.")
+    pa.add_argument("file", help="Path to the scoring script file.")
     pa.set_defaults(func=ranking_upload_script)
-    pa = rs.add_parser("clear-script")
-    pa.add_argument("competition_id", type=int)
+    pa = add_cli_parser(rs, "clear-script", "Remove the scoring script from a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose scoring script should be cleared.")
     pa.set_defaults(func=ranking_clear_script)
-    pa = rs.add_parser("reset-limit")
-    pa.add_argument("competition_id", type=int)
+    pa = add_cli_parser(rs, "reset-limit", "Reset submission limits for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose submission limits should be reset.")
     pa.set_defaults(func=ranking_reset_limit)
-    pa = rs.add_parser("save-config")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--agent-base-url", dest="base_url_value")
-    pa.add_argument("--api-key", help="text or @file")
-    pa.add_argument("--model")
-    pa.add_argument("--timeout-seconds", type=int)
+    pa = add_cli_parser(rs, "save-config", "Save Agent-as-Judge model configuration for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
+    pa.add_argument("--agent-base-url", dest="base_url_value", help="Base URL for the Agent-as-Judge model API.")
+    pa.add_argument("--api-key", help="API key text, or @file to read it from a file.")
+    pa.add_argument("--model", help="Model identifier used by Agent-as-Judge.")
+    pa.add_argument("--timeout-seconds", type=int, help="Agent-as-Judge timeout in seconds.")
     pa.set_defaults(func=ranking_config)
-    pa = rs.add_parser("save-rules")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("rules", help="JSON array or @file")
+    pa = add_cli_parser(rs, "save-rules", "Save Agent-as-Judge grading rules for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
+    pa.add_argument("rules", help="JSON array of rule objects, or @file to read it from a file.")
     pa.set_defaults(func=ranking_rules)
-    pa = rs.add_parser("save-endpoints")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("endpoints", help="JSON array or @file")
-    pa.add_argument("--timeout-seconds", type=int)
+    pa = add_cli_parser(rs, "save-endpoints", "Save endpoint checks for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
+    pa.add_argument("endpoints", help="JSON array of endpoint objects, or @file to read it from a file.")
+    pa.add_argument("--timeout-seconds", type=int, help="Timeout in seconds for endpoint checks.")
     pa.set_defaults(func=ranking_endpoints)
-    pa = rs.add_parser("batch-probe")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--classes", required=True, help="comma separated class_en list")
-    pa.add_argument("--template", required=True)
+    pa = add_cli_parser(rs, "batch-probe", "Preview Git repositories that would be used for batch ranking submissions.")
+    pa.add_argument("competition_id", type=int, help="Competition ID for the batch probe.")
+    pa.add_argument("--classes", required=True, help="Comma-separated class_en list to include.")
+    pa.add_argument("--template", required=True, help="Git URL template used to derive repository URLs.")
     pa.set_defaults(func=ranking_batch_probe)
-    pa = rs.add_parser("batch-status")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("job_id")
+    pa = add_cli_parser(rs, "batch-status", "Check status for a batch ranking-submission job.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the batch job.")
+    pa.add_argument("job_id", help="Batch job ID returned by batch-create or bulk-start.")
     pa.set_defaults(func=ranking_batch_status)
-    pa = rs.add_parser("batch-create")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--template", required=True)
-    pa.add_argument("--usernames", required=True, help="comma separated usernames")
+    pa = add_cli_parser(rs, "batch-create", "Create ranking submissions in batch from a Git URL template.")
+    pa.add_argument("competition_id", type=int, help="Competition ID for the batch submissions.")
+    pa.add_argument("--template", required=True, help="Git URL template used to derive repository URLs.")
+    pa.add_argument("--usernames", required=True, help="Comma-separated usernames to submit for.")
     pa.set_defaults(func=ranking_batch_create)
-    pa = rs.add_parser("matches")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--mine", action="store_true")
+    pa = add_cli_parser(rs, "matches", "List ELO or Agent-as-Judge matches for a competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose matches should be listed.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--mine", action="store_true", help="Show only matches involving the current user when supported.")
     pa.set_defaults(func=ranking_matches)
-    pa = rs.add_parser("match-detail")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("match_id", type=int)
+    pa = add_cli_parser(rs, "match-detail", "Fetch details for one ranking match.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the match.")
+    pa.add_argument("match_id", type=int, help="Match ID to inspect.")
     pa.set_defaults(func=ranking_match_detail)
-    pa = rs.add_parser("bulk-filter")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--start")
-    pa.add_argument("--end")
-    pa.add_argument("--username")
-    pa.add_argument("--statuses", help="comma separated: judging,waiting,accepted,abnormal")
+    pa = add_cli_parser(rs, "bulk-filter", "Preview ranking submissions matching bulk-operation filters.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose submissions should be filtered.")
+    pa.add_argument("--start", help="Inclusive start time filter accepted by the server.")
+    pa.add_argument("--end", help="Exclusive end time filter accepted by the server.")
+    pa.add_argument("--username", help="Filter by username.")
+    pa.add_argument("--statuses", help="Comma-separated statuses, such as judging, waiting, accepted, or abnormal.")
     pa.set_defaults(func=ranking_bulk_filter)
-    pa = rs.add_parser("bulk-start")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--submission-ids", required=True, help="comma separated submission ids")
+    pa = add_cli_parser(rs, "bulk-start", "Start a bulk ranking operation for selected submissions.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose submissions should be processed.")
+    pa.add_argument("--submission-ids", required=True, help="Comma-separated ranking submission IDs.")
     pa.set_defaults(func=ranking_bulk_start)
-    pa = rs.add_parser("bulk-status")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("job_id")
+    pa = add_cli_parser(rs, "bulk-status", "Check status for a bulk ranking operation.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the bulk job.")
+    pa.add_argument("job_id", help="Bulk job ID returned by bulk-start.")
     pa.set_defaults(func=ranking_bulk_status)
-    pa = rs.add_parser("rejudge-agent")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
+    pa = add_cli_parser(rs, "rejudge-agent", "Requeue Agent-as-Judge evaluation for one ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID to rejudge.")
     pa.set_defaults(func=ranking_rejudge_agent)
-    pa = rs.add_parser("appeal")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--reason", required=True, help="text or @file")
+    pa = add_cli_parser(rs, "appeal", "Submit an appeal for one ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID being appealed.")
+    pa.add_argument("--reason", required=True, help="Appeal reason text, or @file to read it from a file.")
     pa.set_defaults(func=ranking_submit_appeal)
-    pa = rs.add_parser("appeal-status")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
+    pa = add_cli_parser(rs, "appeal-status", "Fetch appeal status for one ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID whose appeal status should be fetched.")
     pa.set_defaults(func=ranking_appeal_status)
-    pa = rs.add_parser("appeals")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--query")
-    pa.add_argument("--status")
+    pa = add_cli_parser(rs, "appeals", "List appeals for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose appeals should be listed.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--query", help="Search query for appeal list filtering.")
+    pa.add_argument("--status", help="Appeal status filter accepted by the server.")
     pa.set_defaults(func=ranking_appeals)
-    pa = rs.add_parser("appeal-review")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("appeal_id", type=int)
-    pa.add_argument("-o", "--output")
-    pa.add_argument("--max-chars", type=int, default=3000)
+    pa = add_cli_parser(rs, "appeal-review", "Fetch the review page for a ranking appeal.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the appeal.")
+    pa.add_argument("appeal_id", type=int, help="Appeal ID to review.")
+    pa.add_argument("-o", "--output", help="Write the full appeal-review response to this file.")
+    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ranking_appeal_review)
-    pa = rs.add_parser("appeal-handle")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("appeal_id", type=int)
-    pa.add_argument("--decision", choices=["resolved", "rejected"], required=True)
-    pa.add_argument("--response", default="")
-    pa.add_argument("--overrides", help="JSON object or @file")
+    pa = add_cli_parser(rs, "appeal-handle", "Resolve or reject a ranking appeal.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the appeal.")
+    pa.add_argument("appeal_id", type=int, help="Appeal ID to handle.")
+    pa.add_argument("--decision", choices=["resolved", "rejected"], required=True, help="Appeal decision to record.")
+    pa.add_argument("--response", default="", help="Administrator response text sent with the decision.")
+    pa.add_argument("--overrides", help="JSON object with score/status overrides, or @file to read it from a file.")
     pa.set_defaults(func=ranking_appeal_handle)
     for name in ("start", "stop", "reset"):
-        pa = rs.add_parser(f"elo-{name}")
-        pa.add_argument("competition_id", type=int)
+        descriptions = {
+            "start": "Start automatic ELO matching for a ranking competition.",
+            "stop": "Stop automatic ELO matching for a ranking competition.",
+            "reset": "Reset ELO matching state for a ranking competition.",
+        }
+        pa = add_cli_parser(rs, f"elo-{name}", descriptions[name])
+        pa.add_argument("competition_id", type=int, help="Competition ID whose ELO scheduler should be updated.")
         pa.set_defaults(func=ranking_elo_action, action=name)
-    pa = rs.add_parser("elo-delete-match")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("match_id", type=int)
+    pa = add_cli_parser(rs, "elo-delete-match", "Delete one ELO match record.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the match.")
+    pa.add_argument("match_id", type=int, help="ELO match ID to delete.")
     pa.set_defaults(func=ranking_elo_delete_match)
-    pa = rs.add_parser("elo-rebuild")
-    pa.add_argument("competition_id", type=int)
+    pa = add_cli_parser(rs, "elo-rebuild", "Rebuild ELO ratings for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose ELO ratings should be rebuilt.")
     pa.set_defaults(func=ranking_elo_rebuild)
-    pa = rs.add_parser("delete-submission")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
+    pa = add_cli_parser(rs, "delete-submission", "Delete one ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID to delete.")
     pa.set_defaults(func=ranking_delete_submission)
-    pa = rs.add_parser("download-submission")
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("kind", choices=["answer", "code"])
-    pa.add_argument("-o", "--output")
+    pa = add_cli_parser(rs, "download-submission", "Download the answer file or code archive from a ranking submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID to download from.")
+    pa.add_argument("kind", choices=["answer", "code"], help="Submission artifact to download.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded artifact.")
     pa.set_defaults(func=ranking_download_submission)
-    pa = rs.add_parser("judge-stream")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("submission_id", type=int)
-    pa.add_argument("--max-lines", type=int, default=20)
+    pa = add_cli_parser(rs, "judge-stream", "Fetch recent judge stream lines for a ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Ranking submission ID whose judge stream should be fetched.")
+    pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=ranking_judge_stream)
-    pa = rs.add_parser("my-submissions")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(rs, "my-submissions", "List the current user's submissions for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose submissions should be listed.")
+    pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
     pa.set_defaults(func=ranking_my_submissions)
-    pa = rs.add_parser("submissions")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--page", type=int, default=1)
-    pa.add_argument("--username")
+    pa = add_cli_parser(rs, "submissions", "List all visible submissions for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose submissions should be listed.")
+    pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
+    pa.add_argument("--username", help="Filter submissions by username.")
     pa.set_defaults(func=ranking_all_submissions)
-    pa = rs.add_parser("leaderboard")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--limit", type=int)
+    pa = add_cli_parser(rs, "leaderboard", "Fetch the leaderboard for a ranking competition.")
+    pa.add_argument("competition_id", type=int, help="Competition ID whose leaderboard should be fetched.")
+    pa.add_argument("--limit", type=int, help="Maximum number of leaderboard rows to return.")
     pa.set_defaults(func=ranking_leaderboard)
-    pa = rs.add_parser("submit")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--base-model", required=True)
-    pa.add_argument("--code-zip", required=True)
-    pa.add_argument("--answer-file")
+    pa = add_cli_parser(rs, "submit", "Submit a ZIP-based ranking entry.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
+    pa.add_argument("--base-model", required=True, help="Base model name associated with the submission.")
+    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
+    pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
     pa.set_defaults(func=ranking_submit_zip)
-    pa = rs.add_parser("submit-zip")
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("--base-model", required=True)
-    pa.add_argument("--code-zip", required=True)
-    pa.add_argument("--answer-file")
+    pa = add_cli_parser(rs, "submit-zip", "Alias for ranking submit; submit a ZIP-based ranking entry.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
+    pa.add_argument("--base-model", required=True, help="Base model name associated with the submission.")
+    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
+    pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
     pa.set_defaults(func=ranking_submit_zip)
-    pa = rs.add_parser(
+    pa = add_cli_parser(
+        rs,
         "git",
-        help="Git-based ranking submission: run check first, then submit",
-        description=(
-            "Use when the ranking competition is configured for Git submission. "
-            "Run check first, then submit. "
+        "Use Git-based ranking submission: run check first, then submit.",
+        epilog=(
             "Run `ranking git <competition_id> check` first to verify the server-derived "
             "repository URL and latest commit, then run `ranking git <competition_id> submit`. "
             "Do not pass a repository URL; NumOJ derives it from the competition Git rule and your username."
         ),
     )
-    pa.add_argument("competition_id", type=int)
-    pa.add_argument("action", choices=["check", "submit"], help="check repository visibility first; submit queues the checked repository for evaluation")
+    pa.add_argument("competition_id", type=int, help="Competition ID configured for Git submission.")
+    pa.add_argument("action", choices=["check", "submit"], help="Use check to verify repository visibility; use submit to queue the checked repository for evaluation.")
     pa.set_defaults(func=ranking_git_submit)
 
     return p

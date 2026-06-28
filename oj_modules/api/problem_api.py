@@ -5,6 +5,7 @@ from flask import Blueprint, request
 
 from oj_modules.api.helpers import apply_limit, clamp_limit, json_error, json_success, public_problem, public_user, to_jsonable
 from oj_modules.auth_helpers import current_user
+from oj_modules.promptly_guard import parse_promptly_review_config
 from oj_modules.routes.admin_problem_routes import (
     _DEFAULT_PROGRAMMING_GRADING_MODEL,
     _DEFAULT_WRITTEN_GRADING_MODEL,
@@ -189,6 +190,16 @@ def _problem_form_options():
     }
 
 
+def _promptly_review_config_from_prompt(prompt_text):
+    config = parse_promptly_review_config({"programming_grading_prompt": prompt_text or ""})
+    return {
+        "brief": config.get("brief") or "",
+        "prompt_requirements": config.get("prompt_requirements") or "",
+        "example_replies": config.get("example_replies") or [],
+        "raw_is_json": bool(config.get("raw_is_json")),
+    }
+
+
 @problem_api_bp.route("/admin/problems/create-form", methods=["GET"])
 def problem_create_form():
     user = current_user()
@@ -212,6 +223,7 @@ def problem_create_form():
             "programming_grading_model": _DEFAULT_PROGRAMMING_GRADING_MODEL,
             "programming_output_filename": "output.png",
             "programming_grading_prompt": "",
+            "promptly_review_config": _promptly_review_config_from_prompt(""),
             "written_grading_mode": 1,
             "written_grading_model": _DEFAULT_WRITTEN_GRADING_MODEL,
             "written_grading_prompt": _DEFAULT_WRITTEN_GRADING_PROMPT,
@@ -246,6 +258,7 @@ def problem_edit_form(problem_id):
         "programming_grading_model": problem.get("programming_grading_model") or _DEFAULT_PROGRAMMING_GRADING_MODEL,
         "programming_output_filename": problem.get("programming_output_filename") or "output.png",
         "programming_grading_prompt": problem.get("programming_grading_prompt") or "",
+        "promptly_review_config": _promptly_review_config_from_prompt(problem.get("programming_grading_prompt") or ""),
         "written_grading_mode": problem.get("written_grading_mode") or 1,
         "written_grading_model": problem.get("written_grading_model") or _DEFAULT_WRITTEN_GRADING_MODEL,
         "written_grading_prompt": problem.get("written_grading_prompt") or "",
