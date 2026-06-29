@@ -39,7 +39,7 @@ def register_promptly_generate_submission_task(celery_app, evaluate_submission_t
             return {"success": False, "message": "提交不存在"}
 
         status = str(submission.get("status") or "").strip()
-        if status not in ("Generating", "Pending", "Waiting"):
+        if status != "Generating":
             return {"success": False, "message": f"提交状态不可生成：{status}"}
 
         problem = get_problem(submission.get("problem_id"))
@@ -80,7 +80,13 @@ def register_promptly_generate_submission_task(celery_app, evaluate_submission_t
             )
             update_submission_generated_code(submission_id, generated_code, status="Pending")
             if evaluate_submission_task is not None:
-                evaluate_submission_task.delay(submission_id)
+                try:
+                    evaluate_submission_task.delay(submission_id)
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "message": f"Promptly 代码已生成，但评测任务入队失败：{exc}",
+                    }
             return {"success": True, "submission_id": submission_id}
         except SoftTimeLimitExceeded:
             update_submission_prompt_generation_error(submission_id, "Promptly 代码生成超时。")

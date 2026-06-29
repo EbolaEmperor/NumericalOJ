@@ -5,6 +5,8 @@ import importlib.util
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 
 def _promptly_review_config():
     return json.dumps(
@@ -71,6 +73,13 @@ def _load_numoj_user_cli_module():
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+class _FakeCelery:
+    def task(self, **_kwargs):
+        def deco(fn):
+            return fn
+        return deco
 
 
 def test_admin_cli_builds_promptly_review_json_from_structured_args():
@@ -274,6 +283,41 @@ def test_numoj_user_wait_promptly_review_result_returns_reply():
     assert result["submission_status"]["status"] == "Unaccepted"
 
 
+def test_numoj_user_wait_promptly_review_result_treats_judge_failure_as_review_success():
+    cli = _load_numoj_user_cli_module()
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = ""
+        reason = "OK"
+
+        def json(self):
+            return {
+                "status": "Unaccepted",
+                "prompt_generation_error": "",
+                "promptly_review_reply": "",
+            }
+
+    class FakeClient:
+        def request(self, method, path):
+            assert method == "GET"
+            assert path == "/submission_status/101"
+            return FakeResponse()
+
+    result = cli.wait_promptly_review_result(
+        FakeClient(),
+        101,
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.1,
+    )
+
+    assert result["done"] is True
+    assert result["accepted"] is True
+    assert result["reply"] == ""
+    assert result["status"] == "Unaccepted"
+
+
 def test_numoj_admin_wait_promptly_review_result_returns_reply():
     cli = _load_numoj_admin_cli_module()
 
@@ -312,6 +356,125 @@ def test_numoj_admin_wait_promptly_review_result_returns_reply():
     assert result["accepted"] is False
     assert result["reply"] == "请补充关键边界处理。"
     assert result["submission_status"]["status"] == "Unaccepted"
+
+
+def test_numoj_admin_wait_promptly_review_result_treats_judge_failure_as_review_success():
+    cli = _load_numoj_admin_cli_module()
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = ""
+        reason = "OK"
+
+        def json(self):
+            return {
+                "status": "Unaccepted",
+                "prompt_generation_error": "",
+                "promptly_review_reply": "",
+            }
+
+    class FakeClient:
+        def request(self, method, path):
+            assert method == "GET"
+            assert path == "/submission_status/102"
+            return FakeResponse()
+
+    result = cli.wait_promptly_review_result(
+        FakeClient(),
+        102,
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.1,
+    )
+
+    assert result["done"] is True
+    assert result["accepted"] is True
+    assert result["reply"] == ""
+    assert result["status"] == "Unaccepted"
+
+
+def test_promptly_task_does_not_regenerate_pending_submission(monkeypatch):
+    import oj_modules.tasks.promptly_tasks as promptly_tasks
+
+    monkeypatch.setattr(
+        promptly_tasks,
+        "get_submission_by_id",
+        lambda sid: {"id": sid, "status": "Pending"},
+    )
+    monkeypatch.setattr(
+        promptly_tasks,
+        "review_promptly_student_prompt",
+        lambda *args, **kwargs: pytest.fail("Pending 提交不应重新审查 prompt"),
+    )
+
+    task = promptly_tasks.register_promptly_generate_submission_task(_FakeCelery(), None)
+    result = task(None, 103)
+
+    assert result["success"] is False
+    assert "Pending" in result["message"]
+
+
+def test_promptly_task_keeps_pending_submission_when_evaluation_enqueue_fails(monkeypatch):
+    import oj_modules.tasks.promptly_tasks as promptly_tasks
+
+    generated_updates = []
+    prompt_errors = []
+
+    class FailingEvaluateTask:
+        def __init__(self):
+            self.calls = []
+
+        def delay(self, submission_id):
+            self.calls.append(submission_id)
+            raise RuntimeError("broker down")
+
+    evaluate_task = FailingEvaluateTask()
+
+    monkeypatch.setattr(
+        promptly_tasks,
+        "get_submission_by_id",
+        lambda sid: {
+            "id": sid,
+            "status": "Generating",
+            "problem_id": 7,
+            "problem_type": 1,
+            "username": "alice",
+            "prompt_text": "Use a monotonic deque and expired index handling.",
+        },
+    )
+    monkeypatch.setattr(
+        promptly_tasks,
+        "get_problem",
+        lambda pid: {
+            "id": pid,
+            "type": 1,
+            "programming_grading_mode": 3,
+            "programming_grading_model": "test-model",
+        },
+    )
+    monkeypatch.setattr(promptly_tasks, "update_submission_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(promptly_tasks, "set_submission_status_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(promptly_tasks, "review_promptly_student_prompt", lambda **kwargs: (True, ""))
+    monkeypatch.setattr(promptly_tasks, "generate_promptly_code", lambda **kwargs: "print('hello')\n")
+    monkeypatch.setattr(
+        promptly_tasks,
+        "update_submission_generated_code",
+        lambda sid, code, status="Pending": generated_updates.append((sid, code, status)),
+    )
+    monkeypatch.setattr(
+        promptly_tasks,
+        "update_submission_prompt_generation_error",
+        lambda *args, **kwargs: prompt_errors.append((args, kwargs)),
+    )
+
+    task = promptly_tasks.register_promptly_generate_submission_task(_FakeCelery(), evaluate_task)
+    result = task(None, 104)
+
+    assert result["success"] is False
+    assert "入队失败" in result["message"]
+    assert generated_updates == [(104, "print('hello')\n", "Pending")]
+    assert evaluate_task.calls == [104]
+    assert prompt_errors == []
 
 
 def test_promptly_generation_uses_full_problem_after_review(monkeypatch):
