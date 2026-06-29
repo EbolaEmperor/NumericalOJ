@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from oj_modules.db_services import bump_daily_submission_count, get_db_connection
+from oj_modules.ranking_agent_judge import normalize_orchestration_mode
 
 
 _ranking_tables_ready = False
@@ -137,6 +138,12 @@ def ensure_ranking_tables():
                     " ADD COLUMN agent_judge_api_key VARCHAR(512) DEFAULT NULL,"
                     " ADD COLUMN agent_judge_model VARCHAR(128) DEFAULT NULL,"
                     " ADD COLUMN agent_judge_timeout_seconds INT NOT NULL DEFAULT 1800"
+                )
+            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'agent_judge_orchestration_mode'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_competitions"
+                    " ADD COLUMN agent_judge_orchestration_mode VARCHAR(16) NOT NULL DEFAULT 'single'"
                 )
             # 兼容：每 48 小时窗口提交次数限制（NULL/<=0 表示不限制）+ 窗口锚点
             cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'submit_limit_per_window'")
@@ -362,6 +369,7 @@ def get_competition(competition_id):
                        scoring_script_timeout_seconds,
                        agent_judge_base_url, agent_judge_api_key,
                        agent_judge_model, agent_judge_timeout_seconds,
+                       agent_judge_orchestration_mode,
                        submit_limit_per_window, limit_window_start,
                        submission_method, git_format,
                        reference_answer_path, reference_answer_name,
@@ -548,6 +556,7 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         scoring_script_timeout_seconds=None,
                         agent_judge_base_url=None, agent_judge_api_key=None,
                         agent_judge_model=None, agent_judge_timeout_seconds=None,
+                        agent_judge_orchestration_mode=None,
                         submit_limit_per_window=None, set_limit_window_now=False,
                         submission_method=None, git_format=None):
     ensure_ranking_tables()
@@ -613,6 +622,9 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if agent_judge_timeout_seconds is not None:
         fields.append("agent_judge_timeout_seconds = %s")
         params.append(int(agent_judge_timeout_seconds))
+    if agent_judge_orchestration_mode is not None:
+        fields.append("agent_judge_orchestration_mode = %s")
+        params.append(normalize_orchestration_mode(agent_judge_orchestration_mode))
     if submit_limit_per_window is not None:
         try:
             v = int(submit_limit_per_window)

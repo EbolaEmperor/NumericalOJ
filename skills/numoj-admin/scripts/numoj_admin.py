@@ -1345,6 +1345,7 @@ def ranking_edit(args: argparse.Namespace) -> None:
         "submit_limit_per_window": comp.get("submit_limit_per_window"),
         "submission_method": comp.get("submission_method"),
         "git_format": comp.get("git_format"),
+        "agent_judge_orchestration_mode": comp.get("agent_judge_orchestration_mode"),
         "elo_initial_rating": comp.get("elo_initial_rating"),
         "elo_k_factor": comp.get("elo_k_factor"),
         "elo_max_matches": comp.get("elo_max_matches"),
@@ -1370,6 +1371,8 @@ def ranking_edit(args: argparse.Namespace) -> None:
             ("reset_limit_window", args.reset_limit_window),
             ("submission_method", current_or_arg(current, "submission_method", args.submission_method)),
             ("git_format", current_or_arg(current, "git_format", args.git_format)),
+            ("agent_judge_orchestration_mode", current_or_arg(
+                current, "agent_judge_orchestration_mode", args.agent_orchestration)),
             ("elo_initial_rating", current_or_arg(current, "elo_initial_rating", args.elo_initial_rating)),
             ("elo_k_factor", current_or_arg(current, "elo_k_factor", args.elo_k_factor)),
             ("elo_max_matches", current_or_arg(current, "elo_max_matches", args.elo_max_matches)),
@@ -1455,6 +1458,8 @@ def ranking_config(args: argparse.Namespace) -> None:
         data["agent_judge_api_key"] = read_text_value(args.api_key)
     if args.timeout_seconds is not None:
         data["agent_judge_timeout_seconds"] = str(args.timeout_seconds)
+    if args.orchestration_mode is not None:
+        data["agent_judge_orchestration_mode"] = args.orchestration_mode
     resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/config", data=data)
     print_redirect_response(resp)
 
@@ -1471,6 +1476,8 @@ def ranking_endpoints(args: argparse.Namespace) -> None:
     payload: Dict[str, Any] = {"endpoints": parse_json_value(args.endpoints)}
     if args.timeout_seconds is not None:
         payload["timeout_seconds"] = args.timeout_seconds
+    if args.orchestration_mode is not None:
+        payload["orchestration_mode"] = args.orchestration_mode
     resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/endpoints", json=payload)
     print_or_save_response(resp)
 
@@ -2298,6 +2305,7 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--reset-limit-window", action="store_true", help="Reset the per-user submission-limit window.")
     pa.add_argument("--submission-method", choices=["zip", "git"], help="Submission method accepted by the competition.")
     pa.add_argument("--git-format", help="Git repository URL format or rule used to derive participant repositories.")
+    pa.add_argument("--agent-orchestration", choices=["single", "topological"], help="Agent-as-Judge orchestration mode.")
     pa.add_argument("--elo-initial-rating", type=float, help="Initial ELO rating assigned to new submissions.")
     pa.add_argument("--elo-k-factor", type=float, help="ELO K-factor used when updating ratings.")
     pa.add_argument("--elo-max-matches", type=int, help="Maximum number of ELO matches per submission.")
@@ -2343,6 +2351,7 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--api-key", help="API key text, or @file to read it from a file.")
     pa.add_argument("--model", help="Model identifier used by Agent-as-Judge.")
     pa.add_argument("--timeout-seconds", type=int, help="Agent-as-Judge timeout in seconds.")
+    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="Agent-as-Judge orchestration mode.")
     pa.set_defaults(func=ranking_config)
     pa = add_cli_parser(rs, "save-rules", "Save Agent-as-Judge grading rules for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
@@ -2355,6 +2364,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON array of endpoint objects; each may include status=enabled|paused|disabled, or legacy enabled=true/false.",
     )
     pa.add_argument("--timeout-seconds", type=int, help="Agent-as-Judge timeout in seconds.")
+    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="Agent-as-Judge orchestration mode.")
     pa.set_defaults(func=ranking_endpoints)
     pa = add_cli_parser(rs, "batch-probe", "Preview Git repositories that would be used for batch ranking submissions.")
     pa.add_argument("competition_id", type=int, help="Competition ID for the batch probe.")

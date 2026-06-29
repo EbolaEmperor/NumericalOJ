@@ -151,6 +151,115 @@ def test_run_copies_opencode_state_for_opencode_harness(monkeypatch):
     assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
+def test_exec_harness_phase_streams_prompt_without_workspace_file(monkeypatch):
+    ws = tempfile.mkdtemp(prefix="ajphase_")
+    calls = []
+
+    class FakeSubprocess:
+        def run(self, args, **kwargs):
+            calls.append((list(args), dict(kwargs)))
+            return _FakeProc(0, "")
+
+    monkeypatch.setattr(m, "subprocess", FakeSubprocess())
+
+    m._exec_harness_phase(
+        "aj_7", ws, "rule_9", "prompt containing result_secret.jsonl", 30,
+        resume_session_id="11111111-1111-1111-1111-111111111111",
+        result_filename="result_secret.rule_9.jsonl",
+    )
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    joined = " ".join(args)
+    assert "AJ_PROMPT_FILE" not in joined
+    assert ".aj_prompt_" not in joined
+    assert "-i" in args
+    assert "-e" in args and "DEBIAN_FRONTEND=noninteractive" in args
+    assert kwargs["input"] == "prompt containing result_secret.jsonl"
+    assert not any(name.startswith(".aj_prompt_") for name in os.listdir(ws))
+
+
+def test_topological_orchestration_skips_blocked_rule(monkeypatch):
+    ws = tempfile.mkdtemp(prefix="ajtopo_")
+    os.makedirs(os.path.join(ws, "submission"), exist_ok=True)
+    result_name = "result_topo.jsonl"
+    open(os.path.join(ws, result_name), "w").close()
+    rules = m.aj.normalize_rules([
+        {"rule_id": 1, "rule_text": "基础运行", "value": 10, "dependencies": []},
+        {"rule_id": 2, "rule_text": "依赖基础", "value": 20, "dependencies": [1]},
+        {"rule_id": 3, "rule_text": "独立检查", "value": 30, "dependencies": []},
+    ])
+    phases = []
+    writes = []
+
+    class FakeSubprocess:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, args, **kwargs):
+            self.calls.append(list(args))
+            return _FakeProc(0, "false")
+
+    def fake_exec(container_name, ws_arg, phase, prompt, timeout_s,
+                  resume_session_id=None, result_filename=None):
+        phases.append((phase, resume_session_id))
+        phase_result_path = os.path.join(ws_arg, result_filename or result_name)
+        if phase == "setup":
+            with open(os.path.join(ws_arg, ".aj_session_state.json"), "w", encoding="utf-8") as f:
+                json.dump({"session_id": "11111111-1111-1111-1111-111111111111"}, f)
+        elif phase == "rule_1":
+            with open(phase_result_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"rule_id": 1, "result": "failed", "evidence": "no"}) + "\n")
+            with open(os.path.join(ws_arg, ".aj_session_state.json"), "w", encoding="utf-8") as f:
+                json.dump({"session_id": "22222222-2222-2222-2222-222222222222"}, f)
+        elif phase == "rule_3":
+            with open(phase_result_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"rule_id": 3, "result": "pass", "evidence": "ok"}) + "\n")
+            with open(os.path.join(ws_arg, ".aj_session_state.json"), "w", encoding="utf-8") as f:
+                json.dump({"session_id": "33333333-3333-3333-3333-333333333333"}, f)
+        return _FakeProc(0, "")
+
+    def fake_upsert(submission_id, attempt_id, rule_id, raw, effective, score, evidence):
+        writes.append((rule_id, raw, effective, score, evidence))
+        return 1
+
+    fake_subprocess = FakeSubprocess()
+    monkeypatch.setattr(m, "subprocess", fake_subprocess)
+    monkeypatch.setattr(m, "_exec_harness_phase", fake_exec)
+    monkeypatch.setattr(m, "_attempt_still_current", lambda *_a, **_k: True)
+    monkeypatch.setattr(m, "_dump_container_harness_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "_publish_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "upsert_judge_result_for_attempt", fake_upsert)
+
+    timed_out, ok = m._run_container_topological(
+        submission_id=7,
+        ws=ws,
+        result_name=result_name,
+        competition={"title": "拓扑赛"},
+        rules=rules,
+        timeout_s=600,
+        endpoint={"harness": m.HARNESS_CLAUDE_CODE, "base_url": "http://x", "api_key": "k", "model": "m"},
+        attempt_id="att",
+    )
+    assert (timed_out, ok) == (False, True)
+    assert phases == [
+        ("setup", None),
+        ("rule_1", "11111111-1111-1111-1111-111111111111"),
+        ("rule_3", "22222222-2222-2222-2222-222222222222"),
+    ]
+    by_rule = {row[0]: row for row in writes}
+    assert by_rule[1][1:3] == ("failed", "failed")
+    assert by_rule[2][1] is None and by_rule[2][2] == m.aj.EFF_SKIPPED
+    assert by_rule[3][1:3] == ("pass", "pass")
+    run_call = next(c for c in fake_subprocess.calls if len(c) > 1 and c[1] == "run")
+    assert run_call[-1] == "tail -f /dev/null"
+    apt_call = next(
+        c for c in fake_subprocess.calls
+        if len(c) > 1 and c[1] == "exec" and "apt-get update" in c[-1]
+    )
+    assert "-e" in apt_call and "DEBIAN_FRONTEND=noninteractive" in apt_call
+
+
 def test_hello_probe_request_requires_configured_values():
     req, err = m._hello_probe_request({
         "harness": m.HARNESS_CODEX,
@@ -284,7 +393,7 @@ def test_agent_judge_switches_endpoint_after_failed_hello(monkeypatch):
                         lambda ep: (ep["id"] == 2, "ok" if ep["id"] == 2 else "down"))
     monkeypatch.setattr(m, "_disable_unhealthy_endpoint",
                         lambda ep, reason: disabled.append((ep["id"], reason)))
-    monkeypatch.setattr(m, "_judge", lambda sid, ep, attempt_id=None: judged.append(ep["id"]) or {"success": True})
+    monkeypatch.setattr(m, "_judge", lambda sid, ep, *args: judged.append(ep["id"]) or {"success": True})
 
     task = m.register_ranking_agent_judge_task(_FakeCelery())
     assert task(_FakeTaskSelf(), 100) == {"success": True}
@@ -410,11 +519,14 @@ def test_agent_judge_requeues_when_every_endpoint_slot_is_busy(monkeypatch):
     monkeypatch.setattr(m, "get_competition",
                         lambda cid: {"id": cid, "agent_judge_timeout_seconds": 60})
     monkeypatch.setattr(m, "_resolve_endpoints", lambda *_a, **_k: [endpoint])
-    monkeypatch.setattr(m, "set_submission_status", lambda sid, status: statuses.append((sid, status)))
+    monkeypatch.setattr(
+        m, "set_submission_status_for_attempt",
+        lambda sid, attempt_id, status: statuses.append((sid, attempt_id, status)) or 1,
+    )
     monkeypatch.setattr(m, "_publish_snapshot", lambda sid: None)
     monkeypatch.setattr(m.random, "randint", lambda *_a, **_k: 0)
 
     task = m.register_ranking_agent_judge_task(_FakeCelery())
     with pytest.raises(m.Retry):
         task(_FakeTaskSelf(), 101)
-    assert statuses == [(101, "Queued")]
+    assert statuses == [(101, None, "Queued")]
