@@ -36,6 +36,7 @@ def ensure_agent_judge_tables():
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     competition_id INT NOT NULL,
                     rule_id INT NOT NULL,
+                    rule_name VARCHAR(120) DEFAULT NULL,
                     rule_text MEDIUMTEXT NOT NULL,
                     value DOUBLE NOT NULL DEFAULT 0,
                     dependencies TEXT,
@@ -46,6 +47,12 @@ def ensure_agent_judge_tables():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            cursor.execute("SHOW COLUMNS FROM ranking_judge_rules LIKE 'rule_name'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_judge_rules"
+                    " ADD COLUMN rule_name VARCHAR(120) DEFAULT NULL AFTER rule_id"
+                )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ranking_judge_results (
@@ -227,10 +234,11 @@ def replace_competition_rules(competition_id, rules):
                 cursor.execute(
                     """
                     INSERT INTO ranking_judge_rules
-                        (competition_id, rule_id, rule_text, value, dependencies, ordering)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                        (competition_id, rule_id, rule_name, rule_text, value, dependencies, ordering)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (competition_id, r['rule_id'], r['rule_text'], float(r['value']),
+                    (competition_id, r['rule_id'], r.get('rule_name') or None,
+                     r['rule_text'], float(r['value']),
                      json.dumps(r['dependencies']), r['ordering']),
                 )
         conn.commit()
@@ -247,7 +255,7 @@ def list_competition_rules(competition_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT rule_id, rule_text, value, dependencies, ordering
+                SELECT rule_id, rule_name, rule_text, value, dependencies, ordering
                 FROM ranking_judge_rules
                 WHERE competition_id = %s
                 ORDER BY ordering ASC, rule_id ASC
@@ -263,7 +271,8 @@ def list_competition_rules(competition_id):
             deps = json.loads(row.get('dependencies') or '[]')
         except Exception:
             deps = []
-        out.append({'rule_id': int(row['rule_id']), 'rule_text': row['rule_text'],
+        out.append({'rule_id': int(row['rule_id']), 'rule_name': row.get('rule_name') or '',
+                    'rule_text': row['rule_text'],
                     'value': float(row['value']),
                     'dependencies': [int(d) for d in deps],
                     'ordering': int(row['ordering'] or 0)})
@@ -402,7 +411,8 @@ def build_judge_snapshot(submission_id):
         evidence = evidence_by_id.get(rid, '')
         # 仅存 markdown 源（rule_text / evidence）；HTML 在前端请求时实时渲染（见 render_snapshot_html）
         rule_payloads.append({
-            'rule_id': rid, 'rule_text': r['rule_text'], 'value': float(r['value']),
+            'rule_id': rid, 'rule_name': r.get('rule_name') or '',
+            'rule_text': r['rule_text'], 'value': float(r['value']),
             'dependencies': r['dependencies'],
             'effective': c['effective'], 'score': c['score'],
             'evidence': evidence,

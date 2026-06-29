@@ -421,8 +421,11 @@ def copy_competition(src_id, *, created_by=None):
             comp = cursor.fetchone()
             if not comp:
                 raise ValueError(f'源比赛 {src_id} 不存在')
+            cursor.execute("SHOW COLUMNS FROM ranking_judge_rules LIKE 'rule_name'")
+            has_rule_name = bool(cursor.fetchone())
+            rule_name_select = "rule_name, " if has_rule_name else "'' AS rule_name, "
             cursor.execute(
-                "SELECT rule_id, rule_text, value, dependencies, ordering "
+                "SELECT rule_id, " + rule_name_select + "rule_text, value, dependencies, ordering "
                 "FROM ranking_judge_rules WHERE competition_id = %s ORDER BY ordering, rule_id",
                 (int(src_id),),
             )
@@ -479,12 +482,22 @@ def copy_competition(src_id, *, created_by=None):
 
             # —— 3) 复制评测规则 ——
             for r in rules:
-                cursor.execute(
-                    "INSERT INTO ranking_judge_rules "
-                    "(competition_id, rule_id, rule_text, value, dependencies, ordering) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (new_id, r['rule_id'], r['rule_text'], r['value'], r['dependencies'], r['ordering']),
-                )
+                if has_rule_name:
+                    cursor.execute(
+                        "INSERT INTO ranking_judge_rules "
+                        "(competition_id, rule_id, rule_name, rule_text, value, dependencies, ordering) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                        (new_id, r['rule_id'], r.get('rule_name') or None, r['rule_text'],
+                         r['value'], r['dependencies'], r['ordering']),
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO ranking_judge_rules "
+                        "(competition_id, rule_id, rule_text, value, dependencies, ordering) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (new_id, r['rule_id'], r['rule_text'], r['value'],
+                         r['dependencies'], r['ordering']),
+                    )
 
             # —— 4) 复制 Agent 评测端点（含 api_key）——
             for e in endpoints:

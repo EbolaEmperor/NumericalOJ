@@ -173,6 +173,48 @@
       .aj-md table { border-collapse:collapse; margin:.5rem 0; } .aj-md th,.aj-md td { border:1px solid #e0e0e3; padding:.25rem .5rem; }
       .aj-md blockquote { border-left:3px solid #e0d9bf; margin:.5rem 0; padding:.1rem .8rem; color:#6c757d; }
       .aj-evi { background:#f8f9fa; border-radius:6px; }
+      #judgeDetailModal, .aj-result-pop { --gold:#f5c518; --gold-d:#b8910f; --ink:#1f2329; --muted:#70757c; --line:#e6e6e9;
+        --ok:#1f7a4d; --info:#2563cb; --err:#b03a2e; --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
+      .aj-result-tabs { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#fff; }
+      .aj-result-tab { border:none; background:#fff; color:var(--muted); padding:.28rem .72rem; font-size:.78rem; line-height:1.2; cursor:pointer; transition:.12s; }
+      .aj-result-tab + .aj-result-tab { border-left:1px solid var(--line); }
+      .aj-result-tab:hover { color:var(--gold-d); background:#fffaf0; }
+      .aj-result-tab.active { color:#5b4708; background:var(--gold); font-weight:600; }
+      .aj-result-view[hidden] { display:none !important; }
+      .aj-result-topo-main { border:1px solid var(--line); border-radius:6px; background:#fff; overflow:auto; }
+      .aj-result-topo-canvas { min-height:360px; padding:.35rem; }
+      .aj-result-topo-empty { min-height:300px; display:grid; place-items:center; color:#b7ad95; font-size:.9rem; text-align:center; }
+      .aj-result-surface { position:relative; min-width:100%; }
+      .aj-result-svg { position:absolute; inset:0; overflow:visible; pointer-events:none; }
+      .aj-result-edge { fill:none; stroke:#b9aa7b; stroke-width:2; pointer-events:none; }
+      .aj-result-node { position:absolute; width:176px; height:88px; display:flex; flex-direction:column; gap:.22rem;
+                        text-align:left; border:1px solid #dfd6b6; border-left:3px solid var(--gold);
+                        background:#fffdf8; border-radius:6px; padding:.56rem .65rem; color:var(--ink);
+                        cursor:pointer; transition:border-color .12s, background .12s, transform .12s; overflow:hidden; }
+      .aj-result-node:hover { border-color:var(--gold-d); background:#fff8dd; transform:translateY(-1px); }
+      .aj-result-node.s-pass { border-left-color:var(--ok); background:#fbfffc; }
+      .aj-result-node.s-failed { border-left-color:var(--err); background:#fffafa; }
+      .aj-result-node.s-skipped { border-left-color:#8f969e; background:#fcfcfd; }
+      .aj-result-node.s-error { border-left-color:#b07340; background:#fffaf5; }
+      .aj-result-node.s-pending { border-left-color:var(--info); background:#fbfdff; }
+      .aj-result-node-id { font-family:var(--mono); font-size:.72rem; color:#806713; font-weight:700; line-height:1; }
+      .aj-result-node-title { font-size:.88rem; line-height:1.2; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .aj-result-node-text { font-size:.72rem; line-height:1.25; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+      .aj-result-node-foot { margin-top:auto; display:flex; align-items:center; justify-content:space-between; gap:.4rem; font-size:.7rem; }
+      .aj-result-status { border-radius:999px; padding:.08rem .42rem; white-space:nowrap; }
+      .aj-result-score { font-family:var(--mono); color:var(--ink); white-space:nowrap; }
+      .aj-result-pop { position:fixed; inset:0; z-index:1065; display:grid; place-items:center; background:rgba(31,35,41,.28); padding:1rem; }
+      .aj-result-pop[hidden] { display:none !important; }
+      .aj-result-pop-box { width:min(780px, 100%); max-height:min(82vh, 720px); overflow:auto; background:#fff; border:1px solid var(--line); border-radius:8px; }
+      .aj-result-pop-head { display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; padding:1rem 1.1rem; border-bottom:1px solid var(--line); }
+      .aj-result-pop-title { font-weight:700; color:var(--ink); }
+      .aj-result-pop-meta { font-size:.78rem; color:var(--muted); margin-top:.18rem; }
+      .aj-result-pop-close { border:none; background:transparent; width:30px; height:30px; border-radius:5px; color:var(--muted); }
+      .aj-result-pop-close:hover { background:#f1f1f3; color:var(--ink); }
+      .aj-result-pop-body { padding:1rem 1.1rem 1.1rem; }
+      .aj-result-pop-section + .aj-result-pop-section { margin-top:1rem; }
+      .aj-result-pop-label { font-size:.76rem; color:var(--muted); margin-bottom:.35rem; }
+      @media (max-width:640px){ .aj-result-node{width:164px;} .aj-result-topo-main{max-width:100%;} }
     </style>
 
     {# ========== 比赛描述 ========== #}
@@ -576,6 +618,13 @@
                 <div class="progress-bar" id="judgeModalBar" role="progressbar"
                      style="height:6px;border-radius:999px;background:#16a34a;width:0%;"></div>
               </div>
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <div class="aj-result-tabs" role="tablist" aria-label="评分结果视图">
+                  <button type="button" class="aj-result-tab active" data-judge-view="topo" role="tab" aria-selected="true">拓扑</button>
+                  <button type="button" class="aj-result-tab" data-judge-view="detail" role="tab" aria-selected="false">详情</button>
+                </div>
+                <span class="small text-muted">点击拓扑节点查看规则原文与评分证据</span>
+              </div>
               <div id="appealPanel" class="border rounded p-3 mb-3" style="display:none;background:#fffdf6;border-color:#f0e2b8 !important;">
                 <div id="appealInputArea">
                   <label class="form-label small text-muted mb-1"><i class="fas fa-comment-dots me-1"></i>申诉意见（说明你认为评分有误的地方）</label>
@@ -596,11 +645,37 @@
                   </div>
                 </div>
               </div>
-              <div id="judgeModalRules">
+              <div id="judgeModalTopo" class="aj-result-view">
+                <div class="text-muted text-center py-5">
+                  <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分拓扑…
+                </div>
+              </div>
+              <div id="judgeModalRules" class="aj-result-view" hidden>
                 <div class="text-muted text-center py-5">
                   <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="aj-result-pop" id="judgeRuleReadPopup" hidden>
+        <div class="aj-result-pop-box" role="dialog" aria-modal="true" aria-labelledby="judgeRuleReadTitle">
+          <div class="aj-result-pop-head">
+            <div>
+              <div class="aj-result-pop-title" id="judgeRuleReadTitle">规则详情</div>
+              <div class="aj-result-pop-meta" id="judgeRuleReadMeta"></div>
+            </div>
+            <button type="button" class="aj-result-pop-close" id="judgeRuleReadClose" aria-label="关闭"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="aj-result-pop-body">
+            <div class="aj-result-pop-section">
+              <div class="aj-result-pop-label">规则原文</div>
+              <div class="aj-md small" id="judgeRuleReadRule"></div>
+            </div>
+            <div class="aj-result-pop-section">
+              <div class="aj-result-pop-label">评分证据</div>
+              <div class="aj-md aj-evi small p-2" id="judgeRuleReadEvidence"></div>
             </div>
           </div>
         </div>
@@ -728,6 +803,9 @@
           Queued: '等待评测',
           Pending: '待评测'
         };
+        var currentJudgeSnapshot = null;
+        var currentJudgeView = 'topo';
+        var resultNodeW = 176, resultNodeH = 88, resultMarginX = 28, resultMarginY = 24, resultXGap = 220, resultYGap = 116;
         function closeJudgeStream() {
           if (judgeSource) {
             judgeSource.close();
@@ -739,22 +817,82 @@
             return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c];
           });
         }
-        function renderJudgeSnapshot(snap) {
-          var total = document.getElementById('judgeModalTotal');
-          var max = document.getElementById('judgeModalMax');
-          var status = document.getElementById('judgeModalStatus');
-          var bar = document.getElementById('judgeModalBar');
+        function compactRuleText(s, n) {
+          s = String(s || '').replace(/\s+/g, ' ').trim();
+          if (!s) return '未填写规则内容';
+          return s.length > n ? s.slice(0, n) + '…' : s;
+        }
+        function resultRuleTitle(r) {
+          return (r.rule_name || '').trim() || compactRuleText(r.rule_text, 14);
+        }
+        function setJudgeView(view) {
+          currentJudgeView = view || 'topo';
+          document.querySelectorAll('[data-judge-view]').forEach(function (tab) {
+            var on = tab.dataset.judgeView === currentJudgeView;
+            tab.classList.toggle('active', on);
+            tab.setAttribute('aria-selected', on ? 'true' : 'false');
+          });
+          var topo = document.getElementById('judgeModalTopo');
+          var detail = document.getElementById('judgeModalRules');
+          if (topo) topo.hidden = currentJudgeView !== 'topo';
+          if (detail) detail.hidden = currentJudgeView !== 'detail';
+        }
+        function topoLayoutForRules(rules) {
+          var indeg = {}, adj = {};
+          rules.forEach(function (r) { indeg[r.rule_id] = 0; adj[r.rule_id] = []; });
+          rules.forEach(function (r) {
+            (r.dependencies || []).forEach(function (d) {
+              if (adj[d]) { adj[d].push(r.rule_id); indeg[r.rule_id] += 1; }
+            });
+          });
+          var queue = Object.keys(indeg).map(Number).filter(function (id) { return indeg[id] === 0; }).sort(function (a, b) { return a - b; });
+          var order = [], level = {};
+          rules.forEach(function (r) { level[r.rule_id] = 0; });
+          while (queue.length) {
+            var id = queue.shift();
+            order.push(id);
+            (adj[id] || []).sort(function (a, b) { return a - b; }).forEach(function (nxt) {
+              level[nxt] = Math.max(level[nxt], level[id] + 1);
+              indeg[nxt] -= 1;
+              if (indeg[nxt] === 0) {
+                queue.push(nxt);
+                queue.sort(function (a, b) { return a - b; });
+              }
+            });
+          }
+          if (order.length !== rules.length) return null;
+          var cols = {}, maxLevel = 0, maxRows = 1;
+          order.forEach(function (id) {
+            var lv = level[id] || 0;
+            maxLevel = Math.max(maxLevel, lv);
+            if (!cols[lv]) cols[lv] = [];
+            cols[lv].push(id);
+          });
+          var positions = {};
+          Object.keys(cols).map(Number).sort(function (a, b) { return a - b; }).forEach(function (lv) {
+            cols[lv].sort(function (a, b) { return a - b; });
+            maxRows = Math.max(maxRows, cols[lv].length);
+            cols[lv].forEach(function (id, row) {
+              positions[id] = {
+                x: resultMarginX + lv * (resultNodeW + resultXGap),
+                y: resultMarginY + row * (resultNodeH + resultYGap)
+              };
+            });
+          });
+          return {
+            positions: positions,
+            width: resultMarginX * 2 + (maxLevel + 1) * resultNodeW + maxLevel * resultXGap,
+            height: resultMarginY * 2 + maxRows * resultNodeH + (maxRows - 1) * resultYGap
+          };
+        }
+        function resultEdgePath(a, b) {
+          var x1 = a.x + resultNodeW, y1 = a.y + resultNodeH / 2;
+          var x2 = b.x, y2 = b.y + resultNodeH / 2;
+          var c = Math.max(70, Math.abs(x2 - x1) * 0.45);
+          return 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + c) + ' ' + y1 + ', ' + (x2 - c) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+        }
+        function renderJudgeDetails(snap) {
           var rulesBox = document.getElementById('judgeModalRules');
-          if (total) total.textContent = snap.total_score || 0;
-          if (max) max.textContent = snap.max_score || 0;
-          if (status) {
-            status.textContent = (STATUS[snap.status] || snap.status || '评测状态未知') +
-              (snap.timed_out ? ' · 已超时，保留已有得分' : '');
-          }
-          if (bar) {
-            var pct = snap.max_score ? (snap.total_score / snap.max_score * 100) : 0;
-            bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
-          }
           if (!rulesBox) return;
           if (!snap.rules || !snap.rules.length) {
             rulesBox.innerHTML = '<div class="text-muted text-center py-5">暂无评分规则。</div>';
@@ -765,11 +903,13 @@
             var b = BADGE[r.effective] || BADGE.pending;
             var div = document.createElement('div');
             div.className = 'border rounded p-3 mb-2';
+            var title = '<strong>规则 ' + r.rule_id + '</strong>';
+            if (r.rule_name) title += ' <span class="text-muted small">' + esc(r.rule_name) + '</span>';
             var head =
               '<div class="d-flex justify-content-between align-items-start gap-3">' +
               '<div><span class="badge me-2" style="color:' + b[1] +
               ';background:' + b[2] + ';border-radius:999px;">' + b[0] + '</span>' +
-              '<strong>规则 ' + r.rule_id + '</strong> <span class="text-muted small">(' + r.value + ' 分)</span>' +
+              title + ' <span class="text-muted small">(' + r.value + ' 分)</span>' +
               '<div class="aj-md small mt-1">' + (r.rule_html || esc(r.rule_text)) + '</div></div>' +
               '<div class="text-end fw-semibold" style="white-space:nowrap;">' + (r.score || 0) + ' 分</div></div>';
             var ev = (r.evidence_html || r.evidence)
@@ -779,7 +919,122 @@
             div.innerHTML = head + ev;
             rulesBox.appendChild(div);
           });
-          if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([rulesBox]).catch(function () {}); }
+        }
+        function renderJudgeTopo(snap) {
+          var topo = document.getElementById('judgeModalTopo');
+          if (!topo) return;
+          if (!snap.rules || !snap.rules.length) {
+            topo.innerHTML = '<div class="aj-result-topo-empty">暂无评分规则。</div>';
+            return;
+          }
+          var layout = topoLayoutForRules(snap.rules);
+          if (!layout) {
+            topo.innerHTML = '<div class="aj-result-topo-empty text-danger">当前依赖存在环，无法生成拓扑图。</div>';
+            return;
+          }
+          var wrap = document.createElement('div');
+          wrap.className = 'aj-result-topo-main';
+          var canvas = document.createElement('div');
+          canvas.className = 'aj-result-topo-canvas';
+          var surface = document.createElement('div');
+          surface.className = 'aj-result-surface';
+          surface.style.width = layout.width + 'px';
+          surface.style.height = layout.height + 'px';
+          var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          svg.setAttribute('class', 'aj-result-svg');
+          svg.setAttribute('width', layout.width);
+          svg.setAttribute('height', layout.height);
+          svg.setAttribute('viewBox', '0 0 ' + layout.width + ' ' + layout.height);
+          svg.innerHTML = '<defs><marker id="ajResultArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#b9aa7b"></path></marker></defs>';
+          surface.appendChild(svg);
+          snap.rules.forEach(function (r) {
+            (r.dependencies || []).forEach(function (dep) {
+              var from = layout.positions[dep], to = layout.positions[r.rule_id];
+              if (!from || !to) return;
+              var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+              path.setAttribute('class', 'aj-result-edge');
+              path.setAttribute('d', resultEdgePath(from, to));
+              path.setAttribute('marker-end', 'url(#ajResultArrow)');
+              svg.appendChild(path);
+            });
+          });
+          snap.rules.forEach(function (r) {
+            var pos = layout.positions[r.rule_id];
+            var b = BADGE[r.effective] || BADGE.pending;
+            var node = document.createElement('button');
+            node.type = 'button';
+            node.className = 'aj-result-node s-' + (r.effective || 'pending');
+            node.dataset.ruleId = r.rule_id;
+            node.title = r.rule_text || '未填写规则内容';
+            node.style.left = pos.x + 'px';
+            node.style.top = pos.y + 'px';
+            node.innerHTML =
+              '<span class="aj-result-node-id">规则 ' + r.rule_id + '</span>' +
+              '<span class="aj-result-node-title">' + esc(resultRuleTitle(r)) + '</span>' +
+              '<span class="aj-result-node-text">' + esc(compactRuleText(r.rule_text, 42)) + '</span>' +
+              '<span class="aj-result-node-foot">' +
+                '<span class="aj-result-status" style="color:' + b[1] + ';background:' + b[2] + ';">' + b[0] + '</span>' +
+                '<span class="aj-result-score">' + (r.score || 0) + '/' + (r.value || 0) + '</span>' +
+              '</span>';
+            surface.appendChild(node);
+          });
+          canvas.appendChild(surface);
+          wrap.appendChild(canvas);
+          topo.innerHTML = '';
+          topo.appendChild(wrap);
+          topo.querySelectorAll('[data-rule-id]').forEach(function (n) {
+            n.onclick = function () { openJudgeRulePopup(parseInt(n.dataset.ruleId, 10)); };
+          });
+        }
+        function renderJudgeResultViews(snap) {
+          currentJudgeSnapshot = snap;
+          renderJudgeTopo(snap);
+          renderJudgeDetails(snap);
+          setJudgeView(currentJudgeView || 'topo');
+          var targets = [];
+          var topo = document.getElementById('judgeModalTopo');
+          var rulesBox = document.getElementById('judgeModalRules');
+          if (topo) targets.push(topo);
+          if (rulesBox) targets.push(rulesBox);
+          if (window.MathJax && MathJax.typesetPromise && targets.length) { MathJax.typesetPromise(targets).catch(function () {}); }
+        }
+        function openJudgeRulePopup(ruleId) {
+          if (!currentJudgeSnapshot || !currentJudgeSnapshot.rules) return;
+          var r = currentJudgeSnapshot.rules.filter(function (it) { return parseInt(it.rule_id, 10) === ruleId; })[0];
+          if (!r) return;
+          var popup = document.getElementById('judgeRuleReadPopup');
+          if (!popup) return;
+          var b = BADGE[r.effective] || BADGE.pending;
+          document.getElementById('judgeRuleReadTitle').textContent = '规则 ' + r.rule_id + ' · ' + resultRuleTitle(r);
+          document.getElementById('judgeRuleReadMeta').innerHTML =
+            '<span class="badge me-2" style="color:' + b[1] + ';background:' + b[2] + ';border-radius:999px;">' + b[0] + '</span>' +
+            '<span>得分 ' + (r.score || 0) + ' / ' + (r.value || 0) + '</span>';
+          document.getElementById('judgeRuleReadRule').innerHTML = r.rule_html || esc(r.rule_text);
+          document.getElementById('judgeRuleReadEvidence').innerHTML =
+            (r.evidence_html || r.evidence) ? (r.evidence_html || esc(r.evidence)) : '<span class="text-muted">暂无评分证据。</span>';
+          popup.hidden = false;
+          if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([popup]).catch(function () {}); }
+        }
+        function closeJudgeRulePopup() {
+          var popup = document.getElementById('judgeRuleReadPopup');
+          if (popup) popup.hidden = true;
+        }
+        function renderJudgeSnapshot(snap) {
+          var total = document.getElementById('judgeModalTotal');
+          var max = document.getElementById('judgeModalMax');
+          var status = document.getElementById('judgeModalStatus');
+          var bar = document.getElementById('judgeModalBar');
+          if (total) total.textContent = snap.total_score || 0;
+          if (max) max.textContent = snap.max_score || 0;
+          if (status) {
+            status.textContent = (STATUS[snap.status] || snap.status || '评测状态未知') +
+              (snap.timed_out ? ' · 已超时，保留已有得分' : '');
+          }
+          if (bar) {
+            var pct = snap.max_score ? (snap.total_score / snap.max_score * 100) : 0;
+            bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+          }
+          renderJudgeResultViews(snap);
         }
         function openJudgeModal(btn) {
           if (!btn || !judgeModal) return;
@@ -805,12 +1060,21 @@
           var meta = document.getElementById('judgeModalMeta');
           var status = document.getElementById('judgeModalStatus');
           var rulesBox = document.getElementById('judgeModalRules');
+          var topoBox = document.getElementById('judgeModalTopo');
           var bar = document.getElementById('judgeModalBar');
+          currentJudgeSnapshot = null;
+          currentJudgeView = 'topo';
+          setJudgeView('topo');
+          closeJudgeRulePopup();
           document.getElementById('judgeModalTotal').textContent = '0';
           document.getElementById('judgeModalMax').textContent = '0';
           if (bar) bar.style.width = '0%';
           if (meta) meta.textContent = '#' + sid + (createdAt ? ' · ' + createdAt : '');
           if (status) status.textContent = '正在连接评测进度…';
+          if (topoBox) {
+            topoBox.innerHTML = '<div class="text-muted text-center py-5">' +
+              '<span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分拓扑…</div>';
+          }
           if (rulesBox) {
             rulesBox.innerHTML = '<div class="text-muted text-center py-5">' +
               '<span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…</div>';
@@ -835,6 +1099,17 @@
         document.querySelectorAll('.judge-detail-btn').forEach(function (btn) {
           btn.addEventListener('click', function () { openJudgeModal(btn); });
         });
+        document.querySelectorAll('[data-judge-view]').forEach(function (tab) {
+          tab.addEventListener('click', function () { setJudgeView(tab.dataset.judgeView); });
+        });
+        var ruleReadClose = document.getElementById('judgeRuleReadClose');
+        if (ruleReadClose) ruleReadClose.addEventListener('click', closeJudgeRulePopup);
+        var ruleReadPopup = document.getElementById('judgeRuleReadPopup');
+        if (ruleReadPopup) {
+          ruleReadPopup.addEventListener('click', function (e) {
+            if (e.target === ruleReadPopup) closeJudgeRulePopup();
+          });
+        }
         var appealToggle = document.getElementById('appealToggle');
         if (appealToggle) appealToggle.addEventListener('click', function () {
           var ap = document.getElementById('appealPanel');
@@ -3011,12 +3286,20 @@
         .aj-rules { --gold:#f5c518; --gold-d:#b8910f; --gold-bg:#fef6d8; --gold-line:#ecd98c;
                     --ink:#1f2329; --muted:#70757c; --line:#e4e4e7; --paper:#fbfaf6; --green:#1f7a4d;
                     --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
-        .aj-rules-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:.9rem; }
+        .aj-rules-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.9rem; }
+        .aj-rules-head-left { display:flex; align-items:center; flex-wrap:wrap; gap:.7rem; min-width:0; }
         .aj-rules-head .aj-count { font-size:.8rem; color:var(--muted); }
         .aj-total { font-family:var(--mono); font-size:.78rem; font-weight:600; color:var(--gold-d);
                     background:var(--gold-bg); border:1px solid var(--gold-line);
                     border-radius:4px; padding:.22rem .6rem; letter-spacing:.02em; white-space:nowrap; }
         .aj-total b { font-size:.95rem; }
+        .aj-view-tabs { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#fff; }
+        .aj-view-tab { border:none; background:#fff; color:var(--muted); padding:.32rem .72rem; font-size:.8rem;
+                       line-height:1.2; cursor:pointer; transition:.12s; }
+        .aj-view-tab + .aj-view-tab { border-left:1px solid var(--line); }
+        .aj-view-tab:hover { color:var(--gold-d); background:#fffaf0; }
+        .aj-view-tab.active { color:#5b4708; background:var(--gold); font-weight:600; }
+        .aj-view[hidden] { display:none !important; }
         .aj-rule { position:relative; background:#fff; border:1px solid var(--line); border-left:3px solid var(--gold);
                    border-radius:6px; padding:.85rem .95rem .85rem 1.05rem; margin-bottom:.6rem;
                    transition:border-color .15s ease; animation:ajRuleIn .25s ease both; }
@@ -3026,8 +3309,13 @@
         .aj-no { flex:0 0 auto; width:28px; height:28px; margin-top:.15rem; border-radius:4px;
                  display:grid; place-items:center; font-family:var(--mono); font-weight:700; font-size:.82rem;
                  color:#5b4708; background:var(--gold); }
+        .aj-main-fields { flex:1 1 auto; display:flex; flex-direction:column; gap:.42rem; min-width:180px; }
+        .aj-name { border:1px solid var(--line); border-radius:5px; padding:.42rem .6rem; font-size:.86rem;
+                   color:var(--ink); background:#fff; transition:border-color .15s, background .15s; }
+        .aj-name::placeholder { color:#b3b3b8; }
+        .aj-name:focus { outline:none; background:#fff; border-color:var(--gold); }
         /* 文本编辑框：扁平填充面，聚焦仅靠描边变化 */
-        .aj-desc { flex:1 1 auto; border:1px solid var(--line); border-radius:5px; resize:none; overflow:hidden;
+        .aj-desc { width:100%; border:1px solid var(--line); border-radius:5px; resize:none; overflow:hidden;
                    min-height:46px; padding:.55rem .7rem; font-size:.92rem; line-height:1.55; color:var(--ink);
                    background:var(--paper); transition:border-color .15s, background .15s; }
         .aj-desc::placeholder { color:#b3b3b8; }
@@ -3061,29 +3349,133 @@
                   padding:.7rem; font-size:.88rem; font-weight:500; cursor:pointer; transition:.14s; }
         .aj-add:hover { border-color:var(--gold); color:var(--gold-d); background:var(--gold-bg); }
         .aj-empty { text-align:center; color:#b7ad95; padding:1.4rem 0 .4rem; font-size:.9rem; }
+        .aj-topo-layout { display:grid; grid-template-columns:minmax(0, 1fr) 230px; gap:.85rem; align-items:start; }
+        .aj-topo-main { min-width:0; border:1px solid var(--line); border-radius:6px; background:#fff; overflow:auto; }
+        .aj-topo-canvas { min-height:360px; padding:.35rem; }
+        .aj-topo-empty { min-height:300px; display:grid; place-items:center; color:#b7ad95; font-size:.9rem; text-align:center; }
+        .aj-topo-surface { position:relative; min-width:100%; }
+        .aj-topo-svg { position:absolute; inset:0; overflow:visible; pointer-events:none; }
+        .aj-topo-edge { fill:none; stroke:#b9aa7b; stroke-width:2; pointer-events:none; }
+        .aj-topo-edge.selected { stroke:#b03a2e; stroke-width:2.5; }
+        .aj-topo-edge-hit { fill:none; stroke:transparent; stroke-width:16; cursor:pointer; pointer-events:stroke; }
+        .aj-topo-node { position:absolute; width:168px; height:76px; display:flex; flex-direction:column; gap:.22rem;
+                        text-align:left; border:1px solid #dfd6b6; border-left:3px solid var(--gold);
+                        background:#fffdf8; border-radius:6px; padding:.56rem .65rem; color:var(--ink);
+                        cursor:pointer; transition:border-color .12s, background .12s, transform .12s; overflow:hidden; }
+        .aj-topo-node:hover { border-color:var(--gold-d); background:#fff8dd; transform:translateY(-1px); }
+        .aj-topo-node-id { font-family:var(--mono); font-size:.72rem; color:#806713; font-weight:700; line-height:1; }
+        .aj-topo-node-title { font-size:.88rem; line-height:1.2; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .aj-topo-node-text { font-size:.72rem; line-height:1.25; color:var(--muted); display:-webkit-box;
+                             -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+        .aj-edge-trash { position:absolute; z-index:5; transform:translate(-50%, -50%); width:30px; height:30px;
+                         display:grid; place-items:center; border:1px solid #f0c8c2; border-radius:50%;
+                         background:#fff; color:#b03a2e; cursor:pointer; transition:.12s; }
+        .aj-edge-trash:hover { background:#f8e9e7; border-color:#d9958b; }
+        .aj-topo-panel { border:1px solid var(--line); border-radius:6px; background:#fff; padding:.75rem; }
+        .aj-topo-panel-title { font-size:.78rem; color:var(--muted); margin-bottom:.55rem; }
+        .aj-topo-actions { display:flex; flex-direction:column; gap:.5rem; }
+        .aj-topo-actions .btn { text-align:left; }
+        .aj-topo-add-form { border-top:1px solid var(--line); margin-top:.65rem; padding-top:.65rem; }
+        .aj-topo-add-form[hidden] { display:none; }
+        .aj-topo-add-form label { display:block; font-size:.72rem; color:var(--muted); margin:.35rem 0 .2rem; }
+        .aj-topo-add-form select { width:100%; border:1px solid var(--line); border-radius:5px; padding:.38rem .45rem;
+                                   font-size:.84rem; background:#fff; color:var(--ink); }
+        .aj-topo-help { margin-top:.65rem; padding-top:.65rem; border-top:1px solid var(--line);
+                        color:var(--muted); font-size:.75rem; line-height:1.55; }
         .aj-foot { display:flex; align-items:center; gap:.75rem; margin-top:1.1rem;
                    padding-top:.9rem; border-top:1px solid var(--line); }
         .aj-save { background:var(--green); border:none; color:#fff; font-weight:600;
                    border-radius:5px; padding:.5rem 1.1rem; font-size:.9rem; cursor:pointer; transition:background .14s; }
         .aj-save:hover { background:#196b42; }
         .aj-save:active { background:#155c39; }
-        @media (max-width:640px){ .aj-rule-top{flex-wrap:wrap;} .aj-val{align-items:flex-start;} .aj-deps{margin-left:0;} }
+        .aj-rule-modal textarea { min-height:150px; resize:vertical; }
+        @media (max-width:900px){ .aj-topo-layout{grid-template-columns:1fr;} .aj-topo-panel{order:-1;} }
+        @media (max-width:640px){
+          .aj-rules-head{align-items:flex-start; flex-direction:column;}
+          .aj-rule-top{flex-wrap:wrap;} .aj-val{align-items:flex-start;} .aj-deps{margin-left:0;}
+          .aj-topo-main{max-width:100%;}
+        }
       </style>
       <div class="card mb-3 agent-judge-only" id="agentJudgeRulesCard"
            {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
         <div class="card-header"><i class="fas fa-list-check me-2"></i> 评分规则</div>
         <div class="card-body aj-rules">
           <div class="aj-rules-head">
-            <span class="aj-count" id="rulesCountLabel">共 0 条规则</span>
+            <div class="aj-rules-head-left">
+              <span class="aj-count" id="rulesCountLabel">共 0 条规则</span>
+              <div class="aj-view-tabs" role="tablist" aria-label="评分规则视图">
+                <button type="button" class="aj-view-tab active" data-rules-view="text" role="tab" aria-selected="true">文本</button>
+                <button type="button" class="aj-view-tab" data-rules-view="topo" role="tab" aria-selected="false">拓扑</button>
+              </div>
+            </div>
             <span class="aj-total">满分 <b id="rulesTotalValue">0</b> 分</span>
           </div>
-          <div id="rulesEditor"></div>
+          <div id="rulesEditor" class="aj-view"></div>
+          <div id="rulesTopoView" class="aj-view" hidden>
+            <div class="aj-topo-layout">
+              <div class="aj-topo-main">
+                <div id="rulesTopoCanvas" class="aj-topo-canvas"></div>
+              </div>
+              <aside class="aj-topo-panel">
+                <div class="aj-topo-panel-title">拓扑操作</div>
+                <div class="aj-topo-actions">
+                  <button type="button" class="btn btn-sm btn-outline-primary" id="showAddEdgeBtn">
+                    <i class="fas fa-plus me-1"></i> 增加拓扑
+                  </button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="simplifyTopoBtn">
+                    <i class="fas fa-compress-alt me-1"></i> 简化拓扑关系
+                  </button>
+                </div>
+                <div class="aj-topo-add-form" id="topoAddForm" hidden>
+                  <label for="topoFromSelect">前置规则 a</label>
+                  <select id="topoFromSelect"></select>
+                  <label for="topoToSelect">依赖规则 b</label>
+                  <select id="topoToSelect"></select>
+                  <button type="button" class="btn btn-sm btn-success w-100 mt-2" id="confirmAddEdgeBtn">
+                    建立 a → b
+                  </button>
+                </div>
+                <div class="aj-topo-help">
+                  箭头表示“前置规则 → 依赖它的规则”。点击边后可删除；点击节点可编辑规则内容。
+                </div>
+              </aside>
+            </div>
+          </div>
           <button type="button" class="aj-add" id="addRuleBtn">
             <i class="fas fa-plus"></i> 添加规则
           </button>
           <div class="aj-foot">
             <button type="button" class="aj-save" id="saveRulesBtn"><i class="fas fa-save me-1"></i> 保存规则</button>
             <span class="small" id="saveRulesHint"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal fade aj-rule-modal" id="ajRuleModal" tabindex="-1" aria-labelledby="ajRuleModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="ajRuleModalLabel">编辑规则</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <input type="hidden" id="ajRuleModalIndex">
+              <div class="mb-3">
+                <label class="form-label" for="ajRuleModalName">规则名称</label>
+                <input type="text" class="form-control" id="ajRuleModalName" maxlength="120" placeholder="可选；为空时显示规则原文摘要">
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="ajRuleModalText">规则原文</label>
+                <textarea class="form-control" id="ajRuleModalText" placeholder="用自然语言描述这条评分规则……"></textarea>
+              </div>
+              <div>
+                <label class="form-label" for="ajRuleModalValue">分值</label>
+                <input type="number" min="0" step="0.5" class="form-control" id="ajRuleModalValue">
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="button" class="btn btn-success" id="ajRuleModalSave">保存修改</button>
+            </div>
           </div>
         </div>
       </div>
@@ -3095,22 +3487,83 @@
       (function () {
         var editor = document.getElementById('rulesEditor');
         if (!editor) return;
+        var topoView = document.getElementById('rulesTopoView');
+        var topoCanvas = document.getElementById('rulesTopoCanvas');
+        var addForm = document.getElementById('topoAddForm');
+        var fromSelect = document.getElementById('topoFromSelect');
+        var toSelect = document.getElementById('topoToSelect');
+        var hintEl = document.getElementById('saveRulesHint');
+        var activeView = 'text';
+        var selectedEdge = null;
+        var nodeW = 168, nodeH = 76, marginX = 28, marginY = 24, xGap = 214, yGap = 102;
+        var modalEl = document.getElementById('ajRuleModal');
+        var ruleModal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
         var rules = (window.__JUDGE_RULES__ || []).map(function (r) {
-          return {rule_id: r.rule_id, rule_text: r.rule_text, value: r.value,
+          return {rule_id: r.rule_id, rule_name: r.rule_name || '', rule_text: r.rule_text, value: r.value,
                   dependencies: (r.dependencies || []).slice()};
         });
-        function reindex() { rules.forEach(function (r, i) { r.rule_id = i + 1; }); }
+        function reindex() {
+          var oldToNew = {};
+          rules.forEach(function (r, i) { oldToNew[parseInt(r.rule_id, 10)] = i + 1; });
+          rules.forEach(function (r, i) {
+            r.rule_id = i + 1;
+            r.rule_name = (r.rule_name || '').slice(0, 120);
+            var seen = {};
+            r.dependencies = (r.dependencies || []).map(function (d) {
+              return oldToNew[parseInt(d, 10)] || null;
+            }).filter(function (d) {
+              if (!d || d === r.rule_id || seen[d]) return false;
+              seen[d] = true;
+              return true;
+            }).sort(function (a, b) { return a - b; });
+          });
+        }
         function totalValue() { return rules.reduce(function (s, r) { return s + (parseFloat(r.value) || 0); }, 0); }
         function esc(s) { return (s || '').replace(/[&<>"]/g, function (c) {
           return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+        function compact(s, n) {
+          s = String(s || '').replace(/\s+/g, ' ').trim();
+          if (!s) return '未填写规则内容';
+          return s.length > n ? s.slice(0, n) + '…' : s;
+        }
+        function ruleTitle(r) { return (r.rule_name || '').trim() || compact(r.rule_text, 14); }
+        function ruleOptionLabel(r) { return '规则 ' + r.rule_id + '：' + ruleTitle(r); }
+        function setHint(text, cls) {
+          if (!hintEl) return;
+          hintEl.textContent = text || '';
+          hintEl.className = 'small ' + (cls || 'text-muted');
+        }
         function refreshStats() {
           var t = totalValue();
           document.getElementById('rulesTotalValue').textContent = (Math.round(t * 100) / 100);
           document.getElementById('rulesCountLabel').textContent = '共 ' + rules.length + ' 条规则';
         }
         function grow(t) { if (!t) return; t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
-        function render() {
+        function buildAdj(skip) {
+          var adj = {};
+          rules.forEach(function (r) { adj[r.rule_id] = []; });
+          rules.forEach(function (r) {
+            (r.dependencies || []).forEach(function (d) {
+              if (skip && skip.from === d && skip.to === r.rule_id) return;
+              if (adj[d]) adj[d].push(r.rule_id);
+            });
+          });
+          return adj;
+        }
+        function hasPath(start, target, skip) {
+          var adj = buildAdj(skip), seen = {};
+          function dfs(id) {
+            if (id === target) return true;
+            if (seen[id]) return false;
+            seen[id] = true;
+            return (adj[id] || []).some(dfs);
+          }
+          return dfs(start);
+        }
+        function createsCycle(from, to) { return hasPath(to, from, null); }
+        function renderText() {
           reindex();
+          selectedEdge = null;
           editor.innerHTML = '';
           rules.forEach(function (r, idx) {
             var pills = rules.filter(function (_, j) { return j !== idx; }).map(function (o) {
@@ -3127,7 +3580,10 @@
             card.innerHTML =
               '<div class="aj-rule-top">' +
                 '<div class="aj-no">' + r.rule_id + '</div>' +
-                '<textarea class="aj-desc" data-text="' + idx + '" rows="2" placeholder="用自然语言描述这条评分规则……"></textarea>' +
+                '<div class="aj-main-fields">' +
+                  '<input class="aj-name" data-name="' + idx + '" maxlength="120" placeholder="规则名称（可选）">' +
+                  '<textarea class="aj-desc" data-text="' + idx + '" rows="2" placeholder="用自然语言描述这条评分规则……"></textarea>' +
+                '</div>' +
                 '<div class="aj-val"><label>分值</label><div class="aj-stepper">' +
                   '<button type="button" class="aj-step" data-step="-1" data-i="' + idx + '" tabindex="-1">−</button>' +
                   '<input type="number" min="0" step="0.5" data-val="' + idx + '" value="' + (r.value || 0) + '">' +
@@ -3136,6 +3592,7 @@
                 '<button type="button" class="aj-del" data-del="' + idx + '" title="删除规则"><i class="fas fa-trash-can"></i></button>' +
               '</div>' + depsRow;
             editor.appendChild(card);
+            var nameInput = card.querySelector('[data-name]'); nameInput.value = r.rule_name || '';
             var ta = card.querySelector('[data-text]'); ta.value = r.rule_text || ''; grow(ta);
           });
           if (!rules.length) {
@@ -3144,9 +3601,174 @@
           refreshStats();
           bind();
         }
+        function renderTopoControls() {
+          var options = rules.map(function (r) {
+            return '<option value="' + r.rule_id + '">' + esc(ruleOptionLabel(r)) + '</option>';
+          }).join('');
+          fromSelect.innerHTML = options;
+          toSelect.innerHTML = options;
+          var disabled = rules.length < 2;
+          fromSelect.disabled = disabled;
+          toSelect.disabled = disabled;
+          document.getElementById('confirmAddEdgeBtn').disabled = disabled;
+          document.getElementById('showAddEdgeBtn').disabled = disabled;
+          document.getElementById('simplifyTopoBtn').disabled = !rules.length;
+          if (rules.length >= 2 && fromSelect.value === toSelect.value) {
+            toSelect.selectedIndex = Math.min(1, toSelect.options.length - 1);
+          }
+        }
+        function topoLayout() {
+          reindex();
+          var byId = {}, indeg = {}, adj = {};
+          rules.forEach(function (r) { byId[r.rule_id] = r; indeg[r.rule_id] = 0; adj[r.rule_id] = []; });
+          rules.forEach(function (r) {
+            r.dependencies.forEach(function (d) {
+              if (adj[d]) { adj[d].push(r.rule_id); indeg[r.rule_id] += 1; }
+            });
+          });
+          var queue = Object.keys(indeg).map(Number).filter(function (id) { return indeg[id] === 0; }).sort(function (a, b) { return a - b; });
+          var order = [], level = {};
+          rules.forEach(function (r) { level[r.rule_id] = 0; });
+          while (queue.length) {
+            var id = queue.shift();
+            order.push(id);
+            adj[id].sort(function (a, b) { return a - b; }).forEach(function (nxt) {
+              level[nxt] = Math.max(level[nxt], level[id] + 1);
+              indeg[nxt] -= 1;
+              if (indeg[nxt] === 0) {
+                queue.push(nxt);
+                queue.sort(function (a, b) { return a - b; });
+              }
+            });
+          }
+          if (order.length !== rules.length) return null;
+          var cols = {}, maxLevel = 0, maxRows = 1;
+          order.forEach(function (id) {
+            var lv = level[id] || 0;
+            maxLevel = Math.max(maxLevel, lv);
+            if (!cols[lv]) cols[lv] = [];
+            cols[lv].push(id);
+          });
+          var positions = {};
+          Object.keys(cols).map(Number).sort(function (a, b) { return a - b; }).forEach(function (lv) {
+            cols[lv].sort(function (a, b) { return a - b; });
+            maxRows = Math.max(maxRows, cols[lv].length);
+            cols[lv].forEach(function (id, row) {
+              positions[id] = {
+                x: marginX + lv * (nodeW + xGap),
+                y: marginY + row * (nodeH + yGap)
+              };
+            });
+          });
+          return {
+            positions: positions,
+            width: marginX * 2 + (maxLevel + 1) * nodeW + maxLevel * xGap,
+            height: marginY * 2 + maxRows * nodeH + (maxRows - 1) * yGap
+          };
+        }
+        function edgePath(a, b) {
+          var x1 = a.x + nodeW, y1 = a.y + nodeH / 2, x2 = b.x, y2 = b.y + nodeH / 2;
+          var c = Math.max(70, Math.abs(x2 - x1) * 0.45);
+          return 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + c) + ' ' + y1 + ', ' + (x2 - c) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+        }
+        function renderTopo() {
+          reindex();
+          refreshStats();
+          renderTopoControls();
+          topoCanvas.innerHTML = '';
+          if (!rules.length) {
+            topoCanvas.innerHTML = '<div class="aj-topo-empty"><div><i class="fas fa-diagram-project mb-2 d-block" style="font-size:1.5rem;opacity:.5;"></i>还没有评分规则。</div></div>';
+            return;
+          }
+          var layout = topoLayout();
+          if (!layout) {
+            topoCanvas.innerHTML = '<div class="aj-topo-empty text-danger">当前依赖存在环，无法生成 DAG。请切回文本视图调整。</div>';
+            return;
+          }
+          var surface = document.createElement('div');
+          surface.className = 'aj-topo-surface';
+          surface.style.width = layout.width + 'px';
+          surface.style.height = layout.height + 'px';
+          var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          svg.setAttribute('class', 'aj-topo-svg');
+          svg.setAttribute('width', layout.width);
+          svg.setAttribute('height', layout.height);
+          svg.setAttribute('viewBox', '0 0 ' + layout.width + ' ' + layout.height);
+          svg.innerHTML = '<defs><marker id="ajTopoArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#b9aa7b"></path></marker><marker id="ajTopoArrowSelected" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#b03a2e"></path></marker></defs>';
+          surface.appendChild(svg);
+          rules.forEach(function (r) {
+            r.dependencies.forEach(function (dep) {
+              var from = layout.positions[dep], to = layout.positions[r.rule_id];
+              if (!from || !to) return;
+              var selected = selectedEdge && selectedEdge.from === dep && selectedEdge.to === r.rule_id;
+              var d = edgePath(from, to);
+              var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+              path.setAttribute('class', 'aj-topo-edge' + (selected ? ' selected' : ''));
+              path.setAttribute('d', d);
+              path.setAttribute('marker-end', selected ? 'url(#ajTopoArrowSelected)' : 'url(#ajTopoArrow)');
+              svg.appendChild(path);
+              var hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+              hit.setAttribute('class', 'aj-topo-edge-hit');
+              hit.setAttribute('d', d);
+              hit.dataset.from = dep;
+              hit.dataset.to = r.rule_id;
+              svg.appendChild(hit);
+              if (selected) {
+                var trash = document.createElement('button');
+                trash.type = 'button';
+                trash.className = 'aj-edge-trash';
+                trash.title = '删除这条拓扑';
+                trash.dataset.edgeDelete = dep + ':' + r.rule_id;
+                trash.style.left = ((from.x + nodeW + to.x) / 2) + 'px';
+                trash.style.top = ((from.y + to.y) / 2 + nodeH / 2) + 'px';
+                trash.innerHTML = '<i class="fas fa-trash-can"></i>';
+                surface.appendChild(trash);
+              }
+            });
+          });
+          rules.forEach(function (r, idx) {
+            var pos = layout.positions[r.rule_id];
+            var node = document.createElement('button');
+            node.type = 'button';
+            node.className = 'aj-topo-node';
+            node.dataset.node = idx;
+            node.title = r.rule_text || '未填写规则内容';
+            node.style.left = pos.x + 'px';
+            node.style.top = pos.y + 'px';
+            node.innerHTML =
+              '<span class="aj-topo-node-id">规则 ' + r.rule_id + '</span>' +
+              '<span class="aj-topo-node-title">' + esc(ruleTitle(r)) + '</span>' +
+              '<span class="aj-topo-node-text">' + esc(compact(r.rule_text, 42)) + '</span>';
+            surface.appendChild(node);
+          });
+          topoCanvas.appendChild(surface);
+          surface.querySelectorAll('.aj-topo-edge-hit').forEach(function (p) {
+            p.onclick = function () {
+              selectedEdge = {from: parseInt(p.dataset.from, 10), to: parseInt(p.dataset.to, 10)};
+              renderTopo();
+            };
+          });
+          surface.querySelectorAll('[data-edge-delete]').forEach(function (b) {
+            b.onclick = function () {
+              var parts = b.dataset.edgeDelete.split(':');
+              removeEdge(parseInt(parts[0], 10), parseInt(parts[1], 10));
+            };
+          });
+          surface.querySelectorAll('[data-node]').forEach(function (n) {
+            n.onclick = function () { openRuleModal(parseInt(n.dataset.node, 10)); };
+          });
+        }
+        function renderCurrent() {
+          refreshStats();
+          if (activeView === 'topo') renderTopo();
+          else renderText();
+        }
         function bind() {
           editor.querySelectorAll('[data-del]').forEach(function (b) {
-            b.onclick = function () { rules.splice(parseInt(b.dataset.del, 10), 1); render(); };
+            b.onclick = function () { rules.splice(parseInt(b.dataset.del, 10), 1); renderCurrent(); };
+          });
+          editor.querySelectorAll('[data-name]').forEach(function (n) {
+            n.oninput = function () { rules[parseInt(n.dataset.name, 10)].rule_name = n.value; };
           });
           editor.querySelectorAll('[data-text]').forEach(function (t) {
             t.oninput = function () { rules[parseInt(t.dataset.text, 10)].rule_text = t.value; grow(t); };
@@ -3171,32 +3793,131 @@
               var i = parseInt(p.dataset.depToggle, 10), id = parseInt(p.dataset.depId, 10);
               var arr = rules[i].dependencies, pos = arr.indexOf(id);
               if (pos >= 0) { arr.splice(pos, 1); p.classList.remove('on'); }
-              else { arr.push(id); p.classList.add('on'); }
+              else {
+                if (createsCycle(id, rules[i].rule_id)) {
+                  setHint('不能添加这条依赖：会形成环。', 'text-danger');
+                  return;
+                }
+                arr.push(id);
+                arr.sort(function (a, b) { return a - b; });
+                p.classList.add('on');
+              }
             };
           });
         }
+        function addEdge(from, to) {
+          from = parseInt(from, 10); to = parseInt(to, 10);
+          if (!from || !to || from === to) {
+            setHint('请选择两条不同规则。', 'text-danger');
+            return;
+          }
+          var target = rules.filter(function (r) { return r.rule_id === to; })[0];
+          if (!target) return;
+          if (target.dependencies.indexOf(from) >= 0) {
+            setHint('这条拓扑已经存在。', 'text-muted');
+            return;
+          }
+          if (createsCycle(from, to)) {
+            setHint('不能添加这条拓扑：会形成环。', 'text-danger');
+            return;
+          }
+          target.dependencies.push(from);
+          target.dependencies.sort(function (a, b) { return a - b; });
+          selectedEdge = {from: from, to: to};
+          setHint('已添加拓扑：规则 ' + from + ' → 规则 ' + to, 'text-success');
+          renderTopo();
+        }
+        function removeEdge(from, to) {
+          var target = rules.filter(function (r) { return r.rule_id === to; })[0];
+          if (!target) return;
+          target.dependencies = target.dependencies.filter(function (d) { return d !== from; });
+          selectedEdge = null;
+          setHint('已删除拓扑：规则 ' + from + ' → 规则 ' + to, 'text-success');
+          renderTopo();
+        }
+        function simplifyTopology() {
+          reindex();
+          var removed = 0;
+          rules.forEach(function (r) {
+            r.dependencies = r.dependencies.filter(function (dep) {
+              if (hasPath(dep, r.rule_id, {from: dep, to: r.rule_id})) {
+                removed += 1;
+                return false;
+              }
+              return true;
+            });
+          });
+          selectedEdge = null;
+          setHint(removed ? ('已简化拓扑，删除 ' + removed + ' 条冗余边。') : '当前拓扑已经是最简关系。', removed ? 'text-success' : 'text-muted');
+          renderTopo();
+        }
+        function openRuleModal(idx) {
+          var r = rules[idx];
+          if (!r) return;
+          if (!ruleModal) {
+            var nextText = window.prompt('规则原文', r.rule_text || '');
+            if (nextText !== null) { r.rule_text = nextText; renderCurrent(); }
+            return;
+          }
+          document.getElementById('ajRuleModalIndex').value = idx;
+          document.getElementById('ajRuleModalName').value = r.rule_name || '';
+          document.getElementById('ajRuleModalText').value = r.rule_text || '';
+          document.getElementById('ajRuleModalValue').value = r.value || 0;
+          document.getElementById('ajRuleModalLabel').textContent = '编辑规则 ' + r.rule_id;
+          ruleModal.show();
+        }
+        document.getElementById('ajRuleModalSave').onclick = function () {
+          var idx = parseInt(document.getElementById('ajRuleModalIndex').value, 10);
+          var r = rules[idx];
+          if (!r) return;
+          r.rule_name = document.getElementById('ajRuleModalName').value.slice(0, 120);
+          r.rule_text = document.getElementById('ajRuleModalText').value;
+          var val = parseFloat(document.getElementById('ajRuleModalValue').value);
+          r.value = (!isFinite(val) || val < 0) ? 0 : val;
+          if (ruleModal) ruleModal.hide();
+          renderCurrent();
+        };
+        document.querySelectorAll('[data-rules-view]').forEach(function (tab) {
+          tab.onclick = function () {
+            activeView = tab.dataset.rulesView;
+            document.querySelectorAll('[data-rules-view]').forEach(function (t) {
+              var on = t.dataset.rulesView === activeView;
+              t.classList.toggle('active', on);
+              t.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            editor.hidden = activeView !== 'text';
+            topoView.hidden = activeView !== 'topo';
+            renderCurrent();
+          };
+        });
+        document.getElementById('showAddEdgeBtn').onclick = function () {
+          addForm.hidden = !addForm.hidden;
+          renderTopoControls();
+        };
+        document.getElementById('confirmAddEdgeBtn').onclick = function () { addEdge(fromSelect.value, toSelect.value); };
+        document.getElementById('simplifyTopoBtn').onclick = simplifyTopology;
         document.getElementById('addRuleBtn').onclick = function () {
-          rules.push({rule_id: rules.length + 1, rule_text: '', value: 0, dependencies: []}); render();
+          rules.push({rule_id: rules.length + 1, rule_name: '', rule_text: '', value: 0, dependencies: []});
+          renderCurrent();
           var last = editor.querySelector('.aj-rule:last-child .aj-desc'); if (last) last.focus();
         };
         document.getElementById('saveRulesBtn').onclick = function () {
-          var hint = document.getElementById('saveRulesHint');
-          hint.textContent = '保存中…'; hint.className = 'small text-muted';
+          reindex();
+          setHint('保存中…', 'text-muted');
           fetch(window.__SAVE_RULES_URL__, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
+            method: 'POST', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
             body: JSON.stringify({rules: rules})
           }).then(function (r) { return r.json().then(function (b) { return {ok: r.ok, b: b}; }); })
             .then(function (res) {
               if (res.ok && res.b.success) {
-                hint.textContent = '✓ 已保存 ' + res.b.count + ' 条规则，满分 ' + res.b.max_score + ' 分';
-                hint.className = 'small text-success';
+                setHint('✓ 已保存 ' + res.b.count + ' 条规则，满分 ' + res.b.max_score + ' 分', 'text-success');
               } else {
-                hint.textContent = '保存失败：' + (res.b.message || '未知错误');
-                hint.className = 'small text-danger';
+                setHint('保存失败：' + (res.b.message || '未知错误'), 'text-danger');
               }
-            }).catch(function (e) { hint.textContent = '网络错误：' + e; hint.className = 'small text-danger'; });
+            }).catch(function (e) { setHint('网络错误：' + e, 'text-danger'); });
         };
-        render();
+        renderCurrent();
       })();
       </script>
 
