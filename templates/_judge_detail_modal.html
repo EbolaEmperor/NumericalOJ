@@ -84,7 +84,7 @@
   var STATUS = { Accepted: '评测完成', Error: '评测异常', Judging: '评测中', Queued: '等待评测', Pending: '待评测' };
   var currentJudgeSnapshot = null;
   var currentJudgeView = 'topo';
-  var resultNodeW = 176, resultNodeH = 88, resultMarginX = 28, resultMarginY = 24, resultXGap = 220, resultYGap = 116;
+  var resultNodeW = 176, resultNodeH = 88, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
   function closeJudgeStream() { if (judgeSource) { judgeSource.close(); judgeSource = null; } }
   function esc(s) { return (s || '').replace(/[&<>]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]; }); }
   function compactRuleText(s, n) {
@@ -106,8 +106,8 @@
     if (detail) detail.hidden = currentJudgeView !== 'detail';
   }
   function topoLayoutForRules(rules) {
-    var indeg = {}, adj = {};
-    rules.forEach(function (r) { indeg[r.rule_id] = 0; adj[r.rule_id] = []; });
+    var byId = {}, indeg = {}, adj = {};
+    rules.forEach(function (r) { byId[r.rule_id] = r; indeg[r.rule_id] = 0; adj[r.rule_id] = []; });
     rules.forEach(function (r) {
       (r.dependencies || []).forEach(function (d) {
         if (adj[d]) { adj[d].push(r.rule_id); indeg[r.rule_id] += 1; }
@@ -136,28 +136,364 @@
       if (!cols[lv]) cols[lv] = [];
       cols[lv].push(id);
     });
-    var positions = {};
+    var positions = {}, rowById = {};
     Object.keys(cols).map(Number).sort(function (a, b) { return a - b; }).forEach(function (lv) {
-      cols[lv].sort(function (a, b) { return a - b; });
+      cols[lv].sort(function (a, b) {
+        if (lv === 0) return a - b;
+        function weight(id) {
+          var deps = ((byId[id] && byId[id].dependencies) || []).filter(function (dep) {
+            return rowById[dep] != null;
+          });
+          if (!deps.length) return Number.MAX_SAFE_INTEGER;
+          return deps.reduce(function (sum, dep) { return sum + rowById[dep]; }, 0) / deps.length;
+        }
+        var wa = weight(a), wb = weight(b);
+        return (wa - wb) || (a - b);
+      });
       maxRows = Math.max(maxRows, cols[lv].length);
       cols[lv].forEach(function (id, row) {
+        rowById[id] = row;
         positions[id] = {
-          x: resultMarginX + lv * (resultNodeW + resultXGap),
-          y: resultMarginY + row * (resultNodeH + resultYGap)
+          x: resultMarginX + row * (resultNodeW + resultXGap),
+          y: resultMarginY + lv * (resultNodeH + resultYGap)
         };
       });
     });
     return {
       positions: positions,
-      width: resultMarginX * 2 + (maxLevel + 1) * resultNodeW + maxLevel * resultXGap,
-      height: resultMarginY * 2 + maxRows * resultNodeH + (maxRows - 1) * resultYGap
+      width: resultMarginX * 2 + maxRows * resultNodeW + (maxRows - 1) * resultXGap,
+      height: resultMarginY * 2 + (maxLevel + 1) * resultNodeH + maxLevel * resultYGap
     };
   }
-  function resultEdgePath(a, b) {
-    var x1 = a.x + resultNodeW, y1 = a.y + resultNodeH / 2;
-    var x2 = b.x, y2 = b.y + resultNodeH / 2;
-    var c = Math.max(70, Math.abs(x2 - x1) * 0.45);
-    return 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + c) + ' ' + y1 + ', ' + (x2 - c) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+  function resultEdgeKey(from, to) {
+    return from + ':' + to;
+  }
+  function resultSlotOffset(index, count, width) {
+    if (count <= 1) return 0;
+    var span = Math.max(0, width - 46);
+    var step = Math.min(18, span / Math.max(1, count - 1));
+    return (index - (count - 1) / 2) * step;
+  }
+  function buildResultEdgeRoutes(edges, layout) {
+    var items = [], bySource = {}, byTarget = {}, byBand = {}, routes = {};
+    edges.forEach(function (edge) {
+      var from = layout.positions[edge.from], to = layout.positions[edge.to];
+      if (!from || !to) return;
+      var item = {fromId: edge.from, toId: edge.to, from: from, to: to};
+      items.push(item);
+      (bySource[edge.from] = bySource[edge.from] || []).push(item);
+      (byTarget[edge.to] = byTarget[edge.to] || []).push(item);
+      var band = Math.round(from.y + resultNodeH) + ':' + Math.round(to.y);
+      (byBand[band] = byBand[band] || []).push(item);
+    });
+    Object.keys(bySource).forEach(function (key) {
+      var group = bySource[key].sort(function (a, b) {
+        return (a.to.x - b.to.x) || (a.toId - b.toId);
+      });
+      group.forEach(function (item, index) {
+        item.sourceOffset = resultSlotOffset(index, group.length, resultNodeW);
+      });
+    });
+    Object.keys(byTarget).forEach(function (key) {
+      var group = byTarget[key].sort(function (a, b) {
+        return (a.from.x - b.from.x) || (a.fromId - b.fromId);
+      });
+      group.forEach(function (item, index) {
+        item.targetOffset = resultSlotOffset(index, group.length, resultNodeW);
+      });
+    });
+    Object.keys(byBand).forEach(function (key) {
+      var group = byBand[key].sort(function (a, b) {
+        return (a.from.x - b.from.x) || (a.to.x - b.to.x) || (a.fromId - b.fromId) || (a.toId - b.toId);
+      });
+      group.forEach(function (item) {
+        item.routeX1 = item.from.x + resultNodeW / 2 + (item.sourceOffset || 0);
+        item.routeX2 = item.to.x + resultNodeW / 2 + (item.targetOffset || 0);
+        item.routeLeft = Math.min(item.routeX1, item.routeX2);
+        item.routeRight = Math.max(item.routeX1, item.routeX2);
+        item.y1 = item.from.y + resultNodeH;
+        item.y2 = item.to.y - 12;
+        var span = Math.max(1, item.y2 - item.y1);
+        item.laneTop = item.y1 + Math.max(18, Math.min(26, span * 0.30));
+        item.laneBottom = item.y2 - Math.max(18, Math.min(26, span * 0.30));
+        if (item.laneBottom < item.laneTop + 10) {
+          item.laneTop = item.y1 + span * 0.42;
+          item.laneBottom = item.y1 + span * 0.58;
+        }
+      });
+      function between(v, a, b) {
+        return v > Math.min(a, b) + 2 && v < Math.max(a, b) - 2;
+      }
+      function intervalOverlap(a, b, pad) {
+        return a.routeLeft <= b.routeRight + pad && b.routeLeft <= a.routeRight + pad;
+      }
+      function laneCandidates(item) {
+        var center = (item.laneTop + item.laneBottom) / 2;
+        var candidates = [center], step = 8;
+        for (var d = step; center - d >= item.laneTop || center + d <= item.laneBottom; d += step) {
+          if (center - d >= item.laneTop) candidates.push(center - d);
+          if (center + d <= item.laneBottom) candidates.push(center + d);
+        }
+        return candidates;
+      }
+      function crossingPenalty(item, laneY, other) {
+        var score = 0;
+        if (item.routeRight - item.routeLeft >= 28) {
+          if (other.routeX1 > item.routeLeft + 2 && other.routeX1 < item.routeRight - 2 && between(laneY, other.y1, other.laneY)) score += 1;
+          if (other.routeX2 > item.routeLeft + 2 && other.routeX2 < item.routeRight - 2 && between(laneY, other.laneY, other.y2)) score += 1;
+        }
+        if (other.routeRight - other.routeLeft >= 28) {
+          if (item.routeX1 > other.routeLeft + 2 && item.routeX1 < other.routeRight - 2 && between(other.laneY, item.y1, laneY)) score += 1;
+          if (item.routeX2 > other.routeLeft + 2 && item.routeX2 < other.routeRight - 2 && between(other.laneY, laneY, item.y2)) score += 1;
+        }
+        return score;
+      }
+      var placed = [];
+      group.slice().sort(function (a, b) {
+        return (b.routeRight - b.routeLeft) - (a.routeRight - a.routeLeft) || (a.routeLeft - b.routeLeft);
+      }).forEach(function (item) {
+        var center = (item.laneTop + item.laneBottom) / 2;
+        var best = center, bestScore = Infinity;
+        laneCandidates(item).forEach(function (laneY) {
+          var score = Math.abs(laneY - center) * 0.02;
+          placed.forEach(function (other) {
+            if (item.routeRight - item.routeLeft >= 28 && other.routeRight - other.routeLeft >= 28 &&
+                Math.abs(other.laneY - laneY) < 5 && intervalOverlap(item, other, 14)) {
+              score += 100;
+            }
+            score += crossingPenalty(item, laneY, other) * 16;
+          });
+          if (score < bestScore) {
+            bestScore = score;
+            best = laneY;
+          }
+        });
+        item.laneY = best;
+        placed.push(item);
+      });
+    });
+    var resultPlannedRoutes = [];
+    function resultCrossLayerPoints(item, x1, y1, x2, y2) {
+      var stepY = resultNodeH + resultYGap;
+      var fromLevel = Math.round((item.from.y - resultMarginY) / stepY);
+      var toLevel = Math.round((item.to.y - resultMarginY) / stepY);
+      if (toLevel <= fromLevel + 1) return null;
+      var minX = 8, maxX = Math.max(minX, layout.width - 8);
+      function clampX(x) { return Math.max(minX, Math.min(maxX, x)); }
+      function uniquePush(list, value) {
+        value = Math.round(value * 10) / 10;
+        if (list.indexOf(value) < 0) list.push(value);
+      }
+      function yCandidates(center, minY, maxY) {
+        var list = [];
+        [0, -8, 8, -16, 16, -24, 24].forEach(function (delta) {
+          var y = Math.max(minY, Math.min(maxY, center + delta));
+          uniquePush(list, y);
+        });
+        return list;
+      }
+      function blockedIntervals() {
+        var pad = 12, intervals = [];
+        Object.keys(layout.positions).forEach(function (id) {
+          var pos = layout.positions[id];
+          var lv = Math.round((pos.y - resultMarginY) / stepY);
+          if (lv > fromLevel && lv < toLevel) intervals.push([pos.x - pad, pos.x + resultNodeW + pad]);
+        });
+        intervals.sort(function (a, b) { return a[0] - b[0]; });
+        var merged = [];
+        intervals.forEach(function (it) {
+          var last = merged[merged.length - 1];
+          if (!last || it[0] > last[1]) merged.push([it[0], it[1]]);
+          else last[1] = Math.max(last[1], it[1]);
+        });
+        return merged;
+      }
+      function xCandidates(preferredX, intervals) {
+        var list = [];
+        [preferredX, x1, x2, minX, maxX].forEach(function (x) { uniquePush(list, clampX(x)); });
+        intervals.forEach(function (it, index) {
+          uniquePush(list, clampX(it[0] - 6));
+          uniquePush(list, clampX(it[1] + 6));
+          if (index < intervals.length - 1) {
+            var gapLeft = it[1] + 6, gapRight = intervals[index + 1][0] - 6;
+            if (gapRight >= gapLeft) uniquePush(list, clampX((gapLeft + gapRight) / 2));
+          }
+        });
+        return list.filter(function (x) {
+          return !intervals.some(function (it) { return x > it[0] && x < it[1]; });
+        });
+      }
+      function routeSegments(points) {
+        var segments = [];
+        for (var i = 1; i < points.length; i++) {
+          var a = points[i - 1], b = points[i];
+          if (Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5) continue;
+          segments.push({x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+            vertical: Math.abs(a.x - b.x) < Math.abs(a.y - b.y)});
+        }
+        return segments;
+      }
+      function routePenalty(points) {
+        var score = 0, current = routeSegments(points);
+        resultPlannedRoutes.forEach(function (route) {
+          var otherPoints = route.points || [
+            {x: route.x1, y: route.y1}, {x: route.x1, y: route.laneY},
+            {x: route.x2, y: route.laneY}, {x: route.x2, y: route.y2}
+          ];
+          routeSegments(otherPoints).forEach(function (a) {
+            current.forEach(function (b) {
+              if (a.vertical && b.vertical) {
+                if (Math.abs(a.x1 - b.x1) < 7 &&
+                    Math.max(Math.min(a.y1, a.y2), Math.min(b.y1, b.y2)) <= Math.min(Math.max(a.y1, a.y2), Math.max(b.y1, b.y2)) + 10) score += 80;
+              } else if (!a.vertical && !b.vertical) {
+                if (Math.abs(a.y1 - b.y1) < 7 &&
+                    Math.max(Math.min(a.x1, a.x2), Math.min(b.x1, b.x2)) <= Math.min(Math.max(a.x1, a.x2), Math.max(b.x1, b.x2)) + 10) score += 70;
+              } else {
+                var v = a.vertical ? a : b, h = a.vertical ? b : a;
+                if (v.x1 > Math.min(h.x1, h.x2) + 3 && v.x1 < Math.max(h.x1, h.x2) - 3 &&
+                    h.y1 > Math.min(v.y1, v.y2) + 3 && h.y1 < Math.max(v.y1, v.y2) - 3) score += 18;
+              }
+            });
+          });
+        });
+        return score;
+      }
+      var sourceCenterY = y1 + resultYGap / 2;
+      var targetCenterY = item.to.y - resultYGap / 2;
+      var sourceYs = yCandidates(sourceCenterY, y1 + 12, Math.min(y1 + resultYGap - 10, y2 - 36));
+      var targetYs = yCandidates(targetCenterY, Math.max(y1 + 36, item.to.y - resultYGap + 10), y2 - 8);
+      var intervals = blockedIntervals();
+      var preferredX = x1 + (x2 - x1) * 0.5;
+      var corridorXs = xCandidates(preferredX, intervals);
+      if (!corridorXs.length) corridorXs = [clampX(preferredX), minX, maxX];
+      var bestPoints = null, bestScore = Infinity;
+      sourceYs.forEach(function (sourceY) {
+        targetYs.forEach(function (targetY) {
+          corridorXs.forEach(function (corridorX) {
+            var points = [
+              {x: x1, y: y1}, {x: x1, y: sourceY},
+              {x: corridorX, y: sourceY}, {x: corridorX, y: targetY},
+              {x: x2, y: targetY}, {x: x2, y: y2}
+            ];
+            var score = routePenalty(points) +
+              Math.abs(sourceY - sourceCenterY) * 0.5 +
+              Math.abs(targetY - targetCenterY) * 0.5 +
+              Math.abs(corridorX - preferredX) * 0.12;
+            if (score < bestScore) {
+              bestScore = score;
+              bestPoints = points;
+            }
+          });
+        });
+      });
+      return bestPoints;
+    }
+    function rememberResultRoute(route) {
+      resultPlannedRoutes.push(route);
+      return route;
+    }
+    items.forEach(function (item) {
+      var x1 = item.routeX1 != null ? item.routeX1 : item.from.x + resultNodeW / 2 + (item.sourceOffset || 0);
+      var y1 = item.y1 != null ? item.y1 : item.from.y + resultNodeH;
+      var x2 = item.routeX2 != null ? item.routeX2 : item.to.x + resultNodeW / 2 + (item.targetOffset || 0);
+      var y2 = item.y2 != null ? item.y2 : item.to.y - 12;
+      var span = Math.max(1, y2 - y1);
+      var laneTop = y1 + Math.max(18, Math.min(26, span * 0.30));
+      var laneBottom = y2 - Math.max(18, Math.min(26, span * 0.30));
+      if (laneBottom < laneTop + 10) {
+        laneTop = y1 + span * 0.42;
+        laneBottom = y1 + span * 0.58;
+      }
+      var laneY = item.laneY != null ? item.laneY : (laneTop + laneBottom) / 2;
+      var points = resultCrossLayerPoints(item, x1, y1, x2, y2);
+      var route = {x1: x1, y1: y1, x2: x2, y2: y2, laneY: laneY, arrowTipY: item.to.y - 2};
+      if (points) {
+        route.points = points;
+        route.laneY = points[Math.max(1, points.length - 2)].y;
+      }
+      routes[resultEdgeKey(item.fromId, item.toId)] = rememberResultRoute(route);
+    });
+    return routes;
+  }
+  function resultEdgePath(route) {
+    function roundedPolylinePath(points, radius) {
+      if (!points || !points.length) return '';
+      var path = 'M ' + points[0].x + ' ' + points[0].y;
+      for (var i = 1; i < points.length - 1; i++) {
+        var prev = points[i - 1], curr = points[i], next = points[i + 1];
+        var d1 = Math.sqrt(Math.pow(curr.x - prev.x, 2) + Math.pow(curr.y - prev.y, 2));
+        var d2 = Math.sqrt(Math.pow(next.x - curr.x, 2) + Math.pow(next.y - curr.y, 2));
+        if (d1 < 2 || d2 < 2) continue;
+        var r = Math.min(radius, d1 / 2, d2 / 2);
+        var inX = curr.x + (prev.x - curr.x) * r / d1;
+        var inY = curr.y + (prev.y - curr.y) * r / d1;
+        var outX = curr.x + (next.x - curr.x) * r / d2;
+        var outY = curr.y + (next.y - curr.y) * r / d2;
+        path += ' L ' + inX + ' ' + inY + ' Q ' + curr.x + ' ' + curr.y + ' ' + outX + ' ' + outY;
+      }
+      var last = points[points.length - 1];
+      return path + ' L ' + last.x + ' ' + last.y;
+    }
+    if (route.points && route.points.length > 1) {
+      return roundedPolylinePath(route.points, 10);
+    }
+    var x1 = route.x1, y1 = route.y1, x2 = route.x2, y2 = route.y2, laneY = route.laneY;
+    var dx = x2 - x1;
+    if (Math.abs(dx) < 2) {
+      return 'M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2;
+    }
+    if (Math.abs(dx) < 28) {
+      var soft = Math.min(18, Math.max(8, (y2 - laneY) / 2));
+      return 'M ' + x1 + ' ' + y1 +
+        ' L ' + x1 + ' ' + laneY +
+        ' C ' + x1 + ' ' + (laneY + soft) + ', ' + x2 + ' ' + (laneY + soft) + ', ' + x2 + ' ' + (laneY + soft * 2) +
+        ' L ' + x2 + ' ' + y2;
+    }
+    var dir = dx >= 0 ? 1 : -1;
+    var r = Math.min(14, Math.max(6, Math.abs(dx) / 2), Math.max(6, (y2 - laneY) / 2));
+    return 'M ' + x1 + ' ' + y1 +
+      ' L ' + x1 + ' ' + (laneY - r) +
+      ' Q ' + x1 + ' ' + laneY + ' ' + (x1 + dir * r) + ' ' + laneY +
+      ' L ' + (x2 - dir * r) + ' ' + laneY +
+      ' Q ' + x2 + ' ' + laneY + ' ' + x2 + ' ' + (laneY + r) +
+      ' L ' + x2 + ' ' + y2;
+  }
+  function setResultTopoFocus(surface, ruleId, edgeId) {
+    var active = ruleId != null || !!edgeId;
+    surface.classList.toggle('has-focus', active);
+    var edgeParts = edgeId ? edgeId.split(':') : null;
+    surface.querySelectorAll('.aj-result-edge, .aj-result-arrow').forEach(function (edge) {
+      var on = edgeId
+        ? edge.dataset.edgeKey === edgeId
+        : (edge.dataset.edgeFrom === String(ruleId) || edge.dataset.edgeTo === String(ruleId));
+      edge.classList.toggle('edge-active', !!on);
+    });
+    surface.querySelectorAll('.aj-result-node').forEach(function (node) {
+      var id = node.dataset.ruleId;
+      var on = edgeParts
+        ? (id === edgeParts[0] || id === edgeParts[1])
+        : id === String(ruleId);
+      node.classList.toggle('node-active', !!on);
+    });
+  }
+  function appendResultTopoSurface(canvas, surface, layout) {
+    var stage = document.createElement('div');
+    stage.className = 'aj-result-stage';
+    stage.style.width = Math.ceil(layout.width) + 'px';
+    stage.style.height = Math.ceil(layout.height) + 'px';
+    surface.style.transform = 'none';
+    stage.appendChild(surface);
+    canvas.appendChild(stage);
+  }
+  function appendResultArrow(svg, route, edge) {
+    var arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    var x = route.x2, tailY = route.y2, tipY = route.arrowTipY;
+    arrow.setAttribute('class', 'aj-result-arrow');
+    arrow.setAttribute('points', x + ' ' + tipY + ' ' + (x - 5) + ' ' + tailY + ' ' + (x + 5) + ' ' + tailY);
+    arrow.dataset.edgeKey = resultEdgeKey(edge.from, edge.to);
+    arrow.dataset.edgeFrom = edge.from;
+    arrow.dataset.edgeTo = edge.to;
+    svg.appendChild(arrow);
   }
   function renderJudgeDetails(snap) {
     var rulesBox = document.getElementById('judgeModalRules');
@@ -203,18 +539,33 @@
     svg.setAttribute('width', layout.width);
     svg.setAttribute('height', layout.height);
     svg.setAttribute('viewBox', '0 0 ' + layout.width + ' ' + layout.height);
-    svg.innerHTML = '<defs><marker id="ajResultArrowShared" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#b9aa7b"></path></marker></defs>';
+    svg.innerHTML = '';
     surface.appendChild(svg);
+    var edges = [];
     snap.rules.forEach(function (r) {
       (r.dependencies || []).forEach(function (dep) {
-        var from = layout.positions[dep], to = layout.positions[r.rule_id];
-        if (!from || !to) return;
-        var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('class', 'aj-result-edge');
-        path.setAttribute('d', resultEdgePath(from, to));
-        path.setAttribute('marker-end', 'url(#ajResultArrowShared)');
-        svg.appendChild(path);
+        edges.push({from: dep, to: r.rule_id});
       });
+    });
+    var edgeRoutes = buildResultEdgeRoutes(edges, layout);
+    edges.forEach(function (edge) {
+      var route = edgeRoutes[resultEdgeKey(edge.from, edge.to)];
+      if (!route) return;
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('class', 'aj-result-edge');
+      path.setAttribute('d', resultEdgePath(route));
+      path.dataset.edgeKey = resultEdgeKey(edge.from, edge.to);
+      path.dataset.edgeFrom = edge.from;
+      path.dataset.edgeTo = edge.to;
+      svg.appendChild(path);
+      appendResultArrow(svg, route, edge);
+      var hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      hit.setAttribute('class', 'aj-result-edge-hit');
+      hit.setAttribute('d', path.getAttribute('d'));
+      hit.dataset.edgeKey = path.dataset.edgeKey;
+      hit.dataset.edgeFrom = edge.from;
+      hit.dataset.edgeTo = edge.to;
+      svg.appendChild(hit);
     });
     snap.rules.forEach(function (r) {
       var pos = layout.positions[r.rule_id];
@@ -227,7 +578,7 @@
       node.style.left = pos.x + 'px';
       node.style.top = pos.y + 'px';
       node.innerHTML =
-        '<span class="aj-result-node-id">规则 ' + r.rule_id + '</span>' +
+        '<span class="aj-result-node-id">规则 ' + r.rule_id + ' · ' + (r.value || 0) + ' 分</span>' +
         '<span class="aj-result-node-title">' + esc(resultRuleTitle(r)) + '</span>' +
         '<span class="aj-result-node-text">' + esc(compactRuleText(r.rule_text, 42)) + '</span>' +
         '<span class="aj-result-node-foot">' +
@@ -236,11 +587,20 @@
         '</span>';
       surface.appendChild(node);
     });
-    canvas.appendChild(surface);
     wrap.appendChild(canvas);
     topo.innerHTML = '';
     topo.appendChild(wrap);
-    topo.querySelectorAll('[data-rule-id]').forEach(function (n) {
+    canvas.innerHTML = '';
+    appendResultTopoSurface(canvas, surface, layout);
+    surface.querySelectorAll('.aj-result-edge-hit').forEach(function (edge) {
+      edge.onmouseenter = function () { setResultTopoFocus(surface, null, edge.dataset.edgeKey); };
+      edge.onmouseleave = function () { setResultTopoFocus(surface, null, null); };
+    });
+    surface.querySelectorAll('[data-rule-id]').forEach(function (n) {
+      n.onmouseenter = function () { setResultTopoFocus(surface, parseInt(n.dataset.ruleId, 10), null); };
+      n.onmouseleave = function () { setResultTopoFocus(surface, null, null); };
+      n.onfocus = function () { setResultTopoFocus(surface, parseInt(n.dataset.ruleId, 10), null); };
+      n.onblur = function () { setResultTopoFocus(surface, null, null); };
       n.onclick = function () { openJudgeRulePopup(parseInt(n.dataset.ruleId, 10)); };
     });
   }
