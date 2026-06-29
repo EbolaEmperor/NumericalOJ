@@ -3,9 +3,8 @@
 """
 打榜赛评测 Celery 任务。
 
-仅评测用户上传的答案文件（JSON 或 ZIP，由比赛配置 answer_format 决定），不处理代码压缩包。
-若赛事配置了评测脚本，则以子进程运行脚本（脚本拿到的是答案文件路径，类型不限）；
-否则仅 JSON 模式可用默认的数值对比打分，ZIP 模式必须配套自定义脚本。
+标准答案评分任务只评测用户上传的答案文件，不处理代码压缩包。
+答案格式只影响上传约束；评分一律以子进程运行管理员配置的脚本，不存在兜底评分路径。
 """
 
 import json
@@ -26,94 +25,11 @@ from oj_modules.ranking_db import (
 
 RANKING_EVALUATE_TASK_NAME = "oj.evaluate_ranking_submission"
 DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS = 120
-DEFAULT_NUMERIC_TOLERANCE = 1e-6
 _MYSQL_RETRY_ERRORS = (
     pymysql.err.OperationalError,
     pymysql.err.InterfaceError,
     pymysql.err.InternalError,
 )
-
-
-def _load_json(path):
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def _is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _numbers_match(a, b, tol=DEFAULT_NUMERIC_TOLERANCE):
-    try:
-        a_f = float(a)
-        b_f = float(b)
-    except (TypeError, ValueError):
-        return False
-    if math.isnan(a_f) or math.isnan(b_f):
-        return False
-    if math.isinf(a_f) or math.isinf(b_f):
-        return a_f == b_f
-    scale = max(1.0, abs(a_f), abs(b_f))
-    return abs(a_f - b_f) <= tol * scale
-
-
-def _count_leaves(value):
-    if isinstance(value, dict):
-        return sum(_count_leaves(v) for v in value.values())
-    if isinstance(value, list):
-        return sum(_count_leaves(v) for v in value)
-    return 1
-
-
-def _compare_recursive(user_val, ref_val):
-    """返回 (matched, total)。"""
-    if isinstance(ref_val, dict):
-        if not isinstance(user_val, dict):
-            return 0, _count_leaves(ref_val)
-        matched = 0
-        total = 0
-        for key, ref_child in ref_val.items():
-            user_child = user_val.get(key)
-            m, t = _compare_recursive(user_child, ref_child)
-            matched += m
-            total += t
-        return matched, total
-
-    if isinstance(ref_val, list):
-        total = _count_leaves(ref_val)
-        if not isinstance(user_val, list):
-            return 0, total
-        matched = 0
-        limit = min(len(user_val), len(ref_val))
-        for i in range(limit):
-            m, _ = _compare_recursive(user_val[i], ref_val[i])
-            matched += m
-        return matched, total
-
-    # leaf
-    if _is_number(ref_val):
-        return (1 if _numbers_match(user_val, ref_val) else 0), 1
-    if isinstance(ref_val, bool):
-        return (1 if user_val is ref_val else 0), 1
-    if ref_val is None:
-        return (1 if user_val is None else 0), 1
-    return (1 if user_val == ref_val else 0), 1
-
-
-def _default_grade(user_answer, reference_answer, max_score):
-    matched, total = _compare_recursive(user_answer, reference_answer)
-    if total <= 0:
-        return 0.0, {'matched': 0, 'total': 0, 'note': '参考答案为空，无法评分。'}
-    ratio = matched / total
-    score = round(ratio * float(max_score), 4)
-    return score, {
-        'matched': matched,
-        'total': total,
-        'ratio': round(ratio, 6),
-        'max_score': float(max_score),
-        'mode': 'default_json_compare',
-        'tolerance': DEFAULT_NUMERIC_TOLERANCE,
-    }
 
 
 def _run_scoring_script(script_path, user_answer_path, reference_answer_path, max_score, timeout_seconds=None):
@@ -198,42 +114,23 @@ def _evaluate(submission_id):
         )
         return {'success': False, 'message': '赛事尚未配置标准答案'}
 
-    answer_format = str(competition.get('answer_format') or 'json').strip().lower()
-    if answer_format not in ('json', 'zip'):
-        answer_format = 'json'
     max_score = int(competition.get('max_score') or 100)
     scoring_script = competition.get('scoring_script_path')
     has_script = bool(scoring_script and os.path.isfile(scoring_script))
     script_timeout = int(competition.get('scoring_script_timeout_seconds')
                          or DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS)
-
-    # ZIP 模式下默认 JSON 评分器无法工作，必须配套自定义脚本
-    if answer_format == 'zip' and not has_script:
+    if not has_script:
         update_submission_result(
             submission_id, None, 'Error',
-            grade_details=None,
-            error_message='答案格式为 ZIP，但赛事尚未上传自定义评测脚本，无法评测。',
+            grade_details=None, error_message='赛事尚未配置评分脚本',
         )
-        return {'success': False, 'message': 'ZIP 模式缺少自定义评测脚本'}
+        return {'success': False, 'message': '赛事尚未配置评分脚本'}
 
     try:
-        if has_script:
-            score, details = _run_scoring_script(
-                scoring_script, answer_path, ref_path, max_score,
-                timeout_seconds=script_timeout,
-            )
-        else:
-            # 仅 JSON 模式会走到这里
-            try:
-                user_answer = _load_json(answer_path)
-            except Exception as e:
-                update_submission_result(
-                    submission_id, 0.0, 'Wrong Answer',
-                    grade_details=None, error_message=f'用户答案 JSON 解析失败：{e}',
-                )
-                return {'success': False, 'message': '用户答案 JSON 解析失败'}
-            reference_answer = _load_json(ref_path)
-            score, details = _default_grade(user_answer, reference_answer, max_score)
+        score, details = _run_scoring_script(
+            scoring_script, answer_path, ref_path, max_score,
+            timeout_seconds=script_timeout,
+        )
     except Exception as e:
         update_submission_result(
             submission_id, None, 'Error',

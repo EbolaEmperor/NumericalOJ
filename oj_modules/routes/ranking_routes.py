@@ -154,6 +154,11 @@ def _competition_scoring_mode(comp):
     return _normalize_scoring_mode((comp or {}).get('scoring_mode'))
 
 
+def _configured_file(path):
+    path = str(path or '').strip()
+    return bool(path and os.path.isfile(path))
+
+
 def _agent_judge_endpoint_ready(competition_id, comp):
     """Agent 评测是否就绪：要求端点池中至少有一个**启用**端点（不再回退旧的单端点字段）。"""
     try:
@@ -174,6 +179,65 @@ def _fake_agent_judge_enabled():
     if raw is None:
         raw = getattr(_cfg, 'NUMOJ_FAKE_AGENT_JUDGE', False)
     return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _ranking_submit_block_reason(comp, competition_id, user=None):
+    if not comp:
+        return '比赛不存在或已被删除'
+
+    is_admin = bool(user and user.get('is_admin') == 1)
+    if not is_admin and comp.get('is_active') != 1:
+        return '该比赛未开放'
+
+    scoring_mode = _competition_scoring_mode(comp)
+    if scoring_mode == 'absolute':
+        missing_ref = not _configured_file(comp.get('reference_answer_path'))
+        missing_script = not _configured_file(comp.get('scoring_script_path'))
+        if missing_ref and missing_script:
+            return '该比赛为标准答案评分模式，但管理员尚未上传标准答案和评测脚本，暂时无法提交。'
+        if missing_ref:
+            return '该比赛为标准答案评分模式，但管理员尚未上传标准答案，暂时无法提交。'
+        if missing_script:
+            return '该比赛为标准答案评分模式，但管理员尚未上传评测脚本，暂时无法提交。'
+        return ''
+
+    if scoring_mode == 'elo':
+        if not _configured_file(comp.get('scoring_script_path')):
+            return '该比赛为 ELO 模式，但管理员尚未上传评测脚本，暂时无法提交。'
+        return ''
+
+    if scoring_mode == 'agent_judge':
+        if not _fake_agent_judge_enabled():
+            if not _agent_judge_endpoint_ready(competition_id, comp):
+                return '该比赛为 Agent 评测模式，但管理员尚未配置模型端点，暂时无法提交。'
+            if not list_competition_rules(competition_id):
+                return '该比赛尚未设置评分规则，暂时无法提交。'
+        method = (comp.get('submission_method') or 'zip').strip().lower()
+        if method == 'git':
+            tmpl = (comp.get('git_format') or '').strip()
+            if not tmpl or BATCH_PLACEHOLDER not in tmpl:
+                return '该比赛启用 Git 提交方式，但管理员尚未配置 Git 仓库标准命名，暂时无法提交。'
+            if user:
+                uname = (user.get('username') or '').strip()
+                if not BATCH_USERNAME_RE.match(uname):
+                    return '你的用户名不符合 Git 仓库命名要求，暂时无法提交。'
+        return ''
+
+    return '该比赛评分模式配置异常，暂时无法提交。'
+
+
+def _wants_json_response():
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    accept = (request.headers.get('Accept') or '').lower()
+    return 'application/json' in accept and 'text/html' not in accept
+
+
+def _submit_error_response(competition_id, message, category='warning', status=400):
+    if _wants_json_response():
+        return jsonify(success=False, message=message), status
+    flash(message, category)
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
 
 def _fake_agent_judge_delay_seconds():
@@ -567,11 +631,15 @@ def ranking_detail(competition_id):
         submission_method = 'zip'
 
     submit_quota = None
+    submit_block_reason = ''
     git_repo_url = None
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
+        submit_block_reason = _ranking_submit_block_reason(comp, competition_id, user=user)
         if not is_admin:
             submit_quota = get_submission_quota(competition_id, user.get('username'), comp=comp)
+            if not submit_block_reason and submit_quota is not None and submit_quota['remaining'] <= 0:
+                submit_block_reason = _submission_quota_message(submit_quota)
         # git 提交方式：把标准命名里的 <username> 换成本人学号，算出本人仓库地址
         if is_agent_judge and submission_method == 'git':
             uname = (user.get('username') or '').strip()
@@ -647,6 +715,7 @@ def ranking_detail(competition_id):
         batch_default_template=BATCH_DEFAULT_TEMPLATE,
         submission_method=submission_method,
         git_repo_url=git_repo_url,
+        submit_block_reason=submit_block_reason,
     )
 
 
@@ -1052,15 +1121,20 @@ def ranking_matches_json(competition_id):
 def ranking_submit(competition_id):
     user, resp = _require_user()
     if resp is not None:
+        if _wants_json_response():
+            return jsonify(success=False, message='请先登录'), 401
         return resp
     comp = get_competition(competition_id)
     if not comp:
+        if _wants_json_response():
+            return jsonify(success=False, message='比赛不存在或已被删除'), 404
         flash('比赛不存在或已被删除', 'warning')
         return redirect(url_for('ranking.ranking_list'))
     is_admin = user.get('is_admin') == 1
-    if not is_admin and comp.get('is_active') != 1:
-        flash('该比赛未开放', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
+    block_reason = _ranking_submit_block_reason(comp, competition_id, user=user)
+    if block_reason:
+        status = 403 if block_reason == '该比赛未开放' else 400
+        return _submit_error_response(competition_id, block_reason, status=status)
 
     # 提交限流（管理员豁免）：防止刷量耗尽 Docker 评测队列、主机资源与付费 token 预算。
     if not is_admin:
@@ -1071,55 +1145,44 @@ def ranking_submit(competition_id):
             _RANK_SUBMIT_WINDOW,
         )
         if not allowed:
-            flash(f'提交过于频繁，请 {retry} 秒后再试', 'warning')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+            return _submit_error_response(competition_id, f'提交过于频繁，请 {retry} 秒后再试', status=429)
         # 每 48 小时窗口提交次数限制（管理员豁免）
         quota = get_submission_quota(competition_id, user.get('username'), comp=comp)
         if quota is not None and quota['remaining'] <= 0:
-            flash(_submission_quota_message(quota), 'warning')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+            return _submit_error_response(competition_id, _submission_quota_message(quota), status=429)
 
     answer_format = _competition_answer_format(comp)
     answer_ext = '.' + answer_format
     scoring_mode = _competition_scoring_mode(comp)
-    has_script = bool((comp.get('scoring_script_path') or '').strip())
     submission_method = (comp.get('submission_method') or 'zip').strip().lower()
-    if submission_method == 'git':
-        flash('该比赛启用 Git 提交方式，请使用 Git 提交。', 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+    if scoring_mode == 'agent_judge' and submission_method == 'git':
+        return _submit_error_response(competition_id, '该比赛启用 Git 提交方式，请使用 Git 提交。')
 
     base_model_raw = (request.form.get('base_model') or '').strip()
     if not base_model_raw:
-        flash('请填写基座模型（多个用逗号分隔，例如：deepseek-v4-pro, qwen3.6-plus）', 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(
+            competition_id,
+            '请填写基座模型（多个用逗号分隔，例如：deepseek-v4-pro, qwen3.6-plus）',
+            category='danger',
+        )
     if len(base_model_raw) > 500:
-        flash('基座模型字段过长（不超过 500 字）', 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, '基座模型字段过长（不超过 500 字）', category='danger')
     base_model = base_model_raw
 
     # Agent 评测模式：只需上传代码 zip（不需要 answer 文件），但要求已配置模型与规则
     if scoring_mode == 'agent_judge':
         fake_agent_judge = _fake_agent_judge_enabled()
-        if not fake_agent_judge and not _agent_judge_endpoint_ready(competition_id, comp):
-            flash('该比赛为 Agent 评测模式，但管理员尚未配置模型端点，暂时无法提交。', 'warning')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
-        if not fake_agent_judge and not list_competition_rules(competition_id):
-            flash('该比赛尚未设置评分规则，暂时无法提交。', 'warning')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
         code_file = request.files.get('code_file')
         if not code_file or not (code_file.filename or '').strip():
-            flash('请上传代码文件（.zip）', 'danger')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+            return _submit_error_response(competition_id, '请上传代码文件（.zip）', category='danger')
         if not (code_file.filename or '').lower().endswith('.zip'):
-            flash('代码文件必须是 .zip', 'danger')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+            return _submit_error_response(competition_id, '代码文件必须是 .zip', category='danger')
         try:
             submission_id = create_ranking_submission(
                 competition_id, user.get('username'), enforce_quota=not is_admin,
             )
         except RankingSubmissionQuotaExceeded as e:
-            flash(_submission_quota_message(e.quota), 'warning')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+            return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
         target_dir = submission_dir(submission_id)
         _ensure_dir(target_dir)
         code_name = _safe_filename(code_file.filename, fallback='code.zip')
@@ -1132,8 +1195,7 @@ def ranking_submit(competition_id):
                 raise ValueError(f'代码文件超过 {CODE_ZIP_MAX_BYTES // (1024*1024)}MB 限制')
         except Exception as e:
             shutil.rmtree(target_dir, ignore_errors=True)
-            flash(f'文件保存失败：{e}', 'danger')
-            return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+            return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
         update_submission_files(submission_id, None, None, code_name, code_path, base_model=base_model)
         # agent_judge：入队即置「等待评测(Queued)」，被评测 worker 取到执行时才转「评测中」。
         attempt_id = begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
@@ -1151,41 +1213,26 @@ def ranking_submit(competition_id):
         flash('提交成功，Agent 评测进行中，可在"我的历史提交"点击"查看详情"查看实时进展。', 'success')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
-    # ZIP 模式必须配套自定义评测脚本（默认 JSON 评分器无法处理 zip）
-    if scoring_mode == 'absolute' and answer_format == 'zip' and not has_script:
-        flash('该比赛答案格式为 ZIP 但管理员尚未上传评测脚本，暂时无法提交。', 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
-
-    # ELO 模式必须配套评测脚本（用于两两比较）
-    if scoring_mode == 'elo' and not has_script:
-        flash('该比赛为 ELO 评分模式，但管理员尚未上传评测脚本，暂时无法接收提交。', 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
-
     answer_file = request.files.get('answer_file')
     code_file = request.files.get('code_file')
     if not answer_file or not (answer_file.filename or '').strip():
-        flash(f'请上传答案文件（{answer_ext}）', 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, f'请上传答案文件（{answer_ext}）', category='danger')
     if not code_file or not (code_file.filename or '').strip():
-        flash('请上传代码文件（.zip）', 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, '请上传代码文件（.zip）', category='danger')
 
     answer_name_raw = answer_file.filename
     code_name_raw = code_file.filename
     if not answer_name_raw.lower().endswith(answer_ext):
-        flash(f'答案文件必须是 {answer_ext}', 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, f'答案文件必须是 {answer_ext}', category='danger')
     if not code_name_raw.lower().endswith('.zip'):
-        flash('代码文件必须是 .zip', 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, '代码文件必须是 .zip', category='danger')
 
     try:
         submission_id = create_ranking_submission(
             competition_id, user.get('username'), enforce_quota=not is_admin,
         )
     except RankingSubmissionQuotaExceeded as e:
-        flash(_submission_quota_message(e.quota), 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
     target_dir = submission_dir(submission_id)
     _ensure_dir(target_dir)
 
@@ -1202,8 +1249,7 @@ def ranking_submit(competition_id):
         answer_file.save(answer_path)
         code_file.save(code_path)
     except Exception as e:
-        flash(f'文件保存失败：{e}', 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
 
     try:
         if os.path.getsize(answer_path) > ANSWER_MAX_BYTES:
@@ -1212,8 +1258,7 @@ def ranking_submit(competition_id):
             raise ValueError(f'代码文件超过 {CODE_ZIP_MAX_BYTES // (1024*1024)}MB 限制')
     except Exception as e:
         shutil.rmtree(target_dir, ignore_errors=True)
-        flash(str(e), 'danger')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_error_response(competition_id, str(e), category='danger')
 
     update_submission_files(submission_id, answer_name, answer_path, code_name, code_path, base_model=base_model)
 
@@ -1293,12 +1338,11 @@ def ranking_git_submit(competition_id):
     user, comp, url, err = _user_git_repo_context(competition_id)
     if err is not None:
         return err
+    block_reason = _ranking_submit_block_reason(comp, competition_id, user=user)
+    if block_reason:
+        return jsonify(success=False, message=block_reason), 400
     if _batch_run_task is None:
         return jsonify(success=False, message='评测任务未初始化，请联系管理员'), 500
-    if not list_competition_rules(competition_id):
-        return jsonify(success=False, message='该比赛尚未设置评分规则，暂时无法提交'), 400
-    if not _agent_judge_endpoint_ready(competition_id, comp):
-        return jsonify(success=False, message='管理员尚未配置 Agent 评测模型端点，暂时无法提交'), 400
 
     is_admin = user.get('is_admin') == 1
     if not is_admin:
@@ -1570,7 +1614,7 @@ def ranking_edit(competition_id):
         except (TypeError, ValueError):
             submit_limit = 0
         submit_limit = int(_clamp(submit_limit, 0, 100000))
-    # 是否重置窗口锚点：勾选「立即刷新」，或首次设置正限制且尚无锚点
+    # 兼容 CLI/API 的 reset_limit_window 参数；界面刷新走独立 reset_submit_limit 路由。
     reset_window = str(reset_limit_window_raw or '').strip().lower() in ('1', 'on', 'true', 'yes')
     set_window_now = reset_window or (
         submit_limit is not None and submit_limit > 0 and not comp.get('limit_window_start')
@@ -1649,7 +1693,7 @@ def ranking_reset_submit_limit(competition_id):
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
     reset_competition_limit_window(competition_id)
-    flash('已手动刷新提交次数限制：所有用户的本轮（48 小时）配额已立即重置。', 'success')
+    flash('已刷新提交次数', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -1748,6 +1792,8 @@ def ranking_save_agent_endpoints(competition_id):
     endpoints = payload.get('endpoints')
     timeout_raw = payload.get('timeout_seconds')
     orchestration_raw = payload.get('orchestration_mode')
+    if orchestration_raw is None:
+        orchestration_raw = payload.get('agent_judge_orchestration_mode')
     if timeout_raw is not None and str(timeout_raw).strip() != '':
         try:
             update_competition(competition_id,
@@ -2057,7 +2103,7 @@ def ranking_elo_start(competition_id):
     comp, resp = _require_elo_competition(competition_id)
     if resp is not None:
         return resp
-    if not (comp.get('scoring_script_path') or '').strip():
+    if not _configured_file(comp.get('scoring_script_path')):
         flash('尚未上传评测脚本，无法启动动态评分', 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
     set_elo_running(competition_id, True)
@@ -2243,6 +2289,9 @@ def ranking_upload_reference(competition_id):
     if not comp:
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
+    if _competition_scoring_mode(comp) != 'absolute':
+        flash('仅标准答案评分模式需要标准答案', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
     answer_format = _competition_answer_format(comp)
     answer_ext = '.' + answer_format
@@ -2293,6 +2342,9 @@ def ranking_upload_scoring_script(competition_id):
     if not comp:
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
+    if _competition_scoring_mode(comp) == 'agent_judge':
+        flash('Agent 评测不使用评测脚本', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
     f = request.files.get('scoring_script')
     if not f or not (f.filename or '').strip():
@@ -2346,11 +2398,10 @@ def ranking_clear_scoring_script(competition_id):
         except Exception:
             pass
     update_competition_scoring_script(competition_id, None, None)
-    fmt = _competition_answer_format(comp)
-    if fmt == 'zip':
-        flash('已清除评测脚本。当前答案格式为 ZIP，缺少脚本将导致用户无法提交，请尽快重新上传。', 'warning')
+    if _competition_scoring_mode(comp) in ('absolute', 'elo'):
+        flash('已清除评测脚本；当前评分模式需重新上传', 'warning')
     else:
-        flash('已清除评测脚本（将使用默认 JSON 对比打分）', 'success')
+        flash('已清除评测脚本', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 

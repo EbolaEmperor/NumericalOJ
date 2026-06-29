@@ -84,7 +84,7 @@
   var STATUS = { Accepted: '评测完成', Error: '评测异常', Judging: '评测中', Queued: '等待评测', Pending: '待评测' };
   var currentJudgeSnapshot = null;
   var currentJudgeView = 'topo';
-  var resultNodeW = 176, resultNodeH = 88, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
+  var resultNodeW = 176, resultNodeH = 96, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
   function closeJudgeStream() { if (judgeSource) { judgeSource.close(); judgeSource = null; } }
   function esc(s) { return (s || '').replace(/[&<>]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]; }); }
   function compactRuleText(s, n) {

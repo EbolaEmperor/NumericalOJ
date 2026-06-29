@@ -94,15 +94,40 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
     reference = tmp_path / "reference.json"
     reference.write_text('{"answer": 1}', encoding="utf-8")
     script = tmp_path / "score.py"
-    script.write_text("print('score')\n", encoding="utf-8")
+    script.write_text(
+        "import json\n"
+        "print(json.dumps({'score': 100, 'details': {'ok': True}}))\n",
+        encoding="utf-8",
+    )
     assert cli.admin_json("ranking", "upload-reference", str(ranking_id), str(reference))["success"] is True
     assert cli.admin_json("ranking", "upload-script", str(ranking_id), str(script))["success"] is True
     assert cli.admin_json("ranking", "clear-script", str(ranking_id))["success"] is True
-    assert cli.admin_json("ranking", "reset-limit", str(ranking_id))["success"] is True
 
     answer = tmp_path / "answer.json"
     answer.write_text('{"answer": 1}', encoding="utf-8")
     code_zip = write_zip(tmp_path / "code.zip", {"main.py": "print(1)\n"})
+    blocked_detail = cli.user_json("ranking", "detail", str(ranking_id), "--tab", "submit")
+    assert blocked_detail["can_submit"] is False
+    assert "评测脚本" in blocked_detail["submit_block_reason"]
+    blocked_submit = cli.user_json(
+        "ranking",
+        "submit",
+        str(ranking_id),
+        "--base-model",
+        "baseline",
+        "--code-zip",
+        str(code_zip),
+        "--answer-file",
+        str(answer),
+    )
+    assert blocked_submit["success"] is False
+    assert "评测脚本" in blocked_submit["message"]
+
+    assert cli.admin_json("ranking", "upload-script", str(ranking_id), str(script))["success"] is True
+    ready_detail = cli.user_json("ranking", "detail", str(ranking_id), "--tab", "submit")
+    assert ready_detail["can_submit"] is True
+    assert ready_detail["submit_block_reason"] == ""
+    assert cli.admin_json("ranking", "reset-limit", str(ranking_id))["success"] is True
     submit_payload = cli.user_json(
         "ranking",
         "submit",
@@ -161,7 +186,7 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
 
 
 @pytest.mark.e2e
-def test_ranking_elo_admin_controls(cli, unique_suffix):
+def test_ranking_elo_admin_controls(cli, unique_suffix, tmp_path):
     username = f"cli_elo_{unique_suffix}"
     create_regular_user(username=username, password="pw123456")
     assert cli.init_admin()["success"] is True
@@ -187,6 +212,9 @@ def test_ranking_elo_admin_controls(cli, unique_suffix):
         "--elo-max-pairs-per-round",
         "1",
     )["success"] is True
+    script = tmp_path / "elo_score.py"
+    script.write_text("print('{\"winner\": 0, \"details\": {}}')\n", encoding="utf-8")
+    assert cli.admin_json("ranking", "upload-script", str(ranking_id), str(script))["success"] is True
     assert cli.admin_json("ranking", "elo-start", str(ranking_id))["success"] is True
     assert cli.admin_json("ranking", "elo-stop", str(ranking_id))["success"] is True
     assert cli.admin_json("ranking", "elo-reset", str(ranking_id))["success"] is True

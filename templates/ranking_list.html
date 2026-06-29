@@ -22,13 +22,6 @@
   <div class="ranking-empty">
     <i class="fas fa-trophy ranking-empty-icon mb-3"></i>
     <h4 class="mb-2">暂无打榜赛</h4>
-    <p class="text-muted mb-0">
-      {% if user and user.is_admin == 1 %}
-        点击右上角 <strong>创建打榜赛</strong> 发起第一场比赛。
-      {% else %}
-        敬请期待，新的赛事正在筹备中。
-      {% endif %}
-    </p>
   </div>
 {% else %}
   <div class="row g-3 ranking-grid">
@@ -122,19 +115,14 @@
           <div class="mb-3">
             <label class="form-label">摘要</label>
             <textarea class="form-control" name="summary" rows="2" maxlength="500" placeholder="一句话介绍本场打榜赛（展示在列表卡片上，最多 500 字）"></textarea>
-            <div class="form-text">留空则在列表卡片上回退显示赛事描述的开头若干字。</div>
           </div>
           <div class="mb-3">
             <label class="form-label">满分</label>
             <input type="number" class="form-control" name="max_score" value="100" min="1" max="100000">
-            <div class="form-text">默认 100 分。</div>
           </div>
           <div class="mb-3">
             <label class="form-label">赛事描述（支持 Markdown）</label>
             <textarea class="form-control" name="description" rows="6" placeholder="简介、规则、数据说明……"></textarea>
-          </div>
-          <div class="alert alert-secondary small mb-0">
-            创建后，请在比赛详情页的 <strong>编辑比赛</strong> 标签中上传标准答案、评测脚本与附件。
           </div>
         </div>
         <div class="modal-footer">
@@ -158,11 +146,6 @@
         </div>
         <div class="modal-body">
           <p class="mb-2">确认复制比赛 <strong id="copyCompetitionTitle"></strong> 吗？</p>
-          <div class="alert alert-secondary small mb-0">
-            将生成一个 <strong>非公开</strong> 的副本（标题自动追加「（副本）」）：仅复制比赛
-            <strong>配置</strong>——描述、评测规则、附件与模型端点；<strong>不</strong>复制提交记录与排行榜。
-            副本默认为下线状态，可在编辑页调整后再上线。
-          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>

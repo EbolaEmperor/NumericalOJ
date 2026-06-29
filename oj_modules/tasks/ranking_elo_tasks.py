@@ -328,7 +328,8 @@ def register_ranking_elo_initial_burst_task(celery_app, match_task):
             return {'success': False, 'message': '不是 ELO 模式'}
         if int(comp.get('elo_running') or 0) != 1:
             return {'success': False, 'message': '动态评分尚未启动'}
-        if not (comp.get('scoring_script_path') or '').strip():
+        script = (comp.get('scoring_script_path') or '').strip()
+        if not script or not os.path.isfile(script):
             return {'success': False, 'message': '没有评测脚本'}
 
         n = int(remaining) if remaining is not None else int(comp.get('elo_initial_burst') or 5)

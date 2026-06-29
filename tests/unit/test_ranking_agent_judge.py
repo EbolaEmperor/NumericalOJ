@@ -62,6 +62,8 @@ def test_topo_order_deps_before_dependents():
 def test_normalize_orchestration_mode():
     assert aj.normalize_orchestration_mode('topo') == aj.ORCH_TOPOLOGICAL
     assert aj.normalize_orchestration_mode('topological') == aj.ORCH_TOPOLOGICAL
+    assert aj.normalize_orchestration_mode('topologi') == aj.ORCH_TOPOLOGICAL
+    assert aj.normalize_orchestration_mode('topol') == aj.ORCH_TOPOLOGICAL
     assert aj.normalize_orchestration_mode('anything-else') == aj.ORCH_SINGLE
 
 

@@ -153,6 +153,7 @@ MySQL schema lives in `myojdb.sql`. Core tables: `users`, `class_table`, `user_c
 ## Conventions worth knowing
 
 - The repo's working language is Chinese: most user-visible strings, status names, and a lot of comments are in Chinese. Keep that style when editing UI / templates / messages.
+- 设计前端时，不要增加解释性文字，追求极致简洁、极致美观。
 - Forbidden-function checking: the problem's comma-separated forbidden list is passed to `judger_core.check_forbidden`, which regex-matches `<func>(` (and special-cases the literal `\` for Octave). If you add a language, mirror this contract.
 - Time limits are passed in **nanoseconds**; memory limits arrive in bytes and `judger_core` multiplies by 10 internally before applying `RLIMIT_AS` (legacy quirk — keep it consistent across the `run_*` / `batch_*` functions).
 - The competitions material under `competitions/` is gitignored; treat it as scratch / dataset work, not part of the deployed app.
