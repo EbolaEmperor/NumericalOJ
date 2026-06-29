@@ -1906,7 +1906,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pa.add_argument("--submission-limit", type=int, default=10, help="Maximum number of submissions allowed per regular student.")
     pa.add_argument("--initial-code", default="", help="Initial code prefilled on the submit page, or @file.")
-    pa.add_argument("--test-code", default="", help="Helper code for interactive or special judging, or @file. Usually empty for standard problems.")
+    pa.add_argument(
+        "--test-code",
+        default="",
+        help=(
+            "Helper code for interactive or special judging, or @file. If it contains %%%%user_code_here, "
+            "the student's submitted code is pasted at that marker before judging. Usually empty for standard problems."
+        ),
+    )
     pa.add_argument("--forbidden-func", default="", help="Comma-separated forbidden function names. Matching submissions are judged Forbidden.")
     pa.add_argument(
         "--programming-grading-mode",
@@ -1946,7 +1953,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pa.add_argument("--submission-limit", type=int, help="Maximum submissions allowed per regular student. Omit to keep the current value.")
     pa.add_argument("--initial-code", help="Initial code prefilled on the submit page, or @file. Omit to keep the current value.")
-    pa.add_argument("--test-code", help="Helper code for interactive or special judging, or @file. Omit to keep the current value.")
+    pa.add_argument(
+        "--test-code",
+        help=(
+            "Helper code for interactive or special judging, or @file. If it contains %%%%user_code_here, "
+            "the student's submitted code is pasted at that marker before judging. Omit to keep the current value."
+        ),
+    )
     pa.add_argument("--forbidden-func", help="Comma-separated forbidden function names. Pass an empty string to clear.")
     pa.add_argument(
         "--programming-grading-mode",
