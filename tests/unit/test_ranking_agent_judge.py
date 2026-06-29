@@ -59,6 +59,12 @@ def test_topo_order_deps_before_dependents():
     assert order.index(3) < order.index(2) < order.index(1)
 
 
+def test_normalize_orchestration_mode():
+    assert aj.normalize_orchestration_mode('topo') == aj.ORCH_TOPOLOGICAL
+    assert aj.normalize_orchestration_mode('topological') == aj.ORCH_TOPOLOGICAL
+    assert aj.normalize_orchestration_mode('anything-else') == aj.ORCH_SINGLE
+
+
 # ---- compute_results ----
 def test_compute_pass_and_failed_scores():
     rules = aj.normalize_rules(_rules((1, 10, []), (2, 20, [])))
@@ -188,3 +194,16 @@ def test_build_prompt_mentions_files_and_gate():
     assert 'rules.json' in p and 'result.jsonl' in p and 'report' in p
     assert 'dependence' in p
     assert '我的打榜赛' in p
+
+
+def test_build_topological_prompts_split_setup_and_single_rule():
+    setup = aj.build_setup_prompt('拓扑赛')
+    assert '不要调用 report' in setup
+    rule = aj.normalize_rules([
+        {'rule_id': 2, 'rule_name': '输出', 'rule_text': '输出正确', 'value': 20, 'dependencies': [1]},
+        {'rule_id': 1, 'rule_text': '可运行', 'value': 10, 'dependencies': []},
+    ])[0]
+    p = aj.build_rule_prompt('拓扑赛', rule, 'result_x.jsonl')
+    assert '只判定下面这一条评分规则' in p
+    assert 'result_x.jsonl' in p
+    assert 'report <rule_id> <pass|failed>' in p

@@ -587,6 +587,154 @@ def _prepare_workspace(submission, competition, rules):
     return ws, result_name
 
 
+def _resolve_harness_config(competition, endpoint=None):
+    ep = endpoint or {}
+    harness = ep.get('harness') or HARNESS_CLAUDE_CODE
+    base_url = ep.get('base_url') or competition.get('agent_judge_base_url') or ''
+    api_key = ep.get('api_key') or competition.get('agent_judge_api_key') or ''
+    model = ep.get('model') or competition.get('agent_judge_model') or ''
+    if harness == HARNESS_OPENCODE:
+        base_url = base_url or DEFAULT_OPENCODE_GO_BASE_URL
+        model = model or DEFAULT_OPENCODE_GO_MODEL
+    return harness, base_url, api_key, model
+
+
+def _agent_env_args(harness, base_url, api_key, model, result_name, include_prompt=False):
+    args = [
+        '-e', 'IS_SANDBOX=1',
+        # 关闭 claude 的非必要外联（遥测/自动更新/错误上报），否则在受限容器内会卡住
+        '-e', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1',
+        '-e', 'DISABLE_TELEMETRY=1',
+        '-e', 'DISABLE_AUTOUPDATER=1',
+        '-e', 'DISABLE_ERROR_REPORTING=1',
+        '-e', f'AJ_HARNESS={harness}',
+        '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
+        '-e', 'AJ_SESSION_STATE=/workspace/.aj_session_state.json',
+        '-e', f'ANTHROPIC_BASE_URL={base_url}',
+        '-e', f'ANTHROPIC_AUTH_TOKEN={api_key}',
+        '-e', f'ANTHROPIC_API_KEY={api_key}',
+        '-e', f'ANTHROPIC_MODEL={model}',
+        '-e', f'OPENAI_BASE_URL={base_url}',
+        '-e', f'OPENAI_API_KEY={api_key}',
+        '-e', f'OPENAI_MODEL={model}',
+        '-e', f'OPENCODE_BASE_URL={base_url}',
+        '-e', f'OPENCODE_API_KEY={api_key}',
+        '-e', f'OPENCODE_MODEL={model}',
+    ]
+    if include_prompt:
+        args.extend(['-e', 'AJ_PROMPT'])
+    return args
+
+
+def _docker_container_args(container_name, ws, harness, base_url, api_key, model,
+                           result_name, include_prompt=False):
+    return [
+        'docker', 'run', '-d', '--name', container_name,
+        # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
+        # 既无法写宿主属主(非 root)的挂载文件、也无法 apt 装包。
+        '--security-opt', 'no-new-privileges',
+        '--pids-limit', JUDGE_PIDS_LIMIT,
+        '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
+        '-v', f'{ws}:/workspace', '-w', '/workspace',
+    ] + _agent_env_args(harness, base_url, api_key, model, result_name, include_prompt=include_prompt) + [
+        JUDGE_IMAGE,
+    ]
+
+
+def _read_session_id(ws):
+    try:
+        with open(os.path.join(ws, '.aj_session_state.json'), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        sid = str(data.get('session_id') or '').strip()
+        return sid or None
+    except Exception:
+        return None
+
+
+def _append_phase_log(ws, phase, proc):
+    try:
+        with open(os.path.join(ws, '.aj_harness.log'), 'a', encoding='utf-8') as f:
+            f.write(f'\n===== {phase} returncode={getattr(proc, "returncode", "")} =====\n')
+            if getattr(proc, 'stdout', None):
+                f.write(proc.stdout)
+            if getattr(proc, 'stderr', None):
+                f.write('\n[stderr]\n')
+                f.write(proc.stderr)
+    except Exception:
+        pass
+
+
+def _exec_harness_phase(container_name, ws, phase, prompt, timeout_s,
+                        resume_session_id=None, result_filename=None):
+    args = [
+        'docker', 'exec', '-i',
+        '-e', 'DEBIAN_FRONTEND=noninteractive',
+        '-e', f'AJ_PHASE={phase}',
+        '-e', 'AJ_SESSION_STATE=/workspace/.aj_session_state.json',
+    ]
+    if resume_session_id:
+        args.extend(['-e', f'AJ_RESUME_SESSION_ID={resume_session_id}'])
+    if result_filename:
+        args.extend(['-e', f'AJ_RESULT_FILE=/workspace/{result_filename}'])
+    args.extend([
+        container_name, 'bash', '-lc',
+        'IFS= read -r -d "" AJ_PROMPT || true; export AJ_PROMPT; run_harness',
+    ])
+    proc = subprocess.run(
+        args, input=prompt or '', capture_output=True, text=True,
+        timeout=max(1, int(timeout_s)),
+    )
+    _append_phase_log(ws, phase, proc)
+    return proc
+
+
+def _exec_container_apt_setup(container_name, timeout_s=120):
+    """在后续 docker exec phase 的同类环境里同步重建 apt 索引。"""
+    return subprocess.run(
+        [
+            'docker', 'exec',
+            '-e', 'DEBIAN_FRONTEND=noninteractive',
+            container_name, 'bash', '-lc',
+            'apt-get update >/tmp/aj_apt_setup.log 2>&1 || true',
+        ],
+        check=True, capture_output=True, text=True,
+        timeout=max(1, int(timeout_s)),
+    )
+
+
+def _ingest_result_file(submission_id, attempt_id, result_path, allowed_rule_ids, seen):
+    allowed = {int(x) for x in allowed_rule_ids}
+    parsed_by_id = {}
+    try:
+        with open(result_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception:
+        lines = []
+    for line in lines:
+        parsed = aj.parse_result_line(line)
+        if not parsed or parsed['rule_id'] not in allowed or parsed['rule_id'] in seen:
+            continue
+        seen.add(parsed['rule_id'])
+        raw = parsed['result']
+        affected = upsert_judge_result_for_attempt(
+            submission_id, attempt_id, parsed['rule_id'], raw, raw, 0.0, parsed['evidence'],
+        )
+        if affected <= 0:
+            return parsed_by_id, False
+        parsed_by_id[parsed['rule_id']] = parsed
+        _publish_snapshot(submission_id)
+    return parsed_by_id, True
+
+
+def _write_backend_rule_effect(submission_id, attempt_id, rule_id, effective, evidence):
+    affected = upsert_judge_result_for_attempt(
+        submission_id, attempt_id, rule_id, None, effective, 0.0, evidence,
+    )
+    if affected > 0:
+        _publish_snapshot(submission_id)
+    return affected
+
+
 def _dump_container_harness_state(container_name, ws, harness=HARNESS_CLAUDE_CODE):
     """容器回收前，把所选 Agent Harness 的会话目录 docker cp 到宿主 submission 目录。
     尽力而为：源不存在或 cp 失败都静默跳过，不影响判题。docker cp 可作用于「已退出但未删除」
@@ -642,14 +790,7 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     容器回收前会按 harness 把会话/transcript 目录 docker cp 到宿主 <ws>/submission/.claude、
     .codex 或 .opencode，便于事后归因。endpoint：本次使用的模型端点
     （harness/base_url/api_key/model）；为空时回退到比赛单端点字段。"""
-    ep = endpoint or {}
-    harness = ep.get('harness') or HARNESS_CLAUDE_CODE
-    base_url = ep.get('base_url') or competition.get('agent_judge_base_url') or ''
-    api_key = ep.get('api_key') or competition.get('agent_judge_api_key') or ''
-    model = ep.get('model') or competition.get('agent_judge_model') or ''
-    if harness == HARNESS_OPENCODE:
-        base_url = base_url or DEFAULT_OPENCODE_GO_BASE_URL
-        model = model or DEFAULT_OPENCODE_GO_MODEL
+    harness, base_url, api_key, model = _resolve_harness_config(competition, endpoint)
     prompt = aj.build_prompt(competition.get('title'), result_name)
     container_name = f'aj_{submission_id}'
     # 同名残留容器（上次 worker 被杀留下的孤儿、或异常未清的旧容器）先强制清掉，否则下面
@@ -658,39 +799,9 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
         subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
     except Exception:
         pass
-    docker_args = [
-        # 不再用 --rm：容器退出后保留，给「回收前 docker cp 出 harness 会话目录」留窗口；改由本函数
-        # finally 中的 docker rm -f 统一回收（覆盖正常退出/超时/异常各路径）。
-        'docker', 'run', '-d', '--name', container_name,
-        # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
-        # 既无法写宿主属主(非 root)的挂载文件、也无法 apt 装包。
-        # 用 Docker 默认能力集 + 非特权 + pids/内存/CPU 限制 + 仅挂载本提交工作目录做隔离。
-        # no-new-privileges：禁止容器内进程通过 setuid 提权。
-        '--security-opt', 'no-new-privileges',
-        '--pids-limit', JUDGE_PIDS_LIMIT,
-        '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
-        '-v', f'{ws}:/workspace', '-w', '/workspace',
-        '-e', 'IS_SANDBOX=1',
-        # 关闭 claude 的非必要外联（遥测/自动更新/错误上报），否则在受限容器内会卡住
-        '-e', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1',
-        '-e', 'DISABLE_TELEMETRY=1',
-        '-e', 'DISABLE_AUTOUPDATER=1',
-        '-e', 'DISABLE_ERROR_REPORTING=1',
-        '-e', 'AJ_PROMPT',
-        '-e', f'AJ_HARNESS={harness}',
-        # report 命令据此写入随机结果文件名；参赛者代码无法预先猜到。
-        '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
-        '-e', f'ANTHROPIC_BASE_URL={base_url}',
-        '-e', f'ANTHROPIC_AUTH_TOKEN={api_key}',
-        '-e', f'ANTHROPIC_API_KEY={api_key}',
-        '-e', f'ANTHROPIC_MODEL={model}',
-        '-e', f'OPENAI_BASE_URL={base_url}',
-        '-e', f'OPENAI_API_KEY={api_key}',
-        '-e', f'OPENAI_MODEL={model}',
-        '-e', f'OPENCODE_BASE_URL={base_url}',
-        '-e', f'OPENCODE_API_KEY={api_key}',
-        '-e', f'OPENCODE_MODEL={model}',
-        JUDGE_IMAGE,
+    docker_args = _docker_container_args(
+        container_name, ws, harness, base_url, api_key, model, result_name, include_prompt=True,
+    ) + [
         'bash', '-lc',
         # 启动 claude 前先 apt-get update：镜像各 apt 层都清空了 /var/lib/apt/lists，判题时
         # apt-get install 会报「Unable to locate package」；这里只重建包索引（不做 upgrade，避免
@@ -726,27 +837,15 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
                 except Exception:
                     pass
                 return (False, True)
-            try:
-                with open(result_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-            except Exception:
-                lines = []
-            for line in lines:
-                parsed = aj.parse_result_line(line)
-                if not parsed or parsed['rule_id'] not in rule_ids or parsed['rule_id'] in seen:
-                    continue
-                seen.add(parsed['rule_id'])
-                raw = parsed['result']
-                affected = upsert_judge_result_for_attempt(
-                    submission_id, attempt_id, parsed['rule_id'], raw, raw, 0.0, parsed['evidence'],
-                )
-                if affected <= 0:
-                    try:
-                        subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
-                    except Exception:
-                        pass
-                    return (False, True)
-                _publish_snapshot(submission_id)
+            _, current = _ingest_result_file(
+                submission_id, attempt_id, result_path, rule_ids, seen,
+            )
+            if not current:
+                try:
+                    subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+                return (False, True)
             try:
                 running = subprocess.run(
                     ['docker', 'inspect', '-f', '{{.State.Running}}', container_name],
@@ -765,6 +864,149 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
             time.sleep(JUDGE_POLL_INTERVAL)
     finally:
         # 回收容器前，先把所选 harness 的会话目录拉到宿主 submission 目录（事后归因），再统一回收。
+        _dump_container_harness_state(container_name, ws, harness)
+        try:
+            subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
+        except Exception:
+            pass
+    return (timed_out, True)
+
+
+def _run_container_topological(submission_id, ws, result_name, competition, rules, timeout_s,
+                               endpoint=None, attempt_id=None):
+    """拓扑编排模式：一个常驻容器，多次 docker exec resume 同一 harness 会话。
+
+    后端只在前置依赖 effective=pass 时调用 Agent；失败、跳过、错误都会直接把后继规则
+    标为 skipped。每个 Agent 阶段只采纳当前 rule_id 的 report，避免模型提前上报未来规则。
+    """
+    harness, base_url, api_key, model = _resolve_harness_config(competition, endpoint)
+    container_name = f'aj_{submission_id}'
+    try:
+        subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
+    except Exception:
+        pass
+    docker_args = _docker_container_args(
+        container_name, ws, harness, base_url, api_key, model, result_name, include_prompt=False,
+    ) + [
+        'bash', '-lc', 'tail -f /dev/null',
+    ]
+    try:
+        subprocess.run(docker_args, check=True, capture_output=True, text=True, timeout=120)
+        _exec_container_apt_setup(container_name, timeout_s=120)
+    except Exception:
+        try:
+            subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
+        except Exception:
+            pass
+        return (False, False)
+
+    seen = set()
+    by_id = {int(r['rule_id']): r for r in rules}
+    effective = {}
+    session_id = None
+    start = time.time()
+    timed_out = False
+
+    def _remaining():
+        return max(0.0, float(timeout_s) - (time.time() - start))
+
+    try:
+        if not _attempt_still_current(submission_id, attempt_id):
+            return (False, True)
+        if _remaining() <= 0:
+            return (True, True)
+        try:
+            setup_proc = _exec_harness_phase(
+                container_name, ws, 'setup',
+                aj.build_setup_prompt(competition.get('title')),
+                _remaining(),
+            )
+            session_id = _read_session_id(ws)
+            if setup_proc.returncode != 0 and not session_id:
+                _append_phase_log(ws, 'setup-no-session', setup_proc)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+            except Exception:
+                pass
+            return (timed_out, True)
+
+        for rid in aj.topo_order(rules):
+            if not _attempt_still_current(submission_id, attempt_id):
+                try:
+                    subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+                return (False, True)
+            if _remaining() <= 0:
+                timed_out = True
+                try:
+                    subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+                break
+
+            rule = by_id[rid]
+            blocked = [dep for dep in rule.get('dependencies') or []
+                       if effective.get(int(dep)) != aj.EFF_PASS]
+            if blocked:
+                evidence = (
+                    '后端按拓扑序编排评测：前置规则 '
+                    + ', '.join(str(x) for x in blocked)
+                    + ' 未通过或未完成，因此本规则跳过，得 0 分。'
+                )
+                if _write_backend_rule_effect(
+                    submission_id, attempt_id, rid, aj.EFF_SKIPPED, evidence,
+                ) <= 0:
+                    return (False, True)
+                effective[rid] = aj.EFF_SKIPPED
+                continue
+
+            try:
+                phase_result_name = f'{result_name}.rule_{rid}.jsonl'
+                open(os.path.join(ws, phase_result_name), 'w').close()
+                proc = _exec_harness_phase(
+                    container_name, ws, f'rule_{rid}',
+                    aj.build_rule_prompt(competition.get('title'), rule, phase_result_name),
+                    _remaining(),
+                    resume_session_id=session_id,
+                    result_filename=phase_result_name,
+                )
+                session_id = _read_session_id(ws) or session_id
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                try:
+                    subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+                break
+
+            parsed, current = _ingest_result_file(
+                submission_id, attempt_id, os.path.join(ws, phase_result_name), {rid}, seen,
+            )
+            if not current:
+                try:
+                    subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+                return (False, True)
+            raw = (parsed.get(rid) or {}).get('result')
+            if raw == aj.RESULT_PASS:
+                effective[rid] = aj.EFF_PASS
+            elif raw == aj.RESULT_FAILED:
+                effective[rid] = aj.EFF_FAILED
+            else:
+                evidence = (
+                    f'Agent 本轮未按要求上报规则 {rid} 的结果；'
+                    f'run_harness 退出码 {getattr(proc, "returncode", "unknown")}。'
+                )
+                if _write_backend_rule_effect(
+                    submission_id, attempt_id, rid, aj.EFF_ERROR, evidence,
+                ) <= 0:
+                    return (False, True)
+                effective[rid] = aj.EFF_ERROR
+    finally:
         _dump_container_harness_state(container_name, ws, harness)
         try:
             subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
@@ -837,8 +1079,15 @@ def _judge(submission_id, endpoint=None, attempt_id=None):
         return {'success': True, 'score': 0.0}
     timeout_s = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT)
     ws, result_name = _prepare_workspace(submission, competition, rules)
-    timed_out, container_ok = _run_container_and_tail(
-        submission_id, ws, result_name, competition, rules, timeout_s, endpoint, attempt_id)
+    orchestration_mode = aj.normalize_orchestration_mode(
+        competition.get('agent_judge_orchestration_mode')
+    )
+    if orchestration_mode == aj.ORCH_TOPOLOGICAL:
+        timed_out, container_ok = _run_container_topological(
+            submission_id, ws, result_name, competition, rules, timeout_s, endpoint, attempt_id)
+    else:
+        timed_out, container_ok = _run_container_and_tail(
+            submission_id, ws, result_name, competition, rules, timeout_s, endpoint, attempt_id)
     _finalize(submission_id, rules, timed_out, container_ok, attempt_id)
     return {'success': True}
 
