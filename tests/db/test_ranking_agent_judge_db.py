@@ -16,12 +16,13 @@ def _make_comp():
 def test_replace_and_list_rules(client):  # client fixture 触发 app/db 初始化
     cid = _make_comp()
     ajdb.replace_competition_rules(cid, [
-        {'rule_id': 1, 'rule_text': '能编译', 'value': 10, 'dependencies': []},
+        {'rule_id': 1, 'rule_name': '编译', 'rule_text': '能编译', 'value': 10, 'dependencies': []},
         {'rule_id': 2, 'rule_text': '输出正确', 'value': 20, 'dependencies': [1]},
     ])
     rules = ajdb.list_competition_rules(cid)
     assert [r['rule_id'] for r in rules] == [1, 2]
     assert rules[1]['dependencies'] == [1]
+    assert rules[0]['rule_name'] == '编译'
     assert rules[0]['rule_text'] == '能编译'
 
 

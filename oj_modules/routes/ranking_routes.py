@@ -1665,6 +1665,7 @@ def ranking_save_judge_rules(competition_id):
     for idx, r in enumerate(rules_in):
         rules.append({
             'rule_id': int(r.get('rule_id') or (idx + 1)),
+            'rule_name': (r.get('rule_name') or '').strip(),
             'rule_text': (r.get('rule_text') or '').strip(),
             'value': r.get('value'),
             'dependencies': r.get('dependencies') or [],

@@ -3,6 +3,7 @@
 """Dispatch Agent-as-Judge runs to the selected CLI harness."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -11,7 +12,11 @@ OPENCODE_GO_MODEL = "mimo-v2.5-pro"
 
 
 def _run(args, env=None):
-    return subprocess.run(args, cwd="/workspace", env=env or os.environ.copy()).returncode
+    run_env = env or os.environ.copy()
+    if shutil.which(args[0], path=run_env.get("PATH")) is None:
+        print(f"{args[0]} CLI is not installed in this Agent-as-Judge image", file=sys.stderr)
+        return 127
+    return subprocess.run(args, cwd="/workspace", env=run_env).returncode
 
 
 def _write_codex_config(home, base_url, model):
