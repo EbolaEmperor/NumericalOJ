@@ -210,6 +210,23 @@ def test_git_ranking_help_tells_users_to_check_first():
 
 
 @pytest.mark.e2e
+@pytest.mark.parametrize("action", ["create", "edit"])
+def test_admin_problem_help_explains_user_code_placeholder(action):
+    completed = subprocess.run(
+        [sys.executable, str(ADMIN_CLI), "problem", action, "--help"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=20,
+    )
+    assert completed.returncode == 0
+    help_text = normalize_ws(completed.stdout)
+    assert "%%user_code_here" in help_text
+    assert "student's submitted code is pasted at that marker" in help_text
+
+
+@pytest.mark.e2e
 def test_ai_marks_help_only_accepts_submission_id():
     for script in (USER_CLI, ADMIN_CLI):
         completed = subprocess.run(

@@ -59,6 +59,19 @@
     </div>
 
     {% if submission.problem_type == 1 %}
+    {% if submission.generated_from_prompt %}
+    <div class="card mb-3">
+      <div class="card-header py-2">
+        <strong><i class="fas fa-terminal me-2"></i>Prompt</strong>
+      </div>
+      <div class="card-body">
+        <pre class="mb-0" style="white-space: pre-wrap;">{{ submission.prompt_text or '' }}</pre>
+        {% if submission.prompt_generation_error %}
+          <div class="alert alert-danger mt-3 mb-0">{{ submission.prompt_generation_error }}</div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
     <div class="card">
       <div class="card-body p-0">
         <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
@@ -482,6 +495,7 @@
       'Pending': 'PD',
       'Waiting': 'WT',
       'Running': 'RUN',
+      'Generating': 'GEN',
       'Error': 'ERR',
       'Unaccepted': 'UA'
     };
@@ -745,7 +759,7 @@
   function isWrittenSubmissionJudging() {
     if (!statusTextEl) return false;
     var st = String(statusTextEl.textContent || '').trim();
-    return st === 'Pending' || st === 'Waiting' || st === 'Running';
+    return st === 'Pending' || st === 'Waiting' || st === 'Running' || st === 'Generating';
   }
 
   function setPdfHint(text, isError) {
@@ -830,7 +844,8 @@
 </script>
 {% endif %}
 
-{% if max_score == 0 and submission.problem_type == 1 %}
+{% set programming_active_statuses = ['Pending', 'Waiting', 'Running', 'Generating'] %}
+{% if max_score == 0 and submission.problem_type == 1 and submission.status in programming_active_statuses %}
 <script>
   // 智能轮询判题状态
   let pollCount = 0;
@@ -1062,7 +1077,7 @@
         latexEl.innerHTML = escapeHtml(latex);
       } else if (err.trim()) {
         latexEl.innerHTML = '<span class="text-danger">' + escapeHtml(err) + '</span>';
-      } else if (['Pending', 'Waiting', 'Running'].includes(st)) {
+      } else if (['Pending', 'Waiting', 'Running', 'Generating'].includes(st)) {
         latexEl.innerHTML = '<span class="text-muted">LaTeX 转写中，请稍后查看实时结果。</span>';
       } else {
         latexEl.innerHTML = '<span class="text-muted">暂无 LaTeX 转写结果。</span>';

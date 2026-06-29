@@ -12,6 +12,7 @@ API:
 """
 
 import os
+import platform
 import re
 import shutil
 import time
@@ -56,7 +57,7 @@ IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 # -Wl,--no-as-needed 确保即使目标文件未直接引用也保留这些库；-ldl/-lpthread/-lm 兜底。
 MKL_INCLUDE_DIR = "/opt/mkl/include"
 MKL_LIB_DIR = "/opt/mkl/lib"
-MKL_COMPILE_FLAGS = ["-m64", "-I", MKL_INCLUDE_DIR]
+MKL_COMPILE_FLAGS = ["-I", MKL_INCLUDE_DIR]
 MKL_LINK_FLAGS = [
     "-L", MKL_LIB_DIR,
     f"-Wl,-rpath,{MKL_LIB_DIR}",
@@ -133,15 +134,40 @@ def _warmup_octave_plot(session):
         pass
 
 
+def _target_machine_arch():
+    raw = str(_config_value("JUDGER_TARGET_ARCH", "") or "").strip().lower()
+    if raw:
+        return raw
+    return str(platform.machine() or "").strip().lower()
+
+
+def _is_x86_64_target():
+    return _target_machine_arch() in ("x86_64", "amd64")
+
+
+def _mkl_compile_flags():
+    flags = []
+    if _is_x86_64_target():
+        flags.append("-m64")
+    flags.extend(MKL_COMPILE_FLAGS)
+    return flags
+
+
 def _numeric_backend():
     """返回 C/C++ 数值库后端：mkl / openblas / none。
 
     生产默认仍是 MKL；本机 lite 镜像名包含 judger-lite 时自动改用
     OpenBLAS/LAPACKE，避免 lite 镜像因为没有 /opt/mkl 而所有 C/C++ 编译失败。
-    可通过 JUDGER_NUMERIC_BACKEND 显式覆盖。
+    JUDGER_NUMERIC_BACKEND 可显式关闭数值库；但 judger-lite 镜像没有 MKL，
+    因此不会允许显式切回 MKL。
     """
+    image = str(_config_value("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest") or "").lower()
     raw_backend = str(_config_value("JUDGER_NUMERIC_BACKEND", "") or "").strip().lower()
-    if raw_backend in ("mkl", "openblas", "none"):
+    if raw_backend == "none":
+        return "none"
+    if "judger-lite" in image:
+        return "openblas"
+    if raw_backend in ("mkl", "openblas"):
         return raw_backend
 
     legacy_mkl = _config_value("JUDGER_ENABLE_MKL", None)
@@ -150,9 +176,9 @@ def _numeric_backend():
         if parsed is not None:
             return "mkl" if parsed else "openblas"
 
-    image = str(_config_value("JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest") or "").lower()
-    if "judger-lite" in image:
+    if not _is_x86_64_target():
         return "openblas"
+
     return "mkl"
 
 
@@ -167,7 +193,7 @@ def build_compile_cmd(language, compile_timeout_sec=30):
     cmd.extend(["-I", "/opt/library"])
     backend = _numeric_backend()
     if backend == "mkl":
-        cmd.extend(MKL_COMPILE_FLAGS)
+        cmd.extend(_mkl_compile_flags())
     cmd.extend([src, "-o", "a.out"])
     if backend == "mkl":
         cmd.extend(MKL_LINK_FLAGS)

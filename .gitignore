@@ -42,6 +42,7 @@ docs/superpowers/
 test-results/
 
 # ===== 本地配置 / 运行时目录 =====
+.env
 tmp/
 uploads/
 # 判题运行目录（JUDGER_RUN_ROOT 默认 <OJ_ROOT>/judger）：每次评测的 eoj-* 子目录是

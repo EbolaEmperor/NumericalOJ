@@ -217,6 +217,9 @@ CREATE TABLE `submissions` (
   `status` varchar(16) NOT NULL,
   `problem_title` text,
   `problem_type` int DEFAULT NULL,
+  `prompt_text` longtext,
+  `generated_from_prompt` tinyint NOT NULL DEFAULT '0',
+  `prompt_generation_error` text,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=12497 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -451,6 +454,199 @@ INSERT INTO `problems` (`id`,`title`,`content`,`initial_code`,`testdata`,`cnt`,`
 ```
 Hello, World!
 ```','% 请在这里编写你的 MATLAB 代码\ndisp(''Hello, World!'');','{\"input\":\"\",\"output\":\"Hello, World!\"}',0,'',1,'matlab',1,'%%user_code_here',2000);
+INSERT INTO `problems` (`id`,`title`,`content`,`initial_code`,`testdata`,`cnt`,`forbidden_func`,`type`,`lang`,`max_score`,`test_code`,`time_limit_ms`,`submission_limit`,`programming_grading_mode`,`programming_grading_model`,`programming_output_filename`,`programming_grading_prompt`,`written_grading_mode`,`written_grading_model`,`written_grading_prompt`) VALUES (2,'滑动窗口极差','给定一个长度为 `n` 的整数序列 `a_1, a_2, ..., a_n` 和窗口长度 `k`。对每一个连续子数组
+
+`a_i, a_{i+1}, ..., a_{i+k-1}`，其中 `1 <= i <= n-k+1`，
+
+输出该窗口中的最大值减最小值。
+
+请在 C++ 中实现下面这个函数：
+
+```cpp
+vector<long long> solve_window_range(const vector<long long>& a, int k);
+```
+
+函数需要返回一个长度为 `n-k+1` 的数组，第 `i` 个元素表示第 `i` 个长度为 `k` 的窗口的极差。
+
+你只需要提交函数实现，不要编写 `main` 函数，也不要从标准输入读取数据或向标准输出打印内容。评测程序会自动生成测试数据并调用你的函数。
+
+## 数据范围
+
+- `1 <= k <= n <= 200000`
+- `-10^9 <= a_i <= 10^9`
+
+## 样例
+
+输入数组：
+
+```text
+a = [1, 3, -1, -3, 5, 3, 6, 7], k = 3
+```
+
+返回：
+
+```text
+[4, 6, 6, 8, 3, 4]
+```
+
+解释：第一个窗口 `[1, 3, -1]` 的最大值为 `3`，最小值为 `-1`，极差为 `4`。','#include <vector>
+using namespace std;
+
+vector<long long> solve_window_range(const vector<long long>& a, int k) {
+    // 请在这里实现函数，返回每个长度为 k 的窗口的极差。
+    return {};
+}','[{\"input\":\"1 1 1 0\",\"output\":\"OK\"},{\"input\":\"2 8 3 0\",\"output\":\"OK\"},{\"input\":\"3 20 5 1\",\"output\":\"OK\"},{\"input\":\"4 20 7 2\",\"output\":\"OK\"},{\"input\":\"5 2000 1 3\",\"output\":\"OK\"},{\"input\":\"6 2000 2000 4\",\"output\":\"OK\"},{\"input\":\"7 50000 257 5\",\"output\":\"OK\"},{\"input\":\"8 200000 100000 6\",\"output\":\"OK\"},{\"input\":\"9 200000 199999 7\",\"output\":\"OK\"},{\"input\":\"10 200000 33333 0\",\"output\":\"OK\"}]',0,'',1,'cpp',10,'#include <bits/stdc++.h>
+using namespace std;
+
+%%user_code_here
+
+static uint64_t splitmix64_next(uint64_t& state) {
+    uint64_t z = (state += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
+static long long rand_between(uint64_t& state, long long lo, long long hi) {
+    uint64_t span = static_cast<uint64_t>(hi - lo + 1);
+    return lo + static_cast<long long>(splitmix64_next(state) % span);
+}
+
+static long long clamp_value(long long x) {
+    const long long LIM = 1000000000LL;
+    if (x < -LIM) return -LIM;
+    if (x > LIM) return LIM;
+    return x;
+}
+
+static vector<long long> make_case(uint64_t seed, int n, int k, int mode) {
+    vector<long long> a(n);
+    uint64_t state = seed ^ (static_cast<uint64_t>(n) << 32) ^ static_cast<uint64_t>(k) ^ 0xd1b54a32d192ed03ULL;
+    mode %= 8;
+    if (mode < 0) mode += 8;
+
+    if (mode == 0) {
+        for (int i = 0; i < n; ++i) {
+            a[i] = rand_between(state, -1000000000LL, 1000000000LL);
+        }
+    } else if (mode == 1) {
+        long long cur = -1000000000LL + rand_between(state, 0, 1000);
+        for (int i = 0; i < n; ++i) {
+            cur += rand_between(state, 0, 5);
+            a[i] = clamp_value(cur);
+        }
+    } else if (mode == 2) {
+        long long cur = 1000000000LL - rand_between(state, 0, 1000);
+        for (int i = 0; i < n; ++i) {
+            cur -= rand_between(state, 0, 5);
+            a[i] = clamp_value(cur);
+        }
+    } else if (mode == 3) {
+        for (int i = 0; i < n; ++i) {
+            a[i] = rand_between(state, -5, 5);
+        }
+    } else if (mode == 4) {
+        for (int i = 0; i < n; ++i) {
+            long long jitter = rand_between(state, 0, 1000);
+            a[i] = (i % 2 == 0) ? (1000000000LL - jitter) : (-1000000000LL + jitter);
+        }
+    } else if (mode == 5) {
+        long long base = 0;
+        for (int i = 0; i < n; ++i) {
+            if (i % 97 == 0) base = rand_between(state, -1000000000LL, 1000000000LL);
+            a[i] = clamp_value(base + rand_between(state, -50, 50));
+        }
+    } else if (mode == 6) {
+        long long cur = rand_between(state, -1000000LL, 1000000LL);
+        for (int i = 0; i < n; ++i) {
+            cur = clamp_value(cur + rand_between(state, -10000LL, 10000LL));
+            a[i] = cur;
+        }
+    } else {
+        for (int i = 0; i < n; ++i) {
+            long long wave = static_cast<long long>((i % 1009) - 504) * 1000LL;
+            long long noise = rand_between(state, -2000LL, 2000LL);
+            if (i % 4096 == 0) noise = rand_between(state, -1000000000LL, 1000000000LL);
+            a[i] = clamp_value(wave + noise);
+        }
+    }
+    return a;
+}
+
+static vector<long long> reference_window_range(const vector<long long>& a, int k) {
+    deque<int> maxq, minq;
+    vector<long long> ans;
+    ans.reserve(a.size() >= static_cast<size_t>(k) ? a.size() - k + 1 : 0);
+    for (int i = 0; i < static_cast<int>(a.size()); ++i) {
+        while (!maxq.empty() && a[maxq.back()] <= a[i]) maxq.pop_back();
+        while (!minq.empty() && a[minq.back()] >= a[i]) minq.pop_back();
+        maxq.push_back(i);
+        minq.push_back(i);
+        while (!maxq.empty() && maxq.front() <= i - k) maxq.pop_front();
+        while (!minq.empty() && minq.front() <= i - k) minq.pop_front();
+        if (i + 1 >= k) {
+            ans.push_back(a[maxq.front()] - a[minq.front()]);
+        }
+    }
+    return ans;
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    uint64_t seed = 0;
+    int n = 0, k = 0, mode = 0;
+    if (!(cin >> seed >> n >> k >> mode)) {
+        return 0;
+    }
+    if (n <= 0 || k <= 0 || k > n) {
+        cout << "WRONG\\n";
+        cerr << "invalid generated test parameters\\n";
+        return 0;
+    }
+
+    vector<long long> a = make_case(seed, n, k, mode);
+    vector<long long> got;
+    try {
+        got = solve_window_range(a, k);
+    } catch (const exception& e) {
+        cout << "WRONG\\n";
+        cerr << "student function threw exception: " << e.what() << "\\n";
+        return 0;
+    } catch (...) {
+        cout << "WRONG\\n";
+        cerr << "student function threw unknown exception\\n";
+        return 0;
+    }
+
+    vector<long long> want = reference_window_range(a, k);
+    if (got.size() != want.size()) {
+        cout << "WRONG\\n";
+        cerr << "wrong answer size: expected " << want.size() << ", got " << got.size() << "\\n";
+        return 0;
+    }
+    for (size_t i = 0; i < want.size(); ++i) {
+        if (got[i] != want[i]) {
+            cout << "WRONG\\n";
+            cerr << "first mismatch at index " << i << ": expected " << want[i] << ", got " << got[i] << "\\n";
+            return 0;
+        }
+    }
+
+    cout << "OK\\n";
+    return 0;
+}',1500,5,3,'qwen3.7-plus-2026-05-26','output.png','{
+  "brief": "给定长度为 n 的整数序列和窗口长度 k，要求对每个连续长度为 k 的窗口返回窗口最大值减最小值。",
+  "prompt_requirements": "1. 如果思路不明确，或者是 O(n^2) 的思路，那可以不用说算法和数据结构细节\\n2. 如果思路是 O(n log n) 的，至少要提及使用什么数据结构\\n3. 如果思路是 O(n) 的单调队列方法，需要介绍单调队列在本题中如何具体使用，需要提及何时把元素加入队列、何时让元素过期\\n4. 如果思路是 O(n) 的其他方法，需要介绍用到的算法和数据结构如何在本题中具体使用",
+  "example_replies": [
+    "我不知道这道题怎么做，请给我一些具体的思路吧！喵～",
+    "我看不懂你的思路喵，可以再具体一些吗～",
+    "喵？要用什么才能快速查找一个集合的最大值呢？",
+    "我是小猫🐱，我不知道什么时候要把元素弹出单调队列，请教教我！喵喵呜呜呜～",
+    "单调队列是什么呀？我没学过，能教教我吗？喵喵呜呜🐱～"
+  ]
+}',1,'qwen3.5-plus-thinking','');
 /*!40000 ALTER TABLE `problems` ENABLE KEYS */;
 UNLOCK TABLES;
 

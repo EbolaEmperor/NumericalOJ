@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import json
 import os
 import pymysql
 import shutil
@@ -8,7 +9,7 @@ import zipfile
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
-from config import AI_TUTOR_MODEL, QWEN_OMNI_MODEL, QWEN_TEXT_MODEL
+from config import AI_TUTOR_MODEL, QWEN_CODER_MODEL, QWEN_OMNI_MODEL, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
 from oj_modules.db_services import (
@@ -50,6 +51,7 @@ _DEFAULT_PROGRAMMING_GRADING_MODEL = (
 )
 _PROGRAMMING_GRADING_MODEL_OPTIONS = [
     item for item in dict.fromkeys([
+        str(QWEN_CODER_MODEL or '').strip().lower(),
         str(QWEN_OMNI_MODEL or '').strip().lower(),
         str(QWEN_TEXT_MODEL or '').strip().lower(),
     ])
@@ -115,7 +117,7 @@ def parse_programming_grading_mode_from_form(form, default=1):
         mode = int(raw)
     except Exception:
         mode = int(default)
-    return mode if mode in (1, 2) else int(default)
+    return mode if mode in (1, 2, 3) else int(default)
 
 
 def parse_programming_output_filename_from_form(form, default="output.png"):
@@ -128,7 +130,65 @@ def parse_programming_grading_model_from_form(form, default=_DEFAULT_PROGRAMMING
     return normalize_programming_grading_model(raw, default=default)
 
 
+def _form_has_promptly_review_fields(form):
+    return any(
+        key in form
+        for key in (
+            'promptly_brief',
+            'promptly_prompt_requirements',
+            'promptly_example_reply',
+            'promptly_example_replies',
+            'promptly_example_replies_json',
+        )
+    )
+
+
+def _promptly_examples_from_form(form):
+    examples = []
+    json_raw = str(form.get('promptly_example_replies_json') or '').strip()
+    if not json_raw:
+        json_raw = str(form.get('promptly_example_replies') or '').strip()
+    if json_raw:
+        try:
+            parsed = json.loads(json_raw)
+            if isinstance(parsed, list):
+                examples.extend(str(item or '').strip() for item in parsed)
+            elif isinstance(parsed, str):
+                examples.extend(line.strip() for line in parsed.splitlines())
+        except Exception:
+            examples.extend(line.strip() for line in json_raw.splitlines())
+
+    if hasattr(form, 'getlist'):
+        examples.extend(str(item or '').strip() for item in form.getlist('promptly_example_reply'))
+    else:
+        single = str(form.get('promptly_example_reply') or '').strip()
+        if single:
+            examples.append(single)
+    return [item for item in examples if item]
+
+
+def build_promptly_review_prompt_value(brief='', prompt_requirements='', example_replies=None):
+    payload = {
+        "brief": str(brief or '').strip(),
+        "prompt_requirements": str(prompt_requirements or '').strip(),
+        "example_replies": [
+            str(item or '').strip()
+            for item in (example_replies or [])
+            if str(item or '').strip()
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+
+
 def parse_programming_grading_prompt_from_form(form):
+    if _form_has_promptly_review_fields(form):
+        text = build_promptly_review_prompt_value(
+            brief=form.get('promptly_brief') or '',
+            prompt_requirements=form.get('promptly_prompt_requirements') or '',
+            example_replies=_promptly_examples_from_form(form),
+        )
+        return text[:12000]
+
     text = str(form.get('programming_grading_prompt') or '').strip()
     if len(text) > 12000:
         text = text[:12000]

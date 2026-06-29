@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pytest
 
@@ -15,11 +16,11 @@ from tests.e2e.conftest import (
     create_regular_user,
     get_user_id,
     write_testdata_zip,
+    write_zip,
 )
 
 
 PROBLEM_SECRET_KEYS = {
-    "programming_grading_mode",
     "programming_grading_model",
     "programming_grading_prompt",
     "programming_output_filename",
@@ -216,4 +217,216 @@ def test_problem_submission_limit_blocks_extra_user_submission(cli, unique_suffi
     submissions = cli.user_json("submission", "problem", str(problem_id), "--limit", "10")
     assert submissions["count"] == 3
     assert set(submissions["submission_ids"]) == set(accepted_ids)
+    assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True
+
+
+@pytest.mark.e2e
+def test_promptly_problem_submit_generates_code(cli, unique_suffix, tmp_path):
+    username = f"cli_promptly_{unique_suffix}"
+    create_regular_user(username=username, password="pw123456")
+    assert cli.init_admin()["success"] is True
+    assert cli.init_user(username)["success"] is True
+
+    title = f"CLI Promptly {unique_suffix}"
+    problem_id, _ = create_problem_with_homework(
+        cli,
+        title,
+        submission_limit=3,
+        extra=["--programming-grading-mode", "3"],
+    )
+    testdata_zip = write_testdata_zip(tmp_path / "promptly_testdata.zip")
+    assert cli.admin_json("problem", "upload-testdata", str(problem_id), str(testdata_zip))["success"] is True
+
+    context = cli.user_json("problem", "submit-page", str(problem_id))
+    assert context["submit"]["input_kind"] == "prompt"
+    prompt_text = "Use a monotonic deque and describe expired index handling, then print exactly hello."
+    submission = cli.user_json("problem", "submit", str(problem_id), "--prompt", prompt_text)
+    sid = int(submission["submission_id"])
+
+    detail = None
+    for _ in range(40):
+        detail = cli.user_json("submission", "detail", str(sid))
+        if detail["submission"]["code"].strip():
+            break
+        time.sleep(0.25)
+
+    assert detail is not None
+    assert detail["submission"]["generated_from_prompt"] is True
+    assert detail["submission"]["prompt_text"] == prompt_text
+    assert detail["submission"]["code"].strip() == "print('hello')"
+    assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True
+
+
+@pytest.mark.e2e
+def test_promptly_review_cli_submit_accepts_and_rejects_prompts(cli, unique_suffix, tmp_path):
+    from oj_modules import db_services
+
+    username = f"cli_promptly_review_{unique_suffix}"
+    create_regular_user(username=username, password="pw123456")
+    assert cli.init_admin()["success"] is True
+    assert cli.init_user(username)["success"] is True
+
+    title = f"CLI Promptly Review {unique_suffix}"
+    review_reply = "Please explain the monotonic deque and expired index handling."
+    promptly_model = str(getattr(db_services, "_QWEN_CODER_MODEL_KEY", "") or "").strip().lower()
+    assert promptly_model and promptly_model in db_services._ALLOWED_PROGRAMMING_GRADING_MODELS
+    problem_id, _ = create_problem_with_homework(
+        cli,
+        title,
+        submission_limit=6,
+        extra=[
+            "--programming-grading-mode",
+            "3",
+            "--programming-grading-model",
+            promptly_model,
+            "--promptly-brief",
+            "Submit a prompt that describes the required algorithm before generated code prints hello.",
+            "--promptly-requirements",
+            "The prompt must mention monotonic deque and expired index handling.",
+            "--promptly-example-reply",
+            review_reply,
+        ],
+    )
+    admin_problem_form = cli.admin_json("problem", "edit-form", str(problem_id))
+    assert admin_problem_form["form"]["programming_grading_mode"] == 3
+    assert admin_problem_form["form"]["programming_grading_model"] == promptly_model
+    testdata_zip = write_testdata_zip(tmp_path / "promptly_review_testdata.zip")
+    assert cli.admin_json("problem", "upload-testdata", str(problem_id), str(testdata_zip))["success"] is True
+
+    context = cli.user_json("problem", "submit-page", str(problem_id))
+    assert context["submit"]["input_kind"] == "prompt"
+
+    good_prompt = "Use a monotonic deque, and explicitly remove each expired index before using the window."
+    bad_prompt = "Please write an O(n) algorithm."
+
+    admin_good = cli.admin_json(
+        "problem",
+        "submit",
+        str(problem_id),
+        "--prompt",
+        good_prompt,
+        "--wait-timeout",
+        "20",
+        "--poll-interval",
+        "0.2",
+        timeout=30,
+    )
+    assert admin_good["success"] is True
+    assert admin_good["promptly_review"]["accepted"] is True
+    assert not admin_good.get("reply")
+    admin_good_sid = int(admin_good["submission_id"])
+    admin_good_detail = cli.admin_json("submission", "detail", str(admin_good_sid))
+    assert admin_good_detail["submission"]["prompt_text"] == good_prompt
+    assert admin_good_detail["submission"]["code"].strip() == "print('hello')"
+
+    admin_bad = cli.admin_json(
+        "problem",
+        "submit",
+        str(problem_id),
+        "--prompt",
+        bad_prompt,
+        "--wait-timeout",
+        "20",
+        "--poll-interval",
+        "0.2",
+        timeout=30,
+    )
+    assert admin_bad["success"] is True
+    assert admin_bad["reply"] == review_reply
+    assert admin_bad["promptly_review"]["accepted"] is False
+    assert admin_bad["promptly_review"]["status"] == "Unaccepted"
+    admin_bad_status = cli.admin_json("submission", "status", str(admin_bad["submission_id"]))
+    assert admin_bad_status["status"] == "Unaccepted"
+    assert admin_bad_status["promptly_review_reply"] == review_reply
+
+    user_good = cli.user_json(
+        "problem",
+        "submit",
+        str(problem_id),
+        "--prompt",
+        good_prompt,
+        "--wait-timeout",
+        "20",
+        "--poll-interval",
+        "0.2",
+        timeout=30,
+    )
+    assert user_good["success"] is True
+    assert user_good["promptly_review"]["accepted"] is True
+    assert not user_good.get("reply")
+    user_good_detail = cli.user_json("submission", "detail", str(user_good["submission_id"]))
+    assert user_good_detail["submission"]["prompt_text"] == good_prompt
+    assert user_good_detail["submission"]["code"].strip() == "print('hello')"
+
+    user_bad = cli.user_json(
+        "problem",
+        "submit",
+        str(problem_id),
+        "--prompt",
+        bad_prompt,
+        "--wait-timeout",
+        "20",
+        "--poll-interval",
+        "0.2",
+        timeout=30,
+    )
+    assert user_bad["success"] is True
+    assert user_bad["reply"] == review_reply
+    assert user_bad["promptly_review"]["accepted"] is False
+    assert user_bad["promptly_review"]["status"] == "Unaccepted"
+    user_bad_status = cli.user_json("submission", "status", str(user_bad["submission_id"]))
+    assert user_bad_status["status"] == "Unaccepted"
+    assert user_bad_status["prompt_generation_error"] == review_reply
+    assert user_bad_status["promptly_review_reply"] == review_reply
+    user_bad_detail = cli.user_json("submission", "detail", str(user_bad["submission_id"]))
+    assert user_bad_detail["submission"]["promptly_review_reply"] == review_reply
+    assert user_bad_detail["submission"]["prompt_generation_error"] == review_reply
+
+    wrong_title = f"CLI Promptly Review WA {unique_suffix}"
+    wrong_problem_id, _ = create_problem_with_homework(
+        cli,
+        wrong_title,
+        submission_limit=2,
+        extra=[
+            "--programming-grading-mode",
+            "3",
+            "--programming-grading-model",
+            promptly_model,
+            "--promptly-brief",
+            "Submit a prompt that describes the required algorithm before generated code is judged.",
+            "--promptly-requirements",
+            "The prompt must mention monotonic deque and expired index handling.",
+            "--promptly-example-reply",
+            review_reply,
+        ],
+    )
+    wrong_testdata_zip = write_zip(tmp_path / "promptly_review_wa_testdata.zip", {"1.in": "", "1.out": "goodbye"})
+    assert cli.admin_json("problem", "upload-testdata", str(wrong_problem_id), str(wrong_testdata_zip))["success"] is True
+    user_wrong = cli.user_json(
+        "problem",
+        "submit",
+        str(wrong_problem_id),
+        "--prompt",
+        good_prompt,
+        "--wait-timeout",
+        "20",
+        "--poll-interval",
+        "1.0",
+        timeout=30,
+    )
+    assert user_wrong["success"] is True
+    assert user_wrong["promptly_review"]["accepted"] is True
+    assert not user_wrong.get("reply")
+    user_wrong_status = None
+    for _ in range(40):
+        user_wrong_status = cli.user_json("submission", "status", str(user_wrong["submission_id"]))
+        if user_wrong_status["status"] == "Unaccepted":
+            break
+        time.sleep(0.25)
+    assert user_wrong_status is not None
+    assert user_wrong_status["status"] == "Unaccepted"
+    assert not user_wrong_status.get("prompt_generation_error")
+    assert not user_wrong_status.get("promptly_review_reply")
+
+    assert cli.admin_json("problem", "delete", str(wrong_problem_id))["success"] is True
     assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True
