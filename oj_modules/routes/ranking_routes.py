@@ -90,6 +90,7 @@ from oj_modules.ranking_agent_judge_db import (
     save_agent_judge_endpoints,
 )
 from oj_modules.ranking_agent_judge import max_score as _aj_max_score
+from oj_modules.ranking_agent_judge import normalize_orchestration_mode as _normalize_aj_orchestration
 from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
 from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_events
 from oj_modules.tasks import get_probe_job
@@ -1549,6 +1550,7 @@ def ranking_edit(competition_id):
     aj_model = request.form.get('agent_judge_model')
     aj_timeout_raw = request.form.get('agent_judge_timeout_seconds')
     aj_api_key_raw = request.form.get('agent_judge_api_key')
+    aj_orchestration_raw = request.form.get('agent_judge_orchestration_mode')
     aj_api_key = None
     if aj_api_key_raw is not None and str(aj_api_key_raw).strip() != '':
         aj_api_key = str(aj_api_key_raw).strip()
@@ -1600,6 +1602,10 @@ def ranking_edit(competition_id):
         agent_judge_model=(aj_model if aj_model is not None else None),
         agent_judge_api_key=aj_api_key,
         agent_judge_timeout_seconds=aj_timeout,
+        agent_judge_orchestration_mode=(
+            _normalize_aj_orchestration(aj_orchestration_raw)
+            if aj_orchestration_raw is not None else None
+        ),
         submit_limit_per_window=submit_limit,
         set_limit_window_now=set_window_now,
         submission_method=submission_method,
@@ -1700,6 +1706,7 @@ def ranking_save_agent_config(competition_id):
     model = request.form.get('agent_judge_model')
     api_key_raw = request.form.get('agent_judge_api_key')
     timeout_raw = request.form.get('agent_judge_timeout_seconds')
+    orchestration_raw = request.form.get('agent_judge_orchestration_mode')
     api_key = None
     if api_key_raw is not None and str(api_key_raw).strip() != '':
         api_key = str(api_key_raw).strip()
@@ -1715,6 +1722,10 @@ def ranking_save_agent_config(competition_id):
         agent_judge_model=(model if model is not None else None),
         agent_judge_api_key=api_key,
         agent_judge_timeout_seconds=timeout,
+        agent_judge_orchestration_mode=(
+            _normalize_aj_orchestration(orchestration_raw)
+            if orchestration_raw is not None else None
+        ),
     )
     flash('已保存 Agent 评测设置', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
@@ -1724,7 +1735,7 @@ def ranking_save_agent_config(competition_id):
 def ranking_save_agent_endpoints(competition_id):
     """保存某比赛的 Agent 评测端点池（多个 模型 url + api_key，各带并发上限）+ 整体超时。
 
-    JSON：{timeout_seconds?, endpoints:[{id?, harness, base_url, api_key, model, concurrency_limit, enabled}]}。
+    JSON：{timeout_seconds?, orchestration_mode?, endpoints:[{id?, harness, base_url, api_key, model, concurrency_limit, enabled}]}。
     实际 agent 评测并发 = 各启用端点 concurrency_limit 之和（由判题侧 Redis 槽位限流，改完即生效、无需重启）。"""
     user, err = _admin_json_guard()
     if err is not None:
@@ -1735,12 +1746,18 @@ def ranking_save_agent_endpoints(competition_id):
     payload = request.get_json(silent=True) or {}
     endpoints = payload.get('endpoints')
     timeout_raw = payload.get('timeout_seconds')
+    orchestration_raw = payload.get('orchestration_mode')
     if timeout_raw is not None and str(timeout_raw).strip() != '':
         try:
             update_competition(competition_id,
                                agent_judge_timeout_seconds=int(_clamp(int(timeout_raw), 60, 7200)))
         except (TypeError, ValueError):
             pass
+    if orchestration_raw is not None:
+        update_competition(
+            competition_id,
+            agent_judge_orchestration_mode=_normalize_aj_orchestration(orchestration_raw),
+        )
     try:
         save_agent_judge_endpoints(
             competition_id, endpoints if isinstance(endpoints, list) else [])
@@ -1753,9 +1770,12 @@ def ranking_save_agent_endpoints(competition_id):
                'concurrency_limit': e['concurrency_limit'], 'enabled': e['enabled'],
                'has_key': bool(e['api_key'])} for e in saved]
     total_conc = sum(e['concurrency_limit'] for e in saved if e['enabled'])
+    comp_after = get_competition(competition_id) or comp
     return jsonify(success=True, count=len(saved),
                    enabled=sum(1 for e in saved if e['enabled']),
-                   total_concurrency=total_conc, endpoints=masked)
+                   total_concurrency=total_conc, endpoints=masked,
+                   orchestration_mode=_normalize_aj_orchestration(
+                       comp_after.get('agent_judge_orchestration_mode')))
 
 
 # ---------- Agent 评测：实时进展 SSE + 管理员重测 ----------

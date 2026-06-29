@@ -2752,6 +2752,8 @@
         .aje-foot-left { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
         .aje-timeout { display:flex; align-items:center; gap:.45rem; font-size:.82rem; color:var(--muted); }
         .aje-timeout input { width:92px; height:32px; border:1px solid var(--line-strong); border-radius:7px; padding:.28rem .45rem; font-family:var(--mono); background:#fff; }
+        .aje-mode { display:flex; align-items:center; gap:.45rem; font-size:.82rem; color:var(--muted); }
+        .aje-mode select { height:32px; border:1px solid var(--line-strong); border-radius:7px; padding:.28rem .48rem; background:#fff; color:var(--ink); }
         .aje-actions { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
         .aje-save, .aje-modal-apply { background:var(--green); border-color:var(--green); color:#fff; font-weight:700; }
         .aje-save:hover { background:#274f44; border-color:#274f44; }
@@ -2959,6 +2961,13 @@
                 <span class="aje-timeout">单次评测超时
                   <input type="number" id="ajeTimeout" min="60" max="7200" step="1"
                          value="{{ competition.agent_judge_timeout_seconds or 1800 }}"> 秒</span>
+                {% set _aj_orch = (competition.agent_judge_orchestration_mode or 'single')|lower %}
+                <span class="aje-mode">评测编排
+                  <select id="ajeOrchestrationMode" aria-label="评测编排">
+                    <option value="single" {% if _aj_orch != 'topological' %}selected{% endif %}>一次性评测</option>
+                    <option value="topological" {% if _aj_orch == 'topological' %}selected{% endif %}>拓扑序编排</option>
+                  </select>
+                </span>
               </div>
               <div class="aje-actions">
                 <span class="small" id="ajeHint"></span>
@@ -3258,7 +3267,9 @@
         });
         document.getElementById('ajeSaveBtn').addEventListener('click', function(){
           var hint = document.getElementById('ajeHint');
+          var orchEl = document.getElementById('ajeOrchestrationMode');
           var payload = { timeout_seconds: parseInt(document.getElementById('ajeTimeout').value)||1800,
+            orchestration_mode: orchEl ? (orchEl.value || 'single') : 'single',
             endpoints: eps.map(function(e){ return {id:e.id, harness:e.harness || 'claude_code',
               base_url:(e.base_url||'').trim(),
               api_key:(e.api_key||'').trim(), model:(e.model||'').trim(),

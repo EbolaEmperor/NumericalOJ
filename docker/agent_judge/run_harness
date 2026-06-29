@@ -3,20 +3,115 @@
 """Dispatch Agent-as-Judge runs to the selected CLI harness."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_GO_MODEL = "mimo-v2.5-pro"
+UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+SESSION_KEYS = {
+    "session_id", "sessionId", "conversation_id", "conversationId",
+    "thread_id", "threadId",
+}
 
 
-def _run(args, env=None):
+def _prompt_from_env():
+    prompt_file = (os.environ.get("AJ_PROMPT_FILE") or "").strip()
+    if prompt_file:
+        try:
+            with open(prompt_file, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as exc:
+            print(f"failed to read AJ_PROMPT_FILE: {exc}", file=sys.stderr)
+            return ""
+    return os.environ.get("AJ_PROMPT") or ""
+
+
+def _run(args, env=None, input_text=None):
     run_env = env or os.environ.copy()
     if shutil.which(args[0], path=run_env.get("PATH")) is None:
         print(f"{args[0]} CLI is not installed in this Agent-as-Judge image", file=sys.stderr)
-        return 127
-    return subprocess.run(args, cwd="/workspace", env=run_env).returncode
+        return subprocess.CompletedProcess(args, 127, "", "")
+    proc = subprocess.run(
+        args, cwd="/workspace", env=run_env, input=input_text,
+        text=True, capture_output=True,
+    )
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+        sys.stdout.flush()
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+        sys.stderr.flush()
+    return proc
+
+
+def _walk_json_session_id(obj):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key in SESSION_KEYS and isinstance(value, str) and UUID_RE.search(value):
+                return UUID_RE.search(value).group(0)
+        for value in obj.values():
+            found = _walk_json_session_id(value)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _walk_json_session_id(item)
+            if found:
+                return found
+    return None
+
+
+def _extract_session_id(text):
+    text = text or ""
+    candidates = []
+    stripped = text.strip()
+    if stripped:
+        candidates.append(stripped)
+        candidates.extend(line.strip() for line in stripped.splitlines() if line.strip())
+    for candidate in candidates:
+        try:
+            found = _walk_json_session_id(json.loads(candidate))
+            if found:
+                return found
+        except Exception:
+            pass
+    labeled = re.search(
+        r"(?:session[_ -]?id|thread[_ -]?id|conversation[_ -]?id)[^0-9a-fA-F]{0,16}("
+        + UUID_RE.pattern[2:-2] + r")",
+        text,
+        re.I,
+    )
+    if labeled:
+        return labeled.group(1)
+    return None
+
+
+def _record_session(harness, proc, resume_session_id=None):
+    text = (getattr(proc, "stdout", "") or "") + "\n" + (getattr(proc, "stderr", "") or "")
+    session_id = _extract_session_id(text) or (resume_session_id or "")
+    if not session_id:
+        return ""
+    state_path = os.environ.get("AJ_SESSION_STATE") or "/workspace/.aj_session_state.json"
+    event = {
+        "harness": harness,
+        "phase": os.environ.get("AJ_PHASE") or "",
+        "session_id": session_id,
+        "resume_session_id": resume_session_id or "",
+        "returncode": int(getattr(proc, "returncode", 0) or 0),
+    }
+    try:
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(event, f, ensure_ascii=False)
+        with open(state_path + "l", "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"failed to write AJ session state: {exc}", file=sys.stderr)
+    return session_id
 
 
 def _write_codex_config(home, base_url, model):
@@ -39,6 +134,7 @@ def _run_codex(prompt):
     base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
     api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     model = (os.environ.get("OPENAI_MODEL") or "").strip()
+    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     if not base_url or not api_key:
         print("codex harness requires OPENAI_BASE_URL and OPENAI_API_KEY", file=sys.stderr)
         return 2
@@ -47,14 +143,27 @@ def _run_codex(prompt):
     env = os.environ.copy()
     env["CODEX_HOME"] = home
     env["AJ_OPENAI_API_KEY"] = api_key
-    args = [
-        "codex", "exec",
-        "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--cd", "/workspace",
-        prompt,
-    ]
-    return _run(args, env)
+    if resume_session_id:
+        args = [
+            "codex", "exec", "resume",
+            "--json",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            resume_session_id,
+            "-",
+        ]
+    else:
+        args = [
+            "codex", "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--cd", "/workspace",
+            "-",
+        ]
+    proc = _run(args, env, input_text=prompt)
+    _record_session("codex", proc, resume_session_id)
+    return proc.returncode
 
 
 def _opencode_config_content(base_url, api_key_env, model_id):
@@ -81,6 +190,7 @@ def _opencode_config_content(base_url, api_key_env, model_id):
 
 def _run_opencode(prompt):
     api_key = (os.environ.get("OPENCODE_API_KEY") or "").strip()
+    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     if not api_key:
         print("opencode harness requires OPENCODE_API_KEY", file=sys.stderr)
         return 2
@@ -96,24 +206,43 @@ def _run_opencode(prompt):
     )
     env["OPENCODE_API_KEY"] = api_key
     os.makedirs(home, exist_ok=True)
-    return _run([
+    args = [
         "opencode", "run",
         "--dangerously-skip-permissions",
         "--model", "aj-go/%s" % model_id,
-        prompt,
-    ], env)
+    ]
+    if resume_session_id:
+        args.extend(["--session", resume_session_id])
+    args.append(prompt)
+    proc = _run(args, env)
+    _record_session("opencode", proc, resume_session_id)
+    return proc.returncode
 
 
 def _run_claude_code(prompt):
     model = (os.environ.get("ANTHROPIC_MODEL") or "").strip()
-    args = ["claude", "-p", prompt, "--dangerously-skip-permissions", "--add-dir", "/workspace"]
+    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
+    args = [
+        "claude",
+        "--dangerously-skip-permissions",
+        "--add-dir", "/workspace",
+        "--output-format", "json",
+        "-p",
+    ]
+    if resume_session_id:
+        args.extend(["--resume", resume_session_id])
+        if (os.environ.get("AJ_FORK_SESSION") or "1").strip().lower() not in {"0", "false", "no", "off"}:
+            args.append("--fork-session")
     if model:
         args.extend(["--model", model])
-    return _run(args)
+    args.append(prompt)
+    proc = _run(args)
+    _record_session("claude_code", proc, resume_session_id)
+    return proc.returncode
 
 
 def main():
-    prompt = os.environ.get("AJ_PROMPT") or ""
+    prompt = _prompt_from_env()
     harness = (os.environ.get("AJ_HARNESS") or "claude_code").strip().lower().replace("-", "_")
     if harness == "codex":
         return _run_codex(prompt)
