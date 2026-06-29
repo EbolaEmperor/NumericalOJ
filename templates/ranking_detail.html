@@ -196,7 +196,7 @@
       .aj-result-surface.has-focus .aj-result-edge.edge-active { opacity:1; stroke:#806713; stroke-width:2.6; }
       .aj-result-surface.has-focus .aj-result-arrow.edge-active { opacity:1; fill:#806713; }
       .aj-result-surface.has-focus .aj-result-node.node-active { opacity:1; border-color:var(--gold-d); background:#fff8dd; }
-      .aj-result-node { position:absolute; width:176px; height:88px; display:flex; flex-direction:column; gap:.22rem;
+      .aj-result-node { position:absolute; width:176px; height:96px; display:flex; flex-direction:column; gap:.22rem;
                         text-align:left; border:1px solid #dfd6b6; border-left:3px solid var(--gold);
                         background:#fffdf8; border-radius:6px; padding:.56rem .65rem; color:var(--ink);
                         cursor:pointer; transition:border-color .12s, background .12s, transform .12s, opacity .12s; overflow:hidden; }
@@ -207,7 +207,7 @@
       .aj-result-node.s-error { border-left-color:#b07340; background:#fffaf5; }
       .aj-result-node.s-pending { border-left-color:var(--info); background:#fbfdff; }
       .aj-result-node-id { font-family:var(--mono); font-size:.72rem; color:#806713; font-weight:700; line-height:1; }
-      .aj-result-node-title { font-size:.88rem; line-height:1.2; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .aj-result-node-title { display:block; min-height:1.35em; font-size:.88rem; line-height:1.35; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .aj-result-node-text { font-size:.72rem; line-height:1.25; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
       .aj-result-node-foot { margin-top:auto; display:flex; align-items:center; justify-content:space-between; gap:.4rem; font-size:.7rem; }
       .aj-result-status { border-radius:999px; padding:.08rem .42rem; white-space:nowrap; }
@@ -248,19 +248,8 @@
       {% set answer_format = (competition.answer_format or 'json')|lower %}
       {% set answer_ext = '.' ~ answer_format %}
       {% set scoring_mode = (competition.scoring_mode or 'absolute')|lower %}
-      {% set zip_needs_script = (answer_format == 'zip' and not is_elo and not competition.scoring_script_path) %}
-      {% set elo_needs_script = (is_elo and not competition.scoring_script_path) %}
       {% set answer_icon = 'fa-file-archive' if answer_format == 'zip' else 'fa-file-code' %}
       {% set is_agent_judge = (scoring_mode == 'agent_judge') %}
-      {% set agent_judge_not_ready = (is_agent_judge and not agent_judge_ready) %}
-
-      {% if is_elo %}
-      <div class="alert alert-info mb-4">
-        <i class="fas fa-chess-knight me-2"></i>
-        <strong>ELO 对战模式：</strong>提交后您的作品将进入对战池，定时与其他用户的提交两两比较，根据胜负调整 ELO 分数。
-        每位用户在池中只保留<strong>最近两份</strong>提交，更早的会自动退役。
-      </div>
-      {% endif %}
 
       {% if submit_quota %}
       <div class="rank-quota mb-4">
@@ -272,22 +261,9 @@
       </div>
       {% endif %}
 
-      {# 已下线比赛：普通用户无法提交（且本身也进不来本页）；管理员在评分配置正确时仍可提交（自测/补测）。 #}
-      {% if competition.is_active != 1 and not is_admin %}
+      {% if submit_block_reason %}
         <div class="alert alert-warning mb-4">
-          <i class="fas fa-exclamation-triangle me-2"></i>该比赛已下线，无法提交。
-        </div>
-      {% elif zip_needs_script %}
-        <div class="alert alert-warning mb-4">
-          <i class="fas fa-exclamation-triangle me-2"></i>该比赛答案格式为 ZIP，但管理员尚未上传评测脚本，暂时无法接收提交。
-        </div>
-      {% elif elo_needs_script %}
-        <div class="alert alert-warning mb-4">
-          <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 ELO 模式，但管理员尚未上传评测脚本，暂时无法接收提交。
-        </div>
-      {% elif agent_judge_not_ready %}
-        <div class="alert alert-warning mb-4">
-          <i class="fas fa-exclamation-triangle me-2"></i>该比赛为 Agent 评测模式，但管理员尚未完成模型配置或评分规则设置，暂时无法接收提交。
+          <i class="fas fa-exclamation-triangle me-2"></i>{{ submit_block_reason }}
         </div>
       {% else %}
       {% if is_agent_judge and submission_method == 'git' %}
@@ -505,7 +481,6 @@
                   <div class="file-drop-sub">
                     <span class="file-drop-ext">{{ answer_ext }}</span>
                   </div>
-                  <div class="file-drop-hint">点击选择或拖拽到此处</div>
                   <div class="file-drop-selected" hidden>
                     <i class="fas fa-check-circle"></i>
                     <span class="file-name"></span>
@@ -513,7 +488,6 @@
                   </div>
                 </div>
               </label>
-              <div class="form-text mt-2 mb-0">您跑出的测试集答案，后台据此评测打分。</div>
             </div>
             {% endif %}
             <div class="{{ 'col-md-12' if is_agent_judge else 'col-md-6' }}">
@@ -525,7 +499,6 @@
                   <div class="file-drop-sub">
                     <span class="file-drop-ext">.zip</span>
                   </div>
-                  <div class="file-drop-hint">点击选择或拖拽到此处</div>
                   <div class="file-drop-selected" hidden>
                     <i class="fas fa-check-circle"></i>
                     <span class="file-name"></span>
@@ -533,7 +506,6 @@
                   </div>
                 </div>
               </label>
-              {% if not is_agent_judge %}<div class="form-text mt-2 mb-0">用于复现结果的代码与说明文档，仅存档、不参与评测。</div>{% endif %}
             </div>
           </div>
 
@@ -544,7 +516,6 @@
             <input type="text" class="form-control" id="rankingBaseModelInput"
                    name="base_model" required maxlength="500"
                    placeholder="例如：deepseek-v4-pro, qwen3.6-plus">
-            <div class="form-text">您本次提交所使用的大模型名称，多个用逗号分隔。</div>
           </div>
 
           <div class="submit-actions mt-4">
@@ -632,17 +603,15 @@
                   <button type="button" class="aj-result-tab active" data-judge-view="topo" role="tab" aria-selected="true">拓扑</button>
                   <button type="button" class="aj-result-tab" data-judge-view="detail" role="tab" aria-selected="false">详情</button>
                 </div>
-                <span class="small text-muted">点击拓扑节点查看规则原文与评分证据</span>
               </div>
               <div id="appealPanel" class="border rounded p-3 mb-3" style="display:none;background:#fffdf6;border-color:#f0e2b8 !important;">
                 <div id="appealInputArea">
-                  <label class="form-label small text-muted mb-1"><i class="fas fa-comment-dots me-1"></i>申诉意见（说明你认为评分有误的地方）</label>
+                  <label class="form-label small text-muted mb-1"><i class="fas fa-comment-dots me-2"></i>申诉意见</label>
                   <textarea id="appealReason" class="form-control mb-2" rows="3" maxlength="4000" placeholder="例如：规则 X 我已实现并能正常运行，截图见 …"></textarea>
                   <div class="d-flex align-items-center gap-2">
                     <button type="button" class="btn btn-sm btn-warning" id="appealSubmit"><i class="fas fa-paper-plane me-1"></i>提交申诉</button>
                     <span class="small" id="appealMsg"></span>
                   </div>
-                  <div class="small text-muted mt-1">每份提交只能申诉一次，请一次说清楚。</div>
                 </div>
                 <div id="appealStatusArea" style="display:none;">
                   <div class="mb-2"><span class="small text-muted me-1"><i class="fas fa-gavel me-1"></i>申诉状态：</span><span class="fw-semibold" id="appealStatusLabel"></span></div>
@@ -712,9 +681,9 @@
           var ok = filesOk && modelOk;
           btn.disabled = !ok;
           if (hint) {
-            if (!filesOk) hint.textContent = '请先选择文件';
+            if (!filesOk) hint.textContent = '请选择文件';
             else if (!modelOk) hint.textContent = '请填写基座模型';
-            else hint.textContent = '一切就绪，点击提交';
+            else hint.textContent = '就绪';
           }
         }
         drops.forEach(function (drop) {
@@ -814,7 +783,7 @@
         };
         var currentJudgeSnapshot = null;
         var currentJudgeView = 'topo';
-        var resultNodeW = 176, resultNodeH = 88, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
+        var resultNodeW = 176, resultNodeH = 96, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
         function closeJudgeStream() {
           if (judgeSource) {
             judgeSource.close();
@@ -1898,7 +1867,7 @@
               </div>
 
               <div class="rk-bulk-result-head">
-                <div id="rkBulkSummary">设置筛选条件后点击筛选。</div>
+                <div id="rkBulkSummary"></div>
                 <div class="rk-bulk-select">
                   <label><input type="checkbox" id="rkBulkMaster" disabled><span>全选</span></label>
                 </div>
@@ -2675,7 +2644,7 @@
             .then(function (d) {
               if (!d.success) { createMsg.innerHTML = '<div class="bm-flash">' + escapeHtml(d.message || '创建失败') + '</div>'; createBtn.disabled = false; return; }
               var inv = (d.invalid && d.invalid.length) ? ('，跳过 ' + d.invalid.length) : '';
-              createMsg.innerHTML = '<div class="bm-flash">已开始批量处理 ' + d.queued + ' 个仓库（后台逐个拉取并评测）' + inv + ' · <a href="' + allSubsUrl + '">所有提交</a></div>';
+              createMsg.innerHTML = '<div class="bm-flash">已开始批量处理 ' + d.queued + ' 个仓库' + inv + ' · <a href="' + allSubsUrl + '">所有提交</a></div>';
               state.selected = {}; renderPage(); updateSelUI();
             })
             .catch(function () { createMsg.innerHTML = '<div class="bm-flash">网络错误</div>'; createBtn.disabled = false; });
@@ -2686,25 +2655,70 @@
 
     {# ========== 编辑比赛（管理员） ========== #}
     {% if tab == 'edit' and is_admin %}
+      <style>
+        .rank-limit-refresh-btn {
+          min-width: 44px;
+          height: 36px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 10px;
+          padding: 0 .82rem;
+          flex: 0 0 auto;
+        }
+        .rank-limit-control {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: .65rem;
+        }
+        .rank-limit-control .form-control {
+          min-width: 0;
+        }
+        .rank-limit-time {
+          color: #6c757d;
+          font-size: .8125rem;
+          line-height: 1.35;
+          margin-top: .4rem;
+        }
+        .rank-online-row {
+          display: inline-flex;
+          align-items: center;
+          gap: .65rem;
+          padding-left: 0;
+        }
+        .rank-online-row .form-check-label {
+          cursor: pointer;
+          order: 1;
+        }
+        .rank-online-row .form-check-input {
+          cursor: pointer;
+          float: none;
+          margin-left: 0;
+          margin-top: 0;
+          order: 2;
+        }
+      </style>
       <!-- 基本信息 -->
       <div class="card mb-3">
         <div class="card-header"><i class="fas fa-pencil-alt me-2"></i> 基本信息</div>
         <div class="card-body">
-          <form method="POST" action="{{ url_for('ranking.ranking_edit', competition_id=competition.id) }}">
+          <form id="rankingEditForm" method="POST" action="{{ url_for('ranking.ranking_edit', competition_id=competition.id) }}">
             <div class="mb-3">
-              <label class="form-label">标题</label>
+              <label class="form-label"><i class="fas fa-heading me-2 text-muted"></i>标题</label>
               <input type="text" class="form-control" name="title" value="{{ competition.title }}" required maxlength="255">
             </div>
             <div class="mb-3">
-              <label class="form-label">摘要</label>
+              <label class="form-label"><i class="fas fa-align-left me-2 text-muted"></i>摘要</label>
               <textarea class="form-control" name="summary" rows="2" maxlength="500" placeholder="一句话介绍本场打榜赛（展示在列表卡片上，最多 500 字）">{{ competition.summary or '' }}</textarea>
-              <div class="form-text">留空则在列表卡片上回退显示赛事描述的开头若干字。</div>
             </div>
             {% set _mode = (competition.scoring_mode or 'absolute')|lower %}
             {% set _fmt = (competition.answer_format or 'json')|lower %}
-            <div class="row mb-3">
+            {% set _smethod = (competition.submission_method or 'zip')|lower %}
+            {% set _limit_anchor = competition.limit_window_start or competition.created_at %}
+            <div class="row mb-3 align-items-start">
               <div class="col-md-4">
-                <label class="form-label">评分模式</label>
+                <label class="form-label"><i class="fas fa-star-half-alt me-2 text-muted"></i>评分模式</label>
                 <select class="form-select" name="scoring_mode" id="scoringModeSelect">
                   <option value="absolute"    {% if _mode == 'absolute'    %}selected{% endif %}>标准答案评分</option>
                   <option value="elo"         {% if _mode == 'elo'         %}selected{% endif %}>ELO 对战</option>
@@ -2713,50 +2727,65 @@
               </div>
               <div class="col-md-4 absolute-only" id="maxScoreField"
                    {% if _mode == 'elo' %}style="display:none;"{% endif %}>
-                <label class="form-label">满分</label>
+                <label class="form-label"><i class="fas fa-trophy me-2 text-muted"></i>满分</label>
                 <input type="number" class="form-control" name="max_score" value="{{ competition.max_score or 100 }}" min="1" max="100000">
-                <div class="form-text">仅在绝对分模式下生效。</div>
+              </div>
+              <div class="col-md-4 agent-judge-only" id="submissionMethodInline"
+                   {% if _mode != 'agent_judge' %}style="display:none;"{% endif %}>
+                <label class="form-label"><i class="fas fa-upload me-2 text-muted"></i>提交方式</label>
+                <select class="form-select" name="submission_method" id="submissionMethodSelect">
+                  <option value="zip" {% if _smethod == 'zip' %}selected{% endif %}>上传 ZIP 压缩包</option>
+                  <option value="git" {% if _smethod == 'git' %}selected{% endif %}>Git 仓库拉取</option>
+                </select>
               </div>
               <div class="col-md-4 answer-format-field" id="answerFormatField"
                    {% if _mode == 'agent_judge' %}style="display:none;"{% endif %}>
-                <label class="form-label">答案格式</label>
+                <label class="form-label"><i class="fas fa-file-code me-2 text-muted"></i>答案格式</label>
                 <select class="form-select" name="answer_format">
                   <option value="json" {% if _fmt == 'json' %}selected{% endif %}>JSON（.json）</option>
                   <option value="zip"  {% if _fmt == 'zip'  %}selected{% endif %}>ZIP 压缩包（.zip）</option>
                 </select>
-                <div class="form-text">Agent 评测模式下无需配置（固定上传代码 zip）；其它模式切换格式后旧标准答案会被清理。</div>
+              </div>
+              <div class="col-md-4 agent-judge-only" id="submitLimitInline"
+                   {% if _mode != 'agent_judge' %}style="display:none;"{% endif %}>
+                <label class="form-label"><i class="fas fa-hourglass-half me-2 text-muted"></i>每 48 小时提交次数</label>
+                <div class="rank-limit-control">
+                  <input type="number" class="form-control" id="submitLimitAgentInput" name="submit_limit_per_window"
+                         value="{{ competition.submit_limit_per_window if competition.submit_limit_per_window else '' }}"
+                         min="0" max="100000" step="1"
+                         {% if _mode != 'agent_judge' %}disabled{% endif %}>
+                  {% if competition.submit_limit_per_window %}
+                  <button type="submit" class="btn btn-outline-secondary rank-limit-refresh-btn" form="rankingResetLimitForm"
+                          title="刷新提交次数" aria-label="刷新提交次数">
+                    <i class="fas fa-sync-alt"></i>
+                  </button>
+                  {% endif %}
+                </div>
+                {% if competition.submit_limit_per_window and _limit_anchor %}
+                <div class="rank-limit-time">
+                  <i class="fas fa-clock me-2"></i>刷新时间：{{ _limit_anchor.strftime('%Y-%m-%d %H:%M') }}
+                </div>
+                {% endif %}
               </div>
             </div>
 
             <div class="row mb-3 script-timeout-row" id="scriptTimeoutRow"
                  {% if _mode == 'agent_judge' %}style="display:none;"{% endif %}>
               <div class="col-md-4">
-                <label class="form-label">评测脚本超时（秒）</label>
+                <label class="form-label"><i class="fas fa-stopwatch me-2 text-muted"></i>评测脚本超时（秒）</label>
                 <input type="number" class="form-control" id="scoringScriptTimeoutInput"
                        name="scoring_script_timeout_seconds"
                        value="{{ competition.scoring_script_timeout_seconds or 120 }}"
                        min="5" max="600" step="1">
-                <div class="form-text">每次评测脚本调用的最长允许时间，超时即判失败。</div>
               </div>
             </div>
-            <!-- Agent 评测：提交方式（ZIP 上传 / Git 拉取） -->
-            {% set _smethod = (competition.submission_method or 'zip')|lower %}
-            <div class="row mb-3 agent-judge-only" id="submissionMethodRow"
+            <div class="row mb-3 agent-judge-only" id="gitFormatRow"
                  {% if _mode != 'agent_judge' %}style="display:none;"{% endif %}>
-              <div class="col-md-4">
-                <label class="form-label">提交方式</label>
-                <select class="form-select" name="submission_method" id="submissionMethodSelect">
-                  <option value="zip" {% if _smethod == 'zip' %}selected{% endif %}>上传 ZIP 压缩包</option>
-                  <option value="git" {% if _smethod == 'git' %}selected{% endif %}>Git 仓库拉取</option>
-                </select>
-                <div class="form-text">仅 Agent 评测模式可选。</div>
-              </div>
-              <div class="col-md-8" id="gitFormatField" {% if _smethod != 'git' %}style="display:none;"{% endif %}>
-                <label class="form-label">Git 仓库标准命名</label>
+              <div class="col-md-12" id="gitFormatField" {% if _smethod != 'git' %}style="display:none;"{% endif %}>
+                <label class="form-label"><i class="fas fa-code-branch me-2 text-muted"></i>Git 仓库标准命名</label>
                 <input type="text" class="form-control" name="git_format"
                        value="{{ competition.git_format or '' }}"
                        placeholder="gitea@10.72.190.121:&lt;username&gt;/FinalProject.git">
-                <div class="form-text">用 <code>&lt;username&gt;</code> 占位学生学号；学生提交页会显示替换后的本人仓库地址。</div>
               </div>
             </div>
             <script>
@@ -2770,26 +2799,34 @@
             </script>
 
             <!-- 每 48 小时提交次数限制 -->
-            <div class="row mb-3">
+            <div class="row mb-3 align-items-end non-agent-limit-row"
+                 {% if _mode == 'agent_judge' %}style="display:none;"{% endif %}>
               <div class="col-md-4">
-                <label class="form-label">每 48 小时提交次数</label>
-                <input type="number" class="form-control" name="submit_limit_per_window"
-                       value="{{ competition.submit_limit_per_window if competition.submit_limit_per_window else '' }}"
-                       min="0" max="100000" step="1" placeholder="留空 / 0 = 不限制">
-                <div class="form-text">每位用户每 48 小时可提交的次数；留空或 0 表示不限制，窗口到点自动刷新。</div>
-              </div>
-              <div class="col-md-8 d-flex align-items-center">
-                <div class="form-check mt-3">
-                  <input class="form-check-input" type="checkbox" id="resetLimitWindow" name="reset_limit_window" value="1">
-                  <label class="form-check-label" for="resetLimitWindow">保存时立即刷新所有人的配额（重新开始 48 小时）</label>
+                <label class="form-label"><i class="fas fa-hourglass-half me-2 text-muted"></i>每 48 小时提交次数</label>
+                <div class="rank-limit-control">
+                  <input type="number" class="form-control" id="submitLimitStandardInput" name="submit_limit_per_window"
+                         value="{{ competition.submit_limit_per_window if competition.submit_limit_per_window else '' }}"
+                         min="0" max="100000" step="1"
+                         {% if _mode == 'agent_judge' %}disabled{% endif %}>
+                  {% if competition.submit_limit_per_window %}
+                  <button type="submit" class="btn btn-outline-secondary rank-limit-refresh-btn" form="rankingResetLimitForm"
+                          title="刷新提交次数" aria-label="刷新提交次数">
+                    <i class="fas fa-sync-alt"></i>
+                  </button>
+                  {% endif %}
                 </div>
+                {% if competition.submit_limit_per_window and _limit_anchor %}
+                <div class="rank-limit-time">
+                  <i class="fas fa-clock me-2"></i>刷新时间：{{ _limit_anchor.strftime('%Y-%m-%d %H:%M') }}
+                </div>
+                {% endif %}
               </div>
             </div>
 
             <div class="mb-3">
-              <div class="form-check form-switch">
+              <div class="form-check form-switch rank-online-row">
                 <input class="form-check-input" type="checkbox" id="is_active_switch" name="is_active" value="1" {% if competition.is_active == 1 %}checked{% endif %}>
-                <label class="form-check-label" for="is_active_switch">对用户公开（上线）</label>
+                <label class="form-check-label" for="is_active_switch"><i class="fas fa-bullhorn me-2 text-muted"></i>上线</label>
               </div>
             </div>
 
@@ -2797,49 +2834,45 @@
             <fieldset class="border rounded p-3 mb-3" id="eloParamsBlock"
                       {% if _mode != 'elo' %}style="display:none;"{% endif %}>
               <legend class="float-none w-auto px-2 small fw-semibold text-muted mb-2">
-                <i class="fas fa-chess-knight me-1"></i> ELO 参数
+                <i class="fas fa-chess-knight me-2"></i>ELO 参数
               </legend>
               <div class="row g-2 flex-nowrap">
                 <div class="col">
-                  <label class="form-label small">初始分</label>
+                  <label class="form-label small"><i class="fas fa-flag me-2 text-muted"></i>初始分</label>
                   <input type="number" class="form-control" name="elo_initial_rating"
                          value="{{ '%.0f'|format(competition.elo_initial_rating or 1500) }}"
                          min="100" max="5000" step="1">
                 </div>
                 <div class="col">
-                  <label class="form-label small">K 因子</label>
+                  <label class="form-label small"><i class="fas fa-sliders-h me-2 text-muted"></i>K 因子</label>
                   <input type="number" class="form-control" name="elo_k_factor"
                          value="{{ '%.0f'|format(competition.elo_k_factor or 32) }}"
                          min="1" max="200" step="1">
                 </div>
                 <div class="col">
-                  <label class="form-label small">单提交最大对战</label>
+                  <label class="form-label small"><i class="fas fa-list-ol me-2 text-muted"></i>单提交最大对战</label>
                   <input type="number" class="form-control" name="elo_max_matches"
                          value="{{ competition.elo_max_matches or 200 }}"
                          min="1" max="10000" step="1">
                 </div>
                 <div class="col">
-                  <label class="form-label small">匹配间隔（秒）</label>
+                  <label class="form-label small"><i class="fas fa-clock me-2 text-muted"></i>匹配间隔（秒）</label>
                   <input type="number" class="form-control" name="elo_match_interval_seconds"
                          value="{{ competition.elo_match_interval_seconds or 60 }}"
                          min="5" max="3600" step="1">
                 </div>
                 <div class="col">
-                  <label class="form-label small">新提交即时补战</label>
+                  <label class="form-label small"><i class="fas fa-bolt me-2 text-muted"></i>新提交即时补战</label>
                   <input type="number" class="form-control" name="elo_initial_burst"
                          value="{{ competition.elo_initial_burst or 5 }}"
                          min="0" max="50" step="1">
                 </div>
                 <div class="col">
-                  <label class="form-label small">每轮匹配对数</label>
+                  <label class="form-label small"><i class="fas fa-random me-2 text-muted"></i>每轮匹配对数</label>
                   <input type="number" class="form-control" name="elo_max_pairs_per_round"
                          value="{{ competition.elo_max_pairs_per_round or 1 }}"
                          min="1" max="8" step="1">
                 </div>
-              </div>
-              <div class="form-text mt-2">
-                每位用户在池中只保留最近 2 份提交，更早的会自动退役（脚本签名见下方"评测脚本"栏）。
-                "每轮匹配对数"控制 matchmaker tick 在每个匹配间隔里同时发起几对对战（默认 1，上限 8）。
               </div>
             </fieldset>
             <script>
@@ -2868,56 +2901,40 @@
                   document.querySelectorAll('.script-timeout-row').forEach(function (el) {
                     el.style.display = isAgent ? 'none' : '';
                   });
-                  // 答案格式在 Agent 评测下固定为代码 zip，无需选择
+                  // Agent 评测不使用答案格式字段。
                   document.querySelectorAll('.answer-format-field').forEach(function (el) {
                     el.style.display = isAgent ? 'none' : '';
                   });
-                  var sigElo = document.getElementById('scriptSignatureElo');
-                  var sigAbs = document.getElementById('scriptSignatureAbsolute');
-                  if (sigElo) sigElo.style.display = isElo ? '' : 'none';
-                  if (sigAbs) sigAbs.style.display = (isElo || isAgent) ? 'none' : '';
+                  document.querySelectorAll('.non-agent-limit-row').forEach(function (el) {
+                    el.style.display = isAgent ? 'none' : '';
+                  });
+                  var limitAgent = document.getElementById('submitLimitAgentInput');
+                  var limitStandard = document.getElementById('submitLimitStandardInput');
+                  if (limitAgent && limitStandard) {
+                    if (isAgent) limitAgent.value = limitStandard.value;
+                    else limitStandard.value = limitAgent.value;
+                    limitAgent.disabled = !isAgent;
+                    limitStandard.disabled = isAgent;
+                  }
                 }
                 sel.addEventListener('change', applyMode);
                 applyMode();
               })();
-              // Real-time timeout reflection in the script signature description
-              (function () {
-                var inp = document.getElementById('scoringScriptTimeoutInput');
-                if (!inp) return;
-                function applyTimeout() {
-                  var v = parseInt(inp.value, 10);
-                  if (!isFinite(v) || v <= 0) v = 120;
-                  document.querySelectorAll('.script-timeout-value').forEach(function (el) {
-                    el.textContent = v;
-                  });
-                }
-                inp.addEventListener('input', applyTimeout);
-                applyTimeout();
-              })();
             </script>
             <div class="mb-3">
-              <label class="form-label">赛事描述（支持 Markdown）</label>
+              <label class="form-label"><i class="fas fa-pen-nib me-2 text-muted"></i>赛事描述（支持 Markdown）</label>
               <textarea class="form-control" name="description" rows="10">{{ competition.description or '' }}</textarea>
             </div>
             <button type="submit" class="btn btn-outline-primary">
-              <i class="fas fa-save me-1"></i> 保存基本信息
+              <i class="fas fa-save me-2"></i>保存基本信息
             </button>
           </form>
+          {% if competition.submit_limit_per_window %}
+          <form id="rankingResetLimitForm" method="POST"
+                action="{{ url_for('ranking.ranking_reset_submit_limit', competition_id=competition.id) }}"></form>
+          {% endif %}
         </div>
       </div>
-
-      {% if competition.submit_limit_per_window %}
-      <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
-        <form method="POST" action="{{ url_for('ranking.ranking_reset_submit_limit', competition_id=competition.id) }}" class="m-0">
-          <button type="submit" class="btn btn-outline-secondary btn-sm">
-            <i class="fas fa-sync-alt me-1"></i> 立即刷新提交次数（重置本轮 48 小时配额）
-          </button>
-        </form>
-        {% if competition.limit_window_start %}
-        <span class="text-muted small">当前配额窗口起点：{{ competition.limit_window_start.strftime('%Y-%m-%d %H:%M') }}</span>
-        {% endif %}
-      </div>
-      {% endif %}
 
       {% set edit_fmt = (competition.answer_format or 'json')|lower %}
       {% set edit_ext = '.' ~ edit_fmt %}
@@ -2931,9 +2948,9 @@
           <div class="mb-3">
             <strong>当前文件：</strong>
             {% if competition.reference_answer_name %}
-              <span class="text-success"><i class="fas fa-check-circle me-1"></i>{{ competition.reference_answer_name }}</span>
+              <span class="text-success"><i class="fas fa-check-circle me-2"></i>{{ competition.reference_answer_name }}</span>
             {% else %}
-              <span class="text-danger"><i class="fas fa-times-circle me-1"></i>尚未上传，用户提交将无法评测。</span>
+              <span class="text-danger"><i class="fas fa-times-circle me-2"></i>尚未上传</span>
             {% endif %}
           </div>
           <form method="POST" enctype="multipart/form-data"
@@ -2942,7 +2959,7 @@
               <input type="file" class="form-control" name="reference" accept="{{ edit_ext }}" required>
             </div>
             <button type="submit" class="btn btn-outline-primary">
-              <i class="fas fa-cloud-upload-alt me-1"></i> 上传并替换
+              <i class="fas fa-cloud-upload-alt me-2"></i>上传并替换
             </button>
           </form>
         </div>
@@ -2950,40 +2967,23 @@
       {% endif %}{# end edit_mode == 'absolute' #}
 
       <!-- 评测脚本 -->
-      {% set script_required = (edit_mode == 'elo') or (edit_fmt == 'zip') %}
+      {% set script_required = (edit_mode in ['absolute', 'elo']) %}
       <div class="card mb-3 script-card {% if script_required and not competition.scoring_script_name %}border-warning{% endif %}"
            {% if edit_mode == 'agent_judge' %}style="display:none;"{% endif %}>
         <div class="card-header">
-          <i class="fas fa-scroll me-2"></i> 评测脚本（.py{% if script_required %}，必填{% else %}，可选{% endif %}）
+          <i class="fas fa-scroll me-2"></i> 评测脚本（.py，必填）
         </div>
         <div class="card-body">
-          <!-- 脚本签名说明：随评分模式切换（前端 JS 实时切换；初始 display 由后端模式决定） -->
-          <div id="scriptSignatureElo" class="alert alert-secondary py-2 px-3 mb-3 small"
-               {% if edit_mode != 'elo' %}style="display:none;"{% endif %}>
-            <div class="fw-semibold mb-1"><i class="fas fa-chess-knight me-1"></i> ELO 模式脚本签名</div>
-            调用方式：<code>python &lt;script&gt; &lt;answer_a&gt; &lt;answer_b&gt;</code><br>
-            stdout 输出：<code>{"winner": 0 | 1 | 2, "details": &lt;可选&gt;}</code><br>
-            <code>winner=1</code> A 胜，<code>winner=2</code> B 胜，<code>winner=0</code> 平局（双方按 ELO 公式各取 0.5 分调整，分高一方略降、分低一方略升）。
-            脚本异常时由后端落 <code>winner=-1</code> 占位，分数不动。
-            超时 <span class="script-timeout-value">{{ competition.scoring_script_timeout_seconds or 120 }}</span> 秒。
-          </div>
-          <div id="scriptSignatureAbsolute" class="alert alert-secondary py-2 px-3 mb-3 small"
-               {% if edit_mode == 'elo' %}style="display:none;"{% endif %}>
-            <div class="fw-semibold mb-1"><i class="fas fa-balance-scale me-1"></i> 绝对分模式脚本签名</div>
-            调用方式：<code>python &lt;script&gt; &lt;user_answer&gt; &lt;reference&gt; &lt;max_score&gt;</code><br>
-            stdout 输出：<code>{"score": &lt;number&gt;, "details": &lt;可选&gt;}</code><br>
-            超时 <span class="script-timeout-value">{{ competition.scoring_script_timeout_seconds or 120 }}</span> 秒。
-          </div>
           <div class="mb-3">
             <strong>当前脚本：</strong>
             {% if competition.scoring_script_name %}
-              <span class="text-success"><i class="fas fa-check-circle me-1"></i>{{ competition.scoring_script_name }}</span>
+              <span class="text-success"><i class="fas fa-check-circle me-2"></i>{{ competition.scoring_script_name }}</span>
             {% elif edit_mode == 'elo' %}
-              <span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>ELO 模式下评测脚本必填（接收两份提交、返回 1 或 2），否则用户无法提交。</span>
-            {% elif edit_fmt == 'zip' %}
-              <span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>ZIP 模式下默认评分器无法工作，必须上传评测脚本，否则用户无法提交。</span>
+              <span class="text-warning"><i class="fas fa-exclamation-triangle me-2"></i>评测脚本必填</span>
+            {% elif edit_mode == 'absolute' %}
+              <span class="text-warning"><i class="fas fa-exclamation-triangle me-2"></i>评测脚本必填</span>
             {% else %}
-              <span class="text-muted">未上传，使用默认 JSON 对比（数值容差 1e-6）打分。</span>
+              <span class="text-muted">未上传</span>
             {% endif %}
           </div>
           <form method="POST" enctype="multipart/form-data" class="mb-3"
@@ -2992,15 +2992,15 @@
               <input type="file" class="form-control" name="scoring_script" accept=".py" required>
             </div>
             <button type="submit" class="btn btn-outline-primary">
-              <i class="fas fa-cloud-upload-alt me-1"></i> 上传并替换
+              <i class="fas fa-cloud-upload-alt me-2"></i>上传并替换
             </button>
           </form>
           {% if competition.scoring_script_name %}
           <form method="POST"
                 action="{{ url_for('ranking.ranking_clear_scoring_script', competition_id=competition.id) }}"
-                onsubmit="return confirm('确认清除评测脚本？之后将使用默认评分器。');">
+                onsubmit="return confirm('确认清除评测脚本？');">
             <button type="submit" class="btn btn-outline-danger btn-sm">
-              <i class="fas fa-trash me-1"></i> 清除评测脚本
+              <i class="fas fa-trash me-2"></i>清除评测脚本
             </button>
           </form>
           {% endif %}
@@ -3021,12 +3021,13 @@
           --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace;
           color:var(--ink);
         }
-        .aje-shell { border:1px solid var(--line); background:#fff; border-radius:8px; overflow:hidden; }
+        .aje-shell { border:1px solid var(--line); background:#fff; border-radius:8px; overflow:visible; }
         .aje-head {
-          display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; flex-wrap:wrap;
-          padding:1rem 1.05rem; border-bottom:1px solid var(--line); background:var(--paper);
+          display:flex; align-items:center; justify-content:space-between; gap:.9rem; flex-wrap:wrap;
+          padding:.9rem 1rem; border-bottom:1px solid var(--line); background:var(--paper);
         }
-        .aje-title { font-size:.9rem; font-weight:700; letter-spacing:.02em; color:var(--ink); }
+        .aje-title { font-size:.9rem; font-weight:700; letter-spacing:0; color:var(--ink); }
+        .aje-head-tools { display:flex; align-items:center; justify-content:flex-end; gap:.55rem; flex-wrap:wrap; }
         .aje-meta { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }
         .aje-count, .aje-total {
           display:inline-flex; align-items:baseline; gap:.35rem; border:1px solid var(--line-strong);
@@ -3109,6 +3110,13 @@
           flex:0 0 auto;
         }
         .aje-edit-btn:hover, .aje-add:hover { border-color:#9aa3ad; background:var(--paper); }
+        .aje-add {
+          width:34px;
+          height:34px;
+          padding:0;
+          border-radius:8px;
+          flex:0 0 auto;
+        }
         .aje-empty {
           grid-column:1 / -1;
           text-align:center;
@@ -3119,15 +3127,60 @@
           border-radius:8px;
           background:#fbfcfd;
         }
-        .aje-foot { display:flex; align-items:center; justify-content:space-between; gap:.75rem; padding:.9rem 1rem; border-top:1px solid var(--line); background:var(--paper); flex-wrap:wrap; }
-        .aje-foot-left { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
-        .aje-timeout { display:flex; align-items:center; gap:.45rem; font-size:.82rem; color:var(--muted); }
-        .aje-timeout input { width:92px; height:32px; border:1px solid var(--line-strong); border-radius:7px; padding:.28rem .45rem; font-family:var(--mono); background:#fff; }
-        .aje-mode { display:flex; align-items:center; gap:.45rem; font-size:.82rem; color:var(--muted); }
-        .aje-mode select { height:32px; border:1px solid var(--line-strong); border-radius:7px; padding:.28rem .48rem; background:#fff; color:var(--ink); }
-        .aje-actions { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
+        .aje-foot {
+          display:grid;
+          grid-template-columns:minmax(0, 1fr) auto;
+          align-items:end;
+          gap:.8rem;
+          padding:.78rem 1rem .9rem;
+          border-top:1px solid var(--line);
+          background:#fbfcfd;
+        }
+        .aje-settings {
+          display:grid;
+          grid-template-columns:minmax(130px, 152px) minmax(190px, 226px);
+          align-items:end;
+          gap:.58rem;
+        }
+        .aje-setting { display:flex; flex-direction:column; gap:.3rem; min-width:0; }
+        .aje-setting-label {
+          display:inline-flex;
+          align-items:center;
+          gap:.34rem;
+          color:var(--muted);
+          font-size:.72rem;
+          font-weight:700;
+          line-height:1;
+        }
+        .aje-setting-label i { width:13px; text-align:center; color:#818a95; }
+        .aje-timeout-control {
+          display:flex;
+          align-items:center;
+          height:34px;
+          border:1px solid var(--line-strong);
+          border-radius:8px;
+          background:#fff;
+          color:var(--muted);
+          overflow:hidden;
+        }
+        .aje-timeout input {
+          width:78px;
+          height:100%;
+          border:0;
+          padding:.28rem .5rem;
+          font-family:var(--mono);
+          background:#fff;
+          color:var(--ink);
+        }
+        .aje-timeout input:focus { outline:none; background:#fff; }
+        .aje-timeout-unit { padding:0 .55rem 0 .2rem; font-size:.78rem; }
+        .aje-mode .aje-harness-picker { width:100%; }
+        .aje-mode .aje-harness-trigger { height:34px; border-radius:8px; padding:.28rem .48rem; font-size:.82rem; }
+        .aje-mode .aje-harness-menu { min-width:100%; }
+        .aje-actions { display:flex; align-items:center; justify-content:flex-end; gap:.62rem; flex-wrap:wrap; }
         .aje-save, .aje-modal-apply { background:var(--green); border-color:var(--green); color:#fff; font-weight:700; }
         .aje-save:hover { background:#274f44; border-color:#274f44; }
+        .aje-save { min-height:34px; padding:.38rem .78rem; border-radius:8px; }
         .aje-modal-delete { color:var(--red); border-color:#d9bcbc; }
         .aje-modal-delete:hover { background:#fbf5f5; }
         #ajeHint { color:var(--muted); }
@@ -3152,14 +3205,18 @@
           padding:.8rem 1.05rem;
           gap:.7rem;
         }
-        .aje-modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:.9rem; }
+        .aje-modal-grid {
+          display:grid;
+          grid-template-columns:minmax(0, 1.15fr) minmax(116px, .8fr) minmax(116px, .8fr);
+          gap:.9rem;
+        }
         .aje-modal-field { display:flex; flex-direction:column; gap:.34rem; margin:0; min-width:0; }
         .aje-modal-field.full { grid-column:1 / -1; }
+        .aje-modal-field.choice-top { position:relative; z-index:2; }
         .aje-modal-field span {
           color:var(--muted); font-size:.74rem; font-weight:700;
         }
-        .aje-modal-field input,
-        .aje-modal-field select {
+        .aje-modal-field input {
           width:100%;
           height:38px;
           border:1px solid #b9c1cb;
@@ -3171,10 +3228,8 @@
           line-height:1.2;
           transition:border-color .15s ease, background-color .15s ease;
         }
-        .aje-modal-field input:hover,
-        .aje-modal-field select:hover { border-color:#9da7b2; }
-        .aje-modal-field input:focus,
-        .aje-modal-field select:focus {
+        .aje-modal-field input:hover { border-color:#9da7b2; }
+        .aje-modal-field input:focus {
           outline:none;
           border-color:#687484;
           background:#fff;
@@ -3255,12 +3310,6 @@
         }
         .aje-harness-option-check { color:var(--green); opacity:0; }
         .aje-harness-option.active .aje-harness-option-check { opacity:1; }
-        .aje-modal-note {
-          color:var(--muted);
-          font-size:.78rem;
-          margin-top:.08rem;
-          line-height:1.45;
-        }
         .aje-modal-check {
           display:flex;
           align-items:center;
@@ -3304,6 +3353,10 @@
         }
         @media (max-width:680px){
           .aje-grid { grid-template-columns:1fr; }
+          .aje-foot { grid-template-columns:1fr; align-items:stretch; }
+          .aje-settings { grid-template-columns:1fr; }
+          .aje-actions { justify-content:space-between; }
+          .aje-save { flex:0 0 auto; }
           .aje-modal-grid { grid-template-columns:1fr; }
           .aje-modal-field.full { grid-column:auto; }
           .aje-modal-check.full { grid-column:auto; }
@@ -3321,31 +3374,75 @@
             <div class="aje-head">
               <div>
                 <div class="aje-title">端点池</div>
-                <div class="small text-muted mt-1">模型端点只负责创建评测任务，实际执行仍由 judge worker 队列限流。</div>
               </div>
-              <div class="aje-meta">
-                <span class="aje-count" id="ajeCountLabel">0 个端点</span>
-                <span class="aje-total">并发 <b id="ajeTotalValue">0</b></span>
+              <div class="aje-head-tools">
+                <div class="aje-meta">
+                  <span class="aje-count" id="ajeCountLabel">0 个端点</span>
+                  <span class="aje-total">并发 <b id="ajeTotalValue">0</b></span>
+                </div>
+                <button type="button" class="aje-add" id="ajeAddBtn" title="添加端点" aria-label="添加端点">
+                  <i class="fas fa-plus"></i>
+                </button>
               </div>
             </div>
             <div id="ajeEditor" class="aje-grid"></div>
             <div class="aje-foot">
-              <div class="aje-foot-left">
-                <button type="button" class="aje-add" id="ajeAddBtn"><i class="fas fa-plus"></i> 添加端点</button>
-                <span class="aje-timeout">单次评测超时
-                  <input type="number" id="ajeTimeout" min="60" max="7200" step="1"
-                         value="{{ competition.agent_judge_timeout_seconds or 1800 }}"> 秒</span>
-                {% set _aj_orch = (competition.agent_judge_orchestration_mode or 'single')|lower %}
-                <span class="aje-mode">评测编排
-                  <select id="ajeOrchestrationMode" aria-label="评测编排">
-                    <option value="single" {% if _aj_orch != 'topological' %}selected{% endif %}>一次性评测</option>
-                    <option value="topological" {% if _aj_orch == 'topological' %}selected{% endif %}>拓扑序编排</option>
-                  </select>
-                </span>
+              <div class="aje-settings">
+                <label class="aje-setting aje-timeout">
+                  <span class="aje-setting-label"><i class="fas fa-clock me-2"></i>超时</span>
+                  <span class="aje-timeout-control">
+                    <input type="number" id="ajeTimeout" min="60" max="7200" step="1"
+                           value="{{ competition.agent_judge_timeout_seconds or 1800 }}"
+                           aria-label="单次评测超时">
+                    <span class="aje-timeout-unit">秒</span>
+                  </span>
+                </label>
+                {% set _aj_orch_raw = (competition.agent_judge_orchestration_mode or 'single')|lower|replace('-', '_') %}
+                {% set _aj_orch = 'topological' if _aj_orch_raw in ['topo', 'topology', 'topological', 'topologica', 'topologi', 'topolog', 'topolo', 'topol', 'dag'] else 'single' %}
+                <div class="aje-setting aje-mode">
+                  <span class="aje-setting-label"><i class="fas fa-diagram-project me-2"></i>编排</span>
+                  <input type="hidden" id="ajeOrchestrationMode"
+                         name="agent_judge_orchestration_mode" form="rankingEditForm"
+                         value="{% if _aj_orch == 'topological' %}topological{% else %}single{% endif %}">
+                  <div class="aje-harness-picker" id="ajeOrchestrationPicker">
+                    <button type="button" class="aje-harness-trigger" id="ajeOrchestrationTrigger"
+                            aria-haspopup="listbox" aria-expanded="false">
+                      <span class="aje-harness-trigger-main">
+                        <i class="fas {% if _aj_orch == 'topological' %}fa-diagram-project{% else %}fa-layer-group{% endif %}" id="ajeOrchestrationIcon"></i>
+                        <span id="ajeOrchestrationLabel">{% if _aj_orch == 'topological' %}拓扑序编排{% else %}一次性评测{% endif %}</span>
+                      </span>
+                      <i class="fas fa-chevron-down aje-harness-caret"></i>
+                    </button>
+                    <div class="aje-harness-menu" id="ajeOrchestrationMenu" role="listbox" aria-label="评测编排">
+                      <button type="button" class="aje-harness-option {% if _aj_orch != 'topological' %}active{% endif %}" role="option"
+                              aria-selected="{% if _aj_orch == 'topological' %}false{% else %}true{% endif %}" data-choice-value="single"
+                              data-choice-label="一次性评测" data-choice-icon="fa-layer-group">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-layer-group"></i>
+                          <span>
+                            <span class="aje-harness-option-name">一次性评测</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                      <button type="button" class="aje-harness-option {% if _aj_orch == 'topological' %}active{% endif %}" role="option"
+                              aria-selected="{% if _aj_orch == 'topological' %}true{% else %}false{% endif %}" data-choice-value="topological"
+                              data-choice-label="拓扑序编排" data-choice-icon="fa-diagram-project">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-diagram-project"></i>
+                          <span>
+                            <span class="aje-harness-option-name">拓扑序编排</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div class="aje-actions">
                 <span class="small" id="ajeHint"></span>
-                <button type="button" class="aje-save" id="ajeSaveBtn"><i class="fas fa-save me-1"></i> 保存端点</button>
+                <button type="button" class="aje-save" id="ajeSaveBtn"><i class="fas fa-save me-2"></i>保存</button>
               </div>
             </div>
           </div>
@@ -3374,34 +3471,34 @@
                     </button>
                     <div class="aje-harness-menu" id="ajeHarnessMenu" role="listbox" aria-label="Agent Harness">
                       <button type="button" class="aje-harness-option active" role="option"
-                              aria-selected="true" data-harness-value="claude_code">
+                              aria-selected="true" data-choice-value="claude_code"
+                              data-choice-label="Claude Code" data-choice-icon="fa-robot">
                         <span class="aje-harness-option-main">
                           <i class="fas fa-robot"></i>
                           <span>
                             <span class="aje-harness-option-name">Claude Code</span>
-                            <span class="aje-harness-option-desc">Anthropic 兼容端点</span>
                           </span>
                         </span>
                         <i class="fas fa-check aje-harness-option-check"></i>
                       </button>
                       <button type="button" class="aje-harness-option" role="option"
-                              aria-selected="false" data-harness-value="codex">
+                              aria-selected="false" data-choice-value="codex"
+                              data-choice-label="Codex" data-choice-icon="fa-code">
                         <span class="aje-harness-option-main">
                           <i class="fas fa-code"></i>
                           <span>
                             <span class="aje-harness-option-name">Codex</span>
-                            <span class="aje-harness-option-desc">OpenAI 兼容端点</span>
                           </span>
                         </span>
                         <i class="fas fa-check aje-harness-option-check"></i>
                       </button>
                       <button type="button" class="aje-harness-option" role="option"
-                              aria-selected="false" data-harness-value="opencode">
+                              aria-selected="false" data-choice-value="opencode"
+                              data-choice-label="opencode" data-choice-icon="fa-terminal">
                         <span class="aje-harness-option-main">
                           <i class="fas fa-terminal"></i>
                           <span>
                             <span class="aje-harness-option-name">opencode</span>
-                            <span class="aje-harness-option-desc">Go 订阅，仅需 API Key</span>
                           </span>
                         </span>
                         <i class="fas fa-check aje-harness-option-check"></i>
@@ -3413,30 +3510,66 @@
                   <span>并发上限</span>
                   <input type="number" id="ajeEditConcurrency" min="1" max="64" step="1">
                 </label>
+                <label class="aje-modal-field choice-top">
+                  <span>状态</span>
+                  <input type="hidden" id="ajeEditStatus" value="enabled">
+                  <div class="aje-harness-picker" id="ajeStatusPicker">
+                    <button type="button" class="aje-harness-trigger" id="ajeStatusTrigger"
+                            aria-haspopup="listbox" aria-expanded="false">
+                      <span class="aje-harness-trigger-main">
+                        <i class="fas fa-circle-play" id="ajeStatusIcon"></i>
+                        <span id="ajeStatusLabel">启用</span>
+                      </span>
+                      <i class="fas fa-chevron-down aje-harness-caret"></i>
+                    </button>
+                    <div class="aje-harness-menu" id="ajeStatusMenu" role="listbox" aria-label="端点状态">
+                      <button type="button" class="aje-harness-option" role="option"
+                              aria-selected="false" data-choice-value="enabled"
+                              data-choice-label="启用" data-choice-icon="fa-circle-play">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-circle-play"></i>
+                          <span>
+                            <span class="aje-harness-option-name">启用</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                      <button type="button" class="aje-harness-option" role="option"
+                              aria-selected="false" data-choice-value="paused"
+                              data-choice-label="暂停" data-choice-icon="fa-circle-pause">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-circle-pause"></i>
+                          <span>
+                            <span class="aje-harness-option-name">暂停</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                      <button type="button" class="aje-harness-option" role="option"
+                              aria-selected="false" data-choice-value="disabled"
+                              data-choice-label="停用" data-choice-icon="fa-circle-stop">
+                        <span class="aje-harness-option-main">
+                          <i class="fas fa-circle-stop"></i>
+                          <span>
+                            <span class="aje-harness-option-name">停用</span>
+                          </span>
+                        </span>
+                        <i class="fas fa-check aje-harness-option-check"></i>
+                      </button>
+                    </div>
+                  </div>
+                </label>
                 <label class="aje-modal-field full" id="ajeEditBaseUrlWrap">
                   <span id="ajeEditBaseUrlLabel">Base URL</span>
                   <input class="mono" type="text" id="ajeEditBaseUrl" placeholder="https://.../anthropic">
                 </label>
-                <div class="aje-modal-field full" id="ajeEditOpenCodeNote" style="display:none;">
-                  <span>Base URL</span>
-                  <div class="aje-modal-note">opencode 默认使用 Go 订阅端点，只需要填写 API Key。</div>
-                </div>
                 <label class="aje-modal-field full">
                   <span>API Key</span>
                   <input class="mono" type="password" id="ajeEditApiKey" autocomplete="new-password">
-                  <div class="aje-modal-note" id="ajeEditKeyHint"></div>
                 </label>
                 <label class="aje-modal-field full">
-                  <span>模型（可留空）</span>
-                  <input type="text" id="ajeEditModel" placeholder="默认模型">
-                </label>
-                <label class="aje-modal-field full">
-                  <span>状态</span>
-                  <select id="ajeEditStatus">
-                    <option value="enabled">启用</option>
-                    <option value="paused">暂停</option>
-                    <option value="disabled">停用</option>
-                  </select>
+                  <span>模型</span>
+                  <input type="text" id="ajeEditModel">
                 </label>
               </div>
             </div>
@@ -3462,22 +3595,19 @@
         var modal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
         var editIndex = null;
         var editHarness = document.getElementById('ajeEditHarness');
-        var harnessPicker = document.getElementById('ajeHarnessPicker');
-        var harnessTrigger = document.getElementById('ajeHarnessTrigger');
-        var harnessMenu = document.getElementById('ajeHarnessMenu');
-        var harnessLabelEl = document.getElementById('ajeHarnessLabel');
-        var harnessIconEl = document.getElementById('ajeHarnessIcon');
         var editBaseUrlWrap = document.getElementById('ajeEditBaseUrlWrap');
         var editBaseUrlLabel = document.getElementById('ajeEditBaseUrlLabel');
         var editBaseUrl = document.getElementById('ajeEditBaseUrl');
-        var editOpenCodeNote = document.getElementById('ajeEditOpenCodeNote');
         var editApiKey = document.getElementById('ajeEditApiKey');
-        var editKeyHint = document.getElementById('ajeEditKeyHint');
         var editModel = document.getElementById('ajeEditModel');
         var editConcurrency = document.getElementById('ajeEditConcurrency');
         var editStatus = document.getElementById('ajeEditStatus');
         var editDelete = document.getElementById('ajeEditDelete');
         var editApply = document.getElementById('ajeEditApply');
+        var choicePickers = [];
+        var harnessPickerCtrl = null;
+        var statusPickerCtrl = null;
+        var orchPickerCtrl = null;
         function normalizeStatus(e){
           var raw = e && e.status ? String(e.status).toLowerCase() : (e && e.enabled ? 'enabled' : 'disabled');
           return (raw === 'paused' || raw === 'disabled') ? raw : 'enabled';
@@ -3520,35 +3650,73 @@
           if (h === 'opencode') return 'fa-terminal';
           return 'fa-robot';
         }
-        function setHarnessMenuOpen(open){
-          if (!harnessPicker || !harnessTrigger) return;
-          harnessPicker.classList.toggle('open', !!open);
-          harnessTrigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+        function closeAllPickers(except){
+          choicePickers.forEach(function(ctrl){
+            if (ctrl !== except) ctrl.setOpen(false);
+          });
         }
-        function updateHarnessPicker(){
-          var h = editHarness.value || 'claude_code';
-          if (harnessLabelEl) harnessLabelEl.textContent = harnessLabel(h);
-          if (harnessIconEl) harnessIconEl.className = 'fas ' + harnessIcon(h);
-          if (harnessMenu) {
-            harnessMenu.querySelectorAll('[data-harness-value]').forEach(function(opt){
-              var active = opt.getAttribute('data-harness-value') === h;
-              opt.classList.toggle('active', active);
-              opt.setAttribute('aria-selected', active ? 'true' : 'false');
-            });
-          }
-        }
-        function setHarnessValue(h){
-          editHarness.value = h || 'claude_code';
-          updateHarnessPicker();
-          applyHarnessMode();
-          setHarnessMenuOpen(false);
+        function createChoicePicker(config){
+          var input = document.getElementById(config.inputId);
+          var picker = document.getElementById(config.pickerId);
+          var trigger = document.getElementById(config.triggerId);
+          var menu = document.getElementById(config.menuId);
+          var label = document.getElementById(config.labelId);
+          var icon = document.getElementById(config.iconId);
+          if (!input || !picker || !trigger || !menu) return null;
+          var ctrl = {
+            picker: picker,
+            value: function(){ return input.value; },
+            setOpen: function(open){
+              picker.classList.toggle('open', !!open);
+              trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            },
+            setValue: function(value){
+              var options = Array.prototype.slice.call(menu.querySelectorAll('[data-choice-value]'));
+              var opt = options.find(function(item){
+                return item.getAttribute('data-choice-value') === value;
+              }) || options[0];
+              if (!opt) return;
+              input.value = opt.getAttribute('data-choice-value') || value || '';
+              if (label) label.textContent = opt.getAttribute('data-choice-label') || opt.textContent.trim();
+              if (icon) icon.className = 'fas ' + (opt.getAttribute('data-choice-icon') || 'fa-circle');
+              options.forEach(function(item){
+                var active = item === opt;
+                item.classList.toggle('active', active);
+                item.setAttribute('aria-selected', active ? 'true' : 'false');
+              });
+              if (typeof config.onChange === 'function') config.onChange(input.value);
+            }
+          };
+          trigger.addEventListener('click', function(ev){
+            ev.stopPropagation();
+            var willOpen = !picker.classList.contains('open');
+            closeAllPickers(ctrl);
+            ctrl.setOpen(willOpen);
+          });
+          trigger.addEventListener('keydown', function(ev){
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault();
+              trigger.click();
+            } else if (ev.key === 'Escape') {
+              ctrl.setOpen(false);
+            }
+          });
+          menu.addEventListener('click', function(ev){
+            var opt = ev.target.closest('[data-choice-value]');
+            if (!opt) return;
+            ctrl.setValue(opt.getAttribute('data-choice-value'));
+            ctrl.setOpen(false);
+          });
+          choicePickers.push(ctrl);
+          ctrl.setValue(input.value);
+          return ctrl;
         }
         function modelText(e){
           if ((e.model || '').trim()) return e.model;
-          return (e.harness === 'opencode') ? 'Go 订阅默认模型' : '默认模型';
+          return '';
         }
         function endpointText(e){
-          if (e.harness === 'opencode') return 'Go 订阅默认端点';
+          if (e.harness === 'opencode') return '';
           return (e.base_url || '').trim() || '未填写 Base URL';
         }
         function keyText(e){
@@ -3560,7 +3728,7 @@
           document.getElementById('ajeTotalValue').textContent = totalConc();
         }
         function render(){
-          if (!eps.length){ editor.innerHTML = '<div class="aje-empty">还没有端点，点下方「添加端点」。Agent 评测要求至少配置一个启用端点。</div>'; updateHead(); return; }
+          if (!eps.length){ editor.innerHTML = '<div class="aje-empty">暂无端点</div>'; updateHead(); return; }
           var h = '';
           eps.forEach(function(e, i){
             var harness = e.harness || 'claude_code';
@@ -3589,10 +3757,9 @@
           var h = editHarness.value || 'claude_code';
           var isOpenCode = h === 'opencode';
           editBaseUrlWrap.style.display = isOpenCode ? 'none' : '';
-          editOpenCodeNote.style.display = isOpenCode ? '' : 'none';
           editBaseUrlLabel.textContent = h === 'codex' ? 'Base URL（OpenAI 兼容）' : 'Base URL（Anthropic 兼容）';
           editBaseUrl.placeholder = h === 'codex' ? 'https://.../v1' : 'https://.../anthropic';
-          editModel.placeholder = isOpenCode ? 'Go 订阅默认模型' : '默认模型';
+          editModel.placeholder = '';
         }
         function openEditor(index){
           editIndex = (typeof index === 'number') ? index : null;
@@ -3601,13 +3768,14 @@
           editHarness.value = e.harness || 'claude_code';
           editBaseUrl.value = e.base_url || '';
           editApiKey.value = e.api_key || '';
-          editApiKey.placeholder = e.has_key ? '已配置（留空保持不变）' : '请输入 API Key';
-          editKeyHint.textContent = e.has_key ? '已保存的 API Key 不会回显；留空表示保持不变。' : '保存前请填写 API Key。';
+          editApiKey.placeholder = e.has_key ? '已配置' : '请输入 API Key';
           editModel.value = e.model || '';
           editConcurrency.value = parseInt(e.concurrency_limit) || 1;
-          editStatus.value = normalizeStatus(e);
+          if (harnessPickerCtrl) harnessPickerCtrl.setValue(e.harness || 'claude_code');
+          else editHarness.value = e.harness || 'claude_code';
+          if (statusPickerCtrl) statusPickerCtrl.setValue(normalizeStatus(e));
+          else editStatus.value = normalizeStatus(e);
           editDelete.style.display = editIndex === null ? 'none' : '';
-          updateHarnessPicker();
           applyHarnessMode();
           if (modal) modal.show();
         }
@@ -3616,29 +3784,19 @@
           if (!btn) return;
           openEditor(parseInt(btn.getAttribute('data-edit'), 10));
         });
-        if (harnessTrigger) {
-          harnessTrigger.addEventListener('click', function(ev){
-            ev.stopPropagation();
-            setHarnessMenuOpen(!(harnessPicker && harnessPicker.classList.contains('open')));
-          });
-        }
-        if (harnessMenu) {
-          harnessMenu.addEventListener('click', function(ev){
-            var opt = ev.target.closest('[data-harness-value]');
-            if (!opt) return;
-            setHarnessValue(opt.getAttribute('data-harness-value'));
-          });
-        }
         document.addEventListener('click', function(ev){
-          if (harnessPicker && !harnessPicker.contains(ev.target)) setHarnessMenuOpen(false);
+          var inside = choicePickers.some(function(ctrl){
+            return ctrl && ctrl.picker && ctrl.picker.contains(ev.target);
+          });
+          if (!inside) closeAllPickers(null);
         });
         if (modalEl) {
-          modalEl.addEventListener('hidden.bs.modal', function(){ setHarnessMenuOpen(false); });
+          modalEl.addEventListener('hidden.bs.modal', function(){ closeAllPickers(null); });
         }
         editApply.addEventListener('click', function(){
           var h = editHarness.value || 'claude_code';
           var old = editIndex === null ? defaultEndpoint() : eps[editIndex];
-          var st = normalizeStatus({status: editStatus.value || 'enabled'});
+          var st = normalizeStatus({status: (statusPickerCtrl ? statusPickerCtrl.value() : editStatus.value) || 'enabled'});
           var next = {
             id: old.id || null,
             harness: h,
@@ -3657,7 +3815,7 @@
         });
         editDelete.addEventListener('click', function(){
           if (editIndex === null) return;
-          if (!window.confirm('确认从端点列表中移除这个端点？点击「保存端点」后才会写入。')) return;
+          if (!window.confirm('移除这个端点？')) return;
           eps.splice(editIndex, 1);
           render();
           if (modal) modal.hide();
@@ -3668,8 +3826,10 @@
         document.getElementById('ajeSaveBtn').addEventListener('click', function(){
           var hint = document.getElementById('ajeHint');
           var orchEl = document.getElementById('ajeOrchestrationMode');
+          var orchMode = orchPickerCtrl ? orchPickerCtrl.value() : (orchEl ? (orchEl.value || 'single') : 'single');
           var payload = { timeout_seconds: parseInt(document.getElementById('ajeTimeout').value)||1800,
-            orchestration_mode: orchEl ? (orchEl.value || 'single') : 'single',
+            orchestration_mode: orchMode,
+            agent_judge_orchestration_mode: orchMode,
             endpoints: eps.map(function(e){ return {id:e.id, harness:e.harness || 'claude_code',
               base_url:(e.base_url||'').trim(),
               api_key:(e.api_key||'').trim(), model:(e.model||'').trim(),
@@ -3683,10 +3843,24 @@
           }).then(function(r){return r.json();}).then(function(d){
             if (!d.success){ hint.style.color='#b03a2e'; hint.textContent = d.message || '保存失败'; return; }
             hint.style.color='#1f7a4d';
-            hint.textContent = '已保存：' + d.count + ' 个端点（启用 ' + d.enabled + '，暂停 ' + (d.paused || 0) + '，停用 ' + (d.disabled || 0) + '，总并发 ' + d.total_concurrency + '）';
+            hint.textContent = '已保存';
+            if (orchPickerCtrl && d.orchestration_mode) orchPickerCtrl.setValue(d.orchestration_mode);
             eps = fromServer(d.endpoints);   // 用服务端回传刷新（含新 id/has_key），保证下次保存能保留未改动的 key
             render();
           }).catch(function(){ hint.style.color='#b03a2e'; hint.textContent='网络错误'; });
+        });
+        harnessPickerCtrl = createChoicePicker({
+          inputId:'ajeEditHarness', pickerId:'ajeHarnessPicker', triggerId:'ajeHarnessTrigger',
+          menuId:'ajeHarnessMenu', labelId:'ajeHarnessLabel', iconId:'ajeHarnessIcon',
+          onChange:function(){ applyHarnessMode(); }
+        });
+        statusPickerCtrl = createChoicePicker({
+          inputId:'ajeEditStatus', pickerId:'ajeStatusPicker', triggerId:'ajeStatusTrigger',
+          menuId:'ajeStatusMenu', labelId:'ajeStatusLabel', iconId:'ajeStatusIcon'
+        });
+        orchPickerCtrl = createChoicePicker({
+          inputId:'ajeOrchestrationMode', pickerId:'ajeOrchestrationPicker', triggerId:'ajeOrchestrationTrigger',
+          menuId:'ajeOrchestrationMenu', labelId:'ajeOrchestrationLabel', iconId:'ajeOrchestrationIcon'
         });
         render();
       })();
@@ -3902,7 +4076,7 @@
               <input type="hidden" id="ajRuleModalIndex">
               <div class="mb-3">
                 <label class="form-label" for="ajRuleModalName">规则名称</label>
-                <input type="text" class="form-control" id="ajRuleModalName" maxlength="120" placeholder="可选；为空时显示规则原文摘要">
+                <input type="text" class="form-control" id="ajRuleModalName" maxlength="120" placeholder="规则名称">
               </div>
               <div class="mb-3">
                 <label class="form-label" for="ajRuleModalText">规则原文</label>
@@ -4025,7 +4199,7 @@
               '<div class="aj-rule-top">' +
                 '<div class="aj-no">' + r.rule_id + '</div>' +
                 '<div class="aj-main-fields">' +
-                  '<input class="aj-name" data-name="' + idx + '" maxlength="120" placeholder="规则名称（可选）">' +
+                '<input class="aj-name" data-name="' + idx + '" maxlength="120" placeholder="规则名称">' +
                   '<textarea class="aj-desc" data-text="' + idx + '" rows="2" placeholder="用自然语言描述这条评分规则……"></textarea>' +
                 '</div>' +
                 '<div class="aj-val"><label>分值</label><div class="aj-stepper">' +
@@ -4040,7 +4214,7 @@
             var ta = card.querySelector('[data-text]'); ta.value = r.rule_text || ''; grow(ta);
           });
           if (!rules.length) {
-            editor.innerHTML = '<div class="aj-empty"><i class="fas fa-list-check mb-2 d-block" style="font-size:1.4rem;opacity:.5;"></i>还没有评分规则，点击下方「添加规则」开始。</div>';
+            editor.innerHTML = '<div class="aj-empty"><i class="fas fa-list-check mb-2 d-block" style="font-size:1.4rem;opacity:.5;"></i>还没有评分规则</div>';
           }
           refreshStats();
           bind();
@@ -4831,10 +5005,6 @@
           {% endif %}
         </div>
         <div class="card-body">
-          <p class="text-muted small mb-3">
-            动态评分启动后，全局匹配 tick 才会为本场赛事调度对战，新提交才会触发即时补战。
-            停止仅冻结分数变化，已有的 ELO 分数与对战历史保留；重置则清空对战历史并把池中提交分数恢复到初始分。
-          </p>
           <div class="d-flex flex-wrap gap-2">
             <form method="POST" class="m-0"
                   action="{{ url_for('ranking.ranking_elo_start', competition_id=competition.id) }}">

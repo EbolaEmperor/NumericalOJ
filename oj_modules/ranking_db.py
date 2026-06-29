@@ -140,11 +140,36 @@ def ensure_ranking_tables():
                     " ADD COLUMN agent_judge_timeout_seconds INT NOT NULL DEFAULT 1800"
                 )
             cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'agent_judge_orchestration_mode'")
-            if not cursor.fetchone():
+            orch_col = cursor.fetchone()
+            if not orch_col:
                 cursor.execute(
                     "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN agent_judge_orchestration_mode VARCHAR(16) NOT NULL DEFAULT 'single'"
+                    " ADD COLUMN agent_judge_orchestration_mode VARCHAR(32) NOT NULL DEFAULT 'single'"
                 )
+            else:
+                col_type = ''
+                if isinstance(orch_col, dict):
+                    col_type = str(orch_col.get('Type') or '')
+                elif len(orch_col) > 1:
+                    col_type = str(orch_col[1] or '')
+                type_lower = col_type.strip().lower()
+                if type_lower.startswith('varchar('):
+                    try:
+                        size = int(type_lower.split('(', 1)[1].split(')', 1)[0])
+                    except (TypeError, ValueError, IndexError):
+                        size = 0
+                    if 0 < size < 32:
+                        cursor.execute(
+                            "ALTER TABLE ranking_competitions"
+                            " MODIFY COLUMN agent_judge_orchestration_mode VARCHAR(32) NOT NULL DEFAULT 'single'"
+                        )
+            cursor.execute(
+                """
+                UPDATE ranking_competitions
+                SET agent_judge_orchestration_mode = 'topological'
+                WHERE LOWER(REPLACE(agent_judge_orchestration_mode, '-', '_')) LIKE 'topol%%'
+                """
+            )
             # 兼容：每 48 小时窗口提交次数限制（NULL/<=0 表示不限制）+ 窗口锚点
             cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'submit_limit_per_window'")
             if not cursor.fetchone():

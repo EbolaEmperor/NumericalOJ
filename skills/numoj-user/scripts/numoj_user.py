@@ -684,9 +684,21 @@ def ranking_submit(args: argparse.Namespace) -> None:
     if args.answer_file:
         files["answer_file"] = require_file(args.answer_file)
     try:
-        resp = client.request("POST", f"/ranking/{args.competition_id}/submit", data=data, files=files)
+        resp = client.request(
+            "POST",
+            f"/ranking/{args.competition_id}/submit",
+            data=data,
+            files=files,
+            headers={"Accept": "application/json"},
+        )
     finally:
         close_files(files)
+    if resp.status_code >= 400 and response_is_json(resp):
+        payload = resp.json()
+        if isinstance(payload, dict) and "success" not in payload:
+            payload["success"] = False
+        output_json(payload)
+        return
     ensure_ok(resp)
     after_ids = _ranking_submission_ids(client, args.competition_id)
     new_ids = sorted(after_ids - before_ids)
@@ -706,6 +718,12 @@ def ranking_submit(args: argparse.Namespace) -> None:
 def ranking_git(args: argparse.Namespace) -> None:
     path = "check_repo" if args.action == "check" else "git_submit"
     resp = client_from_args(args).request("POST", f"/ranking/{args.competition_id}/{path}")
+    if resp.status_code >= 400 and response_is_json(resp):
+        payload = resp.json()
+        if isinstance(payload, dict) and "success" not in payload:
+            payload["success"] = False
+        output_json(payload)
+        return
     print_or_save_response(resp)
 
 

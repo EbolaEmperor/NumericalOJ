@@ -163,7 +163,7 @@ window.__APPEAL_RULES__ = {{ rules|tojson }};
   .ap-topo-surface.has-focus .ap-topo-edge.edge-active { opacity:1; stroke:#806713; stroke-width:2.6; }
   .ap-topo-surface.has-focus .ap-topo-arrow.edge-active { opacity:1; fill:#806713; }
   .ap-topo-surface.has-focus .ap-topo-node.node-active { opacity:1; border-color:var(--gold-d); background:#fff8dd; }
-  .ap-topo-node { position:absolute; width:176px; height:88px; display:flex; flex-direction:column; gap:.22rem;
+  .ap-topo-node { position:absolute; width:176px; height:96px; display:flex; flex-direction:column; gap:.22rem;
                   text-align:left; border:1px solid #dfd6b6; border-left:3px solid var(--gold);
                   background:#fffdf8; border-radius:6px; padding:.56rem .65rem; color:var(--ink);
                   cursor:pointer; transition:border-color .12s, background .12s, transform .12s, opacity .12s; overflow:hidden; }
@@ -174,7 +174,7 @@ window.__APPEAL_RULES__ = {{ rules|tojson }};
   .ap-topo-node.s-error { border-left-color:#b07340; background:#fffaf5; }
   .ap-topo-node.s-pending { border-left-color:var(--info); background:#fbfdff; }
   .ap-topo-node-id { font-family:var(--mono); font-size:.72rem; color:#806713; font-weight:700; line-height:1; }
-  .ap-topo-node-title { font-size:.88rem; line-height:1.2; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ap-topo-node-title { display:block; min-height:1.35em; font-size:.88rem; line-height:1.35; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .ap-topo-node-text { font-size:.72rem; line-height:1.25; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .ap-topo-node-foot { margin-top:auto; display:flex; align-items:center; justify-content:space-between; gap:.4rem; font-size:.7rem; }
   .ap-topo-status { border-radius:999px; padding:.08rem .42rem; white-space:nowrap; }
@@ -214,7 +214,7 @@ window.__APPEAL_RULES__ = {{ rules|tojson }};
   var staged = {};                 // rule_id -> 'pass'|'failed'|'skipped'（仅改动过的）
   var state = {};                  // rule_id -> {value, eff, score}
   var activeView = 'topo';
-  var nodeW = 176, nodeH = 88, marginX = 24, marginY = 20, xGap = 88, yGap = 72;
+  var nodeW = 176, nodeH = 96, marginX = 24, marginY = 20, xGap = 88, yGap = 72;
   var rulesData = (window.__APPEAL_RULES__ || []).map(function (r) {
     return {
       rule_id: parseInt(r.rule_id, 10),

@@ -31,7 +31,7 @@ _GATE_FAIL = (EFF_FAILED, EFF_SKIPPED, EFF_ERROR)
 
 def normalize_orchestration_mode(value):
     mode = str(value or '').strip().lower().replace('-', '_')
-    if mode in ('topo', 'topology', 'topological', 'dag'):
+    if mode in ('topo', 'topology', 'topological', 'dag') or mode.startswith('topol'):
         return ORCH_TOPOLOGICAL
     return ORCH_SINGLE
 

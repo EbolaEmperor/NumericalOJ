@@ -39,7 +39,9 @@ from oj_modules.routes.ranking_routes import (
     _competition_scoring_mode,
     _normalize_answer_format,
     _page_window,
+    _ranking_submit_block_reason,
     _render_description,
+    _submission_quota_message,
     build_repo_url,
     fetch_competition_matches_cached,
 )
@@ -226,8 +228,14 @@ def competition_detail(competition_id):
             _safe_submission(row, include_admin=is_admin)
             for row in list_user_submissions(competition_id, user.get("username"))
         ]
+        submit_block_reason = _ranking_submit_block_reason(comp, competition_id, user=user)
+        submit_quota = None if is_admin else get_submission_quota(competition_id, user.get("username"), comp=comp)
+        if not submit_block_reason and submit_quota is not None and submit_quota["remaining"] <= 0:
+            submit_block_reason = _submission_quota_message(submit_quota)
         payload["user_submissions"] = submissions
-        payload["submit_quota"] = None if is_admin else get_submission_quota(competition_id, user.get("username"), comp=comp)
+        payload["submit_quota"] = submit_quota
+        payload["can_submit"] = not bool(submit_block_reason)
+        payload["submit_block_reason"] = submit_block_reason or ""
         if is_agent_judge and payload["submission_method"] == "git":
             uname = (user.get("username") or "").strip()
             tmpl = (comp.get("git_format") or "").strip()
