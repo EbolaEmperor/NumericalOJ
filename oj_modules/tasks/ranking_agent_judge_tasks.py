@@ -43,28 +43,36 @@ from oj_modules.ranking_agent_judge_db import (
 
 RANKING_AGENT_JUDGE_TASK_NAME = 'oj.ranking_agent_judge'
 
-# 配置读取（用 getattr 回退，远端 config.py 无需改动）
-JUDGE_IMAGE = getattr(_cfg, 'AGENT_JUDGE_DOCKER_IMAGE', 'numericaloj-agent-judge:latest')
-JUDGE_WORKSPACE_ROOT = getattr(_cfg, 'AGENT_JUDGE_WORKSPACE_ROOT', 'ranking_uploads/judge_workspace')
-JUDGE_DEFAULT_TIMEOUT = int(getattr(_cfg, 'AGENT_JUDGE_DEFAULT_TIMEOUT', 1800))
-JUDGE_MEM_LIMIT = getattr(_cfg, 'AGENT_JUDGE_MEM_LIMIT', '4g')
-JUDGE_CPU_LIMIT = str(getattr(_cfg, 'AGENT_JUDGE_CPU_LIMIT', '2'))
-JUDGE_PIDS_LIMIT = str(getattr(_cfg, 'AGENT_JUDGE_PIDS_LIMIT', '512'))
-JUDGE_POLL_INTERVAL = float(getattr(_cfg, 'AGENT_JUDGE_RESULT_POLL_INTERVAL', 1.5))
-JUDGE_PROGRESS_TTL = int(getattr(_cfg, 'AGENT_JUDGE_PROGRESS_TTL', 21600))
+# 配置读取：环境变量优先，其次 config.py，最后内置默认。这样本机可用环境变量切 lite 镜像，
+# 生产 config.py 不设置时仍默认使用原版 numericaloj-agent-judge:latest。
+def _config_value(name, default):
+    env_value = os.environ.get(name)
+    if env_value is not None and str(env_value).strip() != '':
+        return env_value
+    return getattr(_cfg, name, default)
+
+
+JUDGE_IMAGE = _config_value('AGENT_JUDGE_DOCKER_IMAGE', 'numericaloj-agent-judge:latest')
+JUDGE_WORKSPACE_ROOT = _config_value('AGENT_JUDGE_WORKSPACE_ROOT', 'ranking_uploads/judge_workspace')
+JUDGE_DEFAULT_TIMEOUT = int(_config_value('AGENT_JUDGE_DEFAULT_TIMEOUT', 1800))
+JUDGE_MEM_LIMIT = _config_value('AGENT_JUDGE_MEM_LIMIT', '4g')
+JUDGE_CPU_LIMIT = str(_config_value('AGENT_JUDGE_CPU_LIMIT', '2'))
+JUDGE_PIDS_LIMIT = str(_config_value('AGENT_JUDGE_PIDS_LIMIT', '512'))
+JUDGE_POLL_INTERVAL = float(_config_value('AGENT_JUDGE_RESULT_POLL_INTERVAL', 1.5))
+JUDGE_PROGRESS_TTL = int(_config_value('AGENT_JUDGE_PROGRESS_TTL', 21600))
 # 多端点并发：未配置端点池时，回退用比赛单端点 + 这个默认并发上限（沿用旧 -c 2 的语义）。
-JUDGE_LEGACY_CONCURRENCY = max(1, int(getattr(_cfg, 'AGENT_JUDGE_CONCURRENCY', 2)))
+JUDGE_LEGACY_CONCURRENCY = max(1, int(_config_value('AGENT_JUDGE_CONCURRENCY', 2)))
 # 所有端点都满时，任务延迟重排（back-pressure）的基准秒数 + 上限重试次数 + 槽位 TTL 余量。
-JUDGE_QUEUE_RETRY_BASE = max(2, int(getattr(_cfg, 'AGENT_JUDGE_QUEUE_RETRY_SECONDS', 8)))
-JUDGE_MAX_QUEUE_RETRIES = max(1, int(getattr(_cfg, 'AGENT_JUDGE_MAX_QUEUE_RETRIES', 2000)))
-JUDGE_SLOT_TTL_BUFFER = max(60, int(getattr(_cfg, 'AGENT_JUDGE_SLOT_TTL_BUFFER', 600)))
+JUDGE_QUEUE_RETRY_BASE = max(2, int(_config_value('AGENT_JUDGE_QUEUE_RETRY_SECONDS', 8)))
+JUDGE_MAX_QUEUE_RETRIES = max(1, int(_config_value('AGENT_JUDGE_MAX_QUEUE_RETRIES', 2000)))
+JUDGE_SLOT_TTL_BUFFER = max(60, int(_config_value('AGENT_JUDGE_SLOT_TTL_BUFFER', 600)))
 JUDGE_HELLO_RETRIES = 5
-JUDGE_HELLO_TIMEOUT_SECONDS = max(1.0, float(getattr(_cfg, 'AGENT_JUDGE_HELLO_TIMEOUT_SECONDS', 8.0)))
-JUDGE_HELLO_RETRY_SLEEP_SECONDS = max(0.0, float(getattr(_cfg, 'AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS', 1.0)))
+JUDGE_HELLO_TIMEOUT_SECONDS = max(1.0, float(_config_value('AGENT_JUDGE_HELLO_TIMEOUT_SECONDS', 8.0)))
+JUDGE_HELLO_RETRY_SLEEP_SECONDS = max(0.0, float(_config_value('AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS', 1.0)))
 OPENCODE_GO_HELLO_MODEL = 'opencode-go/deepseek-v4-flash'
 OPENCODE_HELLO_TIMEOUT_SECONDS = max(
     JUDGE_HELLO_TIMEOUT_SECONDS,
-    float(getattr(_cfg, 'AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS', 30.0)),
+    float(_config_value('AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS', 30.0)),
 )
 
 _judge_rds = None

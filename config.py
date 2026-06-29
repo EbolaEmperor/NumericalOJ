@@ -77,7 +77,9 @@ MODELSCOPE_WEB_SEARCH_DEFAULT_ENGINES = ["baidu"]
 MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS = 90
 
 # 打榜赛 Agent-as-Judge 评测（Docker + Agent Harness CLI）
-# 代码侧均用 getattr(config, ..., 默认值) 读取，远端 config.py 可不改即用以下默认。
+# 代码侧读取环境变量后回退到 config.py / 默认值，远端 config.py 可不改即用以下默认。
+# 本机轻量镜像可通过环境变量覆盖，不改生产默认：
+#   AGENT_JUDGE_DOCKER_IMAGE=numericaloj-agent-judge-lite:latest
 AGENT_JUDGE_DOCKER_IMAGE = "numericaloj-agent-judge:latest"
 AGENT_JUDGE_WORKSPACE_ROOT = "ranking_uploads/judge_workspace"
 AGENT_JUDGE_CONCURRENCY = 2
