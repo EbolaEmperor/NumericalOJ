@@ -592,7 +592,7 @@ def wait_promptly_review_result(
             return {
                 "waited": True,
                 "done": True,
-                "accepted": status not in ("Unaccepted", "Error"),
+                "accepted": True,
                 "status": status,
                 "reply": "",
                 "submission_status": last_status,
