@@ -26,7 +26,7 @@ _GATE_FAIL = (EFF_FAILED, EFF_SKIPPED, EFF_ERROR)
 
 
 def normalize_rules(rules):
-    """校验并归一规则列表。每条 = {rule_id:int>0, rule_text:str, value:float>=0, dependencies:[int]}。
+    """校验并归一规则列表。每条 = {rule_id:int>0, rule_name?:str, rule_text:str, value:float>=0, dependencies:[int]}。
     校验：rule_id 唯一正整数；依赖指向存在的规则；无自依赖；无环；value>=0。返回归一后的新列表。
     任何不合法抛 ValueError。"""
     if not isinstance(rules, list):
@@ -45,6 +45,7 @@ def normalize_rules(rules):
         if rid in seen:
             raise ValueError(f'rule_id 重复：{rid}')
         seen.add(rid)
+        name = str(r.get('rule_name') or '').strip()[:120]
         text = str(r.get('rule_text') or '').strip()
         if not text:
             raise ValueError(f'规则 {rid} 描述不能为空')
@@ -66,7 +67,7 @@ def normalize_rules(rules):
             if d == rid:
                 raise ValueError(f'规则 {rid} 不能依赖自身')
             deps.append(d)
-        out.append({'rule_id': rid, 'rule_text': text, 'value': value,
+        out.append({'rule_id': rid, 'rule_name': name, 'rule_text': text, 'value': value,
                     'dependencies': deps, 'ordering': idx})
     ids = {r['rule_id'] for r in out}
     for r in out:

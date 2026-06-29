@@ -19,6 +19,14 @@ def test_normalize_accepts_valid_dag():
     assert out[1]['dependencies'] == [1]
 
 
+def test_normalize_preserves_optional_rule_name():
+    out = aj.normalize_rules([
+        {'rule_id': 1, 'rule_name': '基础正确性', 'rule_text': '能编译运行',
+         'value': 10, 'dependencies': []},
+    ])
+    assert out[0]['rule_name'] == '基础正确性'
+
+
 def test_normalize_rejects_unknown_dependency():
     with pytest.raises(ValueError):
         aj.normalize_rules(_rules((1, 10, [99])))
