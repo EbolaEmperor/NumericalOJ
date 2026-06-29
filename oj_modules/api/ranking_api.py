@@ -186,6 +186,7 @@ def competition_detail(competition_id):
                     "base_url": e["base_url"],
                     "model": e["model"],
                     "concurrency_limit": e["concurrency_limit"],
+                    "status": e.get("status") or "enabled",
                     "enabled": e["enabled"],
                     "has_key": bool(e.get("api_key")),
                 }

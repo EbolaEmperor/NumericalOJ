@@ -35,13 +35,16 @@ from oj_modules.ranking_db import (
 )
 from oj_modules.ranking_agent_judge_db import (
     DEFAULT_OPENCODE_GO_BASE_URL, DEFAULT_OPENCODE_GO_MODEL,
+    ENDPOINT_STATUS_PAUSED,
     HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE,
     build_judge_snapshot, clear_judge_results_for_attempt,
     list_agent_judge_endpoints, list_competition_rules, list_judge_results,
-    set_agent_judge_endpoint_enabled, upsert_judge_result_for_attempt,
+    list_paused_agent_judge_endpoints, pause_agent_judge_endpoint,
+    resume_paused_agent_judge_endpoint, upsert_judge_result_for_attempt,
 )
 
 RANKING_AGENT_JUDGE_TASK_NAME = 'oj.ranking_agent_judge'
+RANKING_AGENT_JUDGE_PAUSED_PROBE_TASK_NAME = 'oj.ranking_agent_judge_paused_probe'
 
 # 配置读取：环境变量优先，其次 config.py，最后内置默认。这样本机可用环境变量切 lite 镜像，
 # 生产 config.py 不设置时仍默认使用原版 numericaloj-agent-judge:latest。
@@ -69,6 +72,16 @@ JUDGE_SLOT_TTL_BUFFER = max(60, int(_config_value('AGENT_JUDGE_SLOT_TTL_BUFFER',
 JUDGE_HELLO_RETRIES = 5
 JUDGE_HELLO_TIMEOUT_SECONDS = max(1.0, float(_config_value('AGENT_JUDGE_HELLO_TIMEOUT_SECONDS', 8.0)))
 JUDGE_HELLO_RETRY_SLEEP_SECONDS = max(0.0, float(_config_value('AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS', 1.0)))
+PAUSED_PROBE_INTERVAL_SECONDS = max(
+    60,
+    int(_config_value('AGENT_JUDGE_PAUSED_PROBE_INTERVAL_SECONDS', 3600)),
+)
+PAUSED_PROBE_ATTEMPTS = 5
+PAUSED_PROBE_MIN_SUCCESS = 3
+PAUSED_PROBE_OWNER_TTL_SECONDS = max(300, PAUSED_PROBE_INTERVAL_SECONDS * 2)
+PAUSED_PROBE_OWNER_KEY = 'ranking:agent_judge:paused_probe_owner'
+PAUSED_PROBE_SEED_LOCK_KEY = 'ranking:agent_judge:paused_probe_seed_lock'
+PAUSED_PROBE_RUN_LOCK_KEY = 'ranking:agent_judge:paused_probe_run_lock'
 OPENCODE_GO_HELLO_MODEL = 'opencode-go/deepseek-v4-flash'
 OPENCODE_HELLO_TIMEOUT_SECONDS = max(
     JUDGE_HELLO_TIMEOUT_SECONDS,
@@ -261,8 +274,10 @@ def _finish_fake_agent_judge(submission_id, attempt_id, competition):
 # ---------- 多端点选择与 Redis 槽位限流 ----------
 
 def _resolve_endpoints(competition_id, competition=None):
-    """返回该比赛**启用的**判题端点（dict: id, base_url, api_key, model, concurrency_limit）。
-    要求至少配置一个启用端点；为空则返回 []（判题侧据此置 Error）。不再回退到旧的比赛单端点字段。"""
+    """返回该比赛状态为 enabled 的判题端点。
+
+    paused / disabled 都不会参与评测；disabled 只由管理员手动设置，不由后台恢复任务处理。
+    """
     try:
         eps = list_agent_judge_endpoints(competition_id, enabled_only=True)
     except Exception:
@@ -472,11 +487,133 @@ def _probe_endpoint(endpoint, attempts=None):
 
 def _disable_unhealthy_endpoint(endpoint, reason):
     try:
-        set_agent_judge_endpoint_enabled(int(endpoint.get('id')), False)
+        pause_agent_judge_endpoint(int(endpoint.get('id')))
     except Exception:
         pass
     eid = endpoint.get('id')
-    print(f'[agent_judge] disabled endpoint {eid} after hello probe failures: {reason}', flush=True)
+    print(f'[agent_judge] paused endpoint {eid} after hello probe failures: {reason}', flush=True)
+
+
+def _probe_paused_endpoint_for_resume(endpoint):
+    success = 0
+    errors = []
+    for i in range(PAUSED_PROBE_ATTEMPTS):
+        ok, msg = _probe_endpoint_once(endpoint)
+        if ok:
+            success += 1
+        else:
+            errors.append(msg or 'unknown error')
+        if i + 1 < PAUSED_PROBE_ATTEMPTS and JUDGE_HELLO_RETRY_SLEEP_SECONDS > 0:
+            time.sleep(JUDGE_HELLO_RETRY_SLEEP_SECONDS)
+    return success, errors[-1] if errors else 'ok'
+
+
+def register_ranking_agent_judge_paused_probe_task(celery_app):
+    existing = getattr(celery_app, 'tasks', {}).get(RANKING_AGENT_JUDGE_PAUSED_PROBE_TASK_NAME)
+    if existing:
+        return existing
+
+    @celery_app.task(name=RANKING_AGENT_JUDGE_PAUSED_PROBE_TASK_NAME, bind=True)
+    def ranking_agent_judge_paused_probe(self, owner_id):
+        def schedule_next_probe():
+            try:
+                self.apply_async(args=[owner_id], countdown=PAUSED_PROBE_INTERVAL_SECONDS)
+            except Exception:
+                pass
+
+        client = _ensure_judge_redis()
+        run_lock_acquired = False
+        if client is not None:
+            try:
+                current = client.get(PAUSED_PROBE_OWNER_KEY)
+                if current is None:
+                    client.set(PAUSED_PROBE_OWNER_KEY, owner_id, ex=PAUSED_PROBE_OWNER_TTL_SECONDS)
+                elif current != owner_id:
+                    return {'success': True, 'reason': 'not the active paused probe owner'}
+                else:
+                    client.set(PAUSED_PROBE_OWNER_KEY, owner_id, ex=PAUSED_PROBE_OWNER_TTL_SECONDS)
+                run_lock_acquired = bool(client.set(
+                    PAUSED_PROBE_RUN_LOCK_KEY,
+                    owner_id,
+                    ex=PAUSED_PROBE_OWNER_TTL_SECONDS,
+                    nx=True,
+                ))
+                if not run_lock_acquired:
+                    schedule_next_probe()
+                    return {'success': True, 'reason': 'paused probe already running'}
+            except Exception:
+                pass
+
+        checked = 0
+        resumed = 0
+        try:
+            endpoints = list_paused_agent_judge_endpoints()
+            for ep in endpoints:
+                # 只恢复仍处于 paused 的端点；管理员若已手动停用，条件更新不会覆盖。
+                if ep.get('status') != ENDPOINT_STATUS_PAUSED:
+                    continue
+                checked += 1
+                ok_count, last_msg = _probe_paused_endpoint_for_resume(ep)
+                if ok_count >= PAUSED_PROBE_MIN_SUCCESS:
+                    if resume_paused_agent_judge_endpoint(int(ep.get('id'))):
+                        resumed += 1
+                        print(
+                            f'[agent_judge] resumed paused endpoint {ep.get("id")} '
+                            f'after {ok_count}/{PAUSED_PROBE_ATTEMPTS} hello probes',
+                            flush=True,
+                        )
+                else:
+                    print(
+                        f'[agent_judge] endpoint {ep.get("id")} remains paused: '
+                        f'{ok_count}/{PAUSED_PROBE_ATTEMPTS} hello probes ok; last={last_msg}',
+                        flush=True,
+                    )
+        finally:
+            if client is not None and run_lock_acquired:
+                try:
+                    if client.get(PAUSED_PROBE_RUN_LOCK_KEY) == owner_id:
+                        client.delete(PAUSED_PROBE_RUN_LOCK_KEY)
+                except Exception:
+                    pass
+            schedule_next_probe()
+        return {'success': True, 'checked': checked, 'resumed': resumed}
+
+    return ranking_agent_judge_paused_probe
+
+
+def seed_agent_judge_paused_probe(redis_client, paused_probe_task, *,
+                                  reset_owner=False, countdown=300):
+    """启动一条全局唯一的暂停端点恢复检查链路。"""
+    if paused_probe_task is None:
+        return
+    try:
+        if redis_client is None:
+            paused_probe_task.apply_async(args=[secrets.token_hex(16)], countdown=countdown)
+            return
+
+        if reset_owner:
+            owner_id = secrets.token_hex(16)
+            try:
+                redis_client.delete(PAUSED_PROBE_SEED_LOCK_KEY, PAUSED_PROBE_RUN_LOCK_KEY)
+            except Exception:
+                pass
+            redis_client.set(PAUSED_PROBE_OWNER_KEY, owner_id, ex=PAUSED_PROBE_OWNER_TTL_SECONDS)
+            paused_probe_task.apply_async(args=[owner_id], countdown=countdown)
+            return
+
+        if not redis_client.set(PAUSED_PROBE_SEED_LOCK_KEY, '1', ex=60, nx=True):
+            return
+
+        owner_id = redis_client.get(PAUSED_PROBE_OWNER_KEY)
+        if owner_id:
+            paused_probe_task.apply_async(args=[owner_id], countdown=countdown)
+            return
+
+        owner_id = secrets.token_hex(16)
+        if redis_client.set(PAUSED_PROBE_OWNER_KEY, owner_id, ex=PAUSED_PROBE_OWNER_TTL_SECONDS, nx=True):
+            paused_probe_task.apply_async(args=[owner_id], countdown=countdown)
+    except Exception:
+        pass
 
 
 def clear_judge_lock(submission_id):
@@ -925,7 +1062,7 @@ def register_ranking_agent_judge_task(celery_app):
                 if not endpoints:
                     _write_error_for_attempt(
                         sid, attempt_id,
-                        '所有 Agent 评测端点 hello 预检失败，已自动关闭；请检查端点配置后重测',
+                        '所有 Agent 评测端点 hello 预检失败，已自动暂停；请检查端点配置后重测',
                     )
                     _publish_snapshot(sid)
                     return {'success': False, 'message': '所有端点预检失败'}
