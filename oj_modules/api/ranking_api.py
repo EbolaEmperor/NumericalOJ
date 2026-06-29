@@ -5,7 +5,10 @@ from flask import Blueprint, request
 
 from oj_modules.api.helpers import apply_limit, clamp_limit, clamp_page, json_error, json_success, public_user
 from oj_modules.auth_helpers import current_user
-from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
+from oj_modules.ranking_agent_judge import (
+    normalize_orchestration_mode as _normalize_aj_orchestration,
+    render_snapshot_html as _render_snapshot_html,
+)
 from oj_modules.ranking_agent_judge_db import (
     build_judge_snapshot,
     list_agent_judge_endpoints,
@@ -89,6 +92,10 @@ def _safe_competition(comp, include_admin=False):
     out.pop("agent_judge_api_key", None)
     out["answer_format"] = _normalize_answer_format(out.get("answer_format"))
     out["scoring_mode"] = _competition_scoring_mode(out)
+    if "agent_judge_orchestration_mode" in out:
+        out["agent_judge_orchestration_mode"] = _normalize_aj_orchestration(
+            out.get("agent_judge_orchestration_mode")
+        )
     if include_admin:
         out["agent_judge_api_key_set"] = bool((comp.get("agent_judge_api_key") or "").strip())
     return out
