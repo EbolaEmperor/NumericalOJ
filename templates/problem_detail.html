@@ -9,6 +9,7 @@
   else 'C' if (plang or '') == 'c' 
   else 'Python' %}
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
+{% set programming_mode = (problem.programming_grading_mode or 1)|int %}
 
 <div class="problem-detail-page">
 <div class="row problem-detail-row">
@@ -61,7 +62,49 @@
 
   <!-- 右侧：提交作业 -->
   <div class="col-md-6 problem-col-right">
-    {% if problem.type == 1 %}
+    {% if problem.type == 1 and programming_mode == 3 %}
+      <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
+        <div class="d-flex justify-content-between align-items-end mb-2">
+          <label for="promptEditor" class="form-label mb-0 code-label-wrap">
+            <span class="code-title-line">
+              <i class="fas fa-terminal me-2"></i> Prompt
+            </span>
+            <span class="code-meta-line">
+              <span class="badge bg-secondary">
+                <i class="fas fa-language me-2"></i> {{ lang_label }}
+              </span>
+              <span class="badge bg-secondary">
+                <i class="fas fa-stopwatch me-2"></i> {{ tl_ms }} ms
+              </span>
+            </span>
+          </label>
+          <div class="d-flex flex-column align-items-end">
+            {% if user.is_admin != 1 and remaining_submissions is not none %}
+              {% set sub_limit = problem.submission_limit or 10 %}
+              <small class="{% if remaining_submissions <= 3 %}text-danger{% else %}text-muted{% endif %} mb-1">
+                剩余提交次数: <strong>{{ remaining_submissions }}</strong>/{{ sub_limit }}
+              </small>
+            {% endif %}
+            {% if user.is_admin != 1 %}
+              <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
+                <i class="fas fa-paper-plane me-2"></i> {% if can_submit %}提交 Prompt{% else %}已达上限{% endif %}
+              </button>
+            {% else %}
+              <button type="submit" class="btn btn-outline-primary">
+                <i class="fas fa-paper-plane me-2"></i> 提交 Prompt
+              </button>
+            {% endif %}
+          </div>
+        </div>
+        <textarea
+          id="promptEditor"
+          name="prompt"
+          class="form-control"
+          rows="18"
+          required
+          placeholder="请描述你的解题思路，包括算法或数据结构、关键步骤、状态更新和边界处理。后台会先审查 prompt，通过后再生成代码并评测。"></textarea>
+      </form>
+    {% elif problem.type == 1 %}
       <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
         <div class="d-flex justify-content-between align-items-end mb-2">
           <label for="codeEditor" class="form-label mb-0 code-label-wrap">
@@ -224,7 +267,7 @@
     </div>
   </div>
 </div>
-{% if problem.type == 1 %}
+{% if problem.type == 1 and programming_mode != 3 %}
 <div class="modal fade" id="agentGenerateDataModal" tabindex="-1" aria-labelledby="agentGenerateDataModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">

@@ -39,6 +39,7 @@ from oj_modules.markdown_utils import sanitize_html
 problem_core_bp = Blueprint('problem_core', __name__)
 
 _evaluate_submission_task = None
+_promptly_generate_submission_task = None
 _transcribe_written_homework_task = None
 _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
@@ -116,11 +117,13 @@ def _strip_problem_title_tags(title):
 def init_problem_core_module(
     evaluate_submission_task,
     transcribe_written_homework_task,
+    promptly_generate_submission_task=None,
     agent_solve_problem_task=None,
     agent_generate_testdata_task=None,
 ):
-    global _evaluate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task, _agent_generate_testdata_task
+    global _evaluate_submission_task, _promptly_generate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task, _agent_generate_testdata_task
     _evaluate_submission_task = evaluate_submission_task
+    _promptly_generate_submission_task = promptly_generate_submission_task
     _transcribe_written_homework_task = transcribe_written_homework_task
     _agent_solve_problem_task = agent_solve_problem_task
     _agent_generate_testdata_task = agent_generate_testdata_task
@@ -1022,6 +1025,38 @@ def submit_solution(problem_id):
 
     if request.method == 'POST':
         if problem['type'] == 1:
+            try:
+                programming_mode = int(problem.get('programming_grading_mode') or 1)
+            except Exception:
+                programming_mode = 1
+            if programming_mode == 3:
+                prompt_text = request.form.get('prompt', '')
+                if not prompt_text.strip():
+                    flash('Prompt 不能为空。', 'danger')
+                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+
+                submission_id = create_submission(
+                    problem_id=problem_id,
+                    problem_title=problem['title'],
+                    username=user['username'],
+                    code="",
+                    score=0,
+                    test_points=[],
+                    status="Generating",
+                    prompt_text=prompt_text,
+                    generated_from_prompt=True,
+                )
+
+                if user['is_admin'] != 1:
+                    increment_submission_count(user['username'], problem_id)
+
+                if _promptly_generate_submission_task is None:
+                    flash('提交成功，但 Promptly 生成任务未初始化。', 'warning')
+                else:
+                    _promptly_generate_submission_task.delay(submission_id)
+
+                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+
             code = request.form.get('code', '')
             if not code.strip():
                 flash('代码不能为空。', 'danger')
@@ -1118,7 +1153,13 @@ def submit_solution(problem_id):
 
             return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
-    return render_template('problem_detail.html', problem=problem, user=user, remaining_submissions=remaining_submissions)
+    context, error_code = build_problem_detail_context(user, problem_id)
+    if error_code == "not_found":
+        return "<h3>题目不存在</h3>"
+    if error_code == "forbidden":
+        flash('无权限访问该题目', 'danger')
+        return redirect(url_for('problem_core.problem_list'))
+    return render_template('problem_detail.html', **context)
 
 
 @problem_core_bp.route('/admin/agent_tasks')

@@ -70,6 +70,7 @@
         <select class="form-select" id="programmingGradingModeSelect" name="programming_grading_mode" onchange="_toggleProgrammingImageFields(this.value)">
           <option value="1" selected>传统交互</option>
           <option value="2">批改图片</option>
+          <option value="3">Promptly</option>
         </select>
       </div>
       <div class="col-md-6 d-none" id="programmingOutputFilenameField">
@@ -105,7 +106,8 @@
       </div>
       <div class="col-12 d-none" id="programmingGradingPromptField">
         <label for="programmingGradingPromptInput" class="form-label">
-          <i class="fas fa-list-check me-2"></i> 评分标准
+          <i class="fas fa-list-check me-2"></i>
+          <span id="programmingGradingPromptLabelText">评分标准</span>
         </label>
         <textarea
           class="form-control"
@@ -113,6 +115,39 @@
           name="programming_grading_prompt"
           rows="6"
           placeholder="例如：图像内容与题意完全一致记 1 分；若缺少关键元素、布局错误、标注错误或未按要求绘图记 0 分。"></textarea>
+      </div>
+      <div class="col-12 d-none" id="promptlyReviewConfigField">
+        <div class="border rounded p-3">
+          <div class="mb-3">
+            <label for="promptlyBriefInput" class="form-label">
+              <i class="fas fa-align-left me-2"></i> 简要题意
+            </label>
+            <textarea
+              class="form-control"
+              id="promptlyBriefInput"
+              rows="3"
+              placeholder="用几句话概括题目要求，供 prompt 审查模型判断学生思路是否符合题意。"></textarea>
+          </div>
+          <div class="mb-3">
+            <label for="promptlyRequirementsInput" class="form-label">
+              <i class="fas fa-list-check me-2"></i> Prompt 要求
+            </label>
+            <textarea
+              class="form-control"
+              id="promptlyRequirementsInput"
+              rows="4"
+              placeholder="说明学生 prompt 至少需要包含哪些算法、数据结构、状态维护或边界处理。"></textarea>
+          </div>
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <label class="form-label mb-0">
+              <i class="fas fa-comments me-2"></i> 示例回复
+            </label>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="addPromptlyExampleBtn">
+              <i class="fas fa-plus me-1"></i> 添加
+            </button>
+          </div>
+          <div id="promptlyExampleList" class="d-grid gap-2"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -163,9 +198,118 @@
 
         function _toggleProgrammingImageFields(mode) {
           const isImageMode = mode === '2';
+          const isPromptlyMode = mode === '3';
+          const promptField = document.getElementById('programmingGradingPromptField');
+          const promptLabel = document.getElementById('programmingGradingPromptLabelText');
+          const promptInput = document.getElementById('programmingGradingPromptInput');
+          const promptlyField = document.getElementById('promptlyReviewConfigField');
           document.getElementById('programmingOutputFilenameField').classList.toggle('d-none', !isImageMode);
-          document.getElementById('programmingGradingModelField').classList.toggle('d-none', !isImageMode);
-          document.getElementById('programmingGradingPromptField').classList.toggle('d-none', !isImageMode);
+          document.getElementById('programmingGradingModelField').classList.toggle('d-none', !(isImageMode || isPromptlyMode));
+          promptField.classList.toggle('d-none', !isImageMode);
+          if (promptlyField) promptlyField.classList.toggle('d-none', !isPromptlyMode);
+          if (isPromptlyMode) {
+            initPromptlyReviewConfig();
+            serializePromptlyReviewConfig();
+          } else {
+            promptLabel.textContent = '评分标准';
+            promptInput.placeholder = '例如：图像内容与题意完全一致记 1 分；若缺少关键元素、布局错误、标注错误或未按要求绘图记 0 分。';
+          }
+        }
+
+        let promptlyReviewInitialized = false;
+
+        function parsePromptlyReviewConfig(raw) {
+          try {
+            const obj = JSON.parse(raw || '{}');
+            return {
+              brief: obj.brief || obj.problem_brief || obj.summary || obj.context || '',
+              prompt_requirements: obj.prompt_requirements || obj.requirements || obj.prompt_rules || '',
+              example_replies: Array.isArray(obj.example_replies)
+                ? obj.example_replies
+                : (Array.isArray(obj.examples) ? obj.examples : [])
+            };
+          } catch (_) {
+            return {
+              brief: raw || '',
+              prompt_requirements: '',
+              example_replies: []
+            };
+          }
+        }
+
+        function addPromptlyExample(value) {
+          const list = document.getElementById('promptlyExampleList');
+          if (!list) return;
+          const row = document.createElement('div');
+          row.className = 'input-group promptly-example-row';
+          const textarea = document.createElement('textarea');
+          textarea.className = 'form-control promptly-example-input';
+          textarea.rows = 2;
+          textarea.placeholder = '例如：请补充具体算法思路，说明使用的数据结构和关键更新规则。';
+          textarea.value = value || '';
+          textarea.addEventListener('input', serializePromptlyReviewConfig);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-outline-danger';
+          btn.innerHTML = '<i class="fas fa-trash"></i>';
+          btn.addEventListener('click', function() {
+            row.remove();
+            serializePromptlyReviewConfig();
+          });
+          row.appendChild(textarea);
+          row.appendChild(btn);
+          list.appendChild(row);
+        }
+
+        function serializePromptlyReviewConfig() {
+          const promptInput = document.getElementById('programmingGradingPromptInput');
+          const briefInput = document.getElementById('promptlyBriefInput');
+          const requirementsInput = document.getElementById('promptlyRequirementsInput');
+          if (!promptInput || !briefInput || !requirementsInput) return;
+          const examples = Array.from(document.querySelectorAll('.promptly-example-input'))
+            .map(el => (el.value || '').trim())
+            .filter(Boolean);
+          promptInput.value = JSON.stringify({
+            brief: (briefInput.value || '').trim(),
+            prompt_requirements: (requirementsInput.value || '').trim(),
+            example_replies: examples
+          }, null, 2);
+        }
+
+        function initPromptlyReviewConfig() {
+          if (promptlyReviewInitialized) return;
+          promptlyReviewInitialized = true;
+          const promptInput = document.getElementById('programmingGradingPromptInput');
+          const briefInput = document.getElementById('promptlyBriefInput');
+          const requirementsInput = document.getElementById('promptlyRequirementsInput');
+          const addBtn = document.getElementById('addPromptlyExampleBtn');
+          const list = document.getElementById('promptlyExampleList');
+          if (!promptInput || !briefInput || !requirementsInput || !list) return;
+          const config = parsePromptlyReviewConfig(promptInput.value || '');
+          briefInput.value = config.brief || '';
+          requirementsInput.value = config.prompt_requirements || '';
+          list.innerHTML = '';
+          const examples = (config.example_replies || []).filter(Boolean);
+          if (examples.length) {
+            examples.forEach(addPromptlyExample);
+          } else {
+            addPromptlyExample('');
+          }
+          briefInput.addEventListener('input', serializePromptlyReviewConfig);
+          requirementsInput.addEventListener('input', serializePromptlyReviewConfig);
+          if (addBtn) {
+            addBtn.addEventListener('click', function() {
+              addPromptlyExample('');
+              serializePromptlyReviewConfig();
+            });
+          }
+          const form = document.querySelector('form[method="POST"]');
+          if (form) {
+            form.addEventListener('submit', function() {
+              const mode = document.getElementById('programmingGradingModeSelect');
+              if (mode && mode.value === '3') serializePromptlyReviewConfig();
+            });
+          }
         }
       </script>
     </div>

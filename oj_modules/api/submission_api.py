@@ -43,6 +43,7 @@ def _decorate_submission_summary(row):
 
 
 def _submission_detail_payload(submission):
+    prompt_generation_error = submission.get("prompt_generation_error") or ""
     return {
         "id": submission.get("id"),
         "username": submission.get("username"),
@@ -50,6 +51,10 @@ def _submission_detail_payload(submission):
         "problem_title": _strip_problem_title_tags(submission.get("problem_title")),
         "problem_type": submission.get("problem_type"),
         "code": submission.get("code") or "",
+        "prompt_text": submission.get("prompt_text") or "",
+        "generated_from_prompt": bool(submission.get("generated_from_prompt")),
+        "prompt_generation_error": prompt_generation_error,
+        "promptly_review_reply": prompt_generation_error,
         "status": submission.get("status"),
         "score": submission.get("score"),
         "created_at": submission.get("created_at"),

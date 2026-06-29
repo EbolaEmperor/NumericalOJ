@@ -242,14 +242,20 @@ def submission_status(submission_id):
         return jsonify({'error': 'Access denied'}), 403
 
     is_judging = (
-        snapshot.get('status') in ['Pending', 'Waiting', 'Running']
+        snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
         or snapshot.get('score') is None
     )
+    promptly_review_reply = str(
+        snapshot.get('promptly_review_reply') or snapshot.get('prompt_generation_error') or ''
+    ).strip()
 
     return jsonify({
         'status': snapshot.get('status'),
         'score': snapshot.get('score'),
         'is_judging': is_judging,
+        'generated_from_prompt': bool(snapshot.get('generated_from_prompt')),
+        'prompt_generation_error': promptly_review_reply,
+        'promptly_review_reply': promptly_review_reply,
         'test_points_count': snapshot.get('test_points_count', 0),
         'test_points': snapshot.get('test_points', []),
         'last_updated': snapshot.get('last_updated', ''),
@@ -271,7 +277,7 @@ def submission_status_stream(submission_id):
 
     def _build_payload(snapshot):
         is_judging = (
-            snapshot.get('status') in ['Pending', 'Waiting', 'Running']
+            snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
             or snapshot.get('score') is None
         )
         payload = {
@@ -280,10 +286,15 @@ def submission_status_stream(submission_id):
             'status': snapshot.get('status'),
             'score': snapshot.get('score'),
             'is_judging': is_judging,
+            'generated_from_prompt': bool(snapshot.get('generated_from_prompt')),
+            'prompt_generation_error': str(
+                snapshot.get('promptly_review_reply') or snapshot.get('prompt_generation_error') or ''
+            ).strip(),
             'test_points_count': snapshot.get('test_points_count', 0),
             'test_points': snapshot.get('test_points', []),
             'last_updated': snapshot.get('last_updated', ''),
         }
+        payload['promptly_review_reply'] = payload['prompt_generation_error']
         if int(snapshot.get('problem_type') or 0) == 2:
             sid = snapshot.get('id')
             row = get_submission_by_id(sid) if sid else None

@@ -38,6 +38,7 @@ from oj_modules.tasks import (
     register_repository_index_build_task,
     register_agent_solve_problem_task,
     register_evaluate_submission_task,
+    register_promptly_generate_submission_task,
     register_written_homework_task,
     register_ai_detection_tasks,
     register_ranking_evaluate_task,
@@ -218,6 +219,7 @@ celery = Celery('oj',
 celery.conf.task_routes = {
     'oj.agent.solve_problem': {'queue': 'agent'},
     'oj.agent.generate_testdata': {'queue': 'agent'},
+    'oj.promptly.generate_submission': {'queue': 'agent'},
     'oj.ranking_agent_judge': {'queue': 'judge'},
 }
 # 任务执行完才 ack：worker 崩溃/被硬超时 SIGKILL 时，消息不会丢失而是重新投递。
@@ -227,6 +229,7 @@ celery.conf.task_acks_late = True
 celery.conf.task_reject_on_worker_lost = True
 evaluate_submission = register_evaluate_submission_task(celery)
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
+promptly_generate_submission = register_promptly_generate_submission_task(celery, evaluate_submission)
 agent_solve_problem = register_agent_solve_problem_task(celery, evaluate_submission)
 agent_generate_testdata = register_agent_generate_testdata_task(celery, evaluate_submission)
 build_repository_index = register_repository_index_build_task(celery)
@@ -250,6 +253,7 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     celery,
     evaluate_submission,
     transcribe_written_homework_to_latex,
+    promptly_task=promptly_generate_submission,
     agent_judge_task=evaluate_ranking_agent_judge,
 )
 
@@ -261,6 +265,7 @@ init_homework_module(celery, rds, rds_binary)
 init_problem_core_module(
     evaluate_submission,
     transcribe_written_homework_to_latex,
+    promptly_generate_submission,
     agent_solve_problem,
     agent_generate_testdata,
 )
@@ -306,6 +311,7 @@ if __name__ == '__main__':
         requeue_pending_on_startup(
             evaluate_task=evaluate_submission,
             written_task=transcribe_written_homework_to_latex,
+            promptly_task=promptly_generate_submission,
             ranking_task=evaluate_ranking_submission,
             elo_initial_burst_task=ranking_elo_initial_burst,
             agent_judge_task=evaluate_ranking_agent_judge,

@@ -83,6 +83,28 @@ def test_create_problem_keeps_valid_programming_model():
     assert row['programming_grading_model'] == valid
 
 
+def test_create_promptly_problem_preserves_selected_programming_model():
+    default_model = str(db._DEFAULT_PROGRAMMING_GRADING_MODEL or "").strip().lower()
+    selected = next(
+        (model for model in sorted(db._ALLOWED_PROGRAMMING_GRADING_MODELS) if model != default_model),
+        None,
+    )
+    if not selected:
+        # 极简配置里如果只有一个可选模型，无法区分“保留选择”和“回退默认”。
+        return
+    db.create_problem(
+        title='Promptly保留model',
+        content='c',
+        type=1,
+        lang='python',
+        programming_grading_mode=3,
+        programming_grading_model=selected.upper(),
+    )
+    row = _get_problem_by_title('Promptly保留model')
+    assert row['programming_grading_mode'] == 3
+    assert row['programming_grading_model'] == selected
+
+
 def test_create_problem_normalizes_written_fields():
     db.create_problem(
         title='书面题归一化',
