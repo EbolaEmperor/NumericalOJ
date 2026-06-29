@@ -284,12 +284,115 @@ def test_agent_judge_switches_endpoint_after_failed_hello(monkeypatch):
                         lambda ep: (ep["id"] == 2, "ok" if ep["id"] == 2 else "down"))
     monkeypatch.setattr(m, "_disable_unhealthy_endpoint",
                         lambda ep, reason: disabled.append((ep["id"], reason)))
-    monkeypatch.setattr(m, "_judge", lambda sid, ep: judged.append(ep["id"]) or {"success": True})
+    monkeypatch.setattr(m, "_judge", lambda sid, ep, attempt_id=None: judged.append(ep["id"]) or {"success": True})
 
     task = m.register_ranking_agent_judge_task(_FakeCelery())
     assert task(_FakeTaskSelf(), 100) == {"success": True}
     assert disabled == [(1, "down")]
     assert judged == [2]
+
+
+def test_failed_hello_pauses_endpoint(monkeypatch):
+    paused = []
+    monkeypatch.setattr(m, "pause_agent_judge_endpoint", lambda eid: paused.append(eid) or 1)
+
+    m._disable_unhealthy_endpoint({"id": 17}, "down")
+
+    assert paused == [17]
+
+
+def test_paused_endpoint_resume_probe_requires_three_successes(monkeypatch):
+    seq = iter([(True, "ok"), (False, "down"), (True, "ok"), (False, "down"), (True, "ok")])
+    calls = []
+
+    def fake_probe_once(ep):
+        calls.append(ep["id"])
+        return next(seq)
+
+    monkeypatch.setattr(m, "_probe_endpoint_once", fake_probe_once)
+    monkeypatch.setattr(m.time, "sleep", lambda *_a, **_k: None)
+
+    ok_count, last_msg = m._probe_paused_endpoint_for_resume({"id": 18})
+
+    assert ok_count == 3
+    assert last_msg == "down"
+    assert calls == [18, 18, 18, 18, 18]
+
+
+class _FakePeriodicSelf:
+    def __init__(self):
+        self.scheduled = []
+
+    def apply_async(self, **kwargs):
+        self.scheduled.append(kwargs)
+
+
+def test_paused_probe_task_resumes_healthy_paused_endpoint(monkeypatch):
+    resumed = []
+    ep = {"id": 19, "status": m.ENDPOINT_STATUS_PAUSED}
+
+    monkeypatch.setattr(m, "_ensure_judge_redis", lambda: None)
+    monkeypatch.setattr(m, "list_paused_agent_judge_endpoints", lambda: [ep])
+    monkeypatch.setattr(m, "_probe_paused_endpoint_for_resume", lambda endpoint: (3, "ok"))
+    monkeypatch.setattr(m, "resume_paused_agent_judge_endpoint",
+                        lambda eid: resumed.append(eid) or 1)
+
+    task = m.register_ranking_agent_judge_paused_probe_task(_FakeCelery())
+    fake_self = _FakePeriodicSelf()
+    assert task(fake_self, "owner") == {"success": True, "checked": 1, "resumed": 1}
+    assert resumed == [19]
+    assert fake_self.scheduled
+
+
+def test_paused_probe_task_ignores_non_paused_endpoint(monkeypatch):
+    resumed = []
+    probed = []
+
+    monkeypatch.setattr(m, "_ensure_judge_redis", lambda: None)
+    monkeypatch.setattr(m, "list_paused_agent_judge_endpoints",
+                        lambda: [{"id": 20, "status": "disabled"}])
+    monkeypatch.setattr(m, "_probe_paused_endpoint_for_resume",
+                        lambda endpoint: probed.append(endpoint["id"]) or (5, "ok"))
+    monkeypatch.setattr(m, "resume_paused_agent_judge_endpoint",
+                        lambda eid: resumed.append(eid) or 1)
+
+    task = m.register_ranking_agent_judge_paused_probe_task(_FakeCelery())
+    fake_self = _FakePeriodicSelf()
+    assert task(fake_self, "owner") == {"success": True, "checked": 0, "resumed": 0}
+    assert probed == []
+    assert resumed == []
+    assert fake_self.scheduled
+
+
+def test_paused_probe_task_reschedules_when_run_lock_is_busy(monkeypatch):
+    class BusyRunLockRedis:
+        def get(self, key):
+            if key == m.PAUSED_PROBE_OWNER_KEY:
+                return "owner"
+            return None
+
+        def set(self, key, *_args, **kwargs):
+            if key == m.PAUSED_PROBE_RUN_LOCK_KEY and kwargs.get("nx"):
+                return False
+            return True
+
+    monkeypatch.setattr(m, "_ensure_judge_redis", lambda: BusyRunLockRedis())
+    monkeypatch.setattr(
+        m,
+        "list_paused_agent_judge_endpoints",
+        lambda: pytest.fail("run-lock busy path should not probe endpoints"),
+    )
+
+    task = m.register_ranking_agent_judge_paused_probe_task(_FakeCelery())
+    fake_self = _FakePeriodicSelf()
+    assert task(fake_self, "owner") == {
+        "success": True,
+        "reason": "paused probe already running",
+    }
+    assert fake_self.scheduled == [{
+        "args": ["owner"],
+        "countdown": m.PAUSED_PROBE_INTERVAL_SECONDS,
+    }]
 
 
 def test_agent_judge_requeues_when_every_endpoint_slot_is_busy(monkeypatch):

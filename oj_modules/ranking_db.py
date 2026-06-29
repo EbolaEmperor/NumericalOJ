@@ -436,12 +436,26 @@ def copy_competition(src_id, *, created_by=None):
                 (int(src_id),),
             )
             files = cursor.fetchall() or []
-            cursor.execute(
-                "SELECT harness, base_url, api_key, model, concurrency_limit, enabled, ordering "
-                "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
-                (int(src_id),),
-            )
-            endpoints = cursor.fetchall() or []
+            cursor.execute("SHOW TABLES LIKE 'ranking_agent_judge_endpoints'")
+            has_endpoint_table = bool(cursor.fetchone())
+            endpoints = []
+            if has_endpoint_table:
+                cursor.execute("SHOW COLUMNS FROM ranking_agent_judge_endpoints LIKE 'status'")
+                if not cursor.fetchone():
+                    cursor.execute(
+                        "ALTER TABLE ranking_agent_judge_endpoints"
+                        " ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'enabled' AFTER enabled"
+                    )
+                    cursor.execute(
+                        "UPDATE ranking_agent_judge_endpoints"
+                        " SET status = CASE WHEN enabled = 1 THEN 'enabled' ELSE 'disabled' END"
+                    )
+                cursor.execute(
+                    "SELECT harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering "
+                    "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
+                    (int(src_id),),
+                )
+                endpoints = cursor.fetchall() or []
 
             # —— 1) 复制比赛主行（is_active=0 不公开、标题追加后缀、created_by 记为复制者）——
             cols = [c for c in comp.keys() if c not in _COMPETITION_COPY_EXCLUDE_COLS]
@@ -501,12 +515,15 @@ def copy_competition(src_id, *, created_by=None):
 
             # —— 4) 复制 Agent 评测端点（含 api_key）——
             for e in endpoints:
+                status = e.get('status') if e.get('status') in ('enabled', 'disabled', 'paused') else (
+                    'enabled' if int(e.get('enabled') or 0) == 1 else 'disabled'
+                )
                 cursor.execute(
                     "INSERT INTO ranking_agent_judge_endpoints "
-                    "(competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, ordering) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    "(competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (new_id, e.get('harness') or 'claude_code', e['base_url'], e['api_key'], e['model'],
-                     e['concurrency_limit'], e['enabled'], e['ordering']),
+                     e['concurrency_limit'], 1 if status == 'enabled' else 0, status, e['ordering']),
                 )
         conn.commit()
         return new_id

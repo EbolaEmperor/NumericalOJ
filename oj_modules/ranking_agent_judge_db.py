@@ -16,11 +16,60 @@ HARNESS_OPENCODE = 'opencode'
 ALLOWED_AGENT_HARNESSES = (HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE)
 DEFAULT_OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
 DEFAULT_OPENCODE_GO_MODEL = 'mimo-v2.5-pro'
+ENDPOINT_STATUS_ENABLED = 'enabled'
+ENDPOINT_STATUS_DISABLED = 'disabled'
+ENDPOINT_STATUS_PAUSED = 'paused'
+ENDPOINT_STATUSES = (
+    ENDPOINT_STATUS_ENABLED,
+    ENDPOINT_STATUS_DISABLED,
+    ENDPOINT_STATUS_PAUSED,
+)
 
 
 def normalize_agent_harness(value):
     harness = str(value or '').strip().lower().replace('-', '_')
     return harness if harness in ALLOWED_AGENT_HARNESSES else HARNESS_CLAUDE_CODE
+
+
+def normalize_endpoint_status(value, *, fallback_enabled=None):
+    """端点状态归一化。
+
+    enabled：参与评测；paused：自动暂停，可被健康检查恢复；disabled：人工停用，不自动恢复。
+    fallback_enabled 用于兼容旧 payload / 旧表里的 enabled 布尔。
+    """
+    status = str(value or '').strip().lower()
+    if status in ENDPOINT_STATUSES:
+        return status
+    if fallback_enabled is not None:
+        return ENDPOINT_STATUS_ENABLED if bool(fallback_enabled) else ENDPOINT_STATUS_DISABLED
+    return ENDPOINT_STATUS_ENABLED
+
+
+def _status_enabled(status):
+    return 1 if normalize_endpoint_status(status) == ENDPOINT_STATUS_ENABLED else 0
+
+
+def _payload_enabled(value):
+    return value is True or str(value).strip().lower() in ('1', 'true', 'on', 'yes')
+
+
+def _endpoint_row(row):
+    status = normalize_endpoint_status(
+        row.get('status'),
+        fallback_enabled=bool(int(row.get('enabled') or 0)),
+    )
+    return {
+        'id': int(row['id']),
+        'competition_id': int(row.get('competition_id') or 0),
+        'harness': normalize_agent_harness(row.get('harness')),
+        'base_url': row['base_url'] or '',
+        'api_key': row['api_key'] or '',
+        'model': (row.get('model') or ''),
+        'concurrency_limit': int(row['concurrency_limit'] or 1),
+        'status': status,
+        'enabled': _status_enabled(status),
+        'ordering': int(row['ordering'] or 0),
+    }
 
 
 def ensure_agent_judge_tables():
@@ -83,6 +132,7 @@ def ensure_agent_judge_tables():
                     model VARCHAR(128) DEFAULT NULL,
                     concurrency_limit INT NOT NULL DEFAULT 1,
                     enabled TINYINT(1) NOT NULL DEFAULT 1,
+                    status VARCHAR(16) NOT NULL DEFAULT 'enabled',
                     ordering INT NOT NULL DEFAULT 0,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     INDEX idx_aje_comp (competition_id)
@@ -95,6 +145,26 @@ def ensure_agent_judge_tables():
                     "ALTER TABLE ranking_agent_judge_endpoints"
                     " ADD COLUMN harness VARCHAR(32) NOT NULL DEFAULT 'claude_code' AFTER competition_id"
                 )
+            cursor.execute("SHOW COLUMNS FROM ranking_agent_judge_endpoints LIKE 'status'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE ranking_agent_judge_endpoints"
+                    " ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'enabled' AFTER enabled"
+                )
+                cursor.execute(
+                    "UPDATE ranking_agent_judge_endpoints"
+                    " SET status = CASE WHEN enabled = 1 THEN 'enabled' ELSE 'disabled' END"
+                )
+            cursor.execute(
+                "UPDATE ranking_agent_judge_endpoints"
+                " SET status = CASE WHEN enabled = 1 THEN 'enabled' ELSE 'disabled' END"
+                " WHERE status NOT IN ('enabled', 'disabled', 'paused')"
+            )
+            cursor.execute(
+                "UPDATE ranking_agent_judge_endpoints"
+                " SET enabled = CASE WHEN status = 'enabled' THEN 1 ELSE 0 END"
+                " WHERE enabled <> CASE WHEN status = 'enabled' THEN 1 ELSE 0 END"
+            )
         conn.commit()
         _aj_tables_ready = True
     finally:
@@ -108,40 +178,61 @@ def list_agent_judge_endpoints(competition_id, enabled_only=False):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = ("SELECT id, harness, base_url, api_key, model, concurrency_limit, enabled, ordering "
+            sql = ("SELECT id, competition_id, harness, base_url, api_key, model,"
+                   " concurrency_limit, enabled, status, ordering "
                    "FROM ranking_agent_judge_endpoints WHERE competition_id = %s")
             if enabled_only:
-                sql += " AND enabled = 1"
+                sql += " AND status = 'enabled'"
             sql += " ORDER BY ordering ASC, id ASC"
             cursor.execute(sql, (competition_id,))
             rows = cursor.fetchall() or []
     finally:
         conn.close()
-    out = []
-    for r in rows:
-        out.append({
-            'id': int(r['id']),
-            'harness': normalize_agent_harness(r.get('harness')),
-            'base_url': r['base_url'] or '',
-            'api_key': r['api_key'] or '',
-            'model': (r.get('model') or ''),
-            'concurrency_limit': int(r['concurrency_limit'] or 1),
-            'enabled': int(r['enabled'] or 0),
-            'ordering': int(r['ordering'] or 0),
-        })
-    return out
+    return [_endpoint_row(r) for r in rows]
 
 
-def set_agent_judge_endpoint_enabled(endpoint_id, enabled):
-    """启用/关闭单个 Agent 评测端点。返回受影响行数。"""
+def list_paused_agent_judge_endpoints():
+    """返回所有自动暂停中的端点，供周期性恢复探测任务使用。"""
     ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                "UPDATE ranking_agent_judge_endpoints SET enabled = %s WHERE id = %s",
-                (1 if enabled else 0, int(endpoint_id)),
+                """
+                SELECT id, competition_id, harness, base_url, api_key, model,
+                       concurrency_limit, enabled, status, ordering
+                FROM ranking_agent_judge_endpoints
+                WHERE status = 'paused'
+                ORDER BY id ASC
+                """
             )
+            rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+    return [_endpoint_row(r) for r in rows]
+
+
+def set_agent_judge_endpoint_status(endpoint_id, status, *, only_from_status=None):
+    """设置单个端点状态，并同步旧 enabled 字段。返回受影响行数。
+
+    only_from_status 用于避免后台任务覆盖管理员刚刚做出的人工状态修改。
+    """
+    ensure_agent_judge_tables()
+    status = normalize_endpoint_status(status)
+    enabled = _status_enabled(status)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = (
+                "UPDATE ranking_agent_judge_endpoints"
+                " SET status = %s, enabled = %s"
+                " WHERE id = %s"
+            )
+            params = [status, enabled, int(endpoint_id)]
+            if only_from_status is not None:
+                sql += " AND status = %s"
+                params.append(normalize_endpoint_status(only_from_status))
+            cursor.execute(sql, params)
             affected = cursor.rowcount
         conn.commit()
         return int(affected or 0)
@@ -149,16 +240,40 @@ def set_agent_judge_endpoint_enabled(endpoint_id, enabled):
         conn.close()
 
 
+def set_agent_judge_endpoint_enabled(endpoint_id, enabled):
+    """启用/关闭单个 Agent 评测端点。返回受影响行数。"""
+    status = ENDPOINT_STATUS_ENABLED if enabled else ENDPOINT_STATUS_DISABLED
+    return set_agent_judge_endpoint_status(endpoint_id, status)
+
+
+def pause_agent_judge_endpoint(endpoint_id):
+    """后台健康检查失败时把启用端点转为暂停；不会覆盖人工停用。"""
+    return set_agent_judge_endpoint_status(
+        endpoint_id,
+        ENDPOINT_STATUS_PAUSED,
+        only_from_status=ENDPOINT_STATUS_ENABLED,
+    )
+
+
+def resume_paused_agent_judge_endpoint(endpoint_id):
+    """后台恢复检查通过时只把 paused 端点重新启用；不会覆盖人工停用。"""
+    return set_agent_judge_endpoint_status(
+        endpoint_id,
+        ENDPOINT_STATUS_ENABLED,
+        only_from_status=ENDPOINT_STATUS_PAUSED,
+    )
+
+
 def save_agent_judge_endpoints(competition_id, items):
     """整体替换某比赛的端点列表。校验在事务外，失败抛 ValueError（不动 DB）。
 
-    items 中每项：{id?, harness, base_url, api_key, model, concurrency_limit, enabled}。
+    items 中每项：{id?, harness, base_url, api_key, model, concurrency_limit, status|enabled}。
     api_key 留空且带已存在的 id → 沿用旧 key（前端编辑器不回显明文）；
     api_key 留空且无对应 id → 报错（新端点必须填 key）。返回归一化后的列表。"""
     ensure_agent_judge_tables()
     if not isinstance(items, list):
         raise ValueError('端点格式非法')
-    existing = {e['id']: e['api_key'] for e in list_agent_judge_endpoints(competition_id)}
+    existing = {e['id']: e for e in list_agent_judge_endpoints(competition_id)}
     normalized = []
     for idx, it in enumerate(items):
         if not isinstance(it, dict):
@@ -181,8 +296,8 @@ def save_agent_judge_endpoints(competition_id, items):
         key_in = str(it.get('api_key') or '').strip()
         if key_in:
             api_key = key_in
-        elif eid is not None and existing.get(eid):
-            api_key = existing[eid]          # 沿用旧 key（编辑器未改动该行 key）
+        elif eid is not None and existing.get(eid, {}).get('api_key'):
+            api_key = existing[eid]['api_key']          # 沿用旧 key（编辑器未改动该行 key）
         else:
             raise ValueError('新端点必须填写 API Key')
         if len(api_key) > 512:
@@ -197,11 +312,19 @@ def save_agent_judge_endpoints(competition_id, items):
         except (TypeError, ValueError):
             climit = 1
         climit = max(1, min(64, climit))
-        ev = it.get('enabled')
-        enabled = 1 if (ev is True or str(ev).strip().lower() in ('1', 'true', 'on', 'yes')) else 0
+        if 'status' in it:
+            status = normalize_endpoint_status(it.get('status'))
+        elif 'enabled' in it:
+            status = normalize_endpoint_status(None, fallback_enabled=_payload_enabled(it.get('enabled')))
+        elif eid is not None and existing.get(eid):
+            status = existing[eid].get('status') or ENDPOINT_STATUS_ENABLED
+        else:
+            status = ENDPOINT_STATUS_ENABLED
+        enabled = _status_enabled(status)
         # 不去重：同一厂商(同 url)可能有多个账号 → 不同 api_key，应允许并存（各自独立并发槽位）。
         normalized.append({'harness': harness, 'base_url': base_url, 'api_key': api_key, 'model': model,
-                           'concurrency_limit': climit, 'enabled': enabled, 'ordering': idx})
+                           'concurrency_limit': climit, 'status': status,
+                           'enabled': enabled, 'ordering': idx})
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -210,10 +333,10 @@ def save_agent_judge_endpoints(competition_id, items):
             for e in normalized:
                 cursor.execute(
                     "INSERT INTO ranking_agent_judge_endpoints"
-                    " (competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, ordering)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    " (competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (competition_id, e['harness'], e['base_url'], e['api_key'], e['model'],
-                     e['concurrency_limit'], e['enabled'], e['ordering']),
+                     e['concurrency_limit'], e['enabled'], e['status'], e['ordering']),
                 )
         conn.commit()
     finally:

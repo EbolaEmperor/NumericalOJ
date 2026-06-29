@@ -3054,6 +3054,7 @@
         }
         .aje-card:hover { border-color:var(--line-strong); background:#fcfcfd; }
         .aje-card.off { background:#fafafa; color:#8a929b; }
+        .aje-card.paused { background:#fffaf0; border-color:#ead28a; color:#77611e; }
         .aje-card-top { display:flex; align-items:center; justify-content:space-between; gap:.6rem; }
         .aje-harness {
           display:inline-flex; align-items:center; gap:.4rem;
@@ -3065,6 +3066,7 @@
           border-radius:999px; padding:.16rem .5rem; font-size:.7rem; font-weight:700; white-space:nowrap;
         }
         .aje-card.off .aje-state { border-color:#d7dce2; background:#fff; color:#7a828c; }
+        .aje-card.paused .aje-state { border-color:#e1c35d; background:#fff3c9; color:#806713; }
         .aje-card-main { min-height:52px; }
         .aje-model {
           font-size:.95rem; font-weight:700; color:var(--ink);
@@ -3154,7 +3156,8 @@
         .aje-modal-field span {
           color:var(--muted); font-size:.74rem; font-weight:700;
         }
-        .aje-modal-field input {
+        .aje-modal-field input,
+        .aje-modal-field select {
           width:100%;
           height:38px;
           border:1px solid #b9c1cb;
@@ -3166,8 +3169,10 @@
           line-height:1.2;
           transition:border-color .15s ease, background-color .15s ease;
         }
-        .aje-modal-field input:hover { border-color:#9da7b2; }
-        .aje-modal-field input:focus {
+        .aje-modal-field input:hover,
+        .aje-modal-field select:hover { border-color:#9da7b2; }
+        .aje-modal-field input:focus,
+        .aje-modal-field select:focus {
           outline:none;
           border-color:#687484;
           background:#fff;
@@ -3416,8 +3421,13 @@
                   <span>模型（可留空）</span>
                   <input type="text" id="ajeEditModel" placeholder="默认模型">
                 </label>
-                <label class="aje-modal-check full">
-                  <input type="checkbox" id="ajeEditEnabled"> 启用这个端点
+                <label class="aje-modal-field full">
+                  <span>状态</span>
+                  <select id="ajeEditStatus">
+                    <option value="enabled">启用</option>
+                    <option value="paused">暂停</option>
+                    <option value="disabled">停用</option>
+                  </select>
                 </label>
               </div>
             </div>
@@ -3456,22 +3466,40 @@
         var editKeyHint = document.getElementById('ajeEditKeyHint');
         var editModel = document.getElementById('ajeEditModel');
         var editConcurrency = document.getElementById('ajeEditConcurrency');
-        var editEnabled = document.getElementById('ajeEditEnabled');
+        var editStatus = document.getElementById('ajeEditStatus');
         var editDelete = document.getElementById('ajeEditDelete');
         var editApply = document.getElementById('ajeEditApply');
+        function normalizeStatus(e){
+          var raw = e && e.status ? String(e.status).toLowerCase() : (e && e.enabled ? 'enabled' : 'disabled');
+          return (raw === 'paused' || raw === 'disabled') ? raw : 'enabled';
+        }
+        function statusLabel(s){
+          s = normalizeStatus({status:s});
+          if (s === 'paused') return '暂停';
+          if (s === 'disabled') return '停用';
+          return '启用';
+        }
+        function statusClass(s){
+          s = normalizeStatus({status:s});
+          if (s === 'paused') return ' paused';
+          if (s === 'disabled') return ' off';
+          return '';
+        }
+        function isEnabled(e){ return normalizeStatus(e) === 'enabled'; }
         function fromServer(list){
           return (list || []).map(function (e) {
             return {id: e.id, harness: e.harness || 'claude_code',
                     base_url: e.base_url || '', model: e.model || '',
-                    concurrency_limit: e.concurrency_limit || 1, enabled: !!e.enabled,
+                    concurrency_limit: e.concurrency_limit || 1,
+                    status: normalizeStatus(e), enabled: normalizeStatus(e) === 'enabled',
                     has_key: !!e.has_key, api_key: ''};
           });
         }
         var eps = fromServer(window.__AJ_ENDPOINTS__);
         function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
-        function totalConc(){ return eps.reduce(function(s,e){ return s + (e.enabled ? (parseInt(e.concurrency_limit)||0) : 0); }, 0); }
+        function totalConc(){ return eps.reduce(function(s,e){ return s + (isEnabled(e) ? (parseInt(e.concurrency_limit)||0) : 0); }, 0); }
         function defaultEndpoint(){
-          return {id:null, harness:'claude_code', base_url:'', model:'', concurrency_limit:1, enabled:true, has_key:false, api_key:''};
+          return {id:null, harness:'claude_code', base_url:'', model:'', concurrency_limit:1, status:'enabled', enabled:true, has_key:false, api_key:''};
         }
         function harnessLabel(h){
           if (h === 'codex') return 'Codex';
@@ -3527,10 +3555,11 @@
           var h = '';
           eps.forEach(function(e, i){
             var harness = e.harness || 'claude_code';
-            h += '<div class="aje-card' + (e.enabled ? '' : ' off') + '" data-i="' + i + '">' +
+            var st = normalizeStatus(e);
+            h += '<div class="aje-card' + statusClass(st) + '" data-i="' + i + '">' +
               '<div class="aje-card-top">' +
                 '<div class="aje-harness"><i class="fas ' + harnessIcon(harness) + '"></i><span>' + esc(harnessLabel(harness)) + '</span></div>' +
-                '<span class="aje-state">' + (e.enabled ? '启用' : '停用') + '</span>' +
+                '<span class="aje-state">' + statusLabel(st) + '</span>' +
               '</div>' +
               '<div class="aje-card-main">' +
                 '<div class="aje-model" title="' + esc(modelText(e)) + '">' + esc(modelText(e)) + '</div>' +
@@ -3567,7 +3596,7 @@
           editKeyHint.textContent = e.has_key ? '已保存的 API Key 不会回显；留空表示保持不变。' : '保存前请填写 API Key。';
           editModel.value = e.model || '';
           editConcurrency.value = parseInt(e.concurrency_limit) || 1;
-          editEnabled.checked = !!e.enabled;
+          editStatus.value = normalizeStatus(e);
           editDelete.style.display = editIndex === null ? 'none' : '';
           updateHarnessPicker();
           applyHarnessMode();
@@ -3600,13 +3629,15 @@
         editApply.addEventListener('click', function(){
           var h = editHarness.value || 'claude_code';
           var old = editIndex === null ? defaultEndpoint() : eps[editIndex];
+          var st = normalizeStatus({status: editStatus.value || 'enabled'});
           var next = {
             id: old.id || null,
             harness: h,
             base_url: h === 'opencode' ? '' : (editBaseUrl.value || '').trim(),
             model: (editModel.value || '').trim(),
             concurrency_limit: Math.max(1, parseInt(editConcurrency.value, 10) || 1),
-            enabled: !!editEnabled.checked,
+            status: st,
+            enabled: st === 'enabled',
             has_key: !!old.has_key || !!(editApiKey.value || '').trim(),
             api_key: (editApiKey.value || '').trim()
           };
@@ -3631,7 +3662,8 @@
             endpoints: eps.map(function(e){ return {id:e.id, harness:e.harness || 'claude_code',
               base_url:(e.base_url||'').trim(),
               api_key:(e.api_key||'').trim(), model:(e.model||'').trim(),
-              concurrency_limit: parseInt(e.concurrency_limit)||1, enabled: e.enabled }; }) };
+              concurrency_limit: parseInt(e.concurrency_limit)||1, status: normalizeStatus(e),
+              enabled: isEnabled(e) }; }) };
           hint.style.color = '#70757c'; hint.textContent = '保存中…';
           fetch(window.__SAVE_AJ_ENDPOINTS_URL__, {
             method:'POST', credentials:'same-origin',
@@ -3640,7 +3672,7 @@
           }).then(function(r){return r.json();}).then(function(d){
             if (!d.success){ hint.style.color='#b03a2e'; hint.textContent = d.message || '保存失败'; return; }
             hint.style.color='#1f7a4d';
-            hint.textContent = '已保存：' + d.count + ' 个端点（启用 ' + d.enabled + '，总并发 ' + d.total_concurrency + '）';
+            hint.textContent = '已保存：' + d.count + ' 个端点（启用 ' + d.enabled + '，暂停 ' + (d.paused || 0) + '，停用 ' + (d.disabled || 0) + '，总并发 ' + d.total_concurrency + '）';
             eps = fromServer(d.endpoints);   // 用服务端回传刷新（含新 id/has_key），保证下次保存能保留未改动的 key
             render();
           }).catch(function(){ hint.style.color='#b03a2e'; hint.textContent='网络错误'; });

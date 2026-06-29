@@ -228,7 +228,7 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
         str(ranking_id),
         json.dumps([{"rule_id": 1, "rule_text": "Works", "value": 100}], ensure_ascii=False),
     )["success"] is True
-    assert cli.admin_json(
+    endpoints_saved = cli.admin_json(
         "ranking",
         "save-endpoints",
         str(ranking_id),
@@ -241,13 +241,36 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
                     "model": "fake",
                     "concurrency_limit": 1,
                     "enabled": True,
+                },
+                {
+                    "harness": "codex",
+                    "base_url": "http://127.0.0.1:10",
+                    "api_key": "paused-local-only",
+                    "model": "fake-paused",
+                    "concurrency_limit": 2,
+                    "status": "paused",
+                },
+                {
+                    "harness": "codex",
+                    "base_url": "http://127.0.0.1:11",
+                    "api_key": "disabled-local-only",
+                    "model": "fake-disabled",
+                    "concurrency_limit": 4,
+                    "status": "disabled",
                 }
             ],
             ensure_ascii=False,
         ),
         "--timeout-seconds",
         "60",
-    )["success"] is True
+    )
+    assert endpoints_saved["success"] is True
+    assert endpoints_saved["enabled"] == 1
+    assert endpoints_saved["paused"] == 1
+    assert endpoints_saved["disabled"] == 1
+    assert endpoints_saved["total_concurrency"] == 1
+    assert [e["status"] for e in endpoints_saved["endpoints"]] == ["enabled", "paused", "disabled"]
+    assert all("api_key" not in e for e in endpoints_saved["endpoints"])
     assert cli.admin_json(
         "ranking",
         "save-config",
@@ -264,6 +287,9 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
     admin_detail = cli.admin_json("ranking", "detail", str(ranking_id), "--tab", "edit")
     assert admin_detail["success"] is True
     assert admin_detail["aj_endpoints"]
+    assert [e["status"] for e in admin_detail["aj_endpoints"]] == ["enabled", "paused", "disabled"]
+    assert [e["enabled"] for e in admin_detail["aj_endpoints"]] == [1, 0, 0]
+    assert all("api_key" not in e for e in admin_detail["aj_endpoints"])
     assert admin_detail["judge_rules"]
 
     user_detail = cli.user_json("ranking", "detail", str(ranking_id), "--tab", "submit")
@@ -272,7 +298,19 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
     assert_no_json_leaks(
         user_detail,
         forbidden_keys=RANKING_SECRET_KEYS,
-        forbidden_terms=("http://127.0.0.1:9", "local-only", "fake", "Works", "<username>"),
+        forbidden_terms=(
+            "http://127.0.0.1:9",
+            "http://127.0.0.1:10",
+            "http://127.0.0.1:11",
+            "local-only",
+            "paused-local-only",
+            "disabled-local-only",
+            "fake",
+            "fake-paused",
+            "fake-disabled",
+            "Works",
+            "<username>",
+        ),
     )
     rejected_zip = cli.user_json(
         "ranking",

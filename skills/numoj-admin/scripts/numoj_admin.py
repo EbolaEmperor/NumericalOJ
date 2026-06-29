@@ -2348,10 +2348,13 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
     pa.add_argument("rules", help="JSON array of rule objects, or @file to read it from a file.")
     pa.set_defaults(func=ranking_rules)
-    pa = add_cli_parser(rs, "save-endpoints", "Save endpoint checks for a ranking competition.")
+    pa = add_cli_parser(rs, "save-endpoints", "Save Agent-as-Judge endpoint pool for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
-    pa.add_argument("endpoints", help="JSON array of endpoint objects, or @file to read it from a file.")
-    pa.add_argument("--timeout-seconds", type=int, help="Timeout in seconds for endpoint checks.")
+    pa.add_argument(
+        "endpoints",
+        help="JSON array of endpoint objects; each may include status=enabled|paused|disabled, or legacy enabled=true/false.",
+    )
+    pa.add_argument("--timeout-seconds", type=int, help="Agent-as-Judge timeout in seconds.")
     pa.set_defaults(func=ranking_endpoints)
     pa = add_cli_parser(rs, "batch-probe", "Preview Git repositories that would be used for batch ranking submissions.")
     pa.add_argument("competition_id", type=int, help="Competition ID for the batch probe.")

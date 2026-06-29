@@ -47,6 +47,8 @@ from oj_modules.tasks import (
     register_ranking_elo_matchmaker_tick_task,
     seed_elo_matchmaker_tick,
     register_ranking_agent_judge_task,
+    register_ranking_agent_judge_paused_probe_task,
+    seed_agent_judge_paused_probe,
     init_judge_progress_cache,
     register_ranking_batch_tasks,
     init_batch_progress_cache,
@@ -221,6 +223,7 @@ celery.conf.task_routes = {
     'oj.agent.generate_testdata': {'queue': 'agent'},
     'oj.promptly.generate_submission': {'queue': 'agent'},
     'oj.ranking_agent_judge': {'queue': 'judge'},
+    'oj.ranking_agent_judge_paused_probe': {'queue': 'judge'},
 }
 # 任务执行完才 ack：worker 崩溃/被硬超时 SIGKILL 时，消息不会丢失而是重新投递。
 # 配合各任务的 Redis 幂等锁，重投不会导致重复评测；reject_on_worker_lost 让「worker 丢失」
@@ -239,6 +242,7 @@ ranking_elo_match = register_ranking_elo_match_task(celery)
 ranking_elo_initial_burst = register_ranking_elo_initial_burst_task(celery, ranking_elo_match)
 ranking_elo_matchmaker_tick = register_ranking_elo_matchmaker_tick_task(celery, ranking_elo_match)
 evaluate_ranking_agent_judge = register_ranking_agent_judge_task(celery)
+ranking_agent_judge_paused_probe = register_ranking_agent_judge_paused_probe_task(celery)
 # 打榜赛「批量评测」：探测仓库 + 串行批量拉取/创建（拉取完成后接力 Agent 评测）
 ranking_batch_probe, ranking_batch_run = register_ranking_batch_tasks(
     celery, evaluate_ranking_agent_judge,
@@ -323,6 +327,14 @@ if __name__ == '__main__':
             pending_requeue_watchdog,
             reset_owner=True,
             countdown=180,
+        )
+        # 启动 Agent 评测暂停端点的自动恢复探测链路。每小时检查 paused 端点，
+        # 5 次 hello 中至少 3 次成功则自动恢复为启用。
+        seed_agent_judge_paused_probe(
+            rds,
+            ranking_agent_judge_paused_probe,
+            reset_owner=True,
+            countdown=300,
         )
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

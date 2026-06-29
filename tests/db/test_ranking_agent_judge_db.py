@@ -105,6 +105,8 @@ def test_agent_judge_endpoints_store_harness_and_opencode_defaults(client):
          'model': 'gpt-5.4', 'concurrency_limit': 3, 'enabled': True},
         {'harness': 'opencode', 'base_url': '', 'api_key': 'k2',
          'model': '', 'concurrency_limit': 2, 'enabled': True},
+        {'harness': 'codex', 'base_url': 'https://paused/v1', 'api_key': 'k3',
+         'model': 'gpt-5.4', 'concurrency_limit': 4, 'status': 'paused', 'enabled': True},
     ])
     eps = ajdb.list_agent_judge_endpoints(cid)
     assert eps[0]['harness'] == 'codex'
@@ -112,3 +114,32 @@ def test_agent_judge_endpoints_store_harness_and_opencode_defaults(client):
     assert eps[1]['harness'] == 'opencode'
     assert eps[1]['base_url'] == ajdb.DEFAULT_OPENCODE_GO_BASE_URL
     assert eps[1]['model'] == ajdb.DEFAULT_OPENCODE_GO_MODEL
+    assert eps[2]['status'] == 'paused'
+    assert eps[2]['enabled'] == 0
+    assert [e['id'] for e in ajdb.list_agent_judge_endpoints(cid, enabled_only=True)] == [
+        eps[0]['id'], eps[1]['id'],
+    ]
+
+
+def test_agent_judge_endpoint_status_transitions_respect_manual_disabled(client):
+    cid = _make_comp()
+    ajdb.save_agent_judge_endpoints(cid, [
+        {'harness': 'codex', 'base_url': 'https://enabled/v1', 'api_key': 'k1',
+         'model': 'gpt-5.4', 'concurrency_limit': 1, 'status': 'enabled'},
+        {'harness': 'codex', 'base_url': 'https://disabled/v1', 'api_key': 'k2',
+         'model': 'gpt-5.4', 'concurrency_limit': 1, 'status': 'disabled'},
+    ])
+    eps = ajdb.list_agent_judge_endpoints(cid)
+    enabled_id, disabled_id = eps[0]['id'], eps[1]['id']
+
+    assert ajdb.pause_agent_judge_endpoint(enabled_id) == 1
+    assert ajdb.pause_agent_judge_endpoint(disabled_id) == 0
+    by_id = {e['id']: e for e in ajdb.list_agent_judge_endpoints(cid)}
+    assert by_id[enabled_id]['status'] == 'paused'
+    assert by_id[disabled_id]['status'] == 'disabled'
+
+    assert ajdb.resume_paused_agent_judge_endpoint(disabled_id) == 0
+    assert ajdb.resume_paused_agent_judge_endpoint(enabled_id) == 1
+    by_id = {e['id']: e for e in ajdb.list_agent_judge_endpoints(cid)}
+    assert by_id[enabled_id]['status'] == 'enabled'
+    assert by_id[disabled_id]['status'] == 'disabled'

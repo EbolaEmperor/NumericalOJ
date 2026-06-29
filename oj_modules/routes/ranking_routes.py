@@ -547,7 +547,8 @@ def ranking_detail(competition_id):
             _raw_eps = []
         aj_endpoints = [{'id': e['id'], 'harness': e.get('harness') or 'claude_code',
                          'base_url': e['base_url'], 'model': e['model'],
-                         'concurrency_limit': e['concurrency_limit'], 'enabled': e['enabled'],
+                         'concurrency_limit': e['concurrency_limit'], 'status': e.get('status') or 'enabled',
+                         'enabled': e['enabled'],
                          'has_key': bool(e['api_key'])} for e in _raw_eps]
         agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
 
@@ -1724,7 +1725,7 @@ def ranking_save_agent_config(competition_id):
 def ranking_save_agent_endpoints(competition_id):
     """保存某比赛的 Agent 评测端点池（多个 模型 url + api_key，各带并发上限）+ 整体超时。
 
-    JSON：{timeout_seconds?, endpoints:[{id?, harness, base_url, api_key, model, concurrency_limit, enabled}]}。
+    JSON：{timeout_seconds?, endpoints:[{id?, harness, base_url, api_key, model, concurrency_limit, status|enabled}]}。
     实际 agent 评测并发 = 各启用端点 concurrency_limit 之和（由判题侧 Redis 槽位限流，改完即生效、无需重启）。"""
     user, err = _admin_json_guard()
     if err is not None:
@@ -1750,11 +1751,14 @@ def ranking_save_agent_endpoints(competition_id):
     saved = list_agent_judge_endpoints(competition_id)
     masked = [{'id': e['id'], 'harness': e.get('harness') or 'claude_code',
                'base_url': e['base_url'], 'model': e['model'],
-               'concurrency_limit': e['concurrency_limit'], 'enabled': e['enabled'],
+               'concurrency_limit': e['concurrency_limit'], 'status': e.get('status') or 'enabled',
+               'enabled': e['enabled'],
                'has_key': bool(e['api_key'])} for e in saved]
-    total_conc = sum(e['concurrency_limit'] for e in saved if e['enabled'])
+    total_conc = sum(e['concurrency_limit'] for e in saved if (e.get('status') == 'enabled'))
     return jsonify(success=True, count=len(saved),
-                   enabled=sum(1 for e in saved if e['enabled']),
+                   enabled=sum(1 for e in saved if e.get('status') == 'enabled'),
+                   paused=sum(1 for e in saved if e.get('status') == 'paused'),
+                   disabled=sum(1 for e in saved if e.get('status') == 'disabled'),
                    total_concurrency=total_conc, endpoints=masked)
 
 
