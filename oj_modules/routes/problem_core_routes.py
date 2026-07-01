@@ -13,6 +13,7 @@ from flask import Blueprint, Response, flash, jsonify, redirect, render_template
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
+    archive_submission_file_by_id,
     can_submit,
     create_submission,
     ensure_class_homework_columns,
@@ -1119,6 +1120,7 @@ def submit_solution(problem_id):
                     os.makedirs(old_folder)
                     file.save(os.path.join(old_folder, filename))
                     overwrite_written_submission(submission_id, filename)
+                    archive_submission_file_by_id(submission_id, os.path.join(old_folder, filename), filename)
                     if user['is_admin'] != 1:
                         increment_submission_count(user['username'], problem_id)
                     return redirect(url_for('submission.submission_detail', submission_id=submission_id))
@@ -1142,6 +1144,7 @@ def submit_solution(problem_id):
 
             file_path = os.path.join(upload_folder, filename)
             file.save(file_path)
+            archive_submission_file_by_id(submission_id, file_path, filename)
 
             if written_mode != 4:
                 try:

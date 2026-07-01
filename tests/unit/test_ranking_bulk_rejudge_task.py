@@ -17,6 +17,7 @@ class _FakeAsyncTask:
 
     def apply_async(self, *args, **kwargs):
         self.calls.append((args, kwargs))
+        return type("AsyncResult", (), {"id": "task-id"})()
 
 
 def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
@@ -27,6 +28,7 @@ def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
     }
     jobs = {'job1': {'competition_id': 7}}
     cleared = []
+    attempts = []
     statuses = []
     agent_task = _FakeAsyncTask()
     eval_task = _FakeAsyncTask()
@@ -39,6 +41,12 @@ def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
                         lambda job_id, payload: jobs.__setitem__(job_id, dict(payload)))
     monkeypatch.setattr(m, 'clear_judge_results', lambda sid: cleared.append(int(sid)))
     monkeypatch.setattr(
+        m,
+        'begin_agent_judge_attempt',
+        lambda sid, **kw: attempts.append((int(sid), dict(kw))) or f'attempt-{int(sid)}',
+    )
+    monkeypatch.setattr(m, 'set_agent_judge_task_id', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
         m, 'update_submission_result',
         lambda sid, score, status, grade_details=None, error_message=None:
             statuses.append((int(sid), score, status, grade_details, error_message)),
@@ -50,9 +58,16 @@ def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
     task(7, [101, 102], 'job1', 'admin')
 
     assert cleared == [101, 102]
-    assert [c[1]['args'] for c in agent_task.calls] == [[101], [102]]
+    assert [c[1]['args'] for c in agent_task.calls] == [
+        [101, 'attempt-101'],
+        [102, 'attempt-102'],
+    ]
     assert eval_task.calls == []
-    assert [s[:3] for s in statuses] == [(101, None, 'Queued'), (102, None, 'Queued')]
+    assert attempts == [
+        (101, {'status': 'Queued', 'reset_result': True}),
+        (102, {'status': 'Queued', 'reset_result': True}),
+    ]
+    assert statuses == []
     assert jobs['job1']['status'] == 'finished'
     assert jobs['job1']['requeued'] == 2
     assert jobs['job1']['requeued_ids'] == [101, 102]
