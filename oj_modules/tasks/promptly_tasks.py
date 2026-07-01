@@ -7,7 +7,6 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from oj_modules.ai_utils import generate_promptly_code, review_promptly_student_prompt
 from oj_modules.db_services import (
-    archive_submission_by_id,
     get_problem,
     get_submission_by_id,
     set_submission_status_snapshot,
@@ -52,7 +51,6 @@ def register_promptly_generate_submission_task(celery_app, evaluate_submission_t
         if not prompt_text:
             update_submission_prompt_generation_error(submission_id, "prompt 不能为空。")
             return {"success": False, "message": "prompt 不能为空"}
-        archive_submission_by_id(submission_id)
 
         try:
             update_submission_status(submission_id, "Generating")
@@ -81,7 +79,6 @@ def register_promptly_generate_submission_task(celery_app, evaluate_submission_t
                 model_spec=problem.get("programming_grading_model"),
             )
             update_submission_generated_code(submission_id, generated_code, status="Pending")
-            archive_submission_by_id(submission_id)
             if evaluate_submission_task is not None:
                 try:
                     evaluate_submission_task.delay(submission_id)

@@ -13,6 +13,7 @@ from flask import Blueprint, Response, flash, jsonify, redirect, render_template
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
+    archive_submission_by_id,
     archive_submission_file_by_id,
     can_submit,
     create_submission,
@@ -31,6 +32,7 @@ from oj_modules.db_services import (
     get_user_by_username,
     increment_submission_count,
     overwrite_written_submission,
+    update_submission_status,
     upsert_agent_run_snapshot,
 )
 from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
@@ -1047,6 +1049,12 @@ def submit_solution(problem_id):
                     prompt_text=prompt_text,
                     generated_from_prompt=True,
                 )
+                try:
+                    archive_submission_by_id(submission_id, raise_errors=True)
+                except Exception as e:
+                    update_submission_status(submission_id, "Error")
+                    flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
+                    return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
                 if user['is_admin'] != 1:
                     increment_submission_count(user['username'], problem_id)
@@ -1071,6 +1079,12 @@ def submit_solution(problem_id):
                 score=0,
                 test_points=[],
             )
+            try:
+                archive_submission_by_id(submission_id, raise_errors=True)
+            except Exception as e:
+                update_submission_status(submission_id, "Error")
+                flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
+                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
             if user['is_admin'] != 1:
                 increment_submission_count(user['username'], problem_id)
@@ -1120,7 +1134,14 @@ def submit_solution(problem_id):
                     os.makedirs(old_folder)
                     file.save(os.path.join(old_folder, filename))
                     overwrite_written_submission(submission_id, filename)
-                    archive_submission_file_by_id(submission_id, os.path.join(old_folder, filename), filename)
+                    try:
+                        archive_submission_file_by_id(
+                            submission_id, os.path.join(old_folder, filename), filename, raise_errors=True,
+                        )
+                    except Exception as e:
+                        update_submission_status(submission_id, "Error")
+                        flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
+                        return redirect(url_for('submission.submission_detail', submission_id=submission_id))
                     if user['is_admin'] != 1:
                         increment_submission_count(user['username'], problem_id)
                     return redirect(url_for('submission.submission_detail', submission_id=submission_id))
@@ -1135,16 +1156,21 @@ def submit_solution(problem_id):
                 test_points=[filename],
             )
 
-            if user['is_admin'] != 1:
-                increment_submission_count(user['username'], problem_id)
-
             upload_folder = os.path.join('uploads', f"{submission_id}")
             if not os.path.exists(upload_folder):
                 os.makedirs(upload_folder)
 
             file_path = os.path.join(upload_folder, filename)
             file.save(file_path)
-            archive_submission_file_by_id(submission_id, file_path, filename)
+            try:
+                archive_submission_file_by_id(submission_id, file_path, filename, raise_errors=True)
+            except Exception as e:
+                update_submission_status(submission_id, "Error")
+                flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
+                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+
+            if user['is_admin'] != 1:
+                increment_submission_count(user['username'], problem_id)
 
             if written_mode != 4:
                 try:

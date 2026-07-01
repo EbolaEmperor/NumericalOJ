@@ -5,7 +5,7 @@ description: A skill to administer NumericalOJ/NumOJ. Use when the user asks you
 
 # NumOJ Admin
 
-Use the bundled script `scripts/numoj_admin.py` for administrator operations against a running NumOJ instance. Treat this as an administrator skill, not a developer tool: operate through the existing HTTP routes only, never import a NumOJ source checkout, never edit server files, never add POST endpoints, and never touch MySQL/Redis directly.
+Use the bundled script `scripts/numoj_admin.py` for administrator operations against a running NumOJ instance. Treat this as an administrator skill, not a developer tool: operate through authenticated HTTP routes / JSON APIs only, never import a NumOJ source checkout, never edit server files, never add POST endpoints, and never touch MySQL/Redis directly.
 
 ## First-Time Setup
 
@@ -43,18 +43,20 @@ When this skill is invoked:
 
 For a different NumOJ instance, set the address through `init --base-url <url>` or pass the CLI-level `--base-url <url>` option.
 
+JSON inspection commands print their response to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as images, CSVs, ZIPs, attachments, or repository file contents.
+
 ## Command Areas
 
 - `auth`: initialize/login status, local token cleanup, registration/password-reset pages, verification-code requests, and password change.
 - `site`: inspect the home route and its login/problem-list redirect.
 - `me`: current-account classes, class join/leave/set-primary, current admin grades, and current-account submission history.
 - `submission`: list all visible submissions, list submissions for one problem, inspect status/detail/stream, fetch last submitted code, download output images, and download written-submission files.
-- `problem`: list/view problems, open submit pages, submit ordinary programming/written problems, create/edit/delete problems, open create/edit forms, upload test data, rejudge, check rejudge status, inspect Agent task pages/streams, start agent solve/data-generation tasks, and view scores.
+- `problem`: list/view problems, fetch submit contexts, submit ordinary programming/written problems, create/edit/delete problems, fetch create/edit form metadata, upload test data, rejudge, check rejudge status, inspect Agent task statuses/streams, start agent solve/data-generation tasks, and view scores.
 - `homework`: list assigned homework for a class, assign/update/delete homework, export scores/codes/progress, download export artifacts, upload exam scores, and toggle class adjustment.
 - `user`: list users, create/rename class types, set primary class, add/remove users from classes, list grades, and update or clear grades.
 - `grading`: submit written-homework grading decisions and inspect pending grading items.
-- `forum`: list forum threads, view threads, open the new-thread page, create threads, and reply.
-- `repository`: use the per-user code repository: list/get/save/delete/upload files, inspect repository page, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
+- `forum`: list forum threads, view threads, fetch new-thread form metadata, create threads, and reply.
+- `repository`: use the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ranking`: list/view ranking competitions, submit by upload or Git, inspect personal/all submissions, leaderboard, matches, match details, judge streams, create/edit/delete ranking competitions, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge rules/config/endpoints, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, or launch/stop/delete AIGC detection tasks.

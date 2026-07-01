@@ -54,21 +54,20 @@ def test_archive_promptly_submission_keeps_prompt(tmp_path, monkeypatch):
     archive_dir = submission_archive.archive_submission_record(submission, problem, {}, [])
 
     assert os.path.isfile(os.path.join(archive_dir, "prompt.txt"))
-    assert os.path.isfile(os.path.join(archive_dir, "generated_code.cpp"))
+    assert not os.path.exists(os.path.join(archive_dir, "generated_code.cpp"))
+    assert not os.path.exists(os.path.join(archive_dir, "code.cpp"))
     with open(os.path.join(archive_dir, "prompt.txt"), encoding="utf-8") as f:
         assert f.read() == "solve it carefully"
 
 
-def test_archive_uploaded_file_and_tex_artifact(tmp_path, monkeypatch):
+def test_archive_uploaded_original_file(tmp_path, monkeypatch):
     monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path))
     source = tmp_path / "main.tex"
     source.write_text("\\section{A}\n", encoding="utf-8")
 
     copied = submission_archive.archive_uploaded_submission_file(44, str(source), "main.tex")
-    tex = submission_archive.archive_text_artifact(44, "submission.tex", "\\section{B}\n")
 
-    assert os.path.basename(copied) == "submission.tex"
+    assert os.path.basename(copied) == "submitted.tex"
     assert os.path.isfile(copied)
-    assert os.path.isfile(tex)
-    with open(tex, encoding="utf-8") as f:
-        assert f.read() == "\\section{B}\n"
+    with open(copied, encoding="utf-8") as f:
+        assert f.read() == "\\section{A}\n"

@@ -5,7 +5,7 @@ description: A skill to use NumericalOJ/NumOJ. Use when the user asks you to do 
 
 # NumOJ User
 
-Use the bundled script `scripts/numoj_user.py` for normal NumOJ user workflows. This skill is intentionally not an administrator tool: do not use `/admin/...` routes, do not edit server code, do not add endpoints, and do not touch MySQL/Redis directly.
+Use the bundled script `scripts/numoj_user.py` for normal NumOJ user workflows. This skill is intentionally not an administrator tool: use authenticated HTTP routes / JSON APIs, do not use `/admin/...` routes, do not edit server code, do not add endpoints, and do not touch MySQL/Redis directly.
 
 ## First-Time Setup
 
@@ -41,15 +41,17 @@ Proceed only if the result reports `authenticated: true`.
 
 For a different NumOJ instance, set the address through `init --base-url <url>` or pass the CLI-level `--base-url <url>` option.
 
+JSON inspection commands print their response to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as output images, ranking submission archives, or repository file contents.
+
 ## Command Areas
 
 - `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
 - `site`: inspect the home route and its login/problem-list redirect.
 - `me`: view own classes, join/leave/set primary class, view own submissions, and summarize visible grades from submission history.
-- `problem`: list problems, view problem details, open submit pages, and submit programming code, Promptly prompts, or written-homework PDF/ZIP files.
+- `problem`: list problems, view problem details, fetch submit contexts, and submit programming code, Promptly prompts, or written-homework PDF/ZIP files.
 - `submission`: list personal submissions, list submissions for one problem, inspect status/detail/stream, fetch last submitted code, and download output images.
-- `forum`: list forum threads, view threads, open the new-thread page, create threads, and reply.
-- `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository page, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
+- `forum`: list forum threads, view threads, fetch new-thread form metadata, create threads, and reply.
+- `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams, submit/check appeals, and download own visible ranking submission files.
 

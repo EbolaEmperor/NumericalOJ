@@ -27,7 +27,6 @@ from config import (
 )
 from oj_modules.ai_utils import evaluate_program_output_image_with_ai
 from oj_modules.db_services import (
-    archive_submission_by_id,
     get_db_connection,
     insert_user_problem_ac_record_if_absent,
     get_problem,
@@ -346,7 +345,6 @@ def register_evaluate_submission_task(celery_app):
                 if _marker in code:
                     code = code.replace(_marker, "")
             problem = get_problem(problem_id)
-            archive_submission_by_id(submission_id)
             programming_grading_mode = _normalize_programming_grading_mode(problem)
             required_output_image_filename = (
                 str(problem.get('programming_output_filename') or 'output.png').strip()

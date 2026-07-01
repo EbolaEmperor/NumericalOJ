@@ -1438,7 +1438,6 @@ def create_submission(
         bump_daily_submission_count()
     finally:
         conn.close()
-    archive_submission_by_id(subid)
     return subid
 
 
@@ -1598,8 +1597,8 @@ def get_submission_by_id(submission_id):
         conn.close()
 
 
-def archive_submission_by_id(submission_id):
-    """Best-effort filesystem archive for a submission and its DB metadata."""
+def archive_submission_by_id(submission_id, raise_errors=False):
+    """Archive a submission and its DB metadata."""
     try:
         submission = get_submission_by_id(submission_id)
         if not submission:
@@ -1612,29 +1611,22 @@ def archive_submission_by_id(submission_id):
         from oj_modules.submission_archive import archive_submission_record
         return archive_submission_record(submission, problem, user, classes)
     except Exception as e:
+        if raise_errors:
+            raise
         print(f"[SubmissionArchive] failed to archive submission {submission_id}: {e}")
         return None
 
 
-def archive_submission_file_by_id(submission_id, source_path, preferred_filename=None):
-    """Best-effort archive for an uploaded submission file."""
+def archive_submission_file_by_id(submission_id, source_path, preferred_filename=None, raise_errors=False):
+    """Archive an uploaded submission file."""
     try:
-        archive_submission_by_id(submission_id)
+        archive_submission_by_id(submission_id, raise_errors=raise_errors)
         from oj_modules.submission_archive import archive_uploaded_submission_file
         return archive_uploaded_submission_file(submission_id, source_path, preferred_filename)
     except Exception as e:
+        if raise_errors:
+            raise
         print(f"[SubmissionArchive] failed to archive file for submission {submission_id}: {e}")
-        return None
-
-
-def archive_submission_text_artifact_by_id(submission_id, filename, content):
-    """Best-effort archive for a derived text artifact, such as TeX."""
-    try:
-        archive_submission_by_id(submission_id)
-        from oj_modules.submission_archive import archive_text_artifact
-        return archive_text_artifact(submission_id, filename, content)
-    except Exception as e:
-        print(f"[SubmissionArchive] failed to archive text for submission {submission_id}: {e}")
         return None
 
 
