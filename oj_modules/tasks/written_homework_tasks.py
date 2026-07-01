@@ -16,8 +16,6 @@ from oj_modules.ai_utils import (
     save_transcribed_latex,
 )
 from oj_modules.db_services import (
-    archive_submission_file_by_id,
-    archive_submission_text_artifact_by_id,
     get_problem,
     get_submission_by_id,
     refresh_submission_status_snapshot,
@@ -354,7 +352,6 @@ def register_written_homework_task(celery_app):
                 update_submission_score_and_comment(submission_id, 0, "提交文件不存在，无法自动评分，按规则记 0 分。")
                 update_submission_status(submission_id, 'Unaccepted')
                 return
-            archive_submission_file_by_id(submission_id, file_path, os.path.basename(file_path))
 
             upload_folder = os.path.dirname(file_path)
             uploaded_filename = os.path.basename(file_path)
@@ -410,7 +407,6 @@ def register_written_homework_task(celery_app):
                         return
 
                     tex_text = _read_text_file_safe(main_tex_path)
-                    archive_submission_text_artifact_by_id(submission_id, "submission.tex", tex_text)
                     main_tex_dir = os.path.dirname(main_tex_path)
                     compile_ok, compiled_pdf_path, compile_log = _compile_tex_with_xelatex(
                         tex_path=main_tex_path,
@@ -504,7 +500,6 @@ def register_written_homework_task(celery_app):
                 )
                 with open(markdown_path, 'r', encoding='utf-8') as f:
                     latex_text = f.read()
-                archive_submission_text_artifact_by_id(submission_id, "transcribed.tex", latex_text)
                 if not latex_text.strip():
                     raise RuntimeError("转写得到的 LaTeX 为空。")
                 # OCR 已完成，立即发布一次实时状态，供前端渲染 LaTeX 转写结果。

@@ -118,9 +118,7 @@ def archive_uploaded_submission_file(submission_id, source_path, preferred_filen
     source_name = preferred_filename or os.path.basename(source_path)
     _, ext = os.path.splitext(str(source_name or source_path))
     ext = ext.lower()
-    if ext == ".tex":
-        target_name = "submission.tex"
-    elif ext:
+    if ext:
         target_name = f"submitted{ext}"
     else:
         target_name = "submitted_file"
@@ -145,16 +143,13 @@ def archive_submission_record(submission, problem, user, classes):
     )
 
     prompt_text = _safe_text(submission.get("prompt_text"))
-    generated_from_prompt = bool(submission.get("generated_from_prompt"))
     code = _safe_text(submission.get("code"))
     problem_type = int(submission.get("problem_type") or problem.get("type") or 0)
 
     if prompt_text.strip():
         archive_text_artifact(submission_id, "prompt.txt", prompt_text)
-
-    if problem_type == 1 and code.strip():
+    elif problem_type == 1 and code.strip():
         ext = _source_ext_for_problem(problem)
-        filename = f"generated_code{ext}" if (prompt_text.strip() or generated_from_prompt) else f"code{ext}"
-        archive_text_artifact(submission_id, filename, code)
+        archive_text_artifact(submission_id, f"code{ext}", code)
 
     return archive_dir

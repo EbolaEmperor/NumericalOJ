@@ -86,7 +86,7 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
         "--submission-limit",
         "5",
     )["success"] is True
-    assert cli.admin_json("problem", "detail", str(problem_id), "--max-chars", "5000")["problem"]["title"] == edited_title
+    assert cli.admin_json("problem", "detail", str(problem_id))["problem"]["title"] == edited_title
     assert cli.admin_json("problem", "edit-form", str(problem_id))["success"] is True
 
     testdata_zip = write_testdata_zip(tmp_path / "testdata.zip")

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""NumericalOJ administrator CLI over existing web routes.
+"""NumericalOJ administrator CLI over authenticated NumericalOJ HTTP APIs.
 
 This tool intentionally does not import the Flask app or touch MySQL/Redis.
 It authenticates by saving the Flask session cookie locally and then sends that
-cookie back to existing routes, so current admin POST handlers can authorize it
-without any new server-side POST endpoint.
+cookie back to JSON APIs and existing POST routes, so current admin handlers can
+authorize it without direct database access.
 """
 
 from __future__ import annotations
@@ -618,12 +618,8 @@ def submission_stream(args: argparse.Namespace) -> None:
 
 def submission_detail_cmd(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    if args.output:
-        resp = client.request("GET", f"/submission_detail/{args.submission_id}")
-        print_or_save_response(resp, output=args.output, allow_redirect=False)
-        return
     resp = client.request("GET", f"/api/submissions/{args.submission_id}")
-    print_or_save_response(resp)
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def submission_last_code(args: argparse.Namespace) -> None:
@@ -652,25 +648,20 @@ def problem_list(args: argparse.Namespace) -> None:
     params: Dict[str, Any] = {}
     if args.limit is not None:
         params["limit"] = args.limit
-    resp = client.request("GET", "/problems" if args.output else "/api/problems", params=None if args.output else params)
-    if args.output:
-        print_or_save_response(resp, output=args.output, allow_redirect=False)
-        return
-    print_or_save_response(resp)
+    resp = client.request("GET", "/api/problems", params=params)
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def problem_detail(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = f"/problem/{args.problem_id}" if args.output else f"/api/problems/{args.problem_id}"
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/problems/{args.problem_id}")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def problem_submit_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = f"/submit/{args.problem_id}" if args.output else f"/api/problems/{args.problem_id}/submit-context"
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/problems/{args.problem_id}/submit-context")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def problem_submit(args: argparse.Namespace) -> None:
@@ -720,8 +711,8 @@ def problem_submit(args: argparse.Namespace) -> None:
 
 def problem_create_form(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/admin/add_problem" if args.output else "/api/admin/problems/create-form")
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", "/api/admin/problems/create-form")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def problem_create(args: argparse.Namespace) -> None:
@@ -755,9 +746,8 @@ def problem_create(args: argparse.Namespace) -> None:
 
 def problem_edit_form(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = f"/admin/edit_problem/{args.problem_id}" if args.output else f"/api/admin/problems/{args.problem_id}/edit-form"
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/admin/problems/{args.problem_id}/edit-form")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def problem_edit(args: argparse.Namespace) -> None:
@@ -840,9 +830,8 @@ def problem_agent_run_status(args: argparse.Namespace) -> None:
 
 def problem_agent_run_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = f"/admin/agent_run/{args.task_id}" if args.output else f"/admin/agent_run_status/{args.task_id}"
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/admin/agent_run_status/{args.task_id}")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def problem_agent_run_stream(args: argparse.Namespace) -> None:
@@ -853,8 +842,8 @@ def problem_agent_run_stream(args: argparse.Namespace) -> None:
 
 def problem_agent_tasks(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/admin/agent_tasks" if args.output else "/api/admin/agent-tasks")
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", "/api/admin/agent-tasks")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def problem_agent_solve(args: argparse.Namespace) -> None:
@@ -1067,21 +1056,20 @@ def grading_invalidate(args: argparse.Namespace) -> None:
 
 def forum_list(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/forum" if args.output else "/api/forum")
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", "/api/forum")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def forum_thread(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = f"/forum/thread/{args.thread_id}" if args.output else f"/api/forum/threads/{args.thread_id}"
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/forum/threads/{args.thread_id}")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def forum_new_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/forum/new" if args.output else "/api/forum/new-context")
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", "/api/forum/new-context")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def forum_new(args: argparse.Namespace) -> None:
@@ -1104,8 +1092,8 @@ def forum_reply_thread(args: argparse.Namespace) -> None:
 
 def repository_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/code_repository" if args.output else "/api/repository/context")
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", "/api/repository/context")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def repository_files(args: argparse.Namespace) -> None:
@@ -1262,22 +1250,20 @@ def ai_api_get(args: argparse.Namespace) -> None:
 
 def ai_detection_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/admin/ai_detection" if args.output else "/api/admin/ai-detection/dashboard")
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", "/api/admin/ai-detection/dashboard")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def ai_detection_problem_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = f"/admin/ai_detection/problem/{args.problem_id}" if args.output else f"/api/admin/ai-detection/problem/{args.problem_id}"
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/admin/ai-detection/problem/{args.problem_id}")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def ai_detection_student_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = f"/admin/ai_detection/student/{args.username}" if args.output else f"/api/admin/ai-detection/student/{args.username}"
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/admin/ai-detection/student/{args.username}")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def ai_task_post(args: argparse.Namespace) -> None:
@@ -1295,19 +1281,15 @@ def ranking_list(args: argparse.Namespace) -> None:
     params: Dict[str, Any] = {}
     if args.limit is not None:
         params["limit"] = args.limit
-    resp = client.request("GET", "/ranking/" if args.output else "/api/ranking/competitions", params=None if args.output else params)
-    if args.output:
-        print_or_save_response(resp, output=args.output, allow_redirect=False)
-        return
-    print_or_save_response(resp)
+    resp = client.request("GET", "/api/ranking/competitions", params=params)
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def ranking_detail(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     params = {"tab": args.tab} if args.tab else None
-    path = f"/ranking/{args.competition_id}/" if args.output else f"/api/ranking/competitions/{args.competition_id}"
-    resp = client.request("GET", path, params=params)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}", params=params)
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def ranking_create(args: argparse.Namespace) -> None:
@@ -1576,13 +1558,8 @@ def ranking_appeals(args: argparse.Namespace) -> None:
 
 def ranking_appeal_review(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = (
-        f"/ranking/{args.competition_id}/appeal/{args.appeal_id}/review"
-        if args.output
-        else f"/api/ranking/competitions/{args.competition_id}/appeals/{args.appeal_id}/review"
-    )
-    resp = client.request("GET", path)
-    print_or_save_response(resp, output=args.output, allow_redirect=False)
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/appeals/{args.appeal_id}/review")
+    print_or_save_response(resp, allow_redirect=False)
 
 
 def ranking_appeal_handle(args: argparse.Namespace) -> None:
@@ -1785,7 +1762,7 @@ def add_promptly_review_args(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="numoj-admin",
-        description="NumericalOJ administrator CLI over existing HTTP routes.",
+        description="NumericalOJ administrator CLI over authenticated HTTP APIs.",
         formatter_class=HELP_FORMATTER,
     )
     add_common_http_args(p)
@@ -1861,9 +1838,8 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("submission_id", type=int, help="Submission ID whose stream should be fetched.")
     pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=submission_stream)
-    pa = add_cli_parser(ss, "detail", "Fetch submission details, either as JSON status or the raw HTML detail page.")
+    pa = add_cli_parser(ss, "detail", "Fetch submission details as JSON.")
     pa.add_argument("submission_id", type=int, help="Submission ID to inspect.")
-    pa.add_argument("-o", "--output", help="Write the original HTML detail page to this path instead of printing JSON status.")
     pa.set_defaults(func=submission_detail_cmd)
     pa = add_cli_parser(ss, "last-code", "Fetch the current user's last submitted code for a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID whose latest code should be returned.")
@@ -1880,20 +1856,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     problem = add_cli_parser(sub, "problem", "Manage problems, submissions, test data, rejudging, and problem-solving agents.")
     ps = problem.add_subparsers(dest="cmd", required=True)
-    pa = add_cli_parser(ps, "list", "List available problems from the problem-list page.")
+    pa = add_cli_parser(ps, "list", "List available problems from the problem-list API.")
     pa.add_argument("--limit", type=int, help="Maximum number of problems to return.")
-    pa.add_argument("-o", "--output", help="Write the raw response or parsed output to this file.")
-    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_list)
-    pa = add_cli_parser(ps, "detail", "Fetch a problem detail page and summarize or save it.")
+    pa = add_cli_parser(ps, "detail", "Fetch problem detail metadata as JSON.")
     pa.add_argument("problem_id", type=int, help="Problem ID to inspect.")
-    pa.add_argument("-o", "--output", help="Write the full problem detail HTML to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_detail)
-    pa = add_cli_parser(ps, "submit-page", "Fetch the submit page for a problem.")
-    pa.add_argument("problem_id", type=int, help="Problem ID whose submit page should be fetched.")
-    pa.add_argument("-o", "--output", help="Write the full submit page HTML to this file.")
-    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
+    pa = add_cli_parser(ps, "submit-page", "Fetch the submit-context metadata for a problem.")
+    pa.add_argument("problem_id", type=int, help="Problem ID whose submit context should be fetched.")
     pa.set_defaults(func=problem_submit_page)
     pa = add_cli_parser(ps, "submit", "Submit source code, a Promptly prompt, or a written-homework file to a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID to submit to.")
@@ -1914,8 +1884,6 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--poll-interval", type=float, default=1.0, help="Seconds between Promptly status polling requests.")
     pa.set_defaults(func=problem_submit)
     pa = add_cli_parser(ps, "create-form", "Fetch the administrator problem-creation form metadata.")
-    pa.add_argument("-o", "--output", help="Write the raw create-form response to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_create_form)
     pa = add_cli_parser(ps, "create", "Create a programming or written-homework problem.")
     pa.add_argument("--title", required=True, help="Problem title.")
@@ -1962,8 +1930,6 @@ def build_parser() -> argparse.ArgumentParser:
     pa.set_defaults(func=problem_create)
     pa = add_cli_parser(ps, "edit-form", "Fetch administrator edit-form metadata for an existing problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID whose edit form should be fetched.")
-    pa.add_argument("-o", "--output", help="Write the raw edit-form response to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_edit_form)
     pa = add_cli_parser(ps, "edit", "Edit an existing programming or written-homework problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID to edit.")
@@ -2028,18 +1994,14 @@ def build_parser() -> argparse.ArgumentParser:
     pa = add_cli_parser(ps, "agent-run-status", "Fetch JSON status for a problem-solving or test-data-generation agent task.")
     pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
     pa.set_defaults(func=problem_agent_run_status)
-    pa = add_cli_parser(ps, "agent-run", "Fetch the HTML page for an agent task run.")
+    pa = add_cli_parser(ps, "agent-run", "Fetch JSON status for an agent task run.")
     pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
-    pa.add_argument("-o", "--output", help="Write the full agent-run HTML to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_agent_run_page)
     pa = add_cli_parser(ps, "agent-run-stream", "Fetch recent stream lines for an agent task run.")
     pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
     pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=problem_agent_run_stream)
     pa = add_cli_parser(ps, "agent-tasks", "List recent problem-solving and test-data-generation agent tasks.")
-    pa.add_argument("-o", "--output", help="Write the full agent-task page response to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=problem_agent_tasks)
     pa = add_cli_parser(ps, "agent-solve", "Start an AI agent task to solve a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID for the agent to solve.")
@@ -2153,17 +2115,11 @@ def build_parser() -> argparse.ArgumentParser:
     forum = add_cli_parser(sub, "forum", "Inspect and create forum threads and replies.")
     fs = forum.add_subparsers(dest="cmd", required=True)
     pa = add_cli_parser(fs, "list", "List forum threads.")
-    pa.add_argument("-o", "--output", help="Write the full forum list response to this file.")
-    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_list)
     pa = add_cli_parser(fs, "thread", "Fetch one forum thread and its replies.")
     pa.add_argument("thread_id", type=int, help="Forum thread ID to fetch.")
-    pa.add_argument("-o", "--output", help="Write the full thread response to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=forum_thread)
-    pa = add_cli_parser(fs, "new-page", "Fetch the new-thread form page.")
-    pa.add_argument("-o", "--output", help="Write the full new-thread page response to this file.")
-    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
+    pa = add_cli_parser(fs, "new-page", "Fetch the new-thread form metadata as JSON.")
     pa.set_defaults(func=forum_new_page)
     pa = add_cli_parser(fs, "new", "Create a new forum thread.")
     pa.add_argument("--title", required=True, help="Thread title.")
@@ -2180,9 +2136,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     repo = add_cli_parser(sub, "repository", "Manage the per-user code repository and its vector-search index.")
     repos = repo.add_subparsers(dest="cmd", required=True)
-    pa = add_cli_parser(repos, "page", "Fetch the repository page.")
-    pa.add_argument("-o", "--output", help="Write the full repository page response to this file.")
-    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
+    pa = add_cli_parser(repos, "page", "Fetch the repository page context as JSON.")
     pa.set_defaults(func=repository_page)
     pa = add_cli_parser(repos, "files", "List files in the current user's repository.")
     pa.set_defaults(func=repository_files)
@@ -2233,19 +2187,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     ai = add_cli_parser(sub, "ai-detection", "Inspect and run AI-generated-code detection tasks.")
     ais = ai.add_subparsers(dest="cmd", required=True)
-    pa = add_cli_parser(ais, "dashboard", "Fetch the administrator AI-detection dashboard page.")
-    pa.add_argument("-o", "--output", help="Write the full dashboard response to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
+    pa = add_cli_parser(ais, "dashboard", "Fetch the administrator AI-detection dashboard context as JSON.")
     pa.set_defaults(func=ai_detection_page)
-    pa = add_cli_parser(ais, "problem-page", "Fetch the AI-detection page for one problem.")
+    pa = add_cli_parser(ais, "problem-page", "Fetch the AI-detection problem context as JSON.")
     pa.add_argument("problem_id", type=int, help="Problem ID to inspect.")
-    pa.add_argument("-o", "--output", help="Write the full problem AI-detection page to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ai_detection_problem_page)
-    pa = add_cli_parser(ais, "student-page", "Fetch the AI-detection page for one student.")
+    pa = add_cli_parser(ais, "student-page", "Fetch the AI-detection student context as JSON.")
     pa.add_argument("username", help="Username to inspect.")
-    pa.add_argument("-o", "--output", help="Write the full student AI-detection page to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ai_detection_student_page)
     for name, func, description in (
         ("preview", ai_preview, "Preview submissions matching AI-detection filters without starting a detection task."),
@@ -2289,14 +2237,10 @@ def build_parser() -> argparse.ArgumentParser:
     rs = rk.add_subparsers(dest="cmd", required=True)
     pa = add_cli_parser(rs, "list", "List ranking competitions.")
     pa.add_argument("--limit", type=int, help="Maximum number of competitions to return.")
-    pa.add_argument("-o", "--output", help="Write the full response to this file.")
-    pa.add_argument("--max-chars", type=int, default=2000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ranking_list)
-    pa = add_cli_parser(rs, "detail", "Fetch a ranking competition detail page.")
+    pa = add_cli_parser(rs, "detail", "Fetch ranking competition detail metadata as JSON.")
     pa.add_argument("competition_id", type=int, help="Competition ID to inspect.")
-    pa.add_argument("--tab", help="Optional detail-page tab to request, such as submissions, leaderboard, or settings.")
-    pa.add_argument("-o", "--output", help="Write the full detail response to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
+    pa.add_argument("--tab", help="Optional detail tab to request, such as submissions, leaderboard, or settings.")
     pa.set_defaults(func=ranking_detail)
     pa = add_cli_parser(rs, "create", "Create a ranking competition.")
     pa.add_argument("--title", required=True, help="Competition title.")
@@ -2441,11 +2385,9 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--query", help="Search query for appeal list filtering.")
     pa.add_argument("--status", help="Appeal status filter accepted by the server.")
     pa.set_defaults(func=ranking_appeals)
-    pa = add_cli_parser(rs, "appeal-review", "Fetch the review page for a ranking appeal.")
+    pa = add_cli_parser(rs, "appeal-review", "Fetch ranking appeal review metadata as JSON.")
     pa.add_argument("competition_id", type=int, help="Competition ID that owns the appeal.")
     pa.add_argument("appeal_id", type=int, help="Appeal ID to review.")
-    pa.add_argument("-o", "--output", help="Write the full appeal-review response to this file.")
-    pa.add_argument("--max-chars", type=int, default=3000, help="Maximum number of response characters to print when not writing to a file.")
     pa.set_defaults(func=ranking_appeal_review)
     pa = add_cli_parser(rs, "appeal-handle", "Resolve or reject a ranking appeal.")
     pa.add_argument("competition_id", type=int, help="Competition ID that owns the appeal.")
