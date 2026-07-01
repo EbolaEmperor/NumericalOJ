@@ -10,7 +10,7 @@ from oj_modules.db_services import (
     get_submission_by_id,
     get_submissions_in_time_range,
     get_user_by_username,
-    update_submission_status,
+    reset_submission_for_rejudge,
 )
 from oj_modules.tasks.evaluate_tasks import clear_submission_lock
 
@@ -82,7 +82,7 @@ def _enqueue_rejudge(submissions, progress_key, clear_running_lock=False):
     for sub in submissions:
         if clear_running_lock and sub.get("status") == "Running":
             clear_submission_lock(sub["id"])
-        update_submission_status(sub["id"], "Pending")
+        reset_submission_for_rejudge(sub["id"], sub.get("problem_type"))
 
     for idx, sub in enumerate(submissions):
         _rejudge_task.apply_async(

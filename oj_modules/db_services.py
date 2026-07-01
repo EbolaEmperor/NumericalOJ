@@ -1783,6 +1783,42 @@ def update_submission_status(submission_id, new_status):
     refresh_submission_status_snapshot(submission_id)
 
 
+def reset_submission_for_rejudge(submission_id, problem_type=None):
+    """Reset a submission before enqueueing a rejudge.
+
+    Programming submissions must drop stale test-point rows so the detail page
+    enters its live judging path. Written submissions keep test_points because
+    it stores the original uploaded filename used by the grading worker.
+    """
+    try:
+        ptype = int(problem_type) if problem_type is not None else None
+    except (TypeError, ValueError):
+        ptype = None
+    clear_test_points = ptype != 2
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if clear_test_points:
+                sql = """
+                    UPDATE submissions
+                       SET status='Pending', score=0, test_points=''
+                     WHERE id=%s
+                """
+                cursor.execute(sql, (submission_id,))
+            else:
+                sql = """
+                    UPDATE submissions
+                       SET status='Pending', score=0
+                     WHERE id=%s
+                """
+                cursor.execute(sql, (submission_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    refresh_submission_status_snapshot(submission_id)
+
+
 def update_submission_evaluation(submission_id, test_point_statuses, score, status):
     conn = get_db_connection()
     try:
