@@ -1378,6 +1378,7 @@ def create_submission(
     problem = get_problem(problem_id)
     problem_type = problem['type']
     ensure_submission_prompt_columns()
+    subid = None
     conn = get_db_connection()
     try:
         if problem_type == 2:
@@ -1409,7 +1410,6 @@ def create_submission(
                     cursor.execute(sql, (problem_id,))
             conn.commit()
 
-        subid = None
         with conn.cursor() as cursor:
             test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
             sql = """INSERT INTO submissions
@@ -1436,9 +1436,10 @@ def create_submission(
             raise RuntimeError("create_submission: failed to get valid submission id")
         refresh_submission_status_snapshot(subid)
         bump_daily_submission_count()
-        return subid
     finally:
         conn.close()
+    archive_submission_by_id(subid)
+    return subid
 
 
 def get_latest_written_submission(username, problem_id):
@@ -1595,6 +1596,46 @@ def get_submission_by_id(submission_id):
             return submission
     finally:
         conn.close()
+
+
+def archive_submission_by_id(submission_id):
+    """Best-effort filesystem archive for a submission and its DB metadata."""
+    try:
+        submission = get_submission_by_id(submission_id)
+        if not submission:
+            return None
+        problem = get_problem(submission.get('problem_id'))
+        user = get_user_by_username(submission.get('username'))
+        classes = []
+        if user and user.get('id') is not None:
+            classes = get_user_classes(user['id'])
+        from oj_modules.submission_archive import archive_submission_record
+        return archive_submission_record(submission, problem, user, classes)
+    except Exception as e:
+        print(f"[SubmissionArchive] failed to archive submission {submission_id}: {e}")
+        return None
+
+
+def archive_submission_file_by_id(submission_id, source_path, preferred_filename=None):
+    """Best-effort archive for an uploaded submission file."""
+    try:
+        archive_submission_by_id(submission_id)
+        from oj_modules.submission_archive import archive_uploaded_submission_file
+        return archive_uploaded_submission_file(submission_id, source_path, preferred_filename)
+    except Exception as e:
+        print(f"[SubmissionArchive] failed to archive file for submission {submission_id}: {e}")
+        return None
+
+
+def archive_submission_text_artifact_by_id(submission_id, filename, content):
+    """Best-effort archive for a derived text artifact, such as TeX."""
+    try:
+        archive_submission_by_id(submission_id)
+        from oj_modules.submission_archive import archive_text_artifact
+        return archive_text_artifact(submission_id, filename, content)
+    except Exception as e:
+        print(f"[SubmissionArchive] failed to archive text for submission {submission_id}: {e}")
+        return None
 
 
 def get_incomplete_submissions():

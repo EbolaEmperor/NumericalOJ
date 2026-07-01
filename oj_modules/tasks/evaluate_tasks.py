@@ -27,6 +27,7 @@ from config import (
 )
 from oj_modules.ai_utils import evaluate_program_output_image_with_ai
 from oj_modules.db_services import (
+    archive_submission_by_id,
     get_db_connection,
     insert_user_problem_ac_record_if_absent,
     get_problem,
@@ -337,13 +338,15 @@ def register_evaluate_submission_task(celery_app):
             )
 
             problem_id = submission['problem_id']
-            code = submission['code']
+            raw_submission_code = submission['code'] or ''
+            code = raw_submission_code
             # 安全：用户代码若混入评测包裹标记串，会截断禁用函数检查的扫描区间从而绕过过滤。
             # 包裹前先剥离这些标记串，使标记不可被用户伪造。
             for _marker in ("here_is_user_code_fuck_fuck_fuck_hahaha", "user_code_end_fuck_hahaha_fuck"):
                 if _marker in code:
                     code = code.replace(_marker, "")
             problem = get_problem(problem_id)
+            archive_submission_by_id(submission_id)
             programming_grading_mode = _normalize_programming_grading_mode(problem)
             required_output_image_filename = (
                 str(problem.get('programming_output_filename') or 'output.png').strip()
@@ -486,6 +489,8 @@ def register_evaluate_submission_task(celery_app):
                 single_sid = f"eoj-{submission_id}-1"
                 single_payload = {
                     "code": final_code,
+                    "submittedCode": raw_submission_code,
+                    "checkerCode": test_code,
                     "input": single_input,
                     "forbidden": fbd_func,
                     "sid": single_sid,
@@ -577,6 +582,8 @@ def register_evaluate_submission_task(celery_app):
             if lang in ['c', 'cpp', 'matlab', 'python', 'py']:
                 quick_compile_payload = {
                     "code": final_code,
+                    "submittedCode": raw_submission_code,
+                    "checkerCode": test_code,
                     "input": "",
                     "forbidden": fbd_func,
                     "sid": f"eoj-quick-compile-{submission_id}",
@@ -623,6 +630,8 @@ def register_evaluate_submission_task(celery_app):
     
                 batch_payload = {
                     "code": final_code,
+                    "submittedCode": raw_submission_code,
+                    "checkerCode": test_code,
                     "test_cases": test_cases,
                     "forbidden": fbd_func,
                     "sid": f"eoj-batch-{submission_id}",
@@ -877,6 +886,8 @@ def register_evaluate_submission_task(celery_app):
                 for idx, tc in enumerate(test_cases, start=1):
                     payload = {
                         "code": final_code,
+                        "submittedCode": raw_submission_code,
+                        "checkerCode": test_code,
                         "input": tc.get("input", ""),
                         "forbidden": fbd_func,
                         "sid": f"eoj-{submission_id}-{idx}",

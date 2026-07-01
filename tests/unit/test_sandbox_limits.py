@@ -26,7 +26,7 @@ def test_cleanup_run_artifacts_keeps_images(tmp_path, monkeypatch):
     sid = "eoj-batch-999"
     run_dir = os.path.join(str(tmp_path), sid)
     os.makedirs(run_dir, exist_ok=True)
-    for name in ("a.out", "main.c", "input_0.txt", "output_0.txt"):
+    for name in ("a.out", "main.c", "submitted.c", "checker.c", "input_0.txt", "output_0.txt"):
         with open(os.path.join(run_dir, name), "w") as f:
             f.write("x")
     img = os.path.join(run_dir, "output_0.png")
@@ -36,6 +36,9 @@ def test_cleanup_run_artifacts_keeps_images(tmp_path, monkeypatch):
     judger_core.cleanup_run_artifacts(sid)
 
     assert not os.path.exists(os.path.join(run_dir, "a.out"))
+    assert os.path.isfile(os.path.join(run_dir, "main.c"))
+    assert os.path.isfile(os.path.join(run_dir, "submitted.c"))
+    assert os.path.isfile(os.path.join(run_dir, "checker.c"))
     assert not os.path.exists(os.path.join(run_dir, "output_0.txt"))
     assert os.path.isfile(img)
 
@@ -47,6 +50,8 @@ def test_cleanup_run_artifacts_for_submission_prefixes(tmp_path, monkeypatch):
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "a.out"), "w") as f:
             f.write("x")
+        with open(os.path.join(d, "main.cpp"), "w") as f:
+            f.write("x")
     other = os.path.join(str(tmp_path), "eoj-70-1")
     os.makedirs(other, exist_ok=True)
     with open(os.path.join(other, "a.out"), "w") as f:
@@ -56,6 +61,9 @@ def test_cleanup_run_artifacts_for_submission_prefixes(tmp_path, monkeypatch):
 
     assert not os.path.exists(os.path.join(str(tmp_path), "eoj-batch-7", "a.out"))
     assert not os.path.exists(os.path.join(str(tmp_path), "eoj-7-1", "a.out"))
+    assert os.path.isfile(os.path.join(str(tmp_path), "eoj-batch-7", "main.cpp"))
+    assert os.path.isfile(os.path.join(str(tmp_path), "eoj-7-1", "main.cpp"))
+    assert not os.path.exists(os.path.join(str(tmp_path), "eoj-quick-compile-7", "main.cpp"))
     assert os.path.isfile(os.path.join(other, "a.out"))
 
 

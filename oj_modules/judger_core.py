@@ -46,6 +46,20 @@ JUDGER_RUN_ROOT = (
 # ========== 通用工具 ==========
 SAFE_SID_PATTERN = re.compile(r'^[A-Za-z0-9_\-\.]+$')
 IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+SOURCE_ARTIFACT_FILENAMES = {
+    "a.m",
+    "main.c",
+    "main.cpp",
+    "main.py",
+    "submitted.c",
+    "submitted.cpp",
+    "submitted.m",
+    "submitted.py",
+    "checker.c",
+    "checker.cpp",
+    "checker.m",
+    "checker.py",
+}
 
 
 # ========== C/C++ 编译命令 ==========
@@ -132,6 +146,35 @@ def _warmup_octave_plot(session):
         )
     except Exception:
         pass
+
+
+def _source_ext_for_language(language):
+    lang = str(language or "").strip().lower()
+    if lang == "cpp":
+        return ".cpp"
+    if lang == "c":
+        return ".c"
+    if lang in ("python", "py"):
+        return ".py"
+    return ".m"
+
+
+def _write_source_debug_artifacts(run_dir, data, language):
+    """保留调试用源码：原始提交、checker、实际编译/执行源码。"""
+    ext = _source_ext_for_language(language)
+    artifacts = (
+        (f"submitted{ext}", data.get("submittedCode")),
+        (f"checker{ext}", data.get("checkerCode")),
+    )
+    for filename, content in artifacts:
+        if content is None:
+            continue
+        text = content if isinstance(content, str) else str(content)
+        try:
+            with open(os.path.join(run_dir, filename), "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            pass
 
 
 def _target_machine_arch():
@@ -243,10 +286,19 @@ def sanitize_output_image_filename(filename: str) -> str:
     return raw[:255] or "output.png"
 
 
+def _wait_for_output_file(path: str, attempts: int = 20, delay_seconds: float = 0.05) -> bool:
+    """Wait briefly for Docker bind-mount writes to become visible on the host."""
+    for _ in range(max(1, attempts)):
+        if os.path.isfile(path):
+            return True
+        time.sleep(delay_seconds)
+    return os.path.isfile(path)
+
+
 def capture_output_image_file(sid: str, requested_filename: str, stored_stem: str):
     requested_name = sanitize_output_image_filename(requested_filename)
     source_path = os.path.join(sid, requested_name)
-    if not os.path.isfile(source_path):
+    if not _wait_for_output_file(source_path):
         return None
 
     _, ext = os.path.splitext(requested_name)
@@ -277,7 +329,7 @@ def capture_output_image_file(sid: str, requested_filename: str, stored_stem: st
 def capture_output_image_file_to_dir(source_dir: str, target_dir: str, requested_filename: str, stored_stem: str):
     requested_name = sanitize_output_image_filename(requested_filename)
     source_path = os.path.join(source_dir, requested_name)
-    if not os.path.isfile(source_path):
+    if not _wait_for_output_file(source_path):
         return None
 
     _, ext = os.path.splitext(requested_name)
@@ -362,8 +414,8 @@ def _write_user_files(run_dir, user_files):
             f.write(content if isinstance(content, str) else str(content or ""))
 
 
-def cleanup_run_artifacts(sid, keep_images=True):
-    """评测结束后清理运行目录里的临时产物，默认保留输出图片。"""
+def cleanup_run_artifacts(sid, keep_images=True, keep_sources=True):
+    """评测结束后清理运行目录里的临时产物，默认保留输出图片和源码。"""
     run_dir = run_dir_for(sid)
     if not os.path.isdir(run_dir):
         return
@@ -374,6 +426,8 @@ def cleanup_run_artifacts(sid, keep_images=True):
                 continue
             ext = os.path.splitext(name)[1].lower()
             if keep_images and ext in IMAGE_FILE_EXTENSIONS:
+                continue
+            if keep_sources and name in SOURCE_ARTIFACT_FILENAMES:
                 continue
             try:
                 os.remove(path)
@@ -392,13 +446,18 @@ def cleanup_run_artifacts_for_submission(submission_id, keep_images=True):
     """清理某次提交可能用到的所有运行目录的临时产物。"""
     sid = str(submission_id)
     prefix = f"eoj-{sid}-"
+    quick_compile_name = f"eoj-quick-compile-{sid}"
     exact = {f"eoj-batch-{sid}", f"eoj-quick-compile-{sid}"}
     if not os.path.isdir(JUDGER_RUN_ROOT):
         return
     try:
         for name in os.listdir(JUDGER_RUN_ROOT):
             if name in exact or name.startswith(prefix):
-                cleanup_run_artifacts(name, keep_images=keep_images)
+                cleanup_run_artifacts(
+                    name,
+                    keep_images=keep_images,
+                    keep_sources=(name != quick_compile_name),
+                )
     except Exception:
         pass
 
@@ -411,6 +470,8 @@ def reap_stale_run_dirs(ttl_seconds):
     removed = 0
     try:
         for name in os.listdir(JUDGER_RUN_ROOT):
+            if name == "submission_archive":
+                continue
             path = os.path.join(JUDGER_RUN_ROOT, name)
             if not os.path.isdir(path):
                 continue
@@ -472,6 +533,7 @@ def run_octave(data):
 
     with open(os.path.join(run_dir, "a.m"), "w", encoding="utf-8") as f:
         f.write(code_content)
+    _write_source_debug_artifacts(run_dir, data, "octave")
     with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
         f.write(user_input)
 
@@ -541,6 +603,7 @@ def run_py(data):
 
     with open(os.path.join(run_dir, "main.py"), "w", encoding="utf-8") as f:
         f.write(code_content)
+    _write_source_debug_artifacts(run_dir, data, "python")
     with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
         f.write(user_input)
 
@@ -623,6 +686,7 @@ def _run_compiled_single(data, language):
         f.write(user_input)
 
     _write_user_files(run_dir, user_files)
+    _write_source_debug_artifacts(run_dir, data, language)
 
     # Compile
     compile_res = run_in_container(
@@ -727,6 +791,7 @@ def _batch_evaluate_stream(data, language):
             f.write(code_content)
 
         _write_user_files(run_dir, user_files)
+        _write_source_debug_artifacts(run_dir, data, language)
 
         with ContainerSession(run_dir=run_dir) as session:
             # Compile
@@ -744,20 +809,30 @@ def _batch_evaluate_stream(data, language):
             # Run each test case
             for i, test_case in enumerate(test_cases):
                 user_input = test_case.get("input", "")
-                with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
+                case_dir = os.path.join(run_dir, f"case_{i}")
+                if os.path.isdir(case_dir):
+                    shutil.rmtree(case_dir, ignore_errors=True)
+                ensure_dir(case_dir)
+                try:
+                    os.chmod(case_dir, 0o777)
+                except OSError:
+                    pass
+
+                with open(os.path.join(case_dir, "input.txt"), "w", encoding="utf-8") as f:
                     f.write(user_input)
                 timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
-                run_cmd = _timeout_cmd(timeLim_sec, "./a.out")
+                run_cmd = _timeout_cmd(timeLim_sec, "../a.out")
 
                 run_res = session.exec(
                     run_cmd,
                     input_text=user_input,
                     timeout_sec=_guard_timeout(timeLim_sec),
+                    workdir=f"/sandbox/case_{i}",
                     measure_time=True,
                 )
                 exec_time = _measured_exec_time_ns(run_res, tle)
 
-                output_filename = os.path.join(run_dir, f"output_{i}.txt")
+                output_filename = os.path.join(case_dir, "output.txt")
                 outp = read_output_with_fallback(output_filename, run_res.stdout or "")
 
                 status = "Accepted"
@@ -777,11 +852,15 @@ def _batch_evaluate_stream(data, language):
                     exval = run_res.returncode
 
                 files_dict = {"stdout": outp, "stderr": stderr}
-                stored_image_filename = capture_output_image_file(
-                    run_dir, output_image_filename, f"output_{i}",
+                stored_image_filename = capture_output_image_file_to_dir(
+                    case_dir, run_dir, output_image_filename, f"output_{i}",
                 )
                 if stored_image_filename:
                     files_dict[stored_image_filename] = True
+                try:
+                    shutil.rmtree(case_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
                 yield {"event": "test_result", "result": {
                     "test_case_index": i,
@@ -836,6 +915,7 @@ def _batch_evaluate_script_stream(data, language):
 
         with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
             f.write(code_content)
+        _write_source_debug_artifacts(run_dir, data, language)
 
         # 解释型语言无编译步骤，直接报告编译成功以复用上层 stream 处理逻辑。
         yield {"event": "compile", "status": "success", "stderr": ""}

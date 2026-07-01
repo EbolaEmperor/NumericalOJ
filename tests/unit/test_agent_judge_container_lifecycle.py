@@ -55,6 +55,7 @@ def _run(monkeypatch, running_seq, timeout_s, endpoint=None):
     fake = _FakeSubprocess(running_seq)
     monkeypatch.setattr(m, "subprocess", fake)
     monkeypatch.setattr(m.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "_attempt_still_current", lambda *_a, **_k: True)
     ws = tempfile.mkdtemp(prefix="ajws_")
     os.makedirs(os.path.join(ws, "submission"), exist_ok=True)
     competition = {
