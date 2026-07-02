@@ -1,0 +1,40 @@
+mode: full
+generated_at: "2026-07-02T15:24:01+08:00"
+repository:
+  root: /Users/bytedance/personal-codes/NumericalOJ
+  remote: git@github.com:EbolaEmperor/NumericalOJ.git
+  commit: 6c17485bb7c179211335f6c813b99f2efb6e6e29
+upload:
+  status: dry_run_only
+  reason: "Current git remote is GitHub, not code.byted.org; helper dry-run used repo_path EbolaEmperor/NumericalOJ only for packaging validation."
+  dry_run_report: upload_dry_run_report.json
+  packaged_content_dir: wiki_output
+languages:
+  - en
+  - zh
+pages:
+  - id: 1
+    en: wiki_output/en/1-Project Overview.md
+    zh: wiki_output/zh/1-项目概览.md
+  - id: 2
+    en: wiki_output/en/2-Web Application and Data Layer.md
+    zh: wiki_output/zh/2-Web应用与数据层.md
+  - id: 3
+    en: wiki_output/en/3-Judging and Submissions.md
+    zh: wiki_output/zh/3-评测与提交流水线.md
+  - id: 4
+    en: wiki_output/en/4-Written Homework and Coursework.md
+    zh: wiki_output/zh/4-书面作业与课程管理.md
+  - id: 5
+    en: wiki_output/en/5-AI and Repository Intelligence.md
+    zh: wiki_output/zh/5-AI与代码库智能.md
+  - id: 6
+    en: wiki_output/en/6-Ranking Competitions.md
+    zh: wiki_output/zh/6-打榜赛.md
+  - id: 7
+    en: wiki_output/en/7-Operations Testing and Tooling.md
+    zh: wiki_output/zh/7-运维测试与工具链.md
+quality_targets:
+  source_blocks: "Every page includes nearby Sources or 来源 blocks with file paths and line ranges."
+  diagrams: "Every page includes at least two Mermaid diagrams."
+  scope: "Full repository overview across web, tasks, judging, AI, ranking, operations, tests, and CLI skills."
