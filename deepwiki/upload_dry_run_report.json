@@ -1,0 +1,13 @@
+{
+  "repo_path": "EbolaEmperor/NumericalOJ",
+  "commit_id": "6c17485bb7c179211335f6c813b99f2efb6e6e29",
+  "content_dir": "deepwiki_output/wiki_output",
+  "generated_at": "2026-07-02T15:24:01+08:00",
+  "dry_run": true,
+  "home_url": "https://deepwiki.bytedance.net/EbolaEmperor/NumericalOJ",
+  "method": "git",
+  "wiki_repo_url": "git@code.byted.org:EbolaEmperor/NumericalOJ.wiki.git",
+  "files": 15,
+  "total_bytes": 81286,
+  "uploaded_keys": 15
+}
