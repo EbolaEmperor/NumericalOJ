@@ -17,7 +17,6 @@ from oj_modules.db_services import (
     archive_submission_file_by_id,
     can_submit,
     create_submission,
-    ensure_class_homework_columns,
     get_all_problems,
     get_agent_run_by_task_id,
     get_agent_runs_paginated,
@@ -241,15 +240,6 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
     cached = _homeworks_cache.get(cache_key)
     if cached and now_ts < cached["expires_at"]:
         return cached["value"]
-
-    # 保证各班表已有 ranking_competition_id 列、打榜赛相关表已建（惰性、幂等）
-    for cls in class_en_list:
-        ensure_class_homework_columns(cls)
-    try:
-        from oj_modules.ranking_db import ensure_ranking_tables
-        ensure_ranking_tables()
-    except Exception:
-        pass
 
     db_cursor = cursor
     conn = None

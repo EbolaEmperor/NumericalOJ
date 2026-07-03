@@ -83,54 +83,7 @@ class RepositoryIndexJobCancelled(Exception):
 
 
 def ensure_repository_index_tables():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS repository_index_jobs (
-                    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                    user_id INT NOT NULL,
-                    status VARCHAR(16) NOT NULL DEFAULT 'queued',
-                    total_files INT NOT NULL DEFAULT 0,
-                    processed_files INT NOT NULL DEFAULT 0,
-                    total_chunks INT NOT NULL DEFAULT 0,
-                    total_classes INT NOT NULL DEFAULT 0,
-                    error_message TEXT NULL,
-                    progress_message TEXT NULL,
-                    task_id VARCHAR(191) NULL,
-                    cancel_requested TINYINT(1) NOT NULL DEFAULT 0,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    finished_at DATETIME NULL,
-                    KEY idx_repository_index_jobs_user_id (user_id),
-                    KEY idx_repository_index_jobs_status (status),
-                    KEY idx_repository_index_jobs_active (user_id, status, cancel_requested)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-                """
-            )
-            cursor.execute(
-                """
-                SELECT column_name AS name
-                FROM information_schema.columns
-                WHERE table_schema = DATABASE()
-                  AND table_name = 'repository_index_jobs'
-                  AND column_name IN ('progress_message', 'task_id', 'cancel_requested')
-                """
-            )
-            existing = {row["name"] for row in cursor.fetchall()}
-            if "progress_message" not in existing:
-                cursor.execute("ALTER TABLE repository_index_jobs ADD COLUMN progress_message TEXT NULL AFTER error_message")
-            if "task_id" not in existing:
-                cursor.execute("ALTER TABLE repository_index_jobs ADD COLUMN task_id VARCHAR(191) NULL AFTER progress_message")
-            if "cancel_requested" not in existing:
-                cursor.execute(
-                    "ALTER TABLE repository_index_jobs "
-                    "ADD COLUMN cancel_requested TINYINT(1) NOT NULL DEFAULT 0 AFTER task_id"
-                )
-        conn.commit()
-    finally:
-        conn.close()
+    return None
 
 
 def _safe_int(value, default=0):
@@ -190,7 +143,6 @@ def _sha256_text(text):
 
 
 def create_repository_index_job(user_id):
-    ensure_repository_index_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -245,7 +197,6 @@ def update_repository_index_job(job_id, **fields):
 
 
 def get_repository_index_job(job_id, user_id):
-    ensure_repository_index_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -275,7 +226,6 @@ def get_repository_index_job(job_id, user_id):
 
 
 def get_latest_active_repository_index_job(user_id):
-    ensure_repository_index_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -299,7 +249,6 @@ def get_latest_active_repository_index_job(user_id):
 
 
 def _get_repository_index_job_runtime(job_id, user_id=None):
-    ensure_repository_index_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -329,7 +278,6 @@ def _get_repository_index_job_runtime(job_id, user_id=None):
 
 
 def _try_mark_repository_index_job_running(job_id):
-    ensure_repository_index_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -358,7 +306,6 @@ def _is_repository_index_job_cancel_requested(job_id):
 
 
 def request_cancel_repository_index_job(job_id, user_id=None, reason='用户取消任务'):
-    ensure_repository_index_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2269,7 +2216,6 @@ def _format_repository_progress_message(stage, detail=''):
 
 
 def run_repository_index_job(user_id, job_id, file_id=None):
-    ensure_repository_index_tables()
     user_id = int(user_id)
     job_id = int(job_id)
     target_file_id = _safe_int(file_id, 0) if file_id is not None else 0
@@ -2620,7 +2566,6 @@ def run_repository_index_job(user_id, job_id, file_id=None):
 
 
 def list_repository_classes(user_id, limit=300):
-    ensure_repository_index_tables()
     use_limit = max(1, min(2000, _safe_int(limit, 300)))
     conn = get_db_connection()
     try:
@@ -2705,7 +2650,6 @@ def search_repository_chunks(
     query_vector=None,
     query_embedding_model=None,
 ):
-    ensure_repository_index_tables()
     text = str(query or '').strip()
     if query_vector is None and not text:
         return {

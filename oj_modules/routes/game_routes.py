@@ -26,47 +26,7 @@ from oj_modules.auth_helpers import current_user, is_admin
 
 def ensure_circle_cat_tables():
     global _circle_cat_tables_ready
-    if _circle_cat_tables_ready:
-        return
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS circle_cat_records (
-                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                    username VARCHAR(255) NOT NULL,
-                    turn_count INT NOT NULL,
-                    is_win TINYINT(1) NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_circle_cat_win_turn (is_win, turn_count, created_at),
-                    INDEX idx_circle_cat_user_win (username, is_win, turn_count)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS circle_cat_games (
-                    game_id CHAR(32) NOT NULL PRIMARY KEY,
-                    username VARCHAR(255) DEFAULT NULL,
-                    mode VARCHAR(16) NOT NULL,
-                    board_size INT NOT NULL,
-                    initial_blocked_json TEXT NOT NULL,
-                    cat_row INT NOT NULL,
-                    cat_col INT NOT NULL,
-                    is_finished TINYINT(1) NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    finished_at TIMESTAMP NULL DEFAULT NULL,
-                    INDEX idx_circle_cat_games_user_created (username, created_at),
-                    INDEX idx_circle_cat_games_finished (is_finished, created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-        conn.commit()
-        _circle_cat_tables_ready = True
-    finally:
-        conn.close()
+    _circle_cat_tables_ready = True
 
 
 def _parse_mode(value):
@@ -297,7 +257,6 @@ def _create_circle_cat_game(username, mode):
     game_id = None
 
     if username:
-        ensure_circle_cat_tables()
         game_id = uuid4().hex
         conn = get_db_connection()
         try:
@@ -429,7 +388,6 @@ def get_circle_cat_leaderboard_page(limit=10, offset=0):
     fail_rows = []
     conn = None
     try:
-        ensure_circle_cat_tables()
         conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute(
@@ -562,8 +520,6 @@ def circle_cat_result():
     game_id = str(data.get('game_id') or '').strip().lower()
     if len(game_id) != 32:
         return jsonify({'success': False, 'message': '无效的对局标识。'}), 400
-
-    ensure_circle_cat_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:

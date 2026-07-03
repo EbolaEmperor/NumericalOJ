@@ -30,7 +30,8 @@ def make_class(class_en=None, class_cn=None):
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS `{class_en}` ("
                 "id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, problem_id INT, "
-                "ddl DATETIME, complete_cnt INT DEFAULT 0, problem_title TEXT) "
+                "ddl DATETIME, complete_cnt INT DEFAULT 0, problem_title TEXT, "
+                "ranking_competition_id INT DEFAULT NULL) "
                 "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
         conn.commit()
     finally:

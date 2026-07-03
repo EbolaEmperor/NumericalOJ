@@ -11,7 +11,6 @@ from config import AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, AGENT_REPOSITORY_KNN_TO
 from oj_modules.db_services import get_db_connection, get_user_by_username
 from oj_modules.repository_index_services import (
     create_repository_index_job,
-    ensure_repository_index_tables,
     get_repository_index_job,
     get_latest_active_repository_index_job,
     list_repository_classes,
@@ -36,11 +35,6 @@ except Exception:
 def init_repository_index_module(repository_build_index_task):
     global _repository_build_index_task
     _repository_build_index_task = repository_build_index_task
-    try:
-        ensure_repository_index_tables()
-    except Exception:
-        # 避免初始化失败阻断主站运行；真正调用接口时会再确保建表。
-        pass
 
 
 from oj_modules.auth_helpers import current_user, is_admin

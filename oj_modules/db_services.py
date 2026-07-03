@@ -288,55 +288,28 @@ def get_db_connection():
     return _db_pool.acquire()
 
 
-# problems 表的惰性补列：以下若干 ensure_* 函数结构完全一致，统一收敛到一个 helper，
-# 用一个集合做进程内「已补加」缓存，取代过去每列一个 _*_ready 全局标志。
-_ensured_problem_columns = set()
-_ensured_submission_columns = set()
+# Schema creation and migration is handled by scripts/init_db_schema.py before
+# the web and Celery processes start. Runtime data paths must not issue DDL.
+
+
+def _schema_is_managed_at_startup(*args, **kwargs):
+    return None
 
 
 def _ensure_problem_column(column, add_column_sql):
-    """惰性给 problems 表补加某列（幂等 + 进程内缓存）。只读/迁移异常时静默跳过，
-    后续查询仍按默认值处理。column 仅来自代码内常量，add_column_sql 为完整 ALTER 语句。"""
-    if column in _ensured_problem_columns:
-        return
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM problems LIKE %s", (column,))
-            if not cursor.fetchone():
-                cursor.execute(add_column_sql)
-                conn.commit()
-        _ensured_problem_columns.add(column)
-    except Exception:
-        # 兼容只读或迁移过程中的异常；后续查询仍可按默认值处理。
-        pass
-    finally:
-        conn.close()
+    return _schema_is_managed_at_startup(column, add_column_sql)
 
 
 def _ensure_submission_column(column, add_column_sql):
-    """惰性给 submissions 表补加某列（幂等 + 进程内缓存）。"""
-    if column in _ensured_submission_columns:
-        return
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SHOW COLUMNS FROM submissions LIKE %s", (column,))
-            if not cursor.fetchone():
-                cursor.execute(add_column_sql)
-                conn.commit()
-        _ensured_submission_columns.add(column)
-    except Exception:
-        pass
-    finally:
-        conn.close()
+    return _schema_is_managed_at_startup(column, add_column_sql)
+
+
+def ensure_submission_code_longtext_column():
+    return _schema_is_managed_at_startup()
 
 
 def ensure_problem_written_grading_mode_column():
-    _ensure_problem_column(
-        'written_grading_mode',
-        "ALTER TABLE problems ADD COLUMN written_grading_mode TINYINT NOT NULL DEFAULT 1",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def normalize_written_grading_model(value, default=_DEFAULT_WRITTEN_GRADING_MODEL):
@@ -347,18 +320,11 @@ def normalize_written_grading_model(value, default=_DEFAULT_WRITTEN_GRADING_MODE
 
 
 def ensure_problem_written_grading_model_column():
-    default_model_sql = normalize_written_grading_model(_DEFAULT_WRITTEN_GRADING_MODEL).replace("'", "''")
-    _ensure_problem_column(
-        'written_grading_model',
-        f"ALTER TABLE problems ADD COLUMN written_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_problem_written_grading_prompt_column():
-    _ensure_problem_column(
-        'written_grading_prompt',
-        "ALTER TABLE problems ADD COLUMN written_grading_prompt TEXT NULL",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_problem_written_grading_columns():
@@ -386,32 +352,19 @@ def normalize_programming_grading_model(value, default=_DEFAULT_PROGRAMMING_GRAD
 
 
 def ensure_problem_programming_grading_mode_column():
-    _ensure_problem_column(
-        'programming_grading_mode',
-        "ALTER TABLE problems ADD COLUMN programming_grading_mode TINYINT NOT NULL DEFAULT 1",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_problem_programming_grading_model_column():
-    default_model_sql = normalize_programming_grading_model(_DEFAULT_PROGRAMMING_GRADING_MODEL).replace("'", "''")
-    _ensure_problem_column(
-        'programming_grading_model',
-        f"ALTER TABLE problems ADD COLUMN programming_grading_model VARCHAR(32) NOT NULL DEFAULT '{default_model_sql}'",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_problem_programming_output_filename_column():
-    _ensure_problem_column(
-        'programming_output_filename',
-        "ALTER TABLE problems ADD COLUMN programming_output_filename VARCHAR(255) NOT NULL DEFAULT 'output.png'",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_problem_programming_grading_prompt_column():
-    _ensure_problem_column(
-        'programming_grading_prompt',
-        "ALTER TABLE problems ADD COLUMN programming_grading_prompt TEXT NULL",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_problem_programming_grading_columns():
@@ -427,30 +380,19 @@ def ensure_problem_grading_columns():
 
 
 def ensure_submission_prompt_columns():
-    ensure_submission_prompt_text_column()
-    ensure_submission_generated_from_prompt_column()
-    ensure_submission_prompt_generation_error_column()
+    return _schema_is_managed_at_startup()
 
 
 def ensure_submission_prompt_text_column():
-    _ensure_submission_column(
-        'prompt_text',
-        "ALTER TABLE submissions ADD COLUMN prompt_text LONGTEXT NULL",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_submission_generated_from_prompt_column():
-    _ensure_submission_column(
-        'generated_from_prompt',
-        "ALTER TABLE submissions ADD COLUMN generated_from_prompt TINYINT NOT NULL DEFAULT 0",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def ensure_submission_prompt_generation_error_column():
-    _ensure_submission_column(
-        'prompt_generation_error',
-        "ALTER TABLE submissions ADD COLUMN prompt_generation_error TEXT NULL",
-    )
+    return _schema_is_managed_at_startup()
 
 
 def init_submission_snapshot_cache(redis_client, ttl_seconds=None):
@@ -588,7 +530,6 @@ def set_submission_status_snapshot(
 
 
 def refresh_submission_status_snapshot(submission_id):
-    ensure_submission_prompt_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -839,27 +780,10 @@ def get_agent_runs_paginated(page=1, per_page=20):
 
 def ensure_settings_table():
     global _settings_table_ready
-    if _settings_table_ready:
-        return
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS site_settings (
-                    k VARCHAR(191) NOT NULL PRIMARY KEY,
-                    v TEXT
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-        conn.commit()
-        _settings_table_ready = True
-    finally:
-        conn.close()
+    _settings_table_ready = True
 
 
 def get_setting(key, default=None):
-    ensure_settings_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -871,7 +795,6 @@ def get_setting(key, default=None):
 
 
 def set_setting(key, value):
-    ensure_settings_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1040,22 +963,7 @@ def get_users_in_classes(class_en_list):
 
 
 def ensure_class_homework_columns(class_en):
-    """给班级动态表 C<class_en> 惰性补加 ranking_competition_id 列（幂等）。
-    用于支持把「打榜赛」布置为作业——该列非空表示该作业行是一个打榜赛而非题目。
-    不做进程内缓存：作业列表查询本身已带缓存，且 SHOW COLUMNS 很廉价，避免班级表被重建后误判。"""
-    try:
-        tbl = safe_table_name(class_en)
-    except ValueError:
-        return
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE 'ranking_competition_id'")
-            if not cursor.fetchone():
-                cursor.execute(f"ALTER TABLE `{tbl}` ADD COLUMN ranking_competition_id INT DEFAULT NULL")
-        conn.commit()
-    finally:
-        conn.close()
+    return _schema_is_managed_at_startup(class_en)
 
 
 def get_class_by_en(class_en):
@@ -1081,7 +989,6 @@ def get_class_by_cn(class_cn):
 
 
 def get_all_problems():
-    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1098,7 +1005,6 @@ def get_all_problems():
 
 
 def get_problem(problem_id):
-    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1115,7 +1021,6 @@ def get_problem(problem_id):
 
 
 def get_problem_title(problem_id):
-    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1149,7 +1054,6 @@ def create_problem(
     written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
     written_grading_prompt='',
 ):
-    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         max_score = (0 if int(type) == 1 else 5)
@@ -1296,7 +1200,6 @@ def update_problem(
     new_written_grading_model=None,
     new_written_grading_prompt=None,
 ):
-    ensure_problem_grading_columns()
     conn = get_db_connection()
     try:
         programming_mode_val = None
@@ -1377,7 +1280,6 @@ def create_submission(
     # 先在获取连接前查好题目，避免占着连接再去 get_db_connection() 形成嵌套占用、放大连接池压力。
     problem = get_problem(problem_id)
     problem_type = problem['type']
-    ensure_submission_prompt_columns()
     subid = None
     conn = get_db_connection()
     try:
@@ -1723,12 +1625,8 @@ def save_submission_ai_code_marks_json(submission_id, payload):
             cursor.execute(sql, (payload_text, submission_id))
         conn.commit()
         return True
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        msg = str(e)
-        if ('ai_code_marks_json' in msg) and ('Unknown column' in msg or '1054' in msg):
-            print("[AI Code Marks] 缺少 ai_code_marks_json 字段，已跳过缓存写入。")
-            return False
         raise
     finally:
         conn.close()
@@ -1835,7 +1733,6 @@ def update_submission_evaluation(submission_id, test_point_statuses, score, stat
 
 
 def update_submission_generated_code(submission_id, generated_code, status="Pending"):
-    ensure_submission_prompt_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1859,7 +1756,6 @@ def update_submission_generated_code(submission_id, generated_code, status="Pend
 
 
 def update_submission_prompt_generation_error(submission_id, error_message, status="Error"):
-    ensure_submission_prompt_columns()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2291,31 +2187,12 @@ def truncate_ai_detection_tasks():
 
 def ensure_daily_submission_stats_table():
     global _daily_submission_stats_table_ready
-    if _daily_submission_stats_table_ready:
-        return
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS daily_submission_stats (
-                    day DATE NOT NULL PRIMARY KEY,
-                    submissions_count INT NOT NULL DEFAULT 0,
-                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                          ON UPDATE CURRENT_TIMESTAMP
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-        conn.commit()
-        _daily_submission_stats_table_ready = True
-    finally:
-        conn.close()
+    _daily_submission_stats_table_ready = True
 
 
 def bump_daily_submission_count():
     """Best-effort：捕获所有异常并打印到 stderr，永不向调用方抛出，避免统计表问题阻塞提交写入。"""
     try:
-        ensure_daily_submission_stats_table()
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
@@ -2332,7 +2209,6 @@ def bump_daily_submission_count():
 
 
 def get_today_submission_total_from_counter():
-    ensure_daily_submission_stats_table()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2349,7 +2225,6 @@ def get_last_10_days_counts_from_counter():
     """返回 ``(labels, counts)``：'YYYY-MM-DD' 字符串列表 + 对应整数；缺日补 0。"""
     from datetime import date, timedelta
 
-    ensure_daily_submission_stats_table()
     today = date.today()
     days = [today + timedelta(days=i) for i in range(-9, 1)]
     labels = [d.strftime('%Y-%m-%d') for d in days]

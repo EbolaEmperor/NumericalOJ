@@ -74,107 +74,12 @@ def _endpoint_row(row):
 
 def ensure_agent_judge_tables():
     global _aj_tables_ready
-    if _aj_tables_ready:
-        return
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_judge_rules (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    competition_id INT NOT NULL,
-                    rule_id INT NOT NULL,
-                    rule_name VARCHAR(120) DEFAULT NULL,
-                    rule_text MEDIUMTEXT NOT NULL,
-                    value DOUBLE NOT NULL DEFAULT 0,
-                    dependencies TEXT,
-                    ordering INT NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE KEY uq_rjr_comp_rule (competition_id, rule_id),
-                    INDEX idx_rjr_comp (competition_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            cursor.execute("SHOW COLUMNS FROM ranking_judge_rules LIKE 'rule_name'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_judge_rules"
-                    " ADD COLUMN rule_name VARCHAR(120) DEFAULT NULL AFTER rule_id"
-                )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_judge_results (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    submission_id INT NOT NULL,
-                    rule_id INT NOT NULL,
-                    raw_result VARCHAR(16) DEFAULT NULL,
-                    effective_result VARCHAR(16) DEFAULT NULL,
-                    score DOUBLE NOT NULL DEFAULT 0,
-                    evidence MEDIUMTEXT,
-                    reported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                        ON UPDATE CURRENT_TIMESTAMP,
-                    UNIQUE KEY uq_rjres_sub_rule (submission_id, rule_id),
-                    INDEX idx_rjres_sub (submission_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            # 每比赛的多模型端点池：每个端点 (base_url, api_key, model) 各自带并发上限。
-            # 判题时按端点分别用 Redis 槽位限流，从而把 agent 评测并发提升到「各端点上限之和」。
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_agent_judge_endpoints (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    competition_id INT NOT NULL,
-                    harness VARCHAR(32) NOT NULL DEFAULT 'claude_code',
-                    base_url VARCHAR(512) NOT NULL,
-                    api_key VARCHAR(512) NOT NULL,
-                    model VARCHAR(128) DEFAULT NULL,
-                    concurrency_limit INT NOT NULL DEFAULT 1,
-                    enabled TINYINT(1) NOT NULL DEFAULT 1,
-                    status VARCHAR(16) NOT NULL DEFAULT 'enabled',
-                    ordering INT NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_aje_comp (competition_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            cursor.execute("SHOW COLUMNS FROM ranking_agent_judge_endpoints LIKE 'harness'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_agent_judge_endpoints"
-                    " ADD COLUMN harness VARCHAR(32) NOT NULL DEFAULT 'claude_code' AFTER competition_id"
-                )
-            cursor.execute("SHOW COLUMNS FROM ranking_agent_judge_endpoints LIKE 'status'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_agent_judge_endpoints"
-                    " ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'enabled' AFTER enabled"
-                )
-                cursor.execute(
-                    "UPDATE ranking_agent_judge_endpoints"
-                    " SET status = CASE WHEN enabled = 1 THEN 'enabled' ELSE 'disabled' END"
-                )
-            cursor.execute(
-                "UPDATE ranking_agent_judge_endpoints"
-                " SET status = CASE WHEN enabled = 1 THEN 'enabled' ELSE 'disabled' END"
-                " WHERE status NOT IN ('enabled', 'disabled', 'paused')"
-            )
-            cursor.execute(
-                "UPDATE ranking_agent_judge_endpoints"
-                " SET enabled = CASE WHEN status = 'enabled' THEN 1 ELSE 0 END"
-                " WHERE enabled <> CASE WHEN status = 'enabled' THEN 1 ELSE 0 END"
-            )
-        conn.commit()
-        _aj_tables_ready = True
-    finally:
-        conn.close()
+    _aj_tables_ready = True
 
 
 def list_agent_judge_endpoints(competition_id, enabled_only=False):
     """返回某比赛的 agent 评测端点列表（含 api_key 明文，仅供判题侧使用）。
     enabled_only=True 时只返回启用的端点。按 ordering, id 排序。"""
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -193,7 +98,6 @@ def list_agent_judge_endpoints(competition_id, enabled_only=False):
 
 def list_paused_agent_judge_endpoints():
     """返回所有自动暂停中的端点，供周期性恢复探测任务使用。"""
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -217,7 +121,6 @@ def set_agent_judge_endpoint_status(endpoint_id, status, *, only_from_status=Non
 
     only_from_status 用于避免后台任务覆盖管理员刚刚做出的人工状态修改。
     """
-    ensure_agent_judge_tables()
     status = normalize_endpoint_status(status)
     enabled = _status_enabled(status)
     conn = get_db_connection()
@@ -270,7 +173,6 @@ def save_agent_judge_endpoints(competition_id, items):
     items 中每项：{id?, harness, base_url, api_key, model, concurrency_limit, status|enabled}。
     api_key 留空且带已存在的 id → 沿用旧 key（前端编辑器不回显明文）；
     api_key 留空且无对应 id → 报错（新端点必须填 key）。返回归一化后的列表。"""
-    ensure_agent_judge_tables()
     if not isinstance(items, list):
         raise ValueError('端点格式非法')
     existing = {e['id']: e for e in list_agent_judge_endpoints(competition_id)}
@@ -347,7 +249,6 @@ def save_agent_judge_endpoints(competition_id, items):
 def replace_competition_rules(competition_id, rules):
     """整体替换某比赛的评分规则（先 normalize 校验 DAG，再删旧插新）。抛 ValueError 表示校验失败。"""
     normalized = aj.normalize_rules(rules)  # 校验在事务外，失败则不动 DB
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -372,7 +273,6 @@ def replace_competition_rules(competition_id, rules):
 
 def list_competition_rules(competition_id):
     """返回该比赛的规则列表（按 ordering），dependencies 已解析为 int 列表。"""
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -403,7 +303,6 @@ def list_competition_rules(competition_id):
 
 
 def upsert_judge_result(submission_id, rule_id, raw_result, effective_result, score, evidence):
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -429,7 +328,6 @@ def upsert_judge_result(submission_id, rule_id, raw_result, effective_result, sc
 def upsert_judge_result_for_attempt(submission_id, attempt_id, rule_id,
                                     raw_result, effective_result, score, evidence):
     """只在 submission 当前 attempt 未变化时写入规则结果，返回受影响行数。"""
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -457,7 +355,6 @@ def upsert_judge_result_for_attempt(submission_id, attempt_id, rule_id,
 
 
 def list_judge_results(submission_id):
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -476,7 +373,6 @@ def list_judge_results(submission_id):
 
 
 def clear_judge_results(submission_id):
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -489,7 +385,6 @@ def clear_judge_results(submission_id):
 
 def clear_judge_results_for_attempt(submission_id, attempt_id):
     """只在 submission 当前 attempt 未变化时清空规则结果，返回受影响行数。"""
-    ensure_agent_judge_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
