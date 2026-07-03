@@ -6,7 +6,6 @@ from flask import Blueprint, request
 from oj_modules.api.helpers import json_error, json_success, public_user
 from oj_modules.auth_helpers import current_user, is_admin
 from oj_modules.db_services import (
-    ensure_class_homework_columns,
     get_all_classes_except_admin,
     get_all_problems,
     get_class_by_en,
@@ -36,7 +35,6 @@ def homework_list():
     if selected_class:
         if not get_class_by_en(selected_class):
             return json_error("班级不存在", 404, selected_class=selected_class)
-        ensure_class_homework_columns(selected_class)
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:

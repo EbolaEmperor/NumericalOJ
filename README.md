@@ -138,10 +138,13 @@ JUDGER_NUMERIC_BACKEND = "openblas"
 # Redis（如未启动）
 redis-server
 
-# Web 服务（端口 2025）
+# 数据库结构初始化 / 迁移（不删除数据；supervisord 配置也会在进程启动前自动执行）
+python3 scripts/init_db_schema.py
+
+# Web 服务（端口 2025，web.conf 会先执行数据库初始化脚本）
 supervisord -c web.conf
 
-# Celery worker（两个队列）
+# Celery worker（celery.conf 会先执行数据库初始化脚本）
 supervisord -c celery.conf
 ```
 

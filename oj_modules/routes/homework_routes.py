@@ -10,7 +10,6 @@ from flask import Blueprint, flash, jsonify, redirect, render_template, request,
 
 from oj_modules.db_services import (
     CLASS_ADJUST_FLAG_KEY,
-    ensure_class_homework_columns,
     get_all_classes_except_admin,
     get_all_problems,
     get_class_by_en,
@@ -336,7 +335,6 @@ def admin_homework():
 
     homework_list = []
     if selected_class:
-        ensure_class_homework_columns(selected_class)
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
@@ -443,7 +441,6 @@ def admin_add_homework():
         flash('班级不存在', 'danger')
         return redirect(url_for('homework.admin_homework'))
 
-    ensure_class_homework_columns(class_en)
     try:
         if problem_id:
             try:
@@ -528,8 +525,6 @@ def export_scores():
     class_info = get_class_by_en(selected_class)
     if not class_info:
         return "班级不存在", 404
-
-    ensure_class_homework_columns(selected_class)
 
     conn = get_db_connection()
     try:

@@ -57,296 +57,12 @@ def quota_window_bounds(anchor, now, window_seconds=RANK_LIMIT_WINDOW_SECONDS):
 
 def ensure_ranking_tables():
     global _ranking_tables_ready
-    if _ranking_tables_ready:
-        return
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_competitions (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    title VARCHAR(255) NOT NULL,
-                    summary VARCHAR(500) DEFAULT NULL,
-                    description MEDIUMTEXT,
-                    answer_format VARCHAR(8) NOT NULL DEFAULT 'json',
-                    reference_answer_path VARCHAR(512) DEFAULT NULL,
-                    reference_answer_name VARCHAR(255) DEFAULT NULL,
-                    scoring_script_path VARCHAR(512) DEFAULT NULL,
-                    scoring_script_name VARCHAR(255) DEFAULT NULL,
-                    max_score INT NOT NULL DEFAULT 100,
-                    is_active TINYINT(1) NOT NULL DEFAULT 1,
-                    created_by VARCHAR(50) DEFAULT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_rc_active_created (is_active, created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            # 兼容：为已存在的老表补加 summary 列
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'summary'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions ADD COLUMN summary VARCHAR(500) DEFAULT NULL AFTER title"
-                )
-            # 兼容：为已存在的老表补加 answer_format 列
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'answer_format'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions ADD COLUMN answer_format VARCHAR(8) NOT NULL DEFAULT 'json' AFTER description"
-                )
-            # 兼容：为已存在的老表补加 ELO 模式相关列
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'scoring_mode'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN scoring_mode VARCHAR(16) NOT NULL DEFAULT 'absolute' AFTER answer_format,"
-                    " ADD COLUMN elo_initial_rating DOUBLE NOT NULL DEFAULT 1500,"
-                    " ADD COLUMN elo_k_factor DOUBLE NOT NULL DEFAULT 32,"
-                    " ADD COLUMN elo_max_matches INT NOT NULL DEFAULT 200,"
-                    " ADD COLUMN elo_match_interval_seconds INT NOT NULL DEFAULT 60,"
-                    " ADD COLUMN elo_initial_burst INT NOT NULL DEFAULT 5"
-                )
-            # 兼容：为已存在的老表补加评测脚本超时列
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'scoring_script_timeout_seconds'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN scoring_script_timeout_seconds INT NOT NULL DEFAULT 120"
-                )
-            # 兼容：为已存在的老表补加 ELO 运行开关（管理员手动启动 / 停止 / 重置）
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'elo_running'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN elo_running TINYINT(1) NOT NULL DEFAULT 0"
-                )
-            # 兼容：为已存在的老表补加每个匹配间隔可调度的对子数
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'elo_max_pairs_per_round'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN elo_max_pairs_per_round INT NOT NULL DEFAULT 1"
-                )
-            # 兼容：为已存在的老表补加 Agent 评测模式相关列
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'agent_judge_base_url'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN agent_judge_base_url VARCHAR(512) DEFAULT NULL,"
-                    " ADD COLUMN agent_judge_api_key VARCHAR(512) DEFAULT NULL,"
-                    " ADD COLUMN agent_judge_model VARCHAR(128) DEFAULT NULL,"
-                    " ADD COLUMN agent_judge_timeout_seconds INT NOT NULL DEFAULT 1800"
-                )
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'agent_judge_orchestration_mode'")
-            orch_col = cursor.fetchone()
-            if not orch_col:
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN agent_judge_orchestration_mode VARCHAR(32) NOT NULL DEFAULT 'single'"
-                )
-            else:
-                col_type = ''
-                if isinstance(orch_col, dict):
-                    col_type = str(orch_col.get('Type') or '')
-                elif len(orch_col) > 1:
-                    col_type = str(orch_col[1] or '')
-                type_lower = col_type.strip().lower()
-                if type_lower.startswith('varchar('):
-                    try:
-                        size = int(type_lower.split('(', 1)[1].split(')', 1)[0])
-                    except (TypeError, ValueError, IndexError):
-                        size = 0
-                    if 0 < size < 32:
-                        cursor.execute(
-                            "ALTER TABLE ranking_competitions"
-                            " MODIFY COLUMN agent_judge_orchestration_mode VARCHAR(32) NOT NULL DEFAULT 'single'"
-                        )
-            cursor.execute(
-                """
-                UPDATE ranking_competitions
-                SET agent_judge_orchestration_mode = 'topological'
-                WHERE LOWER(REPLACE(agent_judge_orchestration_mode, '-', '_')) LIKE 'topol%%'
-                """
-            )
-            # 兼容：每 48 小时窗口提交次数限制（NULL/<=0 表示不限制）+ 窗口锚点
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'submit_limit_per_window'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN submit_limit_per_window INT DEFAULT NULL,"
-                    " ADD COLUMN limit_window_start DATETIME DEFAULT NULL"
-                )
-            # 兼容：Agent 评测打榜赛的提交方式（zip 上传 / git 拉取）+ git 仓库命名模板
-            cursor.execute("SHOW COLUMNS FROM ranking_competitions LIKE 'submission_method'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_competitions"
-                    " ADD COLUMN submission_method VARCHAR(8) NOT NULL DEFAULT 'zip',"
-                    " ADD COLUMN git_format VARCHAR(512) DEFAULT NULL"
-                )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_competition_files (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    competition_id INT NOT NULL,
-                    filename VARCHAR(255) NOT NULL,
-                    stored_path VARCHAR(512) NOT NULL,
-                    file_size BIGINT NOT NULL DEFAULT 0,
-                    uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_rcf_comp (competition_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_submissions (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    competition_id INT NOT NULL,
-                    username VARCHAR(50) NOT NULL,
-                    answer_filename VARCHAR(255) DEFAULT NULL,
-                    answer_path VARCHAR(512) DEFAULT NULL,
-                    code_filename VARCHAR(255) DEFAULT NULL,
-                    code_path VARCHAR(512) DEFAULT NULL,
-                    base_model VARCHAR(500) DEFAULT NULL,
-                    score DOUBLE DEFAULT NULL,
-                    status VARCHAR(32) NOT NULL DEFAULT 'Judging',
-                    judge_attempt_id VARCHAR(36) DEFAULT NULL,
-                    judge_task_id VARCHAR(64) DEFAULT NULL,
-                    judge_heartbeat_at TIMESTAMP NULL DEFAULT NULL,
-                    grade_details MEDIUMTEXT,
-                    error_message TEXT,
-                    elo_rating DOUBLE DEFAULT NULL,
-                    elo_match_count INT NOT NULL DEFAULT 0,
-                    elo_in_pool TINYINT(1) NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_rs_comp_user (competition_id, username),
-                    INDEX idx_rs_comp_score (competition_id, score),
-                    INDEX idx_rs_comp_created (competition_id, created_at),
-                    INDEX idx_rs_judge_attempt (judge_attempt_id),
-                    INDEX idx_rs_judge_task (judge_task_id),
-                    INDEX idx_rs_elo_pool (competition_id, elo_in_pool)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            # 兼容：为已存在的老表补加 ELO 列
-            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'elo_rating'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions"
-                    " ADD COLUMN elo_rating DOUBLE DEFAULT NULL,"
-                    " ADD COLUMN elo_match_count INT NOT NULL DEFAULT 0,"
-                    " ADD COLUMN elo_in_pool TINYINT(1) NOT NULL DEFAULT 0,"
-                    " ADD INDEX idx_rs_elo_pool (competition_id, elo_in_pool)"
-                )
-            # 兼容：为已存在的老表补加 base_model 列
-            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'base_model'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions"
-                    " ADD COLUMN base_model VARCHAR(500) DEFAULT NULL AFTER code_path"
-                )
-            # 兼容：补加 source 列，区分提交来源（'self'=学生自交、'batch'=管理员批量拉取）。
-            # 默认 'self'：历史行与学生自交都按 self 计入配额；只有批量创建标 'batch' 不计配额。
-            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'source'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions"
-                    " ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'self'"
-                )
-            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'judge_attempt_id'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions"
-                    " ADD COLUMN judge_attempt_id VARCHAR(36) DEFAULT NULL AFTER status"
-                )
-            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'judge_task_id'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions"
-                    " ADD COLUMN judge_task_id VARCHAR(64) DEFAULT NULL AFTER judge_attempt_id"
-                )
-            cursor.execute("SHOW COLUMNS FROM ranking_submissions LIKE 'judge_heartbeat_at'")
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions"
-                    " ADD COLUMN judge_heartbeat_at TIMESTAMP NULL DEFAULT NULL AFTER judge_task_id"
-                )
-            cursor.execute(
-                "SHOW INDEX FROM ranking_submissions WHERE Key_name = 'idx_rs_judge_attempt'"
-            )
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions ADD INDEX idx_rs_judge_attempt (judge_attempt_id)"
-                )
-            cursor.execute(
-                "SHOW INDEX FROM ranking_submissions WHERE Key_name = 'idx_rs_judge_task'"
-            )
-            if not cursor.fetchone():
-                cursor.execute(
-                    "ALTER TABLE ranking_submissions ADD INDEX idx_rs_judge_task (judge_task_id)"
-                )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_elo_matches (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    competition_id INT NOT NULL,
-                    submission_a_id INT NOT NULL,
-                    submission_b_id INT NOT NULL,
-                    winner SMALLINT NOT NULL,
-                    rating_a_before DOUBLE NOT NULL,
-                    rating_b_before DOUBLE NOT NULL,
-                    rating_a_after DOUBLE NOT NULL,
-                    rating_b_after DOUBLE NOT NULL,
-                    details MEDIUMTEXT,
-                    error_message TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_rem_comp_created (competition_id, created_at),
-                    INDEX idx_rem_sub_a (submission_a_id),
-                    INDEX idx_rem_sub_b (submission_b_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-            # 一次性迁移：早期版本用 winner=0 表示"评测脚本失败"，新版本里 0 改为
-            # "平局"，-1 才表示失败。把现存带 error_message 的 winner=0 行搬到 -1，
-            # 避免老数据被新逻辑当成平局误处理。
-            cursor.execute(
-                "UPDATE ranking_elo_matches SET winner = -1"
-                " WHERE winner = 0 AND error_message IS NOT NULL"
-            )
-            # 申诉表：学生对某条提交的评分申诉；管理员在「申诉处理」标签里审阅、回复、驳回/处理。
-            # UNIQUE(submission_id)：一条提交一条申诉记录，重复申诉用 upsert 重开为 pending。
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ranking_appeals (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    competition_id INT NOT NULL,
-                    submission_id INT NOT NULL,
-                    username VARCHAR(50) NOT NULL,
-                    reason TEXT NOT NULL,
-                    status VARCHAR(16) NOT NULL DEFAULT 'pending',
-                    admin_response MEDIUMTEXT,
-                    admin_username VARCHAR(50),
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                          ON UPDATE CURRENT_TIMESTAMP,
-                    UNIQUE KEY uq_ra_sub (submission_id),
-                    INDEX idx_ra_comp_status (competition_id, status),
-                    INDEX idx_ra_comp_created (competition_id, created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-        conn.commit()
-        _ranking_tables_ready = True
-    finally:
-        conn.close()
+    _ranking_tables_ready = True
 
 
 # ---------- Competitions ----------
 
 def list_competitions(include_inactive=False):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -381,7 +97,6 @@ def list_competitions(include_inactive=False):
 
 
 def get_competition(competition_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -411,7 +126,6 @@ def get_competition(competition_id):
 
 
 def create_competition(title, description, max_score, created_by, summary=None):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -445,7 +159,6 @@ def copy_competition(src_id, *, created_by=None):
     所有库写在单事务内，任何异常整体回滚；物理附件只往新比赛目录写，失败则清掉新目录。
     绝不修改源比赛或任何既有数据（只读源 + 只新增）。
     """
-    ensure_ranking_tables()
     conn = get_db_connection()
     created_comp_dir = None
     try:
@@ -454,11 +167,8 @@ def copy_competition(src_id, *, created_by=None):
             comp = cursor.fetchone()
             if not comp:
                 raise ValueError(f'源比赛 {src_id} 不存在')
-            cursor.execute("SHOW COLUMNS FROM ranking_judge_rules LIKE 'rule_name'")
-            has_rule_name = bool(cursor.fetchone())
-            rule_name_select = "rule_name, " if has_rule_name else "'' AS rule_name, "
             cursor.execute(
-                "SELECT rule_id, " + rule_name_select + "rule_text, value, dependencies, ordering "
+                "SELECT rule_id, rule_name, rule_text, value, dependencies, ordering "
                 "FROM ranking_judge_rules WHERE competition_id = %s ORDER BY ordering, rule_id",
                 (int(src_id),),
             )
@@ -469,26 +179,12 @@ def copy_competition(src_id, *, created_by=None):
                 (int(src_id),),
             )
             files = cursor.fetchall() or []
-            cursor.execute("SHOW TABLES LIKE 'ranking_agent_judge_endpoints'")
-            has_endpoint_table = bool(cursor.fetchone())
-            endpoints = []
-            if has_endpoint_table:
-                cursor.execute("SHOW COLUMNS FROM ranking_agent_judge_endpoints LIKE 'status'")
-                if not cursor.fetchone():
-                    cursor.execute(
-                        "ALTER TABLE ranking_agent_judge_endpoints"
-                        " ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'enabled' AFTER enabled"
-                    )
-                    cursor.execute(
-                        "UPDATE ranking_agent_judge_endpoints"
-                        " SET status = CASE WHEN enabled = 1 THEN 'enabled' ELSE 'disabled' END"
-                    )
-                cursor.execute(
-                    "SELECT harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering "
-                    "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
-                    (int(src_id),),
-                )
-                endpoints = cursor.fetchall() or []
+            cursor.execute(
+                "SELECT harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering "
+                "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
+                (int(src_id),),
+            )
+            endpoints = cursor.fetchall() or []
 
             # —— 1) 复制比赛主行（is_active=0 不公开、标题追加后缀、created_by 记为复制者）——
             cols = [c for c in comp.keys() if c not in _COMPETITION_COPY_EXCLUDE_COLS]
@@ -584,7 +280,6 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         agent_judge_orchestration_mode=None,
                         submit_limit_per_window=None, set_limit_window_now=False,
                         submission_method=None, git_format=None):
-    ensure_ranking_tables()
     fields = []
     params = []
     if title is not None:
@@ -686,7 +381,6 @@ def update_competition(competition_id, *, title=None, summary=None, description=
 
 def reset_competition_limit_window(competition_id):
     """管理员手动刷新：把窗口锚点设为当前时刻，相当于立刻开启新一轮 48 小时配额。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -703,7 +397,6 @@ def get_submission_quota(competition_id, username, comp=None):
     """返回某用户在当前 48 小时窗口内的提交配额：
     {'limit', 'used', 'remaining', 'window_start', 'next_reset'}；
     未设置限制（NULL/<=0）时返回 None（表示不限制）。"""
-    ensure_ranking_tables()
     if comp is None:
         comp = get_competition(competition_id)
     if not comp:
@@ -773,7 +466,6 @@ def _ranking_submission_quota_with_cursor(cursor, competition_id, username, comp
 
 
 def update_competition_reference_answer(competition_id, stored_path, original_name):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -791,7 +483,6 @@ def update_competition_reference_answer(competition_id, stored_path, original_na
 
 
 def update_competition_scoring_script(competition_id, stored_path, original_name):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -809,7 +500,6 @@ def update_competition_scoring_script(competition_id, stored_path, original_name
 
 
 def delete_competition(competition_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -824,7 +514,6 @@ def delete_competition(competition_id):
 # ---------- Attachments ----------
 
 def list_competition_files(competition_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -843,7 +532,6 @@ def list_competition_files(competition_id):
 
 
 def get_competition_file(file_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -861,7 +549,6 @@ def get_competition_file(file_id):
 
 
 def create_competition_file(competition_id, filename, stored_path, file_size):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -880,7 +567,6 @@ def create_competition_file(competition_id, filename, stored_path, file_size):
 
 
 def delete_competition_file(file_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -899,7 +585,6 @@ def create_ranking_submission(competition_id, username, source='self', enforce_q
     当 enforce_quota=True 且 source='self' 时，使用同一事务里的 ``SELECT ... FOR UPDATE``
     锁住比赛行，重新计算当前窗口用量并插入提交，避免并发请求同时通过前置 COUNT 检查。
     """
-    ensure_ranking_tables()
     src = 'batch' if str(source or '').strip().lower() == 'batch' else 'self'
     conn = get_db_connection()
     try:
@@ -947,7 +632,6 @@ def create_ranking_submission(competition_id, username, source='self', enforce_q
 
 
 def update_submission_files(submission_id, answer_filename, answer_path, code_filename, code_path, base_model=None):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -969,7 +653,6 @@ def update_submission_files(submission_id, answer_filename, answer_path, code_fi
 
 
 def update_submission_result(submission_id, score, status, grade_details=None, error_message=None):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1002,7 +685,6 @@ def set_submission_status(submission_id, status):
     'Queued'，真正被评测 worker 取到开始执行时置 'Judging'。这样在 judge 并发上限（2）已满时，
     排队中的提交显示「等待评测」，而非误报「评测中」。
     """
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1021,7 +703,6 @@ def begin_agent_judge_attempt(submission_id, status='Queued', reset_result=False
     管理员重测会先清空旧规则结果，再调用本函数把当前提交切到新的 attempt；
     旧 Celery 消息即使之后醒来，也会因 attempt 不匹配而 no-op。
     """
-    ensure_ranking_tables()
     attempt_id = str(uuid.uuid4())
     conn = get_db_connection()
     try:
@@ -1061,7 +742,6 @@ def begin_agent_judge_attempt(submission_id, status='Queued', reset_result=False
 
 def set_agent_judge_task_id(submission_id, attempt_id, task_id):
     """记录当前 attempt 对应的 Celery task id。仅用于诊断和启动恢复判断。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1087,7 +767,6 @@ def set_submission_status_for_attempt(submission_id, attempt_id, status):
     落在同一秒时，UPDATE 会返回 0。这里再查一次 attempt 是否仍匹配，避免把
     “无改动”误判成“旧 attempt”。
     """
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1121,7 +800,6 @@ def set_submission_status_for_attempt(submission_id, attempt_id, status):
 def update_submission_result_for_attempt(submission_id, attempt_id, score, status,
                                          grade_details=None, error_message=None):
     """只在 attempt 仍是当前 attempt 时写入终态，返回受影响行数。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1171,7 +849,6 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
 
     只复制提交记录和落盘文件，不计入学生 48 小时提交配额；新提交的评测入队由调用方负责。
     """
-    ensure_ranking_tables()
     new_status = status if status in ('Pending', 'Queued', 'Judging') else 'Judging'
     conn = get_db_connection()
     try:
@@ -1255,7 +932,6 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
 
 def delete_ranking_submission(submission_id):
     """删除一条提交记录。返回被删除的行数（0 或 1）。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1268,7 +944,6 @@ def delete_ranking_submission(submission_id):
 
 
 def get_ranking_submission(submission_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1301,7 +976,6 @@ def get_incomplete_ranking_submissions():
     'Pending'（尚未上传文件，无可评内容）与 'Active' ELO（已由 matchmaker tick 接管）
     不在此列。
     """
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1332,7 +1006,6 @@ def get_incomplete_ranking_submissions():
 
 
 def list_user_submissions(competition_id, username):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1356,7 +1029,6 @@ def list_user_submissions(competition_id, username):
 
 def list_all_submissions(competition_id, *, page=1, per_page=50, username_q=None):
     """返回 ``(rows, page, total)``。``page`` 在越界时被 clamp 到最后一页（保证只走一次 SELECT）。"""
-    ensure_ranking_tables()
     page = max(1, int(page or 1))
     per_page = max(1, int(per_page or 50))
     q = (username_q or '').strip()
@@ -1428,7 +1100,6 @@ def _bulk_status_condition(status_groups):
 def list_submissions_for_bulk_rejudge(competition_id, *, start=None, end=None,
                                       username_q=None, status_groups=None, limit=1001):
     """按管理员批量重测筛选条件返回 ``(rows, total)``。"""
-    ensure_ranking_tables()
     conditions = ["competition_id = %s"]
     params = [int(competition_id)]
     if start:
@@ -1482,7 +1153,6 @@ def list_submissions_for_bulk_rejudge(competition_id, *, start=None, end=None,
 
 
 def get_submission_stats(competition_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1521,7 +1191,6 @@ def get_leaderboard(competition_id):
     同一窗口里再算 ``COUNT/MIN/MAX`` 给出 submission_count / first_submitted_at /
     best_score，避免历史版本里那条相关子查询带来的 N×扫描。
     """
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1602,7 +1271,6 @@ def submission_dir(submission_id):
 
 def init_submission_elo_state(submission_id, rating):
     """新提交进入 ELO 池：写入初始分、清零对战次数、置入池标志，状态切换为 Active。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1624,7 +1292,6 @@ def init_submission_elo_state(submission_id, rating):
 def retire_excess_user_submissions(competition_id, username, keep_count=2):
     """同一用户在某场赛事的池内提交超过 keep_count 份时，把更早的退役。
     退役提交：elo_in_pool=0，status='Retired'。返回被退役的提交 id 列表。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1656,7 +1323,6 @@ def retire_excess_user_submissions(competition_id, username, keep_count=2):
 
 def set_elo_running(competition_id, running):
     """切换赛事的 ELO 运行开关。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1676,7 +1342,6 @@ def reset_elo_state(competition_id):
       - 把该赛事所有"在池中（elo_in_pool=1）"的提交分数 / 对战次数恢复到初始分。
     返回 (matches_deleted, submissions_reset)。
     """
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1715,7 +1380,6 @@ def reset_elo_state(competition_id):
 
 def list_active_elo_competitions():
     """所有启用了 ELO 模式、已被管理员手动启动、且配置了评测脚本的赛事。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1738,7 +1402,6 @@ def list_active_elo_competitions():
 
 def list_eligible_elo_submissions(competition_id, max_matches):
     """池中、Active、且对战次数还没满的提交。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1758,7 +1421,6 @@ def list_eligible_elo_submissions(competition_id, max_matches):
 
 
 def get_last_elo_match_time(competition_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1780,7 +1442,6 @@ def record_elo_match(competition_id, sub_a_id, sub_b_id, winner,
     winner 取值：1=A 胜，2=B 胜，0=平局（双方按 ELO 公式各取 s=0.5 调整），
     -1=评测脚本失败的占位行（分数与计数不变）。
     调用方应持有按 competition_id 划分的并发锁。"""
-    ensure_ranking_tables()
     details_text = None
     if details is not None:
         if isinstance(details, str):
@@ -1833,7 +1494,6 @@ def record_elo_match_locked(competition_id, sub_a_id, sub_b_id, winner,
     这样即便不依赖 Redis 写锁，并发对战也不会读到同一旧分而互相覆盖（丢更新）。两行按 id 升序加锁，
     避免与反向对战死锁。compute_new_ratings 由调用方提供，保持 ELO 公式单一实现。
     返回 (rating_a_before, rating_b_before, rating_a_after, rating_b_after)。"""
-    ensure_ranking_tables()
     details_text = None
     if details is not None:
         if isinstance(details, str):
@@ -1900,7 +1560,6 @@ def list_competition_matches(competition_id, *, page=1, per_page=20, username=No
     若提供 username，只返回该用户参与的对战（任一方）。
     返回 (rows, page, total)。created_at DESC 排序，新对战在前。
     rows 不带 details / error_message —— 这两个走单条详情接口取，以免列表查询拽着大文本。"""
-    ensure_ranking_tables()
     page = max(1, int(page or 1))
     per_page = max(1, int(per_page or 20))
     user_filter_sql = ""
@@ -1952,7 +1611,6 @@ def list_competition_matches(competition_id, *, page=1, per_page=20, username=No
 
 def get_competition_match(match_id, competition_id):
     """单场对战详情（含 details / error_message + 双方用户名）。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -1977,7 +1635,6 @@ def get_competition_match(match_id, competition_id):
 
 
 def list_elo_matches_for_submission(submission_id, limit=20):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2009,7 +1666,6 @@ def rebuild_elo_history(competition_id):
         and_revert 导致的"历史 rating 快照漂移"。
 
     返回 dict：matches_replayed / submissions_updated / k_factor / initial_rating。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2127,7 +1783,6 @@ def delete_elo_match_and_revert(match_id, competition_id):
     若后续对战引用了某方的中间 rating（作为 rating_before），那些记录里的快照依然
     保留，但之后再删它们时也是同样的"从当前减 delta"逻辑——多个删除按顺序应用是
     可交换的（加减法）。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2199,7 +1854,6 @@ def create_appeal(competition_id, submission_id, username, reason):
     """学生发起一条评分申诉。硬性一次：一份提交只能申诉一次。
     若该提交已存在申诉记录（任何状态）→ 不覆盖、不重开，返回 0；否则插入并返回新行 id。
     UNIQUE(submission_id) + INSERT IGNORE 保证并发下也只会有一条。"""
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2219,7 +1873,6 @@ def create_appeal(competition_id, submission_id, username, reason):
 
 
 def get_appeal(appeal_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2230,7 +1883,6 @@ def get_appeal(appeal_id):
 
 
 def get_appeal_by_submission(submission_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2244,7 +1896,6 @@ def get_appeal_by_submission(submission_id):
 def list_appeals(competition_id, *, page=1, per_page=50, status_q=None, username_q=None):
     """分页列出某比赛的申诉，LEFT JOIN 提交以带出 score/状态/基座模型供卡片展示。
     返回 (rows, page, total)。"""
-    ensure_ranking_tables()
     page = max(1, int(page or 1))
     per_page = max(1, int(per_page or 50))
     where = ["a.competition_id = %s"]
@@ -2287,7 +1938,6 @@ def list_appeals(competition_id, *, page=1, per_page=50, status_q=None, username
 
 
 def get_appeal_stats(competition_id):
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2317,7 +1967,6 @@ def get_appeal_stats(competition_id):
 def resolve_appeal(appeal_id, status, admin_response, admin_username):
     """管理员处理（'resolved'）或驳回（'rejected'）申诉，写入回复与处理人。"""
     status = 'resolved' if str(status).strip().lower() == 'resolved' else 'rejected'
-    ensure_ranking_tables()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:

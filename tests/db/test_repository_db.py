@@ -8,47 +8,14 @@
 - list_repository_classes（limit 夹紧 min(max(1,limit),2000)）
 - get_user_repository_files_by_names（{filename: content}）
 
-注意：myojdb.sql 里的 repository_index_jobs 缺少代码使用的
-progress_message / task_id / cancel_requested 三列（运行期也没有迁移补齐）。
-本文件用 module 级 autouse fixture 幂等地补齐这些列，使 DB 层函数可被测试。
+注意：表结构由测试会话启动时的统一数据库初始化脚本保证，测试本身不再补表补列。
 """
 import json
-
-import pytest
 
 from oj_modules import db_services as db
 from oj_modules import repository_index_services as ris
 from oj_modules import repository_services as rsvc
 from tests import helpers as h
-
-
-# ---------------------------------------------------------------------------
-# 确保 repository_index_jobs 含有代码使用、但 dump 缺失的列。
-# 幂等：每个测试前检查 information_schema，缺则 ADD COLUMN。
-# ---------------------------------------------------------------------------
-@pytest.fixture(autouse=True)
-def _ensure_repo_job_columns():
-    wanted = {
-        'progress_message': "ADD COLUMN progress_message TEXT NULL",
-        'task_id': "ADD COLUMN task_id VARCHAR(64) NULL",
-        'cancel_requested': "ADD COLUMN cancel_requested TINYINT NOT NULL DEFAULT 0",
-    }
-    conn = db.get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            for col, ddl in wanted.items():
-                cur.execute(
-                    "SELECT COUNT(*) AS n FROM information_schema.columns "
-                    "WHERE table_schema = DATABASE() "
-                    "AND table_name = 'repository_index_jobs' AND column_name = %s",
-                    (col,),
-                )
-                if cur.fetchone()['n'] == 0:
-                    cur.execute(f"ALTER TABLE repository_index_jobs {ddl}")
-        conn.commit()
-    finally:
-        conn.close()
-    yield
 
 
 def _insert_class_metadata(user_id, class_id, filename, class_name,

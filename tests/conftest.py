@@ -104,21 +104,8 @@ def _ensure_schema():
                  f'-p{config.MYSQL_PASSWORD}', MYSQL_DB],
                 stdin=fh, check=True)
 
-    # site_settings 不在 dump 里，按需创建
-    conn = _raw_conn(db=MYSQL_DB)
-    with conn.cursor() as cur:
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS site_settings ("
-            "k VARCHAR(191) NOT NULL PRIMARY KEY, v TEXT) "
-            "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
-        # AI 代码点评缓存列（生产里手动加过，dump 里没有）——按需补上
-        cur.execute(
-            "SELECT COUNT(*) AS n FROM information_schema.columns "
-            "WHERE table_schema=%s AND table_name='submissions' "
-            "AND column_name='ai_code_marks_json'", (MYSQL_DB,))
-        if cur.fetchone()['n'] == 0:
-            cur.execute("ALTER TABLE submissions ADD COLUMN ai_code_marks_json LONGTEXT NULL")
-    conn.close()
+    from scripts.init_db_schema import init_schema
+    init_schema()
 
 
 def _all_tables(cur):
@@ -166,7 +153,8 @@ def _reset_db():
                 cur.execute(
                     f"CREATE TABLE IF NOT EXISTS `{en}` ("
                     "id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, problem_id INT, "
-                    "ddl DATETIME, complete_cnt INT DEFAULT 0, problem_title TEXT) "
+                    "ddl DATETIME, complete_cnt INT DEFAULT 0, problem_title TEXT, "
+                    "ranking_competition_id INT DEFAULT NULL) "
                     "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
             cur.execute(
                 "INSERT INTO users (username, password_hash, is_admin, email, "

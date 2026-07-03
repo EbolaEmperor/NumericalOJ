@@ -21,16 +21,20 @@ The README (`README.md`) is in Chinese and is mostly deployment-focused.
 There are **two** processes; both must run together for the app to work end-to-end:
 
 ```bash
+# 0. Schema init / migration (non-destructive; creates missing tables, adds/migrates columns)
+python3 scripts/init_db_schema.py
+
 # 1. Web app (Flask, port 2025) — serves UI + API, registers Celery tasks
 python3 oj.py
-# or under supervisord:
+# or under supervisord (web.conf runs scripts/init_db_schema.py before oj.py):
 supervisord -c web.conf
 
 # 2. Celery workers — judging + AI agents + Agent-as-Judge, three queues
+# celery.conf also runs scripts/init_db_schema.py before each worker process.
 supervisord -c celery.conf
-# Equivalent: celery -A oj.celery worker -Q celery   (judging + in-process sandbox)
-#             celery -A oj.celery worker -Q agent -c 1  (AI agents)
-#             celery -A oj.celery worker -Q judge -c 2  (打榜赛 Agent-as-Judge, runs Docker containers)
+# Equivalent after schema init: celery -A oj.celery worker -Q celery   (judging + in-process sandbox)
+#                           celery -A oj.celery worker -Q agent -c 1  (AI agents)
+#                           celery -A oj.celery worker -Q judge -c 2  (打榜赛 Agent-as-Judge, runs Docker containers)
 
 # Plus: redis-server (broker + caches), mysqld (myojdb)
 ```
