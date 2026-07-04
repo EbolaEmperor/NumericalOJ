@@ -104,7 +104,7 @@
     <a href="{{ url_for('ai_detection.dashboard') }}" class="text-decoration-none">&laquo; AI 检测</a>
     / 学生: {{ target_username }}
   </h5>
-  <button class="btn btn-outline-primary btn-sm" onclick="runUserDetection('{{ target_username }}')">
+  <button class="btn btn-outline-primary btn-sm" onclick='runUserDetection({{ target_username|tojson }})'>
     <i class="fas fa-sync-alt me-1"></i> 检测未分析提交
   </button>
 </div>
@@ -282,7 +282,7 @@
         <td>{{ '%.2f'|format(u.max_score or 0) }}</td>
         <td>{{ '%.2f'|format(u.avg_score or 0) }}</td>
         <td>
-          <button class="btn btn-outline-primary btn-sm" onclick="runUserDetection('{{ u.username }}')">
+          <button class="btn btn-outline-primary btn-sm" onclick='runUserDetection({{ u.username|tojson }})'>
             <i class="fas fa-sync-alt"></i>
           </button>
         </td>
@@ -496,7 +496,16 @@ function runUserDetection(username) {
 }
 
 function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+
+function escJsArg(s) {
+  return escHtml(JSON.stringify(String(s == null ? '' : s)));
 }
 
 // ---- Task panel polling ----
@@ -609,7 +618,7 @@ function refreshSummary() {
               `<td><span class="risk-medium">${u.medium_count}</span></td>` +
               `<td>${(u.max_score||0).toFixed(2)}</td>` +
               `<td>${(u.avg_score||0).toFixed(2)}</td>` +
-              `<td><button class="btn btn-outline-primary btn-sm" onclick="runUserDetection('${escHtml(u.username)}')"><i class="fas fa-sync-alt"></i></button></td>` +
+              `<td><button class="btn btn-outline-primary btn-sm" onclick="runUserDetection(${escJsArg(u.username)})"><i class="fas fa-sync-alt"></i></button></td>` +
               `</tr>`;
           });
           html += '</tbody></table></div>';
@@ -673,10 +682,10 @@ function refreshTasks() {
         const active = t.status === 'running' || t.status === 'pending';
         if (active) hasRunning = true;
         const stopBtn = active
-          ? `<button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:.75em" onclick="stopTask('${escHtml(t.task_id)}', this)">停止</button>`
+          ? `<button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:.75em" onclick="stopTask(${escJsArg(t.task_id)}, this)">停止</button>`
           : '';
         const delBtn = !active
-          ? `<button class="btn btn-outline-secondary btn-sm py-0 px-1 ms-1" style="font-size:.75em" onclick="deleteTask('${escHtml(t.task_id)}', this)">删除</button>`
+          ? `<button class="btn btn-outline-secondary btn-sm py-0 px-1 ms-1" style="font-size:.75em" onclick="deleteTask(${escJsArg(t.task_id)}, this)">删除</button>`
           : '';
         const tr = document.createElement('tr');
         tr.innerHTML =

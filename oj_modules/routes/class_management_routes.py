@@ -133,6 +133,8 @@ def add_user_to_class():
     class_en = (request.form.get('class_en') or '').strip()
     if not (user_id and class_en):
         return jsonify(success=False, message='参数错误'), 400
+    if class_en == 'Cadmin':
+        return jsonify(success=False, message='管理员班级不能作为附加班级添加，请通过修改主班级显式授予管理员权限'), 400
 
     cls = get_class_by_en(class_en)
     if not cls:
@@ -321,6 +323,8 @@ def leave_class():
         if is_primary:
             for cls in user_classes:
                 if cls['class_en'] != class_en:
+                    if cls['class_en'] == 'Cadmin' and not is_admin(user):
+                        continue
                     new_primary_en = cls['class_en']
                     break
 
@@ -338,6 +342,8 @@ def leave_class():
                         "UPDATE user_class_map SET is_primary=1 WHERE user_id=%s AND class_en=%s",
                         (user['id'], new_primary_en),
                     )
+            else:
+                return jsonify(success=False, message="至少需要保留一个普通班级"), 400
 
         with conn.cursor() as cursor:
             cursor.execute(
@@ -376,6 +382,9 @@ def set_primary_class():
     target_class = get_class_by_en(class_en)
     if not target_class:
         return jsonify(success=False, message="班级不存在"), 400
+
+    if class_en == 'Cadmin' and not is_admin(user):
+        return jsonify(success=False, message="不能自助切换到管理员班级"), 403
 
     user_classes = get_user_classes(user['id'])
     is_member = False

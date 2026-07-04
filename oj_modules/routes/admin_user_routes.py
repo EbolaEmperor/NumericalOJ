@@ -17,6 +17,7 @@ from oj_modules.db_services import (
     safe_table_name,
     upsert_user_problem_max_score,
 )
+from oj_modules.security_utils import validate_username
 
 
 admin_user_bp = Blueprint('admin_user', __name__)
@@ -207,6 +208,10 @@ def edit_username_ajax():
 
     if not new_username or not user_id:
         return jsonify({'success': False, 'message': '缺少必要参数'}), 400
+
+    username_ok, new_username, username_msg = validate_username(new_username)
+    if not username_ok:
+        return jsonify({'success': False, 'message': username_msg}), 400
 
     if get_user_by_username(new_username):
         return jsonify({'success': False, 'message': '用户名已存在'}), 400
