@@ -128,6 +128,42 @@ def _normalize_image_mode_test_point_status(run_status, image_grading_score):
     return status_text
 
 
+def _build_terminal_test_point_statuses(test_cases, status, stderr="", stdout=""):
+    test_point_count = len(test_cases or []) or 1
+    return [{
+        "status": status,
+        "stderr": stderr,
+        "stdout": stdout,
+        "time": 0,
+        "has_output_image": False,
+        "test_index": idx,
+    } for idx in range(1, test_point_count + 1)]
+
+
+def _finalize_programming_terminal_submission(
+    submission,
+    problem_id,
+    test_cases,
+    final_status,
+    stderr="",
+    stdout="",
+):
+    test_point_statuses = _build_terminal_test_point_statuses(
+        test_cases,
+        final_status,
+        stderr=stderr,
+        stdout=stdout,
+    )
+    _finalize_programming_submission(
+        submission=submission,
+        problem_id=problem_id,
+        test_point_statuses=test_point_statuses,
+        score=0,
+        final_status=final_status,
+    )
+    return test_point_statuses
+
+
 def _finalize_programming_submission(submission, problem_id, test_point_statuses, score, final_status):
     user = get_user_by_username(submission['username'])
     if final_status == "Accepted":
@@ -591,40 +627,29 @@ def register_evaluate_submission_task(celery_app):
                     "outputImageFilename": required_output_image_filename,
                 }
     
-                try:
-                    # 仅 c/cpp 需要预编译探测；解释型语言（matlab/python）无编译步骤，
-                    # 跳过以免多跑一次容器，直接进入常驻容器批量评测。
-                    quick_result = core.run_single(lang, quick_compile_payload) if lang in ['c', 'cpp'] else {}
+                quick_result = {}
+                if lang in ['c', 'cpp']:
+                    try:
+                        # 仅 c/cpp 需要预编译探测；解释型语言（matlab/python）无编译步骤，
+                        # 跳过以免多跑一次容器，直接进入常驻容器批量评测。
+                        quick_result = core.run_single(lang, quick_compile_payload)
+                    except Exception:
+                        quick_result = {}
 
-                    if quick_result.get('status') == 'Compile Error':
-                        compile_stderr = quick_result.get('files', {}).get('stderr', 'Compile Error')
-                        all_accepted = False
-    
-                        for idx, _ in enumerate(test_cases, start=1):
-                            test_point_statuses.append({
-                                "status": "Compile Error",
-                                "stderr": compile_stderr,
-                                "stdout": "",
-                                "time": 0,
-                                "has_output_image": False,
-                                "test_index": idx,
-                            })
-                            set_submission_status_snapshot(
-                                submission_id=submission_id,
-                                username=submission.get('username'),
-                                problem_id=submission.get('problem_id'),
-                                problem_type=submission.get('problem_type'),
-                                status='Running',
-                                score=sum(1 for tp in test_point_statuses if tp.get("status") == "Accepted"),
-                                test_points=test_point_statuses,
-                            )
-    
-                        update_submission_status(submission_id, 'Compile Error')
-                        update_submission_evaluation(submission_id, test_point_statuses, 0, 'Compile Error')
-                        return
-    
-                except Exception:
-                    pass
+                quick_status = quick_result.get('status')
+                if quick_status in ('Compile Error', 'Forbidden'):
+                    files = quick_result.get('files', {}) or {}
+                    terminal_stderr = files.get('stderr') or quick_status
+                    terminal_stdout = files.get('stdout') if quick_status == 'Forbidden' else ""
+                    _finalize_programming_terminal_submission(
+                        submission=submission,
+                        problem_id=problem_id,
+                        test_cases=test_cases,
+                        final_status=quick_status,
+                        stderr=terminal_stderr,
+                        stdout=terminal_stdout or "",
+                    )
+                    return
     
                 batch_payload = {
                     "code": final_code,
@@ -647,50 +672,25 @@ def register_evaluate_submission_task(celery_app):
                             compile_status = evt.get("status")
                             if compile_status == "error":
                                 compile_stderr = evt.get("stderr", "Compile Error")
-                                all_accepted = False
-                                for idx, _ in enumerate(test_cases, start=1):
-                                    test_point_statuses.append({
-                                        "status": "Compile Error",
-                                        "stderr": compile_stderr,
-                                        "stdout": "",
-                                        "time": 0,
-                                        "has_output_image": False,
-                                        "test_index": idx,
-                                    })
-                                    set_submission_status_snapshot(
-                                        submission_id=submission_id,
-                                        username=submission.get('username'),
-                                        problem_id=submission.get('problem_id'),
-                                        problem_type=submission.get('problem_type'),
-                                        status='Running',
-                                        score=0,
-                                        test_points=test_point_statuses,
-                                    )
-                                stream_handled = True
-                                break
+                                _finalize_programming_terminal_submission(
+                                    submission=submission,
+                                    problem_id=problem_id,
+                                    test_cases=test_cases,
+                                    final_status="Compile Error",
+                                    stderr=compile_stderr,
+                                )
+                                return
                             if compile_status == "forbidden":
                                 forbidden_msg = evt.get("stderr", "Forbidden Function")
-                                all_accepted = False
-                                for idx, _ in enumerate(test_cases, start=1):
-                                    test_point_statuses.append({
-                                        "status": "Forbidden",
-                                        "stderr": forbidden_msg,
-                                        "stdout": forbidden_msg,
-                                        "time": 0,
-                                        "has_output_image": False,
-                                        "test_index": idx,
-                                    })
-                                    set_submission_status_snapshot(
-                                        submission_id=submission_id,
-                                        username=submission.get('username'),
-                                        problem_id=submission.get('problem_id'),
-                                        problem_type=submission.get('problem_type'),
-                                        status='Running',
-                                        score=0,
-                                        test_points=test_point_statuses,
-                                    )
-                                stream_handled = True
-                                break
+                                _finalize_programming_terminal_submission(
+                                    submission=submission,
+                                    problem_id=problem_id,
+                                    test_cases=test_cases,
+                                    final_status="Forbidden",
+                                    stderr=forbidden_msg,
+                                    stdout=forbidden_msg,
+                                )
+                                return
                         elif event_type == "test_result":
                             result = evt.get("result") or {}
                             tc_index = result.get("test_case_index", len(test_point_statuses))
@@ -833,49 +833,26 @@ def register_evaluate_submission_task(celery_app):
     
                     elif batch_result and batch_result.get('compile_result', {}).get('status') == 'error':
                         compile_stderr = batch_result.get('compile_result', {}).get('stderr', 'Compile Error')
-                        all_accepted = False
-    
-                        for idx, _ in enumerate(test_cases, start=1):
-                            test_point_statuses.append({
-                                "status": "Compile Error",
-                                "stderr": compile_stderr,
-                                "stdout": "",
-                                "time": 0,
-                                "has_output_image": False,
-                                "test_index": idx,
-                            })
-                            set_submission_status_snapshot(
-                                submission_id=submission_id,
-                                username=submission.get('username'),
-                                problem_id=submission.get('problem_id'),
-                                problem_type=submission.get('problem_type'),
-                                status='Running',
-                                score=0,
-                                test_points=test_point_statuses,
-                            )
+                        _finalize_programming_terminal_submission(
+                            submission=submission,
+                            problem_id=problem_id,
+                            test_cases=test_cases,
+                            final_status="Compile Error",
+                            stderr=compile_stderr,
+                        )
+                        return
     
                     elif batch_result and batch_result.get('compile_result', {}).get('status') == 'forbidden':
                         forbidden_msg = batch_result.get('compile_result', {}).get('stderr', 'Forbidden Function')
-                        all_accepted = False
-    
-                        for idx, _ in enumerate(test_cases, start=1):
-                            test_point_statuses.append({
-                                "status": "Forbidden",
-                                "stderr": forbidden_msg,
-                                "stdout": forbidden_msg,
-                                "time": 0,
-                                "has_output_image": False,
-                                "test_index": idx,
-                            })
-                            set_submission_status_snapshot(
-                                submission_id=submission_id,
-                                username=submission.get('username'),
-                                problem_id=submission.get('problem_id'),
-                                problem_type=submission.get('problem_type'),
-                                status='Running',
-                                score=0,
-                                test_points=test_point_statuses,
-                            )
+                        _finalize_programming_terminal_submission(
+                            submission=submission,
+                            problem_id=problem_id,
+                            test_cases=test_cases,
+                            final_status="Forbidden",
+                            stderr=forbidden_msg,
+                            stdout=forbidden_msg,
+                        )
+                        return
                     else:
                         print(f"[Warning] Falling back to individual evaluation for submission {submission_id}")
                         batch_result = None

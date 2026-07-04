@@ -14,8 +14,6 @@ from tests.e2e.conftest import ADMIN_CLI, ROOT, USER_CLI, normalize_ws
 USER_COMMAND_PATHS = [
     [],
     ["init"],
-    ["site"],
-    ["site", "home"],
     ["auth"],
     ["auth", "login"],
     ["auth", "logout"],

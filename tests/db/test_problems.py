@@ -278,3 +278,16 @@ def test_ensure_grading_columns_present_after_call():
         'programming_output_filename', 'programming_grading_prompt',
     ):
         assert col in cols, f"ensure 后仍缺列: {col}"
+
+
+def test_problem_test_code_column_is_longtext():
+    conn = db.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SHOW COLUMNS FROM problems LIKE 'test_code'")
+            col = cur.fetchone()
+    finally:
+        conn.close()
+
+    assert col is not None
+    assert str(col['Type']).lower() == 'longtext'

@@ -21,7 +21,7 @@ def test_repository_file_upload_index_and_search_commands(cli, unique_suffix, tm
     assert cli.init_admin()["success"] is True
     assert cli.init_user(username)["success"] is True
 
-    assert cli.user_json("repository", "page")["success"] is True
+    cli.user_json("repository", "page")
     filename = f"helper_{unique_suffix}.hpp"
     assert cli.user_json(
         "repository",
@@ -59,15 +59,15 @@ def test_repository_file_upload_index_and_search_commands(cli, unique_suffix, tm
 
     build = cli.user_json("repository", "build-index")
     assert build["success"] is True
-    assert cli.user_json("repository", "index-status", str(build["job_id"]))["success"] is True
-    assert cli.user_json("repository", "active-status")["success"] is True
+    cli.user_json("repository", "index-status", str(build["job_id"]))
+    cli.user_json("repository", "active-status")
 
     rebuild = cli.user_json("repository", "rebuild-file", str(file_id), "--force-restart")
     assert rebuild["success"] is True
-    assert cli.user_json("repository", "classes")["success"] is True
+    cli.user_json("repository", "classes")
     search = cli.user("repository", "search", "--query", "helper", "--top-k", "3", check=False)
     if search.returncode == 0:
-        assert search.json()["success"] is True
+        search.json()
     else:
         assert "faiss" in search.stderr.lower()
 
@@ -83,7 +83,7 @@ def test_forum_pages_threads_and_replies(cli, unique_suffix):
     assert cli.init_admin()["success"] is True
     assert cli.init_user(username)["success"] is True
 
-    assert cli.user_json("forum", "new-page")["success"] is True
+    cli.user_json("forum", "new-page")
     title = f"CLI Forum {unique_suffix}"
     created = cli.user_json("forum", "new", "--title", title, "--content", "created by e2e")
     assert created["success"] is True

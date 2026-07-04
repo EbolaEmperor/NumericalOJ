@@ -164,7 +164,7 @@ CREATE TABLE `problems` (
   `type` int DEFAULT '1',
   `lang` varchar(16) NOT NULL DEFAULT 'matlab',
   `max_score` int DEFAULT NULL,
-  `test_code` text,
+  `test_code` longtext,
   `time_limit_ms` int DEFAULT '2000',
   `submission_limit` int DEFAULT '10',
   `programming_grading_mode` tinyint NOT NULL DEFAULT '1',

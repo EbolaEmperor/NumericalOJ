@@ -5,7 +5,7 @@ description: A skill to use NumericalOJ/NumOJ. Use when the user asks you to do 
 
 # NumOJ User
 
-Use the bundled script `scripts/numoj_user.py` for normal NumOJ user workflows. This skill is intentionally not an administrator tool: use authenticated HTTP routes / JSON APIs, do not use `/admin/...` routes, do not edit server code, do not add endpoints, and do not touch MySQL/Redis directly.
+Use the bundled script `scripts/numoj_user.py` for NumOJ user workflows.
 
 ## First-Time Setup
 
@@ -35,22 +35,22 @@ Proceed only if the result reports `authenticated: true`.
 
 1. Resolve the CLI path relative to this `SKILL.md`: `scripts/numoj_user.py`.
 2. If config is missing or `auth status` fails, stop and tell the user to run `init`; do not ask them to reveal the password in chat.
-3. Run `python3 scripts/numoj_user.py <group> <command> --help` before using unfamiliar commands. Every command supports `--help`.
-4. Execute the narrowest command matching the user's request.
-5. Summarize submitted IDs, current statuses, exported files, or visible scores.
+3. Before using a command area for the first time in the current task, run `python3 scripts/numoj_user.py <command_area> --help` to fetch the real subcommand list and descriptions. Do not guess subcommands from memory or from the high-level Command Areas summary.
+4. Run `python3 scripts/numoj_user.py <command_area> <subcommand> --help` before using unfamiliar subcommands. Every command supports `--help`.
+5. Execute the narrowest command matching the user's request.
+6. Summarize submitted IDs, current statuses, exported files, or visible scores.
 
 For a different NumOJ instance, set the address through `init --base-url <url>` or pass the CLI-level `--base-url <url>` option.
 
-JSON inspection commands print their response to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as output images, ranking submission archives, or repository file contents.
+JSON inspection commands print JSON to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as output images, ranking submission archives, or repository file contents.
 
 ## Command Areas
 
 - `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
-- `site`: inspect the home route and its login/problem-list redirect.
 - `me`: view own classes, join/leave/set primary class, view own submissions, and summarize visible grades from submission history.
-- `problem`: list problems, view problem details, fetch submit contexts, and submit programming code, Promptly prompts, or written-homework PDF/ZIP files.
-- `submission`: list personal submissions, list submissions for one problem, inspect status/detail/stream, fetch last submitted code, and download output images.
-- `forum`: list forum threads, view threads, fetch new-thread form metadata, create threads, and reply.
+- `problem`: list homework/problem rows, view problem details, fetch submit contexts, and submit programming code, Promptly prompts, or written-homework PDF/ZIP files.
+- `submission`: list personal submissions, list submissions for one problem, inspect details/status/stream, fetch last submitted code, and download output images.
+- `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams, submit/check appeals, and download own visible ranking submission files.
@@ -59,28 +59,48 @@ This skill deliberately excludes administrator actions such as creating/editing 
 
 ## Examples
 
-Submit a programming problem:
+List all the problems:
 
 ```bash
-python3 scripts/numoj_user.py problem submit 42 --code-file solution.m
-python3 scripts/numoj_user.py problem list --limit 10
-python3 scripts/numoj_user.py submission problem 42 --limit 5
-python3 scripts/numoj_user.py submission status 123
-python3 scripts/numoj_user.py submission stream 123 --max-lines 10
+python3 scripts/numoj_user.py problem list
+```
+
+Read problem details:
+
+```bash
+python3 scripts/numoj_user.py problem detail <problem_id>
+```
+
+Search your existing submissions for some problem:
+
+```bash
+python3 scripts/numoj_user.py submission problem <problem_id>
+```
+
+Submit a programming problem and wait for the result:
+
+```bash
+python3 scripts/numoj_user.py problem submit <problem_id> --code-file solution.m
+python3 scripts/numoj_user.py submission status <submission_id>
+python3 scripts/numoj_user.py submission stream <submission_id> --max-lines 10
+```
+
+Export the latest submitted code for a problem:
+
+```bash
+python3 scripts/numoj_user.py submission last-code <problem_id> -o solution.m
 ```
 
 Submit a Promptly problem:
 
 ```bash
-python3 scripts/numoj_user.py problem submit 42 --prompt-file prompt.txt
+python3 scripts/numoj_user.py problem submit <problem_id> --prompt-file prompt.txt
 ```
-
-Promptly submissions wait for the prompt review/generation status by default. If the prompt is rejected by the review model, the command output includes `promptly_review.reply` and a top-level `reply` field with the system feedback. Use `--no-wait-promptly` only when the caller explicitly wants to return immediately after creating the submission.
 
 Submit a written problem:
 
 ```bash
-python3 scripts/numoj_user.py problem submit 43 --file homework.pdf
+python3 scripts/numoj_user.py problem submit <problem_id> --file homework.pdf
 ```
 
 Inspect personal history and visible grades:
@@ -93,17 +113,17 @@ python3 scripts/numoj_user.py me grades --pages 5
 Submit and inspect a ranking competition:
 
 ```bash
-python3 scripts/numoj_user.py ranking submit 1 --base-model "qwen3" --answer-file answer.json --code-zip code.zip
-python3 scripts/numoj_user.py ranking my-submissions 1 --limit 5
-python3 scripts/numoj_user.py ranking leaderboard 1 --limit 10
-python3 scripts/numoj_user.py ranking appeal-status 1 123
+python3 scripts/numoj_user.py ranking submit <competition_id> --base-model "qwen3" --answer-file answer.json --code-zip code.zip
+python3 scripts/numoj_user.py ranking my-submissions <competition_id> --limit 5
+python3 scripts/numoj_user.py ranking leaderboard <competition_id> --limit 10
+python3 scripts/numoj_user.py ranking appeal-status <competition_id> <submission_id>
 ```
 
 Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:
 
 ```bash
-python3 scripts/numoj_user.py ranking git 1 check
-python3 scripts/numoj_user.py ranking git 1 submit
+python3 scripts/numoj_user.py ranking git <competition_id> check
+python3 scripts/numoj_user.py ranking git <competition_id> submit
 ```
 
 Use the code repository:
