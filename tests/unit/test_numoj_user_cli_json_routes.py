@@ -6,6 +6,8 @@ import importlib.util
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 
 def _load_numoj_user_cli_module():
     root = Path(__file__).resolve().parents[2]
@@ -35,6 +37,12 @@ class _PayloadResponse(_FakeResponse):
 
     def json(self):
         return self._payload
+
+
+class _StatusPayloadResponse(_PayloadResponse):
+    def __init__(self, status_code, payload):
+        super().__init__(payload)
+        self.status_code = status_code
 
 
 class _FakeClient:
@@ -113,6 +121,35 @@ def test_problem_list_outputs_only_homeworks(monkeypatch, capsys):
     cli.problem_list(Namespace(limit=5))
 
     assert cli.json.loads(capsys.readouterr().out) == {"homeworks": payload["homeworks"]}
+
+
+def test_problem_list_falls_back_to_flat_visible_problems(monkeypatch, capsys):
+    cli = _load_numoj_user_cli_module()
+    fake_client = _FakeClient()
+    payload = {
+        "success": True,
+        "homeworks_by_class": [
+            {
+                "class_en": "Cclass1",
+                "hw_list": [{"problem_id": 1, "problem_title": "unlimited source"}],
+            }
+        ],
+        "problems": [
+            {
+                "kind": "problem",
+                "id": 2,
+                "problem_id": 2,
+                "title": "limited flat row",
+                "class_en": "Cclass2",
+            }
+        ],
+    }
+    monkeypatch.setattr(fake_client, "request", lambda *args, **kwargs: _PayloadResponse(payload))
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+
+    cli.problem_list(Namespace(limit=1))
+
+    assert cli.json.loads(capsys.readouterr().out) == {"homeworks": payload["problems"]}
 
 
 def _problem_detail_payload():
@@ -393,6 +430,34 @@ def test_submission_last_code_output_writes_only_code_field(monkeypatch, capsys,
         "bytes": len("print('hello')\n".encode("utf-8")),
         "submission_id": 17,
     }
+
+
+def test_repository_build_index_outputs_need_confirm_payload(monkeypatch, capsys):
+    cli = _load_numoj_user_cli_module()
+    fake_client = _FakeClient()
+    payload = {
+        "success": False,
+        "need_confirm": True,
+        "active_job_id": 123,
+        "message": "上一个整理任务正在运行，是否终止？",
+    }
+    monkeypatch.setattr(fake_client, "request", lambda *args, **kwargs: _StatusPayloadResponse(409, payload))
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+
+    cli.repository_build_index(Namespace(force_restart=False))
+
+    assert cli.json.loads(capsys.readouterr().out) == payload
+
+
+def test_forum_reply_rejects_blank_content(monkeypatch):
+    cli = _load_numoj_user_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+
+    with pytest.raises(cli.common.CliError, match="Reply content cannot be empty"):
+        cli.forum_reply(Namespace(thread_id=7, content="   "))
+
+    assert fake_client.requests == []
 
 
 def test_numoj_user_json_query_commands_do_not_accept_output_option():

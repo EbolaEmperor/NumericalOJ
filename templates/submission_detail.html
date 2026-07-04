@@ -483,15 +483,10 @@
     return String(status || '').trim().toLowerCase() === 'accepted';
   }
 
-  function updateProgrammingHeader(status, score, testPointCount) {
+  function updateProgrammingHeader(status, score) {
     if (submissionStatusTextEl && status) {
       submissionStatusTextEl.className = statusClassName(status);
       submissionStatusTextEl.textContent = String(status);
-    }
-
-    const count = Number(testPointCount);
-    if (submissionScoreMaxEl && Number.isFinite(count) && count > 0) {
-      submissionScoreMaxEl.textContent = String(count);
     }
 
     if (!submissionScoreValueEl) return;
@@ -928,7 +923,7 @@
     if (typeof renderTestPoints === 'function') {
       renderTestPoints(data.test_points || []);
     }
-    updateProgrammingHeader(data.status, data.score, data.test_points_count);
+    updateProgrammingHeader(data.status, data.score);
 
     if (!data.is_judging) {
       if (judgingStatusEl) {
