@@ -5,7 +5,7 @@ description: A skill to administer NumericalOJ/NumOJ. Use when the user asks you
 
 # NumOJ Admin
 
-Use the bundled script `scripts/numoj_admin.py` for administrator operations against a running NumOJ instance. Treat this as an administrator skill, not a developer tool: operate through authenticated HTTP routes / JSON APIs only, never import a NumOJ source checkout, never edit server files, never add POST endpoints, and never touch MySQL/Redis directly.
+Use the bundled script `scripts/numoj_admin.py` for administrator operations against a running NumOJ instance.
 
 ## First-Time Setup
 
@@ -37,9 +37,10 @@ When this skill is invoked:
 
 1. Resolve the CLI path relative to this `SKILL.md`: `scripts/numoj_admin.py`.
 2. If config is missing or `auth status` fails, stop and tell the administrator to run `init`; do not ask them to reveal the password in chat.
-3. Run `python3 scripts/numoj_admin.py <group> <command> --help` before using unfamiliar commands. Every command supports `--help`.
-4. Execute the narrowest administrator command that matches the request.
-5. Summarize the result in administrator terms: what changed, what exported file was written, or what failed.
+3. Before using a command area for the first time in the current task, run `python3 scripts/numoj_admin.py <command_area> --help` to fetch the real subcommand list and descriptions. Do not guess subcommands from memory or from the high-level Command Areas summary.
+4. Run `python3 scripts/numoj_admin.py <command_area> <subcommand> --help` before using unfamiliar subcommands. Every command supports `--help`.
+5. Execute the narrowest administrator command that matches the request.
+6. Summarize the result in administrator terms: what changed, what exported file was written, or what failed.
 
 For a different NumOJ instance, set the address through `init --base-url <url>` or pass the CLI-level `--base-url <url>` option.
 
@@ -83,6 +84,12 @@ Edit a problem without clearing omitted fields:
 python3 scripts/numoj_admin.py problem edit 42 \
   --title "矩阵范数计算（修订）" \
   --time-limit-ms 3000
+```
+
+Read problem details:
+
+```bash
+python3 scripts/numoj_admin.py problem detail 42
 ```
 
 Submit a normal programming problem and inspect the latest submissions:

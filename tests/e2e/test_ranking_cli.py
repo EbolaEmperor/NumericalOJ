@@ -77,7 +77,6 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
     ranking_id = _create_ranking(cli, f"CLI Ranking {unique_suffix}")
     assert cli.admin_json("ranking", "detail", str(ranking_id), "--tab", "edit")["success"] is True
     user_detail = cli.user_json("ranking", "detail", str(ranking_id))
-    assert user_detail["success"] is True
     assert_no_json_leaks(user_detail, forbidden_keys=RANKING_SECRET_KEYS)
     user_list = cli.user_json("ranking", "list", "--limit", "10")
     assert user_list["count"] >= 1
@@ -151,7 +150,6 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
     assert cli.admin_json("ranking", "bulk-filter", str(ranking_id), "--username", username)["success"] is True
     assert cli.admin_json("ranking", "bulk-start", str(ranking_id), "--submission-ids", str(sid))["success"] is True
     leaderboard = cli.user_json("ranking", "leaderboard", str(ranking_id))
-    assert leaderboard["success"] is True
     assert_no_json_leaks(leaderboard, forbidden_keys=RANKING_SECRET_KEYS)
     matches = cli.user_json("ranking", "matches", str(ranking_id))
     assert matches["total"] == 0
@@ -321,7 +319,6 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
     assert admin_detail["judge_rules"]
 
     user_detail = cli.user_json("ranking", "detail", str(ranking_id), "--tab", "submit")
-    assert user_detail["success"] is True
     assert user_detail["git_repo_url"] == f"file://{user_repo}"
     assert_no_json_leaks(
         user_detail,

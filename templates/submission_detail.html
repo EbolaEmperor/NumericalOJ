@@ -467,6 +467,9 @@
   const testPointDetailImageEl = document.getElementById('testPointDetailImage');
   const testPointDetailOmniWrapEl = document.getElementById('testPointDetailOmniWrap');
   const testPointDetailOmniTextEl = document.getElementById('testPointDetailOmniText');
+  const submissionStatusTextEl = document.getElementById('submissionStatusText');
+  const submissionScoreValueEl = document.getElementById('submissionScoreValue');
+  const submissionScoreMaxEl = document.getElementById('submissionScoreMax');
   let currentTestPoints = Array.isArray(initialTestPoints) ? initialTestPoints : [];
   let selectedTestPointIndex = null;
   let hasUserSelectedTestPoint = false;
@@ -478,6 +481,36 @@
 
   function isAcceptedStatus(status) {
     return String(status || '').trim().toLowerCase() === 'accepted';
+  }
+
+  function updateProgrammingHeader(status, score, testPointCount) {
+    if (submissionStatusTextEl && status) {
+      submissionStatusTextEl.className = statusClassName(status);
+      submissionStatusTextEl.textContent = String(status);
+    }
+
+    const count = Number(testPointCount);
+    if (submissionScoreMaxEl && Number.isFinite(count) && count > 0) {
+      submissionScoreMaxEl.textContent = String(count);
+    }
+
+    if (!submissionScoreValueEl) return;
+    const safeScore = Number(score);
+    if (!Number.isFinite(safeScore)) {
+      submissionScoreValueEl.textContent = '-';
+      submissionScoreValueEl.className = 'text-danger';
+      return;
+    }
+
+    submissionScoreValueEl.textContent = String(safeScore);
+    const maxScore = Number(submissionScoreMaxEl ? submissionScoreMaxEl.textContent : NaN);
+    if (Number.isFinite(maxScore) && maxScore > 0 && safeScore === maxScore) {
+      submissionScoreValueEl.className = 'text-success';
+    } else if (Number.isFinite(maxScore) && maxScore > 0 && (safeScore / maxScore) >= 0.6) {
+      submissionScoreValueEl.className = 'text-warning';
+    } else {
+      submissionScoreValueEl.className = 'text-danger';
+    }
   }
 
   function statusShortName(status) {
@@ -895,8 +928,12 @@
     if (typeof renderTestPoints === 'function') {
       renderTestPoints(data.test_points || []);
     }
+    updateProgrammingHeader(data.status, data.score, data.test_points_count);
 
     if (!data.is_judging) {
+      if (judgingStatusEl) {
+        judgingStatusEl.classList.add('d-none');
+      }
       if (judgingTextEl) {
         judgingTextEl.innerHTML = '<i class="fas fa-check-circle me-1"></i>判题完成！正在刷新...';
       }

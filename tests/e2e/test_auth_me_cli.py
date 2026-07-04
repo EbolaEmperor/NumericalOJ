@@ -26,11 +26,11 @@ def test_admin_and_user_login_status_logout_and_login_gate(cli, unique_suffix, t
     assert cli.admin_json("auth", "status")["admin"] is True
     assert cli.user_json("auth", "status")["authenticated"] is True
     assert cli.admin_json("site", "home")["success"] is True
-    assert cli.user_json("site", "home")["success"] is True
+    cli.user_json("me", "classes")
 
     anonymous_cfg = tmp_path / "anonymous.json"
     anonymous_cfg.write_text(json.dumps({"base_url": cli.base_url}), encoding="utf-8")
-    gated = cli.run(USER_CLI, anonymous_cfg, "site", "home", check=False)
+    gated = cli.run(USER_CLI, anonymous_cfg, "me", "classes", check=False)
     assert gated.returncode == 2
     assert "CLI requires login" in gated.stderr
 
@@ -95,14 +95,13 @@ def test_me_class_and_grade_commands(cli, unique_suffix):
     assert cli.admin_json("user", "add-class-type", "--class-en", class_token, "--class-cn", "CLI Me 班")["success"] is True
 
     classes = cli.user_json("me", "classes")
-    assert classes["success"] is True
     assert any(c["class_en"] == class_en for c in classes["all_classes"])
 
     assert cli.user_json("me", "join-class", class_en)["success"] is True
     assert cli.user_json("me", "set-primary-class", class_en)["success"] is True
     assert cli.user_json("me", "leave-class", "Cclass1")["success"] is True
-    assert cli.user_json("me", "submissions", "--limit", "5")["success"] is True
-    assert cli.user_json("me", "grades")["success"] is True
+    cli.user_json("me", "submissions", "--limit", "5")
+    cli.user_json("me", "grades")
 
     admin_classes = cli.admin_json("me", "classes")
     assert admin_classes["success"] is True

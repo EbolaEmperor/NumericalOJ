@@ -53,6 +53,41 @@ def test_compare_zero_pair():
     assert cmp("0 0", "0 0") is True
 
 
+# ---------------- 程序题终态快照 ----------------
+def test_finalize_terminal_programming_submission_preserves_terminal_status(monkeypatch):
+    from oj_modules.tasks import evaluate_tasks
+
+    captured = {}
+
+    def fake_finalize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(evaluate_tasks, "_finalize_programming_submission", fake_finalize)
+
+    submission = {
+        "id": 123,
+        "username": "student",
+        "problem_id": 456,
+        "problem_type": 1,
+    }
+    points = evaluate_tasks._finalize_programming_terminal_submission(
+        submission=submission,
+        problem_id=456,
+        test_cases=[{"input": "1"}, {"input": "2"}],
+        final_status="Compile Error",
+        stderr="main.cpp: error",
+    )
+
+    assert captured["submission"] == submission
+    assert captured["problem_id"] == 456
+    assert captured["score"] == 0
+    assert captured["final_status"] == "Compile Error"
+    assert captured["test_point_statuses"] == points
+    assert [tp["status"] for tp in points] == ["Compile Error", "Compile Error"]
+    assert [tp["test_index"] for tp in points] == [1, 2]
+    assert points[0]["stderr"] == "main.cpp: error"
+
+
 # ---------------- _parse_written_homework_grading_result ----------------
 def _parse():
     from oj_modules.ai_utils import _parse_written_homework_grading_result
