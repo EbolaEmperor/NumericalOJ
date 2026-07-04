@@ -66,7 +66,19 @@ def necessary_problem_list_payload(payload: Any) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return {"homeworks": []}
     homeworks = payload.get("homeworks")
-    return {"homeworks": homeworks if isinstance(homeworks, list) else []}
+    if isinstance(homeworks, list):
+        return {"homeworks": homeworks}
+    problems = payload.get("problems")
+    if isinstance(problems, list):
+        return {"homeworks": problems}
+    merged_homeworks = []
+    for class_block in payload.get("homeworks_by_class") or []:
+        if not isinstance(class_block, dict):
+            continue
+        for row in class_block.get("hw_list") or []:
+            if isinstance(row, dict):
+                merged_homeworks.append(row)
+    return {"homeworks": merged_homeworks}
 
 
 def necessary_problem_detail_payload(payload: Any) -> Any:

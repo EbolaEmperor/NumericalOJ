@@ -78,13 +78,22 @@ def forum_new(args: argparse.Namespace) -> None:
     common.print_redirect_response(resp, id_pattern=r"/forum/thread/(\d+)", id_name="thread_id")
 
 
+def _reply_content(args: argparse.Namespace) -> str:
+    content = common.read_text_value(args.content)
+    if not content.strip():
+        raise common.CliError("Reply content cannot be empty.")
+    return content
+
+
 def forum_reply(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", f"/forum/reply/{args.thread_id}", data={"content": common.read_text_value(args.content)})
+    content = _reply_content(args)
+    resp = common.client_from_args(args).request("POST", f"/forum/reply/{args.thread_id}", data={"content": content})
     common.print_redirect_response(resp)
 
 
 def forum_reply_thread(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", f"/forum/thread/{args.thread_id}", data={"content": common.read_text_value(args.content)})
+    content = _reply_content(args)
+    resp = common.client_from_args(args).request("POST", f"/forum/thread/{args.thread_id}", data={"content": content})
     common.print_redirect_response(resp)
 
 

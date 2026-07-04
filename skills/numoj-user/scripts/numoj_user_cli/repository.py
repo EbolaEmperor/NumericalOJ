@@ -192,13 +192,20 @@ def repository_upload(args: argparse.Namespace) -> None:
     common.print_or_save_response(resp)
 
 
-def repository_build_index(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", "/api/repository/index/build", json={"force_restart": bool(args.force_restart)})
+def print_repository_index_start_response(resp: Any) -> None:
+    if resp.status_code == 409 and common.response_is_json(resp):
+        common.output_json(necessary_repository_index_start_payload(resp.json()))
+        return
     common.ensure_ok(resp, allow_redirect=False)
     if common.response_is_json(resp):
         common.output_json(necessary_repository_index_start_payload(resp.json()))
         return
     print(resp.text.strip())
+
+
+def repository_build_index(args: argparse.Namespace) -> None:
+    resp = common.client_from_args(args).request("POST", "/api/repository/index/build", json={"force_restart": bool(args.force_restart)})
+    print_repository_index_start_response(resp)
 
 
 def repository_rebuild_file(args: argparse.Namespace) -> None:
@@ -207,11 +214,7 @@ def repository_rebuild_file(args: argparse.Namespace) -> None:
         "/api/repository/index/rebuild_file",
         json={"file_id": args.file_id, "force_restart": bool(args.force_restart)},
     )
-    common.ensure_ok(resp, allow_redirect=False)
-    if common.response_is_json(resp):
-        common.output_json(necessary_repository_index_start_payload(resp.json()))
-        return
-    print(resp.text.strip())
+    print_repository_index_start_response(resp)
 
 
 def repository_index_status(args: argparse.Namespace) -> None:

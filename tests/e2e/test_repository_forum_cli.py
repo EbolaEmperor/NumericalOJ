@@ -59,15 +59,19 @@ def test_repository_file_upload_index_and_search_commands(cli, unique_suffix, tm
 
     build = cli.user_json("repository", "build-index")
     assert build["success"] is True
-    cli.user_json("repository", "index-status", str(build["job_id"]))
-    cli.user_json("repository", "active-status")
+    status = cli.user_json("repository", "index-status", str(build["job_id"]))
+    assert status["job"]["id"] == build["job_id"]
+    active_status = cli.user_json("repository", "active-status")
+    assert "has_active" in active_status
+    assert "job" in active_status
 
     rebuild = cli.user_json("repository", "rebuild-file", str(file_id), "--force-restart")
     assert rebuild["success"] is True
-    cli.user_json("repository", "classes")
+    classes = cli.user_json("repository", "classes")
+    assert isinstance(classes["classes"], list)
     search = cli.user("repository", "search", "--query", "helper", "--top-k", "3", check=False)
     if search.returncode == 0:
-        search.json()
+        assert isinstance(search.json()["hits"], list)
     else:
         assert "faiss" in search.stderr.lower()
 
