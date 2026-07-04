@@ -7,8 +7,10 @@
 - rate_limit_hit / cooldown：基于假 Redis 的限流语义 + Redis 缺失 fail-open
 - sanitize_html：去除 script / 事件属性 / 危险协议，保留良性标签（防存储型 XSS）
 - safe_user_header_filename：用户头文件名白名单（防目录穿越写入）
+- validate_username：用户身份字段白名单，防用户名进入管理员页面形成存储型 XSS
 """
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -120,6 +122,71 @@ def test_sanitize_keeps_benign_markup():
     assert '<code' in out.lower()
     out2 = sanitize_html('<a href="https://example.com">link</a>')
     assert 'https://example.com' in out2
+
+
+# ---------------- 用户名白名单 / 管理员页 XSS 回归 ----------------
+def test_validate_username_accepts_safe_identifiers():
+    from oj_modules.security_utils import validate_username
+    for username in ('alice', 'student_001', 'u-2026.07'):
+        ok, cleaned, msg = validate_username(f' {username} ')
+        assert ok is True
+        assert cleaned == username
+        assert msg == ''
+
+
+def test_validate_username_rejects_xss_and_paths():
+    from oj_modules.security_utils import validate_username
+    for bad in (
+        '',
+        '-starts-with-dash',
+        '<svg onload=alert(1)>',
+        "x');alert(1)//",
+        '../../admin',
+        '中文用户名',
+        'a' * 51,
+    ):
+        ok, _, msg = validate_username(bad)
+        assert ok is False
+        assert msg
+
+
+def test_admin_score_template_does_not_innerhtml_user_fields():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / 'templates' / 'problem_detail.html').read_text(encoding='utf-8')
+    assert '${score.username}' not in text
+    assert '${score.class_cn}' not in text
+    assert 'appendScoreCell(row, score.username' in text
+
+
+def test_admin_user_template_uses_json_args_for_username():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / 'templates' / 'admin_user_management.html').read_text(encoding='utf-8')
+    assert "showGradesModal('{{ u.id }}', '{{ u.username }}')" not in text
+    assert "showEditUsernameModal('{{ u.id }}', '{{ u.username }}')" not in text
+    assert '{{ u.username|tojson }}' in text
+
+
+def test_class_self_service_cannot_promote_via_cadmin_membership():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
+    assert "class_en == 'Cadmin' and not is_admin(user)" in text
+    assert '不能自助切换到管理员班级' in text
+    assert "cls['class_en'] == 'Cadmin' and not is_admin(user)" in text
+
+
+def test_admin_extra_class_endpoint_rejects_cadmin():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
+    assert "class_en == 'Cadmin'" in text
+    assert '管理员班级不能作为附加班级添加' in text
+
+
+def test_register_never_offers_or_accepts_cadmin_class():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / 'oj_modules' / 'routes' / 'auth_routes.py').read_text(encoding='utf-8')
+    assert 'get_all_classes_except_admin()' in text
+    assert 'get_all_classes()' not in text
+    assert "user_class.get('class_en') == 'Cadmin'" in text
 
 
 # ---------------- 用户头文件名白名单 ----------------

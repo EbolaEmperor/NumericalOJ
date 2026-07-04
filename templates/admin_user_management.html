@@ -49,7 +49,7 @@
     <td>{{ u.id }}</td>
     <td class="d-flex justify-content-between align-items-center">
       <div class="user-username">{{ u.username }}</div>
-      <button type="button" class="btn btn-sm btn-outline-warning" onclick="showEditUsernameModal('{{ u.id }}', '{{ u.username }}')">
+      <button type="button" class="btn btn-sm btn-outline-warning" onclick='showEditUsernameModal({{ u.id|tojson }}, {{ u.username|tojson }})'>
         <i class="fas fa-edit"></i>
       </button>
     </td>
@@ -67,7 +67,7 @@
                 data-class-en="{{ ec.class_en }}">
             {{ ec.class_cn }}
             <span class="remove-x" title="移除"
-                  onclick="removeUserExtraClass('{{ u.id }}','{{ ec.class_en }}', this)">×</span>
+                  onclick='removeUserExtraClass({{ u.id|tojson }}, {{ ec.class_en|tojson }}, this)'>×</span>
           </span>
         {% endfor %}
       {% endif %}
@@ -76,11 +76,11 @@
     <!-- 右列：操作按钮（左到右） -->
     <div class="user-classes-actions">
       <button type="button" class="btn btn-sm btn-outline-warning" 
-              onclick="showEditClassModal('{{ u.id }}', '{{ u.class }}')">
+              onclick='showEditClassModal({{ u.id|tojson }}, {{ u.class|tojson }})'>
         <i class="fas fa-edit me-1"></i>改主班级
       </button>
       <button type="button" class="btn btn-sm btn-outline-success" 
-              onclick="showAddUserClassModal('{{ u.id }}')">
+              onclick='showAddUserClassModal({{ u.id|tojson }})'>
         <i class="fas fa-user-plus me-1"></i>添加班级
       </button>
     </div>
@@ -88,7 +88,7 @@
 </td>
     <td>
       <button type="button" class="btn btn-sm btn-outline-info" 
-              onclick="showGradesModal('{{ u.id }}', '{{ u.username }}')">
+              onclick='showGradesModal({{ u.id|tojson }}, {{ u.username|tojson }})'>
         <i class="fas fa-chart-line me-1"></i>查看成绩
       </button>
     </td>
@@ -351,18 +351,22 @@
     const badge = document.createElement('span');
     badge.className = 'badge bg-info text-dark badge-removable mb-1';
     badge.setAttribute('data-class-en', classEn);
-    badge.innerHTML = `
-      ${classCn}
-      <span class="remove-x" title="移除"
-            onclick="removeUserExtraClass('${userId}','${classEn}', this)">×</span>
-    `;
+    badge.appendChild(document.createTextNode(classCn || classEn || ''));
+    const remove = document.createElement('span');
+    remove.className = 'remove-x';
+    remove.title = '移除';
+    remove.textContent = '×';
+    remove.addEventListener('click', function() {
+      removeUserExtraClass(userId, classEn, remove);
+    });
+    badge.appendChild(remove);
     badgeContainer.appendChild(badge);
   }
 
   // === 班级映射：class_en -> class_cn（用于徽章中文名显示） ===
   const classMap = {
     {% for c in classes %}
-      "{{ c.class_en }}": "{{ c.class_cn }}",
+      {{ c.class_en|tojson }}: {{ c.class_cn|tojson }},
     {% endfor %}
   };
 
@@ -587,21 +591,33 @@
     grades.forEach(item => {
       const row = document.createElement('tr');
       const scoreClass = item.user_score === item.max_score ? 'text-success fw-bold' : 'text-primary';
-      
-      row.innerHTML = `
-        <td>${item.problem_id}</td>
-        <td>${item.problem_title}</td>
-        <td class="${scoreClass}" id="score-${item.problem_id}">${item.user_score}</td>
-        <td>${item.max_score}</td>
-        <td>
-          <button type="button" class="btn btn-sm btn-outline-primary" 
-                  onclick="editGrade(${item.problem_id}, '${item.problem_title}', ${item.user_score}, ${item.max_score})">
-            <i class="fas fa-edit"></i> 修改
-          </button>
-        </td>
-      `;
+
+      appendTextCell(row, item.problem_id);
+      appendTextCell(row, item.problem_title || '');
+      const scoreCell = appendTextCell(row, item.user_score);
+      scoreCell.className = scoreClass;
+      scoreCell.id = 'score-' + item.problem_id;
+      appendTextCell(row, item.max_score);
+
+      const actionCell = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sm btn-outline-primary';
+      btn.innerHTML = '<i class="fas fa-edit"></i> 修改';
+      btn.addEventListener('click', function() {
+        editGrade(item.problem_id, item.problem_title || '', item.user_score, item.max_score);
+      });
+      actionCell.appendChild(btn);
+      row.appendChild(actionCell);
       tbody.appendChild(row);
     });
+  }
+
+  function appendTextCell(row, value) {
+    const cell = document.createElement('td');
+    cell.textContent = value == null ? '' : String(value);
+    row.appendChild(cell);
+    return cell;
   }
 
   // 搜索过滤功能

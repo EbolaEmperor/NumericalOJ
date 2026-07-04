@@ -11,7 +11,6 @@ from flask import Blueprint, flash, jsonify, redirect, render_template, request,
 from config import MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME
 from oj_modules.db_services import (
     create_user,
-    get_all_classes,
     get_all_classes_except_admin,
     get_class_by_en,
     get_current_user,
@@ -23,6 +22,7 @@ from oj_modules.security_utils import (
     cooldown_active,
     hash_password,
     rate_limit_hit,
+    validate_username,
     verify_password,
 )
 
@@ -123,6 +123,10 @@ def login():
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
 
+        username_ok, username, username_msg = validate_username(username)
+        if not username_ok:
+            return render_template('login.html', error_message=username_msg, success_message=None)
+
         # 登录尝试限流（按用户名），减缓离线/在线暴力破解。
         if not rate_limit_hit(_rds, f'login:{username}', _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW)[0]:
             return render_template('login.html', error_message="尝试过于频繁，请稍后再试", success_message=None)
@@ -165,18 +169,26 @@ def send_verification():
 
 @auth_bp.route('/register', methods=['GET', 'POST'])
 def register():
+    public_classes = get_all_classes_except_admin()
     if request.method == 'POST':
-        username = request.form.get('username').strip()
-        password = request.form.get('password').strip()
-        email = request.form.get('email').strip()
-        code = request.form.get('verification_code').strip()
+        username = (request.form.get('username') or '').strip()
+        password = (request.form.get('password') or '').strip()
+        email = (request.form.get('email') or '').strip()
+        code = (request.form.get('verification_code') or '').strip()
         user_class = get_class_by_en(request.form.get('class'))
 
+        if user_class and user_class.get('class_en') == 'Cadmin':
+            user_class = None
+
         if not all([username, password, email, code, user_class]):
-            return render_template('register.html', error_message="所有字段不能为空", classes=get_all_classes())
+            return render_template('register.html', error_message="所有字段不能为空", classes=public_classes)
+
+        username_ok, username, username_msg = validate_username(username)
+        if not username_ok:
+            return render_template('register.html', error_message=username_msg, classes=public_classes)
 
         if not _verify_attempt_allowed(email):
-            return render_template('register.html', error_message="验证次数过多，请稍后再试", classes=get_all_classes())
+            return render_template('register.html', error_message="验证次数过多，请稍后再试", classes=public_classes)
 
         conn = get_db_connection()
         try:
@@ -188,16 +200,15 @@ def register():
             conn.close()
 
         if not record or record['code'] != code or datetime.now() > record['expires_at']:
-            return render_template('register.html', error_message="验证码错误或已过期", classes=get_all_classes())
+            return render_template('register.html', error_message="验证码错误或已过期", classes=public_classes)
 
         if get_user_by_username(username) or get_user_by_email(email):
-            return render_template('register.html', error_message="用户名或邮箱已被注册", classes=get_all_classes())
+            return render_template('register.html', error_message="用户名或邮箱已被注册", classes=public_classes)
 
         create_user(username, hash_password(password), email, user_class)
         return redirect(url_for('auth.login', success="注册成功，请登录"))
 
-    classes = get_all_classes_except_admin()
-    return render_template('register.html', classes=classes)
+    return render_template('register.html', classes=public_classes)
 
 
 @auth_bp.route('/forgot_password', methods=['GET', 'POST'])

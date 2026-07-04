@@ -48,7 +48,7 @@
         {% if show_delete %}
         <form method="POST" class="d-inline"
               action="{{ url_for('ranking.ranking_delete_submission', competition_id=competition.id, submission_id=s.id) }}"
-              onsubmit="return confirm('确认删除提交 #{{ s.id }}（{{ s.username }}）？\n此操作无法撤销，该用户的最高分与排行榜将同步更新。');">
+              onsubmit="return confirm('确认删除提交 #{{ s.id }}？\n此操作无法撤销，该用户的最高分与排行榜将同步更新。');">
           <button type="submit" class="aj-del" title="删除该提交" aria-label="删除提交 #{{ s.id }}"><i class="fas fa-trash"></i></button>
         </form>
         {% endif %}

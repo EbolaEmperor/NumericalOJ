@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""安全相关公共工具：口令哈希（带盐慢哈希 + 兼容历史 sha256）与基于 Redis 的限流。
+"""安全相关公共工具：口令哈希（带盐慢哈希 + 兼容历史 sha256）、用户名校验与限流。
 
 历史版本用无盐 sha256 存口令。这里改用 werkzeug 的带盐慢哈希（pbkdf2/scrypt），
 登录时若发现是历史 sha256 哈希且校验通过，则透明地重新哈希为新算法（verify-then-rehash），
@@ -15,6 +15,25 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 # 历史无盐 sha256：64 位十六进制
 _SHA256_HEX_RE = re.compile(r'^[0-9a-f]{64}$')
+# 用户名会出现在 URL、Git 仓库命名、管理员页面和会话键里；只允许稳定的 ASCII 标识符字符。
+_USERNAME_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.-]{0,49}$')
+
+
+def validate_username(username):
+    """校验并返回规范化用户名。
+
+    返回 ``(ok, cleaned, message)``。用户名作为权限边界字段，不允许 HTML/JS/路径/空白字符。
+    """
+    cleaned = str(username or '').strip()
+    if not cleaned:
+        return False, cleaned, '用户名不能为空'
+    if not _USERNAME_RE.fullmatch(cleaned):
+        return (
+            False,
+            cleaned,
+            '用户名只能包含字母、数字、下划线、点和连字符，长度不超过 50，且必须以字母、数字或下划线开头',
+        )
+    return True, cleaned, ''
 
 
 def hash_password(password):

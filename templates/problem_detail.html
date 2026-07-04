@@ -984,12 +984,10 @@
           statusClass = 'text-danger';
         }
         
-        row.innerHTML = `
-          <td>${score.username}</td>
-          <td>${score.class_cn}</td>
-          <td>${scoreValue}</td>
-          <td class="${statusClass}">${statusText}</td>
-        `;
+        appendScoreCell(row, score.username || '');
+        appendScoreCell(row, score.class_cn || '');
+        appendScoreCell(row, scoreValue);
+        appendScoreCell(row, statusText, statusClass);
         
         tbody.appendChild(row);
       });
@@ -998,6 +996,13 @@
       var validScores = data.scores.length;
       var averageScore = validScores > 0 ? (totalScore / validScores).toFixed(2) : '0.00';
       document.getElementById('averageScore').textContent = averageScore;
+    }
+
+    function appendScoreCell(row, value, className) {
+      var cell = document.createElement('td');
+      if (className) cell.className = className;
+      cell.textContent = value == null ? '' : String(value);
+      row.appendChild(cell);
     }
   })();
 </script>

@@ -863,6 +863,9 @@ def get_user_by_email(email):
 
 
 def create_user(username, password_hash, email, user_class):
+    if (user_class or {}).get('class_en') == 'Cadmin':
+        raise ValueError('普通用户不能注册到管理员班级')
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
