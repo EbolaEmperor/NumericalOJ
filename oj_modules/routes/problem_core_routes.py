@@ -116,6 +116,63 @@ def _strip_problem_title_tags(title):
     return text if text else original
 
 
+def _decode_plagiarism_usernames(raw_value):
+    if not raw_value:
+        return []
+    try:
+        value = json.loads(raw_value)
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+    except Exception:
+        pass
+    return [part.strip() for part in str(raw_value).split(',') if part.strip()]
+
+
+def _format_plagiarism_notice(record):
+    if not record:
+        return None
+    names = _decode_plagiarism_usernames(record.get("matched_usernames"))
+    names_text = "、".join(names) if names else "其他同学"
+    rule = str(record.get("comparison_rule") or "").strip()
+    if rule == "byte-identical":
+        return f"经查，您本题代码与 {names_text} 完全一致"
+
+    try:
+        pct = float(rule) * 100
+        pct_text = str(int(pct)) if pct.is_integer() else f"{pct:.1f}".rstrip("0").rstrip(".")
+    except ValueError:
+        pct_text = rule
+    return f"经查，您本题代码与 {names_text} 的相似度达到 {pct_text}% 以上"
+
+
+def _load_plagiarism_notice_map(username, class_en_list, cursor):
+    if not username or not class_en_list:
+        return {}
+
+    placeholders = ",".join(["%s"] * len(class_en_list))
+    try:
+        cursor.execute(
+            f"""
+            SELECT pr.class_en, pr.problem_id, pr.comparison_rule, pr.matched_usernames
+            FROM plagiarism_records pr
+            JOIN (
+                SELECT class_en, problem_id, MAX(id) AS latest_id
+                FROM plagiarism_records
+                WHERE username=%s AND class_en IN ({placeholders})
+                GROUP BY class_en, problem_id
+            ) latest ON latest.latest_id = pr.id
+            """,
+            tuple([username] + list(class_en_list)),
+        )
+        return {
+            (row["class_en"], int(row["problem_id"])): row
+            for row in cursor.fetchall()
+            if row.get("problem_id") is not None
+        }
+    except Exception:
+        return {}
+
+
 def init_problem_core_module(
     evaluate_submission_task,
     transcribe_written_homework_task,
@@ -282,6 +339,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
             tuple(union_params + [user_id, user_id, username]),
         )
         homework_rows = db_cursor.fetchall()
+        plagiarism_notice_map = _load_plagiarism_notice_map(username, class_en_list, db_cursor)
 
         for row in homework_rows:
             cls = row["class_en"]
@@ -320,6 +378,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                     "total_score": row.get("total_score"),
                     "is_completed": (row.get("is_ac") == 1),
                     "max_score": row.get("user_score"),
+                    "plagiarism_notice": _format_plagiarism_notice(plagiarism_notice_map.get((cls, pid))),
                 }
             result[cls].append(hw)
 

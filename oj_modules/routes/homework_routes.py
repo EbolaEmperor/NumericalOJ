@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import json
+import hashlib
+from collections import defaultdict
 from datetime import datetime
 from difflib import SequenceMatcher
 
 import pymysql
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, flash, jsonify, make_response, redirect, render_template, request, session, url_for
 
 from oj_modules.db_services import (
     CLASS_ADJUST_FLAG_KEY,
@@ -29,6 +31,7 @@ homework_bp = Blueprint('homework', __name__)
 _rds = None
 _rds_binary = None
 _export_task = None
+_plagiarism_task = None
 
 
 def _invalidate_problem_list_cache_for_class(class_en):
@@ -44,7 +47,7 @@ from oj_modules.auth_helpers import current_user, is_admin
 
 
 def init_homework_module(celery_app, redis_client, redis_binary_client):
-    global _rds, _rds_binary, _export_task
+    global _rds, _rds_binary, _export_task, _plagiarism_task
     _rds = redis_client
     _rds_binary = redis_binary_client
 
@@ -79,7 +82,7 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                         'error',
                         0,
                         1,
-                        '该班级没有可导出查重的普通题作业（打榜赛暂不查重）',
+                        '该班级没有可导出的普通题作业（打榜赛暂不导出代码）',
                     )
                     return None
 
@@ -124,7 +127,6 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                 import zipfile
 
                 zip_buffer = BytesIO()
-                codes_for_plagiarism_check = []
 
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                     for idx, pid in enumerate(problem_ids):
@@ -195,30 +197,6 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                             uname = row['username']
                             code = row.get('code') or ""
 
-                            user_id = None
-                            for student in students:
-                                if student['username'] == uname:
-                                    user_id = student['id']
-                                    break
-
-                            included_files = extract_includes_from_code(code)
-                            code_with_includes = code
-
-                            if included_files and user_id:
-                                repository_files = get_user_repository_files_by_names(user_id, included_files)
-                                if repository_files:
-                                    code_with_includes += "\n\n// ===== 以下是引用的代码仓库文件 =====\n"
-                                    for filename, content in repository_files.items():
-                                        code_with_includes += f"\n// ===== {filename} =====\n"
-                                        code_with_includes += content + "\n"
-
-                            codes_for_plagiarism_check.append({
-                                'username': uname,
-                                'code': code_with_includes,
-                                'problem_id': pid,
-                                'problem_title': ptitle,
-                            })
-
                             safe_uname = re.sub(r'[\\/*?:"<>|]', '_', uname)
                             file_name = f"{folder_name}/{safe_uname}{ext}"
                             try:
@@ -230,9 +208,8 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                                 info.flag_bits |= 0x800
                                 zip_file.writestr(info, code)
 
-                    update_export_progress(task_id, 'collecting', 50, 100, '题目代码收集完成，开始收集代码仓库...')
+                    update_export_progress(task_id, 'collecting', 60, 100, '题目代码收集完成，开始收集代码仓库...')
 
-                    repository_data = []
                     for idx, student in enumerate(students):
                         user_id = student['id']
                         username = student['username']
@@ -240,7 +217,7 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                         update_export_progress(
                             task_id,
                             'collecting',
-                            50 + idx * 10 // len(students),
+                            60 + idx * 30 // len(students),
                             100,
                             f'正在收集 {username} 的代码仓库 ({idx + 1}/{len(students)})',
                         )
@@ -248,12 +225,6 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                         repo_files = get_student_repository_files(user_id)
 
                         if repo_files:
-                            repository_data.append({
-                                'user_id': user_id,
-                                'username': username,
-                                'files': repo_files,
-                            })
-
                             safe_uname = re.sub(r'[\\/*?:"<>|]', '_', username)
                             for repo_file in repo_files:
                                 file_name = f"代码仓库/{safe_uname}/{repo_file['filename']}"
@@ -266,45 +237,19 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                                     info.flag_bits |= 0x800
                                     zip_file.writestr(info, repo_file['content'])
 
-                    update_export_progress(task_id, 'collecting', 60, 100, '代码仓库收集完成，开始题目代码查重...')
-
-                    plagiarism_results = detect_plagiarism(codes_for_plagiarism_check, threshold=0.9, task_id=task_id)
-                    update_export_progress(task_id, 'plagiarism_check', 75, 100, '题目代码查重完成，开始代码仓库查重...')
-
-                    repository_results = detect_repository_plagiarism(repository_data, threshold=0.9, task_id=task_id)
-                    update_export_progress(task_id, 'generating', 90, 100, '查重完成，生成报告...')
-
-                    plagiarism_report = generate_plagiarism_report(plagiarism_results, repository_results)
-                    info = zipfile.ZipInfo("查重报告.txt")
-                    info.flag_bits |= 0x800
-                    zip_file.writestr(info, plagiarism_report.encode('utf-8'))
+                    update_export_progress(task_id, 'generating', 92, 100, '正在生成代码压缩包...')
 
                 update_export_progress(task_id, 'generating', 95, 100, '准备下载文件...')
 
                 zip_data = zip_buffer.getvalue()
                 _rds_binary.setex(f'export_zip:{task_id}', 600, zip_data)
 
-                sub_progress = {
-                    'problem_check': {
-                        'current': 100,
-                        'total': 100,
-                        'percentage': 100,
-                        'message': f'题目代码查重完成，发现 {len(plagiarism_results)} 组相似代码',
-                    },
-                    'repo_check': {
-                        'current': 100,
-                        'total': 100,
-                        'percentage': 100,
-                        'message': f'代码仓库查重完成，发现 {len(repository_results)} 组相似文件',
-                    },
-                }
                 update_export_progress(
                     task_id,
                     'completed',
                     100,
                     100,
-                    f'导出完成！题目代码: {len(plagiarism_results)} 组，代码仓库: {len(repository_results)} 组',
-                    sub_progress,
+                    '导出完成',
                 )
                 return task_id
 
@@ -317,6 +262,58 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                 return None
 
         _export_task = export_codes_with_plagiarism_check_task
+
+    if _plagiarism_task is None:
+        @celery_app.task(bind=True, name='oj.homework.mark_plagiarism_task')
+        def mark_plagiarism_task(self, class_en, mode, threshold, problem_ids):
+            task_id = self.request.id
+            try:
+                class_en = str(class_en or '').strip()
+                mode = str(mode or 'threshold').strip()
+                threshold = float(threshold)
+                problem_ids = [int(pid) for pid in (problem_ids or [])]
+
+                class_info = get_class_by_en(class_en)
+                if not class_info:
+                    update_plagiarism_progress(task_id, 'error', 0, 1, '班级不存在')
+                    return None
+
+                update_plagiarism_progress(task_id, 'collecting', 0, 100, '正在收集提交代码...')
+
+                def status_callback(stage, current, total, message):
+                    update_plagiarism_progress(task_id, stage, current, total, message)
+
+                def compare_callback(current, total, message):
+                    update_plagiarism_progress(task_id, 'checking', current, total, message)
+
+                result = mark_class_plagiarism(
+                    class_en,
+                    class_info.get('class_cn'),
+                    problem_ids,
+                    mode,
+                    threshold,
+                    progress_callback=compare_callback,
+                    status_callback=status_callback,
+                )
+
+                _invalidate_problem_list_cache_for_class(class_en)
+                update_plagiarism_progress(
+                    task_id,
+                    'completed',
+                    100,
+                    100,
+                    f"标记完成：发现 {result['group_count']} 组，写入 {result['record_count']} 条记录",
+                    result=result,
+                )
+                return result
+            except pymysql.Error:
+                update_plagiarism_progress(task_id, 'error', 0, 1, '数据库操作失败，请稍后再试')
+                return None
+            except Exception as exc:
+                update_plagiarism_progress(task_id, 'error', 0, 1, f'标记失败: {exc}')
+                return None
+
+        _plagiarism_task = mark_plagiarism_task
 
 
 @homework_bp.route('/admin/homework')
@@ -334,6 +331,7 @@ def admin_homework():
         return redirect(url_for('homework.admin_homework'))
 
     homework_list = []
+    plagiarism_problem_options = []
     if selected_class:
         conn = get_db_connection()
         try:
@@ -351,6 +349,15 @@ def admin_homework():
                         hw['is_ranking'] = False
                         problem = get_problem(hw['problem_id'])
                         hw['problem_title'] = problem['title'] if problem else '未知题目'
+                        try:
+                            pid = int(hw['problem_id'])
+                        except (TypeError, ValueError):
+                            pid = None
+                        if pid is not None and not any(item['id'] == pid for item in plagiarism_problem_options):
+                            plagiarism_problem_options.append({
+                                'id': pid,
+                                'title': hw['problem_title'],
+                            })
         except pymysql.Error as e:
             flash(f'数据库操作失败，请稍后再试', 'danger')
         finally:
@@ -372,6 +379,7 @@ def admin_homework():
         homework_list=homework_list,
         all_problems=all_problems,
         all_competitions=all_competitions,
+        plagiarism_problem_options=plagiarism_problem_options,
         user=user,
     )
 
@@ -691,12 +699,222 @@ def export_scores():
         row.append(str(total))
         writer.writerow([cell.encode('gbk', 'replace').decode('gbk') for cell in row])
 
-    from flask import make_response
-
     resp = make_response(output.getvalue())
     resp.headers['Content-Type'] = 'text/csv; charset=GBK'
     resp.headers['Content-Disposition'] = f'attachment; filename="{selected_class}_scores.csv"'
     return resp
+
+
+def parse_plagiarism_mark_payload(data):
+    data = data or {}
+    class_en = str(data.get('class_en') or '').strip()
+    mode = str(data.get('mode') or 'threshold').strip()
+    if mode not in ('threshold', 'byte'):
+        raise ValueError('查重规则非法')
+
+    class_info = get_class_by_en(class_en)
+    if not class_info:
+        raise ValueError('班级不存在')
+
+    threshold = _parse_threshold(data.get('threshold', 90)) if mode == 'threshold' else 1.0
+
+    try:
+        selected_problem_ids = [int(pid) for pid in (data.get('problem_ids') or [])]
+    except (TypeError, ValueError):
+        raise ValueError('题目 ID 非法')
+
+    selected_problem_ids = list(dict.fromkeys(selected_problem_ids))
+    homework_problem_map = _get_class_homework_problem_map(class_en)
+    valid_problem_ids = set(homework_problem_map.keys())
+    if not selected_problem_ids:
+        raise ValueError('请至少选择一道作业题')
+    if any(pid not in valid_problem_ids for pid in selected_problem_ids):
+        raise ValueError('只能选择该班级已布置的普通题作业')
+
+    return {
+        'class_en': class_en,
+        'class_cn': class_info.get('class_cn'),
+        'mode': mode,
+        'threshold': threshold,
+        'problem_ids': selected_problem_ids,
+    }
+
+
+def start_plagiarism_mark_task(class_en, mode, threshold, problem_ids):
+    if _plagiarism_task is None:
+        raise RuntimeError('查重模块未初始化')
+    task = _plagiarism_task.delay(class_en, mode, float(threshold), list(problem_ids or []))
+    return task.id
+
+
+def get_plagiarism_progress_payload(task_id):
+    if not _rds:
+        return None
+    progress_data = _rds.get(f'plagiarism_progress:{task_id}')
+    if not progress_data:
+        return None
+    if isinstance(progress_data, bytes):
+        progress_data = progress_data.decode('utf-8')
+    return json.loads(progress_data)
+
+
+@homework_bp.route('/admin/plagiarism/mark', methods=['POST'])
+def admin_mark_plagiarism():
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限'), 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        payload = parse_plagiarism_mark_payload(data)
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+
+    try:
+        task_id = start_plagiarism_mark_task(
+            payload['class_en'],
+            payload['mode'],
+            payload['threshold'],
+            payload['problem_ids'],
+        )
+    except RuntimeError as exc:
+        return jsonify(success=False, message=str(exc)), 500
+    except Exception as exc:
+        return jsonify(success=False, message=f'启动失败: {exc}'), 500
+
+    return jsonify(
+        success=True,
+        message='查重任务已启动',
+        task_id=task_id,
+    )
+
+
+@homework_bp.route('/admin/plagiarism/progress/<task_id>')
+def admin_plagiarism_progress(task_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限'), 403
+
+    progress = get_plagiarism_progress_payload(task_id)
+    if not progress:
+        return jsonify(success=False, message='任务不存在或已过期'), 404
+    return jsonify(success=True, progress=progress)
+
+
+@homework_bp.route('/admin/plagiarism/records')
+def admin_plagiarism_records():
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限'), 403
+
+    class_en = request.args.get('sclass', '').strip()
+    if not get_class_by_en(class_en):
+        return jsonify(success=False, message='班级不存在'), 400
+
+    try:
+        records = _load_plagiarism_records_for_class(class_en)
+    except pymysql.Error:
+        return jsonify(success=False, message='数据库操作失败，请稍后再试'), 500
+    return jsonify(success=True, records=records, count=len(records))
+
+
+@homework_bp.route('/admin/plagiarism/records/download')
+def admin_download_plagiarism_records():
+    user = current_user()
+    if not is_admin(user):
+        return redirect(url_for('auth.login'))
+
+    class_en = request.args.get('sclass', '').strip()
+    if not get_class_by_en(class_en):
+        return '班级不存在', 400
+
+    return build_plagiarism_records_csv_response(class_en)
+
+
+def build_plagiarism_records_csv_response(class_en):
+    records = _load_plagiarism_records_for_class(class_en)
+
+    from io import BytesIO
+    import codecs
+    import csv
+
+    output = BytesIO()
+    writer = csv.writer(codecs.getwriter('gbk')(output))
+    headers = [
+        '抄袭记录ID',
+        '用户ID',
+        '用户名',
+        '班级',
+        '题目ID',
+        '题目名称',
+        '提交ID',
+        '比较规则',
+        '相同用户名',
+        '标记时间',
+    ]
+    writer.writerow([h.encode('gbk', 'replace').decode('gbk') for h in headers])
+    for record in records:
+        row = [
+            record.get('id'),
+            record.get('user_id'),
+            record.get('username'),
+            record.get('class_cn') or record.get('class_en'),
+            record.get('problem_id'),
+            record.get('problem_title') or '',
+            record.get('submission_id'),
+            record.get('comparison_rule'),
+            record.get('matched_usernames_text') or '',
+            record.get('created_at') or '',
+        ]
+        writer.writerow([str(cell if cell is not None else '').encode('gbk', 'replace').decode('gbk') for cell in row])
+
+    response = make_response(output.getvalue())
+    response.headers['Content-Type'] = 'text/csv; charset=GBK'
+    response.headers['Content-Disposition'] = f'attachment; filename="{class_en}_plagiarism_records.csv"'
+    return response
+
+
+def delete_plagiarism_records_for_class(class_en, record_ids):
+    placeholders = ','.join(['%s'] * len(record_ids))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM plagiarism_records WHERE class_en=%s AND id IN ({placeholders})",
+                tuple([class_en] + record_ids),
+            )
+            deleted = cursor.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    _invalidate_problem_list_cache_for_class(class_en)
+    return deleted
+
+
+@homework_bp.route('/admin/plagiarism/records/delete', methods=['POST'])
+def admin_delete_plagiarism_records():
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限'), 403
+
+    data = request.get_json(silent=True) or {}
+    class_en = str(data.get('class_en') or '').strip()
+    if not get_class_by_en(class_en):
+        return jsonify(success=False, message='班级不存在'), 400
+
+    try:
+        record_ids = [int(rid) for rid in (data.get('record_ids') or [])]
+    except (TypeError, ValueError):
+        return jsonify(success=False, message='记录 ID 非法'), 400
+    record_ids = list(dict.fromkeys(record_ids))
+    if not record_ids:
+        return jsonify(success=False, message='请选择要删除的记录'), 400
+
+    try:
+        deleted = delete_plagiarism_records_for_class(class_en, record_ids)
+    except pymysql.Error:
+        return jsonify(success=False, message='数据库操作失败，请稍后再试'), 500
+    return jsonify(success=True, message=f'已删除 {deleted} 条记录', deleted=deleted)
 
 
 def update_export_progress(task_id, stage, current, total, message, sub_progress=None):
@@ -709,6 +927,19 @@ def update_export_progress(task_id, stage, current, total, message, sub_progress
         'sub_progress': sub_progress or {},
     }
     _rds.setex(f'export_progress:{task_id}', 600, json.dumps(progress_data))
+
+
+def update_plagiarism_progress(task_id, stage, current, total, message, result=None):
+    progress_data = {
+        'stage': stage,
+        'current': current,
+        'total': total,
+        'message': message,
+        'percentage': int((current / total * 100)) if total > 0 else 0,
+    }
+    if result is not None:
+        progress_data['result'] = result
+    _rds.setex(f'plagiarism_progress:{task_id}', 1800, json.dumps(progress_data, ensure_ascii=False))
 
 
 def normalize_code(code):
@@ -732,6 +963,370 @@ def calculate_code_similarity(code1, code2):
         return 0.0
 
     return SequenceMatcher(None, norm_code1, norm_code2).ratio()
+
+
+def _format_threshold_rule(threshold):
+    return f"{float(threshold):.2f}"
+
+
+def _parse_threshold(raw_value):
+    try:
+        threshold = float(raw_value)
+    except (TypeError, ValueError):
+        raise ValueError("查重阈值必须是数字")
+    if threshold > 1:
+        threshold = threshold / 100.0
+    if threshold <= 0 or threshold > 1:
+        raise ValueError("查重阈值必须在 0 到 100 之间")
+    return threshold
+
+
+def _get_class_homework_problem_map(class_en):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT hw.problem_id, COALESCE(p.title, hw.problem_title) AS problem_title
+                FROM {safe_table_name(class_en)} hw
+                LEFT JOIN problems p ON p.id = hw.problem_id
+                WHERE hw.problem_id IS NOT NULL
+                ORDER BY hw.id ASC
+                """
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    problem_map = {}
+    for row in rows:
+        try:
+            pid = int(row.get('problem_id'))
+        except (TypeError, ValueError):
+            continue
+        problem_map.setdefault(pid, row.get('problem_title') or f'题目 {pid}')
+    return problem_map
+
+
+def _collect_best_first_submissions_for_plagiarism(class_en, problem_ids, include_includes=False):
+    if not problem_ids:
+        return []
+
+    placeholders = ','.join(['%s'] * len(problem_ids))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH class_users AS (
+                    SELECT u.id AS user_id, u.username
+                    FROM user_class_map m
+                    JOIN users u ON u.id = m.user_id
+                    WHERE m.class_en = %s
+                    UNION
+                    SELECT u2.id AS user_id, u2.username
+                    FROM users u2
+                    WHERE u2.class = %s
+                ),
+                ranked_submissions AS (
+                    SELECT cu.user_id,
+                           cu.username,
+                           s.id AS submission_id,
+                           s.problem_id,
+                           s.code,
+                           s.score,
+                           s.created_at,
+                           p.title AS problem_title,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY cu.user_id, s.problem_id
+                               ORDER BY s.score DESC, s.created_at ASC, s.id ASC
+                           ) AS rn
+                    FROM class_users cu
+                    JOIN submissions s ON s.username = cu.username
+                    LEFT JOIN problems p ON p.id = s.problem_id
+                    WHERE s.problem_id IN ({placeholders})
+                )
+                SELECT user_id, username, submission_id, problem_id, code, score, created_at, problem_title
+                FROM ranked_submissions
+                WHERE rn = 1
+                ORDER BY problem_id ASC, username ASC
+                """,
+                tuple([class_en, class_en] + list(problem_ids)),
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    submissions = []
+    for row in rows:
+        raw_code = row.get('code') or ''
+        compare_code = raw_code
+        if include_includes:
+            included_files = extract_includes_from_code(raw_code)
+            if included_files and row.get('user_id'):
+                repository_files = get_user_repository_files_by_names(row.get('user_id'), included_files)
+                if repository_files:
+                    compare_code += "\n\n// ===== 以下是引用的代码仓库文件 =====\n"
+                    for filename, content in repository_files.items():
+                        compare_code += f"\n// ===== {filename} =====\n{content or ''}\n"
+
+        submissions.append({
+            'user_id': row.get('user_id'),
+            'username': row.get('username'),
+            'submission_id': row.get('submission_id'),
+            'problem_id': row.get('problem_id'),
+            'problem_title': row.get('problem_title') or f"题目 {row.get('problem_id')}",
+            'raw_code': raw_code,
+            'compare_code': compare_code,
+        })
+    return submissions
+
+
+def _build_plagiarism_components(codes_data, mode='threshold', threshold=0.9, progress_callback=None):
+    problem_groups = defaultdict(list)
+    for item in codes_data:
+        problem_groups[item['problem_id']].append(item)
+
+    if mode == 'byte':
+        total_items = sum(len(group) for group in problem_groups.values())
+        completed_items = 0
+        progress_step = max(1, total_items // 100) if total_items else 1
+        components = []
+
+        if progress_callback and total_items == 0:
+            progress_callback(1, 1, '没有需要计算哈希的提交代码')
+
+        for _, group in problem_groups.items():
+            by_hash = defaultdict(list)
+            for item in group:
+                raw_code = item.get('raw_code') or ''
+                if raw_code:
+                    code_hash = hashlib.sha256(raw_code.encode('utf-8')).hexdigest()
+                    by_hash[code_hash].append(item)
+                completed_items += 1
+                if progress_callback and (
+                    completed_items == total_items
+                    or completed_items % progress_step == 0
+                ):
+                    problem_title = item.get('problem_title') or f"题目 {item.get('problem_id')}"
+                    progress_callback(
+                        completed_items,
+                        total_items,
+                        f"正在计算字节哈希 {problem_title}: {item.get('username')}",
+                    )
+            for members in by_hash.values():
+                if len(members) >= 2:
+                    components.append(members)
+
+        return components
+
+    total_comparisons = sum(len(group) * (len(group) - 1) // 2 for group in problem_groups.values() if len(group) >= 2)
+    completed_comparisons = 0
+    progress_step = max(1, total_comparisons // 100) if total_comparisons else 1
+    if progress_callback and total_comparisons == 0:
+        progress_callback(1, 1, '没有需要比较的提交代码')
+
+    components = []
+    for _, group in problem_groups.items():
+        if len(group) < 2:
+            continue
+
+        parent = list(range(len(group)))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra = find(a)
+            rb = find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                if mode == 'byte':
+                    code1 = group[i].get('raw_code') or ''
+                    code2 = group[j].get('raw_code') or ''
+                    matched = bool(code1) and code1 == code2
+                else:
+                    code1 = group[i].get('compare_code') or ''
+                    code2 = group[j].get('compare_code') or ''
+                    matched = calculate_code_similarity(code1, code2) >= threshold
+                if matched:
+                    union(i, j)
+                completed_comparisons += 1
+                if progress_callback and (
+                    completed_comparisons == total_comparisons
+                    or completed_comparisons % progress_step == 0
+                ):
+                    problem_title = group[i].get('problem_title') or f"题目 {group[i].get('problem_id')}"
+                    progress_callback(
+                        completed_comparisons,
+                        total_comparisons,
+                        f"正在比较 {problem_title}: {group[i].get('username')} vs {group[j].get('username')}",
+                    )
+
+        by_root = defaultdict(list)
+        for idx, item in enumerate(group):
+            by_root[find(idx)].append(item)
+        for members in by_root.values():
+            if len(members) >= 2:
+                components.append(members)
+
+    return components
+
+
+def _build_plagiarism_record_rows(components, class_en, class_cn, comparison_rule):
+    rows = []
+    for members in components:
+        ordered_members = sorted(members, key=lambda item: str(item.get('username') or ''))
+        usernames = [item.get('username') for item in ordered_members if item.get('username')]
+        for item in ordered_members:
+            username = item.get('username')
+            matched_usernames = [name for name in usernames if name != username]
+            if not username or not matched_usernames:
+                continue
+            rows.append({
+                'user_id': int(item.get('user_id') or 0),
+                'username': username,
+                'class_en': class_en,
+                'class_cn': class_cn,
+                'problem_id': int(item.get('problem_id') or 0),
+                'problem_title': item.get('problem_title') or f"题目 {item.get('problem_id')}",
+                'submission_id': int(item.get('submission_id') or 0),
+                'comparison_rule': comparison_rule,
+                'matched_usernames': matched_usernames,
+            })
+    return rows
+
+
+def _save_plagiarism_records(records):
+    if not records:
+        return 0
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO plagiarism_records
+                    (user_id, username, class_en, class_cn, problem_id, problem_title,
+                     submission_id, comparison_rule, matched_usernames)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    user_id=VALUES(user_id),
+                    class_cn=VALUES(class_cn),
+                    problem_title=VALUES(problem_title),
+                    matched_usernames=VALUES(matched_usernames),
+                    created_at=CURRENT_TIMESTAMP
+                """,
+                [
+                    (
+                        record['user_id'],
+                        record['username'],
+                        record['class_en'],
+                        record['class_cn'],
+                        record['problem_id'],
+                        record['problem_title'],
+                        record['submission_id'],
+                        record['comparison_rule'],
+                        json.dumps(record['matched_usernames'], ensure_ascii=False),
+                    )
+                    for record in records
+                ],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(records)
+
+
+def _decode_matched_usernames(raw_value):
+    if not raw_value:
+        return []
+    if isinstance(raw_value, list):
+        return raw_value
+    try:
+        value = json.loads(raw_value)
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+    except Exception:
+        pass
+    return [part.strip() for part in str(raw_value).split(',') if part.strip()]
+
+
+def _serialize_plagiarism_record(row):
+    matched_usernames = _decode_matched_usernames(row.get('matched_usernames'))
+    created_at = row.get('created_at')
+    return {
+        'id': row.get('id'),
+        'user_id': row.get('user_id'),
+        'username': row.get('username'),
+        'class_en': row.get('class_en'),
+        'class_cn': row.get('class_cn'),
+        'problem_id': row.get('problem_id'),
+        'problem_title': row.get('problem_title'),
+        'submission_id': row.get('submission_id'),
+        'comparison_rule': row.get('comparison_rule'),
+        'matched_usernames': matched_usernames,
+        'matched_usernames_text': '、'.join(matched_usernames),
+        'created_at': created_at.strftime('%Y-%m-%d %H:%M:%S') if created_at else '',
+    }
+
+
+def _load_plagiarism_records_for_class(class_en):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, username, class_en, class_cn, problem_id, problem_title,
+                       submission_id, comparison_rule, matched_usernames, created_at
+                FROM plagiarism_records
+                WHERE class_en=%s
+                ORDER BY created_at DESC, id DESC
+                """,
+                (class_en,),
+            )
+            return [_serialize_plagiarism_record(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def mark_class_plagiarism(class_en, class_cn, problem_ids, mode, threshold, progress_callback=None, status_callback=None):
+    if status_callback:
+        status_callback('collecting', 0, 100, '正在收集提交代码...')
+    include_includes = False
+    codes_data = _collect_best_first_submissions_for_plagiarism(
+        class_en,
+        problem_ids,
+        include_includes=include_includes,
+    )
+    if status_callback:
+        action = '开始计算字节哈希...' if mode == 'byte' else '开始比较...'
+        status_callback('checking', 0, 1, f'已收集 {len(codes_data)} 份提交，{action}')
+    comparison_rule = 'byte-identical' if mode == 'byte' else _format_threshold_rule(threshold)
+    components = _build_plagiarism_components(
+        codes_data,
+        mode=mode,
+        threshold=threshold,
+        progress_callback=progress_callback,
+    )
+    if status_callback:
+        status_callback('saving', 0, 1, '正在写入抄袭记录...')
+    records = _build_plagiarism_record_rows(components, class_en, class_cn, comparison_rule)
+    inserted_count = _save_plagiarism_records(records)
+    if status_callback:
+        status_callback('saving', 1, 1, '抄袭记录写入完成')
+    return {
+        'submission_count': len(codes_data),
+        'group_count': len(components),
+        'record_count': inserted_count,
+        'comparison_rule': comparison_rule,
+    }
 
 
 def detect_plagiarism(codes_data, threshold=0.9, task_id=None):

@@ -600,8 +600,8 @@
               </div>
               <div class="d-flex justify-content-between align-items-center mb-2">
                 <div class="aj-result-tabs" role="tablist" aria-label="评分结果视图">
-                  <button type="button" class="aj-result-tab active" data-judge-view="topo" role="tab" aria-selected="true">拓扑</button>
-                  <button type="button" class="aj-result-tab" data-judge-view="detail" role="tab" aria-selected="false">详情</button>
+                  <button type="button" class="aj-result-tab" data-judge-view="topo" role="tab" aria-selected="false">拓扑</button>
+                  <button type="button" class="aj-result-tab active" data-judge-view="detail" role="tab" aria-selected="true">详情</button>
                 </div>
               </div>
               <div id="appealPanel" class="border rounded p-3 mb-3" style="display:none;background:#fffdf6;border-color:#f0e2b8 !important;">
@@ -623,12 +623,12 @@
                   </div>
                 </div>
               </div>
-              <div id="judgeModalTopo" class="aj-result-view">
+              <div id="judgeModalTopo" class="aj-result-view" hidden>
                 <div class="text-muted text-center py-5">
                   <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分拓扑…
                 </div>
               </div>
-              <div id="judgeModalRules" class="aj-result-view" hidden>
+              <div id="judgeModalRules" class="aj-result-view">
                 <div class="text-muted text-center py-5">
                   <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…
                 </div>
@@ -782,7 +782,7 @@
           Pending: '待评测'
         };
         var currentJudgeSnapshot = null;
-        var currentJudgeView = 'topo';
+        var currentJudgeView = 'detail';
         var resultNodeW = 176, resultNodeH = 96, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
         function closeJudgeStream() {
           if (judgeSource) {
@@ -804,7 +804,7 @@
           return (r.rule_name || '').trim() || compactRuleText(r.rule_text, 14);
         }
         function setJudgeView(view) {
-          currentJudgeView = view || 'topo';
+          currentJudgeView = view || 'detail';
           document.querySelectorAll('[data-judge-view]').forEach(function (tab) {
             var on = tab.dataset.judgeView === currentJudgeView;
             tab.classList.toggle('active', on);
@@ -1328,7 +1328,7 @@
           currentJudgeSnapshot = snap;
           renderJudgeTopo(snap);
           renderJudgeDetails(snap);
-          setJudgeView(currentJudgeView || 'topo');
+          setJudgeView(currentJudgeView || 'detail');
           var targets = [];
           var topo = document.getElementById('judgeModalTopo');
           var rulesBox = document.getElementById('judgeModalRules');
@@ -1401,8 +1401,8 @@
           var topoBox = document.getElementById('judgeModalTopo');
           var bar = document.getElementById('judgeModalBar');
           currentJudgeSnapshot = null;
-          currentJudgeView = 'topo';
-          setJudgeView('topo');
+          currentJudgeView = 'detail';
+          setJudgeView('detail');
           closeJudgeRulePopup();
           document.getElementById('judgeModalTotal').textContent = '0';
           document.getElementById('judgeModalMax').textContent = '0';

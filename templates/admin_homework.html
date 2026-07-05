@@ -1,5 +1,210 @@
 {% extends "layout.html" %}
 {% block title %}作业管理 - {{ super() }}{% endblock %}
+{% block head %}
+{{ super() }}
+<style>
+  .plagiarism-records-modal {
+    --pr-text: #1f2933;
+    --pr-muted: #6b7280;
+    --pr-line: #e5e7eb;
+    --pr-soft: #f7f8fa;
+    --pr-soft-strong: #eef0f3;
+  }
+  .plagiarism-records-dialog {
+    max-width: min(1120px, calc(100vw - 32px));
+  }
+  .plagiarism-records-content {
+    border: 1px solid var(--pr-line);
+    border-radius: 8px;
+    box-shadow: 0 18px 46px rgba(15, 23, 42, 0.14);
+    color: var(--pr-text);
+    overflow: hidden;
+  }
+  .plagiarism-records-header {
+    border-bottom: 1px solid var(--pr-line);
+    background: #fff;
+    padding: 18px 20px;
+  }
+  .plagiarism-records-title {
+    align-items: center;
+    display: flex;
+    font-size: 1.05rem;
+    font-weight: 700;
+    gap: 10px;
+    margin: 0;
+  }
+  .plagiarism-records-title-icon {
+    align-items: center;
+    background: var(--pr-soft-strong);
+    border-radius: 8px;
+    color: #374151;
+    display: inline-flex;
+    height: 34px;
+    justify-content: center;
+    width: 34px;
+  }
+  .plagiarism-records-body {
+    background: #fff;
+    padding: 0;
+  }
+  .plagiarism-records-toolbar {
+    align-items: center;
+    background: var(--pr-soft);
+    border-bottom: 1px solid var(--pr-line);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+  }
+  .plagiarism-records-count {
+    align-items: center;
+    color: var(--pr-muted);
+    display: inline-flex;
+    font-size: 0.92rem;
+    gap: 8px;
+    min-height: 32px;
+  }
+  .plagiarism-records-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .plagiarism-records-action {
+    align-items: center;
+    border-color: var(--pr-line);
+    border-radius: 6px;
+    color: #374151;
+    display: inline-flex;
+    gap: 6px;
+    line-height: 1;
+    min-height: 32px;
+  }
+  .plagiarism-records-action:hover {
+    background: #fff;
+    border-color: #cfd4dc;
+    color: #111827;
+  }
+  .plagiarism-records-action-danger {
+    color: #7f1d1d;
+  }
+  .plagiarism-records-table-wrap {
+    max-height: 560px;
+    overflow: auto;
+  }
+  .plagiarism-records-table {
+    margin: 0;
+  }
+  .plagiarism-records-table thead th {
+    background: #fff;
+    border-bottom: 1px solid var(--pr-line);
+    color: var(--pr-muted);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    padding: 11px 12px;
+    position: sticky;
+    text-transform: none;
+    top: 0;
+    z-index: 1;
+  }
+  .plagiarism-records-table tbody td {
+    border-color: #edf0f2;
+    padding: 12px;
+    vertical-align: middle;
+  }
+  .plagiarism-records-table tbody tr:hover {
+    background: #fafafa;
+  }
+  .plagiarism-select-col {
+    text-align: center;
+    width: 42px;
+  }
+  .plagiarism-record-id {
+    color: var(--pr-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .plagiarism-user-main,
+  .plagiarism-problem-main {
+    color: var(--pr-text);
+    font-weight: 600;
+  }
+  .plagiarism-time {
+    color: var(--pr-muted);
+    font-size: 0.82rem;
+  }
+  .plagiarism-submission-link {
+    color: #374151;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .plagiarism-submission-link:hover {
+    color: #111827;
+    text-decoration: underline;
+  }
+  .plagiarism-rule-badge {
+    align-items: center;
+    border: 1px solid var(--pr-line);
+    border-radius: 999px;
+    display: inline-flex;
+    font-size: 0.84rem;
+    font-weight: 650;
+    gap: 6px;
+    padding: 5px 10px;
+    white-space: nowrap;
+  }
+  .plagiarism-rule-byte {
+    background: var(--pr-soft-strong);
+    color: #111827;
+  }
+  .plagiarism-rule-threshold {
+    background: #fff;
+    color: #374151;
+  }
+  .plagiarism-match-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: 300px;
+  }
+  .plagiarism-match-chip {
+    background: var(--pr-soft);
+    border: 1px solid var(--pr-line);
+    border-radius: 999px;
+    color: #374151;
+    font-size: 0.82rem;
+    line-height: 1.1;
+    padding: 5px 9px;
+  }
+  .plagiarism-records-state {
+    align-items: center;
+    color: var(--pr-muted);
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    min-height: 120px;
+  }
+  .plagiarism-records-footer {
+    border-top: 1px solid var(--pr-line);
+    padding: 12px 16px;
+  }
+  @media (max-width: 768px) {
+    .plagiarism-records-dialog {
+      max-width: calc(100vw - 16px);
+    }
+    .plagiarism-records-toolbar {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .plagiarism-records-actions {
+      justify-content: flex-end;
+    }
+    .plagiarism-match-list {
+      max-width: 220px;
+    }
+  }
+</style>
+{% endblock %}
 
 {% block content %}
 <h2><i class="fas fa-tasks me-2"></i> 作业管理</h2>
@@ -42,6 +247,14 @@
     <!-- 导出学生代码按钮 -->
     <button id="exportCodesBtn" data-class="{{ selected_class }}" class="btn btn-outline-secondary ms-2">
       <i class="fas fa-code me-2"></i>导出学生代码
+    </button>
+
+    <button class="btn btn-outline-danger ms-2" data-bs-toggle="modal" data-bs-target="#markPlagiarismModal">
+      <i class="fas fa-user-slash me-2"></i>标记抄袭
+    </button>
+
+    <button id="openPlagiarismRecordsBtn" data-class="{{ selected_class }}" class="btn btn-outline-dark ms-2">
+      <i class="fas fa-exclamation-triangle me-2"></i>抄袭记录
     </button>
 
     <!-- 上传期末成绩按钮 -->
@@ -224,6 +437,124 @@
   applyType();
 })();
 </script>
+
+<!-- 标记抄袭模态框 -->
+<div class="modal fade" id="markPlagiarismModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-user-slash me-2"></i>标记抄袭</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label d-block">查重规则</label>
+          <div class="btn-group" role="group">
+            <input type="radio" class="btn-check" name="plagiarismRule" id="plagiarismRuleThreshold" value="threshold" checked>
+            <label class="btn btn-outline-primary" for="plagiarismRuleThreshold">查重阈值</label>
+            <input type="radio" class="btn-check" name="plagiarismRule" id="plagiarismRuleByte" value="byte">
+            <label class="btn btn-outline-primary" for="plagiarismRuleByte">字节级一致</label>
+          </div>
+        </div>
+        <div class="mb-3" id="plagiarismThresholdWrap">
+          <label class="form-label" for="plagiarismThresholdInput">阈值（%）</label>
+          <input type="number" class="form-control" id="plagiarismThresholdInput" value="90" min="1" max="100" step="1">
+        </div>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <label class="form-label mb-0">作业题</label>
+          <div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="selectAllPlagiarismProblems">全选</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary ms-1" id="clearPlagiarismProblems">清空</button>
+          </div>
+        </div>
+        <div class="border rounded p-3" style="max-height: 260px; overflow:auto;">
+          {% if plagiarism_problem_options %}
+            {% for p in plagiarism_problem_options %}
+            <div class="form-check">
+              <input class="form-check-input plagiarism-problem-checkbox" type="checkbox" value="{{ p.id }}" id="plagiarismProblem{{ p.id }}" checked>
+              <label class="form-check-label" for="plagiarismProblem{{ p.id }}">
+                <span class="text-muted">#{{ p.id }}</span> {{ p.title }}
+              </label>
+            </div>
+            {% endfor %}
+          {% else %}
+            <div class="text-muted">暂无可查重的普通题作业</div>
+          {% endif %}
+        </div>
+        <div class="alert mt-3 mb-0 d-none" id="plagiarismMarkStatus" role="alert"></div>
+        <div class="mt-3 d-none" id="plagiarismProgressWrap">
+          <div class="d-flex justify-content-between mb-2">
+            <span id="plagiarismProgressMessage" class="text-muted small">正在启动任务...</span>
+            <span id="plagiarismProgressPercent" class="small">0%</span>
+          </div>
+          <div class="progress" style="height: 20px;">
+            <div id="plagiarismProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-danger"
+                 role="progressbar" style="width: 0%;">0%</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+        <button type="button" class="btn btn-danger" id="startPlagiarismMarkBtn" data-class="{{ selected_class }}">
+          <i class="fas fa-play me-2"></i>开始
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 抄袭记录模态框 -->
+<div class="modal fade plagiarism-records-modal" id="plagiarismRecordsModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable plagiarism-records-dialog">
+    <div class="modal-content plagiarism-records-content">
+      <div class="modal-header plagiarism-records-header">
+        <h5 class="modal-title plagiarism-records-title">
+          <span class="plagiarism-records-title-icon"><i class="fas fa-exclamation-triangle"></i></span>
+          抄袭记录
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body plagiarism-records-body">
+        <div class="plagiarism-records-toolbar">
+          <div class="plagiarism-records-count">
+            <i class="fas fa-list-ul"></i>
+            <span id="plagiarismRecordsCount">加载中...</span>
+          </div>
+          <div class="plagiarism-records-actions">
+            <a id="downloadPlagiarismRecordsBtn" class="btn btn-sm btn-light plagiarism-records-action" href="#">
+              <i class="fas fa-download"></i>下载
+            </a>
+            <button type="button" class="btn btn-sm btn-light plagiarism-records-action plagiarism-records-action-danger" id="deletePlagiarismRecordsBtn">
+              <i class="fas fa-trash-alt"></i>删除
+            </button>
+          </div>
+        </div>
+        <div class="table-responsive plagiarism-records-table-wrap">
+          <table class="table table-sm align-middle plagiarism-records-table">
+            <thead>
+              <tr>
+                <th class="plagiarism-select-col"><input class="form-check-input" type="checkbox" id="selectAllPlagiarismRecords" aria-label="全选抄袭记录"></th>
+                <th>记录ID</th>
+                <th>用户</th>
+                <th>题目</th>
+                <th>提交ID</th>
+                <th><i class="fas fa-balance-scale me-1"></i>比较规则</th>
+                <th>相同用户名</th>
+                <th>标记时间</th>
+              </tr>
+            </thead>
+            <tbody id="plagiarismRecordsBody">
+              <tr><td colspan="8"><div class="plagiarism-records-state"><span class="spinner-border spinner-border-sm" role="status"></span><span>加载中...</span></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer plagiarism-records-footer">
+        <button type="button" class="btn btn-sm btn-light plagiarism-records-action" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- 上传期末成绩模态框 -->
 <div class="modal fade" id="uploadExamModal" tabindex="-1">
@@ -415,6 +746,286 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"]/g, function(c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+    });
+  }
+
+  const plagiarismRuleInputs = document.querySelectorAll('input[name="plagiarismRule"]');
+  const plagiarismThresholdWrap = document.getElementById('plagiarismThresholdWrap');
+  const plagiarismThresholdInput = document.getElementById('plagiarismThresholdInput');
+  function updatePlagiarismRuleState() {
+    const checked = document.querySelector('input[name="plagiarismRule"]:checked');
+    const isByte = checked && checked.value === 'byte';
+    if (plagiarismThresholdWrap) plagiarismThresholdWrap.style.display = isByte ? 'none' : 'block';
+    if (plagiarismThresholdInput) plagiarismThresholdInput.disabled = isByte;
+  }
+  plagiarismRuleInputs.forEach(input => input.addEventListener('change', updatePlagiarismRuleState));
+  updatePlagiarismRuleState();
+
+  const selectAllPlagiarismProblems = document.getElementById('selectAllPlagiarismProblems');
+  const clearPlagiarismProblems = document.getElementById('clearPlagiarismProblems');
+  if (selectAllPlagiarismProblems) {
+    selectAllPlagiarismProblems.addEventListener('click', function() {
+      document.querySelectorAll('.plagiarism-problem-checkbox').forEach(cb => { cb.checked = true; });
+    });
+  }
+  if (clearPlagiarismProblems) {
+    clearPlagiarismProblems.addEventListener('click', function() {
+      document.querySelectorAll('.plagiarism-problem-checkbox').forEach(cb => { cb.checked = false; });
+    });
+  }
+
+  const plagiarismMarkStatus = document.getElementById('plagiarismMarkStatus');
+  function setPlagiarismMarkStatus(kind, message) {
+    if (!plagiarismMarkStatus) return;
+    plagiarismMarkStatus.className = 'alert mt-3 mb-0 alert-' + kind;
+    plagiarismMarkStatus.textContent = message;
+  }
+
+  const startPlagiarismMarkBtn = document.getElementById('startPlagiarismMarkBtn');
+  const plagiarismProgressWrap = document.getElementById('plagiarismProgressWrap');
+  const plagiarismProgressMessage = document.getElementById('plagiarismProgressMessage');
+  const plagiarismProgressPercent = document.getElementById('plagiarismProgressPercent');
+  const plagiarismProgressBar = document.getElementById('plagiarismProgressBar');
+  let plagiarismPollInterval = null;
+
+  function updatePlagiarismProgress(progress) {
+    const pct = Math.max(0, Math.min(100, Number(progress && progress.percentage) || 0));
+    if (plagiarismProgressWrap) plagiarismProgressWrap.classList.remove('d-none');
+    if (plagiarismProgressMessage) plagiarismProgressMessage.textContent = (progress && progress.message) || '查重中...';
+    if (plagiarismProgressPercent) plagiarismProgressPercent.textContent = pct + '%';
+    if (plagiarismProgressBar) {
+      plagiarismProgressBar.style.width = pct + '%';
+      plagiarismProgressBar.textContent = pct + '%';
+      if (progress && progress.stage === 'completed') {
+        plagiarismProgressBar.className = 'progress-bar bg-success';
+      } else if (progress && progress.stage === 'error') {
+        plagiarismProgressBar.className = 'progress-bar bg-danger';
+      } else {
+        plagiarismProgressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-danger';
+      }
+    }
+  }
+
+  function finishPlagiarismPolling(button, oldHtml) {
+    if (plagiarismPollInterval) {
+      clearInterval(plagiarismPollInterval);
+      plagiarismPollInterval = null;
+    }
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = oldHtml;
+    }
+  }
+
+  function pollPlagiarismProgress(taskId, button, oldHtml) {
+    if (plagiarismPollInterval) clearInterval(plagiarismPollInterval);
+    plagiarismPollInterval = setInterval(async function() {
+      try {
+        const response = await fetch('/admin/plagiarism/progress/' + encodeURIComponent(taskId));
+        const result = await response.json();
+        if (!result.success) {
+          setPlagiarismMarkStatus('danger', result.message || '获取进度失败');
+          updatePlagiarismProgress({stage: 'error', percentage: 0, message: result.message || '获取进度失败'});
+          finishPlagiarismPolling(button, oldHtml);
+          return;
+        }
+        const progress = result.progress || {};
+        updatePlagiarismProgress(progress);
+        if (progress.stage === 'completed') {
+          setPlagiarismMarkStatus('success', progress.message || '标记完成');
+          finishPlagiarismPolling(button, oldHtml);
+        } else if (progress.stage === 'error') {
+          setPlagiarismMarkStatus('danger', progress.message || '标记失败');
+          finishPlagiarismPolling(button, oldHtml);
+        }
+      } catch (error) {
+        setPlagiarismMarkStatus('danger', '获取进度失败，请检查网络');
+        updatePlagiarismProgress({stage: 'error', percentage: 0, message: '获取进度失败'});
+        finishPlagiarismPolling(button, oldHtml);
+      }
+    }, 500);
+  }
+
+  if (startPlagiarismMarkBtn) {
+    startPlagiarismMarkBtn.addEventListener('click', async function() {
+      const selectedClass = this.getAttribute('data-class');
+      const selectedProblems = Array.from(document.querySelectorAll('.plagiarism-problem-checkbox:checked'))
+        .map(cb => parseInt(cb.value, 10))
+        .filter(v => !Number.isNaN(v));
+      const checkedRule = document.querySelector('input[name="plagiarismRule"]:checked');
+      const rule = checkedRule ? checkedRule.value : 'threshold';
+      if (!selectedProblems.length) {
+        setPlagiarismMarkStatus('warning', '请至少选择一道作业题');
+        return;
+      }
+
+      const oldHtml = this.innerHTML;
+      this.disabled = true;
+      this.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>处理中';
+      setPlagiarismMarkStatus('info', '查重任务启动中...');
+      updatePlagiarismProgress({stage: 'collecting', percentage: 0, message: '正在启动任务...'});
+      try {
+        const response = await fetch('/admin/plagiarism/mark', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            class_en: selectedClass,
+            mode: rule,
+            threshold: plagiarismThresholdInput ? plagiarismThresholdInput.value : 90,
+            problem_ids: selectedProblems,
+          })
+        });
+        const result = await response.json();
+        if (result.success) {
+          setPlagiarismMarkStatus('info', '查重运行中，请不要关闭窗口');
+          pollPlagiarismProgress(result.task_id, this, oldHtml);
+        } else {
+          setPlagiarismMarkStatus('danger', result.message || '标记失败');
+          finishPlagiarismPolling(this, oldHtml);
+        }
+      } catch (error) {
+        setPlagiarismMarkStatus('danger', '请求失败，请检查网络');
+        finishPlagiarismPolling(this, oldHtml);
+      }
+    });
+  }
+
+  const plagiarismRecordsModalEl = document.getElementById('plagiarismRecordsModal');
+  const openPlagiarismRecordsBtn = document.getElementById('openPlagiarismRecordsBtn');
+  const plagiarismRecordsBody = document.getElementById('plagiarismRecordsBody');
+  const plagiarismRecordsCount = document.getElementById('plagiarismRecordsCount');
+  const downloadPlagiarismRecordsBtn = document.getElementById('downloadPlagiarismRecordsBtn');
+  const deletePlagiarismRecordsBtn = document.getElementById('deletePlagiarismRecordsBtn');
+  const selectAllPlagiarismRecords = document.getElementById('selectAllPlagiarismRecords');
+  let currentPlagiarismRecordsClass = null;
+
+  function renderPlagiarismRecords(records) {
+    if (!plagiarismRecordsBody) return;
+    if (!records.length) {
+      plagiarismRecordsBody.innerHTML = '<tr><td colspan="8"><div class="plagiarism-records-state"><i class="fas fa-inbox"></i><span>暂无抄袭记录</span></div></td></tr>';
+      return;
+    }
+    plagiarismRecordsBody.innerHTML = records.map(function(record) {
+      const title = normalizePlagiarismProblemTitle(record.problem_title);
+      const users = Array.isArray(record.matched_usernames)
+        ? record.matched_usernames
+        : String(record.matched_usernames_text || '').split(/[、,]/).map(v => v.trim()).filter(Boolean);
+      return '<tr>' +
+        '<td class="plagiarism-select-col"><input class="form-check-input plagiarism-record-checkbox" type="checkbox" value="' + record.id + '" aria-label="选择记录 ' + record.id + '"></td>' +
+        '<td><span class="plagiarism-record-id">#' + record.id + '</span></td>' +
+        '<td><div class="plagiarism-user-main">' + escapeHtml(record.username) + '</div></td>' +
+        '<td><div class="plagiarism-problem-main">' + escapeHtml(title) + '</div></td>' +
+        '<td><a class="plagiarism-submission-link" href="/submission_detail/' + encodeURIComponent(record.submission_id) + '" target="_blank" rel="noopener noreferrer">#' + escapeHtml(record.submission_id || '') + '</a></td>' +
+        '<td>' + renderPlagiarismRule(record.comparison_rule) + '</td>' +
+        '<td>' + renderMatchedUsers(users) + '</td>' +
+        '<td><span class="plagiarism-time">' + escapeHtml(record.created_at || '') + '</span></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  function normalizePlagiarismProblemTitle(rawTitle) {
+    const fallback = '题目';
+    let title = String(rawTitle || fallback).trim();
+    title = title.replace(/^(\s*(?:题目|Problem)\s*)?#?\d+(?:[._/-]\d+)*\s*(?:[:：\-—–]\s*)?(?:「[^」]*」\s*)+/i, function(_, label) {
+      return label ? label.trimEnd() + ' ' : '';
+    });
+    title = title.replace(/^(\s*(?:题目|Problem)\s*)(?:「[^」]*」\s*)+/i, function(_, prefix) {
+      return prefix.trimEnd() + ' ';
+    });
+    title = title.replace(/^\s*(?:「[^」]*」\s*)+/, '');
+    return title.replace(/\s{2,}/g, ' ').trim() || fallback;
+  }
+
+  function renderPlagiarismRule(rawRule) {
+    const rule = String(rawRule || '').trim();
+    if (rule === 'byte-identical') {
+      return '<span class="plagiarism-rule-badge plagiarism-rule-byte"><i class="fas fa-fingerprint"></i>字节级</span>';
+    }
+    const parsedRule = parseFloat(rule);
+    if (!Number.isNaN(parsedRule)) {
+      const percent = parsedRule <= 1 ? parsedRule * 100 : parsedRule;
+      return '<span class="plagiarism-rule-badge plagiarism-rule-threshold"><i class="fas fa-percent"></i>' + escapeHtml(percent.toFixed(0) + '%') + '</span>';
+    }
+    return '<span class="plagiarism-rule-badge plagiarism-rule-threshold"><i class="fas fa-sliders-h"></i>' + escapeHtml(rule) + '</span>';
+  }
+
+  function renderMatchedUsers(users) {
+    if (!users.length) return '<span class="text-muted">-</span>';
+    return '<div class="plagiarism-match-list">' + users.map(function(username) {
+      return '<span class="plagiarism-match-chip">' + escapeHtml(username) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  async function loadPlagiarismRecords(selectedClass) {
+    currentPlagiarismRecordsClass = selectedClass;
+    if (downloadPlagiarismRecordsBtn) {
+      downloadPlagiarismRecordsBtn.href = '/admin/plagiarism/records/download?sclass=' + encodeURIComponent(selectedClass);
+    }
+    if (plagiarismRecordsCount) plagiarismRecordsCount.textContent = '加载中...';
+    if (plagiarismRecordsBody) plagiarismRecordsBody.innerHTML = '<tr><td colspan="8"><div class="plagiarism-records-state"><span class="spinner-border spinner-border-sm" role="status"></span><span>加载中...</span></div></td></tr>';
+    if (selectAllPlagiarismRecords) selectAllPlagiarismRecords.checked = false;
+    try {
+      const response = await fetch('/admin/plagiarism/records?sclass=' + encodeURIComponent(selectedClass));
+      const result = await response.json();
+      if (!result.success) {
+        if (plagiarismRecordsCount) plagiarismRecordsCount.textContent = result.message || '加载失败';
+        if (plagiarismRecordsBody) plagiarismRecordsBody.innerHTML = '<tr><td colspan="8"><div class="plagiarism-records-state text-danger"><i class="fas fa-times-circle"></i><span>加载失败</span></div></td></tr>';
+        return;
+      }
+      if (plagiarismRecordsCount) plagiarismRecordsCount.textContent = '共 ' + result.count + ' 条记录';
+      renderPlagiarismRecords(result.records || []);
+    } catch (error) {
+      if (plagiarismRecordsCount) plagiarismRecordsCount.textContent = '加载失败';
+      if (plagiarismRecordsBody) plagiarismRecordsBody.innerHTML = '<tr><td colspan="8"><div class="plagiarism-records-state text-danger"><i class="fas fa-wifi"></i><span>请求失败</span></div></td></tr>';
+    }
+  }
+
+  if (openPlagiarismRecordsBtn && plagiarismRecordsModalEl) {
+    openPlagiarismRecordsBtn.addEventListener('click', function() {
+      const selectedClass = this.getAttribute('data-class');
+      const modal = new bootstrap.Modal(plagiarismRecordsModalEl);
+      modal.show();
+      loadPlagiarismRecords(selectedClass);
+    });
+  }
+
+  if (selectAllPlagiarismRecords) {
+    selectAllPlagiarismRecords.addEventListener('change', function() {
+      document.querySelectorAll('.plagiarism-record-checkbox').forEach(cb => { cb.checked = this.checked; });
+    });
+  }
+
+  if (deletePlagiarismRecordsBtn) {
+    deletePlagiarismRecordsBtn.addEventListener('click', async function() {
+      const ids = Array.from(document.querySelectorAll('.plagiarism-record-checkbox:checked'))
+        .map(cb => parseInt(cb.value, 10))
+        .filter(v => !Number.isNaN(v));
+      if (!ids.length) {
+        alert('请选择要删除的记录');
+        return;
+      }
+      if (!confirm('确定删除选中的抄袭记录吗？')) return;
+      try {
+        const response = await fetch('/admin/plagiarism/records/delete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({class_en: currentPlagiarismRecordsClass, record_ids: ids})
+        });
+        const result = await response.json();
+        if (result.success) {
+          loadPlagiarismRecords(currentPlagiarismRecordsClass);
+        } else {
+          alert(result.message || '删除失败');
+        }
+      } catch (error) {
+        alert('请求失败，请检查网络');
+      }
+    });
+  }
+
   // 导出学生代码功能
   const exportCodesBtn = document.getElementById('exportCodesBtn');
   if (exportCodesBtn) {
@@ -535,7 +1146,7 @@ document.addEventListener('DOMContentLoaded', function() {
         stageClass = 'text-info';
         break;
       case 'generating':
-        stageText = '<i class="fas fa-file-alt me-2"></i>生成报告';
+        stageText = '<i class="fas fa-file-alt me-2"></i>生成压缩包';
         stageClass = 'text-warning';
         break;
       case 'completed':
@@ -554,44 +1165,8 @@ document.addEventListener('DOMContentLoaded', function() {
     progressStage.innerHTML = stageText;
     progressStage.className = stageClass + ' fw-bold';
     
-    // 如果任务完成，强制设置两个进度条为 100%
-    if (stage === 'completed') {
-      // 强制显示题目代码查重进度条为 100%
-      const problemDiv = document.getElementById('problemCheckProgress');
-      const problemBar = document.getElementById('problemCheckBar');
-      const problemPercentage = document.getElementById('problemCheckPercentage');
-      const problemMessage = document.getElementById('problemCheckMessage');
-      
-      problemDiv.style.display = 'block';
-      problemBar.style.width = '100%';
-      problemBar.textContent = '100%';
-      problemPercentage.textContent = '100%';
-      problemBar.className = 'progress-bar bg-info'; // 移除动画
-      
-      // 强制显示代码仓库查重进度条为 100%
-      const repoDiv = document.getElementById('repoCheckProgress');
-      const repoBar = document.getElementById('repoCheckBar');
-      const repoPercentage = document.getElementById('repoCheckPercentage');
-      const repoMessage = document.getElementById('repoCheckMessage');
-      
-      repoDiv.style.display = 'block';
-      repoBar.style.width = '100%';
-      repoBar.textContent = '100%';
-      repoPercentage.textContent = '100%';
-      repoBar.className = 'progress-bar bg-success'; // 移除动画
-      
-      // 如果有 sub_progress，更新详细消息
-      if (subProgress) {
-        if (subProgress.problem_check && subProgress.problem_check.message) {
-          problemMessage.textContent = subProgress.problem_check.message;
-        }
-        if (subProgress.repo_check && subProgress.repo_check.message) {
-          repoMessage.textContent = subProgress.repo_check.message;
-        }
-      }
-    }
-    // 否则，正常更新子进度条
-    else if (subProgress) {
+    // 更新子进度条（导出代码不再自动查重，通常不会出现子进度）
+    if (subProgress) {
       // 题目代码查重进度
       if (subProgress.problem_check) {
         const problemDiv = document.getElementById('problemCheckProgress');

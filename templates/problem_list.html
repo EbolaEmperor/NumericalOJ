@@ -18,6 +18,10 @@
     line-height: 1.25;
     font-size: 0.875rem;
   }
+  .plagiarism-notice-btn {
+    line-height: 1;
+    vertical-align: baseline;
+  }
   @media (max-width: 767.98px) {
     .student-hw-row { align-items: flex-start; }
   }
@@ -88,7 +92,11 @@
                     <div class="d-flex justify-content-between student-hw-row">
                       <!-- 左侧显示题目编号和标题 -->
                       <div class="student-hw-main">
-                        {% if hw.is_completed %}
+                        {% if hw.plagiarism_notice %}
+                          <button type="button" class="btn btn-link p-0 me-1 plagiarism-notice-btn" onclick='showPlagiarismNotice({{ hw.plagiarism_notice|tojson }})' title="抄袭记录">
+                            <i class="fas fa-exclamation-triangle fa-fw text-warning"></i>
+                          </button>
+                        {% elif hw.is_completed %}
                           <!-- 如果已完成，显示绿色的勾 -->
                           <i class="fas fa-check fa-fw text-success" title="已完成"></i>
                         {% else %}
@@ -163,7 +171,11 @@
                 <div class="d-flex justify-content-between student-hw-row">
                   <!-- 左侧显示题目编号和标题 -->
                   <div class="student-hw-main">
-                    {% if hw.is_completed %}
+                    {% if hw.plagiarism_notice %}
+                      <button type="button" class="btn btn-link p-0 me-2 plagiarism-notice-btn" onclick='showPlagiarismNotice({{ hw.plagiarism_notice|tojson }})' title="抄袭记录">
+                        <i class="fas fa-exclamation-triangle fa-fw text-warning"></i>
+                      </button>
+                    {% elif hw.is_completed %}
                       <!-- 如果已完成，显示绿色的勾 -->
                       <i class="fas fa-check fa-fw me-2 text-success" title="已完成"></i>
                     {% else %}
@@ -269,6 +281,24 @@
             <li><a href="https://www.cc98.org" target="_blank" rel="noopener noreferrer" class="ms-2 text-decoration-none">CC98</a></li>
           </ul>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 抄袭提示模态框 -->
+<div class="modal fade" id="plagiarismNoticeModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-exclamation-triangle me-2 text-warning"></i>抄袭记录</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-0" id="plagiarismNoticeText"></p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
       </div>
     </div>
   </div>
@@ -428,6 +458,12 @@ document.getElementById('projects-refresh-btn').addEventListener('click', refres
 </script>
 
 <script>
+function showPlagiarismNotice(message) {
+  document.getElementById('plagiarismNoticeText').textContent = message || '';
+  const modal = new bootstrap.Modal(document.getElementById('plagiarismNoticeModal'));
+  modal.show();
+}
+
 // 显示成绩模态框
 function showGrades(className, regularScore, finalScore) {
   document.getElementById('modalClassName').textContent = className;
