@@ -235,6 +235,34 @@ ALTER TABLE forum_replies ADD INDEX idx_forum_replies_created (created_at);
 ALTER TABLE forum_threads ADD INDEX idx_forum_threads_created (created_at);
 
 --
+-- Table structure for table `plagiarism_records`
+--
+
+DROP TABLE IF EXISTS `plagiarism_records`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `plagiarism_records` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `username` varchar(50) NOT NULL,
+  `class_en` varchar(255) NOT NULL,
+  `class_cn` varchar(255) DEFAULT NULL,
+  `problem_id` int NOT NULL,
+  `problem_title` varchar(255) DEFAULT NULL,
+  `submission_id` int NOT NULL,
+  `comparison_rule` varchar(64) NOT NULL,
+  `matched_usernames` text NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_plagiarism_record` (`class_en`,`problem_id`,`username`,`submission_id`,`comparison_rule`),
+  KEY `idx_plagiarism_username` (`username`),
+  KEY `idx_plagiarism_class` (`class_en`),
+  KEY `idx_plagiarism_class_problem` (`class_en`,`problem_id`),
+  KEY `idx_plagiarism_user_problem` (`username`,`problem_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `agent_task_runs`
 --
 

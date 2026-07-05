@@ -930,6 +930,84 @@ def homework_download_export(args: argparse.Namespace) -> None:
     print_or_save_response(resp, output=output)
 
 
+def homework_plagiarism_start(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    payload = {
+        "class_en": args.class_en,
+        "mode": args.mode,
+        "threshold": args.threshold,
+        "problem_ids": parse_int_csv(args.problem_ids),
+    }
+    resp = client.request("POST", "/api/admin/homework/plagiarism/start", json=payload)
+    ensure_ok(resp)
+    if not response_is_json(resp):
+        raise CliError("Server did not return JSON for plagiarism-start.")
+    start_payload = resp.json()
+    if not args.wait:
+        output_json(start_payload)
+        return
+
+    if not start_payload.get("success"):
+        output_json(start_payload)
+        return
+
+    task_id = start_payload.get("task_id")
+    if not task_id:
+        raise CliError(f"Missing task_id in response: {start_payload}")
+
+    deadline = time.time() + float(args.timeout)
+    last_payload: Dict[str, Any] = start_payload
+    while time.time() < deadline:
+        progress_resp = client.request("GET", f"/api/admin/homework/plagiarism/progress/{task_id}")
+        ensure_ok(progress_resp)
+        if not response_is_json(progress_resp):
+            raise CliError("Server did not return JSON for plagiarism progress.")
+        progress_payload = progress_resp.json()
+        last_payload = {
+            "success": bool(progress_payload.get("success")),
+            "task_id": task_id,
+            "start": start_payload,
+            "progress": progress_payload.get("progress"),
+        }
+        progress = progress_payload.get("progress") or {}
+        stage = progress.get("stage")
+        if stage == "completed":
+            output_json(last_payload)
+            return
+        if stage == "error":
+            output_json(last_payload)
+            return
+        time.sleep(max(0.1, float(args.poll_interval)))
+
+    raise CliError(f"Timed out waiting for plagiarism task {task_id}: {last_payload}")
+
+
+def homework_plagiarism_progress(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    resp = client.request("GET", f"/api/admin/homework/plagiarism/progress/{args.task_id}")
+    print_or_save_response(resp)
+
+
+def homework_plagiarism_records(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    resp = client.request("GET", "/api/admin/homework/plagiarism/records", params={"class_en": args.class_en})
+    print_or_save_response(resp)
+
+
+def homework_plagiarism_download(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    output = args.output or f"{args.class_en}_plagiarism_records.csv"
+    resp = client.request("GET", "/api/admin/homework/plagiarism/download", params={"class_en": args.class_en})
+    print_or_save_response(resp, output=output)
+
+
+def homework_plagiarism_delete(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    payload = {"class_en": args.class_en, "record_ids": parse_int_csv(args.record_ids)}
+    resp = client.request("POST", "/api/admin/homework/plagiarism/delete", json=payload)
+    print_or_save_response(resp)
+
+
 def homework_upload_exam(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     files = {"file": require_file(args.file)}
@@ -2052,6 +2130,29 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("task_id", help="Export task ID returned by export-codes.")
     pa.add_argument("-o", "--output", help="Path to write the downloaded archive.")
     pa.set_defaults(func=homework_download_export)
+    pa = add_cli_parser(hs, "plagiarism-start", "Start an asynchronous plagiarism check for selected class homework problems.")
+    pa.add_argument("--class-en", required=True, help="English class identifier whose homework submissions should be checked.")
+    pa.add_argument("--mode", choices=("threshold", "byte"), default="threshold", help="Comparison mode: normalized threshold or byte-identical.")
+    pa.add_argument("--threshold", type=float, default=90, help="Threshold percentage or ratio for threshold mode.")
+    pa.add_argument("--problem-ids", required=True, help="Comma-separated homework problem IDs to compare.")
+    pa.add_argument("--wait", action="store_true", help="Poll until the plagiarism task finishes.")
+    pa.add_argument("--poll-interval", type=float, default=0.5, help="Seconds between progress polls when --wait is used.")
+    pa.add_argument("--timeout", type=float, default=120.0, help="Maximum seconds to wait when --wait is used.")
+    pa.set_defaults(func=homework_plagiarism_start)
+    pa = add_cli_parser(hs, "plagiarism-progress", "Check progress for a plagiarism task.")
+    pa.add_argument("task_id", help="Plagiarism task ID returned by plagiarism-start.")
+    pa.set_defaults(func=homework_plagiarism_progress)
+    pa = add_cli_parser(hs, "plagiarism-records", "List plagiarism records for a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier whose records should be listed.")
+    pa.set_defaults(func=homework_plagiarism_records)
+    pa = add_cli_parser(hs, "plagiarism-download", "Download plagiarism records for a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier whose records should be downloaded.")
+    pa.add_argument("-o", "--output", help="Path to write the downloaded CSV.")
+    pa.set_defaults(func=homework_plagiarism_download)
+    pa = add_cli_parser(hs, "plagiarism-delete", "Delete selected plagiarism records for a class.")
+    pa.add_argument("--class-en", required=True, help="English class identifier whose records should be deleted.")
+    pa.add_argument("--record-ids", required=True, help="Comma-separated plagiarism record IDs to delete.")
+    pa.set_defaults(func=homework_plagiarism_delete)
     pa = add_cli_parser(hs, "upload-exam", "Upload a final-exam score file for a class.")
     pa.add_argument("--class-en", required=True, help="English class identifier whose exam scores should be uploaded.")
     pa.add_argument("file", help="Path to the exam-score file to upload.")

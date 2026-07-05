@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import csv
 from pathlib import Path
 
 import pytest
@@ -130,5 +131,73 @@ def test_homework_score_exports_exam_upload_and_export_artifact(cli, unique_suff
     download = cli.admin_json("homework", "download-export", task_id, "-o", str(tmp_path))
     assert download["success"] is True
     assert Path(download["path"]).exists()
+
+    assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True
+
+
+@pytest.mark.e2e
+def test_homework_byte_plagiarism_cli_api_download(cli, unique_suffix, tmp_path):
+    usernames = [f"cli_plag_{idx}_{unique_suffix}" for idx in range(5)]
+    for username in usernames:
+        create_regular_user(username=username, password="pw123456")
+
+    assert cli.init_admin()["success"] is True
+
+    title = f"CLI Byte Plagiarism {unique_suffix}"
+    problem_id, _ = create_problem_with_homework(cli, title, submission_limit=10)
+
+    identical_code = "print('byte-identical')\n"
+    submitted_codes = [
+        identical_code,
+        identical_code,
+        identical_code,
+        "print('unique-four')\n",
+        "print('unique-five')\n",
+    ]
+    for username, code in zip(usernames, submitted_codes):
+        assert cli.init_user(username)["success"] is True
+        payload = cli.user_json("problem", "submit", str(problem_id), "--code", code, timeout=90)
+        assert payload["success"] is True
+        assert int(payload["submission_id"]) > 0
+
+    plagiarism = cli.admin_json(
+        "homework",
+        "plagiarism-start",
+        "--class-en",
+        "Cclass1",
+        "--mode",
+        "byte",
+        "--problem-ids",
+        str(problem_id),
+        "--wait",
+        "--timeout",
+        "120",
+        timeout=140,
+    )
+    assert plagiarism["success"] is True
+    progress = plagiarism["progress"]
+    assert progress["stage"] == "completed"
+    assert progress["result"]["group_count"] == 1
+    assert progress["result"]["record_count"] == 3
+
+    records_payload = cli.admin_json("homework", "plagiarism-records", "--class-en", "Cclass1")
+    assert records_payload["success"] is True
+    assert records_payload["count"] == 3
+
+    download = cli.admin_json("homework", "plagiarism-download", "--class-en", "Cclass1", "-o", str(tmp_path))
+    assert download["success"] is True
+    csv_path = Path(download["path"])
+    rows = list(csv.DictReader(csv_path.read_text(encoding="gb18030").splitlines()))
+
+    identical_users = set(usernames[:3])
+    unique_users = set(usernames[3:])
+    assert len(rows) == 3
+    assert {row["用户名"] for row in rows} == identical_users
+    assert not ({row["用户名"] for row in rows} & unique_users)
+    for row in rows:
+        username = row["用户名"]
+        assert row["题目ID"] == str(problem_id)
+        assert row["比较规则"] == "byte-identical"
+        assert set(row["相同用户名"].split("、")) == identical_users - {username}
 
     assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True
