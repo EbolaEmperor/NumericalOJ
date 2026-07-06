@@ -13,6 +13,7 @@ from tests.e2e.conftest import (
     create_problem,
     create_regular_user,
     ranking_id_from_create,
+    require_docker_judger_image,
     write_testdata_zip,
     write_zip,
 )
@@ -232,49 +233,6 @@ def test_problem_plagiarism_extended_submission_flows(cli, unique_suffix, tmp_pa
         expected_users=set(promptly_users[:3]),
     )
 
-    image_users = _create_users("cli_plag_image", unique_suffix, 3)
-    image_title = f"CLI Image Plagiarism {unique_suffix}"
-    image_problem_id = create_problem(
-        cli,
-        image_title,
-        submission_limit=10,
-        extra=[
-            "--programming-grading-mode",
-            "2",
-            "--programming-output-filename",
-            "output.png",
-        ],
-    )
-    add_problem_homework(cli, image_problem_id, image_title)
-    png_b64 = (
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
-    )
-    image_code_a = (
-        "import base64\n"
-        f"open('output.png', 'wb').write(base64.b64decode('{png_b64}'))\n"
-    )
-    image_code_b = (
-        "from base64 import b64decode\n"
-        f"data = '{png_b64}'\n"
-        "open('output.png', 'wb').write(b64decode(data))\n"
-    )
-    for username, code in zip(image_users, [image_code_a, image_code_a, image_code_b]):
-        assert cli.init_user(username)["success"] is True
-        payload = cli.user_json("problem", "submit", str(image_problem_id), "--code", code, timeout=90)
-        assert payload["success"] is True
-        _wait_problem_submission_status(cli, int(payload["submission_id"]), {"Accepted"})
-
-    image_result = _run_plagiarism(cli, f"problem:{image_problem_id}", mode="byte")
-    assert image_result["group_count"] == 1
-    assert image_result["record_count"] == 2
-    _assert_plagiarism_group(
-        cli,
-        target_kind="problem",
-        target_id=image_problem_id,
-        comparison_rule="byte-identical",
-        expected_users=set(image_users[:2]),
-    )
-
     tex_users = _create_users("cli_plag_tex", unique_suffix, 4)
     tex_title = f"CLI TeX Plagiarism {unique_suffix}"
     tex_problem_id = create_problem(
@@ -335,8 +293,59 @@ def test_problem_plagiarism_extended_submission_flows(cli, unique_suffix, tmp_pa
     )
 
     assert cli.admin_json("problem", "delete", str(tex_problem_id))["success"] is True
-    assert cli.admin_json("problem", "delete", str(image_problem_id))["success"] is True
     assert cli.admin_json("problem", "delete", str(promptly_problem_id))["success"] is True
+
+
+@pytest.mark.e2e
+@pytest.mark.judger
+def test_problem_image_output_plagiarism_flow(cli, unique_suffix):
+    require_docker_judger_image()
+    assert cli.init_admin()["success"] is True
+
+    image_users = _create_users("cli_plag_image", unique_suffix, 3)
+    image_title = f"CLI Image Plagiarism {unique_suffix}"
+    image_problem_id = create_problem(
+        cli,
+        image_title,
+        submission_limit=10,
+        extra=[
+            "--programming-grading-mode",
+            "2",
+            "--programming-output-filename",
+            "output.png",
+        ],
+    )
+    add_problem_homework(cli, image_problem_id, image_title)
+    png_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+    )
+    image_code_a = (
+        "import base64\n"
+        f"open('output.png', 'wb').write(base64.b64decode('{png_b64}'))\n"
+    )
+    image_code_b = (
+        "from base64 import b64decode\n"
+        f"data = '{png_b64}'\n"
+        "open('output.png', 'wb').write(b64decode(data))\n"
+    )
+    for username, code in zip(image_users, [image_code_a, image_code_a, image_code_b]):
+        assert cli.init_user(username)["success"] is True
+        payload = cli.user_json("problem", "submit", str(image_problem_id), "--code", code, timeout=90)
+        assert payload["success"] is True
+        _wait_problem_submission_status(cli, int(payload["submission_id"]), {"Accepted"})
+
+    image_result = _run_plagiarism(cli, f"problem:{image_problem_id}", mode="byte")
+    assert image_result["group_count"] == 1
+    assert image_result["record_count"] == 2
+    _assert_plagiarism_group(
+        cli,
+        target_kind="problem",
+        target_id=image_problem_id,
+        comparison_rule="byte-identical",
+        expected_users=set(image_users[:2]),
+    )
+
+    assert cli.admin_json("problem", "delete", str(image_problem_id))["success"] is True
 
 
 @pytest.mark.e2e

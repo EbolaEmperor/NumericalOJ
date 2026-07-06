@@ -52,6 +52,25 @@ def test_normalize_rejects_duplicate_rule_id():
         aj.normalize_rules(_rules((1, 10, []), (1, 5, [])))
 
 
+def test_reindex_rules_by_order_remaps_dependencies_after_delete():
+    out = aj.reindex_rules_by_order([
+        {'rule_id': 1, 'rule_text': '规则1', 'value': 1, 'dependencies': []},
+        {'rule_id': 3, 'rule_text': '规则3', 'value': 1, 'dependencies': []},
+        {'rule_id': 4, 'rule_text': '规则4', 'value': 1, 'dependencies': [3]},
+    ])
+    assert [r['rule_id'] for r in out] == [1, 2, 3]
+    assert out[2]['dependencies'] == [2]
+
+
+def test_reindex_rules_by_order_drops_dependencies_to_deleted_nodes():
+    out = aj.reindex_rules_by_order([
+        {'rule_id': 1, 'rule_text': '规则1', 'value': 1, 'dependencies': []},
+        {'rule_id': 3, 'rule_text': '规则3', 'value': 1, 'dependencies': [1, 2]},
+    ])
+    assert [r['rule_id'] for r in out] == [1, 2]
+    assert out[1]['dependencies'] == [1]
+
+
 # ---- topo_order ----
 def test_topo_order_deps_before_dependents():
     rules = aj.normalize_rules(_rules((1, 10, [2]), (2, 10, [3]), (3, 10, [])))

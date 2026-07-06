@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -29,6 +30,34 @@ ROOT = Path(__file__).resolve().parents[2]
 ADMIN_CLI = ROOT / "skills" / "numoj-admin" / "scripts" / "numoj_admin.py"
 USER_CLI = ROOT / "skills" / "numoj-user" / "scripts" / "numoj_user.py"
 BASE_URL = "http://127.0.0.1:2025"
+
+
+def judger_image_name() -> str:
+    env_value = os.environ.get("JUDGER_DOCKER_IMAGE")
+    if env_value:
+        return env_value
+    try:
+        import config
+        return getattr(config, "JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
+    except Exception:
+        return "numericaloj-judger:latest"
+
+
+def require_docker_judger_image() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI is not available for sandbox judging e2e.")
+    image = judger_image_name()
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", image],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip(f"Docker judger image {image} is not available.")
 
 
 def _assert_disposable_environment() -> None:

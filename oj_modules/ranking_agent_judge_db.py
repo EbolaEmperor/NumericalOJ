@@ -248,7 +248,7 @@ def save_agent_judge_endpoints(competition_id, items):
 
 def replace_competition_rules(competition_id, rules):
     """整体替换某比赛的评分规则（先 normalize 校验 DAG，再删旧插新）。抛 ValueError 表示校验失败。"""
-    normalized = aj.normalize_rules(rules)  # 校验在事务外，失败则不动 DB
+    normalized = aj.reindex_rules_by_order(rules)  # 校验在事务外，失败则不动 DB
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:

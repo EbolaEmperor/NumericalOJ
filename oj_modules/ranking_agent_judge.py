@@ -89,6 +89,58 @@ def normalize_rules(rules):
     return out
 
 
+def reindex_rules_by_order(rules):
+    """按当前列表顺序重编 rule_id，并把 dependencies 从旧编号映射到新编号。
+
+    这是规则编辑器删除节点后的持久化语义：列表中第 i 条规则就是新规则 i；
+    依赖里指向已不存在旧编号的项视为被删除节点，直接移除。
+    """
+    if not isinstance(rules, list):
+        raise ValueError('规则必须是列表')
+    old_to_new = {}
+    items = []
+    for idx, r in enumerate(rules):
+        if not isinstance(r, dict):
+            raise ValueError(f'第 {idx + 1} 条规则格式非法')
+        raw_id = r.get('rule_id')
+        try:
+            old_id = int(raw_id) if raw_id not in (None, '') else idx + 1
+        except (TypeError, ValueError):
+            raise ValueError(f'第 {idx + 1} 条规则缺少合法 rule_id')
+        if old_id <= 0:
+            raise ValueError(f'rule_id 必须为正整数：{old_id}')
+        if old_id in old_to_new:
+            raise ValueError(f'rule_id 重复：{old_id}')
+        old_to_new[old_id] = idx + 1
+        items.append((old_id, r))
+
+    reindexed = []
+    for idx, (_, r) in enumerate(items):
+        deps_raw = r.get('dependencies') or []
+        if not isinstance(deps_raw, list):
+            raise ValueError(f'规则 {idx + 1} 依赖必须是列表')
+        deps = []
+        seen = set()
+        for dep in deps_raw:
+            try:
+                old_dep = int(dep)
+            except (TypeError, ValueError):
+                raise ValueError(f'规则 {idx + 1} 依赖项非整数：{dep!r}')
+            new_dep = old_to_new.get(old_dep)
+            if not new_dep or new_dep in seen:
+                continue
+            seen.add(new_dep)
+            deps.append(new_dep)
+        reindexed.append({
+            'rule_id': idx + 1,
+            'rule_name': r.get('rule_name'),
+            'rule_text': r.get('rule_text'),
+            'value': r.get('value'),
+            'dependencies': sorted(deps),
+        })
+    return normalize_rules(reindexed)
+
+
 def topo_order(rules):
     """返回 rule_id 的拓扑序（依赖在前）。有环抛 ValueError。"""
     indeg = {r['rule_id']: 0 for r in rules}

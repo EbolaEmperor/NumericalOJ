@@ -1711,11 +1711,13 @@ def ranking_save_judge_rules(competition_id):
     rules_in = payload.get('rules')
     if not isinstance(rules_in, list):
         return jsonify({'success': False, 'message': '规则格式非法'}), 400
-    # 归一：rule_id 按顺序 1..n，dependencies 为前端给出的 rule_id 列表
+    # DB 层会按当前列表顺序重算 rule_id，并把 dependencies 从旧编号映射到新编号。
     rules = []
     for idx, r in enumerate(rules_in):
+        if not isinstance(r, dict):
+            return jsonify({'success': False, 'message': f'第 {idx + 1} 条规则格式非法'}), 400
         rules.append({
-            'rule_id': int(r.get('rule_id') or (idx + 1)),
+            'rule_id': r.get('rule_id') or (idx + 1),
             'rule_name': (r.get('rule_name') or '').strip(),
             'rule_text': (r.get('rule_text') or '').strip(),
             'value': r.get('value'),
