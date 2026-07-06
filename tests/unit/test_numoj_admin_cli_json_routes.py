@@ -36,6 +36,31 @@ class _FakeClient:
         return _FakeResponse()
 
 
+class _PayloadResponse:
+    def __init__(self, payload, status_code=200):
+        import json
+
+        self._payload = payload
+        self.status_code = status_code
+        self.headers = {"Content-Type": "application/json"}
+        self.text = json.dumps(payload, ensure_ascii=False)
+        self.content = self.text.encode("utf-8")
+
+    def json(self):
+        return self._payload
+
+
+class _SequenceClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def request(self, method, path, **kwargs):
+        self.requests.append((method, path, kwargs))
+        assert self.responses
+        return self.responses.pop(0)
+
+
 def test_numoj_admin_page_like_commands_use_json_api_without_output(monkeypatch):
     cli = _load_numoj_admin_cli_module()
     fake_client = _FakeClient()
@@ -105,3 +130,40 @@ def test_numoj_admin_download_commands_keep_output_option():
     parser = cli.build_parser()
     args = parser.parse_args(["submission", "output-image", "123", "0", "-o", "/tmp/out.bmp"])
     assert args.output == "/tmp/out.bmp"
+
+
+def test_homework_plagiarism_wait_tolerates_initial_missing_progress(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _SequenceClient([
+        _PayloadResponse({"success": True, "task_id": "task-1"}),
+        _PayloadResponse({"success": False, "message": "任务不存在或已过期"}, status_code=404),
+        _PayloadResponse({
+            "success": True,
+            "progress": {
+                "stage": "completed",
+                "result": {"group_count": 1, "record_count": 2},
+            },
+        }),
+    ])
+    monkeypatch.setattr(cli, "client_from_args", lambda _args: fake_client)
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    cli.homework_plagiarism_start(Namespace(
+        class_en="Cclass1",
+        mode="byte",
+        threshold=1,
+        problem_ids="",
+        targets="problem:1",
+        wait=True,
+        timeout=5,
+        poll_interval=0.1,
+    ))
+
+    payload = cli.json.loads(capsys.readouterr().out)
+    assert payload["success"] is True
+    assert payload["progress"]["stage"] == "completed"
+    assert [request[1] for request in fake_client.requests] == [
+        "/api/admin/homework/plagiarism/start",
+        "/api/admin/homework/plagiarism/progress/task-1",
+        "/api/admin/homework/plagiarism/progress/task-1",
+    ]

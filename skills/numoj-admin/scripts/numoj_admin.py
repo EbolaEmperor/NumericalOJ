@@ -932,12 +932,19 @@ def homework_download_export(args: argparse.Namespace) -> None:
 
 def homework_plagiarism_start(args: argparse.Namespace) -> None:
     client = client_from_args(args)
+    problem_ids = parse_int_csv(args.problem_ids) if args.problem_ids else []
+    targets = [item.strip() for item in str(args.targets or "").split(",") if item.strip()]
+    if not problem_ids and not targets:
+        raise CliError("Provide --problem-ids or --targets.")
     payload = {
         "class_en": args.class_en,
         "mode": args.mode,
         "threshold": args.threshold,
-        "problem_ids": parse_int_csv(args.problem_ids),
     }
+    if targets:
+        payload["targets"] = targets
+    else:
+        payload["problem_ids"] = problem_ids
     resp = client.request("POST", "/api/admin/homework/plagiarism/start", json=payload)
     ensure_ok(resp)
     if not response_is_json(resp):
@@ -959,6 +966,16 @@ def homework_plagiarism_start(args: argparse.Namespace) -> None:
     last_payload: Dict[str, Any] = start_payload
     while time.time() < deadline:
         progress_resp = client.request("GET", f"/api/admin/homework/plagiarism/progress/{task_id}")
+        if progress_resp.status_code == 404:
+            last_payload = {
+                "success": False,
+                "task_id": task_id,
+                "start": start_payload,
+                "progress": None,
+                "message": "Progress is not visible yet.",
+            }
+            time.sleep(max(0.1, float(args.poll_interval)))
+            continue
         ensure_ok(progress_resp)
         if not response_is_json(progress_resp):
             raise CliError("Server did not return JSON for plagiarism progress.")
@@ -2130,11 +2147,12 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("task_id", help="Export task ID returned by export-codes.")
     pa.add_argument("-o", "--output", help="Path to write the downloaded archive.")
     pa.set_defaults(func=homework_download_export)
-    pa = add_cli_parser(hs, "plagiarism-start", "Start an asynchronous plagiarism check for selected class homework problems.")
+    pa = add_cli_parser(hs, "plagiarism-start", "Start an asynchronous plagiarism check for selected class homework targets.")
     pa.add_argument("--class-en", required=True, help="English class identifier whose homework submissions should be checked.")
     pa.add_argument("--mode", choices=("threshold", "byte"), default="threshold", help="Comparison mode: normalized threshold or byte-identical.")
     pa.add_argument("--threshold", type=float, default=90, help="Threshold percentage or ratio for threshold mode.")
-    pa.add_argument("--problem-ids", required=True, help="Comma-separated homework problem IDs to compare.")
+    pa.add_argument("--problem-ids", help="Comma-separated homework problem IDs to compare.")
+    pa.add_argument("--targets", help="Comma-separated targets such as problem:42,ranking:3.")
     pa.add_argument("--wait", action="store_true", help="Poll until the plagiarism task finishes.")
     pa.add_argument("--poll-interval", type=float, default=0.5, help="Seconds between progress polls when --wait is used.")
     pa.add_argument("--timeout", type=float, default=120.0, help="Maximum seconds to wait when --wait is used.")

@@ -52,6 +52,21 @@ _TEX_HAS_CJK_SETUP_PATTERN = re.compile(
 _TEX_MISSING_CHAR_PATTERN = re.compile(r"Missing character: There is no .*?\(U\+([0-9A-Fa-f]{4,6})\)")
 
 
+def _fake_written_homework_grade_from_env():
+    raw_score = os.getenv("NUMOJ_FAKE_WRITTEN_HOMEWORK_SCORE")
+    if raw_score is None:
+        return None
+    try:
+        score = float(raw_score)
+    except (TypeError, ValueError):
+        score = 5.0
+    score = max(0.0, min(5.0, score))
+    if score.is_integer():
+        score = int(score)
+    comment = os.getenv("NUMOJ_FAKE_WRITTEN_HOMEWORK_COMMENT") or "本地假书面批改结果。"
+    return score, comment
+
+
 def _is_deterministic_written_input_error(error):
     text = str(error or "")
     markers = (
@@ -364,6 +379,18 @@ def register_written_homework_task(celery_app):
             except Exception:
                 written_mode = 1
             written_model = str(problem.get('written_grading_model') or _DEFAULT_WRITTEN_GRADING_MODEL_SPEC).strip().lower()
+
+            fake_grade = _fake_written_homework_grade_from_env()
+            if fake_grade is not None:
+                score, ai_comment = fake_grade
+                update_submission_score_and_comment(submission_id, score, ai_comment)
+                update_submission_status(submission_id, 'Accepted' if score == 5 else 'Unaccepted')
+                refresh_submission_status_snapshot(submission_id)
+                print(
+                    f"[Written Grade] submission={submission_id} 使用本地假批改结果: "
+                    f"score={score}"
+                )
+                return
 
             if written_mode == 2:
                 image_paths = render_pdf_to_images(file_path, upload_folder)
