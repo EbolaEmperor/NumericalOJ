@@ -3947,7 +3947,7 @@
         .aj-topo-edge.selected { stroke:#b03a2e; stroke-width:2.5; }
         .aj-topo-arrow.selected { fill:#b03a2e; }
         .aj-topo-edge-hit { fill:none; stroke:transparent; stroke-width:16; cursor:pointer; pointer-events:stroke; }
-        .aj-topo-node { position:absolute; width:168px; height:76px; display:flex; flex-direction:column; gap:.22rem;
+        .aj-topo-node { position:absolute; width:168px; height:100px; display:flex; flex-direction:column; gap:.22rem;
                         text-align:left; border:1px solid #dfd6b6; border-left:3px solid var(--gold);
                         background:#fffdf8; border-radius:6px; padding:.56rem .65rem; color:var(--ink);
                         cursor:pointer; transition:border-color .12s, background .12s, box-shadow .12s, opacity .12s, transform .12s, filter .12s; overflow:hidden; }
@@ -3961,24 +3961,32 @@
         .aj-topo-surface.has-focus:not(.link-mode) .aj-topo-arrow.edge-active.selected { fill:#b03a2e; }
         .aj-topo-surface.has-focus:not(.link-mode) .aj-topo-node.node-active { opacity:1; border-color:var(--gold-d); background:#fff8dd; }
         .aj-topo-surface.link-mode .aj-topo-edge-hit { pointer-events:none; }
-        .aj-topo-surface.link-mode .aj-topo-node { cursor:crosshair; }
-        .aj-topo-node.link-ready { animation:aj-link-ready 1.2s ease-in-out infinite; }
+        .aj-topo-surface.link-mode .aj-topo-node { cursor:crosshair; animation:aj-node-link-pulse 1.8s ease-in-out infinite; }
+        .aj-topo-surface.delete-mode .aj-topo-edge-hit { pointer-events:none; }
+        .aj-topo-surface.delete-mode .aj-topo-node { animation:aj-node-delete-pulse 1.8s ease-in-out infinite; }
+        .aj-topo-surface.delete-mode .aj-topo-node.delete-selected {
+          border-color:#b03a2e; border-left-color:#b03a2e; background:#fff8f7;
+          animation:none; box-shadow:0 0 0 2px rgba(176,58,46,.18);
+        }
+        .aj-topo-surface.delete-mode .aj-topo-node.delete-selected::after {
+          content:''; position:absolute; inset:0; background:rgba(176,58,46,.24); pointer-events:none;
+        }
         .aj-topo-node.link-source { border-color:var(--gold-d); background:#fff7cf; transform:translateY(-1px);
                                     box-shadow:0 0 0 2px rgba(245,197,24,.38), 0 0 0 8px rgba(245,197,24,.12); }
         .aj-topo-node.link-target { border-color:#25845b; border-left-color:#25845b; background:#fbfffc;
-                                    box-shadow:0 0 0 2px rgba(37,132,91,.26); animation:aj-link-target 1.05s ease-in-out infinite; }
+                                    box-shadow:0 0 0 2px rgba(37,132,91,.26); }
         .aj-topo-node.link-blocked { opacity:.34; filter:saturate(.55); cursor:not-allowed; }
-        @keyframes aj-link-ready {
-          0%, 100% { box-shadow:0 0 0 0 rgba(245,197,24,.18); }
-          50% { box-shadow:0 0 0 7px rgba(245,197,24,.08); }
+        @keyframes aj-node-link-pulse {
+          0%, 100% { filter:brightness(1); }
+          50% { filter:brightness(.95); }
         }
-        @keyframes aj-link-target {
-          0%, 100% { box-shadow:0 0 0 2px rgba(37,132,91,.18), 0 0 0 0 rgba(37,132,91,.16); }
-          50% { box-shadow:0 0 0 2px rgba(37,132,91,.28), 0 0 0 7px rgba(37,132,91,.08); }
+        @keyframes aj-node-delete-pulse {
+          0%, 100% { filter:brightness(1); }
+          50% { filter:brightness(.94); }
         }
-        .aj-topo-node-id { font-family:var(--mono); font-size:.72rem; color:#806713; font-weight:700; line-height:1; }
-        .aj-topo-node-title { font-size:.88rem; line-height:1.2; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .aj-topo-node-text { font-size:.72rem; line-height:1.25; color:var(--muted); display:-webkit-box;
+        .aj-topo-node-id { font-family:var(--mono); font-size:.72rem; color:#806713; font-weight:700; line-height:1.15; }
+        .aj-topo-node-title { font-size:.88rem; line-height:1.28; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .aj-topo-node-text { font-size:.72rem; line-height:1.32; color:var(--muted); display:-webkit-box;
                              -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
         .aj-edge-trash { position:absolute; z-index:5; transform:translate(-50%, -50%); width:30px; height:30px;
                          display:grid; place-items:center; border:1px solid #f0c8c2; border-radius:50%;
@@ -3987,12 +3995,27 @@
         .aj-topo-panel { border:1px solid var(--line); border-radius:6px; background:#fff; padding:.34rem;
                          display:flex; flex-direction:column; align-items:center; gap:.4rem; }
         .aj-topo-actions { display:flex; flex-direction:column; align-items:center; gap:.32rem; }
+        .aj-topo-delete-wrap { display:flex; flex-direction:column; align-items:center; gap:.28rem; }
         .aj-topo-icon-btn { width:32px; height:32px; display:grid; place-items:center;
                             border:1px solid transparent; background:transparent; color:#8a7f63;
                             border-radius:5px; padding:0; font-size:.85rem; cursor:pointer; transition:.12s; }
         .aj-topo-icon-btn svg { width:18px; height:18px; display:block; stroke:currentColor; }
-        .aj-topo-icon-btn:hover, .aj-topo-icon-btn.active { border-color:#e7d58d; background:#fff8dd; color:#5b4708; }
+        .aj-topo-icon-btn:hover { border-color:#e7d58d; background:#fff8dd; color:#5b4708; }
+        .aj-topo-icon-btn.active {
+          border-color:#e7d58d; background:#fff8dd; color:#5b4708;
+          transform:translateY(1px); box-shadow:inset 0 1px 3px rgba(91,71,8,.16);
+        }
+        .aj-topo-icon-btn.delete-active {
+          border-color:#d9958b; background:#f8e9e7; color:#b03a2e;
+          transform:translateY(1px); box-shadow:inset 0 1px 3px rgba(121,39,30,.18);
+        }
         .aj-topo-icon-btn:disabled { opacity:.34; cursor:not-allowed; }
+        .aj-topo-confirm-btn { width:32px; height:32px; display:none; align-items:center; justify-content:center;
+                               border:1px solid #efc3bd; background:#fff; color:#b03a2e; border-radius:5px;
+                               padding:0; font-size:.82rem; cursor:pointer; transition:.12s; }
+        .aj-topo-confirm-btn.show { display:inline-flex; }
+        .aj-topo-confirm-btn:hover:not(:disabled) { background:#f8e9e7; border-color:#d9958b; }
+        .aj-topo-confirm-btn:disabled { opacity:.42; cursor:not-allowed; }
         .aj-foot { display:flex; align-items:center; gap:.75rem; margin-top:1.1rem;
                    padding-top:.9rem; border-top:1px solid var(--line); }
         .aj-save { background:var(--green); border:none; color:#fff; font-weight:600;
@@ -4000,6 +4023,8 @@
         .aj-save:hover { background:#196b42; }
         .aj-save:active { background:#155c39; }
         .aj-rule-modal textarea { min-height:150px; resize:vertical; }
+        .aj-delete-warn-icon { width:38px; height:38px; flex:0 0 38px; display:grid; place-items:center;
+                               border-radius:50%; background:#f8e9e7; color:#b03a2e; }
         @media (max-width:900px){
           .aj-topo-layout{grid-template-columns:1fr;}
           .aj-topo-panel{order:-1; width:max-content; flex-direction:row;}
@@ -4033,7 +4058,32 @@
               </div>
               <aside class="aj-topo-panel" aria-label="拓扑工具">
                 <div class="aj-topo-actions">
-                  <button type="button" class="aj-topo-icon-btn" id="showAddEdgeBtn" aria-label="增加拓扑" title="增加拓扑">
+                  <button type="button" class="aj-topo-icon-btn" id="addTopoNodeBtn" aria-label="增加节点" title="增加节点">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="5"></circle>
+                      <path d="M12 9v6"></path>
+                      <path d="M9 12h6"></path>
+                      <path d="M12 2v3"></path>
+                      <path d="M12 19v3"></path>
+                      <path d="M2 12h3"></path>
+                      <path d="M19 12h3"></path>
+                    </svg>
+                  </button>
+                  <div class="aj-topo-delete-wrap">
+                    <button type="button" class="aj-topo-icon-btn" id="deleteTopoNodeBtn" aria-label="删除节点" title="删除节点">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 7h16"></path>
+                        <path d="M9 7V4h6v3"></path>
+                        <path d="M7 7l1 13h8l1-13"></path>
+                        <path d="M10 11v5"></path>
+                        <path d="M14 11v5"></path>
+                      </svg>
+                    </button>
+                    <button type="button" class="aj-topo-confirm-btn" id="confirmDeleteTopoNodeBtn" aria-label="确认删除" title="确认删除" disabled>
+                      <i class="fas fa-check"></i>
+                    </button>
+                  </div>
+                  <button type="button" class="aj-topo-icon-btn" id="showAddEdgeBtn" aria-label="添加连接" title="添加连接">
                     <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <circle cx="5" cy="12" r="2.5"></circle>
                       <path d="M8 12h8.5"></path>
@@ -4094,6 +4144,29 @@
           </div>
         </div>
       </div>
+      <div class="modal fade" id="ajDeleteRulesModal" tabindex="-1" aria-labelledby="ajDeleteRulesModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="ajDeleteRulesModalLabel">确认删除规则</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <div class="d-flex align-items-start gap-3">
+                <div class="aj-delete-warn-icon"><i class="fas fa-trash-can"></i></div>
+                <div>
+                  <div class="fw-semibold mb-1" id="ajDeleteRulesSummary"></div>
+                  <div class="text-muted small">删除后将重新计算所有规则编号和依赖编号。</div>
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="button" class="btn btn-danger" id="ajDeleteRulesConfirm">确认删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
       <script>
         window.__JUDGE_RULES__ = {{ judge_rules|tojson }};
         window.__SAVE_RULES_URL__ = "{{ url_for('ranking.ranking_save_judge_rules', competition_id=competition.id) }}";
@@ -4104,6 +4177,9 @@
         if (!editor) return;
         var topoView = document.getElementById('rulesTopoView');
         var topoCanvas = document.getElementById('rulesTopoCanvas');
+        var addNodeBtn = document.getElementById('addTopoNodeBtn');
+        var deleteNodeBtn = document.getElementById('deleteTopoNodeBtn');
+        var confirmDeleteNodeBtn = document.getElementById('confirmDeleteTopoNodeBtn');
         var addEdgeBtn = document.getElementById('showAddEdgeBtn');
         var simplifyTopoBtn = document.getElementById('simplifyTopoBtn');
         var hintEl = document.getElementById('saveRulesHint');
@@ -4111,9 +4187,14 @@
         var selectedEdge = null;
         var addEdgeMode = false;
         var pendingEdgeFrom = null;
-        var nodeW = 168, nodeH = 76, marginX = 24, marginY = 20, xGap = 88, yGap = 72;
+        var deleteNodeMode = false;
+        var pendingDeleteIndexes = {};
+        var nodeW = 168, nodeH = 100, marginX = 24, marginY = 20, xGap = 88, yGap = 80;
         var modalEl = document.getElementById('ajRuleModal');
         var ruleModal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
+        var deleteModalEl = document.getElementById('ajDeleteRulesModal');
+        var deleteRulesModal = (deleteModalEl && window.bootstrap) ? new bootstrap.Modal(deleteModalEl) : null;
+        var pendingDeleteConfirmIndexes = [];
         var rules = (window.__JUDGE_RULES__ || []).map(function (r) {
           return {rule_id: r.rule_id, rule_name: r.rule_name || '', rule_text: r.rule_text, value: r.value,
                   dependencies: (r.dependencies || []).slice()};
@@ -4133,6 +4214,51 @@
               return true;
             }).sort(function (a, b) { return a - b; });
           });
+        }
+        function resetTopoModes() {
+          selectedEdge = null;
+          addEdgeMode = false;
+          pendingEdgeFrom = null;
+          deleteNodeMode = false;
+          pendingDeleteIndexes = {};
+        }
+        function createRule() {
+          rules.push({rule_id: rules.length + 1, rule_name: '', rule_text: '', value: 0, dependencies: []});
+          reindex();
+          return rules.length - 1;
+        }
+        function deleteRuleAt(idx, opts) {
+          opts = opts || {};
+          idx = parseInt(idx, 10);
+          var removed = rules[idx];
+          if (!removed) return;
+          var oldId = removed.rule_id;
+          rules.splice(idx, 1);
+          resetTopoModes();
+          reindex();
+          if (!opts.silent) setHint('已删除规则 ' + oldId + '，编号和依赖已重算。', 'text-success');
+          renderCurrent();
+        }
+        function selectedDeleteIndexes() {
+          return Object.keys(pendingDeleteIndexes).map(function (k) {
+            return parseInt(k, 10);
+          }).filter(function (idx) {
+            return idx >= 0 && idx < rules.length && pendingDeleteIndexes[idx];
+          }).sort(function (a, b) { return a - b; });
+        }
+        function deleteRulesAt(indexes) {
+          indexes = (indexes || []).slice().sort(function (a, b) { return b - a; });
+          if (!indexes.length) return;
+          var ids = indexes.map(function (idx) {
+            return rules[idx] ? rules[idx].rule_id : null;
+          }).filter(function (id) { return id != null; }).sort(function (a, b) { return a - b; });
+          indexes.forEach(function (idx) {
+            if (rules[idx]) rules.splice(idx, 1);
+          });
+          resetTopoModes();
+          reindex();
+          setHint('已删除 ' + ids.length + ' 条规则，编号和依赖已重算。', 'text-success');
+          renderCurrent();
         }
         function totalValue() { return rules.reduce(function (s, r) { return s + (parseFloat(r.value) || 0); }, 0); }
         function esc(s) { return (s || '').replace(/[&<>"]/g, function (c) {
@@ -4182,6 +4308,8 @@
           selectedEdge = null;
           addEdgeMode = false;
           pendingEdgeFrom = null;
+          deleteNodeMode = false;
+          pendingDeleteIndexes = {};
           editor.innerHTML = '';
           rules.forEach(function (r, idx) {
             var pills = rules.filter(function (_, j) { return j !== idx; }).map(function (o) {
@@ -4225,11 +4353,24 @@
             addEdgeMode = false;
             pendingEdgeFrom = null;
           }
+          if (!rules.length) {
+            deleteNodeMode = false;
+            pendingDeleteIndexes = {};
+          }
+          if (addNodeBtn) addNodeBtn.disabled = deleteNodeMode;
+          if (deleteNodeBtn) {
+            deleteNodeBtn.disabled = !rules.length;
+            deleteNodeBtn.classList.toggle('delete-active', deleteNodeMode);
+          }
+          if (confirmDeleteNodeBtn) {
+            confirmDeleteNodeBtn.classList.toggle('show', deleteNodeMode);
+            confirmDeleteNodeBtn.disabled = !deleteNodeMode || !selectedDeleteIndexes().length;
+          }
           if (addEdgeBtn) {
-            addEdgeBtn.disabled = disabled;
+            addEdgeBtn.disabled = disabled || deleteNodeMode;
             addEdgeBtn.classList.toggle('active', addEdgeMode);
           }
-          if (simplifyTopoBtn) simplifyTopoBtn.disabled = !rules.length;
+          if (simplifyTopoBtn) simplifyTopoBtn.disabled = !rules.length || deleteNodeMode;
         }
         function topoLayout() {
           reindex();
@@ -4586,7 +4727,7 @@
             ' L ' + x2 + ' ' + y2;
         }
         function setTopoFocus(surface, ruleId, activeEdge) {
-          if (addEdgeMode) return;
+          if (addEdgeMode || deleteNodeMode) return;
           var active = ruleId != null || !!activeEdge;
           surface.classList.toggle('has-focus', active);
           var edgeParts = activeEdge ? activeEdge.split(':') : null;
@@ -4637,9 +4778,20 @@
           if (pendingEdgeFrom === ruleId) return ' link-source';
           return canAddEdge(pendingEdgeFrom, ruleId) ? ' link-target' : ' link-blocked';
         }
+        function topoNodeClass(ruleId, idx) {
+          if (deleteNodeMode) return pendingDeleteIndexes[idx] ? ' delete-selected' : '';
+          return edgeNodeClass(ruleId);
+        }
         function handleTopoNodeClick(idx) {
           var r = rules[idx];
           if (!r) return;
+          if (deleteNodeMode) {
+            if (pendingDeleteIndexes[idx]) delete pendingDeleteIndexes[idx];
+            else pendingDeleteIndexes[idx] = true;
+            selectedEdge = null;
+            renderTopo();
+            return;
+          }
           if (!addEdgeMode) {
             openRuleModal(idx);
             return;
@@ -4677,7 +4829,9 @@
             return;
           }
           var surface = document.createElement('div');
-          surface.className = 'aj-topo-surface' + (addEdgeMode ? (' link-mode' + (pendingEdgeFrom ? ' link-has-source' : '')) : '');
+          surface.className = 'aj-topo-surface'
+            + (addEdgeMode ? (' link-mode' + (pendingEdgeFrom ? ' link-has-source' : '')) : '')
+            + (deleteNodeMode ? ' delete-mode' : '');
           surface.style.width = layout.width + 'px';
           surface.style.height = layout.height + 'px';
           var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -4730,7 +4884,7 @@
             var pos = layout.positions[r.rule_id];
             var node = document.createElement('button');
             node.type = 'button';
-            node.className = 'aj-topo-node' + edgeNodeClass(r.rule_id);
+            node.className = 'aj-topo-node' + topoNodeClass(r.rule_id, idx);
             node.dataset.node = idx;
             node.dataset.ruleId = r.rule_id;
             node.title = r.rule_text || '未填写规则内容';
@@ -4772,7 +4926,7 @@
         }
         function bind() {
           editor.querySelectorAll('[data-del]').forEach(function (b) {
-            b.onclick = function () { rules.splice(parseInt(b.dataset.del, 10), 1); renderCurrent(); };
+            b.onclick = function () { deleteRuleAt(parseInt(b.dataset.del, 10)); };
           });
           editor.querySelectorAll('[data-name]').forEach(function (n) {
             n.oninput = function () { rules[parseInt(n.dataset.name, 10)].rule_name = n.value; };
@@ -4874,6 +5028,21 @@
           document.getElementById('ajRuleModalLabel').textContent = '编辑规则 ' + r.rule_id;
           ruleModal.show();
         }
+        function openDeleteRulesModal(indexes) {
+          pendingDeleteConfirmIndexes = (indexes || []).slice();
+          var ids = pendingDeleteConfirmIndexes.map(function (idx) { return rules[idx].rule_id; });
+          var summary = document.getElementById('ajDeleteRulesSummary');
+          if (summary) summary.textContent = '将删除规则 ' + ids.join('、');
+          if (deleteRulesModal) deleteRulesModal.show();
+          else deleteRulesAt(pendingDeleteConfirmIndexes);
+        }
+        var deleteRulesConfirmBtn = document.getElementById('ajDeleteRulesConfirm');
+        if (deleteRulesConfirmBtn) deleteRulesConfirmBtn.onclick = function () {
+          var indexes = pendingDeleteConfirmIndexes.slice();
+          pendingDeleteConfirmIndexes = [];
+          if (deleteRulesModal) deleteRulesModal.hide();
+          deleteRulesAt(indexes);
+        };
         document.getElementById('ajRuleModalSave').onclick = function () {
           var idx = parseInt(document.getElementById('ajRuleModalIndex').value, 10);
           var r = rules[idx];
@@ -4898,8 +5067,35 @@
             renderCurrent();
           };
         });
+        if (addNodeBtn) addNodeBtn.onclick = function () {
+          if (deleteNodeMode) return;
+          addEdgeMode = false;
+          pendingEdgeFrom = null;
+          selectedEdge = null;
+          var idx = createRule();
+          renderTopo();
+          openRuleModal(idx);
+        };
+        if (deleteNodeBtn) deleteNodeBtn.onclick = function () {
+          if (!rules.length) return;
+          deleteNodeMode = !deleteNodeMode;
+          addEdgeMode = false;
+          pendingEdgeFrom = null;
+          selectedEdge = null;
+          pendingDeleteIndexes = {};
+          setHint(deleteNodeMode ? '请选择要删除的节点。' : '已退出删除模式。', deleteNodeMode ? 'text-muted' : 'text-muted');
+          renderTopo();
+        };
+        if (confirmDeleteNodeBtn) confirmDeleteNodeBtn.onclick = function () {
+          if (!deleteNodeMode) return;
+          var indexes = selectedDeleteIndexes();
+          if (!indexes.length) return;
+          openDeleteRulesModal(indexes);
+        };
         if (addEdgeBtn) addEdgeBtn.onclick = function () {
           if (rules.length < 2) return;
+          deleteNodeMode = false;
+          pendingDeleteIndexes = {};
           addEdgeMode = !addEdgeMode;
           pendingEdgeFrom = null;
           selectedEdge = null;
@@ -4908,12 +5104,18 @@
         if (simplifyTopoBtn) simplifyTopoBtn.onclick = function () {
           addEdgeMode = false;
           pendingEdgeFrom = null;
+          deleteNodeMode = false;
+          pendingDeleteIndexes = {};
           simplifyTopology();
         };
         document.getElementById('addRuleBtn').onclick = function () {
-          rules.push({rule_id: rules.length + 1, rule_name: '', rule_text: '', value: 0, dependencies: []});
+          resetTopoModes();
+          var idx = createRule();
           renderCurrent();
-          var last = editor.querySelector('.aj-rule:last-child .aj-desc'); if (last) last.focus();
+          if (activeView === 'topo') openRuleModal(idx);
+          else {
+            var last = editor.querySelector('.aj-rule:last-child .aj-desc'); if (last) last.focus();
+          }
         };
         document.getElementById('saveRulesBtn').onclick = function () {
           reindex();

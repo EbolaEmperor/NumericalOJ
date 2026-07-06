@@ -1038,6 +1038,8 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // 导出学生代码功能
+  let pollInterval = null;
+  let autoDownloadTriggered = false;
   const exportCodesBtn = document.getElementById('exportCodesBtn');
   if (exportCodesBtn) {
     exportCodesBtn.addEventListener('click', async function() {
@@ -1049,6 +1051,7 @@ document.addEventListener('DOMContentLoaded', function() {
       
       // 重置进度显示
       updateProgress(0, '正在启动任务...', 'collecting', null);
+      autoDownloadTriggered = false;
       document.getElementById('downloadBtn').style.display = 'none';
       document.getElementById('cancelExportBtn').disabled = true;
       document.getElementById('problemCheckProgress').style.display = 'none';
@@ -1087,7 +1090,6 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   
   // 轮询进度
-  let pollInterval = null;
   function pollProgress(taskId, modalInstance) {
     if (pollInterval) {
       clearInterval(pollInterval);
@@ -1117,8 +1119,14 @@ document.addEventListener('DOMContentLoaded', function() {
           
           // 显示下载按钮
           const downloadBtn = document.getElementById('downloadBtn');
-          downloadBtn.href = `/download_export/${taskId}`;
+          const downloadUrl = `/download_export/${taskId}`;
+          downloadBtn.href = downloadUrl;
           downloadBtn.style.display = 'inline-block';
+
+          if (!autoDownloadTriggered) {
+            autoDownloadTriggered = true;
+            downloadBtn.click();
+          }
           
         } else if (progress.stage === 'error') {
           clearInterval(pollInterval);
