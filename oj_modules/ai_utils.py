@@ -973,6 +973,10 @@ def evaluate_program_output_image_with_ai(problem, student_username, image_path)
     if not image_path or not os.path.isfile(image_path):
         raise RuntimeError("未找到可用于图片批改的输出图片。")
 
+    fake_result = os.getenv("NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT")
+    if fake_result is not None:
+        return _parse_program_output_image_grading_result(fake_result)
+
     grading_rules = str((problem or {}).get("programming_grading_prompt") or "").strip()
     programming_grading_model = str((problem or {}).get("programming_grading_model") or _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC).strip().lower()
     if not grading_rules:

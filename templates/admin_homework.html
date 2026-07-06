@@ -471,14 +471,15 @@
           {% if plagiarism_problem_options %}
             {% for p in plagiarism_problem_options %}
             <div class="form-check">
-              <input class="form-check-input plagiarism-problem-checkbox" type="checkbox" value="{{ p.id }}" id="plagiarismProblem{{ p.id }}" checked>
-              <label class="form-check-label" for="plagiarismProblem{{ p.id }}">
+              <input class="form-check-input plagiarism-problem-checkbox" type="checkbox" value="{{ p.target or (p.kind ~ ':' ~ p.id) }}" id="plagiarismProblem{{ p.kind }}{{ p.id }}" data-kind="{{ p.kind }}" checked>
+              <label class="form-check-label" for="plagiarismProblem{{ p.kind }}{{ p.id }}">
+                {% if p.kind == 'ranking' %}<span class="badge bg-warning text-dark me-1">打榜赛</span>{% endif %}
                 <span class="text-muted">#{{ p.id }}</span> {{ p.title }}
               </label>
             </div>
             {% endfor %}
           {% else %}
-            <div class="text-muted">暂无可查重的普通题作业</div>
+            <div class="text-muted">暂无可查重的作业</div>
           {% endif %}
         </div>
         <div class="alert mt-3 mb-0 d-none" id="plagiarismMarkStatus" role="alert"></div>
@@ -852,12 +853,12 @@ document.addEventListener('DOMContentLoaded', function() {
   if (startPlagiarismMarkBtn) {
     startPlagiarismMarkBtn.addEventListener('click', async function() {
       const selectedClass = this.getAttribute('data-class');
-      const selectedProblems = Array.from(document.querySelectorAll('.plagiarism-problem-checkbox:checked'))
-        .map(cb => parseInt(cb.value, 10))
-        .filter(v => !Number.isNaN(v));
+      const selectedTargets = Array.from(document.querySelectorAll('.plagiarism-problem-checkbox:checked'))
+        .map(cb => String(cb.value || '').trim())
+        .filter(Boolean);
       const checkedRule = document.querySelector('input[name="plagiarismRule"]:checked');
       const rule = checkedRule ? checkedRule.value : 'threshold';
-      if (!selectedProblems.length) {
+      if (!selectedTargets.length) {
         setPlagiarismMarkStatus('warning', '请至少选择一道作业题');
         return;
       }
@@ -875,7 +876,7 @@ document.addEventListener('DOMContentLoaded', function() {
             class_en: selectedClass,
             mode: rule,
             threshold: plagiarismThresholdInput ? plagiarismThresholdInput.value : 90,
-            problem_ids: selectedProblems,
+            targets: selectedTargets,
           })
         });
         const result = await response.json();
@@ -910,6 +911,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     plagiarismRecordsBody.innerHTML = records.map(function(record) {
       const title = normalizePlagiarismProblemTitle(record.problem_title);
+      const submissionHref = plagiarismSubmissionHref(record);
       const users = Array.isArray(record.matched_usernames)
         ? record.matched_usernames
         : String(record.matched_usernames_text || '').split(/[、,]/).map(v => v.trim()).filter(Boolean);
@@ -918,12 +920,21 @@ document.addEventListener('DOMContentLoaded', function() {
         '<td><span class="plagiarism-record-id">#' + record.id + '</span></td>' +
         '<td><div class="plagiarism-user-main">' + escapeHtml(record.username) + '</div></td>' +
         '<td><div class="plagiarism-problem-main">' + escapeHtml(title) + '</div></td>' +
-        '<td><a class="plagiarism-submission-link" href="/submission_detail/' + encodeURIComponent(record.submission_id) + '" target="_blank" rel="noopener noreferrer">#' + escapeHtml(record.submission_id || '') + '</a></td>' +
+        '<td><a class="plagiarism-submission-link" href="' + escapeHtml(submissionHref) + '" target="_blank" rel="noopener noreferrer">#' + escapeHtml(record.submission_id || '') + '</a></td>' +
         '<td>' + renderPlagiarismRule(record.comparison_rule) + '</td>' +
         '<td>' + renderMatchedUsers(users) + '</td>' +
         '<td><span class="plagiarism-time">' + escapeHtml(record.created_at || '') + '</span></td>' +
       '</tr>';
     }).join('');
+  }
+
+  function plagiarismSubmissionHref(record) {
+    if (record && record.target_kind === 'ranking') {
+      const cid = record.competition_id || record.problem_id;
+      const q = record.username ? '&q=' + encodeURIComponent(record.username) : '';
+      return '/ranking/' + encodeURIComponent(cid) + '/?tab=all_submissions' + q;
+    }
+    return '/submission_detail/' + encodeURIComponent(record && record.submission_id ? record.submission_id : '');
   }
 
   function normalizePlagiarismProblemTitle(rawTitle) {

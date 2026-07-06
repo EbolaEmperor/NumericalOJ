@@ -104,7 +104,7 @@ def plagiarism_start():
             payload["class_en"],
             payload["mode"],
             payload["threshold"],
-            payload["problem_ids"],
+            payload["targets"],
         )
     except RuntimeError as exc:
         return json_error(str(exc), 500)

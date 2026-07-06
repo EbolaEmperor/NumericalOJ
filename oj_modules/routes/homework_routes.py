@@ -3,6 +3,9 @@
 
 import json
 import hashlib
+import os
+import posixpath
+import zipfile
 from collections import defaultdict
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -32,6 +35,11 @@ _rds = None
 _rds_binary = None
 _export_task = None
 _plagiarism_task = None
+
+_PLAGIARISM_TARGET_PROBLEM = 'problem'
+_PLAGIARISM_TARGET_RANKING = 'ranking'
+_PLAGIARISM_TEX_MAX_FILES = 256
+_PLAGIARISM_TEX_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
 
 def _invalidate_problem_list_cache_for_class(class_en):
@@ -265,20 +273,25 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
 
     if _plagiarism_task is None:
         @celery_app.task(bind=True, name='oj.homework.mark_plagiarism_task')
-        def mark_plagiarism_task(self, class_en, mode, threshold, problem_ids):
+        def mark_plagiarism_task(self, class_en, mode, threshold, targets):
             task_id = self.request.id
             try:
                 class_en = str(class_en or '').strip()
                 mode = str(mode or 'threshold').strip()
                 threshold = float(threshold)
-                problem_ids = [int(pid) for pid in (problem_ids or [])]
+                normalized_targets = []
+                for item in (targets or []):
+                    if isinstance(item, dict):
+                        normalized_targets.append(item)
+                    else:
+                        normalized_targets.append(_normalize_plagiarism_target(item))
 
                 class_info = get_class_by_en(class_en)
                 if not class_info:
                     update_plagiarism_progress(task_id, 'error', 0, 1, '班级不存在')
                     return None
 
-                update_plagiarism_progress(task_id, 'collecting', 0, 100, '正在收集提交代码...')
+                update_plagiarism_progress(task_id, 'collecting', 0, 100, '正在收集提交材料...')
 
                 def status_callback(stage, current, total, message):
                     update_plagiarism_progress(task_id, stage, current, total, message)
@@ -289,7 +302,7 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                 result = mark_class_plagiarism(
                     class_en,
                     class_info.get('class_cn'),
-                    problem_ids,
+                    normalized_targets,
                     mode,
                     threshold,
                     progress_callback=compare_callback,
@@ -345,6 +358,20 @@ def admin_homework():
                         # ranking 作业：沿用入库时存的比赛标题（problem_title 列）
                         if not hw.get('problem_title'):
                             hw['problem_title'] = '未知打榜赛'
+                        try:
+                            cid = int(hw['ranking_competition_id'])
+                        except (TypeError, ValueError):
+                            cid = None
+                        if cid is not None and not any(
+                            item.get('kind') == _PLAGIARISM_TARGET_RANKING and item.get('id') == cid
+                            for item in plagiarism_problem_options
+                        ):
+                            plagiarism_problem_options.append({
+                                'kind': _PLAGIARISM_TARGET_RANKING,
+                                'id': cid,
+                                'target': f'{_PLAGIARISM_TARGET_RANKING}:{cid}',
+                                'title': hw['problem_title'],
+                            })
                     else:
                         hw['is_ranking'] = False
                         problem = get_problem(hw['problem_id'])
@@ -353,9 +380,14 @@ def admin_homework():
                             pid = int(hw['problem_id'])
                         except (TypeError, ValueError):
                             pid = None
-                        if pid is not None and not any(item['id'] == pid for item in plagiarism_problem_options):
+                        if pid is not None and not any(
+                            item.get('kind') == _PLAGIARISM_TARGET_PROBLEM and item.get('id') == pid
+                            for item in plagiarism_problem_options
+                        ):
                             plagiarism_problem_options.append({
+                                'kind': _PLAGIARISM_TARGET_PROBLEM,
                                 'id': pid,
+                                'target': f'{_PLAGIARISM_TARGET_PROBLEM}:{pid}',
                                 'title': hw['problem_title'],
                             })
         except pymysql.Error as e:
@@ -718,32 +750,65 @@ def parse_plagiarism_mark_payload(data):
 
     threshold = _parse_threshold(data.get('threshold', 90)) if mode == 'threshold' else 1.0
 
-    try:
-        selected_problem_ids = [int(pid) for pid in (data.get('problem_ids') or [])]
-    except (TypeError, ValueError):
-        raise ValueError('题目 ID 非法')
+    raw_targets = data.get('targets')
+    selected_targets = []
+    if raw_targets:
+        if not isinstance(raw_targets, (list, tuple)):
+            raise ValueError('作业项非法')
+        selected_targets = [_normalize_plagiarism_target(item) for item in raw_targets]
+    else:
+        try:
+            selected_problem_ids = [int(pid) for pid in (data.get('problem_ids') or [])]
+        except (TypeError, ValueError):
+            raise ValueError('题目 ID 非法')
+        selected_targets = [
+            {
+                'kind': _PLAGIARISM_TARGET_PROBLEM,
+                'id': pid,
+                'key': _plagiarism_target_key(_PLAGIARISM_TARGET_PROBLEM, pid),
+            }
+            for pid in selected_problem_ids
+        ]
 
-    selected_problem_ids = list(dict.fromkeys(selected_problem_ids))
-    homework_problem_map = _get_class_homework_problem_map(class_en)
-    valid_problem_ids = set(homework_problem_map.keys())
-    if not selected_problem_ids:
+    deduped_targets = []
+    seen_keys = set()
+    for target in selected_targets:
+        key = target.get('key')
+        if key and key not in seen_keys:
+            seen_keys.add(key)
+            deduped_targets.append(target)
+    selected_targets = deduped_targets
+
+    homework_target_map = _get_class_homework_target_map(class_en)
+    valid_target_keys = set(homework_target_map.keys())
+    if not selected_targets:
         raise ValueError('请至少选择一道作业题')
-    if any(pid not in valid_problem_ids for pid in selected_problem_ids):
-        raise ValueError('只能选择该班级已布置的普通题作业')
+    if any(target.get('key') not in valid_target_keys for target in selected_targets):
+        raise ValueError('只能选择该班级已布置的作业')
+    if mode == 'threshold' and any(target.get('kind') == _PLAGIARISM_TARGET_RANKING for target in selected_targets):
+        raise ValueError('相似度查重暂不支持打榜赛，请改用字节级一致或取消打榜赛')
+
+    resolved_targets = [dict(homework_target_map[target['key']]) for target in selected_targets]
+    selected_problem_ids = [
+        int(target['id'])
+        for target in resolved_targets
+        if target.get('kind') == _PLAGIARISM_TARGET_PROBLEM
+    ]
 
     return {
         'class_en': class_en,
         'class_cn': class_info.get('class_cn'),
         'mode': mode,
         'threshold': threshold,
+        'targets': resolved_targets,
         'problem_ids': selected_problem_ids,
     }
 
 
-def start_plagiarism_mark_task(class_en, mode, threshold, problem_ids):
+def start_plagiarism_mark_task(class_en, mode, threshold, targets):
     if _plagiarism_task is None:
         raise RuntimeError('查重模块未初始化')
-    task = _plagiarism_task.delay(class_en, mode, float(threshold), list(problem_ids or []))
+    task = _plagiarism_task.delay(class_en, mode, float(threshold), list(targets or []))
     return task.id
 
 
@@ -775,7 +840,7 @@ def admin_mark_plagiarism():
             payload['class_en'],
             payload['mode'],
             payload['threshold'],
-            payload['problem_ids'],
+            payload['targets'],
         )
     except RuntimeError as exc:
         return jsonify(success=False, message=str(exc)), 500
@@ -981,16 +1046,60 @@ def _parse_threshold(raw_value):
     return threshold
 
 
-def _get_class_homework_problem_map(class_en):
+def _plagiarism_target_key(kind, target_id):
+    return f"{str(kind or '').strip()}:{int(target_id)}"
+
+
+def _normalize_plagiarism_target(raw_value):
+    if isinstance(raw_value, dict):
+        kind = str(raw_value.get('kind') or raw_value.get('type') or '').strip().lower()
+        target_id = raw_value.get('id') or raw_value.get('target_id') or raw_value.get('problem_id') or raw_value.get('competition_id')
+    else:
+        text = str(raw_value or '').strip()
+        if not text:
+            raise ValueError('作业项非法')
+        if ':' in text:
+            kind, target_id = text.split(':', 1)
+            kind = kind.strip().lower()
+        else:
+            kind, target_id = _PLAGIARISM_TARGET_PROBLEM, text
+
+    if kind in ('problem', 'ordinary'):
+        kind = _PLAGIARISM_TARGET_PROBLEM
+    elif kind in ('ranking', 'competition'):
+        kind = _PLAGIARISM_TARGET_RANKING
+    else:
+        raise ValueError('作业项类型非法')
+
+    try:
+        target_id = int(target_id)
+    except (TypeError, ValueError):
+        raise ValueError('作业项 ID 非法')
+    if target_id <= 0:
+        raise ValueError('作业项 ID 非法')
+
+    return {
+        'kind': kind,
+        'id': target_id,
+        'key': _plagiarism_target_key(kind, target_id),
+    }
+
+
+def _get_class_homework_target_map(class_en):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT hw.problem_id, COALESCE(p.title, hw.problem_title) AS problem_title
+                SELECT hw.problem_id,
+                       hw.ranking_competition_id,
+                       COALESCE(p.title, hw.problem_title) AS problem_title,
+                       COALESCE(rc.title, hw.problem_title) AS ranking_title
                 FROM {safe_table_name(class_en)} hw
                 LEFT JOIN problems p ON p.id = hw.problem_id
+                LEFT JOIN ranking_competitions rc ON rc.id = hw.ranking_competition_id
                 WHERE hw.problem_id IS NOT NULL
+                   OR hw.ranking_competition_id IS NOT NULL
                 ORDER BY hw.id ASC
                 """
             )
@@ -998,17 +1107,243 @@ def _get_class_homework_problem_map(class_en):
     finally:
         conn.close()
 
-    problem_map = {}
+    target_map = {}
     for row in rows:
-        try:
-            pid = int(row.get('problem_id'))
-        except (TypeError, ValueError):
-            continue
-        problem_map.setdefault(pid, row.get('problem_title') or f'题目 {pid}')
+        if row.get('problem_id') is not None:
+            try:
+                pid = int(row.get('problem_id'))
+            except (TypeError, ValueError):
+                pid = None
+            if pid:
+                key = _plagiarism_target_key(_PLAGIARISM_TARGET_PROBLEM, pid)
+                target_map.setdefault(key, {
+                    'kind': _PLAGIARISM_TARGET_PROBLEM,
+                    'id': pid,
+                    'key': key,
+                    'title': row.get('problem_title') or f'题目 {pid}',
+                })
+        if row.get('ranking_competition_id') is not None:
+            try:
+                cid = int(row.get('ranking_competition_id'))
+            except (TypeError, ValueError):
+                cid = None
+            if cid:
+                key = _plagiarism_target_key(_PLAGIARISM_TARGET_RANKING, cid)
+                target_map.setdefault(key, {
+                    'kind': _PLAGIARISM_TARGET_RANKING,
+                    'id': cid,
+                    'key': key,
+                    'title': row.get('ranking_title') or f'打榜赛 {cid}',
+                })
+    return target_map
+
+
+def _get_class_homework_problem_map(class_en):
+    target_map = _get_class_homework_target_map(class_en)
+    problem_map = {}
+    for target in target_map.values():
+        if target.get('kind') == _PLAGIARISM_TARGET_PROBLEM:
+            problem_map[int(target['id'])] = target.get('title') or f"题目 {target['id']}"
     return problem_map
 
 
-def _collect_best_first_submissions_for_plagiarism(class_en, problem_ids, include_includes=False):
+def _json_lines_to_list(value):
+    if not value:
+        return []
+    items = []
+    for line in str(value or '').strip().split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            items.append(json.loads(line))
+        except Exception:
+            items.append(line)
+    return items
+
+
+def _submission_upload_file_path(submission_id, test_points):
+    points = _json_lines_to_list(test_points)
+    if not points:
+        return ''
+    first = points[0]
+    filename = ''
+    if isinstance(first, str):
+        filename = first
+    elif isinstance(first, dict):
+        filename = first.get('filename') or first.get('file') or first.get('name') or ''
+    filename = os.path.basename(str(filename or '').strip())
+    if not filename:
+        return ''
+    return os.path.join('uploads', str(submission_id), filename)
+
+
+def _file_sha256_fingerprint(path, label='file'):
+    if not path or not os.path.isfile(path):
+        return ''
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            if chunk:
+                digest.update(chunk)
+    return f"{label}:{digest.hexdigest()}"
+
+
+def _zip_content_sha256_fingerprint(path, label='zip-content'):
+    if not path or not os.path.isfile(path):
+        return ''
+    digest = hashlib.sha256()
+    try:
+        with zipfile.ZipFile(path, 'r') as zf:
+            infos = []
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                name = _safe_zip_member_name(info.filename)
+                if name:
+                    infos.append((name, info))
+            for name, info in sorted(infos, key=lambda item: item[0]):
+                try:
+                    content = zf.read(info)
+                except Exception:
+                    return ''
+                digest.update(name.encode('utf-8', errors='replace'))
+                digest.update(b'\0')
+                digest.update(content)
+                digest.update(b'\0')
+    except (OSError, zipfile.BadZipFile):
+        return ''
+    return f"{label}:{digest.hexdigest()}"
+
+
+def _safe_zip_member_name(name):
+    raw = str(name or '').replace('\\', '/')
+    normalized = posixpath.normpath(raw)
+    if not normalized or normalized == '.':
+        return ''
+    if normalized.startswith('../') or normalized.startswith('/') or '/../' in f"/{normalized}/":
+        return ''
+    return normalized
+
+
+def _read_tex_files_from_zip(zip_path):
+    if not zip_path or not os.path.isfile(zip_path):
+        return {}
+    tex_files = {}
+    total_bytes = 0
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for info in sorted(zf.infolist(), key=lambda item: str(item.filename or '')):
+                if info.is_dir():
+                    continue
+                name = _safe_zip_member_name(info.filename)
+                if not name or not name.lower().endswith('.tex'):
+                    continue
+                if len(tex_files) >= _PLAGIARISM_TEX_MAX_FILES:
+                    break
+                total_bytes += int(info.file_size or 0)
+                if total_bytes > _PLAGIARISM_TEX_MAX_TOTAL_BYTES:
+                    break
+                try:
+                    content = zf.read(info)
+                except Exception:
+                    continue
+                tex_files[name] = content.decode('utf-8', errors='replace')
+    except (OSError, zipfile.BadZipFile):
+        return {}
+    return tex_files
+
+
+def _calculate_tex_files_similarity(files1, files2):
+    left = files1 or {}
+    right = files2 or {}
+    common_names = sorted(set(left.keys()) & set(right.keys()))
+    if not common_names:
+        return 0.0
+    best = 0.0
+    for name in common_names:
+        score = calculate_code_similarity(left.get(name) or '', right.get(name) or '')
+        if score > best:
+            best = score
+    return best
+
+
+def _class_users_cte_sql():
+    return """
+        SELECT u.id AS user_id, u.username
+        FROM user_class_map m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.class_en = %s
+        UNION
+        SELECT u2.id AS user_id, u2.username
+        FROM users u2
+        WHERE u2.class = %s
+    """
+
+
+def _problem_plagiarism_target_title(row):
+    return row.get('problem_title') or f"题目 {row.get('problem_id')}"
+
+
+def _build_problem_plagiarism_item(row, include_includes=False):
+    problem_id = int(row.get('problem_id') or 0)
+    problem_type = int(row.get('problem_type') or 1)
+    programming_mode = int(row.get('programming_grading_mode') or 1)
+    written_mode = int(row.get('written_grading_mode') or 1)
+    raw_code = row.get('code') or ''
+    compare_code = raw_code
+    compare_kind = 'code'
+    compare_files = None
+    byte_fingerprints = []
+    material_label = '代码'
+
+    if problem_type == 1 and programming_mode == 3:
+        raw_code = row.get('prompt_text') or ''
+        compare_code = raw_code
+        compare_kind = 'prompt'
+        material_label = 'Prompt'
+    elif problem_type == 2:
+        file_path = _submission_upload_file_path(row.get('submission_id'), row.get('test_points'))
+        byte_fp = _file_sha256_fingerprint(file_path, label='submission-file')
+        if byte_fp:
+            byte_fingerprints.append(byte_fp)
+        raw_code = ''
+        compare_code = ''
+        compare_kind = 'none'
+        material_label = '提交文件'
+        if written_mode == 3:
+            compare_files = _read_tex_files_from_zip(file_path)
+            compare_kind = 'tex_files' if compare_files else 'none'
+            material_label = 'TeX'
+    else:
+        if include_includes:
+            included_files = extract_includes_from_code(raw_code)
+            if included_files and row.get('user_id'):
+                repository_files = get_user_repository_files_by_names(row.get('user_id'), included_files)
+                if repository_files:
+                    compare_code += "\n\n// ===== 以下是引用的代码仓库文件 =====\n"
+                    for filename, content in repository_files.items():
+                        compare_code += f"\n// ===== {filename} =====\n{content or ''}\n"
+
+    return {
+        'target_kind': _PLAGIARISM_TARGET_PROBLEM,
+        'target_key': _plagiarism_target_key(_PLAGIARISM_TARGET_PROBLEM, problem_id),
+        'user_id': row.get('user_id'),
+        'username': row.get('username'),
+        'submission_id': row.get('submission_id'),
+        'problem_id': problem_id,
+        'problem_title': _problem_plagiarism_target_title(row),
+        'raw_code': raw_code,
+        'compare_code': compare_code,
+        'compare_kind': compare_kind,
+        'compare_files': compare_files,
+        'byte_fingerprints': byte_fingerprints,
+        'material_label': material_label,
+    }
+
+
+def _collect_best_first_submissions_for_plagiarism(class_en, problem_targets, include_includes=False):
+    problem_ids = [int(target['id']) for target in (problem_targets or [])]
     if not problem_ids:
         return []
 
@@ -1019,14 +1354,7 @@ def _collect_best_first_submissions_for_plagiarism(class_en, problem_ids, includ
             cursor.execute(
                 f"""
                 WITH class_users AS (
-                    SELECT u.id AS user_id, u.username
-                    FROM user_class_map m
-                    JOIN users u ON u.id = m.user_id
-                    WHERE m.class_en = %s
-                    UNION
-                    SELECT u2.id AS user_id, u2.username
-                    FROM users u2
-                    WHERE u2.class = %s
+                    {_class_users_cte_sql()}
                 ),
                 ranked_submissions AS (
                     SELECT cu.user_id,
@@ -1034,9 +1362,14 @@ def _collect_best_first_submissions_for_plagiarism(class_en, problem_ids, includ
                            s.id AS submission_id,
                            s.problem_id,
                            s.code,
+                           s.prompt_text,
+                           s.test_points,
                            s.score,
                            s.created_at,
                            p.title AS problem_title,
+                           p.type AS problem_type,
+                           p.programming_grading_mode,
+                           p.written_grading_mode,
                            ROW_NUMBER() OVER (
                                PARTITION BY cu.user_id, s.problem_id
                                ORDER BY s.score DESC, s.created_at ASC, s.id ASC
@@ -1046,7 +1379,8 @@ def _collect_best_first_submissions_for_plagiarism(class_en, problem_ids, includ
                     LEFT JOIN problems p ON p.id = s.problem_id
                     WHERE s.problem_id IN ({placeholders})
                 )
-                SELECT user_id, username, submission_id, problem_id, code, score, created_at, problem_title
+                SELECT user_id, username, submission_id, problem_id, code, prompt_text, test_points,
+                       score, created_at, problem_title, problem_type, programming_grading_mode, written_grading_mode
                 FROM ranked_submissions
                 WHERE rn = 1
                 ORDER BY problem_id ASC, username ASC
@@ -1057,35 +1391,143 @@ def _collect_best_first_submissions_for_plagiarism(class_en, problem_ids, includ
     finally:
         conn.close()
 
+    return [_build_problem_plagiarism_item(row, include_includes=include_includes) for row in rows]
+
+
+def _ranking_byte_fingerprints_for_submission(row):
+    scoring_mode = str(row.get('scoring_mode') or 'absolute').strip().lower()
+    fingerprints = []
+    if scoring_mode == 'agent_judge':
+        code_fp = _zip_content_sha256_fingerprint(row.get('code_path'), label='agent-files')
+        if not code_fp:
+            code_fp = _file_sha256_fingerprint(row.get('code_path'), label='agent-code-zip')
+        if code_fp:
+            fingerprints.append(code_fp)
+    elif scoring_mode == 'elo':
+        answer_fp = _file_sha256_fingerprint(row.get('answer_path'), label='answer-zip')
+        code_fp = _file_sha256_fingerprint(row.get('code_path'), label='code-zip')
+        if answer_fp:
+            fingerprints.append(answer_fp)
+        if code_fp:
+            fingerprints.append(code_fp)
+    else:
+        code_fp = _file_sha256_fingerprint(row.get('code_path'), label='code-zip')
+        if code_fp:
+            fingerprints.append(code_fp)
+    return fingerprints
+
+
+def _collect_best_first_ranking_submissions_for_plagiarism(class_en, ranking_targets):
+    competition_ids = [int(target['id']) for target in (ranking_targets or [])]
+    if not competition_ids:
+        return []
+
+    placeholders = ','.join(['%s'] * len(competition_ids))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH class_users AS (
+                    {_class_users_cte_sql()}
+                ),
+                ranked_submissions AS (
+                    SELECT cu.user_id,
+                           cu.username,
+                           rs.id AS submission_id,
+                           rs.competition_id,
+                           rs.answer_path,
+                           rs.code_path,
+                           rs.score,
+                           rs.created_at,
+                           rc.title AS competition_title,
+                           rc.scoring_mode,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY cu.user_id, rs.competition_id
+                               ORDER BY (rs.score IS NULL) ASC, rs.score DESC, rs.created_at ASC, rs.id ASC
+                           ) AS rn
+                    FROM class_users cu
+                    JOIN ranking_submissions rs ON rs.username = cu.username
+                    LEFT JOIN ranking_competitions rc ON rc.id = rs.competition_id
+                    WHERE rs.competition_id IN ({placeholders})
+                )
+                SELECT user_id, username, submission_id, competition_id, answer_path, code_path,
+                       score, created_at, competition_title, scoring_mode
+                FROM ranked_submissions
+                WHERE rn = 1
+                ORDER BY competition_id ASC, username ASC
+                """,
+                tuple([class_en, class_en] + list(competition_ids)),
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
     submissions = []
     for row in rows:
-        raw_code = row.get('code') or ''
-        compare_code = raw_code
-        if include_includes:
-            included_files = extract_includes_from_code(raw_code)
-            if included_files and row.get('user_id'):
-                repository_files = get_user_repository_files_by_names(row.get('user_id'), included_files)
-                if repository_files:
-                    compare_code += "\n\n// ===== 以下是引用的代码仓库文件 =====\n"
-                    for filename, content in repository_files.items():
-                        compare_code += f"\n// ===== {filename} =====\n{content or ''}\n"
-
+        competition_id = int(row.get('competition_id') or 0)
+        scoring_mode = str(row.get('scoring_mode') or 'absolute').strip().lower()
+        title = row.get('competition_title') or f"打榜赛 {competition_id}"
         submissions.append({
+            'target_kind': _PLAGIARISM_TARGET_RANKING,
+            'target_key': _plagiarism_target_key(_PLAGIARISM_TARGET_RANKING, competition_id),
             'user_id': row.get('user_id'),
             'username': row.get('username'),
             'submission_id': row.get('submission_id'),
-            'problem_id': row.get('problem_id'),
-            'problem_title': row.get('problem_title') or f"题目 {row.get('problem_id')}",
-            'raw_code': raw_code,
-            'compare_code': compare_code,
+            # 负数写入 plagiarism_records.problem_id，避免与普通题记录唯一键冲突。
+            'problem_id': -competition_id,
+            'competition_id': competition_id,
+            'problem_title': f"打榜赛：{title}",
+            'raw_code': '',
+            'compare_code': '',
+            'compare_kind': 'ranking_zip',
+            'byte_fingerprints': _ranking_byte_fingerprints_for_submission(row),
+            'material_label': '打榜赛提交',
+            'scoring_mode': scoring_mode,
         })
     return submissions
+
+
+def _byte_fingerprints_for_plagiarism_item(item):
+    if '_byte_fingerprints_cache' in item:
+        return item.get('_byte_fingerprints_cache') or []
+
+    fingerprints = []
+    for value in item.get('byte_fingerprints') or []:
+        text = str(value or '').strip()
+        if text:
+            fingerprints.append(text)
+    if fingerprints:
+        item['_byte_fingerprints_cache'] = sorted(set(fingerprints))
+        return item['_byte_fingerprints_cache']
+
+    raw_code = item.get('raw_code') or ''
+    if not raw_code:
+        item['_byte_fingerprints_cache'] = []
+        return []
+    payload = raw_code.encode('utf-8')
+    item['_byte_fingerprints_cache'] = [f"submission:{hashlib.sha256(payload).hexdigest()}"]
+    return item['_byte_fingerprints_cache']
+
+
+def _plagiarism_similarity(item1, item2):
+    kind1 = str(item1.get('compare_kind') or 'code')
+    kind2 = str(item2.get('compare_kind') or 'code')
+    if kind1 == 'tex_files' and kind2 == 'tex_files':
+        return _calculate_tex_files_similarity(item1.get('compare_files'), item2.get('compare_files'))
+    if kind1 == 'none' or kind2 == 'none':
+        return 0.0
+    return calculate_code_similarity(item1.get('compare_code') or '', item2.get('compare_code') or '')
 
 
 def _build_plagiarism_components(codes_data, mode='threshold', threshold=0.9, progress_callback=None):
     problem_groups = defaultdict(list)
     for item in codes_data:
-        problem_groups[item['problem_id']].append(item)
+        group_key = item.get('target_key') or _plagiarism_target_key(
+            item.get('target_kind') or _PLAGIARISM_TARGET_PROBLEM,
+            abs(int(item.get('problem_id') or 0)),
+        )
+        problem_groups[group_key].append(item)
 
     if mode == 'byte':
         total_items = sum(len(group) for group in problem_groups.values())
@@ -1098,11 +1540,23 @@ def _build_plagiarism_components(codes_data, mode='threshold', threshold=0.9, pr
 
         for _, group in problem_groups.items():
             by_hash = defaultdict(list)
-            for item in group:
-                raw_code = item.get('raw_code') or ''
-                if raw_code:
-                    code_hash = hashlib.sha256(raw_code.encode('utf-8')).hexdigest()
-                    by_hash[code_hash].append(item)
+            parent = list(range(len(group)))
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            def union(a, b):
+                ra = find(a)
+                rb = find(b)
+                if ra != rb:
+                    parent[rb] = ra
+
+            for idx, item in enumerate(group):
+                for fingerprint in _byte_fingerprints_for_plagiarism_item(item):
+                    by_hash[fingerprint].append(idx)
                 completed_items += 1
                 if progress_callback and (
                     completed_items == total_items
@@ -1114,7 +1568,17 @@ def _build_plagiarism_components(codes_data, mode='threshold', threshold=0.9, pr
                         total_items,
                         f"正在计算字节哈希 {problem_title}: {item.get('username')}",
                     )
-            for members in by_hash.values():
+            for indexes in by_hash.values():
+                if len(indexes) >= 2:
+                    first = indexes[0]
+                    for other in indexes[1:]:
+                        union(first, other)
+
+            by_root = defaultdict(list)
+            for idx, item in enumerate(group):
+                if _byte_fingerprints_for_plagiarism_item(item):
+                    by_root[find(idx)].append(item)
+            for members in by_root.values():
                 if len(members) >= 2:
                     components.append(members)
 
@@ -1152,9 +1616,7 @@ def _build_plagiarism_components(codes_data, mode='threshold', threshold=0.9, pr
                     code2 = group[j].get('raw_code') or ''
                     matched = bool(code1) and code1 == code2
                 else:
-                    code1 = group[i].get('compare_code') or ''
-                    code2 = group[j].get('compare_code') or ''
-                    matched = calculate_code_similarity(code1, code2) >= threshold
+                    matched = _plagiarism_similarity(group[i], group[j]) >= threshold
                 if matched:
                     union(i, j)
                 completed_comparisons += 1
@@ -1199,6 +1661,7 @@ def _build_plagiarism_record_rows(components, class_en, class_cn, comparison_rul
                 'submission_id': int(item.get('submission_id') or 0),
                 'comparison_rule': comparison_rule,
                 'matched_usernames': matched_usernames,
+                'target_kind': item.get('target_kind') or _PLAGIARISM_TARGET_PROBLEM,
             })
     return rows
 
@@ -1261,18 +1724,24 @@ def _decode_matched_usernames(raw_value):
 def _serialize_plagiarism_record(row):
     matched_usernames = _decode_matched_usernames(row.get('matched_usernames'))
     created_at = row.get('created_at')
+    raw_problem_id = int(row.get('problem_id') or 0)
+    title = row.get('problem_title') or ''
+    target_kind = _PLAGIARISM_TARGET_RANKING if raw_problem_id < 0 or str(title).startswith('打榜赛：') else _PLAGIARISM_TARGET_PROBLEM
+    display_problem_id = abs(raw_problem_id) if target_kind == _PLAGIARISM_TARGET_RANKING else raw_problem_id
     return {
         'id': row.get('id'),
         'user_id': row.get('user_id'),
         'username': row.get('username'),
         'class_en': row.get('class_en'),
         'class_cn': row.get('class_cn'),
-        'problem_id': row.get('problem_id'),
-        'problem_title': row.get('problem_title'),
+        'problem_id': display_problem_id,
+        'problem_title': title,
         'submission_id': row.get('submission_id'),
         'comparison_rule': row.get('comparison_rule'),
         'matched_usernames': matched_usernames,
         'matched_usernames_text': '、'.join(matched_usernames),
+        'target_kind': target_kind,
+        'competition_id': display_problem_id if target_kind == _PLAGIARISM_TARGET_RANKING else None,
         'created_at': created_at.strftime('%Y-%m-%d %H:%M:%S') if created_at else '',
     }
 
@@ -1296,15 +1765,29 @@ def _load_plagiarism_records_for_class(class_en):
         conn.close()
 
 
-def mark_class_plagiarism(class_en, class_cn, problem_ids, mode, threshold, progress_callback=None, status_callback=None):
+def mark_class_plagiarism(class_en, class_cn, targets, mode, threshold, progress_callback=None, status_callback=None):
     if status_callback:
-        status_callback('collecting', 0, 100, '正在收集提交代码...')
+        status_callback('collecting', 0, 100, '正在收集提交材料...')
     include_includes = False
+    normalized_targets = []
+    for target in (targets or []):
+        if isinstance(target, dict):
+            normalized_targets.append(target)
+        else:
+            normalized_targets.append(_normalize_plagiarism_target(target))
+
+    problem_targets = [target for target in normalized_targets if target.get('kind') == _PLAGIARISM_TARGET_PROBLEM]
+    ranking_targets = [target for target in normalized_targets if target.get('kind') == _PLAGIARISM_TARGET_RANKING]
+    if mode == 'threshold' and ranking_targets:
+        raise ValueError('相似度查重暂不支持打榜赛')
+
     codes_data = _collect_best_first_submissions_for_plagiarism(
         class_en,
-        problem_ids,
+        problem_targets,
         include_includes=include_includes,
     )
+    if mode == 'byte' and ranking_targets:
+        codes_data.extend(_collect_best_first_ranking_submissions_for_plagiarism(class_en, ranking_targets))
     if status_callback:
         action = '开始计算字节哈希...' if mode == 'byte' else '开始比较...'
         status_callback('checking', 0, 1, f'已收集 {len(codes_data)} 份提交，{action}')

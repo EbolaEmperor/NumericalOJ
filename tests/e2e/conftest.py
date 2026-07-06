@@ -101,7 +101,10 @@ def local_numoj_server() -> str:
     env["PYTHONUNBUFFERED"] = "1"
     env["OJ_LIVE_AI"] = "0"
     env["NUMOJ_FAKE_AGENT_JUDGE"] = "1"
-    env["NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS"] = "3600"
+    env["NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS"] = "0"
+    env["NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT"] = '{"score": 1, "comment": "本地 e2e 假图片批改通过。"}'
+    env["NUMOJ_FAKE_WRITTEN_HOMEWORK_SCORE"] = "5"
+    env["NUMOJ_FAKE_WRITTEN_HOMEWORK_COMMENT"] = "本地 e2e 假书面批改通过。"
     env["NUMOJ_FAKE_PROMPTLY_REVIEW_REQUIRED_TERMS"] = '["monotonic deque", "expired index"]'
     env["NUMOJ_FAKE_PROMPTLY_REVIEW_REPLY"] = "Please explain the monotonic deque and expired index handling."
     env["NUMOJ_FAKE_PROMPTLY_CODE"] = "print('hello')\n"
@@ -123,7 +126,7 @@ def local_numoj_server() -> str:
             "worker",
             "--loglevel=warning",
             "-Q",
-            "celery,agent",
+            "celery,agent,judge",
             "--pool=solo",
             "--concurrency=1",
         ],
