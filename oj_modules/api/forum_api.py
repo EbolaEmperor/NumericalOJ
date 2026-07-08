@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Blueprint
+import math
+
+from flask import Blueprint, request
 
 from oj_modules.api.helpers import json_error, json_success, public_user
 from oj_modules.auth_helpers import current_user
@@ -19,16 +21,31 @@ forum_api_bp = Blueprint("forum_api", __name__, url_prefix="/api")
 @forum_api_bp.route("/forum", methods=["GET"])
 def forum_list():
     user = current_user()
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    limit = min(max(limit, 1), 100)
+    offset = (page - 1) * limit
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) AS total FROM forum_threads")
+            total = int((cursor.fetchone() or {}).get("total") or 0)
             cursor.execute(
                 """
                 SELECT t.*, u.username
                 FROM forum_threads t
                 LEFT JOIN users u ON u.id = t.user_id
                 ORDER BY t.created_at DESC
-                """
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
             )
             threads = cursor.fetchall() or []
     finally:
@@ -47,6 +64,10 @@ def forum_list():
         last_10_days=last_10_days,
         daily_counts=daily_counts,
         count=len(threads),
+        total=total,
+        page=page,
+        limit=limit,
+        total_pages=max(1, math.ceil(total / limit)) if total else 0,
     )
 
 

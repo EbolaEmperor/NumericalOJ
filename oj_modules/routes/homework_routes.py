@@ -42,6 +42,24 @@ _PLAGIARISM_TEX_MAX_FILES = 256
 _PLAGIARISM_TEX_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
 
+def _wants_json_response():
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    if request.is_json:
+        return True
+    accept = request.headers.get('Accept', '')
+    return 'application/json' in accept and 'text/html' not in accept
+
+
+def _json_or_homework_redirect(message, status=400, *, class_en=None):
+    if _wants_json_response():
+        return jsonify(success=False, message=message), status
+    flash(message, 'danger')
+    if class_en:
+        return redirect(url_for('homework.admin_homework', sclass=class_en))
+    return redirect(url_for('homework.admin_homework'))
+
+
 def _invalidate_problem_list_cache_for_class(class_en):
     try:
         from oj_modules.routes.problem_core_routes import invalidate_problem_list_cache_for_class
@@ -462,8 +480,7 @@ def admin_update_ddl():
 def admin_add_homework():
     user = current_user()
     if not is_admin(user):
-        flash('无权限操作', 'danger')
-        return redirect(url_for('homework.admin_homework'))
+        return _json_or_homework_redirect('无权限操作', 403)
 
     class_en = request.form.get('class_en')
     ddl = request.form.get('ddl')
@@ -471,38 +488,31 @@ def admin_add_homework():
     ranking_competition_id = (request.form.get('ranking_competition_id') or '').strip()
 
     if not class_en or not ddl:
-        flash('缺少必要参数', 'danger')
-        return redirect(url_for('homework.admin_homework', sclass=class_en))
+        return _json_or_homework_redirect('缺少必要参数', 400, class_en=class_en)
     # 题目 / 打榜赛 必须恰好二选一
     if bool(problem_id) == bool(ranking_competition_id):
-        flash('请选择一项作业内容：题目 或 打榜赛', 'danger')
-        return redirect(url_for('homework.admin_homework', sclass=class_en))
+        return _json_or_homework_redirect('请选择一项作业内容：题目 或 打榜赛', 400, class_en=class_en)
     if not get_class_by_en(class_en):
-        flash('班级不存在', 'danger')
-        return redirect(url_for('homework.admin_homework'))
+        return _json_or_homework_redirect('班级不存在', 404)
 
     try:
         if problem_id:
             try:
                 pid = int(problem_id)
             except ValueError:
-                flash('题目ID必须是数字', 'danger')
-                return redirect(url_for('homework.admin_homework', sclass=class_en))
+                return _json_or_homework_redirect('题目ID必须是数字', 400, class_en=class_en)
             problem = get_problem_title(pid)
             if not problem:
-                flash('题目不存在', 'danger')
-                return redirect(url_for('homework.admin_homework', sclass=class_en))
+                return _json_or_homework_redirect('题目不存在', 404, class_en=class_en)
             col, val, title = 'problem_id', pid, problem['title']
         else:
             try:
                 cid = int(ranking_competition_id)
             except ValueError:
-                flash('打榜赛ID非法', 'danger')
-                return redirect(url_for('homework.admin_homework', sclass=class_en))
+                return _json_or_homework_redirect('打榜赛ID非法', 400, class_en=class_en)
             comp = get_competition(cid)
             if not comp:
-                flash('打榜赛不存在', 'danger')
-                return redirect(url_for('homework.admin_homework', sclass=class_en))
+                return _json_or_homework_redirect('打榜赛不存在', 404, class_en=class_en)
             col, val, title = 'ranking_competition_id', cid, comp['title']
 
         conn = get_db_connection()
@@ -510,12 +520,17 @@ def admin_add_homework():
             with conn.cursor() as cursor:
                 sql = f"INSERT INTO {safe_table_name(class_en)} ({col}, ddl, complete_cnt, problem_title) VALUES (%s, %s, 0, %s)"
                 cursor.execute(sql, (val, ddl, title))
+                homework_id = cursor.lastrowid
             conn.commit()
             _invalidate_problem_list_cache_for_class(class_en)
+            if _wants_json_response():
+                return jsonify(success=True, message='作业添加成功', class_en=class_en, homework_id=homework_id)
             flash('作业添加成功', 'success')
         finally:
             conn.close()
     except pymysql.Error as e:
+        if _wants_json_response():
+            return jsonify(success=False, message='数据库操作失败，请稍后再试'), 500
         flash(f'数据库操作失败，请稍后再试', 'danger')
 
     return redirect(url_for('homework.admin_homework', sclass=class_en))

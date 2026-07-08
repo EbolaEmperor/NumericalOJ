@@ -20,6 +20,7 @@ from oj_modules.db_services import (
     normalize_programming_grading_model,
     normalize_programming_output_filename,
     normalize_written_grading_model,
+    safe_table_name,
     update_problem,
 )
 from oj_modules.testdata_services import TestdataValidationError, import_testdata_zip
@@ -59,6 +60,22 @@ _PROGRAMMING_GRADING_MODEL_OPTIONS = [
 ]
 if _DEFAULT_PROGRAMMING_GRADING_MODEL and _DEFAULT_PROGRAMMING_GRADING_MODEL not in _PROGRAMMING_GRADING_MODEL_OPTIONS:
     _PROGRAMMING_GRADING_MODEL_OPTIONS.insert(0, _DEFAULT_PROGRAMMING_GRADING_MODEL)
+
+
+def _wants_json_response():
+    if request.is_json:
+        return True
+    accept = request.headers.get('Accept', '')
+    return 'application/json' in accept and 'text/html' not in accept
+
+
+def _json_or_problem_redirect(message, status=400, *, problem_id=None):
+    if _wants_json_response():
+        return jsonify(success=False, message=message), status
+    flash(message, 'danger')
+    if problem_id is not None:
+        return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+    return redirect(url_for('problem_core.problem_list'))
 
 
 from oj_modules.auth_helpers import current_user, is_admin
@@ -199,6 +216,8 @@ def parse_programming_grading_prompt_from_form(form):
 def add_problem():
     user = current_user()
     if not is_admin(user):
+        if _wants_json_response():
+            return jsonify(success=False, message="无权限"), 403
         return "<h3>无权限</h3>"
 
     if request.method == 'POST':
@@ -220,6 +239,8 @@ def add_problem():
         submission_limit = int(request.form.get('submission_limit', 10))
 
         if not title or not content:
+            if _wants_json_response():
+                return jsonify(success=False, message="标题和内容不能为空"), 400
             return render_template(
                 'add_problem.html',
                 user=user,
@@ -231,7 +252,7 @@ def add_problem():
                 default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
             )
 
-        create_problem(
+        problem_id = create_problem(
             title,
             content,
             initial_code,
@@ -249,6 +270,8 @@ def add_problem():
             written_grading_model,
             written_grading_prompt,
         )
+        if _wants_json_response():
+            return jsonify(success=True, problem_id=problem_id, message="题目创建成功")
         return redirect(url_for('problem_core.problem_list'))
 
     return render_template(
@@ -267,10 +290,14 @@ def add_problem():
 def edit_problem(problem_id):
     user = current_user()
     if not is_admin(user):
+        if _wants_json_response():
+            return jsonify(success=False, message="无权限"), 403
         return "<h3>无权限</h3>"
 
     problem = get_problem(problem_id)
     if not problem:
+        if _wants_json_response():
+            return jsonify(success=False, message="题目不存在"), 404
         return "<h3>题目不存在</h3>"
 
     if request.method == 'POST':
@@ -353,21 +380,17 @@ def handle_file_too_large(error):
 def upload_testdata(problem_id):
     user = current_user()
     if not is_admin(user):
-        flash('无权限进行此操作。', 'danger')
-        return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+        return _json_or_problem_redirect('无权限进行此操作。', 403, problem_id=problem_id)
 
     if 'testdata_zip' not in request.files:
-        flash('没有文件部分。', 'danger')
-        return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+        return _json_or_problem_redirect('没有文件部分。', 400, problem_id=problem_id)
 
     file = request.files['testdata_zip']
     if file.filename == '':
-        flash('未选择文件。', 'danger')
-        return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+        return _json_or_problem_redirect('未选择文件。', 400, problem_id=problem_id)
 
     if not (file and allowed_file(file.filename)):
-        flash('只允许上传 ZIP 文件。', 'danger')
-        return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+        return _json_or_problem_redirect('只允许上传 ZIP 文件。', 400, problem_id=problem_id)
 
     filename = secure_filename(file.filename)
     temp_path = os.path.join('tmp', filename)
@@ -377,12 +400,20 @@ def upload_testdata(problem_id):
         os.makedirs('tmp', exist_ok=True)
         file.save(temp_path)
         import_testdata_zip(problem_id=problem_id, zip_path=temp_path, extract_dir=extract_path)
+        if _wants_json_response():
+            return jsonify(success=True, message='测试数据上传成功。', problem_id=problem_id)
         flash('测试数据上传成功。', 'success')
     except zipfile.BadZipFile:
+        if _wants_json_response():
+            return jsonify(success=False, message='上传的文件不是有效的 ZIP 压缩包。'), 400
         flash('上传的文件不是有效的 ZIP 压缩包。', 'danger')
     except TestdataValidationError as e:
+        if _wants_json_response():
+            return jsonify(success=False, message=str(e)), 400
         flash(str(e), 'danger')
     except Exception as e:
+        if _wants_json_response():
+            return jsonify(success=False, message=f'上传过程中发生错误：{str(e)}'), 500
         flash(f'上传过程中发生错误：{str(e)}', 'danger')
     finally:
         if os.path.exists(extract_path):
@@ -408,10 +439,52 @@ def delete_problem(problem_id):
             if not problem:
                 return jsonify(success=False, message="题目不存在"), 404
 
-            sql = "DELETE FROM problems WHERE id=%s"
-            cursor.execute(sql, (problem_id,))
+            cursor.execute("SELECT id FROM submissions WHERE problem_id=%s", (problem_id,))
+            submission_ids = [row['id'] for row in cursor.fetchall()]
+            deleted = {
+                "submissions": len(submission_ids),
+                "ai_detection_results": 0,
+                "plagiarism_records": 0,
+                "max_score": 0,
+                "ac_record": 0,
+                "submission_limits": 0,
+                "agent_task_runs": 0,
+                "class_homeworks": 0,
+            }
+
+            cursor.execute("DELETE FROM ai_detection_results WHERE problem_id=%s", (problem_id,))
+            deleted["ai_detection_results"] = cursor.rowcount
+            cursor.execute("DELETE FROM plagiarism_records WHERE problem_id=%s", (problem_id,))
+            deleted["plagiarism_records"] = cursor.rowcount
+            cursor.execute("DELETE FROM max_score WHERE problem_id=%s", (problem_id,))
+            deleted["max_score"] = cursor.rowcount
+            cursor.execute("DELETE FROM ac_record WHERE problem_id=%s", (problem_id,))
+            deleted["ac_record"] = cursor.rowcount
+            cursor.execute("DELETE FROM submission_limits WHERE problem_id=%s", (problem_id,))
+            deleted["submission_limits"] = cursor.rowcount
+            cursor.execute("DELETE FROM agent_task_runs WHERE problem_id=%s", (problem_id,))
+            deleted["agent_task_runs"] = cursor.rowcount
+            cursor.execute("DELETE FROM submissions WHERE problem_id=%s", (problem_id,))
+
+            cursor.execute("SELECT class_en FROM class_table")
+            for row in cursor.fetchall():
+                table_name = row.get('class_en')
+                if not table_name:
+                    continue
+                try:
+                    safe_name = safe_table_name(table_name)
+                except ValueError:
+                    continue
+                try:
+                    cursor.execute(f"DELETE FROM `{safe_name}` WHERE problem_id=%s", (problem_id,))
+                    deleted["class_homeworks"] += cursor.rowcount
+                except pymysql.Error as exc:
+                    if getattr(exc, 'args', [None])[0] != 1146:
+                        raise
+
+            cursor.execute("DELETE FROM problems WHERE id=%s", (problem_id,))
         conn.commit()
-        return jsonify(success=True, message="题目删除成功")
+        return jsonify(success=True, message="题目删除成功", problem_id=problem_id, deleted=deleted)
     except pymysql.Error as e:
         return jsonify(success=False, message="数据库错误: " + str(e)), 500
     finally:

@@ -495,7 +495,8 @@ def test_ranking_plagiarism_extended_submission_flows(cli, unique_suffix, tmp_pa
         check=False,
     )
     assert blocked.returncode != 0
-    assert "相似度查重暂不支持打榜赛" in blocked.stderr or "HTTP 400" in blocked.stderr
+    blocked_text = blocked.stdout + blocked.stderr
+    assert "相似度查重暂不支持打榜赛" in blocked_text or "HTTP 400" in blocked_text
 
     assert cli.admin_json("ranking", "delete", str(agent_id))["success"] is True
     assert cli.admin_json("ranking", "delete", str(elo_id))["success"] is True

@@ -88,7 +88,7 @@ def get_repository_file(file_id):
     try:
         with conn.cursor() as cursor:
             sql = """
-            SELECT filename, file_content
+            SELECT id, filename, file_content, file_size, updated_at
             FROM user_code_repository
             WHERE id = %s AND user_id = %s
             """
@@ -98,7 +98,14 @@ def get_repository_file(file_id):
             if not file_data:
                 return jsonify(success=False, message="文件不存在"), 404
 
-            return jsonify(success=True, filename=file_data['filename'], content=file_data['file_content'])
+            return jsonify(
+                success=True,
+                id=file_data['id'],
+                filename=file_data['filename'],
+                file_size=file_data.get('file_size') or 0,
+                updated_at=file_data.get('updated_at'),
+                content=file_data['file_content'],
+            )
     except Exception as e:
         return jsonify(success=False, message=f"获取文件失败: {str(e)}"), 500
     finally:
@@ -143,6 +150,7 @@ def save_repository_file():
                 if cursor.rowcount == 0:
                     return jsonify(success=False, message="文件不存在或无权限"), 404
 
+                saved_id = int(file_id)
                 message = "文件更新成功"
             else:
                 sql = """
@@ -151,12 +159,29 @@ def save_repository_file():
                 """
                 try:
                     cursor.execute(sql, (user['id'], filename, content, file_size))
+                    saved_id = cursor.lastrowid
                     message = "文件创建成功"
                 except pymysql.IntegrityError:
                     return jsonify(success=False, message="文件名已存在"), 409
 
+            cursor.execute(
+                """
+                SELECT id, filename, file_size, updated_at
+                FROM user_code_repository
+                WHERE id = %s AND user_id = %s
+                """,
+                (saved_id, user['id']),
+            )
+            saved_file = cursor.fetchone() or {}
             conn.commit()
-            return jsonify(success=True, message=message)
+            return jsonify(
+                success=True,
+                message=message,
+                file_id=saved_file.get('id') or saved_id,
+                filename=saved_file.get('filename') or filename,
+                file_size=saved_file.get('file_size') if saved_file else file_size,
+                updated_at=saved_file.get('updated_at'),
+            )
     except Exception as e:
         conn.rollback()
         return jsonify(success=False, message=f"保存文件失败: {str(e)}"), 500
@@ -180,7 +205,7 @@ def delete_repository_file(file_id):
                 return jsonify(success=False, message="文件不存在或无权限"), 404
 
             conn.commit()
-            return jsonify(success=True, message="文件删除成功")
+            return jsonify(success=True, message="文件删除成功", file_id=file_id, deleted=True)
     except Exception as e:
         conn.rollback()
         return jsonify(success=False, message=f"删除文件失败: {str(e)}"), 500
@@ -226,9 +251,25 @@ def upload_repository_file():
             file_size = VALUES(file_size)
             """
             cursor.execute(sql, (user['id'], filename, content, file_size))
+            cursor.execute(
+                """
+                SELECT id, filename, file_size, updated_at
+                FROM user_code_repository
+                WHERE user_id = %s AND filename = %s
+                """,
+                (user['id'], filename),
+            )
+            saved_file = cursor.fetchone() or {}
 
             conn.commit()
-            return jsonify(success=True, message="文件上传成功")
+            return jsonify(
+                success=True,
+                message="文件上传成功",
+                file_id=saved_file.get('id'),
+                filename=saved_file.get('filename') or filename,
+                file_size=saved_file.get('file_size') if saved_file else file_size,
+                updated_at=saved_file.get('updated_at'),
+            )
     except Exception as e:
         conn.rollback()
         return jsonify(success=False, message=f"上传文件失败: {str(e)}"), 500

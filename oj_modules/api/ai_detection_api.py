@@ -24,6 +24,8 @@ ai_detection_api_bp = Blueprint("ai_detection_api", __name__, url_prefix="/api/a
 
 def _require_admin():
     user = current_user()
+    if not user:
+        return None, json_error("未登录", 401)
     if not is_admin(user):
         return None, json_error("无权限", 403)
     return user, None

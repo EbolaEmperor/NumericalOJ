@@ -1114,7 +1114,9 @@ def create_problem(
                     use_written_prompt,
                 ),
             )
+            problem_id = cursor.lastrowid
         conn.commit()
+        return problem_id
     finally:
         conn.close()
 

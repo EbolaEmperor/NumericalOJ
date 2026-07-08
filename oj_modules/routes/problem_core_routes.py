@@ -679,7 +679,7 @@ def get_submissions_by_user_paginated(username, page=1, per_page=20):
             total_pages = (total + per_page - 1) // per_page
 
             data_sql = """
-                SELECT id, username, status, score, problem_title, created_at
+                SELECT id, problem_id, username, status, score, problem_title, created_at
                 FROM submissions
                 WHERE username=%s
                 ORDER BY id DESC
@@ -703,7 +703,7 @@ def get_all_submissions_paginated(page=1, per_page=20):
             total_pages = (total + per_page - 1) // per_page
 
             data_sql = """
-                SELECT id, username, status, score, problem_title, created_at
+                SELECT id, problem_id, username, status, score, problem_title, created_at
                 FROM submissions
                 ORDER BY id DESC
                 LIMIT %s OFFSET %s
