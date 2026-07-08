@@ -50,6 +50,15 @@ There **is** a pytest suite under `tests/` (`tests/unit`, `tests/db`, `tests/e2e
 - `tests/e2e/` is the CLI-driven end-to-end path: each file starts a local Flask service against disposable MySQL/Redis and drives real HTTP routes through `skills/numoj-admin/scripts/numoj_admin.py` and `skills/numoj-user/scripts/numoj_user.py`, split by auth, problem/submission, homework/class, repository/forum, ranking, AI-detection, and help-matrix scenarios. It must run only on a local machine or another non-production server.
 - CI/full-suite test runs, including anything under `tests/ci/`, are **forbidden on `why-server` / host `computing`**. If they must be run manually, run them locally or on a separate non-production server; never use the production host as a CI runner. A lightweight GitHub Actions gate (`.github/workflows/ci.yml`) runs `compileall` + the infra-free unit tests on every push/PR.
 
+### Local full test workflow
+
+Use this workflow only on a local/dev checkout with local MySQL/Redis targets, never on `why-server` / host `computing`.
+
+1. **Back up the local MySQL database and stop local NumOJ services.** Confirm hostname, checkout path, `config.py` MySQL host/database, and Redis target first. Before taking the dump, sanity-check that the default admin account is still `class='Cadmin'`, `class_cn='管理员'`, and `is_admin=1`; if not, fix the local baseline first instead of preserving a broken backup. Dump the local database (default `myojdb`) to a timestamped file outside the repo, then stop any local Flask/Celery/supervisord processes that could hold port `2025` or mutate the database while tests run.
+2. **Run the complete local unit and e2e suites.** Run all `tests/unit` first, then all `tests/e2e`. The e2e fixtures start their own Flask and Celery subprocesses and refuse known production targets.
+3. **Fix failures and repeat from step 2.** If any unit or e2e test fails, fix the code or test fixture issue, then rerun the complete `tests/unit` + `tests/e2e` cycle. Do not restore the database until the suite is clean or the run is explicitly abandoned.
+4. **Restore local state and restart services.** After the suite is clean, restore the local MySQL database from the backup, recheck that the default admin account is still `class='Cadmin'`, `class_cn='管理员'`, and `is_admin=1`, then restart the normal local services: NumOJ Flask, Celery workers for `celery`, `agent`, and `judge`, and ensure the local judging Docker image used by the workers exists (`numericaloj-judger-lite:latest` for `local_dev.conf`, or the configured image). Recheck that `127.0.0.1:2025` is serving after restart.
+
 ### Data safety boundary
 
 There has been a real production incident where unit tests were run directly on `why-server` (the production host's own hostname is `computing`) and the production database was cleared. Avoid repeating this class of failure:

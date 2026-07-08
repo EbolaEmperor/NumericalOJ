@@ -1,11 +1,11 @@
 ---
 name: numoj-admin
-description: A skill to administer NumericalOJ/NumOJ. Use when the user asks you to do something on NumOJ as an administrator. For example, create a problem in NumOJ, export student scores from NumOJ, etc.
+description: A skill to administer NumericalOJ/NumOJ. Use when the user asks you to do something on NumOJ as an administrator. For example, create a problem in NumOJ, assign homework, export student scores, manage users/classes, rejudge submissions, or configure ranking competitions.
 ---
 
 # NumOJ Admin
 
-Use the bundled script `scripts/numoj_admin.py` for administrator operations against a running NumOJ instance.
+Use the bundled script `scripts/numoj_admin.py` for NumOJ administrator workflows.
 
 ## First-Time Setup
 
@@ -21,9 +21,9 @@ The command prompts for:
 - administrator username
 - administrator password
 
-It logs in through NumOJ's existing `/login` route and writes a local JSON config to `~/.numoj-cli/config.json` by default. The JSON contains the base URL, username, and Flask session cookie. Treat it as a secret. Do not print, paste, commit, or transmit the cookie. Use `--config <path>` or `NUMOJ_CLI_CONFIG=<path>` only when the admin wants a different config file.
+It logs in through NumOJ's existing `/login` route and writes a local JSON config to `~/.numoj-cli/config.json` by default. Treat that JSON as a secret because it contains the Flask session cookie. Use `--config <path>` or `NUMOJ_CLI_CONFIG=<path>` only when the administrator wants a different config file.
 
-After initialization, verify access:
+Verify access:
 
 ```bash
 python3 /path/to/numoj-admin/scripts/numoj_admin.py auth status
@@ -33,38 +33,51 @@ Proceed only if the result reports `authenticated: true` and `admin: true`.
 
 ## Agent Workflow
 
-When this skill is invoked:
-
 1. Resolve the CLI path relative to this `SKILL.md`: `scripts/numoj_admin.py`.
-2. If config is missing or `auth status` fails, stop and tell the administrator to run `init`; do not ask them to reveal the password in chat.
+2. If config is missing, `auth status` fails, or the account is not an administrator, stop and tell the user to run `init` with an administrator account; do not ask them to reveal the password in chat.
 3. Before using a command area for the first time in the current task, run `python3 scripts/numoj_admin.py <command_area> --help` to fetch the real subcommand list and descriptions. Do not guess subcommands from memory or from the high-level Command Areas summary.
 4. Run `python3 scripts/numoj_admin.py <command_area> <subcommand> --help` before using unfamiliar subcommands. Every command supports `--help`.
-5. Execute the narrowest administrator command that matches the request.
-6. Summarize the result in administrator terms: what changed, what exported file was written, or what failed.
+5. Execute the narrowest administrator command matching the user's request.
+6. Summarize created IDs, changed settings, current statuses, exported files, or visible scores.
 
 For a different NumOJ instance, set the address through `init --base-url <url>` or pass the CLI-level `--base-url <url>` option.
 
-JSON inspection commands print their response to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as images, CSVs, ZIPs, attachments, or repository file contents.
+JSON inspection commands print JSON to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as score CSVs, code ZIPs, output images, ranking attachments, written-submission files, or repository file contents.
+
+Do not use commands that launch external model/API work, large judging workloads, destructive data changes, or mass notifications unless the administrator explicitly asks for that action. This includes Promptly prompt submissions, AI tutor calls, agent solve/data-generation tasks, AIGC detection runs, Agent-as-Judge evaluation, bulk rejudging, batch ranking probes/evaluation, deleting problems, deleting submissions, and deleting competitions.
 
 ## Command Areas
 
-- `auth`: initialize/login status, local token cleanup, registration/password-reset pages, verification-code requests, and password change.
-- `site`: inspect the home route and its login/problem-list redirect.
-- `me`: current-account classes, class join/leave/set-primary, current admin grades, and current-account submission history.
-- `submission`: list all visible submissions, list submissions for one problem, inspect status/detail/stream, fetch last submitted code, download output images, and download written-submission files.
-- `problem`: list/view problems, fetch submit contexts, submit ordinary programming/written problems, create/edit/delete problems, fetch create/edit form metadata, upload test data, rejudge, check rejudge status, inspect Agent task statuses/streams, start agent solve/data-generation tasks, and view scores.
-- `homework`: list assigned homework for a class, assign/update/delete homework, export scores/codes/progress, download export artifacts, upload exam scores, and toggle class adjustment.
-- `user`: list users, create/rename class types, set primary class, add/remove users from classes, list grades, and update or clear grades.
-- `grading`: submit written-homework grading decisions and inspect pending grading items.
-- `forum`: list forum threads, view threads, fetch new-thread form metadata, create threads, and reply.
-- `repository`: use the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
+- `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
+- `site`: inspect public site routes and login/problem-list redirects.
+- `me`: view current account classes, join/leave/set primary class, view current account submissions, and summarize visible grades.
+- `submission`: list visible submissions, list submissions for one problem, inspect details/status/streams, fetch last submitted code, download output images, and download written-submission files.
+- `problem`: list/view/create/edit/delete problems, fetch create/edit/submit contexts, submit programming/Promptly/written homework as the administrator, upload test data, inspect scores, rejudge submissions, check rejudge status, and manage problem-solving or test-data-generation agent tasks.
+- `homework`: list class homework, assign/update/delete homework, export scores/codes/progress, download export artifacts, upload exam scores, inspect plagiarism records, and toggle class-adjustment settings.
+- `user`: list users, create class types, rename users, add/remove class memberships, set primary classes, list grades, and update or clear manual grade overrides.
+- `grading`: inspect pending written-homework grading items and submit manual grading decisions.
+- `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.
+- `repository`: inspect and manage the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
-- `ranking`: list/view ranking competitions, submit by upload or Git, inspect personal/all submissions, leaderboard, matches, match details, judge streams, create/edit/delete ranking competitions, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge rules/config/endpoints, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
-- `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, or launch/stop/delete AIGC detection tasks.
+- `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, and launch/stop/delete AIGC detection tasks.
+- `ranking`: list/view/create/edit/delete ranking competitions, submit by upload or Git, inspect personal/all submissions, view leaderboards, inspect matches/match details/judge streams, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge rules/config/endpoints, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
 
-Do not use commands that launch external model/API work, such as Promptly prompt submissions, agent solving, generated test data, AIGC detection runs, or Agent-as-Judge evaluation, unless the administrator explicitly asks for that action and understands it may call configured model services.
+For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
 
 ## Examples
+
+Check administrator login:
+
+```bash
+python3 scripts/numoj_admin.py auth status
+```
+
+List users and inspect the current administrator account:
+
+```bash
+python3 scripts/numoj_admin.py user list --username admin
+python3 scripts/numoj_admin.py me classes
+```
 
 Create a programming problem:
 
@@ -81,61 +94,86 @@ python3 scripts/numoj_admin.py problem create \
 Edit a problem without clearing omitted fields:
 
 ```bash
-python3 scripts/numoj_admin.py problem edit 42 \
+python3 scripts/numoj_admin.py problem edit <problem_id> \
   --title "矩阵范数计算（修订）" \
   --time-limit-ms 3000
 ```
 
-Read problem details:
+Read problem details and inspect recent submissions:
 
 ```bash
-python3 scripts/numoj_admin.py problem detail 42
+python3 scripts/numoj_admin.py problem detail <problem_id>
+python3 scripts/numoj_admin.py submission problem <problem_id> --limit 5
 ```
 
-Submit a normal programming problem and inspect the latest submissions:
+Submit code and inspect submission results:
 
 ```bash
-python3 scripts/numoj_admin.py problem submit 42 --code-file solution.m
-python3 scripts/numoj_admin.py submission problem 42 --limit 5
-python3 scripts/numoj_admin.py submission status 123
-python3 scripts/numoj_admin.py submission stream 123 --max-lines 10
+python3 scripts/numoj_admin.py problem submit <problem_id> --code-file solution.m
+python3 scripts/numoj_admin.py submission list --limit 10
+python3 scripts/numoj_admin.py submission problem <problem_id> --limit 10
+python3 scripts/numoj_admin.py submission detail <submission_id>
+python3 scripts/numoj_admin.py submission status <submission_id>
+python3 scripts/numoj_admin.py submission stream <submission_id> --max-lines 10
 ```
 
-Submit a Promptly problem:
+Fetch your last submission for some problem and save the code to some file:
 
 ```bash
-python3 scripts/numoj_admin.py problem submit 42 --prompt-file prompt.txt
+python3 scripts/numoj_admin.py submission last-code <problem_id>
+python3 scripts/numoj_admin.py submission last-code <problem_id> --output <filename>
 ```
 
-Promptly submissions wait for the prompt review/generation status by default. If the prompt is rejected by the review model, the command output includes `promptly_review.reply` and a top-level `reply` field with the system feedback. Use `--no-wait-promptly` only when the administrator explicitly wants to return immediately after creating the submission.
+Upload test data and rejudge a problem:
+
+```bash
+python3 scripts/numoj_admin.py problem upload-testdata <problem_id> testdata.zip
+python3 scripts/numoj_admin.py problem rejudge <problem_id>
+python3 scripts/numoj_admin.py problem rejudge-status <problem_id>
+```
 
 Assign homework and export scores:
 
 ```bash
-python3 scripts/numoj_admin.py homework add --class-en C2026A --problem-id 42 --ddl 2026-12-31T23:59
+python3 scripts/numoj_admin.py homework add --class-en C2026A --problem-id <problem_id> --ddl 2026-12-31T23:59
 python3 scripts/numoj_admin.py homework export-scores --class-en C2026A -o scores.csv
+```
+
+Manage a user's class and grades:
+
+```bash
+python3 scripts/numoj_admin.py user add-to-class <user_id> C2026A
+python3 scripts/numoj_admin.py user set-primary-class <user_id> C2026A
+python3 scripts/numoj_admin.py user grades <user_id>
 ```
 
 Create and configure a ranking competition:
 
 ```bash
 python3 scripts/numoj_admin.py ranking create --title "第 1 周打榜赛" --max-score 100
-python3 scripts/numoj_admin.py ranking save-rules 1 '[{"rule_text":"结果格式正确","value":40},{"rule_text":"得分最优","value":60}]'
-python3 scripts/numoj_admin.py ranking save-config 1 --agent-base-url https://api.example.com --model qwen3
+python3 scripts/numoj_admin.py ranking save-rules <competition_id> @rules.json
+python3 scripts/numoj_admin.py ranking save-config <competition_id> --agent-base-url https://api.example.com --model qwen3
 ```
 
 Submit and inspect a ranking competition:
 
 ```bash
-python3 scripts/numoj_admin.py ranking submit 1 --base-model "qwen3" --answer-file answer.json --code-zip code.zip
-python3 scripts/numoj_admin.py ranking my-submissions 1 --limit 5
-python3 scripts/numoj_admin.py ranking leaderboard 1 --limit 10
-python3 scripts/numoj_admin.py ranking appeals 1 --status open
+python3 scripts/numoj_admin.py ranking submit <competition_id> --base-model qwen3 --answer-file answer.json --code-zip code.zip
+python3 scripts/numoj_admin.py ranking my-submissions <competition_id> --limit 5
+python3 scripts/numoj_admin.py ranking leaderboard <competition_id> --limit 10
+python3 scripts/numoj_admin.py ranking appeals <competition_id> --status open
 ```
 
-For Git-based ranking submissions, do not provide a Git URL. NumOJ derives it from the competition's Git rule and the logged-in username. Check first, then submit:
+Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:
 
 ```bash
-python3 scripts/numoj_admin.py ranking git 1 check
-python3 scripts/numoj_admin.py ranking git 1 submit
+python3 scripts/numoj_admin.py ranking git <competition_id> check
+python3 scripts/numoj_admin.py ranking git <competition_id> submit
+```
+
+Use the code repository:
+
+```bash
+python3 scripts/numoj_admin.py repository files
+python3 scripts/numoj_admin.py repository save --filename helper.hpp --content-file helper.hpp
 ```
