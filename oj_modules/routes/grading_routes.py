@@ -149,7 +149,11 @@ def get_next_pending_submission(submission_id):
                 if next_submission:
                     next_submission_id = next_submission['id']
                     next_submission_url = url_for('submission.submission_detail', submission_id=next_submission_id)
-                    return jsonify(success=True, next_submission_url=next_submission_url)
+                    return jsonify(
+                        success=True,
+                        next_submission_id=next_submission_id,
+                        next_submission_url=next_submission_url,
+                    )
 
             with conn.cursor() as cursor:
                 sql = """
@@ -164,7 +168,11 @@ def get_next_pending_submission(submission_id):
                 if next_submission:
                     next_submission_id = next_submission['id']
                     next_submission_url = url_for('submission.submission_detail', submission_id=next_submission_id)
-                    return jsonify(success=True, next_submission_url=next_submission_url)
+                    return jsonify(
+                        success=True,
+                        next_submission_id=next_submission_id,
+                        next_submission_url=next_submission_url,
+                    )
         finally:
             conn.close()
 

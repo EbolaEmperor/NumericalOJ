@@ -38,6 +38,19 @@ def init_auth_module(redis_client):
     _rds = redis_client
 
 
+def _wants_json_response():
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    accept = (request.headers.get('Accept') or '').lower()
+    return 'application/json' in accept and 'text/html' not in accept
+
+
+def _json_or_error(message, status=400):
+    if _wants_json_response():
+        return jsonify(success=False, message=message), status
+    return render_template('error.html', message=message), status
+
+
 # ---- 限流参数 ----
 _VCODE_COOLDOWN_SECONDS = 60          # 同一邮箱两次发码最小间隔
 _VCODE_MAX_PER_HOUR = 5               # 同一邮箱每小时最多发码次数
@@ -283,18 +296,18 @@ def forgot_password():
 @auth_bp.route('/send_password_code', methods=['POST'])
 def send_password_code():
     if 'username' not in session:
-        return jsonify(success=False, message="请先登录")
+        return jsonify(success=False, message="请先登录"), 401
 
     user = get_current_user()
     if not user:
-        return jsonify(success=False, message="用户不存在")
+        return jsonify(success=False, message="用户不存在"), 404
 
     allowed, reason = _check_send_code_allowed(user['email'])
     if not allowed:
-        return jsonify(success=False, message=reason)
+        return jsonify(success=False, message=reason), 429
 
     if not send_verification_code(user['email'], "重置密码验证码"):
-        return jsonify(success=False, message="验证码发送失败")
+        return jsonify(success=False, message="验证码发送失败"), 500
 
     return jsonify(success=True, message="验证码已发送")
 
@@ -302,18 +315,22 @@ def send_password_code():
 @auth_bp.route('/change_password', methods=['POST'])
 def change_password():
     if 'username' not in session:
+        if _wants_json_response():
+            return jsonify(success=False, message="请先登录"), 401
         return redirect(url_for('auth.login'))
 
     user = get_current_user()
+    if not user:
+        return _json_or_error("用户不存在", 404)
     code = request.form.get('code', '')
     new_password = request.form.get('new_password', '')
     confirm_password = request.form.get('confirm_password', '')
 
     if new_password != confirm_password:
-        return render_template('error.html', message="两次输入的密码不一致")
+        return _json_or_error("两次输入的密码不一致", 400)
 
     if not _verify_attempt_allowed(user['email']):
-        return render_template('error.html', message="验证次数过多，请稍后再试")
+        return _json_or_error("验证次数过多，请稍后再试", 429)
 
     conn = get_db_connection()
     try:
@@ -325,7 +342,7 @@ def change_password():
         conn.close()
 
     if not record or record['code'] != code or datetime.now() > record['expires_at']:
-        return render_template('error.html', message="验证码错误或已过期")
+        return _json_or_error("验证码错误或已过期", 400)
 
     _update_password_hash(user_id=user['id'], new_hash=hash_password(new_password))
 
@@ -338,6 +355,8 @@ def change_password():
     finally:
         conn.close()
 
+    if _wants_json_response():
+        return jsonify(success=True, message="密码修改成功")
     return redirect(url_for('problem_core.problem_list', success="密码修改成功"))
 
 

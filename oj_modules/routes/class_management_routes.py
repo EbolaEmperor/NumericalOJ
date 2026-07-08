@@ -286,7 +286,7 @@ def join_class():
         conn.close()
 
     _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
-    return jsonify(success=True, message="成功加入班级", class_cn=target_class['class_cn'])
+    return jsonify(success=True, message="成功加入班级", class_en=class_en, class_cn=target_class['class_cn'])
 
 
 @class_management_bp.route('/me/leave_class', methods=['POST'])
@@ -303,9 +303,6 @@ def leave_class():
 
     user_classes = get_user_classes(user['id'])
 
-    if len(user_classes) <= 1:
-        return jsonify(success=False, message="至少需要保留一个班级"), 400
-
     is_member = False
     is_primary = False
     for cls in user_classes:
@@ -316,6 +313,9 @@ def leave_class():
 
     if not is_member:
         return jsonify(success=False, message="您不是该班级成员"), 400
+
+    if len(user_classes) <= 1:
+        return jsonify(success=False, message="至少需要保留一个班级"), 400
 
     conn = get_db_connection()
     new_primary_en = None
@@ -400,10 +400,9 @@ def set_primary_class():
         return jsonify(success=False, message="您不是该班级成员"), 400
 
     if user.get('class') == class_en:
-        return jsonify(success=True, message="已经是主班级")
+        return jsonify(success=True, message="已经是主班级", primary_en=class_en, class_en=class_en)
 
-    is_admin_class = (class_en == 'Cadmin')
-    new_is_admin = 1 if is_admin_class else 0
+    new_is_admin = 1 if is_admin(user) else (1 if class_en == 'Cadmin' else 0)
 
     conn = get_db_connection()
     try:
@@ -432,4 +431,4 @@ def set_primary_class():
         conn.close()
 
     _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
-    return jsonify(success=True, message="主班级设置成功")
+    return jsonify(success=True, message="主班级设置成功", primary_en=class_en, class_en=class_en)

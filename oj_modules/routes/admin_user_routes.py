@@ -154,7 +154,7 @@ def edit_user_ajax():
         return jsonify({'success': False, 'message': '目标班级不存在'}), 400
 
     old_class_en = user.get('class') or None
-    give_admin = 1 if new_class['class_en'] == 'Cadmin' else 0
+    give_admin = 1 if is_admin(user) else (1 if new_class['class_en'] == 'Cadmin' else 0)
 
     if old_class_en == new_class['class_en'] and user.get('class_cn') == new_class['class_cn'] and user.get('is_admin') == give_admin:
         return jsonify({'success': True, 'message': '主班级未变化', 'user_id': user_id, 'new_class': new_class})

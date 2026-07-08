@@ -450,6 +450,8 @@ def _current_user():
 def _require_user():
     user = _current_user()
     if not user:
+        if _wants_json_response():
+            return None, (jsonify(success=False, message='请先登录'), 401)
         return None, redirect(url_for('auth.login'))
     return user, None
 
@@ -459,6 +461,8 @@ def _require_admin():
     if resp is not None:
         return None, resp
     if (user or {}).get('is_admin') != 1:
+        if _wants_json_response():
+            return None, (jsonify(success=False, message='需要管理员权限'), 403)
         flash('需要管理员权限', 'danger')
         return None, redirect(url_for('ranking.ranking_list'))
     return user, None
@@ -1917,6 +1921,8 @@ def ranking_rejudge_agent(competition_id, submission_id):
         return resp
     sub = get_ranking_submission(submission_id)
     if not sub or int(sub.get('competition_id')) != competition_id:
+        if _wants_json_response():
+            return jsonify(success=False, message='提交不存在'), 404
         flash('提交不存在', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
     clear_judge_results(submission_id)
@@ -1926,8 +1932,18 @@ def ranking_rejudge_agent(competition_id, submission_id):
             async_result = _agent_judge_task.apply_async(args=[submission_id, attempt_id])
             set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
         except Exception as e:
+            if _wants_json_response():
+                return jsonify(success=False, message=f'重测入队失败：{e}'), 500
             flash(f'重测入队失败：{e}', 'warning')
     flash('已触发重新评测', 'success')
+    if _wants_json_response():
+        return jsonify(
+            success=True,
+            message='已触发重新评测',
+            competition_id=competition_id,
+            submission_id=submission_id,
+            attempt_id=attempt_id,
+        )
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
 
 
@@ -1968,13 +1984,13 @@ def ranking_appeal_status(competition_id, submission_id):
     """学生/管理员查询某提交的申诉状态（用于评分详情弹窗里回显结果）。"""
     user, resp = _require_user()
     if resp is not None:
-        return jsonify({'ok': False}), 401
+        return jsonify({'ok': False, 'success': False, 'message': '请先登录'}), 401
     sub = get_ranking_submission(submission_id)
     if not sub or int(sub.get('competition_id')) != competition_id:
-        return jsonify({'ok': False}), 404
+        return jsonify({'ok': False, 'success': False, 'message': '提交不存在'}), 404
     is_admin = user.get('is_admin') == 1
     if not is_admin and (sub.get('username') or '') != (user.get('username') or ''):
-        return jsonify({'ok': False}), 403
+        return jsonify({'ok': False, 'success': False, 'message': '无权查看该申诉状态'}), 403
     a = get_appeal_by_submission(submission_id)
     if not a:
         return jsonify({'ok': True, 'has_appeal': False})
@@ -2026,6 +2042,8 @@ def ranking_appeal_review(competition_id, appeal_id):
         return resp
     comp = get_competition(competition_id)
     if not comp:
+        if _wants_json_response():
+            return jsonify(success=False, message='比赛不存在'), 404
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
     appeal = get_appeal(appeal_id)
@@ -2153,6 +2171,8 @@ def ranking_delete(competition_id):
     comp_dir = competition_dir(competition_id)
     shutil.rmtree(comp_dir, ignore_errors=True)
     flash('已删除比赛', 'success')
+    if _wants_json_response():
+        return jsonify(success=True, message='已删除比赛', competition_id=competition_id)
     return redirect(url_for('ranking.ranking_list'))
 
 
@@ -2214,6 +2234,8 @@ def ranking_delete_attachment(competition_id, file_id):
         return resp
     rec = get_competition_file(file_id)
     if not rec or rec.get('competition_id') != competition_id:
+        if _wants_json_response():
+            return jsonify(success=False, message='附件不存在'), 404
         flash('附件不存在', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
     stored = rec.get('stored_path') or ''
@@ -2224,6 +2246,8 @@ def ranking_delete_attachment(competition_id, file_id):
             pass
     delete_competition_file(file_id)
     flash('已删除附件', 'success')
+    if _wants_json_response():
+        return jsonify(success=True, message='已删除附件', competition_id=competition_id, file_id=file_id)
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -2464,6 +2488,8 @@ def ranking_delete_submission(competition_id, submission_id):
         return resp
     sub = get_ranking_submission(submission_id)
     if not sub or sub.get('competition_id') != competition_id:
+        if _wants_json_response():
+            return jsonify(success=False, message='提交记录不存在'), 404
         flash('提交记录不存在', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
 
@@ -2475,4 +2501,12 @@ def ranking_delete_submission(competition_id, submission_id):
     # 删除数据库行
     delete_ranking_submission(submission_id)
     flash(f'已删除提交 #{submission_id}（用户 {username}）；该用户最高分与排行榜已随之更新。', 'success')
+    if _wants_json_response():
+        return jsonify(
+            success=True,
+            message='已删除提交',
+            competition_id=competition_id,
+            submission_id=submission_id,
+            username=username,
+        )
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))

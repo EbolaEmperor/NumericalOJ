@@ -168,14 +168,14 @@ def competition_detail(competition_id):
     is_admin = user.get("is_admin") == 1
     tab = (request.args.get("tab") or "description").strip().lower()
     if tab not in ALLOWED_TABS:
-        tab = "description"
+        return json_error("未知标签", 400)
     if tab in ("all_submissions", "appeals", "edit", "batch_eval") and not is_admin:
-        tab = "description"
+        return json_error("无权限", 403)
     if tab == "appeals" and _competition_scoring_mode(comp) != "agent_judge":
-        tab = "description"
+        return json_error("该比赛不支持申诉标签", 400)
     is_agent_judge = _competition_scoring_mode(comp) == "agent_judge"
     if tab == "batch_eval" and not is_agent_judge:
-        tab = "description"
+        return json_error("该比赛不支持批量评测标签", 400)
 
     files = _files_with_media(list_competition_files(competition_id))
     judge_rules = list_competition_rules(competition_id) if (is_agent_judge and is_admin) else []

@@ -174,6 +174,15 @@ def test_class_self_service_cannot_promote_via_cadmin_membership():
     assert "cls['class_en'] == 'Cadmin' and not is_admin(user)" in text
 
 
+def test_admin_primary_class_change_preserves_existing_admin_flag():
+    root = Path(__file__).resolve().parents[2]
+    class_text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
+    admin_text = (root / 'oj_modules' / 'routes' / 'admin_user_routes.py').read_text(encoding='utf-8')
+    expected = "1 if is_admin(user) else (1 if"
+    assert expected in class_text
+    assert expected in admin_text
+
+
 def test_admin_extra_class_endpoint_rejects_cadmin():
     root = Path(__file__).resolve().parents[2]
     text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
