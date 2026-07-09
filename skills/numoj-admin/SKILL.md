@@ -60,7 +60,7 @@ Do not use commands that launch external model/API work, large judging workloads
 - `repository`: inspect and manage the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, and launch/stop/delete AIGC detection tasks.
-- `ranking`: list/view/create/edit/delete ranking competitions, submit by upload or Git, inspect personal/all submissions, view leaderboards, inspect matches/match details/judge streams, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge rules/config/endpoints, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
+- `ranking`: list/view/create/edit/delete ranking competitions, submit by upload or Git, inspect personal/all submissions, view leaderboards, inspect matches/match details/judge streams, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge / reverse-judge config/endpoints, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
 
 For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
 
@@ -155,10 +155,27 @@ python3 scripts/numoj_admin.py ranking save-rules <competition_id> @rules.json
 python3 scripts/numoj_admin.py ranking save-config <competition_id> --agent-base-url https://api.example.com --model qwen3
 ```
 
+Create or edit a reverse-judge ranking competition and configure the AI answering endpoint:
+
+```bash
+python3 scripts/numoj_admin.py ranking edit <competition_id> \
+  --scoring-mode reverse_judge \
+  --submission-method zip \
+  --agent-timeout 600
+python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
+  --agent-base-url https://api.deepseek.com/anthropic \
+  --api-key-env DEEPSEEK_API_KEY \
+  --env-file .env \
+  --model deepseek-v4-flash \
+  --timeout-seconds 600
+```
+
 Submit and inspect a ranking competition:
 
 ```bash
 python3 scripts/numoj_admin.py ranking submit <competition_id> --base-model qwen3 --answer-file answer.json --code-zip code.zip
+python3 scripts/numoj_admin.py ranking submit <competition_id> --code-zip reverse_problem.zip
+python3 scripts/numoj_admin.py ranking reverse-stream <competition_id> <submission_id> --max-lines 10
 python3 scripts/numoj_admin.py ranking my-submissions <competition_id> --limit 5
 python3 scripts/numoj_admin.py ranking leaderboard <competition_id> --limit 10
 python3 scripts/numoj_admin.py ranking appeals <competition_id> --status open

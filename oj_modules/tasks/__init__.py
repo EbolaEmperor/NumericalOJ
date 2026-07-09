@@ -28,6 +28,12 @@ from oj_modules.tasks.ranking_agent_judge_tasks import (
     subscribe_judge_run_events,
     get_judge_progress_snapshot,
 )
+from oj_modules.tasks.ranking_reverse_judge_tasks import (
+    register_ranking_reverse_judge_task,
+    init_reverse_judge_progress_cache,
+    subscribe_reverse_judge_events,
+    get_reverse_judge_progress_snapshot,
+)
 from oj_modules.tasks.ranking_batch_pull_tasks import (
     register_ranking_batch_tasks,
     init_batch_progress_cache,
@@ -59,6 +65,10 @@ __all__ = [
     "init_judge_progress_cache",
     "subscribe_judge_run_events",
     "get_judge_progress_snapshot",
+    "register_ranking_reverse_judge_task",
+    "init_reverse_judge_progress_cache",
+    "subscribe_reverse_judge_events",
+    "get_reverse_judge_progress_snapshot",
     "register_ranking_batch_tasks",
     "init_batch_progress_cache",
     "get_probe_job",

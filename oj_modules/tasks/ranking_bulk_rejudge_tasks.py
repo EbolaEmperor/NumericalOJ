@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover
 import config as _cfg
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.ranking_agent_judge_db import clear_judge_results
+from oj_modules.ranking_reverse_judge_db import clear_reverse_judge_steps
 from oj_modules.ranking_db import (
     begin_agent_judge_attempt,
     get_competition,
@@ -79,7 +80,7 @@ def save_bulk_rejudge_job(job_id, payload):
 
 def _mode(comp):
     mode = str((comp or {}).get('scoring_mode') or 'absolute').strip().lower()
-    return mode if mode in ('absolute', 'elo', 'agent_judge') else 'absolute'
+    return mode if mode in ('absolute', 'elo', 'agent_judge', 'reverse_judge') else 'absolute'
 
 
 def _reset_submission_for_rejudge(comp, submission_id):
@@ -87,6 +88,9 @@ def _reset_submission_for_rejudge(comp, submission_id):
     mode = _mode(comp)
     if mode == 'agent_judge':
         clear_judge_results(submission_id)
+        return begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
+    if mode == 'reverse_judge':
+        clear_reverse_judge_steps(submission_id)
         return begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
     if mode == 'elo':
         initial_rating = float(comp.get('elo_initial_rating') or 1500)
@@ -98,12 +102,20 @@ def _reset_submission_for_rejudge(comp, submission_id):
 
 
 def _enqueue_submission(comp, submission_id,
-                        evaluate_task, agent_judge_task, elo_initial_burst_task, attempt_id=None):
+                        evaluate_task, agent_judge_task, reverse_judge_task,
+                        elo_initial_burst_task, attempt_id=None):
     mode = _mode(comp)
     if mode == 'agent_judge':
         if agent_judge_task is None:
             raise RuntimeError('Agent 评测任务未初始化')
         async_result = agent_judge_task.apply_async(args=[submission_id, attempt_id])
+        set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
+        return
+
+    if mode == 'reverse_judge':
+        if reverse_judge_task is None:
+            raise RuntimeError('反向评测任务未初始化')
+        async_result = reverse_judge_task.apply_async(args=[submission_id, attempt_id])
         set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
         return
 
@@ -118,7 +130,8 @@ def _enqueue_submission(comp, submission_id,
 
 
 def register_ranking_bulk_rejudge_task(celery_app, evaluate_ranking_task,
-                                       agent_judge_task=None, elo_initial_burst_task=None):
+                                       agent_judge_task=None, reverse_judge_task=None,
+                                       elo_initial_burst_task=None):
     @celery_app.task(name=TASK_NAME)
     def ranking_bulk_rejudge(competition_id, source_ids, job_id, started_by=None):
         source_ids = [int(x) for x in (source_ids or [])]
@@ -159,7 +172,8 @@ def register_ranking_bulk_rejudge_task(celery_app, evaluate_ranking_task,
                 attempt_id = _reset_submission_for_rejudge(comp, requeued_id)
                 _enqueue_submission(
                     comp, requeued_id,
-                    evaluate_ranking_task, agent_judge_task, elo_initial_burst_task, attempt_id,
+                    evaluate_ranking_task, agent_judge_task, reverse_judge_task,
+                    elo_initial_burst_task, attempt_id,
                 )
                 job['requeued'] = int(job.get('requeued') or 0) + 1
                 requeued_ids = job.get('requeued_ids')

@@ -962,6 +962,7 @@ CREATE TABLE `ranking_competitions` (
   `agent_judge_api_key` varchar(512) DEFAULT NULL,
   `agent_judge_model` varchar(128) DEFAULT NULL,
   `agent_judge_timeout_seconds` int NOT NULL DEFAULT '1800',
+  `reverse_judge_finalize_timeout_seconds` int NOT NULL DEFAULT '180',
   `agent_judge_orchestration_mode` varchar(32) NOT NULL DEFAULT 'single',
   `submit_limit_per_window` int DEFAULT NULL,
   `limit_window_start` datetime DEFAULT NULL,
@@ -1021,6 +1022,9 @@ CREATE TABLE `ranking_submissions` (
   `judge_attempt_id` varchar(36) DEFAULT NULL,
   `judge_task_id` varchar(64) DEFAULT NULL,
   `judge_heartbeat_at` timestamp NULL DEFAULT NULL,
+  `agent_endpoint_id` int DEFAULT NULL,
+  `agent_endpoint_harness` varchar(32) DEFAULT NULL,
+  `agent_endpoint_model` varchar(128) DEFAULT NULL,
   `source` varchar(16) NOT NULL DEFAULT 'self',
   `grade_details` mediumtext,
   `error_message` text,
@@ -1034,6 +1038,7 @@ CREATE TABLE `ranking_submissions` (
   KEY `idx_rs_comp_created` (`competition_id`,`created_at`),
   KEY `idx_rs_judge_attempt` (`judge_attempt_id`),
   KEY `idx_rs_judge_task` (`judge_task_id`),
+  KEY `idx_rs_agent_endpoint` (`agent_endpoint_id`),
   KEY `idx_rs_elo_pool` (`competition_id`,`elo_in_pool`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -1132,6 +1137,36 @@ CREATE TABLE `ranking_judge_results` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_rjres_sub_rule` (`submission_id`,`rule_id`),
   KEY `idx_rjres_sub` (`submission_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `ranking_reverse_judge_steps`
+--
+
+DROP TABLE IF EXISTS `ranking_reverse_judge_steps`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `ranking_reverse_judge_steps` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `submission_id` int NOT NULL,
+  `step_key` varchar(32) NOT NULL,
+  `step_order` int NOT NULL DEFAULT '0',
+  `title` varchar(64) NOT NULL,
+  `status` varchar(32) NOT NULL DEFAULT 'pending',
+  `max_score` double DEFAULT NULL,
+  `score` double DEFAULT NULL,
+  `result_json` mediumtext,
+  `stdout` mediumtext,
+  `stderr` mediumtext,
+  `error_message` text,
+  `trace_dir` varchar(512) DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `finished_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_rrjs_sub_step` (`submission_id`,`step_key`),
+  KEY `idx_rrjs_sub` (`submission_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

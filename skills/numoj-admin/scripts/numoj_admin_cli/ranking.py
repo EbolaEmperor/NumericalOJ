@@ -37,6 +37,7 @@ def _necessary_competition(
         "submission_count",
         "agent_judge_api_key_set",
         "agent_judge_timeout_seconds",
+        "reverse_judge_finalize_timeout_seconds",
         "agent_judge_orchestration_mode",
         "elo_initial_rating",
         "elo_k_factor",
@@ -77,6 +78,10 @@ def _necessary_ranking_submission(row: Any) -> Dict[str, Any]:
             "answer_filename",
             "code_filename",
             "base_model",
+            "agent_endpoint_id",
+            "agent_endpoint_harness",
+            "agent_endpoint_model",
+            "agent_endpoint_label",
             "score",
             "rating",
             "status",
@@ -260,6 +265,34 @@ def necessary_ranking_stream_event_payload(event: Any) -> Any:
     return necessary or common.necessary_response_payload(event)
 
 
+def necessary_reverse_judge_snapshot_payload(event: Any) -> Any:
+    if not isinstance(event, dict):
+        return necessary_ranking_stream_event_payload(event)
+    out: Dict[str, Any] = {}
+    for key in ("submission_id", "competition_id", "username", "status", "score", "error_message", "updated_at"):
+        if event.get(key) not in (None, ""):
+            out[key] = event[key]
+    steps = []
+    for step in event.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        result = step.get("result") if isinstance(step.get("result"), dict) else {}
+        item = {
+            "title": step.get("title"),
+            "status": step.get("status"),
+            "score": result.get("score"),
+            "max_score": result.get("max_score"),
+            "trace_messages_count": len(step.get("trace_messages") or []),
+        }
+        step_key = step.get("key") or step.get("step")
+        if step_key:
+            item["key"] = step_key
+        steps.append(item)
+    if steps:
+        out["steps"] = steps
+    return out or common.necessary_response_payload(event)
+
+
 def necessary_ranking_appeals_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
@@ -353,6 +386,7 @@ def ranking_edit(args: argparse.Namespace) -> None:
         "submission_method": comp.get("submission_method"),
         "git_format": comp.get("git_format"),
         "agent_judge_orchestration_mode": comp.get("agent_judge_orchestration_mode"),
+        "reverse_judge_finalize_timeout_seconds": comp.get("reverse_judge_finalize_timeout_seconds"),
         "elo_initial_rating": comp.get("elo_initial_rating"),
         "elo_k_factor": comp.get("elo_k_factor"),
         "elo_max_matches": comp.get("elo_max_matches"),
@@ -387,6 +421,8 @@ def ranking_edit(args: argparse.Namespace) -> None:
             ("elo_initial_burst", current_or_arg(current, "elo_initial_burst", args.elo_initial_burst)),
             ("elo_max_pairs_per_round", current_or_arg(current, "elo_max_pairs_per_round", args.elo_max_pairs_per_round)),
             ("agent_judge_timeout_seconds", current_or_arg(current, "agent_judge_timeout_seconds", args.agent_timeout)),
+            ("reverse_judge_finalize_timeout_seconds", current_or_arg(
+                current, "reverse_judge_finalize_timeout_seconds", args.reverse_finalize_timeout)),
         ]
     )
     resp = client.request("POST", f"/ranking/{args.competition_id}/edit", data=data)
@@ -463,8 +499,12 @@ def ranking_config(args: argparse.Namespace) -> None:
         data["agent_judge_model"] = args.model
     if args.api_key is not None:
         data["agent_judge_api_key"] = read_text_value(args.api_key)
+    if getattr(args, "api_key_env", None) is not None:
+        data["agent_judge_api_key"] = _read_env_secret(args.api_key_env, getattr(args, "env_file", None))
     if args.timeout_seconds is not None:
         data["agent_judge_timeout_seconds"] = str(args.timeout_seconds)
+    if args.reverse_finalize_timeout is not None:
+        data["reverse_judge_finalize_timeout_seconds"] = str(args.reverse_finalize_timeout)
     if args.orchestration_mode is not None:
         data["agent_judge_orchestration_mode"] = args.orchestration_mode
     resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/config", data=data)
@@ -480,9 +520,93 @@ def ranking_rules(args: argparse.Namespace) -> None:
 
 def ranking_endpoints(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    payload: Dict[str, Any] = {"endpoints": parse_json_value(args.endpoints)}
+    endpoints = parse_json_value(args.endpoints)
+    if isinstance(endpoints, list):
+        endpoints = [
+            _resolve_endpoint_secret_fields(ep, getattr(args, "env_file", None))
+            for ep in endpoints
+        ]
+    payload: Dict[str, Any] = {"endpoints": endpoints}
     if args.timeout_seconds is not None:
         payload["timeout_seconds"] = args.timeout_seconds
+    if args.reverse_finalize_timeout is not None:
+        payload["reverse_judge_finalize_timeout_seconds"] = args.reverse_finalize_timeout
+    if args.orchestration_mode is not None:
+        payload["orchestration_mode"] = args.orchestration_mode
+    resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/endpoints", json=payload)
+    print_or_save_response(resp)
+
+
+def _read_dotenv_values(path: str) -> Dict[str, str]:
+    env_path = Path(path).expanduser()
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise CliError(f"Cannot read env file: {env_path}: {exc.strerror or exc}") from exc
+    values: Dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _read_env_secret(name: str, env_file: Optional[str] = None) -> str:
+    key_name = (name or "").strip()
+    if not key_name:
+        raise CliError("Missing environment variable name.")
+    if env_file:
+        value = _read_dotenv_values(env_file).get(key_name)
+        if value:
+            return value
+    value = os.environ.get(key_name, "").strip()
+    if value:
+        return value
+    source = f" in {env_file}" if env_file else ""
+    raise CliError(f"Environment variable {key_name}{source} is empty or not set.")
+
+
+def _resolve_endpoint_secret_fields(endpoint: Any, default_env_file: Optional[str] = None) -> Any:
+    if not isinstance(endpoint, dict):
+        return endpoint
+    out = dict(endpoint)
+    api_key_env = out.pop("api_key_env", None)
+    env_file = out.pop("env_file", None) or default_env_file
+    if api_key_env:
+        out["api_key"] = _read_env_secret(str(api_key_env), env_file)
+    return out
+
+
+def _endpoint_api_key_from_args(args: argparse.Namespace) -> str:
+    if getattr(args, "api_key", None) is not None:
+        return read_text_value(args.api_key).strip()
+    if getattr(args, "api_key_env", None) is not None:
+        return _read_env_secret(args.api_key_env, getattr(args, "env_file", None))
+    raise CliError("Endpoint API key is required. Use --api-key, --api-key @file, or --api-key-env NAME.")
+
+
+def ranking_save_endpoint(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    endpoint = {
+        "harness": args.harness,
+        "base_url": args.base_url_value,
+        "api_key": _endpoint_api_key_from_args(args),
+        "model": args.model,
+        "concurrency_limit": args.concurrency_limit,
+        "status": args.status,
+    }
+    payload: Dict[str, Any] = {"endpoints": [endpoint]}
+    if args.timeout_seconds is not None:
+        payload["timeout_seconds"] = args.timeout_seconds
+    if args.reverse_finalize_timeout is not None:
+        payload["reverse_judge_finalize_timeout_seconds"] = args.reverse_finalize_timeout
     if args.orchestration_mode is not None:
         payload["orchestration_mode"] = args.orchestration_mode
     resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/endpoints", json=payload)
@@ -505,6 +629,8 @@ def ranking_batch_status(args: argparse.Namespace) -> None:
 def ranking_batch_create(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     payload = {"template": args.template, "usernames": parse_csv(args.usernames)}
+    if getattr(args, "agent_endpoint_id", None) is not None:
+        payload["agent_endpoint_id"] = args.agent_endpoint_id
     resp = client.request("POST", f"/ranking/{args.competition_id}/batch_eval/create", json=payload)
     print_or_save_response(resp)
 
@@ -650,6 +776,24 @@ def ranking_judge_stream(args: argparse.Namespace) -> None:
     })
 
 
+def ranking_reverse_judge_stream(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    resp = client.request("GET", f"/ranking/{args.competition_id}/reverse_judge_stream/{args.submission_id}", stream=True)
+    if getattr(args, "full", False):
+        print_stream_lines(resp, max_lines=args.max_lines)
+        return
+    stream_payload = common.read_stream_events(resp, max_lines=args.max_lines)
+    latest = None
+    for event in stream_payload.get("events") or []:
+        latest = event
+    output_json({
+        "success": True,
+        "events_count": len(stream_payload.get("events") or []),
+        "latest": necessary_reverse_judge_snapshot_payload(latest) if latest is not None else None,
+        "truncated": bool(stream_payload.get("truncated")),
+    })
+
+
 def ranking_my_submissions(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     params: Dict[str, Any] = {}
@@ -697,7 +841,11 @@ def ranking_submit_zip(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     before_ids = _ranking_submission_ids(client, args.competition_id)
     files = {"code_file": require_file(args.code_zip)}
-    data = {"base_model": args.base_model}
+    data: Dict[str, str] = {}
+    if getattr(args, "base_model", None) is not None:
+        data["base_model"] = args.base_model
+    if getattr(args, "agent_endpoint_id", None) is not None:
+        data["agent_endpoint_id"] = str(args.agent_endpoint_id)
     if args.answer_file:
         files["answer_file"] = require_file(args.answer_file)
     try:
@@ -710,7 +858,7 @@ def ranking_submit_zip(args: argparse.Namespace) -> None:
         )
     finally:
         close_files(files)
-    ensure_ok(resp, allow_redirect=False)
+    ensure_ok(resp)
     after_ids = _ranking_submission_ids(client, args.competition_id)
     new_ids = sorted(after_ids - before_ids)
     payload: Dict[str, Any] = {
@@ -726,7 +874,10 @@ def ranking_submit_zip(args: argparse.Namespace) -> None:
 def ranking_git_submit(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     path = "check_repo" if args.action == "check" else "git_submit"
-    resp = client.request("POST", f"/ranking/{args.competition_id}/{path}")
+    data: Dict[str, str] = {}
+    if path == "git_submit" and getattr(args, "agent_endpoint_id", None) is not None:
+        data["agent_endpoint_id"] = str(args.agent_endpoint_id)
+    resp = client.request("POST", f"/ranking/{args.competition_id}/{path}", data=data or None)
     print_or_save_response(resp, allow_redirect=False)
 
 
@@ -734,7 +885,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
     sub = subparsers
 
-    rk = add_cli_parser(sub, "ranking", "Manage ranking competitions, submissions, judging, appeals, and Agent-as-Judge settings.")
+    rk = add_cli_parser(sub, "ranking", "Manage ranking competitions, submissions, judging, appeals, and AI-judge settings.")
     rs = rk.add_subparsers(dest="cmd", required=True)
     pa = add_cli_parser(rs, "list", "List ranking competitions.")
     pa.add_argument("--limit", type=int, help="Maximum number of competitions to return.")
@@ -763,20 +914,21 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     active_group.add_argument("--active", dest="active", action="store_true", default=None, help="Mark the competition as active.")
     active_group.add_argument("--inactive", dest="active", action="store_false", default=None, help="Mark the competition as inactive.")
     pa.add_argument("--answer-format", choices=["json", "zip"], help="Expected answer format for submissions.")
-    pa.add_argument("--scoring-mode", choices=["absolute", "elo", "agent_judge"], help="Scoring mode used by the competition.")
+    pa.add_argument("--scoring-mode", choices=["absolute", "elo", "agent_judge", "reverse_judge"], help="Scoring mode used by the competition.")
     pa.add_argument("--script-timeout", type=int, help="Timeout in seconds for scoring-script execution.")
     pa.add_argument("--submit-limit", type=int, help="Maximum number of submissions allowed in the active limit window.")
     pa.add_argument("--reset-limit-window", action="store_true", help="Reset the per-user submission-limit window.")
     pa.add_argument("--submission-method", choices=["zip", "git"], help="Submission method accepted by the competition.")
     pa.add_argument("--git-format", help="Git repository URL format or rule used to derive participant repositories.")
-    pa.add_argument("--agent-orchestration", choices=["single", "topological"], help="Agent-as-Judge orchestration mode.")
+    pa.add_argument("--agent-orchestration", choices=["single", "topological"], help="AI-judge orchestration mode.")
     pa.add_argument("--elo-initial-rating", type=float, help="Initial ELO rating assigned to new submissions.")
     pa.add_argument("--elo-k-factor", type=float, help="ELO K-factor used when updating ratings.")
     pa.add_argument("--elo-max-matches", type=int, help="Maximum number of ELO matches per submission.")
     pa.add_argument("--elo-match-interval", type=int, help="Interval in seconds between automatic ELO match rounds.")
     pa.add_argument("--elo-initial-burst", type=int, help="Number of initial ELO matches to schedule quickly for a new submission.")
     pa.add_argument("--elo-max-pairs-per-round", type=int, help="Maximum number of ELO match pairs generated per scheduler round.")
-    pa.add_argument("--agent-timeout", type=int, help="Timeout in seconds for Agent-as-Judge evaluation.")
+    pa.add_argument("--agent-timeout", type=int, help="Timeout in seconds for Agent-as-Judge evaluation or reverse-judge AI answering.")
+    pa.add_argument("--reverse-finalize-timeout", type=int, help="Timeout in seconds for reverse-judge forced finalization after AI answering is cut off.")
     pa.set_defaults(func=ranking_edit)
     pa = add_cli_parser(rs, "delete", "Delete a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to delete.")
@@ -809,27 +961,48 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = add_cli_parser(rs, "reset-limit", "Reset submission limits for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID whose submission limits should be reset.")
     pa.set_defaults(func=ranking_reset_limit)
-    pa = add_cli_parser(rs, "save-config", "Save Agent-as-Judge model configuration for a ranking competition.")
+    pa = add_cli_parser(rs, "save-config", "Save single-model AI-judge fallback configuration for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
-    pa.add_argument("--agent-base-url", dest="base_url_value", help="Base URL for the Agent-as-Judge model API.")
-    pa.add_argument("--api-key", help="API key text, or @file to read it from a file.")
-    pa.add_argument("--model", help="Model identifier used by Agent-as-Judge.")
-    pa.add_argument("--timeout-seconds", type=int, help="Agent-as-Judge timeout in seconds.")
-    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="Agent-as-Judge orchestration mode.")
+    pa.add_argument("--agent-base-url", dest="base_url_value", help="Base URL for the AI-judge model API.")
+    key_group = pa.add_mutually_exclusive_group()
+    key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")
+    key_group.add_argument("--api-key-env", help="Environment variable name holding the API key.")
+    pa.add_argument("--env-file", help="Optional .env file used with --api-key-env.")
+    pa.add_argument("--model", help="Model identifier used by the AI judge.")
+    pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
+    pa.add_argument("--reverse-finalize-timeout", type=int, help="Reverse-judge forced-finalization timeout in seconds.")
+    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="AI-judge orchestration mode.")
     pa.set_defaults(func=ranking_config)
     pa = add_cli_parser(rs, "save-rules", "Save Agent-as-Judge grading rules for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
     pa.add_argument("rules", help="JSON array of rule objects, or @file to read it from a file.")
     pa.set_defaults(func=ranking_rules)
-    pa = add_cli_parser(rs, "save-endpoints", "Save Agent-as-Judge endpoint pool for a ranking competition.")
+    pa = add_cli_parser(rs, "save-endpoints", "Save AI-judge endpoint pool for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
     pa.add_argument(
         "endpoints",
-        help="JSON array of endpoint objects; each may include status=enabled|paused|disabled, or legacy enabled=true/false.",
+        help="JSON array of endpoint objects; each may include api_key or api_key_env, status=enabled|paused|disabled, or legacy enabled=true/false.",
     )
-    pa.add_argument("--timeout-seconds", type=int, help="Agent-as-Judge timeout in seconds.")
-    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="Agent-as-Judge orchestration mode.")
+    pa.add_argument("--env-file", help="Optional .env file used by endpoint api_key_env fields.")
+    pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
+    pa.add_argument("--reverse-finalize-timeout", type=int, help="Reverse-judge forced-finalization timeout in seconds.")
+    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="AI-judge orchestration mode.")
     pa.set_defaults(func=ranking_endpoints)
+    pa = add_cli_parser(rs, "save-endpoint", "Replace the AI-judge endpoint pool with one endpoint.")
+    pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
+    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode"], default="claude_code", help="Agent harness used by the endpoint.")
+    pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the AI-judge model API.")
+    key_group = pa.add_mutually_exclusive_group(required=True)
+    key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")
+    key_group.add_argument("--api-key-env", help="Environment variable name holding the API key.")
+    pa.add_argument("--env-file", help="Optional .env file used with --api-key-env.")
+    pa.add_argument("--model", required=True, help="Model identifier used by the endpoint.")
+    pa.add_argument("--concurrency-limit", type=int, default=1, help="Maximum concurrent jobs for this endpoint.")
+    pa.add_argument("--status", choices=["enabled", "paused", "disabled"], default="enabled", help="Endpoint status.")
+    pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
+    pa.add_argument("--reverse-finalize-timeout", type=int, help="Reverse-judge forced-finalization timeout in seconds.")
+    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="AI-judge orchestration mode.")
+    pa.set_defaults(func=ranking_save_endpoint)
     pa = add_cli_parser(rs, "batch-probe", "Preview Git repositories that would be used for batch ranking submissions.")
     pa.add_argument("competition_id", type=int, help="Competition ID for the batch probe.")
     pa.add_argument("--classes", required=True, help="Comma-separated class_en list to include.")
@@ -843,6 +1016,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("competition_id", type=int, help="Competition ID for the batch submissions.")
     pa.add_argument("--template", required=True, help="Git URL template used to derive repository URLs.")
     pa.add_argument("--usernames", required=True, help="Comma-separated usernames to submit for.")
+    pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge batch submissions.")
     pa.set_defaults(func=ranking_batch_create)
     pa = add_cli_parser(rs, "matches", "List ELO or Agent-as-Judge matches for a competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID whose matches should be listed.")
@@ -930,6 +1104,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.add_argument("--full", action="store_true", help="Print raw stream lines instead of the default judge-status summary.")
     pa.set_defaults(func=ranking_judge_stream)
+    pa = add_cli_parser(rs, "reverse-stream", "Fetch recent reverse-judge step snapshots for a ranking submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Reverse-judge submission ID whose step stream should be fetched.")
+    pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
+    pa.add_argument("--full", action="store_true", help="Print raw stream lines instead of the default reverse-judge summary.")
+    pa.set_defaults(func=ranking_reverse_judge_stream)
     pa = add_cli_parser(rs, "my-submissions", "List the current user's submissions for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID whose submissions should be listed.")
     pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")
@@ -943,17 +1123,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("competition_id", type=int, help="Competition ID whose leaderboard should be fetched.")
     pa.add_argument("--limit", type=int, help="Maximum number of leaderboard rows to return.")
     pa.set_defaults(func=ranking_leaderboard)
-    pa = add_cli_parser(rs, "submit", "Submit a ZIP-based ranking entry.")
+    pa = add_cli_parser(rs, "submit", "Submit a ZIP-based ranking entry; for reverse_judge, --code-zip is the problem package.")
     pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
-    pa.add_argument("--base-model", required=True, help="Base model name associated with the submission.")
-    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
+    pa.add_argument("--base-model", help="Base model name associated with the submission. Required unless the competition is reverse_judge.")
+    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive, or reverse-judge problem ZIP package.")
     pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
+    pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge submissions.")
     pa.set_defaults(func=ranking_submit_zip)
     pa = add_cli_parser(rs, "submit-zip", "Alias for ranking submit; submit a ZIP-based ranking entry.")
     pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
-    pa.add_argument("--base-model", required=True, help="Base model name associated with the submission.")
-    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
+    pa.add_argument("--base-model", help="Base model name associated with the submission. Required unless the competition is reverse_judge.")
+    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive, or reverse-judge problem ZIP package.")
     pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
+    pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge submissions.")
     pa.set_defaults(func=ranking_submit_zip)
     pa = add_cli_parser(
         rs,
@@ -967,4 +1149,5 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     pa.add_argument("competition_id", type=int, help="Competition ID configured for Git submission.")
     pa.add_argument("action", choices=["check", "submit"], help="Use check to verify repository visibility; use submit to queue the checked repository for evaluation.")
+    pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge git submissions.")
     pa.set_defaults(func=ranking_git_submit)

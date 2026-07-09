@@ -50,6 +50,8 @@ from oj_modules.tasks import (
     register_ranking_agent_judge_paused_probe_task,
     seed_agent_judge_paused_probe,
     init_judge_progress_cache,
+    register_ranking_reverse_judge_task,
+    init_reverse_judge_progress_cache,
     register_ranking_batch_tasks,
     init_batch_progress_cache,
     register_ranking_bulk_rejudge_task,
@@ -224,6 +226,7 @@ celery.conf.task_routes = {
     'oj.promptly.generate_submission': {'queue': 'agent'},
     'oj.ranking_agent_judge': {'queue': 'judge'},
     'oj.ranking_agent_judge_paused_probe': {'queue': 'judge'},
+    'oj.ranking_reverse_judge': {'queue': 'judge'},
 }
 # 任务执行完才 ack：worker 崩溃/被硬超时 SIGKILL 时，消息不会丢失而是重新投递。
 # 配合各任务的 Redis 幂等锁，重投不会导致重复评测；reject_on_worker_lost 让「worker 丢失」
@@ -243,14 +246,18 @@ ranking_elo_initial_burst = register_ranking_elo_initial_burst_task(celery, rank
 ranking_elo_matchmaker_tick = register_ranking_elo_matchmaker_tick_task(celery, ranking_elo_match)
 evaluate_ranking_agent_judge = register_ranking_agent_judge_task(celery)
 ranking_agent_judge_paused_probe = register_ranking_agent_judge_paused_probe_task(celery)
+evaluate_ranking_reverse_judge = register_ranking_reverse_judge_task(celery)
 # 打榜赛「批量评测」：探测仓库 + 串行批量拉取/创建（拉取完成后接力 Agent 评测）
 ranking_batch_probe, ranking_batch_run = register_ranking_batch_tasks(
-    celery, evaluate_ranking_agent_judge,
+    celery,
+    agent_judge_task=evaluate_ranking_agent_judge,
+    reverse_judge_task=evaluate_ranking_reverse_judge,
 )
 ranking_bulk_rejudge = register_ranking_bulk_rejudge_task(
     celery,
     evaluate_ranking_submission,
     agent_judge_task=evaluate_ranking_agent_judge,
+    reverse_judge_task=evaluate_ranking_reverse_judge,
     elo_initial_burst_task=ranking_elo_initial_burst,
 )
 pending_requeue_watchdog = register_pending_requeue_watchdog_task(
@@ -259,6 +266,7 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     transcribe_written_homework_to_latex,
     promptly_task=promptly_generate_submission,
     agent_judge_task=evaluate_ranking_agent_judge,
+    reverse_judge_task=evaluate_ranking_reverse_judge,
 )
 
 # 初始化重测模块（依赖 Celery、Redis、程序题评测 + 书面作业转写评分任务）
@@ -280,6 +288,7 @@ init_ai_detection_module(detect_single_submission, detect_batch_for_problem, det
 # 初始化打榜赛模块（依赖 Celery 评测任务、ELO 即时补战任务、Agent 评测任务、批量评测任务）
 init_ranking_module(
     evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge,
+    reverse_judge_task=evaluate_ranking_reverse_judge,
     redis_client=rds,
     batch_probe_task=ranking_batch_probe, batch_run_task=ranking_batch_run,
     bulk_rejudge_task=ranking_bulk_rejudge,
@@ -296,6 +305,8 @@ init_submission_snapshot_cache(rds)
 init_agent_progress_cache(rds)
 # 初始化打榜赛 Agent 评测进度缓存（Redis）
 init_judge_progress_cache(rds)
+# 初始化打榜赛反向评测进度缓存（Redis）
+init_reverse_judge_progress_cache(rds)
 # 初始化打榜赛「批量评测」探测进度缓存（Redis）
 init_batch_progress_cache(rds)
 # 初始化打榜赛「批量重测」进度缓存（Redis）
@@ -319,6 +330,7 @@ if __name__ == '__main__':
             ranking_task=evaluate_ranking_submission,
             elo_initial_burst_task=ranking_elo_initial_burst,
             agent_judge_task=evaluate_ranking_agent_judge,
+            reverse_judge_task=evaluate_ranking_reverse_judge,
         )
         # 启动 Pending 自动回收链路（自调度，全局单链）。重启恢复完成后换新 owner，
         # 让旧 watchdog ETA 消息即使醒来，也因 owner 不匹配而 no-op。

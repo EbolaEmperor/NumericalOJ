@@ -1,0 +1,392 @@
+{# 反向评测三步详情弹窗。通过事件委托监听 .reverse-detail-btn。 #}
+<div class="modal fade" id="reverseJudgeDetailModal" tabindex="-1" aria-labelledby="reverseJudgeDetailModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content rj-modal">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="reverseJudgeDetailModalLabel">
+            <i class="fas fa-list-check me-2 text-warning"></i>反向评测详情
+          </h5>
+          <div class="text-muted small" id="rjModalMeta"></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="rj-summary">
+          <span id="rjModalStatus">正在连接评测进度…</span>
+          <span class="rj-total">学生得分 <strong id="rjModalTotal">—</strong><small>/100</small></span>
+        </div>
+        <div class="rj-tabs mb-3" id="rjTabs" role="tablist" aria-label="反向评测步骤">
+          <button type="button" class="rj-tab active" data-rj-step="solution_check">标准答案</button>
+          <button type="button" class="rj-tab" data-rj-step="agent_answer" disabled>AI 作答</button>
+          <button type="button" class="rj-tab" data-rj-step="ai_judge" disabled>评测 AI 答案</button>
+        </div>
+        <div id="rjStepBody">
+          <div class="text-muted text-center py-5">
+            <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载…
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<style>
+  .rj-modal { --ink:#1f2329; --muted:#6f767f; --line:#e6e8ec; --soft:#f6f7f9; --ok:#1f7a4d; --info:#2563cb; --err:#b03a2e; --gold:#f5c518; --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace; }
+  .rj-summary { display:flex; align-items:center; justify-content:space-between; gap:.8rem; margin-bottom:.85rem; color:var(--muted); font-size:.86rem; }
+  .rj-total { display:inline-flex; align-items:baseline; gap:.22rem; padding:.28rem .55rem; border:1px solid var(--line); border-radius:999px; color:var(--muted); background:#fff; white-space:nowrap; }
+  .rj-total strong { color:var(--ink); font-family:var(--mono); font-size:.92rem; }
+  .rj-total small { color:var(--muted); }
+  .rj-tabs { display:flex; flex-wrap:wrap; gap:.45rem; }
+  .rj-tab { min-height:34px; border:1px solid var(--line); background:#fff; color:var(--muted); border-radius:8px; padding:.38rem .68rem; font-size:.84rem; display:inline-flex; align-items:center; gap:.38rem; }
+  .rj-tab.active { background:#17191d; border-color:#17191d; color:#fff; font-weight:650; }
+  .rj-tab:disabled { opacity:.42; cursor:not-allowed; }
+  .rj-tab .spinner-border { width:.78rem; height:.78rem; border-width:.12rem; }
+  .rj-dot { width:.46rem; height:.46rem; border-radius:999px; background:var(--line); display:inline-block; }
+  .rj-dot.ok { background:var(--ok); }
+  .rj-dot.err { background:var(--err); }
+  .rj-result-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.85rem 1rem; border:1px solid var(--line); border-radius:8px; background:#fff; margin-bottom:.85rem; }
+  .rj-result-title { font-size:.95rem; font-weight:700; color:var(--ink); }
+  .rj-score-pill { display:inline-flex; align-items:baseline; gap:.28rem; padding:.42rem .72rem; border-radius:999px; background:#f1f5f3; color:#1d5e40; font-family:var(--mono); white-space:nowrap; }
+  .rj-score-pill strong { font-size:1.05rem; }
+  .rj-score-pill small { color:#56806a; }
+  .rj-pre { white-space:pre-wrap; word-break:break-word; background:#f6f7f9; border:1px solid var(--line); border-radius:8px; padding:.72rem .85rem; font-size:.8rem; max-height:420px; overflow:auto; }
+  .rj-point { border:1px solid var(--line); border-radius:8px; padding:.72rem .85rem; margin-bottom:.55rem; background:#fff; }
+  .rj-point-head { display:flex; justify-content:space-between; gap:1rem; font-size:.88rem; }
+  .rj-point-score { font-family:var(--mono); font-weight:700; color:var(--ink); white-space:nowrap; }
+  .rj-point-desc { color:var(--muted); font-size:.82rem; margin-top:.25rem; white-space:pre-wrap; }
+  .rj-alert { border:1px solid #f0c9c4; background:#fff6f4; color:var(--err); border-radius:8px; padding:.65rem .8rem; margin-bottom:.85rem; font-size:.86rem; }
+  .rj-agent-feed { display:flex; flex-direction:column; gap:.7rem; }
+  .rj-msg { border:1px solid var(--line); background:#fff; border-radius:8px; padding:.78rem .9rem; }
+  .rj-msg.subagent { border-color:#d8e2f5; background:#f8fbff; }
+  .rj-msg.tool { border-color:#dce7dd; background:#fbfdfb; }
+  .rj-msg.thinking { border-color:#ece2bf; background:#fffdf5; }
+  details.rj-msg.thinking, details.rj-msg.tool, details.rj-msg.subagent { padding:0; overflow:hidden; }
+  .rj-thinking-summary, .rj-tool-summary, .rj-subagent-summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:.6rem; padding:.62rem .82rem; color:var(--muted); font-size:.78rem; min-width:0; }
+  .rj-thinking-summary::-webkit-details-marker, .rj-tool-summary::-webkit-details-marker, .rj-subagent-summary::-webkit-details-marker { display:none; }
+  .rj-thinking-summary::after { content:'展开'; color:#8c7b42; font-size:.76rem; white-space:nowrap; }
+  .rj-tool-summary::after { content:'展开'; color:#54745a; font-size:.76rem; white-space:nowrap; }
+  .rj-subagent-summary::after { content:'展开'; color:#536f9e; font-size:.76rem; white-space:nowrap; }
+  details.rj-msg.thinking[open] .rj-thinking-summary { border-bottom:1px solid #ece2bf; }
+  details.rj-msg.tool[open] .rj-tool-summary { border-bottom:1px solid #dce7dd; }
+  details.rj-msg.subagent[open] .rj-subagent-summary { border-bottom:1px solid #d8e2f5; }
+  details.rj-msg.thinking[open] .rj-thinking-summary::after { content:'收起'; }
+  details.rj-msg.tool[open] .rj-tool-summary::after { content:'收起'; }
+  details.rj-msg.subagent[open] .rj-subagent-summary::after { content:'收起'; }
+  .rj-summary-main { display:flex; align-items:center; gap:.55rem; min-width:0; flex:1; }
+  .rj-summary-preview { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#6d7570; font-size:.78rem; font-weight:400; }
+  .rj-summary-meta { flex-shrink:0; max-width:11rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  details.rj-msg[open] .rj-summary-preview { display:none; }
+  .rj-msg-head { display:flex; align-items:center; justify-content:space-between; gap:.6rem; margin-bottom:.42rem; color:var(--muted); font-size:.78rem; }
+  .rj-msg-title { display:inline-flex; align-items:center; gap:.42rem; color:var(--ink); font-weight:700; }
+  .rj-msg-body { white-space:pre-wrap; word-break:break-word; color:var(--ink); font-size:.86rem; line-height:1.55; }
+  .rj-md { white-space:normal; line-height:1.65; word-break:break-word; }
+  .rj-md > :first-child { margin-top:0; } .rj-md > :last-child { margin-bottom:0; }
+  .rj-md pre { background:#f6f7f9; border:1px solid var(--line); border-radius:6px; padding:.55rem .7rem; overflow:auto; margin:.5rem 0; }
+  .rj-md code { background:#f1f1f3; padding:.05rem .3rem; border-radius:3px; font-size:.92em; }
+  .rj-md pre code { background:transparent; padding:0; }
+  .rj-md table { border-collapse:collapse; margin:.5rem 0; } .rj-md th,.rj-md td { border:1px solid var(--line); padding:.25rem .5rem; }
+  .rj-md blockquote { border-left:3px solid #e0d9bf; margin:.5rem 0; padding:.1rem .8rem; color:#6c757d; }
+  details.rj-msg.thinking .rj-msg-body { padding:.78rem .9rem .9rem; color:#4b4635; }
+  details.rj-msg.tool .rj-msg-body { padding:.78rem .9rem .9rem; color:#2f4432; }
+	  details.rj-msg.subagent .rj-msg-body { padding:.78rem .9rem .9rem; color:#30405b; }
+	  .rj-tool-json { font-family:var(--mono); font-size:.8rem; line-height:1.5; }
+	  .rj-tool-text { font-size:.84rem; line-height:1.55; }
+	  .rj-empty { border:1px dashed var(--line); background:var(--soft); color:var(--muted); border-radius:8px; padding:1.2rem; text-align:center; }
+  .rj-raw-json { margin-top:.9rem; }
+  .rj-raw-json summary { width:max-content; list-style:none; cursor:pointer; border:1px solid var(--line); border-radius:999px; padding:.36rem .7rem; color:var(--muted); background:#fff; font-size:.82rem; }
+  .rj-raw-json summary::-webkit-details-marker { display:none; }
+</style>
+<script>
+(function () {
+  if (window.__reverseJudgeModalInit) return;
+  window.__reverseJudgeModalInit = true;
+  var modalEl = document.getElementById('reverseJudgeDetailModal');
+  var modal = null;
+  var source = null;
+  var snapshot = null;
+  var activeStep = 'solution_check';
+  var openDetails = Object.create(null);
+  var renderedTraceKeys = Object.create(null);
+  var STATUS = { Accepted:'评测完成', Error:'评测异常', Judging:'评测中', Queued:'等待评测', Pending:'待评测' };
+  var STEP_LABEL = { solution_check:'标准答案', agent_answer:'AI 作答', ai_judge:'评测 AI 答案' };
+  function getModal(){ if(!modal && modalEl && window.bootstrap) modal = new bootstrap.Modal(modalEl); return modal; }
+  function closeSource(){ if(source){ source.close(); source=null; } }
+  function esc(v){ return String(v == null ? '' : v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function fmt(v){ var n=Number(v); return Number.isFinite(n) ? n.toFixed(2) : '—'; }
+  function detailAttr(key){ return ' data-rj-open-key="' + esc(key) + '"'; }
+  function rememberOpenDetails(root){
+    if (!root) return;
+    root.querySelectorAll('details[data-rj-open-key]').forEach(function(el){
+      openDetails[el.getAttribute('data-rj-open-key')] = !!el.open;
+    });
+  }
+  function restoreOpenDetails(root){
+    if (!root) return;
+    root.querySelectorAll('details[data-rj-open-key]').forEach(function(el){
+      var key = el.getAttribute('data-rj-open-key');
+      if (Object.prototype.hasOwnProperty.call(openDetails, key)) el.open = !!openDetails[key];
+    });
+  }
+  function traceMessageKey(m, idx){
+    var parts = [activeStep, 'msg', m.kind || 'assistant'];
+    if (m.line != null) parts.push('line:' + m.line);
+    else parts.push('idx:' + idx);
+    parts.push(m.title || '', m.meta || '', String(m.text || '').slice(0, 120));
+    return parts.join('|');
+  }
+  function renderMsgBody(m, kind){
+    if ((kind === 'assistant' || kind === 'thinking') && m.html) {
+      return '<div class="rj-msg-body rj-md">' + String(m.html) + '</div>';
+    }
+	    if (kind === 'tool' || kind === 'subagent') {
+	      var cls = m.format === 'json' ? 'rj-tool-json' : 'rj-tool-text';
+	      return '<div class="rj-msg-body ' + cls + '">' + esc(m.text || '') + '</div>';
+	    }
+    return '<div class="rj-msg-body">' + esc(m.text || '') + '</div>';
+  }
+  function typesetMath(root){
+    if (window.MathJax && typeof window.MathJax.typesetPromise === 'function') {
+      window.MathJax.typesetPromise(root ? [root] : undefined).catch(function(){});
+    }
+  }
+  function messageKind(m){
+    return m.kind === 'subagent' ? 'subagent' : (m.kind === 'thinking' ? 'thinking' : (m.kind === 'tool' ? 'tool' : 'assistant'));
+  }
+  function messageIcon(kind){
+    return kind === 'subagent' ? 'fa-diagram-project' : (kind === 'thinking' ? 'fa-brain' : (kind === 'tool' ? 'fa-screwdriver-wrench' : 'fa-comment-dots'));
+  }
+  function previewText(m){
+    var text = String(m && m.text || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.length > 80 ? text.slice(0, 80) + '...' : text;
+  }
+  function summaryHtml(m, kind, icon){
+    var title = m.title || (kind === 'tool' ? '工具调用' : (kind === 'subagent' ? '派出 subagent' : '思考片段'));
+    var preview = previewText(m);
+    return '<span class="rj-summary-main"><span class="rj-msg-title"><i class="fas ' + icon + '"></i>' + esc(title) + '</span>' +
+      (preview ? '<span class="rj-summary-preview">' + esc(preview) + '</span>' : '') +
+      '</span><span class="rj-summary-meta">' + esc(m.meta || '') + '</span>';
+  }
+  function renderMessageHtml(m, idx){
+    var kind = messageKind(m);
+    var icon = messageIcon(kind);
+    var keyAttr = detailAttr(traceMessageKey(m, idx));
+    if (kind === 'thinking') {
+      return '<details class="rj-msg thinking"' + keyAttr + '>' +
+        '<summary class="rj-thinking-summary">' + summaryHtml(m, kind, icon) + '</summary>' +
+        renderMsgBody(m, kind) +
+        '</details>';
+    }
+    if (kind === 'tool' || kind === 'subagent') {
+      var summaryClass = kind === 'subagent' ? 'rj-subagent-summary' : 'rj-tool-summary';
+      return '<details class="rj-msg ' + kind + '"' + keyAttr + '>' +
+        '<summary class="' + summaryClass + '">' + summaryHtml(m, kind, icon) + '</summary>' +
+        renderMsgBody(m, kind) +
+        '</details>';
+    }
+    return '<div class="rj-msg ' + kind + '" data-rj-msg-key="' + esc(traceMessageKey(m, idx)) + '">' +
+      '<div class="rj-msg-head"><span class="rj-msg-title"><i class="fas ' + icon + '"></i>' + esc(m.title || 'AI 回复') + '</span>' +
+      '<span>' + esc(m.meta || '') + '</span></div>' +
+      renderMsgBody(m, kind) +
+      '</div>';
+  }
+  function byKey(key){ return (snapshot && snapshot.steps || []).filter(function(s){ return s.step_key === key; })[0] || null; }
+  function chooseActive(){
+    if (byKey(activeStep) && byKey(activeStep).status !== 'pending') return;
+    var steps = snapshot && snapshot.steps || [];
+    for (var i=0;i<steps.length;i++){ if(steps[i].status !== 'pending'){ activeStep = steps[i].step_key; return; } }
+    activeStep = 'solution_check';
+  }
+  function tabMark(st){
+    if (st === 'running') return '<span class="spinner-border spinner-border-sm" role="status"></span>';
+    if (st === 'passed') return '<span class="rj-dot ok"></span>';
+    if (st === 'failed' || st === 'error') return '<span class="rj-dot err"></span>';
+    return '<span class="rj-dot"></span>';
+  }
+  function renderTabs(){
+    document.querySelectorAll('[data-rj-step]').forEach(function(btn){
+      var key = btn.getAttribute('data-rj-step');
+      var step = byKey(key);
+      var st = step ? step.status : 'pending';
+      btn.disabled = st === 'pending';
+      btn.classList.toggle('active', key === activeStep);
+      btn.innerHTML = esc(STEP_LABEL[key] || key) + ' ' + tabMark(st);
+    });
+  }
+  function renderResult(step, title){
+    var result = step && step.result;
+    if (!result) return '<div class="rj-empty">暂无 result.json</div>';
+    var points = result.test_points || {};
+    var html = '<div class="rj-result-head">' +
+      '<div class="rj-result-title">' + esc(title) + '</div>' +
+      '<div class="rj-score-pill"><strong>' + fmt(result.score) + '</strong><small>/ ' + fmt(result.max_score) + '</small></div>' +
+      '</div>';
+    Object.keys(points).forEach(function(key){
+      var p = points[key] || {};
+      html += '<div class="rj-point"><div class="rj-point-head"><strong>' + esc(key) + '</strong><span class="rj-point-score">' + fmt(p.score) + ' / ' + fmt(p.max_score) + '</span></div>' +
+        '<div class="rj-point-desc">' + esc(p.description || '') + '</div></div>';
+    });
+    html += '<details class="rj-raw-json"' + detailAttr(activeStep + '|result-json') + '><summary>展开原始 JSON</summary><pre class="rj-pre mt-2">' + esc(JSON.stringify(result, null, 2)) + '</pre></details>';
+    return html;
+  }
+  function renderRawTrace(files){
+    files = files || [];
+    if (!files.length) return '';
+    var f = files[0] || {};
+    return '<details class="rj-raw-json"' + detailAttr(activeStep + '|trace-json|' + (f.path || '')) + '><summary>展开原始 JSON</summary>' +
+      '<div class="small text-muted mt-2"><code>' + esc(f.path || '') + '</code> · ' + esc(f.size || 0) + ' B</div>' +
+      '<pre class="rj-pre mt-2">' + esc(f.content || '') + '</pre></details>';
+  }
+  function renderAgentShell(step){
+    var html = step.error_message ? '<div class="rj-alert" data-rj-agent-error>' + esc(step.error_message) + '</div>' : '<div data-rj-agent-error hidden></div>';
+    html += '<div class="rj-agent-feed" data-rj-agent-feed></div>';
+    html += '<div class="rj-empty" data-rj-agent-empty' + ((step.trace_messages || []).length ? ' hidden' : '') + '>' +
+      (step.status === 'running' ? '<span class="spinner-border spinner-border-sm me-2" role="status"></span>AI 正在作答' : '暂无可展示轨迹') +
+      '</div>';
+    html += '<div data-rj-agent-raw>' + renderRawTrace(step.trace_files || []) + '</div>';
+    html += '<div data-rj-agent-stdio></div>';
+    return html;
+  }
+  function syncAgentExtras(body, step){
+    var err = body.querySelector('[data-rj-agent-error]');
+    if (err) {
+      if (step.error_message) {
+        err.hidden = false;
+        err.className = 'rj-alert';
+        err.textContent = step.error_message;
+      } else {
+        err.hidden = true;
+        err.textContent = '';
+      }
+    }
+    var empty = body.querySelector('[data-rj-agent-empty]');
+    if (empty) {
+      var hasMessages = !!((step.trace_messages || []).length);
+      empty.hidden = hasMessages;
+      if (!hasMessages) {
+        empty.innerHTML = step.status === 'running'
+          ? '<span class="spinner-border spinner-border-sm me-2" role="status"></span>AI 正在作答'
+          : '暂无可展示轨迹';
+      }
+    }
+    var raw = body.querySelector('[data-rj-agent-raw]');
+    if (raw) raw.innerHTML = renderRawTrace(step.trace_files || []);
+    var stdio = body.querySelector('[data-rj-agent-stdio]');
+    if (stdio) {
+      var html = '';
+      if (step.stdout) html += '<details class="rj-raw-json"' + detailAttr(activeStep + '|stdout') + '><summary>stdout</summary><pre class="rj-pre mt-2">' + esc(step.stdout) + '</pre></details>';
+      if (step.stderr) html += '<details class="rj-raw-json"' + detailAttr(activeStep + '|stderr') + '><summary>stderr</summary><pre class="rj-pre mt-2">' + esc(step.stderr) + '</pre></details>';
+      stdio.innerHTML = html;
+    }
+  }
+  function appendTraceMessages(body, step){
+    var feed = body.querySelector('[data-rj-agent-feed]');
+    if (!feed) return;
+    var added = false;
+    (step.trace_messages || []).forEach(function(m, idx){
+      var key = traceMessageKey(m, idx);
+      if (renderedTraceKeys[key]) return;
+      feed.insertAdjacentHTML('beforeend', renderMessageHtml(m, idx));
+      renderedTraceKeys[key] = true;
+      added = true;
+    });
+    if (added) typesetMath(feed);
+  }
+  function renderAgentStepBody(body, step){
+    var currentStep = body.getAttribute('data-rj-rendered-step') || '';
+    if (currentStep !== activeStep || !body.querySelector('[data-rj-agent-feed]')) {
+      rememberOpenDetails(body);
+      body.innerHTML = renderAgentShell(step);
+      body.setAttribute('data-rj-rendered-step', activeStep);
+      renderedTraceKeys = Object.create(null);
+      appendTraceMessages(body, step);
+      restoreOpenDetails(body);
+      syncAgentExtras(body, step);
+      restoreOpenDetails(body);
+      typesetMath(body);
+      return;
+    }
+    rememberOpenDetails(body);
+    appendTraceMessages(body, step);
+    syncAgentExtras(body, step);
+    restoreOpenDetails(body);
+  }
+  function renderTrace(step){
+    var messages = step.trace_messages || [];
+    var html = '';
+    if (messages.length) {
+      html += '<div class="rj-agent-feed">';
+      messages.forEach(function(m, idx){
+        html += renderMessageHtml(m, idx);
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="rj-empty">' + (step.status === 'running' ? '<span class="spinner-border spinner-border-sm me-2" role="status"></span>AI 正在作答' : '暂无可展示轨迹') + '</div>';
+    }
+    html += renderRawTrace(step.trace_files || []);
+    return html;
+  }
+  function renderStepBody(){
+    var body = document.getElementById('rjStepBody');
+    var step = byKey(activeStep);
+    if (!body || !step) return;
+    if (activeStep === 'agent_answer') {
+      renderAgentStepBody(body, step);
+      return;
+    }
+    rememberOpenDetails(body);
+    var html = step.error_message ? '<div class="rj-alert">' + esc(step.error_message) + '</div>' : '';
+    html += renderResult(step, STEP_LABEL[activeStep] || step.title || activeStep);
+    if (step.stdout) html += '<details class="rj-raw-json"' + detailAttr(activeStep + '|stdout') + '><summary>stdout</summary><pre class="rj-pre mt-2">' + esc(step.stdout) + '</pre></details>';
+    if (step.stderr) html += '<details class="rj-raw-json"' + detailAttr(activeStep + '|stderr') + '><summary>stderr</summary><pre class="rj-pre mt-2">' + esc(step.stderr) + '</pre></details>';
+    body.innerHTML = html;
+    body.setAttribute('data-rj-rendered-step', activeStep);
+    restoreOpenDetails(body);
+    typesetMath(body);
+  }
+  function renderSnap(snap){
+    snapshot = snap || {};
+    chooseActive();
+    var total = document.getElementById('rjModalTotal');
+    var status = document.getElementById('rjModalStatus');
+    if (total) total.textContent = snapshot.total_score == null ? '—' : fmt(snapshot.total_score);
+    if (status) status.textContent = (STATUS[snapshot.status] || snapshot.status || '状态未知') + (snapshot.error_message ? ' · ' + snapshot.error_message : '');
+    renderTabs();
+    renderStepBody();
+  }
+  document.addEventListener('click', function(e){
+    var tab = e.target.closest && e.target.closest('[data-rj-step]');
+    if (tab && !tab.disabled) {
+      activeStep = tab.getAttribute('data-rj-step');
+      renderTabs();
+      renderStepBody();
+      return;
+    }
+    var btn = e.target.closest && e.target.closest('.reverse-detail-btn');
+    if (!btn) return;
+    var m = getModal(); if (!m) return;
+    closeSource();
+    activeStep = 'solution_check';
+    openDetails = Object.create(null);
+    renderedTraceKeys = Object.create(null);
+    var sid = btn.getAttribute('data-submission-id') || '';
+    var createdAt = btn.getAttribute('data-created-at') || '';
+    var meta = document.getElementById('rjModalMeta');
+    if (meta) meta.textContent = '#' + sid + (createdAt ? ' · ' + createdAt : '');
+    document.getElementById('rjStepBody').innerHTML = '<div class="text-muted text-center py-5"><span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载…</div>';
+    m.show();
+    var url = btn.getAttribute('data-stream-url');
+    if (!url || !window.EventSource) {
+      var st = document.getElementById('rjModalStatus');
+      if (st) st.textContent = '当前浏览器不支持实时进度。';
+      return;
+    }
+    source = new EventSource(url);
+    source.addEventListener('progress', function(ev){ renderSnap(JSON.parse(ev.data)); });
+    source.addEventListener('done', function(ev){ renderSnap(JSON.parse(ev.data)); closeSource(); });
+    source.addEventListener('timeout', function(ev){ try{ renderSnap(JSON.parse(ev.data)); }catch(_e){} closeSource(); });
+    source.addEventListener('error', function(){ closeSource(); });
+  });
+  if (modalEl) modalEl.addEventListener('hidden.bs.modal', closeSource);
+})();
+</script>

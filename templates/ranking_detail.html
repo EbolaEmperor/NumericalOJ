@@ -17,11 +17,57 @@
   <div class="text-muted small">
     {% if (competition.scoring_mode or 'absolute')|lower == 'elo' %}
       ELO 对战 · 创建于 {{ competition.created_at }}
+    {% elif (competition.scoring_mode or 'absolute')|lower == 'reverse_judge' %}
+      反向评测 · 创建于 {{ competition.created_at }}
     {% else %}
       满分 {{ competition.max_score or 100 }} · 创建于 {{ competition.created_at }}
     {% endif %}
   </div>
 </div>
+
+<style>
+  .rk-choice { position:relative; width:100%; }
+  .rk-choice-trigger {
+    width:100%; min-height:38px; display:flex; align-items:center; justify-content:space-between; gap:.62rem;
+    border:1px solid #b9c1cb; border-radius:8px; background:#fff; color:#1f2329;
+    padding:.45rem .58rem; font-size:.86rem; line-height:1.2; cursor:pointer;
+    transition:border-color .15s ease, background-color .15s ease;
+  }
+  .rk-choice-trigger:hover,
+  .rk-choice.open .rk-choice-trigger { border-color:#687484; background:#fbfcfd; }
+  .rk-choice-trigger-main { display:inline-flex; align-items:center; gap:.46rem; min-width:0; }
+  .rk-choice-trigger-main i {
+    width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center;
+    color:#69727d; text-align:center; flex:none; font-size:.82rem; line-height:1;
+  }
+  .rk-choice-trigger-main span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
+  .rk-choice-caret { color:#69727d; font-size:.76rem; transition:transform .15s ease; flex:none; }
+  .rk-choice.open .rk-choice-caret { transform:rotate(180deg); }
+  .rk-choice-menu {
+    position:absolute; z-index:1060; top:calc(100% + 6px); left:0; right:0; display:none;
+    margin:0; padding:.28rem; list-style:none; border:1px solid #b9c1cb; border-radius:8px; background:#fff;
+  }
+  .rk-choice.open .rk-choice-menu { display:block; }
+  .rk-choice-option {
+    display:flex; align-items:center; justify-content:space-between; gap:.65rem; width:100%;
+    border:0; border-radius:6px; background:transparent; color:#1f2329;
+    padding:.5rem .55rem; text-align:left; cursor:pointer;
+  }
+  .rk-choice-option:hover,
+  .rk-choice-option.active { background:#f3f5f7; }
+  .rk-choice-option-main { display:flex; align-items:center; gap:.48rem; min-width:0; }
+  .rk-choice-option-main i {
+    width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center;
+    color:#69727d; text-align:center; flex:none; font-size:.82rem; line-height:1;
+  }
+  .rk-choice-option-name { display:block; color:#1f2329; font-size:.86rem; font-weight:650; line-height:1.15; }
+  .rk-choice-option-check { color:#1f7a4d; opacity:0; flex:none; }
+  .rk-choice-option.active .rk-choice-option-check { opacity:1; }
+  .rk-choice-sm .rk-choice-trigger { min-height:34px; padding:.34rem .52rem; font-size:.82rem; }
+  .rk-choice-sm .rk-choice-option { padding:.44rem .5rem; }
+  .rk-choice-sm .rk-choice-option-name,
+  .rk-choice-sm .rk-choice-trigger-main span { font-size:.82rem; }
+</style>
 
 <div class="row">
   <!-- 左侧边栏 -->
@@ -56,6 +102,8 @@
            class="list-group-item list-group-item-action {% if tab == 'appeals' %}active{% endif %}">
           <i class="fas fa-gavel me-2"></i> 申诉处理
         </a>
+        {% endif %}
+        {% if (competition.scoring_mode or 'absolute')|lower in ['agent_judge', 'reverse_judge'] %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='batch_eval') }}"
            class="list-group-item list-group-item-action {% if tab == 'batch_eval' %}active{% endif %}">
           <i class="fas fa-layer-group me-2"></i> 批量评测
@@ -120,6 +168,8 @@
   <div class="col-md-9 col-lg-10">
     {% set is_elo = ((competition.scoring_mode or 'absolute')|lower == 'elo') %}
     {% set is_agent_judge = ((competition.scoring_mode or 'absolute')|lower == 'agent_judge') %}
+    {% set is_reverse_judge = ((competition.scoring_mode or 'absolute')|lower == 'reverse_judge') %}
+    {% set is_ai_judge = is_agent_judge or is_reverse_judge %}
     {% from '_ranking_sub_card.html' import render_sub_card %}
 
     <style>
@@ -250,6 +300,7 @@
       {% set scoring_mode = (competition.scoring_mode or 'absolute')|lower %}
       {% set answer_icon = 'fa-file-archive' if answer_format == 'zip' else 'fa-file-code' %}
       {% set is_agent_judge = (scoring_mode == 'agent_judge') %}
+      {% set is_reverse_judge = (scoring_mode == 'reverse_judge') %}
 
       {% if submit_quota %}
       <div class="rank-quota mb-4">
@@ -266,7 +317,7 @@
           <i class="fas fa-exclamation-triangle me-2"></i>{{ submit_block_reason }}
         </div>
       {% else %}
-      {% if is_agent_judge and submission_method == 'git' %}
+      {% if (is_agent_judge and submission_method == 'git') or is_reverse_judge %}
         {# ===== Git 提交方式（扁平 / 无阴影 / 克制配色） ===== #}
         <style>
           .gitsub{--gs-ink:#15171c;--gs-muted:#6b7280;--gs-faint:#9aa1ab;--gs-line:#e7e9ec;
@@ -317,13 +368,102 @@
           .gitsub-confirm-hint{font-size:.84rem;color:var(--gs-muted);}
           .gitsub-confirm-hint.ok{color:var(--gs-ok);} .gitsub-confirm-hint.no{color:var(--gs-no);}
           .gitsub-note{margin-top:16px;font-size:.86rem;color:var(--gs-muted);}
+          .rj-submit-controls{display:flex;align-items:center;gap:.9rem;flex-wrap:wrap;margin-bottom:.85rem;position:relative;z-index:3;}
+          .rj-submit-switch{display:flex;align-items:center;gap:.7rem;margin:0;}
+          .rj-submit-switch label{font-size:.82rem;color:var(--gs-muted);margin:0;}
+          .rj-submit-switch .rk-choice{width:190px;}
+          .rj-submit-switch.rj-node-switch .rk-choice{width:min(390px, calc(100vw - 2rem));}
+          .rj-submit-switch.rj-node-switch{align-items:center;flex-wrap:wrap;}
+          .rj-node-meta{display:block;color:#8a929b;font-size:.72rem;font-weight:500;margin-top:.12rem;}
         </style>
+        {% if is_reverse_judge %}
+        {% macro rj_endpoint_label(ep) -%}
+          {%- set _h = ep.harness or 'claude_code' -%}
+          {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else _h)) -%}
+          {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
+        {%- endmacro %}
+        {% set rj_ep = namespace(default='', count=0) %}
+        {% for ep in aj_endpoints %}
+          {% if (ep.status or '') == 'enabled' %}
+            {% if not rj_ep.default %}{% set rj_ep.default = ep.id|string %}{% endif %}
+            {% set rj_ep.count = rj_ep.count + 1 %}
+          {% endif %}
+        {% endfor %}
+        <div class="rj-submit-controls">
+          <div class="rj-submit-switch">
+            <label for="reverseSubmitModeTrigger"><i class="fas fa-upload me-2"></i>提交方式</label>
+            <input type="hidden" id="reverseSubmitMode" value="git">
+            <div class="rk-choice rk-choice-sm" data-rk-choice data-rk-choice-input="reverseSubmitMode">
+              <button type="button" class="rk-choice-trigger" id="reverseSubmitModeTrigger"
+                      aria-haspopup="listbox" aria-expanded="false">
+                <span class="rk-choice-trigger-main">
+                  <i class="fas fa-code-branch" data-rk-choice-icon></i>
+                  <span data-rk-choice-label>Git 仓库</span>
+                </span>
+                <i class="fas fa-chevron-down rk-choice-caret"></i>
+              </button>
+              <div class="rk-choice-menu" role="listbox" aria-label="提交方式">
+                <button type="button" class="rk-choice-option active" role="option" aria-selected="true"
+                        data-choice-value="git" data-choice-label="Git 仓库" data-choice-icon="fa-code-branch">
+                  <span class="rk-choice-option-main"><i class="fas fa-code-branch"></i><span class="rk-choice-option-name">Git 仓库</span></span>
+                  <i class="fas fa-check rk-choice-option-check"></i>
+                </button>
+                <button type="button" class="rk-choice-option" role="option" aria-selected="false"
+                        data-choice-value="zip" data-choice-label="ZIP 压缩包" data-choice-icon="fa-file-archive">
+                  <span class="rk-choice-option-main"><i class="fas fa-file-archive"></i><span class="rk-choice-option-name">ZIP 压缩包</span></span>
+                  <i class="fas fa-check rk-choice-option-check"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="rj-submit-switch rj-node-switch">
+            <label for="reverseAgentEndpointTrigger"><i class="fas fa-robot me-2"></i>AI 节点</label>
+            <input type="hidden" id="reverseAgentEndpointId" name="agent_endpoint_id"
+                   form="rankingSubmitForm" value="{{ rj_ep.default }}">
+            <div class="rk-choice rk-choice-sm" data-rk-choice data-rk-choice-input="reverseAgentEndpointId">
+              <button type="button" class="rk-choice-trigger" id="reverseAgentEndpointTrigger"
+                      aria-haspopup="listbox" aria-expanded="false">
+                <span class="rk-choice-trigger-main">
+                  <i class="fas fa-robot" data-rk-choice-icon></i>
+                  <span data-rk-choice-label>
+                    {% if rj_ep.default %}
+                      {% for ep in aj_endpoints %}{% if ep.id|string == rj_ep.default %}{{ rj_endpoint_label(ep) }}{% endif %}{% endfor %}
+                    {% else %}无可用节点{% endif %}
+                  </span>
+                </span>
+                <i class="fas fa-chevron-down rk-choice-caret"></i>
+              </button>
+              <div class="rk-choice-menu" role="listbox" aria-label="AI 节点">
+                {% for ep in aj_endpoints %}
+                  {% if (ep.status or '') == 'enabled' %}
+                  <button type="button" class="rk-choice-option {% if ep.id|string == rj_ep.default %}active{% endif %}"
+                          role="option"
+                          aria-selected="{% if ep.id|string == rj_ep.default %}true{% else %}false{% endif %}"
+                          data-choice-value="{{ ep.id }}"
+                          data-choice-label="{{ rj_endpoint_label(ep) }}"
+                          data-choice-icon="fa-robot">
+                    <span class="rk-choice-option-main">
+                      <i class="fas fa-robot"></i>
+                      <span>
+                        <span class="rk-choice-option-name">{{ rj_endpoint_label(ep) }}</span>
+                      </span>
+                    </span>
+                    <i class="fas fa-check rk-choice-option-check"></i>
+                  </button>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+        {% endif %}
         <div class="gitsub"
+             id="reverseGitPanel"
              data-check-url="{{ url_for('ranking.ranking_check_repo', competition_id=competition.id) }}"
              data-submit-url="{{ url_for('ranking.ranking_git_submit', competition_id=competition.id) }}"
              {% if submit_quota %}data-remaining="{{ submit_quota.remaining }}"{% endif %}>
           <div class="gitsub-head">
-            <h3>Git 提交</h3><span>从你的仓库拉取最新代码并评测</span>
+            <h3>Git 提交</h3><span>从你的仓库拉取最新内容并评测</span>
           </div>
           <div class="gitsub-repo">
             <span class="k">仓库</span>
@@ -353,6 +493,54 @@
             </div>
           {% endif %}
         </div>
+        {% if is_reverse_judge %}
+        <form method="POST" enctype="multipart/form-data"
+              action="{{ url_for('ranking.ranking_submit', competition_id=competition.id) }}"
+              id="rankingSubmitForm"
+              class="submit-form mb-4"
+              style="display:none;">
+          <div class="row g-3">
+            <div class="col-md-12">
+              <label class="file-drop" data-kind="code">
+                <input type="file" name="code_file" accept=".zip" required hidden>
+                <div class="file-drop-inner">
+                  <i class="fas fa-file-archive file-drop-icon file-drop-icon-code"></i>
+                  <div class="file-drop-title">反向评测题目包</div>
+                  <div class="file-drop-sub">
+                    <span class="file-drop-ext">.zip</span>
+                  </div>
+                  <div class="file-drop-selected" hidden>
+                    <i class="fas fa-check-circle"></i>
+                    <span class="file-name"></span>
+                    <span class="file-size"></span>
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="submit-actions mt-4">
+            <button type="submit" class="btn btn-primary submit-cta" id="rankingSubmitBtn" disabled>
+              <i class="fas fa-paper-plane me-2"></i>提交评测
+            </button>
+            <span class="submit-hint ms-3 text-muted small" id="rankingSubmitHint">请选择题目包</span>
+          </div>
+        </form>
+        <script>
+        (function () {
+          var sel = document.getElementById('reverseSubmitMode');
+          var git = document.getElementById('reverseGitPanel');
+          var zip = document.getElementById('rankingSubmitForm');
+          if (!sel || !git || !zip) return;
+          function apply() {
+            var isZip = sel.value === 'zip';
+            git.style.display = isZip ? 'none' : '';
+            zip.style.display = isZip ? '' : 'none';
+          }
+          sel.addEventListener('change', apply);
+          apply();
+        })();
+        </script>
+        {% endif %}
         <script>
         (function () {
           var root = document.querySelector('.gitsub');
@@ -372,6 +560,7 @@
           var confirmHint = document.getElementById('gitsubConfirmHint');
           var copyBtn = document.getElementById('gitsubCopy');
           var urlEl = document.getElementById('gitsubUrl');
+          var endpointInput = document.getElementById('reverseAgentEndpointId');
 
           function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
           function fmtDate(iso){
@@ -400,6 +589,12 @@
           function setChecking(on){
             checkBtn.disabled=on; checkSpin.hidden=!on; checkLabel.textContent=on?'检查中':'检查仓库';
           }
+          function selectedEndpointId(){
+            return endpointInput ? (endpointInput.value || '').trim() : '';
+          }
+          function endpointReady(){
+            return !endpointInput || selectedEndpointId().length > 0;
+          }
           function renderResult(d){
             var html='';
             if(d.exists && d.info){
@@ -426,8 +621,25 @@
               if(remaining!==null && !isNaN(remaining) && remaining<=0){
                 submitBtn.disabled=true; confirmHint.className='gitsub-confirm-hint no';
                 confirmHint.textContent='本轮提交次数已用完';
+              } else if(!endpointReady()){
+                submitBtn.disabled=true; confirmHint.className='gitsub-confirm-hint no';
+                confirmHint.textContent='请选择 AI 节点';
               } else { submitBtn.disabled=false; confirmHint.className='gitsub-confirm-hint'; confirmHint.textContent=''; }
             } else { confirmEl.hidden=true; }
+          }
+          if (endpointInput) {
+            endpointInput.addEventListener('change', function(){
+              if (!confirmEl.hidden && submitBtn) {
+                submitBtn.disabled = !endpointReady();
+                if (!endpointReady()) {
+                  confirmHint.className='gitsub-confirm-hint no';
+                  confirmHint.textContent='请选择 AI 节点';
+                } else if (confirmHint.textContent === '请选择 AI 节点') {
+                  confirmHint.className='gitsub-confirm-hint';
+                  confirmHint.textContent='';
+                }
+              }
+            });
           }
 
           checkBtn.addEventListener('click', function(){
@@ -446,10 +658,17 @@
           });
 
           submitBtn.addEventListener('click', function(){
+            if(!endpointReady()){
+              confirmHint.className='gitsub-confirm-hint no'; confirmHint.textContent='请选择 AI 节点';
+              return;
+            }
             submitBtn.disabled=true; submitSpin.hidden=false; submitLabel.textContent='提交中';
             confirmHint.className='gitsub-confirm-hint'; confirmHint.textContent='';
+            var body = new URLSearchParams();
+            if (endpointInput) body.set('agent_endpoint_id', selectedEndpointId());
             fetch(submitUrl,{method:'POST',credentials:'same-origin',
-              headers:{'X-Requested-With':'XMLHttpRequest'}})
+              headers:{'X-Requested-With':'XMLHttpRequest','Content-Type':'application/x-www-form-urlencoded'},
+              body: body.toString()})
               .then(function(r){return r.json();})
               .then(function(d){
                 submitSpin.hidden=true;
@@ -563,7 +782,7 @@
       {% else %}
         <div class="aj-subs">
           {% for s in user_submissions %}
-            {{ render_sub_card(s, competition, is_elo, is_agent_judge, max_score, false, false) }}
+            {{ render_sub_card(s, competition, is_elo, is_agent_judge, max_score, false, false, is_reverse_judge) }}
           {% endfor %}
         </div>
       {% endif %}
@@ -660,6 +879,10 @@
       </div>
       {% endif %}
 
+      {% if is_reverse_judge %}
+        {% include '_reverse_judge_detail_modal.html' %}
+      {% endif %}
+
       <script>
       (function () {
         function fmt(bytes) {
@@ -678,11 +901,14 @@
           });
           var baseModelInput = document.getElementById('rankingBaseModelInput');
           var modelOk = baseModelInput ? baseModelInput.value.trim().length > 0 : true;
-          var ok = filesOk && modelOk;
+          var endpointInput = document.getElementById('reverseAgentEndpointId');
+          var endpointOk = endpointInput ? endpointInput.value.trim().length > 0 : true;
+          var ok = filesOk && modelOk && endpointOk;
           btn.disabled = !ok;
           if (hint) {
             if (!filesOk) hint.textContent = '请选择文件';
             else if (!modelOk) hint.textContent = '请填写基座模型';
+            else if (!endpointOk) hint.textContent = '请选择 AI 节点';
             else hint.textContent = '就绪';
           }
         }
@@ -729,6 +955,10 @@
         var baseModelInput = document.getElementById('rankingBaseModelInput');
         if (baseModelInput) {
           baseModelInput.addEventListener('input', updateSubmit);
+        }
+        var endpointInput = document.getElementById('reverseAgentEndpointId');
+        if (endpointInput) {
+          endpointInput.addEventListener('change', updateSubmit);
         }
         var form = document.getElementById('rankingSubmitForm');
         if (form) {
@@ -1561,6 +1791,9 @@
                   </div>
                   <div class="lb-subs">
                     <i class="fas fa-paper-plane me-1"></i>{{ row.submission_count }} 次提交
+                    {% if is_reverse_judge and row.best_agent_endpoint_label %}
+                      <span class="lb-endpoint" title="AI 节点"><i class="fas fa-robot"></i>{{ row.best_agent_endpoint_label }}</span>
+                    {% endif %}
                   </div>
                 </div>
                 <div class="lb-score">
@@ -1895,6 +2128,7 @@
       </div>
 
       {% if is_agent_judge %}{% include '_judge_detail_modal.html' %}{% endif %}
+      {% if is_reverse_judge %}{% include '_reverse_judge_detail_modal.html' %}{% endif %}
 
       {% if total_subs == 0 %}
         <div class="card submissions-card">
@@ -2286,8 +2520,8 @@
       {% endif %}
     {% endif %}
 
-    {# ========== 批量评测（管理员 · 仅 Agent 评测） ========== #}
-    {% if tab == 'batch_eval' and is_admin and is_agent_judge %}
+    {# ========== 批量评测（管理员 · Agent 评测 / 反向评测） ========== #}
+    {% if tab == 'batch_eval' and is_admin and is_ai_judge %}
       <style>
         .bm-wrap{
           --ink:#18181b; --ink-2:#52525b; --muted:#a1a1aa; --faint:#d4d4d8;
@@ -2322,6 +2556,9 @@
           font-size:.85rem; padding:.5rem 1.5rem; border-radius:9px; cursor:pointer; transition:opacity .15s; }
         .bm-go:hover:not(:disabled){ opacity:.82; }
         .bm-go:disabled{ opacity:.38; cursor:not-allowed; }
+        .bm-node{ flex:0 1 300px; min-width:238px; }
+        .bm-node .rk-choice-trigger{ min-height:100%; }
+        .bm-node .rj-node-meta{ display:block; color:#8a929b; font-size:.72rem; font-weight:500; margin-top:.12rem; }
         /* —— class dropdown —— */
         .bm-dd{ position:relative; flex:0 0 auto; }
         .bm-dd-trigger{ height:100%; display:flex; align-items:center; gap:.7rem; cursor:pointer; background:var(--bg);
@@ -2418,6 +2655,54 @@
         <div class="bm-stage">
         <div class="bm-title"><i class="fas fa-layer-group" style="margin-right:.55rem;font-size:.9em"></i>批量评测</div>
         <div class="bm-bar">
+          {% if is_reverse_judge %}
+          {% macro bm_endpoint_label(ep) -%}
+            {%- set _h = ep.harness or 'claude_code' -%}
+            {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else _h)) -%}
+            {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
+          {%- endmacro %}
+          {% set bm_ep = namespace(default='') %}
+          {% for ep in aj_endpoints %}
+            {% if (ep.status or '') == 'enabled' and not bm_ep.default %}
+              {% set bm_ep.default = ep.id|string %}
+            {% endif %}
+          {% endfor %}
+          <input type="hidden" id="bmAgentEndpointId" value="{{ bm_ep.default }}">
+          <div class="bm-node">
+            <div class="rk-choice rk-choice-sm" data-rk-choice data-rk-choice-input="bmAgentEndpointId">
+              <button type="button" class="rk-choice-trigger" aria-haspopup="listbox" aria-expanded="false">
+                <span class="rk-choice-trigger-main">
+                  <i class="fas fa-robot" data-rk-choice-icon></i>
+                  <span data-rk-choice-label>
+                    {% if bm_ep.default %}
+                      {% for ep in aj_endpoints %}{% if ep.id|string == bm_ep.default %}{{ bm_endpoint_label(ep) }}{% endif %}{% endfor %}
+                    {% else %}无可用节点{% endif %}
+                  </span>
+                </span>
+                <i class="fas fa-chevron-down rk-choice-caret"></i>
+              </button>
+              <div class="rk-choice-menu" role="listbox" aria-label="AI 节点">
+                {% for ep in aj_endpoints %}
+                  {% if (ep.status or '') == 'enabled' %}
+                  <button type="button" class="rk-choice-option {% if ep.id|string == bm_ep.default %}active{% endif %}"
+                          role="option"
+                          aria-selected="{% if ep.id|string == bm_ep.default %}true{% else %}false{% endif %}"
+                          data-choice-value="{{ ep.id }}" data-choice-label="{{ bm_endpoint_label(ep) }}"
+                          data-choice-icon="fa-robot">
+                    <span class="rk-choice-option-main">
+                      <i class="fas fa-robot"></i>
+                      <span>
+                        <span class="rk-choice-option-name">{{ bm_endpoint_label(ep) }}</span>
+                      </span>
+                    </span>
+                    <i class="fas fa-check rk-choice-option-check"></i>
+                  </button>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+          {% endif %}
           {% if batch_classes %}
           <div class="bm-dd" id="bmClassDrop">
             <button type="button" class="bm-dd-trigger" id="bmClassTrigger" aria-haspopup="listbox" aria-expanded="false">
@@ -2494,6 +2779,7 @@
         var results = $('bmResults'), countEl = $('bmCount'), gridEl = $('bmGrid'), emptyEl = $('bmEmpty');
         var pagerEl = $('bmPager'), pageInfoEl = $('bmPageInfo'), selAllBtn = $('bmSelAll'), selCountEl = $('bmSelCount');
         var createBtn = $('bmCreate'), createMsg = $('bmCreateMsg'), labelEl = $('bmClassLabel');
+        var endpointEl = $('bmAgentEndpointId');
 
         function clsChecks() { return Array.prototype.slice.call(document.querySelectorAll('.bm-cls-cb')); }
         function selectedClasses() { return clsChecks().filter(function (c) { return c.checked; }).map(function (c) { return c.value; }); }
@@ -2528,12 +2814,14 @@
 
         function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (m) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]; }); }
         function selCount() { return Object.keys(state.selected).length; }
+        function endpointReady() { return !endpointEl || (endpointEl.value || '').trim().length > 0; }
         function updateSelUI() {
           var n = selCount();
           if (selCountEl) selCountEl.textContent = '已选 ' + n;
-          if (createBtn) createBtn.disabled = (n === 0);
+          if (createBtn) createBtn.disabled = (n === 0 || !endpointReady());
           if (selAllBtn) selAllBtn.textContent = (state.found.length > 0 && n === state.found.length) ? '取消全选' : '全选';
         }
+        if (endpointEl) endpointEl.addEventListener('change', updateSelUI);
 
         function renderPage() {
           var total = state.found.length, pages = Math.max(1, Math.ceil(total / PER_PAGE));
@@ -2633,13 +2921,16 @@
 
         if (createBtn) createBtn.addEventListener('click', function () {
           var usernames = Object.keys(state.selected); if (usernames.length === 0) return;
+          if (!endpointReady()) { createMsg.innerHTML = '<div class="bm-flash">请选择 AI 节点</div>'; return; }
           var template = (tmplEl.value || '').trim();
           if (!window.confirm('确认对 ' + usernames.length + ' 个仓库批量创建提交并评测？')) return;
           createBtn.disabled = true; createMsg.innerHTML = '<div class="bm-flash">创建中…</div>';
+          var payload = { template: template, usernames: usernames };
+          if (endpointEl) payload.agent_endpoint_id = (endpointEl.value || '').trim();
           fetch(createUrl, {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            body: JSON.stringify({ template: template, usernames: usernames })
+            body: JSON.stringify(payload)
           }).then(function (r) { return r.json(); })
             .then(function (d) {
               if (!d.success) { createMsg.innerHTML = '<div class="bm-flash">' + escapeHtml(d.message || '创建失败') + '</div>'; createBtn.disabled = false; return; }
@@ -2719,41 +3010,112 @@
             <div class="row mb-3 align-items-start">
               <div class="col-md-4">
                 <label class="form-label"><i class="fas fa-star-half-alt me-2 text-muted"></i>评分模式</label>
-                <select class="form-select" name="scoring_mode" id="scoringModeSelect">
-                  <option value="absolute"    {% if _mode == 'absolute'    %}selected{% endif %}>标准答案评分</option>
-                  <option value="elo"         {% if _mode == 'elo'         %}selected{% endif %}>ELO 对战</option>
-                  <option value="agent_judge" {% if _mode == 'agent_judge' %}selected{% endif %}>Agent 评测</option>
-                </select>
+                <input type="hidden" name="scoring_mode" id="scoringModeSelect" value="{{ _mode }}">
+                <div class="rk-choice" data-rk-choice data-rk-choice-input="scoringModeSelect">
+                  <button type="button" class="rk-choice-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="rk-choice-trigger-main">
+                      <i class="fas {% if _mode == 'elo' %}fa-chess{% elif _mode == 'agent_judge' %}fa-robot{% elif _mode == 'reverse_judge' %}fa-undo-alt{% else %}fa-award{% endif %}" data-rk-choice-icon></i>
+                      <span data-rk-choice-label>{% if _mode == 'elo' %}ELO 对战{% elif _mode == 'agent_judge' %}Agent 评测{% elif _mode == 'reverse_judge' %}反向评测{% else %}标准答案评分{% endif %}</span>
+                    </span>
+                    <i class="fas fa-chevron-down rk-choice-caret"></i>
+                  </button>
+                  <div class="rk-choice-menu" role="listbox" aria-label="评分模式">
+                    <button type="button" class="rk-choice-option {% if _mode == 'absolute' %}active{% endif %}" role="option"
+                            aria-selected="{% if _mode == 'absolute' %}true{% else %}false{% endif %}"
+                            data-choice-value="absolute" data-choice-label="标准答案评分" data-choice-icon="fa-award">
+                      <span class="rk-choice-option-main"><i class="fas fa-award"></i><span class="rk-choice-option-name">标准答案评分</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                    <button type="button" class="rk-choice-option {% if _mode == 'elo' %}active{% endif %}" role="option"
+                            aria-selected="{% if _mode == 'elo' %}true{% else %}false{% endif %}"
+                            data-choice-value="elo" data-choice-label="ELO 对战" data-choice-icon="fa-chess">
+                      <span class="rk-choice-option-main"><i class="fas fa-chess"></i><span class="rk-choice-option-name">ELO 对战</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                    <button type="button" class="rk-choice-option {% if _mode == 'agent_judge' %}active{% endif %}" role="option"
+                            aria-selected="{% if _mode == 'agent_judge' %}true{% else %}false{% endif %}"
+                            data-choice-value="agent_judge" data-choice-label="Agent 评测" data-choice-icon="fa-robot">
+                      <span class="rk-choice-option-main"><i class="fas fa-robot"></i><span class="rk-choice-option-name">Agent 评测</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                    <button type="button" class="rk-choice-option {% if _mode == 'reverse_judge' %}active{% endif %}" role="option"
+                            aria-selected="{% if _mode == 'reverse_judge' %}true{% else %}false{% endif %}"
+                            data-choice-value="reverse_judge" data-choice-label="反向评测" data-choice-icon="fa-undo-alt">
+                      <span class="rk-choice-option-main"><i class="fas fa-undo-alt"></i><span class="rk-choice-option-name">反向评测</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                  </div>
+                </div>
               </div>
               <div class="col-md-4 absolute-only" id="maxScoreField"
-                   {% if _mode == 'elo' %}style="display:none;"{% endif %}>
+                   {% if _mode != 'absolute' %}style="display:none;"{% endif %}>
                 <label class="form-label"><i class="fas fa-trophy me-2 text-muted"></i>满分</label>
                 <input type="number" class="form-control" name="max_score" value="{{ competition.max_score or 100 }}" min="1" max="100000">
               </div>
-              <div class="col-md-4 agent-judge-only" id="submissionMethodInline"
+              <div class="col-md-4 agent-method-only" id="submissionMethodInline"
                    {% if _mode != 'agent_judge' %}style="display:none;"{% endif %}>
                 <label class="form-label"><i class="fas fa-upload me-2 text-muted"></i>提交方式</label>
-                <select class="form-select" name="submission_method" id="submissionMethodSelect">
-                  <option value="zip" {% if _smethod == 'zip' %}selected{% endif %}>上传 ZIP 压缩包</option>
-                  <option value="git" {% if _smethod == 'git' %}selected{% endif %}>Git 仓库拉取</option>
-                </select>
+                <input type="hidden" name="submission_method" id="submissionMethodSelect" value="{{ _smethod }}">
+                <div class="rk-choice" data-rk-choice data-rk-choice-input="submissionMethodSelect">
+                  <button type="button" class="rk-choice-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="rk-choice-trigger-main">
+                      <i class="fas {% if _smethod == 'git' %}fa-code-branch{% else %}fa-file-archive{% endif %}" data-rk-choice-icon></i>
+                      <span data-rk-choice-label>{% if _smethod == 'git' %}Git 仓库拉取{% else %}上传 ZIP 压缩包{% endif %}</span>
+                    </span>
+                    <i class="fas fa-chevron-down rk-choice-caret"></i>
+                  </button>
+                  <div class="rk-choice-menu" role="listbox" aria-label="提交方式">
+                    <button type="button" class="rk-choice-option {% if _smethod == 'zip' %}active{% endif %}" role="option"
+                            aria-selected="{% if _smethod == 'zip' %}true{% else %}false{% endif %}"
+                            data-choice-value="zip" data-choice-label="上传 ZIP 压缩包" data-choice-icon="fa-file-archive">
+                      <span class="rk-choice-option-main"><i class="fas fa-file-archive"></i><span class="rk-choice-option-name">上传 ZIP 压缩包</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                    <button type="button" class="rk-choice-option {% if _smethod == 'git' %}active{% endif %}" role="option"
+                            aria-selected="{% if _smethod == 'git' %}true{% else %}false{% endif %}"
+                            data-choice-value="git" data-choice-label="Git 仓库拉取" data-choice-icon="fa-code-branch">
+                      <span class="rk-choice-option-main"><i class="fas fa-code-branch"></i><span class="rk-choice-option-name">Git 仓库拉取</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                  </div>
+                </div>
               </div>
               <div class="col-md-4 answer-format-field" id="answerFormatField"
-                   {% if _mode == 'agent_judge' %}style="display:none;"{% endif %}>
+                   {% if _mode in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
                 <label class="form-label"><i class="fas fa-file-code me-2 text-muted"></i>答案格式</label>
-                <select class="form-select" name="answer_format">
-                  <option value="json" {% if _fmt == 'json' %}selected{% endif %}>JSON（.json）</option>
-                  <option value="zip"  {% if _fmt == 'zip'  %}selected{% endif %}>ZIP 压缩包（.zip）</option>
-                </select>
+                <input type="hidden" name="answer_format" id="answerFormatSelect" value="{{ _fmt }}">
+                <div class="rk-choice" data-rk-choice data-rk-choice-input="answerFormatSelect">
+                  <button type="button" class="rk-choice-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="rk-choice-trigger-main">
+                      <i class="fas {% if _fmt == 'zip' %}fa-file-archive{% else %}fa-file-code{% endif %}" data-rk-choice-icon></i>
+                      <span data-rk-choice-label>{% if _fmt == 'zip' %}ZIP 压缩包（.zip）{% else %}JSON（.json）{% endif %}</span>
+                    </span>
+                    <i class="fas fa-chevron-down rk-choice-caret"></i>
+                  </button>
+                  <div class="rk-choice-menu" role="listbox" aria-label="答案格式">
+                    <button type="button" class="rk-choice-option {% if _fmt == 'json' %}active{% endif %}" role="option"
+                            aria-selected="{% if _fmt == 'json' %}true{% else %}false{% endif %}"
+                            data-choice-value="json" data-choice-label="JSON（.json）" data-choice-icon="fa-file-code">
+                      <span class="rk-choice-option-main"><i class="fas fa-file-code"></i><span class="rk-choice-option-name">JSON（.json）</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                    <button type="button" class="rk-choice-option {% if _fmt == 'zip' %}active{% endif %}" role="option"
+                            aria-selected="{% if _fmt == 'zip' %}true{% else %}false{% endif %}"
+                            data-choice-value="zip" data-choice-label="ZIP 压缩包（.zip）" data-choice-icon="fa-file-archive">
+                      <span class="rk-choice-option-main"><i class="fas fa-file-archive"></i><span class="rk-choice-option-name">ZIP 压缩包（.zip）</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                  </div>
+                </div>
               </div>
               <div class="col-md-4 agent-judge-only" id="submitLimitInline"
-                   {% if _mode != 'agent_judge' %}style="display:none;"{% endif %}>
+                   {% if _mode not in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
                 <label class="form-label"><i class="fas fa-hourglass-half me-2 text-muted"></i>每 48 小时提交次数</label>
                 <div class="rank-limit-control">
                   <input type="number" class="form-control" id="submitLimitAgentInput" name="submit_limit_per_window"
                          value="{{ competition.submit_limit_per_window if competition.submit_limit_per_window else '' }}"
                          min="0" max="100000" step="1"
-                         {% if _mode != 'agent_judge' %}disabled{% endif %}>
+                         {% if _mode not in ['agent_judge', 'reverse_judge'] %}disabled{% endif %}>
                   {% if competition.submit_limit_per_window %}
                   <button type="submit" class="btn btn-outline-secondary rank-limit-refresh-btn" form="rankingResetLimitForm"
                           title="刷新提交次数" aria-label="刷新提交次数">
@@ -2780,8 +3142,8 @@
               </div>
             </div>
             <div class="row mb-3 agent-judge-only" id="gitFormatRow"
-                 {% if _mode != 'agent_judge' %}style="display:none;"{% endif %}>
-              <div class="col-md-12" id="gitFormatField" {% if _smethod != 'git' %}style="display:none;"{% endif %}>
+                 {% if _mode not in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
+              <div class="col-md-12" id="gitFormatField" {% if _mode != 'reverse_judge' and _smethod != 'git' %}style="display:none;"{% endif %}>
                 <label class="form-label"><i class="fas fa-code-branch me-2 text-muted"></i>Git 仓库标准命名</label>
                 <input type="text" class="form-control" name="git_format"
                        value="{{ competition.git_format or '' }}"
@@ -2791,23 +3153,28 @@
             <script>
               (function(){
                 var ms=document.getElementById('submissionMethodSelect');
+                var modeSel=document.getElementById('scoringModeSelect');
                 var gf=document.getElementById('gitFormatField');
                 if(!ms||!gf) return;
-                function ap(){ gf.style.display=(ms.value==='git')?'':'none'; }
+                function ap(){
+                  var isReverse = modeSel && modeSel.value === 'reverse_judge';
+                  gf.style.display=(isReverse || ms.value==='git')?'':'none';
+                }
                 ms.addEventListener('change',ap); ap();
+                if(modeSel) modeSel.addEventListener('change',ap);
               })();
             </script>
 
             <!-- 每 48 小时提交次数限制 -->
             <div class="row mb-3 align-items-end non-agent-limit-row"
-                 {% if _mode == 'agent_judge' %}style="display:none;"{% endif %}>
+                 {% if _mode in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
               <div class="col-md-4">
                 <label class="form-label"><i class="fas fa-hourglass-half me-2 text-muted"></i>每 48 小时提交次数</label>
                 <div class="rank-limit-control">
                   <input type="number" class="form-control" id="submitLimitStandardInput" name="submit_limit_per_window"
                          value="{{ competition.submit_limit_per_window if competition.submit_limit_per_window else '' }}"
                          min="0" max="100000" step="1"
-                         {% if _mode == 'agent_judge' %}disabled{% endif %}>
+                         {% if _mode in ['agent_judge', 'reverse_judge'] %}disabled{% endif %}>
                   {% if competition.submit_limit_per_window %}
                   <button type="submit" class="btn btn-outline-secondary rank-limit-refresh-btn" form="rankingResetLimitForm"
                           title="刷新提交次数" aria-label="刷新提交次数">
@@ -2882,39 +3249,58 @@
                 function applyMode() {
                   var isElo = (sel.value === 'elo');
                   var isAgent = (sel.value === 'agent_judge');
+                  var isReverse = (sel.value === 'reverse_judge');
+                  var isAi = isAgent || isReverse;
                   var blk = document.getElementById('eloParamsBlock');
                   if (blk) blk.style.display = isElo ? '' : 'none';
                   var run = document.getElementById('eloRunControlBlock');
                   if (run) run.style.display = isElo ? '' : 'none';
-                  // 绝对分专属字段：仅在绝对分模式显示（ELO / Agent 均隐藏）
+                  // 绝对分专属字段：仅在绝对分模式显示（ELO / AI 评测类均隐藏）
                   document.querySelectorAll('.absolute-only').forEach(function (el) {
-                    el.style.display = (isElo || isAgent) ? 'none' : '';
+                    el.style.display = (isElo || isAi) ? 'none' : '';
                   });
-                  // Agent 评测专属卡片：仅在 Agent 模式显示
+                  // AI 评测类共享卡片：端点池、Git 命名、提交次数
                   document.querySelectorAll('.agent-judge-only').forEach(function (el) {
+                    el.style.display = isAi ? '' : 'none';
+                  });
+                  document.querySelectorAll('.agent-method-only').forEach(function (el) {
                     el.style.display = isAgent ? '' : 'none';
                   });
-                  // 评测脚本卡片 + 评测脚本超时栏在 Agent 模式下无意义，隐藏
+                  document.querySelectorAll('.agent-rules-only').forEach(function (el) {
+                    el.style.display = isAgent ? '' : 'none';
+                  });
+                  document.querySelectorAll('.reverse-finalize-only').forEach(function (el) {
+                    el.style.display = isReverse ? '' : 'none';
+                  });
+                  document.querySelectorAll('.agent-orchestration-only').forEach(function (el) {
+                    el.style.display = isReverse ? 'none' : '';
+                  });
+                  document.querySelectorAll('.aje-settings').forEach(function (el) {
+                    el.classList.toggle('reverse-timeout-settings', isReverse);
+                  });
+                  // 管理员上传评测脚本在 AI 评测类下无意义；脚本超时对反向评测的 judge.sh 仍有效。
                   document.querySelectorAll('.script-card').forEach(function (el) {
-                    el.style.display = isAgent ? 'none' : '';
+                    el.style.display = isAi ? 'none' : '';
                   });
                   document.querySelectorAll('.script-timeout-row').forEach(function (el) {
                     el.style.display = isAgent ? 'none' : '';
                   });
-                  // Agent 评测不使用答案格式字段。
+                  // AI 评测类不使用答案格式字段。
                   document.querySelectorAll('.answer-format-field').forEach(function (el) {
-                    el.style.display = isAgent ? 'none' : '';
+                    el.style.display = isAi ? 'none' : '';
                   });
                   document.querySelectorAll('.non-agent-limit-row').forEach(function (el) {
-                    el.style.display = isAgent ? 'none' : '';
+                    el.style.display = isAi ? 'none' : '';
                   });
                   var limitAgent = document.getElementById('submitLimitAgentInput');
                   var limitStandard = document.getElementById('submitLimitStandardInput');
+                  var finalizeInput = document.getElementById('reverseFinalizeTimeout');
+                  if (finalizeInput) finalizeInput.disabled = !isReverse;
                   if (limitAgent && limitStandard) {
-                    if (isAgent) limitAgent.value = limitStandard.value;
+                    if (isAi) limitAgent.value = limitStandard.value;
                     else limitStandard.value = limitAgent.value;
-                    limitAgent.disabled = !isAgent;
-                    limitStandard.disabled = isAgent;
+                    limitAgent.disabled = !isAi;
+                    limitStandard.disabled = isAi;
                   }
                 }
                 sel.addEventListener('change', applyMode);
@@ -2969,7 +3355,7 @@
       <!-- 评测脚本 -->
       {% set script_required = (edit_mode in ['absolute', 'elo']) %}
       <div class="card mb-3 script-card {% if script_required and not competition.scoring_script_name %}border-warning{% endif %}"
-           {% if edit_mode == 'agent_judge' %}style="display:none;"{% endif %}>
+           {% if edit_mode in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
         <div class="card-header">
           <i class="fas fa-scroll me-2"></i> 评测脚本（.py，必填）
         </div>
@@ -3142,6 +3528,10 @@
           align-items:end;
           gap:.58rem;
         }
+        .aje-settings.reverse-timeout-settings {
+          grid-template-columns:repeat(2, minmax(130px, 152px));
+          justify-content:start;
+        }
         .aje-setting { display:flex; flex-direction:column; gap:.3rem; min-width:0; }
         .aje-setting-label {
           display:inline-flex;
@@ -3160,20 +3550,43 @@
           border:1px solid var(--line-strong);
           border-radius:8px;
           background:#fff;
-          color:var(--muted);
           overflow:hidden;
         }
-        .aje-timeout input {
-          width:78px;
+        .aje-timeout-step {
+          width:30px;
           height:100%;
           border:0;
-          padding:.28rem .5rem;
+          display:inline-flex;
+          align-items:center;
+          justify-content:center;
+          background:#f4f6f8;
+          color:#5f6873;
+          font-size:.72rem;
+          cursor:pointer;
+          transition:background-color .15s ease, color .15s ease;
+        }
+        .aje-timeout-step:hover { background:#e8edf2; color:var(--ink); }
+        .aje-timeout-step:disabled { opacity:.42; cursor:not-allowed; }
+        .aje-timeout input {
+          width:72px;
+          height:100%;
+          border:0;
+          padding:.28rem .38rem;
           font-family:var(--mono);
           background:#fff;
           color:var(--ink);
+          text-align:center;
         }
         .aje-timeout input:focus { outline:none; background:#fff; }
-        .aje-timeout-unit { padding:0 .55rem 0 .2rem; font-size:.78rem; }
+        .aje-timeout-unit {
+          flex:0 0 auto;
+          align-self:stretch;
+          display:inline-flex;
+          align-items:center;
+          padding:0 .46rem 0 .08rem;
+          color:var(--muted);
+          font-size:.78rem;
+        }
         .aje-mode .aje-harness-picker { width:100%; }
         .aje-mode .aje-harness-trigger { height:34px; border-radius:8px; padding:.28rem .48rem; font-size:.82rem; }
         .aje-mode .aje-harness-menu { min-width:100%; }
@@ -3367,8 +3780,8 @@
         }
       </style>
       <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
-           {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
-        <div class="card-header"><i class="fas fa-robot me-2"></i> Agent 评测模型端点</div>
+           {% if edit_mode not in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
+        <div class="card-header"><i class="fas fa-robot me-2"></i> AI 评测模型端点</div>
         <div class="card-body aje">
           <div class="aje-shell">
             <div class="aje-head">
@@ -3387,58 +3800,91 @@
             </div>
             <div id="ajeEditor" class="aje-grid"></div>
             <div class="aje-foot">
-              <div class="aje-settings">
+              <div class="aje-settings {% if edit_mode == 'reverse_judge' %}reverse-timeout-settings{% endif %}">
+                {% set _aj_timeout_label = 'AI 作答超时' if edit_mode == 'reverse_judge' else '单次评测超时' %}
                 <label class="aje-setting aje-timeout">
-                  <span class="aje-setting-label"><i class="fas fa-clock me-2"></i>超时</span>
-                  <span class="aje-timeout-control">
-                    <input type="number" id="ajeTimeout" min="60" max="7200" step="1"
+                  <span class="aje-setting-label"><i class="fas fa-clock me-2"></i>{{ _aj_timeout_label }}</span>
+                  <span class="aje-timeout-control" data-timeout-control data-min="60" data-max="7200" data-step="60">
+                    <button type="button" class="aje-timeout-step" data-timeout-delta="-60"
+                            title="减少" aria-label="减少 AI 作答超时">
+                      <i class="fas fa-minus"></i>
+                    </button>
+                    <input type="text" id="ajeTimeout" inputmode="numeric" pattern="[0-9]*"
                            value="{{ competition.agent_judge_timeout_seconds or 1800 }}"
-                           aria-label="单次评测超时">
+                           aria-label="{{ _aj_timeout_label }}">
                     <span class="aje-timeout-unit">秒</span>
+                    <button type="button" class="aje-timeout-step" data-timeout-delta="60"
+                            title="增加" aria-label="增加 AI 作答超时">
+                      <i class="fas fa-plus"></i>
+                    </button>
                   </span>
                 </label>
-                {% set _aj_orch_raw = (competition.agent_judge_orchestration_mode or 'single')|lower|replace('-', '_') %}
-                {% set _aj_orch = 'topological' if _aj_orch_raw in ['topo', 'topology', 'topological', 'topologica', 'topologi', 'topolog', 'topolo', 'topol', 'dag'] else 'single' %}
-                <div class="aje-setting aje-mode">
-                  <span class="aje-setting-label"><i class="fas fa-diagram-project me-2"></i>编排</span>
-                  <input type="hidden" id="ajeOrchestrationMode"
-                         name="agent_judge_orchestration_mode" form="rankingEditForm"
-                         value="{% if _aj_orch == 'topological' %}topological{% else %}single{% endif %}">
-                  <div class="aje-harness-picker" id="ajeOrchestrationPicker">
-                    <button type="button" class="aje-harness-trigger" id="ajeOrchestrationTrigger"
-                            aria-haspopup="listbox" aria-expanded="false">
-                      <span class="aje-harness-trigger-main">
-                        <i class="fas {% if _aj_orch == 'topological' %}fa-diagram-project{% else %}fa-layer-group{% endif %}" id="ajeOrchestrationIcon"></i>
-                        <span id="ajeOrchestrationLabel">{% if _aj_orch == 'topological' %}拓扑序编排{% else %}一次性评测{% endif %}</span>
-                      </span>
-                      <i class="fas fa-chevron-down aje-harness-caret"></i>
+                <label class="aje-setting aje-timeout reverse-finalize-only"
+                       {% if edit_mode != 'reverse_judge' %}style="display:none;"{% endif %}>
+                  <span class="aje-setting-label"><i class="fas fa-hourglass-end me-2"></i>收尾超时</span>
+                  <span class="aje-timeout-control" data-timeout-control data-min="30" data-max="7200" data-step="30">
+                    <button type="button" class="aje-timeout-step" data-timeout-delta="-30"
+                            title="减少" aria-label="减少收尾超时">
+                      <i class="fas fa-minus"></i>
                     </button>
-                    <div class="aje-harness-menu" id="ajeOrchestrationMenu" role="listbox" aria-label="评测编排">
-                      <button type="button" class="aje-harness-option {% if _aj_orch != 'topological' %}active{% endif %}" role="option"
-                              aria-selected="{% if _aj_orch == 'topological' %}false{% else %}true{% endif %}" data-choice-value="single"
-                              data-choice-label="一次性评测" data-choice-icon="fa-layer-group">
-                        <span class="aje-harness-option-main">
-                          <i class="fas fa-layer-group"></i>
-                          <span>
-                            <span class="aje-harness-option-name">一次性评测</span>
-                          </span>
+                    <input type="text" id="reverseFinalizeTimeout"
+                           name="reverse_judge_finalize_timeout_seconds"
+                           form="rankingEditForm"
+                           inputmode="numeric" pattern="[0-9]*"
+                           value="{{ competition.reverse_judge_finalize_timeout_seconds or 180 }}"
+                           {% if edit_mode != 'reverse_judge' %}disabled{% endif %}
+                           aria-label="收尾超时">
+                    <span class="aje-timeout-unit">秒</span>
+                    <button type="button" class="aje-timeout-step" data-timeout-delta="30"
+                            title="增加" aria-label="增加收尾超时">
+                      <i class="fas fa-plus"></i>
+                    </button>
+                  </span>
+                </label>
+                {% if edit_mode != 'reverse_judge' %}
+                  {% set _aj_orch_raw = (competition.agent_judge_orchestration_mode or 'single')|lower|replace('-', '_') %}
+                  {% set _aj_orch = 'topological' if _aj_orch_raw in ['topo', 'topology', 'topological', 'topologica', 'topologi', 'topolog', 'topolo', 'topol', 'dag'] else 'single' %}
+                  <div class="aje-setting aje-mode agent-orchestration-only">
+                    <span class="aje-setting-label"><i class="fas fa-diagram-project me-2"></i>编排</span>
+                    <input type="hidden" id="ajeOrchestrationMode"
+                           name="agent_judge_orchestration_mode" form="rankingEditForm"
+                           value="{% if _aj_orch == 'topological' %}topological{% else %}single{% endif %}">
+                    <div class="aje-harness-picker" id="ajeOrchestrationPicker">
+                      <button type="button" class="aje-harness-trigger" id="ajeOrchestrationTrigger"
+                              aria-haspopup="listbox" aria-expanded="false">
+                        <span class="aje-harness-trigger-main">
+                          <i class="fas {% if _aj_orch == 'topological' %}fa-diagram-project{% else %}fa-layer-group{% endif %}" id="ajeOrchestrationIcon"></i>
+                          <span id="ajeOrchestrationLabel">{% if _aj_orch == 'topological' %}拓扑序编排{% else %}一次性评测{% endif %}</span>
                         </span>
-                        <i class="fas fa-check aje-harness-option-check"></i>
+                        <i class="fas fa-chevron-down aje-harness-caret"></i>
                       </button>
-                      <button type="button" class="aje-harness-option {% if _aj_orch == 'topological' %}active{% endif %}" role="option"
-                              aria-selected="{% if _aj_orch == 'topological' %}true{% else %}false{% endif %}" data-choice-value="topological"
-                              data-choice-label="拓扑序编排" data-choice-icon="fa-diagram-project">
-                        <span class="aje-harness-option-main">
-                          <i class="fas fa-diagram-project"></i>
-                          <span>
-                            <span class="aje-harness-option-name">拓扑序编排</span>
+                      <div class="aje-harness-menu" id="ajeOrchestrationMenu" role="listbox" aria-label="评测编排">
+                        <button type="button" class="aje-harness-option {% if _aj_orch != 'topological' %}active{% endif %}" role="option"
+                                aria-selected="{% if _aj_orch == 'topological' %}false{% else %}true{% endif %}" data-choice-value="single"
+                                data-choice-label="一次性评测" data-choice-icon="fa-layer-group">
+                          <span class="aje-harness-option-main">
+                            <i class="fas fa-layer-group"></i>
+                            <span>
+                              <span class="aje-harness-option-name">一次性评测</span>
+                            </span>
                           </span>
-                        </span>
-                        <i class="fas fa-check aje-harness-option-check"></i>
-                      </button>
+                          <i class="fas fa-check aje-harness-option-check"></i>
+                        </button>
+                        <button type="button" class="aje-harness-option {% if _aj_orch == 'topological' %}active{% endif %}" role="option"
+                                aria-selected="{% if _aj_orch == 'topological' %}true{% else %}false{% endif %}" data-choice-value="topological"
+                                data-choice-label="拓扑序编排" data-choice-icon="fa-diagram-project">
+                          <span class="aje-harness-option-main">
+                            <i class="fas fa-diagram-project"></i>
+                            <span>
+                              <span class="aje-harness-option-name">拓扑序编排</span>
+                            </span>
+                          </span>
+                          <i class="fas fa-check aje-harness-option-check"></i>
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                {% endif %}
               </div>
               <div class="aje-actions">
                 <span class="small" id="ajeHint"></span>
@@ -3608,6 +4054,51 @@
         var harnessPickerCtrl = null;
         var statusPickerCtrl = null;
         var orchPickerCtrl = null;
+        function clampNumber(value, min, max, fallback){
+          var n = parseInt(value, 10);
+          if (!Number.isFinite(n)) n = fallback;
+          if (!Number.isFinite(n)) n = min;
+          return Math.max(min, Math.min(max, n));
+        }
+        function initTimeoutControls(){
+          document.querySelectorAll('[data-timeout-control]').forEach(function(ctrl){
+            var input = ctrl.querySelector('input');
+            if (!input) return;
+            var min = parseInt(ctrl.getAttribute('data-min'), 10) || 1;
+            var max = parseInt(ctrl.getAttribute('data-max'), 10) || 7200;
+            var step = parseInt(ctrl.getAttribute('data-step'), 10) || 60;
+            function normalize(){
+              input.value = String(clampNumber(input.value, min, max, min));
+            }
+            ctrl.querySelectorAll('[data-timeout-delta]').forEach(function(btn){
+              btn.addEventListener('click', function(){
+                if (input.disabled) return;
+                var delta = parseInt(btn.getAttribute('data-timeout-delta'), 10) || step;
+                var current = clampNumber(input.value, min, max, min);
+                input.value = String(clampNumber(current + delta, min, max, min));
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+              });
+            });
+            input.addEventListener('input', function(){
+              input.value = input.value.replace(/[^\d]/g, '');
+            });
+            input.addEventListener('blur', normalize);
+            normalize();
+          });
+          var form = document.getElementById('rankingEditForm');
+          if (form && !form.__ajeTimeoutBound) {
+            form.__ajeTimeoutBound = true;
+            form.addEventListener('submit', function(){
+              document.querySelectorAll('[data-timeout-control]').forEach(function(ctrl){
+                var input = ctrl.querySelector('input');
+                if (!input || input.disabled) return;
+                var min = parseInt(ctrl.getAttribute('data-min'), 10) || 1;
+                var max = parseInt(ctrl.getAttribute('data-max'), 10) || 7200;
+                input.value = String(clampNumber(input.value, min, max, min));
+              });
+            });
+          }
+        }
         function normalizeStatus(e){
           var raw = e && e.status ? String(e.status).toLowerCase() : (e && e.enabled ? 'enabled' : 'disabled');
           return (raw === 'paused' || raw === 'disabled') ? raw : 'enabled';
@@ -3634,6 +4125,7 @@
                     has_key: !!e.has_key, api_key: ''};
           });
         }
+        initTimeoutControls();
         var eps = fromServer(window.__AJ_ENDPOINTS__);
         function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
         function totalConc(){ return eps.reduce(function(s,e){ return s + (isEnabled(e) ? (parseInt(e.concurrency_limit)||0) : 0); }, 0); }
@@ -3827,14 +4319,22 @@
           var hint = document.getElementById('ajeHint');
           var orchEl = document.getElementById('ajeOrchestrationMode');
           var orchMode = orchPickerCtrl ? orchPickerCtrl.value() : (orchEl ? (orchEl.value || 'single') : 'single');
-          var payload = { timeout_seconds: parseInt(document.getElementById('ajeTimeout').value)||1800,
-            orchestration_mode: orchMode,
-            agent_judge_orchestration_mode: orchMode,
+          var finalizeInput = document.getElementById('reverseFinalizeTimeout');
+          var modeInput = document.getElementById('scoringModeSelect');
+          var answerTimeout = document.getElementById('ajeTimeout');
+          var payload = { timeout_seconds: clampNumber(answerTimeout ? answerTimeout.value : 1800, 60, 7200, 1800),
             endpoints: eps.map(function(e){ return {id:e.id, harness:e.harness || 'claude_code',
               base_url:(e.base_url||'').trim(),
               api_key:(e.api_key||'').trim(), model:(e.model||'').trim(),
               concurrency_limit: parseInt(e.concurrency_limit)||1, status: normalizeStatus(e),
               enabled: isEnabled(e) }; }) };
+          if (finalizeInput && modeInput && modeInput.value === 'reverse_judge') {
+            payload.reverse_judge_finalize_timeout_seconds = clampNumber(finalizeInput.value, 30, 7200, 180);
+          }
+          if (orchEl || orchPickerCtrl) {
+            payload.orchestration_mode = orchMode;
+            payload.agent_judge_orchestration_mode = orchMode;
+          }
           hint.style.color = '#70757c'; hint.textContent = '保存中…';
           fetch(window.__SAVE_AJ_ENDPOINTS_URL__, {
             method:'POST', credentials:'same-origin',
@@ -3845,6 +4345,9 @@
             hint.style.color='#1f7a4d';
             hint.textContent = '已保存';
             if (orchPickerCtrl && d.orchestration_mode) orchPickerCtrl.setValue(d.orchestration_mode);
+            if (finalizeInput && d.reverse_judge_finalize_timeout_seconds) {
+              finalizeInput.value = d.reverse_judge_finalize_timeout_seconds;
+            }
             eps = fromServer(d.endpoints);   // 用服务端回传刷新（含新 id/has_key），保证下次保存能保留未改动的 key
             render();
           }).catch(function(){ hint.style.color='#b03a2e'; hint.textContent='网络错误'; });
@@ -4036,7 +4539,7 @@
           .aj-topo-main{max-width:100%;}
         }
       </style>
-      <div class="card mb-3 agent-judge-only" id="agentJudgeRulesCard"
+      <div class="card mb-3 agent-rules-only" id="agentJudgeRulesCard"
            {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
         <div class="card-header"><i class="fas fa-list-check me-2"></i> 评分规则</div>
         <div class="card-body aj-rules">
@@ -5945,6 +6448,16 @@
     color: #868e96;
     margin-top: 0.15rem;
   }
+  .lb-endpoint {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    margin-left: 0.55rem;
+    color: #495057;
+    font-family: "Menlo", "SF Mono", ui-monospace, monospace;
+    font-size: 0.76rem;
+  }
+  .lb-endpoint i { color: #868e96; font-size: 0.72rem; }
 
   .lb-score {
     display: flex;
@@ -6741,6 +7254,81 @@
     font-size: 0.75rem;
   }
 </style>
+
+<script>
+(function () {
+  var pickers = Array.prototype.slice.call(document.querySelectorAll('[data-rk-choice]'));
+  if (!pickers.length) return;
+
+  function closeAll(except) {
+    pickers.forEach(function (picker) {
+      if (picker !== except) {
+        picker.classList.remove('open');
+        var trigger = picker.querySelector('.rk-choice-trigger');
+        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  function setPickerValue(picker, value, notify) {
+    var input = document.getElementById(picker.getAttribute('data-rk-choice-input') || '');
+    var trigger = picker.querySelector('.rk-choice-trigger');
+    var label = picker.querySelector('[data-rk-choice-label]');
+    var icon = picker.querySelector('[data-rk-choice-icon]');
+    var options = Array.prototype.slice.call(picker.querySelectorAll('[data-choice-value]'));
+    var selected = options.find(function (option) {
+      return option.getAttribute('data-choice-value') === value;
+    }) || options[0];
+    if (!input || !selected) return;
+    input.value = selected.getAttribute('data-choice-value') || '';
+    if (label) label.textContent = selected.getAttribute('data-choice-label') || selected.textContent.trim();
+    if (icon) icon.className = 'fas ' + (selected.getAttribute('data-choice-icon') || 'fa-circle');
+    options.forEach(function (option) {
+      var active = option === selected;
+      option.classList.toggle('active', active);
+      option.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    if (trigger) trigger.setAttribute('aria-expanded', picker.classList.contains('open') ? 'true' : 'false');
+    if (notify) input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  pickers.forEach(function (picker) {
+    var input = document.getElementById(picker.getAttribute('data-rk-choice-input') || '');
+    var trigger = picker.querySelector('.rk-choice-trigger');
+    var menu = picker.querySelector('.rk-choice-menu');
+    if (!input || !trigger || !menu) return;
+    setPickerValue(picker, input.value, false);
+    trigger.addEventListener('click', function (event) {
+      event.stopPropagation();
+      var willOpen = !picker.classList.contains('open');
+      closeAll(picker);
+      picker.classList.toggle('open', willOpen);
+      trigger.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    });
+    trigger.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        trigger.click();
+      } else if (event.key === 'Escape') {
+        picker.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+      }
+    });
+    menu.addEventListener('click', function (event) {
+      var option = event.target.closest('[data-choice-value]');
+      if (!option) return;
+      setPickerValue(picker, option.getAttribute('data-choice-value'), true);
+      picker.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+    });
+  });
+
+  document.addEventListener('click', function (event) {
+    var inside = pickers.some(function (picker) { return picker.contains(event.target); });
+    if (!inside) closeAll(null);
+  });
+})();
+</script>
 
 <!-- 附件图片/视频预览器（图片查看器 + 视频播放器） -->
 <div class="modal fade" id="rkMediaViewer" tabindex="-1" aria-hidden="true">

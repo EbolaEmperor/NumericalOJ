@@ -153,6 +153,7 @@ ADMIN_EXTRA_COMMAND_PATHS = [
     ["ranking", "save-config"],
     ["ranking", "save-rules"],
     ["ranking", "save-endpoints"],
+    ["ranking", "save-endpoint"],
     ["ranking", "batch-probe"],
     ["ranking", "batch-status"],
     ["ranking", "batch-create"],
@@ -169,6 +170,7 @@ ADMIN_EXTRA_COMMAND_PATHS = [
     ["ranking", "elo-delete-match"],
     ["ranking", "elo-rebuild"],
     ["ranking", "delete-submission"],
+    ["ranking", "reverse-stream"],
     ["ranking", "submissions"],
     ["ranking", "submit-zip"],
 ]
