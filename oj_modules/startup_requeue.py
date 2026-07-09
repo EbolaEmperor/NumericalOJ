@@ -53,7 +53,12 @@ _PENDING_REQUEUE_ITEM_KEY_FMT = "submission:{submission_id}:pending_requeue"
 _RANKING_REQUEUE_ITEM_KEY_FMT = "ranking_submission:{submission_id}:pending_requeue"
 _AGENT_JUDGE_STARTUP_GUARD_KEY = "ranking:agent_judge:startup_recovery_guard"
 _AGENT_JUDGE_TASK_NAME = "oj.ranking_agent_judge"
-_BROKER_PURGE_TASK_NAMES = {_AGENT_JUDGE_TASK_NAME, PENDING_REQUEUE_WATCHDOG_TASK_NAME}
+_REVERSE_JUDGE_TASK_NAME = "oj.ranking_reverse_judge"
+_BROKER_PURGE_TASK_NAMES = {
+    _AGENT_JUDGE_TASK_NAME,
+    _REVERSE_JUDGE_TASK_NAME,
+    PENDING_REQUEUE_WATCHDOG_TASK_NAME,
+}
 _PENDING_REQUEUE_INTERVAL_SECONDS = 300
 _PENDING_REQUEUE_OWNER_TTL_SECONDS = _PENDING_REQUEUE_INTERVAL_SECONDS * 3
 _PENDING_REQUEUE_GRACE_SECONDS = 180
@@ -187,11 +192,11 @@ def _broker_list_keys(redis_client):
 
 
 def _purge_agent_judge_broker_messages(redis_client):
-    """受控重启恢复前，丢弃 Redis broker 里的旧 Agent Judge retry/投递消息。
+    """受控重启恢复前，丢弃 Redis broker 里的旧 AI 评测类 retry/投递消息。
 
-    DB 是 Agent Judge 的恢复源。重启时如果保留旧 Celery retry/ETA/unacked 消息，
+    DB 是 Agent/反向评测的恢复源。重启时如果保留旧 Celery retry/ETA/unacked 消息，
     它们会和新 attempt 竞争，导致新入队任务被旧消息刷新/跳过。这里只精确删除
-    `oj.ranking_agent_judge`，不清普通评测队列和 Celery backend。
+    AI 评测类任务，不清普通评测队列和 Celery backend。
     """
     if redis_client is None:
         return {'ready': 0, 'unacked': 0, 'claims': 0}
@@ -275,6 +280,16 @@ def _active_agent_judge_submission_ids(redis_client):
     active_ids = set()
     try:
         for key in redis_client.scan_iter(match='ranking:judge:lock:*', count=200):
+            parts = str(key or '').split(':')
+            if len(parts) >= 4:
+                try:
+                    active_ids.add(int(parts[3]))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        for key in redis_client.scan_iter(match='ranking:reverse_judge:lock:*', count=200):
             parts = str(key or '').split(':')
             if len(parts) >= 4:
                 try:
@@ -465,13 +480,14 @@ def _requeue_programming_submissions(evaluate_task, written_task, promptly_task=
     return requeued
 
 
-def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_judge_task=None):
+def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task,
+                                 agent_judge_task=None, reverse_judge_task=None):
     """重新入队卡在 'Judging' 的打榜赛提交。
 
     - 绝对分模式：直接 .delay() 给评测任务；
     - ELO 模式：正式带入对战池（init_submission_elo_state -> Active）并补发
       initial-burst；池中 Active 的提交由已重新 seed 的 matchmaker tick 接管。
-    - Agent 评测模式：重新 .apply_async() 给 Agent 评测任务。
+    - Agent/反向评测模式：重新 .apply_async() 给对应 AI 评测任务。
     """
     requeued = 0
     try:
@@ -503,6 +519,12 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_jud
                         agent_judge_task, row, requeue_index=requeued,
                     ):
                         requeued += 1
+            elif scoring_mode == 'reverse_judge':
+                if reverse_judge_task is not None:
+                    if _enqueue_agent_judge_recovery(
+                        reverse_judge_task, row, requeue_index=requeued,
+                    ):
+                        requeued += 1
             elif scoring_mode == 'elo':
                 initial_rating = float(row.get('elo_initial_rating') or 1500)
                 init_submission_elo_state(sub_id, initial_rating)
@@ -521,9 +543,9 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_jud
     return requeued
 
 
-def _requeue_orphaned_agent_judge_submissions(agent_judge_task):
-    """周期性回收 DB 停在 Queued/Judging、但已没有活任务的 Agent 评测记录。"""
-    if agent_judge_task is None:
+def _requeue_orphaned_agent_judge_submissions(agent_judge_task, reverse_judge_task=None):
+    """周期性回收 DB 停在 Queued/Judging、但已没有活任务的 AI 评测类记录。"""
+    if agent_judge_task is None and reverse_judge_task is None:
         return 0
 
     redis_client = _redis_client()
@@ -547,17 +569,21 @@ def _requeue_orphaned_agent_judge_submissions(agent_judge_task):
     for row in rows:
         if requeued >= _PENDING_REQUEUE_MAX_PER_TICK:
             break
-        if str(row.get('scoring_mode') or '').strip().lower() != 'agent_judge':
+        mode = str(row.get('scoring_mode') or '').strip().lower()
+        if mode not in ('agent_judge', 'reverse_judge'):
             continue
         sub_id = row.get('id')
         if sub_id is None:
             continue
-        if is_completed_agent_judge_submission(row):
+        task = reverse_judge_task if mode == 'reverse_judge' else agent_judge_task
+        if task is None:
+            continue
+        if mode == 'agent_judge' and is_completed_agent_judge_submission(row):
             continue
         if int(sub_id) in active_submission_ids:
             skipped_active += 1
             continue
-        if not _agent_judge_orphaned(row, active_submission_ids, agent_judge_task):
+        if not _agent_judge_orphaned(row, active_submission_ids, task):
             continue
         if not _claim_watchdog_requeue(
             redis_client,
@@ -569,7 +595,7 @@ def _requeue_orphaned_agent_judge_submissions(agent_judge_task):
 
         try:
             if _enqueue_agent_judge_recovery(
-                agent_judge_task, row, requeue_index=requeued,
+                task, row, requeue_index=requeued,
             ):
                 requeued += 1
             else:
@@ -588,19 +614,25 @@ def _requeue_orphaned_agent_judge_submissions(agent_judge_task):
 
     if requeued or skipped_active or skipped_claimed:
         print(
-            f"[PendingRequeue] agent_judge 扫描完成：重新入队 {requeued} 条，"
+            f"[PendingRequeue] AI 评测类扫描完成：重新入队 {requeued} 条，"
             f"跳过活跃任务 {skipped_active} 条，跳过已抢占 {skipped_claimed} 条。"
         )
     return requeued
 
 
 def requeue_pending_on_startup(*, evaluate_task, written_task, promptly_task=None,
-                               ranking_task, elo_initial_burst_task, agent_judge_task=None):
+                               ranking_task, elo_initial_burst_task,
+                               agent_judge_task=None, reverse_judge_task=None):
     """启动时扫描 MySQL 并重新入队所有未完成任务（程序题 / 书面作业 / 打榜赛）。"""
     try:
         _purge_agent_judge_broker_messages(_redis_client())
         prog = _requeue_programming_submissions(evaluate_task, written_task, promptly_task=promptly_task)
-        rank = _requeue_ranking_submissions(ranking_task, elo_initial_burst_task, agent_judge_task)
+        rank = _requeue_ranking_submissions(
+            ranking_task,
+            elo_initial_burst_task,
+            agent_judge_task,
+            reverse_judge_task,
+        )
         print(
             f"[StartupRequeue] 启动重新入队完成："
             f"程序题/书面作业 {prog} 条，打榜赛 {rank} 条。"
@@ -611,7 +643,8 @@ def requeue_pending_on_startup(*, evaluate_task, written_task, promptly_task=Non
 
 def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_task,
                                            promptly_task=None,
-                                           agent_judge_task=None):
+                                           agent_judge_task=None,
+                                           reverse_judge_task=None):
     """注册周期性 Pending 回收任务。
 
     不依赖 celery beat：任务运行结束前会自我调度下一跳，和 ELO matchmaker 一样用
@@ -662,7 +695,9 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
                 promptly_task=promptly_task,
                 source='watchdog',
             )
-            agent_requeued = _requeue_orphaned_agent_judge_submissions(agent_judge_task)
+            agent_requeued = _requeue_orphaned_agent_judge_submissions(
+                agent_judge_task, reverse_judge_task,
+            )
         finally:
             try:
                 self.apply_async(args=[owner_id], countdown=_PENDING_REQUEUE_INTERVAL_SECONDS)

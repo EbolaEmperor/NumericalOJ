@@ -73,3 +73,48 @@ def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
     assert jobs['job1']['requeued_ids'] == [101, 102]
     assert jobs['job1'].get('created', 0) == 0
     assert jobs['job1'].get('created_ids', []) == []
+
+
+def test_bulk_rejudge_requeues_original_reverse_judge_submissions(monkeypatch):
+    comp = {'id': 8, 'scoring_mode': 'reverse_judge'}
+    submissions = {
+        201: {'id': 201, 'competition_id': 8, 'username': 'u1'},
+    }
+    jobs = {'job2': {'competition_id': 8}}
+    cleared_reverse = []
+    cleared_agent = []
+    attempts = []
+    reverse_task = _FakeAsyncTask()
+    agent_task = _FakeAsyncTask()
+    eval_task = _FakeAsyncTask()
+
+    monkeypatch.setattr(m, 'ITEM_SLEEP_SECONDS', 0.0)
+    monkeypatch.setattr(m, 'get_competition', lambda cid: comp)
+    monkeypatch.setattr(m, 'get_ranking_submission', lambda sid: submissions.get(int(sid)))
+    monkeypatch.setattr(m, 'get_bulk_rejudge_job', lambda job_id: dict(jobs.get(job_id) or {}))
+    monkeypatch.setattr(m, 'save_bulk_rejudge_job',
+                        lambda job_id, payload: jobs.__setitem__(job_id, dict(payload)))
+    monkeypatch.setattr(m, 'clear_reverse_judge_steps', lambda sid: cleared_reverse.append(int(sid)))
+    monkeypatch.setattr(m, 'clear_judge_results', lambda sid: cleared_agent.append(int(sid)))
+    monkeypatch.setattr(
+        m,
+        'begin_agent_judge_attempt',
+        lambda sid, **kw: attempts.append((int(sid), dict(kw))) or f'reverse-attempt-{int(sid)}',
+    )
+    monkeypatch.setattr(m, 'set_agent_judge_task_id', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(m, 'update_submission_result', lambda *_args, **_kwargs: None)
+
+    task = m.register_ranking_bulk_rejudge_task(
+        _FakeCelery(), eval_task, agent_judge_task=agent_task, reverse_judge_task=reverse_task,
+    )
+    task(8, [201], 'job2', 'admin')
+
+    assert cleared_reverse == [201]
+    assert cleared_agent == []
+    assert [c[1]['args'] for c in reverse_task.calls] == [[201, 'reverse-attempt-201']]
+    assert agent_task.calls == []
+    assert eval_task.calls == []
+    assert attempts == [(201, {'status': 'Queued', 'reset_result': True})]
+    assert jobs['job2']['status'] == 'finished'
+    assert jobs['job2']['requeued'] == 1
+    assert jobs['job2']['requeued_ids'] == [201]

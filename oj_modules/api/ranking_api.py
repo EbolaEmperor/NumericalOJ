@@ -173,16 +173,21 @@ def competition_detail(competition_id):
         return json_error("无权限", 403)
     if tab == "appeals" and _competition_scoring_mode(comp) != "agent_judge":
         return json_error("该比赛不支持申诉标签", 400)
-    is_agent_judge = _competition_scoring_mode(comp) == "agent_judge"
-    if tab == "batch_eval" and not is_agent_judge:
+    scoring_mode = _competition_scoring_mode(comp)
+    is_agent_judge = scoring_mode == "agent_judge"
+    is_reverse_judge = scoring_mode == "reverse_judge"
+    is_ai_judge = is_agent_judge or is_reverse_judge
+    if tab == "batch_eval" and not is_ai_judge:
         return json_error("该比赛不支持批量评测标签", 400)
 
     files = _files_with_media(list_competition_files(competition_id))
     judge_rules = list_competition_rules(competition_id) if (is_agent_judge and is_admin) else []
     aj_endpoints = []
     agent_judge_ready = False
-    if is_agent_judge:
-        agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
+    if is_ai_judge:
+        agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp)
+        if is_agent_judge:
+            agent_judge_ready = agent_judge_ready and bool(judge_rules)
         if is_admin:
             try:
                 raw_eps = list_agent_judge_endpoints(competition_id)
@@ -202,7 +207,11 @@ def competition_detail(competition_id):
                 for e in raw_eps
             ]
         else:
-            agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(list_competition_rules(competition_id))
+            if is_agent_judge:
+                agent_judge_ready = (
+                    _agent_judge_endpoint_ready(competition_id, comp)
+                    and bool(list_competition_rules(competition_id))
+                )
 
     payload = {
         "user": public_user(user),
@@ -236,7 +245,7 @@ def competition_detail(competition_id):
         payload["submit_quota"] = submit_quota
         payload["can_submit"] = not bool(submit_block_reason)
         payload["submit_block_reason"] = submit_block_reason or ""
-        if is_agent_judge and payload["submission_method"] == "git":
+        if is_ai_judge and (payload["submission_method"] == "git" or is_reverse_judge):
             uname = (user.get("username") or "").strip()
             tmpl = (comp.get("git_format") or "").strip()
             payload["git_repo_url"] = build_repo_url(tmpl, uname) if tmpl and BATCH_USERNAME_RE.match(uname) else None

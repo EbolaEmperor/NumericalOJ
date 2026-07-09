@@ -224,22 +224,50 @@ def save_agent_judge_endpoints(competition_id, items):
             status = ENDPOINT_STATUS_ENABLED
         enabled = _status_enabled(status)
         # 不去重：同一厂商(同 url)可能有多个账号 → 不同 api_key，应允许并存（各自独立并发槽位）。
-        normalized.append({'harness': harness, 'base_url': base_url, 'api_key': api_key, 'model': model,
+        normalized.append({'id': eid if eid in existing else None,
+                           'harness': harness, 'base_url': base_url, 'api_key': api_key, 'model': model,
                            'concurrency_limit': climit, 'status': status,
                            'enabled': enabled, 'ordering': idx})
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("DELETE FROM ranking_agent_judge_endpoints WHERE competition_id = %s",
-                           (competition_id,))
-            for e in normalized:
+            keep_ids = [e['id'] for e in normalized if e.get('id') is not None]
+            if keep_ids:
                 cursor.execute(
-                    "INSERT INTO ranking_agent_judge_endpoints"
-                    " (competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (competition_id, e['harness'], e['base_url'], e['api_key'], e['model'],
-                     e['concurrency_limit'], e['enabled'], e['status'], e['ordering']),
+                    "DELETE FROM ranking_agent_judge_endpoints "
+                    f"WHERE competition_id = %s AND id NOT IN ({','.join(['%s'] * len(keep_ids))})",
+                    tuple([competition_id] + keep_ids),
                 )
+            else:
+                cursor.execute("DELETE FROM ranking_agent_judge_endpoints WHERE competition_id = %s",
+                               (competition_id,))
+            for e in normalized:
+                if e.get('id') is not None:
+                    cursor.execute(
+                        """
+                        UPDATE ranking_agent_judge_endpoints
+                        SET harness = %s,
+                            base_url = %s,
+                            api_key = %s,
+                            model = %s,
+                            concurrency_limit = %s,
+                            enabled = %s,
+                            status = %s,
+                            ordering = %s
+                        WHERE id = %s AND competition_id = %s
+                        """,
+                        (e['harness'], e['base_url'], e['api_key'], e['model'],
+                         e['concurrency_limit'], e['enabled'], e['status'], e['ordering'],
+                         e['id'], competition_id),
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO ranking_agent_judge_endpoints"
+                        " (competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering)"
+                        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (competition_id, e['harness'], e['base_url'], e['api_key'], e['model'],
+                         e['concurrency_limit'], e['enabled'], e['status'], e['ordering']),
+                    )
         conn.commit()
     finally:
         conn.close()

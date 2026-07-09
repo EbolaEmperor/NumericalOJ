@@ -109,6 +109,7 @@ def get_competition(competition_id):
                        scoring_script_timeout_seconds,
                        agent_judge_base_url, agent_judge_api_key,
                        agent_judge_model, agent_judge_timeout_seconds,
+                       reverse_judge_finalize_timeout_seconds,
                        agent_judge_orchestration_mode,
                        submit_limit_per_window, limit_window_start,
                        submission_method, git_format,
@@ -277,6 +278,7 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         scoring_script_timeout_seconds=None,
                         agent_judge_base_url=None, agent_judge_api_key=None,
                         agent_judge_model=None, agent_judge_timeout_seconds=None,
+                        reverse_judge_finalize_timeout_seconds=None,
                         agent_judge_orchestration_mode=None,
                         submit_limit_per_window=None, set_limit_window_now=False,
                         submission_method=None, git_format=None):
@@ -305,7 +307,7 @@ def update_competition(competition_id, *, title=None, summary=None, description=
         params.append(fmt)
     if scoring_mode is not None:
         mode = str(scoring_mode or '').strip().lower()
-        if mode not in ('absolute', 'elo', 'agent_judge'):
+        if mode not in ('absolute', 'elo', 'agent_judge', 'reverse_judge'):
             mode = 'absolute'
         fields.append("scoring_mode = %s")
         params.append(mode)
@@ -342,6 +344,9 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if agent_judge_timeout_seconds is not None:
         fields.append("agent_judge_timeout_seconds = %s")
         params.append(int(agent_judge_timeout_seconds))
+    if reverse_judge_finalize_timeout_seconds is not None:
+        fields.append("reverse_judge_finalize_timeout_seconds = %s")
+        params.append(int(reverse_judge_finalize_timeout_seconds))
     if agent_judge_orchestration_mode is not None:
         fields.append("agent_judge_orchestration_mode = %s")
         params.append(normalize_orchestration_mode(agent_judge_orchestration_mode))
@@ -578,7 +583,58 @@ def delete_competition_file(file_id):
 
 # ---------- Submissions ----------
 
-def create_ranking_submission(competition_id, username, source='self', enforce_quota=False):
+def _agent_endpoint_snapshot_with_cursor(cursor, competition_id, endpoint_id):
+    if endpoint_id in (None, '', 'null'):
+        return None, None
+    try:
+        eid = int(endpoint_id)
+    except (TypeError, ValueError):
+        return None, None
+    cursor.execute(
+        """
+        SELECT harness, model
+        FROM ranking_agent_judge_endpoints
+        WHERE id = %s AND competition_id = %s
+        """,
+        (eid, int(competition_id)),
+    )
+    row = cursor.fetchone() or {}
+    return row.get('harness') or None, row.get('model') or None
+
+
+def _agent_endpoint_harness_label(harness):
+    value = str(harness or '').strip().lower().replace('-', '_')
+    if value == 'claude_code':
+        return 'Claude Code'
+    if value == 'codex':
+        return 'Codex'
+    if value == 'opencode':
+        return 'OpenCode'
+    return str(harness or '').strip()
+
+
+def _agent_endpoint_label(harness, model):
+    harness_label = _agent_endpoint_harness_label(harness)
+    model_text = str(model or '').strip()
+    if harness_label and model_text:
+        return f'{harness_label} ({model_text})'
+    if harness_label:
+        return harness_label
+    if model_text:
+        return model_text
+    return None
+
+
+def _attach_agent_endpoint_labels(rows, *, label_key='agent_endpoint_label',
+                                  harness_key='agent_endpoint_harness',
+                                  model_key='agent_endpoint_model'):
+    for row in rows or []:
+        row[label_key] = _agent_endpoint_label(row.get(harness_key), row.get(model_key))
+    return rows
+
+
+def create_ranking_submission(competition_id, username, source='self', enforce_quota=False,
+                              agent_endpoint_id=None):
     """新建一条打榜赛提交。source：'self'=学生自交（计入 48h 配额）、
     'batch'=管理员批量拉取（不计入学生配额）。
 
@@ -610,12 +666,26 @@ def create_ranking_submission(competition_id, username, source='self', enforce_q
                     if quota is not None and quota['remaining'] <= 0:
                         conn.rollback()
                         raise RankingSubmissionQuotaExceeded(quota)
+            endpoint_id = None
+            if agent_endpoint_id not in (None, '', 'null'):
+                try:
+                    endpoint_id = int(agent_endpoint_id)
+                except (TypeError, ValueError):
+                    endpoint_id = None
+            endpoint_harness, endpoint_model = _agent_endpoint_snapshot_with_cursor(
+                cursor, competition_id, endpoint_id,
+            )
             cursor.execute(
                 """
-                INSERT INTO ranking_submissions (competition_id, username, status, source)
-                VALUES (%s, %s, 'Pending', %s)
+                INSERT INTO ranking_submissions
+                    (competition_id, username, status, source, agent_endpoint_id,
+                     agent_endpoint_harness, agent_endpoint_model)
+                VALUES (%s, %s, 'Pending', %s, %s, %s, %s)
                 """,
-                (competition_id, username, src),
+                (
+                    competition_id, username, src, endpoint_id,
+                    endpoint_harness, endpoint_model,
+                ),
             )
             new_id = cursor.lastrowid
         conn.commit()
@@ -646,6 +716,37 @@ def update_submission_files(submission_id, answer_filename, answer_path, code_fi
                 """,
                 (answer_filename, answer_path, code_filename, code_path,
                  (base_model or None), submission_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_submission_agent_endpoint(submission_id, endpoint_id):
+    endpoint_id = int(endpoint_id) if endpoint_id not in (None, '', 'null') else None
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            competition_id = None
+            cursor.execute(
+                "SELECT competition_id FROM ranking_submissions WHERE id = %s",
+                (submission_id,),
+            )
+            row = cursor.fetchone() or {}
+            if row.get('competition_id') is not None:
+                competition_id = int(row.get('competition_id'))
+            endpoint_harness, endpoint_model = _agent_endpoint_snapshot_with_cursor(
+                cursor, competition_id, endpoint_id,
+            ) if competition_id is not None else (None, None)
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET agent_endpoint_id = %s,
+                    agent_endpoint_harness = %s,
+                    agent_endpoint_model = %s
+                WHERE id = %s
+                """,
+                (endpoint_id, endpoint_harness, endpoint_model, submission_id),
             )
         conn.commit()
     finally:
@@ -738,6 +839,30 @@ def begin_agent_judge_attempt(submission_id, status='Queued', reset_result=False
     finally:
         conn.close()
     return attempt_id
+
+
+def invalidate_ranking_submission_attempt(submission_id, status='Cancelled'):
+    """让当前评测 attempt 失效，用于删除前阻止旧 Celery 消息继续落库或启动容器。"""
+    attempt_id = str(uuid.uuid4())
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET status = %s,
+                    judge_attempt_id = %s,
+                    judge_task_id = NULL,
+                    judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (status, attempt_id, submission_id),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0), attempt_id
+    finally:
+        conn.close()
 
 
 def set_agent_judge_task_id(submission_id, attempt_id, task_id):
@@ -857,7 +982,8 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
                 """
                 SELECT id, competition_id, username,
                        answer_filename, answer_path, code_filename, code_path,
-                       base_model
+                       base_model,
+                       agent_endpoint_id, agent_endpoint_harness, agent_endpoint_model
                 FROM ranking_submissions
                 WHERE id = %s
                 """,
@@ -873,9 +999,10 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
                 """
                 INSERT INTO ranking_submissions
                     (competition_id, username, answer_filename, code_filename, base_model,
+                     agent_endpoint_id, agent_endpoint_harness, agent_endpoint_model,
                      score, status, grade_details, error_message,
                      elo_rating, elo_match_count, elo_in_pool, source)
-                VALUES (%s, %s, %s, %s, %s,
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
                         NULL, %s, NULL, NULL,
                         NULL, 0, 0, 'batch')
                 """,
@@ -885,6 +1012,9 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
                     source.get('answer_filename'),
                     source.get('code_filename'),
                     source.get('base_model'),
+                    source.get('agent_endpoint_id'),
+                    source.get('agent_endpoint_harness'),
+                    source.get('agent_endpoint_model'),
                     new_status,
                 ),
             )
@@ -953,6 +1083,7 @@ def get_ranking_submission(submission_id):
                        answer_filename, answer_path, code_filename, code_path,
                        base_model, score, status, grade_details, error_message,
                        judge_attempt_id, judge_task_id, judge_heartbeat_at,
+                       agent_endpoint_id, agent_endpoint_harness, agent_endpoint_model,
                        elo_rating, elo_match_count, elo_in_pool,
                        created_at
                 FROM ranking_submissions
@@ -984,6 +1115,7 @@ def get_incomplete_ranking_submissions():
                 SELECT s.id, s.competition_id, s.status,
                        s.score, s.grade_details,
                        s.judge_attempt_id, s.judge_task_id, s.judge_heartbeat_at,
+                       s.agent_endpoint_id,
                        s.created_at,
                        c.scoring_mode, c.elo_initial_rating
                 FROM ranking_submissions s
@@ -1011,18 +1143,22 @@ def list_user_submissions(competition_id, username):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, competition_id, username,
-                       answer_filename, code_filename, base_model,
-                       score, status,
-                       elo_rating, elo_match_count, elo_in_pool,
-                       created_at
-                FROM ranking_submissions
-                WHERE competition_id = %s AND username = %s
-                ORDER BY created_at DESC, id DESC
+                SELECT s.id, s.competition_id, s.username,
+                       s.answer_filename, s.code_filename, s.base_model,
+                       s.score, s.status,
+                       s.agent_endpoint_id,
+                       COALESCE(s.agent_endpoint_harness, ep.harness) AS agent_endpoint_harness,
+                       COALESCE(s.agent_endpoint_model, ep.model) AS agent_endpoint_model,
+                       s.elo_rating, s.elo_match_count, s.elo_in_pool,
+                       s.created_at
+                FROM ranking_submissions s
+                LEFT JOIN ranking_agent_judge_endpoints ep ON ep.id = s.agent_endpoint_id
+                WHERE s.competition_id = %s AND s.username = %s
+                ORDER BY s.created_at DESC, s.id DESC
                 """,
                 (competition_id, username),
             )
-            return cursor.fetchall() or []
+            return _attach_agent_endpoint_labels(cursor.fetchall() or [])
     finally:
         conn.close()
 
@@ -1032,16 +1168,16 @@ def list_all_submissions(competition_id, *, page=1, per_page=50, username_q=None
     page = max(1, int(page or 1))
     per_page = max(1, int(per_page or 50))
     q = (username_q or '').strip()
-    where_sql = "WHERE competition_id = %s"
+    where_sql = "WHERE s.competition_id = %s"
     params = [int(competition_id)]
     if q:
-        where_sql += " AND username LIKE %s"
+        where_sql += " AND s.username LIKE %s"
         params.append(f"%{q}%")
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                f"SELECT COUNT(*) AS total FROM ranking_submissions {where_sql}",
+                f"SELECT COUNT(*) AS total FROM ranking_submissions s {where_sql}",
                 tuple(params),
             )
             total = int((cursor.fetchone() or {}).get('total') or 0)
@@ -1051,19 +1187,23 @@ def list_all_submissions(competition_id, *, page=1, per_page=50, username_q=None
             offset = (page - 1) * per_page
             cursor.execute(
                 f"""
-                SELECT id, competition_id, username,
-                       answer_filename, code_filename, base_model,
-                       score, status,
-                       elo_rating, elo_match_count, elo_in_pool,
-                       created_at
-                FROM ranking_submissions
+                SELECT s.id, s.competition_id, s.username,
+                       s.answer_filename, s.code_filename, s.base_model,
+                       s.score, s.status,
+                       s.agent_endpoint_id,
+                       COALESCE(s.agent_endpoint_harness, ep.harness) AS agent_endpoint_harness,
+                       COALESCE(s.agent_endpoint_model, ep.model) AS agent_endpoint_model,
+                       s.elo_rating, s.elo_match_count, s.elo_in_pool,
+                       s.created_at
+                FROM ranking_submissions s
+                LEFT JOIN ranking_agent_judge_endpoints ep ON ep.id = s.agent_endpoint_id
                 {where_sql}
-                ORDER BY created_at DESC, id DESC
+                ORDER BY s.created_at DESC, s.id DESC
                 LIMIT %s OFFSET %s
                 """,
                 tuple(params) + (per_page, offset),
             )
-            rows = cursor.fetchall() or []
+            rows = _attach_agent_endpoint_labels(cursor.fetchall() or [])
             return rows, page, total
     finally:
         conn.close()
@@ -1199,6 +1339,7 @@ def get_leaderboard(competition_id):
                 WITH ranked AS (
                     SELECT
                         username, score, base_model, created_at, id,
+                        agent_endpoint_id, agent_endpoint_harness, agent_endpoint_model,
                         ROW_NUMBER() OVER (
                             PARTITION BY username
                             ORDER BY score DESC, created_at DESC, id DESC
@@ -1210,13 +1351,17 @@ def get_leaderboard(competition_id):
                     WHERE competition_id = %s AND score IS NOT NULL
                 )
                 SELECT
-                    username,
-                    user_best_score AS best_score,
-                    user_submission_count AS submission_count,
-                    user_first_submitted_at AS first_submitted_at,
-                    base_model AS best_base_model
-                FROM ranked
-                WHERE rn = 1
+                    r.username,
+                    r.user_best_score AS best_score,
+                    r.user_submission_count AS submission_count,
+                    r.user_first_submitted_at AS first_submitted_at,
+                    r.base_model AS best_base_model,
+                    r.agent_endpoint_id AS best_agent_endpoint_id,
+                    COALESCE(r.agent_endpoint_harness, ep.harness) AS best_agent_endpoint_harness,
+                    COALESCE(r.agent_endpoint_model, ep.model) AS best_agent_endpoint_model
+                FROM ranked r
+                LEFT JOIN ranking_agent_judge_endpoints ep ON ep.id = r.agent_endpoint_id
+                WHERE r.rn = 1
                 ORDER BY user_best_score DESC, user_first_submitted_at ASC, username ASC
                 """,
                 (competition_id,),
@@ -1241,6 +1386,13 @@ def get_leaderboard(competition_id):
             'submission_count': int(row.get('submission_count') or 0),
             'first_submitted_at': row.get('first_submitted_at'),
             'best_base_model': row.get('best_base_model'),
+            'best_agent_endpoint_id': row.get('best_agent_endpoint_id'),
+            'best_agent_endpoint_harness': row.get('best_agent_endpoint_harness'),
+            'best_agent_endpoint_model': row.get('best_agent_endpoint_model'),
+            'best_agent_endpoint_label': _agent_endpoint_label(
+                row.get('best_agent_endpoint_harness'),
+                row.get('best_agent_endpoint_model'),
+            ),
         })
     return leaderboard
 

@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import shutil
+import subprocess
 import uuid
 from datetime import datetime
 
@@ -55,6 +56,7 @@ from oj_modules.ranking_db import (
     get_ranking_submission,
     get_submission_quota,
     get_submission_stats,
+    invalidate_ranking_submission_attempt,
     init_submission_elo_state,
     list_submissions_for_bulk_rejudge,
     list_appeals,
@@ -93,11 +95,15 @@ from oj_modules.ranking_agent_judge import max_score as _aj_max_score
 from oj_modules.ranking_agent_judge import normalize_orchestration_mode as _normalize_aj_orchestration
 from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
 from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_events
+from oj_modules.tasks import get_reverse_judge_progress_snapshot, subscribe_reverse_judge_events
 from oj_modules.tasks import get_probe_job
 from oj_modules.tasks import get_bulk_rejudge_job, save_bulk_rejudge_job
 from oj_modules.tasks.ranking_batch_pull_tasks import (
     PLACEHOLDER as BATCH_PLACEHOLDER, USERNAME_RE as BATCH_USERNAME_RE, build_repo_url,
     repo_last_commit,
+)
+from oj_modules.ranking_reverse_judge_db import (
+    build_reverse_judge_snapshot,
 )
 
 
@@ -124,7 +130,7 @@ SCORING_SCRIPT_MAX_BYTES = 4 * 1024 * 1024 # 4MB
 REFERENCE_MAX_BYTES = 64 * 1024 * 1024     # 64MB
 
 ALLOWED_ANSWER_FORMATS = ('json', 'zip')
-ALLOWED_SCORING_MODES = ('absolute', 'elo', 'agent_judge')
+ALLOWED_SCORING_MODES = ('absolute', 'elo', 'agent_judge', 'reverse_judge')
 
 # ELO 参数取值范围
 ELO_INITIAL_RATING_RANGE = (100.0, 5000.0)
@@ -134,6 +140,8 @@ ELO_MATCH_INTERVAL_RANGE = (5, 3600)
 ELO_INITIAL_BURST_RANGE = (0, 50)
 ELO_MAX_PAIRS_PER_ROUND_RANGE = (1, 8)   # 与 ranking_elo_tasks.MAX_PAIRS_PER_ROUND 保持一致
 SCORING_SCRIPT_TIMEOUT_RANGE = (5, 600)
+REVERSE_FINALIZE_TIMEOUT_DEFAULT = 180
+REVERSE_FINALIZE_TIMEOUT_RANGE = (30, 7200)
 
 
 def _normalize_answer_format(value, default='json'):
@@ -165,6 +173,35 @@ def _agent_judge_endpoint_ready(competition_id, comp):
         return bool(list_agent_judge_endpoints(competition_id, enabled_only=True))
     except Exception:
         return False
+
+
+def _request_agent_endpoint_id():
+    raw = request.form.get('agent_endpoint_id')
+    if raw is None and request.is_json:
+        data = request.get_json(silent=True) or {}
+        raw = data.get('agent_endpoint_id')
+    try:
+        eid = int(str(raw or '').strip())
+    except (TypeError, ValueError):
+        return None
+    return eid if eid > 0 else None
+
+
+def _validate_reverse_endpoint_choice(competition_id):
+    endpoint_id = _request_agent_endpoint_id()
+    if endpoint_id is None:
+        return None, '请选择 AI 作答节点'
+    try:
+        endpoints = list_agent_judge_endpoints(competition_id)
+    except Exception:
+        endpoints = []
+    for ep in endpoints:
+        if int(ep.get('id') or 0) != endpoint_id:
+            continue
+        if str(ep.get('status') or '').lower() != 'enabled':
+            return None, '选择的 AI 作答节点当前不可用'
+        return endpoint_id, ''
+    return None, '选择的 AI 作答节点不存在'
 
 
 def _submission_quota_message(quota):
@@ -223,6 +260,11 @@ def _ranking_submit_block_reason(comp, competition_id, user=None):
                     return '你的用户名不符合 Git 仓库命名要求，暂时无法提交。'
         return ''
 
+    if scoring_mode == 'reverse_judge':
+        if not _agent_judge_endpoint_ready(competition_id, comp):
+            return '该比赛为反向评测模式，但管理员尚未配置模型端点，暂时无法提交。'
+        return ''
+
     return '该比赛评分模式配置异常，暂时无法提交。'
 
 
@@ -277,6 +319,149 @@ def _redis_client():
         )
     except Exception:
         return None
+
+
+def _ranking_task_ref_for_mode(scoring_mode):
+    mode = _normalize_scoring_mode(scoring_mode)
+    if mode == 'reverse_judge' and _reverse_judge_task is not None:
+        return _reverse_judge_task
+    if mode == 'agent_judge' and _agent_judge_task is not None:
+        return _agent_judge_task
+    if mode == 'absolute' and _evaluate_ranking_task is not None:
+        return _evaluate_ranking_task
+    for task_ref in (_reverse_judge_task, _agent_judge_task, _evaluate_ranking_task):
+        if task_ref is not None:
+            return task_ref
+    return None
+
+
+def _revoke_ranking_task(task_id, scoring_mode):
+    task_id = str(task_id or '').strip()
+    if not task_id:
+        return None
+    task_ref = _ranking_task_ref_for_mode(scoring_mode)
+    if task_ref is None:
+        return '评测任务未初始化，无法撤销 Celery 任务'
+    try:
+        task_ref.app.control.revoke(task_id, terminate=True, signal='SIGTERM')
+        return None
+    except Exception as e:
+        return f'撤销 Celery 任务失败：{e}'
+
+
+def _docker_command(args, timeout=15):
+    try:
+        return subprocess.run(
+            ['docker'] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        ), None
+    except FileNotFoundError:
+        return None, 'Docker CLI 不存在'
+    except subprocess.TimeoutExpired:
+        return None, 'Docker 命令超时'
+    except Exception as e:
+        return None, f'Docker 命令失败：{e}'
+
+
+def _docker_container_names_for_submission(submission_id):
+    sid = int(submission_id)
+    names = [f'aj_{sid}', f'rj_agent_{sid}']
+    proc, error = _docker_command(['ps', '-a', '--format', '{{.Names}}'], timeout=10)
+    if error:
+        return names, error
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout or '').strip()
+        return names, f'Docker 容器列表读取失败：{message[-300:]}'
+    prefix = f'rj_judge_{sid}_'
+    for line in (proc.stdout or '').splitlines():
+        name = line.strip()
+        if name.startswith(prefix) and name not in names:
+            names.append(name)
+    return names, None
+
+
+def _kill_ranking_submission_containers(submission_id):
+    names, list_error = _docker_container_names_for_submission(submission_id)
+    if list_error == 'Docker CLI 不存在':
+        return [list_error]
+    warnings = [list_error] if list_error else []
+    seen = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        proc, error = _docker_command(['rm', '-f', name], timeout=20)
+        if error:
+            warnings.append(f'清理容器 {name} 失败：{error}')
+            continue
+        if proc.returncode != 0:
+            message = (proc.stderr or proc.stdout or '').strip()
+            if 'No such container' not in message:
+                warnings.append(f'清理容器 {name} 失败：{message[-300:]}')
+    return warnings
+
+
+def _clear_ranking_submission_runtime_keys(submission_id):
+    sid = int(submission_id)
+    client = _rds or _redis_client()
+    if client is None:
+        return ['Redis 不可用，无法清理评测锁和端点槽位']
+    warnings = []
+    keys = {
+        f'ranking:judge:lock:{sid}',
+        f'ranking:reverse_judge:lock:{sid}',
+        f'ranking_submission:{sid}:pending_requeue',
+        f'ranking_judge:{sid}',
+        f'ranking_reverse_judge:{sid}',
+    }
+    try:
+        for pattern in (
+            f'ranking:judge:lock:{sid}:*',
+            f'ranking:reverse_judge:lock:{sid}:*',
+        ):
+            for key in client.scan_iter(match=pattern, count=50):
+                keys.add(key)
+        for key in client.scan_iter(match='aj:ep:*:slot:*', count=200):
+            try:
+                value = client.get(key)
+            except Exception:
+                value = None
+            if str(value or '').startswith(f'{sid}:'):
+                keys.add(key)
+        if keys:
+            client.delete(*list(keys))
+    except Exception as e:
+        warnings.append(f'清理 Redis 运行态失败：{e}')
+    return warnings
+
+
+def _cancel_ranking_submission_runtime(submission, competition):
+    """删除提交前中止仍在运行的后台评测。返回非致命清理告警。"""
+    if not submission:
+        return []
+    status = str(submission.get('status') or '').strip()
+    if status not in ('Queued', 'Judging'):
+        return []
+
+    sid = int(submission.get('id'))
+    scoring_mode = _competition_scoring_mode(competition)
+    task_id = str(submission.get('judge_task_id') or '').strip()
+    warnings = []
+
+    try:
+        invalidate_ranking_submission_attempt(sid)
+    except Exception as e:
+        warnings.append(f'失效评测 attempt 失败：{e}')
+
+    warning = _revoke_ranking_task(task_id, scoring_mode)
+    if warning:
+        warnings.append(warning)
+
+    warnings.extend(_kill_ranking_submission_containers(sid))
+    warnings.extend(_clear_ranking_submission_runtime_keys(sid))
+    return [w for w in warnings if w]
 
 
 def _serialize_for_cache(obj):
@@ -412,6 +597,7 @@ def fetch_competition_match_detail_cached(match_id, competition_id):
 _evaluate_ranking_task = None
 _elo_initial_burst_task = None
 _agent_judge_task = None
+_reverse_judge_task = None
 _batch_probe_task = None
 _batch_run_task = None
 _bulk_rejudge_task = None
@@ -426,13 +612,15 @@ _BULK_REJUDGE_INTERVAL_SECONDS = 2
 
 
 def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None,
+                        reverse_judge_task=None,
                         redis_client=None, batch_probe_task=None, batch_run_task=None,
                         bulk_rejudge_task=None):
-    global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task, _rds
+    global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task, _reverse_judge_task, _rds
     global _batch_probe_task, _batch_run_task, _bulk_rejudge_task
     _evaluate_ranking_task = evaluate_ranking_task
     _elo_initial_burst_task = elo_initial_burst_task
     _agent_judge_task = agent_judge_task
+    _reverse_judge_task = reverse_judge_task
     _batch_probe_task = batch_probe_task
     _batch_run_task = batch_run_task
     _bulk_rejudge_task = bulk_rejudge_task
@@ -603,13 +791,16 @@ def ranking_detail(competition_id):
     matches_total = 0
     matches_mine = False
 
-    is_agent_judge = _competition_scoring_mode(comp) == 'agent_judge'
+    scoring_mode = _competition_scoring_mode(comp)
+    is_agent_judge = scoring_mode == 'agent_judge'
+    is_reverse_judge = scoring_mode == 'reverse_judge'
+    is_ai_judge = is_agent_judge or is_reverse_judge
     judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
     # Agent 评测端点池（编辑器用；api_key 不回传明文，仅给 has_key 标记）+ 就绪标志
     aj_endpoints = []
     agent_judge_ready = False
-    if is_agent_judge:
+    if is_ai_judge:
         try:
             _raw_eps = list_agent_judge_endpoints(competition_id)
         except Exception:
@@ -620,9 +811,11 @@ def ranking_detail(competition_id):
                          'enabled': e['enabled'],
                          'has_key': bool(e['api_key'])} for e in _raw_eps]
         agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
+        if is_reverse_judge:
+            agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp)
 
-    # 「批量评测」仅对 Agent 评测模式开放
-    if tab == 'batch_eval' and not is_agent_judge:
+    # 「批量评测」对 Agent 评测 / 反向评测开放，共用 Git 标准命名与端点池
+    if tab == 'batch_eval' and not is_ai_judge:
         tab = 'description'
 
     batch_classes = []
@@ -645,7 +838,7 @@ def ranking_detail(competition_id):
             if not submit_block_reason and submit_quota is not None and submit_quota['remaining'] <= 0:
                 submit_block_reason = _submission_quota_message(submit_quota)
         # git 提交方式：把标准命名里的 <username> 换成本人学号，算出本人仓库地址
-        if is_agent_judge and submission_method == 'git':
+        if is_ai_judge and (submission_method == 'git' or is_reverse_judge):
             uname = (user.get('username') or '').strip()
             tmpl = (comp.get('git_format') or '').strip()
             if tmpl and BATCH_USERNAME_RE.match(uname):
@@ -715,6 +908,8 @@ def ranking_detail(competition_id):
         agent_judge_api_key_set=agent_judge_api_key_set,
         aj_endpoints=aj_endpoints,
         agent_judge_ready=agent_judge_ready,
+        is_reverse_judge=is_reverse_judge,
+        is_ai_judge=is_ai_judge,
         batch_classes=batch_classes,
         batch_default_template=BATCH_DEFAULT_TEMPLATE,
         submission_method=submission_method,
@@ -911,6 +1106,7 @@ def ranking_submissions_json(competition_id):
     max_score = comp.get('max_score') or 100
 
     is_agent_judge = (str(comp.get('scoring_mode') or 'absolute').lower() == 'agent_judge')
+    is_reverse_judge = (str(comp.get('scoring_mode') or 'absolute').lower() == 'reverse_judge')
     rows_html = render_template(
         '_ranking_submission_rows.html',
         all_submissions=rows,
@@ -918,6 +1114,7 @@ def ranking_submissions_json(competition_id):
         is_elo=is_elo,
         max_score=max_score,
         is_agent_judge=is_agent_judge,
+        is_reverse_judge=is_reverse_judge,
     )
     pagination_html = render_template(
         '_ranking_submission_pagination.html',
@@ -1162,6 +1359,48 @@ def ranking_submit(competition_id):
     if scoring_mode == 'agent_judge' and submission_method == 'git':
         return _submit_error_response(competition_id, '该比赛启用 Git 提交方式，请使用 Git 提交。')
 
+    if scoring_mode == 'reverse_judge':
+        endpoint_id, endpoint_error = _validate_reverse_endpoint_choice(competition_id)
+        if endpoint_error:
+            return _submit_error_response(competition_id, endpoint_error, category='danger')
+        code_file = request.files.get('code_file')
+        if not code_file or not (code_file.filename or '').strip():
+            return _submit_error_response(competition_id, '请上传反向评测题目包（.zip）', category='danger')
+        if not (code_file.filename or '').lower().endswith('.zip'):
+            return _submit_error_response(competition_id, '反向评测题目包必须是 .zip', category='danger')
+        try:
+            submission_id = create_ranking_submission(
+                competition_id, user.get('username'), enforce_quota=not is_admin,
+                agent_endpoint_id=endpoint_id,
+            )
+        except RankingSubmissionQuotaExceeded as e:
+            return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
+        target_dir = submission_dir(submission_id)
+        _ensure_dir(target_dir)
+        code_name = _safe_filename(code_file.filename, fallback='reverse_judge.zip')
+        if not code_name.lower().endswith('.zip'):
+            code_name += '.zip'
+        code_path = os.path.join(target_dir, code_name)
+        try:
+            code_file.save(code_path)
+            if os.path.getsize(code_path) > CODE_ZIP_MAX_BYTES:
+                raise ValueError(f'题目包超过 {CODE_ZIP_MAX_BYTES // (1024*1024)}MB 限制')
+        except Exception as e:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
+        update_submission_files(submission_id, None, None, code_name, code_path, base_model=None)
+        attempt_id = begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
+        if _reverse_judge_task is None:
+            flash('已接收提交，但反向评测任务未初始化，请联系管理员', 'warning')
+        else:
+            try:
+                async_result = _reverse_judge_task.apply_async(args=[submission_id, attempt_id, endpoint_id])
+                set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
+            except Exception as e:
+                flash(f'已接收提交，但反向评测任务入队失败：{e}', 'warning')
+        flash('提交成功，反向评测进行中，可在"我的历史提交"查看三步详情。', 'success')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+
     base_model_raw = (request.form.get('base_model') or '').strip()
     if not base_model_raw:
         return _submit_error_response(
@@ -1284,7 +1523,8 @@ def ranking_submit(competition_id):
             flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
         else:
             try:
-                _evaluate_ranking_task.delay(submission_id)
+                async_result = _evaluate_ranking_task.apply_async(args=[submission_id])
+                set_agent_judge_task_id(submission_id, None, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
         flash('提交成功，正在评测中', 'success')
@@ -1306,10 +1546,11 @@ def _user_git_repo_context(competition_id):
     is_admin = user.get('is_admin') == 1
     if not is_admin and comp.get('is_active') != 1:
         return None, None, None, (jsonify(success=False, message='该比赛未开放'), 403)
-    if _competition_scoring_mode(comp) != 'agent_judge':
+    scoring_mode = _competition_scoring_mode(comp)
+    if scoring_mode not in ('agent_judge', 'reverse_judge'):
         return None, None, None, (jsonify(success=False, message='该比赛不支持 git 提交'), 400)
     method = (comp.get('submission_method') or 'zip').strip().lower()
-    if method != 'git':
+    if scoring_mode == 'agent_judge' and method != 'git':
         return None, None, None, (jsonify(success=False, message='该比赛未启用 git 提交方式'), 400)
     uname = (user.get('username') or '').strip()
     tmpl = (comp.get('git_format') or '').strip()
@@ -1347,6 +1588,11 @@ def ranking_git_submit(competition_id):
         return jsonify(success=False, message=block_reason), 400
     if _batch_run_task is None:
         return jsonify(success=False, message='评测任务未初始化，请联系管理员'), 500
+    endpoint_id = None
+    if _competition_scoring_mode(comp) == 'reverse_judge':
+        endpoint_id, endpoint_error = _validate_reverse_endpoint_choice(competition_id)
+        if endpoint_error:
+            return jsonify(success=False, message=endpoint_error), 400
 
     is_admin = user.get('is_admin') == 1
     if not is_admin:
@@ -1363,7 +1609,10 @@ def ranking_git_submit(competition_id):
                 message=_submission_quota_message(quota),
             ), 429
 
-    items = [{'username': user.get('username'), 'url': url, 'source': 'self'}]
+    item = {'username': user.get('username'), 'url': url, 'source': 'self'}
+    if endpoint_id is not None:
+        item['agent_endpoint_id'] = endpoint_id
+    items = [item]
     try:
         _batch_run_task.delay(competition_id, items)
     except Exception as e:
@@ -1385,7 +1634,7 @@ def _admin_json_guard():
 
 
 def _require_admin_agent_judge(competition_id):
-    """批量评测公共校验：管理员 + 比赛存在 + agent_judge 模式。
+    """批量评测公共校验：管理员 + 比赛存在 + AI 评测类模式。
     返回 (comp, None) 或 (None, (resp, code))。"""
     user, err = _admin_json_guard()
     if err is not None:
@@ -1393,8 +1642,8 @@ def _require_admin_agent_judge(competition_id):
     comp = get_competition(competition_id)
     if not comp:
         return None, (jsonify(success=False, message='比赛不存在或已被删除'), 404)
-    if _competition_scoring_mode(comp) != 'agent_judge':
-        return None, (jsonify(success=False, message='仅「Agent 评测」模式支持批量评测'), 400)
+    if _competition_scoring_mode(comp) not in ('agent_judge', 'reverse_judge'):
+        return None, (jsonify(success=False, message='仅 Agent 评测或反向评测模式支持批量评测'), 400)
     return comp, None
 
 
@@ -1462,11 +1711,17 @@ def ranking_batch_create(competition_id):
         return err
     if _batch_run_task is None:
         return jsonify(success=False, message='批量评测任务未初始化，请联系管理员'), 500
-    if not list_competition_rules(competition_id):
+    scoring_mode = _competition_scoring_mode(comp)
+    if scoring_mode == 'agent_judge' and not list_competition_rules(competition_id):
         return jsonify(success=False, message='该比赛尚未设置评分规则，无法评测'), 400
     if not _agent_judge_endpoint_ready(competition_id, comp):
         return jsonify(success=False, message='该比赛尚未配置 Agent 评测模型端点'), 400
     data = request.get_json(silent=True) or {}
+    endpoint_id = None
+    if scoring_mode == 'reverse_judge':
+        endpoint_id, endpoint_error = _validate_reverse_endpoint_choice(competition_id)
+        if endpoint_error:
+            return jsonify(success=False, message=endpoint_error), 400
     template = (data.get('template') or '').strip()
     usernames = data.get('usernames') or []
     if BATCH_PLACEHOLDER not in template:
@@ -1487,7 +1742,10 @@ def ranking_batch_create(competition_id):
         if not BATCH_USERNAME_RE.match(uname) or not get_user_by_username(uname):
             invalid.append(uname)
             continue
-        items.append({'username': uname, 'url': build_repo_url(template, uname)})
+        item = {'username': uname, 'url': build_repo_url(template, uname)}
+        if endpoint_id is not None:
+            item['agent_endpoint_id'] = endpoint_id
+        items.append(item)
 
     if not items:
         return jsonify(success=False, message='没有可处理的有效仓库', invalid=invalid), 400
@@ -1549,6 +1807,8 @@ def ranking_edit(competition_id):
     old_mode = _competition_scoring_mode(comp)
     new_mode = _normalize_scoring_mode(scoring_mode_raw, default=old_mode)
     mode_changed = (new_mode != old_mode)
+    if new_mode == 'reverse_judge':
+        max_score_int = 100
 
     # 解析 ELO 参数（缺省继承当前值）
     def _parse_float(raw, fallback, lo, hi):
@@ -1598,6 +1858,7 @@ def ranking_edit(competition_id):
     aj_base_url = request.form.get('agent_judge_base_url')
     aj_model = request.form.get('agent_judge_model')
     aj_timeout_raw = request.form.get('agent_judge_timeout_seconds')
+    finalize_timeout_raw = request.form.get('reverse_judge_finalize_timeout_seconds')
     aj_api_key_raw = request.form.get('agent_judge_api_key')
     aj_orchestration_raw = request.form.get('agent_judge_orchestration_mode')
     aj_api_key = None
@@ -1609,6 +1870,16 @@ def ranking_edit(competition_id):
             aj_timeout = int(_clamp(int(aj_timeout_raw), 60, 7200))
         except (TypeError, ValueError):
             aj_timeout = None
+    finalize_timeout = None
+    if finalize_timeout_raw is not None and str(finalize_timeout_raw).strip() != '':
+        try:
+            finalize_timeout = int(_clamp(
+                int(finalize_timeout_raw),
+                REVERSE_FINALIZE_TIMEOUT_RANGE[0],
+                REVERSE_FINALIZE_TIMEOUT_RANGE[1],
+            ))
+        except (TypeError, ValueError):
+            finalize_timeout = None
 
     # 每 48 小时窗口提交次数限制：空/0 表示不限制；范围 0~100000
     submit_limit = None
@@ -1651,6 +1922,7 @@ def ranking_edit(competition_id):
         agent_judge_model=(aj_model if aj_model is not None else None),
         agent_judge_api_key=aj_api_key,
         agent_judge_timeout_seconds=aj_timeout,
+        reverse_judge_finalize_timeout_seconds=finalize_timeout,
         agent_judge_orchestration_mode=(
             _normalize_aj_orchestration(aj_orchestration_raw)
             if aj_orchestration_raw is not None else None
@@ -1674,6 +1946,7 @@ def ranking_edit(competition_id):
         flash(f'答案格式已切换为 {new_format.upper()}，请重新上传对应的标准答案文件。', 'warning')
     if mode_changed:
         _mode_label = {'elo': 'ELO 对战', 'agent_judge': 'Agent 评测',
+                       'reverse_judge': '反向评测',
                        'absolute': '标准答案评分'}.get(new_mode, '标准答案评分')
         flash(
             f'评分模式已切换为 {_mode_label}。'
@@ -1757,6 +2030,7 @@ def ranking_save_agent_config(competition_id):
     model = request.form.get('agent_judge_model')
     api_key_raw = request.form.get('agent_judge_api_key')
     timeout_raw = request.form.get('agent_judge_timeout_seconds')
+    finalize_timeout_raw = request.form.get('reverse_judge_finalize_timeout_seconds')
     orchestration_raw = request.form.get('agent_judge_orchestration_mode')
     api_key = None
     if api_key_raw is not None and str(api_key_raw).strip() != '':
@@ -1767,12 +2041,23 @@ def ranking_save_agent_config(competition_id):
             timeout = int(_clamp(int(timeout_raw), 60, 7200))
         except (TypeError, ValueError):
             timeout = None
+    finalize_timeout = None
+    if finalize_timeout_raw is not None and str(finalize_timeout_raw).strip() != '':
+        try:
+            finalize_timeout = int(_clamp(
+                int(finalize_timeout_raw),
+                REVERSE_FINALIZE_TIMEOUT_RANGE[0],
+                REVERSE_FINALIZE_TIMEOUT_RANGE[1],
+            ))
+        except (TypeError, ValueError):
+            finalize_timeout = None
     update_competition(
         competition_id,
         agent_judge_base_url=(base_url if base_url is not None else None),
         agent_judge_model=(model if model is not None else None),
         agent_judge_api_key=api_key,
         agent_judge_timeout_seconds=timeout,
+        reverse_judge_finalize_timeout_seconds=finalize_timeout,
         agent_judge_orchestration_mode=(
             _normalize_aj_orchestration(orchestration_raw)
             if orchestration_raw is not None else None
@@ -1797,6 +2082,9 @@ def ranking_save_agent_endpoints(competition_id):
     payload = request.get_json(silent=True) or {}
     endpoints = payload.get('endpoints')
     timeout_raw = payload.get('timeout_seconds')
+    finalize_timeout_raw = payload.get('reverse_judge_finalize_timeout_seconds')
+    if finalize_timeout_raw is None:
+        finalize_timeout_raw = payload.get('finalize_timeout_seconds')
     orchestration_raw = payload.get('orchestration_mode')
     if orchestration_raw is None:
         orchestration_raw = payload.get('agent_judge_orchestration_mode')
@@ -1804,6 +2092,18 @@ def ranking_save_agent_endpoints(competition_id):
         try:
             update_competition(competition_id,
                                agent_judge_timeout_seconds=int(_clamp(int(timeout_raw), 60, 7200)))
+        except (TypeError, ValueError):
+            pass
+    if finalize_timeout_raw is not None and str(finalize_timeout_raw).strip() != '':
+        try:
+            update_competition(
+                competition_id,
+                reverse_judge_finalize_timeout_seconds=int(_clamp(
+                    int(finalize_timeout_raw),
+                    REVERSE_FINALIZE_TIMEOUT_RANGE[0],
+                    REVERSE_FINALIZE_TIMEOUT_RANGE[1],
+                )),
+            )
         except (TypeError, ValueError):
             pass
     if orchestration_raw is not None:
@@ -1830,6 +2130,10 @@ def ranking_save_agent_endpoints(competition_id):
                    paused=sum(1 for e in saved if e.get('status') == 'paused'),
                    disabled=sum(1 for e in saved if e.get('status') == 'disabled'),
                    total_concurrency=total_conc, endpoints=masked,
+                   reverse_judge_finalize_timeout_seconds=(
+                       comp_after.get('reverse_judge_finalize_timeout_seconds')
+                       or REVERSE_FINALIZE_TIMEOUT_DEFAULT
+                   ),
                    orchestration_mode=_normalize_aj_orchestration(
                        comp_after.get('agent_judge_orchestration_mode')))
 
@@ -1886,6 +2190,81 @@ def ranking_judge_stream(competition_id, submission_id):
                 msg = pubsub.get_message(timeout=15.0)
                 if _t.time() - start > 3600:
                     yield _encode('timeout', build_judge_snapshot(submission_id) or snap)
+                    return
+                if not msg:
+                    yield ": keepalive\n\n"
+                    continue
+                if msg.get('type') != 'message':
+                    continue
+                raw = msg.get('data')
+                if isinstance(raw, bytes):
+                    raw = raw.decode('utf-8', 'ignore')
+                try:
+                    s = json.loads(raw)
+                except Exception:
+                    continue
+                yield _encode('progress', s)
+                if s.get('status') not in ('Judging', 'Pending', 'Queued'):
+                    yield _encode('done', s)
+                    return
+        finally:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+                             'Connection': 'keep-alive'})
+
+
+@ranking_bp.route('/<int:competition_id>/reverse_judge_stream/<int:submission_id>')
+def ranking_reverse_judge_stream(competition_id, submission_id):
+    user, resp = _require_user()
+    if resp is not None:
+        return resp
+    sub = get_ranking_submission(submission_id)
+    if not sub or int(sub.get('competition_id')) != competition_id:
+        return Response('not found', status=404)
+    if user.get('is_admin') != 1 and sub.get('username') != user.get('username'):
+        return Response('forbidden', status=403)
+
+    def _encode(name, payload):
+        return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        import time as _t
+        snap = get_reverse_judge_progress_snapshot(submission_id) or build_reverse_judge_snapshot(submission_id)
+        if snap is None:
+            yield _encode('error', {'error': 'not found'})
+            return
+        yield _encode('progress', snap)
+        if snap.get('status') not in ('Judging', 'Pending', 'Queued'):
+            yield _encode('done', snap)
+            return
+        start = _t.time()
+        pubsub = subscribe_reverse_judge_events(submission_id)
+        if pubsub is None:
+            last = json.dumps(snap, ensure_ascii=False)
+            while True:
+                s = build_reverse_judge_snapshot(submission_id)
+                cur = json.dumps(s, ensure_ascii=False) if s else last
+                if cur != last:
+                    yield _encode('progress', s)
+                    last = cur
+                if s and s.get('status') not in ('Judging', 'Pending', 'Queued'):
+                    yield _encode('done', s)
+                    return
+                if _t.time() - start > 3600:
+                    yield _encode('timeout', s or snap)
+                    return
+                _t.sleep(2)
+        try:
+            while True:
+                msg = pubsub.get_message(timeout=15.0)
+                if _t.time() - start > 3600:
+                    yield _encode('timeout', build_reverse_judge_snapshot(submission_id) or snap)
                     return
                 if not msg:
                     yield ": keepalive\n\n"
@@ -2368,8 +2747,12 @@ def ranking_upload_scoring_script(competition_id):
     if not comp:
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
-    if _competition_scoring_mode(comp) == 'agent_judge':
+    mode = _competition_scoring_mode(comp)
+    if mode == 'agent_judge':
         flash('Agent 评测不使用评测脚本', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
+    if mode == 'reverse_judge':
+        flash('反向评测不使用后台评测脚本，请将 judge.sh 放入提交包。', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
     f = request.files.get('scoring_script')
@@ -2494,6 +2877,8 @@ def ranking_delete_submission(competition_id, submission_id):
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
 
     username = sub.get('username') or ''
+    comp = get_competition(competition_id)
+    cleanup_warnings = _cancel_ranking_submission_runtime(sub, comp)
     # 清理磁盘上的答案 + 代码文件
     target_dir = submission_dir(submission_id)
     if os.path.isdir(target_dir):
@@ -2501,6 +2886,8 @@ def ranking_delete_submission(competition_id, submission_id):
     # 删除数据库行
     delete_ranking_submission(submission_id)
     flash(f'已删除提交 #{submission_id}（用户 {username}）；该用户最高分与排行榜已随之更新。', 'success')
+    for warning in cleanup_warnings[:3]:
+        flash(warning, 'warning')
     if _wants_json_response():
         return jsonify(
             success=True,
@@ -2508,5 +2895,6 @@ def ranking_delete_submission(competition_id, submission_id):
             competition_id=competition_id,
             submission_id=submission_id,
             username=username,
+            warnings=cleanup_warnings,
         )
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))

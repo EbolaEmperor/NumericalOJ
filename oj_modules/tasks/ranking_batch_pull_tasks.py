@@ -37,7 +37,7 @@ from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.db_services import get_users_in_classes
 from oj_modules.ranking_db import (
     begin_agent_judge_attempt,
-    create_ranking_submission, delete_ranking_submission, get_ranking_submission,
+    create_ranking_submission, delete_ranking_submission, get_competition, get_ranking_submission,
     RankingSubmissionQuotaExceeded,
     set_agent_judge_task_id, submission_dir, update_submission_files, update_submission_result,
 )
@@ -274,8 +274,14 @@ def _pull_and_zip(url, zip_path):
     return False, (last_err or '拉取失败')
 
 
-def _create_submission_with_retry(competition_id, username, zip_path, pull_err, agent_judge_task,
-                                  source='batch'):
+def _mode_for_competition(competition_id):
+    comp = get_competition(int(competition_id))
+    mode = str((comp or {}).get('scoring_mode') or 'absolute').strip().lower()
+    return mode if mode in ('agent_judge', 'reverse_judge') else 'agent_judge'
+
+
+def _create_submission_with_retry(competition_id, username, zip_path, pull_err, judge_task,
+                                  source='batch', mode='agent_judge', agent_endpoint_id=None):
     """创建提交并校验，失败则删除已建提交后重试，至多 CREATE_RETRY 次。
 
     - 拉取成功（zip_path 有效）：落盘 zip → 置 'Queued'（等待评测）→ 入队 Agent 评测；
@@ -290,6 +296,7 @@ def _create_submission_with_retry(competition_id, username, zip_path, pull_err, 
             # source='self'：学生 git 提交，占用配额并走数据库侧原子限额。
             sid = create_ranking_submission(
                 competition_id, username, source=src, enforce_quota=(src == 'self'),
+                agent_endpoint_id=agent_endpoint_id if mode == 'reverse_judge' else None,
             )
             if not sid:
                 continue
@@ -304,8 +311,11 @@ def _create_submission_with_retry(competition_id, username, zip_path, pull_err, 
                 sub = get_ranking_submission(sid)       # 校验：行存在 + code_path 落盘成功
                 if not sub or not sub.get('code_path') or not os.path.isfile(sub.get('code_path')):
                     raise RuntimeError('提交创建校验失败（code_path 缺失）')
-                if agent_judge_task is not None:
-                    async_result = agent_judge_task.apply_async(args=[sid, attempt_id])
+                if judge_task is not None:
+                    args = [sid, attempt_id]
+                    if mode == 'reverse_judge':
+                        args.append(agent_endpoint_id)
+                    async_result = judge_task.apply_async(args=args)
                     set_agent_judge_task_id(sid, attempt_id, async_result.id)
             else:
                 update_submission_result(sid, None, 'Error',
@@ -332,21 +342,22 @@ def _create_submission_with_retry(competition_id, username, zip_path, pull_err, 
     return False, None
 
 
-def _process_one(competition_id, username, url, agent_judge_task, source='batch'):
+def _process_one(competition_id, username, url, judge_task, source='batch',
+                 mode='agent_judge', agent_endpoint_id=None):
     """串行处理单个仓库：拉取(重试) → 创建提交(校验+重试) → 入队评测。"""
     tmp = tempfile.mkdtemp(prefix='rankrun_')
     zip_path = os.path.join(tmp, 'code.zip')
     try:
         ok, err = _pull_and_zip(url, zip_path)
         _create_submission_with_retry(
-            competition_id, username, zip_path if ok else None, err, agent_judge_task,
-            source=source,
+            competition_id, username, zip_path if ok else None, err, judge_task,
+            source=source, mode=mode, agent_endpoint_id=agent_endpoint_id,
         )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def register_ranking_batch_tasks(celery_app, agent_judge_task=None):
+def register_ranking_batch_tasks(celery_app, agent_judge_task=None, reverse_judge_task=None):
     """注册并返回 ``(probe_task, run_task)``。
 
     ``run_task`` 串行处理勾选的仓库列表；``agent_judge_task`` 为已注册的 Agent 评测任务引用，
@@ -413,16 +424,22 @@ def register_ranking_batch_tasks(celery_app, agent_judge_task=None):
         丢失时重投以免重复创建；worker 异常退出则整批中止，由管理员重新发起即可。
         """
         done = 0
+        mode = _mode_for_competition(competition_id)
+        judge_task = reverse_judge_task if mode == 'reverse_judge' else agent_judge_task
         for it in (items or []):
             if not isinstance(it, dict):
                 continue
             username = str(it.get('username') or '').strip()
             url = str(it.get('url') or '').strip()
             source = 'self' if str(it.get('source') or '').strip().lower() == 'self' else 'batch'
+            endpoint_id = it.get('agent_endpoint_id')
             if not username or not USERNAME_RE.match(username) or not url:
                 continue
             try:
-                _process_one(competition_id, username, url, agent_judge_task, source=source)
+                _process_one(
+                    competition_id, username, url, judge_task, source=source,
+                    mode=mode, agent_endpoint_id=endpoint_id,
+                )
             except Exception:
                 pass
             done += 1

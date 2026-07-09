@@ -43,6 +43,10 @@ def _necessary_ranking_submission(row: Any) -> Dict[str, Any]:
             "answer_filename",
             "code_filename",
             "base_model",
+            "agent_endpoint_id",
+            "agent_endpoint_harness",
+            "agent_endpoint_model",
+            "agent_endpoint_label",
             "score",
             "status",
             "created_at",
@@ -215,6 +219,8 @@ def ranking_submit(args: argparse.Namespace) -> None:
     before_ids = _ranking_submission_ids(client, args.competition_id)
     files = {"code_file": common.require_file(args.code_zip)}
     data = {"base_model": args.base_model}
+    if getattr(args, "agent_endpoint_id", None) is not None:
+        data["agent_endpoint_id"] = str(args.agent_endpoint_id)
     if args.answer_file:
         files["answer_file"] = common.require_file(args.answer_file)
     try:
@@ -333,6 +339,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--base-model", required=True, help="Base model name associated with the submission.")
     pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
     pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
+    pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint ID for reverse-judge submissions.")
     pa.set_defaults(func=ranking_submit)
     pa = common.add_cli_parser(
         rank_sub,
