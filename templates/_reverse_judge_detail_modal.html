@@ -1,4 +1,4 @@
-{# 反向评测三步详情弹窗。通过事件委托监听 .reverse-detail-btn。 #}
+{# 反向评测四步详情弹窗。通过事件委托监听 .reverse-detail-btn。 #}
 <div class="modal fade" id="reverseJudgeDetailModal" tabindex="-1" aria-labelledby="reverseJudgeDetailModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content rj-modal">
@@ -18,6 +18,7 @@
         </div>
         <div class="rj-tabs mb-3" id="rjTabs" role="tablist" aria-label="反向评测步骤">
           <button type="button" class="rj-tab active" data-rj-step="solution_check">标准答案</button>
+          <button type="button" class="rj-tab" data-rj-step="quality_gate" disabled hidden>质量门禁</button>
           <button type="button" class="rj-tab" data-rj-step="agent_answer" disabled>AI 作答</button>
           <button type="button" class="rj-tab" data-rj-step="ai_judge" disabled>评测 AI 答案</button>
         </div>
@@ -38,12 +39,14 @@
   .rj-total small { color:var(--muted); }
   .rj-tabs { display:flex; flex-wrap:wrap; gap:.45rem; }
   .rj-tab { min-height:34px; border:1px solid var(--line); background:#fff; color:var(--muted); border-radius:8px; padding:.38rem .68rem; font-size:.84rem; display:inline-flex; align-items:center; gap:.38rem; }
+  .rj-tab[hidden] { display:none; }
   .rj-tab.active { background:#17191d; border-color:#17191d; color:#fff; font-weight:650; }
   .rj-tab:disabled { opacity:.42; cursor:not-allowed; }
   .rj-tab .spinner-border { width:.78rem; height:.78rem; border-width:.12rem; }
   .rj-dot { width:.46rem; height:.46rem; border-radius:999px; background:var(--line); display:inline-block; }
   .rj-dot.ok { background:var(--ok); }
   .rj-dot.err { background:var(--err); }
+  .rj-dot.skip { background:#9aa1aa; }
   .rj-result-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.85rem 1rem; border:1px solid var(--line); border-radius:8px; background:#fff; margin-bottom:.85rem; }
   .rj-result-title { font-size:.95rem; font-weight:700; color:var(--ink); }
   .rj-score-pill { display:inline-flex; align-items:baseline; gap:.28rem; padding:.42rem .72rem; border-radius:999px; background:#f1f5f3; color:#1d5e40; font-family:var(--mono); white-space:nowrap; }
@@ -92,6 +95,19 @@
 	  .rj-tool-json { font-family:var(--mono); font-size:.8rem; line-height:1.5; }
 	  .rj-tool-text { font-size:.84rem; line-height:1.55; }
 	  .rj-empty { border:1px dashed var(--line); background:var(--soft); color:var(--muted); border-radius:8px; padding:1.2rem; text-align:center; }
+  .rj-gate-verdict { display:inline-flex; align-items:center; gap:.38rem; border:1px solid var(--line); border-radius:999px; padding:.34rem .65rem; font-size:.78rem; font-weight:700; white-space:nowrap; }
+  .rj-gate-verdict.pass { color:var(--ok); border-color:#b9d8c8; background:#f3faf6; }
+  .rj-gate-verdict.fail { color:var(--err); border-color:#efc5bf; background:#fff6f4; }
+  .rj-gate-verdict.skip { color:#6f767f; background:#f6f7f9; }
+  .rj-gate-summary { border:1px solid var(--line); border-radius:8px; padding:.8rem .9rem; background:#fff; color:var(--ink); white-space:pre-wrap; line-height:1.6; font-size:.86rem; }
+  .rj-gate-label { margin:.9rem 0 .45rem; color:var(--muted); font-size:.72rem; font-weight:700; letter-spacing:.04em; }
+  .rj-violation { border:1px solid #efcbc5; border-left:3px solid var(--err); border-radius:8px; padding:.72rem .82rem; margin-bottom:.55rem; background:#fff9f8; }
+  .rj-violation-title { color:#7f2f27; font-size:.86rem; font-weight:700; }
+  .rj-violation-body { margin-top:.28rem; color:#69443f; font-size:.82rem; line-height:1.55; white-space:pre-wrap; }
+  .rj-evidence-list { display:flex; flex-direction:column; gap:.38rem; margin-top:.58rem; }
+  .rj-evidence { border-top:1px solid #f0d8d4; padding-top:.42rem; }
+  .rj-evidence-path { color:#87554e; font-family:var(--mono); font-size:.74rem; }
+  .rj-evidence-excerpt { margin-top:.2rem; color:#5f4541; font-family:var(--mono); font-size:.76rem; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
   .rj-raw-json { margin-top:.9rem; }
   .rj-raw-json summary { width:max-content; list-style:none; cursor:pointer; border:1px solid var(--line); border-radius:999px; padding:.36rem .7rem; color:var(--muted); background:#fff; font-size:.82rem; }
   .rj-raw-json summary::-webkit-details-marker { display:none; }
@@ -108,7 +124,7 @@
   var openDetails = Object.create(null);
   var renderedTraceKeys = Object.create(null);
   var STATUS = { Accepted:'评测完成', Error:'评测异常', Judging:'评测中', Queued:'等待评测', Pending:'待评测' };
-  var STEP_LABEL = { solution_check:'标准答案', agent_answer:'AI 作答', ai_judge:'评测 AI 答案' };
+  var STEP_LABEL = { solution_check:'标准答案', quality_gate:'质量门禁', agent_answer:'AI 作答', ai_judge:'评测 AI 答案' };
   function getModal(){ if(!modal && modalEl && window.bootstrap) modal = new bootstrap.Modal(modalEl); return modal; }
   function closeSource(){ if(source){ source.close(); source=null; } }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
@@ -191,22 +207,40 @@
       '</div>';
   }
   function byKey(key){ return (snapshot && snapshot.steps || []).filter(function(s){ return s.step_key === key; })[0] || null; }
+  function shouldRenderStep(key, step){
+    if (key !== 'quality_gate') return true;
+    return !!step && step.status !== 'skipped' && !(step.result && step.result.skipped);
+  }
   function chooseActive(){
-    if (byKey(activeStep) && byKey(activeStep).status !== 'pending') return;
+    var current = byKey(activeStep);
+    if (current && shouldRenderStep(activeStep, current) && current.status !== 'pending') return;
     var steps = snapshot && snapshot.steps || [];
-    for (var i=0;i<steps.length;i++){ if(steps[i].status !== 'pending'){ activeStep = steps[i].step_key; return; } }
+    for (var i=0;i<steps.length;i++){
+      if (shouldRenderStep(steps[i].step_key, steps[i]) && steps[i].status !== 'pending') {
+        activeStep = steps[i].step_key;
+        return;
+      }
+    }
     activeStep = 'solution_check';
   }
   function tabMark(st){
     if (st === 'running') return '<span class="spinner-border spinner-border-sm" role="status"></span>';
     if (st === 'passed') return '<span class="rj-dot ok"></span>';
     if (st === 'failed' || st === 'error') return '<span class="rj-dot err"></span>';
+    if (st === 'skipped') return '<span class="rj-dot skip"></span>';
     return '<span class="rj-dot"></span>';
   }
   function renderTabs(){
     document.querySelectorAll('[data-rj-step]').forEach(function(btn){
       var key = btn.getAttribute('data-rj-step');
       var step = byKey(key);
+      var renderable = shouldRenderStep(key, step);
+      btn.hidden = !renderable;
+      if (!renderable) {
+        btn.disabled = true;
+        btn.classList.remove('active');
+        return;
+      }
       var st = step ? step.status : 'pending';
       btn.disabled = st === 'pending';
       btn.classList.toggle('active', key === activeStep);
@@ -326,12 +360,79 @@
     html += renderRawTrace(step.trace_files || []);
     return html;
   }
+  function qualityVerdict(step, result){
+    if (step.status === 'skipped' || result.skipped) return {label:'未执行', cls:'skip', icon:'fa-forward-step'};
+    if (step.status === 'error') return {label:'审核异常', cls:'fail', icon:'fa-triangle-exclamation'};
+    var raw = String(result.verdict == null ? '' : result.verdict).trim();
+    var key = raw.toLowerCase().replace(/[\s_-]+/g, '');
+    var passed = result.passed;
+    if (passed == null) passed = result.compliant;
+    if (passed == null) passed = result.approved;
+    if (passed === true || ['pass','passed','accept','accepted','approve','approved','compliant','ok','通过','合规'].indexOf(key) >= 0) {
+      return {label:'通过', cls:'pass', icon:'fa-check'};
+    }
+    if (passed === false || ['fail','failed','reject','rejected','deny','denied','noncompliant','violation','不通过','拒绝','违规'].indexOf(key) >= 0) {
+      return {label:'不通过', cls:'fail', icon:'fa-xmark'};
+    }
+    return {label:raw || (step.status === 'running' ? '审核中' : '待确认'), cls:'skip', icon:'fa-minus'};
+  }
+  function violationText(item){
+    if (item == null) return '';
+    if (typeof item !== 'object') return String(item);
+    return String(item.description || item.message || item.reason || item.detail || item.evidence || JSON.stringify(item, null, 2));
+  }
+  function renderViolationEvidence(item){
+    var evidence = item && typeof item === 'object' && Array.isArray(item.evidence) ? item.evidence : [];
+    if (!evidence.length) return '';
+    var html = '<div class="rj-evidence-list">';
+    evidence.forEach(function(entry){
+      if (!entry || typeof entry !== 'object') return;
+      var location = String(entry.path || '');
+      if (entry.line != null && String(entry.line).trim()) location += (location ? ':' : '第 ') + String(entry.line) + (location ? '' : ' 行');
+      html += '<div class="rj-evidence">' +
+        (location ? '<div class="rj-evidence-path">' + esc(location) + '</div>' : '') +
+        (entry.excerpt ? '<div class="rj-evidence-excerpt">' + esc(entry.excerpt) + '</div>' : '') +
+        '</div>';
+    });
+    return html + '</div>';
+  }
+  function renderQualityGate(step){
+    var result = step.result || {};
+    var verdict = qualityVerdict(step, result);
+    var violations = Array.isArray(result.violations) ? result.violations : (Array.isArray(result.issues) ? result.issues : []);
+    var summary = String(result.summary || result.reason || (step.status === 'skipped' ? '本次评测未执行质量门禁' : ''));
+    var html = step.error_message ? '<div class="rj-alert">' + esc(step.error_message) + '</div>' : '';
+    html += '<div class="rj-result-head"><div class="rj-result-title">质量门禁</div>' +
+      '<span class="rj-gate-verdict ' + verdict.cls + '"><i class="fas ' + verdict.icon + '"></i>' + esc(verdict.label) + '</span></div>';
+    html += '<div class="rj-gate-label">审核摘要</div><div class="rj-gate-summary">' + esc(summary || '—') + '</div>';
+    html += '<div class="rj-gate-label">违规项 · ' + violations.length + '</div>';
+    if (!violations.length) {
+      html += '<div class="rj-empty">无违规项</div>';
+    } else {
+      violations.forEach(function(item, index){
+        var title = (item && typeof item === 'object') ? (item.title || item.rule || item.code) : '';
+        html += '<div class="rj-violation"><div class="rj-violation-title">' + esc(title || ('违规项 ' + (index + 1))) + '</div>' +
+          '<div class="rj-violation-body">' + esc(violationText(item)) + '</div>' + renderViolationEvidence(item) + '</div>';
+      });
+    }
+    if (step.result) {
+      html += '<details class="rj-raw-json"' + detailAttr(activeStep + '|result-json') + '><summary>展开原始 JSON</summary><pre class="rj-pre mt-2">' + esc(JSON.stringify(result, null, 2)) + '</pre></details>';
+    }
+    return html;
+  }
   function renderStepBody(){
     var body = document.getElementById('rjStepBody');
     var step = byKey(activeStep);
     if (!body || !step) return;
     if (activeStep === 'agent_answer') {
       renderAgentStepBody(body, step);
+      return;
+    }
+    if (activeStep === 'quality_gate') {
+      rememberOpenDetails(body);
+      body.innerHTML = renderQualityGate(step);
+      body.setAttribute('data-rj-rendered-step', activeStep);
+      restoreOpenDetails(body);
       return;
     }
     rememberOpenDetails(body);

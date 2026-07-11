@@ -13,6 +13,7 @@ from oj_modules.ranking_agent_judge_db import (
     build_judge_snapshot,
     list_agent_judge_endpoints,
     list_competition_rules,
+    list_quality_gate_endpoints,
 )
 from oj_modules.ranking_db import (
     get_appeal,
@@ -37,10 +38,12 @@ from oj_modules.routes.ranking_routes import (
     _agent_judge_endpoint_ready,
     _attachment_media_kind,
     _competition_scoring_mode,
+    _masked_agent_endpoints,
     _normalize_answer_format,
     _page_window,
     _ranking_submit_block_reason,
     _render_description,
+    _reverse_quality_gate_ready,
     _submission_quota_message,
     build_repo_url,
     fetch_competition_matches_cached,
@@ -92,6 +95,10 @@ def _safe_competition(comp, include_admin=False):
         if key in comp
     }
     out.pop("agent_judge_api_key", None)
+    if not include_admin:
+        # 防御性过滤：即便未来公共字段扩展，也不向参赛者暴露审核标准。
+        out.pop("reverse_quality_gate_prompt", None)
+        out.pop("reverse_quality_gate_enabled", None)
     out["answer_format"] = _normalize_answer_format(out.get("answer_format"))
     out["scoring_mode"] = _competition_scoring_mode(out)
     if "agent_judge_orchestration_mode" in out:
@@ -100,6 +107,34 @@ def _safe_competition(comp, include_admin=False):
         )
     if include_admin:
         out["agent_judge_api_key_set"] = bool((comp.get("agent_judge_api_key") or "").strip())
+    return out
+
+
+def _public_answer_endpoints(endpoints):
+    """返回反向评测参赛者可选择的主端点，不暴露连接配置。"""
+    out = []
+    harness_labels = {
+        "claude_code": "Claude Code",
+        "codex": "Codex",
+        "opencode": "OpenCode",
+    }
+    for endpoint in endpoints or []:
+        if endpoint.get("pool_kind") != "primary" or endpoint.get("status") != "enabled":
+            continue
+        try:
+            endpoint_id = int(endpoint.get("id"))
+        except (TypeError, ValueError):
+            continue
+        harness = str(endpoint.get("harness") or "claude_code").strip().lower()
+        model = str(endpoint.get("model") or "").strip()
+        harness_label = harness_labels.get(harness, harness)
+        label = f"{harness_label} ({model or f'节点 #{endpoint_id}'})"
+        out.append({
+            "id": endpoint_id,
+            "harness": harness,
+            "model": model,
+            "label": label,
+        })
     return out
 
 
@@ -183,29 +218,35 @@ def competition_detail(competition_id):
     files = _files_with_media(list_competition_files(competition_id))
     judge_rules = list_competition_rules(competition_id) if (is_agent_judge and is_admin) else []
     aj_endpoints = []
+    answer_endpoints = []
+    quality_gate_endpoints = []
+    quality_gate_ready = _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
     agent_judge_ready = False
     if is_ai_judge:
         agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp)
         if is_agent_judge:
             agent_judge_ready = agent_judge_ready and bool(judge_rules)
+        elif is_reverse_judge:
+            agent_judge_ready = agent_judge_ready and quality_gate_ready
+            try:
+                answer_endpoints = _public_answer_endpoints(
+                    list_agent_judge_endpoints(competition_id, enabled_only=True)
+                )
+            except Exception:
+                answer_endpoints = []
         if is_admin:
             try:
                 raw_eps = list_agent_judge_endpoints(competition_id)
             except Exception:
                 raw_eps = []
-            aj_endpoints = [
-                {
-                    "id": e["id"],
-                    "harness": e.get("harness") or "claude_code",
-                    "base_url": e["base_url"],
-                    "model": e["model"],
-                    "concurrency_limit": e["concurrency_limit"],
-                    "status": e.get("status") or "enabled",
-                    "enabled": e["enabled"],
-                    "has_key": bool(e.get("api_key")),
-                }
-                for e in raw_eps
-            ]
+            aj_endpoints = _masked_agent_endpoints(raw_eps)
+            if is_reverse_judge:
+                try:
+                    quality_gate_endpoints = _masked_agent_endpoints(
+                        list_quality_gate_endpoints(competition_id)
+                    )
+                except Exception:
+                    quality_gate_endpoints = []
         else:
             if is_agent_judge:
                 agent_judge_ready = (
@@ -222,9 +263,13 @@ def competition_detail(competition_id):
         "rendered_description": _render_description(comp.get("description") or "") if tab == "description" else "",
         "submission_method": (comp.get("submission_method") or "zip").strip().lower(),
     }
+    if is_reverse_judge:
+        payload["answer_endpoints"] = answer_endpoints
     if is_admin:
         payload.update({
             "agent_judge_ready": agent_judge_ready,
+            "quality_gate_ready": quality_gate_ready,
+            "quality_gate_endpoints": quality_gate_endpoints,
             "judge_rules": judge_rules,
             "aj_endpoints": aj_endpoints,
             "batch_default_template": BATCH_DEFAULT_TEMPLATE,

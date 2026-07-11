@@ -54,6 +54,20 @@ class _FakeClient:
         return _FakeResponse()
 
 
+class _StreamResponse(_FakeResponse):
+    headers = {"Content-Type": "text/event-stream"}
+
+    def __init__(self, payload):
+        import json
+
+        self.text = f"event: done\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        self.content = self.text.encode("utf-8")
+
+    def iter_lines(self, decode_unicode=False):
+        for line in self.text.splitlines():
+            yield line if decode_unicode else line.encode("utf-8")
+
+
 def test_numoj_user_page_like_commands_use_json_api_without_output(monkeypatch):
     cli = _load_numoj_user_cli_module()
     fake_client = _FakeClient()
@@ -493,3 +507,142 @@ def test_numoj_user_download_commands_keep_output_option():
     assert args.output == "/tmp/out.bmp"
     args = parser.parse_args(["submission", "last-code", "42", "-o", "/tmp/solution.py"])
     assert args.output == "/tmp/solution.py"
+
+
+def test_user_ranking_submit_allows_missing_base_model_and_omits_it_from_request(monkeypatch, capsys, tmp_path):
+    cli = _load_numoj_user_cli_module()
+    parser = cli.build_parser()
+    parsed = parser.parse_args(["ranking", "submit", "9", "--code-zip", str(tmp_path / "problem.zip")])
+    assert parsed.base_model is None
+
+    problem_zip = tmp_path / "problem.zip"
+    problem_zip.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+
+    class _SubmitClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.submitted = False
+
+        def request(self, method, path, **kwargs):
+            self.requests.append((method, path, kwargs))
+            if path.endswith("/my-submissions"):
+                rows = [{"id": 41}] if self.submitted else []
+                return _PayloadResponse({"submissions": rows})
+            if path.endswith("/submit"):
+                self.submitted = True
+                return _PayloadResponse({"success": True})
+            raise AssertionError(path)
+
+    fake_client = _SubmitClient()
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+    cli.ranking_submit(Namespace(
+        competition_id=9,
+        base_model=None,
+        code_zip=str(problem_zip),
+        answer_file=None,
+        agent_endpoint_id=7,
+    ))
+
+    assert cli.json.loads(capsys.readouterr().out) == {"success": True, "submission_id": 41}
+    submit_request = next(request for request in fake_client.requests if request[1].endswith("/submit"))
+    assert submit_request[2]["data"] == {"agent_endpoint_id": "7"}
+
+
+def test_user_reverse_stream_projects_four_steps_without_internal_fields(monkeypatch, capsys):
+    cli = _load_numoj_user_cli_module()
+    fake_client = _FakeClient()
+    snapshot = {
+        "submission_id": 12,
+        "status": "Error",
+        "steps": [
+            {"step_key": "solution_check", "title": "标准答案自检", "status": "passed", "stdout": "hidden"},
+            {
+                "step_key": "quality_gate",
+                "title": "质量门禁",
+                "status": "failed",
+                "result": {
+                    "passed": False,
+                    "verdict": "reject",
+                    "summary": "不合规",
+                    "violations": ["存在私有密码"],
+                    "raw_model_response": "hidden",
+                },
+            },
+            {"step_key": "agent_answer", "title": "AI 作答", "status": "pending"},
+            {"step_key": "ai_judge", "title": "评测 AI 答案", "status": "pending"},
+        ],
+        "quality_gate_endpoints": [{"id": 99, "api_key": "must-not-leak"}],
+    }
+    monkeypatch.setattr(fake_client, "request", lambda *args, **kwargs: _StreamResponse(snapshot))
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+
+    cli.ranking_reverse_judge_stream(Namespace(competition_id=3, submission_id=12, max_lines=20))
+
+    out = cli.json.loads(capsys.readouterr().out)
+    assert [step["step_key"] for step in out["latest"]["steps"]] == [
+        "solution_check",
+        "quality_gate",
+        "agent_answer",
+        "ai_judge",
+    ]
+    gate = out["latest"]["steps"][1]
+    assert gate["passed"] is False
+    assert gate["verdict"] == "reject"
+    assert gate["summary"] == "不合规"
+    assert gate["violations"] == ["存在私有密码"]
+    assert "quality_gate_endpoints" not in out["latest"]
+    assert "stdout" not in out["latest"]["steps"][0]
+    assert "raw_model_response" not in gate
+
+
+def test_user_ranking_detail_projects_only_safe_answer_endpoints():
+    cli = _load_numoj_user_cli_module()
+
+    projected = cli.necessary_ranking_detail_payload({
+        "competition": {
+            "id": 3,
+            "title": "反向赛",
+            "description": "公开题面",
+            "reverse_quality_gate_enabled": 1,
+            "reverse_quality_gate_prompt": "管理员私有审核标准",
+        },
+        "quality_gate_endpoints": [
+            {"id": 99, "base_url": "http://quality.local", "api_key": "secret"}
+        ],
+        "answer_endpoints": [{
+            "id": 7,
+            "harness": "codex",
+            "model": "gpt-answer",
+            "label": "Codex (gpt-answer)",
+            "base_url": "http://answer.local",
+            "api_key": "answer-secret",
+            "status": "enabled",
+            "pool_kind": "primary",
+        }],
+    })
+
+    assert "reverse_quality_gate_enabled" not in projected["competition"]
+    assert "reverse_quality_gate_prompt" not in projected["competition"]
+    assert "quality_gate_endpoints" not in projected
+    assert projected["answer_endpoints"] == [{
+        "id": 7,
+        "harness": "codex",
+        "model": "gpt-answer",
+        "label": "Codex (gpt-answer)",
+    }]
+
+
+def test_user_cli_has_no_quality_gate_endpoint_selector():
+    cli = _load_numoj_user_cli_module()
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "ranking",
+            "submit",
+            "3",
+            "--code-zip",
+            "problem.zip",
+            "--quality-gate-endpoint-id",
+            "99",
+        ])

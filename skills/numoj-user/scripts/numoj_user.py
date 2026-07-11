@@ -96,6 +96,7 @@ necessary_ranking_submissions_payload = ranking.necessary_ranking_submissions_pa
 necessary_ranking_leaderboard_payload = ranking.necessary_ranking_leaderboard_payload
 necessary_ranking_matches_payload = ranking.necessary_ranking_matches_payload
 necessary_ranking_match_detail_payload = ranking.necessary_ranking_match_detail_payload
+necessary_reverse_judge_snapshot_payload = ranking.necessary_reverse_judge_snapshot_payload
 ranking_detail = ranking.ranking_detail
 ranking_matches = ranking.ranking_matches
 ranking_match_detail = ranking.ranking_match_detail
@@ -105,6 +106,7 @@ ranking_my_submissions = ranking.ranking_my_submissions
 ranking_leaderboard = ranking.ranking_leaderboard
 ranking_download_submission = ranking.ranking_download_submission
 ranking_judge_stream = ranking.ranking_judge_stream
+ranking_reverse_judge_stream = ranking.ranking_reverse_judge_stream
 ranking_submit_appeal = ranking.ranking_submit_appeal
 ranking_appeal_status = ranking.ranking_appeal_status
 

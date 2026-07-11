@@ -35,6 +35,7 @@ from oj_modules.ranking_db import (
 )
 from oj_modules.ranking_agent_judge_db import (
     DEFAULT_OPENCODE_GO_BASE_URL, DEFAULT_OPENCODE_GO_MODEL,
+    ENDPOINT_POOL_QUALITY_GATE,
     ENDPOINT_STATUS_PAUSED,
     HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE,
     build_judge_snapshot, clear_judge_results_for_attempt,
@@ -455,7 +456,10 @@ def _probe_opencode_once(endpoint):
 
 def _probe_endpoint_once(endpoint):
     harness = str(endpoint.get('harness') or HARNESS_CLAUDE_CODE).strip().lower()
-    if harness == HARNESS_OPENCODE:
+    # 主评测池的 OpenCode Go 保持既有 CLI 探针；质量门禁调用的是管理员配置的
+    # OpenAI-compatible 端点，探活（含 paused 恢复）必须命中同一 URL / model。
+    if (harness == HARNESS_OPENCODE
+            and endpoint.get('pool_kind') != ENDPOINT_POOL_QUALITY_GATE):
         return _probe_opencode_once(endpoint)
     req, err = _hello_probe_request(endpoint)
     if err:
@@ -472,11 +476,22 @@ def _probe_endpoint_once(endpoint):
         return False, str(e)[:200]
 
 
+def _sanitize_probe_message(endpoint, message):
+    """健康检查错误可写日志，但绝不能携带端点密钥或控制字符。"""
+    text = str(message or 'unknown error')
+    api_key = str((endpoint or {}).get('api_key') or '')
+    if api_key:
+        text = text.replace(api_key, '[redacted]')
+    text = ''.join(ch if ch >= ' ' and ch != '\x7f' else ' ' for ch in text)
+    return text[:200]
+
+
 def _probe_endpoint(endpoint, attempts=None):
     tries = max(1, int(attempts or JUDGE_HELLO_RETRIES))
     last_error = ''
     for i in range(tries):
         ok, msg = _probe_endpoint_once(endpoint)
+        msg = _sanitize_probe_message(endpoint, msg)
         if ok:
             return True, msg
         last_error = msg or 'unknown error'
@@ -499,6 +514,7 @@ def _probe_paused_endpoint_for_resume(endpoint):
     errors = []
     for i in range(PAUSED_PROBE_ATTEMPTS):
         ok, msg = _probe_endpoint_once(endpoint)
+        msg = _sanitize_probe_message(endpoint, msg)
         if ok:
             success += 1
         else:
@@ -617,15 +633,20 @@ def seed_agent_judge_paused_probe(redis_client, paused_probe_task, *,
 
 
 def clear_judge_lock(submission_id):
-    """删除某提交的 agent 评测幂等锁。进程重启重排前调用：上次被杀的 worker 会留下
-    僵尸锁（TTL 内有效），不清的话重排任务 set(nx) 失败、直接返回，提交会一直卡住。"""
+    """删除某提交的 Agent / 反向评测幂等锁。
+
+    进程重启重排前调用：上次被杀的 worker 会留下僵尸锁（TTL 内有效），不清的话
+    重排任务 set(nx) 失败、直接返回，提交会一直卡住。
+    """
     client = _ensure_judge_redis()
     if client is None:
         return
     try:
-        client.delete(f'ranking:judge:lock:{int(submission_id)}')
-        for key in client.scan_iter(match=f'ranking:judge:lock:{int(submission_id)}:*', count=50):
-            client.delete(key)
+        sid = int(submission_id)
+        for prefix in ('ranking:judge:lock', 'ranking:reverse_judge:lock'):
+            client.delete(f'{prefix}:{sid}')
+            for key in client.scan_iter(match=f'{prefix}:{sid}:*', count=50):
+                client.delete(key)
     except Exception:
         pass
 

@@ -309,7 +309,7 @@ def test_probe_opencode_uses_cli_with_cheapest_go_model(monkeypatch):
         return Result()
 
     monkeypatch.setattr(m.subprocess, "run", fake_run)
-    ok, msg = m._probe_opencode_once({
+    ok, msg = m._probe_endpoint_once({
         "harness": m.HARNESS_OPENCODE,
         "base_url": "",
         "api_key": "go-key",
@@ -332,6 +332,94 @@ def test_probe_opencode_uses_cli_with_cheapest_go_model(monkeypatch):
     assert calls["config"]["enabled_providers"] == ["opencode-go"]
 
 
+def test_quality_gate_opencode_probe_uses_configured_url_and_model(monkeypatch):
+    requests = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(m.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        m.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("质量门禁不得使用固定 OpenCode CLI 探针")
+        ),
+    )
+
+    ok, msg = m._probe_endpoint_once({
+        "pool_kind": m.ENDPOINT_POOL_QUALITY_GATE,
+        "harness": m.HARNESS_OPENCODE,
+        "base_url": "https://gate.example/custom/v1",
+        "api_key": "gate-key",
+        "model": "configured-gate-model",
+    })
+
+    assert ok is True and msg == "ok"
+    assert len(requests) == 1
+    request, timeout = requests[0]
+    assert request.full_url == "https://gate.example/custom/v1/chat/completions"
+    assert json.loads(request.data.decode("utf-8"))["model"] == "configured-gate-model"
+    assert request.headers["Authorization"] == "Bearer gate-key"
+    assert timeout == m.JUDGE_HELLO_TIMEOUT_SECONDS
+
+
+def test_paused_quality_gate_opencode_recovery_reuses_configured_endpoint(monkeypatch):
+    requested_urls = []
+    requested_models = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        requested_urls.append(request.full_url)
+        requested_models.append(json.loads(request.data.decode("utf-8"))["model"])
+        return Response()
+
+    monkeypatch.setattr(m.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(m.time, "sleep", lambda *_args, **_kwargs: None)
+    endpoint = {
+        "id": 41,
+        "pool_kind": m.ENDPOINT_POOL_QUALITY_GATE,
+        "harness": m.HARNESS_OPENCODE,
+        "base_url": "https://recovery.example/api/v1",
+        "api_key": "recovery-key",
+        "model": "recovery-model",
+        "status": m.ENDPOINT_STATUS_PAUSED,
+    }
+
+    successes, message = m._probe_paused_endpoint_for_resume(endpoint)
+
+    assert successes == m.PAUSED_PROBE_ATTEMPTS
+    assert message == "ok"
+    assert requested_urls == [
+        "https://recovery.example/api/v1/chat/completions"
+    ] * m.PAUSED_PROBE_ATTEMPTS
+    assert requested_models == ["recovery-model"] * m.PAUSED_PROBE_ATTEMPTS
+
+
 def test_probe_opencode_missing_key_fails_without_cli(monkeypatch):
     called = []
     monkeypatch.setattr(m.subprocess, "run", lambda *_a, **_k: called.append(True))
@@ -344,6 +432,18 @@ def test_probe_opencode_missing_key_fails_without_cli(monkeypatch):
     assert ok is False
     assert "API Key" in msg
     assert called == []
+
+
+def test_probe_error_message_redacts_key_and_control_characters():
+    message = m._sanitize_probe_message(
+        {"api_key": "secret-token"},
+        "invalid Authorization: Bearer secret-token\r\nnext-line",
+    )
+
+    assert "secret-token" not in message
+    assert "[redacted]" in message
+    assert "\r" not in message
+    assert "\n" not in message
 
 
 def test_probe_endpoint_retries_configured_attempts(monkeypatch):

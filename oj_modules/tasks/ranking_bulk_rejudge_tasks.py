@@ -12,8 +12,6 @@ except Exception:  # pragma: no cover
 
 import config as _cfg
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
-from oj_modules.ranking_agent_judge_db import clear_judge_results
-from oj_modules.ranking_reverse_judge_db import clear_reverse_judge_steps
 from oj_modules.ranking_db import (
     begin_agent_judge_attempt,
     get_competition,
@@ -87,11 +85,15 @@ def _reset_submission_for_rejudge(comp, submission_id):
     """在原提交记录上清空旧结果，并切回可评测状态。"""
     mode = _mode(comp)
     if mode == 'agent_judge':
-        clear_judge_results(submission_id)
-        return begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
+        return begin_agent_judge_attempt(
+            submission_id, status='Queued', reset_result=True,
+            clear_agent_results=True,
+        )
     if mode == 'reverse_judge':
-        clear_reverse_judge_steps(submission_id)
-        return begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
+        return begin_agent_judge_attempt(
+            submission_id, status='Queued', reset_result=True,
+            clear_reverse_steps=True,
+        )
     if mode == 'elo':
         initial_rating = float(comp.get('elo_initial_rating') or 1500)
         init_submission_elo_state(submission_id, initial_rating)

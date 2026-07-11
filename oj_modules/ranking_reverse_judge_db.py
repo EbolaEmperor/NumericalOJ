@@ -12,18 +12,20 @@ from oj_modules.ranking_db import get_ranking_submission
 
 
 STEP_SOLUTION = 'solution_check'
+STEP_QUALITY_GATE = 'quality_gate'
 STEP_AGENT = 'agent_answer'
 STEP_AI_JUDGE = 'ai_judge'
 
 STEP_DEFS = (
     (STEP_SOLUTION, 1, '标准答案自检'),
-    (STEP_AGENT, 2, 'AI 作答'),
-    (STEP_AI_JUDGE, 3, '评测 AI 答案'),
+    (STEP_QUALITY_GATE, 2, '质量门禁'),
+    (STEP_AGENT, 3, 'AI 作答'),
+    (STEP_AI_JUDGE, 4, '评测 AI 答案'),
 )
 STEP_DEF_BY_KEY = {key: {'step_key': key, 'step_order': order, 'title': title}
                    for key, order, title in STEP_DEFS}
 STEP_KEYS = tuple(key for key, _, _ in STEP_DEFS)
-TERMINAL_STEP_STATUSES = {'passed', 'failed', 'error'}
+TERMINAL_STEP_STATUSES = {'passed', 'failed', 'error', 'skipped'}
 
 _TRACE_MAX_FILES = 16
 _TRACE_MAX_FILE_BYTES = 64 * 1024
@@ -52,7 +54,7 @@ def clear_reverse_judge_steps(submission_id):
 
 
 def init_reverse_judge_steps_for_attempt(submission_id, attempt_id):
-    """重置并预置三步记录。仅在 submission 当前 attempt 仍匹配时生效。"""
+    """重置并预置四步记录。仅在 submission 当前 attempt 仍匹配时生效。"""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -98,6 +100,39 @@ def init_reverse_judge_steps_for_attempt(submission_id, attempt_id):
         conn.close()
 
 
+def ensure_reverse_judge_steps_for_attempt(submission_id, attempt_id):
+    """补齐当前 attempt 的步骤记录，但保留已经完成的阶段。
+
+    反向评测在端点繁忙时会通过 Celery retry 重新排队。重排后必须沿用已经通过的
+    标准答案自检和质量门禁，否则每次等待模型槽位都会重复执行用户脚本和消耗审核
+    token。新的 attempt 会在入队前清空旧步骤，因此这里只做幂等补齐即可。
+    """
+    conn = get_db_connection()
+    try:
+        affected_total = 0
+        with conn.cursor() as cursor:
+            for key, order, title in STEP_DEFS:
+                cursor.execute(
+                    """
+                    INSERT INTO ranking_reverse_judge_steps
+                        (submission_id, step_key, step_order, title, status)
+                    SELECT %s, %s, %s, %s, 'pending'
+                    FROM ranking_submissions
+                    WHERE id = %s AND judge_attempt_id <=> %s
+                    ON DUPLICATE KEY UPDATE
+                        step_order = VALUES(step_order),
+                        title = VALUES(title)
+                    """,
+                    (int(submission_id), key, int(order), title,
+                     int(submission_id), attempt_id),
+                )
+                affected_total += cursor.rowcount
+        conn.commit()
+        return int(affected_total or 0)
+    finally:
+        conn.close()
+
+
 def update_reverse_judge_step_for_attempt(submission_id, attempt_id, step_key, *,
                                           status=None, max_score=None, score=None,
                                           result_json=None, stdout=None, stderr=None,
@@ -131,7 +166,7 @@ def update_reverse_judge_step_for_attempt(submission_id, attempt_id, step_key, *
                        %s, %s, %s, %s, %s,
                        %s, %s,
                        CASE WHEN %s = 'running' THEN CURRENT_TIMESTAMP ELSE NULL END,
-                       CASE WHEN %s IN ('passed', 'failed', 'error') THEN CURRENT_TIMESTAMP ELSE NULL END
+                       CASE WHEN %s IN ('passed', 'failed', 'error', 'skipped') THEN CURRENT_TIMESTAMP ELSE NULL END
                 FROM ranking_submissions
                 WHERE id = %s AND judge_attempt_id <=> %s
                 ON DUPLICATE KEY UPDATE
@@ -163,6 +198,7 @@ def update_reverse_judge_step_for_attempt(submission_id, attempt_id, step_key, *
 
 
 def list_reverse_judge_steps(submission_id):
+    submission = get_ranking_submission(submission_id)
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -185,10 +221,25 @@ def list_reverse_judge_steps(submission_id):
     out = []
     for key, order, title in STEP_DEFS:
         row = dict(by_key.get(key) or {})
-        row.setdefault('step_key', key)
-        row.setdefault('step_order', order)
-        row.setdefault('title', title)
-        row.setdefault('status', 'pending')
+        # 历史三步记录仍保存着旧的 1/2/3 顺序；对外始终投影为当前四步定义，
+        # 避免质量门禁和 AI 作答同时显示 step_order=2。
+        row['step_key'] = key
+        row['step_order'] = order
+        row['title'] = title
+        if 'status' not in row:
+            # 质量门禁上线前的历史提交没有对应 DB 行。终态历史记录应明确展示为
+            # “未执行”，而不是永久多出一个 pending 步骤；新排队/评测中的提交仍
+            # 等待 worker 通过 ensure_reverse_judge_steps_for_attempt 补齐真实记录。
+            if key == STEP_QUALITY_GATE and str((submission or {}).get('status') or '') not in (
+                    'Judging', 'Pending', 'Queued'):
+                row['status'] = 'skipped'
+                row['result_json'] = {
+                    'enabled': False,
+                    'skipped': True,
+                    'summary': '历史评测未执行质量门禁',
+                }
+            else:
+                row['status'] = 'pending'
         out.append(row)
     return out
 

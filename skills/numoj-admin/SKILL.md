@@ -60,7 +60,7 @@ Do not use commands that launch external model/API work, large judging workloads
 - `repository`: inspect and manage the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, and launch/stop/delete AIGC detection tasks.
-- `ranking`: list/view/create/edit/delete ranking competitions, submit by upload or Git, inspect personal/all submissions, view leaderboards, inspect matches/match details/judge streams, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge / reverse-judge config/endpoints, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
+- `ranking`: list/view/create/edit/delete ranking competitions, submit by upload or Git, inspect personal/all submissions, view leaderboards, inspect matches/match details/judge streams, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge / reverse-judge config/endpoints and the independent reverse-judge quality gate, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
 
 For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
 
@@ -170,11 +170,23 @@ python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
   --timeout-seconds 600
 ```
 
+Configure the reverse-judge quality gate. Its endpoint pool is independent from the AI-answering pool and is scheduled automatically; participants never select a quality endpoint. The prompt and endpoint JSON support `@file`, and endpoint secrets may use `api_key_env` plus `--env-file` just like the Agent-as-Judge pool:
+
+```bash
+python3 scripts/numoj_admin.py ranking save-quality-gate <competition_id> \
+  --disabled \
+  --prompt @quality-gate-prompt.txt
+python3 scripts/numoj_admin.py ranking save-quality-gate-endpoints <competition_id> \
+  @quality-gate-endpoints.json \
+  --env-file .env
+python3 scripts/numoj_admin.py ranking save-quality-gate <competition_id> --enabled
+```
+
 Submit and inspect a ranking competition:
 
 ```bash
 python3 scripts/numoj_admin.py ranking submit <competition_id> --base-model qwen3 --answer-file answer.json --code-zip code.zip
-python3 scripts/numoj_admin.py ranking submit <competition_id> --code-zip reverse_problem.zip
+python3 scripts/numoj_admin.py ranking submit <competition_id> --code-zip reverse_problem.zip --agent-endpoint-id <answer_endpoint_id>
 python3 scripts/numoj_admin.py ranking reverse-stream <competition_id> <submission_id> --max-lines 10
 python3 scripts/numoj_admin.py ranking my-submissions <competition_id> --limit 5
 python3 scripts/numoj_admin.py ranking leaderboard <competition_id> --limit 10

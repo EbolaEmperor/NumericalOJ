@@ -3269,6 +3269,9 @@
                   document.querySelectorAll('.agent-rules-only').forEach(function (el) {
                     el.style.display = isAgent ? '' : 'none';
                   });
+                  document.querySelectorAll('.reverse-judge-only').forEach(function (el) {
+                    el.style.display = isReverse ? '' : 'none';
+                  });
                   document.querySelectorAll('.reverse-finalize-only').forEach(function (el) {
                     el.style.display = isReverse ? '' : 'none';
                   });
@@ -3761,6 +3764,29 @@
         }
         .aje-modal-apply:hover { background:#274f44; border-color:#274f44; color:#fff; }
         .aje-modal-delete { min-height:36px; background:#fff; }
+        .qge-config {
+          display:grid;
+          gap:.65rem;
+          margin-bottom:.85rem;
+          padding:.9rem 1rem 1rem;
+          border:1px solid var(--line);
+          border-radius:8px;
+          background:#fbfcfd;
+        }
+        .qge-config-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+        .qge-config-title { color:var(--ink); font-size:.88rem; font-weight:700; }
+        .qge-switch { display:flex; align-items:center; gap:.5rem; margin:0; }
+        .qge-switch .form-check-input { float:none; margin:0; cursor:pointer; }
+        .qge-switch .form-check-label { color:var(--muted); font-size:.8rem; font-weight:700; cursor:pointer; }
+        .qge-prompt {
+          width:100%; min-height:150px; resize:vertical;
+          border:1px solid var(--line-strong); border-radius:8px;
+          padding:.7rem .78rem; background:#fff; color:var(--ink);
+          font-size:.88rem; line-height:1.6;
+        }
+        .qge-prompt:focus { outline:none; border-color:#687484; }
+        .qge-shell { border-color:#d7dfe8; }
+        .qge-shell .aje-head { background:#f7f9fb; }
         @media (max-width:1100px){
           .aje-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
         }
@@ -3781,12 +3807,12 @@
       </style>
       <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
            {% if edit_mode not in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
-        <div class="card-header"><i class="fas fa-robot me-2"></i> AI 评测模型端点</div>
+        <div class="card-header"><i class="fas fa-robot me-2"></i> {% if edit_mode == 'reverse_judge' %}AI 作答端点{% else %}AI 评测模型端点{% endif %}</div>
         <div class="card-body aje">
           <div class="aje-shell">
             <div class="aje-head">
               <div>
-                <div class="aje-title">端点池</div>
+                <div class="aje-title">{% if edit_mode == 'reverse_judge' %}AI 作答端点池{% else %}端点池{% endif %}</div>
               </div>
               <div class="aje-head-tools">
                 <div class="aje-meta">
@@ -3889,6 +3915,45 @@
               <div class="aje-actions">
                 <span class="small" id="ajeHint"></span>
                 <button type="button" class="aje-save" id="ajeSaveBtn"><i class="fas fa-save me-2"></i>保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card mb-3 reverse-judge-only" id="qualityGateConfigCard"
+           {% if edit_mode != 'reverse_judge' %}style="display:none;"{% endif %}>
+        <div class="card-header"><i class="fas fa-shield-halved me-2"></i> 质量门禁</div>
+        <div class="card-body aje">
+          <div class="qge-config">
+            <div class="qge-config-head">
+              <span class="qge-config-title">审核标准</span>
+              <div class="form-check form-switch qge-switch">
+                <input class="form-check-input" type="checkbox" id="qgeEnabled"
+                       {% if competition.reverse_quality_gate_enabled %}checked{% endif %}>
+                <label class="form-check-label" for="qgeEnabled">启用</label>
+              </div>
+            </div>
+            <textarea class="qge-prompt" id="qgePrompt" maxlength="20000" aria-label="质量门禁审核标准">{{ competition.reverse_quality_gate_prompt or '' }}</textarea>
+          </div>
+          <div class="aje-shell qge-shell">
+            <div class="aje-head">
+              <div class="aje-title">审核端点池</div>
+              <div class="aje-head-tools">
+                <div class="aje-meta">
+                  <span class="aje-count" id="qgeCountLabel">0 个端点</span>
+                  <span class="aje-total">并发 <b id="qgeTotalValue">0</b></span>
+                </div>
+                <button type="button" class="aje-add" id="qgeAddBtn" title="添加端点" aria-label="添加质量门禁端点">
+                  <i class="fas fa-plus"></i>
+                </button>
+              </div>
+            </div>
+            <div id="qgeEditor" class="aje-grid"></div>
+            <div class="aje-foot">
+              <div></div>
+              <div class="aje-actions">
+                <span class="small" id="qgeHint"></span>
+                <button type="button" class="aje-save" id="qgeSaveBtn"><i class="fas fa-save me-2"></i>保存</button>
               </div>
             </div>
           </div>
@@ -4032,13 +4097,16 @@
       <script>
         window.__AJ_ENDPOINTS__ = {{ aj_endpoints|tojson }};
         window.__SAVE_AJ_ENDPOINTS_URL__ = "{{ url_for('ranking.ranking_save_agent_endpoints', competition_id=competition.id) }}";
+        window.__QUALITY_GATE_ENDPOINTS__ = {{ quality_gate_endpoints|tojson }};
+        window.__SAVE_QUALITY_GATE_URL__ = "{{ url_for('ranking.ranking_save_reverse_quality_gate', competition_id=competition.id) }}";
       </script>
       <script>
       (function () {
-        var editor = document.getElementById('ajeEditor');
-        if (!editor) return;
+        var primaryEditor = document.getElementById('ajeEditor');
+        if (!primaryEditor) return;
         var modalEl = document.getElementById('ajeEditModal');
         var modal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
+        var activeManager = null;
         var editIndex = null;
         var editHarness = document.getElementById('ajeEditHarness');
         var editBaseUrlWrap = document.getElementById('ajeEditBaseUrlWrap');
@@ -4126,9 +4194,7 @@
           });
         }
         initTimeoutControls();
-        var eps = fromServer(window.__AJ_ENDPOINTS__);
         function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
-        function totalConc(){ return eps.reduce(function(s,e){ return s + (isEnabled(e) ? (parseInt(e.concurrency_limit)||0) : 0); }, 0); }
         function defaultEndpoint(){
           return {id:null, harness:'claude_code', base_url:'', model:'', concurrency_limit:1, status:'enabled', enabled:true, has_key:false, api_key:''};
         }
@@ -4207,22 +4273,42 @@
           if ((e.model || '').trim()) return e.model;
           return '';
         }
-        function endpointText(e){
-          if (e.harness === 'opencode') return '';
+        function usesFixedOpenCodeEndpoint(manager, harness){
+          return harness === 'opencode' && (!manager || manager.poolKind === 'primary');
+        }
+        function endpointText(manager, e){
+          if (usesFixedOpenCodeEndpoint(manager, e.harness)) return '';
           return (e.base_url || '').trim() || '未填写 Base URL';
         }
         function keyText(e){
           if ((e.api_key || '').trim()) return '新 Key 待保存';
           return e.has_key ? 'Key 已配置' : 'Key 未配置';
         }
-        function updateHead(){
-          document.getElementById('ajeCountLabel').textContent = eps.length + ' 个端点';
-          document.getElementById('ajeTotalValue').textContent = totalConc();
+        function endpointPayload(manager){
+          return manager.eps.map(function(e){
+            return {id:e.id, harness:e.harness || 'claude_code',
+              base_url:(e.base_url||'').trim(), api_key:(e.api_key||'').trim(),
+              model:(e.model||'').trim(), concurrency_limit:parseInt(e.concurrency_limit)||1,
+              status:normalizeStatus(e), enabled:isEnabled(e)};
+          });
         }
-        function render(){
-          if (!eps.length){ editor.innerHTML = '<div class="aje-empty">暂无端点</div>'; updateHead(); return; }
+        function totalConc(manager){
+          return manager.eps.reduce(function(sum, endpoint){
+            return sum + (isEnabled(endpoint) ? (parseInt(endpoint.concurrency_limit, 10) || 0) : 0);
+          }, 0);
+        }
+        function updateHead(manager){
+          manager.countLabel.textContent = manager.eps.length + ' 个端点';
+          manager.totalValue.textContent = totalConc(manager);
+        }
+        function renderManager(manager){
+          if (!manager.eps.length){
+            manager.editor.innerHTML = '<div class="aje-empty">暂无端点</div>';
+            updateHead(manager);
+            return;
+          }
           var h = '';
-          eps.forEach(function(e, i){
+          manager.eps.forEach(function(e, i){
             var harness = e.harness || 'claude_code';
             var st = normalizeStatus(e);
             h += '<div class="aje-card' + statusClass(st) + '" data-i="' + i + '">' +
@@ -4232,7 +4318,7 @@
               '</div>' +
               '<div class="aje-card-main">' +
                 '<div class="aje-model" title="' + esc(modelText(e)) + '">' + esc(modelText(e)) + '</div>' +
-                '<div class="aje-url" title="' + esc(endpointText(e)) + '">' + esc(endpointText(e)) + '</div>' +
+                '<div class="aje-url" title="' + esc(endpointText(manager, e)) + '">' + esc(endpointText(manager, e)) + '</div>' +
               '</div>' +
               '<div class="aje-card-meta">' +
                 '<span class="aje-chip"><i class="fas fa-gauge-high"></i>并发 ' + (parseInt(e.concurrency_limit)||1) + '</span>' +
@@ -4242,21 +4328,24 @@
               '</div>' +
             '</div>';
           });
-          editor.innerHTML = h;
-          updateHead();
+          manager.editor.innerHTML = h;
+          updateHead(manager);
         }
         function applyHarnessMode(){
           var h = editHarness.value || 'claude_code';
-          var isOpenCode = h === 'opencode';
-          editBaseUrlWrap.style.display = isOpenCode ? 'none' : '';
-          editBaseUrlLabel.textContent = h === 'codex' ? 'Base URL（OpenAI 兼容）' : 'Base URL（Anthropic 兼容）';
-          editBaseUrl.placeholder = h === 'codex' ? 'https://.../v1' : 'https://.../anthropic';
+          var fixedOpenCode = usesFixedOpenCodeEndpoint(activeManager, h);
+          var openAiCompatible = h === 'codex' || (h === 'opencode' && !fixedOpenCode);
+          editBaseUrlWrap.style.display = fixedOpenCode ? 'none' : '';
+          editBaseUrlLabel.textContent = openAiCompatible ? 'Base URL（OpenAI 兼容）' : 'Base URL（Anthropic 兼容）';
+          editBaseUrl.placeholder = openAiCompatible ? 'https://.../v1' : 'https://.../anthropic';
           editModel.placeholder = '';
         }
-        function openEditor(index){
+        function openEditor(manager, index){
+          activeManager = manager;
           editIndex = (typeof index === 'number') ? index : null;
-          var e = editIndex === null ? defaultEndpoint() : eps[editIndex];
-          document.getElementById('ajeEditModalLabel').textContent = editIndex === null ? '添加端点' : '编辑端点';
+          var e = editIndex === null ? defaultEndpoint() : manager.eps[editIndex];
+          document.getElementById('ajeEditModalLabel').textContent =
+            (editIndex === null ? '添加' : '编辑') + manager.endpointName;
           editHarness.value = e.harness || 'claude_code';
           editBaseUrl.value = e.base_url || '';
           editApiKey.value = e.api_key || '';
@@ -4271,11 +4360,63 @@
           applyHarnessMode();
           if (modal) modal.show();
         }
-        editor.addEventListener('click', function(ev){
-          var btn = ev.target.closest('[data-edit]');
-          if (!btn) return;
-          openEditor(parseInt(btn.getAttribute('data-edit'), 10));
-        });
+        function setHint(manager, kind, text){
+          manager.hint.style.color = kind === 'error' ? '#b03a2e' : (kind === 'ok' ? '#1f7a4d' : '#70757c');
+          manager.hint.textContent = text || '';
+        }
+        function saveManager(manager){
+          var payload;
+          try {
+            payload = manager.buildPayload(manager);
+          } catch (error) {
+            setHint(manager, 'error', error && error.message ? error.message : '配置不完整');
+            return;
+          }
+          setHint(manager, 'pending', '保存中…');
+          manager.saveBtn.disabled = true;
+          fetch(manager.saveUrl, {
+            method:'POST', credentials:'same-origin',
+            headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+            body:JSON.stringify(payload)
+          }).then(function(response){ return response.json(); }).then(function(data){
+            manager.saveBtn.disabled = false;
+            if (!data.success){ setHint(manager, 'error', data.message || '保存失败'); return; }
+            manager.eps = fromServer(manager.readEndpoints(data));
+            renderManager(manager);
+            if (typeof manager.afterSave === 'function') manager.afterSave(data);
+            setHint(manager, 'ok', '已保存');
+          }).catch(function(){
+            manager.saveBtn.disabled = false;
+            setHint(manager, 'error', '网络错误');
+          });
+        }
+        function createPoolManager(config){
+          var manager = {
+            editor:document.getElementById(config.editorId),
+            addBtn:document.getElementById(config.addId),
+            saveBtn:document.getElementById(config.saveId),
+            hint:document.getElementById(config.hintId),
+            countLabel:document.getElementById(config.countId),
+            totalValue:document.getElementById(config.totalId),
+            poolKind:config.poolKind || 'primary',
+            endpointName:config.endpointName || '端点',
+            saveUrl:config.saveUrl,
+            eps:fromServer(config.endpoints),
+            buildPayload:config.buildPayload,
+            readEndpoints:config.readEndpoints,
+            afterSave:config.afterSave
+          };
+          if (!manager.editor || !manager.addBtn || !manager.saveBtn || !manager.hint) return null;
+          manager.editor.addEventListener('click', function(ev){
+            var btn = ev.target.closest('[data-edit]');
+            if (!btn) return;
+            openEditor(manager, parseInt(btn.getAttribute('data-edit'), 10));
+          });
+          manager.addBtn.addEventListener('click', function(){ openEditor(manager, null); });
+          manager.saveBtn.addEventListener('click', function(){ saveManager(manager); });
+          renderManager(manager);
+          return manager;
+        }
         document.addEventListener('click', function(ev){
           var inside = choicePickers.some(function(ctrl){
             return ctrl && ctrl.picker && ctrl.picker.contains(ev.target);
@@ -4286,13 +4427,14 @@
           modalEl.addEventListener('hidden.bs.modal', function(){ closeAllPickers(null); });
         }
         editApply.addEventListener('click', function(){
+          if (!activeManager) return;
           var h = editHarness.value || 'claude_code';
-          var old = editIndex === null ? defaultEndpoint() : eps[editIndex];
+          var old = editIndex === null ? defaultEndpoint() : activeManager.eps[editIndex];
           var st = normalizeStatus({status: (statusPickerCtrl ? statusPickerCtrl.value() : editStatus.value) || 'enabled'});
           var next = {
             id: old.id || null,
             harness: h,
-            base_url: h === 'opencode' ? '' : (editBaseUrl.value || '').trim(),
+            base_url: usesFixedOpenCodeEndpoint(activeManager, h) ? '' : (editBaseUrl.value || '').trim(),
             model: (editModel.value || '').trim(),
             concurrency_limit: Math.max(1, parseInt(editConcurrency.value, 10) || 1),
             status: st,
@@ -4300,57 +4442,17 @@
             has_key: !!old.has_key || !!(editApiKey.value || '').trim(),
             api_key: (editApiKey.value || '').trim()
           };
-          if (editIndex === null) eps.push(next);
-          else eps[editIndex] = next;
-          render();
+          if (editIndex === null) activeManager.eps.push(next);
+          else activeManager.eps[editIndex] = next;
+          renderManager(activeManager);
           if (modal) modal.hide();
         });
         editDelete.addEventListener('click', function(){
-          if (editIndex === null) return;
+          if (!activeManager || editIndex === null) return;
           if (!window.confirm('移除这个端点？')) return;
-          eps.splice(editIndex, 1);
-          render();
+          activeManager.eps.splice(editIndex, 1);
+          renderManager(activeManager);
           if (modal) modal.hide();
-        });
-        document.getElementById('ajeAddBtn').addEventListener('click', function(){
-          openEditor(null);
-        });
-        document.getElementById('ajeSaveBtn').addEventListener('click', function(){
-          var hint = document.getElementById('ajeHint');
-          var orchEl = document.getElementById('ajeOrchestrationMode');
-          var orchMode = orchPickerCtrl ? orchPickerCtrl.value() : (orchEl ? (orchEl.value || 'single') : 'single');
-          var finalizeInput = document.getElementById('reverseFinalizeTimeout');
-          var modeInput = document.getElementById('scoringModeSelect');
-          var answerTimeout = document.getElementById('ajeTimeout');
-          var payload = { timeout_seconds: clampNumber(answerTimeout ? answerTimeout.value : 1800, 60, 7200, 1800),
-            endpoints: eps.map(function(e){ return {id:e.id, harness:e.harness || 'claude_code',
-              base_url:(e.base_url||'').trim(),
-              api_key:(e.api_key||'').trim(), model:(e.model||'').trim(),
-              concurrency_limit: parseInt(e.concurrency_limit)||1, status: normalizeStatus(e),
-              enabled: isEnabled(e) }; }) };
-          if (finalizeInput && modeInput && modeInput.value === 'reverse_judge') {
-            payload.reverse_judge_finalize_timeout_seconds = clampNumber(finalizeInput.value, 30, 7200, 180);
-          }
-          if (orchEl || orchPickerCtrl) {
-            payload.orchestration_mode = orchMode;
-            payload.agent_judge_orchestration_mode = orchMode;
-          }
-          hint.style.color = '#70757c'; hint.textContent = '保存中…';
-          fetch(window.__SAVE_AJ_ENDPOINTS_URL__, {
-            method:'POST', credentials:'same-origin',
-            headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
-            body: JSON.stringify(payload)
-          }).then(function(r){return r.json();}).then(function(d){
-            if (!d.success){ hint.style.color='#b03a2e'; hint.textContent = d.message || '保存失败'; return; }
-            hint.style.color='#1f7a4d';
-            hint.textContent = '已保存';
-            if (orchPickerCtrl && d.orchestration_mode) orchPickerCtrl.setValue(d.orchestration_mode);
-            if (finalizeInput && d.reverse_judge_finalize_timeout_seconds) {
-              finalizeInput.value = d.reverse_judge_finalize_timeout_seconds;
-            }
-            eps = fromServer(d.endpoints);   // 用服务端回传刷新（含新 id/has_key），保证下次保存能保留未改动的 key
-            render();
-          }).catch(function(){ hint.style.color='#b03a2e'; hint.textContent='网络错误'; });
         });
         harnessPickerCtrl = createChoicePicker({
           inputId:'ajeEditHarness', pickerId:'ajeHarnessPicker', triggerId:'ajeHarnessTrigger',
@@ -4365,7 +4467,59 @@
           inputId:'ajeOrchestrationMode', pickerId:'ajeOrchestrationPicker', triggerId:'ajeOrchestrationTrigger',
           menuId:'ajeOrchestrationMenu', labelId:'ajeOrchestrationLabel', iconId:'ajeOrchestrationIcon'
         });
-        render();
+        var primaryManager = createPoolManager({
+          editorId:'ajeEditor', addId:'ajeAddBtn', saveId:'ajeSaveBtn', hintId:'ajeHint',
+          countId:'ajeCountLabel', totalId:'ajeTotalValue', endpointName:'端点',
+          poolKind:'primary',
+          endpoints:window.__AJ_ENDPOINTS__, saveUrl:window.__SAVE_AJ_ENDPOINTS_URL__,
+          readEndpoints:function(data){ return data.endpoints || []; },
+          buildPayload:function(manager){
+          var orchEl = document.getElementById('ajeOrchestrationMode');
+          var orchMode = orchPickerCtrl ? orchPickerCtrl.value() : (orchEl ? (orchEl.value || 'single') : 'single');
+          var finalizeInput = document.getElementById('reverseFinalizeTimeout');
+          var modeInput = document.getElementById('scoringModeSelect');
+          var answerTimeout = document.getElementById('ajeTimeout');
+          var payload = { timeout_seconds: clampNumber(answerTimeout ? answerTimeout.value : 1800, 60, 7200, 1800),
+            endpoints:endpointPayload(manager) };
+          if (finalizeInput && modeInput && modeInput.value === 'reverse_judge') {
+            payload.reverse_judge_finalize_timeout_seconds = clampNumber(finalizeInput.value, 30, 7200, 180);
+          }
+          if (orchEl || orchPickerCtrl) {
+            payload.orchestration_mode = orchMode;
+            payload.agent_judge_orchestration_mode = orchMode;
+          }
+          return payload;
+          },
+          afterSave:function(data){
+            var finalizeInput = document.getElementById('reverseFinalizeTimeout');
+            if (orchPickerCtrl && data.orchestration_mode) orchPickerCtrl.setValue(data.orchestration_mode);
+            if (finalizeInput && data.reverse_judge_finalize_timeout_seconds) {
+              finalizeInput.value = data.reverse_judge_finalize_timeout_seconds;
+            }
+          }
+        });
+        var qualityEnabled = document.getElementById('qgeEnabled');
+        var qualityPrompt = document.getElementById('qgePrompt');
+        var qualityManager = createPoolManager({
+          editorId:'qgeEditor', addId:'qgeAddBtn', saveId:'qgeSaveBtn', hintId:'qgeHint',
+          countId:'qgeCountLabel', totalId:'qgeTotalValue', endpointName:'质量门禁端点',
+          poolKind:'quality_gate',
+          endpoints:window.__QUALITY_GATE_ENDPOINTS__, saveUrl:window.__SAVE_QUALITY_GATE_URL__,
+          readEndpoints:function(data){ return data.quality_gate_endpoints || data.endpoints || []; },
+          buildPayload:function(manager){
+            var enabled = !!(qualityEnabled && qualityEnabled.checked);
+            var prompt = qualityPrompt ? qualityPrompt.value.trim() : '';
+            if (enabled && !prompt) throw new Error('请填写审核标准');
+            if (enabled && !manager.eps.some(isEnabled)) throw new Error('请配置至少一个启用端点');
+            return {enabled:enabled, prompt:prompt, endpoints:endpointPayload(manager)};
+          },
+          afterSave:function(data){
+            if (qualityEnabled) qualityEnabled.checked = !!data.enabled;
+            if (qualityPrompt && typeof data.prompt === 'string') qualityPrompt.value = data.prompt;
+          }
+        });
+        void primaryManager;
+        void qualityManager;
       })();
       </script>
 

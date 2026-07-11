@@ -110,6 +110,7 @@ def get_competition(competition_id):
                        agent_judge_base_url, agent_judge_api_key,
                        agent_judge_model, agent_judge_timeout_seconds,
                        reverse_judge_finalize_timeout_seconds,
+                       reverse_quality_gate_enabled, reverse_quality_gate_prompt,
                        agent_judge_orchestration_mode,
                        submit_limit_per_window, limit_window_start,
                        submission_method, git_format,
@@ -181,7 +182,7 @@ def copy_competition(src_id, *, created_by=None):
             )
             files = cursor.fetchall() or []
             cursor.execute(
-                "SELECT harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering "
+                "SELECT pool_kind, harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering "
                 "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
                 (int(src_id),),
             )
@@ -250,9 +251,11 @@ def copy_competition(src_id, *, created_by=None):
                 )
                 cursor.execute(
                     "INSERT INTO ranking_agent_judge_endpoints "
-                    "(competition_id, harness, base_url, api_key, model, concurrency_limit, enabled, status, ordering) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (new_id, e.get('harness') or 'claude_code', e['base_url'], e['api_key'], e['model'],
+                    "(competition_id, pool_kind, harness, base_url, api_key, model, "
+                    "concurrency_limit, enabled, status, ordering) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (new_id, e.get('pool_kind') or 'primary',
+                     e.get('harness') or 'claude_code', e['base_url'], e['api_key'], e['model'],
                      e['concurrency_limit'], 1 if status == 'enabled' else 0, status, e['ordering']),
                 )
         conn.commit()
@@ -279,6 +282,8 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         agent_judge_base_url=None, agent_judge_api_key=None,
                         agent_judge_model=None, agent_judge_timeout_seconds=None,
                         reverse_judge_finalize_timeout_seconds=None,
+                        reverse_quality_gate_enabled=None,
+                        reverse_quality_gate_prompt=None,
                         agent_judge_orchestration_mode=None,
                         submit_limit_per_window=None, set_limit_window_now=False,
                         submission_method=None, git_format=None):
@@ -347,6 +352,12 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if reverse_judge_finalize_timeout_seconds is not None:
         fields.append("reverse_judge_finalize_timeout_seconds = %s")
         params.append(int(reverse_judge_finalize_timeout_seconds))
+    if reverse_quality_gate_enabled is not None:
+        fields.append("reverse_quality_gate_enabled = %s")
+        params.append(1 if reverse_quality_gate_enabled else 0)
+    if reverse_quality_gate_prompt is not None:
+        fields.append("reverse_quality_gate_prompt = %s")
+        params.append(str(reverse_quality_gate_prompt))
     if agent_judge_orchestration_mode is not None:
         fields.append("agent_judge_orchestration_mode = %s")
         params.append(normalize_orchestration_mode(agent_judge_orchestration_mode))
@@ -508,10 +519,29 @@ def delete_competition(competition_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # 先清理无外键级联的从属记录。尤其端点表含明文 API Key；若留下孤儿，
+            # paused 恢复任务还会继续对已删除比赛的端点发起 hello。
+            cursor.execute(
+                """
+                DELETE steps
+                FROM ranking_reverse_judge_steps steps
+                JOIN ranking_submissions submissions
+                  ON submissions.id = steps.submission_id
+                WHERE submissions.competition_id = %s
+                """,
+                (competition_id,),
+            )
+            cursor.execute(
+                "DELETE FROM ranking_agent_judge_endpoints WHERE competition_id = %s",
+                (competition_id,),
+            )
             cursor.execute("DELETE FROM ranking_submissions WHERE competition_id = %s", (competition_id,))
             cursor.execute("DELETE FROM ranking_competition_files WHERE competition_id = %s", (competition_id,))
             cursor.execute("DELETE FROM ranking_competitions WHERE id = %s", (competition_id,))
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -594,7 +624,7 @@ def _agent_endpoint_snapshot_with_cursor(cursor, competition_id, endpoint_id):
         """
         SELECT harness, model
         FROM ranking_agent_judge_endpoints
-        WHERE id = %s AND competition_id = %s
+        WHERE id = %s AND competition_id = %s AND pool_kind = 'primary'
         """,
         (eid, int(competition_id)),
     )
@@ -798,11 +828,14 @@ def set_submission_status(submission_id, status):
         conn.close()
 
 
-def begin_agent_judge_attempt(submission_id, status='Queued', reset_result=False):
+def begin_agent_judge_attempt(submission_id, status='Queued', reset_result=False, *,
+                              clear_agent_results=False,
+                              clear_reverse_steps=False):
     """为一次 Agent-as-Judge 评测生成新的 attempt，并返回 attempt_id。
 
-    管理员重测会先清空旧规则结果，再调用本函数把当前提交切到新的 attempt；
-    旧 Celery 消息即使之后醒来，也会因 attempt 不匹配而 no-op。
+    重测时可在同一事务中清空 Agent 规则结果或反向评测步骤。必须先写入新 attempt
+    再清旧结果，且二者原子提交：这样旧 worker 立即失效，也不存在进程在两步之间
+    崩溃后让新 attempt 继承旧门禁结果的窗口。
     """
     attempt_id = str(uuid.uuid4())
     conn = get_db_connection()
@@ -835,7 +868,20 @@ def begin_agent_judge_attempt(submission_id, status='Queued', reset_result=False
                     """,
                     (status, attempt_id, submission_id),
                 )
+            if clear_agent_results:
+                cursor.execute(
+                    "DELETE FROM ranking_judge_results WHERE submission_id = %s",
+                    (submission_id,),
+                )
+            if clear_reverse_steps:
+                cursor.execute(
+                    "DELETE FROM ranking_reverse_judge_steps WHERE submission_id = %s",
+                    (submission_id,),
+                )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
     return attempt_id
@@ -1152,7 +1198,8 @@ def list_user_submissions(competition_id, username):
                        s.elo_rating, s.elo_match_count, s.elo_in_pool,
                        s.created_at
                 FROM ranking_submissions s
-                LEFT JOIN ranking_agent_judge_endpoints ep ON ep.id = s.agent_endpoint_id
+                LEFT JOIN ranking_agent_judge_endpoints ep
+                  ON ep.id = s.agent_endpoint_id AND ep.pool_kind = 'primary'
                 WHERE s.competition_id = %s AND s.username = %s
                 ORDER BY s.created_at DESC, s.id DESC
                 """,
@@ -1196,7 +1243,8 @@ def list_all_submissions(competition_id, *, page=1, per_page=50, username_q=None
                        s.elo_rating, s.elo_match_count, s.elo_in_pool,
                        s.created_at
                 FROM ranking_submissions s
-                LEFT JOIN ranking_agent_judge_endpoints ep ON ep.id = s.agent_endpoint_id
+                LEFT JOIN ranking_agent_judge_endpoints ep
+                  ON ep.id = s.agent_endpoint_id AND ep.pool_kind = 'primary'
                 {where_sql}
                 ORDER BY s.created_at DESC, s.id DESC
                 LIMIT %s OFFSET %s
@@ -1360,7 +1408,8 @@ def get_leaderboard(competition_id):
                     COALESCE(r.agent_endpoint_harness, ep.harness) AS best_agent_endpoint_harness,
                     COALESCE(r.agent_endpoint_model, ep.model) AS best_agent_endpoint_model
                 FROM ranked r
-                LEFT JOIN ranking_agent_judge_endpoints ep ON ep.id = r.agent_endpoint_id
+                LEFT JOIN ranking_agent_judge_endpoints ep
+                  ON ep.id = r.agent_endpoint_id AND ep.pool_kind = 'primary'
                 WHERE r.rn = 1
                 ORDER BY user_best_score DESC, user_first_submitted_at ASC, username ASC
                 """,

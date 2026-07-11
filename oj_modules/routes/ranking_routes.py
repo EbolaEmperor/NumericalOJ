@@ -4,6 +4,7 @@
 打榜赛（Ranking Competition）路由。
 """
 
+import copy
 import json
 import os
 import secrets
@@ -85,11 +86,12 @@ from oj_modules.ranking_db import (
 from oj_modules.ranking_agent_judge_db import (
     apply_rule_overrides,
     build_judge_snapshot,
-    clear_judge_results,
     list_agent_judge_endpoints,
     list_competition_rules,
+    list_quality_gate_endpoints,
     replace_competition_rules,
     save_agent_judge_endpoints,
+    save_reverse_quality_gate_configuration,
 )
 from oj_modules.ranking_agent_judge import max_score as _aj_max_score
 from oj_modules.ranking_agent_judge import normalize_orchestration_mode as _normalize_aj_orchestration
@@ -173,6 +175,51 @@ def _agent_judge_endpoint_ready(competition_id, comp):
         return bool(list_agent_judge_endpoints(competition_id, enabled_only=True))
     except Exception:
         return False
+
+
+def _quality_gate_endpoint_ready(competition_id):
+    """质量门禁端点池是否至少有一个可调度端点。"""
+    try:
+        return bool(list_quality_gate_endpoints(competition_id, enabled_only=True))
+    except Exception:
+        return False
+
+
+def _reverse_quality_gate_enabled(comp):
+    value = (comp or {}).get('reverse_quality_gate_enabled')
+    return value is True or str(value or '').strip().lower() in ('1', 'true', 'on', 'yes')
+
+
+def _reverse_quality_gate_block_reason(competition_id, comp):
+    """返回质量门禁配置阻止提交的原因；未启用时为空。"""
+    if not _reverse_quality_gate_enabled(comp):
+        return ''
+    if not str((comp or {}).get('reverse_quality_gate_prompt') or '').strip():
+        return '该比赛已启用质量门禁，但管理员尚未设置审核标准，暂时无法提交。'
+    if not _quality_gate_endpoint_ready(competition_id):
+        return '该比赛已启用质量门禁，但管理员尚未配置质量门禁端点，暂时无法提交。'
+    return ''
+
+
+def _reverse_quality_gate_ready(competition_id, comp):
+    return not _reverse_quality_gate_block_reason(competition_id, comp)
+
+
+def _masked_agent_endpoints(endpoints):
+    """管理端可见的端点配置；密钥仅返回是否已配置。"""
+    return [
+        {
+            'id': e['id'],
+            'harness': e.get('harness') or 'claude_code',
+            'base_url': e.get('base_url') or '',
+            'model': e.get('model') or '',
+            'concurrency_limit': int(e.get('concurrency_limit') or 1),
+            'status': e.get('status') or 'enabled',
+            'enabled': e.get('enabled'),
+            'has_key': bool(e.get('api_key')),
+        }
+        for e in (endpoints or [])
+    ]
 
 
 def _request_agent_endpoint_id():
@@ -263,6 +310,9 @@ def _ranking_submit_block_reason(comp, competition_id, user=None):
     if scoring_mode == 'reverse_judge':
         if not _agent_judge_endpoint_ready(competition_id, comp):
             return '该比赛为反向评测模式，但管理员尚未配置模型端点，暂时无法提交。'
+        quality_gate_reason = _reverse_quality_gate_block_reason(competition_id, comp)
+        if quality_gate_reason:
+            return quality_gate_reason
         return ''
 
     return '该比赛评分模式配置异常，暂时无法提交。'
@@ -799,20 +849,25 @@ def ranking_detail(competition_id):
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
     # Agent 评测端点池（编辑器用；api_key 不回传明文，仅给 has_key 标记）+ 就绪标志
     aj_endpoints = []
+    quality_gate_endpoints = []
     agent_judge_ready = False
+    quality_gate_ready = _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
     if is_ai_judge:
         try:
             _raw_eps = list_agent_judge_endpoints(competition_id)
         except Exception:
             _raw_eps = []
-        aj_endpoints = [{'id': e['id'], 'harness': e.get('harness') or 'claude_code',
-                         'base_url': e['base_url'], 'model': e['model'],
-                         'concurrency_limit': e['concurrency_limit'], 'status': e.get('status') or 'enabled',
-                         'enabled': e['enabled'],
-                         'has_key': bool(e['api_key'])} for e in _raw_eps]
+        aj_endpoints = _masked_agent_endpoints(_raw_eps)
         agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
         if is_reverse_judge:
-            agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp)
+            agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and quality_gate_ready
+            if is_admin:
+                try:
+                    quality_gate_endpoints = _masked_agent_endpoints(
+                        list_quality_gate_endpoints(competition_id)
+                    )
+                except Exception:
+                    quality_gate_endpoints = []
 
     # 「批量评测」对 Agent 评测 / 反向评测开放，共用 Git 标准命名与端点池
     if tab == 'batch_eval' and not is_ai_judge:
@@ -907,7 +962,9 @@ def ranking_detail(competition_id):
         judge_rules=judge_rules,
         agent_judge_api_key_set=agent_judge_api_key_set,
         aj_endpoints=aj_endpoints,
+        quality_gate_endpoints=quality_gate_endpoints,
         agent_judge_ready=agent_judge_ready,
+        quality_gate_ready=quality_gate_ready,
         is_reverse_judge=is_reverse_judge,
         is_ai_judge=is_ai_judge,
         batch_classes=batch_classes,
@@ -1398,7 +1455,7 @@ def ranking_submit(competition_id):
                 set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但反向评测任务入队失败：{e}', 'warning')
-        flash('提交成功，反向评测进行中，可在"我的历史提交"查看三步详情。', 'success')
+        flash('提交成功，反向评测进行中，可在"我的历史提交"查看四步详情。', 'success')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     base_model_raw = (request.form.get('base_model') or '').strip()
@@ -1716,6 +1773,10 @@ def ranking_batch_create(competition_id):
         return jsonify(success=False, message='该比赛尚未设置评分规则，无法评测'), 400
     if not _agent_judge_endpoint_ready(competition_id, comp):
         return jsonify(success=False, message='该比赛尚未配置 Agent 评测模型端点'), 400
+    if scoring_mode == 'reverse_judge':
+        quality_gate_reason = _reverse_quality_gate_block_reason(competition_id, comp)
+        if quality_gate_reason:
+            return jsonify(success=False, message=quality_gate_reason), 400
     data = request.get_json(silent=True) or {}
     endpoint_id = None
     if scoring_mode == 'reverse_judge':
@@ -2138,6 +2199,88 @@ def ranking_save_agent_endpoints(competition_id):
                        comp_after.get('agent_judge_orchestration_mode')))
 
 
+def _quality_gate_payload_enabled(value):
+    if isinstance(value, bool):
+        return value
+    text = str(value or '').strip().lower()
+    if text in ('1', 'true', 'on', 'yes'):
+        return True
+    if text in ('0', 'false', 'off', 'no'):
+        return False
+    raise ValueError('enabled 必须是布尔值')
+
+
+@ranking_bp.route('/<int:competition_id>/reverse_judge/quality_gate', methods=['POST'])
+def ranking_save_reverse_quality_gate(competition_id):
+    """部分更新反向评测质量门禁开关、审核标准和独立端点池。"""
+    user, err = _admin_json_guard()
+    if err is not None:
+        return err
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify(success=False, message='比赛不存在或已被删除'), 404
+    if _competition_scoring_mode(comp) != 'reverse_judge':
+        return jsonify(success=False, message='仅反向评测模式支持质量门禁'), 400
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(success=False, message='请求体必须是 JSON 对象'), 400
+
+    proposed_enabled = None
+    if 'enabled' in payload:
+        try:
+            proposed_enabled = _quality_gate_payload_enabled(payload.get('enabled'))
+        except ValueError as e:
+            return jsonify(success=False, message=str(e)), 400
+    proposed_prompt = None
+    if 'prompt' in payload:
+        proposed_prompt = str(payload.get('prompt') or '').strip()
+        if len(proposed_prompt) > 20000:
+            return jsonify(success=False, message='审核标准不能超过 20000 字'), 400
+    proposed_endpoints = payload.get('endpoints') if 'endpoints' in payload else None
+    if proposed_endpoints is not None and not isinstance(proposed_endpoints, list):
+        return jsonify(success=False, message='endpoints 必须是数组'), 400
+
+    update_fields = {}
+    if 'enabled' in payload:
+        update_fields['enabled'] = proposed_enabled
+    if 'prompt' in payload:
+        update_fields['prompt'] = proposed_prompt
+    if proposed_endpoints is not None:
+        update_fields['endpoints'] = proposed_endpoints
+    try:
+        save_reverse_quality_gate_configuration(competition_id, **update_fields)
+    except ValueError as e:
+        return jsonify(success=False, message=str(e)), 400
+
+    comp_after = get_competition(competition_id) or comp
+    saved = list_quality_gate_endpoints(competition_id)
+    masked = _masked_agent_endpoints(saved)
+    gate_enabled = _reverse_quality_gate_enabled(comp_after)
+    prompt = str(comp_after.get('reverse_quality_gate_prompt') or '')
+    enabled_count = sum(1 for e in saved if e.get('status') == 'enabled')
+    paused_count = sum(1 for e in saved if e.get('status') == 'paused')
+    disabled_count = sum(1 for e in saved if e.get('status') == 'disabled')
+    total_concurrency = sum(
+        int(e.get('concurrency_limit') or 1)
+        for e in saved if e.get('status') == 'enabled'
+    )
+    ready = (not gate_enabled) or (bool(prompt.strip()) and enabled_count > 0)
+    return jsonify(
+        success=True,
+        enabled=gate_enabled,
+        quality_gate_enabled=gate_enabled,
+        prompt=prompt,
+        ready=ready,
+        count=len(saved),
+        enabled_count=enabled_count,
+        paused_count=paused_count,
+        disabled_count=disabled_count,
+        total_concurrency=total_concurrency,
+        endpoints=masked,
+        quality_gate_endpoints=masked,
+    )
+
+
 # ---------- Agent 评测：实时进展 SSE + 管理员重测 ----------
 
 @ranking_bp.route('/<int:competition_id>/judge_stream/<int:submission_id>')
@@ -2218,6 +2361,65 @@ def ranking_judge_stream(competition_id, submission_id):
                              'Connection': 'keep-alive'})
 
 
+def _project_reverse_judge_snapshot(snapshot, *, include_internal=False):
+    """按查看者权限投影反向评测快照，避免泄露质量门禁私有标准。"""
+    if include_internal or not isinstance(snapshot, dict):
+        return snapshot
+
+    projected = copy.deepcopy(snapshot)
+    steps = projected.get('steps')
+    if not isinstance(steps, list):
+        return projected
+
+    gate_rejected = False
+    for step in steps:
+        if not isinstance(step, dict) or step.get('step_key') != 'quality_gate':
+            continue
+        result = step.get('result')
+        if not isinstance(result, dict):
+            continue
+
+        passed = result.get('passed') if isinstance(result.get('passed'), bool) else None
+        verdict = str(result.get('verdict') or '').strip().lower()
+        if step.get('status') == 'skipped' or result.get('skipped') is True:
+            verdict = 'skipped'
+            passed = None
+        elif verdict not in ('pass', 'reject', 'skipped'):
+            verdict = 'pass' if passed is True else ('reject' if passed is False else '')
+        if verdict == 'pass':
+            summary = '题目已通过质量门禁'
+        elif verdict == 'reject':
+            summary = '题目未通过质量门禁，请检查题目包后重试'
+            gate_rejected = True
+        elif verdict == 'skipped':
+            summary = '本次评测未执行质量门禁'
+        else:
+            summary = '质量门禁审核中'
+
+        raw_violations = result.get('violations')
+        violation_count = len(raw_violations) if isinstance(raw_violations, list) else 0
+        step['result'] = {
+            'passed': passed,
+            'verdict': verdict,
+            'summary': summary,
+            # 模型生成的 rule/reason/evidence 都可能复述私有审核标准；仅公开数量。
+            'violations': [
+                {'reason': '检测到不符合质量门禁的行为'}
+                for _ in range(violation_count)
+            ],
+        }
+        # 当前门禁不产生日志；这里同时约束未来实现，避免经旁路泄露审核上下文。
+        step['stdout'] = ''
+        step['stderr'] = ''
+        step['trace_files'] = []
+        step['trace_messages'] = []
+        if gate_rejected and step.get('error_message'):
+            step['error_message'] = summary
+    if gate_rejected and projected.get('error_message'):
+        projected['error_message'] = '质量门禁未通过，请检查题目包后重试'
+    return projected
+
+
 @ranking_bp.route('/<int:competition_id>/reverse_judge_stream/<int:submission_id>')
 def ranking_reverse_judge_stream(competition_id, submission_id):
     user, resp = _require_user()
@@ -2229,8 +2431,13 @@ def ranking_reverse_judge_stream(competition_id, submission_id):
     if user.get('is_admin') != 1 and sub.get('username') != user.get('username'):
         return Response('forbidden', status=403)
 
+    include_internal = user.get('is_admin') == 1
+
     def _encode(name, payload):
-        return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        projected = _project_reverse_judge_snapshot(
+            payload, include_internal=include_internal,
+        )
+        return f"event: {name}\ndata: {json.dumps(projected, ensure_ascii=False)}\n\n"
 
     @stream_with_context
     def generate():
@@ -2304,11 +2511,23 @@ def ranking_rejudge_agent(competition_id, submission_id):
             return jsonify(success=False, message='提交不存在'), 404
         flash('提交不存在', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
-    clear_judge_results(submission_id)
-    attempt_id = begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
-    if _agent_judge_task is not None:
+    comp = get_competition(competition_id) or {}
+    scoring_mode = _competition_scoring_mode(comp)
+    if scoring_mode == 'reverse_judge':
+        task_ref = _reverse_judge_task
+        attempt_id = begin_agent_judge_attempt(
+            submission_id, status='Queued', reset_result=True,
+            clear_reverse_steps=True,
+        )
+    else:
+        task_ref = _agent_judge_task
+        attempt_id = begin_agent_judge_attempt(
+            submission_id, status='Queued', reset_result=True,
+            clear_agent_results=True,
+        )
+    if task_ref is not None:
         try:
-            async_result = _agent_judge_task.apply_async(args=[submission_id, attempt_id])
+            async_result = task_ref.apply_async(args=[submission_id, attempt_id])
             set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
         except Exception as e:
             if _wants_json_response():

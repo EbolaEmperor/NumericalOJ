@@ -176,6 +176,34 @@ def print_stream_lines(resp: requests.Response, *, max_lines: int) -> None:
     output_json({"success": True, "lines": lines, "truncated": len(lines) >= max_lines})
 
 
+def read_stream_events(resp: requests.Response, *, max_lines: int) -> Dict[str, Any]:
+    ensure_ok(resp, allow_redirect=False)
+    lines: List[str] = []
+    events: List[Any] = []
+    for raw in resp.iter_lines(decode_unicode=True):
+        if raw is None:
+            continue
+        line = str(raw)
+        if not line:
+            continue
+        lines.append(line)
+        if line.startswith("data:"):
+            text = line[5:].strip()
+            if text:
+                try:
+                    events.append(json.loads(text))
+                except ValueError:
+                    events.append(text)
+        if len(lines) >= max_lines:
+            break
+    return {
+        "success": True,
+        "lines_read": len(lines),
+        "events": events,
+        "truncated": len(lines) >= max_lines,
+    }
+
+
 def read_code_arg(args: argparse.Namespace) -> str:
     if getattr(args, "code_file", None):
         return Path(args.code_file).expanduser().read_text(encoding="utf-8")
