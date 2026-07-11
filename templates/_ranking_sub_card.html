@@ -41,6 +41,7 @@
         {% if is_agent_judge %}
         <button type="button" class="aj-detail judge-detail-btn"
                 data-submission-id="{{ s.id }}" data-created-at="{{ s.created_at }}"
+                data-submission-status="{{ s.status }}"
                 data-stream-url="{{ url_for('ranking.ranking_judge_stream', competition_id=competition.id, submission_id=s.id) }}"
                 data-appeal-url="{{ url_for('ranking.ranking_submit_appeal', competition_id=competition.id, submission_id=s.id) }}"
                 data-appeal-status-url="{{ url_for('ranking.ranking_appeal_status', competition_id=competition.id, submission_id=s.id) }}">
@@ -49,7 +50,8 @@
         {% elif is_reverse_judge %}
         <button type="button" class="aj-detail reverse-detail-btn"
                 data-submission-id="{{ s.id }}" data-created-at="{{ s.created_at }}"
-                data-stream-url="{{ url_for('ranking.ranking_reverse_judge_stream', competition_id=competition.id, submission_id=s.id) }}">
+                data-stream-url="{{ url_for('ranking.ranking_reverse_judge_stream', competition_id=competition.id, submission_id=s.id) }}"
+                data-answer-download-url="{{ url_for('ranking.download_reverse_agent_answer', competition_id=competition.id, submission_id=s.id) }}">
           <i class="fas fa-list-check"></i>评测详情
         </button>
         {% endif %}

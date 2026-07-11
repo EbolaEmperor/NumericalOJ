@@ -10,6 +10,12 @@ import oj_modules.ranking_reverse_judge_db as rjdb
 import oj_modules.tasks.ranking_reverse_judge_tasks as rj
 
 
+def _without_trace_identity(messages):
+    ignored = {'offset', 'event_index', 'source', 'phase'}
+    return [{key: value for key, value in message.items() if key not in ignored}
+            for message in messages]
+
+
 def _make_package(root):
     for name in ("problem", "template", "solution"):
         (root / name).mkdir(parents=True, exist_ok=True)
@@ -324,7 +330,7 @@ def test_collect_trace_messages_extracts_visible_reply_and_subagent(tmp_path):
 
     messages = rjdb._collect_trace_messages(str(trace))
 
-    assert messages == [
+    assert _without_trace_identity(messages) == [
         {
             "kind": "thinking",
             "title": "思考片段",
@@ -379,7 +385,7 @@ def test_collect_claude_trace_messages_keeps_unknown_tool_as_json(tmp_path):
 
     messages = rjdb._collect_trace_messages(str(trace))
 
-    assert messages == [{
+    assert _without_trace_identity(messages) == [{
         "kind": "tool",
         "title": "调用 MysteryTool",
         "text": json.dumps(item, ensure_ascii=False, indent=2),
@@ -434,7 +440,7 @@ def test_collect_codex_trace_messages_extracts_errors(tmp_path):
 
     messages = rjdb._collect_trace_messages(str(trace))
 
-    assert messages == [
+    assert _without_trace_identity(messages) == [
         {
             "kind": "tool",
             "title": "Codex 错误",
@@ -493,7 +499,7 @@ def test_collect_codex_trace_messages_extracts_reply_reasoning_and_tool(tmp_path
 
     messages = rjdb._collect_trace_messages(str(trace))
 
-    assert messages == [
+    assert _without_trace_identity(messages) == [
         {
             "kind": "thinking",
             "title": "思考片段",
@@ -1131,9 +1137,23 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
     docker_calls = []
     dumps = []
     env_calls = []
+    proxy_closes = []
+    proxy = SimpleNamespace(
+        container_base_url="http://host.docker.internal:43123/v1",
+        token="attempt-only-token",
+        close=lambda: proxy_closes.append(True),
+    )
 
     monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: False)
     monkeypatch.setattr(rj, "submission_dir", lambda _sid: str(tmp_path / "submission"))
+    monkeypatch.setattr(
+        rj, "_start_reverse_endpoint_proxy",
+        lambda base_url, api_key, harness: (
+            proxy if (base_url, api_key, harness) == (
+                "https://gate-3.example/v1", "top-secret", rj.HARNESS_CLAUDE_CODE,
+            ) else pytest.fail("代理收到错误的真实端点配置")
+        ),
+    )
     monkeypatch.setattr(
         rj, "_agent_env_args",
         lambda harness, base_url, api_key, model, *_args, **_kwargs:
@@ -1180,8 +1200,15 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
     assert running_updates[0][1]["trace_dir"] == result["trace_dir"]
     assert publications == [12, 12, 12, 12]
     assert env_calls == [
-        (rj.HARNESS_CLAUDE_CODE, "https://gate-3.example/v1", "top-secret", "model-3")
+        (
+            rj.HARNESS_CLAUDE_CODE,
+            "http://host.docker.internal:43123/v1",
+            "attempt-only-token",
+            "model-3",
+        )
     ]
+    assert proxy_closes == [True]
+    assert "top-secret" not in json.dumps(docker_calls, ensure_ascii=False)
     assert "top-secret" not in json.dumps(result, ensure_ascii=False)
     assert len(dumps) == 1
     assert docker_calls[-1][:4] == ["docker", "rm", "-f", "rj_agent_12_attempt-1"]
@@ -1485,15 +1512,21 @@ def _patch_reverse_pipeline_base(monkeypatch, tmp_path, events):
     )
     monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
     monkeypatch.setattr(
+        rj, "_persist_agent_answer_archive", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: events.append(("step", args[2], kwargs.get("status"))),
+        lambda *args, **kwargs: events.append(
+            ("step", args[2], kwargs.get("status"), kwargs.get("stderr")),
+        ),
     )
     monkeypatch.setattr(rj, "_write_error_for_attempt", lambda *_args: None)
     return package, audit, submission
 
 
+@pytest.mark.parametrize("archive_fails", [False, True])
 def test_run_reverse_judge_orders_gate_between_solution_and_agent_and_restores_snapshot(
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, archive_fails):
     events = []
     package, audit, _submission = _patch_reverse_pipeline_base(monkeypatch, tmp_path, events)
     endpoint = _quality_endpoint(9)
@@ -1530,13 +1563,24 @@ def test_run_reverse_judge_orders_gate_between_solution_and_agent_and_restores_s
     )
     monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: True)
     monkeypatch.setattr(
+        rj, "_invalidate_reverse_answer_archive",
+        lambda *_args: events.append(("invalidate",)) or False,
+    )
+    monkeypatch.setattr(
         rj, "_run_agent",
         lambda *_args: events.append(("agent",)) or {
             "ok": True, "stdout": "", "stderr": "", "error": "", "trace_dir": "/trace",
         },
     )
+    def persist_archive(*_args, **_kwargs):
+        events.append(("archive",))
+        if archive_fails:
+            raise OSError("disk full")
+
+    monkeypatch.setattr(rj, "_persist_agent_answer_archive", persist_archive)
     monkeypatch.setattr(
-        rj, "_release_slot", lambda *_args: releases.append(_args[1:]),
+        rj, "_release_slot",
+        lambda *_args: events.append(("release",)) or releases.append(_args[1:]),
     )
     monkeypatch.setattr(
         rj, "update_submission_result_for_attempt",
@@ -1555,12 +1599,22 @@ def test_run_reverse_judge_orders_gate_between_solution_and_agent_and_restores_s
     )
 
     assert result == {"success": True, "score": 75.0}
-    assert [event for event in events if event[0] in {"judge", "gate", "resolve", "agent"}] == [
-        ("judge", "solution"), ("gate",), ("resolve",), ("agent",), ("judge", "template"),
+    assert [event for event in events if event[0] in {
+        "judge", "gate", "resolve", "invalidate", "agent", "release", "archive",
+    }] == [
+        ("invalidate",), ("judge", "solution"), ("gate",), ("resolve",),
+        ("agent",), ("release",), ("archive",), ("judge", "template"),
     ]
     assert releases == [("answer-slot", "answer-token")]
     assert final_results[0][0][:4] == (20, "a1", 75.0, "Accepted")
     assert final_results[0][1]["grade_details"]["quality_gate"] is True
+    agent_step = next(
+        event for event in events
+        if event[:3] == ("step", rj.STEP_AGENT, "passed")
+    )
+    assert agent_step[3] == (
+        "AI 解答未归档：产物不满足下载安全要求" if archive_fails else ""
+    )
     assert (audit / "problem" / "readme.md").read_text() == "original"
 
 

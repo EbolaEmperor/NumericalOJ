@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """打榜赛 Agent-as-Judge 的 DB 层：评分规则表 + 逐条结果表 + 快照构造。"""
+import hashlib
 import json
+import os
+import re
 import time
 
 from oj_modules.db_services import get_db_connection
-from oj_modules.ranking_db import get_ranking_submission
+from oj_modules.ranking_db import get_ranking_submission, submission_dir
 from oj_modules import ranking_agent_judge as aj
+from oj_modules.ranking_reverse_judge_db import (
+    collect_agent_trace_files,
+    collect_agent_trace_messages,
+)
 
 _aj_tables_ready = False
 
@@ -31,6 +38,7 @@ ENDPOINT_POOL_KINDS = (
     ENDPOINT_POOL_QUALITY_GATE,
 )
 _QUALITY_GATE_UNSET = object()
+_AGENT_TRACE_SUBDIR = 'agent_judge_trace'
 
 
 def normalize_agent_harness(value):
@@ -624,6 +632,57 @@ def _format_now():
     return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
 
+def _safe_attempt_component(attempt_id):
+    value = str(attempt_id or 'legacy').strip()
+    value = re.sub(r'[^A-Za-z0-9_.-]+', '_', value).strip('._')
+    return value[:96] or 'legacy'
+
+
+def agent_judge_trace_dir(submission_id, attempt_id):
+    """返回当前评测 attempt 的受信任轨迹目录。
+
+    目录不在选手 ZIP 解压出的 workspace 内，不能被附件预置；attempt 隔离也保证
+    旧 worker 无法把上一轮轨迹混入重测后的评分详情。
+    """
+    return os.path.join(
+        submission_dir(int(submission_id)),
+        _AGENT_TRACE_SUBDIR,
+        _safe_attempt_component(attempt_id),
+    )
+
+
+def agent_judge_trace_id(attempt_id):
+    """返回可安全下发给前端的 attempt 标识，不暴露数据库中的原始 UUID。"""
+    value = str(attempt_id or 'legacy').encode('utf-8', 'replace')
+    return hashlib.sha256(value).hexdigest()[:16]
+
+
+def _execution_trace_status(submission_status):
+    status = str(submission_status or '')
+    if status in ('Judging', 'Pending', 'Queued'):
+        return 'running' if status == 'Judging' else 'pending'
+    if status == 'Accepted':
+        return 'passed'
+    if status == 'Error':
+        return 'error'
+    return 'pending'
+
+
+def _build_execution_trace_payload(submission):
+    trace_dir = agent_judge_trace_dir(
+        submission.get('id'), submission.get('judge_attempt_id'),
+    )
+    return {
+        'trace_id': agent_judge_trace_id(submission.get('judge_attempt_id')),
+        'status': _execution_trace_status(submission.get('status')),
+        'error_message': submission.get('error_message') or '',
+        'stdout': '',
+        'stderr': '',
+        'trace_files': collect_agent_trace_files(trace_dir),
+        'trace_messages': collect_agent_trace_messages(trace_dir),
+    }
+
+
 def build_judge_snapshot(submission_id):
     """组合提交 + 规则 + 已上报结果 → SSE 快照（effective 由纯逻辑按 DAG 重算）。"""
     submission = get_ranking_submission(submission_id)
@@ -661,11 +720,14 @@ def build_judge_snapshot(submission_id):
             timed_out = False
     return {
         'submission_id': int(submission_id),
+        'attempt_trace_id': agent_judge_trace_id(submission.get('judge_attempt_id')),
         'status': status,
+        'error_message': submission.get('error_message') or '',
         'max_score': aj.max_score(rules) if rules else 0.0,
         'total_score': aj.total_score(computed) if computed else 0.0,
         'timed_out': timed_out,
         'rules': rule_payloads,
+        'execution_trace': _build_execution_trace_payload(submission),
         'last_updated': _format_now(),
     }
 

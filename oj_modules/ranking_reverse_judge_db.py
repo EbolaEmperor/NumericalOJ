@@ -4,11 +4,12 @@
 
 import json
 import os
+import stat
 import time
 
 from oj_modules.db_services import get_db_connection
 from oj_modules.ranking_agent_judge import render_md_math
-from oj_modules.ranking_db import get_ranking_submission
+from oj_modules.ranking_db import get_ranking_submission, submission_dir
 
 
 STEP_SOLUTION = 'solution_check'
@@ -27,17 +28,45 @@ STEP_DEF_BY_KEY = {key: {'step_key': key, 'step_order': order, 'title': title}
 STEP_KEYS = tuple(key for key, _, _ in STEP_DEFS)
 TERMINAL_STEP_STATUSES = {'passed', 'failed', 'error', 'skipped'}
 
+_REVERSE_AGENT_ANSWER_SUBDIR = 'reverse_agent_answers'
+
 _TRACE_MAX_FILES = 16
 _TRACE_MAX_FILE_BYTES = 64 * 1024
 _TRACE_MAX_TOTAL_BYTES = 256 * 1024
-_TRACE_JSONL_PARSE_MAX_BYTES = 1024 * 1024
-_TRACE_MAX_MESSAGES = 80
+# 只解析 JSONL 尾部的有界窗口：每次 resume 追加后都能立即看到最新事件，同时
+# 避免轨迹变大后反复读取整个文件、无限放大 SSE 快照。浏览器端会按稳定字节偏移
+# 增量去重，因此评测过程中窗口向后滑动也不会清掉已经展示的早期消息。
+_TRACE_JSONL_PARSE_MAX_BYTES = 2 * 1024 * 1024
+_TRACE_MAX_MESSAGES = 240
 _TRACE_THINKING_MAX_CHARS = 1200
 _TRACE_TOOL_MAX_CHARS = 1200
 _TRACE_TEXT_EXTS = {
     '.json', '.jsonl', '.md', '.txt', '.log', '.toml', '.yaml', '.yml',
     '.xml', '.html', '.htm', '.csv',
 }
+
+
+def safe_attempt_component(attempt_id):
+    text = ''.join(
+        ch for ch in str(attempt_id or 'legacy')
+        if ch.isalnum() or ch in ('-', '_')
+    )
+    return text[:80] or 'legacy'
+
+
+def reverse_agent_answer_archive_path(submission_id, attempt_id):
+    """返回当前提交/attempt 的可信 AI 解答 ZIP 路径。"""
+    root = os.path.realpath(os.path.join(
+        submission_dir(int(submission_id)), _REVERSE_AGENT_ANSWER_SUBDIR,
+    ))
+    # 不解析最终文件本身的 symlink；调用方必须用 lstat 校验。若在这里 realpath，
+    # 恶意/损坏链接会把“是否可用”查询变成 ValueError，并使详情接口 500。
+    archive_path = os.path.abspath(os.path.join(
+        root, safe_attempt_component(attempt_id) + '.zip',
+    ))
+    if archive_path == root or not archive_path.startswith(root + os.sep):
+        raise ValueError('AI 解答归档路径非法')
+    return archive_path
 
 
 def clear_reverse_judge_steps(submission_id):
@@ -282,9 +311,10 @@ def _latest_claude_jsonl(trace_dir):
     base = os.path.realpath(trace_dir)
     candidates = []
     preferred_root = os.path.join(base, '.claude', 'projects', '-workspace')
-    combined = os.path.join(preferred_root, 'reverse_solve_combined.jsonl')
-    if os.path.isfile(combined):
-        return combined
+    for combined_name in ('agent_judge_combined.jsonl', 'reverse_solve_combined.jsonl'):
+        combined = os.path.join(preferred_root, combined_name)
+        if os.path.isfile(combined):
+            return combined
     roots = [preferred_root] if os.path.isdir(preferred_root) else []
     if not roots:
         roots = [base]
@@ -316,9 +346,12 @@ def _latest_codex_jsonl(trace_dir):
     if not trace_dir or not os.path.isdir(trace_dir):
         return None
     base = os.path.realpath(trace_dir)
-    preferred = os.path.join(base, 'codex_reverse_solve.jsonl')
-    if os.path.isfile(preferred):
-        return preferred
+    for preferred_name in (
+            'codex_agent_judge.jsonl', 'opencode_agent_judge.jsonl',
+            'codex_reverse_solve.jsonl'):
+        preferred = os.path.join(base, preferred_name)
+        if os.path.isfile(preferred):
+            return preferred
     codex_root = os.path.join(base, '.codex')
     roots = [codex_root] if os.path.isdir(codex_root) else []
     candidates = []
@@ -356,6 +389,45 @@ def _read_limited_text(path, limit):
     if size > limit:
         text += f'\n...（已截断，文件大小 {size} 字节）'
     return text, int(size), min(int(size), int(limit))
+
+
+def _read_jsonl_tail(path, limit):
+    """返回 JSONL 尾部完整行及其绝对字节偏移，内存占用严格受 limit 约束。"""
+    try:
+        size = int(os.path.getsize(path))
+    except OSError:
+        return []
+    if size <= 0:
+        return []
+    start = max(0, size - max(1, int(limit)))
+    read_start = max(0, start - 1)
+    try:
+        with open(path, 'rb') as f:
+            f.seek(read_start)
+            raw = f.read(size - read_start)
+    except Exception:
+        return []
+
+    base_offset = read_start
+    if start > 0:
+        previous = raw[:1]
+        raw = raw[1:]
+        base_offset = start
+        if previous != b'\n':
+            boundary = raw.find(b'\n')
+            if boundary < 0:
+                return []
+            raw = raw[boundary + 1:]
+            base_offset += boundary + 1
+
+    rows = []
+    offset = base_offset
+    for encoded in raw.splitlines(keepends=True):
+        line = encoded.rstrip(b'\r\n')
+        if line:
+            rows.append((offset, line.decode('utf-8', 'replace')))
+        offset += len(encoded)
+    return rows
 
 
 def _collect_trace_files(trace_dir):
@@ -769,13 +841,17 @@ def _codex_event_messages(event, line_no):
 def _collect_claude_trace_messages(path):
     if not path:
         return []
-    text, _size, _read_bytes = _read_limited_text(path, _TRACE_JSONL_PARSE_MAX_BYTES)
-    if not text:
-        return []
     messages = []
-    for line_no, raw in enumerate(text.splitlines(), start=1):
+    # Claude resume/fork 会把父会话历史完整复制进新的 JSONL。事件 uuid 在各 fork
+    # 间保持稳定，因此在共享渲染层按 uuid 去重，既保留每次 resume 的新增轨迹，
+    # 也避免旧历史随阶段数成倍重复。没有 uuid 的兼容事件仍按原样保留。
+    seen_event_uuids = set()
+    rows = _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
+    for line_no, (source_offset, raw) in enumerate(
+            rows, start=1):
+        message_start = len(messages)
         raw = raw.strip()
-        if not raw or raw.startswith('...（已截断'):
+        if not raw:
             continue
         try:
             event = json.loads(raw)
@@ -783,6 +859,14 @@ def _collect_claude_trace_messages(path):
             continue
         if not isinstance(event, dict):
             continue
+        event_uuid = event.get('uuid')
+        if isinstance(event_uuid, str) and 0 < len(event_uuid) <= 128:
+            if event_uuid in seen_event_uuids:
+                continue
+            seen_event_uuids.add(event_uuid)
+        event_offset = event.get('_trace_offset', source_offset)
+        event_source = str(event.get('_trace_source') or '')
+        event_phase = str(event.get('_trace_phase') or '')
         if event.get('type') != 'assistant':
             continue
         msg = event.get('message') if isinstance(event.get('message'), dict) else {}
@@ -812,19 +896,25 @@ def _collect_claude_trace_messages(path):
                     tool_msg['line'] = line_no
                     tool_msg['meta'] = str(tool_msg.get('meta') or '')
                     messages.append(tool_msg)
+        for event_index, item in enumerate(messages[message_start:]):
+            item['offset'] = event_offset
+            item['event_index'] = event_index
+            if event_source:
+                item['source'] = event_source
+            if event_phase:
+                item['phase'] = event_phase
         if len(messages) >= _TRACE_MAX_MESSAGES:
             messages = messages[-_TRACE_MAX_MESSAGES:]
     return messages[-_TRACE_MAX_MESSAGES:]
 
 
 def _collect_codex_trace_messages(path):
-    text, _size, _read_bytes = _read_limited_text(path, _TRACE_JSONL_PARSE_MAX_BYTES)
-    if not text:
-        return []
     messages = []
-    for line_no, raw in enumerate(text.splitlines(), start=1):
+    rows = _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
+    for line_no, (source_offset, raw) in enumerate(
+            rows, start=1):
         raw = raw.strip()
-        if not raw or raw.startswith('...（已截断'):
+        if not raw:
             continue
         try:
             event = json.loads(raw)
@@ -832,7 +922,18 @@ def _collect_codex_trace_messages(path):
             continue
         if not isinstance(event, dict):
             continue
-        messages.extend(_codex_event_messages(event, line_no))
+        parsed = _codex_event_messages(event, line_no)
+        event_offset = event.get('_trace_offset', source_offset)
+        event_source = str(event.get('_trace_source') or '')
+        event_phase = str(event.get('_trace_phase') or '')
+        for event_index, item in enumerate(parsed):
+            item['offset'] = event_offset
+            item['event_index'] = event_index
+            if event_source:
+                item['source'] = event_source
+            if event_phase:
+                item['phase'] = event_phase
+        messages.extend(parsed)
         if len(messages) >= _TRACE_MAX_MESSAGES:
             messages = messages[-_TRACE_MAX_MESSAGES:]
     return messages[-_TRACE_MAX_MESSAGES:]
@@ -848,10 +949,29 @@ def _collect_trace_messages(trace_dir):
     return []
 
 
+# Agent Judge 与反向评测共用同一套轨迹解析与 Markdown 安全渲染。保留原有私有
+# 函数名以兼容既有单测，同时提供语义明确的公共入口，避免第二套解析器逐渐漂移。
+def collect_agent_trace_files(trace_dir):
+    return _collect_trace_files(trace_dir)
+
+
+def collect_agent_trace_messages(trace_dir):
+    return _collect_trace_messages(trace_dir)
+
+
 def build_reverse_judge_snapshot(submission_id):
     submission = get_ranking_submission(submission_id)
     if not submission:
         return None
+    current_answer_archive = reverse_agent_answer_archive_path(
+        submission_id, submission.get('judge_attempt_id'),
+    )
+    try:
+        answer_archive_is_regular = stat.S_ISREG(
+            os.lstat(current_answer_archive).st_mode,
+        )
+    except OSError:
+        answer_archive_is_regular = False
     steps = []
     for row in list_reverse_judge_steps(submission_id):
         result = _parse_result(row.get('result_json'))
@@ -871,6 +991,13 @@ def build_reverse_judge_snapshot(submission_id):
             'started_at': str(row.get('started_at') or ''),
             'finished_at': str(row.get('finished_at') or ''),
         }
+        if item['step_key'] == STEP_AGENT:
+            # ZIP 由临时文件完成后再原子发布；评测终态前不开放，避免执行中的
+            # 产物被提前取走，也使按钮状态与最终提交状态保持一致。
+            item['answer_available'] = (
+                submission.get('status') in {'Accepted', 'Error'}
+                and answer_archive_is_regular
+            )
         steps.append(item)
     return {
         'submission_id': int(submission_id),

@@ -2,13 +2,18 @@
 # -*- coding: utf-8 -*-
 """打榜赛反向评测任务：学生出题考 AI，AI 得分越低，学生得分越高。"""
 
-import json
+import base64
 import hashlib
+import hmac
+import http.server
+import json
 import os
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -46,6 +51,8 @@ from oj_modules.ranking_reverse_judge_db import (
     build_reverse_judge_snapshot,
     ensure_reverse_judge_steps_for_attempt,
     list_reverse_judge_steps,
+    reverse_agent_answer_archive_path,
+    safe_attempt_component,
     update_reverse_judge_step_for_attempt,
 )
 from oj_modules.tasks.ranking_agent_judge_tasks import (
@@ -115,6 +122,36 @@ REVERSE_PACKAGE_MAX_TOTAL_BYTES = max(
 REVERSE_PACKAGE_MAX_COMPRESSION_RATIO = max(
     10.0, float(getattr(_cfg, 'REVERSE_PACKAGE_MAX_COMPRESSION_RATIO', 500.0)),
 )
+REVERSE_ANSWER_MAX_FILES = max(
+    16, int(getattr(_cfg, 'REVERSE_ANSWER_MAX_FILES', 4096)),
+)
+REVERSE_ANSWER_MAX_FILE_BYTES = max(
+    1024 * 1024,
+    int(getattr(_cfg, 'REVERSE_ANSWER_MAX_FILE_BYTES', 256 * 1024 * 1024)),
+)
+REVERSE_ANSWER_MAX_TOTAL_BYTES = max(
+    REVERSE_ANSWER_MAX_FILE_BYTES,
+    int(getattr(_cfg, 'REVERSE_ANSWER_MAX_TOTAL_BYTES', 512 * 1024 * 1024)),
+)
+REVERSE_ENDPOINT_PROXY_MAX_REQUEST_BYTES = max(
+    1024 * 1024,
+    int(getattr(_cfg, 'REVERSE_ENDPOINT_PROXY_MAX_REQUEST_BYTES', 8 * 1024 * 1024)),
+)
+REVERSE_ENDPOINT_PROXY_MAX_CONNECTIONS = max(
+    1, int(getattr(_cfg, 'REVERSE_ENDPOINT_PROXY_MAX_CONNECTIONS', 2)),
+)
+REVERSE_ENDPOINT_PROXY_CLIENT_TIMEOUT_SECONDS = max(
+    5, int(getattr(_cfg, 'REVERSE_ENDPOINT_PROXY_CLIENT_TIMEOUT_SECONDS', 30)),
+)
+REVERSE_ENDPOINT_PROXY_TIMEOUT_SECONDS = max(
+    30, int(getattr(_cfg, 'REVERSE_ENDPOINT_PROXY_TIMEOUT_SECONDS', 600)),
+)
+REVERSE_ENDPOINT_PROXY_BIND_HOST = str(
+    getattr(_cfg, 'REVERSE_ENDPOINT_PROXY_BIND_HOST', '0.0.0.0'),
+).strip() or '0.0.0.0'
+REVERSE_ENDPOINT_PROXY_CONTAINER_HOST = str(
+    getattr(_cfg, 'REVERSE_ENDPOINT_PROXY_CONTAINER_HOST', 'host.docker.internal'),
+).strip() or 'host.docker.internal'
 REVERSE_TRACE_RETENTION_SECONDS = max(
     3600, int(getattr(_cfg, 'REVERSE_TRACE_RETENTION_SECONDS', 14 * 24 * 3600)),
 )
@@ -332,9 +369,8 @@ def _find_package_root(extract_dir):
     return extract_dir
 
 
-def _safe_attempt_component(attempt_id):
-    text = ''.join(ch for ch in str(attempt_id or 'legacy') if ch.isalnum() or ch in ('-', '_'))
-    return text[:80] or 'legacy'
+# 兼容既有内部调用/单测；规范实现归 DB 层统一管理。
+_safe_attempt_component = safe_attempt_component
 
 
 def _attempt_workspace_path(submission_id, attempt_id):
@@ -352,40 +388,250 @@ def _cleanup_attempt_workspace(submission_id, attempt_id):
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _prune_reverse_trace_attempts(submission_id, keep_attempt=None):
-    """惰性清理旧轨迹；近期目录保留，避免与刚失效但尚未退出的 worker 争用。"""
+def _prune_reverse_artifact_attempts(
+        submission_id, subdir, keep_attempt=None, *, file_suffix=''):
+    """惰性清理旧 attempt 产物，避免与刚失效但尚未退出的 worker 争用。"""
     parent = os.path.realpath(os.path.join(
-        submission_dir(submission_id), 'reverse_agent_trace',
+        submission_dir(submission_id), subdir,
     ))
     if not os.path.isdir(parent):
         return 0
-    keep_name = _safe_attempt_component(keep_attempt) if keep_attempt is not None else None
+    keep_name = (
+        _safe_attempt_component(keep_attempt) + file_suffix
+        if keep_attempt is not None else None
+    )
     now = time.time()
     entries = []
     for name in os.listdir(parent):
         path = os.path.realpath(os.path.join(parent, name))
-        if path == parent or not path.startswith(parent + os.sep) or not os.path.isdir(path):
+        if path == parent or not path.startswith(parent + os.sep):
+            continue
+        is_dir = os.path.isdir(path)
+        is_file = os.path.isfile(path)
+        if file_suffix and not is_file:
+            continue
+        if not file_suffix and not is_dir:
             continue
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             continue
-        entries.append((mtime, name, path))
+        entries.append((mtime, name, path, is_dir))
     entries.sort(reverse=True)
     retained = 0
     removed = 0
-    for mtime, name, path in entries:
+    for mtime, name, path, entry_is_dir in entries:
         if name == keep_name:
             continue
         age = max(0.0, now - mtime)
         must_expire = age >= REVERSE_TRACE_RETENTION_SECONDS
         over_count = retained >= max(0, REVERSE_TRACE_MAX_ATTEMPTS - 1)
         if age >= REVERSE_TRACE_MIN_DELETE_AGE_SECONDS and (must_expire or over_count):
-            shutil.rmtree(path, ignore_errors=True)
+            if entry_is_dir:
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             removed += 1
         else:
             retained += 1
     return removed
+
+
+def _prune_reverse_trace_attempts(submission_id, keep_attempt=None):
+    return _prune_reverse_artifact_attempts(
+        submission_id, 'reverse_agent_trace', keep_attempt=keep_attempt,
+    )
+
+
+def _prune_reverse_answer_attempts(submission_id, keep_attempt=None):
+    return _prune_reverse_artifact_attempts(
+        submission_id, 'reverse_agent_answers', keep_attempt=keep_attempt,
+        file_suffix='.zip',
+    )
+
+
+def _invalidate_reverse_answer_archive(submission_id, attempt_id):
+    """在同 attempt 重新运行 Agent 前撤销旧 ZIP，失败结果绝不能回退到旧答案。"""
+    target = reverse_agent_answer_archive_path(submission_id, attempt_id)
+    try:
+        target_stat = os.lstat(target)
+    except FileNotFoundError:
+        return False
+    if stat.S_ISDIR(target_stat.st_mode) and not stat.S_ISLNK(target_stat.st_mode):
+        shutil.rmtree(target, ignore_errors=True)
+    else:
+        try:
+            os.remove(target)
+        except FileNotFoundError:
+            return False
+    return True
+
+
+_REVERSE_ANSWER_INTERNAL_DIRS = {
+    '.claude', '.codex', '.git', '.opencode', '.svn',
+}
+
+
+def _exclude_reverse_answer_name(name):
+    return name in _REVERSE_ANSWER_INTERNAL_DIRS or name.startswith('.aj_')
+
+
+def _reverse_answer_arcname(relative_path):
+    parts = str(relative_path or '').split(os.sep)
+    if any(part in ('', '.', '..') or '\\' in part for part in parts):
+        raise RuntimeError('AI 解答包含不安全的文件名')
+    return 'ai_answer/' + '/'.join(parts)
+
+
+def _reverse_answer_secret_needles(sensitive_values):
+    """生成需要拦截的凭证明文及常见无损编码，降低答案包外泄风险。"""
+    needles = set()
+    for value in sensitive_values or ():
+        raw = str(value or '').strip().encode('utf-8')
+        # 过短值会在普通源码中高频误命中，也不应被当作有效端点凭证。
+        if len(raw) < 8:
+            continue
+        needles.add(raw)
+        needles.add(raw.hex().encode('ascii'))
+        needles.add(raw.hex().upper().encode('ascii'))
+        encoded = base64.b64encode(raw)
+        needles.add(encoded)
+        needles.add(encoded.rstrip(b'='))
+        urlsafe = base64.urlsafe_b64encode(raw)
+        needles.add(urlsafe)
+        needles.add(urlsafe.rstrip(b'='))
+    return tuple(sorted((item for item in needles if item), key=len, reverse=True))
+
+
+def _file_contains_reverse_answer_secret(path, needles):
+    if not needles:
+        return False
+    overlap = max(len(item) for item in needles) - 1
+    carry = b''
+    with open(path, 'rb') as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                return False
+            haystack = carry + chunk
+            if any(needle in haystack for needle in needles):
+                return True
+            carry = haystack[-overlap:] if overlap > 0 else b''
+
+
+def _reverse_answer_name_contains_secret(relative_path, needles):
+    encoded = os.fsencode(str(relative_path or ''))
+    return any(needle in encoded for needle in needles)
+
+
+def _persist_agent_answer_archive(
+        submission_id, attempt_id, source_dir, *, sensitive_values=(),
+        publish_guard=None):
+    """校验并原子生成 attempt 级 AI 解答 ZIP；不保留可变目录副本。"""
+    def guard_allows_publish():
+        if not callable(publish_guard):
+            return True
+        try:
+            return bool(publish_guard())
+        except Exception:
+            return False
+
+    if not guard_allows_publish():
+        raise RuntimeError('AI 解答归档取消：评测 attempt 已失效')
+    source_path = os.path.abspath(str(source_dir or ''))
+    try:
+        source_stat = os.lstat(source_path)
+    except OSError as exc:
+        raise RuntimeError('AI 解答目录不存在') from exc
+    if stat.S_ISLNK(source_stat.st_mode) or not stat.S_ISDIR(source_stat.st_mode):
+        raise RuntimeError('AI 解答目录类型非法')
+    source = os.path.realpath(source_path)
+
+    _prune_reverse_answer_attempts(submission_id, keep_attempt=attempt_id)
+    target = reverse_agent_answer_archive_path(submission_id, attempt_id)
+    parent = os.path.dirname(target)
+    os.makedirs(parent, exist_ok=True)
+    staging = target + f'.tmp-{secrets.token_hex(8)}'
+    member_count = 0
+    total_bytes = 0
+    secret_needles = _reverse_answer_secret_needles(sensitive_values)
+    guard_failed = False
+    try:
+        with zipfile.ZipFile(
+                staging, 'w', compression=zipfile.ZIP_DEFLATED,
+                allowZip64=True, compresslevel=6, strict_timestamps=False,
+        ) as archive:
+            archive.writestr('ai_answer/', b'')
+            # 自行用 scandir 做有界 DFS；os.walk 会先把单层全部成员装入两个列表，
+            # 恶意答案可用海量空目录在数量检查前制造内存峰值。
+            pending_dirs = [(source, '')]
+            while pending_dirs:
+                walk_root, relative_root = pending_dirs.pop()
+                entries = []
+                with os.scandir(walk_root) as iterator:
+                    for entry in iterator:
+                        name = entry.name
+                        if _exclude_reverse_answer_name(name):
+                            continue
+                        member_count += 1
+                        if member_count > REVERSE_ANSWER_MAX_FILES:
+                            raise RuntimeError('AI 解答文件或目录数量超过限制')
+                        relative = os.path.join(relative_root, name) if relative_root else name
+                        if _reverse_answer_name_contains_secret(relative, secret_needles):
+                            raise RuntimeError('AI 解答文件名包含端点凭证或内部地址')
+                        entries.append((
+                            name, entry.path, relative,
+                            entry.stat(follow_symlinks=False),
+                        ))
+
+                child_dirs = []
+                for _name, path, relative, item_stat in sorted(entries):
+                    mode = item_stat.st_mode
+                    if stat.S_ISLNK(mode):
+                        raise RuntimeError('AI 解答包含符号链接或特殊文件')
+                    resolved = os.path.realpath(path)
+                    if resolved == source or not resolved.startswith(source + os.sep):
+                        raise RuntimeError('AI 解答包含越界文件或目录')
+                    if stat.S_ISDIR(mode):
+                        archive.writestr(_reverse_answer_arcname(relative) + '/', b'')
+                        child_dirs.append((path, relative))
+                        continue
+                    if not stat.S_ISREG(item_stat.st_mode):
+                        raise RuntimeError('AI 解答包含符号链接或特殊文件')
+                    file_bytes = max(0, int(item_stat.st_size or 0))
+                    if file_bytes > REVERSE_ANSWER_MAX_FILE_BYTES:
+                        raise RuntimeError('AI 解答中的单个文件超过大小限制')
+                    total_bytes += file_bytes
+                    if total_bytes > REVERSE_ANSWER_MAX_TOTAL_BYTES:
+                        raise RuntimeError('AI 解答总大小超过限制')
+                    if _file_contains_reverse_answer_secret(path, secret_needles):
+                        raise RuntimeError('AI 解答包含端点凭证或内部地址')
+                    archive.write(path, _reverse_answer_arcname(relative))
+                pending_dirs.extend(reversed(child_dirs))
+        os.chmod(staging, 0o600)
+        if not guard_allows_publish():
+            guard_failed = True
+            raise RuntimeError('评测 attempt 已失效')
+        os.replace(staging, target)
+        return target
+    except Exception as exc:
+        raise RuntimeError(f'AI 解答归档失败：{exc}') from exc
+    finally:
+        try:
+            os.remove(staging)
+        except FileNotFoundError:
+            pass
+        if guard_failed:
+            # 删除提交与归档发布并发时，尽力收掉本 worker 刚创建的空父目录；
+            # rmdir 只删除空目录，不会碰新 attempt 或其它保留产物。
+            for empty_dir in (parent, os.path.dirname(parent)):
+                try:
+                    os.rmdir(empty_dir)
+                except OSError:
+                    pass
 
 
 def _prepare_workspace(submission, attempt_id=None):
@@ -702,6 +948,371 @@ def _agent_container_base_url(base_url):
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
+_REVERSE_PROXY_POST_SUFFIXES = (
+    '/v1/messages', '/messages',
+    '/v1/messages/count_tokens', '/messages/count_tokens',
+    '/v1/chat/completions', '/chat/completions',
+    '/v1/responses', '/responses',
+)
+_REVERSE_PROXY_GET_SUFFIXES = ('/v1/models', '/models')
+_REVERSE_PROXY_HOP_HEADERS = {
+    'connection', 'content-length', 'expect', 'host', 'keep-alive',
+    'proxy-authenticate', 'proxy-authorization', 'te', 'trailer',
+    'transfer-encoding', 'upgrade',
+}
+_REVERSE_PROXY_CREDENTIAL_HEADERS = {'authorization', 'api-key', 'x-api-key'}
+
+
+class _ReverseProxyNoRedirect(urllib.request.HTTPRedirectHandler):
+    """真实凭证请求绝不跨 Location 边界；3xx 作为普通上游响应回传。"""
+
+    def redirect_request(self, _req, _fp, _code, _msg, _headers, _newurl):
+        return None
+
+
+def _reverse_proxy_path_allowed(method, path):
+    normalized = str(path or '').rstrip('/')
+    suffixes = (
+        _REVERSE_PROXY_GET_SUFFIXES if str(method).upper() == 'GET'
+        else _REVERSE_PROXY_POST_SUFFIXES if str(method).upper() == 'POST'
+        else ()
+    )
+    return normalized in suffixes
+
+
+def _reverse_proxy_header_map(headers):
+    return {
+        str(name).lower(): str(value)
+        for name, value in (headers.items() if headers is not None else ())
+    }
+
+
+def _reverse_proxy_token_valid(headers, token):
+    mapped = _reverse_proxy_header_map(headers)
+    candidates = [mapped.get('x-api-key', ''), mapped.get('api-key', '')]
+    authorization = mapped.get('authorization', '').strip()
+    if authorization.lower().startswith('bearer '):
+        candidates.append(authorization[7:].strip())
+    return any(
+        candidate and hmac.compare_digest(candidate, str(token or ''))
+        for candidate in candidates
+    )
+
+
+def _reverse_proxy_target_url(upstream, method, raw_path):
+    request_parts = urlsplit(str(raw_path or ''))
+    request_path = request_parts.path or '/'
+    base_path = (upstream.path or '').rstrip('/')
+    if base_path and not (
+            request_path == base_path or request_path.startswith(base_path + '/')):
+        target_path = base_path + ('/' if not request_path.startswith('/') else '') + request_path
+    else:
+        target_path = request_path
+    relative_target = (
+        target_path[len(base_path):] if base_path and target_path.startswith(base_path)
+        else target_path
+    ) or '/'
+    if not _reverse_proxy_path_allowed(method, relative_target):
+        return ''
+    query_parts = [part for part in (upstream.query, request_parts.query) if part]
+    return urlunsplit((
+        upstream.scheme, upstream.netloc, target_path, '&'.join(query_parts), '',
+    ))
+
+
+def _reverse_proxy_upstream_headers(headers, real_key, harness):
+    forwarded = {}
+    incoming_credential_headers = set()
+    for name, value in (headers.items() if headers is not None else ()):
+        lowered = str(name).lower()
+        if lowered in _REVERSE_PROXY_HOP_HEADERS:
+            continue
+        if lowered in _REVERSE_PROXY_CREDENTIAL_HEADERS:
+            incoming_credential_headers.add(lowered)
+            continue
+        forwarded[str(name)] = str(value)
+    if 'authorization' in incoming_credential_headers:
+        forwarded['Authorization'] = f'Bearer {real_key}'
+    if 'x-api-key' in incoming_credential_headers:
+        forwarded['x-api-key'] = str(real_key)
+    if 'api-key' in incoming_credential_headers:
+        forwarded['api-key'] = str(real_key)
+    if not incoming_credential_headers:
+        if str(harness or '').strip().lower() == HARNESS_CLAUDE_CODE:
+            forwarded['x-api-key'] = str(real_key)
+        else:
+            forwarded['Authorization'] = f'Bearer {real_key}'
+    return forwarded
+
+
+def _reverse_proxy_read_chunk(response, size=64 * 1024):
+    # HTTPResponse.read(n) 对 chunked/SSE 可能等到累计 n 字节或 EOF；read1 只取
+    # 当前已到达的数据，保证模型流式事件实时透传。
+    reader = getattr(response, 'read1', None)
+    if callable(reader):
+        return reader(int(size))
+    return response.read(int(size))
+
+
+class _BoundedReverseProxyServer(http.server.ThreadingHTTPServer):
+    """限制宿主代理线程数，并给慢请求设置硬读超时。"""
+
+    daemon_threads = True
+    request_queue_size = max(2, REVERSE_ENDPOINT_PROXY_MAX_CONNECTIONS * 2)
+
+    def __init__(self, server_address, handler_class):
+        self._connection_slots = threading.BoundedSemaphore(
+            REVERSE_ENDPOINT_PROXY_MAX_CONNECTIONS,
+        )
+        self._active_lock = threading.Lock()
+        self._active_clients = set()
+        self._active_upstreams = set()
+        self._closing = False
+        super().__init__(server_address, handler_class)
+
+    def _reject_busy(self, request):
+        try:
+            request.sendall(
+                b'HTTP/1.0 503 Service Unavailable\r\n'
+                b'Content-Length: 4\r\nConnection: close\r\n\r\nbusy',
+            )
+        except OSError:
+            pass
+        self.shutdown_request(request)
+
+    def process_request(self, request, client_address):
+        try:
+            request.settimeout(REVERSE_ENDPOINT_PROXY_CLIENT_TIMEOUT_SECONDS)
+        except OSError:
+            self.shutdown_request(request)
+            return
+        if not self._connection_slots.acquire(blocking=False):
+            self._reject_busy(request)
+            return
+        with self._active_lock:
+            closing = self._closing
+            if not closing:
+                self._active_clients.add(request)
+        if closing:
+            self._connection_slots.release()
+            self._reject_busy(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            with self._active_lock:
+                self._active_clients.discard(request)
+            self._connection_slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._active_lock:
+                self._active_clients.discard(request)
+            self._connection_slots.release()
+
+    def register_upstream(self, response):
+        with self._active_lock:
+            if self._closing:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+                return False
+            self._active_upstreams.add(response)
+            return True
+
+    def unregister_upstream(self, response):
+        with self._active_lock:
+            self._active_upstreams.discard(response)
+
+    def close_active_requests(self):
+        with self._active_lock:
+            self._closing = True
+            clients = list(self._active_clients)
+            upstreams = list(self._active_upstreams)
+            self._active_clients.clear()
+            self._active_upstreams.clear()
+        for response in upstreams:
+            try:
+                response.close()
+            except Exception:
+                pass
+        for request in clients:
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                request.close()
+            except OSError:
+                pass
+
+    def handle_error(self, _request, _client_address):
+        return
+
+
+class _ReverseEndpointProxy:
+    """短生命周期固定上游代理；容器只持有随代理销毁的一次性 token。"""
+
+    def __init__(self, server, thread, token, container_base_url, local_base_url):
+        self.server = server
+        self.thread = thread
+        self.token = token
+        self.container_base_url = container_base_url
+        self.local_base_url = local_base_url
+        self._closed = False
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.server.close_active_requests()
+            self.server.shutdown()
+        finally:
+            self.server.server_close()
+            self.thread.join(timeout=5)
+
+
+def _start_reverse_endpoint_proxy(base_url, api_key, harness):
+    """启动 attempt 内有效的模型代理，确保真实端点凭证不进入 Agent 容器。"""
+    upstream = urlsplit(str(base_url or '').strip())
+    real_key = str(api_key or '')
+    if upstream.scheme not in {'http', 'https'} or not upstream.netloc or not real_key:
+        raise RuntimeError('AI 作答端点配置无效')
+    base_path = (upstream.path or '').rstrip('/')
+    token = secrets.token_urlsafe(32)
+    upstream_opener = urllib.request.build_opener(_ReverseProxyNoRedirect())
+
+    class ProxyHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.0'
+        server_version = 'NumOJReverseProxy/1.0'
+        sys_version = ''
+
+        def log_message(self, _format, *_args):
+            return
+
+        def _send_plain(self, status, message):
+            payload = str(message).encode('utf-8')
+            self.send_response(int(status))
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(len(payload)))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            self.close_connection = True
+
+        def _token_valid(self):
+            return _reverse_proxy_token_valid(self.headers, token)
+
+        def _proxy(self):
+            if not self._token_valid():
+                self._send_plain(403, 'forbidden')
+                return
+            target_url = _reverse_proxy_target_url(upstream, self.command, self.path)
+            if not target_url:
+                self._send_plain(404, 'not found')
+                return
+            try:
+                content_length = int(self.headers.get('Content-Length') or 0)
+            except (TypeError, ValueError):
+                self._send_plain(400, 'invalid content length')
+                return
+            if content_length < 0 or content_length > REVERSE_ENDPOINT_PROXY_MAX_REQUEST_BYTES:
+                self._send_plain(413, 'request too large')
+                return
+            transfer_encoding = str(
+                self.headers.get('Transfer-Encoding') or '',
+            ).strip().lower()
+            if transfer_encoding not in ('', 'identity'):
+                self._send_plain(400, 'unsupported transfer encoding')
+                return
+            try:
+                body = self.rfile.read(content_length) if content_length else None
+            except (socket.timeout, TimeoutError):
+                self._send_plain(408, 'request timeout')
+                return
+            if content_length and (body is None or len(body) != content_length):
+                self._send_plain(400, 'incomplete request')
+                return
+
+            headers = _reverse_proxy_upstream_headers(
+                self.headers, real_key, harness,
+            )
+
+            request_obj = urllib.request.Request(
+                target_url, data=body, headers=headers, method=self.command,
+            )
+            response = None
+            try:
+                response = upstream_opener.open(
+                    request_obj, timeout=REVERSE_ENDPOINT_PROXY_TIMEOUT_SECONDS,
+                )
+            except urllib.error.HTTPError as exc:
+                response = exc
+            except Exception:
+                self._send_plain(502, 'upstream unavailable')
+                return
+            if not self.server.register_upstream(response):
+                return
+            try:
+                status = int(getattr(response, 'status', response.getcode()))
+                self.send_response(status)
+                for name, value in response.headers.items():
+                    if str(name).lower() in _REVERSE_PROXY_HOP_HEADERS:
+                        continue
+                    self.send_header(str(name), str(value))
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                while True:
+                    chunk = _reverse_proxy_read_chunk(response)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                self.server.unregister_upstream(response)
+                try:
+                    response.close()
+                except Exception:
+                    pass
+                self.close_connection = True
+
+        def do_POST(self):
+            self._proxy()
+
+        def do_GET(self):
+            self._proxy()
+
+    try:
+        server = _BoundedReverseProxyServer(
+            (REVERSE_ENDPOINT_PROXY_BIND_HOST, 0), ProxyHandler,
+        )
+    except OSError as exc:
+        raise RuntimeError('AI 作答临时凭证代理启动失败') from exc
+    port = int(server.server_address[1])
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name=f'reverse-endpoint-proxy-{port}', daemon=True,
+    )
+    thread.start()
+    proxy_path = base_path
+    container_base_url = f'http://{REVERSE_ENDPOINT_PROXY_CONTAINER_HOST}:{port}{proxy_path}'
+    local_base_url = f'http://127.0.0.1:{port}{proxy_path}'
+    return _ReverseEndpointProxy(
+        server, thread, token, container_base_url, local_base_url,
+    )
+
+
 def _reverse_prompt():
     return (
         '当前工作目录 /workspace 是可写的答案目录；/workspace/problem 是只读的题目描述目录。'
@@ -1010,11 +1621,6 @@ def _exec_reverse_harness_phase(
             os.remove(path)
         except FileNotFoundError:
             pass
-    try:
-        from oj_modules.tasks.ranking_agent_judge_tasks import _append_phase_log
-        _append_phase_log(ws, phase, proc)
-    except Exception:
-        pass
     return proc
 
 
@@ -1028,7 +1634,6 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
             'trace_dir': None,
         }
     harness, base_url, api_key, model = _resolve_harness_config(endpoint)
-    container_base_url = _agent_container_base_url(base_url)
     template_dir = os.path.realpath(os.path.join(package_root, 'template'))
     problem_dir = os.path.realpath(os.path.join(package_root, 'problem'))
     attempt_component = _safe_attempt_component(attempt_id)
@@ -1042,6 +1647,16 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
     except Exception:
         pass
+    try:
+        endpoint_proxy = _start_reverse_endpoint_proxy(base_url, api_key, harness)
+    except Exception as exc:
+        return {
+            'ok': False,
+            'stdout': '',
+            'stderr': '',
+            'error': str(exc),
+            'trace_dir': trace_dir,
+        }
     docker_args = [
         'docker', 'run', '-d', '--name', container_name,
         '--security-opt', 'no-new-privileges',
@@ -1053,7 +1668,8 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         '-v', f'{problem_dir}:/workspace/problem:ro',
         '-w', '/workspace',
     ] + _agent_env_args(
-        harness, container_base_url, api_key, model, 'reverse_unused.jsonl', include_prompt=False,
+        harness, endpoint_proxy.container_base_url, endpoint_proxy.token,
+        model, 'reverse_unused.jsonl', include_prompt=False,
     ) + [JUDGE_IMAGE, 'bash', '-lc', 'tail -f /dev/null']
     try:
         subprocess.run(docker_args, check=True, capture_output=True, text=True, timeout=120)
@@ -1146,11 +1762,21 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
             'trace_dir': trace_dir,
         }
     finally:
-        _dump_harness_trace(container_name, trace_dir, template_dir, harness)
         try:
-            subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
-        except Exception:
-            pass
+            # harness 主进程一结束就先关闭一次性凭证代理；后续轨迹落盘期间，
+            # Agent 在容器中遗留的后台进程也无法再发起新模型请求。
+            endpoint_proxy.close()
+        finally:
+            try:
+                _dump_harness_trace(container_name, trace_dir, template_dir, harness)
+            finally:
+                try:
+                    subprocess.run(
+                        ['docker', 'rm', '-f', container_name],
+                        capture_output=True, timeout=20,
+                    )
+                except Exception:
+                    pass
 
 
 _QUALITY_GATE_SYSTEM_PROMPT = (
@@ -1647,6 +2273,9 @@ def _run_reverse_judge(task, client, submission_id, attempt_id, competition,
     submission = get_ranking_submission(submission_id)
     if not submission:
         return {'success': False, 'message': '提交不存在'}
+    # 只要同一 attempt 重新进入任务，就先撤销可能由崩溃前 worker 留下的 ZIP；
+    # 即使本次在端点排队阶段超时为 Error，也不会重新开放旧答案。
+    _invalidate_reverse_answer_archive(submission_id, attempt_id)
     try:
         ws, package_root, audit_root = _prepare_workspace(submission, attempt_id)
     except Exception as e:
@@ -1767,13 +2396,37 @@ def _run_reverse_judge(task, client, submission_id, attempt_id, competition,
                 submission_id, attempt_id, STEP_AGENT,
                 agent_run['error'], trace_dir=agent_run.get('trace_dir'),
             )
-        update_reverse_judge_step_for_attempt(
-            submission_id, attempt_id, STEP_AGENT,
-            status='passed', trace_dir=agent_run.get('trace_dir'),
-        )
-        _publish_snapshot(submission_id)
     finally:
         _release_slot(client, slot_key, slot_token)
+
+    # Agent 已停止、一次性代理凭证已销毁且端点槽位已释放；归档只是本地旁路，
+    # 不应继续占用稀缺的模型并发。
+    archive_warning = ''
+    try:
+        _persist_agent_answer_archive(
+            submission_id, attempt_id,
+            os.path.join(package_root, 'template'),
+            sensitive_values=(
+                endpoint.get('api_key'), endpoint.get('base_url'),
+                _agent_container_base_url(endpoint.get('base_url')),
+            ),
+            publish_guard=lambda: _attempt_still_current(
+                submission_id, attempt_id,
+            ),
+        )
+    except Exception:
+        # 下载归档是评测旁路能力。遇到链接、特殊文件、超限或磁盘异常时不发布
+        # ZIP，但不能因此改变题目本身的评分结果。
+        archive_warning = 'AI 解答未归档：产物不满足下载安全要求'
+    if not _attempt_still_current(submission_id, attempt_id):
+        _invalidate_reverse_answer_archive(submission_id, attempt_id)
+        return {'success': True, 'message': '旧评测 attempt，跳过'}
+    update_reverse_judge_step_for_attempt(
+        submission_id, attempt_id, STEP_AGENT,
+        status='passed', trace_dir=agent_run.get('trace_dir'),
+        stderr=archive_warning,
+    )
+    _publish_snapshot(submission_id)
 
     if not _attempt_still_current(submission_id, attempt_id):
         return {'success': True, 'message': '旧评测 attempt，跳过'}
