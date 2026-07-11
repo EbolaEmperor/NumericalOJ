@@ -229,6 +229,9 @@ def local_numoj_server() -> str:
     env["NUMOJ_FAKE_AGENT_JUDGE"] = "1"
     env["NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS"] = "0"
     env["NUMOJ_FAKE_REVERSE_JUDGE"] = "1"
+    # 端点 hello 仍走本地 HTTP 桩，只将需要真实模型 CLI 的门禁
+    # Agent 替换为确定性实现；容器安全边界由单元测独立覆盖。
+    env["NUMOJ_FAKE_REVERSE_QUALITY_GATE"] = "1"
     env["NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT"] = '{"score": 1, "comment": "本地 e2e 假图片批改通过。"}'
     env["NUMOJ_FAKE_WRITTEN_HOMEWORK_SCORE"] = "5"
     env["NUMOJ_FAKE_WRITTEN_HOMEWORK_COMMENT"] = "本地 e2e 假书面批改通过。"
