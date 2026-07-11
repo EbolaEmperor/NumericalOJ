@@ -96,6 +96,8 @@ def _necessary_ranking_submission(row: Any) -> Dict[str, Any]:
             "updated_at",
             "answer_download_url",
             "code_download_url",
+            "ai_answer_available",
+            "ai_answer_download_url",
         )
         if key in row
     }
@@ -304,6 +306,8 @@ def necessary_reverse_judge_snapshot_payload(event: Any) -> Any:
             "max_score": step.get("max_score") if step.get("max_score") is not None else result.get("max_score"),
             "trace_messages_count": len(step.get("trace_messages") or []),
         }
+        if step_key == "agent_answer":
+            item["answer_available"] = bool(step.get("answer_available"))
         if step.get("error_message"):
             item["error_message"] = step["error_message"]
         if step_key == "quality_gate":
@@ -843,9 +847,14 @@ def ranking_delete_submission(args: argparse.Namespace) -> None:
 
 def ranking_download_submission(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    kind = "answer" if args.kind == "answer" else "code"
-    resp = client.request("GET", f"/ranking/submission/{args.submission_id}/{kind}")
-    print_or_save_response(resp, output=args.output or ".")
+    if args.kind == "ai-answer":
+        path = f"/api/ranking/submissions/{args.submission_id}/reverse-agent-answer"
+    else:
+        path = f"/ranking/submission/{args.submission_id}/{args.kind}"
+    resp = client.request("GET", path)
+    print_or_save_response(
+        resp, output=args.output or ".", allow_redirect=False,
+    )
 
 
 def ranking_judge_stream(args: argparse.Namespace) -> None:
@@ -1230,9 +1239,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
     pa.add_argument("submission_id", type=int, help="Ranking submission ID to delete.")
     pa.set_defaults(func=ranking_delete_submission)
-    pa = add_cli_parser(rs, "download-submission", "Download the answer file or code archive from a ranking submission.")
+    pa = add_cli_parser(rs, "download-submission", "Download an uploaded answer, code archive, or reverse-judge AI answer.")
     pa.add_argument("submission_id", type=int, help="Ranking submission ID to download from.")
-    pa.add_argument("kind", choices=["answer", "code"], help="Submission artifact to download.")
+    pa.add_argument("kind", choices=["answer", "code", "ai-answer"], help="Submission artifact to download.")
     pa.add_argument("-o", "--output", help="Path to write the downloaded artifact.")
     pa.set_defaults(func=ranking_download_submission)
     pa = add_cli_parser(rs, "judge-stream", "Fetch recent judge stream lines for a ranking submission.")

@@ -117,6 +117,7 @@ python3 scripts/numoj_user.py ranking submit <competition_id> --base-model "qwen
 python3 scripts/numoj_user.py ranking detail <reverse_competition_id> --tab submit
 python3 scripts/numoj_user.py ranking submit <reverse_competition_id> --code-zip reverse_problem.zip --agent-endpoint-id <answer_endpoint_id>
 python3 scripts/numoj_user.py ranking reverse-stream <reverse_competition_id> <submission_id> --max-lines 20
+python3 scripts/numoj_user.py ranking download-submission <submission_id> ai-answer -o ./ai-answer.zip
 python3 scripts/numoj_user.py ranking my-submissions <competition_id> --limit 5
 python3 scripts/numoj_user.py ranking leaderboard <competition_id> --limit 10
 python3 scripts/numoj_user.py ranking appeal-status <competition_id> <submission_id>

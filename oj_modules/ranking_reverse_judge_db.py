@@ -69,6 +69,21 @@ def reverse_agent_answer_archive_path(submission_id, attempt_id):
     return archive_path
 
 
+def available_reverse_agent_answer_archive_path(submission_id, attempt_id, status):
+    """返回可下载的当前 attempt AI 解答 ZIP；不可用时返回 ``None``。"""
+    if status not in {'Accepted', 'Error'}:
+        return None
+    try:
+        archive_path = reverse_agent_answer_archive_path(submission_id, attempt_id)
+        archive_stat = os.lstat(archive_path)
+    except (OSError, TypeError, ValueError):
+        return None
+    # lstat 的普通文件判定天然排除符号链接，避免下载越出提交目录。
+    if not stat.S_ISREG(archive_stat.st_mode):
+        return None
+    return archive_path
+
+
 def clear_reverse_judge_steps(submission_id):
     conn = get_db_connection()
     try:
@@ -963,15 +978,11 @@ def build_reverse_judge_snapshot(submission_id):
     submission = get_ranking_submission(submission_id)
     if not submission:
         return None
-    current_answer_archive = reverse_agent_answer_archive_path(
-        submission_id, submission.get('judge_attempt_id'),
+    current_answer_archive = available_reverse_agent_answer_archive_path(
+        submission_id,
+        submission.get('judge_attempt_id'),
+        submission.get('status'),
     )
-    try:
-        answer_archive_is_regular = stat.S_ISREG(
-            os.lstat(current_answer_archive).st_mode,
-        )
-    except OSError:
-        answer_archive_is_regular = False
     steps = []
     for row in list_reverse_judge_steps(submission_id):
         result = _parse_result(row.get('result_json'))
@@ -994,10 +1005,7 @@ def build_reverse_judge_snapshot(submission_id):
         if item['step_key'] == STEP_AGENT:
             # ZIP 由临时文件完成后再原子发布；评测终态前不开放，避免执行中的
             # 产物被提前取走，也使按钮状态与最终提交状态保持一致。
-            item['answer_available'] = (
-                submission.get('status') in {'Accepted', 'Error'}
-                and answer_archive_is_regular
-            )
+            item['answer_available'] = bool(current_answer_archive)
         steps.append(item)
     return {
         'submission_id': int(submission_id),

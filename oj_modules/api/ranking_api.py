@@ -15,6 +15,9 @@ from oj_modules.ranking_agent_judge_db import (
     list_competition_rules,
     list_quality_gate_endpoints,
 )
+from oj_modules.ranking_reverse_judge_db import (
+    available_reverse_agent_answer_archive_path,
+)
 from oj_modules.ranking_db import (
     get_appeal,
     get_appeal_stats,
@@ -47,6 +50,8 @@ from oj_modules.routes.ranking_routes import (
     _submission_quota_message,
     build_repo_url,
     fetch_competition_matches_cached,
+    resolve_reverse_agent_answer_archive,
+    send_reverse_agent_answer_archive,
 )
 
 
@@ -148,17 +153,30 @@ def _files_with_media(files):
     return out
 
 
-def _submission_download_urls(row):
+def _submission_download_urls(row, *, include_reverse_answer=False):
     out = dict(row or {})
+    attempt_id = out.pop("judge_attempt_id", None)
     sid = out.get("id")
     if sid:
         out["answer_download_url"] = f"/ranking/submission/{sid}/answer"
         out["code_download_url"] = f"/ranking/submission/{sid}/code"
+    archive_path = None
+    if sid and include_reverse_answer:
+        archive_path = available_reverse_agent_answer_archive_path(
+            sid, attempt_id, out.get("status"),
+        )
+    out["ai_answer_available"] = bool(archive_path)
+    out["ai_answer_download_url"] = (
+        f"/api/ranking/submissions/{sid}/reverse-agent-answer"
+        if archive_path else None
+    )
     return out
 
 
-def _safe_submission(row, include_admin=False):
-    out = _submission_download_urls(row)
+def _safe_submission(row, include_admin=False, include_reverse_answer=False):
+    out = _submission_download_urls(
+        row, include_reverse_answer=include_reverse_answer,
+    )
     if not include_admin:
         for key in (
             "elo_rating",
@@ -169,6 +187,20 @@ def _safe_submission(row, include_admin=False):
         ):
             out.pop(key, None)
     return out
+
+
+@ranking_api_bp.route(
+    "/submissions/<int:submission_id>/reverse-agent-answer",
+    methods=["GET"],
+)
+def reverse_agent_answer(submission_id):
+    user, error = _require_user()
+    if error is not None:
+        return error
+    archive_path = resolve_reverse_agent_answer_archive(user, submission_id)
+    if not archive_path:
+        return json_error("AI 解答不存在或无权限", 404)
+    return send_reverse_agent_answer_archive(archive_path, submission_id)
 
 
 @ranking_api_bp.route("/competitions", methods=["GET"])
@@ -279,7 +311,11 @@ def competition_detail(competition_id):
 
     if tab == "submit":
         submissions = [
-            _safe_submission(row, include_admin=is_admin)
+            _safe_submission(
+                row,
+                include_admin=is_admin,
+                include_reverse_answer=is_reverse_judge,
+            )
             for row in list_user_submissions(competition_id, user.get("username"))
         ]
         submit_block_reason = _ranking_submit_block_reason(comp, competition_id, user=user)
@@ -324,7 +360,12 @@ def competition_detail(competition_id):
         )
         total_pages = max(1, (total + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
         payload.update({
-            "all_submissions": [_submission_download_urls(row) for row in rows],
+            "all_submissions": [
+                _submission_download_urls(
+                    row, include_reverse_answer=is_reverse_judge,
+                )
+                for row in rows
+            ],
             "submission_stats": get_submission_stats(competition_id),
             "submission_search_q": q,
             "current_page": current_page,
@@ -368,12 +409,20 @@ def my_submissions(competition_id):
     if error is not None:
         return error
     limit = clamp_limit(request.args.get("limit"), default=None)
-    rows = [_submission_download_urls(row) for row in list_user_submissions(competition_id, user.get("username"))]
+    rows = list_user_submissions(competition_id, user.get("username"))
     visible = apply_limit(rows, limit)
+    include_reverse_answer = _competition_scoring_mode(comp) == "reverse_judge"
     return json_success(
         competition=_safe_competition(comp, include_admin=user.get("is_admin") == 1),
         competition_id=competition_id,
-        submissions=[_safe_submission(row, include_admin=user.get("is_admin") == 1) for row in visible],
+        submissions=[
+            _safe_submission(
+                row,
+                include_admin=user.get("is_admin") == 1,
+                include_reverse_answer=include_reverse_answer,
+            )
+            for row in visible
+        ],
         count=len(visible),
         total=len(rows),
     )
@@ -450,7 +499,15 @@ def all_submissions(competition_id):
     return json_success(
         competition=_safe_competition(comp, include_admin=True),
         competition_id=competition_id,
-        submissions=[_submission_download_urls(row) for row in rows],
+        submissions=[
+            _submission_download_urls(
+                row,
+                include_reverse_answer=(
+                    _competition_scoring_mode(comp) == "reverse_judge"
+                ),
+            )
+            for row in rows
+        ],
         count=len(rows),
         total=total,
         page=current_page,

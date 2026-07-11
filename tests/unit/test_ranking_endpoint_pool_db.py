@@ -490,3 +490,57 @@ def test_submission_endpoint_sql_never_falls_back_to_quality_gate(monkeypatch):
             if 'JOIN ranking_agent_judge_endpoints' in sql
         )
         assert "ep.pool_kind = 'primary'" in endpoint_sql
+
+
+def test_list_user_submissions_selects_current_attempt_and_returns_labeled_rows(
+        monkeypatch):
+    row = {
+        'id': 31,
+        'judge_attempt_id': 'attempt-2',
+        'agent_endpoint_harness': 'codex',
+        'agent_endpoint_model': 'deepseek-v4-flash',
+    }
+    cursor = _FakeCursor(rows=[row])
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(ranking_db, 'get_db_connection', lambda: conn)
+
+    rows = ranking_db.list_user_submissions(17, 'alice')
+
+    sql, params = cursor.calls[0]
+    normalized_sql = ' '.join(sql.split())
+    assert 's.judge_attempt_id' in normalized_sql
+    assert "ep.pool_kind = 'primary'" in normalized_sql
+    assert params == (17, 'alice')
+    assert rows[0]['judge_attempt_id'] == 'attempt-2'
+    assert rows[0]['agent_endpoint_label'] == 'Codex (deepseek-v4-flash)'
+    assert conn.closed is True
+
+
+def test_list_all_submissions_paginated_search_selects_current_attempt(
+        monkeypatch):
+    row = {
+        'id': 32,
+        'judge_attempt_id': 'attempt-3',
+        'agent_endpoint_harness': 'codex',
+        'agent_endpoint_model': 'deepseek-v4-flash',
+    }
+    cursor = _FakeCursor(rows=[row], one_values=[{'total': 3}])
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(ranking_db, 'get_db_connection', lambda: conn)
+
+    rows, page, total = ranking_db.list_all_submissions(
+        17, page=99, per_page=2, username_q=' alice ',
+    )
+
+    assert len(cursor.calls) == 2
+    count_sql, count_params = cursor.calls[0]
+    select_sql, select_params = cursor.calls[1]
+    normalized_select = ' '.join(select_sql.split())
+    assert 's.judge_attempt_id' in normalized_select
+    assert "ep.pool_kind = 'primary'" in normalized_select
+    assert count_params == (17, '%alice%')
+    assert select_params == (17, '%alice%', 2, 2)
+    assert rows[0]['judge_attempt_id'] == 'attempt-3'
+    assert rows[0]['agent_endpoint_label'] == 'Codex (deepseek-v4-flash)'
+    assert (page, total) == (2, 3)
+    assert conn.closed is True
