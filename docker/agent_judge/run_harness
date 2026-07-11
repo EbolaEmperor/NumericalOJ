@@ -180,6 +180,12 @@ def _write_codex_config(home, base_url, model):
         f.write("\n".join(lines) + "\n")
 
 
+def _audit_read_only_enabled():
+    return (os.environ.get("AJ_AUDIT_READ_ONLY") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _run_codex(prompt):
     base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
     api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
@@ -193,7 +199,8 @@ def _run_codex(prompt):
     env = os.environ.copy()
     env["CODEX_HOME"] = home
     env["AJ_OPENAI_API_KEY"] = api_key
-    if resume_session_id:
+    audit_read_only = _audit_read_only_enabled()
+    if resume_session_id and not audit_read_only:
         args = [
             "codex", "exec", "resume",
             "--json",
@@ -202,6 +209,16 @@ def _run_codex(prompt):
             resume_session_id,
             "-",
         ]
+    elif audit_read_only:
+        args = [
+            "codex", "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox", "read-only",
+            "--cd", "/workspace",
+            "-",
+        ]
+        resume_session_id = ""
     else:
         args = [
             "codex", "exec",
@@ -216,7 +233,7 @@ def _run_codex(prompt):
     return proc.returncode
 
 
-def _opencode_config_content(base_url, api_key_env, model_id):
+def _opencode_config_content(base_url, api_key_env, model_id, audit_read_only=False):
     cfg = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
@@ -235,6 +252,14 @@ def _opencode_config_content(base_url, api_key_env, model_id):
             },
         },
     }
+    if audit_read_only:
+        cfg["permission"] = {
+            "*": "deny",
+            "read": "allow",
+            "glob": "allow",
+            "grep": "allow",
+            "external_directory": {"/evidence/**": "allow"},
+        }
     return json.dumps(cfg, ensure_ascii=False)
 
 
@@ -248,20 +273,37 @@ def _run_opencode(prompt):
     model = (os.environ.get("OPENCODE_MODEL") or "").strip() or OPENCODE_GO_MODEL
     model_id = model.split("/", 1)[1] if model.startswith("opencode-go/") else model
     model_id = model_id.split("/", 1)[1] if model_id.startswith("aj-go/") else model_id
+    audit_read_only = _audit_read_only_enabled()
     home = "/tmp/aj_opencode_home"
     env = os.environ.copy()
     env["HOME"] = home
     env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(
-        base_url, "OPENCODE_API_KEY", model_id,
+        base_url, "OPENCODE_API_KEY", model_id, audit_read_only=audit_read_only,
     )
     env["OPENCODE_API_KEY"] = api_key
+    if audit_read_only:
+        env.update({
+            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+            "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+            "OPENCODE_DISABLE_AUTOUPDATE": "true",
+            "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
+            "OPENCODE_DISABLE_MODELS_FETCH": "true",
+        })
     os.makedirs(home, exist_ok=True)
-    args = [
-        "opencode", "run",
-        "--dangerously-skip-permissions",
-        "--model", "aj-go/%s" % model_id,
-    ]
-    if resume_session_id:
+    if audit_read_only:
+        args = [
+            "opencode", "--pure", "run",
+            "--format", "json",
+            "--model", "aj-go/%s" % model_id,
+        ]
+        resume_session_id = ""
+    else:
+        args = [
+            "opencode", "run",
+            "--dangerously-skip-permissions",
+            "--model", "aj-go/%s" % model_id,
+        ]
+    if resume_session_id and not audit_read_only:
         args.extend(["--session", resume_session_id])
     args.append(prompt)
     proc = _run(args, env)
@@ -272,14 +314,30 @@ def _run_opencode(prompt):
 def _run_claude_code(prompt):
     model = (os.environ.get("ANTHROPIC_MODEL") or "").strip()
     resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
-    args = [
-        "claude",
-        "--dangerously-skip-permissions",
-        "--add-dir", "/workspace",
-        "--output-format", "json",
-        "-p",
-    ]
-    if resume_session_id:
+    audit_read_only = _audit_read_only_enabled()
+    if audit_read_only:
+        args = [
+            "claude",
+            "--bare",
+            "--safe-mode",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            "--tools", "Read,Glob,Grep",
+            "--allowed-tools", "Read,Glob,Grep",
+            "--add-dir", "/evidence",
+            "--output-format", "json",
+            "-p",
+        ]
+        resume_session_id = ""
+    else:
+        args = [
+            "claude",
+            "--dangerously-skip-permissions",
+            "--add-dir", "/workspace",
+            "--output-format", "json",
+            "-p",
+        ]
+    if resume_session_id and not audit_read_only:
         args.extend(["--resume", resume_session_id])
         if (os.environ.get("AJ_FORK_SESSION") or "1").strip().lower() not in {"0", "false", "no", "off"}:
             args.append("--fork-session")
