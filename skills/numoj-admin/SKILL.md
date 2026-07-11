@@ -188,6 +188,7 @@ Submit and inspect a ranking competition:
 python3 scripts/numoj_admin.py ranking submit <competition_id> --base-model qwen3 --answer-file answer.json --code-zip code.zip
 python3 scripts/numoj_admin.py ranking submit <competition_id> --code-zip reverse_problem.zip --agent-endpoint-id <answer_endpoint_id>
 python3 scripts/numoj_admin.py ranking reverse-stream <competition_id> <submission_id> --max-lines 10
+python3 scripts/numoj_admin.py ranking download-submission <submission_id> ai-answer -o ./ai-answer.zip
 python3 scripts/numoj_admin.py ranking my-submissions <competition_id> --limit 5
 python3 scripts/numoj_admin.py ranking leaderboard <competition_id> --limit 10
 python3 scripts/numoj_admin.py ranking appeals <competition_id> --status open

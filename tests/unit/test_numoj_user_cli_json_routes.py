@@ -595,6 +595,117 @@ def test_user_reverse_stream_projects_four_steps_without_internal_fields(monkeyp
     assert "raw_model_response" not in gate
 
 
+def test_user_ranking_submission_projection_keeps_ai_answer_metadata_and_filters_internal_fields():
+    cli = _load_numoj_user_cli_module()
+
+    projected = cli.ranking._necessary_ranking_submission({
+        "id": 9,
+        "status": "Accepted",
+        "ai_answer_available": True,
+        "ai_answer_download_url": "/api/ranking/submissions/9/reverse-agent-answer",
+        "judge_attempt_id": "attempt-private",
+        "secret": "must-not-leak",
+    })
+
+    assert projected == {
+        "id": 9,
+        "status": "Accepted",
+        "ai_answer_available": True,
+        "ai_answer_download_url": "/api/ranking/submissions/9/reverse-agent-answer",
+    }
+    assert cli.ranking._necessary_ranking_submission("not-a-mapping") == {}
+
+
+def test_user_reverse_snapshot_projects_agent_availability_only():
+    cli = _load_numoj_user_cli_module()
+
+    projected = cli.necessary_reverse_judge_snapshot_payload({
+        "submission_id": 9,
+        "status": "Accepted",
+        "steps": [
+            {
+                "step_key": "agent_answer",
+                "title": "AI 作答",
+                "status": "completed",
+                "answer_available": True,
+                "answer_path": "/private/agent-answer.zip",
+                "trace_messages": [{"text": "one"}, {"text": "two"}],
+            },
+            {
+                "step_key": "quality_gate",
+                "title": "质量门禁",
+                "status": "completed",
+                "answer_available": True,
+                "result": {
+                    "passed": True,
+                    "verdict": "accept",
+                    "violations": [],
+                },
+            },
+        ],
+    })
+
+    agent_step, quality_step = projected["steps"]
+    assert agent_step["answer_available"] is True
+    assert agent_step["trace_messages_count"] == 2
+    assert "answer_path" not in agent_step
+    assert quality_step["passed"] is True
+    assert quality_step["verdict"] == "accept"
+    assert quality_step["violations"] == []
+    assert "answer_available" not in quality_step
+    assert "answer_path" not in repr(projected)
+
+
+def test_user_ranking_download_submission_routes_and_saves_all_supported_artifacts(monkeypatch):
+    cli = _load_numoj_user_cli_module()
+    fake_client = _FakeClient()
+    saved = []
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+    monkeypatch.setattr(
+        cli.common,
+        "print_or_save_response",
+        lambda response, **kwargs: saved.append((response, kwargs)),
+    )
+
+    cases = [
+        ("ai-answer", "/tmp/ai-answer.zip", "/api/ranking/submissions/9/reverse-agent-answer"),
+        ("answer", None, "/ranking/submission/9/answer"),
+        ("code", "/tmp/code.zip", "/ranking/submission/9/code"),
+    ]
+    for kind, output, expected_path in cases:
+        cli.ranking_download_submission(Namespace(submission_id=9, kind=kind, output=output))
+        method, path, kwargs = fake_client.requests[-1]
+        response, save_kwargs = saved[-1]
+        assert (method, path, kwargs) == ("GET", expected_path, {})
+        assert isinstance(response, _FakeResponse)
+        assert save_kwargs == {
+            "output": output or ".",
+            "allow_redirect": False,
+        }
+
+
+def test_user_ranking_parser_supports_ai_answer_choice():
+    cli = _load_numoj_user_cli_module()
+    parser = cli.build_parser()
+
+    args = parser.parse_args([
+        "ranking",
+        "download-submission",
+        "9",
+        "ai-answer",
+        "-o",
+        "answer.zip",
+    ])
+
+    assert args.submission_id == 9
+    assert args.kind == "ai-answer"
+    assert args.output == "answer.zip"
+    assert args.func is cli.ranking_download_submission
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["ranking", "download-submission", "9", "invalid"])
+    assert exc_info.value.code == 2
+
+
 def test_user_ranking_detail_projects_only_safe_answer_endpoints():
     cli = _load_numoj_user_cli_module()
 

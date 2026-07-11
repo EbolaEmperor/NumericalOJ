@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,7 @@ RANKING_SECRET_KEYS = {
     "elo_rating",
     "elo_match_count",
     "elo_in_pool",
+    "judge_attempt_id",
 }
 
 
@@ -691,7 +693,13 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
         str(answer_endpoint_id),
     )
     compliant_id = int(compliant_submit["submission_id"])
-    assert _wait_for_ranking_submission(cli, ranking_id, compliant_id)["status"] == "Accepted"
+    compliant_row = _wait_for_ranking_submission(cli, ranking_id, compliant_id)
+    assert compliant_row["status"] == "Accepted"
+    assert "judge_attempt_id" not in compliant_row
+    assert compliant_row["ai_answer_available"] is True
+    assert compliant_row["ai_answer_download_url"] == (
+        f"/api/ranking/submissions/{compliant_id}/reverse-agent-answer"
+    )
     compliant_stream = cli.user_json(
         "ranking",
         "reverse-stream",
@@ -712,6 +720,31 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     assert compliant_gate["verdict"] == "pass"
     assert compliant_gate["summary"]
     assert compliant_gate["violations"] == []
+    assert compliant_steps[2]["answer_available"] is True
+
+    user_download_dir = tmp_path / "user-ai-answer"
+    admin_download_dir = tmp_path / "admin-ai-answer"
+    user_download_dir.mkdir()
+    admin_download_dir.mkdir()
+    download_payloads = [
+        cli.user_json(
+            "ranking", "download-submission", str(compliant_id), "ai-answer",
+            "-o", str(user_download_dir),
+        ),
+        cli.admin_json(
+            "ranking", "download-submission", str(compliant_id), "ai-answer",
+            "-o", str(admin_download_dir),
+        ),
+    ]
+    for download in download_payloads:
+        downloaded_path = Path(download["path"])
+        assert download["success"] is True
+        assert download["bytes"] > 0
+        assert downloaded_path.name == f"reverse_ai_answer_{compliant_id}.zip"
+        assert downloaded_path.stat().st_size == download["bytes"]
+        with zipfile.ZipFile(downloaded_path) as archive:
+            assert "ai_answer/README.md" in archive.namelist()
+            assert archive.read("ai_answer/README.md").decode("utf-8") == "在此目录作答。\n"
 
     rejected_submit = cli.user_json(
         "ranking",
@@ -725,6 +758,8 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     rejected_id = int(rejected_submit["submission_id"])
     rejected_row = _wait_for_ranking_submission(cli, ranking_id, rejected_id)
     assert rejected_row["status"] == "Error"
+    assert rejected_row["ai_answer_available"] is False
+    assert rejected_row["ai_answer_download_url"] is None
     assert "私有配对密码" not in json.dumps(rejected_row, ensure_ascii=False)
     rejected_stream = cli.user_json(
         "ranking",
@@ -751,6 +786,15 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
         forbidden_keys={"criteria_sha256", "reviewed_file_count", "source_file_count"},
         forbidden_terms=("私有配对密码",),
     )
+    rejected_download_path = tmp_path / "rejected-ai-answer.zip"
+    rejected_download = cli.user(
+        "ranking", "download-submission", str(rejected_id), "ai-answer",
+        "-o", str(rejected_download_path),
+        check=False,
+    )
+    assert rejected_download.returncode != 0
+    assert "404" in (rejected_download.stdout + rejected_download.stderr)
+    assert not rejected_download_path.exists()
 
     rejudge = cli.admin_json(
         "ranking", "rejudge-agent", str(ranking_id), str(rejected_id),

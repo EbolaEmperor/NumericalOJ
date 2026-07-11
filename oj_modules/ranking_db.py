@@ -1191,7 +1191,7 @@ def list_user_submissions(competition_id, username):
                 """
                 SELECT s.id, s.competition_id, s.username,
                        s.answer_filename, s.code_filename, s.base_model,
-                       s.score, s.status,
+                       s.score, s.status, s.judge_attempt_id,
                        s.agent_endpoint_id,
                        COALESCE(s.agent_endpoint_harness, ep.harness) AS agent_endpoint_harness,
                        COALESCE(s.agent_endpoint_model, ep.model) AS agent_endpoint_model,
@@ -1236,7 +1236,7 @@ def list_all_submissions(competition_id, *, page=1, per_page=50, username_q=None
                 f"""
                 SELECT s.id, s.competition_id, s.username,
                        s.answer_filename, s.code_filename, s.base_model,
-                       s.score, s.status,
+                       s.score, s.status, s.judge_attempt_id,
                        s.agent_endpoint_id,
                        COALESCE(s.agent_endpoint_harness, ep.harness) AS agent_endpoint_harness,
                        COALESCE(s.agent_endpoint_model, ep.model) AS agent_endpoint_model,

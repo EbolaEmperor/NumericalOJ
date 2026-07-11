@@ -10,7 +10,6 @@ import os
 import re
 import secrets
 import shutil
-import stat
 import subprocess
 import uuid
 from datetime import datetime
@@ -112,8 +111,8 @@ from oj_modules.tasks.ranking_batch_pull_tasks import (
     repo_last_commit,
 )
 from oj_modules.ranking_reverse_judge_db import (
+    available_reverse_agent_answer_archive_path,
     build_reverse_judge_snapshot,
-    reverse_agent_answer_archive_path,
 )
 
 
@@ -3190,38 +3189,28 @@ def _can_access_submission(user, submission):
     return submission.get('username') == user.get('username')
 
 
-@ranking_bp.route(
-    '/<int:competition_id>/submission/<int:submission_id>/reverse_agent_answer',
-    methods=['GET'],
-)
-def download_reverse_agent_answer(competition_id, submission_id):
-    user, resp = _require_user()
-    if resp is not None:
-        return resp
+def resolve_reverse_agent_answer_archive(user, submission_id, competition_id=None):
+    """解析用户可下载的当前 attempt AI 解答归档；不可访问时返回 ``None``。"""
     sub = get_ranking_submission(submission_id)
     if not sub or not _can_access_submission(user, sub):
-        abort(404)
+        return None
     try:
-        if int(sub.get('competition_id')) != int(competition_id):
-            abort(404)
+        actual_competition_id = int(sub.get('competition_id'))
+        if competition_id is not None and actual_competition_id != int(competition_id):
+            return None
     except (TypeError, ValueError):
-        abort(404)
-    competition = get_competition(competition_id)
+        return None
+    competition = get_competition(actual_competition_id)
     if not competition or _competition_scoring_mode(competition) != 'reverse_judge':
-        abort(404)
-    if sub.get('status') not in {'Accepted', 'Error'}:
-        abort(404)
-
-    archive_path = reverse_agent_answer_archive_path(
-        submission_id, sub.get('judge_attempt_id'),
+        return None
+    return available_reverse_agent_answer_archive_path(
+        submission_id,
+        sub.get('judge_attempt_id'),
+        sub.get('status'),
     )
-    try:
-        archive_stat = os.lstat(archive_path)
-    except OSError:
-        abort(404)
-    if stat.S_ISLNK(archive_stat.st_mode) or not stat.S_ISREG(archive_stat.st_mode):
-        abort(404)
 
+
+def send_reverse_agent_answer_archive(archive_path, submission_id):
     response = send_file(
         archive_path,
         mimetype='application/zip',
@@ -3232,6 +3221,22 @@ def download_reverse_agent_answer(competition_id, submission_id):
     response.headers['Cache-Control'] = 'private, no-store'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
+
+
+@ranking_bp.route(
+    '/<int:competition_id>/submission/<int:submission_id>/reverse_agent_answer',
+    methods=['GET'],
+)
+def download_reverse_agent_answer(competition_id, submission_id):
+    user, resp = _require_user()
+    if resp is not None:
+        return resp
+    archive_path = resolve_reverse_agent_answer_archive(
+        user, submission_id, competition_id=competition_id,
+    )
+    if not archive_path:
+        abort(404)
+    return send_reverse_agent_answer_archive(archive_path, submission_id)
 
 
 @ranking_bp.route('/submission/<int:submission_id>/answer', methods=['GET'])
