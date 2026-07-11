@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 """Dispatch Agent-as-Judge runs to the selected CLI harness."""
 import json
+from collections import deque
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_GO_MODEL = "mimo-v2.5-pro"
@@ -36,17 +38,65 @@ def _run(args, env=None, input_text=None):
     if shutil.which(args[0], path=run_env.get("PATH")) is None:
         print(f"{args[0]} CLI is not installed in this Agent-as-Judge image", file=sys.stderr)
         return subprocess.CompletedProcess(args, 127, "", "")
-    proc = subprocess.run(
-        args, cwd="/workspace", env=run_env, input=input_text,
-        text=True, capture_output=True,
+    proc = subprocess.Popen(
+        args, cwd=run_env.get("AJ_WORKSPACE") or "/workspace", env=run_env,
+        stdin=subprocess.PIPE if input_text is not None else None,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1,
     )
-    if proc.stdout:
-        sys.stdout.write(proc.stdout)
-        sys.stdout.flush()
-    if proc.stderr:
-        sys.stderr.write(proc.stderr)
-        sys.stderr.flush()
-    return proc
+    try:
+        capture_limit = max(1024, int(run_env.get("AJ_CAPTURE_MAX_CHARS") or 8 * 1024 * 1024))
+    except Exception:
+        capture_limit = 8 * 1024 * 1024
+    stdout_chunks = deque()
+    stderr_chunks = deque()
+    captured_sizes = {"stdout": 0, "stderr": 0}
+
+    def _remember(chunks, key, chunk):
+        chunks.append(chunk)
+        captured_sizes[key] += len(chunk)
+        while chunks and captured_sizes[key] > capture_limit:
+            overflow = captured_sizes[key] - capture_limit
+            if len(chunks[0]) <= overflow:
+                captured_sizes[key] -= len(chunks.popleft())
+            else:
+                chunks[0] = chunks[0][overflow:]
+                captured_sizes[key] -= overflow
+
+    def _relay(source, target, chunks, key):
+        try:
+            for chunk in iter(lambda: source.readline(65536), ""):
+                _remember(chunks, key, chunk)
+                target.write(chunk)
+                target.flush()
+        finally:
+            source.close()
+
+    stdout_thread = threading.Thread(
+        target=_relay, args=(proc.stdout, sys.stdout, stdout_chunks, "stdout"), daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_relay, args=(proc.stderr, sys.stderr, stderr_chunks, "stderr"), daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    if input_text is not None:
+        try:
+            proc.stdin.write(input_text)
+            proc.stdin.flush()
+        except BrokenPipeError:
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+    returncode = proc.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+    return subprocess.CompletedProcess(
+        args, returncode, "".join(stdout_chunks), "".join(stderr_chunks),
+    )
 
 
 def _walk_json_session_id(obj):

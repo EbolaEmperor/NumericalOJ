@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """纯逻辑单测：打榜赛 Agent-as-Judge 容器生命周期（不依赖 Docker / 不连生产）。
 
-验证回收容器前会把容器内 harness 会话目录 docker cp 到宿主 submission 目录，且：
-  - docker run 不再带 --rm（否则容器退出即删，没有拷出会话目录的窗口）；
+验证评测轨迹写入独立脱敏目录而不复制原始 harness 会话，且：
+  - docker run 不带 --rm，便于停止后读取最终日志；
   - run 之前会先 docker rm -f 同名残留容器；
-  - 正常退出 / 超时 两条路径，都在「最终 docker rm -f」之前完成 docker cp。
+  - 正常退出 / 超时两条路径最终都回收容器。
 做法：把模块里的 subprocess 换成假对象，记录所有 docker 调用并模拟其行为。
 """
 import os
 import tempfile
 import json
+import time
 
 import pytest
 
@@ -80,49 +81,26 @@ def test_run_args_have_no_rm_and_prerun_cleanup(monkeypatch):
     assert any(c[:3] == ["docker", "rm", "-f"] for c in pre), "run 前应先 docker rm -f 残留容器"
 
 
-def test_normal_exit_copies_claude_before_removal(monkeypatch):
+def test_normal_exit_does_not_copy_raw_claude_state(monkeypatch):
     fake, ws, timed_out, ok = _run(monkeypatch, ["false"], timeout_s=600)
     assert ok is True and timed_out is False
     subs = _docker_subcmds(fake.calls)
-    assert "cp" in subs, "回收前应 docker cp 出 .claude"
-    # 找最后一次 rm -f（最终回收）与 cp 的位置：cp 必须在最终 rm 之前
-    cp_idx = max(i for i, c in enumerate(fake.calls) if len(c) > 1 and c[1] == "cp")
-    final_rm_idx = max(i for i, c in enumerate(fake.calls) if c[:3] == ["docker", "rm", "-f"])
-    assert cp_idx < final_rm_idx, "docker cp 必须发生在最终 docker rm -f 之前"
-    # cp 源应是容器内 ~/.claude
-    cp_call = fake.calls[cp_idx]
-    assert any(str(a).endswith(":/root/.claude") for a in cp_call)
-    # .claude 落到了 submission 目录
-    assert os.path.isdir(os.path.join(ws, "submission", ".claude"))
+    assert "cp" not in subs
+    assert any(c[:3] == ["docker", "rm", "-f"] for c in fake.calls)
+    assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
-def test_timeout_path_kills_then_copies_then_removes(monkeypatch):
+def test_timeout_path_kills_without_copying_raw_state(monkeypatch):
     # inspect 一直 true + timeout_s=0 -> 命中超时分支
     fake, ws, timed_out, ok = _run(monkeypatch, ["true"], timeout_s=0)
     assert timed_out is True and ok is True
     subs = _docker_subcmds(fake.calls)
     assert "kill" in subs, "超时应 docker kill"
-    assert "cp" in subs, "超时回收前仍应拷 .claude"
-    cp_idx = max(i for i, c in enumerate(fake.calls) if len(c) > 1 and c[1] == "cp")
-    final_rm_idx = max(i for i, c in enumerate(fake.calls) if c[:3] == ["docker", "rm", "-f"])
-    assert cp_idx < final_rm_idx
-    assert os.path.isdir(os.path.join(ws, "submission", ".claude"))
+    assert "cp" not in subs
+    assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
-def test_dump_container_claude_replaces_existing(monkeypatch):
-    fake = _FakeSubprocess(["false"])
-    monkeypatch.setattr(m, "subprocess", fake)
-    ws = tempfile.mkdtemp(prefix="ajws_")
-    sub = os.path.join(ws, "submission")
-    os.makedirs(os.path.join(sub, ".claude", "stale"), exist_ok=True)  # 预置旧内容
-    m._dump_container_claude("aj_9", ws)
-    # 旧的 stale 子目录应被清掉（先 rmtree 再 cp）
-    assert not os.path.exists(os.path.join(sub, ".claude", "stale"))
-    assert os.path.isdir(os.path.join(sub, ".claude"))
-    assert any(len(c) > 1 and c[1] == "cp" for c in fake.calls)
-
-
-def test_run_copies_codex_state_for_codex_harness(monkeypatch):
+def test_run_does_not_copy_raw_codex_state(monkeypatch):
     endpoint = {
         "harness": m.HARNESS_CODEX,
         "base_url": "http://openai-compatible",
@@ -131,13 +109,12 @@ def test_run_copies_codex_state_for_codex_harness(monkeypatch):
     }
     fake, ws, timed_out, ok = _run(monkeypatch, ["false"], timeout_s=600, endpoint=endpoint)
     assert ok is True and timed_out is False
-    cp_call = max((c for c in fake.calls if len(c) > 1 and c[1] == "cp"), key=fake.calls.index)
-    assert any(str(a).endswith(":/workspace/.codex") for a in cp_call)
-    assert os.path.isdir(os.path.join(ws, "submission", ".codex"))
+    assert not any(len(c) > 1 and c[1] == "cp" for c in fake.calls)
+    assert not os.path.isdir(os.path.join(ws, "submission", ".codex"))
     assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
-def test_run_copies_opencode_state_for_opencode_harness(monkeypatch):
+def test_run_does_not_copy_raw_opencode_state(monkeypatch):
     endpoint = {
         "harness": m.HARNESS_OPENCODE,
         "base_url": "",
@@ -146,9 +123,8 @@ def test_run_copies_opencode_state_for_opencode_harness(monkeypatch):
     }
     fake, ws, timed_out, ok = _run(monkeypatch, ["false"], timeout_s=600, endpoint=endpoint)
     assert ok is True and timed_out is False
-    cp_call = max((c for c in fake.calls if len(c) > 1 and c[1] == "cp"), key=fake.calls.index)
-    assert any(str(a).endswith(":/workspace/.opencode") for a in cp_call)
-    assert os.path.isdir(os.path.join(ws, "submission", ".opencode"))
+    assert not any(len(c) > 1 and c[1] == "cp" for c in fake.calls)
+    assert not os.path.isdir(os.path.join(ws, "submission", ".opencode"))
     assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
@@ -156,12 +132,11 @@ def test_exec_harness_phase_streams_prompt_without_workspace_file(monkeypatch):
     ws = tempfile.mkdtemp(prefix="ajphase_")
     calls = []
 
-    class FakeSubprocess:
-        def run(self, args, **kwargs):
-            calls.append((list(args), dict(kwargs)))
-            return _FakeProc(0, "")
+    def fake_run(args, input_text, **kwargs):
+        calls.append((list(args), input_text, dict(kwargs)))
+        return _FakeProc(0, "")
 
-    monkeypatch.setattr(m, "subprocess", FakeSubprocess())
+    monkeypatch.setattr(m, "_run_process_with_input_limited", fake_run)
 
     m._exec_harness_phase(
         "aj_7", ws, "rule_9", "prompt containing result_secret.jsonl", 30,
@@ -170,13 +145,14 @@ def test_exec_harness_phase_streams_prompt_without_workspace_file(monkeypatch):
     )
 
     assert len(calls) == 1
-    args, kwargs = calls[0]
+    args, input_text, kwargs = calls[0]
     joined = " ".join(args)
     assert "AJ_PROMPT_FILE" not in joined
     assert ".aj_prompt_" not in joined
     assert "-i" in args
     assert "-e" in args and "DEBIAN_FRONTEND=noninteractive" in args
-    assert kwargs["input"] == "prompt containing result_secret.jsonl"
+    assert input_text == "prompt containing result_secret.jsonl"
+    assert kwargs["timeout"] == 30
     assert not any(name.startswith(".aj_prompt_") for name in os.listdir(ws))
 
 
@@ -192,6 +168,7 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
     ])
     phases = []
     writes = []
+    trace_sessions = []
 
     class FakeSubprocess:
         def __init__(self):
@@ -202,7 +179,7 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
             return _FakeProc(0, "false")
 
     def fake_exec(container_name, ws_arg, phase, prompt, timeout_s,
-                  resume_session_id=None, result_filename=None):
+                  resume_session_id=None, result_filename=None, **_kwargs):
         phases.append((phase, resume_session_id))
         phase_result_path = os.path.join(ws_arg, result_filename or result_name)
         if phase == "setup":
@@ -224,11 +201,17 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
         writes.append((rule_id, raw, effective, score, evidence))
         return 1
 
+    def fake_sync(_container_name, ws_arg, _trace_dir, **_kwargs):
+        state_path = os.path.join(ws_arg, ".aj_session_state.json")
+        with open(state_path, "r", encoding="utf-8") as f:
+            trace_sessions.append(json.load(f)["session_id"])
+        return True
+
     fake_subprocess = FakeSubprocess()
     monkeypatch.setattr(m, "subprocess", fake_subprocess)
     monkeypatch.setattr(m, "_exec_harness_phase", fake_exec)
     monkeypatch.setattr(m, "_attempt_still_current", lambda *_a, **_k: True)
-    monkeypatch.setattr(m, "_dump_container_harness_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "_sync_claude_execution_trace", fake_sync)
     monkeypatch.setattr(m, "_publish_snapshot", lambda *_a, **_k: None)
     monkeypatch.setattr(m, "upsert_judge_result_for_attempt", fake_upsert)
 
@@ -248,6 +231,13 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
         ("rule_1", "11111111-1111-1111-1111-111111111111"),
         ("rule_3", "22222222-2222-2222-2222-222222222222"),
     ]
+    # setup、每次真正执行的 resume、finally 都同步；依赖跳过的 rule_2 不伪造轨迹。
+    assert trace_sessions == [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+        "33333333-3333-3333-3333-333333333333",
+        "33333333-3333-3333-3333-333333333333",
+    ]
     by_rule = {row[0]: row for row in writes}
     assert by_rule[1][1:3] == ("failed", "failed")
     assert by_rule[2][1] is None and by_rule[2][2] == m.aj.EFF_SKIPPED
@@ -259,6 +249,65 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
         if len(c) > 1 and c[1] == "exec" and "apt-get update" in c[-1]
     )
     assert "-e" in apt_call and "DEBIAN_FRONTEND=noninteractive" in apt_call
+
+
+def test_topological_claude_trace_syncs_before_long_phase_finishes(monkeypatch):
+    ws = tempfile.mkdtemp(prefix="ajtopo_live_")
+    os.makedirs(os.path.join(ws, "submission"), exist_ok=True)
+    result_name = "result_live.jsonl"
+    open(os.path.join(ws, result_name), "w").close()
+    rules = m.aj.normalize_rules([
+        {"rule_id": 1, "rule_text": "检查", "value": 10, "dependencies": []},
+    ])
+    phase_running = {"value": False}
+    syncs_during_phase = []
+
+    def fake_run(_args, **_kwargs):
+        return _FakeProc(0, "false")
+
+    def fake_exec(_container, ws_arg, phase, _prompt, _timeout, result_filename=None, **_kwargs):
+        phase_running["value"] = True
+        if phase == "setup":
+            with open(os.path.join(ws_arg, ".aj_session_state.json"), "w", encoding="utf-8") as f:
+                json.dump({"session_id": "11111111-1111-1111-1111-111111111111"}, f)
+        else:
+            with open(os.path.join(ws_arg, result_filename), "a", encoding="utf-8") as f:
+                f.write(json.dumps({"rule_id": 1, "result": "pass", "evidence": "ok"}) + "\n")
+        time.sleep(0.08)
+        phase_running["value"] = False
+        return _FakeProc(0, "")
+
+    def fake_sync(_container, _ws, _trace_dir, **kwargs):
+        if phase_running["value"]:
+            syncs_during_phase.append(kwargs.get("default_phase"))
+        return False
+
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+    monkeypatch.setattr(m, "_exec_harness_phase", fake_exec)
+    monkeypatch.setattr(m, "_sync_claude_execution_trace", fake_sync)
+    monkeypatch.setattr(m, "_attempt_still_current", lambda *_a, **_k: True)
+    monkeypatch.setattr(m, "_publish_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "upsert_judge_result_for_attempt", lambda *_a, **_k: 1)
+    monkeypatch.setattr(m, "JUDGE_TRACE_SYNC_INTERVAL", 0.01)
+
+    timed_out, ok = m._run_container_topological(
+        submission_id=13,
+        ws=ws,
+        result_name=result_name,
+        competition={"title": "live"},
+        rules=rules,
+        timeout_s=60,
+        endpoint={
+            "harness": m.HARNESS_CLAUDE_CODE,
+            "base_url": "http://x",
+            "api_key": "secret-key",
+            "model": "model",
+        },
+        attempt_id="attempt-live",
+    )
+
+    assert (timed_out, ok) == (False, True)
+    assert "setup" in syncs_during_phase or "rule_1" in syncs_during_phase
 
 
 def test_hello_probe_request_requires_configured_values():

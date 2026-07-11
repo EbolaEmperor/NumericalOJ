@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """打榜赛 Agent-as-Judge 评测任务：起 Docker 容器跑所选 harness，tail result.jsonl 实时回传。"""
+import hashlib
 import json
 import os
 import random
+import re
 import secrets
 import shutil
+import stat
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -38,6 +42,7 @@ from oj_modules.ranking_agent_judge_db import (
     ENDPOINT_POOL_QUALITY_GATE,
     ENDPOINT_STATUS_PAUSED,
     HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE,
+    agent_judge_trace_dir, agent_judge_trace_id,
     build_judge_snapshot, clear_judge_results_for_attempt,
     list_agent_judge_endpoints, list_competition_rules, list_judge_results,
     list_paused_agent_judge_endpoints, pause_agent_judge_endpoint,
@@ -64,6 +69,9 @@ JUDGE_CPU_LIMIT = str(_config_value('AGENT_JUDGE_CPU_LIMIT', '2'))
 JUDGE_PIDS_LIMIT = str(_config_value('AGENT_JUDGE_PIDS_LIMIT', '512'))
 JUDGE_POLL_INTERVAL = float(_config_value('AGENT_JUDGE_RESULT_POLL_INTERVAL', 1.5))
 JUDGE_PROGRESS_TTL = int(_config_value('AGENT_JUDGE_PROGRESS_TTL', 21600))
+JUDGE_TRACE_SYNC_INTERVAL = max(
+    2.0, float(_config_value('AGENT_JUDGE_TRACE_SYNC_INTERVAL_SECONDS', 5.0)),
+)
 # 多端点并发：未配置端点池时，回退用比赛单端点 + 这个默认并发上限（沿用旧 -c 2 的语义）。
 JUDGE_LEGACY_CONCURRENCY = max(1, int(_config_value('AGENT_JUDGE_CONCURRENCY', 2)))
 # 所有端点都满时，任务延迟重排（back-pressure）的基准秒数 + 上限重试次数 + 槽位 TTL 余量。
@@ -91,6 +99,8 @@ OPENCODE_HELLO_TIMEOUT_SECONDS = max(
 
 _judge_rds = None
 _TERMINAL_STATUSES = {'Accepted', 'Error'}
+_UNTRUSTED_RESULT_MAX_BYTES = 1024 * 1024
+_UNTRUSTED_SESSION_STATE_MAX_BYTES = 256 * 1024
 
 
 def init_judge_progress_cache(redis_client):
@@ -111,6 +121,53 @@ def _ensure_judge_redis():
     except Exception:
         _judge_rds = None
     return _judge_rds
+
+
+def _read_untrusted_regular_file(path, max_bytes):
+    """读取容器可写目录中的文件；拒绝 symlink/非普通文件/超限内容。"""
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    fd = None
+    try:
+        fd = os.open(path, flags)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > int(max_bytes):
+            return None
+        chunks = []
+        remaining = int(max_bytes) + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b''.join(chunks)
+        return payload if len(payload) <= int(max_bytes) else None
+    except Exception:
+        return None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _reset_untrusted_output_file(path):
+    """安全重置容器可写目录中的结果文件，不跟随 Agent 植入的 symlink。"""
+    nofollow = getattr(os, 'O_NOFOLLOW', 0)
+    nonblock = getattr(os, 'O_NONBLOCK', 0)
+    try:
+        fd = os.open(path, os.O_WRONLY | nofollow | nonblock)
+    except FileNotFoundError:
+        fd = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | nonblock, 0o600,
+        )
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError('agent judge result path is not a regular file')
+        os.ftruncate(fd, 0)
+    finally:
+        os.close(fd)
 
 
 def _judge_progress_key(submission_id):
@@ -134,21 +191,52 @@ def subscribe_judge_run_events(submission_id):
 
 
 def get_judge_progress_snapshot(submission_id):
+    current = get_ranking_submission(submission_id)
+    # 终态必须以 DB + 规范化轨迹目录实时重建。Redis 只用于评测中的低延迟快照；
+    # worker 热重启或最终轨迹补全后，缓存中的同 attempt 终态也可能已经过时。
+    if current and str(current.get('status') or '') in _TERMINAL_STATUSES:
+        return build_current_judge_snapshot(submission_id)
+
     client = _ensure_judge_redis()
     if client is not None:
         try:
             raw = client.get(_judge_progress_key(submission_id))
             if raw:
                 data = json.loads(raw)
-                if isinstance(data, dict):
+                current_trace_id = agent_judge_trace_id(
+                    (current or {}).get('judge_attempt_id'),
+                )
+                if (isinstance(data, dict)
+                        and data.get('attempt_trace_id') == current_trace_id):
                     return data
+                client.delete(_judge_progress_key(submission_id))
         except Exception:
             pass
     return build_judge_snapshot(submission_id)
 
 
+def snapshot_matches_current_attempt(submission_id, snapshot):
+    if not isinstance(snapshot, dict):
+        return False
+    current = get_ranking_submission(submission_id)
+    return snapshot.get('attempt_trace_id') == agent_judge_trace_id(
+        (current or {}).get('judge_attempt_id'),
+    )
+
+
+def build_current_judge_snapshot(submission_id):
+    """构造与当前 attempt 一致的快照；切换竞态下最多重读一次。"""
+    for _ in range(2):
+        snap = build_judge_snapshot(submission_id)
+        if snap is None:
+            return None
+        if snapshot_matches_current_attempt(submission_id, snap):
+            return snap
+    return None
+
+
 def _publish_snapshot(submission_id):
-    snap = build_judge_snapshot(submission_id)
+    snap = build_current_judge_snapshot(submission_id)
     if snap is None:
         return None
     client = _ensure_judge_redis()
@@ -703,14 +791,18 @@ def _safe_extract_zip(zip_path, dest_dir):
             zf.extract(member, dest_dir)
 
 
-def _prepare_workspace(submission, competition, rules):
+def _prepare_workspace(submission, competition, rules, attempt_id=None):
     """准备宿主工作目录，返回 (绝对路径, 随机结果文件名)。
 
     结果文件名随机生成，仅通过提示词/AJ_RESULT_FILE 告知评测 Agent；参赛者代码无法预先猜到该
     文件名，从而无法把伪造的 pass 结果写进去（防止刷满分）。不再把工作目录/结果文件改为 world-writable
     —— 容器内 root + 默认能力集（含 CAP_DAC_OVERRIDE）足以写宿主属主的挂载文件。"""
     sid = submission['id']
-    ws = os.path.realpath(os.path.join(JUDGE_WORKSPACE_ROOT, str(sid)))
+    attempt_component = agent_judge_trace_id(attempt_id)
+    submission_root = os.path.realpath(os.path.join(JUDGE_WORKSPACE_ROOT, str(sid)))
+    ws = os.path.realpath(os.path.join(submission_root, attempt_component))
+    if ws != submission_root and not ws.startswith(submission_root + os.sep):
+        raise ValueError('invalid agent judge workspace')
     if os.path.isdir(ws):
         shutil.rmtree(ws, ignore_errors=True)
     os.makedirs(ws, exist_ok=True)
@@ -791,6 +883,7 @@ def _docker_container_args(container_name, ws, harness, base_url, api_key, model
         # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
         # 既无法写宿主属主(非 root)的挂载文件、也无法 apt 装包。
         '--security-opt', 'no-new-privileges',
+        '--log-opt', 'max-size=16m', '--log-opt', 'max-file=1',
         '--pids-limit', JUDGE_PIDS_LIMIT,
         '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
         '-v', f'{ws}:/workspace', '-w', '/workspace',
@@ -801,25 +894,807 @@ def _docker_container_args(container_name, ws, harness, base_url, api_key, model
 
 def _read_session_id(ws):
     try:
-        with open(os.path.join(ws, '.aj_session_state.json'), 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        raw = _read_untrusted_regular_file(
+            os.path.join(ws, '.aj_session_state.json'), 16 * 1024,
+        )
+        data = json.loads((raw or b'').decode('utf-8'))
         sid = str(data.get('session_id') or '').strip()
-        return sid or None
+        return sid if re.fullmatch(
+            r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', sid,
+        ) else None
     except Exception:
         return None
 
 
-def _append_phase_log(ws, phase, proc):
+_TRACE_RESULT_FILE_RE = re.compile(
+    r'result_[0-9a-fA-F]{32}\.jsonl(?:\.rule_\d+\.jsonl)?', re.I,
+)
+_TRACE_ENV_SECRET_RE = re.compile(
+    r'((?:ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|'
+    r'OPENCODE_API_KEY)\s*[=:]\s*)[^\s"\'<>]+',
+    re.I,
+)
+_TRACE_LOG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024
+_TRACE_EXPORT_CAPTURE_MAX_BYTES = 12 * 1024 * 1024
+_TRACE_EXPORT_MAX_ITEMS = 48
+_TRACE_EXPORT_MAX_EVENTS = 4096
+_TRACE_EXPORT_MAX_EVENT_BYTES = 256 * 1024
+_TRACE_PHASE_CAPTURE_MAX_BYTES = 8 * 1024 * 1024
+_TRACE_JOURNAL_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _trace_text(value):
+    if isinstance(value, bytes):
+        return value.decode('utf-8', 'replace')
+    return str(value or '')
+
+
+def _split_docker_log_line(raw):
+    raw = raw if isinstance(raw, bytes) else _trace_text(raw).encode('utf-8')
+    stamp, separator, content = raw.partition(b' ')
+    if separator and b'T' in stamp and stamp.endswith(b'Z'):
+        identity = int(hashlib.sha256(stamp).hexdigest()[:15], 16)
+        return identity, content
+    identity = int(hashlib.sha256(raw).hexdigest()[:15], 16)
+    return identity, raw
+
+
+def _capture_process_output_limited(args, *, timeout=8, max_bytes=None):
+    """持续 drain 子进程输出但只保留尾部，防止 docker logs 把 worker 内存撑爆。"""
+    limit = max(1024, int(max_bytes or _TRACE_LOG_CAPTURE_MAX_BYTES))
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout = bytearray()
+    stderr = bytearray()
+    truncated = {'stdout': False, 'stderr': False}
+
+    def _drain(source, target, key):
+        while True:
+            chunk = source.read(65536)
+            if not chunk:
+                break
+            target.extend(chunk)
+            if len(target) > limit:
+                truncated[key] = True
+                del target[:-limit]
+
+    threads = [
+        threading.Thread(target=_drain, args=(proc.stdout, stdout, 'stdout'), daemon=True),
+        threading.Thread(target=_drain, args=(proc.stderr, stderr, 'stderr'), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    timed_out = False
     try:
-        with open(os.path.join(ws, '.aj_harness.log'), 'a', encoding='utf-8') as f:
-            f.write(f'\n===== {phase} returncode={getattr(proc, "returncode", "")} =====\n')
-            if getattr(proc, 'stdout', None):
-                f.write(proc.stdout)
-            if getattr(proc, 'stderr', None):
-                f.write('\n[stderr]\n')
-                f.write(proc.stderr)
+        returncode = proc.wait(timeout=max(1, float(timeout)))
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        returncode = proc.wait(timeout=3)
+    for thread in threads:
+        thread.join(timeout=3)
+    result = subprocess.CompletedProcess(args, returncode, bytes(stdout), bytes(stderr))
+    result.stdout_truncated = truncated['stdout']
+    result.stderr_truncated = truncated['stderr']
+    result.timed_out = timed_out
+    return result
+
+
+def _run_process_with_input_limited(args, input_text, *, timeout, max_bytes=None):
+    """带 stdin 执行并有界收集 stdout/stderr；超时时保留尾部后抛 TimeoutExpired。"""
+    limit = max(1024, int(max_bytes or _TRACE_PHASE_CAPTURE_MAX_BYTES))
+    proc = subprocess.Popen(
+        args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    stdout = bytearray()
+    stderr = bytearray()
+
+    def _drain(source, target):
+        while True:
+            chunk = source.read(65536)
+            if not chunk:
+                break
+            target.extend(chunk)
+            if len(target) > limit:
+                del target[:-limit]
+
+    readers = [
+        threading.Thread(target=_drain, args=(proc.stdout, stdout), daemon=True),
+        threading.Thread(target=_drain, args=(proc.stderr, stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        try:
+            proc.stdin.write(_trace_text(input_text).encode('utf-8'))
+            proc.stdin.flush()
+        except BrokenPipeError:
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+        try:
+            returncode = proc.wait(timeout=max(1, float(timeout)))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+            for reader in readers:
+                reader.join(timeout=3)
+            raise subprocess.TimeoutExpired(
+                args, timeout,
+                output=bytes(stdout).decode('utf-8', 'replace'),
+                stderr=bytes(stderr).decode('utf-8', 'replace'),
+            )
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    for reader in readers:
+        reader.join(timeout=3)
+    return subprocess.CompletedProcess(
+        args, returncode,
+        bytes(stdout).decode('utf-8', 'replace'),
+        bytes(stderr).decode('utf-8', 'replace'),
+    )
+
+
+def _agent_judge_container_name(submission_id, attempt_id):
+    """为每次评测生成独立容器名，避免旧 worker 清理时误杀重测容器。"""
+    return f'aj_{int(submission_id)}_{agent_judge_trace_id(attempt_id)}'
+
+
+def _remove_stale_agent_containers(submission_id, current_name):
+    """清理同一提交的 legacy/旧 attempt 容器，名称前缀严格限定 sid。"""
+    legacy = f'aj_{int(submission_id)}'
+    prefix = legacy + '_'
+    try:
+        listed = subprocess.run(
+            ['docker', 'ps', '-a', '--format', '{{.Names}}'],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return
+    if int(getattr(listed, 'returncode', 1) or 0) != 0:
+        return
+    for raw_name in (listed.stdout or '').splitlines():
+        name = raw_name.strip()
+        if not name or name == current_name:
+            continue
+        if name != legacy and not name.startswith(prefix):
+            continue
+        try:
+            subprocess.run(
+                ['docker', 'rm', '-f', name], capture_output=True, timeout=20,
+            )
+        except Exception:
+            pass
+
+
+def _prune_stale_attempt_workspaces(submission_id, current_ws):
+    root = os.path.realpath(os.path.join(JUDGE_WORKSPACE_ROOT, str(int(submission_id))))
+    try:
+        os.makedirs(root, exist_ok=True)
+        for name in os.listdir(root):
+            path = os.path.realpath(os.path.join(root, name))
+            if path == current_ws or not path.startswith(root + os.sep):
+                continue
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.isfile(path):
+                os.remove(path)
     except Exception:
         pass
+
+
+def _sanitize_trace_payload(value, *, api_key='', extra_secrets=()):
+    """轨迹落盘前永久脱敏。
+
+    参赛内容不可信，可能诱导 Agent 输出环境变量；因此不能只在路由层遮盖，原始
+    JSONL 和日志在写入受信任目录前就必须去掉本次端点密钥与随机结果文件名。
+    """
+    text = _trace_text(value)
+    secrets_to_redact = [api_key] + list(extra_secrets or ())
+    for secret in secrets_to_redact:
+        secret = str(secret or '')
+        if len(secret) >= 8:
+            text = text.replace(secret, '[redacted]')
+    text = _TRACE_RESULT_FILE_RE.sub('[result-file]', text)
+    text = _TRACE_ENV_SECRET_RE.sub(r'\1[redacted]', text)
+    return text.encode('utf-8')
+
+
+def _atomic_write_trace(path, payload):
+    payload = payload if isinstance(payload, bytes) else _trace_text(payload).encode('utf-8')
+    try:
+        with open(path, 'rb') as f:
+            if f.read() == payload:
+                return False
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'wb') as f:
+            f.write(payload)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(path + '.tmp'):
+                os.remove(path + '.tmp')
+        except Exception:
+            pass
+        return False
+
+
+def _append_bounded_trace_journal(path, payload):
+    payload = payload if isinstance(payload, bytes) else _trace_text(payload).encode('utf-8')
+    marker = json.dumps({
+        'type': 'assistant_message',
+        'message': '执行轨迹已达到持久化上限，后续事件不再记录。',
+        '_trace_source': 'trace-journal',
+        '_trace_offset': 0,
+        '_trace_phase': 'final',
+    }, ensure_ascii=False).encode('utf-8') + b'\n'
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        if size:
+            try:
+                with open(path, 'rb') as f:
+                    f.seek(max(0, size - 65536))
+                    if marker.rstrip(b'\n') in f.read():
+                        return False
+            except OSError:
+                pass
+        if size + len(payload) > _TRACE_JOURNAL_MAX_BYTES:
+            payload = marker if size + len(marker) <= _TRACE_JOURNAL_MAX_BYTES else b''
+        if not payload:
+            return False
+        with open(path, 'ab') as f:
+            f.write(payload)
+        return True
+    except Exception:
+        return False
+
+
+def _claude_trace_order(ws):
+    ordered = []
+    seen = set()
+    path = os.path.join(ws, '.aj_session_state.jsonl')
+    try:
+        raw = _read_untrusted_regular_file(path, _UNTRUSTED_SESSION_STATE_MAX_BYTES)
+        if raw is None:
+            return ordered
+        for line in raw.decode('utf-8', 'replace').splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            session_id = str(event.get('session_id') or '').strip()
+            if (re.fullmatch(
+                    r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',
+                    session_id,
+                ) and session_id not in seen):
+                seen.add(session_id)
+                ordered.append((session_id, str(event.get('phase') or '').strip()))
+    except Exception:
+        pass
+    return ordered
+
+
+def _load_claude_trace_cursor_state(trace_dir):
+    cursor_path = os.path.join(trace_dir, '.claude_trace_cursors.json')
+    try:
+        with open(cursor_path, 'r', encoding='utf-8') as f:
+            loaded = json.load(f)
+        cursors = {
+            str(key): int(value)
+            for key, value in loaded.items()
+            if isinstance(key, str) and isinstance(value, int)
+        } if isinstance(loaded, dict) else {}
+        seen_event_uuids = {
+            value for value in loaded.get('__seen_event_uuids__', [])
+            if isinstance(value, str) and 0 < len(value) <= 128
+        } if isinstance(loaded, dict) else set()
+    except Exception:
+        cursors = {}
+        seen_event_uuids = set()
+    return cursor_path, cursors, seen_event_uuids
+
+
+def _export_container_claude_jsonl(container_name, cursor_state=None):
+    """一次有界导出 Claude JSONL，避免逐文件 cat 的无界内存与超时放大。"""
+    incremental_cursors = {
+        str(key): int(value)
+        for key, value in (cursor_state or {}).items()
+        if isinstance(key, str) and isinstance(value, int)
+    }
+    export_cmd = (
+        "python3 - <<'PY'\n"
+        "import hashlib, json, os, stat\n"
+        "MAX_SCAN=512; MAX_FILES=48; MAX_FILE=2*1024*1024; MAX_TOTAL=8*1024*1024; BACKTRACK=256*1024\n"
+        f"CURSORS={incremental_cursors!r}\n"
+        "bases=['/root/.claude/projects/-workspace',"
+        "'/home/node/.claude/projects/-workspace']\n"
+        "items=[]\n"
+        "complete=True\n"
+        "for base in bases:\n"
+        "  try:\n"
+        "    scanned=0\n"
+        "    with os.scandir(base) as entries:\n"
+        "      for entry in entries:\n"
+        "        scanned += 1\n"
+        "        if scanned > MAX_SCAN: complete=False; break\n"
+        "        if not entry.name.endswith('.jsonl') or entry.is_symlink(): continue\n"
+        "        st=entry.stat(follow_symlinks=False)\n"
+        "        if stat.S_ISREG(st.st_mode): items.append({'path':entry.path,'mtime':st.st_mtime,'size':st.st_size})\n"
+        "  except FileNotFoundError:\n"
+        "    pass\n"
+        "  except Exception:\n"
+        "    complete=False\n"
+        "items.sort(key=lambda item:(item['mtime'],item['path']))\n"
+        "truncated=len(items) > MAX_FILES\n"
+        "items=items[-MAX_FILES:]\n"
+        "selected=[]; total=0\n"
+        "for item in reversed(items):\n"
+        "  source='claude-'+hashlib.sha256(os.path.basename(item['path']).encode('utf-8','replace')).hexdigest()[:16]\n"
+        "  size=int(item['size']); previous_size=CURSORS.get('__size__:'+source)\n"
+        "  if isinstance(previous_size,int) and previous_size == size: continue\n"
+        "  remaining=MAX_TOTAL-total\n"
+        "  if remaining <= 0: truncated=True; break\n"
+        "  try:\n"
+        "    aligned=False; previous_offset=CURSORS.get(source,-1)\n"
+        "    if isinstance(previous_size,int) and 0 <= previous_size < size:\n"
+        "      start=max(0,previous_size-BACKTRACK); aligned=(start == 0)\n"
+        "    elif isinstance(previous_offset,int) and 0 <= previous_offset < size:\n"
+        "      start=previous_offset\n"
+        "    else:\n"
+        "      start=0\n"
+        "    available=max(0,size-start); take=min(available,MAX_FILE,remaining)\n"
+        "    was_truncated=take < available\n"
+        "    if was_truncated: start=max(start,size-take); aligned=False\n"
+        "    with open(item['path'],'rb') as f:\n"
+        "      f.seek(start); data=f.read(take)\n"
+        "    if start and not aligned:\n"
+        "      cut=data.find(b'\\n')\n"
+        "      if cut >= 0: start += cut + 1; data=data[cut+1:]\n"
+        "      else: data=b''\n"
+        "    events=[]; cursor=start\n"
+        "    for line in data.splitlines(keepends=True):\n"
+        "      stripped=line.strip()\n"
+        "      try: event=json.loads(stripped)\n"
+        "      except Exception: event=None\n"
+        "      if isinstance(event,dict) and event.get('type') == 'assistant':\n"
+        "        events.append({'offset':cursor,'event':event})\n"
+        "      cursor += len(line)\n"
+        "    selected.append({'path':item['path'],'mtime':item['mtime'],'size':size,'events':events,'truncated':was_truncated})\n"
+        "    total += len(data)\n"
+        "  except Exception:\n"
+        "    complete=False\n"
+        "selected.reverse()\n"
+        "print(json.dumps({'complete':complete,'truncated':truncated,'has_files':bool(items),'items':selected}, ensure_ascii=False))\n"
+        "PY"
+    )
+    try:
+        exported = _capture_process_output_limited(
+            ['docker', 'exec', container_name, 'bash', '-lc', export_cmd],
+            timeout=8, max_bytes=_TRACE_EXPORT_CAPTURE_MAX_BYTES,
+        )
+        if (int(getattr(exported, 'returncode', 1) or 0) != 0
+                or getattr(exported, 'stdout_truncated', False)
+                or getattr(exported, 'timed_out', False)):
+            return {'complete': False, 'items': []}
+        bundle = json.loads((exported.stdout or b'{}').decode('utf-8', 'replace'))
+    except Exception:
+        return {'complete': False, 'items': []}
+    if not isinstance(bundle, dict) or not isinstance(bundle.get('items'), list):
+        return {'complete': False, 'items': []}
+    items = bundle['items']
+    if len(items) > _TRACE_EXPORT_MAX_ITEMS:
+        return {'complete': False, 'items': []}
+    decoded = []
+    total_events = 0
+    for item in items:
+        if (not isinstance(item, dict) or not item.get('path')
+                or len(str(item.get('path'))) > 512):
+            continue
+        try:
+            item_size = max(0, int(item.get('size') or 0))
+        except Exception:
+            continue
+        events = []
+        for wrapped in item.get('events') or []:
+            if not isinstance(wrapped, dict) or not isinstance(wrapped.get('event'), dict):
+                continue
+            try:
+                offset = max(0, int(wrapped.get('offset') or 0))
+            except Exception:
+                continue
+            try:
+                event_size = len(json.dumps(
+                    wrapped['event'], ensure_ascii=False,
+                ).encode('utf-8'))
+            except Exception:
+                continue
+            if event_size > _TRACE_EXPORT_MAX_EVENT_BYTES:
+                continue
+            total_events += 1
+            if total_events > _TRACE_EXPORT_MAX_EVENTS:
+                return {'complete': False, 'items': []}
+            events.append({'offset': offset, 'event': wrapped['event']})
+        decoded.append({
+            'path': str(item['path']),
+            'mtime': float(item.get('mtime') or 0),
+            'size': item_size,
+            'events': events,
+            'truncated': item.get('truncated') is True,
+        })
+    return {
+        'complete': bundle.get('complete') is True,
+        'truncated': bundle.get('truncated') is True,
+        'has_files': bundle.get('has_files') is True,
+        'items': decoded,
+    }
+
+
+def _sync_claude_log_fallback(container_name, trace_dir, *, api_key='',
+                              extra_secrets=()):
+    """容器已停止时从有界 docker logs 补入 Claude 的最终回复。"""
+    try:
+        logs = _capture_process_output_limited(
+            ['docker', 'logs', '--timestamps', '--tail', '200', container_name], timeout=8,
+        )
+    except Exception:
+        return False
+    raw = _sanitize_trace_payload(
+        getattr(logs, 'stdout', b''), api_key=api_key,
+        extra_secrets=extra_secrets,
+    )
+    text = ''
+    for raw_line in reversed(raw.splitlines()):
+        _identity, content = _split_docker_log_line(raw_line)
+        line = _trace_text(content)
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(event, dict):
+            continue
+        candidate = event.get('result') or event.get('message') or event.get('text')
+        if isinstance(candidate, str) and candidate.strip():
+            text = candidate.strip()
+            break
+    if not text:
+        text = _trace_text(raw).strip()[-8000:]
+    if not text:
+        return False
+    marker = int(hashlib.sha256(text.encode('utf-8')).hexdigest()[:15], 16)
+    event = {
+        'type': 'assistant',
+        'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]},
+        '_trace_source': 'docker-logs',
+        '_trace_offset': marker,
+        '_trace_phase': 'final',
+    }
+    line = _sanitize_trace_payload(
+        json.dumps(event, ensure_ascii=False).encode('utf-8'),
+        api_key=api_key, extra_secrets=extra_secrets,
+    )
+    combined_path = os.path.join(
+        trace_dir, '.claude', 'projects', '-workspace',
+        'agent_judge_combined.jsonl',
+    )
+    try:
+        size = os.path.getsize(combined_path)
+        if size + len(line) + 1 > _TRACE_JOURNAL_MAX_BYTES:
+            return False
+        with open(combined_path, 'rb') as f:
+            f.seek(max(0, size - 2 * 1024 * 1024))
+            existing_tail = f.read()
+    except OSError:
+        existing_tail = b''
+    if text in existing_tail.decode('utf-8', 'replace') or line in existing_tail.splitlines():
+        return False
+    try:
+        os.makedirs(os.path.dirname(combined_path), exist_ok=True)
+        with open(combined_path, 'ab') as f:
+            f.write(line + b'\n')
+        return True
+    except Exception:
+        return False
+
+
+def _sync_claude_execution_trace(container_name, ws, trace_dir, *, api_key='',
+                                 extra_secrets=(), default_phase=''):
+    """把各 Claude fork 的新增 assistant 事件追加到规范化 journal。"""
+    cursor_path, cursors, seen_event_uuids = _load_claude_trace_cursor_state(
+        trace_dir,
+    )
+    bundle = _export_container_claude_jsonl(container_name, cursors)
+    items = bundle.get('items') or []
+    if not items:
+        if bundle.get('has_files'):
+            return False
+        return _sync_claude_log_fallback(
+            container_name, trace_dir, api_key=api_key,
+            extra_secrets=extra_secrets,
+        )
+    if not bundle.get('complete'):
+        return False
+    session_order = _claude_trace_order(ws)
+    order_by_session = {sid: index for index, (sid, _phase) in enumerate(session_order)}
+    phase_by_session = {sid: phase for sid, phase in session_order if phase}
+
+    def item_order(item):
+        path = str(item.get('path') or '')
+        matched = next(
+            (order_by_session[sid] for sid, _phase in session_order if sid in path),
+            len(session_order),
+        )
+        return matched, float(item.get('mtime') or 0), path
+
+    def item_phase(item):
+        path = str(item.get('path') or '')
+        return next(
+            (phase for sid, phase in session_order if sid in path),
+            str(default_phase or ''),
+        )
+
+    def cursor_state_payload():
+        state = dict(cursors)
+        if seen_event_uuids:
+            state['__seen_event_uuids__'] = sorted(seen_event_uuids)
+        return json.dumps(state, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    initial_cursor_state = cursor_state_payload()
+    if cursors.get('__journal_full__'):
+        return False
+
+    chunks = []
+    for item in sorted(items, key=item_order):
+        source_name = os.path.basename(str(item.get('path') or ''))
+        source = 'claude-' + hashlib.sha256(
+            source_name.encode('utf-8', 'replace'),
+        ).hexdigest()[:16]
+        phase = item_phase(item)
+        events = item.get('events') or []
+        previous_offset = int(cursors.get(source, -1))
+        cursors['__size__:' + source] = max(0, int(item.get('size') or 0))
+        if item.get('truncated') and events:
+            first_offset = int(events[0].get('offset') or 0)
+            if previous_offset < first_offset:
+                marker = {
+                    'type': 'assistant',
+                    'message': {
+                        'role': 'assistant',
+                        'content': [{'type': 'text', 'text': '该阶段轨迹过长，仅保留最近内容。'}],
+                    },
+                    '_trace_source': source,
+                    '_trace_offset': max(0, first_offset - 1),
+                    '_trace_phase': phase,
+                }
+                chunks.append(json.dumps(marker, ensure_ascii=False).encode('utf-8'))
+        for wrapped in events:
+            event_offset = int(wrapped.get('offset') or 0)
+            if event_offset <= previous_offset:
+                continue
+            event = dict(wrapped.get('event') or {})
+            event_uuid = event.get('uuid')
+            stable_uuid = (
+                event_uuid if isinstance(event_uuid, str) and
+                0 < len(event_uuid) <= 128 else ''
+            )
+            if stable_uuid and stable_uuid in seen_event_uuids:
+                previous_offset = max(previous_offset, event_offset)
+                continue
+            event_session_id = str(
+                event.get('sessionId') or event.get('session_id') or '',
+            ).strip()
+            event_phase = phase_by_session.get(event_session_id, phase)
+            event['_trace_source'] = source
+            event['_trace_offset'] = event_offset
+            event['_trace_phase'] = event_phase
+            payload = _sanitize_trace_payload(
+                json.dumps(event, ensure_ascii=False).encode('utf-8'),
+                api_key=api_key, extra_secrets=extra_secrets,
+            ).rstrip(b'\n')
+            if payload:
+                chunks.append(payload)
+                if stable_uuid:
+                    seen_event_uuids.add(stable_uuid)
+                previous_offset = max(previous_offset, event_offset)
+        cursors[source] = previous_offset
+    if bundle.get('truncated') and not cursors.get('__export_truncated__'):
+        chunks.append(json.dumps({
+            'type': 'assistant',
+            'message': {
+                'role': 'assistant',
+                'content': [{'type': 'text', 'text': '轨迹文件数量超过采集上限，仅追加最近会话。'}],
+            },
+            '_trace_source': 'claude-export',
+            '_trace_offset': 0,
+            '_trace_phase': 'final',
+        }, ensure_ascii=False).encode('utf-8'))
+        cursors['__export_truncated__'] = 1
+    combined_path = os.path.join(
+        trace_dir, '.claude', 'projects', '-workspace',
+        'agent_judge_combined.jsonl',
+    )
+    batch = b'\n'.join(chunks) + (b'\n' if chunks else b'')
+    try:
+        journal_size = os.path.getsize(combined_path)
+    except OSError:
+        journal_size = 0
+    if journal_size + len(batch) > _TRACE_JOURNAL_MAX_BYTES:
+        marker = json.dumps({
+            'type': 'assistant',
+            'message': {
+                'role': 'assistant',
+                'content': [{'type': 'text', 'text': '执行轨迹已达到持久化上限，后续事件不再记录。'}],
+            },
+            '_trace_source': 'claude-journal',
+            '_trace_offset': 0,
+            '_trace_phase': 'final',
+        }, ensure_ascii=False).encode('utf-8') + b'\n'
+        batch = marker if journal_size + len(marker) <= _TRACE_JOURNAL_MAX_BYTES else b''
+        cursors['__journal_full__'] = 1
+    if not batch:
+        next_cursor_state = cursor_state_payload()
+        if next_cursor_state != initial_cursor_state:
+            _atomic_write_trace(
+                cursor_path,
+                next_cursor_state,
+            )
+        return False
+    try:
+        os.makedirs(os.path.dirname(combined_path), exist_ok=True)
+        with open(combined_path, 'ab') as f:
+            f.write(batch)
+        changed = True
+        _atomic_write_trace(
+            cursor_path,
+            cursor_state_payload(),
+        )
+    except Exception:
+        changed = False
+    return changed
+
+
+def _append_phase_execution_trace(trace_dir, harness, phase, proc, *, api_key='',
+                                  extra_secrets=()):
+    stdout = _sanitize_trace_payload(
+        getattr(proc, 'stdout', b''), api_key=api_key, extra_secrets=extra_secrets,
+    )
+    stderr = _trace_text(_sanitize_trace_payload(
+        getattr(proc, 'stderr', b''), api_key=api_key,
+        extra_secrets=extra_secrets,
+    ))
+    if harness == HARNESS_CODEX:
+        annotated = []
+        for raw in stdout.splitlines():
+            try:
+                event = json.loads(raw.decode('utf-8', 'replace'))
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event['_trace_source'] = 'codex'
+            event['_trace_phase'] = phase
+            annotated.append(json.dumps(event, ensure_ascii=False).encode('utf-8'))
+        payload = b'\n'.join(annotated)
+    elif harness == HARNESS_OPENCODE:
+        visible = _trace_text(stdout).strip()
+        if stderr:
+            visible = (visible + '\n' + stderr).strip()
+        if not visible:
+            return False
+        payload = json.dumps({
+            'type': 'assistant_message',
+            'message': f'[{phase}]\n{visible}',
+            'model': 'opencode',
+            '_trace_source': 'opencode',
+            '_trace_phase': phase,
+        }, ensure_ascii=False).encode('utf-8')
+    else:
+        return False
+    if not payload:
+        return False
+    name = 'codex_agent_judge.jsonl' if harness == HARNESS_CODEX else 'opencode_agent_judge.jsonl'
+    path = os.path.join(trace_dir, name)
+    return _append_bounded_trace_journal(path, payload.rstrip(b'\n') + b'\n')
+
+
+def _sync_live_execution_trace(container_name, ws, trace_dir, harness, *, api_key='',
+                               extra_secrets=()):
+    if harness == HARNESS_CLAUDE_CODE:
+        return _sync_claude_execution_trace(
+            container_name, ws, trace_dir,
+            api_key=api_key, extra_secrets=extra_secrets,
+        )
+    try:
+        logs = _capture_process_output_limited(
+            ['docker', 'logs', '--timestamps', '--tail', '2000', container_name], timeout=8,
+        )
+    except Exception:
+        return False
+    stdout = _sanitize_trace_payload(
+        getattr(logs, 'stdout', b''), api_key=api_key, extra_secrets=extra_secrets,
+    )
+    if harness == HARNESS_CODEX:
+        encoded_events = []
+        for raw in stdout.splitlines():
+            log_offset, content = _split_docker_log_line(raw)
+            try:
+                event = json.loads(content.decode('utf-8', 'replace'))
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event['_trace_source'] = 'codex-logs'
+            event['_trace_offset'] = log_offset
+            encoded_events.append(json.dumps(event, ensure_ascii=False).encode('utf-8'))
+        payload = b'\n'.join(encoded_events) + (b'\n' if encoded_events else b'')
+        stderr = _sanitize_trace_payload(
+            getattr(logs, 'stderr', b''), api_key=api_key,
+            extra_secrets=extra_secrets,
+        )
+        if stderr.strip():
+            stderr_text = _trace_text(stderr).strip()[-4000:]
+            payload += json.dumps({
+                'type': 'error',
+                'message': stderr_text,
+                '_trace_source': 'codex-stderr',
+                '_trace_offset': int(hashlib.sha256(
+                    stderr_text.encode('utf-8'),
+                ).hexdigest()[:15], 16),
+            }, ensure_ascii=False).encode('utf-8') + b'\n'
+        path = os.path.join(trace_dir, 'codex_agent_judge.jsonl')
+    else:
+        visible_lines = []
+        for raw_line in stdout.splitlines():
+            log_offset, content = _split_docker_log_line(raw_line)
+            line = _trace_text(content).strip()
+            if line:
+                visible_lines.append((log_offset, line))
+        stderr = _sanitize_trace_payload(
+            getattr(logs, 'stderr', b''), api_key=api_key,
+            extra_secrets=extra_secrets,
+        )
+        for raw_line in stderr.splitlines():
+            log_offset, content = _split_docker_log_line(raw_line)
+            line = _trace_text(content).strip()
+            if line:
+                visible_lines.append((log_offset, '[stderr] ' + line))
+        payload_parts = []
+        for log_offset, line in visible_lines:
+            payload_parts.append(json.dumps({
+                'type': 'assistant_message', 'message': line, 'model': 'opencode',
+                '_trace_source': 'opencode-logs',
+                '_trace_offset': log_offset,
+            }, ensure_ascii=False).encode('utf-8') + b'\n')
+        payload = b''.join(payload_parts)
+        path = os.path.join(trace_dir, 'opencode_agent_judge.jsonl')
+    return _atomic_write_trace(path, payload) if payload else False
+
+
+def _prepare_agent_trace_attempt(submission_id, attempt_id):
+    trace_dir = agent_judge_trace_dir(submission_id, attempt_id)
+    root = os.path.dirname(trace_dir)
+    current_name = os.path.basename(trace_dir)
+    try:
+        os.makedirs(root, exist_ok=True)
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if name != current_name and os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+        if os.path.isdir(trace_dir):
+            shutil.rmtree(trace_dir, ignore_errors=True)
+        os.makedirs(trace_dir, exist_ok=True)
+    except Exception:
+        os.makedirs(trace_dir, exist_ok=True)
+    return trace_dir
 
 
 def _exec_harness_phase(container_name, ws, phase, prompt, timeout_s,
@@ -838,11 +1713,9 @@ def _exec_harness_phase(container_name, ws, phase, prompt, timeout_s,
         container_name, 'bash', '-lc',
         'IFS= read -r -d "" AJ_PROMPT || true; export AJ_PROMPT; run_harness',
     ])
-    proc = subprocess.run(
-        args, input=prompt or '', capture_output=True, text=True,
-        timeout=max(1, int(timeout_s)),
+    proc = _run_process_with_input_limited(
+        args, prompt or '', timeout=max(1, int(timeout_s)),
     )
-    _append_phase_log(ws, phase, proc)
     return proc
 
 
@@ -863,11 +1736,8 @@ def _exec_container_apt_setup(container_name, timeout_s=120):
 def _ingest_result_file(submission_id, attempt_id, result_path, allowed_rule_ids, seen):
     allowed = {int(x) for x in allowed_rule_ids}
     parsed_by_id = {}
-    try:
-        with open(result_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-    except Exception:
-        lines = []
+    raw = _read_untrusted_regular_file(result_path, _UNTRUSTED_RESULT_MAX_BYTES)
+    lines = (raw or b'').decode('utf-8', 'replace').splitlines()
     for line in lines:
         parsed = aj.parse_result_line(line)
         if not parsed or parsed['rule_id'] not in allowed or parsed['rule_id'] in seen:
@@ -893,64 +1763,18 @@ def _write_backend_rule_effect(submission_id, attempt_id, rule_id, effective, ev
     return affected
 
 
-def _dump_container_harness_state(container_name, ws, harness=HARNESS_CLAUDE_CODE):
-    """容器回收前，把所选 Agent Harness 的会话目录 docker cp 到宿主 submission 目录。
-    尽力而为：源不存在或 cp 失败都静默跳过，不影响判题。docker cp 可作用于「已退出但未删除」
-    的容器，这正是去掉 --rm 的原因。"""
-    dest_dir = os.path.join(ws, 'submission')
-    try:
-        os.makedirs(dest_dir, exist_ok=True)
-    except Exception:
-        return
-    harness = str(harness or HARNESS_CLAUDE_CODE).strip().lower()
-    if harness == HARNESS_CODEX:
-        sources = [('/workspace/.codex', '.codex'), ('/root/.codex', '.codex'),
-                   ('/tmp/aj_codex_home', '.codex')]
-        dest_name = '.codex'
-    elif harness == HARNESS_OPENCODE:
-        sources = [('/workspace/.opencode', '.opencode'),
-                   ('/root/.local/share/opencode', '.opencode'),
-                   ('/tmp/aj_opencode_home/.local/share/opencode', '.opencode')]
-        dest_name = '.opencode'
-    else:
-        sources = [('/root/.claude', '.claude'), ('/workspace/.claude', '.claude')]
-        dest_name = '.claude'
-    dest = os.path.join(dest_dir, dest_name)
-    # 目标已存在先删，避免 docker cp 把目录套进已有目录里。
-    if os.path.exists(dest):
-        shutil.rmtree(dest, ignore_errors=True)
-    for src, expected_name in sources:
-        try:
-            r = subprocess.run(['docker', 'cp', f'{container_name}:{src}', dest_dir],
-                               capture_output=True, text=True, timeout=60)
-            copied = os.path.join(dest_dir, os.path.basename(src))
-            if r.returncode == 0 and os.path.isdir(copied):
-                if copied != dest:
-                    if os.path.exists(dest):
-                        shutil.rmtree(dest, ignore_errors=True)
-                    os.replace(copied, dest)
-                return
-            if r.returncode == 0 and os.path.isdir(os.path.join(dest_dir, expected_name)):
-                return
-        except Exception:
-            pass
-
-
-def _dump_container_claude(container_name, ws):
-    """兼容旧单测/调用名：拷出 Claude Code 会话目录。"""
-    return _dump_container_harness_state(container_name, ws, HARNESS_CLAUDE_CODE)
-
-
 def _run_container_and_tail(submission_id, ws, result_name, competition, rules, timeout_s,
-                            endpoint=None, attempt_id=None):
+                            endpoint=None, attempt_id=None, trace_dir=None):
     """起 docker 容器跑所选 Agent Harness，tail 随机结果文件，逐条 upsert + 广播。
     返回 (timed_out, container_ok)。可被集成测试整体 monkeypatch。
-    容器回收前会按 harness 把会话/transcript 目录 docker cp 到宿主 <ws>/submission/.claude、
-    .codex 或 .opencode，便于事后归因。endpoint：本次使用的模型端点
+    轨迹经脱敏后写入 attempt 隔离的受信任目录，不再把含凭据风险的原始会话目录
+    复制回选手 workspace。endpoint：本次使用的模型端点
     （harness/base_url/api_key/model）；为空时回退到比赛单端点字段。"""
     harness, base_url, api_key, model = _resolve_harness_config(competition, endpoint)
+    trace_dir = trace_dir or os.path.join(ws, 'agent_trace')
+    os.makedirs(trace_dir, exist_ok=True)
     prompt = aj.build_prompt(competition.get('title'), result_name)
-    container_name = f'aj_{submission_id}'
+    container_name = _agent_judge_container_name(submission_id, attempt_id)
     # 同名残留容器（上次 worker 被杀留下的孤儿、或异常未清的旧容器）先强制清掉，否则下面
     # docker run 同名会冲突。去掉 --rm 后（容器退出不再自动删），这一步尤其必要。
     try:
@@ -986,6 +1810,7 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     rule_ids = {r['rule_id'] for r in rules}
     seen = set()
     start = time.time()
+    last_trace_sync = 0.0
     timed_out = False
     try:
         while True:
@@ -995,6 +1820,15 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
                 except Exception:
                     pass
                 return (False, True)
+            now = time.time()
+            if now - last_trace_sync >= JUDGE_TRACE_SYNC_INTERVAL:
+                changed = _sync_live_execution_trace(
+                    container_name, ws, trace_dir, harness,
+                    api_key=api_key, extra_secrets=(result_name, base_url),
+                )
+                last_trace_sync = now
+                if changed:
+                    _publish_snapshot(submission_id)
             _, current = _ingest_result_file(
                 submission_id, attempt_id, result_path, rule_ids, seen,
             )
@@ -1021,8 +1855,11 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
                 break
             time.sleep(JUDGE_POLL_INTERVAL)
     finally:
-        # 回收容器前，先把所选 harness 的会话目录拉到宿主 submission 目录（事后归因），再统一回收。
-        _dump_container_harness_state(container_name, ws, harness)
+        if _attempt_still_current(submission_id, attempt_id):
+            if _sync_live_execution_trace(
+                    container_name, ws, trace_dir, harness,
+                    api_key=api_key, extra_secrets=(result_name, base_url)):
+                _publish_snapshot(submission_id)
         try:
             subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
         except Exception:
@@ -1031,14 +1868,16 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
 
 
 def _run_container_topological(submission_id, ws, result_name, competition, rules, timeout_s,
-                               endpoint=None, attempt_id=None):
+                               endpoint=None, attempt_id=None, trace_dir=None):
     """拓扑编排模式：一个常驻容器，多次 docker exec resume 同一 harness 会话。
 
     后端只在前置依赖 effective=pass 时调用 Agent；失败、跳过、错误都会直接把后继规则
     标为 skipped。每个 Agent 阶段只采纳当前 rule_id 的 report，避免模型提前上报未来规则。
     """
     harness, base_url, api_key, model = _resolve_harness_config(competition, endpoint)
-    container_name = f'aj_{submission_id}'
+    trace_dir = trace_dir or os.path.join(ws, 'agent_trace')
+    os.makedirs(trace_dir, exist_ok=True)
+    container_name = _agent_judge_container_name(submission_id, attempt_id)
     try:
         subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
     except Exception:
@@ -1064,9 +1903,53 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
     session_id = None
     start = time.time()
     timed_out = False
+    trace_lock = threading.Lock()
+    trace_monitor_stop = threading.Event()
+    trace_monitor_thread = None
+    current_trace_phase = {'value': 'setup'}
 
     def _remaining():
         return max(0.0, float(timeout_s) - (time.time() - start))
+
+    def _record_trace(phase, proc=None, extra_result_name=None):
+        if not _attempt_still_current(submission_id, attempt_id):
+            return False
+        with trace_lock:
+            if not _attempt_still_current(submission_id, attempt_id):
+                return False
+            secrets_to_redact = tuple(
+                value for value in (
+                    result_name, extra_result_name, base_url,
+                ) if value
+            )
+            if harness == HARNESS_CLAUDE_CODE:
+                changed = _sync_claude_execution_trace(
+                    container_name, ws, trace_dir,
+                    api_key=api_key, extra_secrets=secrets_to_redact,
+                    default_phase=phase,
+                )
+            else:
+                changed = False
+                if proc is not None:
+                    changed = _append_phase_execution_trace(
+                        trace_dir, harness, phase, proc,
+                        api_key=api_key, extra_secrets=secrets_to_redact,
+                    )
+            if changed:
+                _publish_snapshot(submission_id)
+            return changed
+
+    def _monitor_trace():
+        while not trace_monitor_stop.wait(JUDGE_TRACE_SYNC_INTERVAL):
+            _record_trace(current_trace_phase['value'])
+
+    if harness == HARNESS_CLAUDE_CODE:
+        trace_monitor_thread = threading.Thread(
+            target=_monitor_trace,
+            name=f'agent-judge-trace-{submission_id}',
+            daemon=True,
+        )
+        trace_monitor_thread.start()
 
     try:
         if not _attempt_still_current(submission_id, attempt_id):
@@ -1079,10 +1962,10 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
                 aj.build_setup_prompt(competition.get('title')),
                 _remaining(),
             )
+            _record_trace('setup', setup_proc)
             session_id = _read_session_id(ws)
-            if setup_proc.returncode != 0 and not session_id:
-                _append_phase_log(ws, 'setup-no-session', setup_proc)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            _record_trace('setup', e)
             timed_out = True
             try:
                 subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
@@ -1123,7 +2006,8 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
 
             try:
                 phase_result_name = f'{result_name}.rule_{rid}.jsonl'
-                open(os.path.join(ws, phase_result_name), 'w').close()
+                _reset_untrusted_output_file(os.path.join(ws, phase_result_name))
+                current_trace_phase['value'] = f'rule_{rid}'
                 proc = _exec_harness_phase(
                     container_name, ws, f'rule_{rid}',
                     aj.build_rule_prompt(competition.get('title'), rule, phase_result_name),
@@ -1131,8 +2015,10 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
                     resume_session_id=session_id,
                     result_filename=phase_result_name,
                 )
+                _record_trace(f'rule_{rid}', proc, phase_result_name)
                 session_id = _read_session_id(ws) or session_id
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as e:
+                _record_trace(f'rule_{rid}', e, phase_result_name)
                 timed_out = True
                 try:
                     subprocess.run(['docker', 'kill', container_name], capture_output=True, timeout=15)
@@ -1165,7 +2051,12 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
                     return (False, True)
                 effective[rid] = aj.EFF_ERROR
     finally:
-        _dump_container_harness_state(container_name, ws, harness)
+        trace_monitor_stop.set()
+        if trace_monitor_thread is not None:
+            trace_monitor_thread.join(timeout=10)
+        current_trace_phase['value'] = 'final'
+        if _attempt_still_current(submission_id, attempt_id):
+            _record_trace('final')
         try:
             subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True, timeout=20)
         except Exception:
@@ -1236,16 +2127,25 @@ def _judge(submission_id, endpoint=None, attempt_id=None):
         _publish_snapshot(submission_id)
         return {'success': True, 'score': 0.0}
     timeout_s = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT)
-    ws, result_name = _prepare_workspace(submission, competition, rules)
+    current_container = _agent_judge_container_name(submission_id, attempt_id)
+    _remove_stale_agent_containers(submission_id, current_container)
+    ws, result_name = _prepare_workspace(
+        submission, competition, rules, attempt_id,
+    )
+    _prune_stale_attempt_workspaces(submission_id, ws)
+    trace_dir = _prepare_agent_trace_attempt(submission_id, attempt_id)
+    _publish_snapshot(submission_id)
     orchestration_mode = aj.normalize_orchestration_mode(
         competition.get('agent_judge_orchestration_mode')
     )
     if orchestration_mode == aj.ORCH_TOPOLOGICAL:
         timed_out, container_ok = _run_container_topological(
-            submission_id, ws, result_name, competition, rules, timeout_s, endpoint, attempt_id)
+            submission_id, ws, result_name, competition, rules, timeout_s,
+            endpoint, attempt_id, trace_dir)
     else:
         timed_out, container_ok = _run_container_and_tail(
-            submission_id, ws, result_name, competition, rules, timeout_s, endpoint, attempt_id)
+            submission_id, ws, result_name, competition, rules, timeout_s,
+            endpoint, attempt_id, trace_dir)
     _finalize(submission_id, rules, timed_out, container_ok, attempt_id)
     return {'success': True}
 

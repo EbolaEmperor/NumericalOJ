@@ -1,0 +1,433 @@
+{# Agent 执行轨迹共享渲染器。反向评测与 Agent Judge 共用。
+   API: AgentExecutionTrace.create({keyPrefix}).render(root, trace, {scope, source, phase}); reset(root)。 #}
+<style>
+  .agent-execution-trace { color:var(--ink, #1f2329); }
+  .rj-pre { white-space:pre-wrap; word-break:break-word; background:#f6f7f9; border:1px solid var(--line, #e6e8ec); border-radius:8px; padding:.72rem .85rem; font-size:.8rem; max-height:420px; overflow:auto; }
+  .rj-alert { border:1px solid #f0c9c4; background:#fff6f4; color:var(--err, #b03a2e); border-radius:8px; padding:.65rem .8rem; margin-bottom:.85rem; font-size:.86rem; }
+  .rj-agent-feed { display:flex; flex-direction:column; gap:.7rem; }
+  .rj-msg { border:1px solid var(--line, #e6e8ec); background:#fff; border-radius:8px; padding:.78rem .9rem; }
+  .rj-msg.subagent { border-color:#d8e2f5; background:#f8fbff; }
+  .rj-msg.tool { border-color:#dce7dd; background:#fbfdfb; }
+  .rj-msg.thinking { border-color:#ece2bf; background:#fffdf5; }
+  details.rj-msg.thinking, details.rj-msg.tool, details.rj-msg.subagent { padding:0; overflow:hidden; }
+  .rj-thinking-summary, .rj-tool-summary, .rj-subagent-summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:.6rem; padding:.62rem .82rem; color:var(--muted, #6f767f); font-size:.78rem; min-width:0; }
+  .rj-thinking-summary::-webkit-details-marker, .rj-tool-summary::-webkit-details-marker, .rj-subagent-summary::-webkit-details-marker { display:none; }
+  .rj-thinking-summary::after { content:'展开'; color:#8c7b42; font-size:.76rem; white-space:nowrap; }
+  .rj-tool-summary::after { content:'展开'; color:#54745a; font-size:.76rem; white-space:nowrap; }
+  .rj-subagent-summary::after { content:'展开'; color:#536f9e; font-size:.76rem; white-space:nowrap; }
+  details.rj-msg.thinking[open] .rj-thinking-summary { border-bottom:1px solid #ece2bf; }
+  details.rj-msg.tool[open] .rj-tool-summary { border-bottom:1px solid #dce7dd; }
+  details.rj-msg.subagent[open] .rj-subagent-summary { border-bottom:1px solid #d8e2f5; }
+  details.rj-msg.thinking[open] .rj-thinking-summary::after { content:'收起'; }
+  details.rj-msg.tool[open] .rj-tool-summary::after { content:'收起'; }
+  details.rj-msg.subagent[open] .rj-subagent-summary::after { content:'收起'; }
+  .rj-summary-main { display:flex; align-items:center; gap:.55rem; min-width:0; flex:1; }
+  .rj-summary-preview { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#6d7570; font-size:.78rem; font-weight:400; }
+  .rj-summary-meta { flex-shrink:0; max-width:11rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  details.rj-msg[open] .rj-summary-preview { display:none; }
+  .rj-msg-head { display:flex; align-items:center; justify-content:space-between; gap:.6rem; margin-bottom:.42rem; color:var(--muted, #6f767f); font-size:.78rem; }
+  .rj-msg-title { display:inline-flex; align-items:center; gap:.42rem; color:var(--ink, #1f2329); font-weight:700; }
+  .rj-msg-body { white-space:pre-wrap; word-break:break-word; color:var(--ink, #1f2329); font-size:.86rem; line-height:1.55; }
+  .rj-md { white-space:normal; line-height:1.65; word-break:break-word; }
+  .rj-md > :first-child { margin-top:0; }
+  .rj-md > :last-child { margin-bottom:0; }
+  .rj-md pre { background:#f6f7f9; border:1px solid var(--line, #e6e8ec); border-radius:6px; padding:.55rem .7rem; overflow:auto; margin:.5rem 0; }
+  .rj-md code { background:#f1f1f3; padding:.05rem .3rem; border-radius:3px; font-size:.92em; }
+  .rj-md pre code { background:transparent; padding:0; }
+  .rj-md table { border-collapse:collapse; margin:.5rem 0; }
+  .rj-md th, .rj-md td { border:1px solid var(--line, #e6e8ec); padding:.25rem .5rem; }
+  .rj-md blockquote { border-left:3px solid #e0d9bf; margin:.5rem 0; padding:.1rem .8rem; color:#6c757d; }
+  details.rj-msg.thinking .rj-msg-body { padding:.78rem .9rem .9rem; color:#4b4635; }
+  details.rj-msg.tool .rj-msg-body { padding:.78rem .9rem .9rem; color:#2f4432; }
+  details.rj-msg.subagent .rj-msg-body { padding:.78rem .9rem .9rem; color:#30405b; }
+  .rj-tool-json { font-family:var(--mono, 'Menlo', 'SF Mono', 'JetBrains Mono', ui-monospace, monospace); font-size:.8rem; line-height:1.5; }
+  .rj-tool-text { font-size:.84rem; line-height:1.55; }
+  .rj-empty { border:1px dashed var(--line, #e6e8ec); background:var(--soft, #f6f7f9); color:var(--muted, #6f767f); border-radius:8px; padding:1.2rem; text-align:center; }
+  .rj-raw-json { margin-top:.9rem; }
+  .rj-raw-json summary { width:max-content; list-style:none; cursor:pointer; border:1px solid var(--line, #e6e8ec); border-radius:999px; padding:.36rem .7rem; color:var(--muted, #6f767f); background:#fff; font-size:.82rem; }
+  .rj-raw-json summary::-webkit-details-marker { display:none; }
+</style>
+<script>
+(function () {
+  if (window.AgentExecutionTrace) return;
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"]/g, function (char) {
+      return {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;'}[char];
+    });
+  }
+
+  function typesetMath(targets) {
+    if (window.MathJax && typeof window.MathJax.typesetPromise === 'function') {
+      var roots = Array.isArray(targets) ? targets : (targets ? [targets] : undefined);
+      if (!roots || roots.length) window.MathJax.typesetPromise(roots).catch(function () {});
+    }
+  }
+
+  function createRenderer(defaultOptions) {
+    var defaults = defaultOptions || {};
+    var currentRoot = null;
+    var currentScope = '';
+    var openDetails = Object.create(null);
+
+    function option(context, trace, name, fallback) {
+      if (context && context[name] != null) return context[name];
+      if (trace && trace[name] != null) return trace[name];
+      if (defaults[name] != null) return defaults[name];
+      return fallback;
+    }
+
+    function messageField(message, context, trace, name) {
+      if (message && message[name] != null) return message[name];
+      return option(context, trace, name, '');
+    }
+
+    function scopeKey(context, trace) {
+      return String(option(context, trace, 'scope', 'default'));
+    }
+
+    function traceIdentity(context, trace) {
+      return [
+        scopeKey(context, trace),
+        'source:' + String(option(context, trace, 'source', '')),
+        'phase:' + String(option(context, trace, 'phase', ''))
+      ].join('|');
+    }
+
+    function messageKey(message, index, context, trace) {
+      var line = messageField(message, context, trace, 'line');
+      var offset = messageField(message, context, trace, 'offset');
+      var source = String(messageField(message, context, trace, 'source'));
+      var eventIndex = messageField(message, context, trace, 'event_index');
+      if (source !== '' && offset !== '') {
+        return [
+          scopeKey(context, trace), 'msg', message.kind || 'assistant',
+          'source:' + source, 'offset:' + String(offset),
+          'event:' + String(eventIndex === '' ? index : eventIndex)
+        ].join('|');
+      }
+      var parts = [
+        traceIdentity(context, trace),
+        'msg',
+        message.kind || 'assistant',
+        'source:' + source,
+        'phase:' + String(messageField(message, context, trace, 'phase')),
+        offset === '' ? 'line:' + String(line) : 'offset:' + String(offset)
+      ];
+      if (line === '' && offset === '') parts.push('idx:' + index);
+      parts.push(message.title || '', message.meta || '', String(message.text || '').slice(0, 120));
+      return parts.join('|');
+    }
+
+    function detailAttr(key) {
+      key = String(defaults.keyPrefix || 'agent-trace') + '|' + key;
+      return ' data-agent-trace-open-key="' + esc(key) + '" data-rj-open-key="' + esc(key) + '"';
+    }
+
+    function remember(root) {
+      if (!root) return;
+      root.querySelectorAll('details[data-agent-trace-open-key]').forEach(function (element) {
+        openDetails[element.getAttribute('data-agent-trace-open-key')] = !!element.open;
+      });
+    }
+
+    function restore(root) {
+      if (!root) return;
+      root.querySelectorAll('details[data-agent-trace-open-key]').forEach(function (element) {
+        var key = element.getAttribute('data-agent-trace-open-key');
+        if (Object.prototype.hasOwnProperty.call(openDetails, key)) element.open = !!openDetails[key];
+      });
+    }
+
+    function messageKind(message) {
+      if (message.kind === 'subagent') return 'subagent';
+      if (message.kind === 'thinking') return 'thinking';
+      if (message.kind === 'tool') return 'tool';
+      return 'assistant';
+    }
+
+    function messageIcon(kind) {
+      if (kind === 'subagent') return 'fa-diagram-project';
+      if (kind === 'thinking') return 'fa-brain';
+      if (kind === 'tool') return 'fa-screwdriver-wrench';
+      return 'fa-comment-dots';
+    }
+
+    function previewText(message) {
+      var text = String(message && message.text || '').replace(/\s+/g, ' ').trim();
+      if (!text) return '';
+      return text.length > 80 ? text.slice(0, 80) + '...' : text;
+    }
+
+    function safeRichHtml(value) {
+      var template = document.createElement('template');
+      template.innerHTML = String(value || '');
+      template.content.querySelectorAll('[id], [name]').forEach(function (element) {
+        element.removeAttribute('id');
+        element.removeAttribute('name');
+      });
+      return template.innerHTML;
+    }
+
+    function messageBody(message, kind) {
+      if ((kind === 'assistant' || kind === 'thinking') && message.html) {
+        return '<div class="rj-msg-body rj-md">' + safeRichHtml(message.html) + '</div>';
+      }
+      if (kind === 'tool' || kind === 'subagent') {
+        var className = message.format === 'json' ? 'rj-tool-json' : 'rj-tool-text';
+        return '<div class="rj-msg-body ' + className + '">' + esc(message.text || '') + '</div>';
+      }
+      return '<div class="rj-msg-body">' + esc(message.text || '') + '</div>';
+    }
+
+    function summaryHtml(message, kind, icon) {
+      var title = message.title || (kind === 'tool' ? '工具调用' : (kind === 'subagent' ? '派出 subagent' : '思考片段'));
+      var preview = previewText(message);
+      return '<span class="rj-summary-main"><span class="rj-msg-title"><i class="fas ' + icon + '"></i>' + esc(title) + '</span>' +
+        (preview ? '<span class="rj-summary-preview">' + esc(preview) + '</span>' : '') +
+        '</span><span class="rj-summary-meta">' + esc(message.meta || '') + '</span>';
+    }
+
+    function messageHtml(message, index, context, trace) {
+      var kind = messageKind(message);
+      var icon = messageIcon(kind);
+      var key = messageKey(message, index, context, trace);
+      var messageKeyAttr = ' data-agent-trace-message-key="' + esc(key) + '"';
+      var keyAttr = detailAttr(key);
+      if (kind === 'thinking') {
+        return '<details class="rj-msg thinking"' + messageKeyAttr + keyAttr + '>' +
+          '<summary class="rj-thinking-summary">' + summaryHtml(message, kind, icon) + '</summary>' +
+          messageBody(message, kind) + '</details>';
+      }
+      if (kind === 'tool' || kind === 'subagent') {
+        var summaryClass = kind === 'subagent' ? 'rj-subagent-summary' : 'rj-tool-summary';
+        return '<details class="rj-msg ' + kind + '"' + messageKeyAttr + keyAttr + '>' +
+          '<summary class="' + summaryClass + '">' + summaryHtml(message, kind, icon) + '</summary>' +
+          messageBody(message, kind) + '</details>';
+      }
+      return '<div class="rj-msg ' + kind + '"' + messageKeyAttr + '>' +
+        '<div class="rj-msg-head"><span class="rj-msg-title"><i class="fas ' + icon + '"></i>' + esc(message.title || 'AI 回复') + '</span>' +
+        '<span>' + esc(message.meta || '') + '</span></div>' + messageBody(message, kind) + '</div>';
+    }
+
+    function rawTraceHtml(files, context, trace) {
+      files = files || [];
+      if (!files.length) return '';
+      var file = files[0] || {};
+      var key = traceIdentity(context, trace) + '|trace-json|' + (file.path || '');
+      return '<details class="rj-raw-json"' + detailAttr(key) + '><summary>展开原始 JSON</summary>' +
+        '<div class="small text-muted mt-2"><code>' + esc(file.path || '') + '</code> · ' + esc(file.size || 0) + ' B</div>' +
+        '<pre class="rj-pre mt-2">' + esc(file.content || '') + '</pre></details>';
+    }
+
+    function shellHtml(trace, context) {
+      var messages = trace.trace_messages || [];
+      var runningText = esc(option(context, trace, 'runningText', 'AI 正在作答'));
+      var pendingText = esc(option(context, trace, 'pendingText', '等待 Agent 开始执行'));
+      var emptyText = esc(option(context, trace, 'emptyText', '暂无可展示轨迹'));
+      var html = trace.error_message
+        ? '<div class="rj-alert" data-agent-trace-error>' + esc(trace.error_message) + '</div>'
+        : '<div data-agent-trace-error hidden></div>';
+      html += '<div class="rj-agent-feed" data-agent-trace-feed></div>';
+      html += '<div class="rj-empty" data-agent-trace-empty' + (messages.length ? ' hidden' : '') + '>' +
+        (trace.status === 'running' ? '<span class="spinner-border spinner-border-sm me-2" role="status"></span>' + runningText :
+          (trace.status === 'pending' ? pendingText : emptyText)) +
+        '</div>';
+      html += '<div data-agent-trace-raw>' + rawTraceHtml(trace.trace_files || [], context, trace) + '</div>';
+      html += '<div data-agent-trace-stdio></div>';
+      return html;
+    }
+
+    // TRACE_ORDER_HELPER_START
+    function reconcileMessageOrder(existingKeys, incomingKeys) {
+      function isPrefix(prefix, full) {
+        if (prefix.length > full.length) return false;
+        for (var index = 0; index < prefix.length; index += 1) {
+          if (prefix[index] !== full[index]) return false;
+        }
+        return true;
+      }
+
+      if (isPrefix(existingKeys, incomingKeys)) return incomingKeys.slice();
+      if (isPrefix(incomingKeys, existingKeys)) return existingKeys.slice();
+
+      var existingIndex = Object.create(null);
+      var incomingSet = Object.create(null);
+      existingKeys.forEach(function (key, index) { existingIndex[key] = index; });
+      incomingKeys.forEach(function (key) { incomingSet[key] = true; });
+
+      var firstOverlapIndex = -1;
+      for (var index = 0; index < incomingKeys.length; index += 1) {
+        if (Object.prototype.hasOwnProperty.call(existingIndex, incomingKeys[index])) {
+          firstOverlapIndex = existingIndex[incomingKeys[index]];
+          break;
+        }
+      }
+      if (firstOverlapIndex < 0) return existingKeys.concat(incomingKeys);
+
+      // 新快照可能是滑动尾窗，也可能补回了先前缺失的前置事件。保留第一个
+      // 重叠事件之前、且新快照没有携带的历史；重叠部分则以新快照顺序为准。
+      return existingKeys.slice(0, firstOverlapIndex).filter(function (key) {
+        return !incomingSet[key];
+      }).concat(incomingKeys);
+    }
+    // TRACE_ORDER_HELPER_END
+
+    function reconcileMessages(root, trace, context) {
+      var feed = root.querySelector('[data-agent-trace-feed]');
+      if (!feed) return [];
+      var existingElements = Object.create(null);
+      var existingKeys = [];
+      var unknownElements = [];
+      Array.prototype.forEach.call(feed.children, function (element) {
+        var key = element.getAttribute('data-agent-trace-message-key');
+        if (!key || existingElements[key]) {
+          unknownElements.push(element);
+          return;
+        }
+        existingElements[key] = element;
+        existingKeys.push(key);
+      });
+
+      var incomingMessages = Object.create(null);
+      var incomingKeys = [];
+      (trace.trace_messages || []).forEach(function (message, index) {
+        var key = messageKey(message, index, context, trace);
+        if (incomingMessages[key]) return;
+        incomingMessages[key] = {message: message, index: index};
+        incomingKeys.push(key);
+      });
+
+      var targetKeys = reconcileMessageOrder(existingKeys, incomingKeys);
+      var targetSet = Object.create(null);
+      var addedElements = [];
+      targetKeys.forEach(function (key) {
+        targetSet[key] = true;
+        if (existingElements[key]) return;
+        var incoming = incomingMessages[key];
+        if (!incoming) return;
+        feed.insertAdjacentHTML(
+          'beforeend', messageHtml(incoming.message, incoming.index, context, trace)
+        );
+        existingElements[key] = feed.lastElementChild;
+        addedElements.push(existingElements[key]);
+      });
+
+      unknownElements.forEach(function (element) {
+        if (element.parentNode === feed) feed.removeChild(element);
+      });
+
+      Object.keys(existingElements).forEach(function (key) {
+        if (!targetSet[key] && existingElements[key].parentNode === feed) {
+          feed.removeChild(existingElements[key]);
+        }
+      });
+
+      var currentKeys = Array.prototype.map.call(feed.children, function (element) {
+        return element.getAttribute('data-agent-trace-message-key') || '';
+      });
+      var orderChanged = currentKeys.length !== targetKeys.length || targetKeys.some(
+        function (key, index) { return currentKeys[index] !== key; }
+      );
+      if (orderChanged) {
+        targetKeys.forEach(function (key) {
+          var element = existingElements[key];
+          if (element && element.parentNode === feed) feed.appendChild(element);
+        });
+      }
+      return addedElements;
+    }
+
+    function syncExtras(root, trace, context) {
+      var error = root.querySelector('[data-agent-trace-error]');
+      if (error) {
+        var errorText = trace.error_message || '';
+        if (error.hidden === !!errorText) error.hidden = !errorText;
+        var errorClass = errorText ? 'rj-alert' : '';
+        if (error.className !== errorClass) error.className = errorClass;
+        if (error.textContent !== errorText) error.textContent = errorText;
+      }
+      var empty = root.querySelector('[data-agent-trace-empty]');
+      if (empty) {
+        var feed = root.querySelector('[data-agent-trace-feed]');
+        var hasMessages = !!(feed && feed.children.length);
+        empty.hidden = hasMessages;
+        if (!hasMessages) {
+          var runningText = esc(option(context, trace, 'runningText', 'AI 正在作答'));
+          var pendingText = esc(option(context, trace, 'pendingText', '等待 Agent 开始执行'));
+          var emptyText = esc(option(context, trace, 'emptyText', '暂无可展示轨迹'));
+          var emptyHtml = trace.status === 'running'
+            ? '<span class="spinner-border spinner-border-sm me-2" role="status"></span>' + runningText
+            : (trace.status === 'pending' ? pendingText : emptyText);
+          if (empty.innerHTML !== emptyHtml) empty.innerHTML = emptyHtml;
+        }
+      }
+      var raw = root.querySelector('[data-agent-trace-raw]');
+      if (raw) {
+        var rawHtml = rawTraceHtml(trace.trace_files || [], context, trace);
+        if (raw.innerHTML !== rawHtml) raw.innerHTML = rawHtml;
+      }
+      var stdio = root.querySelector('[data-agent-trace-stdio]');
+      if (stdio) {
+        var identity = traceIdentity(context, trace);
+        var html = '';
+        if (trace.stdout) {
+          html += '<details class="rj-raw-json"' + detailAttr(identity + '|stdout') + '><summary>stdout</summary><pre class="rj-pre mt-2">' + esc(trace.stdout) + '</pre></details>';
+        }
+        if (trace.stderr) {
+          html += '<details class="rj-raw-json"' + detailAttr(identity + '|stderr') + '><summary>stderr</summary><pre class="rj-pre mt-2">' + esc(trace.stderr) + '</pre></details>';
+        }
+        if (stdio.innerHTML !== html) stdio.innerHTML = html;
+      }
+    }
+
+    function reset(root, options) {
+      var target = root || currentRoot;
+      var resetOptions = options || {};
+      if (target) {
+        target.removeAttribute('data-agent-trace-scope');
+        if (resetOptions.clear !== false) target.innerHTML = '';
+      }
+      currentRoot = null;
+      currentScope = '';
+      openDetails = Object.create(null);
+    }
+
+    function render(root, trace, context) {
+      if (!root) return;
+      trace = trace || {};
+      context = context || {};
+      var nextScope = scopeKey(context, trace);
+      var rebuild = currentRoot !== root || currentScope !== nextScope || !root.querySelector('[data-agent-trace-feed]');
+      root.classList.add('agent-execution-trace');
+      if (rebuild) {
+        remember(currentRoot);
+        root.innerHTML = shellHtml(trace, context);
+        root.setAttribute('data-agent-trace-scope', nextScope);
+        currentRoot = root;
+        currentScope = nextScope;
+        reconcileMessages(root, trace, context);
+        restore(root);
+        syncExtras(root, trace, context);
+        restore(root);
+        typesetMath(root);
+        return;
+      }
+      remember(root);
+      var addedElements = reconcileMessages(root, trace, context);
+      syncExtras(root, trace, context);
+      restore(root);
+      typesetMath(addedElements);
+    }
+
+    return {reset: reset, render: render};
+  }
+
+  var defaultRenderer = createRenderer();
+  window.AgentExecutionTrace = {
+    create: createRenderer,
+    reset: defaultRenderer.reset,
+    render: defaultRenderer.render
+  };
+})();
+</script>

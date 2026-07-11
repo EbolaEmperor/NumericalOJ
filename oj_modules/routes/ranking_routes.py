@@ -7,8 +7,10 @@
 import copy
 import json
 import os
+import re
 import secrets
 import shutil
+import stat
 import subprocess
 import uuid
 from datetime import datetime
@@ -84,6 +86,7 @@ from oj_modules.ranking_db import (
     update_submission_result,
 )
 from oj_modules.ranking_agent_judge_db import (
+    agent_judge_trace_id,
     apply_rule_overrides,
     build_judge_snapshot,
     list_agent_judge_endpoints,
@@ -96,7 +99,11 @@ from oj_modules.ranking_agent_judge_db import (
 from oj_modules.ranking_agent_judge import max_score as _aj_max_score
 from oj_modules.ranking_agent_judge import normalize_orchestration_mode as _normalize_aj_orchestration
 from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
-from oj_modules.tasks import get_judge_progress_snapshot, subscribe_judge_run_events
+from oj_modules.tasks import (
+    build_current_judge_snapshot,
+    get_judge_progress_snapshot,
+    subscribe_judge_run_events,
+)
 from oj_modules.tasks import get_reverse_judge_progress_snapshot, subscribe_reverse_judge_events
 from oj_modules.tasks import get_probe_job
 from oj_modules.tasks import get_bulk_rejudge_job, save_bulk_rejudge_job
@@ -106,6 +113,7 @@ from oj_modules.tasks.ranking_batch_pull_tasks import (
 )
 from oj_modules.ranking_reverse_judge_db import (
     build_reverse_judge_snapshot,
+    reverse_agent_answer_archive_path,
 )
 
 
@@ -424,10 +432,10 @@ def _docker_container_names_for_submission(submission_id):
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout or '').strip()
         return names, f'Docker 容器列表读取失败：{message[-300:]}'
-    prefix = f'rj_judge_{sid}_'
+    prefixes = (f'aj_{sid}_', f'rj_judge_{sid}_')
     for line in (proc.stdout or '').splitlines():
         name = line.strip()
-        if name.startswith(prefix) and name not in names:
+        if name.startswith(prefixes) and name not in names:
             names.append(name)
     return names, None
 
@@ -2283,6 +2291,113 @@ def ranking_save_reverse_quality_gate(competition_id):
 
 # ---------- Agent 评测：实时进展 SSE + 管理员重测 ----------
 
+_AGENT_TRACE_RESULT_FILE_RE = re.compile(
+    r'result_[0-9a-fA-F]{32}\.jsonl(?:\.rule_\d+\.jsonl)?', re.I,
+)
+_AGENT_TRACE_PUBLIC_PHASE_RE = re.compile(r'^(?:setup|final|rule_\d+)$')
+
+
+def _public_agent_trace_message(message):
+    """普通参赛者只看事件形态/阶段；自由文本完整轨迹仅管理员可见。"""
+    if not isinstance(message, dict):
+        return None
+    kind = str(message.get('kind') or 'assistant')
+    if kind not in {'assistant', 'thinking', 'tool', 'subagent'}:
+        kind = 'assistant'
+    titles = {
+        'assistant': 'AI 回复',
+        'thinking': '思考片段',
+        'tool': '工具调用',
+        'subagent': '派出 subagent',
+    }
+    phase = str(message.get('phase') or '')
+    if not _AGENT_TRACE_PUBLIC_PHASE_RE.fullmatch(phase):
+        phase = ''
+    projected = {
+        'kind': kind,
+        'title': titles[kind],
+        'text': phase.replace('_', ' ') if phase else '',
+        'meta': phase,
+        'format': 'text',
+    }
+    for key in ('line', 'offset', 'event_index'):
+        value = message.get(key)
+        if isinstance(value, int):
+            projected[key] = value
+    source = str(message.get('source') or '')
+    if re.fullmatch(r'(?:claude|codex|opencode|docker)(?:-[A-Za-z0-9]+)*', source):
+        projected['source'] = source
+    if phase:
+        projected['phase'] = phase
+    return projected
+
+
+def _redact_agent_trace_value(value, sensitive_values=()):
+    if isinstance(value, dict):
+        return {
+            key: _redact_agent_trace_value(item, sensitive_values)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_agent_trace_value(item, sensitive_values) for item in value]
+    if isinstance(value, str):
+        text = value
+        for secret in sensitive_values:
+            secret = str(secret or '')
+            if secret:
+                text = text.replace(secret, '[redacted]')
+        return _AGENT_TRACE_RESULT_FILE_RE.sub('[result-file]', text)
+    return value
+
+
+def _project_agent_judge_snapshot(snapshot, *, include_internal=False,
+                                  sensitive_values=(), redaction_ready=True):
+    """投影评分轨迹：所有查看者都隐藏随机结果文件名，普通选手不拿原始文件。"""
+    if not isinstance(snapshot, dict):
+        return snapshot
+    projected = copy.deepcopy(snapshot)
+    trace = projected.get('execution_trace')
+    if isinstance(trace, dict):
+        trace = _redact_agent_trace_value(
+            trace, tuple(sensitive_values or ()),
+        )
+        projected['execution_trace'] = trace
+    if isinstance(trace, dict) and not include_internal:
+        trace['trace_files'] = []
+        trace['stdout'] = ''
+        trace['stderr'] = ''
+        trace['trace_messages'] = [
+            safe for safe in (
+                _public_agent_trace_message(message)
+                for message in trace.get('trace_messages') or []
+            ) if safe is not None
+        ]
+        projected['error_message'] = _redact_agent_trace_value(
+            projected.get('error_message'), tuple(sensitive_values or ()),
+        ) if redaction_ready else ''
+        for rule in projected.get('rules') or []:
+            if not isinstance(rule, dict):
+                continue
+            for field in ('evidence', 'evidence_html'):
+                if field in rule:
+                    rule[field] = (_redact_agent_trace_value(
+                        rule.get(field), tuple(sensitive_values or ()),
+                    ) if redaction_ready else '')
+    return projected
+
+
+def _canonical_terminal_judge_snapshot(submission_id, snapshot, attempt_trace_id):
+    """终态事件关闭 SSE 前，从 DB/磁盘重建一次，避免把旧缓存固化在页面。"""
+    if (not isinstance(snapshot, dict)
+            or snapshot.get('status') in ('Judging', 'Pending', 'Queued')):
+        return snapshot
+    canonical = build_current_judge_snapshot(submission_id)
+    if (isinstance(canonical, dict)
+            and canonical.get('attempt_trace_id') == attempt_trace_id):
+        return canonical
+    # attempt 已切换时不能用旧终态关闭 SSE；继续等待新 attempt 的事件。
+    return None
+
 @ranking_bp.route('/<int:competition_id>/judge_stream/<int:submission_id>')
 def ranking_judge_stream(competition_id, submission_id):
     user, resp = _require_user()
@@ -2294,7 +2409,26 @@ def ranking_judge_stream(competition_id, submission_id):
     if user.get('is_admin') != 1 and sub.get('username') != user.get('username'):
         return Response('forbidden', status=403)
 
+    trace_sensitive_values = []
+    trace_redaction_ready = True
+    try:
+        comp = get_competition(competition_id) or {}
+        trace_sensitive_values.extend([
+            comp.get('agent_judge_api_key'), comp.get('agent_judge_base_url'),
+        ])
+        for endpoint in list_agent_judge_endpoints(competition_id, enabled_only=False):
+            trace_sensitive_values.extend([
+                endpoint.get('api_key'), endpoint.get('base_url'),
+            ])
+    except Exception:
+        trace_redaction_ready = False
+
     def _encode(name, payload):
+        payload = _project_agent_judge_snapshot(
+            payload, include_internal=user.get('is_admin') == 1,
+            sensitive_values=trace_sensitive_values,
+            redaction_ready=trace_redaction_ready,
+        )
         # 快照在下发前实时渲染 Markdown/LaTeX（仅传输时渲染，不持久化 HTML）
         if name in ('progress', 'done', 'timeout') and isinstance(payload, dict):
             payload = _render_snapshot_html(payload)
@@ -2345,6 +2479,19 @@ def ranking_judge_stream(competition_id, submission_id):
                 try:
                     s = json.loads(raw)
                 except Exception:
+                    continue
+                current_submission = get_ranking_submission(submission_id)
+                current_trace_id = agent_judge_trace_id(
+                    (current_submission or {}).get('judge_attempt_id'),
+                )
+                if s.get('attempt_trace_id') != current_trace_id:
+                    s = build_judge_snapshot(submission_id)
+                    if not s:
+                        continue
+                s = _canonical_terminal_judge_snapshot(
+                    submission_id, s, current_trace_id,
+                )
+                if s is None:
                     continue
                 yield _encode('progress', s)
                 if s.get('status') not in ('Judging', 'Pending', 'Queued'):
@@ -3041,6 +3188,50 @@ def _can_access_submission(user, submission):
     if user.get('is_admin') == 1:
         return True
     return submission.get('username') == user.get('username')
+
+
+@ranking_bp.route(
+    '/<int:competition_id>/submission/<int:submission_id>/reverse_agent_answer',
+    methods=['GET'],
+)
+def download_reverse_agent_answer(competition_id, submission_id):
+    user, resp = _require_user()
+    if resp is not None:
+        return resp
+    sub = get_ranking_submission(submission_id)
+    if not sub or not _can_access_submission(user, sub):
+        abort(404)
+    try:
+        if int(sub.get('competition_id')) != int(competition_id):
+            abort(404)
+    except (TypeError, ValueError):
+        abort(404)
+    competition = get_competition(competition_id)
+    if not competition or _competition_scoring_mode(competition) != 'reverse_judge':
+        abort(404)
+    if sub.get('status') not in {'Accepted', 'Error'}:
+        abort(404)
+
+    archive_path = reverse_agent_answer_archive_path(
+        submission_id, sub.get('judge_attempt_id'),
+    )
+    try:
+        archive_stat = os.lstat(archive_path)
+    except OSError:
+        abort(404)
+    if stat.S_ISLNK(archive_stat.st_mode) or not stat.S_ISREG(archive_stat.st_mode):
+        abort(404)
+
+    response = send_file(
+        archive_path,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=f'reverse_ai_answer_{int(submission_id)}.zip',
+        conditional=True,
+    )
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
 
 @ranking_bp.route('/submission/<int:submission_id>/answer', methods=['GET'])
