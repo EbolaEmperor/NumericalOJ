@@ -73,6 +73,7 @@ USER_COMMAND_PATHS = [
     ["ranking", "leaderboard"],
     ["ranking", "download-submission"],
     ["ranking", "judge-stream"],
+    ["ranking", "reverse-stream"],
     ["ranking", "appeal"],
     ["ranking", "appeal-status"],
 ]
@@ -154,6 +155,9 @@ ADMIN_EXTRA_COMMAND_PATHS = [
     ["ranking", "save-rules"],
     ["ranking", "save-endpoints"],
     ["ranking", "save-endpoint"],
+    ["ranking", "save-quality-gate"],
+    ["ranking", "save-quality-gate-endpoints"],
+    ["ranking", "save-quality-gate-endpoint"],
     ["ranking", "batch-probe"],
     ["ranking", "batch-status"],
     ["ranking", "batch-create"],
@@ -170,7 +174,6 @@ ADMIN_EXTRA_COMMAND_PATHS = [
     ["ranking", "elo-delete-match"],
     ["ranking", "elo-rebuild"],
     ["ranking", "delete-submission"],
-    ["ranking", "reverse-stream"],
     ["ranking", "submissions"],
     ["ranking", "submit-zip"],
 ]

@@ -31,6 +31,16 @@ def _necessary_ranking_file(row: Any) -> Dict[str, Any]:
     return {key: row[key] for key in ("id", "filename", "media_kind", "download_url") if key in row}
 
 
+def _necessary_answer_endpoint(row: Any) -> Dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    return {
+        key: row[key]
+        for key in ("id", "harness", "model", "label")
+        if key in row
+    }
+
+
 def _necessary_ranking_submission(row: Any) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
@@ -102,6 +112,12 @@ def necessary_ranking_detail_payload(payload: Any) -> Any:
             necessary[key] = payload[key]
     if "files" in payload:
         necessary["files"] = [_necessary_ranking_file(row) for row in payload.get("files") or []]
+    if "answer_endpoints" in payload:
+        necessary["answer_endpoints"] = [
+            _necessary_answer_endpoint(row)
+            for row in payload.get("answer_endpoints") or []
+            if isinstance(row, dict)
+        ]
     if "user_submissions" in payload:
         necessary["user_submissions"] = [_necessary_ranking_submission(row) for row in payload.get("user_submissions") or []]
     if "leaderboard" in payload:
@@ -153,6 +169,51 @@ def necessary_ranking_match_detail_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
     return _necessary_match(payload)
+
+
+def necessary_reverse_judge_snapshot_payload(event: Any) -> Any:
+    if not isinstance(event, dict):
+        text = str(event or "")
+        return text if len(text) <= 500 else {"text": text[:500], "chars": len(text), "truncated": True}
+    out: Dict[str, Any] = {}
+    for key in (
+        "submission_id",
+        "competition_id",
+        "username",
+        "status",
+        "total_score",
+        "max_score",
+        "score",
+        "error_message",
+        "last_updated",
+        "updated_at",
+    ):
+        if event.get(key) not in (None, ""):
+            out[key] = event[key]
+    steps = []
+    for step in event.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        result = step.get("result") if isinstance(step.get("result"), dict) else {}
+        step_key = step.get("step_key")
+        item = {
+            "step_key": step_key,
+            "title": step.get("title"),
+            "status": step.get("status"),
+            "score": step.get("score") if step.get("score") is not None else result.get("score"),
+            "max_score": step.get("max_score") if step.get("max_score") is not None else result.get("max_score"),
+            "trace_messages_count": len(step.get("trace_messages") or []),
+        }
+        if step.get("error_message"):
+            item["error_message"] = step["error_message"]
+        if step_key == "quality_gate":
+            for key in ("passed", "verdict", "summary", "violations"):
+                if key in result:
+                    item[key] = result[key]
+        steps.append(item)
+    if steps:
+        out["steps"] = steps
+    return out
 
 
 def ranking_list(args: argparse.Namespace) -> None:
@@ -218,7 +279,9 @@ def ranking_submit(args: argparse.Namespace) -> None:
     client = common.client_from_args(args)
     before_ids = _ranking_submission_ids(client, args.competition_id)
     files = {"code_file": common.require_file(args.code_zip)}
-    data = {"base_model": args.base_model}
+    data: Dict[str, str] = {}
+    if args.base_model is not None:
+        data["base_model"] = args.base_model
     if getattr(args, "agent_endpoint_id", None) is not None:
         data["agent_endpoint_id"] = str(args.agent_endpoint_id)
     if args.answer_file:
@@ -301,6 +364,23 @@ def ranking_judge_stream(args: argparse.Namespace) -> None:
     common.print_stream_lines(resp, max_lines=args.max_lines)
 
 
+def ranking_reverse_judge_stream(args: argparse.Namespace) -> None:
+    resp = common.client_from_args(args).request(
+        "GET",
+        f"/ranking/{args.competition_id}/reverse_judge_stream/{args.submission_id}",
+        stream=True,
+    )
+    stream_payload = common.read_stream_events(resp, max_lines=args.max_lines)
+    events = stream_payload.get("events") or []
+    latest = events[-1] if events else None
+    common.output_json({
+        "success": True,
+        "events_count": len(events),
+        "latest": necessary_reverse_judge_snapshot_payload(latest) if latest is not None else None,
+        "truncated": bool(stream_payload.get("truncated")),
+    })
+
+
 def ranking_submit_appeal(args: argparse.Namespace) -> None:
     resp = common.client_from_args(args).request(
         "POST",
@@ -336,7 +416,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.set_defaults(func=ranking_match_detail)
     pa = common.add_cli_parser(rank_sub, "submit", "Submit a ZIP-based ranking entry.")
     pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
-    pa.add_argument("--base-model", required=True, help="Base model name associated with the submission.")
+    pa.add_argument("--base-model", help="Base model name associated with a normal submission; reverse-judge submissions do not require it.")
     pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
     pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
     pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint ID for reverse-judge submissions.")
@@ -372,6 +452,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("submission_id", type=int, help="Ranking submission ID whose judge stream should be fetched.")
     pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")
     pa.set_defaults(func=ranking_judge_stream)
+    pa = common.add_cli_parser(rank_sub, "reverse-stream", "Fetch projected reverse-judge step snapshots for your submission.")
+    pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
+    pa.add_argument("submission_id", type=int, help="Reverse-judge submission ID whose step stream should be fetched.")
+    pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to read.")
+    pa.set_defaults(func=ranking_reverse_judge_stream)
     pa = common.add_cli_parser(rank_sub, "appeal", "Submit an appeal for one ranking submission.")
     pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
     pa.add_argument("submission_id", type=int, help="Ranking submission ID being appealed.")

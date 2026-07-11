@@ -15,11 +15,13 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,6 +32,101 @@ ROOT = Path(__file__).resolve().parents[2]
 ADMIN_CLI = ROOT / "skills" / "numoj-admin" / "scripts" / "numoj_admin.py"
 USER_CLI = ROOT / "skills" / "numoj-user" / "scripts" / "numoj_user.py"
 BASE_URL = "http://127.0.0.1:2025"
+QUALITY_GATE_STUB_PORT = 19101
+
+
+class _QualityGateStubHandler(BaseHTTPRequestHandler):
+    """仅用于 e2e：强制每次正式审核前先完成一次 hello。"""
+
+    protocol_version = "HTTP/1.1"
+    hello_count: dict[str, int] = {}
+    review_count: dict[str, int] = {}
+    recovery_healthy = False
+
+    def log_message(self, _format: str, *args: Any) -> None:
+        return
+
+    def _reply(self, status: int, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            self._reply(400, {"error": "invalid json"})
+            return
+        api_key = self.headers.get("x-api-key") or ""
+        allowed_models = {
+            "quality-pool-secret": "fake-quality-model",
+            "recovering-quality-secret": "recovering-quality-model",
+        }
+        if (self.path != "/v1/messages"
+                or allowed_models.get(api_key) != payload.get("model")):
+            self._reply(401, {"error": "wrong endpoint configuration"})
+            return
+        messages = payload.get("messages") or []
+        last_content = messages[-1].get("content") if messages and isinstance(messages[-1], dict) else ""
+        if last_content == "hello" and not payload.get("system"):
+            if api_key == "recovering-quality-secret" and not type(self).recovery_healthy:
+                self._reply(503, {"error": "temporarily unhealthy"})
+                return
+            type(self).hello_count[api_key] = type(self).hello_count.get(api_key, 0) + 1
+            self._reply(200, {"content": [{"type": "text", "text": "hello"}]})
+            return
+        if type(self).hello_count.get(api_key, 0) <= type(self).review_count.get(api_key, 0):
+            self._reply(409, {"error": "hello required before review"})
+            return
+        type(self).review_count[api_key] = type(self).review_count.get(api_key, 0) + 1
+        package_text = str(last_content or "")
+        rejected = "quality_gate_reject.txt" in package_text
+        result = {
+            "passed": not rejected,
+            "summary": (
+                "命中私有审核标准：solution 和 judge 不得隐藏私有配对密码"
+                if rejected else "题目包通过质量审核"
+            ),
+            "violations": ([{
+                "rule": "solution 和 judge 不得隐藏私有配对密码",
+                "reason": "发现测试用违规标记",
+                "evidence": [{
+                    "path": "quality_gate_reject.txt",
+                    "line": 1,
+                    "excerpt": "fake gate rejection marker",
+                }],
+            }] if rejected else []),
+        }
+        self._reply(200, {
+            "content": [{
+                "type": "text",
+                "text": json.dumps(result, ensure_ascii=False),
+            }],
+        })
+
+
+def _start_quality_gate_stub() -> tuple[ThreadingHTTPServer, threading.Thread]:
+    _QualityGateStubHandler.hello_count = {}
+    _QualityGateStubHandler.review_count = {}
+    _QualityGateStubHandler.recovery_healthy = False
+    try:
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", QUALITY_GATE_STUB_PORT),
+            _QualityGateStubHandler,
+        )
+    except OSError as exc:
+        pytest.fail(f"Could not start quality-gate e2e stub: {exc}")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def set_quality_gate_stub_recovery_healthy(healthy: bool) -> None:
+    _QualityGateStubHandler.recovery_healthy = bool(healthy)
 
 
 def judger_image_name() -> str:
@@ -131,12 +228,14 @@ def local_numoj_server() -> str:
     env["OJ_LIVE_AI"] = "0"
     env["NUMOJ_FAKE_AGENT_JUDGE"] = "1"
     env["NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS"] = "0"
+    env["NUMOJ_FAKE_REVERSE_JUDGE"] = "1"
     env["NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT"] = '{"score": 1, "comment": "本地 e2e 假图片批改通过。"}'
     env["NUMOJ_FAKE_WRITTEN_HOMEWORK_SCORE"] = "5"
     env["NUMOJ_FAKE_WRITTEN_HOMEWORK_COMMENT"] = "本地 e2e 假书面批改通过。"
     env["NUMOJ_FAKE_PROMPTLY_REVIEW_REQUIRED_TERMS"] = '["monotonic deque", "expired index"]'
     env["NUMOJ_FAKE_PROMPTLY_REVIEW_REPLY"] = "Please explain the monotonic deque and expired index handling."
     env["NUMOJ_FAKE_PROMPTLY_CODE"] = "print('hello')\n"
+    quality_gate_server, quality_gate_thread = _start_quality_gate_stub()
     web_proc = subprocess.Popen(
         [sys.executable, "-B", "oj.py"],
         cwd=ROOT,
@@ -176,6 +275,9 @@ def local_numoj_server() -> str:
     finally:
         _terminate_process(celery_proc)
         _terminate_process(web_proc)
+        quality_gate_server.shutdown()
+        quality_gate_server.server_close()
+        quality_gate_thread.join(timeout=5)
 
 
 class CliResult:
@@ -346,6 +448,24 @@ def get_ranking_appeal_id(submission_id: int) -> int:
     if not row:
         pytest.fail(f"Ranking appeal for submission {submission_id} was not found.")
     return int(row["id"])
+
+
+def count_ranking_endpoints(competition_id: int) -> int:
+    """仅供删除比赛 e2e 断言：确认含密钥的端点行没有成为孤儿。"""
+    from oj_modules import db_services
+
+    conn = db_services.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM ranking_agent_judge_endpoints "
+                "WHERE competition_id=%s",
+                (int(competition_id),),
+            )
+            row = cur.fetchone() or {}
+    finally:
+        conn.close()
+    return int(row.get("n") or 0)
 
 
 def thread_id_from_create(payload: dict[str, Any]) -> int:

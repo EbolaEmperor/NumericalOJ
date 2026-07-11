@@ -514,6 +514,195 @@ def test_admin_ranking_detail_description_tab_keeps_description(monkeypatch, cap
     assert "description_chars" not in out["competition"]
 
 
+def test_admin_ranking_detail_projects_quality_gate_configuration(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    payload = {
+        "success": True,
+        "competition": {
+            "id": 1,
+            "title": "反向赛",
+            "reverse_quality_gate_enabled": 1,
+            "reverse_quality_gate_prompt": "不得隐藏私有密码",
+        },
+        "quality_gate_endpoints": [
+            {
+                "id": 8,
+                "harness": "codex",
+                "base_url": "http://quality.local",
+                "model": "quality-model",
+                "status": "enabled",
+                "has_key": True,
+            }
+        ],
+    }
+    monkeypatch.setattr(fake_client, "request", lambda *args, **kwargs: _PayloadResponse(payload))
+    monkeypatch.setitem(cli.ranking_detail.__globals__, "client_from_args", lambda _args: fake_client)
+
+    cli.ranking_detail(Namespace(competition_id=1, tab="edit", full=False))
+
+    out = cli.json.loads(capsys.readouterr().out)
+    assert out["competition"]["reverse_quality_gate_enabled"] == 1
+    assert out["competition"]["reverse_quality_gate_prompt"] == "不得隐藏私有密码"
+    assert out["quality_gate_endpoints"][0]["has_key"] is True
+    assert "api_key" not in out["quality_gate_endpoints"][0]
+
+
+def test_admin_quality_gate_commands_reuse_file_and_env_secret_inputs(monkeypatch, capsys, tmp_path):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    prompt_path = tmp_path / "quality-prompt.txt"
+    prompt_path.write_text("不得隐藏私有协议。", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("QUALITY_GATE_KEY=secret-from-env\n", encoding="utf-8")
+    endpoints_path = tmp_path / "quality-endpoints.json"
+    endpoints_path.write_text(
+        '[{"harness":"codex","base_url":"http://quality.local",'
+        '"api_key_env":"QUALITY_GATE_KEY","model":"quality-model",'
+        '"concurrency_limit":2,"status":"enabled"}]',
+        encoding="utf-8",
+    )
+    for func in (
+        cli.ranking_save_quality_gate,
+        cli.ranking_save_quality_gate_endpoints,
+        cli.ranking_save_quality_gate_endpoint,
+    ):
+        monkeypatch.setitem(func.__globals__, "client_from_args", lambda _args: fake_client)
+
+    cli.ranking_save_quality_gate(Namespace(
+        competition_id=3,
+        enabled=False,
+        prompt=f"@{prompt_path}",
+    ))
+    cli.ranking_save_quality_gate_endpoints(Namespace(
+        competition_id=3,
+        endpoints=f"@{endpoints_path}",
+        env_file=str(env_path),
+    ))
+    cli.ranking_save_quality_gate_endpoint(Namespace(
+        competition_id=3,
+        harness="claude_code",
+        base_url_value="http://single-quality.local",
+        api_key=None,
+        api_key_env="QUALITY_GATE_KEY",
+        env_file=str(env_path),
+        model="single-quality-model",
+        concurrency_limit=1,
+        status="paused",
+    ))
+    capsys.readouterr()
+
+    assert [request[1] for request in fake_client.requests] == [
+        "/ranking/3/reverse_judge/quality_gate",
+        "/ranking/3/reverse_judge/quality_gate",
+        "/ranking/3/reverse_judge/quality_gate",
+    ]
+    assert fake_client.requests[0][2]["json"] == {
+        "enabled": False,
+        "prompt": "不得隐藏私有协议。",
+    }
+    assert fake_client.requests[1][2]["json"]["endpoints"][0]["api_key"] == "secret-from-env"
+    assert "api_key_env" not in fake_client.requests[1][2]["json"]["endpoints"][0]
+    assert fake_client.requests[2][2]["json"]["endpoints"] == [
+        {
+            "harness": "claude_code",
+            "base_url": "http://single-quality.local",
+            "api_key": "secret-from-env",
+            "model": "single-quality-model",
+            "concurrency_limit": 1,
+            "status": "paused",
+        }
+    ]
+
+
+def test_admin_quality_gate_endpoint_commands_require_explicit_http_url(monkeypatch):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    for func in (
+        cli.ranking_save_quality_gate_endpoints,
+        cli.ranking_save_quality_gate_endpoint,
+    ):
+        monkeypatch.setitem(func.__globals__, "client_from_args", lambda _args: fake_client)
+
+    invalid_lists = (
+        '[{"harness":"opencode","api_key":"secret","model":"gate-model"}]',
+        '[{"harness":"opencode","base_url":"ftp://quality.local",'
+        '"api_key":"secret","model":"gate-model"}]',
+    )
+    for endpoints in invalid_lists:
+        try:
+            cli.ranking_save_quality_gate_endpoints(Namespace(
+                competition_id=3,
+                endpoints=endpoints,
+                env_file=None,
+            ))
+        except cli.CliError as exc:
+            assert "base_url" in str(exc)
+        else:
+            raise AssertionError("quality-gate endpoint without an HTTP URL was accepted")
+
+    try:
+        cli.ranking_save_quality_gate_endpoint(Namespace(
+            competition_id=3,
+            harness="opencode",
+            base_url_value="",
+            api_key="secret",
+            api_key_env=None,
+            env_file=None,
+            model="gate-model",
+            concurrency_limit=1,
+            status="enabled",
+        ))
+    except cli.CliError as exc:
+        assert "base_url" in str(exc)
+    else:
+        raise AssertionError("single quality-gate endpoint without a URL was accepted")
+
+    assert fake_client.requests == []
+
+
+def test_admin_reverse_snapshot_uses_step_key_and_projects_quality_verdict():
+    cli = _load_numoj_admin_cli_module()
+
+    projected = cli.ranking.necessary_reverse_judge_snapshot_payload({
+        "submission_id": 12,
+        "status": "Error",
+        "total_score": None,
+        "last_updated": "2026-07-10 12:00:00",
+        "steps": [
+            {
+                "step_key": "quality_gate",
+                "title": "质量门禁",
+                "status": "failed",
+                "result": {
+                    "passed": False,
+                    "verdict": "reject",
+                    "summary": "存在私有配对密码",
+                    "violations": ["solution 与 judge 使用未公开密码"],
+                    "private_debug": "must not leak",
+                },
+                "trace_messages": [{"text": "one"}],
+            }
+        ],
+    })
+
+    assert projected["last_updated"] == "2026-07-10 12:00:00"
+    assert projected["steps"] == [
+        {
+            "step_key": "quality_gate",
+            "title": "质量门禁",
+            "status": "failed",
+            "score": None,
+            "max_score": None,
+            "trace_messages_count": 1,
+            "passed": False,
+            "verdict": "reject",
+            "summary": "存在私有配对密码",
+            "violations": ["solution 与 judge 使用未公开密码"],
+        }
+    ]
+
+
 def test_admin_problem_edit_form_omits_large_text_fields(monkeypatch, capsys):
     cli = _load_numoj_admin_cli_module()
     fake_client = _FakeClient()
@@ -997,6 +1186,9 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["ranking", "save-rules", "1", '[{"name":"rule"}]'],
         ["ranking", "save-endpoints", "1", '[{"url":"http://model"}]'],
         ["ranking", "save-endpoint", "1", "--agent-base-url", "http://model", "--api-key", "key", "--model", "qwen"],
+        ["ranking", "save-quality-gate", "1", "--disabled", "--prompt", "审核提示"],
+        ["ranking", "save-quality-gate-endpoints", "1", "[]"],
+        ["ranking", "save-quality-gate-endpoint", "1", "--agent-base-url", "http://quality", "--api-key", "key", "--model", "qwen"],
         ["ranking", "batch-probe", "1", "--classes", "C1", "--template", "https://git/{username}"],
         ["ranking", "batch-status", "1", "job-1"],
         ["ranking", "batch-create", "1", "--template", "https://git/{username}", "--usernames", "alice"],

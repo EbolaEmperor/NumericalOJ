@@ -53,7 +53,7 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 - `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
-- `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams, submit/check appeals, and download own visible ranking submission files.
+- `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge four-step progress), submit/check appeals, and download own visible ranking submission files.
 
 This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
 
@@ -114,10 +114,15 @@ Submit and inspect a ranking competition:
 
 ```bash
 python3 scripts/numoj_user.py ranking submit <competition_id> --base-model "qwen3" --answer-file answer.json --code-zip code.zip
+python3 scripts/numoj_user.py ranking detail <reverse_competition_id> --tab submit
+python3 scripts/numoj_user.py ranking submit <reverse_competition_id> --code-zip reverse_problem.zip --agent-endpoint-id <answer_endpoint_id>
+python3 scripts/numoj_user.py ranking reverse-stream <reverse_competition_id> <submission_id> --max-lines 20
 python3 scripts/numoj_user.py ranking my-submissions <competition_id> --limit 5
 python3 scripts/numoj_user.py ranking leaderboard <competition_id> --limit 10
 python3 scripts/numoj_user.py ranking appeal-status <competition_id> <submission_id>
 ```
+
+For a reverse-judge submission, first read `answer_endpoints` from `ranking detail` and use one of its `id` values. This list contains only enabled answer-pool endpoints; quality-gate endpoints are selected automatically by the server and are never user-selectable.
 
 Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:
 

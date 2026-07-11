@@ -20,6 +20,7 @@ def _necessary_competition(
     *,
     include_description: bool = False,
     include_description_meta: bool = False,
+    include_quality_gate: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
@@ -50,6 +51,8 @@ def _necessary_competition(
     ]
     if include_description:
         keys.insert(3, "description")
+    if include_quality_gate:
+        keys.extend(("reverse_quality_gate_enabled", "reverse_quality_gate_prompt"))
     out = {key: row[key] for key in keys if key in row}
     if include_description_meta and not include_description and row.get("description"):
         out["description_chars"] = len(str(row.get("description") or ""))
@@ -147,12 +150,14 @@ def necessary_ranking_detail_payload(payload: Any, *, include_description: bool 
             payload.get("competition"),
             include_description=include_description,
             include_description_meta=True,
+            include_quality_gate=True,
         )
     for key in (
         "tab",
         "submission_method",
         "judge_ready",
         "agent_judge_ready",
+        "quality_gate_ready",
         "can_submit",
         "submit_block_reason",
         "submit_quota",
@@ -180,6 +185,8 @@ def necessary_ranking_detail_payload(payload: Any, *, include_description: bool 
         necessary["judge_rules"] = payload.get("judge_rules") or []
     if "aj_endpoints" in payload:
         necessary["aj_endpoints"] = payload.get("aj_endpoints") or []
+    if "quality_gate_endpoints" in payload:
+        necessary["quality_gate_endpoints"] = payload.get("quality_gate_endpoints") or []
     return necessary
 
 
@@ -269,7 +276,18 @@ def necessary_reverse_judge_snapshot_payload(event: Any) -> Any:
     if not isinstance(event, dict):
         return necessary_ranking_stream_event_payload(event)
     out: Dict[str, Any] = {}
-    for key in ("submission_id", "competition_id", "username", "status", "score", "error_message", "updated_at"):
+    for key in (
+        "submission_id",
+        "competition_id",
+        "username",
+        "status",
+        "total_score",
+        "max_score",
+        "score",
+        "error_message",
+        "last_updated",
+        "updated_at",
+    ):
         if event.get(key) not in (None, ""):
             out[key] = event[key]
     steps = []
@@ -277,16 +295,21 @@ def necessary_reverse_judge_snapshot_payload(event: Any) -> Any:
         if not isinstance(step, dict):
             continue
         result = step.get("result") if isinstance(step.get("result"), dict) else {}
+        step_key = step.get("step_key")
         item = {
+            "step_key": step_key,
             "title": step.get("title"),
             "status": step.get("status"),
-            "score": result.get("score"),
-            "max_score": result.get("max_score"),
+            "score": step.get("score") if step.get("score") is not None else result.get("score"),
+            "max_score": step.get("max_score") if step.get("max_score") is not None else result.get("max_score"),
             "trace_messages_count": len(step.get("trace_messages") or []),
         }
-        step_key = step.get("key") or step.get("step")
-        if step_key:
-            item["key"] = step_key
+        if step.get("error_message"):
+            item["error_message"] = step["error_message"]
+        if step_key == "quality_gate":
+            for key in ("passed", "verdict", "summary", "violations"):
+                if key in result:
+                    item[key] = result[key]
         steps.append(item)
     if steps:
         out["steps"] = steps
@@ -610,6 +633,73 @@ def ranking_save_endpoint(args: argparse.Namespace) -> None:
     if args.orchestration_mode is not None:
         payload["orchestration_mode"] = args.orchestration_mode
     resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/endpoints", json=payload)
+    print_or_save_response(resp)
+
+
+def ranking_save_quality_gate(args: argparse.Namespace) -> None:
+    payload: Dict[str, Any] = {}
+    if args.enabled is not None:
+        payload["enabled"] = bool(args.enabled)
+    if args.prompt is not None:
+        payload["prompt"] = read_text_value(args.prompt)
+    if not payload:
+        raise CliError("Quality-gate configuration requires --enabled, --disabled, or --prompt.")
+    resp = client_from_args(args).request(
+        "POST",
+        f"/ranking/{args.competition_id}/reverse_judge/quality_gate",
+        json=payload,
+    )
+    print_or_save_response(resp)
+
+
+def _require_quality_gate_endpoint_urls(endpoints: List[Any]) -> List[Dict[str, Any]]:
+    """质量门禁始终直连配置的模型 API，不能沿用主池 OpenCode 的固定端点。"""
+    validated: List[Dict[str, Any]] = []
+    for index, endpoint in enumerate(endpoints, start=1):
+        if not isinstance(endpoint, dict):
+            raise CliError(f"Quality-gate endpoint #{index} must be a JSON object.")
+        base_url = str(endpoint.get("base_url") or "").strip()
+        if not base_url:
+            raise CliError(f"Quality-gate endpoint #{index} requires a non-empty base_url.")
+        if not base_url.startswith(("http://", "https://")):
+            raise CliError(f"Quality-gate endpoint #{index} base_url must start with http:// or https://.")
+        normalized = dict(endpoint)
+        normalized["base_url"] = base_url
+        validated.append(normalized)
+    return validated
+
+
+def ranking_save_quality_gate_endpoints(args: argparse.Namespace) -> None:
+    endpoints = parse_json_value(args.endpoints)
+    if not isinstance(endpoints, list):
+        raise CliError("Quality-gate endpoints must be a JSON array.")
+    endpoints = [
+        _resolve_endpoint_secret_fields(endpoint, getattr(args, "env_file", None))
+        for endpoint in endpoints
+    ]
+    endpoints = _require_quality_gate_endpoint_urls(endpoints)
+    resp = client_from_args(args).request(
+        "POST",
+        f"/ranking/{args.competition_id}/reverse_judge/quality_gate",
+        json={"endpoints": endpoints},
+    )
+    print_or_save_response(resp)
+
+
+def ranking_save_quality_gate_endpoint(args: argparse.Namespace) -> None:
+    endpoint = _require_quality_gate_endpoint_urls([{
+        "harness": args.harness,
+        "base_url": args.base_url_value,
+        "api_key": _endpoint_api_key_from_args(args),
+        "model": args.model,
+        "concurrency_limit": args.concurrency_limit,
+        "status": args.status,
+    }])[0]
+    resp = client_from_args(args).request(
+        "POST",
+        f"/ranking/{args.competition_id}/reverse_judge/quality_gate",
+        json={"endpoints": [endpoint]},
+    )
     print_or_save_response(resp)
 
 
@@ -1003,6 +1093,53 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--reverse-finalize-timeout", type=int, help="Reverse-judge forced-finalization timeout in seconds.")
     pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="AI-judge orchestration mode.")
     pa.set_defaults(func=ranking_save_endpoint)
+    pa = add_cli_parser(rs, "save-quality-gate", "Save reverse-judge quality-gate policy and enabled state.")
+    pa.add_argument("competition_id", type=int, help="Reverse-judge competition ID to configure.")
+    enabled_group = pa.add_mutually_exclusive_group()
+    enabled_group.add_argument(
+        "--enabled",
+        dest="enabled",
+        action="store_true",
+        default=None,
+        help="Enable quality-gate review (requires a non-empty prompt and an enabled quality endpoint).",
+    )
+    enabled_group.add_argument(
+        "--disabled",
+        dest="enabled",
+        action="store_false",
+        default=None,
+        help="Disable quality-gate review.",
+    )
+    pa.add_argument("--prompt", help="Quality-gate review prompt, or @file to read it from a file.")
+    pa.set_defaults(func=ranking_save_quality_gate)
+    pa = add_cli_parser(
+        rs,
+        "save-quality-gate-endpoints",
+        "Replace the independently scheduled reverse-judge quality-gate endpoint pool.",
+    )
+    pa.add_argument("competition_id", type=int, help="Reverse-judge competition ID to configure.")
+    pa.add_argument(
+        "endpoints",
+        help="JSON array of quality endpoint objects, or @file; api_key_env and status=enabled|paused|disabled are supported.",
+    )
+    pa.add_argument("--env-file", help="Optional .env file used by endpoint api_key_env fields.")
+    pa.set_defaults(func=ranking_save_quality_gate_endpoints)
+    pa = add_cli_parser(
+        rs,
+        "save-quality-gate-endpoint",
+        "Replace the reverse-judge quality-gate pool with one endpoint.",
+    )
+    pa.add_argument("competition_id", type=int, help="Reverse-judge competition ID to configure.")
+    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode"], default="claude_code", help="Agent harness used by the quality endpoint.")
+    pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the quality-review model API.")
+    key_group = pa.add_mutually_exclusive_group(required=True)
+    key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")
+    key_group.add_argument("--api-key-env", help="Environment variable name holding the API key.")
+    pa.add_argument("--env-file", help="Optional .env file used with --api-key-env.")
+    pa.add_argument("--model", required=True, help="Model identifier used by the quality endpoint.")
+    pa.add_argument("--concurrency-limit", type=int, default=1, help="Maximum concurrent quality reviews for this endpoint.")
+    pa.add_argument("--status", choices=["enabled", "paused", "disabled"], default="enabled", help="Quality endpoint status.")
+    pa.set_defaults(func=ranking_save_quality_gate_endpoint)
     pa = add_cli_parser(rs, "batch-probe", "Preview Git repositories that would be used for batch ranking submissions.")
     pa.add_argument("competition_id", type=int, help="Competition ID for the batch probe.")
     pa.add_argument("--classes", required=True, help="Comma-separated class_en list to include.")
@@ -1042,7 +1179,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("competition_id", type=int, help="Competition ID that owns the bulk job.")
     pa.add_argument("job_id", help="Bulk job ID returned by bulk-start.")
     pa.set_defaults(func=ranking_bulk_status)
-    pa = add_cli_parser(rs, "rejudge-agent", "Requeue Agent-as-Judge evaluation for one ranking submission.")
+    pa = add_cli_parser(rs, "rejudge-agent", "Requeue Agent-as-Judge or reverse-judge evaluation for one ranking submission.")
     pa.add_argument("competition_id", type=int, help="Competition ID that owns the submission.")
     pa.add_argument("submission_id", type=int, help="Ranking submission ID to rejudge.")
     pa.set_defaults(func=ranking_rejudge_agent)

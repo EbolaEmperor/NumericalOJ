@@ -963,6 +963,8 @@ CREATE TABLE `ranking_competitions` (
   `agent_judge_model` varchar(128) DEFAULT NULL,
   `agent_judge_timeout_seconds` int NOT NULL DEFAULT '1800',
   `reverse_judge_finalize_timeout_seconds` int NOT NULL DEFAULT '180',
+  `reverse_quality_gate_enabled` tinyint(1) NOT NULL DEFAULT '0',
+  `reverse_quality_gate_prompt` mediumtext,
   `agent_judge_orchestration_mode` varchar(32) NOT NULL DEFAULT 'single',
   `submit_limit_per_window` int DEFAULT NULL,
   `limit_window_start` datetime DEFAULT NULL,
@@ -1180,6 +1182,7 @@ DROP TABLE IF EXISTS `ranking_agent_judge_endpoints`;
 CREATE TABLE `ranking_agent_judge_endpoints` (
   `id` int NOT NULL AUTO_INCREMENT,
   `competition_id` int NOT NULL,
+  `pool_kind` varchar(32) NOT NULL DEFAULT 'primary',
   `harness` varchar(32) NOT NULL DEFAULT 'claude_code',
   `base_url` varchar(512) NOT NULL,
   `api_key` varchar(512) NOT NULL,
@@ -1190,7 +1193,8 @@ CREATE TABLE `ranking_agent_judge_endpoints` (
   `ordering` int NOT NULL DEFAULT '0',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_aje_comp` (`competition_id`)
+  KEY `idx_aje_comp` (`competition_id`),
+  KEY `idx_aje_comp_pool` (`competition_id`,`pool_kind`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

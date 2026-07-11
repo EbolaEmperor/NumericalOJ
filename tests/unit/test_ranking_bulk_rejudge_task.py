@@ -27,7 +27,6 @@ def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
         102: {'id': 102, 'competition_id': 7, 'username': 'u2'},
     }
     jobs = {'job1': {'competition_id': 7}}
-    cleared = []
     attempts = []
     statuses = []
     agent_task = _FakeAsyncTask()
@@ -39,7 +38,6 @@ def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
     monkeypatch.setattr(m, 'get_bulk_rejudge_job', lambda job_id: dict(jobs.get(job_id) or {}))
     monkeypatch.setattr(m, 'save_bulk_rejudge_job',
                         lambda job_id, payload: jobs.__setitem__(job_id, dict(payload)))
-    monkeypatch.setattr(m, 'clear_judge_results', lambda sid: cleared.append(int(sid)))
     monkeypatch.setattr(
         m,
         'begin_agent_judge_attempt',
@@ -57,15 +55,14 @@ def test_bulk_rejudge_requeues_original_agent_judge_submissions(monkeypatch):
     )
     task(7, [101, 102], 'job1', 'admin')
 
-    assert cleared == [101, 102]
     assert [c[1]['args'] for c in agent_task.calls] == [
         [101, 'attempt-101'],
         [102, 'attempt-102'],
     ]
     assert eval_task.calls == []
     assert attempts == [
-        (101, {'status': 'Queued', 'reset_result': True}),
-        (102, {'status': 'Queued', 'reset_result': True}),
+        (101, {'status': 'Queued', 'reset_result': True, 'clear_agent_results': True}),
+        (102, {'status': 'Queued', 'reset_result': True, 'clear_agent_results': True}),
     ]
     assert statuses == []
     assert jobs['job1']['status'] == 'finished'
@@ -81,8 +78,6 @@ def test_bulk_rejudge_requeues_original_reverse_judge_submissions(monkeypatch):
         201: {'id': 201, 'competition_id': 8, 'username': 'u1'},
     }
     jobs = {'job2': {'competition_id': 8}}
-    cleared_reverse = []
-    cleared_agent = []
     attempts = []
     reverse_task = _FakeAsyncTask()
     agent_task = _FakeAsyncTask()
@@ -94,8 +89,6 @@ def test_bulk_rejudge_requeues_original_reverse_judge_submissions(monkeypatch):
     monkeypatch.setattr(m, 'get_bulk_rejudge_job', lambda job_id: dict(jobs.get(job_id) or {}))
     monkeypatch.setattr(m, 'save_bulk_rejudge_job',
                         lambda job_id, payload: jobs.__setitem__(job_id, dict(payload)))
-    monkeypatch.setattr(m, 'clear_reverse_judge_steps', lambda sid: cleared_reverse.append(int(sid)))
-    monkeypatch.setattr(m, 'clear_judge_results', lambda sid: cleared_agent.append(int(sid)))
     monkeypatch.setattr(
         m,
         'begin_agent_judge_attempt',
@@ -109,12 +102,12 @@ def test_bulk_rejudge_requeues_original_reverse_judge_submissions(monkeypatch):
     )
     task(8, [201], 'job2', 'admin')
 
-    assert cleared_reverse == [201]
-    assert cleared_agent == []
     assert [c[1]['args'] for c in reverse_task.calls] == [[201, 'reverse-attempt-201']]
     assert agent_task.calls == []
     assert eval_task.calls == []
-    assert attempts == [(201, {'status': 'Queued', 'reset_result': True})]
+    assert attempts == [(201, {
+        'status': 'Queued', 'reset_result': True, 'clear_reverse_steps': True,
+    })]
     assert jobs['job2']['status'] == 'finished'
     assert jobs['job2']['requeued'] == 1
     assert jobs['job2']['requeued_ids'] == [201]
