@@ -343,6 +343,12 @@ def _run_claude_code(prompt):
             args.append("--fork-session")
     if model:
         args.extend(["--model", model])
+    # AJ_EFFORT 控制努力级别（low/medium/high/xhigh/max）。Anthropic claude CLI
+    # 用此标志联动 thinking token 预算；不设则用 CLI 默认。我们主要在 reverse
+    # 阶段把它调到 high/max，避免 AI 在 thinking 中途被 abort 而不输出代码。
+    effort = (os.environ.get("AJ_EFFORT") or "").strip().lower()
+    if effort:
+        args.extend(["--effort", effort])
     args.append(prompt)
     proc = _run(args)
     _record_session("claude_code", proc, resume_session_id)

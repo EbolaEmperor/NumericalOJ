@@ -83,6 +83,17 @@ from oj_modules.ranking_agent_judge_db import (
 
 
 RANKING_REVERSE_JUDGE_TASK_NAME = 'oj.ranking_reverse_judge'
+# Claude Code harness 在默认 effort 下可能在长 thinking 后被 abort（stop_reason
+# =abort，未输出任何工具调用或最终回复），让 agent_answer 误判 passed、提交空
+# 答案给 ai_judge 跑出 0 分。下面两个 knob 控制 reverse_solve 的努力级别：默认
+# 用 DEFAULT_EFFORT（保留成本），仅当检测到 abort 才升级到 RETRY_EFFORT 重试
+# 一次。两个值都需是 claude CLI 的 --effort 合法值（low/medium/high/xhigh/max）。
+REVERSE_DEFAULT_EFFORT = str(
+    getattr(_cfg, 'REVERSE_JUDGE_DEFAULT_EFFORT', 'high') or 'high'
+).strip().lower() or 'high'
+REVERSE_RETRY_EFFORT = str(
+    getattr(_cfg, 'REVERSE_JUDGE_RETRY_EFFORT', 'max') or 'max'
+).strip().lower() or 'max'
 REVERSE_PROGRESS_TTL = int(getattr(_cfg, 'REVERSE_JUDGE_PROGRESS_TTL', 21600))
 REVERSE_WORKSPACE_ROOT = getattr(
     _cfg, 'REVERSE_JUDGE_WORKSPACE_ROOT', 'ranking_uploads/reverse_judge_workspace',
@@ -1647,6 +1658,59 @@ def _read_session_id_from_workspace(ws):
     return str(data.get('session_id') or '').strip()
 
 
+def _detect_claude_stop_reason(trace_dir, phase='reverse_solve'):
+    """扫 trace_dir 内 claude session jsonl，返回最末 assistant 消息的 stop_reason。
+
+    AI 在 thinking 阶段被 Claude CLI 中止时 stop_reason='abort'，且不会输出任何
+    工具调用或最终文本。docker exec 退出码 0，整体被判 passed —— 实际 AI 没写
+    任何东西。本函数用于检测这种"静默 abort"，调用方可据此重试一次更高 effort。
+    """
+    project_dir = os.path.join(trace_dir, '.claude', 'projects', '-workspace')
+    if not os.path.isdir(project_dir):
+        return ''
+    candidates = []
+    try:
+        for name in os.listdir(project_dir):
+            if name.endswith('.jsonl'):
+                p = os.path.join(project_dir, name)
+                try:
+                    candidates.append((os.path.getmtime(p), p))
+                except OSError:
+                    pass
+    except OSError:
+        return ''
+    if not candidates:
+        return ''
+    candidates.sort(reverse=True)
+    for _mtime, path in candidates:
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get('type') or '').strip().lower() != 'assistant':
+                continue
+            msg = ev.get('message')
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get('role') or '').strip().lower() != 'assistant':
+                continue
+            stop = str(msg.get('stop_reason') or '').strip().lower()
+            if stop:
+                return stop
+    return ''
+
+
 def _latest_claude_session_id_from_container(container_name):
     find_cmd = (
         "python3 - <<'PY'\n"
@@ -1690,7 +1754,7 @@ def _merge_proc_output(*values):
 
 def _exec_reverse_harness_phase(
     container_name, ws, phase, prompt, timeout_s, on_tick=None,
-    resume_session_id='', fork_session=True, capture_dir=None,
+    resume_session_id='', fork_session=True, capture_dir=None, effort='',
 ):
     timeout_s = max(1, int(timeout_s))
     args = [
@@ -1705,6 +1769,9 @@ def _exec_reverse_harness_phase(
         args.extend(['-e', f'AJ_RESUME_SESSION_ID={resume_session_id}'])
     if not fork_session:
         args.extend(['-e', 'AJ_FORK_SESSION=0'])
+    effort = (effort or '').strip().lower()
+    if effort:
+        args.extend(['-e', f'AJ_EFFORT={effort}'])
     args.extend([
         container_name, 'bash', '-lc',
         'IFS= read -r -d "" AJ_PROMPT || true; export AJ_PROMPT; '
@@ -1859,7 +1926,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         proc = _exec_reverse_harness_phase(
             container_name, template_dir, 'reverse_solve',
             _reverse_prompt(), max(1, int(timeout_s)), on_tick=sync_trace,
-            capture_dir=trace_dir,
+            capture_dir=trace_dir, effort=REVERSE_DEFAULT_EFFORT,
         )
         sync_trace()
         if getattr(proc, 'aj_timed_out', False):
@@ -1899,6 +1966,51 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                 'error': error,
                 'trace_dir': trace_dir,
             }
+        # Claude Code 在默认 effort 下可能在 thinking 中途被 stop_reason=abort
+        # 中止（docker exec 退出码 0，但 AI 没写任何代码）。此时单一 reverse_solve
+        # 实际没有产出，直接判 passed 会让 ai_judge 拿空模板跑出 0 分。这里检测
+        # trace 里最末 assistant 事件的 stop_reason，若是 abort 则升级到
+        # REVERSE_RETRY_EFFORT 续跑同 session 一次，让模型继续推进；重试仍 abort
+        # 才认输，作为 Agent 退出码 0 + abort 报错。
+        if (
+            harness == HARNESS_CLAUDE_CODE
+            and proc.returncode == 0
+            and _detect_claude_stop_reason(trace_dir, phase='reverse_solve') == 'abort'
+        ):
+            session_id = _resolve_resume_session_id(
+                container_name, template_dir, harness,
+            )
+            if session_id:
+                retry_proc = _exec_reverse_harness_phase(
+                    container_name, template_dir, 'reverse_solve',
+                    '继续完成答案，从上次停止处接着写代码，不要再花时间思考。',
+                    max(1, int(timeout_s)), on_tick=sync_trace,
+                    capture_dir=trace_dir,
+                    resume_session_id=session_id, fork_session=False,
+                    effort=REVERSE_RETRY_EFFORT,
+                )
+                sync_trace()
+                # 重试若仍 abort 或退出码非 0，认输；否则用重试结果。
+                if retry_proc.returncode == 0 and _detect_claude_stop_reason(
+                    trace_dir, phase='reverse_solve',
+                ) != 'abort':
+                    proc = retry_proc
+                else:
+                    return {
+                        'ok': False,
+                        'stdout': _merge_proc_output(proc.stdout, retry_proc.stdout),
+                        'stderr': _merge_proc_output(proc.stderr, retry_proc.stderr),
+                        'error': 'Agent 思考被中止（abort）且重试未恢复',
+                        'trace_dir': trace_dir,
+                    }
+            else:
+                return {
+                    'ok': False,
+                    'stdout': proc.stdout or '',
+                    'stderr': proc.stderr or '',
+                    'error': 'Agent 思考被中止（abort）且未找到可恢复会话',
+                    'trace_dir': trace_dir,
+                }
         ok = proc.returncode == 0
         return {
             'ok': ok,
