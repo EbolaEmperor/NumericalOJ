@@ -317,6 +317,61 @@ def test_auth_status_without_cookie_reports_unauthenticated(monkeypatch, capsys,
     }
 
 
+def test_auth_status_without_config_reports_uninitialized(monkeypatch, capsys, tmp_path):
+    cli = _load_numoj_admin_cli_module()
+    monkeypatch.setattr(cli.auth, "load_config", lambda _path: {})
+
+    cli.auth.status(Namespace(config=tmp_path / "cfg.json", base_url=None, timeout=60.0))
+
+    assert cli.json.loads(capsys.readouterr().out) == {
+        "authenticated": False,
+        "admin": False,
+        "base_url": None,
+        "username": None,
+        "reason": "no_config",
+    }
+
+
+def test_auth_login_surfaces_html_error_message(monkeypatch, tmp_path):
+    cli = _load_numoj_admin_cli_module()
+
+    class _FailedLoginResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/html"}
+        text = '<div class="alert alert-danger" role="alert">用户名或密码错误</div>'
+
+    class _FailedLoginSession:
+        trust_env = False
+
+        class _Cookies:
+            def get_dict(self):
+                return {}
+
+        def __init__(self):
+            self.cookies = self._Cookies()
+
+        def post(self, *args, **kwargs):
+            return _FailedLoginResponse()
+
+    monkeypatch.setattr(cli.auth.requests, "Session", _FailedLoginSession)
+    args = Namespace(
+        config=tmp_path / "cfg.json",
+        login_base_url="http://oj",
+        base_url=None,
+        username="admin",
+        password="bad-password",
+        timeout=60.0,
+        prompt_base_url=False,
+    )
+
+    try:
+        cli.auth.login(args)
+    except cli.common.CliError as exc:
+        assert str(exc) == "Login failed. HTTP 200: 用户名或密码错误"
+    else:
+        raise AssertionError("failed HTML login should raise CliError")
+
+
 def test_homework_list_does_not_duplicate_homework_keys(monkeypatch, capsys):
     cli = _load_numoj_admin_cli_module()
     fake_client = _FakeClient()
