@@ -89,6 +89,7 @@
   var source = null;
   var snapshot = null;
   var activeStep = 'solution_check';
+  var activeStepManuallySelected = false;
   var agentAnswerDownloadUrl = '';
   var openDetails = Object.create(null);
   var agentTrace = window.AgentExecutionTrace.create({keyPrefix:'reverse-judge'});
@@ -117,22 +118,69 @@
       window.MathJax.typesetPromise(root ? [root] : undefined).catch(function(){});
     }
   }
-  function byKey(key){ return (snapshot && snapshot.steps || []).filter(function(s){ return s.step_key === key; })[0] || null; }
-  function shouldRenderStep(key, step){
+  // REVERSE_JUDGE_STEP_SELECTOR_START
+  function isReverseJudgeStepVisible(key, step){
     if (key !== 'quality_gate') return true;
     return !!step && step.status !== 'skipped' && !(step.result && step.result.skipped);
   }
-  function chooseActive(){
-    var current = byKey(activeStep);
-    if (current && shouldRenderStep(activeStep, current) && current.status !== 'pending') return;
-    var steps = snapshot && snapshot.steps || [];
-    for (var i=0;i<steps.length;i++){
-      if (shouldRenderStep(steps[i].step_key, steps[i]) && steps[i].status !== 'pending') {
-        activeStep = steps[i].step_key;
-        return;
+  function selectReverseJudgeStep(status, steps, currentStep, manuallySelected){
+    var ordered = Array.isArray(steps) ? steps.slice() : [];
+    ordered.sort(function(a, b){
+      var aOrder = Number(a && a.step_order);
+      var bOrder = Number(b && b.step_order);
+      if (!Number.isFinite(aOrder) || aOrder <= 0) aOrder = Infinity;
+      if (!Number.isFinite(bOrder) || bOrder <= 0) bOrder = Infinity;
+      return aOrder - bOrder;
+    });
+    function selectable(step){
+      return !!step && isReverseJudgeStepVisible(step.step_key, step) && step.status !== 'pending';
+    }
+    function findByKey(key){
+      for (var i=0;i<ordered.length;i++) if (ordered[i].step_key === key) return ordered[i];
+      return null;
+    }
+    function findLast(predicate){
+      for (var i=ordered.length - 1;i>=0;i--) if (predicate(ordered[i])) return ordered[i];
+      return null;
+    }
+
+    var current = findByKey(currentStep);
+    if (manuallySelected && selectable(current)) return currentStep;
+
+    var selected = null;
+    if (status === 'Error') {
+      selected = findLast(function(step){
+        return selectable(step) && (step.status === 'failed' || step.status === 'error');
+      });
+    } else if (status === 'Accepted') {
+      selected = findLast(selectable);
+    }
+    if (!selected) {
+      selected = findLast(function(step){
+        return selectable(step) && step.status === 'running';
+      });
+    }
+    if (!selected) selected = findLast(selectable);
+    if (!selected) {
+      for (var i=0;i<ordered.length;i++) {
+        if (isReverseJudgeStepVisible(ordered[i].step_key, ordered[i])) {
+          selected = ordered[i];
+          break;
+        }
       }
     }
-    activeStep = 'solution_check';
+    return selected ? selected.step_key : 'solution_check';
+  }
+  // REVERSE_JUDGE_STEP_SELECTOR_END
+  function byKey(key){ return (snapshot && snapshot.steps || []).filter(function(s){ return s.step_key === key; })[0] || null; }
+  function shouldRenderStep(key, step){ return isReverseJudgeStepVisible(key, step); }
+  function chooseActive(){
+    activeStep = selectReverseJudgeStep(
+      snapshot && snapshot.status,
+      snapshot && snapshot.steps,
+      activeStep,
+      activeStepManuallySelected
+    );
   }
   function tabMark(st){
     if (st === 'running') return '<span class="spinner-border spinner-border-sm" role="status"></span>';
@@ -290,6 +338,7 @@
     var tab = e.target.closest && e.target.closest('[data-rj-step]');
     if (tab && !tab.disabled) {
       activeStep = tab.getAttribute('data-rj-step');
+      activeStepManuallySelected = true;
       renderTabs();
       renderStepBody();
       return;
@@ -299,6 +348,7 @@
     var m = getModal(); if (!m) return;
     closeSource();
     activeStep = 'solution_check';
+    activeStepManuallySelected = false;
     agentAnswerDownloadUrl = btn.getAttribute('data-answer-download-url') || '';
     openDetails = Object.create(null);
     agentTrace.reset(null, {clear:false});
@@ -319,8 +369,14 @@
     source = new EventSource(url);
     source.addEventListener('progress', function(ev){ renderSnap(JSON.parse(ev.data)); });
     source.addEventListener('done', function(ev){ renderSnap(JSON.parse(ev.data)); closeSource(); });
-    source.addEventListener('timeout', function(ev){ try{ renderSnap(JSON.parse(ev.data)); }catch(_e){} closeSource(); });
-    source.addEventListener('error', function(){ closeSource(); });
+    source.addEventListener('timeout', function(ev){
+      try { renderSnap(JSON.parse(ev.data)); } catch (_e) {}
+      // 服务端会主动结束超长 SSE；不 close，让 EventSource 自动重连并续取进度。
+    });
+    source.addEventListener('error', function(){
+      // CONNECTING 表示浏览器正在自动重连。只有明确关闭时才清理本地引用。
+      if (source && source.readyState === EventSource.CLOSED) closeSource();
+    });
   });
   if (modalEl) modalEl.addEventListener('hidden.bs.modal', closeSource);
 })();

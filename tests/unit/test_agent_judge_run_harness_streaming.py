@@ -10,6 +10,8 @@ import sys
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "docker" / "agent_judge" / "run_harness"
@@ -97,6 +99,36 @@ def test_claude_audit_mode_is_bare_safe_and_read_tools_only(monkeypatch):
     assert "--fork-session" not in args
     assert all(forbidden not in ",".join(args) for forbidden in ("Bash", "Write", "Edit"))
     assert kwargs == {}
+
+
+@pytest.mark.parametrize(("configured", "expected"), [
+    (" HIGH ", "high"),
+    ("xhigh", "xhigh"),
+    ("turbo", None),
+    ("", None),
+])
+def test_claude_effort_argument_is_normalized_and_allowlisted(
+        monkeypatch, configured, expected):
+    module = _load_run_harness()
+    calls = []
+    monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "0")
+    monkeypatch.setenv("AJ_EFFORT", configured)
+    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
+    monkeypatch.setattr(
+        module, "_run",
+        lambda args, **kwargs: calls.append((list(args), kwargs)) or SimpleNamespace(
+            returncode=0, stdout="{}", stderr="",
+        ),
+    )
+    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
+
+    assert module._run_claude_code("solve") == 0
+
+    args, _kwargs = calls[0]
+    if expected is None:
+        assert "--effort" not in args
+    else:
+        assert args[args.index("--effort") + 1] == expected
 
 
 def test_codex_audit_mode_uses_read_only_sandbox_without_bypass(monkeypatch):

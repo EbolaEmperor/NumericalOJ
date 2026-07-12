@@ -19,6 +19,7 @@ SESSION_KEYS = {
     "session_id", "sessionId", "conversation_id", "conversationId",
     "thread_id", "threadId",
 }
+CLAUDE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def _prompt_from_env():
@@ -347,7 +348,7 @@ def _run_claude_code(prompt):
     # 用此标志联动 thinking token 预算；不设则用 CLI 默认。我们主要在 reverse
     # 阶段把它调到 high/max，避免 AI 在 thinking 中途被 abort 而不输出代码。
     effort = (os.environ.get("AJ_EFFORT") or "").strip().lower()
-    if effort:
+    if effort in CLAUDE_EFFORT_LEVELS:
         args.extend(["--effort", effort])
     args.append(prompt)
     proc = _run(args)

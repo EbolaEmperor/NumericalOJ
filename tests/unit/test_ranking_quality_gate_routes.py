@@ -42,6 +42,40 @@ def test_disabled_quality_gate_does_not_require_prompt_or_pool(monkeypatch):
     ) == ""
 
 
+def test_reverse_stream_timeout_covers_abort_retry_and_optional_gate():
+    comp = {
+        "scoring_script_timeout_seconds": 401,
+        "agent_judge_timeout_seconds": 2201,
+        "reverse_judge_finalize_timeout_seconds": 601,
+        "reverse_quality_gate_enabled": True,
+    }
+
+    assert routes._reverse_judge_stream_timeout_seconds(comp) == (
+        401 * 2
+        + 2201 * 2
+        + 601
+        + routes.REVERSE_QUALITY_GATE_TIMEOUT_DEFAULT
+        + routes.REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
+    )
+
+    comp["reverse_quality_gate_enabled"] = False
+    assert routes._reverse_judge_stream_timeout_seconds(comp) == (
+        401 * 2
+        + 2201 * 2
+        + 601
+        + routes.REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
+    )
+
+
+def test_reverse_stream_timeout_never_drops_below_previous_one_hour_floor():
+    assert routes._reverse_judge_stream_timeout_seconds({
+        "scoring_script_timeout_seconds": 5,
+        "agent_judge_timeout_seconds": 60,
+        "reverse_judge_finalize_timeout_seconds": 30,
+        "reverse_quality_gate_enabled": 0,
+    }) == routes.REVERSE_STREAM_MIN_TIMEOUT_SECONDS
+
+
 def test_quality_gate_partial_update_uses_atomic_merged_state_validation(monkeypatch):
     comp = {
         "id": 7,
@@ -382,6 +416,7 @@ def test_reverse_stream_projects_private_gate_result_for_submission_owner(monkey
         "get_ranking_submission",
         lambda submission_id: {"id": submission_id, "competition_id": 7, "username": "u1"},
     )
+    monkeypatch.setattr(routes, "get_competition", lambda competition_id: {"id": competition_id})
     monkeypatch.setattr(routes, "get_reverse_judge_progress_snapshot", lambda sid: snapshot)
 
     with _app().test_request_context():
@@ -408,6 +443,7 @@ def test_reverse_stream_keeps_gate_internals_for_admin(monkeypatch):
         "get_ranking_submission",
         lambda submission_id: {"id": submission_id, "competition_id": 7, "username": "u1"},
     )
+    monkeypatch.setattr(routes, "get_competition", lambda competition_id: {"id": competition_id})
     monkeypatch.setattr(routes, "get_reverse_judge_progress_snapshot", lambda sid: snapshot)
 
     with _app().test_request_context():

@@ -151,6 +151,22 @@ ELO_MAX_PAIRS_PER_ROUND_RANGE = (1, 8)   # 与 ranking_elo_tasks.MAX_PAIRS_PER_R
 SCORING_SCRIPT_TIMEOUT_RANGE = (5, 600)
 REVERSE_FINALIZE_TIMEOUT_DEFAULT = 180
 REVERSE_FINALIZE_TIMEOUT_RANGE = (30, 7200)
+REVERSE_JUDGE_SCRIPT_TIMEOUT_DEFAULT = int(
+    getattr(_cfg, 'REVERSE_JUDGE_SCRIPT_TIMEOUT', 300)
+)
+REVERSE_AGENT_TIMEOUT_DEFAULT = int(
+    getattr(_cfg, 'AGENT_JUDGE_DEFAULT_TIMEOUT', 1800)
+)
+REVERSE_QUALITY_GATE_TIMEOUT_DEFAULT = max(
+    10, int(getattr(_cfg, 'REVERSE_QUALITY_GATE_TIMEOUT_SECONDS', 300))
+)
+REVERSE_STREAM_MIN_TIMEOUT_SECONDS = 3600
+# 与任务侧的两个模型槽位 TTL 余量保持同一数量级，覆盖容器收尾、SSE 发布延迟
+# 以及 abort 重试前后的状态切换。
+REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS = max(
+    120,
+    int(getattr(_cfg, 'REVERSE_JUDGE_STREAM_TIMEOUT_BUFFER_SECONDS', 1200)),
+)
 
 
 def _normalize_answer_format(value, default='json'):
@@ -195,6 +211,35 @@ def _quality_gate_endpoint_ready(competition_id):
 def _reverse_quality_gate_enabled(comp):
     value = (comp or {}).get('reverse_quality_gate_enabled')
     return value is True or str(value or '').strip().lower() in ('1', 'true', 'on', 'yes')
+
+
+def _reverse_judge_stream_timeout_seconds(comp):
+    """返回覆盖反向评测完整合法执行路径的 SSE 等待上限。"""
+    comp = comp or {}
+    judge_timeout = int(
+        comp.get('scoring_script_timeout_seconds')
+        or REVERSE_JUDGE_SCRIPT_TIMEOUT_DEFAULT
+    )
+    agent_timeout = int(
+        comp.get('agent_judge_timeout_seconds')
+        or REVERSE_AGENT_TIMEOUT_DEFAULT
+    )
+    finalize_timeout = int(
+        comp.get('reverse_judge_finalize_timeout_seconds')
+        or REVERSE_FINALIZE_TIMEOUT_DEFAULT
+    )
+    quality_gate_timeout = (
+        REVERSE_QUALITY_GATE_TIMEOUT_DEFAULT
+        if _reverse_quality_gate_enabled(comp) else 0
+    )
+    legal_upper_bound = (
+        judge_timeout * 2
+        + agent_timeout * 2
+        + finalize_timeout
+        + quality_gate_timeout
+        + REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
+    )
+    return max(REVERSE_STREAM_MIN_TIMEOUT_SECONDS, legal_upper_bound)
 
 
 def _reverse_quality_gate_block_reason(competition_id, comp):
@@ -2578,6 +2623,9 @@ def ranking_reverse_judge_stream(competition_id, submission_id):
         return Response('forbidden', status=403)
 
     include_internal = user.get('is_admin') == 1
+    stream_timeout = _reverse_judge_stream_timeout_seconds(
+        get_competition(competition_id) or {},
+    )
 
     def _encode(name, payload):
         projected = _project_reverse_judge_snapshot(
@@ -2609,14 +2657,14 @@ def ranking_reverse_judge_stream(competition_id, submission_id):
                 if s and s.get('status') not in ('Judging', 'Pending', 'Queued'):
                     yield _encode('done', s)
                     return
-                if _t.time() - start > 3600:
+                if _t.time() - start > stream_timeout:
                     yield _encode('timeout', s or snap)
                     return
                 _t.sleep(2)
         try:
             while True:
                 msg = pubsub.get_message(timeout=15.0)
-                if _t.time() - start > 3600:
+                if _t.time() - start > stream_timeout:
                     yield _encode('timeout', build_reverse_judge_snapshot(submission_id) or snap)
                     return
                 if not msg:
