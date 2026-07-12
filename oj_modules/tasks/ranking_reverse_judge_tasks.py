@@ -83,17 +83,28 @@ from oj_modules.ranking_agent_judge_db import (
 
 
 RANKING_REVERSE_JUDGE_TASK_NAME = 'oj.ranking_reverse_judge'
+_CLAUDE_EFFORT_LEVELS = frozenset(('low', 'medium', 'high', 'xhigh', 'max'))
+
+
+def _normalize_claude_effort(value, fallback=''):
+    normalized = str(value or '').strip().lower()
+    if normalized in _CLAUDE_EFFORT_LEVELS:
+        return normalized
+    normalized_fallback = str(fallback or '').strip().lower()
+    return normalized_fallback if normalized_fallback in _CLAUDE_EFFORT_LEVELS else ''
+
+
 # Claude Code harness 在默认 effort 下可能在长 thinking 后被 abort（stop_reason
 # =abort，未输出任何工具调用或最终回复），让 agent_answer 误判 passed、提交空
 # 答案给 ai_judge 跑出 0 分。下面两个 knob 控制 reverse_solve 的努力级别：默认
 # 用 DEFAULT_EFFORT（保留成本），仅当检测到 abort 才升级到 RETRY_EFFORT 重试
 # 一次。两个值都需是 claude CLI 的 --effort 合法值（low/medium/high/xhigh/max）。
-REVERSE_DEFAULT_EFFORT = str(
-    getattr(_cfg, 'REVERSE_JUDGE_DEFAULT_EFFORT', 'high') or 'high'
-).strip().lower() or 'high'
-REVERSE_RETRY_EFFORT = str(
-    getattr(_cfg, 'REVERSE_JUDGE_RETRY_EFFORT', 'max') or 'max'
-).strip().lower() or 'max'
+REVERSE_DEFAULT_EFFORT = _normalize_claude_effort(
+    getattr(_cfg, 'REVERSE_JUDGE_DEFAULT_EFFORT', 'high'), 'high',
+)
+REVERSE_RETRY_EFFORT = _normalize_claude_effort(
+    getattr(_cfg, 'REVERSE_JUDGE_RETRY_EFFORT', 'max'), 'max',
+)
 REVERSE_PROGRESS_TTL = int(getattr(_cfg, 'REVERSE_JUDGE_PROGRESS_TTL', 21600))
 REVERSE_WORKSPACE_ROOT = getattr(
     _cfg, 'REVERSE_JUDGE_WORKSPACE_ROOT', 'ranking_uploads/reverse_judge_workspace',
@@ -1658,7 +1669,7 @@ def _read_session_id_from_workspace(ws):
     return str(data.get('session_id') or '').strip()
 
 
-def _detect_claude_stop_reason(trace_dir, phase='reverse_solve'):
+def _detect_claude_stop_reason(trace_dir):
     """扫 trace_dir 内 claude session jsonl，返回最末 assistant 消息的 stop_reason。
 
     AI 在 thinking 阶段被 Claude CLI 中止时 stop_reason='abort'，且不会输出任何
@@ -1705,9 +1716,9 @@ def _detect_claude_stop_reason(trace_dir, phase='reverse_solve'):
                 continue
             if str(msg.get('role') or '').strip().lower() != 'assistant':
                 continue
-            stop = str(msg.get('stop_reason') or '').strip().lower()
-            if stop:
-                return stop
+            # 这是按文件时间和行序找到的最新合法 assistant；即使字段为空也
+            # 必须立即返回，不能继续捞到更旧消息的 abort 而触发错误恢复。
+            return str(msg.get('stop_reason') or '').strip().lower()
     return ''
 
 
@@ -1769,7 +1780,7 @@ def _exec_reverse_harness_phase(
         args.extend(['-e', f'AJ_RESUME_SESSION_ID={resume_session_id}'])
     if not fork_session:
         args.extend(['-e', 'AJ_FORK_SESSION=0'])
-    effort = (effort or '').strip().lower()
+    effort = _normalize_claude_effort(effort)
     if effort:
         args.extend(['-e', f'AJ_EFFORT={effort}'])
     args.extend([
@@ -1975,7 +1986,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         if (
             harness == HARNESS_CLAUDE_CODE
             and proc.returncode == 0
-            and _detect_claude_stop_reason(trace_dir, phase='reverse_solve') == 'abort'
+            and _detect_claude_stop_reason(trace_dir) == 'abort'
         ):
             session_id = _resolve_resume_session_id(
                 container_name, template_dir, harness,
@@ -1991,9 +2002,8 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                 )
                 sync_trace()
                 # 重试若仍 abort 或退出码非 0，认输；否则用重试结果。
-                if retry_proc.returncode == 0 and _detect_claude_stop_reason(
-                    trace_dir, phase='reverse_solve',
-                ) != 'abort':
+                retry_stop_reason = _detect_claude_stop_reason(trace_dir)
+                if retry_proc.returncode == 0 and retry_stop_reason not in ('', 'abort'):
                     proc = retry_proc
                 else:
                     return {
@@ -2372,48 +2382,52 @@ def _redact_quality_gate_value(value, sensitive_values):
 
 
 def _extract_last_quality_gate_json(text):
-    """从可能含自然语言说明的输出里抽取最末一个含 passed 字段的 JSON 对象。
+    """抽取位于回复末尾、含 passed 字段的 JSON 对象。
 
     Claude Code 偶尔会在 JSON 之前输出一段解释性散文（"Based on my
     thorough review..."），导致 json.loads(raw) 在第 1 行第 1 列就失败。
-    这里用状态机扫描 raw，记录所有顶层平衡 {...} 片段，按出现顺序取最后
-    一个能 json.loads 成 dict 且含 passed 键的对象。
+    前文还可能带未闭合的引号或花括号，因此不能从头维护一套全局 JSON 状态；
+    这里从回复末尾反向配对最终对象，扫描到根对象起点就停止。为避免 Agent 在
+    verdict 后继续输出散文而被静默忽略，只允许尾随空白或 Markdown 闭合围栏。
     """
-    raw = str(text or '')
-    candidates = []
+    raw = str(text or '').rstrip()
+    if raw.endswith('```'):
+        raw = raw[:-3].rstrip()
+    if not raw.endswith('}'):
+        return None
+
     depth = 0
-    in_str = False
-    esc = False
-    start = -1
-    for i, ch in enumerate(raw):
-        if esc:
-            esc = False
+    in_string = False
+    for index in range(len(raw) - 1, -1, -1):
+        char = raw[index]
+        if char == '"':
+            preceding_slashes = 0
+            slash_index = index - 1
+            while slash_index >= 0 and raw[slash_index] == '\\':
+                preceding_slashes += 1
+                slash_index -= 1
+            if preceding_slashes % 2 == 0:
+                in_string = not in_string
             continue
-        if in_str:
-            if ch == '\\':
-                esc = True
-            elif ch == '"':
-                in_str = False
+        if in_string:
             continue
-        if ch == '"':
-            in_str = True
-        elif ch == '{':
-            if depth == 0:
-                start = i
+        if char == '}':
             depth += 1
-        elif ch == '}':
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start >= 0:
-                    candidates.append(raw[start:i + 1])
-                    start = -1
-    for cand in reversed(candidates):
-        try:
-            obj = json.loads(cand)
-        except Exception:
             continue
+        if char != '{':
+            continue
+        depth -= 1
+        if depth != 0:
+            if depth < 0:
+                return None
+            continue
+        try:
+            obj = json.loads(raw[index:])
+        except Exception:
+            return None
         if isinstance(obj, dict) and isinstance(obj.get('passed'), bool):
             return obj
+        return None
     return None
 
 
@@ -2961,7 +2975,12 @@ def _run_reverse_judge(task, client, submission_id, attempt_id, competition,
             submission_id, attempt_id, STEP_AGENT, endpoint_error,
         )
 
-    answer_ttl = agent_timeout + finalize_timeout + judge_timeout + JUDGE_SLOT_TTL_BUFFER
+    # 首轮成功退出但 trace 标记 abort 时，会以同一 session 再运行一个完整的
+    # agent_timeout；槽位必须覆盖该次恢复，不能在 Agent 仍使用端点时提前释放。
+    answer_ttl = (
+        agent_timeout * 2 + finalize_timeout + judge_timeout
+        + JUDGE_SLOT_TTL_BUFFER
+    )
     endpoint, slot_key, slot_token = _acquire_endpoint_slot(
         client, [endpoint], submission_id, answer_ttl,
     )
@@ -3111,7 +3130,7 @@ def register_ranking_reverse_judge_task(celery_app):
         )
         # 整体幂等锁覆盖完整四阶段上界；两个模型槽位则只在各自阶段短暂持有。
         ttl = (
-            judge_timeout * 2 + agent_timeout + finalize_timeout
+            judge_timeout * 2 + agent_timeout * 2 + finalize_timeout
             + (REVERSE_QUALITY_GATE_TIMEOUT if _quality_gate_enabled(competition) else 0)
             + JUDGE_SLOT_TTL_BUFFER * 2
         )

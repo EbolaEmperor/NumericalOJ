@@ -679,6 +679,34 @@ def test_parse_quality_gate_result_accepts_strict_json_and_fenced_json():
     assert rejected["violations"][0]["evidence"][0]["line"] == 17
 
 
+@pytest.mark.parametrize("prefix", [
+    "审核说明：已经逐项检查。\n",
+    '前文有未闭合引号 " 和花括号 {，但 verdict 独立有效。\n',
+    "说明里甚至有残缺 JSON：{\"foo\": 1。\n```json\n",
+])
+def test_parse_quality_gate_result_accepts_only_explanation_before_final_json(prefix):
+    suffix = "\n```" if prefix.endswith("```json\n") else ""
+
+    result = rj._parse_quality_gate_result(
+        prefix + '{"passed":true,"summary":"符合标准","violations":[]}' + suffix
+    )
+
+    assert result["passed"] is True
+    assert result["summary"] == "符合标准"
+
+
+def test_parse_quality_gate_result_suffix_scanner_ignores_braces_and_quotes_in_strings():
+    summary = '字符串证据含有 }、{、"quoted" 和 \\\\ 路径'
+    verdict = json.dumps({
+        "passed": True, "summary": summary, "violations": [],
+    }, ensure_ascii=False)
+
+    result = rj._parse_quality_gate_result('前言留下未闭合的 " 和 {\n' + verdict)
+
+    assert result["passed"] is True
+    assert result["summary"] == summary
+
+
 def test_parse_quality_gate_result_rejects_pass_with_violations_and_caps_output():
     evidence = [{
         "path": "p" * 600,
@@ -1377,6 +1405,157 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
     assert docker_calls[-1][:4] == ["docker", "rm", "-f", "rj_agent_12_attempt-1"]
 
 
+@pytest.mark.parametrize(("latest_message", "expected"), [
+    ({"role": "assistant", "stop_reason": "end_turn"}, "end_turn"),
+    ({"role": "assistant"}, ""),
+])
+def test_detect_claude_stop_reason_uses_latest_assistant_even_without_reason(
+        tmp_path, latest_message, expected):
+    project = tmp_path / ".claude" / "projects" / "-workspace"
+    project.mkdir(parents=True)
+    older = project / "older.jsonl"
+    latest = project / "latest.jsonl"
+    older.write_text(json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "stop_reason": "abort"},
+    }) + "\n", encoding="utf-8")
+    latest.write_text(
+        "not-json\n" + json.dumps({
+            "type": "assistant",
+            "message": latest_message,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    __import__("os").utime(older, (1, 1))
+    __import__("os").utime(latest, (2, 2))
+
+    assert rj._detect_claude_stop_reason(str(tmp_path)) == expected
+
+
+@pytest.mark.parametrize(("retry_stop_reason", "expected_ok"), [
+    ("end_turn", True),
+    ("abort", False),
+    ("", False),
+])
+def test_run_agent_resumes_aborted_claude_session_once_and_requires_recovery(
+        monkeypatch, tmp_path, retry_stop_reason, expected_ok):
+    package = tmp_path / "package"
+    (package / "template").mkdir(parents=True)
+    (package / "problem").mkdir()
+    proxy_closes = []
+    phase_calls = []
+    stop_reasons = iter(("abort", retry_stop_reason))
+    proxy = SimpleNamespace(
+        container_base_url="http://host.docker.internal:43123/v1",
+        token="attempt-token",
+        close=lambda: proxy_closes.append(True),
+    )
+
+    monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: False)
+    monkeypatch.setattr(rj, "submission_dir", lambda _sid: str(tmp_path / "submission"))
+    monkeypatch.setattr(rj, "_start_reverse_endpoint_proxy", lambda *_args: proxy)
+    monkeypatch.setattr(rj, "_agent_env_args", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        rj.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(rj, "_exec_container_apt_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(rj, "_prepare_agent_workspace_for_node", lambda *_args: None)
+    monkeypatch.setattr(rj, "_sync_claude_project_jsonl", lambda *_args: True)
+    monkeypatch.setattr(rj, "_publish_snapshot", lambda *_args: None)
+    monkeypatch.setattr(
+        rj, "update_reverse_judge_step_for_attempt", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(rj, "_dump_harness_trace", lambda *_args: None)
+    monkeypatch.setattr(
+        rj, "_resolve_resume_session_id", lambda *_args: "session-to-resume",
+    )
+    monkeypatch.setattr(
+        rj, "_detect_claude_stop_reason", lambda *_args, **_kwargs: next(stop_reasons),
+    )
+
+    def run_phase(*args, **kwargs):
+        phase_calls.append((args, kwargs))
+        index = len(phase_calls)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="initial" if index == 1 else "resumed",
+            stderr="",
+            aj_timed_out=False,
+        )
+
+    monkeypatch.setattr(rj, "_exec_reverse_harness_phase", run_phase)
+
+    result = rj._run_agent(
+        12, "attempt-1", str(package), _quality_endpoint(3), 30, 10,
+    )
+
+    assert result["ok"] is expected_ok
+    if expected_ok:
+        assert result["stdout"] == "resumed"
+        assert result["error"] == ""
+    else:
+        assert result["stdout"] == "initial\n\nresumed"
+        assert result["error"] == "Agent 思考被中止（abort）且重试未恢复"
+    assert len(phase_calls) == 2
+    assert phase_calls[0][1]["effort"] == rj.REVERSE_DEFAULT_EFFORT
+    assert "resume_session_id" not in phase_calls[0][1]
+    assert phase_calls[1][1]["resume_session_id"] == "session-to-resume"
+    assert phase_calls[1][1]["fork_session"] is False
+    assert phase_calls[1][1]["effort"] == rj.REVERSE_RETRY_EFFORT
+    assert proxy_closes == [True]
+
+
+@pytest.mark.parametrize(("value", "fallback", "expected"), [
+    (" HIGH ", "", "high"),
+    ("turbo", "max", "max"),
+    ("turbo", "also-invalid", ""),
+    (None, "xhigh", "xhigh"),
+])
+def test_normalize_claude_effort_allows_only_cli_supported_values(
+        value, fallback, expected):
+    assert rj._normalize_claude_effort(value, fallback) == expected
+
+
+def test_exec_reverse_harness_phase_passes_only_normalized_effort(monkeypatch, tmp_path):
+    commands = []
+
+    class Stdin:
+        def write(self, _value):
+            return None
+
+        def close(self):
+            return None
+
+    class Process:
+        returncode = 0
+        stdin = Stdin()
+
+        def __init__(self, args, **_kwargs):
+            commands.append(list(args))
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(rj.subprocess, "Popen", Process)
+
+    valid = rj._exec_reverse_harness_phase(
+        "agent-container", str(tmp_path), "reverse_solve", "prompt", 5,
+        capture_dir=str(tmp_path), effort=" HIGH ",
+    )
+    invalid = rj._exec_reverse_harness_phase(
+        "agent-container", str(tmp_path), "reverse_solve", "prompt", 5,
+        capture_dir=str(tmp_path), effort="turbo",
+    )
+
+    assert valid.returncode == invalid.returncode == 0
+    assert "AJ_EFFORT=high" in commands[0]
+    assert not any(arg.startswith("AJ_EFFORT=") for arg in commands[1])
+
+
 def test_retry_queued_submission_requeues_current_attempt(monkeypatch):
     retry_calls = []
     statuses = []
@@ -1760,6 +1939,7 @@ def test_run_reverse_judge_orders_gate_between_solution_and_agent_and_restores_s
     endpoint = _quality_endpoint(9)
     final_results = []
     releases = []
+    acquisitions = []
 
     def judge(_sid, package_root, answer_dir, _timeout):
         events.append(("judge", answer_dir))
@@ -1787,7 +1967,9 @@ def test_run_reverse_judge_orders_gate_between_solution_and_agent_and_restores_s
     )
     monkeypatch.setattr(
         rj, "_acquire_endpoint_slot",
-        lambda *_args: (endpoint, "answer-slot", "answer-token"),
+        lambda *args: acquisitions.append(args) or (
+            endpoint, "answer-slot", "answer-token",
+        ),
     )
     monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: True)
     monkeypatch.setattr(
@@ -1834,6 +2016,7 @@ def test_run_reverse_judge_orders_gate_between_solution_and_agent_and_restores_s
         ("agent",), ("release",), ("archive",), ("judge", "template"),
     ]
     assert releases == [("answer-slot", "answer-token")]
+    assert acquisitions[0][3] == 20 * 2 + 5 + 10 + rj.JUDGE_SLOT_TTL_BUFFER
     assert final_results[0][0][:4] == (20, "a1", 75.0, "Accepted")
     assert final_results[0][1]["grade_details"]["quality_gate"] is True
     agent_step = next(
@@ -2039,7 +2222,7 @@ def test_registered_reverse_task_lock_ttl_includes_quality_gate_and_forwards_onl
     )
     assert lock_call.kwargs["nx"] is True
     assert lock_call.kwargs["ex"] == (
-        11 * 2 + 22 + 33 + rj.REVERSE_QUALITY_GATE_TIMEOUT
+        11 * 2 + 22 * 2 + 33 + rj.REVERSE_QUALITY_GATE_TIMEOUT
         + rj.JUDGE_SLOT_TTL_BUFFER * 2
     )
     client.delete.assert_called_once_with("ranking:reverse_judge:lock:41:attempt-1")
