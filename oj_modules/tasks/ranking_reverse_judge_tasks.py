@@ -1568,7 +1568,12 @@ def _sync_claude_project_jsonl(container_name, trace_dir):
 
 
 def _sync_codex_stdout_trace(template_dir, trace_dir):
-    src = os.path.join(template_dir, '.aj_reverse_solve.stdout.tmp')
+    # 宿主侧捕获文件已改写到 trace_dir（见 _exec_reverse_harness_phase），
+    # 因此 codex 的 stdout.jsonl 也从 trace_dir 取。保留 template_dir 仅作
+    # 兼容回退：旧 attempt 仍可能在容器挂载点留有同名文件。
+    src = os.path.join(trace_dir, '.aj_reverse_solve.stdout.tmp')
+    if not os.path.isfile(src):
+        src = os.path.join(template_dir, '.aj_reverse_solve.stdout.tmp')
     if not os.path.isfile(src):
         return False
     dest = os.path.join(trace_dir, 'codex_reverse_solve.jsonl')
@@ -1685,7 +1690,7 @@ def _merge_proc_output(*values):
 
 def _exec_reverse_harness_phase(
     container_name, ws, phase, prompt, timeout_s, on_tick=None,
-    resume_session_id='', fork_session=True,
+    resume_session_id='', fork_session=True, capture_dir=None,
 ):
     timeout_s = max(1, int(timeout_s))
     args = [
@@ -1705,8 +1710,14 @@ def _exec_reverse_harness_phase(
         'IFS= read -r -d "" AJ_PROMPT || true; export AJ_PROMPT; '
         'timeout -k 10s "${AJ_HARNESS_TIMEOUT_SECONDS}s" run_harness',
     ])
-    stdout_path = os.path.join(ws, f'.aj_{phase}.stdout.tmp')
-    stderr_path = os.path.join(ws, f'.aj_{phase}.stderr.tmp')
+    # 宿主侧的 stdout/stderr 捕获文件落到 capture_dir（默认 ws）。
+    # 当 ws 是被容器内 chown node:node 接管的挂载点（agent_answer 阶段）
+    # 时，宿主 ebola 进程无法在其中创建文件；改写到宿主私有的 trace_dir
+    # 即可避开权限问题，详见 _run_agent 的调用处。
+    capture_dir = capture_dir or ws
+    os.makedirs(capture_dir, exist_ok=True)
+    stdout_path = os.path.join(capture_dir, f'.aj_{phase}.stdout.tmp')
+    stderr_path = os.path.join(capture_dir, f'.aj_{phase}.stderr.tmp')
     started = time.monotonic()
     last_tick = 0.0
     outer_timeout_s = timeout_s + 60
@@ -1848,6 +1859,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         proc = _exec_reverse_harness_phase(
             container_name, template_dir, 'reverse_solve',
             _reverse_prompt(), max(1, int(timeout_s)), on_tick=sync_trace,
+            capture_dir=trace_dir,
         )
         sync_trace()
         if getattr(proc, 'aj_timed_out', False):
@@ -1867,6 +1879,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                 on_tick=sync_trace,
                 resume_session_id=session_id,
                 fork_session=False,
+                capture_dir=trace_dir,
             )
             sync_trace()
             ok = finalize_proc.returncode == 0 and not getattr(finalize_proc, 'aj_timed_out', False)
@@ -2246,6 +2259,52 @@ def _redact_quality_gate_value(value, sensitive_values):
     return text
 
 
+def _extract_last_quality_gate_json(text):
+    """从可能含自然语言说明的输出里抽取最末一个含 passed 字段的 JSON 对象。
+
+    Claude Code 偶尔会在 JSON 之前输出一段解释性散文（"Based on my
+    thorough review..."），导致 json.loads(raw) 在第 1 行第 1 列就失败。
+    这里用状态机扫描 raw，记录所有顶层平衡 {...} 片段，按出现顺序取最后
+    一个能 json.loads 成 dict 且含 passed 键的对象。
+    """
+    raw = str(text or '')
+    candidates = []
+    depth = 0
+    in_str = False
+    esc = False
+    start = -1
+    for i, ch in enumerate(raw):
+        if esc:
+            esc = False
+            continue
+        if in_str:
+            if ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidates.append(raw[start:i + 1])
+                    start = -1
+    for cand in reversed(candidates):
+        try:
+            obj = json.loads(cand)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get('passed'), bool):
+            return obj
+    return None
+
+
 def _parse_quality_gate_result(text):
     raw = str(text or '').strip()
     if raw.startswith('```'):
@@ -2258,7 +2317,12 @@ def _parse_quality_gate_result(text):
     try:
         obj = json.loads(raw)
     except Exception as exc:
-        raise ValueError(f'质量门禁未返回合法 JSON：{exc}')
+        # Claude Code 偶尔在 JSON 前输出解释性散文；从 raw 中尝试抽取
+        # 最末一个含 passed 字段的平衡 JSON 对象。
+        fallback = _extract_last_quality_gate_json(raw)
+        if fallback is None:
+            raise ValueError(f'质量门禁未返回合法 JSON：{exc}')
+        obj = fallback
     if not isinstance(obj, dict) or not isinstance(obj.get('passed'), bool):
         raise ValueError('质量门禁 JSON 必须包含布尔字段 passed')
     summary = str(obj.get('summary') or '').strip()
