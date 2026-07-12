@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import html
 import json
 import os
 import re
@@ -25,6 +26,30 @@ def _admin_probe(session: requests.Session, base_url: str, timeout: float):
     )
 
 
+def _login_failure_reason(resp: requests.Response) -> str:
+    """Return a concise server-side login error without leaking an HTML page."""
+    if response_is_json(resp):
+        try:
+            payload = resp.json() or {}
+            if isinstance(payload, dict) and payload.get("message"):
+                return str(payload["message"])
+        except Exception:
+            pass
+
+    match = re.search(
+        r'<div\b[^>]*\balert-danger\b[^>]*>(.*?)</div>',
+        resp.text or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        text = re.sub(r"<[^>]+>", " ", match.group(1))
+        text = re.sub(r"\s+", " ", html.unescape(text)).strip()
+        if text:
+            return text
+
+    return "服务器未返回可识别的登录成功响应"
+
+
 def login(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
     login_base_url = getattr(args, "login_base_url", None)
@@ -42,9 +67,10 @@ def login(args: argparse.Namespace) -> None:
         allow_redirects=False,
         timeout=args.timeout,
     )
-    if resp.status_code not in (301, 302, 303, 307, 308) or "session" not in sess.cookies.get_dict():
-        body = resp.text[:500].strip()
-        raise CliError(f"Login failed. HTTP {resp.status_code}: {body}")
+    has_session_cookie = "session" in sess.cookies.get_dict()
+    if resp.status_code >= 400 or not has_session_cookie:
+        reason = _login_failure_reason(resp)
+        raise CliError(f"Login failed. HTTP {resp.status_code}: {reason}")
     admin_resp = _admin_probe(sess, base_url, args.timeout)
     if admin_resp.status_code >= 400 or 300 <= admin_resp.status_code < 400:
         reason = ""
@@ -97,7 +123,19 @@ def logout(args: argparse.Namespace) -> None:
 
 def status(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
-    base_url = normalize_base_url(args.base_url or cfg.get("base_url") or "")
+    raw_base_url = args.base_url or cfg.get("base_url") or ""
+    if not raw_base_url:
+        output_json(
+            {
+                "authenticated": False,
+                "admin": False,
+                "base_url": None,
+                "username": cfg.get("username"),
+                "reason": "no_config",
+            }
+        )
+        return
+    base_url = normalize_base_url(raw_base_url)
     cookies = cfg.get("cookies") or {}
     if not cookies.get("session"):
         output_json(
