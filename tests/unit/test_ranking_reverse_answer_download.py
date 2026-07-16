@@ -768,9 +768,12 @@ def test_reverse_detail_template_shows_download_only_after_archive_is_available(
 
     assert "下载 AI 解答" in modal
     assert 'id="rjAnswerDownload"' in modal
+    assert 'href="#" download hidden' in modal
     assert "answerStep.answer_available" in modal
     assert "data-answer-download-url" in card
     assert "ranking.download_reverse_agent_answer" in card
+    assert "download_submission_answer', submission_id=s.id) }}\" download" in card
+    assert "download_submission_code', submission_id=s.id) }}\" download" in card
 
 
 @pytest.mark.parametrize("status", ["Accepted", "Error"])

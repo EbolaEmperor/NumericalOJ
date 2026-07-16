@@ -346,9 +346,6 @@
           .gitsub-btn-ghost:not(:disabled):hover{background:var(--gs-ink);color:#fff;}
           .gitsub-btn-solid{background:var(--gs-ink);color:#fff;}
           .gitsub-btn-solid:not(:disabled):hover{background:#000;}
-          .gitsub-spin{width:13px;height:13px;border:2px solid currentColor;border-top-color:transparent;
-                       border-radius:50%;display:inline-block;animation:gitsubspin .6s linear infinite;}
-          @keyframes gitsubspin{to{transform:rotate(360deg);}}
           .gitsub-result{margin-top:18px;border-top:1px solid var(--gs-line);padding-top:18px;
                          animation:gitsubin .28s ease both;}
           @keyframes gitsubin{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
@@ -479,14 +476,14 @@
           {% else %}
             <div class="gitsub-actions">
               <button type="button" class="gitsub-btn gitsub-btn-ghost" id="gitsubCheckBtn">
-                <span class="gitsub-spin" id="gitsubCheckSpin" hidden></span>
+                <span class="math-curve-loader" data-math-curve-loader data-icon-only="true" data-size="xs" id="gitsubCheckSpin" hidden aria-label="检查中"></span>
                 <span id="gitsubCheckLabel">检查仓库</span>
               </button>
             </div>
             <div class="gitsub-result" id="gitsubResult" hidden></div>
             <div class="gitsub-confirm" id="gitsubConfirm" hidden>
               <button type="button" class="gitsub-btn gitsub-btn-solid" id="gitsubSubmitBtn">
-                <span class="gitsub-spin" id="gitsubSubmitSpin" hidden></span>
+                <span class="math-curve-loader" data-math-curve-loader data-icon-only="true" data-size="xs" id="gitsubSubmitSpin" hidden aria-label="提交中"></span>
                 <span id="gitsubSubmitLabel">确认提交</span>
               </button>
               <span class="gitsub-confirm-hint" id="gitsubConfirmHint"></span>
@@ -808,7 +805,7 @@
             </div>
             <div class="modal-body">
               <div class="d-flex justify-content-between align-items-center mb-2">
-                <span class="small text-muted" id="judgeModalStatus">正在连接评测进度…</span>
+                  <span class="small text-muted d-inline-flex align-items-center gap-1" id="judgeModalStatus">正在连接评测进度…</span>
                 <span class="small text-muted">得分
                   <span class="fw-semibold" id="judgeModalTotal">0</span>
                   / <span id="judgeModalMax">0</span>
@@ -846,17 +843,17 @@
               </div>
               <div id="judgeModalTopo" class="aj-result-view" hidden>
                 <div class="text-muted text-center py-5">
-                  <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分拓扑…
+                  <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载评分拓扑…</span></span>
                 </div>
               </div>
               <div id="judgeModalRules" class="aj-result-view" hidden>
                 <div class="text-muted text-center py-5">
-                  <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…
+                  <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载评分细则…</span></span>
                 </div>
               </div>
               <div id="judgeModalTrace" class="aj-result-view">
                 <div class="text-muted text-center py-5">
-                  <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载执行轨迹…
+                  <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载执行轨迹…</span></span>
                 </div>
               </div>
             </div>
@@ -973,7 +970,7 @@
             var btn = document.getElementById('rankingSubmitBtn');
             if (btn) {
               btn.disabled = true;
-              btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>提交中…';
+              btn.innerHTML = MathCurveLoader.markup('提交中…', 'xs');
             }
           });
         }
@@ -1022,7 +1019,9 @@
         var currentJudgeResultSignature = '';
         var currentJudgeView = 'trace';
         var judgeViewManuallySelected = false;
-        var judgeTraceRenderer = window.AgentExecutionTrace.create({keyPrefix:'agent-judge'});
+        var judgeTraceRenderer = window.AgentExecutionTrace.create({
+          keyPrefix:'agent-judge', showThinkingLoader:true, showPendingLoader:true
+        });
         var resultNodeW = 176, resultNodeH = 96, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
         function closeJudgeStream() {
           if (judgeSource) {
@@ -1034,6 +1033,21 @@
           return (s || '').replace(/[&<>]/g, function (c) {
             return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c];
           });
+        }
+        function renderJudgeStatus(element, snap) {
+          if (!element) return;
+          var text = (STATUS[snap.status] || snap.status || '评测状态未知') +
+            (snap.timed_out ? ' · 已超时，保留已有得分' : '');
+          if (snap.status !== 'Judging') {
+            element.textContent = text;
+            return;
+          }
+          if (!element.querySelector('[data-judge-status-loader]')) {
+            element.innerHTML = '<span data-judge-status-loader class="math-curve-loader" ' +
+              'data-math-curve-loader data-icon-only="true" data-size="xs" aria-label="评测进行中"></span>' +
+              '<span data-judge-status-text></span>';
+          }
+          element.querySelector('[data-judge-status-text]').textContent = text;
         }
         function compactRuleText(s, n) {
           s = String(s || '').replace(/\s+/g, ' ').trim();
@@ -1621,10 +1635,7 @@
           var bar = document.getElementById('judgeModalBar');
           if (total) total.textContent = snap.total_score || 0;
           if (max) max.textContent = snap.max_score || 0;
-          if (status) {
-            status.textContent = (STATUS[snap.status] || snap.status || '评测状态未知') +
-              (snap.timed_out ? ' · 已超时，保留已有得分' : '');
-          }
+          renderJudgeStatus(status, snap);
           if (bar) {
             var pct = snap.max_score ? (snap.total_score / snap.max_score * 100) : 0;
             bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
@@ -1634,8 +1645,9 @@
           var traceBox = document.getElementById('judgeModalTrace');
           if (traceBox) {
             var executionTrace = snap.execution_trace || {
-              status: ['Judging', 'Queued', 'Pending'].indexOf(snap.status) >= 0
-                ? 'running' : (snap.status === 'Error' ? 'error' : 'passed'),
+              status: snap.status === 'Judging' ? 'running' :
+                (['Queued', 'Pending'].indexOf(snap.status) >= 0
+                  ? 'pending' : (snap.status === 'Error' ? 'error' : 'passed')),
               trace_messages: [], trace_files: []
             };
             judgeTraceRenderer.render(traceBox, executionTrace, {
@@ -1685,15 +1697,15 @@
           if (status) status.textContent = '正在连接评测进度…';
           if (topoBox) {
             topoBox.innerHTML = '<div class="text-muted text-center py-5">' +
-              '<span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分拓扑…</div>';
+              MathCurveLoader.markup('正在加载评分拓扑…', 'md') + '</div>';
           }
           if (rulesBox) {
             rulesBox.innerHTML = '<div class="text-muted text-center py-5">' +
-              '<span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…</div>';
+              MathCurveLoader.markup('正在加载评分细则…', 'md') + '</div>';
           }
           if (traceBox) {
             traceBox.innerHTML = '<div class="text-muted text-center py-5">' +
-              '<span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载执行轨迹…</div>';
+              MathCurveLoader.markup('正在加载执行轨迹…', 'md') + '</div>';
           }
           judgeModal.show();
           if (!streamUrl || !window.EventSource) {
@@ -1741,7 +1753,7 @@
           if (!reason) { if (apMsg) { apMsg.textContent = '请填写申诉意见'; apMsg.className = 'small text-danger'; } return; }
           if (!currentAppealUrl) { if (apMsg) { apMsg.textContent = '无法定位提交，请刷新重试'; apMsg.className = 'small text-danger'; } return; }
           appealSubmit.disabled = true;
-          if (apMsg) { apMsg.textContent = '提交中…'; apMsg.className = 'small text-muted'; }
+          if (apMsg) { apMsg.innerHTML = MathCurveLoader.markup('提交中…', 'sm'); apMsg.className = 'small text-muted'; }
           var body = new URLSearchParams(); body.append('reason', reason);
           fetch(currentAppealUrl, {
             method: 'POST', credentials: 'same-origin',
@@ -1929,7 +1941,7 @@
             </div>
             <div class="modal-body">
               <div id="matchDetailLoading" class="text-center text-muted py-4">
-                <i class="fas fa-spinner fa-spin me-2"></i>加载中…
+                <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">加载中…</span></span>
               </div>
               <div id="matchDetailError" class="alert alert-danger d-none"></div>
               <div id="matchDetailContent" class="d-none">
@@ -2354,7 +2366,9 @@
             pct = Math.max(0, Math.min(100, Number(pct) || 0));
             progressBar.style.width = pct + '%';
             progressBar.textContent = pct + '%';
-            progressText.textContent = '重测入队进度 ' + processed + ' / ' + total + '，已入队 ' + requeued + '，失败 ' + failed;
+            var text = '重测入队进度 ' + processed + ' / ' + total + '，已入队 ' + requeued + '，失败 ' + failed;
+            if (pct < 100) MathCurveLoader.update(progressText, text, {size: 'sm'});
+            else progressText.textContent = text;
           }
           function poll() {
             if (!state.jobId) return;
@@ -2406,7 +2420,7 @@
             }
             filterBtn.disabled = true;
             startBtn.disabled = true;
-            summary.textContent = '筛选中...';
+            MathCurveLoader.update(summary, '筛选中…', {size: 'sm'});
             fetch(filterUrl, {
               method: 'POST',
               credentials: 'same-origin',
@@ -2646,8 +2660,7 @@
         /* —— progress —— */
         .bm-progress{ margin-top:1.15rem; height:1px; background:var(--line); position:relative; overflow:hidden; }
         .bm-fill{ position:absolute; top:0; bottom:0; left:0; width:0%; background:var(--ink); transition:width .4s ease; }
-        .bm-fill.is-indet{ width:28%; animation:bmIndet 1.1s ease-in-out infinite; }
-        @keyframes bmIndet{ 0%{ left:-28%; } 100%{ left:100%; } }
+        .bm-fill.is-indet{ width:0; }
         .bm-status{ margin-top:.6rem; font-family:var(--mono); font-size:.76rem; color:var(--muted); }
         /* —— results —— */
         .bm-results{ margin-top:2rem; }
@@ -2924,7 +2937,13 @@
         }
 
         function setProgress(pct, indet) { if (!fill) return; fill.classList.toggle('is-indet', !!indet); if (!indet) fill.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
-        function setStatus(t) { if (!statusEl) return; statusEl.hidden = !t; statusEl.textContent = t || ''; }
+        function setStatus(t, loading) {
+          if (!statusEl) return;
+          statusEl.hidden = !t;
+          if (!t) { statusEl.textContent = ''; return; }
+          if (loading) MathCurveLoader.update(statusEl, t, {size: 'sm'});
+          else statusEl.textContent = t;
+        }
 
         function poll(jobId) {
           fetch(statusUrl + '?job=' + encodeURIComponent(jobId), { credentials: 'same-origin' })
@@ -2941,7 +2960,7 @@
                 goBtn.disabled = false; state.polling = false;
               } else {
                 if (d.total > 0) setProgress((d.checked || 0) / d.total * 100, false); else setProgress(0, true);
-                setStatus((d.state === 'queued' ? '排队中' : '探测中') + ' ' + (d.checked || 0) + (d.total ? ' / ' + d.total : ''));
+                setStatus((d.state === 'queued' ? '排队中' : '探测中') + ' ' + (d.checked || 0) + (d.total ? ' / ' + d.total : ''), true);
                 setTimeout(function () { poll(jobId); }, 1200);
               }
             })
@@ -2957,7 +2976,7 @@
           state.found = []; state.selected = {}; state.page = 1; createMsg.innerHTML = '';
           if (results) results.hidden = true;
           if (progress) progress.hidden = false; setProgress(0, true);
-          goBtn.disabled = true; state.polling = true; setStatus('提交中');
+          goBtn.disabled = true; state.polling = true; setStatus('提交中', true);
           fetch(probeUrl, {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -2972,7 +2991,7 @@
           if (!endpointReady()) { createMsg.innerHTML = '<div class="bm-flash">请选择 AI 节点</div>'; return; }
           var template = (tmplEl.value || '').trim();
           if (!window.confirm('确认对 ' + usernames.length + ' 个仓库批量创建提交并评测？')) return;
-          createBtn.disabled = true; createMsg.innerHTML = '<div class="bm-flash">创建中…</div>';
+          createBtn.disabled = true; createMsg.innerHTML = '<div class="bm-flash">' + MathCurveLoader.markup('创建中…', 'sm') + '</div>';
           var payload = { template: template, usernames: usernames };
           if (endpointEl) payload.agent_endpoint_id = (endpointEl.value || '').trim();
           fetch(createUrl, {

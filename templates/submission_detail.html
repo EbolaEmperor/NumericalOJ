@@ -8,7 +8,8 @@
   else 'Python' %}
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
 
-<div class="row">
+<div class="row"
+     data-math-curve-stroke-scale="1.2">
   <!-- 左侧：提交详情和代码展示 -->
   <div class="col-md-8 mb-3">
     {% set header_max_score = test_points | length %}
@@ -92,7 +93,11 @@
             id="pdfViewerHint"
             class="d-flex align-items-center justify-content-center text-muted"
             style="width: 100%; height: 100%;">
-            正在加载 PDF...
+            <span class="math-curve-loader"
+                  data-math-curve-loader
+                  data-size="lg">
+              <span class="math-curve-loader__label">正在加载 PDF…</span>
+            </span>
           </div>
         </div>
       </div>
@@ -147,7 +152,11 @@
     {% if max_score == 0 %}
     <div id="judgingStatus" class="alert alert-info d-none mb-3">
       <div class="d-flex align-items-center">
-        <i class="fas fa-spinner fa-spin me-2"></i>
+        <span class="math-curve-loader me-2"
+              data-math-curve-loader
+              data-icon-only="true"
+              data-size="md"
+              aria-label="判题进行中"></span>
         <div>
           <strong>判题进行中</strong><br>
           <small id="judgingText">正在编译和初始化...</small>
@@ -794,7 +803,11 @@
     if (!pdfHintEl) return;
     pdfHintEl.classList.remove('text-danger', 'text-muted');
     pdfHintEl.classList.add(isError ? 'text-danger' : 'text-muted');
-    pdfHintEl.textContent = text || '';
+    if (isError) {
+      pdfHintEl.textContent = text || '';
+    } else {
+      pdfHintEl.innerHTML = MathCurveLoader.markup(text || 'PDF 生成中…', 'lg');
+    }
     pdfHintEl.classList.remove('d-none');
     if (pdfIframeEl) {
       pdfIframeEl.classList.add('d-none');
@@ -1103,6 +1116,7 @@
       const latex = String(rawLatex || '');
       const err = String(errText || '');
       const st = String(status || '');
+      latexEl.classList.remove('text-muted');
       if (latexHtml.trim()) {
         latexEl.innerHTML = latexHtml;
       } else if (latex.trim()) {
@@ -1110,7 +1124,8 @@
       } else if (err.trim()) {
         latexEl.innerHTML = '<span class="text-danger">' + escapeHtml(err) + '</span>';
       } else if (['Pending', 'Waiting', 'Running', 'Generating'].includes(st)) {
-        latexEl.innerHTML = '<span class="text-muted">LaTeX 转写中，请稍后查看实时结果。</span>';
+        latexEl.classList.add('text-muted');
+        MathCurveLoader.update(latexEl, 'LaTeX 转写中…', {size: 'md'});
       } else {
         latexEl.innerHTML = '<span class="text-muted">暂无 LaTeX 转写结果。</span>';
       }
@@ -1235,7 +1250,7 @@
       const comment = String(commentInput.value || '');
 
       saveBtn.disabled = true;
-      saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>提交中...';
+      saveBtn.innerHTML = MathCurveLoader.markup('提交中…', 'sm');
 
       fetch('{{ url_for('grading.submit_grading', submission_id=submission.id) }}', {
         method: 'POST',
@@ -1394,7 +1409,7 @@
     if (!askAiBtn) return;
     askAiBtn.disabled = !!loading;
     if (loading) {
-      askAiBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>AI 分析中...';
+      askAiBtn.innerHTML = MathCurveLoader.markup('AI 分析中…', 'sm');
       return;
     }
     askAiBtn.innerHTML = askAiBtnDefaultHtml || '<i class="fas fa-robot me-2"></i> 询问 AI 助教';

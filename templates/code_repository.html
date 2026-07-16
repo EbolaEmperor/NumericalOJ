@@ -32,7 +32,9 @@
                 <!-- 文件列表 -->
                 <div id="fileList" class="list-group">
                     <div class="text-center text-muted p-3">
-                        <i class="fas fa-spinner fa-spin"></i> 加载中...
+                        <span class="math-curve-loader" data-math-curve-loader data-size="md">
+                            <span class="math-curve-loader__label">正在加载文件…</span>
+                        </span>
                     </div>
                 </div>
             </div>
@@ -808,10 +810,16 @@ function pollIndexJobStatus(jobId) {
                 const stageLabel = repositoryIndexStageLabelMap[parsedProgress.stage] || '';
                 const detail = parsedProgress.detail;
                 const stageText = stageLabel ? `【${stageLabel}】` : '';
-                statusEl.textContent =
+                const statusText =
                     `整理任务 #${jobId}：${job.status || 'unknown'} (${progress}%)，文件 ${job.processed_files || 0}/${job.total_files || 0}` +
                     `${stageText ? `，${stageText}` : ''}` +
                     `${detail ? `，${detail}` : ''}`;
+
+                if (job.status === 'pending' || job.status === 'running') {
+                    MathCurveLoader.update(statusEl, statusText, {size: 'sm'});
+                } else {
+                    statusEl.textContent = statusText;
+                }
 
                 if (job.status === 'success') {
                     clearInterval(indexStatusTimer);
@@ -909,7 +917,7 @@ function searchRepositorySemantic() {
         return;
     }
 
-    resultEl.innerHTML = '<div class="text-muted"><i class="fas fa-spinner fa-spin"></i> 检索中...</div>';
+    resultEl.innerHTML = '<div class="text-muted">' + MathCurveLoader.markup('检索中…', 'md') + '</div>';
     metaEl.textContent = '';
 
     fetch('/api/repository/index/search', {

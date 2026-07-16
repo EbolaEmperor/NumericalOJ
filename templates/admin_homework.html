@@ -240,7 +240,7 @@
     </button>
   
     <!-- 导出成绩按钮 -->
-    <a href="{{ url_for('homework.export_scores', sclass=selected_class) }}" class="btn btn-outline-primary ms-2">
+    <a href="{{ url_for('homework.export_scores', sclass=selected_class) }}" download class="btn btn-outline-primary ms-2">
       <i class="fas fa-download me-2"></i>导出成绩
     </a>
 
@@ -489,7 +489,7 @@
             <span id="plagiarismProgressPercent" class="small">0%</span>
           </div>
           <div class="progress" style="height: 20px;">
-            <div id="plagiarismProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-danger"
+            <div id="plagiarismProgressBar" class="progress-bar bg-danger"
                  role="progressbar" style="width: 0%;">0%</div>
           </div>
         </div>
@@ -545,7 +545,7 @@
               </tr>
             </thead>
             <tbody id="plagiarismRecordsBody">
-              <tr><td colspan="8"><div class="plagiarism-records-state"><span class="spinner-border spinner-border-sm" role="status"></span><span>加载中...</span></div></td></tr>
+              <tr><td colspan="8"><div class="plagiarism-records-state"><span class="math-curve-loader" data-math-curve-loader data-size="sm"><span class="math-curve-loader__label">加载中…</span></span></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -609,7 +609,7 @@
             <span id="problemCheckPercentage">0%</span>
           </div>
           <div class="progress" style="height: 20px;">
-            <div id="problemCheckBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
+            <div id="problemCheckBar" class="progress-bar bg-info"
                  role="progressbar" style="width: 0%;">
               0%
             </div>
@@ -624,7 +624,7 @@
             <span id="repoCheckPercentage">0%</span>
           </div>
           <div class="progress" style="height: 20px;">
-            <div id="repoCheckBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" 
+            <div id="repoCheckBar" class="progress-bar bg-success"
                  role="progressbar" style="width: 0%;">
               0%
             </div>
@@ -794,8 +794,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function updatePlagiarismProgress(progress) {
     const pct = Math.max(0, Math.min(100, Number(progress && progress.percentage) || 0));
+    const stage = progress && progress.stage;
+    const message = (progress && progress.message) || '查重中...';
     if (plagiarismProgressWrap) plagiarismProgressWrap.classList.remove('d-none');
-    if (plagiarismProgressMessage) plagiarismProgressMessage.textContent = (progress && progress.message) || '查重中...';
+    if (plagiarismProgressMessage) {
+      if (stage === 'completed' || stage === 'error') {
+        plagiarismProgressMessage.textContent = message;
+      } else {
+        MathCurveLoader.update(plagiarismProgressMessage, message, {size: 'sm'});
+      }
+    }
     if (plagiarismProgressPercent) plagiarismProgressPercent.textContent = pct + '%';
     if (plagiarismProgressBar) {
       plagiarismProgressBar.style.width = pct + '%';
@@ -805,7 +813,7 @@ document.addEventListener('DOMContentLoaded', function() {
       } else if (progress && progress.stage === 'error') {
         plagiarismProgressBar.className = 'progress-bar bg-danger';
       } else {
-        plagiarismProgressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-danger';
+        plagiarismProgressBar.className = 'progress-bar bg-danger';
       }
     }
   }
@@ -865,7 +873,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
       const oldHtml = this.innerHTML;
       this.disabled = true;
-      this.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>处理中';
+      this.innerHTML = MathCurveLoader.markup('处理中…', 'xs');
       setPlagiarismMarkStatus('info', '查重任务启动中...');
       updatePlagiarismProgress({stage: 'collecting', percentage: 0, message: '正在启动任务...'});
       try {
@@ -976,7 +984,7 @@ document.addEventListener('DOMContentLoaded', function() {
       downloadPlagiarismRecordsBtn.href = '/admin/plagiarism/records/download?sclass=' + encodeURIComponent(selectedClass);
     }
     if (plagiarismRecordsCount) plagiarismRecordsCount.textContent = '加载中...';
-    if (plagiarismRecordsBody) plagiarismRecordsBody.innerHTML = '<tr><td colspan="8"><div class="plagiarism-records-state"><span class="spinner-border spinner-border-sm" role="status"></span><span>加载中...</span></div></td></tr>';
+    if (plagiarismRecordsBody) plagiarismRecordsBody.innerHTML = '<tr><td colspan="8"><div class="plagiarism-records-state">' + MathCurveLoader.markup('加载中…', 'sm') + '</div></td></tr>';
     if (selectAllPlagiarismRecords) selectAllPlagiarismRecords.checked = false;
     try {
       const response = await fetch('/admin/plagiarism/records?sclass=' + encodeURIComponent(selectedClass));
@@ -1154,19 +1162,23 @@ document.addEventListener('DOMContentLoaded', function() {
     // 更新阶段显示
     let stageText = '';
     let stageClass = '';
+    let stageLoading = false;
     
     switch(stage) {
       case 'collecting':
-        stageText = '<i class="fas fa-download me-2"></i>收集代码';
+        stageText = '收集代码';
         stageClass = 'text-primary';
+        stageLoading = true;
         break;
       case 'plagiarism_check':
-        stageText = '<i class="fas fa-search me-2"></i>代码查重中';
+        stageText = '代码查重中';
         stageClass = 'text-info';
+        stageLoading = true;
         break;
       case 'generating':
-        stageText = '<i class="fas fa-file-alt me-2"></i>生成压缩包';
+        stageText = '生成压缩包';
         stageClass = 'text-warning';
+        stageLoading = true;
         break;
       case 'completed':
         stageText = '<i class="fas fa-check-circle me-2"></i>完成';
@@ -1177,12 +1189,17 @@ document.addEventListener('DOMContentLoaded', function() {
         stageClass = 'text-danger';
         break;
       default:
-        stageText = '<i class="fas fa-spinner me-2"></i>准备中';
+        stageText = '准备中';
         stageClass = 'text-secondary';
+        stageLoading = true;
     }
     
-    progressStage.innerHTML = stageText;
     progressStage.className = stageClass + ' fw-bold';
+    if (stageLoading) {
+      MathCurveLoader.update(progressStage, stageText, {size: 'xs'});
+    } else {
+      progressStage.innerHTML = stageText;
+    }
     
     // 更新子进度条（导出代码不再自动查重，通常不会出现子进度）
     if (subProgress) {

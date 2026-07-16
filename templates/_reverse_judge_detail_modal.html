@@ -16,7 +16,7 @@
         <div class="rj-summary">
           <span id="rjModalStatus">正在连接评测进度…</span>
           <span class="rj-summary-actions">
-            <a id="rjAnswerDownload" class="rj-answer-download" href="#" hidden>
+            <a id="rjAnswerDownload" class="rj-answer-download" href="#" download hidden>
               <i class="fas fa-download"></i>下载 AI 解答
             </a>
             <span class="rj-total">学生得分 <strong id="rjModalTotal">—</strong><small>/100</small></span>
@@ -30,7 +30,9 @@
         </div>
         <div id="rjStepBody">
           <div class="text-muted text-center py-5">
-            <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载…
+            <span class="math-curve-loader" data-math-curve-loader data-size="md">
+              <span class="math-curve-loader__label">正在加载…</span>
+            </span>
           </div>
         </div>
       </div>
@@ -52,11 +54,13 @@
   .rj-tab[hidden] { display:none; }
   .rj-tab.active { background:#17191d; border-color:#17191d; color:#fff; font-weight:650; }
   .rj-tab:disabled { opacity:.42; cursor:not-allowed; }
-  .rj-tab .spinner-border { width:.78rem; height:.78rem; border-width:.12rem; }
   .rj-dot { width:.46rem; height:.46rem; border-radius:999px; background:var(--line); display:inline-block; }
+  .rj-dot.running { background:var(--gold); }
   .rj-dot.ok { background:var(--ok); }
   .rj-dot.err { background:var(--err); }
   .rj-dot.skip { background:#9aa1aa; }
+  .rj-step-running { height:clamp(260px, 42vh, 420px); display:grid; place-items:center; }
+  .rj-step-running .math-curve-loader { --math-curve-size:clamp(7rem, 13vw, 10rem); }
   .rj-result-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.85rem 1rem; border:1px solid var(--line); border-radius:8px; background:#fff; margin-bottom:.85rem; }
   .rj-result-title { font-size:.95rem; font-weight:700; color:var(--ink); }
   .rj-score-pill { display:inline-flex; align-items:baseline; gap:.28rem; padding:.42rem .72rem; border-radius:999px; background:#f1f5f3; color:#1d5e40; font-family:var(--mono); white-space:nowrap; }
@@ -92,9 +96,12 @@
   var activeStepManuallySelected = false;
   var agentAnswerDownloadUrl = '';
   var openDetails = Object.create(null);
-  var agentTrace = window.AgentExecutionTrace.create({keyPrefix:'reverse-judge'});
+  var agentTrace = window.AgentExecutionTrace.create({
+    keyPrefix:'reverse-judge', showThinkingLoader:true
+  });
   var STATUS = { Accepted:'评测完成', Error:'评测异常', Judging:'评测中', Queued:'等待评测', Pending:'待评测' };
   var STEP_LABEL = { solution_check:'标准答案', quality_gate:'质量门禁', agent_answer:'AI 作答', ai_judge:'评测 AI 答案' };
+  var CENTER_LOADER_STEPS = { solution_check:true, quality_gate:true, ai_judge:true };
   function getModal(){ if(!modal && modalEl && window.bootstrap) modal = new bootstrap.Modal(modalEl); return modal; }
   function closeSource(){ if(source){ source.close(); source=null; } }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
@@ -183,7 +190,7 @@
     );
   }
   function tabMark(st){
-    if (st === 'running') return '<span class="spinner-border spinner-border-sm" role="status"></span>';
+    if (st === 'running') return '<span class="rj-dot running"></span>';
     if (st === 'passed') return '<span class="rj-dot ok"></span>';
     if (st === 'failed' || st === 'error') return '<span class="rj-dot err"></span>';
     if (st === 'skipped') return '<span class="rj-dot skip"></span>';
@@ -230,6 +237,15 @@
       phase: step.trace_phase || step.phase || ''
     });
     restoreOpenDetails(body);
+  }
+  function renderRunningStepBody(body, key){
+    if (body.getAttribute('data-rj-running-step') === key) return;
+    body.innerHTML = '<div class="rj-step-running" role="status" aria-label="' +
+      esc((STEP_LABEL[key] || key) + '正在运行') + '">' +
+      '<span class="math-curve-loader" data-math-curve-loader data-icon-only="true" data-size="lg"></span>' +
+      '</div>';
+    body.setAttribute('data-rj-rendered-step', key);
+    body.setAttribute('data-rj-running-step', key);
   }
   function qualityVerdict(step, result){
     if (step.status === 'skipped' || result.skipped) return {label:'未执行', cls:'skip', icon:'fa-forward-step'};
@@ -295,6 +311,11 @@
     var body = document.getElementById('rjStepBody');
     var step = byKey(activeStep);
     if (!body || !step) return;
+    if (step.status === 'running' && CENTER_LOADER_STEPS[activeStep]) {
+      renderRunningStepBody(body, activeStep);
+      return;
+    }
+    body.removeAttribute('data-rj-running-step');
     if (activeStep === 'agent_answer') {
       renderAgentStepBody(body, step);
       return;
@@ -358,7 +379,7 @@
     if (meta) meta.textContent = '#' + sid + (createdAt ? ' · ' + createdAt : '');
     var download = document.getElementById('rjAnswerDownload');
     if (download) { download.hidden = true; download.removeAttribute('href'); }
-    document.getElementById('rjStepBody').innerHTML = '<div class="text-muted text-center py-5"><span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载…</div>';
+    document.getElementById('rjStepBody').innerHTML = '<div class="text-muted text-center py-5">' + MathCurveLoader.markup('正在加载…', 'md') + '</div>';
     m.show();
     var url = btn.getAttribute('data-stream-url');
     if (!url || !window.EventSource) {

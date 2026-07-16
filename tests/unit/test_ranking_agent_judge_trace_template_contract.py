@@ -1,5 +1,6 @@
 """Agent Judge 执行轨迹标签、默认视图与共享 renderer 的前端契约。"""
 
+import json
 import re
 import shutil
 import subprocess
@@ -38,10 +39,39 @@ def test_reverse_and_agent_judge_use_one_shared_trace_renderer():
     assert "{% include '_agent_execution_trace.html' %}" in REVERSE_MODAL
     assert "{% include '_agent_execution_trace.html' %}" in JUDGE_MODAL
     assert "{% include '_agent_execution_trace.html' %}" in RANKING
-    assert "window.AgentExecutionTrace.create({keyPrefix:'reverse-judge'})" in REVERSE_MODAL
-    assert "window.AgentExecutionTrace.create({keyPrefix:'agent-judge'})" in JUDGE_MODAL
-    assert "window.AgentExecutionTrace.create({keyPrefix:'agent-judge'})" in RANKING
+    assert "keyPrefix:'reverse-judge', showThinkingLoader:true" in REVERSE_MODAL
+    for template in (JUDGE_MODAL, RANKING):
+        assert (
+            "keyPrefix:'agent-judge', showThinkingLoader:true, "
+            "showPendingLoader:true"
+        ) in template
     assert "function renderMessageHtml" not in REVERSE_MODAL
+
+
+def test_agent_judge_trace_uses_bottom_thinking_and_large_pending_loaders():
+    assert "function thinkingLoaderHtml(word)" in TRACE_RENDERER
+    assert "function pendingLoaderHtml(context, trace)" in TRACE_RENDERER
+    assert "data-agent-trace-activity" in TRACE_RENDERER
+    assert "trace.status === 'running' && showThinking" in TRACE_RENDERER
+    assert "trace.status === 'pending' && showPending" in TRACE_RENDERER
+    assert 'class="agent-trace-pending"' in TRACE_RENDERER
+    assert 'data-icon-only="true" data-size="lg"' in TRACE_RENDERER
+    assert 'class="agent-trace-thinking"' in TRACE_RENDERER
+    assert "thinkingLoaderHtml(thinkingWord)" in TRACE_RENDERER
+    for template in (JUDGE_MODAL, RANKING):
+        assert "status: snap.status === 'Judging' ? 'running'" in template
+        assert "? 'pending' : (snap.status === 'Error'" in template
+
+
+def test_judging_status_shows_stable_inline_loader_before_progress_bar():
+    for template in (JUDGE_MODAL, RANKING):
+        assert "function renderJudgeStatus(element, snap)" in template
+        assert "snap.status !== 'Judging'" in template
+        assert "data-judge-status-loader" in template
+        assert 'data-icon-only="true" data-size="xs"' in template
+        assert "element.querySelector('[data-judge-status-text]').textContent = text" in template
+        assert "renderJudgeStatus(status, snap)" in template
+        assert "d-inline-flex align-items-center gap-1" in template
 
 
 def test_shared_renderer_reconciles_by_stable_source_offset_identity():
@@ -84,6 +114,53 @@ process.stdout.write(JSON.stringify(cases));
         '"reorder":["setup","rule17","rule18","rule19"],'
         '"sliding":["setup","rule1","rule2","rule3"],'
         '"stale":["setup","rule1","rule2"]}'
+    )
+
+
+def test_trace_window_keeps_first_seven_and_live_last_two_until_expanded():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable")
+    helper = TRACE_RENDERER.split("// TRACE_WINDOW_HELPER_START", 1)[1].split(
+        "// TRACE_WINDOW_HELPER_END", 1,
+    )[0]
+    script = helper + r"""
+const keys = Array.from({length: 12}, (_, index) => 'm' + (index + 1));
+const cases = {
+  nine: visibleMessageKeys(keys.slice(0, 9), false),
+  ten: visibleMessageKeys(keys.slice(0, 10), false),
+  twelve: visibleMessageKeys(keys, false),
+  expanded: visibleMessageKeys(keys, true)
+};
+process.stdout.write(JSON.stringify(cases));
+"""
+    result = subprocess.run(
+        [node, "-e", script], check=True, capture_output=True, text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "nine": [f"m{index}" for index in range(1, 10)],
+        "ten": ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m9", "m10"],
+        "twelve": ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m11", "m12"],
+        "expanded": [f"m{index}" for index in range(1, 13)],
+    }
+
+
+def test_trace_window_state_survives_incremental_events_and_keeps_history_off_dom():
+    assert "var traceExpanded = false" in TRACE_RENDERER
+    assert "var messageOrder = []" in TRACE_RENDERER
+    assert "var messageRecords = Object.create(null)" in TRACE_RENDERER
+    assert "reconcileMessageOrder(messageOrder, incomingKeys)" in TRACE_RENDERER
+    assert "visibleMessageKeys(messageOrder, traceExpanded)" in TRACE_RENDERER
+    assert "traceExpanded = true" in TRACE_RENDERER
+    assert "messageOrder.length > 9 && !traceExpanded" in TRACE_RENDERER
+    assert "收起中间执行记录" not in TRACE_RENDERER
+    assert "data-agent-trace-toggle" in TRACE_RENDERER
+    assert "feed.insertBefore(toggle, eighthMessage || null)" in TRACE_RENDERER
+    assert "latestTrace = trace" in TRACE_RENDERER
+    assert "latestContext = context" in TRACE_RENDERER
+    assert TRACE_RENDERER.index("data-agent-trace-activity") < TRACE_RENDERER.index(
+        "data-agent-trace-raw"
     )
 
 
