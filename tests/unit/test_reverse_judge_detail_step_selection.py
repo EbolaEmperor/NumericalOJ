@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MODAL = (ROOT / "templates" / "_reverse_judge_detail_modal.html").read_text(
     encoding="utf-8",
 )
+TRACE_RENDERER = (ROOT / "templates" / "_agent_execution_trace.html").read_text(
+    encoding="utf-8",
+)
 
 
 def _selector_helper():
@@ -126,6 +129,38 @@ def test_reverse_detail_manual_selection_state_resets_for_each_open():
     assert "activeStepManuallySelected = false;" in MODAL
     assert "activeStepManuallySelected\n    );" in MODAL
     assert "function shouldRenderStep(key, step){ return isReverseJudgeStepVisible(key, step); }" in MODAL
+
+
+def test_running_steps_use_large_center_loader_and_yellow_tab_dot():
+    assert (
+        "var CENTER_LOADER_STEPS = { solution_check:true, "
+        "quality_gate:true, ai_judge:true };"
+    ) in MODAL
+    assert "MathCurveLoader.markup('运行中'" not in MODAL
+    assert "'<span class=\"rj-dot running\"></span>'" in MODAL
+    assert ".rj-dot.running { background:var(--gold); }" in MODAL
+    assert 'class="rj-step-running"' in MODAL
+    assert 'data-icon-only="true" data-size="lg"' in MODAL
+    assert "step.status === 'running' && CENTER_LOADER_STEPS[activeStep]" in MODAL
+
+
+def test_running_agent_answer_shows_random_thinking_loader_before_raw_json():
+    assert "keyPrefix:'reverse-judge', showThinkingLoader:true" in MODAL
+    assert "var THINKING_WORDS = [" in TRACE_RENDERER
+    for word in ("Thinking", "Pondering", "Cogitating", "Contemplating", "Synthesizing"):
+        assert f"'{word}'" in TRACE_RENDERER
+    assert "Math.floor(Math.random() * THINKING_WORDS.length)" in TRACE_RENDERER
+    assert "thinkingLoaderHtml(thinkingWord)" in TRACE_RENDERER
+    assert "data-agent-trace-activity" in TRACE_RENDERER
+    assert TRACE_RENDERER.index("data-agent-trace-activity") < TRACE_RENDERER.index(
+        "data-agent-trace-raw"
+    )
+    assert "if (mode && empty) empty.hidden = true" in TRACE_RENDERER
+    assert "--math-curve-size:2.7rem" in TRACE_RENDERER
+    assert "padding:.9rem 0 .55rem" in TRACE_RENDERER
+    assert "<span>.</span><span>.</span><span>.</span>" in TRACE_RENDERER
+    assert "@keyframes agent-trace-thinking-dot" in TRACE_RENDERER
+    assert "prefers-reduced-motion: reduce" in TRACE_RENDERER
 
 
 def test_reverse_detail_keeps_event_source_reconnectable_before_terminal_state():

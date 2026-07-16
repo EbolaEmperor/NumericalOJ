@@ -15,7 +15,7 @@
       </div>
       <div class="modal-body">
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="small text-muted" id="judgeModalStatus">正在连接评测进度…</span>
+          <span class="small text-muted d-inline-flex align-items-center gap-1" id="judgeModalStatus">正在连接评测进度…</span>
           <span class="small text-muted">得分
             <span class="fw-semibold" id="judgeModalTotal">0</span>
             / <span id="judgeModalMax">0</span>
@@ -35,17 +35,17 @@
         </div>
         <div id="judgeModalTopo" class="aj-result-view" hidden>
           <div class="text-muted text-center py-5">
-            <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分拓扑…
+            <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载评分拓扑…</span></span>
           </div>
         </div>
         <div id="judgeModalRules" class="aj-result-view" hidden>
           <div class="text-muted text-center py-5">
-            <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…
+            <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载评分细则…</span></span>
           </div>
         </div>
         <div id="judgeModalTrace" class="aj-result-view">
           <div class="text-muted text-center py-5">
-            <span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载执行轨迹…
+            <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载执行轨迹…</span></span>
           </div>
         </div>
       </div>
@@ -93,10 +93,27 @@
   var currentJudgeResultSignature = '';
   var currentJudgeView = 'trace';
   var judgeViewManuallySelected = false;
-  var judgeTraceRenderer = window.AgentExecutionTrace.create({keyPrefix:'agent-judge'});
+  var judgeTraceRenderer = window.AgentExecutionTrace.create({
+    keyPrefix:'agent-judge', showThinkingLoader:true, showPendingLoader:true
+  });
   var resultNodeW = 176, resultNodeH = 96, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
   function closeJudgeStream() { if (judgeSource) { judgeSource.close(); judgeSource = null; } }
   function esc(s) { return (s || '').replace(/[&<>]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]; }); }
+  function renderJudgeStatus(element, snap) {
+    if (!element) return;
+    var text = (STATUS[snap.status] || snap.status || '评测状态未知') +
+      (snap.timed_out ? ' · 已超时，保留已有得分' : '');
+    if (snap.status !== 'Judging') {
+      element.textContent = text;
+      return;
+    }
+    if (!element.querySelector('[data-judge-status-loader]')) {
+      element.innerHTML = '<span data-judge-status-loader class="math-curve-loader" ' +
+        'data-math-curve-loader data-icon-only="true" data-size="xs" aria-label="评测进行中"></span>' +
+        '<span data-judge-status-text></span>';
+    }
+    element.querySelector('[data-judge-status-text]').textContent = text;
+  }
   function compactRuleText(s, n) {
     s = String(s || '').replace(/\s+/g, ' ').trim();
     if (!s) return '未填写规则内容';
@@ -673,15 +690,16 @@
     var bar = document.getElementById('judgeModalBar');
     if (total) total.textContent = snap.total_score || 0;
     if (max) max.textContent = snap.max_score || 0;
-    if (status) status.textContent = (STATUS[snap.status] || snap.status || '评测状态未知') + (snap.timed_out ? ' · 已超时，保留已有得分' : '');
+    renderJudgeStatus(status, snap);
     if (bar) { var pct = snap.max_score ? (snap.total_score / snap.max_score * 100) : 0; bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
     applyDefaultJudgeView(snap.status);
     renderJudgeResultViews(snap);
     var traceBox = document.getElementById('judgeModalTrace');
     if (traceBox) {
       var executionTrace = snap.execution_trace || {
-        status: ['Judging', 'Queued', 'Pending'].indexOf(snap.status) >= 0
-          ? 'running' : (snap.status === 'Error' ? 'error' : 'passed'),
+        status: snap.status === 'Judging' ? 'running' :
+          (['Queued', 'Pending'].indexOf(snap.status) >= 0
+            ? 'pending' : (snap.status === 'Error' ? 'error' : 'passed')),
         trace_messages: [], trace_files: []
       };
       judgeTraceRenderer.render(traceBox, executionTrace, {
@@ -715,9 +733,9 @@
     if (bar) bar.style.width = '0%';
     if (meta) meta.textContent = '#' + sid + (createdAt ? ' · ' + createdAt : '');
     if (status) status.textContent = '正在连接评测进度…';
-    if (topoBox) topoBox.innerHTML = '<div class="text-muted text-center py-5"><span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分拓扑…</div>';
-    if (rulesBox) rulesBox.innerHTML = '<div class="text-muted text-center py-5"><span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载评分细则…</div>';
-    if (traceBox) traceBox.innerHTML = '<div class="text-muted text-center py-5"><span class="spinner-border spinner-border-sm me-2" role="status"></span>正在加载执行轨迹…</div>';
+    if (topoBox) topoBox.innerHTML = '<div class="text-muted text-center py-5">' + MathCurveLoader.markup('正在加载评分拓扑…', 'md') + '</div>';
+    if (rulesBox) rulesBox.innerHTML = '<div class="text-muted text-center py-5">' + MathCurveLoader.markup('正在加载评分细则…', 'md') + '</div>';
+    if (traceBox) traceBox.innerHTML = '<div class="text-muted text-center py-5">' + MathCurveLoader.markup('正在加载执行轨迹…', 'md') + '</div>';
     m.show();
     if (!streamUrl || !window.EventSource) { if (status) status.textContent = '当前浏览器不支持实时进度，请刷新页面后重试。'; return; }
     judgeSource = new EventSource(streamUrl);

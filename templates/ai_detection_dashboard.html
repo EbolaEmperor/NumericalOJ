@@ -20,7 +20,6 @@
   #previewTable th, #previewTable td { font-size: 0.88em; }
   .filter-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 1.25rem 1.5rem; }
   .stat-card { border-radius: 8px; }
-  @keyframes indeterminate { from { transform: translateX(-60%); } to { transform: translateX(200%); } }
 </style>
 
 {% if view == 'problem' %}
@@ -403,7 +402,7 @@ function previewFilter() {
   const btnLabel = document.getElementById('btnLabel');
 
   area.classList.remove('d-none');
-  summary.textContent = '加载中…';
+  summary.innerHTML = MathCurveLoader.markup('正在查询匹配记录…', 'sm');
   table.classList.add('d-none');
   btn.classList.add('d-none');
 
@@ -511,7 +510,7 @@ function escJsArg(s) {
 // ---- Task panel polling ----
 const _statusBadge = {
   pending: '<span class="badge bg-secondary">等待中</span>',
-  running: '<span class="badge bg-primary"><i class="fas fa-spinner fa-spin me-1"></i>运行中</span>',
+  running: '<span class="badge bg-primary">' + MathCurveLoader.markup('运行中', 'xs') + '</span>',
   done:    '<span class="badge bg-success">完成</span>',
   failed:  '<span class="badge bg-danger">失败</span>',
 };
@@ -529,9 +528,7 @@ function _renderProgress(t) {
   if (t.status === 'running' && (total === null || total === 0)) {
     // Worker started but total not set yet (or empty task)
     return '<div class="d-flex align-items-center gap-1">' +
-           '<div class="score-bar flex-grow-1" style="overflow:hidden">' +
-           '<div class="score-bar-fill bg-primary" style="width:40%;animation:indeterminate 1.2s ease-in-out infinite alternate"></div></div>' +
-           '<small class="text-muted">' + (total === 0 ? '0 条' : '启动中') + '</small></div>';
+           MathCurveLoader.markup(total === 0 ? '0 条' : '启动中', 'xs') + '</div>';
   }
   const pct = Math.min(100, Math.round(processed / total * 100));
   const colorCls = t.status === 'done' ? 'bg-success' : 'bg-primary';
@@ -544,7 +541,7 @@ function _renderProgress(t) {
 function deleteTask(taskId, btn) {
   if (!confirm('确认删除该任务？\n\n此操作将同时删除该任务产生的所有 AI 检测记录（不影响其他任务的结果）。')) return;
   btn.disabled = true;
-  btn.textContent = '删除中…';
+  btn.innerHTML = MathCurveLoader.markup('删除中…', 'xs');
   fetch('/admin/ai_detection/api/delete_task/' + taskId, { method: 'POST' })
     .then(r => r.json())
     .then(data => {
@@ -568,7 +565,7 @@ function deleteTask(taskId, btn) {
 function stopTask(taskId, btn) {
   if (!confirm('确认强制停止该任务？')) return;
   btn.disabled = true;
-  btn.textContent = '停止中…';
+  btn.innerHTML = MathCurveLoader.markup('停止中…', 'xs');
   fetch('/admin/ai_detection/api/stop/' + taskId, { method: 'POST' })
     .then(r => r.json())
     .then(data => {

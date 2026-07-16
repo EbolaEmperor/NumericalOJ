@@ -189,7 +189,7 @@
       <div class="modal-body">
         <div class="progress mb-2">
           <div
-            class="progress-bar progress-bar-striped progress-bar-animated"
+            class="progress-bar"
             role="progressbar"
             id="timeRangeRejudgeProgressBar"
             style="width: 0%;"
@@ -256,7 +256,12 @@
       progressBar.style.width = percent + "%";
       progressBar.setAttribute("aria-valuenow", percent);
       progressBar.textContent = percent + "%";
-      progressDetail.textContent = "已完成 " + done + " / " + total;
+      var detailText = "已完成 " + done + " / " + total;
+      if (Number(percent) < 100) {
+        MathCurveLoader.update(progressDetail, detailText, { size: 'sm' });
+      } else {
+        progressDetail.textContent = detailText;
+      }
     }
 
     function checkProgress() {

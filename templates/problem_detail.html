@@ -353,7 +353,7 @@
       </div>
       <div class="modal-body">
         <div class="progress mb-3">
-          <div class="progress-bar progress-bar-striped progress-bar-animated" 
+          <div class="progress-bar"
                role="progressbar"
                style="width: 0%;" 
                id="rejudgeProgressBar"
@@ -383,10 +383,9 @@
       </div>
       <div class="modal-body">
         <div id="scoresLoading" class="text-center">
-          <div class="spinner-border" role="status">
-            <span class="visually-hidden">加载中...</span>
-          </div>
-          <p class="mt-2">正在加载用户得分数据...</p>
+          <span class="math-curve-loader" data-math-curve-loader data-size="md">
+            <span class="math-curve-loader__label">正在加载用户得分…</span>
+          </span>
         </div>
         <div id="scoresContent" style="display: none;">
           <div class="mb-3">
@@ -730,7 +729,7 @@
     
     // 禁用按钮并显示加载中
     btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> 加载中...';
+    btn.innerHTML = MathCurveLoader.markup('加载中…', 'xs');
     
     fetch(`/api/get_last_submission_code/${problemId}`)
       .then(response => response.json())
@@ -774,7 +773,7 @@
       const btn = this;
       const originalHtml = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin me"></i>';
+      btn.innerHTML = MathCurveLoader.markup('启动中…', 'xs');
 
       fetch("{{ url_for('problem_core.admin_agent_solve_problem', problem_id=problem.id) }}", {
         method: "POST",
@@ -839,7 +838,7 @@
       var btn = this;
       var originalHtml = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>启动中...';
+      btn.innerHTML = MathCurveLoader.markup('启动中…', 'xs');
 
       fetch("{{ url_for('problem_core.admin_agent_generate_testdata', problem_id=problem.id) }}", {
         method: "POST",
@@ -918,7 +917,12 @@
       progressBar.style.width = percent + "%";
       progressBar.setAttribute("aria-valuenow", percent);
       progressBar.textContent = percent + "%";
-      progressDetail.textContent = "已完成 " + done + " / " + total;
+      var detailText = "已完成 " + done + " / " + total;
+      if (Number(percent) < 100) {
+        MathCurveLoader.update(progressDetail, detailText, { size: 'sm' });
+      } else {
+        progressDetail.textContent = detailText;
+      }
     }
 
     // 查看用户得分按钮事件

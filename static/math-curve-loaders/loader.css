@@ -1,0 +1,112 @@
+.math-curve-loader {
+  --math-curve-size: 2rem;
+  --math-curve-color-a: #111111;
+  --math-curve-color-b: #000000;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  max-width: 100%;
+  color: inherit;
+  vertical-align: middle;
+}
+
+.math-curve-loader[hidden] {
+  display: none !important;
+}
+
+.math-curve-loader[data-size="xs"] { --math-curve-size: 1.15rem; gap: 0.3rem; }
+.math-curve-loader[data-size="sm"] { --math-curve-size: 1.8rem; gap: 0.45rem; }
+.math-curve-loader[data-size="md"] { --math-curve-size: 3.8rem; }
+.math-curve-loader[data-size="lg"] { --math-curve-size: 6.5rem; gap: 0.8rem; }
+
+.math-curve-loader--block {
+  display: flex;
+  width: 100%;
+  padding: 0.65rem;
+}
+
+.math-curve-loader__canvas,
+.math-curve-loader__svg {
+  width: var(--math-curve-size);
+  height: var(--math-curve-size);
+  flex: 0 0 var(--math-curve-size);
+}
+
+.math-curve-loader__svg {
+  display: block;
+  overflow: visible;
+  filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--math-curve-color-a) 30%, transparent));
+}
+
+.math-curve-loader__label {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.math-curve-loader-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(37, 99, 235, 0.12), transparent 34%),
+    rgba(246, 248, 252, 0.82);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
+}
+
+.math-curve-loader-overlay.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 160ms ease;
+}
+
+.math-curve-loader-overlay__card {
+  min-width: min(17rem, calc(100vw - 2.5rem));
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(99, 102, 241, 0.16);
+  border-radius: 1.15rem;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 20px 60px rgba(30, 64, 175, 0.16);
+  color: #334155;
+  text-align: center;
+}
+
+.math-curve-loader-overlay__card .math-curve-loader {
+  flex-direction: column;
+}
+
+.math-curve-loader-overlay__card .math-curve-loader__label {
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+@media (prefers-color-scheme: dark) {
+  .math-curve-loader-overlay {
+    background:
+      radial-gradient(circle at 50% 42%, rgba(56, 189, 248, 0.14), transparent 34%),
+      rgba(15, 23, 42, 0.84);
+  }
+
+  .math-curve-loader-overlay__card {
+    border-color: rgba(56, 189, 248, 0.2);
+    background: rgba(30, 41, 59, 0.96);
+    box-shadow: 0 20px 60px rgba(2, 6, 23, 0.36);
+    color: #e2e8f0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .math-curve-loader__svg {
+    filter: none;
+  }
+}

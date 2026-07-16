@@ -34,8 +34,8 @@
         <span class="aj-time">{{ s.created_at }}</span>
         {% if is_reverse_judge and s.agent_endpoint_label %}<span class="aj-chip" title="AI 节点">{{ s.agent_endpoint_label }}</span>{% endif %}
         {% if s.base_model %}<span class="aj-chip" title="基座模型">{{ s.base_model }}</span>{% endif %}
-        {% if s.answer_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}" title="下载 {{ s.answer_filename }}"><i class="fas fa-file-code"></i>答案</a>{% endif %}
-        {% if s.code_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" title="下载 {{ s.code_filename }}"><i class="fas fa-file-archive"></i>代码</a>{% endif %}
+        {% if s.answer_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}" download title="下载 {{ s.answer_filename }}"><i class="fas fa-file-code"></i>答案</a>{% endif %}
+        {% if s.code_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" download title="下载 {{ s.code_filename }}"><i class="fas fa-file-archive"></i>代码</a>{% endif %}
       </div>
       <div class="aj-acts">
         {% if is_agent_judge %}

@@ -8,6 +8,8 @@
   <!-- <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"> -->
   <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='math-curve-loaders/loader.css') }}">
+  <script src="{{ url_for('static', filename='math-curve-loaders/loader.js') }}"></script>
   <!-- MathJax for LaTeX -->
   <script>
   window.MathJax = {
@@ -359,7 +361,11 @@
       <div class="modal-body">
         <h6 class="mb-2">我的班级</h6>
         <div id="myClassesBox" class="list-group mb-3">
-          <!-- JS 渲染 -->
+          <div class="list-group-item text-muted">
+            <span class="math-curve-loader" data-math-curve-loader data-size="sm">
+              <span class="math-curve-loader__label">正在加载班级…</span>
+            </span>
+          </div>
         </div>
 
         <hr>
@@ -490,7 +496,9 @@
 
   // 打开时加载
   modalEl.addEventListener('show.bs.modal', () => {
-    fetch('/me/classes')
+    myBox.innerHTML = '<div class="list-group-item text-muted">' + MathCurveLoader.markup('正在加载班级…', 'sm') + '</div>';
+    joinSel.innerHTML = '<option value="">正在加载…</option>';
+    fetch('/me/classes', { mathCurveLoader: true })
       .then(r => r.json())
       .then(data => {
         if (!data.success) throw new Error(data.message || '加载失败');

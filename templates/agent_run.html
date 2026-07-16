@@ -23,7 +23,9 @@
         <div class="mb-2">
           <span id="agentStatusBadge" class="badge bg-secondary">Pending</span>
         </div>
-        <div class="small text-muted mb-1" id="agentProgressText">进度：0/0</div>
+        <div class="small text-muted mb-1" id="agentProgressText">
+          <span class="math-curve-loader" data-math-curve-loader data-size="sm"><span class="math-curve-loader__label">进度：0/0</span></span>
+        </div>
         <div class="small text-muted mb-2" id="agentMessageText">任务排队中</div>
         <div class="small mb-1">
           <strong>最新 Submission:</strong>
@@ -390,7 +392,12 @@
       statusBadgeEl.className = 'badge ' + statusBadgeClass(status);
       const round = Number(state.round || 0);
       const maxRounds = Number(state.max_rounds || 0);
-      progressTextEl.textContent = '进度：' + round + '/' + maxRounds;
+      const progressText = '进度：' + round + '/' + maxRounds;
+      if (isFinished(state)) {
+        progressTextEl.textContent = progressText;
+      } else {
+        MathCurveLoader.update(progressTextEl, progressText, {size: 'sm'});
+      }
       messageTextEl.textContent = state.message || '任务执行中';
       renderEvents(state.events);
 
