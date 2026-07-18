@@ -12,6 +12,7 @@ from celery import Celery
 from config import *
 import config as _cfg
 from oj_modules.db_services import (
+    get_db_connection,
     get_user_by_username,
     init_submission_snapshot_cache,
     is_class_adjust_enabled,
@@ -31,6 +32,8 @@ from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
+from oj_modules.routes.health_routes import create_health_blueprint
+from oj_modules.request_security import install_same_origin_protection
 from oj_modules.api import API_BLUEPRINTS
 from oj_modules.tasks import (
     init_agent_progress_cache,
@@ -66,12 +69,21 @@ from oj_modules.startup_requeue import (
 import redis
 
 # Redis 连接
-rds = redis.StrictRedis(host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB), decode_responses=True)
+_REDIS_SOCKET_TIMEOUT = max(
+    0.1, float(getattr(_cfg, 'REDIS_SOCKET_TIMEOUT_SECONDS', 3.0)),
+)
+_REDIS_CLIENT_OPTIONS = {
+    'host': REDIS_HOST,
+    'port': int(REDIS_PORT),
+    'db': int(REDIS_DB),
+    'socket_connect_timeout': _REDIS_SOCKET_TIMEOUT,
+    'socket_timeout': _REDIS_SOCKET_TIMEOUT,
+    'health_check_interval': 30,
+}
+rds = redis.StrictRedis(**_REDIS_CLIENT_OPTIONS, decode_responses=True)
 # 用于存储二进制数据（如 ZIP 文件）的 Redis 连接
 rds_binary = redis.StrictRedis(
-    host=REDIS_HOST,
-    port=int(REDIS_PORT),
-    db=int(REDIS_DB),
+    **_REDIS_CLIENT_OPTIONS,
     decode_responses=False,
 )
 
@@ -117,6 +129,10 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=bool(getattr(_cfg, 'SESSION_COOKIE_SECURE', False)),
 )
+install_same_origin_protection(
+    app,
+    trusted_origins=getattr(_cfg, 'CSRF_TRUSTED_ORIGINS', ()),
+)
 
 # Celery 配置
 _REDIS_URL = f"redis://{REDIS_HOST}:{int(REDIS_PORT)}/{int(REDIS_DB)}"
@@ -139,6 +155,7 @@ app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
 app.register_blueprint(game_bp)
 app.register_blueprint(ranking_bp)
+app.register_blueprint(create_health_blueprint(rds, get_db_connection))
 for _api_bp in API_BLUEPRINTS:
     app.register_blueprint(_api_bp)
 
@@ -293,8 +310,6 @@ init_ranking_module(
     batch_probe_task=ranking_batch_probe, batch_run_task=ranking_batch_run,
     bulk_rejudge_task=ranking_bulk_rejudge,
 )
-# 启动 ELO 匹配 tick 链路（自调度，全局单链）
-seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
 # 初始化认证模块（登录/发码限流依赖 Redis）
 init_auth_module(rds)
 # 初始化 AI 模块（ask_ai_code_marks 限流依赖 Redis）
@@ -315,6 +330,42 @@ init_bulk_rejudge_progress_cache(rds)
 ###############################################################################
 #  班级管理
 ###############################################################################
+
+
+def run_startup_jobs():
+    """启动只应由 Web 服务进程执行的恢复与自调度任务。
+
+    保持该入口显式，避免 Celery、测试或管理脚本仅仅导入 ``oj`` 时就向
+    Redis/Celery 写入任务。
+    """
+    # 启动 ELO 匹配 tick 链路（自调度，全局单链）。
+    seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
+    # 启动时把数据库里残留的 pending/评测中任务重新入队（重启后队列会清空）。
+    requeue_pending_on_startup(
+        evaluate_task=evaluate_submission,
+        written_task=transcribe_written_homework_to_latex,
+        promptly_task=promptly_generate_submission,
+        ranking_task=evaluate_ranking_submission,
+        elo_initial_burst_task=ranking_elo_initial_burst,
+        agent_judge_task=evaluate_ranking_agent_judge,
+        reverse_judge_task=evaluate_ranking_reverse_judge,
+    )
+    # 重启恢复完成后换新 owner，让旧 watchdog ETA 消息醒来后 no-op。
+    seed_pending_requeue_watchdog(
+        rds,
+        pending_requeue_watchdog,
+        reset_owner=True,
+        countdown=180,
+    )
+    # 每小时探测暂停的 Agent 评测端点并按健康度自动恢复。
+    seed_agent_judge_paused_probe(
+        rds,
+        ranking_agent_judge_paused_probe,
+        reset_owner=True,
+        countdown=300,
+    )
+
+
 if __name__ == '__main__':
     # 启动时把数据库里残留的 pending/评测中任务重新入队（重启后队列会清空）。
     # 仅在真正提供服务的进程里执行一次：
@@ -323,30 +374,6 @@ if __name__ == '__main__':
     #   - debug 模式下 Werkzeug reloader 会让父子两个进程都跑 __main__，用
     #     WERKZEUG_RUN_MAIN 守卫，只在真正服务的子进程里跑一次。
     if (not app.debug) or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        requeue_pending_on_startup(
-            evaluate_task=evaluate_submission,
-            written_task=transcribe_written_homework_to_latex,
-            promptly_task=promptly_generate_submission,
-            ranking_task=evaluate_ranking_submission,
-            elo_initial_burst_task=ranking_elo_initial_burst,
-            agent_judge_task=evaluate_ranking_agent_judge,
-            reverse_judge_task=evaluate_ranking_reverse_judge,
-        )
-        # 启动 Pending 自动回收链路（自调度，全局单链）。重启恢复完成后换新 owner，
-        # 让旧 watchdog ETA 消息即使醒来，也因 owner 不匹配而 no-op。
-        seed_pending_requeue_watchdog(
-            rds,
-            pending_requeue_watchdog,
-            reset_owner=True,
-            countdown=180,
-        )
-        # 启动 Agent 评测暂停端点的自动恢复探测链路。每小时检查 paused 端点，
-        # 5 次 hello 中至少 3 次成功则自动恢复为启用。
-        seed_agent_judge_paused_probe(
-            rds,
-            ranking_agent_judge_paused_probe,
-            reset_owner=True,
-            countdown=300,
-        )
+        run_startup_jobs()
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

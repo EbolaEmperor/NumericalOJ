@@ -25,3 +25,4 @@ pypdfium2==5.12.1
 
 # supervisord is the checked-in process manager used by web.conf/celery.conf.
 supervisor==4.3.0
+gunicorn==26.0.0
