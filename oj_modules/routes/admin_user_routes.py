@@ -3,7 +3,7 @@
 
 import re
 
-from flask import Blueprint, flash, jsonify, render_template, request, session
+from flask import Blueprint, current_app, flash, jsonify, render_template, request, session
 
 from oj_modules.db_services import (
     delete_user_problem_max_score,
@@ -13,7 +13,7 @@ from oj_modules.db_services import (
     get_db_connection,
     get_problem_title,
     get_user_by_id,
-    get_user_by_username,
+    rename_user,
     safe_table_name,
     upsert_user_problem_max_score,
 )
@@ -29,7 +29,7 @@ def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
         invalidate_problem_list_cache_for_user(user_id=user_id, username=username)
     except Exception:
         # 缓存失效失败不影响主流程
-        pass
+        current_app.logger.exception('用户题目列表缓存失效失败')
 
 
 from oj_modules.auth_helpers import current_user, is_admin
@@ -203,7 +203,7 @@ def edit_username_ajax():
     if not is_admin(admin):
         return jsonify({'success': False, 'message': '无权限'}), 403
 
-    user_id = request.form.get('user_id')
+    user_id = request.form.get('user_id', type=int)
     new_username = request.form.get('new_username')
 
     if not new_username or not user_id:
@@ -213,17 +213,21 @@ def edit_username_ajax():
     if not username_ok:
         return jsonify({'success': False, 'message': username_msg}), 400
 
-    if get_user_by_username(new_username):
-        return jsonify({'success': False, 'message': '用户名已存在'}), 400
-
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            sql = "UPDATE users SET username=%s WHERE id=%s"
-            cursor.execute(sql, (new_username, user_id))
-        conn.commit()
-    finally:
-        conn.close()
+        old_username = rename_user(user_id, new_username)
+    except LookupError:
+        return jsonify({'success': False, 'message': '用户不存在'}), 404
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    except Exception:
+        current_app.logger.exception('修改用户名事务失败', extra={'user_id': user_id})
+        return jsonify({'success': False, 'message': '数据库操作失败，请稍后再试'}), 500
+
+    if session.get('username') == old_username:
+        session['username'] = new_username
+
+    _invalidate_problem_list_cache_for_user(user_id=user_id, username=old_username)
+    _invalidate_problem_list_cache_for_user(username=new_username)
 
     return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_username': new_username})
 

@@ -275,17 +275,28 @@ class _MySQLConnectionPool:
             self._created = 0
 
 
-_db_pool = _MySQLConnectionPool(
-    min_size=int(MYSQL_POOL_MIN_SIZE),
-    max_size=int(MYSQL_POOL_MAX_SIZE),
-    wait_timeout=int(MYSQL_POOL_WAIT_TIMEOUT),
-    recycle_seconds=int(MYSQL_POOL_RECYCLE_SECONDS),
-)
+_db_pool = None
+_db_pool_init_lock = threading.Lock()
+
+
+def _get_db_pool():
+    """按需创建连接池，避免导入模块时就访问 MySQL。"""
+    global _db_pool
+    if _db_pool is None:
+        with _db_pool_init_lock:
+            if _db_pool is None:
+                _db_pool = _MySQLConnectionPool(
+                    min_size=int(MYSQL_POOL_MIN_SIZE),
+                    max_size=int(MYSQL_POOL_MAX_SIZE),
+                    wait_timeout=int(MYSQL_POOL_WAIT_TIMEOUT),
+                    recycle_seconds=int(MYSQL_POOL_RECYCLE_SECONDS),
+                )
+    return _db_pool
 
 
 def get_db_connection():
     """返回一个连接池代理连接（close() 时归还池）。"""
-    return _db_pool.acquire()
+    return _get_db_pool().acquire()
 
 
 # Schema creation and migration is handled by scripts/init_db_schema.py before
@@ -862,6 +873,86 @@ def get_user_by_email(email):
         conn.close()
 
 
+# 用户名仍是部分历史表的业务键。改名时必须在同一事务里同步这些列，否则用户会丢失
+# 提交记录、提交配额或功能模块中的历史归属。核心表缺失说明 schema 已损坏，必须中止；
+# 可选功能表允许整表不存在，但只要表存在，约定的身份列就必须存在，避免 schema 漂移时
+# 静默完成一半改名。
+_RENAME_USER_REQUIRED_COLUMNS = (
+    ('users', 'username'),
+    ('submissions', 'username'),
+    ('submission_limits', 'username'),
+)
+
+_RENAME_USER_OPTIONAL_COLUMNS = (
+    # 成绩导入以登录用户名作为 student_id 查询。
+    ('final_exam_scores', 'student_id'),
+    ('plagiarism_records', 'username'),
+    ('agent_task_runs', 'requested_by'),
+    ('ai_detection_results', 'username'),
+    ('ranking_competitions', 'created_by'),
+    ('ranking_submissions', 'username'),
+    ('ranking_appeals', 'username'),
+    ('ranking_appeals', 'admin_username'),
+    ('circle_cat_records', 'username'),
+    ('circle_cat_games', 'username'),
+)
+
+
+def _get_rename_user_columns(cursor):
+    """返回当前 schema 中可安全同步的用户名列，并在 schema 漂移时 fail closed。"""
+    expected_columns = _RENAME_USER_REQUIRED_COLUMNS + _RENAME_USER_OPTIONAL_COLUMNS
+    expected_by_table = {}
+    for table_name, column_name in expected_columns:
+        expected_by_table.setdefault(table_name, set()).add(column_name)
+
+    table_names = tuple(expected_by_table)
+    placeholders = ', '.join(['%s'] * len(table_names))
+    cursor.execute(
+        f"""
+        SELECT TABLE_NAME, COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA=DATABASE()
+          AND TABLE_NAME IN ({placeholders})
+        """,
+        table_names,
+    )
+    rows = cursor.fetchall()
+    actual_by_table = {}
+    for row in rows:
+        table_name = row.get('TABLE_NAME') or row.get('table_name')
+        column_name = row.get('COLUMN_NAME') or row.get('column_name')
+        if table_name and column_name:
+            actual_by_table.setdefault(table_name, set()).add(column_name)
+
+    missing_required = [
+        f'{table_name}.{column_name}'
+        for table_name, column_name in _RENAME_USER_REQUIRED_COLUMNS
+        if column_name not in actual_by_table.get(table_name, set())
+    ]
+    if missing_required:
+        raise RuntimeError(
+            '用户名改名所需的核心数据列不存在: ' + ', '.join(missing_required)
+        )
+
+    for table_name, expected in expected_by_table.items():
+        if table_name not in actual_by_table:
+            # 可选功能未安装时允许整表不存在；核心表已在上面拦截。
+            continue
+        missing_columns = expected - actual_by_table[table_name]
+        if missing_columns:
+            missing = ', '.join(
+                f'{table_name}.{column_name}' for column_name in sorted(missing_columns)
+            )
+            raise RuntimeError('用户名改名遇到不完整的数据表: ' + missing)
+
+    return tuple(
+        (table_name, column_name)
+        for table_name, column_name in expected_columns
+        if table_name != 'users'
+        and column_name in actual_by_table.get(table_name, set())
+    )
+
+
 def create_user(username, password_hash, email, user_class):
     if (user_class or {}).get('class_en') == 'Cadmin':
         raise ValueError('普通用户不能注册到管理员班级')
@@ -871,16 +962,72 @@ def create_user(username, password_hash, email, user_class):
         with conn.cursor() as cursor:
             sql = 'INSERT INTO users (username, password_hash, email, class, class_cn) VALUES (%s, %s, %s, %s, %s)'
             cursor.execute(sql, (username, password_hash, email, user_class['class_en'], user_class['class_cn']))
-        conn.commit()
-        with conn.cursor() as cursor:
+            user_id = cursor.lastrowid
+
             sql = 'UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s'
             cursor.execute(sql, (user_class['class_en'],))
-        conn.commit()
-        user = get_user_by_username(username)
-        with conn.cursor() as cursor:
+
             sql = 'INSERT INTO user_class_map (user_id, class_en, is_primary) VALUES (%s, %s, %s)'
-            cursor.execute(sql, (user['id'], user_class['class_en'], 1))
+            cursor.execute(sql, (user_id, user_class['class_en'], 1))
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def rename_user(user_id, new_username):
+    """原子地修改用户名及所有仍以用户名作为用户身份的历史数据。
+
+    返回原用户名。用户不存在时抛 ``LookupError``，新用户名已被占用时抛
+    ``ValueError``；schema 不完整或任意数据更新失败都会回滚整个事务。
+    """
+    new_username = str(new_username or '').strip()
+    if not new_username:
+        raise ValueError('新用户名不能为空')
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'SELECT id, username FROM users WHERE id=%s FOR UPDATE',
+                (user_id,),
+            )
+            user = cursor.fetchone()
+            if not user:
+                raise LookupError('用户不存在')
+
+            old_username = user['username']
+            if old_username == new_username:
+                conn.commit()
+                return old_username
+
+            cursor.execute(
+                'SELECT id FROM users WHERE username=%s AND id<>%s LIMIT 1 FOR UPDATE',
+                (new_username, user_id),
+            )
+            if cursor.fetchone():
+                raise ValueError('用户名已存在')
+
+            reference_columns = _get_rename_user_columns(cursor)
+            for table_name, column_name in reference_columns:
+                # 表名和列名只来自上面的模块级常量，不包含外部输入。
+                cursor.execute(
+                    f'UPDATE `{table_name}` SET `{column_name}`=%s WHERE `{column_name}`=%s',
+                    (new_username, old_username),
+                )
+
+            cursor.execute(
+                'UPDATE users SET username=%s WHERE id=%s',
+                (new_username, user_id),
+            )
+
+        conn.commit()
+        return old_username
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
