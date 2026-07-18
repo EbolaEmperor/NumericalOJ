@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='math-curve-loaders/loader.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/layout.css') }}">
   <script src="{{ url_for('static', filename='math-curve-loaders/loader.js') }}"></script>
   <!-- MathJax for LaTeX -->
   <script>
@@ -21,28 +22,6 @@
   </script>
   <script src="{{ url_for('static', filename='vendor/mathjax/tex-mml-chtml.js') }}"></script>
 
-  <style>
-    /* 修改侧拉栏宽度 */
-    .offcanvas-end {
-      width: 150px !important; /* 调整为你需要的宽度 */
-    }
-    .layout-navbar.layout-nav-compact .navbar-brand,
-    .layout-navbar.layout-nav-compact .nav-link,
-    .layout-navbar.layout-nav-compact .nav-link.disabled {
-      font-size: 0.92rem;
-    }
-    .layout-offcanvas-nav.layout-nav-compact .nav-link {
-      font-size: 0.92rem;
-    }
-    /* 顶部导航栏粘性吸顶 */
-    .layout-navbar {
-      position: sticky;
-      top: 0;
-      z-index: 1030;
-      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
-    }
-  </style>
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -293,7 +272,9 @@
         <h5 class="modal-title">修改密码</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form id="passwordForm" method="POST" action="{{ url_for('auth.change_password') }}">
+      <form id="passwordForm" method="POST" action="{{ url_for('auth.change_password') }}"
+        data-password-code-url="{{ url_for('auth.send_password_code') }}"
+        data-user-email="{{ user.email }}">
         <div class="modal-body">
           <!-- 邮箱显示 -->
           <div class="mb-3">
@@ -306,7 +287,7 @@
             <label class="form-label"><i class="fas fa-shield-alt"></i> 验证码</label>
             <div class="input-group">
               <input type="text" class="form-control" name="code" required>
-              <button type="button" class="btn btn-outline-secondary" onclick="sendPasswordCode()">
+              <button type="button" class="btn btn-outline-secondary" id="sendPasswordCodeBtn">
                 发送验证码
               </button>
             </div>
@@ -339,7 +320,12 @@
 <!-- 班级管理 Modal -->
 <div class="modal fade" id="classManagerModal" tabindex="-1" aria-labelledby="classManagerLabel" aria-hidden="true"
   data-is-admin="{% if user and user.is_admin == 1 %}1{% else %}0{% endif %}"
-  data-class-adjust-enabled="{% if class_adjust_enabled %}1{% else %}0{% endif %}">
+  data-class-adjust-enabled="{% if class_adjust_enabled %}1{% else %}0{% endif %}"
+  data-classes-url="{{ url_for('class_management.get_my_classes') }}"
+  data-join-class-url="{{ url_for('class_management.join_class') }}"
+  data-leave-class-url="{{ url_for('class_management.leave_class') }}"
+  data-set-primary-class-url="{{ url_for('class_management.set_primary_class') }}"
+  data-class-adjust-url="{{ url_for('homework.admin_class_adjust') }}">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
 
@@ -372,7 +358,7 @@
 
         <h6 class="mb-2">加入新班级</h6>
         <div class="d-flex gap-2 align-items-center">
-          <select id="joinClassSelect" class="form-select" style="max-width: 320px;">
+          <select id="joinClassSelect" class="form-select class-join-select">
             <option value="">请选择班级</option>
           </select>
           <button class="btn btn-outline-success" id="joinClassBtn">
@@ -393,29 +379,6 @@
 </div>
 {% endif %}
 
-<style>
-  /* 班级列表的行：左侧信息，右侧动作 */
-  .class-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: .75rem;
-  }
-  .class-left {
-    display: flex;
-    align-items: center;
-    gap: .5rem;
-    min-width: 0;
-  }
-  .class-actions { display: flex; gap: .5rem; }
-  .class-name {
-    font-weight: 600;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .radio-wrap { display: inline-flex; align-items: center; gap: .35rem; }
-</style>
-
-
 <!-- Flash 消息 -->
 <div class="container mt-4">
   {% with messages = get_flashed_messages(with_categories=true) %}
@@ -432,341 +395,11 @@
 
 <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
 
-<script>
-(function () {
-  const compactClass = 'layout-nav-compact';
-  const desktopQuery = window.matchMedia('(min-width: 992px)');
-  const mobileQuery = window.matchMedia('(max-width: 991.98px)');
-
-  function bindAdaptiveFont(containerSelector, labelSelector, mediaQuery) {
-    const container = document.querySelector(containerSelector);
-    const label = container ? container.querySelector(labelSelector) : null;
-    if (!container || !label) return;
-
-    function updateFontSize() {
-      container.classList.remove(compactClass);
-      if (!mediaQuery.matches) return;
-      if (label.getClientRects().length > 1) {
-        container.classList.add(compactClass);
-      }
-    }
-
-    let initialized = false;
-    function initializeAdaptiveFont() {
-      if (initialized) return;
-      initialized = true;
-      updateFontSize();
-    }
-
-    if (typeof mediaQuery.addEventListener === 'function') {
-      mediaQuery.addEventListener('change', updateFontSize);
-    } else if (typeof mediaQuery.addListener === 'function') {
-      mediaQuery.addListener(updateFontSize);
-    }
-
-    window.addEventListener('resize', updateFontSize);
-
-    if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(initializeAdaptiveFont);
-    } else {
-      initializeAdaptiveFont();
-    }
-  }
-
-  bindAdaptiveFont('.layout-navbar', '[data-problem-list-label="desktop"]', desktopQuery);
-  bindAdaptiveFont('.layout-offcanvas-nav', '[data-problem-list-label="mobile"]', mobileQuery);
-})();
-</script>
-
-{% if user %}
-<script>
-(function(){
-  const modalEl = document.getElementById('classManagerModal');
-  if (!modalEl) return;
-
-  const myBox   = document.getElementById('myClassesBox');
-  const joinSel = document.getElementById('joinClassSelect');
-  const joinBtn = document.getElementById('joinClassBtn');
-  const isAdmin = modalEl.dataset.isAdmin === '1';
-  let classAdjustEnabled = modalEl.dataset.classAdjustEnabled === '1';
-  const switchEl = document.getElementById('classAdjustSwitch');
-  const switchLabel = document.getElementById('classAdjustLabel');
-
-  let model = { memberships: [], primary_en: '', all_classes: [] };
-
-  // 打开时加载
-  modalEl.addEventListener('show.bs.modal', () => {
-    myBox.innerHTML = '<div class="list-group-item text-muted">' + MathCurveLoader.markup('正在加载班级…', 'sm') + '</div>';
-    joinSel.innerHTML = '<option value="">正在加载…</option>';
-    fetch('/me/classes', { mathCurveLoader: true })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) throw new Error(data.message || '加载失败');
-        model.memberships = data.memberships || [];
-        model.primary_en  = data.primary_en || '';
-        model.all_classes = data.all_classes || [];
-        renderMyClasses();
-        renderJoinSelect();
-        // 根据当前开关调整交互
-        updateJoinLeaveAvailability();
-      })
-      .catch(err => {
-        myBox.innerHTML = `<div class="list-group-item text-danger">加载失败：${err}</div>`;
-        joinSel.innerHTML = `<option value="">加载失败</option>`;
-      });
-  });
-
-  function renderMyClasses() {
-    myBox.innerHTML = '';
-    if (!model.memberships.length) {
-      myBox.innerHTML = `<div class="list-group-item text-muted">暂无班级</div>`;
-      return;
-    }
-
-    model.memberships.forEach(m => {
-      const row = document.createElement('div');
-      row.className = 'list-group-item class-row';
-
-      const left = document.createElement('div');
-      left.className = 'class-left';
-
-      // 主班选择 radio
-      const radioWrap = document.createElement('label');
-      radioWrap.className = 'radio-wrap';
-      const radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = 'primaryClass';
-      radio.value = m.class_en;
-      radio.checked = !!m.is_primary;
-      radio.addEventListener('change', () => setPrimary(m.class_en));
-      radioWrap.appendChild(radio);
-      radioWrap.appendChild(document.createTextNode('主'));
-      left.appendChild(radioWrap);
-
-      // 班级名
-      const name = document.createElement('span');
-      name.className = 'class-name';
-      name.textContent = m.class_cn || m.class_en;
-      left.appendChild(name);
-
-      // 徽章
-      if (m.is_primary) {
-        const badge = document.createElement('span');
-        badge.className = 'badge bg-primary';
-        badge.textContent = '主班级';
-        left.appendChild(badge);
-      }
-
-      // 动作
-      const actions = document.createElement('div');
-      actions.className = 'class-actions';
-      const leaveBtn = document.createElement('button');
-      leaveBtn.className = 'btn btn-sm btn-outline-danger';
-      leaveBtn.innerHTML = '<i class="fas fa-sign-out-alt me-1"></i> 退出';
-
-      const onlyOne = model.memberships.length <= 1; // 至少保留 1 个
-      leaveBtn.disabled = onlyOne;
-      leaveBtn.addEventListener('click', () => {
-        if (onlyOne) return;
-        if (!confirm(`确认退出「${m.class_cn || m.class_en}」吗？`)) return;
-        leaveClass(m.class_en);
-      });
-
-      actions.appendChild(leaveBtn);
-
-      row.appendChild(left);
-      row.appendChild(actions);
-      myBox.appendChild(row);
-    });
-  }
-
-  function renderJoinSelect() {
-    const owned = new Set(model.memberships.map(m => m.class_en));
-    joinSel.innerHTML = '<option value="">请选择班级</option>';
-    (model.all_classes || []).forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c.class_en;
-      opt.textContent = c.class_cn || c.class_en;
-      if (owned.has(c.class_en)) opt.disabled = true;
-      joinSel.appendChild(opt);
-    });
-  }
-
-  joinBtn.addEventListener('click', () => {
-    const classEn = joinSel.value;
-    if (!classEn) { alert('请选择班级'); return; }
-    if (!classAdjustEnabled && !isAdmin) { alert('当前不允许调整班级，请联系老师'); return; }
-    joinBtn.disabled = true;
-    joinClass(classEn).finally(() => joinBtn.disabled = false);
-  });
-
-  function joinClass(classEn) {
-    const form = new FormData();
-    form.append('class_en', classEn);
-    return fetch('/me/join_class', { method: 'POST', body: form })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) throw new Error(data.message || '加入失败');
-        model.memberships.push({
-          class_en: classEn,
-          class_cn: data.class_cn || getCn(classEn),
-          is_primary: false
-        });
-        renderMyClasses();
-        renderJoinSelect();
-        toast('已加入：' + (data.class_cn || getCn(classEn)));
-      })
-      .catch(err => alert(err));
-  }
-
-  function leaveClass(classEn) {
-    const form = new FormData();
-    form.append('class_en', classEn);
-    return fetch('/me/leave_class', { method: 'POST', body: form })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) throw new Error(data.message || '退出失败');
-        model.memberships = model.memberships.filter(m => m.class_en !== classEn);
-        if (data.primary_en) model.primary_en = data.primary_en;
-        model.memberships.forEach(m => m.is_primary = (m.class_en === model.primary_en));
-        renderMyClasses();
-        renderJoinSelect();
-        toast('已退出：' + getCn(classEn));
-      })
-      .catch(err => alert(err));
-  }
-
-  function setPrimary(classEn) {
-    if (!classAdjustEnabled && !isAdmin) { alert('当前不允许调整班级，请联系老师'); renderMyClasses(); return; }
-    const form = new FormData();
-    form.append('class_en', classEn);
-    fetch('/me/set_primary_class', { method: 'POST', body: form })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) throw new Error(data.message || '设置失败');
-        model.primary_en = classEn;
-        model.memberships.forEach(m => m.is_primary = (m.class_en === classEn));
-        renderMyClasses();
-        toast('主班级已切换为：' + getCn(classEn));
-      })
-      .catch(err => {
-        alert(err);
-        renderMyClasses(); // 回滚 UI
-      });
-  }
-
-  function getCn(classEn) {
-    const x = (model.all_classes || []).find(c => c.class_en === classEn);
-    return (x && (x.class_cn || x.class_en)) || classEn;
-  }
-
-  function toast(msg) {
-    console.log(msg); // 需要的话换成你站内的 Toast
-  }
-
-  function updateJoinLeaveAvailability() {
-    // 非管理员且关闭时，禁用加入按钮
-    if (!isAdmin && !classAdjustEnabled) {
-      if (joinBtn) joinBtn.disabled = true;
-    } else {
-      if (joinBtn) joinBtn.disabled = false;
-    }
-  }
-
-  if (isAdmin && switchEl) {
-    switchEl.addEventListener('change', () => {
-      const enabled = switchEl.checked ? '1' : '0';
-      const form = new FormData();
-      form.append('enabled', enabled);
-      fetch('/admin/class_adjust', { method: 'POST', body: form })
-        .then(r => r.json())
-        .then(data => {
-          if (!data.success) throw new Error(data.message || '保存失败');
-          classAdjustEnabled = !!data.enabled;
-          switchEl.checked = classAdjustEnabled;
-          if (switchLabel) switchLabel.textContent = classAdjustEnabled ? '允许' : '禁止';
-          updateJoinLeaveAvailability();
-          toast('已保存：' + (classAdjustEnabled ? '允许' : '禁止'));
-        })
-        .catch(err => {
-          alert(err);
-          // 回滚 UI
-          switchEl.checked = classAdjustEnabled;
-        });
-    });
-  }
-})();
-</script>
-{% endif %}
-
 <div class="{% block content_container_class %}container mt-4{% endblock %}">
   {% block content %}{% endblock %}
 </div>
 
-{% if user %}
-<script>
-  // 发送密码重置验证码
-  function sendPasswordCode() {
-      const btn = document.querySelector('#passwordForm .btn-outline-secondary');
-      btn.disabled = true;
-      
-      fetch('/send_password_code', {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: `email=${encodeURIComponent("{{ user.email }}")}`
-      })
-      .then(response => response.json())
-      .then(data => {
-          if (data.success) {
-              // 倒计时60秒
-              let seconds = 60;
-              const timer = setInterval(() => {
-                  btn.innerHTML = `${seconds}秒后重发`;
-                  if (--seconds < 0) {
-                      clearInterval(timer);
-                      btn.disabled = false;
-                      btn.innerHTML = '发送验证码';
-                  }
-              }, 1000);
-          } else {
-              alert(data.message);
-              btn.disabled = false;
-          }
-      })
-      .catch(() => {
-          btn.disabled = false;
-      });
-  }
-  
-  // 密码表单提交处理
-  document.getElementById('passwordForm').addEventListener('submit', function(e) {
-      e.preventDefault();
-      
-      const formData = new FormData(this);
-      fetch(this.action, {
-          method: 'POST',
-          body: formData
-      })
-      .then(response => {
-          if (response.redirected) {
-              window.location.href = response.url;
-          } else {
-              return response.text();
-          }
-      })
-      .then(text => {
-          // 处理错误响应
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(text, 'text/html');
-          const error = doc.querySelector('.alert-danger');
-          if (error) alert(error.textContent);
-      });
-  });
-</script>
-{% endif %}
-
+<script src="{{ url_for('static', filename='app/layout.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

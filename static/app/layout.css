@@ -1,0 +1,56 @@
+/* 全局布局和导航共用样式。 */
+.offcanvas-end {
+  width: 150px !important;
+}
+
+.layout-navbar.layout-nav-compact .navbar-brand,
+.layout-navbar.layout-nav-compact .nav-link,
+.layout-navbar.layout-nav-compact .nav-link.disabled,
+.layout-offcanvas-nav.layout-nav-compact .nav-link {
+  font-size: 0.92rem;
+}
+
+.layout-navbar {
+  position: sticky;
+  top: 0;
+  z-index: 1030;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+}
+
+/* 班级管理弹窗。 */
+.class-join-select {
+  max-width: 320px;
+}
+
+.class-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.class-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.class-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.class-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radio-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
