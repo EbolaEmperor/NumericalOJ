@@ -117,14 +117,25 @@ docker build -f docker/agent_judge-lite/Dockerfile \
 
 ## 启动
 
-生产风格的双边界启动：
+首次安装或没有待恢复任务时，生产风格的双边界启动：
 
 ```bash
 supervisord -c web.conf
 supervisord -c celery.conf
 ```
 
-`web.conf` 会依次执行结构同步、一次性启动恢复任务，再以 Gunicorn `gthread` worker 提供 Web 服务；`python oj.py` 仅作为本地开发入口。
+`web.conf` 先执行结构同步，再按 `gunicorn.conf.py` 启动 Gunicorn；应用装载完成后，worker 通过 `post_worker_init` 幂等确保后台自调度链存在，不会清理或重投正在执行的 Celery 任务。当前配置使用单 worker、64 个 `gthread` 线程承载 SSE，不按请求数回收 worker；`python oj.py` 仅作为本地开发入口。
+
+完整停止两个应用边界后，如需恢复停机前的未完成任务，必须在 Celery 仍处于停止状态时显式执行：
+
+```bash
+python3 scripts/init_db_schema.py
+python3 scripts/recover_pending_tasks.py --confirm-celery-stopped
+supervisord -c web.conf
+supervisord -c celery.conf
+```
+
+恢复脚本会检查本机进程和 Celery ping；只重启 Web、Gunicorn worker 重建或 HUP reload 时不得运行它。
 
 本地 `.venv` + lite 镜像可以使用单个开发配置：
 
@@ -160,13 +171,7 @@ python -m compileall -q oj.py oj_modules tests
 python -m pytest -q tests/unit
 ```
 
-`tests/db` 和 `tests/e2e` 会清空目标测试库及 Redis DB，受 fail-closed 安全门保护。它们只允许在明确的非生产环境运行，并同时要求：
-
-- `NUMOJ_TEST_ENV=1`；
-- MySQL 库名符合测试库命名（例如 `myojdb_test`，禁止 `myojdb`）；
-- Redis 使用大于 0 的专用 DB；
-- MySQL/Redis 指向 loopback 或测试 Compose 服务；
-- 主机和检出路径不是 `why-server` / `computing` / `/home/ebola/oj`。
+`tests/db` 和 `tests/e2e` 会清空目标测试库及 Redis DB，受 fail-closed 安全门保护，只能指向明确可丢弃的非生产基础设施。完整测试矩阵、安全门判定条件和按改动选测规则统一维护在 [`docs/maintenance.md`](docs/maintenance.md#3-测试矩阵)。
 
 推荐使用隔离的 Docker Compose 完整测试：
 
@@ -180,14 +185,14 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 
 ## 目录边界
 
-- `oj.py`：应用装配、Celery 注册、启动恢复任务；
+- `oj.py`：应用装配、Celery 注册、幂等调度引导与显式停机恢复入口；
 - `oj_modules/routes/`、`oj_modules/api/`：页面与 HTTP API；
 - `oj_modules/tasks/`：Celery 后台任务；
 - `oj_modules/db_services.py`、`oj_modules/ranking*_db.py`：数据访问；
 - `oj_modules/judger_core.py`、`oj_modules/docker_sandbox.py`：普通判题与容器沙箱；
 - `oj_modules/*_services.py`：可复用业务服务；
 - `templates/`、`static/`：服务端模板和静态资源；
-- `scripts/init_db_schema.py`、`myojdb.sql`：当前数据库结构基线与同步工具；
+- `scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`、`myojdb.sql`：结构同步与显式停机恢复工具；
 - `tests/unit`、`tests/db`、`tests/e2e`：按基础设施依赖分层的测试。
 
 维护规则、变更清单、测试矩阵和发布/回滚原则见 [`docs/maintenance.md`](docs/maintenance.md)。生产部署约束见 [`CLAUDE.md`](CLAUDE.md)。
