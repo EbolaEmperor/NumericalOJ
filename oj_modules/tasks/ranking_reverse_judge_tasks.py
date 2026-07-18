@@ -35,6 +35,11 @@ except Exception:  # pragma: no cover
 
 import config as _cfg
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
+from oj_modules.archive_utils import (
+    ArchiveExtractionError,
+    ZipExtractionPolicy,
+    extract_zip,
+)
 from oj_modules.ranking_db import (
     get_competition,
     get_ranking_submission,
@@ -295,65 +300,31 @@ def _write_error_for_attempt(submission_id, attempt_id, error_message):
 
 def _safe_extract_zip(zip_path, dest_dir):
     """在成员数、解压大小和压缩比硬上限内流式解压；任何异常都不留半包。"""
-    os.makedirs(dest_dir, exist_ok=True)
-    base = os.path.realpath(dest_dir)
+    policy = ZipExtractionPolicy(
+        max_members=REVERSE_PACKAGE_MAX_MEMBERS,
+        max_file_bytes=REVERSE_PACKAGE_MAX_FILE_BYTES,
+        max_total_bytes=REVERSE_PACKAGE_MAX_TOTAL_BYTES,
+        max_compression_ratio=REVERSE_PACKAGE_MAX_COMPRESSION_RATIO,
+        cleanup_on_error=True,
+    )
     try:
-        with zipfile.ZipFile(zip_path) as zf:
-            members = zf.infolist()
-            if len(members) > REVERSE_PACKAGE_MAX_MEMBERS:
-                raise RuntimeError('提交包文件数量超过限制')
-            announced_total = sum(max(0, int(info.file_size or 0)) for info in members)
-            if announced_total > REVERSE_PACKAGE_MAX_TOTAL_BYTES:
-                raise RuntimeError('提交包解压后总大小超过限制')
-
-            targets = set()
-            actual_total = 0
-            for info in members:
-                member = str(info.filename or '').replace('\\', '/')
-                target = os.path.realpath(os.path.join(dest_dir, member))
-                if target != base and not target.startswith(base + os.sep):
-                    raise RuntimeError('提交包包含越界路径')
-                if target in targets:
-                    raise RuntimeError('提交包包含重复路径')
-                targets.add(target)
-                if info.flag_bits & 0x1:
-                    raise RuntimeError('提交包不能包含加密文件')
-                mode = (int(info.external_attr or 0) >> 16) & 0xFFFF
-                if mode and stat.S_ISLNK(mode):
-                    raise RuntimeError('提交包不能包含符号链接')
-                if info.is_dir() or member.endswith('/'):
-                    os.makedirs(target, exist_ok=True)
-                    continue
-
-                declared_size = max(0, int(info.file_size or 0))
-                if declared_size > REVERSE_PACKAGE_MAX_FILE_BYTES:
-                    raise RuntimeError('提交包中的单个文件超过大小限制')
-                compressed_size = max(0, int(info.compress_size or 0))
-                if declared_size and (
-                    compressed_size <= 0
-                    or declared_size / compressed_size > REVERSE_PACKAGE_MAX_COMPRESSION_RATIO
-                ):
-                    raise RuntimeError('提交包包含异常压缩比文件')
-
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                written = 0
-                with zf.open(info, 'r') as source, open(target, 'wb') as output:
-                    while True:
-                        chunk = source.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        written += len(chunk)
-                        actual_total += len(chunk)
-                        if written > declared_size or written > REVERSE_PACKAGE_MAX_FILE_BYTES:
-                            raise RuntimeError('提交包中的单个文件超过大小限制')
-                        if actual_total > REVERSE_PACKAGE_MAX_TOTAL_BYTES:
-                            raise RuntimeError('提交包解压后总大小超过限制')
-                        output.write(chunk)
-                if written != declared_size:
-                    raise RuntimeError('提交包文件大小校验失败')
-    except Exception:
-        shutil.rmtree(dest_dir, ignore_errors=True)
-        raise
+        extract_zip(zip_path, dest_dir, policy=policy)
+    except ArchiveExtractionError as exc:
+        messages = {
+            'too_many_members': '提交包文件数量超过限制',
+            'total_too_large': '提交包解压后总大小超过限制',
+            'absolute_path': '提交包包含越界路径',
+            'path_traversal': '提交包包含越界路径',
+            'outside_destination': '提交包包含越界路径',
+            'duplicate_target': '提交包包含重复路径',
+            'target_conflict': '提交包包含冲突路径',
+            'encrypted_member': '提交包不能包含加密文件',
+            'symlink': '提交包不能包含符号链接',
+            'file_too_large': '提交包中的单个文件超过大小限制',
+            'compression_ratio': '提交包包含异常压缩比文件',
+            'size_mismatch': '提交包文件大小校验失败',
+        }
+        raise RuntimeError(messages.get(exc.reason, '提交包解压失败')) from exc
 
 
 def _has_reverse_package_shape(path):

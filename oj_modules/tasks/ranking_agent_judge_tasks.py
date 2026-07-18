@@ -31,6 +31,7 @@ except Exception:  # pragma: no cover
 
 import config as _cfg
 from config import REDIS_DB, REDIS_HOST, REDIS_PORT
+from oj_modules.archive_utils import ZipExtractionPolicy, extract_zip
 from oj_modules import ranking_agent_judge as aj
 from oj_modules.ranking_db import (
     get_competition, get_ranking_submission, list_competition_files,
@@ -78,6 +79,20 @@ JUDGE_LEGACY_CONCURRENCY = max(1, int(_config_value('AGENT_JUDGE_CONCURRENCY', 2
 JUDGE_QUEUE_RETRY_BASE = max(2, int(_config_value('AGENT_JUDGE_QUEUE_RETRY_SECONDS', 8)))
 JUDGE_MAX_QUEUE_RETRIES = max(1, int(_config_value('AGENT_JUDGE_MAX_QUEUE_RETRIES', 2000)))
 JUDGE_SLOT_TTL_BUFFER = max(60, int(_config_value('AGENT_JUDGE_SLOT_TTL_BUFFER', 600)))
+JUDGE_PACKAGE_MAX_MEMBERS = max(
+    16, int(_config_value('AGENT_JUDGE_PACKAGE_MAX_MEMBERS', 4096)),
+)
+JUDGE_PACKAGE_MAX_FILE_BYTES = max(
+    1024 * 1024,
+    int(_config_value('AGENT_JUDGE_PACKAGE_MAX_FILE_BYTES', 256 * 1024 * 1024)),
+)
+JUDGE_PACKAGE_MAX_TOTAL_BYTES = max(
+    JUDGE_PACKAGE_MAX_FILE_BYTES,
+    int(_config_value('AGENT_JUDGE_PACKAGE_MAX_TOTAL_BYTES', 512 * 1024 * 1024)),
+)
+JUDGE_PACKAGE_MAX_COMPRESSION_RATIO = max(
+    10.0, float(_config_value('AGENT_JUDGE_PACKAGE_MAX_COMPRESSION_RATIO', 500.0)),
+)
 JUDGE_HELLO_RETRIES = 5
 JUDGE_HELLO_TIMEOUT_SECONDS = max(1.0, float(_config_value('AGENT_JUDGE_HELLO_TIMEOUT_SECONDS', 8.0)))
 JUDGE_HELLO_RETRY_SLEEP_SECONDS = max(0.0, float(_config_value('AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS', 1.0)))
@@ -780,15 +795,19 @@ def _retry_queued_submission(task, submission_id, attempt_id=None,
 
 
 def _safe_extract_zip(zip_path, dest_dir):
-    """安全解包 zip：跳过绝对路径/越界条目。"""
-    os.makedirs(dest_dir, exist_ok=True)
-    base = os.path.realpath(dest_dir)
-    with zipfile.ZipFile(zip_path) as zf:
-        for member in zf.namelist():
-            target = os.path.realpath(os.path.join(dest_dir, member))
-            if target != base and not target.startswith(base + os.sep):
-                continue
-            zf.extract(member, dest_dir)
+    """安全解包 ZIP；沿用既有语义，忽略越界成员并继续处理其余文件。"""
+    extract_zip(
+        zip_path,
+        dest_dir,
+        policy=ZipExtractionPolicy(
+            max_members=JUDGE_PACKAGE_MAX_MEMBERS,
+            max_file_bytes=JUDGE_PACKAGE_MAX_FILE_BYTES,
+            max_total_bytes=JUDGE_PACKAGE_MAX_TOTAL_BYTES,
+            max_compression_ratio=JUDGE_PACKAGE_MAX_COMPRESSION_RATIO,
+            unsafe_member_action='skip',
+            cleanup_on_error=True,
+        ),
+    )
 
 
 def _prepare_workspace(submission, competition, rules, attempt_id=None):
@@ -811,9 +830,12 @@ def _prepare_workspace(submission, competition, rules, attempt_id=None):
     sub_dir = os.path.join(ws, 'submission')
     os.makedirs(sub_dir, exist_ok=True)
     if code_path and os.path.isfile(code_path):
-        try:
+        # 当前上传契约要求代码包使用 .zip；is_zipfile 兼容历史上扩展名丢失的有效包。
+        # 一旦判定为压缩包，任何解压异常都必须拒绝，不能把损坏/危险 ZIP 原样交给容器。
+        if str(code_path).lower().endswith('.zip') or zipfile.is_zipfile(code_path):
             _safe_extract_zip(code_path, sub_dir)
-        except Exception:
+        else:
+            # 兼容历史数据中的单个源码文件；当前上传路由不会再产生这种提交。
             shutil.copy(code_path, os.path.join(sub_dir, os.path.basename(code_path)))
     # 描述
     with open(os.path.join(ws, 'description.md'), 'w', encoding='utf-8') as f:

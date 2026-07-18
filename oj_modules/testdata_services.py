@@ -3,13 +3,36 @@
 
 import json
 import os
-import zipfile
+import shutil
 
+import config as _cfg
+from oj_modules.archive_utils import (
+    ArchiveExtractionError,
+    ZipExtractionPolicy,
+    extract_zip,
+)
 from oj_modules.db_services import get_db_connection
 
 
 class TestdataValidationError(Exception):
     pass
+
+
+TESTDATA_ZIP_MAX_MEMBERS = max(
+    2, int(getattr(_cfg, 'TESTDATA_ZIP_MAX_MEMBERS', 4096)),
+)
+TESTDATA_ZIP_MAX_FILE_BYTES = max(
+    1024 * 1024,
+    int(getattr(_cfg, 'TESTDATA_ZIP_MAX_FILE_BYTES', 128 * 1024 * 1024)),
+)
+TESTDATA_ZIP_MAX_TOTAL_BYTES = max(
+    TESTDATA_ZIP_MAX_FILE_BYTES,
+    int(getattr(_cfg, 'TESTDATA_ZIP_MAX_TOTAL_BYTES', 256 * 1024 * 1024)),
+)
+TESTDATA_ZIP_MAX_COMPRESSION_RATIO = max(
+    10.0,
+    float(getattr(_cfg, 'TESTDATA_ZIP_MAX_COMPRESSION_RATIO', 500.0)),
+)
 
 
 def _numeric_name_sort_key(filename):
@@ -78,10 +101,41 @@ def update_problem_testdata(problem_id, testdata):
 
 
 def import_testdata_zip(problem_id, zip_path, extract_dir):
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_dir)
-    testdata = load_testdata_from_extracted_dir(extract_dir)
-    update_problem_testdata(problem_id, testdata)
+    # 调用方为每次导入提供专用临时目录；先清理崩溃遗留，避免旧 .in/.out 混入新包。
+    shutil.rmtree(extract_dir, ignore_errors=True)
+    policy = ZipExtractionPolicy(
+        max_members=TESTDATA_ZIP_MAX_MEMBERS,
+        max_file_bytes=TESTDATA_ZIP_MAX_FILE_BYTES,
+        max_total_bytes=TESTDATA_ZIP_MAX_TOTAL_BYTES,
+        max_compression_ratio=TESTDATA_ZIP_MAX_COMPRESSION_RATIO,
+        require_non_empty=True,
+        cleanup_on_error=True,
+    )
+    try:
+        extract_zip(zip_path, extract_dir, policy=policy)
+    except ArchiveExtractionError as exc:
+        messages = {
+            'empty_archive': 'ZIP 压缩包为空。',
+            'too_many_members': 'ZIP 文件数量超过限制。',
+            'file_too_large': 'ZIP 中单个测试数据文件超过大小限制。',
+            'total_too_large': 'ZIP 解压后总大小超过限制。',
+            'compression_ratio': 'ZIP 包含异常压缩比文件。',
+            'absolute_path': 'ZIP 包含绝对路径。',
+            'path_traversal': 'ZIP 包含目录穿越路径。',
+            'outside_destination': 'ZIP 包含越界路径。',
+            'symlink': 'ZIP 不能包含符号链接。',
+            'encrypted_member': 'ZIP 不能包含加密文件。',
+            'duplicate_target': 'ZIP 包含重复路径。',
+            'target_conflict': 'ZIP 包含文件与目录冲突路径。',
+            'size_mismatch': 'ZIP 文件大小校验失败。',
+        }
+        raise TestdataValidationError(messages.get(exc.reason, 'ZIP 解压失败。')) from exc
+    try:
+        testdata = load_testdata_from_extracted_dir(extract_dir)
+        update_problem_testdata(problem_id, testdata)
+    except Exception:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
     return {
         "count": len(testdata),
         "testdata": testdata,
