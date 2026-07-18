@@ -2,7 +2,7 @@ name: CI
 
 # 轻量 CI 门禁：每次 push / PR 都跑。
 # - compile：对全部 Python 文件做 py_compile（零依赖、必过的语法门禁）。
-# - unit：安装依赖后跑「无需 MySQL/Redis/编译器」的纯逻辑单测。
+# - unit：安装依赖后跑全部「无需 MySQL/Redis/编译器」的纯逻辑单测。
 # 需要真实 gcc/g++/octave/MySQL/Redis 的完整 CLI e2e 测试见 tests/ci/
 # （Docker Compose，只能在本地或非生产服务器运行，禁止在 why-server/computing 上跑）。
 
@@ -32,11 +32,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest pytest-timeout
+          pip install -r requirements.txt -r requirements-test.txt
       - name: Run infra-free unit tests
-        run: |
-          python -m pytest -q \
-            tests/unit/test_judger_core.py \
-            tests/unit/test_security_regression.py \
-            tests/unit/test_grading_and_compare.py \
-            tests/unit/test_sandbox_limits.py
+        run: python -m pytest -q tests/unit
