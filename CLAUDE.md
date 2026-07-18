@@ -38,7 +38,7 @@ celery -A oj.celery worker -Q judge -c 16
 
 普通判题的调用链是 `evaluate_tasks.py -> judger_core.py -> docker_sandbox.py -> Docker`。`judger_core.py` 作为库在 `celery` worker 内运行，但**用户代码在 Docker 容器内执行**；不存在旧的 `5050` 判题 HTTP 服务，也不再使用宿主进程 RLIMIT 沙箱。默认运行目录为 `<OJ_ROOT>/judger/<sid>`。
 
-`oj.py` 在导入时创建 Flask/Celery 对象并注册任务；恢复、ELO tick 和 watchdog 等有副作用的启动工作统一由 `run_startup_jobs()` 完成。本地直接执行 `python oj.py` 时由主入口调用，生产 `web.conf` 则先执行 `scripts/run_startup_jobs.py`，再启动 Gunicorn。新增启动行为不得重新变成 import-time 写操作。
+`oj.py` 在导入时创建 Flask/Celery 对象并注册任务，但不执行外部写操作。幂等的 ELO tick、watchdog 和暂停端点探测链由 `ensure_background_schedulers()` 确保存在；本地入口和 `gunicorn.conf.py` 的 `post_worker_init` 都可以安全调用。会清锁、重置 Running 状态和重投任务的恢复逻辑严格隔离在 `recover_pending_after_all_workers_stopped()`，只能由 `scripts/recover_pending_tasks.py --confirm-celery-stopped` 在全部 Celery worker 停止后显式执行。新增启动行为不得重新变成 import-time 写操作，也不得把破坏性恢复绑定到 Web worker 生命周期。
 
 健康检查：
 
@@ -71,6 +71,8 @@ celery -A oj.celery worker -Q judge -c 16
 
 `REDIS_SOCKET_TIMEOUT_SECONDS` 默认 3 秒，避免健康检查和请求线程在 Redis 网络故障时无限等待。
 
+`TESTDATA_TEXT_MAX_TOTAL_BYTES` 是 `config.py` 中可选的非敏感整数，默认 64 MiB，限制一次测试数据导入实际读入内存的 `.in/.out` 文本总量；修改后需要重启 Web 进程。
+
 ## 数据库结构与迁移能力
 
 `myojdb.sql` 是当前结构基线，`scripts/init_db_schema.py` 会：
@@ -80,23 +82,13 @@ celery -A oj.celery worker -Q judge -c 16
 - 在识别到列类型差异时修改列类型；
 - 使用 MySQL advisory lock 避免多个进程同时同步。
 
-它不会删除或重命名表/列，不负责数据回填，也没有 migration 版本表或已执行迁移账本。换言之，仓库目前**没有版本化迁移系统**。涉及删除、重命名、回填、约束或语义变化时：
-
-1. 编写单独、幂等、可审计的迁移；
-2. 在一次性数据库验证并记录前后置条件；
-3. 部署前备份，定义代码与数据回滚路径；
-4. 不要假设启动脚本能表达或回滚该变更。
+它不会删除或重命名表/列，不负责数据回填，也没有 migration 版本表或已执行迁移账本。换言之，仓库目前**没有版本化迁移系统**。涉及删除、重命名、回填、约束或语义变化时，必须使用可审计的显式迁移并准备备份与回滚，不能假设启动脚本能够表达或撤销。完整数据库变更流程统一维护在 `docs/maintenance.md` 第 4 节。
 
 所有业务连接必须经 `oj_modules.db_services.get_db_connection()` 或相应数据层取得，不要直接新建 PyMySQL 连接。动态表名必须先经 `safe_table_name()` 校验。
 
 ## 测试与数据安全
 
-测试分层：
-
-- `tests/unit`：无 MySQL/Redis 的纯逻辑测试；GitHub Actions 在每次 push/PR 运行全部该目录测试；
-- `tests/db`：真实 MySQL/Redis 数据层测试，会重置目标数据；
-- `tests/e2e`：启动本地 Flask 与 Celery，通过 `numoj-admin` / `numoj-user` CLI 走真实 HTTP；
-- `tests/ci`：在本地或独立非生产服务器编排一次性 MySQL/Redis 和完整测试。
+GitHub Actions 在每次 push/PR 运行全部 `tests/unit`。`tests/db`、`tests/e2e` 和 `tests/ci` 会操作真实 MySQL/Redis，只能使用一次性基础设施；完整分层、命令和选测规则以 `docs/maintenance.md` 第 3 节为唯一详细来源。
 
 日常最低门禁：
 
@@ -113,15 +105,7 @@ docker compose -f tests/ci/docker-compose.local.yml \
 docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 ```
 
-任何会建库、清表、删动态班级表或 `FLUSHDB` 的 fixture 都必须先通过 `tests/environment_guard.py` 的 fail-closed 校验。直接运行 `tests/db` / `tests/e2e` 时必须同时满足：
-
-- 显式设置 `NUMOJ_TEST_ENV=1`；
-- MySQL 名称含测试标记，例如 `myojdb_test`，禁止默认库 `myojdb`；
-- Redis 使用大于 0 的专用 DB；
-- MySQL/Redis 仅指向 loopback 或测试 Compose 服务名；
-- 当前主机不是 `why-server` / `computing`，检出目录不是 `/home/ebola/oj`。
-
-不能证明目标可丢弃时必须停止，不能通过放宽 guard、捕获错误或改名绕过。
+任何会建库、清表、删动态班级表或 `FLUSHDB` 的 fixture 都必须在第一次写操作前通过 `tests/environment_guard.py`。不能证明目标可丢弃时必须停止，不能通过放宽 guard、捕获错误或改名绕过；具体判定条件只在维护手册中维护。
 
 ### 生产安全边界
 
@@ -215,15 +199,19 @@ ranking_uploads/
 
 在远端用 `ps` 找到分别使用 `web.conf` 和 `celery.conf` 的两个应用 supervisord PID，只 kill 明确 PID。不要使用 `pkill -f`；不要停止 root 管理的 `/etc/supervisor/supervisord.conf`。旧版若仍有 `judger.conf` / `judger/app.py` 进程，也只能按明确 PID 清理。
 
-从 `/home/ebola/oj/` 按顺序启动：
+确认两个应用 supervisord 都已停止后，先同步结构，再显式恢复停机前的未完成任务；恢复脚本会同时检查本机进程和 Celery ping，任一 worker 仍存活或状态无法确认都会拒绝执行：
 
 ```bash
+python3 scripts/init_db_schema.py
+python3 scripts/recover_pending_tasks.py --confirm-celery-stopped
 supervisord -c web.conf
 supervisord -c celery.conf
 ```
 
+只重启 Web、Gunicorn worker 自动重建或 HUP reload 时不得执行恢复脚本；这些路径只幂等检查后台调度链，不能清理仍在运行的 Celery 任务。
+
 `web.conf` 与 `celery.conf` 使用独立的 pidfile 和 supervisord 日志，排障时不要混淆两组进程。
-`web.conf` 使用单进程、八线程的 Gunicorn `gthread` worker，以兼容现有进程内缓存和流式响应；修改 worker 数、线程数或超时前必须验证这些约束。
+`web.conf` 使用单进程、64 线程的 Gunicorn `gthread` worker，以兼容现有进程内缓存并为 SSE 长连接保留容量；单 worker 下禁用按请求数回收。修改 worker 数、线程数、回收策略或超时前必须验证这些约束。
 
 ### 5. 验证
 
