@@ -3,6 +3,8 @@
 #   docker build -f docker/agent_judge-lite/Dockerfile -t numericaloj-agent-judge-lite:latest docker
 FROM node:20-bookworm-slim
 
+ARG CLAUDE_CODE_VERSION=2.1.197
+
 ENV DEBIAN_FRONTEND=noninteractive
 # 关闭 claude CLI 的非必要外联（遥测/自动更新/错误上报）——受限容器内若开启会卡住
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
@@ -46,7 +48,8 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         openai anthropic dashscope google-genai httpx tenacity python-dotenv
 
 # 轻量版只安装 Claude Code，不安装 Codex / opencode。
-RUN npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+        --registry=https://registry.npmmirror.com
 
 # report / run_harness 与原版镜像复用同一份脚本。
 COPY agent_judge/report /usr/local/bin/report
