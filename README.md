@@ -1,173 +1,193 @@
-# NumericalOJ 部署指南
+# NumericalOJ
 
-## 项目简介
+NumericalOJ 是面向高校教学的中文在线评测系统，支持 MATLAB/Octave、C、C++、Python。除传统编程题外，系统还提供班级与作业管理、书面作业 OCR/AI 评分、代码查重与 AI 生成检测、用户代码仓库、论坛，以及普通打榜赛、ELO 和 Agent-as-Judge 等排行模式。
 
-我们做的是一个轻量化的 Online Judge 系统，用于大学本科 coding 作业的自动化评分。支持各种作业类型，包括：传统算法题、理论推导题、开放性工程问题。
+## 核心能力
 
-传统 OJ（Codeforces、LeetCode）只能判定"唯一正确答案"的算法题。随着 AI 发展，简单的算法题作为作业已经没有什么价值，学生全都用 AI 生成代码直接提交，学不到任何知识；而 ACM 中 hard 级别的算法题不适合作为作业。作为老师与助教，我们需要重新思考：什么样的 coding 作业，才能锻炼学生在 AI 时代下的 coding 能力？
+- 编程题：标准输入输出、checker、多测试点实时状态、禁用函数检查、C/C++ 数值库支持。
+- 教学管理：班级、作业、截止时间、提交次数、成绩导出和期末成绩。
+- AI 能力：代码助教、自动解题、测试数据生成、书面作业 OCR/评分、AI 生成代码检测。
+- 代码仓库：用户级代码文件、函数/类结构化解析、FAISS + Qwen embedding 语义检索。
+- 打榜赛：分数排名、ELO、Agent-as-Judge、反向评测、批量评测与申诉。
+- 协作功能：题目论坛和教学小游戏。
 
-我们的答案是：让学生做开放性工程问题。这类问题没有标准答案，只有谁更优，而且通常需要结合各类 AI 工具去迭代调优。但是这类问题难以用传统 OJ 去评分。Kaggle 风格的打榜平台契合此趋势，但闭源、无法部署到校内轻量服务器，也不支持 MATLAB 等教学语言与手写作业批改。
+## 运行架构
 
-于是我们做了一个轻量化的系统：把 Kaggle 风格打榜赛首次带进开源、可单机部署的教学 OJ。同时也支持传统算法题、手写的理论作业题。支持 MATLAB/C/C++/Python 四语言判题，附带班级管理、作业管理、代码查重、手写作业 OCR 批改等教学功能。内嵌了多种 AI 功能，包括：
+系统有两个逻辑执行边界，二者必须同时可用：
 
-1. 自动出题、自动造数据、自动解题的 Agent
-2. 帮学生找代码 bug、划出错误代码的 AI 助教
-3. 支持传统文本比对、LLM-as-Judge 等多模式结合的自动化评分系统
+1. **Web 服务**：`oj.py` 创建 Flask 应用，生产由 `web.conf` 通过 Gunicorn 监听 `2025`，提供页面、HTTP API、健康检查，并完成 Celery 任务注册与依赖装配。
+2. **Celery worker 组**：`celery.conf` 管理三个独立 worker：
+   - `celery`：普通判题、书面作业、检测、索引等常规后台任务；
+   - `agent`：耗时较长的 AI 智能体任务，生产配置并发为 1；
+   - `judge`：打榜赛 Agent-as-Judge 与反向评测任务。
 
-目前已应用于"数据结构与算法"、"数值分析"、"计算方法"、"数学软件"、"数学软件与人工智能"等多门本科课程，注册用户 900+，累计提交 4 万+ 份。
+普通判题没有独立的 `5050` HTTP 服务。`evaluate_tasks.py` 在 `celery` worker 内调用 `oj_modules/judger_core.py`，后者通过 `oj_modules/docker_sandbox.py` 启动 Docker 容器执行用户代码。容器默认断网、只读根文件系统、非 root 运行，并设置内存、CPU 和进程数限制。
 
-## 核心功能
+外部基础设施：
 
-- **用户与班级管理**：注册、邮箱验证、班级创建与管理、按班级布置作业、成绩导出、提交次数限制。
-- **代码查重与 AI 生成代码检测**：
-  - 传统代码相似度查重。
-  - LLM + 行为信号双通道的 AI 生成代码检测（最终分数 = `min(1.0, llm_score + behavior_score * 0.3)`）。
-  - 针对 MATLAB 的专用本地 vLLM 微调检测模型。
-- **编程题**：
-  - 标准输入输出 + checker 评测，支持每题禁用函数白/黑名单。
-  - C/C++ 编译时附带项目内 `library/` 公共头文件路径，并链接 Intel MKL。
-  - 评测完成后由 AI 助教自动给出错误定位与改进建议。
-- **AI 解题 / 出题智能体**：以 ReAct 循环驱动的多轮智能体，可以自动尝试解题、生成测试数据，支持图像理解与 Web 搜索（ModelScope MCP）。
-- **书面作业题**：用户上传手写作业图片，系统调用大模型完成 LaTeX OCR 转写并自动评分。
-- **图片批改 / 代码批注**：基于多模态模型对图片提交进行批注与评分。
-- **用户头文件仓库**：每个用户可以在线编辑自己的 C/C++/MATLAB 头文件，编程题提交时可 `#include`；仓库内容会被解析为函数 / 类粒度的代码片段，并通过 FAISS + Qwen 向量嵌入提供语义检索，供智能体与用户搜索复用。
-- **排行赛与 ELO 排位赛**：
-  - 普通排行赛：按得分 / 用时排名。
-  - ELO 模式：自动撮合用户提交两两对局并更新评分，含初始 burst 撮合、节流、单对最多 3 次 rematch、平局、管理员启停 / 重置 / 删除对局并回滚评分，以及公开的对局历史页面。
-- **论坛**：题目讨论、回复、置顶等。
-- **小游戏**：教学辅助的小游戏入口（如 circle-cat）。
+- MySQL：持久化业务数据，默认库名 `myojdb`；
+- Redis：Celery broker/backend、提交快照、幂等锁、任务恢复、智能体进度和事件流；
+- Docker：普通判题和 Agent-as-Judge 的隔离执行环境。
 
-## 系统架构
+## 环境基线
 
-整套系统由 **两个进程** + Redis + MySQL 组成，两个进程必须同时运行：
+- Python **3.12**（见 `.python-version` 和 GitHub Actions）；
+- MySQL 8.x；
+- Redis 7（CI 与本地编排基线）；
+- Docker Engine；
+- Linux 为生产部署目标，macOS 可用于本地开发。
 
-1. **Web 服务**（`oj.py`，Flask，端口 `2025`）：承载所有 UI 与 API，并注册 Celery 任务。
-2. **Celery Worker**：分为两个队列——`celery`（判题、AIGC 检测、向量索引等）与 `agent`（AI 智能体，限制并发为 1）。判题沙箱已集成到 `celery` 队列 worker 内部，由 `oj_modules/judger_core.py` 直接调用，使用 `timeout` + `RLIMIT_CPU` / `RLIMIT_AS` 隔离运行用户代码，并在编译/执行前进行禁用函数过滤。
+`gcc`、`g++`、Octave、LaTeX、MKL/OpenBLAS 等判题工具链位于判题镜像内，不要求直接安装到 Web 进程环境。运行 Celery worker 的用户必须能访问 Docker daemon。
 
-Redis 同时承担 Celery broker/backend、提交快照缓存、评测幂等锁、Pending 自动回收守护、智能体进度与事件流。MySQL 库为 `myojdb`，所有持久化数据（用户、题目、提交、班级、AC 记录、智能体运行、论坛、AIGC 检测结果、用户代码仓库与向量索引元数据等）均存放于此。
-
-## 环境要求
-
-### 系统
-
-- Linux / macOS / Windows
-- Python 3.8+
-- MySQL 8.0+
-- Redis 6.0+
-- 编译器：`gcc` / `g++`（C/C++ 评测，需可链接 Intel MKL）、`octave`（MATLAB/Octave 评测）、`python3`（Python 评测）
-- 可选：本地 vLLM 部署（如启用 MATLAB AI 生成代码检测模型）
-
-### Python 依赖
+## 安装依赖
 
 ```bash
-pip install flask pymysql markdown celery redis openpyxl werkzeug \
-            requests numpy pygments faiss-cpu openai dashscope pillow
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-如需启用 `agent` 队列的 Web 搜索 MCP，还需要 `npx`（Node.js 环境）。
+依赖按用途分层，文件中的直接依赖使用精确版本：
 
-## 快速部署
+- `requirements.txt`：生产运行依赖；
+- `requirements-test.txt`：pytest 等测试工具；
+- `requirements-optional.txt`：非默认的本地 embedding 后端等重量级能力。
 
-### 1. 初始化数据库
+开发环境通常安装前两层：
+
+```bash
+python -m pip install -r requirements.txt -r requirements-test.txt
+```
+
+升级依赖时必须显式修改版本，并至少通过全部纯单元测试；涉及数据库、Redis、Docker 或外部协议时，还要通过对应的隔离测试。
+
+当前尚未提交带哈希的完整传递依赖锁文件，因此直接依赖固定减少了漂移，但不等于位级可复现；完整锁定仍属于后续治理项。
+
+## 配置
+
+仓库中的 `config.py` 是可运行模板，生产部署的同名文件包含私密配置，部署时不得覆盖。至少确认以下设置：
+
+- `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` / `MYSQL_USERNAME` / `MYSQL_PASSWORD`；
+- `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB`；
+- `SECRET_KEY`、SMTP 和 DashScope/Qwen 配置；
+- `JUDGER_*` 与 `AGENT_JUDGE_*` 镜像、资源和超时设置。
+
+浏览器写请求统一校验 `Origin` / `Referer`。反向代理下若公开 Origin 与应用看到的 Host 不同，用 `CSRF_TRUSTED_ORIGINS` 显式列出可信 Origin；不要用通配符放开。
+
+`config.py` 会读取仓库根目录下可选的 `.env`，并且不会覆盖进程中已经存在的环境变量。需要注意：它不是自动映射全部配置项的通用设置系统；只有显式使用 `os.getenv(...)` 或“环境变量优先”的配置读取器的选项才会生效。数据库、邮件等直接赋值项仍应在部署专用的 `config.py` 中配置。`.env` 已被 Git 忽略，不得提交密钥。
+
+## 数据库初始化与结构同步
+
+首次安装：
 
 ```bash
 mysql -u root -p -e "CREATE DATABASE myojdb CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
 mysql -u root -p myojdb < myojdb.sql
+python scripts/init_db_schema.py
 ```
 
-### 2. 配置 `config.py`
+`scripts/init_db_schema.py` 会基于 `myojdb.sql` 创建缺失的库、表、列和索引，并同步已识别的列类型；启动配置也会先运行它。它目前**不是版本化迁移系统**：没有 migration 版本表，也不负责删除/重命名、数据回填或任意约束变更。涉及这些操作时必须编写显式、可审计的迁移方案，并准备备份与回滚路径，不能仅依赖启动脚本。
 
-仓库内的 `config.py` 是模板，需要把占位符替换成真实凭据。关键字段：
+默认管理员为 `admin` / `admin123`，首次登录后必须立即修改密码。
 
-```python
-# 数据库
-MYSQL_USERNAME = 'root'
-MYSQL_PASSWORD = 'your_mysql_password'
+## 构建判题镜像
 
-# 邮件（验证码 / 通知）
-MAIL_SERVER = 'smtp.qq.com'
-MAIL_PORT = 465
-MAIL_USERNAME = 'your_email@qq.com'
-MAIL_PASSWORD = 'your_smtp_authorize_code'
+普通判题生产镜像包含 MKL 与完整 TeX 环境：
 
-# 阿里云 DashScope（AI 助教、智能体、书面作业评分、向量嵌入等）
-DASHSCOPE_APP_ID = 'your_dashscope_app_id'
-DASHSCOPE_API_KEY = 'your_dashscope_api_key'
-DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-
-# Redis
-REDIS_HOST = '127.0.0.1'
-REDIS_PORT = 6379
-REDIS_DB = 0
+```bash
+docker build -t numericaloj-judger:latest docker/judger
 ```
 
-其他可调项（保持默认即可）：
-
-- `QWEN_*_MODEL` / `AI_TUTOR_MODEL`：各处使用的 Qwen 模型版本。
-- `MATLAB_AI_DETECT_*`：本地 vLLM 部署的 MATLAB AI 检测模型，未启用时保持占位。
-- `REPOSITORY_*`：用户头文件仓库的向量化与 FAISS 索引参数。
-- `AGENT_*`：AI 智能体的最大轮数、提交上限、上下文与记忆大小等。
-- `MODELSCOPE_WEB_SEARCH_MCP_*`：智能体使用的网页搜索 MCP 工具配置。
-
-### 本机轻量判题镜像
-
-生产判题镜像 `docker/judger/Dockerfile` 包含 Intel oneAPI MKL 和 `texlive-full`，体积较大。本机开发可以构建轻量版：
+本地开发可使用 OpenBLAS 轻量镜像：
 
 ```bash
 docker build -t numericaloj-judger-lite:latest docker/judger-lite
 ```
 
-轻量版不安装 MKL，也不安装 `texlive-full`；TeX 只保留 XeLaTeX、常用 LaTeX 包、中文包、字体和 `latexmk`。切换方式：
+打榜赛 Agent-as-Judge 镜像：
 
 ```bash
-export JUDGER_DOCKER_IMAGE=numericaloj-judger-lite:latest
+docker build -t numericaloj-agent-judge:latest docker/agent_judge
+docker build -f docker/agent_judge-lite/Dockerfile \
+  -t numericaloj-agent-judge-lite:latest docker
 ```
 
-或者在本地 `config.py` 中设置：
+`local_dev.conf` 已把两个沙箱切换为 lite 镜像；生产默认使用完整镜像。修改 `docker/agent_judge/report` 或 `docker/agent_judge/run_harness` 后必须重建 Agent-as-Judge 镜像。
 
-```python
-JUDGER_DOCKER_IMAGE = "numericaloj-judger-lite:latest"
-JUDGER_NUMERIC_BACKEND = "openblas"
-```
+## 启动
 
-如果镜像名包含 `judger-lite`，C/C++ 编译命令会自动从 MKL 链接切到 OpenBLAS/LAPACKE；生产默认仍使用 MKL。
-
-### 3. 启动服务
+生产风格的双边界启动：
 
 ```bash
-# Redis（如未启动）
-redis-server
-
-# 数据库结构初始化 / 迁移（不删除数据；supervisord 配置也会在进程启动前自动执行）
-python3 scripts/init_db_schema.py
-
-# Web 服务（端口 2025，web.conf 会先执行数据库初始化脚本）
 supervisord -c web.conf
-
-# Celery worker（celery.conf 会先执行数据库初始化脚本）
 supervisord -c celery.conf
 ```
 
-系统将在 `http://localhost:2025` 启动。
+`web.conf` 会依次执行结构同步、一次性启动恢复任务，再以 Gunicorn `gthread` worker 提供 Web 服务；`python oj.py` 仅作为本地开发入口。
 
-## 默认账号
+本地 `.venv` + lite 镜像可以使用单个开发配置：
 
-系统导入后包含以下默认账号：
+```bash
+supervisord -c local_dev.conf
+```
 
-- **管理员**
-  - 用户名：`admin`
-  - 密码：`admin123`
-  - 邮箱：`admin@example.com`
+也可以在完成结构同步后手工启动：
 
-首次登录后请立即修改密码。
+```bash
+python oj.py
+celery -A oj.celery worker -Q celery
+celery -A oj.celery worker -Q agent -c 1
+celery -A oj.celery worker -Q judge -c 2
+```
 
-## 目录结构（节选）
+健康检查：
 
-- `oj.py`：Flask 入口，注册所有蓝图与 Celery 任务。
-- `oj_modules/routes/`：按功能划分的路由模块（题目、提交、作业、班级、排行、论坛、小游戏、AIGC 检测、AI 助教等）。
-- `oj_modules/tasks/`：Celery 任务（判题、AI 智能体、书面作业评分、AIGC 检测、向量索引、ELO 撮合等）。
-- `oj_modules/judger_core.py`：集成在 Celery worker 内的判题沙箱核心。
-- `oj_modules/db_services.py`：MySQL 连接池与全部数据库访问入口。
-- `oj_modules/ai_utils.py` / `oj_modules/ai_detection/` / `oj_modules/repository_index_services.py`：AI 与向量检索相关基础设施。
-- `library/`、`user_libraries/`：公共与按用户的 C/C++/MATLAB 头文件库。
-- `templates/`、`static/`：Web 前端模板与静态资源。
+```bash
+curl -f http://127.0.0.1:2025/health/live
+curl -f http://127.0.0.1:2025/health/ready
+```
+
+- `/health/live` 只证明 Web 进程能响应；
+- `/health/ready` 会检查 MySQL 与 Redis，任一不可用时返回 HTTP 503。
+
+## 测试
+
+纯单元测试不连接 MySQL/Redis：
+
+```bash
+python -m compileall -q oj.py oj_modules tests
+python -m pytest -q tests/unit
+```
+
+`tests/db` 和 `tests/e2e` 会清空目标测试库及 Redis DB，受 fail-closed 安全门保护。它们只允许在明确的非生产环境运行，并同时要求：
+
+- `NUMOJ_TEST_ENV=1`；
+- MySQL 库名符合测试库命名（例如 `myojdb_test`，禁止 `myojdb`）；
+- Redis 使用大于 0 的专用 DB；
+- MySQL/Redis 指向 loopback 或测试 Compose 服务；
+- 主机和检出路径不是 `why-server` / `computing` / `/home/ebola/oj`。
+
+推荐使用隔离的 Docker Compose 完整测试：
+
+```bash
+docker compose -f tests/ci/docker-compose.local.yml \
+  up --build --abort-on-container-exit --exit-code-from test
+docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
+```
+
+任何测试（包括纯单元测试和容器测试）都禁止在生产主机 `why-server`（hostname `computing`）上运行。
+
+## 目录边界
+
+- `oj.py`：应用装配、Celery 注册、启动恢复任务；
+- `oj_modules/routes/`、`oj_modules/api/`：页面与 HTTP API；
+- `oj_modules/tasks/`：Celery 后台任务；
+- `oj_modules/db_services.py`、`oj_modules/ranking*_db.py`：数据访问；
+- `oj_modules/judger_core.py`、`oj_modules/docker_sandbox.py`：普通判题与容器沙箱；
+- `oj_modules/*_services.py`：可复用业务服务；
+- `templates/`、`static/`：服务端模板和静态资源；
+- `scripts/init_db_schema.py`、`myojdb.sql`：当前数据库结构基线与同步工具；
+- `tests/unit`、`tests/db`、`tests/e2e`：按基础设施依赖分层的测试。
+
+维护规则、变更清单、测试矩阵和发布/回滚原则见 [`docs/maintenance.md`](docs/maintenance.md)。生产部署约束见 [`CLAUDE.md`](CLAUDE.md)。
