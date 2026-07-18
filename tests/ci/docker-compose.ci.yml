@@ -6,7 +6,7 @@ services:
       --collation-server=utf8mb4_0900_ai_ci
     environment:
       MYSQL_ROOT_PASSWORD: ci_root_password
-      MYSQL_DATABASE: myojdb
+      MYSQL_DATABASE: myojdb_test
     volumes:
       - ../../myojdb.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
@@ -33,6 +33,7 @@ services:
       redis:
         condition: service_healthy
     environment:
+      NUMOJ_TEST_ENV: "1"
       # 不再覆盖 JUDGER_RUN_ROOT：判题运行目录用内置默认 <OJ_ROOT>/judger（容器内 /app/judger），
       # 不在 tmp 下；submission_output_image 端点通过 judger_core.run_dir_for 解析同一目录。
       # judger_core 在 import 时读取 MKLROOT；指向下面挂入的宿主 oneAPI MKL

@@ -27,6 +27,12 @@ from typing import Any, Optional
 
 import pytest
 
+from tests.environment_guard import (
+    DestructiveTestTarget,
+    UnsafeTestEnvironmentError,
+    assert_disposable_test_target,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ADMIN_CLI = ROOT / "skills" / "numoj-admin" / "scripts" / "numoj_admin.py"
@@ -160,17 +166,19 @@ def require_docker_judger_image() -> None:
 def _assert_disposable_environment() -> None:
     import config
 
-    hostname = socket.gethostname()
-    if hostname == "computing":
-        pytest.fail("Refusing to run CLI e2e tests on production host 'computing'.")
-
-    mysql_host = str(getattr(config, "MYSQL_HOST", "127.0.0.1") or "127.0.0.1").strip().lower()
-    redis_host = str(getattr(config, "REDIS_HOST", "127.0.0.1") or "127.0.0.1").strip().lower()
-    allowed_hosts = {"127.0.0.1", "localhost", "mysql", "redis"}
-    if mysql_host not in allowed_hosts:
-        pytest.fail(f"Refusing to run CLI e2e tests against MYSQL_HOST={mysql_host!r}.")
-    if redis_host not in allowed_hosts:
-        pytest.fail(f"Refusing to run CLI e2e tests against REDIS_HOST={redis_host!r}.")
+    target = DestructiveTestTarget(
+        test_env=os.environ.get("NUMOJ_TEST_ENV"),
+        hostname=socket.gethostname(),
+        checkout_path=str(ROOT.resolve()),
+        mysql_host=str(getattr(config, "MYSQL_HOST", "127.0.0.1")),
+        mysql_db=str(getattr(config, "MYSQL_DB", "myojdb")),
+        redis_host=str(getattr(config, "REDIS_HOST", "127.0.0.1")),
+        redis_db=getattr(config, "REDIS_DB", 0),
+    )
+    try:
+        assert_disposable_test_target(target)
+    except UnsafeTestEnvironmentError as exc:
+        pytest.fail(str(exc), pytrace=False)
 
 
 def _assert_port_free(host: str = "127.0.0.1", port: int = 2025) -> None:

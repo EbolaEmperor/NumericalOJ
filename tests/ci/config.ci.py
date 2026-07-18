@@ -9,7 +9,7 @@ MAIL_PASSWORD = 'ci-mail-pass'
 # MySQL —— 指向 docker-compose 的 mysql 服务
 MYSQL_HOST = 'mysql'
 MYSQL_PORT = 3306
-MYSQL_DB = 'myojdb'
+MYSQL_DB = 'myojdb_test'
 MYSQL_USERNAME = 'root'
 MYSQL_PASSWORD = 'ci_root_password'
 MYSQL_CONNECT_TIMEOUT = 5
@@ -40,7 +40,7 @@ AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT = 180
 # Redis —— 指向 docker-compose 的 redis 服务
 REDIS_HOST = "redis"
 REDIS_PORT = 6379
-REDIS_DB = 0
+REDIS_DB = 15
 
 SUBMISSION_SNAPSHOT_TTL_SECONDS = 21600
 EVALUATE_SUBMISSION_LOCK_TTL_SECONDS = 900

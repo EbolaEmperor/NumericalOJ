@@ -13,6 +13,7 @@ import hashlib
 import os
 import pathlib
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -24,10 +25,17 @@ OJ_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OJ_ROOT))
 
 import config  # noqa: E402
+from tests.environment_guard import (  # noqa: E402
+    DestructiveTestTarget,
+    UnsafeTestEnvironmentError,
+    assert_disposable_test_target,
+)
 
 MYSQL_HOST = getattr(config, 'MYSQL_HOST', '127.0.0.1')
 MYSQL_PORT = int(getattr(config, 'MYSQL_PORT', 3306))
 MYSQL_DB = getattr(config, 'MYSQL_DB', 'myojdb')
+REDIS_HOST = getattr(config, 'REDIS_HOST', '127.0.0.1')
+REDIS_DB = int(getattr(config, 'REDIS_DB', 0))
 
 # 需要 truncate 的核心业务表（动态班级表 ^C\w+ 另行 DROP）
 CORE_TABLES = [
@@ -48,6 +56,23 @@ SEED_CLASSES = [('Cadmin', '管理员'), ('Cclass1', '测试班级')]
 
 def sha256_hex(text):
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _assert_destructive_test_environment():
+    """在任何测试数据写入/清理前证明目标是一次性环境。"""
+    target = DestructiveTestTarget(
+        test_env=os.environ.get('NUMOJ_TEST_ENV'),
+        hostname=socket.gethostname(),
+        checkout_path=str(OJ_ROOT.resolve()),
+        mysql_host=str(MYSQL_HOST),
+        mysql_db=str(MYSQL_DB),
+        redis_host=str(REDIS_HOST),
+        redis_db=REDIS_DB,
+    )
+    try:
+        assert_disposable_test_target(target)
+    except UnsafeTestEnvironmentError as exc:
+        pytest.fail(str(exc), pytrace=False)
 
 
 def _raw_conn(db=None):
@@ -81,6 +106,7 @@ def _table_exists(cur, name):
 
 
 def _ensure_schema():
+    _assert_destructive_test_environment()
     # 确保库存在
     root = _raw_conn(db=None)
     with root.cursor() as cur:
@@ -120,17 +146,19 @@ _DYN_CLASS_RE = re.compile(r'^C[A-Za-z0-9_]+$')
 
 def _flush_redis():
     """清空测试用 Redis（提交状态快照、对战列表缓存、锁、ELO owner 等），避免跨用例脏数据。"""
+    _assert_destructive_test_environment()
     try:
         import redis as _redis
         _redis.StrictRedis(
-            host=config.REDIS_HOST, port=int(config.REDIS_PORT),
-            db=int(config.REDIS_DB),
+            host=REDIS_HOST, port=int(config.REDIS_PORT),
+            db=REDIS_DB,
         ).flushdb()
     except Exception:
         pass
 
 
 def _reset_db():
+    _assert_destructive_test_environment()
     _flush_redis()
     conn = _raw_conn(db=MYSQL_DB)
     try:
@@ -183,6 +211,8 @@ def _is_infra_free_test(request):
 
 @pytest.fixture(scope='session')
 def _infra():
+    # 先校验，后连接；错误配置不能通过等待超时掩盖真正的安全问题。
+    _assert_destructive_test_environment()
     _wait_for_mysql()
     _ensure_schema()
     yield
