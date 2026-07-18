@@ -31,10 +31,9 @@ from oj_modules.db_services import (
     get_today_submission_total_from_counter,
     get_user_classes,
     get_user_by_username,
+    mark_submission_archive_failed,
     overwrite_written_submission,
-    release_submission_quota,
     reserve_submission_quota,
-    update_submission_status,
     upsert_agent_run_snapshot,
 )
 from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
@@ -277,17 +276,18 @@ def _submission_limit_redirect(problem_id, submission_limit):
     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
 
-def _release_quota_if_counted(username, problem_id, counted_submission_limit):
-    if counted_submission_limit is not None:
-        try:
-            release_submission_quota(username, problem_id)
-        except Exception:
-            # 这是失败路径中的补偿动作；保留原始提交错误响应，同时把配额泄漏
-            # 作为可运维告警记录，避免二次异常掩盖首次故障。
-            logger.exception(
-                '提交失败后的配额释放失败',
-                extra={'username': username, 'problem_id': problem_id},
-            )
+def _record_archive_failure(submission_id, counted_submission_limit):
+    try:
+        mark_submission_archive_failed(
+            submission_id,
+            release_quota=counted_submission_limit is not None,
+        )
+    except Exception:
+        # 保留最初的归档错误响应，同时把原子补偿失败作为可运维告警记录。
+        logger.exception(
+            '提交归档失败状态与配额补偿写入失败',
+            extra={'submission_id': submission_id},
+        )
 
 
 def get_user_classes_cached(user_id):
@@ -1091,7 +1091,7 @@ def submit_solution(problem_id):
     submission_limit = problem.get('submission_limit', 10)
     counted_submission_limit = submission_limit if user['is_admin'] != 1 else None
 
-    if user['is_admin'] != 1:
+    if request.method == 'GET' and user['is_admin'] != 1:
         if not can_submit(user['username'], problem_id, submission_limit):
             return _submission_limit_redirect(problem_id, submission_limit)
 
@@ -1119,16 +1119,14 @@ def submit_solution(problem_id):
                         prompt_text=prompt_text,
                         generated_from_prompt=True,
                         submission_limit=counted_submission_limit,
+                        user_id=user['id'],
                     )
                 except SubmissionLimitExceeded:
                     return _submission_limit_redirect(problem_id, submission_limit)
                 try:
                     archive_submission_by_id(submission_id, raise_errors=True)
                 except Exception as e:
-                    _release_quota_if_counted(
-                        user['username'], problem_id, counted_submission_limit,
-                    )
-                    update_submission_status(submission_id, "Error")
+                    _record_archive_failure(submission_id, counted_submission_limit)
                     flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                     return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
@@ -1153,16 +1151,14 @@ def submit_solution(problem_id):
                     score=0,
                     test_points=[],
                     submission_limit=counted_submission_limit,
+                    user_id=user['id'],
                 )
             except SubmissionLimitExceeded:
                 return _submission_limit_redirect(problem_id, submission_limit)
             try:
                 archive_submission_by_id(submission_id, raise_errors=True)
             except Exception as e:
-                _release_quota_if_counted(
-                    user['username'], problem_id, counted_submission_limit,
-                )
-                update_submission_status(submission_id, "Error")
+                _record_archive_failure(submission_id, counted_submission_limit)
                 flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                 return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
@@ -1207,6 +1203,7 @@ def submit_solution(problem_id):
                         if counted_submission_limit is not None:
                             reserve_submission_quota(
                                 user['username'], problem_id, counted_submission_limit,
+                                user_id=user['id'],
                             )
                     except SubmissionLimitExceeded:
                         return _submission_limit_redirect(problem_id, submission_limit)
@@ -1223,10 +1220,7 @@ def submit_solution(problem_id):
                             submission_id, os.path.join(old_folder, filename), filename, raise_errors=True,
                         )
                     except Exception as e:
-                        _release_quota_if_counted(
-                            user['username'], problem_id, counted_submission_limit,
-                        )
-                        update_submission_status(submission_id, "Error")
+                        _record_archive_failure(submission_id, counted_submission_limit)
                         flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                         return redirect(url_for('submission.submission_detail', submission_id=submission_id))
                     return redirect(url_for('submission.submission_detail', submission_id=submission_id))
@@ -1241,6 +1235,7 @@ def submit_solution(problem_id):
                     score=0,
                     test_points=[filename],
                     submission_limit=counted_submission_limit,
+                    user_id=user['id'],
                 )
             except SubmissionLimitExceeded:
                 return _submission_limit_redirect(problem_id, submission_limit)
@@ -1254,10 +1249,7 @@ def submit_solution(problem_id):
                 file.save(file_path)
                 archive_submission_file_by_id(submission_id, file_path, filename, raise_errors=True)
             except Exception as e:
-                _release_quota_if_counted(
-                    user['username'], problem_id, counted_submission_limit,
-                )
-                update_submission_status(submission_id, "Error")
+                _record_archive_failure(submission_id, counted_submission_limit)
                 flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                 return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 

@@ -41,6 +41,18 @@ def _strip_problem_title_tags(title):
 from oj_modules.auth_helpers import current_user, is_admin
 
 
+def _get_authorized_submission_snapshot(submission_id, user):
+    """缓存身份不匹配时回源一次，避免改名后的旧快照误拒绝。"""
+    snapshot = get_submission_status_snapshot(submission_id, prefer_cache=True)
+    if (
+        snapshot
+        and snapshot.get('username') != user['username']
+        and not is_admin(user)
+    ):
+        snapshot = get_submission_status_snapshot(submission_id, prefer_cache=False)
+    return snapshot
+
+
 def _read_text_file_safe(path, max_chars=200000):
     if not path or not os.path.isfile(path):
         return ""
@@ -234,7 +246,7 @@ def submission_status(submission_id):
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    snapshot = get_submission_status_snapshot(submission_id, prefer_cache=True)
+    snapshot = _get_authorized_submission_snapshot(submission_id, user)
     if not snapshot:
         return jsonify({'error': 'Submission not found'}), 404
 
@@ -268,7 +280,7 @@ def submission_status_stream(submission_id):
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    initial_snapshot = get_submission_status_snapshot(submission_id, prefer_cache=True)
+    initial_snapshot = _get_authorized_submission_snapshot(submission_id, user)
     if not initial_snapshot:
         return jsonify({'error': 'Submission not found'}), 404
 

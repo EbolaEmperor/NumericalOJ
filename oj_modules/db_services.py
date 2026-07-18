@@ -971,6 +971,57 @@ def _get_rename_user_columns(cursor):
     )
 
 
+def _replace_plagiarism_matched_usernames(cursor, old_username, new_username):
+    """精确替换查重记录中反规范化保存的用户名列表。"""
+    cursor.execute(
+        """SELECT id, matched_usernames
+           FROM plagiarism_records
+           WHERE matched_usernames LIKE %s
+           FOR UPDATE""",
+        (f'%{old_username}%',),
+    )
+    changed_rows = []
+    for row in cursor.fetchall() or ():
+        raw_value = row.get('matched_usernames')
+        raw_text = str(raw_value or '')
+        json_encoded = False
+        names = None
+        try:
+            decoded = json.loads(raw_text)
+            if isinstance(decoded, list):
+                names = [str(item) for item in decoded]
+                json_encoded = True
+        except (TypeError, ValueError):
+            pass
+        if names is None:
+            names = [part.strip() for part in raw_text.split(',') if part.strip()]
+
+        if old_username not in names:
+            continue
+
+        replaced = []
+        seen = set()
+        for name in names:
+            current = new_username if name == old_username else name
+            if current in seen:
+                continue
+            seen.add(current)
+            replaced.append(current)
+        serialized = (
+            json.dumps(replaced, ensure_ascii=False)
+            if json_encoded
+            else ','.join(replaced)
+        )
+        changed_rows.append((serialized, row['id']))
+
+    for serialized, row_id in changed_rows:
+        cursor.execute(
+            'UPDATE plagiarism_records SET matched_usernames=%s WHERE id=%s',
+            (serialized, row_id),
+        )
+    return len(changed_rows)
+
+
 def create_user(username, password_hash, email, user_class):
     if (user_class or {}).get('class_en') == 'Cadmin':
         raise ValueError('普通用户不能注册到管理员班级')
@@ -1029,6 +1080,10 @@ def rename_user(user_id, new_username):
                 raise ValueError('用户名已存在')
 
             reference_columns = _get_rename_user_columns(cursor)
+            if ('plagiarism_records', 'username') in reference_columns:
+                _replace_plagiarism_matched_usernames(
+                    cursor, old_username, new_username,
+                )
             for table_name, column_name in reference_columns:
                 # 表名和列名只来自上面的模块级常量，不包含外部输入。
                 cursor.execute(
@@ -1435,6 +1490,34 @@ def update_problem(
         conn.close()
 
 
+def _lock_submission_user_with_cursor(cursor, *, username, user_id=None):
+    """锁定提交用户并返回当前规范身份，防止改名与提交交错产生孤儿记录。"""
+    if user_id is not None:
+        try:
+            normalized_user_id = int(user_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('user_id must be an integer') from exc
+        cursor.execute(
+            """SELECT id, username, is_admin, class
+               FROM users WHERE id=%s FOR UPDATE""",
+            (normalized_user_id,),
+        )
+    else:
+        normalized_username = str(username or '').strip()
+        if not normalized_username:
+            raise ValueError('username must not be empty')
+        cursor.execute(
+            """SELECT id, username, is_admin, class
+               FROM users WHERE username=%s FOR UPDATE""",
+            (normalized_username,),
+        )
+
+    user = cursor.fetchone()
+    if not user:
+        raise LookupError('提交用户不存在或用户名已变更')
+    return user
+
+
 def create_submission(
     problem_id,
     problem_title,
@@ -1447,8 +1530,9 @@ def create_submission(
     generated_from_prompt=False,
     prompt_generation_error=None,
     submission_limit=None,
+    user_id=None,
 ):
-    """创建提交；传入 ``submission_limit`` 时在同一事务内原子占用一次配额。"""
+    """创建提交，并在同一事务内锁定用户身份及可选提交配额。"""
     # 先在获取连接前查好题目，避免占着连接再去 get_db_connection() 形成嵌套占用、放大连接池压力。
     problem = get_problem(problem_id)
     problem_type = problem['type']
@@ -1456,10 +1540,15 @@ def create_submission(
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            user = _lock_submission_user_with_cursor(
+                cursor, username=username, user_id=user_id,
+            )
+            effective_username = user['username']
+
             if submission_limit is not None:
                 _reserve_submission_quota_with_cursor(
                     cursor,
-                    username=username,
+                    username=effective_username,
                     problem_id=problem_id,
                     max_submissions=submission_limit,
                 )
@@ -1469,15 +1558,10 @@ def create_submission(
                 # 并发首次提交串行化，且计数与 submissions INSERT 同事务提交。
                 cursor.execute("SELECT id FROM problems WHERE id=%s FOR UPDATE", (problem_id,))
                 sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
-                cursor.execute(sql, (username, problem_id))
+                cursor.execute(sql, (effective_username, problem_id))
                 total_submissions = cursor.fetchone()['COUNT(*)']
                 if total_submissions == 0:
-                    cursor.execute(
-                        "SELECT id, is_admin, class FROM users WHERE username=%s",
-                        (username,),
-                    )
-                    user = cursor.fetchone()
-                    if user and user["is_admin"] != 1:
+                    if user["is_admin"] != 1:
                         # 班级以 user_class_map 为权威来源（users.class 单列可能为空/过期——恢复后的
                         # 学生班级关系保存在 user_class_map 里；旧代码直接读 user["class"]=None，
                         # 会让 safe_table_name(None) 抛错、整份提交 500，而管理员走不到这分支故不受影响）。
@@ -1505,7 +1589,7 @@ def create_submission(
                      VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(sql, (
                 problem_id,
-                username,
+                effective_username,
                 code,
                 score,
                 test_points_str,
@@ -1872,13 +1956,22 @@ def _reserve_submission_quota_with_cursor(cursor, username, problem_id, max_subm
     return current_count + 1
 
 
-def reserve_submission_quota(username, problem_id, max_submissions=10):
-    """原子预占一次提交配额，达到上限时抛出 SubmissionLimitExceeded。"""
+def reserve_submission_quota(
+    username,
+    problem_id,
+    max_submissions=10,
+    *,
+    user_id=None,
+):
+    """锁定当前用户身份后原子预占一次提交配额。"""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            user = _lock_submission_user_with_cursor(
+                cursor, username=username, user_id=user_id,
+            )
             count = _reserve_submission_quota_with_cursor(
-                cursor, username, problem_id, max_submissions,
+                cursor, user['username'], problem_id, max_submissions,
             )
         conn.commit()
         return count
@@ -1889,19 +1982,25 @@ def reserve_submission_quota(username, problem_id, max_submissions=10):
         conn.close()
 
 
+def _release_submission_quota_with_cursor(cursor, username, problem_id):
+    cursor.execute(
+        """UPDATE submission_limits
+           SET submission_count=GREATEST(submission_count-1, 0),
+               updated_at=CURRENT_TIMESTAMP
+           WHERE username=%s AND problem_id=%s AND submission_count>0""",
+        (username, problem_id),
+    )
+    return cursor.rowcount > 0
+
+
 def release_submission_quota(username, problem_id):
     """补偿一次已预占但未形成有效提交的配额；计数不会降到零以下。"""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """UPDATE submission_limits
-                   SET submission_count=GREATEST(submission_count-1, 0),
-                       updated_at=CURRENT_TIMESTAMP
-                   WHERE username=%s AND problem_id=%s AND submission_count>0""",
-                (username, problem_id),
+            released = _release_submission_quota_with_cursor(
+                cursor, username, problem_id,
             )
-            released = cursor.rowcount > 0
         conn.commit()
         return released
     except Exception:
@@ -1909,6 +2008,48 @@ def release_submission_quota(username, problem_id):
         raise
     finally:
         conn.close()
+
+
+def mark_submission_archive_failed(submission_id, *, release_quota=False):
+    """原子标记归档失败，并按需归还该提交实际身份对应的配额。"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT id, username, problem_id
+                   FROM submissions WHERE id=%s FOR UPDATE""",
+                (submission_id,),
+            )
+            submission = cursor.fetchone()
+            if not submission:
+                raise LookupError('提交不存在')
+
+            released = False
+            if release_quota:
+                released = _release_submission_quota_with_cursor(
+                    cursor,
+                    submission['username'],
+                    submission['problem_id'],
+                )
+            cursor.execute(
+                "UPDATE submissions SET status='Error' WHERE id=%s",
+                (submission_id,),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    try:
+        refresh_submission_status_snapshot(submission_id)
+    except Exception:
+        logger.exception(
+            '归档失败状态快照刷新失败',
+            extra={'submission_id': submission_id},
+        )
+    return released
 
 
 def can_submit(username, problem_id, max_submissions=10):

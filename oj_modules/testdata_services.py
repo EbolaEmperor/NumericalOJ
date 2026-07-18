@@ -33,6 +33,10 @@ TESTDATA_ZIP_MAX_COMPRESSION_RATIO = max(
     10.0,
     float(getattr(_cfg, 'TESTDATA_ZIP_MAX_COMPRESSION_RATIO', 500.0)),
 )
+TESTDATA_TEXT_MAX_TOTAL_BYTES = max(
+    1,
+    int(getattr(_cfg, 'TESTDATA_TEXT_MAX_TOTAL_BYTES', 64 * 1024 * 1024)),
+)
 
 
 def _numeric_name_sort_key(filename):
@@ -43,9 +47,15 @@ def _numeric_name_sort_key(filename):
         return (1, stem)
 
 
-def load_testdata_from_extracted_dir(extract_dir):
+def load_testdata_from_extracted_dir(extract_dir, *, max_total_text_bytes=None):
     if not os.path.isdir(extract_dir):
         raise TestdataValidationError("解压目录不存在。")
+
+    text_size_limit = (
+        TESTDATA_TEXT_MAX_TOTAL_BYTES
+        if max_total_text_bytes is None
+        else max(1, int(max_total_text_bytes))
+    )
 
     in_files = sorted(
         [f for f in os.listdir(extract_dir) if str(f).endswith('.in')],
@@ -61,7 +71,10 @@ def load_testdata_from_extracted_dir(extract_dir):
     if not in_files:
         raise TestdataValidationError("ZIP 中未找到任何 .in/.out 测试数据文件。")
 
-    testdata = []
+    paired_paths = []
+    total_text_bytes = 0
+    # 先按磁盘上的实际文件大小完成全量预检，再读取任何文本。这样超限包不会在
+    # Python 字符串、strip() 与 JSON 序列化阶段产生数倍内存放大。
     for in_file, out_file in zip(in_files, out_files):
         base_in = os.path.splitext(in_file)[0]
         base_out = os.path.splitext(out_file)[0]
@@ -70,6 +83,20 @@ def load_testdata_from_extracted_dir(extract_dir):
 
         in_path = os.path.join(extract_dir, in_file)
         out_path = os.path.join(extract_dir, out_file)
+        try:
+            total_text_bytes += os.path.getsize(in_path)
+            total_text_bytes += os.path.getsize(out_path)
+        except OSError as exc:
+            raise TestdataValidationError(f"无法读取测试数据文件大小：{exc}") from exc
+        if total_text_bytes > text_size_limit:
+            raise TestdataValidationError(
+                "测试数据 .in/.out 文本总大小超过限制"
+                f"（上限 {text_size_limit} 字节）。"
+            )
+        paired_paths.append((in_path, out_path))
+
+    testdata = []
+    for in_path, out_path in paired_paths:
         try:
             with open(in_path, 'r', encoding='utf-8') as f_in:
                 input_data = f_in.read().strip()
@@ -93,9 +120,14 @@ def update_problem_testdata(problem_id, testdata):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("UPDATE problems SET testdata=%s WHERE id=%s", (testdata_json, problem_id))
-            cursor.execute("UPDATE problems SET max_score=%s WHERE id=%s", (len(testdata), problem_id))
+            cursor.execute(
+                "UPDATE problems SET testdata=%s, max_score=%s WHERE id=%s",
+                (testdata_json, len(testdata), problem_id),
+            )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

@@ -11,12 +11,17 @@ from oj_modules.routes import problem_core_routes
 class _QuotaStore:
     def __init__(self, *, fail_submission_insert=False):
         self.lock = threading.Lock()
+        self.user_id = 1
+        self.username = "student"
+        self.user_exists = True
         self.submission_count = 0
         self.submissions = 0
         self.problem_count = 0
         self.next_submission_id = 1
         self.fail_submission_insert = fail_submission_insert
         self.sql = []
+        self.inserted_usernames = []
+        self.quota_usernames = []
 
 
 class _FakeCursor:
@@ -47,8 +52,27 @@ class _FakeCursor:
         self.rowcount = 0
         self._result = None
 
-        if normalized.startswith("INSERT INTO submission_limits"):
+        if normalized.startswith("SELECT id, username, is_admin, class FROM users WHERE id="):
             self._begin_locked_transaction()
+            if self.connection.store.user_exists and int(params[0]) == self.connection.store.user_id:
+                self._result = {
+                    "id": self.connection.store.user_id,
+                    "username": self.connection.store.username,
+                    "is_admin": 1,
+                    "class": None,
+                }
+        elif normalized.startswith("SELECT id, username, is_admin, class FROM users WHERE username="):
+            self._begin_locked_transaction()
+            if self.connection.store.user_exists and params[0] == self.connection.store.username:
+                self._result = {
+                    "id": self.connection.store.user_id,
+                    "username": self.connection.store.username,
+                    "is_admin": 1,
+                    "class": None,
+                }
+        elif normalized.startswith("INSERT INTO submission_limits"):
+            self._begin_locked_transaction()
+            self.connection.store.quota_usernames.append(params[0])
             self.rowcount = 1
         elif normalized.startswith("SELECT submission_count FROM submission_limits"):
             self._result = {"submission_count": self.connection.local_submission_count}
@@ -65,8 +89,6 @@ class _FakeCursor:
             self._result = {"id": params[0]}
         elif normalized.startswith("SELECT COUNT(*) FROM submissions"):
             self._result = {"COUNT(*)": self.connection.local_submissions}
-        elif normalized.startswith("SELECT id, is_admin, class FROM users"):
-            self._result = {"id": 1, "username": params[0], "is_admin": 1, "class": None}
         elif normalized.startswith("UPDATE problems SET cnt=cnt+1"):
             self.connection.local_problem_count += 1
             self.rowcount = 1
@@ -78,6 +100,7 @@ class _FakeCursor:
             self.lastrowid = self.connection.store.next_submission_id
             self.connection.store.next_submission_id += 1
             self.connection.local_submissions += 1
+            self.connection.store.inserted_usernames.append(params[1])
             self.rowcount = 1
         else:
             raise AssertionError(f"unexpected SQL: {normalized}")
@@ -147,6 +170,7 @@ def _create_counted_submission():
         score=0,
         test_points=[],
         submission_limit=1,
+        user_id=1,
     )
 
 
@@ -231,6 +255,193 @@ def test_written_first_submission_counters_and_insert_commit_together(monkeypatc
     assert connections[0].commit_count == 1
 
 
+def test_submission_with_stable_user_id_uses_current_username(monkeypatch):
+    store = _QuotaStore()
+    store.username = "student-new"
+    _install_fake_submission_db(monkeypatch, store)
+
+    submission_id = db_services.create_submission(
+        7,
+        "改名并发题",
+        "student-old",
+        "print(1)",
+        0,
+        [],
+        submission_limit=2,
+        user_id=store.user_id,
+    )
+
+    assert submission_id == 1
+    assert store.inserted_usernames == ["student-new"]
+    assert store.quota_usernames == ["student-new"]
+
+
+def test_submission_without_user_id_rejects_stale_username(monkeypatch):
+    store = _QuotaStore()
+    store.username = "student-new"
+    connections = _install_fake_submission_db(monkeypatch, store)
+
+    with pytest.raises(LookupError, match="用户名已变更"):
+        db_services.create_submission(
+            7,
+            "改名并发题",
+            "student-old",
+            "print(1)",
+            0,
+            [],
+            submission_limit=2,
+        )
+
+    assert store.submissions == 0
+    assert store.submission_count == 0
+    assert connections[0].rollback_count == 1
+
+
+def test_reserve_quota_with_stable_user_id_uses_current_username(monkeypatch):
+    store = _QuotaStore()
+    store.username = "student-new"
+    _install_fake_submission_db(monkeypatch, store)
+
+    count = db_services.reserve_submission_quota(
+        "student-old",
+        7,
+        2,
+        user_id=store.user_id,
+    )
+
+    assert count == 1
+    assert store.submission_count == 1
+    assert store.quota_usernames == ["student-new"]
+
+
+class _ArchiveFailureStore:
+    def __init__(self, *, fail_status_update=False):
+        self.username = "student-new"
+        self.problem_id = 7
+        self.status = "Pending"
+        self.submission_count = 1
+        self.fail_status_update = fail_status_update
+
+
+class _ArchiveFailureCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.rowcount = 0
+        self._result = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        self.rowcount = 0
+        self._result = None
+        if normalized.startswith("SELECT id, username, problem_id FROM submissions"):
+            self._result = {
+                "id": params[0],
+                "username": self.connection.store.username,
+                "problem_id": self.connection.store.problem_id,
+            }
+        elif "SET submission_count=GREATEST(submission_count-1, 0)" in normalized:
+            if self.connection.local_submission_count > 0:
+                self.connection.local_submission_count -= 1
+                self.rowcount = 1
+        elif normalized.startswith("UPDATE submissions SET status='Error'"):
+            if self.connection.store.fail_status_update:
+                raise RuntimeError("injected status update failure")
+            self.connection.local_status = "Error"
+            self.rowcount = 1
+        else:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return self.rowcount
+
+    def fetchone(self):
+        return self._result
+
+
+class _ArchiveFailureConnection:
+    def __init__(self, store):
+        self.store = store
+        self.local_status = store.status
+        self.local_submission_count = store.submission_count
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    def cursor(self):
+        return _ArchiveFailureCursor(self)
+
+    def commit(self):
+        self.commit_count += 1
+        self.store.status = self.local_status
+        self.store.submission_count = self.local_submission_count
+
+    def rollback(self):
+        self.rollback_count += 1
+
+    def close(self):
+        pass
+
+
+def _install_fake_archive_failure_db(monkeypatch, store):
+    connection = _ArchiveFailureConnection(store)
+    monkeypatch.setattr(db_services, "get_db_connection", lambda: connection)
+    return connection
+
+
+def test_mark_archive_failed_updates_status_and_quota_in_one_transaction(monkeypatch):
+    store = _ArchiveFailureStore()
+    connection = _install_fake_archive_failure_db(monkeypatch, store)
+    refreshed = []
+    monkeypatch.setattr(
+        db_services,
+        "refresh_submission_status_snapshot",
+        lambda submission_id: refreshed.append(submission_id),
+    )
+
+    released = db_services.mark_submission_archive_failed(31, release_quota=True)
+
+    assert released is True
+    assert store.status == "Error"
+    assert store.submission_count == 0
+    assert connection.commit_count == 1
+    assert connection.rollback_count == 0
+    assert refreshed == [31]
+
+
+def test_mark_archive_failed_rolls_back_quota_when_status_update_fails(monkeypatch):
+    store = _ArchiveFailureStore(fail_status_update=True)
+    connection = _install_fake_archive_failure_db(monkeypatch, store)
+    monkeypatch.setattr(
+        db_services,
+        "refresh_submission_status_snapshot",
+        lambda _submission_id: pytest.fail("事务失败后不应刷新快照"),
+    )
+
+    with pytest.raises(RuntimeError, match="injected status update failure"):
+        db_services.mark_submission_archive_failed(31, release_quota=True)
+
+    assert store.status == "Pending"
+    assert store.submission_count == 1
+    assert connection.commit_count == 0
+    assert connection.rollback_count == 1
+
+
+def test_mark_archive_failed_ignores_snapshot_refresh_failure(monkeypatch):
+    store = _ArchiveFailureStore()
+    _install_fake_archive_failure_db(monkeypatch, store)
+    monkeypatch.setattr(
+        db_services,
+        "refresh_submission_status_snapshot",
+        lambda _submission_id: (_ for _ in ()).throw(RuntimeError("redis failed")),
+    )
+
+    assert db_services.mark_submission_archive_failed(31) is False
+    assert store.status == "Error"
+
+
 def _route_app():
     app = Flask(__name__)
     app.secret_key = "test-secret"
@@ -282,8 +493,7 @@ def test_submit_route_handles_limit_exception_without_queueing(monkeypatch):
 
 def test_archive_failure_releases_counted_submission_quota(monkeypatch):
     _install_submit_route_fakes(monkeypatch)
-    released = []
-    statuses = []
+    failures = []
     monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 31)
     monkeypatch.setattr(
         problem_core_routes,
@@ -292,13 +502,10 @@ def test_archive_failure_releases_counted_submission_quota(monkeypatch):
     )
     monkeypatch.setattr(
         problem_core_routes,
-        "release_submission_quota",
-        lambda username, problem_id: released.append((username, problem_id)),
-    )
-    monkeypatch.setattr(
-        problem_core_routes,
-        "update_submission_status",
-        lambda submission_id, status: statuses.append((submission_id, status)),
+        "mark_submission_archive_failed",
+        lambda submission_id, *, release_quota: failures.append(
+            (submission_id, release_quota)
+        ),
     )
 
     with _route_app().test_request_context(
@@ -307,13 +514,11 @@ def test_archive_failure_releases_counted_submission_quota(monkeypatch):
         response = problem_core_routes.submit_solution(7)
 
     assert response.status_code == 302
-    assert released == [("student", 7)]
-    assert statuses == [(31, "Error")]
+    assert failures == [(31, True)]
 
 
 def test_quota_compensation_failure_does_not_hide_original_submission_error(monkeypatch):
     _install_submit_route_fakes(monkeypatch)
-    statuses = []
     monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 32)
     monkeypatch.setattr(
         problem_core_routes,
@@ -322,13 +527,10 @@ def test_quota_compensation_failure_does_not_hide_original_submission_error(monk
     )
     monkeypatch.setattr(
         problem_core_routes,
-        "release_submission_quota",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("quota database failed")),
-    )
-    monkeypatch.setattr(
-        problem_core_routes,
-        "update_submission_status",
-        lambda submission_id, status: statuses.append((submission_id, status)),
+        "mark_submission_archive_failed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("quota database failed")
+        ),
     )
 
     with _route_app().test_request_context(
@@ -337,4 +539,33 @@ def test_quota_compensation_failure_does_not_hide_original_submission_error(monk
         response = problem_core_routes.submit_solution(7)
 
     assert response.status_code == 302
-    assert statuses == [(32, "Error")]
+
+
+def test_post_submit_skips_advisory_precheck_and_passes_stable_user_id(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    created = []
+    monkeypatch.setattr(
+        problem_core_routes,
+        "can_submit",
+        lambda *_args: pytest.fail("POST 不应执行非事务性的提交次数预检查"),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "create_submission",
+        lambda **kwargs: created.append(kwargs) or 41,
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "archive_submission_by_id",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(problem_core_routes, "_evaluate_submission_task", None)
+
+    with _route_app().test_request_context(
+        "/submit/7", method="POST", data={"code": "print(1)"},
+    ):
+        response = problem_core_routes.submit_solution(7)
+
+    assert response.status_code == 302
+    assert created[0]["user_id"] == 1
+    assert created[0]["submission_limit"] == 1

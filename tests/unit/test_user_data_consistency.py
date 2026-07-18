@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
 
+import json
+
 import pytest
 from flask import Flask
 
 from oj_modules import db_services
-from oj_modules.routes import admin_user_routes
+from oj_modules.routes import admin_user_routes, submission_routes
 
 
 class _FakeCursor:
     def __init__(self, *, user=None, conflicting_user=None, schema_rows=None,
-                 fail_when=None, lastrowid=73):
+                 plagiarism_rows=None, fail_when=None, lastrowid=73):
         self.user = user
         self.conflicting_user = conflicting_user
         self.schema_rows = list(schema_rows or [])
+        self.plagiarism_rows = list(plagiarism_rows or [])
         self.fail_when = fail_when
         self.lastrowid = lastrowid
         self.calls = []
@@ -37,6 +40,9 @@ class _FakeCursor:
             self._fetchone_result = self.conflicting_user
         elif 'FROM INFORMATION_SCHEMA.COLUMNS' in compact_sql:
             self._fetchall_result = self.schema_rows
+        elif compact_sql.startswith(
+                'SELECT id, matched_usernames FROM plagiarism_records'):
+            self._fetchall_result = self.plagiarism_rows
 
     def fetchone(self):
         result = self._fetchone_result
@@ -169,6 +175,50 @@ def test_rename_user_allows_absent_optional_table(monkeypatch):
     assert not any('circle_cat_games' in sql for sql in updates)
     assert conn.commit_count == 1
     assert conn.rollback_count == 0
+
+
+def test_rename_user_exactly_replaces_json_and_legacy_matched_usernames(monkeypatch):
+    cursor = _FakeCursor(
+        user={'id': 9, 'username': 'alice'},
+        schema_rows=_complete_rename_schema_rows(),
+        plagiarism_rows=[
+            {'id': 1, 'matched_usernames': json.dumps(['alice', 'bob', 'alice'])},
+            {'id': 2, 'matched_usernames': 'carol, alice'},
+            {'id': 3, 'matched_usernames': 'malice,bob'},
+        ],
+    )
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(db_services, 'get_db_connection', lambda: conn)
+
+    db_services.rename_user(9, 'alice-new')
+
+    matched_updates = [
+        params
+        for sql, params in cursor.calls
+        if sql == 'UPDATE plagiarism_records SET matched_usernames=%s WHERE id=%s'
+    ]
+    assert len(matched_updates) == 2
+    assert json.loads(matched_updates[0][0]) == ['alice-new', 'bob']
+    assert matched_updates[0][1] == 1
+    assert matched_updates[1] == ('carol,alice-new', 2)
+    assert conn.commit_count == 1
+
+
+def test_rename_user_skips_matched_usernames_when_optional_table_absent(monkeypatch):
+    cursor = _FakeCursor(
+        user={'id': 9, 'username': 'alice'},
+        schema_rows=_complete_rename_schema_rows(excluded_tables={'plagiarism_records'}),
+    )
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(db_services, 'get_db_connection', lambda: conn)
+
+    db_services.rename_user(9, 'alice-new')
+
+    assert not any(
+        sql.startswith('SELECT id, matched_usernames FROM plagiarism_records')
+        for sql, _params in cursor.calls
+    )
+    assert conn.commit_count == 1
 
 
 def test_rename_user_rejects_present_optional_table_with_missing_column(monkeypatch):
@@ -306,3 +356,56 @@ def test_edit_username_route_maps_service_failures(
 
     assert response.status_code == expected_status
     assert response.get_json()['message'] == expected_message
+
+
+def _submission_status_test_app():
+    app = Flask(__name__)
+    app.config.update(TESTING=True, SECRET_KEY='test-secret')
+    app.register_blueprint(submission_routes.submission_bp)
+    return app
+
+
+@pytest.mark.parametrize(
+    ('path', 'expected_body'),
+    [
+        ('/submission_status/42', None),
+        ('/submission_status_stream/42', 'event: done'),
+    ],
+)
+def test_submission_status_refreshes_stale_username_cache_once(
+        monkeypatch, path, expected_body):
+    calls = []
+    cached_snapshot = {
+        'id': 42,
+        'username': 'alice-old',
+        'problem_type': 1,
+        'status': 'Accepted',
+        'score': 100,
+        'test_points': [],
+    }
+    database_snapshot = {**cached_snapshot, 'username': 'alice-new'}
+
+    def get_snapshot(submission_id, prefer_cache=True):
+        calls.append((submission_id, prefer_cache))
+        return cached_snapshot if prefer_cache else database_snapshot
+
+    monkeypatch.setattr(
+        submission_routes,
+        'current_user',
+        lambda: {'id': 9, 'username': 'alice-new', 'is_admin': 0},
+    )
+    monkeypatch.setattr(submission_routes, 'is_admin', lambda _user: False)
+    monkeypatch.setattr(
+        submission_routes,
+        'get_submission_status_snapshot',
+        get_snapshot,
+    )
+
+    response = _submission_status_test_app().test_client().get(path)
+
+    assert response.status_code == 200
+    assert calls == [(42, True), (42, False)]
+    if expected_body is None:
+        assert response.get_json()['status'] == 'Accepted'
+    else:
+        assert expected_body in response.get_data(as_text=True)
