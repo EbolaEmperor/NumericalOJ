@@ -759,10 +759,14 @@ def test_download_reverse_agent_answer_is_hidden_until_submission_finishes(
 
 def test_reverse_detail_template_shows_download_only_after_archive_is_available():
     root = Path(__file__).resolve().parents[2]
-    modal = (root / "templates" / "_reverse_judge_detail_modal.html").read_text(
+    modal = (
+        root / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
+    ).read_text(
         encoding="utf-8",
     )
-    card = (root / "templates" / "_ranking_sub_card.html").read_text(
+    card = (
+        root / "templates" / "ranking" / "components" / "submission_card.html"
+    ).read_text(
         encoding="utf-8",
     )
 

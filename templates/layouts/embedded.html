@@ -1,0 +1,7 @@
+{% extends "layouts/base.html" %}
+
+{% block body %}
+<div class="{% block content_container_class %}container-fluid mt-2 px-2{% endblock %}">
+  {% block content %}{% endblock %}
+</div>
+{% endblock %}

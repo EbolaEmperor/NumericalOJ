@@ -97,7 +97,7 @@ def forum_index():
     last_10_days, daily_counts = get_last_10_days_forum_counts()
 
     return render_template(
-        'forum_index.html',
+        'forum/index.html',
         threads=threads,
         user=user,
         total_submissions=total_submissions,
@@ -151,7 +151,7 @@ def view_thread(thread_id):
 
         return redirect(url_for('forum.view_thread', thread_id=thread_id))
 
-    return render_template('view_thread.html', thread=thread, replies=replies, user=user)
+    return render_template('forum/thread.html', thread=thread, replies=replies, user=user)
 
 
 @forum_bp.route('/forum/new', methods=['GET', 'POST'])
@@ -182,7 +182,7 @@ def create_thread():
 
         return redirect(url_for('forum.view_thread', thread_id=thread_id))
 
-    return render_template('create_thread.html', user=user)
+    return render_template('forum/create.html', user=user)
 
 
 @forum_bp.route('/forum/reply/<int:thread_id>', methods=['POST'])

@@ -3,11 +3,20 @@
 from pathlib import Path
 
 
-TEMPLATE = (
-    Path(__file__).resolve().parents[2] / "templates" / "ranking_detail.html"
-).read_text(encoding="utf-8")
+ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in (
+        ROOT / "templates" / "ranking" / "settings" / "endpoint_pool.html",
+        ROOT / "static" / "app" / "ranking" / "endpoints.js",
+    )
+)
 MODAL_TEMPLATE = (
-    Path(__file__).resolve().parents[2] / "templates" / "_reverse_judge_detail_modal.html"
+    ROOT
+    / "templates"
+    / "ranking"
+    / "modals"
+    / "reverse_judge_detail.html"
 ).read_text(encoding="utf-8")
 
 

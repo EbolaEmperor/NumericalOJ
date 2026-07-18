@@ -6,15 +6,21 @@ import shutil
 import tempfile
 
 import openpyxl
-from flask import Blueprint, flash, jsonify, request, session
+from flask import Blueprint, flash, jsonify, request
 
+from oj_modules.class_membership_services import (
+    PrimaryMembershipError,
+    add_class_membership,
+    leave_class_membership,
+    remove_secondary_membership,
+    set_primary_membership,
+)
 from oj_modules.db_services import (
     get_all_classes_except_admin,
     get_class_by_en,
     get_db_connection,
     get_user_classes,
     get_user_by_id,
-    get_user_by_username,
     is_class_adjust_enabled,
 )
 
@@ -38,10 +44,6 @@ from oj_modules.auth_helpers import current_user, is_admin
 
 def allowed_grade_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_GRADES_EXTENSIONS
-
-
-def create_final_exam_scores_table():
-    return
 
 
 @class_management_bp.route('/admin/upload_exam_scores', methods=['POST'])
@@ -82,8 +84,6 @@ def upload_exam_scores():
         start_idx = 0
         if isinstance(rows[0][0], str) and not rows[0][0].isdigit():
             start_idx = 1
-
-        create_final_exam_scores_table()
 
         conn = get_db_connection()
         try:
@@ -144,27 +144,7 @@ def add_user_to_class():
     if user and (user.get('class') == class_en):
         return jsonify(success=True, added=False, reason='already_primary', message='该用户的主班级已经是此班，无需添加')
 
-    conn = get_db_connection()
-    added = False
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-                INSERT INTO user_class_map (user_id, class_en, is_primary)
-                VALUES (%s, %s, 0)
-                ON DUPLICATE KEY UPDATE
-                  is_primary = VALUES(is_primary)
-            """
-            cursor.execute(sql, (user_id, class_en))
-            added = (cursor.rowcount == 1)
-        if added:
-            conn.commit()
-            with conn.cursor() as cursor:
-                cursor.execute("UPDATE class_table SET class_cnt = class_cnt + 1 WHERE class_en=%s", (class_en,))
-            conn.commit()
-        else:
-            conn.rollback()
-    finally:
-        conn.close()
+    added = add_class_membership(user_id, class_en)
 
     if added:
         _invalidate_problem_list_cache_for_user(user_id=user_id, username=(user or {}).get('username'))
@@ -185,28 +165,10 @@ def remove_user_from_class():
 
     target_user = get_user_by_id(user_id)
 
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT is_primary FROM user_class_map WHERE user_id=%s AND class_en=%s",
-                (user_id, class_en),
-            )
-            row = cursor.fetchone()
-            if row and row['is_primary'] == 1:
-                return jsonify(success=False, message='不能移除主班级，请使用修改主班级功能'), 400
-
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "DELETE FROM user_class_map WHERE user_id=%s AND class_en=%s",
-                (user_id, class_en),
-            )
-        conn.commit()
-        with conn.cursor() as cursor:
-            cursor.execute("UPDATE class_table SET class_cnt = class_cnt - 1 WHERE class_en=%s AND class_cnt>0", (class_en,))
-        conn.commit()
-    finally:
-        conn.close()
+        remove_secondary_membership(user_id, class_en)
+    except PrimaryMembershipError:
+        return jsonify(success=False, message='不能移除主班级，请使用修改主班级功能'), 400
 
     _invalidate_problem_list_cache_for_user(user_id=user_id, username=(target_user or {}).get('username'))
     return jsonify(success=True)
@@ -266,24 +228,12 @@ def join_class():
     if user.get('class') == class_en:
         return jsonify(success=False, message="您已经是该班级成员"), 400
 
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            sql = """
-                INSERT INTO user_class_map (user_id, class_en, is_primary)
-                VALUES (%s, %s, 0)
-            """
-            cursor.execute(sql, (user['id'], class_en))
-        conn.commit()
-
-        with conn.cursor() as cursor:
-            cursor.execute("UPDATE class_table SET class_cnt = class_cnt + 1 WHERE class_en=%s", (class_en,))
-        conn.commit()
-
+        added = add_class_membership(user['id'], class_en)
+        if not added:
+            return jsonify(success=False, message="您已经是该班级成员"), 400
     except Exception as e:
         return jsonify(success=False, message=f"加入班级失败: {str(e)}"), 500
-    finally:
-        conn.close()
 
     _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
     return jsonify(success=True, message="成功加入班级", class_en=class_en, class_cn=target_class['class_cn'])
@@ -317,9 +267,9 @@ def leave_class():
     if len(user_classes) <= 1:
         return jsonify(success=False, message="至少需要保留一个班级"), 400
 
-    conn = get_db_connection()
     new_primary_en = None
     try:
+        new_primary_class = None
         if is_primary:
             for cls in user_classes:
                 if cls['class_en'] != class_en:
@@ -330,38 +280,17 @@ def leave_class():
 
             if new_primary_en:
                 new_primary_class = get_class_by_en(new_primary_en)
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        "UPDATE users SET class=%s, class_cn=%s WHERE id=%s",
-                        (new_primary_en, new_primary_class['class_cn'], user['id']),
-                    )
-
-                with conn.cursor() as cursor:
-                    cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user['id'],))
-                    cursor.execute(
-                        "UPDATE user_class_map SET is_primary=1 WHERE user_id=%s AND class_en=%s",
-                        (user['id'], new_primary_en),
-                    )
             else:
                 return jsonify(success=False, message="至少需要保留一个普通班级"), 400
 
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "DELETE FROM user_class_map WHERE user_id=%s AND class_en=%s",
-                (user['id'], class_en),
-            )
-
-        conn.commit()
-
-        with conn.cursor() as cursor:
-            cursor.execute("UPDATE class_table SET class_cnt = class_cnt - 1 WHERE class_en=%s AND class_cnt > 0", (class_en,))
-        conn.commit()
-
+        leave_class_membership(
+            user['id'],
+            class_en,
+            replacement_class_en=new_primary_en,
+            replacement_class_cn=(new_primary_class or {}).get('class_cn'),
+        )
     except Exception as e:
-        conn.rollback()
         return jsonify(success=False, message=f"退出班级失败: {str(e)}"), 500
-    finally:
-        conn.close()
 
     _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
     return jsonify(success=True, message="成功退出班级", primary_en=new_primary_en)
@@ -404,31 +333,15 @@ def set_primary_class():
 
     new_is_admin = 1 if is_admin(user) else (1 if class_en == 'Cadmin' else 0)
 
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "UPDATE users SET class=%s, class_cn=%s, is_admin=%s WHERE id=%s",
-                (class_en, target_class['class_cn'], new_is_admin, user['id']),
-            )
-
-            cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user['id'],))
-            cursor.execute(
-                """
-                INSERT INTO user_class_map (user_id, class_en, is_primary)
-                VALUES (%s, %s, 1)
-                ON DUPLICATE KEY UPDATE is_primary=1
-                """,
-                (user['id'], class_en),
-            )
-
-        conn.commit()
-
+        set_primary_membership(
+            user['id'],
+            class_en,
+            target_class['class_cn'],
+            new_is_admin,
+        )
     except Exception as e:
-        conn.rollback()
         return jsonify(success=False, message=f"设置主班级失败: {str(e)}"), 500
-    finally:
-        conn.close()
 
     _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
     return jsonify(success=True, message="主班级设置成功", primary_en=class_en, class_en=class_en)

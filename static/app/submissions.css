@@ -1,0 +1,64 @@
+.submission-table .badge.accepted {
+  background-color: rgb(36, 180, 77);
+  color: #fff;
+}
+
+.submission-table .badge.unaccepted,
+.submission-table .badge.mobile-ac-state-nonac {
+  background-color: rgb(226, 23, 60);
+  color: #fff;
+}
+
+.submission-table .badge.pending,
+.submission-table .badge.waiting,
+.submission-table .badge.running {
+  background-color: lightblue;
+  color: #000;
+}
+
+.submission-table .badge.compile-error {
+  background-color: #ff9800;
+  color: #fff;
+}
+
+.submission-table .badge.undefined-status {
+  background-color: gray;
+  color: #fff;
+}
+
+.submission-table .badge.mobile-ac-state-ac {
+  background-color: rgb(36, 180, 77);
+  color: #fff;
+}
+
+.submission-table > .list-group-item > div {
+  overflow: hidden;
+  padding: 0 8px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submission-table__status { width: 15%; }
+.submission-table__score { width: 10%; }
+.submission-table__problem { width: 35%; }
+.submission-table__mobile-user { width: 30%; }
+.submission-table__user,
+.submission-table__time { width: 20%; }
+.submission-table__action-mobile { width: 50px; }
+.submission-table__action { width: 100px; }
+
+.submission-pagination {
+  margin: 16px 0;
+}
+
+.submission-pagination .page-item.active .page-link {
+  background-color: #007bff;
+  border-color: #007bff;
+}
+
+.submission-pagination .page-link {
+  color: #007bff;
+  min-width: 45px;
+  text-align: center;
+}

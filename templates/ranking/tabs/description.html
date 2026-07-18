@@ -1,0 +1,15 @@
+    {# ========== 比赛描述 ========== #}
+    {% if tab == 'description' %}
+      <div class="card">
+        <div class="card-header">
+          <i class="fas fa-file-alt me-2"></i> 比赛描述
+        </div>
+        <div class="card-body">
+          {% if rendered_description %}
+            <div class="ranking-description">{{ rendered_description|safe }}</div>
+          {% else %}
+            <p class="text-muted mb-0">暂无比赛描述。</p>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}

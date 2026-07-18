@@ -21,11 +21,6 @@ from urllib.parse import urlsplit, urlunsplit
 import zipfile
 
 try:
-    import redis as _redis
-except Exception:  # pragma: no cover
-    _redis = None
-
-try:
     from celery.exceptions import MaxRetriesExceededError, Retry
 except Exception:  # pragma: no cover
     class MaxRetriesExceededError(Exception):
@@ -34,11 +29,14 @@ except Exception:  # pragma: no cover
         pass
 
 import config as _cfg
-from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.archive_utils import (
     ArchiveExtractionError,
     ZipExtractionPolicy,
     extract_zip,
+)
+from oj_modules.redis_clients import (
+    RedisClientProfile,
+    create_optional_redis_client,
 )
 from oj_modules.ranking_db import (
     get_competition,
@@ -190,28 +188,31 @@ _HARNESS_TIMEOUT_EXIT_CODES = {124, 137}
 _TERMINAL_STATUSES = {'Accepted', 'Error'}
 
 _reverse_rds = None
+_reverse_blocking_rds = None
 
 
-def init_reverse_judge_progress_cache(redis_client):
-    global _reverse_rds
+def init_reverse_judge_progress_cache(redis_client, blocking_client=None):
+    global _reverse_rds, _reverse_blocking_rds
     _reverse_rds = redis_client
+    _reverse_blocking_rds = redis_client if blocking_client is None else blocking_client
 
 
 def _ensure_reverse_redis():
     global _reverse_rds
     if _reverse_rds is not None:
         return _reverse_rds
-    if _redis is None:
-        return None
-    try:
-        _reverse_rds = _redis.StrictRedis(
-            host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB),
-            decode_responses=True,
-        )
-        _reverse_rds.ping()
-    except Exception:
-        _reverse_rds = None
+    _reverse_rds = create_optional_redis_client()
     return _reverse_rds
+
+
+def _ensure_reverse_blocking_redis():
+    global _reverse_blocking_rds
+    if _reverse_blocking_rds is not None:
+        return _reverse_blocking_rds
+    _reverse_blocking_rds = create_optional_redis_client(
+        RedisClientProfile.BLOCKING,
+    )
+    return _reverse_blocking_rds
 
 
 def _reverse_progress_key(submission_id):
@@ -223,7 +224,7 @@ def _reverse_progress_channel(submission_id):
 
 
 def subscribe_reverse_judge_events(submission_id):
-    client = _ensure_reverse_redis()
+    client = _ensure_reverse_blocking_redis()
     if client is None:
         return None
     try:

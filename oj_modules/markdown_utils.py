@@ -9,7 +9,7 @@
 这里不改各处的 Markdown 渲染特性，只在输出上做白名单消毒：
 - 优先用 bleach（白名单标签/属性/协议，能正确保留代码块里的 <、表格、图片）；
 - 未安装 bleach 时退化为基于正则的尽力清洗（移除 script/危险标签/事件属性/危险协议）。
-bleach 已加入 requirements.txt；生产机器 `pip install bleach` 后即获得严格白名单消毒。
+bleach 已加入 requirements/production.txt；生产安装后即获得严格白名单消毒。
 """
 
 import re

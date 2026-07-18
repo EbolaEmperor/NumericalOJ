@@ -152,7 +152,7 @@ def test_validate_username_rejects_xss_and_paths():
 
 def test_admin_score_template_does_not_innerhtml_user_fields():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'templates' / 'problem_detail.html').read_text(encoding='utf-8')
+    text = (root / 'templates' / 'problems' / 'detail.html').read_text(encoding='utf-8')
     assert '${score.username}' not in text
     assert '${score.class_cn}' not in text
     assert 'appendScoreCell(row, score.username' in text
@@ -160,7 +160,7 @@ def test_admin_score_template_does_not_innerhtml_user_fields():
 
 def test_admin_user_template_uses_json_args_for_username():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'templates' / 'admin_user_management.html').read_text(encoding='utf-8')
+    text = (root / 'templates' / 'admin' / 'users.html').read_text(encoding='utf-8')
     assert "showGradesModal('{{ u.id }}', '{{ u.username }}')" not in text
     assert "showEditUsernameModal('{{ u.id }}', '{{ u.username }}')" not in text
     assert '{{ u.username|tojson }}' in text

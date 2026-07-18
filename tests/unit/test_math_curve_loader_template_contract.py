@@ -10,11 +10,15 @@ LOADER_JS = (ROOT / "static" / "math-curve-loaders" / "loader.js").read_text(
 )
 
 
-def test_both_layouts_load_the_shared_math_curve_assets():
-    for filename in ("layout.html", "layout_embedded.html"):
+def test_layout_family_loads_shared_math_curve_assets_once_from_base():
+    base = (TEMPLATES / "layouts" / "base.html").read_text(encoding="utf-8")
+    assert base.count("math-curve-loaders/loader.css") == 1
+    assert base.count("math-curve-loaders/loader.js") == 1
+    for filename in ("layouts/site.html", "layouts/embedded.html"):
         template = (TEMPLATES / filename).read_text(encoding="utf-8")
-        assert "math-curve-loaders/loader.css" in template
-        assert "math-curve-loaders/loader.js" in template
+        assert template.count('{% extends "layouts/base.html" %}') == 1
+        assert "math-curve-loaders/loader.css" not in template
+        assert "math-curve-loaders/loader.js" not in template
 
 
 def test_loader_randomizes_among_the_selected_seven_gallery_curves():
@@ -42,7 +46,7 @@ def test_templates_no_longer_use_legacy_loading_spinners():
         "gitsub-spin",
         "progress-bar-animated",
     )
-    for path in TEMPLATES.glob("*.html"):
+    for path in TEMPLATES.rglob("*.html"):
         template = path.read_text(encoding="utf-8")
         for marker in legacy_markers:
             assert marker not in template, f"{path.name} 仍包含旧加载动画 {marker}"
@@ -59,7 +63,7 @@ def test_loader_covers_navigation_fetch_and_dynamic_content():
 
 
 def test_submission_detail_uses_large_bold_loaders():
-    template = (TEMPLATES / "submission_detail.html").read_text(encoding="utf-8")
+    template = (TEMPLATES / "submissions" / "detail.html").read_text(encoding="utf-8")
     assert 'data-math-curve-stroke-scale="1.2"' in template
     assert 'data-size="lg"' in template
     assert 'data-size="md"' in template
@@ -69,7 +73,7 @@ def test_submission_detail_uses_large_bold_loaders():
 
 
 def test_score_export_is_marked_as_a_download_navigation():
-    template = (TEMPLATES / "admin_homework.html").read_text(encoding="utf-8")
+    template = (TEMPLATES / "admin" / "homework.html").read_text(encoding="utf-8")
     assert (
         "url_for('homework.export_scores', sclass=selected_class) }}\" download"
         in template

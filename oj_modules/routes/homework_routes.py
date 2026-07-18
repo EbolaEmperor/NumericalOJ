@@ -423,7 +423,7 @@ def admin_homework():
         all_competitions = []
 
     return render_template(
-        'admin_homework.html',
+        'admin/homework.html',
         classes=classes,
         selected_class=selected_class,
         homework_list=homework_list,

@@ -31,12 +31,7 @@ import sys
 import time
 import uuid
 
-try:
-    import redis as _redis
-except Exception:  # pragma: no cover
-    _redis = None
-
-from config import REDIS_DB, REDIS_HOST, REDIS_PORT
+from oj_modules.redis_clients import create_optional_redis_client
 from oj_modules.ranking_db import (
     get_competition,
     get_last_elo_match_time,
@@ -72,15 +67,7 @@ TICK_COOLDOWN_KEY_FMT = "ranking:elo:tick_cooldown:{competition_id}"
 
 
 def _redis_client():
-    if _redis is None:
-        return None
-    try:
-        return _redis.StrictRedis(
-            host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB),
-            decode_responses=True,
-        )
-    except Exception:
-        return None
+    return create_optional_redis_client(verify_connection=False)
 
 
 # ---------- ELO math ----------

@@ -4,19 +4,17 @@
 
 import json
 import time
-
-try:
-    import redis as _redis
-except Exception:  # pragma: no cover
-    _redis = None
+import uuid
 
 import config as _cfg
-from config import REDIS_DB, REDIS_HOST, REDIS_PORT
+from oj_modules.redis_clients import create_optional_redis_client
 from oj_modules.ranking_db import (
+    activate_elo_submission,
     begin_agent_judge_attempt,
     get_competition,
     get_ranking_submission,
-    init_submission_elo_state,
+    release_standard_ranking_evaluation,
+    reserve_standard_ranking_evaluation,
     set_agent_judge_task_id,
     update_submission_result,
 )
@@ -39,15 +37,7 @@ def _ensure_rds():
     global _bulk_rds
     if _bulk_rds is not None:
         return _bulk_rds
-    if _redis is None:
-        return None
-    try:
-        _bulk_rds = _redis.StrictRedis(
-            host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB), decode_responses=True,
-        )
-        _bulk_rds.ping()
-    except Exception:
-        _bulk_rds = None
+    _bulk_rds = create_optional_redis_client()
     return _bulk_rds
 
 
@@ -81,7 +71,7 @@ def _mode(comp):
     return mode if mode in ('absolute', 'elo', 'agent_judge', 'reverse_judge') else 'absolute'
 
 
-def _reset_submission_for_rejudge(comp, submission_id):
+def _reset_submission_for_rejudge(comp, submission_id, *, username=None):
     """在原提交记录上清空旧结果，并切回可评测状态。"""
     mode = _mode(comp)
     if mode == 'agent_judge':
@@ -96,7 +86,13 @@ def _reset_submission_for_rejudge(comp, submission_id):
         )
     if mode == 'elo':
         initial_rating = float(comp.get('elo_initial_rating') or 1500)
-        init_submission_elo_state(submission_id, initial_rating)
+        activate_elo_submission(
+            submission_id,
+            int(comp['id']),
+            username,
+            initial_rating,
+            keep_count=2,
+        )
         return None
     update_submission_result(submission_id, None, 'Judging',
                              grade_details=None, error_message=None)
@@ -128,7 +124,18 @@ def _enqueue_submission(comp, submission_id,
 
     if evaluate_task is None:
         raise RuntimeError('打榜赛评测任务未初始化')
-    evaluate_task.apply_async(args=[submission_id])
+    dispatch_task_id = str(uuid.uuid4())
+    if not reserve_standard_ranking_evaluation(
+            submission_id,
+            dispatch_task_id,
+            force=True,
+    ):
+        raise RuntimeError(f'提交 #{submission_id} 无法取得普通评测数据库租约')
+    try:
+        evaluate_task.apply_async(args=[submission_id], task_id=dispatch_task_id)
+    except Exception:
+        release_standard_ranking_evaluation(submission_id, dispatch_task_id)
+        raise
 
 
 def register_ranking_bulk_rejudge_task(celery_app, evaluate_ranking_task,
@@ -171,7 +178,11 @@ def register_ranking_bulk_rejudge_task(celery_app, evaluate_ranking_task,
                     raise ValueError(f"ranking submission {requeued_id} not found")
                 if int(source.get('competition_id') or 0) != int(competition_id):
                     raise ValueError("submission does not belong to this competition")
-                attempt_id = _reset_submission_for_rejudge(comp, requeued_id)
+                attempt_id = _reset_submission_for_rejudge(
+                    comp,
+                    requeued_id,
+                    username=source.get('username'),
+                )
                 _enqueue_submission(
                     comp, requeued_id,
                     evaluate_ranking_task, agent_judge_task, reverse_judge_task,

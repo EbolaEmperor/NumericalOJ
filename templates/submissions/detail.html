@@ -1,0 +1,1607 @@
+{% extends layout_template if layout_template is defined else "layouts/site.html" %}
+{% block title %}提交详情 - {{ super() }}{% endblock %}
+{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block content %}
+{% set lang_label = 
+  'MATLAB' if (plang or 'matlab') == 'matlab' 
+  else 'C++' if (plang or '') == 'cpp' 
+  else 'C' if (plang or '') == 'c' 
+  else 'Python' %}
+{% set tl_ms = (problem.time_limit_ms or 2000) %}
+
+<div class="row"
+     data-math-curve-stroke-scale="1.2">
+  <!-- 左侧：提交详情和代码展示 -->
+  <div class="col-md-8 mb-3">
+    {% set header_max_score = test_points | length %}
+    {% if submission.problem_type == 2 %}
+      {% set header_max_score = 5 %}
+    {% endif %}
+    <div class="d-flex align-items-center justify-content-between">
+      <h2 class="mb-0" data-header-max-score="{{ header_max_score }}">
+        <span id="submissionStatusText" class="{{ submission.status | lower | replace(' ', '-') }}">{{ submission.status }}</span>
+        <span class="ms-3">
+          <i class="fas fa-trophy me-1"></i>
+          {% if header_max_score == 0 %}
+            <span id="submissionScoreValue" class="text-danger">{{ submission.score }}</span> /
+            <span id="submissionScoreMax">?</span>
+          {% else %}
+            {% set header_percentage = (submission.score / header_max_score) * 100 %}
+            {% if submission.score == header_max_score %}
+              <span id="submissionScoreValue" class="text-success">{{ submission.score }}</span>
+            {% elif header_percentage >= 60 %}
+              <span id="submissionScoreValue" class="text-warning">{{ submission.score }}</span>
+            {% else %}
+              <span id="submissionScoreValue" class="text-danger">{{ submission.score }}</span>
+            {% endif %}
+            / <span id="submissionScoreMax">{{ header_max_score }}</span>
+          {% endif %}
+        </span>
+      </h2>
+    </div>
+    <div class="d-flex justify-content-between align-items-center mt-2 mb-1">
+      <p class="text-muted mb-0">
+        <i class="fas fa-clock me-2"></i>
+        {% if submission.created_at and submission.created_at.strftime is defined %}
+          {{ submission.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+        {% else %}
+          {{ submission.created_at or '-' }}
+        {% endif %}
+      </p>
+      {% if submission.problem_type == 1 %}
+      <label for="langTL" class="form-label mb-0 text-end">
+        <span class="badge bg-secondary">
+          <i class="fas fa-language me-1"></i> {{ lang_label }}
+        </span>
+        <span class="badge bg-secondary">
+          <i class="fas fa-stopwatch me-1"></i> {{ tl_ms }} ms
+        </span>
+      </label>
+      {% endif %}
+    </div>
+
+    {% if submission.problem_type == 1 %}
+    {% if submission.generated_from_prompt %}
+    <div class="card mb-3">
+      <div class="card-header py-2">
+        <strong><i class="fas fa-terminal me-2"></i>Prompt</strong>
+      </div>
+      <div class="card-body">
+        <pre class="mb-0" style="white-space: pre-wrap;">{{ submission.prompt_text or '' }}</pre>
+        {% if submission.prompt_generation_error %}
+          <div class="alert alert-danger mt-3 mb-0">{{ submission.prompt_generation_error }}</div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    <div class="card">
+      <div class="card-body p-0">
+        <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
+      </div>
+    </div>
+    <div id="aiInlineStatus" class="alert alert-secondary mt-3 d-none" role="status" aria-live="polite"></div>
+    {% else %}
+    <!-- 书面作业题目：不显示代码和测试点 -->
+    <div class="card">
+      <div class="card-body p-0">
+        <div id="pdfViewer" style="width: 100%; height: 580px; position: relative;">
+          <iframe
+            id="pdfInlineFrame"
+            title="submission-pdf"
+            class="w-100 h-100 border-0 d-none"
+            referrerpolicy="no-referrer"></iframe>
+          <div
+            id="pdfViewerHint"
+            class="d-flex align-items-center justify-content-center text-muted"
+            style="width: 100%; height: 100%;">
+            <span class="math-curve-loader"
+                  data-math-curve-loader
+                  data-size="lg">
+              <span class="math-curve-loader__label">正在加载 PDF…</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% if (problem.written_grading_mode or 1) == 1 %}
+    <div class="card mt-3">
+      <div class="card-header py-2">
+        <strong><i class="fas fa-file-code me-2"></i>LaTeX 转写结果</strong>
+      </div>
+      <div class="card-body">
+        <div id="submissionLatexRendered"
+             class="form-control"
+             style="min-height: 220px; height: auto; overflow-y: auto; white-space: normal;"></div>
+      </div>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <hr/>
+    <a href="{{ url_for('problem_core.problem_detail', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
+    <a href="{{ url_for('submission.submission_list', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回本题记录</a>
+  </div>
+
+  <!-- 右侧：测试点详情 + AI 按钮 / 书面作业批改 -->
+  <div class="col-md-4 mb-3">
+    {% if submission.problem_type == 2 %}
+      <div class="mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <label class="form-label mb-0"><i class="fas fa-comment me-2"></i> 批改结果</label>
+          {% if user and user.is_admin == 1 %}
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-primary btn-sm" id="openGradeEditorBtn">
+              <i class="fas fa-pen-to-square me-1"></i> 编辑
+            </button>
+            <button type="button" class="btn btn-outline-success btn-sm" id="nextBtn">
+              <i class="fas fa-arrow-right me-1"></i> 下一个
+            </button>
+          </div>
+          {% endif %}
+        </div>
+        <div id="studentCommentRendered"
+             class="form-control"
+             style="min-height: 360px; height: auto; overflow-y: auto; white-space: normal;"></div>
+      </div>
+    {% endif %}
+
+    {% if submission.problem_type == 1 %}
+    <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
+    
+    <!-- 判题进度提示 -->
+    {% set max_score = test_points | length %}
+    {% if max_score == 0 %}
+    <div id="judgingStatus" class="alert alert-info d-none mb-3">
+      <div class="d-flex align-items-center">
+        <span class="math-curve-loader me-2"
+              data-math-curve-loader
+              data-icon-only="true"
+              data-size="md"
+              aria-label="判题进行中"></span>
+        <div>
+          <strong>判题进行中</strong><br>
+          <small id="judgingText">正在编译和初始化...</small>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+    
+    <div id="testPointGrid" class="test-point-grid mt-2"></div>
+
+    <div class="card mt-3 d-none" id="testPointDetailPanel">
+      <div class="card-header py-2">
+        <strong id="testPointDetailTitle">测试点详情</strong>
+      </div>
+      <div class="card-body">
+        <div id="testPointDetailHint" class="text-muted">点击上方方块查看该测试点详情。</div>
+
+        <div id="testPointDetailMeta" class="small text-muted d-none mb-2"></div>
+
+        <div id="testPointDetailErrorWrap" class="d-none mb-3">
+          <div class="fw-semibold mb-1">错误信息</div>
+          <pre id="testPointDetailErrorText" class="tp-detail-pre mb-0"></pre>
+        </div>
+
+        <div id="testPointDetailOutputWrap" class="d-none mb-3">
+          <div class="fw-semibold mb-1">程序输出</div>
+          <pre id="testPointDetailOutputText" class="tp-detail-pre mb-0"></pre>
+        </div>
+
+        <div id="testPointDetailCommentWrap" class="d-none mb-3">
+          <div class="fw-semibold mb-1" id="testPointDetailCommentLabel">评语</div>
+          <pre id="testPointDetailCommentText" class="tp-detail-pre mb-0"></pre>
+        </div>
+
+        <div id="testPointDetailImageWrap" class="d-none">
+          <div class="fw-semibold mb-2">输出图片</div>
+          <img id="testPointDetailImage"
+               src=""
+               alt=""
+               class="img-fluid border rounded"
+               style="max-width: 100%; max-height: 320px; cursor: pointer;">
+        </div>
+
+        <div id="testPointDetailOmniWrap" class="d-none mt-3">
+          <div class="fw-semibold mb-1">
+            <i class="fas fa-eye me-1"></i> Omni 图片分析
+          </div>
+          <pre id="testPointDetailOmniText" class="tp-detail-pre mb-0"></pre>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if submission.problem_type == 1 and submission.status == "Unaccepted" %}
+    <hr/>
+    <button type="button" class="btn btn-outline-info w-100 mb-3" id="askAiBtn">
+      <i class="fas fa-robot me-2"></i> 询问 AI 助教
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+<!-- PDF.js（书面作业） -->
+<script src="{{ url_for('static', filename='vendor/pdfjs/pdf.min.js') }}"></script>
+
+{% include 'components/editor/codemirror.html' %}
+
+<style>
+  #pdfViewer { width: 100%; height: 580px; overflow-y: auto; overflow-x: hidden; }
+  .accepted { color: rgb(36, 180, 77); font-weight: bold; }
+  .wrong-answer, .unaccepted { color: rgb(226, 23, 60); font-weight: bold; }
+  .time-limit-exceeded { color: orange; font-weight: bold; }
+  .runtime-error { color: rgb(198, 69, 245); font-weight: bold; }
+  .memory-limit-exceeded, .forbidden { color: darkblue; font-weight: bold; }
+  .no-output { color: purple; font-weight: bold; }
+  .pending, .waiting, .running { color: lightblue; font-weight: bold; }
+
+  .test-point-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .test-point-grid.medium {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .test-point-grid.dense {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .test-point-card {
+    position: relative;
+    min-height: 104px;
+    border: 2px solid #d9d9d9;
+    border-radius: 10px;
+    background: #fff;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px 8px 10px;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+  }
+  .test-point-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  }
+  .test-point-card.selected {
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.2);
+  }
+  .tp-index {
+    position: absolute;
+    left: 8px;
+    top: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #6c757d;
+  }
+  .tp-status-short {
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.1;
+    text-align: center;
+  }
+  .tp-time {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #6c757d;
+    text-align: center;
+  }
+  .test-point-grid.dense .test-point-card {
+    min-height: 86px;
+    padding: 14px 6px 8px;
+  }
+  .test-point-grid.dense .tp-index {
+    left: 6px;
+    top: 4px;
+    font-size: 11px;
+  }
+  .test-point-grid.dense .tp-status-short {
+    font-size: 19px;
+  }
+  .test-point-grid.dense .tp-time {
+    margin-top: 4px;
+    font-size: 11px;
+  }
+  .test-point-card.tp-accepted .tp-status-short { color: rgb(36, 180, 77); }
+  .test-point-card.tp-wrong-answer .tp-status-short,
+  .test-point-card.tp-unaccepted .tp-status-short,
+  .test-point-card.tp-nonzero-exit-status .tp-status-short,
+  .test-point-card.tp-compile-error .tp-status-short,
+  .test-point-card.tp-error .tp-status-short { color: rgb(226, 23, 60); }
+  .test-point-card.tp-time-limit-exceeded .tp-status-short { color: orange; }
+  .test-point-card.tp-runtime-error .tp-status-short { color: rgb(198, 69, 245); }
+  .test-point-card.tp-memory-limit-exceeded .tp-status-short,
+  .test-point-card.tp-forbidden .tp-status-short { color: darkblue; }
+  .test-point-card.tp-no-output .tp-status-short { color: purple; }
+  .test-point-card.tp-pending .tp-status-short,
+  .test-point-card.tp-waiting .tp-status-short,
+  .test-point-card.tp-running .tp-status-short { color: #3aa2d7; }
+  .tp-detail-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f8f9fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 10px;
+    max-height: 240px;
+    overflow: auto;
+  }
+</style>
+
+<!-- 图片查看模态框 -->
+<div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="imageModalLabel"><i class="fas fa-image me-2"></i> 输出图片</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body text-center">
+        <img id="modalImage" src="" alt="" class="img-fluid" style="max-width: 100%; max-height: 80vh;">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>关闭</button>
+        <a id="downloadImageBtn" href="" download class="btn btn-primary">
+          <i class="fas fa-download me-2"></i>下载图片
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if submission.problem_type == 2 and user and user.is_admin == 1 %}
+<div class="modal fade" id="gradeEditModal" tabindex="-1" aria-labelledby="gradeEditModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="gradeEditModalLabel"><i class="fas fa-pen-to-square me-2"></i>编辑批改结果</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="editScoreInput" class="form-label"><i class="fas fa-trophy me-2"></i>给分 (0-5 分)</label>
+          <input type="number" class="form-control" id="editScoreInput" name="score" min="0" max="5" step="1" required>
+        </div>
+        <div class="mb-0">
+          <label for="editCommentInput" class="form-label"><i class="fas fa-comment me-2"></i>评语</label>
+          <textarea class="form-control" id="editCommentInput" name="comment" rows="14"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+          <i class="fas fa-times me-2"></i>取消
+        </button>
+        <button type="button" class="btn btn-outline-success" id="submitGradeBtn">
+          <i class="fas fa-check me-2"></i>保存并提交
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- JavaScript 函数：显示图片模态框 -->
+<script>
+  // 显示图片的模态框函数
+  function showImageModal(imageSrc, imageTitle) {
+    const imageModal = new bootstrap.Modal(document.getElementById('imageModal'));
+    const modalImage = document.getElementById('modalImage');
+    const modalLabel = document.getElementById('imageModalLabel');
+    const downloadBtn = document.getElementById('downloadImageBtn');
+    
+    modalImage.src = imageSrc;
+    modalImage.alt = imageTitle;
+    modalLabel.textContent = imageTitle;
+    downloadBtn.href = imageSrc;
+    // 不强制 .png 扩展名：后端按真实文件类型（含 bmp）设置 Content-Disposition 下载名，
+    // 这里用空字符串让浏览器采用服务端给出的文件名，避免把 bmp 误存成 .png。
+    downloadBtn.download = '';
+
+    imageModal.show();
+  }
+</script>
+
+{% if submission.problem_type == 1 %}
+<script>
+  // 根据后端传入的 plang 设置 CodeMirror 模式
+  var pl = '{{ plang or "matlab" }}';
+  var mode = (pl === 'cpp') ? 'text/x-c++src'
+           : (pl === 'c') ? 'text/x-csrc'
+           : (pl === 'python' || pl === 'py') ? 'python'
+           : 'octave';
+
+  var submissionCodeEditor = CodeMirror.fromTextArea(
+    document.getElementById('submissionCode'),
+    {
+      mode: mode,
+      theme: 'eclipse',
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 4,
+      tabSize: 4,
+      readOnly: true,
+      matchBrackets: true
+    }
+  );
+  submissionCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  submissionCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  function computeEditorHeightPx() {
+    const wrapper = submissionCodeEditor.getWrapperElement();
+    const rect = wrapper.getBoundingClientRect();
+    const isMobile = window.innerWidth <= 768;
+    const minHeight = isMobile ? 220 : 320;
+    const maxHeight = isMobile ? 520 : 900;
+    const viewportBottomReserve = isMobile ? 96 : 128;
+    let available = window.innerHeight - rect.top - viewportBottomReserve;
+    if (!Number.isFinite(available)) {
+      available = minHeight;
+    }
+    available = Math.max(minHeight, Math.min(maxHeight, available));
+    return Math.round(available);
+  }
+
+  function resizeEditor() {
+    submissionCodeEditor.setSize(null, `${computeEditorHeightPx()}px`);
+  }
+  requestAnimationFrame(resizeEditor);
+  window.addEventListener('resize', resizeEditor);
+  window.addEventListener('orientationchange', resizeEditor);
+
+  const submissionId = {{ submission.id }};
+  const initialTestPoints = {{ (test_points or []) | tojson }};
+  const testPointGridEl = document.getElementById('testPointGrid');
+  const testPointDetailPanelEl = document.getElementById('testPointDetailPanel');
+  const testPointDetailTitleEl = document.getElementById('testPointDetailTitle');
+  const testPointDetailHintEl = document.getElementById('testPointDetailHint');
+  const testPointDetailMetaEl = document.getElementById('testPointDetailMeta');
+  const testPointDetailErrorWrapEl = document.getElementById('testPointDetailErrorWrap');
+  const testPointDetailErrorTextEl = document.getElementById('testPointDetailErrorText');
+  const testPointDetailOutputWrapEl = document.getElementById('testPointDetailOutputWrap');
+  const testPointDetailOutputTextEl = document.getElementById('testPointDetailOutputText');
+  const testPointDetailCommentWrapEl = document.getElementById('testPointDetailCommentWrap');
+  const testPointDetailCommentLabelEl = document.getElementById('testPointDetailCommentLabel');
+  const testPointDetailCommentTextEl = document.getElementById('testPointDetailCommentText');
+  const testPointDetailImageWrapEl = document.getElementById('testPointDetailImageWrap');
+  const testPointDetailImageEl = document.getElementById('testPointDetailImage');
+  const testPointDetailOmniWrapEl = document.getElementById('testPointDetailOmniWrap');
+  const testPointDetailOmniTextEl = document.getElementById('testPointDetailOmniText');
+  const submissionStatusTextEl = document.getElementById('submissionStatusText');
+  const submissionScoreValueEl = document.getElementById('submissionScoreValue');
+  const submissionScoreMaxEl = document.getElementById('submissionScoreMax');
+  let currentTestPoints = Array.isArray(initialTestPoints) ? initialTestPoints : [];
+  let selectedTestPointIndex = null;
+  let hasUserSelectedTestPoint = false;
+  let aiOmniImageAnalysis = { text: '', testIndex: null };
+
+  function statusClassName(status) {
+    return String(status || '').toLowerCase().replace(/\s+/g, '-');
+  }
+
+  function isAcceptedStatus(status) {
+    return String(status || '').trim().toLowerCase() === 'accepted';
+  }
+
+  function updateProgrammingHeader(status, score) {
+    if (submissionStatusTextEl && status) {
+      submissionStatusTextEl.className = statusClassName(status);
+      submissionStatusTextEl.textContent = String(status);
+    }
+
+    if (!submissionScoreValueEl) return;
+    const safeScore = Number(score);
+    if (!Number.isFinite(safeScore)) {
+      submissionScoreValueEl.textContent = '-';
+      submissionScoreValueEl.className = 'text-danger';
+      return;
+    }
+
+    submissionScoreValueEl.textContent = String(safeScore);
+    const maxScore = Number(submissionScoreMaxEl ? submissionScoreMaxEl.textContent : NaN);
+    if (Number.isFinite(maxScore) && maxScore > 0 && safeScore === maxScore) {
+      submissionScoreValueEl.className = 'text-success';
+    } else if (Number.isFinite(maxScore) && maxScore > 0 && (safeScore / maxScore) >= 0.6) {
+      submissionScoreValueEl.className = 'text-warning';
+    } else {
+      submissionScoreValueEl.className = 'text-danger';
+    }
+  }
+
+  function statusShortName(status) {
+    const key = String(status || '').trim();
+    const map = {
+      'Accepted': 'AC',
+      'Wrong Answer': 'WA',
+      'Compile Error': 'CE',
+      'Runtime Error': 'RE',
+      'Time Limit Exceeded': 'TLE',
+      'Memory Limit Exceeded': 'MLE',
+      'Forbidden': 'FB',
+      'No Output': 'NO',
+      'Nonzero Exit Status': 'NZ',
+      'Pending': 'PD',
+      'Waiting': 'WT',
+      'Running': 'RUN',
+      'Generating': 'GEN',
+      'Error': 'ERR',
+      'Unaccepted': 'UA'
+    };
+    return map[key] || (key ? key.slice(0, 3).toUpperCase() : '...');
+  }
+
+  function formatTime(tp) {
+    if (tp && (tp.time === 0 || tp.time)) {
+      return `${tp.time} ms`;
+    }
+    return '--';
+  }
+
+  function getTestPointImageUrl(tp, idx) {
+    const testIndex = (tp && tp.test_index) ? tp.test_index : (idx + 1);
+    return `/submission_output_image/${submissionId}/${testIndex}`;
+  }
+
+  function setTestPointDetailVisible(visible) {
+    if (!testPointDetailPanelEl) return;
+    testPointDetailPanelEl.classList.toggle('d-none', !visible);
+  }
+
+  function clearTestPointDetail(hintText, keepVisible) {
+    setTestPointDetailVisible(!!keepVisible);
+    if (testPointDetailTitleEl) testPointDetailTitleEl.textContent = '测试点详情';
+    if (testPointDetailHintEl) {
+      testPointDetailHintEl.textContent = hintText || '点击上方方块查看该测试点详情。';
+      testPointDetailHintEl.classList.remove('d-none');
+    }
+    if (testPointDetailMetaEl) {
+      testPointDetailMetaEl.classList.add('d-none');
+      testPointDetailMetaEl.textContent = '';
+    }
+    if (testPointDetailErrorWrapEl) testPointDetailErrorWrapEl.classList.add('d-none');
+    if (testPointDetailErrorTextEl) testPointDetailErrorTextEl.textContent = '';
+    if (testPointDetailOutputWrapEl) testPointDetailOutputWrapEl.classList.add('d-none');
+    if (testPointDetailOutputTextEl) testPointDetailOutputTextEl.textContent = '';
+    if (testPointDetailCommentWrapEl) testPointDetailCommentWrapEl.classList.add('d-none');
+    if (testPointDetailCommentLabelEl) testPointDetailCommentLabelEl.textContent = '评语';
+    if (testPointDetailCommentTextEl) testPointDetailCommentTextEl.textContent = '';
+    if (testPointDetailImageWrapEl) testPointDetailImageWrapEl.classList.add('d-none');
+    if (testPointDetailImageEl) {
+      testPointDetailImageEl.src = '';
+      testPointDetailImageEl.alt = '';
+      testPointDetailImageEl.onclick = null;
+      testPointDetailImageEl.onerror = null;
+    }
+    if (testPointDetailOmniWrapEl) testPointDetailOmniWrapEl.classList.add('d-none');
+    if (testPointDetailOmniTextEl) testPointDetailOmniTextEl.textContent = '';
+  }
+
+  function updateAiOmniImageAnalysis(text, testIndex) {
+    const normalizedText = String(text || '').trim();
+    let normalizedIndex = parseInt(testIndex, 10);
+    if (!Number.isFinite(normalizedIndex) || normalizedIndex <= 0) {
+      normalizedIndex = null;
+    }
+    aiOmniImageAnalysis = {
+      text: normalizedText,
+      testIndex: normalizedIndex
+    };
+    if (selectedTestPointIndex !== null) {
+      renderTestPointDetail(selectedTestPointIndex);
+    }
+  }
+
+  function renderOmniImageAnalysisForTestPoint(tp, index) {
+    if (!testPointDetailOmniWrapEl || !testPointDetailOmniTextEl) return;
+    testPointDetailOmniWrapEl.classList.add('d-none');
+    testPointDetailOmniTextEl.textContent = '';
+
+    const analysisText = String((aiOmniImageAnalysis && aiOmniImageAnalysis.text) || '').trim();
+    const analysisTestIndex = parseInt((aiOmniImageAnalysis || {}).testIndex, 10);
+    if (!analysisText || !Number.isFinite(analysisTestIndex) || analysisTestIndex <= 0) {
+      return;
+    }
+
+    const selectedTestIndex = (tp && tp.test_index) ? parseInt(tp.test_index, 10) : (index + 1);
+    if (!Number.isFinite(selectedTestIndex) || selectedTestIndex !== analysisTestIndex) {
+      return;
+    }
+
+    testPointDetailOmniTextEl.textContent = analysisText;
+    testPointDetailOmniWrapEl.classList.remove('d-none');
+  }
+
+  function renderTestPointDetail(index) {
+    const tp = currentTestPoints[index];
+    if (!tp) {
+      clearTestPointDetail();
+      return;
+    }
+    setTestPointDetailVisible(true);
+
+    const status = tp.status || 'Running';
+    const statusShort = statusShortName(status);
+    const stderr = String(tp.stderr || '').trim();
+    const stdout = String(tp.stdout || '').trim();
+    const comment = String(tp.comment || '').trim();
+    const canShowStderr = status !== 'Time Limit Exceeded' && status !== 'Accepted';
+    const canShowStdout = status !== 'Accepted';
+    const hasImage = !!tp.has_output_image;
+
+    if (testPointDetailTitleEl) {
+      testPointDetailTitleEl.textContent = `测试点 #${index + 1} (${statusShort})`;
+    }
+    if (testPointDetailHintEl) {
+      testPointDetailHintEl.classList.add('d-none');
+    }
+    if (testPointDetailMetaEl) {
+      testPointDetailMetaEl.classList.remove('d-none');
+      testPointDetailMetaEl.textContent = `状态：${status} | 运行时间：${formatTime(tp)}`;
+    }
+
+    if (stderr && canShowStderr) {
+      testPointDetailErrorWrapEl.classList.remove('d-none');
+      testPointDetailErrorTextEl.textContent = stderr;
+    } else {
+      testPointDetailErrorWrapEl.classList.add('d-none');
+      testPointDetailErrorTextEl.textContent = '';
+    }
+
+    if (stdout && canShowStdout) {
+      testPointDetailOutputWrapEl.classList.remove('d-none');
+      testPointDetailOutputTextEl.textContent = stdout;
+    } else {
+      testPointDetailOutputWrapEl.classList.add('d-none');
+      testPointDetailOutputTextEl.textContent = '';
+    }
+
+    if (comment) {
+      testPointDetailCommentWrapEl.classList.remove('d-none');
+      testPointDetailCommentLabelEl.textContent = hasImage ? 'AI 评语' : '评测说明';
+      testPointDetailCommentTextEl.textContent = comment;
+    } else {
+      testPointDetailCommentWrapEl.classList.add('d-none');
+      testPointDetailCommentLabelEl.textContent = '评语';
+      testPointDetailCommentTextEl.textContent = '';
+    }
+
+    if (hasImage) {
+      const imageUrl = getTestPointImageUrl(tp, index);
+      testPointDetailImageWrapEl.classList.remove('d-none');
+      testPointDetailImageEl.src = imageUrl;
+      testPointDetailImageEl.alt = `测试点${index + 1}输出图片`;
+      testPointDetailImageEl.onclick = function () {
+        showImageModal(imageUrl, `测试点${index + 1}输出图片`);
+      };
+      testPointDetailImageEl.onerror = function () {
+        testPointDetailImageWrapEl.classList.add('d-none');
+      };
+    } else {
+      testPointDetailImageWrapEl.classList.add('d-none');
+      testPointDetailImageEl.src = '';
+      testPointDetailImageEl.alt = '';
+      testPointDetailImageEl.onclick = null;
+      testPointDetailImageEl.onerror = null;
+    }
+
+    renderOmniImageAnalysisForTestPoint(tp, index);
+    const hasOmniAnalysisShown = !!(testPointDetailOmniWrapEl && !testPointDetailOmniWrapEl.classList.contains('d-none'));
+
+    if (!stderr && !stdout && !comment && !hasImage && !hasOmniAnalysisShown && testPointDetailHintEl) {
+      testPointDetailHintEl.textContent = '该测试点暂无更多详情。';
+      testPointDetailHintEl.classList.remove('d-none');
+    }
+  }
+
+  function selectTestPoint(index, fromUserAction) {
+    if (fromUserAction) {
+      hasUserSelectedTestPoint = true;
+    }
+    selectedTestPointIndex = index;
+    if (testPointGridEl) {
+      const cards = testPointGridEl.querySelectorAll('.test-point-card');
+      cards.forEach((card, idx) => {
+        card.classList.toggle('selected', idx === index);
+      });
+    }
+    renderTestPointDetail(index);
+  }
+
+  function findDefaultTestPointIndex(testPoints) {
+    if (!Array.isArray(testPoints) || !testPoints.length) return null;
+    for (let i = 0; i < testPoints.length; i++) {
+      if (!isAcceptedStatus(testPoints[i] && testPoints[i].status)) {
+        return i;
+      }
+    }
+    return 0;
+  }
+
+  function renderTestPoints(testPoints) {
+    if (!testPointGridEl || !Array.isArray(testPoints)) return;
+
+    currentTestPoints = testPoints;
+    const isDense = testPoints.length > 20;
+    const isMedium = testPoints.length > 9 && testPoints.length <= 20;
+    testPointGridEl.classList.toggle('medium', isMedium);
+    testPointGridEl.classList.toggle('dense', isDense);
+    testPointGridEl.innerHTML = '';
+
+    if (!testPoints.length) {
+      selectedTestPointIndex = null;
+      clearTestPointDetail('判题中，暂时没有可展示的测试点结果。', false);
+      return;
+    }
+
+    testPoints.forEach((tp, idx) => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = `test-point-card tp-${statusClassName(tp.status)}`;
+
+      const idxEl = document.createElement('span');
+      idxEl.className = 'tp-index';
+      idxEl.textContent = `#${idx + 1}`;
+      card.appendChild(idxEl);
+
+      const statusEl = document.createElement('div');
+      statusEl.className = 'tp-status-short';
+      statusEl.textContent = statusShortName(tp.status || 'Running');
+      card.appendChild(statusEl);
+
+      const timeEl = document.createElement('div');
+      timeEl.className = 'tp-time';
+      timeEl.textContent = formatTime(tp);
+      card.appendChild(timeEl);
+
+      card.addEventListener('click', function () {
+        selectTestPoint(idx, true);
+      });
+      testPointGridEl.appendChild(card);
+    });
+
+    if (hasUserSelectedTestPoint && selectedTestPointIndex !== null && selectedTestPointIndex < testPoints.length) {
+      selectTestPoint(selectedTestPointIndex, false);
+    } else {
+      const defaultIndex = findDefaultTestPointIndex(testPoints);
+      if (defaultIndex !== null) {
+        hasUserSelectedTestPoint = false;
+        selectTestPoint(defaultIndex, false);
+      } else {
+        selectedTestPointIndex = null;
+        clearTestPointDetail(undefined, false);
+      }
+    }
+  }
+
+  renderTestPoints(initialTestPoints);
+</script>
+{% else %}
+<script>
+  // 原生 PDF 内嵌渲染（避免 pdf.js 在中文字体映射上的兼容问题）
+  var url = "{{ url_for('grading.download_submission_file', submission_id=submission.id) }}";
+  var statusTextEl = document.getElementById('submissionStatusText');
+  var pdfIframeEl = document.getElementById('pdfInlineFrame');
+  var pdfHintEl = document.getElementById('pdfViewerHint');
+  var pdfLoaded = false;
+
+  function isWrittenSubmissionJudging() {
+    if (!statusTextEl) return false;
+    var st = String(statusTextEl.textContent || '').trim();
+    return st === 'Pending' || st === 'Waiting' || st === 'Running' || st === 'Generating';
+  }
+
+  function setPdfHint(text, isError) {
+    if (!pdfHintEl) return;
+    pdfHintEl.classList.remove('text-danger', 'text-muted');
+    pdfHintEl.classList.add(isError ? 'text-danger' : 'text-muted');
+    if (isError) {
+      pdfHintEl.textContent = text || '';
+    } else {
+      pdfHintEl.innerHTML = MathCurveLoader.markup(text || 'PDF 生成中…', 'lg');
+    }
+    pdfHintEl.classList.remove('d-none');
+    if (pdfIframeEl) {
+      pdfIframeEl.classList.add('d-none');
+    }
+  }
+
+  function showPdf() {
+    if (!pdfIframeEl) return;
+    pdfLoaded = true;
+    pdfIframeEl.src = url + "?v=" + Date.now();
+    pdfIframeEl.classList.remove('d-none');
+    if (pdfHintEl) {
+      pdfHintEl.classList.add('d-none');
+    }
+  }
+
+  function tryLoadPdf(attempt) {
+    fetch(url, { method: 'HEAD', cache: 'no-store' }).then(function(resp) {
+      if (resp && resp.ok) {
+        showPdf();
+        return;
+      }
+      if (isWrittenSubmissionJudging() && attempt < 180) {
+        setPdfHint('PDF 生成中，请稍候...', false);
+        setTimeout(function() { tryLoadPdf(attempt + 1); }, 1000);
+        return;
+      }
+      setPdfHint('暂无可渲染的 PDF（可能是编译失败）。', true);
+    }).catch(function() {
+      if (isWrittenSubmissionJudging() && attempt < 180) {
+        setTimeout(function() { tryLoadPdf(attempt + 1); }, 1000);
+        return;
+      }
+      if (!pdfLoaded) {
+        setPdfHint('PDF 加载失败，请稍后刷新。', true);
+      }
+    });
+  }
+
+  if (pdfIframeEl) {
+    pdfIframeEl.addEventListener('load', function() {
+      pdfLoaded = true;
+      if (pdfHintEl) {
+        pdfHintEl.classList.add('d-none');
+      }
+    });
+    pdfIframeEl.addEventListener('error', function() {
+      if (!pdfLoaded) {
+        setPdfHint('PDF 渲染失败。', true);
+      }
+    });
+  }
+
+  if (isWrittenSubmissionJudging()) {
+    setPdfHint('PDF 生成中，请稍候...', false);
+    tryLoadPdf(0);
+  } else {
+    fetch(url, { method: 'HEAD', cache: 'no-store' }).then(function(resp) {
+      if (resp && resp.ok) {
+        showPdf();
+      } else {
+        setPdfHint('暂无可渲染的 PDF（可能是编译失败）。', true);
+      }
+    }).catch(function() {
+      setPdfHint('PDF 加载失败，请稍后刷新。', true);
+    });
+  }
+
+  // 已加载后若服务端刷新了 PDF，允许手动刷新时获取最新。
+  window.addEventListener('focus', function() {
+    if (!pdfLoaded || isWrittenSubmissionJudging()) {
+      tryLoadPdf(0);
+    }
+  });
+</script>
+{% endif %}
+
+{% set programming_active_statuses = ['Pending', 'Waiting', 'Running', 'Generating'] %}
+{% if max_score == 0 and submission.problem_type == 1 and submission.status in programming_active_statuses %}
+<script>
+  // 智能轮询判题状态
+  let pollCount = 0;
+  let maxPollCount = 60; // 最多轮询60次（约2-5分钟）
+  let judgingStatusEl = document.getElementById('judgingStatus');
+  let judgingTextEl = document.getElementById('judgingText');
+  
+  // 显示判题状态提示
+  if (judgingStatusEl) {
+    judgingStatusEl.classList.remove('d-none');
+  }
+  
+  function getPollingInterval() {
+    // 动态轮询间隔：前10次每1秒，然后每2秒，最后每5秒
+    if (pollCount < 20) return 500;   // 前10秒每秒检查
+    if (pollCount < 40) return 1000;   // 然后20秒内每2秒检查
+    return 5000;                       // 最后每5秒检查
+  }
+
+  function updateJudgingText() {
+    if (!judgingTextEl) return;
+    
+    if (pollCount < 5) {
+      judgingTextEl.textContent = '正在编译和初始化...';
+    } else if (pollCount < 15) {
+      judgingTextEl.textContent = '正在运行测试点...';
+    } else if (pollCount < 30) {
+      judgingTextEl.textContent = '判题进行中，请耐心等待...';
+    } else {
+      judgingTextEl.textContent = '判题时间较长，正在处理复杂测试...';
+    }
+  }
+
+  function handleSubmissionStatusData(data) {
+    pollCount++;
+    updateJudgingText();
+
+    if (data.error) {
+      console.error('状态检查错误:', data.error);
+      if (judgingTextEl) {
+        judgingTextEl.textContent = '状态检查出错，即将刷新页面...';
+      }
+      setTimeout(() => location.replace(location.href), 2000);
+      return false;
+    }
+
+    if (typeof renderTestPoints === 'function') {
+      renderTestPoints(data.test_points || []);
+    }
+    updateProgrammingHeader(data.status, data.score);
+
+    if (!data.is_judging) {
+      if (judgingStatusEl) {
+        judgingStatusEl.classList.add('d-none');
+      }
+      if (judgingTextEl) {
+        judgingTextEl.innerHTML = '<i class="fas fa-check-circle me-1"></i>判题完成！正在刷新...';
+      }
+      setTimeout(() => location.replace(location.href), 500);
+      return false;
+    }
+    return true;
+  }
+
+  function checkSubmissionStatus() {
+    updateJudgingText();
+    
+    fetch('{{ url_for("submission.submission_status", submission_id=submission.id) }}')
+      .then(response => response.json())
+      .then(data => {
+        if (!handleSubmissionStatusData(data)) {
+          return;
+        }
+
+        if (pollCount < maxPollCount) {
+          setTimeout(checkSubmissionStatus, getPollingInterval());
+        } else {
+          if (judgingTextEl) {
+            judgingTextEl.textContent = '判题时间过长，正在刷新页面...';
+          }
+          setTimeout(() => location.replace(location.href), 1000);
+        }
+      })
+      .catch(error => {
+        console.error('网络错误:', error);
+        pollCount++;
+        
+        if (judgingTextEl) {
+          judgingTextEl.textContent = '网络连接不稳定，正在重试...';
+        }
+        
+        // 网络错误时也继续尝试
+        if (pollCount < maxPollCount) {
+          setTimeout(checkSubmissionStatus, Math.min(5000, getPollingInterval() * 2));
+        } else {
+          if (judgingTextEl) {
+            judgingTextEl.textContent = '网络错误，正在刷新页面...';
+          }
+          setTimeout(() => location.replace(location.href), 2000);
+        }
+      });
+  }
+
+  function startSubmissionStatusStream() {
+    if (!window.EventSource) {
+      setTimeout(checkSubmissionStatus, 500);
+      return;
+    }
+
+    const streamUrl = '{{ url_for("submission.submission_status_stream", submission_id=submission.id) }}';
+    const source = new EventSource(streamUrl);
+    let hasMessage = false;
+    let closedByClient = false;
+
+    function closeStream() {
+      if (!closedByClient) {
+        closedByClient = true;
+        source.close();
+      }
+    }
+
+    source.addEventListener('status', function(evt) {
+      hasMessage = true;
+      try {
+        const data = JSON.parse(evt.data);
+        if (!handleSubmissionStatusData(data)) {
+          closeStream();
+        }
+      } catch (_) {
+      }
+    });
+
+    source.addEventListener('done', function(evt) {
+      hasMessage = true;
+      try {
+        const data = JSON.parse(evt.data);
+        handleSubmissionStatusData(data);
+      } catch (_) {
+      }
+      closeStream();
+    });
+
+    source.addEventListener('timeout', function() {
+      closeStream();
+      setTimeout(checkSubmissionStatus, 500);
+    });
+
+    source.addEventListener('error', function() {
+      if (closedByClient) return;
+      closeStream();
+      if (!hasMessage) {
+        setTimeout(checkSubmissionStatus, 500);
+      } else {
+        setTimeout(checkSubmissionStatus, 1000);
+      }
+    });
+  }
+
+  // 页面加载后优先使用流式订阅，失败再回退轮询
+  setTimeout(startSubmissionStatusStream, 300);
+</script>
+{% endif %}
+
+{% if submission.problem_type == 2 %}
+<script>
+  (function bindWrittenSubmissionStream() {
+    const statusEl = document.getElementById('submissionStatusText');
+    const scoreEl = document.getElementById('submissionScoreValue');
+    const scoreMaxEl = document.getElementById('submissionScoreMax');
+    const latexEl = document.getElementById('submissionLatexRendered');
+    const commentEl = document.getElementById('studentCommentRendered');
+    const gradeEditModalEl = document.getElementById('gradeEditModal');
+    const editCommentInput = document.getElementById('editCommentInput');
+    const editScoreInput = document.getElementById('editScoreInput');
+    const streamUrl = '{{ url_for("submission.submission_status_stream", submission_id=submission.id) }}';
+
+    const initialPayload = {
+      status: {{ (submission.status or '') | tojson }},
+      score: {{ submission.score | tojson }},
+      written_latex_text: {{ (submission_latex_text or '') | tojson }},
+      written_latex_html: {{ (submission_latex_html or '') | tojson }},
+      written_latex_error: {{ (submission_latex_error or '') | tojson }},
+      written_comment: {{ (submission.code or '') | tojson }}
+    };
+    let latestWrittenPayload = Object.assign({}, initialPayload);
+
+    function escapeHtml(text) {
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>');
+    }
+
+    function statusClassName(status) {
+      return String(status || '').toLowerCase().trim().replace(/\s+/g, '-');
+    }
+
+    function updateHeader(status, score) {
+      if (statusEl) {
+        statusEl.className = statusClassName(status);
+        statusEl.textContent = String(status || '-');
+      }
+
+      if (!scoreEl || !scoreMaxEl) return;
+      const maxScoreRaw = scoreMaxEl.textContent ? String(scoreMaxEl.textContent).trim() : "5";
+      const maxScore = Number(maxScoreRaw);
+      const safeScore = Number(score);
+      if (!Number.isFinite(safeScore)) {
+        scoreEl.textContent = '-';
+        scoreEl.className = 'text-danger';
+        return;
+      }
+      scoreEl.textContent = String(safeScore);
+      if (Number.isFinite(maxScore) && maxScore > 0 && safeScore === maxScore) {
+        scoreEl.className = 'text-success';
+      } else if (Number.isFinite(maxScore) && maxScore > 0 && (safeScore / maxScore) >= 0.6) {
+        scoreEl.className = 'text-warning';
+      } else {
+        scoreEl.className = 'text-danger';
+      }
+    }
+
+    function renderLatex(rawLatexHtml, rawLatex, errText, status) {
+      if (!latexEl) return;
+      const latexHtml = String(rawLatexHtml || '');
+      const latex = String(rawLatex || '');
+      const err = String(errText || '');
+      const st = String(status || '');
+      latexEl.classList.remove('text-muted');
+      if (latexHtml.trim()) {
+        latexEl.innerHTML = latexHtml;
+      } else if (latex.trim()) {
+        latexEl.innerHTML = escapeHtml(latex);
+      } else if (err.trim()) {
+        latexEl.innerHTML = '<span class="text-danger">' + escapeHtml(err) + '</span>';
+      } else if (['Pending', 'Waiting', 'Running', 'Generating'].includes(st)) {
+        latexEl.classList.add('text-muted');
+        MathCurveLoader.update(latexEl, 'LaTeX 转写中…', {size: 'md'});
+      } else {
+        latexEl.innerHTML = '<span class="text-muted">暂无 LaTeX 转写结果。</span>';
+      }
+      if (window.MathJax && window.MathJax.typesetPromise) {
+        MathJax.typesetPromise([latexEl]).catch(() => {});
+      }
+    }
+
+    function renderComment(rawComment) {
+      const raw = String(rawComment || '');
+      if (commentEl) {
+        commentEl.dataset.rawComment = raw;
+        if (!raw.trim()) {
+          commentEl.innerHTML = '<span class="text-muted">暂无评语</span>';
+        } else {
+          commentEl.innerHTML = escapeHtml(raw);
+        }
+        if (window.MathJax && window.MathJax.typesetPromise) {
+          MathJax.typesetPromise([commentEl]).catch(() => {});
+        }
+      }
+    }
+
+    function isGradeEditModalOpen() {
+      return !!(gradeEditModalEl && gradeEditModalEl.classList.contains('show'));
+    }
+
+    function applyWrittenPayload(payload) {
+      latestWrittenPayload = Object.assign({}, latestWrittenPayload, payload || {});
+      const data = latestWrittenPayload;
+      updateHeader(data.status, data.score);
+      renderLatex(data.written_latex_html, data.written_latex_text, data.written_latex_error, data.status);
+      renderComment(data.written_comment);
+      if (!isGradeEditModalOpen()) {
+        if (editScoreInput && Number.isFinite(Number(data.score))) {
+          editScoreInput.value = String(Number(data.score));
+        }
+        if (editCommentInput) {
+          editCommentInput.value = String(data.written_comment || '');
+        }
+      }
+    }
+
+    window.__writtenSubmissionDetail = {
+      applyPayload: function(payload) {
+        applyWrittenPayload(payload || {});
+      },
+      getPayload: function() {
+        return Object.assign({}, latestWrittenPayload);
+      },
+    };
+
+    applyWrittenPayload(initialPayload);
+
+    if (!window.EventSource) {
+      return;
+    }
+
+    const source = new EventSource(streamUrl);
+    source.addEventListener('status', function(evt) {
+      try {
+        const data = JSON.parse(evt.data);
+        applyWrittenPayload(data);
+      } catch (_) {}
+    });
+    source.addEventListener('done', function(evt) {
+      try {
+        const data = JSON.parse(evt.data);
+        applyWrittenPayload(data);
+      } catch (_) {}
+      source.close();
+    });
+    source.addEventListener('error', function() {
+      // 交给 EventSource 自动重连，不使用轮询。
+    });
+  })();
+</script>
+{% endif %}
+
+{% if submission.problem_type == 2 and user and user.is_admin == 1 %}
+<script>
+  (function bindAdminGradingEditor() {
+    const openEditorBtn = document.getElementById('openGradeEditorBtn');
+    const saveBtn = document.getElementById('submitGradeBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const modalEl = document.getElementById('gradeEditModal');
+    const scoreInput = document.getElementById('editScoreInput');
+    const commentInput = document.getElementById('editCommentInput');
+    if (!openEditorBtn || !saveBtn || !nextBtn || !modalEl || !scoreInput || !commentInput) {
+      return;
+    }
+
+    const modal = new bootstrap.Modal(modalEl);
+    const saveBtnDefaultHtml = saveBtn.innerHTML;
+
+    function getCurrentPayload() {
+      if (window.__writtenSubmissionDetail && typeof window.__writtenSubmissionDetail.getPayload === 'function') {
+        return window.__writtenSubmissionDetail.getPayload();
+      }
+      return {};
+    }
+
+    function fillEditorFromCurrentPayload() {
+      const payload = getCurrentPayload();
+      const currentScore = Number(payload.score);
+      scoreInput.value = Number.isFinite(currentScore) ? String(currentScore) : '0';
+      commentInput.value = String(payload.written_comment || '');
+    }
+
+    openEditorBtn.addEventListener('click', function() {
+      fillEditorFromCurrentPayload();
+      modal.show();
+    });
+
+    saveBtn.addEventListener('click', function() {
+      const scoreRaw = Number(scoreInput.value);
+      const score = Math.round(scoreRaw);
+      if (!Number.isFinite(scoreRaw) || score < 0 || score > 5) {
+        alert('得分必须在 0 到 5 之间。');
+        return;
+      }
+      const comment = String(commentInput.value || '');
+
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = MathCurveLoader.markup('提交中…', 'sm');
+
+      fetch('{{ url_for('grading.submit_grading', submission_id=submission.id) }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ 'score': String(score), 'comment': comment })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success) {
+          throw new Error(data.message || '提交失败');
+        }
+        const nextStatus = (score === 5) ? 'Accepted' : 'Unaccepted';
+        if (window.__writtenSubmissionDetail && typeof window.__writtenSubmissionDetail.applyPayload === 'function') {
+          window.__writtenSubmissionDetail.applyPayload({
+            score: score,
+            status: nextStatus,
+            written_comment: comment,
+          });
+        }
+        modal.hide();
+      })
+      .catch(err => {
+        alert('提交失败: ' + (err && err.message ? err.message : err));
+      })
+      .finally(() => {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = saveBtnDefaultHtml;
+      });
+    });
+
+    nextBtn.addEventListener('click', function() {
+      fetch('{{ url_for("grading.get_next_pending_submission", submission_id=submission.id) }}')
+        .then(r => r.json())
+        .then(data => { window.location.href = data.success ? data.next_submission_url : location.href; })
+        .catch(err => console.error('错误:', err));
+    });
+  })();
+</script>
+{% endif %}
+
+<!-- AI 部分：只有在 problem_type == 1 时才显示 询问 AI 按钮 -->
+{% if submission.problem_type == 1 %}
+<script>
+  const askAiBtn = document.getElementById('askAiBtn');
+  const aiInlineStatus = document.getElementById('aiInlineStatus');
+  const cachedAiCodeMarks = {{ cached_ai_code_marks | tojson }};
+  const hasCachedAiCodeMarks = !!(cachedAiCodeMarks && cachedAiCodeMarks.success);
+
+  let aiIssueMarkers = [];
+  let aiIssueRequestToken = 0;
+  let aiIssueTooltipEl = null;
+  let aiIssueTooltipBound = false;
+  const askAiBtnDefaultHtml = askAiBtn ? askAiBtn.innerHTML : '';
+
+  function setAiStatus(message, level) {
+    if (!aiInlineStatus) return;
+    const levelClass = level === 'danger'
+      ? 'alert-danger'
+      : level === 'warning'
+      ? 'alert-warning'
+      : level === 'success'
+      ? 'alert-success'
+      : 'alert-secondary';
+    aiInlineStatus.className = `alert ${levelClass} mt-3 mb-0`;
+    aiInlineStatus.textContent = message;
+    aiInlineStatus.classList.remove('d-none');
+  }
+
+  function setAskAiBtnLoading(loading) {
+    if (!askAiBtn) return;
+    askAiBtn.disabled = !!loading;
+    if (loading) {
+      askAiBtn.innerHTML = MathCurveLoader.markup('AI 分析中…', 'sm');
+      return;
+    }
+    askAiBtn.innerHTML = askAiBtnDefaultHtml || '<i class="fas fa-robot me-2"></i> 询问 AI 助教';
+  }
+
+  function ensureAiIssueTooltip() {
+    if (aiIssueTooltipEl) return;
+    aiIssueTooltipEl = document.createElement('div');
+    aiIssueTooltipEl.id = 'aiIssueTooltip';
+    aiIssueTooltipEl.className = 'ai-issue-tooltip';
+    document.body.appendChild(aiIssueTooltipEl);
+  }
+
+  function hideAiIssueTooltip() {
+    if (!aiIssueTooltipEl) return;
+    aiIssueTooltipEl.style.opacity = '0';
+    aiIssueTooltipEl.style.visibility = 'hidden';
+  }
+
+  function showAiIssueTooltip(text, clientX, clientY) {
+    ensureAiIssueTooltip();
+    if (!aiIssueTooltipEl) return;
+    aiIssueTooltipEl.textContent = text;
+    aiIssueTooltipEl.style.opacity = '1';
+    aiIssueTooltipEl.style.visibility = 'visible';
+
+    const margin = 14;
+    const rect = aiIssueTooltipEl.getBoundingClientRect();
+    let left = clientX + margin;
+    let top = clientY + margin;
+
+    if (left + rect.width > window.innerWidth - 8) {
+      left = Math.max(8, clientX - rect.width - margin);
+    }
+    if (top + rect.height > window.innerHeight - 8) {
+      top = Math.max(8, clientY - rect.height - margin);
+    }
+
+    aiIssueTooltipEl.style.left = `${left}px`;
+    aiIssueTooltipEl.style.top = `${top}px`;
+  }
+
+  function bindAiIssueTooltipEvents() {
+    if (aiIssueTooltipBound || !submissionCodeEditor) return;
+    aiIssueTooltipBound = true;
+    ensureAiIssueTooltip();
+
+    const wrapper = submissionCodeEditor.getWrapperElement();
+    wrapper.addEventListener('mousemove', function(e) {
+      const target = e.target && e.target.closest ? e.target.closest('.cm-ai-issue-underline') : null;
+      if (!target) {
+        hideAiIssueTooltip();
+        return;
+      }
+
+      let reason = target.dataset.issueReason || target.getAttribute('title') || '';
+      reason = String(reason).trim();
+      if (!reason) {
+        hideAiIssueTooltip();
+        return;
+      }
+
+      // 避免浏览器原生 title 提示，统一走自定义浮层
+      if (!target.dataset.issueReason) {
+        target.dataset.issueReason = reason;
+      }
+      if (target.hasAttribute('title')) {
+        target.removeAttribute('title');
+      }
+
+      showAiIssueTooltip(reason, e.clientX, e.clientY);
+    });
+
+    wrapper.addEventListener('mouseleave', hideAiIssueTooltip);
+    wrapper.addEventListener('mousedown', hideAiIssueTooltip);
+    wrapper.addEventListener('wheel', hideAiIssueTooltip, { passive: true });
+    window.addEventListener('scroll', hideAiIssueTooltip, true);
+    window.addEventListener('resize', hideAiIssueTooltip);
+  }
+
+  function clearAiIssueMarkers() {
+    aiIssueMarkers.forEach(marker => marker.clear());
+    aiIssueMarkers = [];
+    hideAiIssueTooltip();
+  }
+
+  function normalizeIssueLineRange(issue, lineCount) {
+    let ls = parseInt(issue.line_start || 1, 10);
+    let le = parseInt(issue.line_end || ls, 10);
+    if (!Number.isFinite(ls)) ls = 1;
+    if (!Number.isFinite(le)) le = ls;
+    if (ls > le) {
+      const t = ls;
+      ls = le;
+      le = t;
+    }
+    ls = Math.max(1, Math.min(lineCount, ls));
+    le = Math.max(1, Math.min(lineCount, le));
+    return [ls, le];
+  }
+
+  function renderAiIssueMarks(displayCode, issues) {
+    const safeCode = (typeof displayCode === 'string') ? displayCode : '';
+    submissionCodeEditor.setValue(safeCode);
+    submissionCodeEditor.refresh();
+
+    clearAiIssueMarkers();
+    bindAiIssueTooltipEvents();
+
+    const codeLines = safeCode.split('\n');
+    const lineCount = Math.max(1, codeLines.length);
+    issues.forEach((issue) => {
+      const lineRange = normalizeIssueLineRange(issue, lineCount);
+      const ls = lineRange[0];
+      const le = lineRange[1];
+      const reason = String(issue.reason || '这里可能有问题').trim();
+
+      for (let lineNo = ls; lineNo <= le; lineNo++) {
+        const lineText = codeLines[lineNo - 1] || '';
+        const toCh = lineText.length;
+        if (toCh <= 0) continue;
+        try {
+          const marker = submissionCodeEditor.markText(
+            { line: lineNo - 1, ch: 0 },
+            { line: lineNo - 1, ch: toCh },
+            {
+              className: 'cm-ai-issue-underline',
+              title: reason,
+              handleMouseEvents: true
+            }
+          );
+          aiIssueMarkers.push(marker);
+        } catch (e) {
+          console.warn('markText 失败:', e, issue);
+        }
+      }
+    });
+  }
+
+  function requestAiIssueMarks(requestToken) {
+    fetch('{{ url_for("ai.ask_ai_code_marks") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        submission_id: {{ submission.id }}
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (requestToken !== aiIssueRequestToken) return;
+      setAskAiBtnLoading(false);
+      const fallbackCode = submissionCodeEditor ? (submissionCodeEditor.getValue() || '') : '';
+      const displayCode = (data && typeof data.code_used === 'string') ? data.code_used : fallbackCode;
+      const ok = !!(data && data.success);
+      const issues = (ok && Array.isArray(data.issues)) ? data.issues : [];
+      const summary = ok && data.summary ? String(data.summary) : '';
+      const omniAnalysis = ok && data.image_mismatch_analysis ? String(data.image_mismatch_analysis) : '';
+      const omniTestIndex = ok ? data.image_analysis_test_index : null;
+
+      if (!ok) {
+        clearAiIssueMarkers();
+        submissionCodeEditor.setValue(displayCode);
+        submissionCodeEditor.refresh();
+        setAiStatus(
+          (data && data.message) ? String(data.message) : 'AI 未返回可用结果。',
+          'danger'
+        );
+        return;
+      }
+
+      if (typeof updateAiOmniImageAnalysis === 'function') {
+        updateAiOmniImageAnalysis(omniAnalysis, omniTestIndex);
+      }
+      renderAiIssueMarks(displayCode, issues);
+
+      if (summary) {
+        setAiStatus(`${summary}`, issues.length > 0 ? 'warning' : 'success');
+      } else if (issues.length > 0) {
+        setAiStatus(`已定位 ${issues.length} 处关键问题（鼠标悬停红色波浪线可查看原因）`, 'warning');
+      } else {
+        setAiStatus('未定位到明确的问题代码位置。', 'success');
+      }
+    })
+    .catch(err => {
+      if (requestToken !== aiIssueRequestToken) return;
+      setAskAiBtnLoading(false);
+      clearAiIssueMarkers();
+      const currentCode = submissionCodeEditor ? (submissionCodeEditor.getValue() || '') : '';
+      submissionCodeEditor.setValue(currentCode);
+      submissionCodeEditor.refresh();
+      setAiStatus(`问题标注失败：${err}`, 'danger');
+    });
+  }
+
+  // 仅代码标注模式
+  function callAI() {
+    if (!submissionCodeEditor) return;
+    const requestToken = ++aiIssueRequestToken;
+    clearAiIssueMarkers();
+    setAskAiBtnLoading(true);
+    setAiStatus('AI 正在定位问题代码，请稍候...', 'info');
+
+    requestAiIssueMarks(requestToken);
+  }
+
+  // 点击询问 AI 按钮后的逻辑
+  if (askAiBtn) {
+    askAiBtn.addEventListener('click', function() {
+      callAI();
+    });
+  }
+
+  function renderCachedAiMarksOnLoad() {
+    if (!hasCachedAiCodeMarks) return;
+    const issues = Array.isArray(cachedAiCodeMarks.issues) ? cachedAiCodeMarks.issues : [];
+    const displayCode = (typeof cachedAiCodeMarks.code_used === 'string')
+      ? cachedAiCodeMarks.code_used
+      : (submissionCodeEditor.getValue() || '');
+    const omniAnalysis = cachedAiCodeMarks.image_mismatch_analysis
+      ? String(cachedAiCodeMarks.image_mismatch_analysis)
+      : '';
+    const omniTestIndex = cachedAiCodeMarks.image_analysis_test_index;
+
+    if (typeof updateAiOmniImageAnalysis === 'function') {
+      updateAiOmniImageAnalysis(omniAnalysis, omniTestIndex);
+    }
+
+    renderAiIssueMarks(displayCode, issues);
+    if (cachedAiCodeMarks.summary) {
+      setAiStatus(`${cachedAiCodeMarks.summary}`, issues.length > 0 ? 'warning' : 'success');
+    } else if (issues.length > 0) {
+      setAiStatus(`定位到 ${issues.length} 处关键问题（鼠标悬停红色波浪线可查看原因）`, 'warning');
+    } else {
+      setAiStatus('未定位到明确的问题代码位置。', 'success');
+    }
+  }
+
+  // 页面加载后渲染已缓存的 AI 标注。
+  window.addEventListener('load', function() {
+    renderCachedAiMarksOnLoad();
+  });
+</script>
+{% endif %}
+
+<style>
+  /* AI 标注问题代码：红色波浪线，悬停显示 title 原因 */
+  .cm-ai-issue-underline {
+      text-decoration-line: underline;
+      text-decoration-style: wavy;
+      text-decoration-color: #e74c3c;
+      text-decoration-thickness: 1.5px;
+      cursor: help;
+      background-color: rgba(231, 76, 60, 0.1);
+  }
+
+  .ai-issue-tooltip {
+      position: fixed;
+      z-index: 12000;
+      max-width: min(460px, 76vw);
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(25, 25, 25, 0.12);
+      background: linear-gradient(180deg, #fffdf8 0%, #fff8f3 100%);
+      color: #2b2b2b;
+      box-shadow: 0 14px 40px rgba(25, 25, 25, 0.2);
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 120ms ease-out, visibility 120ms ease-out;
+  }
+
+  .ai-issue-tooltip::before {
+      content: '';
+      position: absolute;
+      top: 10px;
+      left: -6px;
+      width: 10px;
+      height: 10px;
+      transform: rotate(45deg);
+      background: #fffaf5;
+      border-left: 1px solid rgba(25, 25, 25, 0.12);
+      border-bottom: 1px solid rgba(25, 25, 25, 0.12);
+  }
+</style>
+{% endblock %}

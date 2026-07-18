@@ -23,9 +23,6 @@ from config import (
     EVALUATE_SUBMISSION_LOCK_TTL_SECONDS,
     QWEN_CODER_MODEL,
     QWEN_TEXT_MODEL,
-    REDIS_DB,
-    REDIS_HOST,
-    REDIS_PORT,
     SUBMISSION_SNAPSHOT_TTL_SECONDS,
 )
 from oj_modules.db_services import (
@@ -35,21 +32,20 @@ from oj_modules.db_services import (
     get_submission_by_id,
     subscribe_submission_status_events,
 )
+from oj_modules.redis_clients import (
+    RedisClientProfile,
+    create_optional_redis_client,
+)
 
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None
 
-try:
-    import redis
-except Exception:
-    redis = None
-
-
 AGENT_SOLVE_TASK_NAME = "oj.agent.solve_problem"
 AGENT_GENERATE_TESTDATA_TASK_NAME = "oj.agent.generate_testdata"
 _agent_progress_rds = None
+_agent_progress_blocking_rds = None
 _AGENT_PROGRESS_TTL_SECONDS = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 
 
@@ -88,9 +84,13 @@ _TOOL_TIMEOUT_MAX_SECONDS = _clamp_int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, 60,
 _SUMMARY_MODEL_DISPLAY = str(QWEN_TEXT_MODEL or "").strip() or "configured-model"
 
 
-def init_agent_progress_cache(redis_client, ttl_seconds=None):
-    global _agent_progress_rds, _AGENT_PROGRESS_TTL_SECONDS
+def init_agent_progress_cache(redis_client, ttl_seconds=None, blocking_client=None):
+    global _agent_progress_rds, _agent_progress_blocking_rds
+    global _AGENT_PROGRESS_TTL_SECONDS
     _agent_progress_rds = redis_client
+    _agent_progress_blocking_rds = (
+        redis_client if blocking_client is None else blocking_client
+    )
     if ttl_seconds is not None:
         try:
             _AGENT_PROGRESS_TTL_SECONDS = max(300, int(ttl_seconds))
@@ -102,20 +102,18 @@ def _ensure_agent_progress_redis():
     global _agent_progress_rds
     if _agent_progress_rds is not None:
         return _agent_progress_rds
-    if redis is None:
-        return None
-
-    try:
-        _agent_progress_rds = redis.StrictRedis(
-            host=REDIS_HOST,
-            port=int(REDIS_PORT),
-            db=int(REDIS_DB),
-            decode_responses=True,
-        )
-        _agent_progress_rds.ping()
-    except Exception:
-        _agent_progress_rds = None
+    _agent_progress_rds = create_optional_redis_client()
     return _agent_progress_rds
+
+
+def _ensure_agent_progress_blocking_redis():
+    global _agent_progress_blocking_rds
+    if _agent_progress_blocking_rds is not None:
+        return _agent_progress_blocking_rds
+    _agent_progress_blocking_rds = create_optional_redis_client(
+        RedisClientProfile.BLOCKING,
+    )
+    return _agent_progress_blocking_rds
 
 
 def _agent_progress_key(task_id):
@@ -145,7 +143,7 @@ def get_agent_run_snapshot(task_id):
 def subscribe_agent_run_events(task_id):
     if not task_id:
         return None
-    client = _ensure_agent_progress_redis()
+    client = _ensure_agent_progress_blocking_redis()
     if client is None:
         return None
     try:

@@ -45,7 +45,7 @@ def code_repository():
     user = current_user()
     if not user:
         return redirect(url_for('auth.login'))
-    return render_template('code_repository.html', user=user)
+    return render_template('repository/index.html', user=user)
 
 
 @repository_bp.route('/api/repository/files', methods=['GET'])

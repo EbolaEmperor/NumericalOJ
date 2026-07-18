@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MYOJDB_SQL = ROOT / "myojdb.sql"
+DATABASE_BOOTSTRAP_SQL = ROOT / "database" / "bootstrap.sql"
 SKIP_DUMP_TABLES = {"Cdemo2024", "Ctest"}
 IDENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
 SCHEMA_LOCK_NAME = "numericaloj:init_db_schema"
@@ -182,7 +182,7 @@ def _parse_dump_alter_indexes(sql_text: str, specs: OrderedDict[str, TableSpec])
 
 
 def _load_schema_specs() -> OrderedDict[str, TableSpec]:
-    sql_text = MYOJDB_SQL.read_text(encoding="utf-8")
+    sql_text = DATABASE_BOOTSTRAP_SQL.read_text(encoding="utf-8")
     specs: OrderedDict[str, TableSpec] = OrderedDict()
     for name, create_sql in _iter_create_table_sql(sql_text):
         specs[name] = _parse_table_spec(name, create_sql)
@@ -295,21 +295,40 @@ def _sync_dynamic_class_tables(cursor, dry_run: bool, actions: list[str]) -> Non
         _sync_table(cursor, _class_table_spec(class_en), dry_run, actions)
 
 
-def _ensure_database(config, dry_run: bool, actions: list[str]) -> None:
+def _ensure_database(config, dry_run: bool, actions: list[str]) -> bool:
     db_name = getattr(config, "MYSQL_DB", "myojdb")
     if not IDENT_RE.match(db_name):
         raise ValueError(f"invalid database name: {db_name!r}")
     conn = _connect(config, with_db=False)
     try:
         with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA "
+                "WHERE SCHEMA_NAME=%s",
+                (db_name,),
+            )
+            database_exists = cursor.fetchone() is not None
             sql = (
                 f"CREATE DATABASE IF NOT EXISTS {_quote_identifier(db_name)} "
                 "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
             )
             _run(cursor, sql, dry_run, actions)
-        conn.commit()
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
     finally:
         conn.close()
+    return database_exists
+
+
+def _plan_empty_database(config, specs, actions: list[str]) -> None:
+    """为空服务器生成完整计划，避免 dry-run 连接尚不存在的数据库。"""
+    db_name = getattr(config, "MYSQL_DB", "myojdb")
+    actions.append(f"USE {_quote_identifier(db_name)}")
+    actions.append("SET FOREIGN_KEY_CHECKS=0")
+    actions.extend(spec.create_sql for spec in specs.values())
+    actions.append("SET FOREIGN_KEY_CHECKS=1")
 
 
 def init_schema(dry_run: bool = False) -> list[str]:
@@ -317,7 +336,10 @@ def init_schema(dry_run: bool = False) -> list[str]:
     specs = _load_schema_specs()
     actions: list[str] = []
 
-    _ensure_database(config, dry_run, actions)
+    database_exists = _ensure_database(config, dry_run, actions)
+    if dry_run and not database_exists:
+        _plan_empty_database(config, specs, actions)
+        return actions
     conn = _connect(config, with_db=True)
 
     try:

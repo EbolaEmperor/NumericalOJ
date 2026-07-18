@@ -1,0 +1,7 @@
+{# 全语言 CodeMirror 资源。所有使用代码编辑器的页面从这里加载，避免版本和模式漂移。 #}
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/lib/codemirror.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='codemirror/theme/eclipse.css') }}">
+<script src="{{ url_for('static', filename='codemirror/lib/codemirror.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/octave/octave.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/clike/clike.js') }}"></script>
+<script src="{{ url_for('static', filename='codemirror/mode/python/python.js') }}"></script>

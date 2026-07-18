@@ -1,0 +1,9 @@
+<script>
+window.MathJax = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']],
+    displayMath: [['$$', '$$'], ['\\[', '\\]']]
+  }
+};
+</script>
+<script src="{{ url_for('static', filename='vendor/mathjax/tex-mml-chtml.js') }}"></script>

@@ -177,7 +177,7 @@ def submission_list(problem_id):
     page_end = min(total_pages, page + 8)
     page_numbers = list(range(page_start, page_end + 1))
     return render_template(
-        'submission_list.html',
+        'submissions/list.html',
         problem_id=problem_id,
         user_submissions=subs,
         user=user,
@@ -224,12 +224,12 @@ def submission_detail(submission_id):
             submission_latex_html = _render_written_markdown_to_html(submission_latex_text)
 
     return render_template(
-        'submission_detail.html',
+        'submissions/detail.html',
         submission=submission,
         test_points=submission['test_points'],
         user=user,
         embedded=embedded,
-        layout_template='layout_embedded.html' if embedded else 'layout.html',
+        layout_template='layouts/embedded.html' if embedded else 'layouts/site.html',
         plang=plang,
         problem=problem,
         cached_ai_code_marks=cached_ai_code_marks,

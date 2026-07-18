@@ -111,3 +111,83 @@ def test_bulk_rejudge_requeues_original_reverse_judge_submissions(monkeypatch):
     assert jobs['job2']['status'] == 'finished'
     assert jobs['job2']['requeued'] == 1
     assert jobs['job2']['requeued_ids'] == [201]
+
+
+def test_bulk_rejudge_reserves_standard_task_id_before_dispatch(monkeypatch):
+    comp = {'id': 9, 'scoring_mode': 'absolute'}
+    submission = {'id': 301, 'competition_id': 9, 'username': 'u1'}
+    jobs = {'job3': {'competition_id': 9}}
+    statuses = []
+    reservations = []
+    eval_task = _FakeAsyncTask()
+
+    monkeypatch.setattr(m, 'ITEM_SLEEP_SECONDS', 0.0)
+    monkeypatch.setattr(m, 'get_competition', lambda _cid: comp)
+    monkeypatch.setattr(m, 'get_ranking_submission', lambda _sid: submission)
+    monkeypatch.setattr(m, 'get_bulk_rejudge_job', lambda job_id: dict(jobs.get(job_id) or {}))
+    monkeypatch.setattr(
+        m,
+        'save_bulk_rejudge_job',
+        lambda job_id, payload: jobs.__setitem__(job_id, dict(payload)),
+    )
+    monkeypatch.setattr(
+        m,
+        'update_submission_result',
+        lambda sid, score, status, grade_details=None, error_message=None: statuses.append(
+            (sid, score, status, grade_details, error_message)
+        ),
+    )
+    monkeypatch.setattr(m.uuid, 'uuid4', lambda: 'bulk-task-301')
+    monkeypatch.setattr(
+        m,
+        'reserve_standard_ranking_evaluation',
+        lambda submission_id, task_id, **kwargs: reservations.append(
+            (submission_id, task_id, kwargs)
+        ) or 1,
+    )
+
+    task = m.register_ranking_bulk_rejudge_task(_FakeCelery(), eval_task)
+    task(9, [301], 'job3', 'admin')
+
+    assert statuses == [(301, None, 'Judging', None, None)]
+    assert reservations == [(301, 'bulk-task-301', {'force': True})]
+    assert eval_task.calls == [((), {
+        'args': [301],
+        'task_id': 'bulk-task-301',
+    })]
+    assert jobs['job3']['status'] == 'finished'
+    assert jobs['job3']['requeued'] == 1
+
+
+def test_bulk_rejudge_elo_keeps_activation_and_retirement_in_one_boundary(monkeypatch):
+    comp = {'id': 10, 'scoring_mode': 'elo', 'elo_initial_rating': 1550}
+    submission = {'id': 401, 'competition_id': 10, 'username': 'u1'}
+    jobs = {'job4': {'competition_id': 10}}
+    activations = []
+    burst = _FakeAsyncTask()
+
+    monkeypatch.setattr(m, 'ITEM_SLEEP_SECONDS', 0.0)
+    monkeypatch.setattr(m, 'get_competition', lambda _cid: comp)
+    monkeypatch.setattr(m, 'get_ranking_submission', lambda _sid: submission)
+    monkeypatch.setattr(m, 'get_bulk_rejudge_job', lambda job_id: dict(jobs.get(job_id) or {}))
+    monkeypatch.setattr(
+        m,
+        'save_bulk_rejudge_job',
+        lambda job_id, payload: jobs.__setitem__(job_id, dict(payload)),
+    )
+    monkeypatch.setattr(
+        m,
+        'activate_elo_submission',
+        lambda *args, **kwargs: activations.append((args, kwargs)),
+    )
+
+    task = m.register_ranking_bulk_rejudge_task(
+        _FakeCelery(),
+        _FakeAsyncTask(),
+        elo_initial_burst_task=burst,
+    )
+    task(10, [401], 'job4', 'admin')
+
+    assert activations == [((401, 10, 'u1', 1550.0), {'keep_count': 2})]
+    assert burst.calls == [((), {'args': [10, 401], 'countdown': 3})]
+    assert jobs['job4']['requeued'] == 1

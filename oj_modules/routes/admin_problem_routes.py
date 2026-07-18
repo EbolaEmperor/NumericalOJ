@@ -241,7 +241,7 @@ def add_problem():
             if _wants_json_response():
                 return jsonify(success=False, message="标题和内容不能为空"), 400
             return render_template(
-                'add_problem.html',
+                'problems/create.html',
                 user=user,
                 error_message="标题和内容不能为空",
                 programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
@@ -274,7 +274,7 @@ def add_problem():
         return redirect(url_for('problem_core.problem_list'))
 
     return render_template(
-        'add_problem.html',
+        'problems/create.html',
         user=user,
         error_message=None,
         programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
@@ -327,7 +327,7 @@ def edit_problem(problem_id):
 
         if not new_title or not new_content:
             return render_template(
-                'edit_problem.html',
+                'problems/edit.html',
                 problem=problem,
                 user=user,
                 error_message="标题和内容不能为空",
@@ -358,7 +358,7 @@ def edit_problem(problem_id):
         return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
     return render_template(
-        'edit_problem.html',
+        'problems/edit.html',
         problem=problem,
         user=user,
         error_message=None,

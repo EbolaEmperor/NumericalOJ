@@ -9,10 +9,10 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MODAL = (ROOT / "templates" / "_reverse_judge_detail_modal.html").read_text(
+MODAL = (ROOT / "templates" / "ranking" / "modals" / "reverse_judge_detail.html").read_text(
     encoding="utf-8",
 )
-TRACE_RENDERER = (ROOT / "templates" / "_agent_execution_trace.html").read_text(
+TRACE_RENDERER = (ROOT / "templates" / "ranking" / "scripts" / "execution_trace.html").read_text(
     encoding="utf-8",
 )
 

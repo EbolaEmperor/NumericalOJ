@@ -17,22 +17,20 @@
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
-try:
-    import redis
-except Exception:
-    redis = None
-
-from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.db_services import (
     get_incomplete_submissions,
+    get_submission_by_id,
     update_submission_status,
 )
+from oj_modules.redis_clients import create_optional_redis_client
 from oj_modules.ranking_db import (
+    activate_elo_submission,
     begin_agent_judge_attempt,
     get_incomplete_ranking_submissions,
-    init_submission_elo_state,
+    release_standard_ranking_evaluation,
+    reserve_standard_ranking_evaluation,
     set_agent_judge_task_id,
 )
 from oj_modules.tasks.evaluate_tasks import clear_submission_lock, has_submission_lock
@@ -41,11 +39,16 @@ from oj_modules.tasks.ranking_agent_judge_tasks import (
     clear_judge_lock,
     is_completed_agent_judge_submission,
 )
+from oj_modules.written_submission_artifacts import (
+    DEFAULT_RECOVERY_GRACE_SECONDS,
+    recover_written_submission_publications,
+)
 
 
 _STARTUP_REQUEUE_STAGGER_SECONDS = 1
 _AGENT_JUDGE_RECOVERY_BASE_DELAY_SECONDS = 10
-_AGENT_JUDGE_ORPHAN_REQUEUE_AFTER_SECONDS = 15 * 60
+_RANKING_ORPHAN_REQUEUE_AFTER_SECONDS = 15 * 60
+_RANKING_TASK_LEASE_SECONDS = 30 * 60
 PENDING_REQUEUE_WATCHDOG_TASK_NAME = "oj.pending_requeue_watchdog"
 _PENDING_REQUEUE_OWNER_KEY = "submission:pending_requeue:owner"
 _PENDING_REQUEUE_SEED_LOCK_KEY = "submission:pending_requeue:seed_lock"
@@ -79,17 +82,22 @@ def _agent_judge_recovery_countdown(index):
 
 
 def _redis_client():
-    if redis is None:
-        return None
+    return create_optional_redis_client(verify_connection=False)
+
+
+def _recover_written_publications(*, min_age_seconds):
     try:
-        return redis.StrictRedis(
-            host=REDIS_HOST,
-            port=int(REDIS_PORT),
-            db=int(REDIS_DB),
-            decode_responses=True,
+        result = recover_written_submission_publications(
+            get_submission_by_id,
+            min_age_seconds=min_age_seconds,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        print(f"[PendingRequeue] 人工作业 publication 恢复失败：{exc}")
+        return {"completed": 0, "rolled_back": 0, "conflicts": 0, "failed": 1}
+    changed = int(result.get("completed") or 0) + int(result.get("rolled_back") or 0)
+    if changed or result.get("conflicts") or result.get("failed"):
+        print(f"[PendingRequeue] 人工作业 publication 恢复结果：{result}")
+    return result
 
 
 def _submission_age_seconds(row, now=None):
@@ -337,7 +345,7 @@ def _agent_judge_orphaned(row, active_submission_ids, agent_judge_task):
         return False
 
     age_seconds = _submission_age_seconds(row)
-    if age_seconds is None or age_seconds < _AGENT_JUDGE_ORPHAN_REQUEUE_AFTER_SECONDS:
+    if age_seconds is None or age_seconds < _RANKING_ORPHAN_REQUEUE_AFTER_SECONDS:
         return False
 
     if _task_result_ready(agent_judge_task, row.get('judge_task_id')):
@@ -367,6 +375,120 @@ def _enqueue_agent_judge_recovery(agent_judge_task, row, *, requeue_index):
     )
     set_agent_judge_task_id(sub_id, attempt_id, async_result.id)
     return True
+
+
+def _requeue_orphaned_standard_ranking_submissions(
+        ranking_task, elo_initial_burst_task=None):
+    """周期性回收未入队或任务租约已过期的普通/ELO 打榜提交。
+
+    文件型提交在数据库 ``commit`` 响应丢失时不会冒险立即重投。若提交实际已经落库，
+    记录会保持 ``Judging`` 且没有 task id；等待宽限期后由这里领取并补发。普通评测
+    用数据库 task-id 租约防重，Redis claim 只削减竞争；超过 30 分钟的旧租约才可替换。
+    """
+    if ranking_task is None and elo_initial_burst_task is None:
+        return 0
+
+    redis_client = _redis_client()
+    requeued = 0
+    skipped_claimed = 0
+    try:
+        rows = get_incomplete_ranking_submissions()
+    except Exception as e:
+        print(f"[PendingRequeue] 查询未完成普通打榜赛提交失败：{e}")
+        return 0
+
+    for row in rows:
+        if requeued >= _PENDING_REQUEUE_MAX_PER_TICK:
+            break
+        mode = str(row.get('scoring_mode') or '').strip().lower()
+        if mode in ('agent_judge', 'reverse_judge'):
+            continue
+        status = str(row.get('status') or '').strip()
+        if status not in ('Judging', 'Queued'):
+            continue
+        task_id = row.get('judge_task_id')
+        if mode == 'elo' and (status != 'Judging' or task_id):
+            continue
+        age_seconds = _submission_age_seconds(row)
+        minimum_age = (
+            _RANKING_TASK_LEASE_SECONDS
+            if task_id else _RANKING_ORPHAN_REQUEUE_AFTER_SECONDS
+        )
+        if age_seconds is None or age_seconds < minimum_age:
+            continue
+
+        sub_id = row.get('id')
+        competition_id = row.get('competition_id')
+        if sub_id is None:
+            continue
+        if not _claim_watchdog_requeue(
+            redis_client,
+            sub_id,
+            key_fmt=_RANKING_REQUEUE_ITEM_KEY_FMT,
+        ):
+            skipped_claimed += 1
+            continue
+
+        try:
+            if mode == 'elo':
+                initial_rating = float(row.get('elo_initial_rating') or 1500)
+                activate_elo_submission(
+                    sub_id,
+                    competition_id,
+                    row.get('username'),
+                    initial_rating,
+                    keep_count=2,
+                )
+                if elo_initial_burst_task is not None:
+                    elo_initial_burst_task.apply_async(
+                        args=[competition_id, sub_id],
+                        countdown=3 + _startup_countdown(requeued),
+                    )
+            else:
+                if ranking_task is None:
+                    _release_watchdog_requeue_claim(
+                        redis_client,
+                        sub_id,
+                        key_fmt=_RANKING_REQUEUE_ITEM_KEY_FMT,
+                    )
+                    continue
+                dispatch_task_id = str(uuid.uuid4())
+                reserved = reserve_standard_ranking_evaluation(
+                    sub_id,
+                    dispatch_task_id,
+                    stale_after_seconds=_RANKING_TASK_LEASE_SECONDS,
+                )
+                if not reserved:
+                    _release_watchdog_requeue_claim(
+                        redis_client,
+                        sub_id,
+                        key_fmt=_RANKING_REQUEUE_ITEM_KEY_FMT,
+                    )
+                    continue
+                try:
+                    ranking_task.apply_async(
+                        args=[sub_id],
+                        countdown=_startup_countdown(requeued),
+                        task_id=dispatch_task_id,
+                    )
+                except Exception:
+                    release_standard_ranking_evaluation(sub_id, dispatch_task_id)
+                    raise
+            requeued += 1
+        except Exception as e:
+            _release_watchdog_requeue_claim(
+                redis_client,
+                sub_id,
+                key_fmt=_RANKING_REQUEUE_ITEM_KEY_FMT,
+            )
+            print(f"[PendingRequeue] 普通打榜赛提交 #{sub_id} 重新入队失败：{e}")
+
+    if requeued or skipped_claimed:
+        print(
+            f"[PendingRequeue] 普通/ELO 打榜扫描完成：重新入队 {requeued} 条，"
+            f"跳过已抢占 {skipped_claimed} 条。"
+        )
+    return requeued
 
 
 def _requeue_stale_pending_submissions(evaluate_task, written_task, promptly_task=None, *, source):
@@ -486,8 +608,8 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task,
     """重新入队卡在 'Judging' 的打榜赛提交。
 
     - 绝对分模式：直接 .delay() 给评测任务；
-    - ELO 模式：正式带入对战池（init_submission_elo_state -> Active）并补发
-      initial-burst；池中 Active 的提交由已重新 seed 的 matchmaker tick 接管。
+    - ELO 模式：在单事务内激活新提交并退役超额旧提交，再补发 initial-burst；
+      池中 Active 的提交由已重新 seed 的 matchmaker tick 接管。
     - Agent/反向评测模式：重新 .apply_async() 给对应 AI 评测任务。
     """
     requeued = 0
@@ -528,7 +650,13 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task,
                         requeued += 1
             elif scoring_mode == 'elo':
                 initial_rating = float(row.get('elo_initial_rating') or 1500)
-                init_submission_elo_state(sub_id, initial_rating)
+                activate_elo_submission(
+                    sub_id,
+                    competition_id,
+                    row.get('username'),
+                    initial_rating,
+                    keep_count=2,
+                )
                 if elo_initial_burst_task is not None:
                     elo_initial_burst_task.apply_async(
                         args=[competition_id, sub_id], countdown=3 + _startup_countdown(requeued),
@@ -536,8 +664,22 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task,
                     requeued += 1
             else:
                 if ranking_task is not None:
-                    ranking_task.apply_async(args=[sub_id], countdown=_startup_countdown(requeued))
-                    requeued += 1
+                    dispatch_task_id = str(uuid.uuid4())
+                    if reserve_standard_ranking_evaluation(
+                            sub_id,
+                            dispatch_task_id,
+                            force=True,
+                    ):
+                        try:
+                            ranking_task.apply_async(
+                                args=[sub_id],
+                                countdown=_startup_countdown(requeued),
+                                task_id=dispatch_task_id,
+                            )
+                        except Exception:
+                            release_standard_ranking_evaluation(sub_id, dispatch_task_id)
+                            raise
+                        requeued += 1
         except Exception as e:
             print(f"[StartupRequeue] 打榜赛提交 #{sub_id} 重新入队失败：{e}")
 
@@ -626,6 +768,7 @@ def requeue_pending_on_startup(*, evaluate_task, written_task, promptly_task=Non
                                agent_judge_task=None, reverse_judge_task=None):
     """启动时扫描 MySQL 并重新入队所有未完成任务（程序题 / 书面作业 / 打榜赛）。"""
     try:
+        _recover_written_publications(min_age_seconds=0)
         _purge_agent_judge_broker_messages(_redis_client())
         prog = _requeue_programming_submissions(evaluate_task, written_task, promptly_task=promptly_task)
         rank = _requeue_ranking_submissions(
@@ -644,6 +787,8 @@ def requeue_pending_on_startup(*, evaluate_task, written_task, promptly_task=Non
 
 def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_task,
                                            promptly_task=None,
+                                           ranking_task=None,
+                                           elo_initial_burst_task=None,
                                            agent_judge_task=None,
                                            reverse_judge_task=None):
     """注册周期性 Pending 回收任务。
@@ -688,13 +833,22 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
                 pass
 
         requeued = 0
+        ranking_requeued = 0
         agent_requeued = 0
+        written_publications = {}
         try:
+            written_publications = _recover_written_publications(
+                min_age_seconds=DEFAULT_RECOVERY_GRACE_SECONDS,
+            )
             requeued = _requeue_stale_pending_submissions(
                 evaluate_task,
                 written_task,
                 promptly_task=promptly_task,
                 source='watchdog',
+            )
+            ranking_requeued = _requeue_orphaned_standard_ranking_submissions(
+                ranking_task,
+                elo_initial_burst_task,
             )
             agent_requeued = _requeue_orphaned_agent_judge_submissions(
                 agent_judge_task, reverse_judge_task,
@@ -707,7 +861,9 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
         return {
             'success': True,
             'requeued': requeued,
+            'ranking_requeued': ranking_requeued,
             'agent_judge_requeued': agent_requeued,
+            'written_publications': written_publications,
         }
 
     return pending_requeue_watchdog

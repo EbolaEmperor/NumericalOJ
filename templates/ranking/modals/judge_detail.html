@@ -1,0 +1,549 @@
+{# Agent 评测「评分详情」弹窗 + 实时进度。供「我的历史提交」「所有提交」共用。
+   通过事件委托监听 .judge-detail-btn（含 AJAX 动态加载的按钮）。 #}
+{% include 'ranking/scripts/execution_trace.html' %}
+<div class="modal fade" id="judgeDetailModal" tabindex="-1" aria-labelledby="judgeDetailModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="judgeDetailModalLabel">
+            <i class="fas fa-list-check me-2 text-warning"></i>评分详情
+          </h5>
+          <div class="text-muted small" id="judgeModalMeta"></div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          {% if tab == 'submit' %}
+          <button type="button" class="btn btn-sm btn-outline-warning" id="appealToggle">
+            <i class="fas fa-gavel me-1"></i>我要申诉
+          </button>
+          {% endif %}
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="small text-muted d-inline-flex align-items-center gap-1" id="judgeModalStatus">正在连接评测进度…</span>
+          <span class="small text-muted">得分
+            <span class="fw-semibold" id="judgeModalTotal">0</span>
+            / <span id="judgeModalMax">0</span>
+          </span>
+        </div>
+        <div class="progress mb-3" style="height:6px;background:#f0f0f2;border-radius:999px;">
+          <div class="progress-bar" id="judgeModalBar" role="progressbar"
+               style="height:6px;border-radius:999px;background:#1f7a4d;width:0%;"></div>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="aj-result-tabs" role="tablist" aria-label="评分结果视图">
+            <button type="button" class="aj-result-tab" data-judge-view="topo" role="tab" aria-selected="false">拓扑</button>
+            <button type="button" class="aj-result-tab" data-judge-view="detail" role="tab" aria-selected="false">详情</button>
+            <button type="button" class="aj-result-tab active" data-judge-view="trace" role="tab" aria-selected="true">执行轨迹</button>
+          </div>
+          <span class="small text-muted" id="judgeViewHint"></span>
+        </div>
+        {% if tab == 'submit' %}
+        <div id="appealPanel" class="border rounded p-3 mb-3" hidden>
+          <div id="appealInputArea">
+            <label class="form-label small text-muted mb-1"><i class="fas fa-comment-dots me-2"></i>申诉意见</label>
+            <textarea id="appealReason" class="form-control mb-2" rows="3" maxlength="4000" placeholder="例如：规则 X 我已实现并能正常运行，截图见 …"></textarea>
+            <div class="d-flex align-items-center gap-2">
+              <button type="button" class="btn btn-sm btn-warning" id="appealSubmit"><i class="fas fa-paper-plane me-1"></i>提交申诉</button>
+              <span class="small" id="appealMsg"></span>
+            </div>
+          </div>
+          <div id="appealStatusArea" hidden>
+            <div class="mb-2"><span class="small text-muted me-1"><i class="fas fa-gavel me-1"></i>申诉状态：</span><span class="fw-semibold" id="appealStatusLabel"></span></div>
+            <div class="small text-muted mb-1">你的申诉意见：</div>
+            <div class="aj-evi small p-2 mb-2" id="appealStatusReason"></div>
+            <div id="appealReplyWrap" hidden>
+              <div class="small text-muted mb-1">管理员回复：</div>
+              <div class="aj-evi small p-2 mb-0" id="appealStatusReply"></div>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+        <div id="judgeModalTopo" class="aj-result-view" hidden>
+          <div class="text-muted text-center py-5">
+            <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载评分拓扑…</span></span>
+          </div>
+        </div>
+        <div id="judgeModalRules" class="aj-result-view" hidden>
+          <div class="text-muted text-center py-5">
+            <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载评分细则…</span></span>
+          </div>
+        </div>
+        <div id="judgeModalTrace" class="aj-result-view">
+          <div class="text-muted text-center py-5">
+            <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在加载执行轨迹…</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="aj-result-pop" id="judgeRuleReadPopup" hidden>
+  <div class="aj-result-pop-box" role="dialog" aria-modal="true" aria-labelledby="judgeRuleReadTitle">
+    <div class="aj-result-pop-head">
+      <div>
+        <div class="aj-result-pop-title" id="judgeRuleReadTitle">规则详情</div>
+        <div class="aj-result-pop-meta" id="judgeRuleReadMeta"></div>
+      </div>
+      <button type="button" class="aj-result-pop-close" id="judgeRuleReadClose" aria-label="关闭"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="aj-result-pop-body">
+      <div class="aj-result-pop-section">
+        <div class="aj-result-pop-label">规则原文</div>
+        <div class="aj-md small" id="judgeRuleReadRule"></div>
+      </div>
+      <div class="aj-result-pop-section">
+        <div class="aj-result-pop-label">评分证据</div>
+        <div class="aj-md aj-evi small p-2" id="judgeRuleReadEvidence"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  if (window.__ajJudgeModalInit) return;
+  window.__ajJudgeModalInit = true;
+  var judgeModalEl = document.getElementById('judgeDetailModal');
+  var judgeModal = null;
+  function getModal() { if (!judgeModal && judgeModalEl && window.bootstrap) judgeModal = new bootstrap.Modal(judgeModalEl); return judgeModal; }
+  var judgeSource = null;
+  var currentAppealUrl = '';
+  var currentAppealStatusUrl = '';
+  function setHidden(element, hidden) {
+    if (element) element.hidden = !!hidden;
+  }
+  function renderAppealState(data) {
+    var inputArea = document.getElementById('appealInputArea');
+    var statusArea = document.getElementById('appealStatusArea');
+    var toggle = document.getElementById('appealToggle');
+    if (data && data.has_appeal) {
+      setHidden(inputArea, true);
+      setHidden(statusArea, false);
+      var label = document.getElementById('appealStatusLabel');
+      if (label) label.textContent = data.status_label || data.status || '';
+      var reason = document.getElementById('appealStatusReason');
+      if (reason) reason.textContent = data.reason || '';
+      var replyWrap = document.getElementById('appealReplyWrap');
+      var reply = document.getElementById('appealStatusReply');
+      setHidden(replyWrap, !data.admin_response);
+      if (reply) reply.textContent = data.admin_response || '';
+      if (toggle) toggle.innerHTML = '<i class="fas fa-gavel me-1"></i>申诉状态';
+      return;
+    }
+    setHidden(inputArea, false);
+    setHidden(statusArea, true);
+    if (toggle) toggle.innerHTML = '<i class="fas fa-gavel me-1"></i>我要申诉';
+  }
+  var BADGE = {
+    pass: ['通过', '#1f7a4d', '#e9f3ec'],
+    failed: ['未通过', '#b03a2e', '#f8e9e7'],
+    skipped: ['依赖跳过', '#6c757d', '#f1f1f3'],
+    error: ['异常', '#b07340', '#fbf0e3'],
+    pending: ['待评测', '#2563cb', '#e8f0fb']
+  };
+  var STATUS = { Accepted: '评测完成', Error: '评测异常', Judging: '评测中', Queued: '等待评测', Pending: '待评测' };
+  var currentJudgeSnapshot = null;
+  var currentJudgeResultSignature = '';
+  var currentJudgeView = 'trace';
+  var judgeViewManuallySelected = false;
+  var judgeTraceRenderer = window.AgentExecutionTrace.create({
+    keyPrefix:'agent-judge', showThinkingLoader:true, showPendingLoader:true
+  });
+  var resultNodeW = 176, resultNodeH = 96, resultMarginX = 24, resultMarginY = 20, resultXGap = 88, resultYGap = 72;
+  function closeJudgeStream() { if (judgeSource) { judgeSource.close(); judgeSource = null; } }
+  function esc(s) { return (s || '').replace(/[&<>]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]; }); }
+  function renderJudgeStatus(element, snap) {
+    if (!element) return;
+    var text = (STATUS[snap.status] || snap.status || '评测状态未知') +
+      (snap.timed_out ? ' · 已超时，保留已有得分' : '');
+    if (snap.status !== 'Judging') {
+      element.textContent = text;
+      return;
+    }
+    if (!element.querySelector('[data-judge-status-loader]')) {
+      element.innerHTML = '<span data-judge-status-loader class="math-curve-loader" ' +
+        'data-math-curve-loader data-icon-only="true" data-size="xs" aria-label="评测进行中"></span>' +
+        '<span data-judge-status-text></span>';
+    }
+    element.querySelector('[data-judge-status-text]').textContent = text;
+  }
+  function compactRuleText(s, n) {
+    s = String(s || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '未填写规则内容';
+    return s.length > n ? s.slice(0, n) + '…' : s;
+  }
+  function resultRuleTitle(r) { return (r.rule_name || '').trim() || compactRuleText(r.rule_text, 14); }
+  function setJudgeView(view, manual) {
+    currentJudgeView = view || 'trace';
+    if (manual) judgeViewManuallySelected = true;
+    document.querySelectorAll('[data-judge-view]').forEach(function (tab) {
+      var on = tab.dataset.judgeView === currentJudgeView;
+      tab.classList.toggle('active', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    var topo = document.getElementById('judgeModalTopo');
+    var detail = document.getElementById('judgeModalRules');
+    var trace = document.getElementById('judgeModalTrace');
+    var hint = document.getElementById('judgeViewHint');
+    if (topo) topo.hidden = currentJudgeView !== 'topo';
+    if (detail) detail.hidden = currentJudgeView !== 'detail';
+    if (trace) trace.hidden = currentJudgeView !== 'trace';
+    if (hint) hint.textContent = currentJudgeView === 'topo' ? '点击拓扑节点查看规则原文与评分证据' : '';
+  }
+  function defaultJudgeView(status) {
+    return ['Judging', 'Queued', 'Pending'].indexOf(String(status || '')) >= 0 ? 'trace' : 'detail';
+  }
+  function applyDefaultJudgeView(status) {
+    if (!judgeViewManuallySelected) setJudgeView(defaultJudgeView(status), false);
+  }
+  var resultRuleTopology = window.RuleTopology.create({
+    nodeWidth: resultNodeW, nodeHeight: resultNodeH,
+    marginX: resultMarginX, marginY: resultMarginY,
+    columnGap: resultXGap, rowGap: resultYGap,
+    slotPadding: 46, maxSlotStep: 18
+  });
+  function topoLayoutForRules(rules) { return resultRuleTopology.layout(rules); }
+  var resultEdgeKey = resultRuleTopology.edgeKey;
+  var buildResultEdgeRoutes = resultRuleTopology.buildRoutes;
+  var resultEdgePath = resultRuleTopology.edgePath;
+  function setResultTopoFocus(surface, ruleId, edgeId) {
+    var active = ruleId != null || !!edgeId;
+    surface.classList.toggle('has-focus', active);
+    var edgeParts = edgeId ? edgeId.split(':') : null;
+    surface.querySelectorAll('.aj-result-edge, .aj-result-arrow').forEach(function (edge) {
+      var on = edgeId
+        ? edge.dataset.edgeKey === edgeId
+        : (edge.dataset.edgeFrom === String(ruleId) || edge.dataset.edgeTo === String(ruleId));
+      edge.classList.toggle('edge-active', !!on);
+    });
+    surface.querySelectorAll('.aj-result-node').forEach(function (node) {
+      var id = node.dataset.ruleId;
+      var on = edgeParts
+        ? (id === edgeParts[0] || id === edgeParts[1])
+        : id === String(ruleId);
+      node.classList.toggle('node-active', !!on);
+    });
+  }
+  function appendResultTopoSurface(canvas, surface, layout) {
+    var stage = document.createElement('div');
+    stage.className = 'aj-result-stage';
+    stage.style.width = Math.ceil(layout.width) + 'px';
+    stage.style.height = Math.ceil(layout.height) + 'px';
+    surface.style.transform = 'none';
+    stage.appendChild(surface);
+    canvas.appendChild(stage);
+  }
+  function appendResultArrow(svg, route, edge) {
+    var arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    var x = route.x2, tailY = route.y2, tipY = route.arrowTipY;
+    arrow.setAttribute('class', 'aj-result-arrow');
+    arrow.setAttribute('points', x + ' ' + tipY + ' ' + (x - 5) + ' ' + tailY + ' ' + (x + 5) + ' ' + tailY);
+    arrow.dataset.edgeKey = resultEdgeKey(edge.from, edge.to);
+    arrow.dataset.edgeFrom = edge.from;
+    arrow.dataset.edgeTo = edge.to;
+    svg.appendChild(arrow);
+  }
+  function renderJudgeDetails(snap) {
+    var rulesBox = document.getElementById('judgeModalRules');
+    if (!rulesBox) return;
+    if (!snap.rules || !snap.rules.length) { rulesBox.innerHTML = '<div class="text-muted text-center py-5">暂无评分规则。</div>'; return; }
+    rulesBox.innerHTML = '';
+    snap.rules.forEach(function (r) {
+      var b = BADGE[r.effective] || BADGE.pending;
+      var div = document.createElement('div');
+      div.className = 'border rounded p-3 mb-2';
+      var title = '<strong>规则 ' + r.rule_id + '</strong>';
+      if (r.rule_name) title += ' <span class="text-muted small">' + esc(r.rule_name) + '</span>';
+      var head =
+        '<div class="d-flex justify-content-between align-items-start gap-3">' +
+        '<div><span class="badge me-2" style="color:' + b[1] + ';background:' + b[2] + ';border-radius:4px;">' + b[0] + '</span>' +
+        title + ' <span class="text-muted small">(' + r.value + ' 分)</span>' +
+        '<div class="aj-md small mt-1">' + (r.rule_html || esc(r.rule_text)) + '</div></div>' +
+        '<div class="text-end fw-semibold" style="white-space:nowrap;">' + (r.score || 0) + ' 分</div></div>';
+      var ev = (r.evidence_html || r.evidence)
+        ? '<details class="mt-2"><summary class="small text-muted">评分证据</summary>' +
+          '<div class="aj-md aj-evi small p-2 mt-1 mb-0">' + (r.evidence_html || esc(r.evidence)) + '</div></details>'
+        : '';
+      div.innerHTML = head + ev;
+      rulesBox.appendChild(div);
+    });
+  }
+  function renderJudgeTopo(snap) {
+    var topo = document.getElementById('judgeModalTopo');
+    if (!topo) return;
+    if (!snap.rules || !snap.rules.length) { topo.innerHTML = '<div class="aj-result-topo-empty">暂无评分规则。</div>'; return; }
+    var layout = topoLayoutForRules(snap.rules);
+    if (!layout) { topo.innerHTML = '<div class="aj-result-topo-empty text-danger">当前依赖存在环，无法生成拓扑图。</div>'; return; }
+    var wrap = document.createElement('div');
+    wrap.className = 'aj-result-topo-main';
+    var canvas = document.createElement('div');
+    canvas.className = 'aj-result-topo-canvas';
+    var surface = document.createElement('div');
+    surface.className = 'aj-result-surface';
+    surface.style.width = layout.width + 'px';
+    surface.style.height = layout.height + 'px';
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'aj-result-svg');
+    svg.setAttribute('width', layout.width);
+    svg.setAttribute('height', layout.height);
+    svg.setAttribute('viewBox', '0 0 ' + layout.width + ' ' + layout.height);
+    svg.innerHTML = '';
+    surface.appendChild(svg);
+    var edges = [];
+    snap.rules.forEach(function (r) {
+      (r.dependencies || []).forEach(function (dep) {
+        edges.push({from: dep, to: r.rule_id});
+      });
+    });
+    var edgeRoutes = buildResultEdgeRoutes(edges, layout);
+    edges.forEach(function (edge) {
+      var route = edgeRoutes[resultEdgeKey(edge.from, edge.to)];
+      if (!route) return;
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('class', 'aj-result-edge');
+      path.setAttribute('d', resultEdgePath(route));
+      path.dataset.edgeKey = resultEdgeKey(edge.from, edge.to);
+      path.dataset.edgeFrom = edge.from;
+      path.dataset.edgeTo = edge.to;
+      svg.appendChild(path);
+      appendResultArrow(svg, route, edge);
+      var hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      hit.setAttribute('class', 'aj-result-edge-hit');
+      hit.setAttribute('d', path.getAttribute('d'));
+      hit.dataset.edgeKey = path.dataset.edgeKey;
+      hit.dataset.edgeFrom = edge.from;
+      hit.dataset.edgeTo = edge.to;
+      svg.appendChild(hit);
+    });
+    snap.rules.forEach(function (r) {
+      var pos = layout.positions[r.rule_id];
+      var b = BADGE[r.effective] || BADGE.pending;
+      var node = document.createElement('button');
+      node.type = 'button';
+      node.className = 'aj-result-node s-' + (r.effective || 'pending');
+      node.dataset.ruleId = r.rule_id;
+      node.title = r.rule_text || '未填写规则内容';
+      node.style.left = pos.x + 'px';
+      node.style.top = pos.y + 'px';
+      node.innerHTML =
+        '<span class="aj-result-node-id">规则 ' + r.rule_id + ' · ' + (r.value || 0) + ' 分</span>' +
+        '<span class="aj-result-node-title">' + esc(resultRuleTitle(r)) + '</span>' +
+        '<span class="aj-result-node-text">' + esc(compactRuleText(r.rule_text, 42)) + '</span>' +
+        '<span class="aj-result-node-foot">' +
+          '<span class="aj-result-status" style="color:' + b[1] + ';background:' + b[2] + ';">' + b[0] + '</span>' +
+          '<span class="aj-result-score">' + (r.score || 0) + '/' + (r.value || 0) + '</span>' +
+        '</span>';
+      surface.appendChild(node);
+    });
+    wrap.appendChild(canvas);
+    topo.innerHTML = '';
+    topo.appendChild(wrap);
+    canvas.innerHTML = '';
+    appendResultTopoSurface(canvas, surface, layout);
+    surface.querySelectorAll('.aj-result-edge-hit').forEach(function (edge) {
+      edge.onmouseenter = function () { setResultTopoFocus(surface, null, edge.dataset.edgeKey); };
+      edge.onmouseleave = function () { setResultTopoFocus(surface, null, null); };
+    });
+    surface.querySelectorAll('[data-rule-id]').forEach(function (n) {
+      n.onmouseenter = function () { setResultTopoFocus(surface, parseInt(n.dataset.ruleId, 10), null); };
+      n.onmouseleave = function () { setResultTopoFocus(surface, null, null); };
+      n.onfocus = function () { setResultTopoFocus(surface, parseInt(n.dataset.ruleId, 10), null); };
+      n.onblur = function () { setResultTopoFocus(surface, null, null); };
+      n.onclick = function () { openJudgeRulePopup(parseInt(n.dataset.ruleId, 10)); };
+    });
+  }
+  function renderJudgeResultViews(snap) {
+    currentJudgeSnapshot = snap;
+    var signature = JSON.stringify([
+      snap.status, snap.total_score, snap.max_score, !!snap.timed_out, snap.rules || []
+    ]);
+    if (signature === currentJudgeResultSignature) {
+      setJudgeView(currentJudgeView || 'trace', false);
+      return;
+    }
+    currentJudgeResultSignature = signature;
+    renderJudgeTopo(snap);
+    renderJudgeDetails(snap);
+    setJudgeView(currentJudgeView || 'trace', false);
+    var targets = [];
+    var topo = document.getElementById('judgeModalTopo');
+    var rulesBox = document.getElementById('judgeModalRules');
+    if (topo) targets.push(topo);
+    if (rulesBox) targets.push(rulesBox);
+    if (window.MathJax && MathJax.typesetPromise && targets.length) { MathJax.typesetPromise(targets).catch(function () {}); }
+  }
+  function openJudgeRulePopup(ruleId) {
+    if (!currentJudgeSnapshot || !currentJudgeSnapshot.rules) return;
+    var r = currentJudgeSnapshot.rules.filter(function (it) { return parseInt(it.rule_id, 10) === ruleId; })[0];
+    if (!r) return;
+    var popup = document.getElementById('judgeRuleReadPopup');
+    if (!popup) return;
+    var b = BADGE[r.effective] || BADGE.pending;
+    popup.querySelector('#judgeRuleReadTitle').textContent = '规则 ' + r.rule_id + ' · ' + resultRuleTitle(r);
+    popup.querySelector('#judgeRuleReadMeta').innerHTML =
+      '<span class="badge me-2" style="color:' + b[1] + ';background:' + b[2] + ';border-radius:999px;">' + b[0] + '</span>' +
+      '<span>得分 ' + (r.score || 0) + ' / ' + (r.value || 0) + '</span>';
+    popup.querySelector('#judgeRuleReadRule').innerHTML = r.rule_html || esc(r.rule_text);
+    popup.querySelector('#judgeRuleReadEvidence').innerHTML =
+      (r.evidence_html || r.evidence) ? (r.evidence_html || esc(r.evidence)) : '<span class="text-muted">暂无评分证据。</span>';
+    popup.hidden = false;
+    if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([popup]).catch(function () {}); }
+  }
+  function closeJudgeRulePopup() {
+    var popup = document.getElementById('judgeRuleReadPopup');
+    if (popup) popup.hidden = true;
+  }
+  function renderJudgeSnapshot(snap) {
+    var total = document.getElementById('judgeModalTotal');
+    var max = document.getElementById('judgeModalMax');
+    var status = document.getElementById('judgeModalStatus');
+    var bar = document.getElementById('judgeModalBar');
+    if (total) total.textContent = snap.total_score || 0;
+    if (max) max.textContent = snap.max_score || 0;
+    renderJudgeStatus(status, snap);
+    if (bar) { var pct = snap.max_score ? (snap.total_score / snap.max_score * 100) : 0; bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
+    applyDefaultJudgeView(snap.status);
+    renderJudgeResultViews(snap);
+    var traceBox = document.getElementById('judgeModalTrace');
+    if (traceBox) {
+      var executionTrace = snap.execution_trace || {
+        status: snap.status === 'Judging' ? 'running' :
+          (['Queued', 'Pending'].indexOf(snap.status) >= 0
+            ? 'pending' : (snap.status === 'Error' ? 'error' : 'passed')),
+        trace_messages: [], trace_files: []
+      };
+      judgeTraceRenderer.render(traceBox, executionTrace, {
+        scope:'agent-judge-' + String(snap.submission_id || '') + '-' +
+          String(executionTrace.trace_id || snap.attempt_trace_id || '')
+      });
+    }
+  }
+  function openJudgeModal(btn) {
+    var m = getModal();
+    if (!btn || !m) return;
+    closeJudgeStream();
+    var sid = btn.getAttribute('data-submission-id') || '';
+    currentAppealUrl = btn.getAttribute('data-appeal-url') || '';
+    currentAppealStatusUrl = btn.getAttribute('data-appeal-status-url') || '';
+    var appealPanel = document.getElementById('appealPanel');
+    var appealMessage = document.getElementById('appealMsg');
+    var appealReason = document.getElementById('appealReason');
+    setHidden(appealPanel, true);
+    if (appealMessage) { appealMessage.textContent = ''; appealMessage.className = 'small'; }
+    if (appealReason) appealReason.value = '';
+    renderAppealState({ has_appeal: false });
+    if (currentAppealStatusUrl) {
+      fetch(currentAppealStatusUrl, { credentials: 'same-origin' })
+        .then(function (response) { return response.json(); })
+        .then(function (data) { if (data && data.ok) renderAppealState(data); })
+        .catch(function () {});
+    }
+    var createdAt = btn.getAttribute('data-created-at') || '';
+    var streamUrl = btn.getAttribute('data-stream-url');
+    var meta = document.getElementById('judgeModalMeta');
+    var status = document.getElementById('judgeModalStatus');
+    var rulesBox = document.getElementById('judgeModalRules');
+    var topoBox = document.getElementById('judgeModalTopo');
+    var traceBox = document.getElementById('judgeModalTrace');
+    var bar = document.getElementById('judgeModalBar');
+    currentJudgeSnapshot = null;
+    currentJudgeResultSignature = '';
+    judgeViewManuallySelected = false;
+    currentJudgeView = defaultJudgeView(btn.getAttribute('data-submission-status'));
+    setJudgeView(currentJudgeView, false);
+    judgeTraceRenderer.reset(traceBox);
+    closeJudgeRulePopup();
+    document.getElementById('judgeModalTotal').textContent = '0';
+    document.getElementById('judgeModalMax').textContent = '0';
+    if (bar) bar.style.width = '0%';
+    if (meta) meta.textContent = '#' + sid + (createdAt ? ' · ' + createdAt : '');
+    if (status) status.textContent = '正在连接评测进度…';
+    if (topoBox) topoBox.innerHTML = '<div class="text-muted text-center py-5">' + MathCurveLoader.markup('正在加载评分拓扑…', 'md') + '</div>';
+    if (rulesBox) rulesBox.innerHTML = '<div class="text-muted text-center py-5">' + MathCurveLoader.markup('正在加载评分细则…', 'md') + '</div>';
+    if (traceBox) traceBox.innerHTML = '<div class="text-muted text-center py-5">' + MathCurveLoader.markup('正在加载执行轨迹…', 'md') + '</div>';
+    m.show();
+    if (!streamUrl || !window.EventSource) { if (status) status.textContent = '当前浏览器不支持实时进度，请刷新页面后重试。'; return; }
+    judgeSource = new EventSource(streamUrl);
+    judgeSource.addEventListener('progress', function (e) { renderJudgeSnapshot(JSON.parse(e.data)); });
+    judgeSource.addEventListener('done', function (e) { renderJudgeSnapshot(JSON.parse(e.data)); closeJudgeStream(); });
+    judgeSource.addEventListener('timeout', function () { if (status) status.textContent = '实时连接超时，请关闭弹窗后重试。'; closeJudgeStream(); });
+    judgeSource.addEventListener('error', function () { if (status) status.textContent = '实时连接中断，请关闭弹窗后重试。'; closeJudgeStream(); });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.judge-detail-btn') : null;
+    if (b) { e.preventDefault(); openJudgeModal(b); }
+  });
+  document.querySelectorAll('[data-judge-view]').forEach(function (tab) {
+    tab.addEventListener('click', function () { setJudgeView(tab.dataset.judgeView, true); });
+  });
+  var ruleReadClose = document.getElementById('judgeRuleReadClose');
+  if (ruleReadClose) ruleReadClose.addEventListener('click', closeJudgeRulePopup);
+  var ruleReadPopup = document.getElementById('judgeRuleReadPopup');
+  if (ruleReadPopup) {
+    ruleReadPopup.addEventListener('click', function (e) {
+      if (e.target === ruleReadPopup) closeJudgeRulePopup();
+    });
+  }
+  var appealToggle = document.getElementById('appealToggle');
+  if (appealToggle) appealToggle.addEventListener('click', function () {
+    var panel = document.getElementById('appealPanel');
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    var reason = document.getElementById('appealReason');
+    if (!panel.hidden && reason) reason.focus();
+  });
+  var appealSubmit = document.getElementById('appealSubmit');
+  if (appealSubmit) appealSubmit.addEventListener('click', function () {
+    var reasonElement = document.getElementById('appealReason');
+    var message = document.getElementById('appealMsg');
+    var reason = ((reasonElement && reasonElement.value) || '').trim();
+    if (!reason) {
+      if (message) { message.textContent = '请填写申诉意见'; message.className = 'small text-danger'; }
+      return;
+    }
+    if (!currentAppealUrl) {
+      if (message) { message.textContent = '无法定位提交，请刷新重试'; message.className = 'small text-danger'; }
+      return;
+    }
+    appealSubmit.disabled = true;
+    if (message) { message.innerHTML = MathCurveLoader.markup('提交中…', 'sm'); message.className = 'small text-muted'; }
+    var body = new URLSearchParams();
+    body.append('reason', reason);
+    fetch(currentAppealUrl, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    })
+      .then(function (response) {
+        return response.json().then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        appealSubmit.disabled = false;
+        if (result.ok && result.data && result.data.ok) {
+          renderAppealState({
+            has_appeal: true, status: 'pending', status_label: '待处理',
+            reason: reason, admin_response: ''
+          });
+          return;
+        }
+        if (result.data && result.data.already && currentAppealStatusUrl) {
+          fetch(currentAppealStatusUrl, { credentials: 'same-origin' })
+            .then(function (response) { return response.json(); })
+            .then(function (data) { if (data && data.ok) renderAppealState(data); })
+            .catch(function () {});
+        }
+        if (message) {
+          message.textContent = (result.data && result.data.message) || '提交失败';
+          message.className = result.data && result.data.already ? 'small text-warning' : 'small text-danger';
+        }
+      })
+      .catch(function () {
+        appealSubmit.disabled = false;
+        if (message) { message.textContent = '网络错误，请重试'; message.className = 'small text-danger'; }
+      });
+  });
+  if (judgeModalEl) judgeModalEl.addEventListener('hidden.bs.modal', closeJudgeStream);
+})();
+</script>

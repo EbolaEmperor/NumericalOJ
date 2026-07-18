@@ -1,0 +1,3 @@
+# Test-only dependencies. Production installs must not consume this file.
+pytest==9.1.1
+pytest-timeout==2.4.0

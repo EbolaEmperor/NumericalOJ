@@ -16,16 +16,16 @@
 系统有两个逻辑执行边界：Web 服务和 Celery worker 组。整体依赖 MySQL 与 Redis；执行判题任务的 worker 还必须能访问 Docker daemon。
 
 ```bash
-# 0. 同步数据库结构；web.conf / celery.conf 也会在启动 worker 前执行
+# 0. 本地显式同步数据库结构；生产由 deploy.sh 在停机窗口执行
 python3 scripts/init_db_schema.py
 
 # 1. 本地开发 Web，端口 2025
 python3 oj.py
-# 生产由 web.conf 启动 Gunicorn
-supervisord -c web.conf
+# 生产由 deploy.sh 准备 current-venv 后，通过独立配置启动 Gunicorn
+supervisord -c deploy/supervisor/web.conf
 
-# 2. Celery worker 组
-supervisord -c celery.conf
+# 2. 生产 Celery worker 组（同样要求已有成功部署的 current-venv）
+supervisord -c deploy/supervisor/celery.conf
 # 等价的队列边界：
 celery -A oj.celery worker -Q celery -c 16
 celery -A oj.celery worker -Q agent -c 1
@@ -38,7 +38,7 @@ celery -A oj.celery worker -Q judge -c 16
 
 普通判题的调用链是 `evaluate_tasks.py -> judger_core.py -> docker_sandbox.py -> Docker`。`judger_core.py` 作为库在 `celery` worker 内运行，但**用户代码在 Docker 容器内执行**；不存在旧的 `5050` 判题 HTTP 服务，也不再使用宿主进程 RLIMIT 沙箱。默认运行目录为 `<OJ_ROOT>/judger/<sid>`。
 
-`oj.py` 在导入时创建 Flask/Celery 对象并注册任务，但不执行外部写操作。幂等的 ELO tick、watchdog 和暂停端点探测链由 `ensure_background_schedulers()` 确保存在；本地入口和 `gunicorn.conf.py` 的 `post_worker_init` 都可以安全调用。会清锁、重置 Running 状态和重投任务的恢复逻辑严格隔离在 `recover_pending_after_all_workers_stopped()`，只能由 `scripts/recover_pending_tasks.py --confirm-celery-stopped` 在全部 Celery worker 停止后显式执行。新增启动行为不得重新变成 import-time 写操作，也不得把破坏性恢复绑定到 Web worker 生命周期。
+`oj.py` 在导入时创建 Flask/Celery 对象并注册任务，但不执行外部写操作。幂等的 ELO tick、watchdog 和暂停端点探测链由 `ensure_background_schedulers()` 确保存在；本地入口和 `deploy/gunicorn.py` 的 `post_worker_init` 都可以安全调用。会清锁、重置 Running 状态和重投任务的恢复逻辑严格隔离在 `recover_pending_after_all_workers_stopped()`，只能由 `scripts/recover_pending_tasks.py --confirm-celery-stopped` 在全部 Celery worker 停止后显式执行。新增启动行为不得重新变成 import-time 写操作，也不得把破坏性恢复绑定到 Web worker 生命周期。
 
 健康检查：
 
@@ -49,11 +49,11 @@ celery -A oj.celery worker -Q judge -c 16
 
 依赖文件中的直接依赖使用精确版本，职责如下：
 
-- `requirements.txt`：生产运行依赖；
-- `requirements-test.txt`：测试工具；
-- `requirements-optional.txt`：默认路径不需要的重量级可选能力。
+- `requirements/production.txt`：生产运行依赖；
+- `requirements/test.txt`：测试工具；
+- `requirements/optional.txt`：默认路径不需要的重量级可选能力。
 
-不要通过在文档中列出零散 `pip install` 命令来绕过依赖文件。新增默认功能的 import 必须同步进入 `requirements.txt`；仅用于测试或可选后端的包分别进入对应分层。依赖升级必须作为显式变更并运行相应测试。
+不要通过在文档中列出零散 `pip install` 命令来绕过依赖文件。新增默认功能的 import 必须同步进入 `requirements/production.txt`；仅用于测试或可选后端的包分别进入对应分层。依赖升级必须作为显式变更并运行相应测试。
 
 仓库尚未提供带哈希的完整传递依赖锁文件；不得把直接 pin 描述为位级可复现构建，后续应在 Python 3.12 上生成并由 CI 校验 lock。
 
@@ -69,13 +69,13 @@ celery -A oj.celery worker -Q judge -c 16
 - `SECRET_KEY`、`SESSION_COOKIE_SECURE`、`CONTENT_SECURITY_POLICY`：Web 安全；
 - `CSRF_TRUSTED_ORIGINS`：反向代理导致应用内外 Origin 不同时，显式列出可信的公开站点 Origin。
 
-`REDIS_SOCKET_TIMEOUT_SECONDS` 默认 3 秒，避免健康检查和请求线程在 Redis 网络故障时无限等待。
+Redis 客户端统一由 `oj_modules/redis_clients.py` 创建。普通命令的 `REDIS_SOCKET_TIMEOUT_SECONDS` 与 `REDIS_CONNECT_TIMEOUT_SECONDS` 默认 3 秒；Pub/Sub 使用独立的 `REDIS_BLOCKING_SOCKET_TIMEOUT_SECONDS`，默认 30 秒。业务模块不得自行构造 `Redis` / `StrictRedis`。
 
 `TESTDATA_TEXT_MAX_TOTAL_BYTES` 是 `config.py` 中可选的非敏感整数，默认 64 MiB，限制一次测试数据导入实际读入内存的 `.in/.out` 文本总量；修改后需要重启 Web 进程。
 
 ## 数据库结构与迁移能力
 
-`myojdb.sql` 是当前结构基线，`scripts/init_db_schema.py` 会：
+`database/bootstrap.sql` 是当前新安装结构与开发种子基线，`scripts/init_db_schema.py` 会：
 
 - 创建缺失的数据库、表和动态班级作业表；
 - 添加缺失列和索引；
@@ -134,6 +134,9 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 - `security_utils.py`：密码哈希、旧哈希升级、限流与冷却；
 - `markdown_utils.py`：Markdown 渲染和 HTML 清洗；所有配合 `| safe` 的内容必须先清洗；
 - `archive_utils.py`：带成员数、单文件大小、总大小、压缩率和路径校验的 ZIP 解压；
+- `redis_clients.py`：普通、二进制、阻塞订阅和 fail-open 可选 Redis 客户端的唯一构造入口；
+- `class_membership_services.py`：班级成员关系与人数计数的事务边界；
+- `written_submission_artifacts.py`：人工书面作业不可变代次、DB 快照 CAS、发布 journal 与崩溃恢复；
 - `db_services.safe_table_name()`：动态 SQL 标识符校验。
 
 禁止在路由/任务里复制这些能力。三个以上同前缀同职责文件应考虑归入子目录并简化名称，但不要为目录整齐引入无意义实体。
@@ -147,7 +150,7 @@ docker build -t numericaloj-judger:latest docker/judger
 docker build -t numericaloj-judger-lite:latest docker/judger-lite
 ```
 
-lite 镜像使用 OpenBLAS/LAPACKE；完整镜像提供 Intel MKL 与完整 TeX。`local_dev.conf` 使用 lite，生产默认使用 `numericaloj-judger:latest`。
+lite 镜像使用 OpenBLAS/LAPACKE；完整镜像提供 Intel MKL 与完整 TeX。`deploy/supervisor/local-dev.conf` 使用 lite，生产默认使用 `numericaloj-judger:latest`。
 
 Agent-as-Judge：
 
@@ -161,82 +164,41 @@ docker build -f docker/agent_judge-lite/Dockerfile \
 
 ## 部署到 why-server
 
-只有用户明确要求部署时才执行以下流程。
-
-### 1. 部署前检查
-
-- 确认当前提交、变更文件、配置兼容性和对应测试结果；
-- 结构或数据变更先做生产备份并准备回滚脚本；
-- Dockerfile 或镜像内脚本变更，记录旧镜像 ID/标签以便回滚；
-- 确认远端目标严格为 `why-server:/home/ebola/oj/`。
-
-### 2. 同步代码
-
-使用 `rsync -avz` 或逐文件 `scp`，至少排除：
-
-```text
-config.py
-static/
-.git/
-__pycache__/
-tmp/
-uploads/
-judger/
-ranking_uploads/
-```
-
-不得使用 `--delete`。生产 `config.py` 含密钥，只能由用户手工维护或在明确授权下增量修改。生产 `static/` 可能包含仓库外资产，只能按明确清单增量添加，不能批量覆盖或删除。
-
-### 3. 重建必要镜像
-
-- 修改 `docker/judger/**`：重建 `numericaloj-judger:latest`；
-- 修改 `docker/agent_judge/**`：重建 `numericaloj-agent-judge:latest`；
-- 仅 Python/模板变更不需要重建镜像。
-
-若 `requirements*.txt` 发生变化，必须在重启前用生产服务实际使用的 Python 解释器安装对应依赖；不要临时安装未记录版本。本分支首次部署需要安装新增的 Gunicorn。
-
-### 4. 重启
-
-在远端用 `ps` 找到分别使用 `web.conf` 和 `celery.conf` 的两个应用 supervisord PID，只 kill 明确 PID。不要使用 `pkill -f`；不要停止 root 管理的 `/etc/supervisor/supervisord.conf`。旧版若仍有 `judger.conf` / `judger/app.py` 进程，也只能按明确 PID 清理。
-
-确认两个应用 supervisord 都已停止后，先同步结构，再显式恢复停机前的未完成任务；恢复脚本会同时检查本机进程和 Celery ping，任一 worker 仍存活或状态无法确认都会拒绝执行：
+只有用户明确要求部署时，才在已提交且工作树干净的分支上执行：
 
 ```bash
-python3 scripts/init_db_schema.py
-python3 scripts/recover_pending_tasks.py --confirm-celery-stopped
-supervisord -c web.conf
-supervisord -c celery.conf
+bash deploy.sh
 ```
 
-只重启 Web、Gunicorn worker 自动重建或 HUP reload 时不得执行恢复脚本；这些路径只幂等检查后台调度链，不能清理仍在运行的 Celery 任务。
+`deploy.sh` 是唯一生产发布入口，固定验证目标为 `why-server:/home/ebola/oj/`，并完成以下状态机：
 
-`web.conf` 与 `celery.conf` 使用独立的 pidfile 和 supervisord 日志，排障时不要混淆两组进程。
-`web.conf` 使用单进程、64 线程的 Gunicorn `gthread` worker，以兼容现有进程内缓存并为 SSE 长连接保留容量；单 worker 下禁用按请求数回收。修改 worker 数、线程数、回收策略或超时前必须验证这些约束。
+1. 本地与远端预检，创建按完整 Git SHA 隔离的 staging，并按 `requirements/production.txt` 内容摘要构建或复用经过只读树哈希校验的虚拟环境；
+2. 按 Docker context 变化在停服前构建并冒烟验证 commit-tagged 候选镜像；首次部署、基线不可识别或显式 `--rebuild-all` 时重建全部生产镜像；
+3. 使用有保守默认值的可配置阈值检查生产目录、部署状态目录与 Docker data-root 的磁盘余量，再通过独立 Supervisor socket 优雅停止 Web/Celery；首次迁移时只对验证过 cwd 与 cmdline 的明确 PID 回退，不使用 `pkill -f`；
+4. 备份数据库和当前代码后激活候选版本；
+5. 只执行一次 `scripts/init_db_schema.py`，并在全部 Celery 已停止时恢复未完成任务；
+6. 原子切换按依赖摘要寻址的只读虚拟环境与镜像，依次启动 Web/Celery，验证 live/ready、Supervisor 状态与三个 worker 的精确队列映射；
+7. 全部成功后才记录部署提交；失败时恢复旧代码与旧镜像并尝试重启，数据库备份只保留、不自动回灌。
 
-### 5. 验证
+生产 `config.py`、上传与运行目录不进入同步。`static/` 按追加式目录处理：只安装缺失文件，若远端同名文件内容不同则拒绝部署。删除的 Git 跟踪代码只依据上一次成功部署清单逐项清理，不对项目目录执行无边界 `--delete`。
+
+强制重建两个生产镜像：
 
 ```bash
-curl -f http://127.0.0.1:2025/health/live
-curl -f http://127.0.0.1:2025/health/ready
+bash deploy.sh --rebuild-all
 ```
 
-随后检查三类 Celery worker 进程和对应日志，并做一个不修改生产数据的页面/API 冒烟检查。不得用 pytest 代替生产验证。
-
-### 6. 回滚
-
-- 代码异常：同步上一个已知正常提交并按同样顺序重启；
-- 镜像异常：恢复部署前记录的镜像 ID/标签，再重启 Celery；
-- 数据库异常：只执行部署前设计并验证过的回滚方案；启动同步脚本没有自动 down migration；
-- 回滚后重新检查 `/health/live`、`/health/ready` 和 worker 日志。
+部署脚本不修改系统 Python 或全局 site-packages；相同的生产依赖摘要复用 `/home/ebola/.numericaloj-deploy/venvs/py312-<requirements-sha256>`，每次复用前后都校验只读权限、完整树哈希、`pip check`、关键 import 和 Python 3.12，再原子切换 `current-venv`，部署 run 仍分别记录 revision、venv 路径和依赖摘要。失败则恢复旧指针。默认磁盘最低余量是生产目录 10 GiB、状态目录 10 GiB、Docker data-root 20 GiB，可分别用 `NUMOJ_DEPLOY_MIN_TARGET_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_STATE_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_DOCKER_FREE_BYTES` 调整；任一检查无法执行或余量不足都会在停服前失败关闭。`deploy/supervisor/web.conf` 与 `celery.conf` 使用独立 socket、pidfile 和日志；Web 保持单进程、64 线程的 Gunicorn `gthread` 配置，修改并发或回收策略前必须重新验证 SSE 与进程内状态约束。
 
 ### 前端快速路径
 
 仅修改模板时，可以逐文件 `scp` 到 `templates/`，无需重启。生产 `FLASK_DEBUG` 应保持关闭；模板实时生效依赖 `TEMPLATES_AUTO_RELOAD=True`，不是 debug reloader。静态资产仍受上面的远端保护规则约束。
+
+页面统一从 `templates/layouts/base.html` 派生的 site/embedded 布局继承。MathJax 是显式 opt-in 资源；新增公式页面覆盖 `mathjax` block，普通页面不得把它重新放回全局布局。排名规则拓扑统一调用 `static/app/ranking/topology.js`，提交列表统一复用 `templates/submissions/components/table.html`，不要复制页面私有版本。
 
 ## 其他约定
 
 - 禁用函数列表以逗号分隔，`judger_core.check_forbidden()` 按函数调用模式匹配；新增语言应保持该契约。
 - 判题时间限制在任务与核心之间以纳秒传递；不要在边界中悄悄改单位。
 - `competitions/` 是 gitignored 的数据集/临时工作区，不属于部署代码。
-- `fix-tools/` 是一次性修复脚本，不会自动运行，生产执行必须单独授权。
 - `.codex/skills/matlab-problem-setter/` 描述 MATLAB 题包格式，可作为出题结构参考。

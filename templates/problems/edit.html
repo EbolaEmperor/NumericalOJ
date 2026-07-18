@@ -1,0 +1,422 @@
+{% extends "layouts/site.html" %}
+{% block title %}编辑题目 - {{ super() }}{% endblock %}
+{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block content %}
+<h2><i class="fas fa-pencil-alt me-2"></i> 编辑题目</h2>
+
+{% if error_message %}
+  <div class="alert alert-danger" role="alert">
+    {{ error_message }}
+  </div>
+{% endif %}
+
+<form id="editProblemForm" method="POST" action="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}">
+  {% if problem.type == 1 %}
+  <!-- 同行：语言 + 时限 + 提交限制 -->
+  <div class="row mb-3">
+    <div class="col-md-4">
+      <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
+      <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
+    </div>
+
+    <div class="col-md-2">
+      <label for="langSelect" class="form-label"><i class="fas fa-language me-2"></i> 语言</label>
+      <select class="form-select" id="langSelect" name="lang">
+        {% set plang = (problem.lang or 'matlab') | lower %}
+        <option value="matlab" {% if plang == 'matlab' %}selected{% endif %}>MATLAB</option>
+        <option value="c" {% if plang == 'c' %}selected{% endif %}>C</option>
+        <option value="cpp" {% if plang == 'cpp' %}selected{% endif %}>C++</option>
+        <option value="python" {% if plang == 'python' %}selected{% endif %}>Python</option>
+      </select>
+    </div>
+
+    {% set tl_ms = (problem.time_limit_ms or 2000) %}
+    <div class="col-md-3">
+      <label for="timeLimitInput" class="form-label"><i class="fas fa-stopwatch me-2"></i> 时限 (ms)</label>
+      <input type="number" class="form-control" id="timeLimitInput" name="time_limit" min="1" value="{{ tl_ms }}">
+    </div>
+
+    {% set sub_limit = (problem.submission_limit or 10) %}
+    <div class="col-md-3">
+      <label for="submissionLimitInput" class="form-label"><i class="fas fa-check-circle me-2"></i> 提交限制</label>
+      <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" min="1" value="{{ sub_limit }}">
+    </div>
+  </div>
+  {% set programming_mode = (problem.programming_grading_mode or 1) %}
+  <div class="row g-3 mb-3">
+    <div class="col-md-4">
+      <label for="programmingGradingModeSelect" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
+      <select class="form-select" id="programmingGradingModeSelect" name="programming_grading_mode" onchange="_toggleProgrammingImageFields(this.value)">
+        <option value="1" {% if programming_mode == 1 %}selected{% endif %}>传统交互</option>
+        <option value="2" {% if programming_mode == 2 %}selected{% endif %}>批改图片</option>
+        <option value="3" {% if programming_mode == 3 %}selected{% endif %}>Promptly</option>
+      </select>
+    </div>
+    <div class="col-md-4" id="programmingOutputFilenameField">
+      <label for="programmingOutputFilenameInput" class="form-label"><i class="fas fa-image me-2"></i> 输出文件名</label>
+      <input
+        type="text"
+        class="form-control"
+        id="programmingOutputFilenameInput"
+        name="programming_output_filename"
+        value="{{ problem.programming_output_filename or 'output.png' }}"
+        placeholder="例如：output.png">
+    </div>
+    <div class="col-md-4" id="programmingGradingModelField">
+      <label for="programmingGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
+      {% set programming_model = (problem.programming_grading_model or default_programming_grading_model) %}
+      <select class="form-select" id="programmingGradingModelSelect" name="programming_grading_model">
+        {% for model_option in programming_grading_model_options %}
+        <option value="{{ model_option }}" {% if programming_model == model_option %}selected{% endif %}>
+          {% if 'vl' in model_option %}
+            Qwen3-VL
+          {% elif 'qwen3.5-plus' in model_option %}
+            Qwen-3.5-plus
+          {% else %}
+            {{ model_option }}
+          {% endif %}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="mb-3" id="programmingGradingPromptField">
+    <label for="programmingGradingPromptInput" class="form-label">
+      <i class="fas fa-list-check me-2"></i>
+      <span id="programmingGradingPromptLabelText">评分标准</span>
+    </label>
+    <textarea
+      class="form-control"
+      id="programmingGradingPromptInput"
+      name="programming_grading_prompt"
+      rows="6"
+      placeholder="例如：图像内容与题意完全一致记 1 分；若缺少关键元素、布局错误、标注错误或未按要求绘图记 0 分。">{{ problem.programming_grading_prompt or '' }}</textarea>
+  </div>
+  <div class="mb-3" id="promptlyReviewConfigField">
+    <div class="border rounded p-3">
+      <div class="mb-3">
+        <label for="promptlyBriefInput" class="form-label">
+          <i class="fas fa-align-left me-2"></i> 简要题意
+        </label>
+        <textarea
+          class="form-control"
+          id="promptlyBriefInput"
+          rows="3"
+          placeholder="用几句话概括题目要求，供 prompt 审查模型判断学生思路是否符合题意。"></textarea>
+      </div>
+      <div class="mb-3">
+        <label for="promptlyRequirementsInput" class="form-label">
+          <i class="fas fa-list-check me-2"></i> Prompt 要求
+        </label>
+        <textarea
+          class="form-control"
+          id="promptlyRequirementsInput"
+          rows="4"
+          placeholder="说明学生 prompt 至少需要包含哪些算法、数据结构、状态维护或边界处理。"></textarea>
+      </div>
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <label class="form-label mb-0">
+          <i class="fas fa-comments me-2"></i> 示例回复
+        </label>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="addPromptlyExampleBtn">
+          <i class="fas fa-plus me-1"></i> 添加
+        </button>
+      </div>
+      <div id="promptlyExampleList" class="d-grid gap-2"></div>
+    </div>
+  </div>
+  {% else %}
+  <div class="row mb-3">
+    <div class="col-md-3">
+      <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
+      <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
+    </div>
+    <div class="col-md-3">
+      <label for="writtenGradingModeSelect" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
+      {% set written_mode = (problem.written_grading_mode or 1) %}
+      <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode" onchange="_toggleAiGradingFields(this.value)">
+        <option value="1" {% if written_mode == 1 %}selected{% endif %}>OCR + 文本批改</option>
+        <option value="2" {% if written_mode == 2 %}selected{% endif %}>直接批改图片</option>
+        <option value="3" {% if written_mode == 3 %}selected{% endif %}>tex 文本批改</option>
+        <option value="4" {% if written_mode == 4 %}selected{% endif %}>纯人工批改</option>
+      </select>
+    </div>
+    <div class="col-md-3" id="writtenGradingModelField">
+      <label for="writtenGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
+      {% set written_model = (problem.written_grading_model or default_written_grading_model) %}
+      <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
+        {% for model_option in written_grading_model_options %}
+        <option value="{{ model_option }}" {% if written_model == model_option %}selected{% endif %}>{{ model_option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% set sub_limit = (problem.submission_limit or 10) %}
+    <div class="col-md-3">
+      <label for="submissionLimitInput" class="form-label"><i class="fas fa-check-circle me-2"></i> 提交限制</label>
+      <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" min="1" value="{{ sub_limit }}">
+    </div>
+  </div>
+  <div class="mb-3" id="writtenGradingPromptField">
+    <label for="writtenGradingPromptInput" class="form-label">
+      <i class="fas fa-list-check me-2"></i> 评分标准
+    </label>
+    <textarea
+      class="form-control"
+      id="writtenGradingPromptInput"
+      name="written_grading_prompt"
+      rows="6"
+      placeholder="例如：步骤完整性 2 分、关键结论正确性 2 分、表达规范性 1 分；若缺失边界条件，最多给 4 分。">{{ problem.written_grading_prompt or '' }}</textarea>
+  </div>
+  {% endif %}
+
+  <div class="mb-3">
+    <label for="contentTextArea" class="form-label"><i class="fab fa-markdown me-2"></i> 题面 (Markdown + LaTeX)</label>
+    <textarea class="form-control" id="contentTextArea" name="content" rows="10" required>{{ problem.content }}</textarea>
+    <small class="text-muted">可使用 Markdown + LaTeX 语法；如行内公式可用 \$...\$ 或 \\(...\\)。</small>
+  </div>
+
+  {% if problem.type == 1 %}
+  <div class="row mb-3">
+    <div class="col-md-6">
+      <label class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
+      <div class="card">
+        <div class="card-body p-0">
+          <textarea id="initialCode" name="initial_code" style="display:none;">{{ problem.initial_code }}</textarea>
+          <div id="initialCodeEditorBox"></div>
+        </div>
+      </div>
+      <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
+    </div>
+
+    <div class="col-md-6">
+      <label class="form-label"><i class="fas fa-code me-2"></i> 交互库代码 (可选)</label>
+      <div class="card">
+        <div class="card-body p-0">
+          <textarea id="testCode" name="test_code" style="display:none;">{{ problem.test_code }}</textarea>
+          <div id="testCodeEditorBox"></div>
+        </div>
+      </div>
+      <small class="text-muted">这段代码用作交互库/模板。学生代码将粘贴到 <code>%%user_code_here</code>。</small>
+    </div>
+  </div>
+
+  <div class="mb-3">
+    <label for="forbiddenFuncInput" class="form-label"><i class="fas fa-ban me-2"></i> 禁用函数 (可选)</label>
+    <input type="text" class="form-control" id="forbiddenFuncInput" name="forbidden_func" value="{{ problem.forbidden_func | default('') }}">
+    <small class="text-muted">可以输入多个函数名，用逗号分隔。</small>
+  </div>
+  {% endif %}
+
+  <!-- 题目类型（不可修改）-->
+  <div class="mb-3">
+    <label for="problemType" class="form-label"><i class="fas fa-question-circle me-2"></i> 题目类型</label>
+    <select class="form-select" id="problemType" name="problem_type" disabled>
+      <option value="1" {% if problem.type == 1 %}selected{% endif %}>编程题</option>
+      <option value="2" {% if problem.type == 2 %}selected{% endif %}>书面作业</option>
+    </select>
+    <small class="text-muted">题目类型一旦创建后无法修改。</small>
+  </div>
+
+  <button type="submit" class="btn btn-outline-primary"><i class="fas fa-check"></i> 保存修改</button>
+  <a href="{{ url_for('problem_core.problem_detail', problem_id=problem.id) }}" class="btn btn-outline-secondary"><i class="fas fa-times"></i> 放弃修改</a>
+</form>
+
+{% include 'components/editor/codemirror.html' %}
+
+<script>
+  function _toggleProgrammingImageFields(mode) {
+    const isImageMode = mode === '2';
+    const isPromptlyMode = mode === '3';
+    const outputField = document.getElementById('programmingOutputFilenameField');
+    const modelField = document.getElementById('programmingGradingModelField');
+    const promptField = document.getElementById('programmingGradingPromptField');
+    const promptLabel = document.getElementById('programmingGradingPromptLabelText');
+    const promptInput = document.getElementById('programmingGradingPromptInput');
+    const promptlyField = document.getElementById('promptlyReviewConfigField');
+    if (outputField) outputField.style.display = isImageMode ? '' : 'none';
+    if (modelField) modelField.style.display = (isImageMode || isPromptlyMode) ? '' : 'none';
+    if (promptField) promptField.style.display = isImageMode ? '' : 'none';
+    if (promptlyField) promptlyField.style.display = isPromptlyMode ? '' : 'none';
+    if (promptLabel && promptInput) {
+      if (isPromptlyMode) {
+        initPromptlyReviewConfig();
+        serializePromptlyReviewConfig();
+      } else {
+        promptLabel.textContent = '评分标准';
+        promptInput.placeholder = '例如：图像内容与题意完全一致记 1 分；若缺少关键元素、布局错误、标注错误或未按要求绘图记 0 分。';
+      }
+    }
+  }
+
+  let promptlyReviewInitialized = false;
+
+  function parsePromptlyReviewConfig(raw) {
+    try {
+      const obj = JSON.parse(raw || '{}');
+      return {
+        brief: obj.brief || obj.problem_brief || obj.summary || obj.context || '',
+        prompt_requirements: obj.prompt_requirements || obj.requirements || obj.prompt_rules || '',
+        example_replies: Array.isArray(obj.example_replies)
+          ? obj.example_replies
+          : (Array.isArray(obj.examples) ? obj.examples : [])
+      };
+    } catch (_) {
+      return {
+        brief: raw || '',
+        prompt_requirements: '',
+        example_replies: []
+      };
+    }
+  }
+
+  function addPromptlyExample(value) {
+    const list = document.getElementById('promptlyExampleList');
+    if (!list) return;
+    const row = document.createElement('div');
+    row.className = 'input-group promptly-example-row';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'form-control promptly-example-input';
+    textarea.rows = 2;
+    textarea.placeholder = '例如：请补充具体算法思路，说明使用的数据结构和关键更新规则。';
+    textarea.value = value || '';
+    textarea.addEventListener('input', serializePromptlyReviewConfig);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-outline-danger';
+    btn.innerHTML = '<i class="fas fa-trash"></i>';
+    btn.addEventListener('click', function() {
+      row.remove();
+      serializePromptlyReviewConfig();
+    });
+    row.appendChild(textarea);
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+
+  function serializePromptlyReviewConfig() {
+    const promptInput = document.getElementById('programmingGradingPromptInput');
+    const briefInput = document.getElementById('promptlyBriefInput');
+    const requirementsInput = document.getElementById('promptlyRequirementsInput');
+    if (!promptInput || !briefInput || !requirementsInput) return;
+    const examples = Array.from(document.querySelectorAll('.promptly-example-input'))
+      .map(el => (el.value || '').trim())
+      .filter(Boolean);
+    promptInput.value = JSON.stringify({
+      brief: (briefInput.value || '').trim(),
+      prompt_requirements: (requirementsInput.value || '').trim(),
+      example_replies: examples
+    }, null, 2);
+  }
+
+  function initPromptlyReviewConfig() {
+    if (promptlyReviewInitialized) return;
+    promptlyReviewInitialized = true;
+    const promptInput = document.getElementById('programmingGradingPromptInput');
+    const briefInput = document.getElementById('promptlyBriefInput');
+    const requirementsInput = document.getElementById('promptlyRequirementsInput');
+    const addBtn = document.getElementById('addPromptlyExampleBtn');
+    const list = document.getElementById('promptlyExampleList');
+    if (!promptInput || !briefInput || !requirementsInput || !list) return;
+    const config = parsePromptlyReviewConfig(promptInput.value || '');
+    briefInput.value = config.brief || '';
+    requirementsInput.value = config.prompt_requirements || '';
+    list.innerHTML = '';
+    const examples = (config.example_replies || []).filter(Boolean);
+    if (examples.length) {
+      examples.forEach(addPromptlyExample);
+    } else {
+      addPromptlyExample('');
+    }
+    briefInput.addEventListener('input', serializePromptlyReviewConfig);
+    requirementsInput.addEventListener('input', serializePromptlyReviewConfig);
+    if (addBtn) {
+      addBtn.addEventListener('click', function() {
+        addPromptlyExample('');
+        serializePromptlyReviewConfig();
+      });
+    }
+    const form = document.querySelector('form[method="POST"]');
+    if (form) {
+      form.addEventListener('submit', function() {
+        const mode = document.getElementById('programmingGradingModeSelect');
+        if (mode && mode.value === '3') serializePromptlyReviewConfig();
+      });
+    }
+  }
+
+  function _toggleAiGradingFields(mode) {
+    const hide = mode === '4';
+    const modelField = document.getElementById('writtenGradingModelField');
+    const promptField = document.getElementById('writtenGradingPromptField');
+    if (modelField) modelField.style.display = hide ? 'none' : '';
+    if (promptField) promptField.style.display = hide ? 'none' : '';
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    const programmingModeSelect = document.getElementById('programmingGradingModeSelect');
+    if (programmingModeSelect) {
+      _toggleProgrammingImageFields(programmingModeSelect.value);
+    }
+
+    const writtenModeSelect = document.getElementById('writtenGradingModeSelect');
+    if (writtenModeSelect) {
+      _toggleAiGradingFields(writtenModeSelect.value);
+    }
+  });
+
+  {% if problem.type == 1 %}
+  function getModeByLang(lang) {
+    if (lang === 'cpp') return 'text/x-c++src';
+    if (lang === 'c') return 'text/x-csrc';
+    if (lang === 'python' || lang === 'py') return 'python';
+    return 'octave';
+  }
+  const langSelect = document.getElementById('langSelect');
+  const initialMode = getModeByLang(langSelect.value);
+
+  // 用 .value 而不是 .textContent 读取 textarea 初始值
+  var initialCodeEditor = CodeMirror(document.getElementById('initialCodeEditorBox'), {
+    value: document.getElementById('initialCode').value || '',
+    mode: initialMode,
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    matchBrackets: true,
+    autofocus: true,
+    extraKeys: {"Tab": "indentMore","Shift-Tab": "indentLess"}
+  });
+  initialCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  initialCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  var testCodeEditor = CodeMirror(document.getElementById('testCodeEditorBox'), {
+    value: document.getElementById('testCode').value || '',
+    mode: initialMode,
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    matchBrackets: true,
+    autofocus: false,
+    extraKeys: {"Tab": "indentMore","Shift-Tab": "indentLess"}
+  });
+  testCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  testCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  langSelect.addEventListener('change', function() {
+    const mode = getModeByLang(this.value);
+    initialCodeEditor.setOption('mode', mode);
+    testCodeEditor.setOption('mode', mode);
+  });
+
+  // 只绑定到编辑表单，避免绑错到其他 form（如导航条）
+  document.getElementById('editProblemForm').addEventListener('submit', function() {
+    document.getElementById('initialCode').value = initialCodeEditor.getValue();
+    document.getElementById('testCode').value = testCodeEditor.getValue();
+  });
+  {% endif %}
+</script>
+
+{% endblock %}

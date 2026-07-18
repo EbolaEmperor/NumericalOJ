@@ -46,8 +46,8 @@ def archive_dir_for_submission(submission_id):
     return os.path.join(judger_core.JUDGER_RUN_ROOT, ARCHIVE_DIRNAME, f"submission_{sid}")
 
 
-def _ensure_archive_dir(submission_id):
-    archive_dir = archive_dir_for_submission(submission_id)
+def _ensure_archive_dir(submission_id, archive_dir=None):
+    archive_dir = archive_dir or archive_dir_for_submission(submission_id)
     os.makedirs(archive_dir, exist_ok=True)
     return archive_dir
 
@@ -103,18 +103,24 @@ def build_submission_meta(submission, problem, user, classes):
     }
 
 
-def archive_text_artifact(submission_id, filename, content):
-    archive_dir = _ensure_archive_dir(submission_id)
+def archive_text_artifact(submission_id, filename, content, *, archive_dir=None):
+    archive_dir = _ensure_archive_dir(submission_id, archive_dir)
     safe_name = _safe_archive_filename(filename)
     target_path = os.path.join(archive_dir, safe_name)
     _atomic_write_text(target_path, _safe_text(content))
     return target_path
 
 
-def archive_uploaded_submission_file(submission_id, source_path, preferred_filename=None):
+def archive_uploaded_submission_file(
+    submission_id,
+    source_path,
+    preferred_filename=None,
+    *,
+    archive_dir=None,
+):
     if not source_path or not os.path.isfile(source_path):
         return None
-    archive_dir = _ensure_archive_dir(submission_id)
+    archive_dir = _ensure_archive_dir(submission_id, archive_dir)
     source_name = preferred_filename or os.path.basename(source_path)
     _, ext = os.path.splitext(str(source_name or source_path))
     ext = ext.lower()
@@ -128,14 +134,21 @@ def archive_uploaded_submission_file(submission_id, source_path, preferred_filen
     return target_path
 
 
-def archive_submission_record(submission, problem, user, classes):
+def archive_submission_record(
+    submission,
+    problem,
+    user,
+    classes,
+    *,
+    archive_dir=None,
+):
     submission = submission or {}
     problem = problem or {}
     submission_id = submission.get("id")
     if not submission_id:
         return None
 
-    archive_dir = _ensure_archive_dir(submission_id)
+    archive_dir = _ensure_archive_dir(submission_id, archive_dir)
     meta = build_submission_meta(submission, problem, user, classes)
     _atomic_write_text(
         os.path.join(archive_dir, "meta.json"),
@@ -147,9 +160,13 @@ def archive_submission_record(submission, problem, user, classes):
     problem_type = int(submission.get("problem_type") or problem.get("type") or 0)
 
     if prompt_text.strip():
-        archive_text_artifact(submission_id, "prompt.txt", prompt_text)
+        archive_text_artifact(
+            submission_id, "prompt.txt", prompt_text, archive_dir=archive_dir,
+        )
     elif problem_type == 1 and code.strip():
         ext = _source_ext_for_problem(problem)
-        archive_text_artifact(submission_id, f"code{ext}", code)
+        archive_text_artifact(
+            submission_id, f"code{ext}", code, archive_dir=archive_dir,
+        )
 
     return archive_dir

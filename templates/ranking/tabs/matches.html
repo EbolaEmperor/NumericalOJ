@@ -1,0 +1,187 @@
+    {# ========== 对战数据（ELO 模式公开） ========== #}
+    {% if tab == 'matches' %}
+      <div class="matches-card" id="matchesCard"
+           data-matches-url="{{ url_for('ranking.ranking_matches_json', competition_id=competition.id) }}"
+           data-current-page="{{ current_page }}"
+           data-mine="{{ 1 if matches_mine else 0 }}">
+        <header class="matches-head">
+          <div class="matches-head-title">
+            <div class="matches-eyebrow">Duels · 对战数据</div>
+            <div class="matches-title">
+              <span class="matches-title-number" id="matchesTotalNumber">{{ matches_total }}</span>
+              <span class="matches-title-label">场对决</span>
+              {% if matches_mine %}<span class="matches-scope-tag">You only</span>{% endif %}
+            </div>
+            <div class="matches-meta">
+              {% if competition.elo_running == 1 %}
+                <span class="matches-meta-dot is-live"></span>
+                匹配引擎运行中 · 每 {{ competition.elo_match_interval_seconds or 60 }} 秒一轮
+              {% else %}
+                <span class="matches-meta-dot is-paused"></span>
+                匹配引擎已暂停
+              {% endif %}
+            </div>
+          </div>
+          <div class="matches-head-actions">
+            {% if is_admin and matches %}
+              <form method="POST" class="matches-rebuild-form"
+                    action="{{ url_for('ranking.ranking_elo_rebuild_history', competition_id=competition.id) }}"
+                    onsubmit="return confirm('确认按时间顺序重新计算所有对战的历史 rating 快照，并把每份提交的当前 ELO 同步到重放终态？\n\n这不会删除任何对战行，只是修正因删除操作导致的历史显示错位。');">
+                <button type="submit" class="matches-rebuild-btn"
+                        title="按时间顺序重放现存对战、刷新历史 rating 快照">
+                  <i class="fas fa-wrench" aria-hidden="true"></i>
+                  <span>重构历史轨迹</span>
+                </button>
+              </form>
+            {% endif %}
+            <nav class="matches-filter" aria-label="过滤">
+              <a class="matches-filter-pill {% if not matches_mine %}is-active{% endif %}"
+                 href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}">
+                全部
+              </a>
+              <a class="matches-filter-pill {% if matches_mine %}is-active{% endif %}"
+                 href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', mine=1) }}">
+                <i class="fas fa-user-circle me-1"></i>与我相关
+              </a>
+            </nav>
+          </div>
+        </header>
+
+        <div id="matchesDynamic">
+          {% include 'ranking/components/matches.html' %}
+        </div>
+      </div>
+
+      <!-- 详情 modal -->
+      <div class="modal fade" id="matchDetailModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title"><i class="fas fa-magnifying-glass me-2"></i>对战详情</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <div id="matchDetailLoading" class="text-center text-muted py-4">
+                <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">加载中…</span></span>
+              </div>
+              <div id="matchDetailError" class="alert alert-danger d-none"></div>
+              <div id="matchDetailContent" class="d-none">
+                <div class="text-muted small mb-2" id="matchDetailMeta"></div>
+                <h6 class="mb-2">评测脚本给出的胜负理由</h6>
+                <pre id="matchDetailVerdict" class="bg-light border rounded p-3 small" style="white-space: pre-wrap; word-break: break-word;"></pre>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var card = document.getElementById('matchesCard');
+          var dynEl = document.getElementById('matchesDynamic');
+          var totalEl = document.getElementById('matchesTotalNumber');
+          var modalEl = document.getElementById('matchDetailModal');
+          var modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+          var loadingEl = document.getElementById('matchDetailLoading');
+          var errorEl = document.getElementById('matchDetailError');
+          var contentEl = document.getElementById('matchDetailContent');
+          var metaEl = document.getElementById('matchDetailMeta');
+          var verdictEl = document.getElementById('matchDetailVerdict');
+
+          function showState(state) {
+            if (loadingEl) loadingEl.classList.toggle('d-none', state !== 'loading');
+            if (errorEl) errorEl.classList.toggle('d-none', state !== 'error');
+            if (contentEl) contentEl.classList.toggle('d-none', state !== 'ok');
+          }
+
+          function renderDetail(data) {
+            var winner = data.winner;
+            var winnerLabel = winner === 1 ? (data.username_a + ' 胜')
+                            : winner === 2 ? (data.username_b + ' 胜')
+                            : winner === 0 ? '平局'
+                            : '失败';
+            metaEl.textContent = '#' + data.id + ' · ' + data.created_at + ' · ' + winnerLabel;
+            var verdict = '';
+            if (data.error_message) {
+              verdict = '【脚本错误】\n' + data.error_message;
+            } else if (data.details === null || data.details === undefined || data.details === '') {
+              verdict = '（评测脚本未输出 details 字段）';
+            } else if (typeof data.details === 'string') {
+              try {
+                var parsed = JSON.parse(data.details);
+                if (parsed && typeof parsed === 'object') {
+                  var pref = parsed.reason || parsed.verdict || parsed.explanation || parsed.justification || parsed.message;
+                  verdict = pref ? String(pref) : JSON.stringify(parsed, null, 2);
+                } else { verdict = String(parsed); }
+              } catch (_) { verdict = data.details; }
+            } else if (typeof data.details === 'object') {
+              var pref2 = data.details.reason || data.details.verdict || data.details.explanation || data.details.justification || data.details.message;
+              verdict = pref2 ? String(pref2) : JSON.stringify(data.details, null, 2);
+            } else { verdict = String(data.details); }
+            verdictEl.textContent = verdict;
+          }
+
+          var loadedCache = {};
+          function openDetail(matchId) {
+            if (!modal) return;
+            showState('loading');
+            modal.show();
+            if (loadedCache[matchId]) { renderDetail(loadedCache[matchId]); showState('ok'); return; }
+            fetch('{{ url_for("ranking.ranking_match_details", competition_id=competition.id, match_id=0) }}'.replace(/\/0\//, '/' + matchId + '/'))
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                if (!data.success) { errorEl.textContent = data.message || '加载失败'; showState('error'); return; }
+                loadedCache[matchId] = data; renderDetail(data); showState('ok');
+              })
+              .catch(function (e) { errorEl.textContent = '网络错误：' + (e && e.message || e); showState('error'); });
+          }
+
+          // 删除后只刷新「当前页」的对战列表，保持管理员所在的 page，不跳回第 1 页
+          function refreshMatches(page) {
+            if (!card || !dynEl) return;
+            var base = card.getAttribute('data-matches-url');
+            var mine = card.getAttribute('data-mine') === '1';
+            var url = base + '?page=' + encodeURIComponent(page) + (mine ? '&mine=1' : '');
+            fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                if (!data || data.error) return;
+                dynEl.innerHTML = data.html;
+                if (totalEl && typeof data.total !== 'undefined') totalEl.textContent = data.total;
+                card.setAttribute('data-current-page', data.page);
+              })
+              .catch(function () {});
+          }
+
+          function deleteMatch(btn) {
+            if (btn.disabled) return;
+            var msg = btn.getAttribute('data-confirm') || ('确认删除对战 #' + btn.getAttribute('data-match-id') + '？');
+            if (!window.confirm(msg)) return;
+            var url = btn.getAttribute('data-delete-url');
+            btn.disabled = true;
+            fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+              .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+              .then(function (res) {
+                if (!res.ok || !res.j || !res.j.success) {
+                  window.alert((res.j && res.j.message) || '删除失败'); btn.disabled = false; return;
+                }
+                var page = parseInt(card && card.getAttribute('data-current-page'), 10) || 1;
+                refreshMatches(page);
+              })
+              .catch(function (e) { window.alert('网络错误：' + (e && e.message || e)); btn.disabled = false; });
+          }
+
+          // 事件委托：AJAX 局部刷新后，新行无需重新绑定监听
+          document.addEventListener('click', function (ev) {
+            if (!ev.target || !ev.target.closest) return;
+            var detailBtn = ev.target.closest('.match-detail-btn');
+            if (detailBtn && (!dynEl || dynEl.contains(detailBtn))) { openDetail(detailBtn.getAttribute('data-match-id')); return; }
+            var delBtn = ev.target.closest('.match-delete-btn');
+            if (delBtn && (!dynEl || dynEl.contains(delBtn))) { deleteMatch(delBtn); return; }
+          });
+        })();
+      </script>
+    {% endif %}

@@ -123,7 +123,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
   docker compose -f tests/ci/docker-compose.local.yml logs mysql
   ```
 - 报“拒绝执行可能清空 MySQL/Redis 的测试”：先检查 test 容器中 `NUMOJ_TEST_ENV=1`、`MYSQL_DB='myojdb_test'` 和 `REDIS_DB=15`，不要通过放宽 `tests/environment_guard.py` 绕过。
-- schema 未灌入 / 改了 `myojdb.sql` 不生效：`myojdb.sql` 只在 mysql 数据卷首次初始化时执行；卷里有旧数据就不会重灌。用下面命令删卷后重跑：
+- schema 未灌入 / 改了 `database/bootstrap.sql` 不生效：该基线只在 MySQL 数据卷首次初始化时执行；卷里有旧数据就不会重灌。用下面命令删卷后重跑：
   ```bash
   docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
   ```

@@ -1,30 +1,9 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
+# ===== 编辑器与系统元数据 =====
 .vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-file
-*.flf
-#Test results file
-TestResults.xml
-# Fuck the MacOS
+# macOS 文件系统元数据
 .DS_Store
 */.DS_Store
 .DS_Store?
-**/__pycache__/*
 
 competitions/*
 
@@ -34,9 +13,13 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .cache/
+.venv/
 
 # ===== Superpowers 产物（设计/计划/参考文档，非交付物，不入库）=====
 docs/superpowers/
+
+# ===== 生成式 Wiki 产物（源配置保留在 .wiki/）=====
+deepwiki/
 
 # ===== CI 测试运行产物 =====
 test-results/

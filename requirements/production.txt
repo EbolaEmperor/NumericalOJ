@@ -1,0 +1,29 @@
+# Direct runtime dependencies are deliberately pinned. Upgrade them through an
+# explicit change that runs the unit and disposable-infrastructure suites. A
+# fully hashed transitive lock is still future work; do not claim bit-for-bit
+# reproducibility from this file alone.
+flask==3.1.3
+celery==5.6.3
+redis==8.0.0
+pymysql==1.2.0
+werkzeug==3.1.8
+requests==2.34.2
+numpy==2.5.0
+pillow==12.2.0
+openpyxl==3.1.5
+markdown==3.10.2
+pygments==2.20.0
+bleach==6.4.0
+openai==2.43.0
+httpx==0.28.1
+
+# Repository indexing and PDF homework are enabled by the default configuration,
+# so their dependencies belong to the runtime set rather than test-only extras.
+faiss-cpu==1.14.3
+tree-sitter==0.25.2
+tree-sitter-cpp==0.23.4
+pypdfium2==5.12.1
+
+# supervisord is the checked-in process manager used by deploy/supervisor/.
+supervisor==4.3.0
+gunicorn==26.0.0

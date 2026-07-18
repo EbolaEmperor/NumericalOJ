@@ -25,9 +25,15 @@ def test_logout_and_export_task_start_are_post_only():
 
 
 def test_checked_in_browser_and_cli_callers_use_post():
-    layout = (ROOT / 'templates' / 'layout.html').read_text(encoding='utf-8')
+    layout = "\n".join(
+        path.read_text(encoding='utf-8')
+        for path in (
+            ROOT / 'templates' / 'layouts' / 'site.html',
+            ROOT / 'templates' / 'components' / 'layout' / 'navigation.html',
+        )
+    )
     homework_template = (
-        ROOT / 'templates' / 'admin_homework.html'
+        ROOT / 'templates' / 'admin' / 'homework.html'
     ).read_text(encoding='utf-8')
     admin_auth = (
         ROOT / 'skills' / 'numoj-admin' / 'scripts' / 'numoj_admin_cli' / 'auth.py'
