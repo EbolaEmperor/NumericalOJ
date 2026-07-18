@@ -360,7 +360,7 @@ def change_password():
     return redirect(url_for('problem_core.problem_list', success="密码修改成功"))
 
 
-@auth_bp.route('/logout')
+@auth_bp.post('/logout')
 def logout():
     session.pop('username', None)
     return redirect(url_for('auth.login'))

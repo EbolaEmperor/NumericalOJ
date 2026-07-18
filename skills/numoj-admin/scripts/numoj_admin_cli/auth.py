@@ -113,7 +113,7 @@ def logout(args: argparse.Namespace) -> None:
     if cfg.get("cookies"):
         try:
             client = NumOJClient(cfg, timeout=args.timeout)
-            client.request("GET", "/logout")
+            client.request("POST", "/logout")
         except Exception:
             pass
     cfg.pop("cookies", None)

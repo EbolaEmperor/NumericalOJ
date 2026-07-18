@@ -470,7 +470,7 @@ def register_ranking_elo_matchmaker_tick_task(celery_app, match_task):
     return ranking_elo_matchmaker_tick
 
 
-def seed_elo_matchmaker_tick(redis_client, tick_task):
+def seed_elo_matchmaker_tick(redis_client, tick_task, *, reset_owner=False):
     """启动一条全局唯一的 tick 链。多次/多进程调用安全：靠 Redis owner key 上锁。"""
     if tick_task is None:
         return
@@ -482,6 +482,8 @@ def seed_elo_matchmaker_tick(redis_client, tick_task):
             pass
         return
     try:
+        if reset_owner:
+            redis_client.delete(TICK_OWNER_KEY)
         new_owner = uuid.uuid4().hex
         if redis_client.set(
             TICK_OWNER_KEY, new_owner,

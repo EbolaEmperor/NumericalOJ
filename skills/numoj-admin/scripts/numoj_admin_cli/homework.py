@@ -83,7 +83,7 @@ def homework_export_scores(args: argparse.Namespace) -> None:
 
 def homework_export_codes(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/export_student_codes", params={"sclass": args.class_en})
+    resp = client.request("POST", "/export_student_codes", json={"sclass": args.class_en})
     print_or_save_response(resp)
 
 

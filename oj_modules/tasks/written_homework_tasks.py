@@ -362,6 +362,7 @@ def register_written_homework_task(celery_app):
 
         upload_folder = ""
         uploaded_filename = f"submission_{submission_id}"
+        tex_extract_dir = None
         try:
             update_submission_status(submission_id, 'Running')
 
@@ -419,6 +420,7 @@ def register_written_homework_task(celery_app):
                 try:
                     base_name, _ = os.path.splitext(uploaded_filename)
                     extracted_dir = os.path.join(upload_folder, f"{base_name}_project")
+                    tex_extract_dir = extracted_dir
                     if os.path.isdir(extracted_dir):
                         shutil.rmtree(extracted_dir, ignore_errors=True)
                     os.makedirs(extracted_dir, exist_ok=True)
@@ -586,6 +588,11 @@ def register_written_homework_task(celery_app):
                 pass
             print(f"[LaTeX OCR] submission={submission_id} 转写或评分失败: {e}")
         finally:
+            # TeX 工程只服务于本次编译。PDF、编译日志和错误日志已经复制到提交根目录；
+            # 无论成功、输入错误、异常还是上方任意提前 return，都不能永久保留最多
+            # 200 MiB 的解压目录。
+            if tex_extract_dir:
+                shutil.rmtree(tex_extract_dir, ignore_errors=True)
             release_submission_lock(lock_client, lock_key, lock_token)
 
     return transcribe_written_homework_to_latex

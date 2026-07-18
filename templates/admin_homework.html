@@ -1067,7 +1067,11 @@ document.addEventListener('DOMContentLoaded', function() {
       
       try {
         // 启动导出任务
-        const response = await fetch(`/export_student_codes?sclass=${selectedClass}`);
+        const response = await fetch('/export_student_codes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ sclass: selectedClass }).toString(),
+        });
         const result = await response.json();
         
         if (!result.success) {

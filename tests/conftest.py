@@ -5,8 +5,8 @@
 由本地 Flask 服务 + numoj-admin / numoj-user CLI 驱动。
 
 要点：
-- import db_services 即连 MySQL；oj.py import 时跑 seed_*。因此先确保 infra，再在
-  monkeypatch 掉 seed_* 之后 import oj。
+- `db_services` 的连接池按首次取连接创建，`oj.py` 的恢复与自调度工作也必须由显式
+  启动入口触发；导入模块本身不得连接基础设施或投递任务。
 - DB 隔离用 truncate+reseed（每个 db_services 函数各自 commit，事务回滚不可行）。
 """
 import hashlib
@@ -220,11 +220,7 @@ def _infra():
 
 @pytest.fixture(scope='session')
 def app(_infra):
-    # 在 import oj 之前禁掉自调度链路
-    import oj_modules.tasks as _tasks
-    import oj_modules.startup_requeue as _sr
-    _tasks.seed_elo_matchmaker_tick = lambda *a, **k: None
-    _sr.seed_pending_requeue_watchdog = lambda *a, **k: None
+    # `oj` 导入只做应用装配；恢复/调度任务由显式启动入口负责，不会在测试中投递。
     import oj as ojmod
     ojmod.app.config.update(TESTING=True)
     return ojmod.app
