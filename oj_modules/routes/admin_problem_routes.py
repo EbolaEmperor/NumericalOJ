@@ -4,11 +4,10 @@
 import json
 import os
 import pymysql
-import shutil
+import tempfile
 import zipfile
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
-from werkzeug.utils import secure_filename
 from config import AI_TUTOR_MODEL, QWEN_CODER_MODEL, QWEN_OMNI_MODEL, QWEN_TEXT_MODEL
 from oj_modules.ai_utils import DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
@@ -392,14 +391,22 @@ def upload_testdata(problem_id):
     if not (file and allowed_file(file.filename)):
         return _json_or_problem_redirect('只允许上传 ZIP 文件。', 400, problem_id=problem_id)
 
-    filename = secure_filename(file.filename)
-    temp_path = os.path.join('tmp', filename)
-    extract_path = os.path.join('tmp', f'extracted_{problem_id}')
-
     try:
         os.makedirs('tmp', exist_ok=True)
-        file.save(temp_path)
-        import_testdata_zip(problem_id=problem_id, zip_path=temp_path, extract_dir=extract_path)
+        # 每个请求使用独占临时根。即使同一道题被并发上传同名 ZIP，归档文件与
+        # 解压目录也不会互相覆盖；上下文退出时统一清理成功或失败留下的产物。
+        with tempfile.TemporaryDirectory(
+            prefix=f'numoj-testdata-{problem_id}-',
+            dir='tmp',
+        ) as request_root:
+            temp_path = os.path.join(request_root, 'upload.zip')
+            extract_path = os.path.join(request_root, 'extracted')
+            file.save(temp_path)
+            import_testdata_zip(
+                problem_id=problem_id,
+                zip_path=temp_path,
+                extract_dir=extract_path,
+            )
         if _wants_json_response():
             return jsonify(success=True, message='测试数据上传成功。', problem_id=problem_id)
         flash('测试数据上传成功。', 'success')
@@ -415,11 +422,6 @@ def upload_testdata(problem_id):
         if _wants_json_response():
             return jsonify(success=False, message=f'上传过程中发生错误：{str(e)}'), 500
         flash(f'上传过程中发生错误：{str(e)}', 'danger')
-    finally:
-        if os.path.exists(extract_path):
-            shutil.rmtree(extract_path)
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
 
     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
