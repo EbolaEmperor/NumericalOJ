@@ -4,11 +4,15 @@
 import os
 import re
 import shutil
-import zipfile
 
 import pymysql
 
 from config import AI_TUTOR_MODEL, EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, QWEN_TEXT_MODEL
+from oj_modules.archive_utils import (
+    ArchiveExtractionError,
+    ZipExtractionPolicy,
+    extract_zip,
+)
 from oj_modules.ai_utils import (
     evaluate_written_homework_with_ai,
     evaluate_written_homework_with_ai_from_images,
@@ -263,36 +267,36 @@ def _safe_extract_zip(zip_path, target_dir, max_total_uncompressed=200 * 1024 * 
     if not os.path.isfile(zip_abs):
         raise RuntimeError("上传的 ZIP 文件不存在。")
 
-    os.makedirs(target_abs, exist_ok=True)
-    total_size = 0
-    with zipfile.ZipFile(zip_abs, 'r') as zf:
-        infos = zf.infolist()
-        if not infos:
-            raise RuntimeError("ZIP 压缩包为空。")
-        for info in infos:
-            raw_name = str(info.filename or "")
-            if not raw_name:
-                continue
-            normalized = raw_name.replace("\\", "/").lstrip("/")
-            if normalized.startswith("../") or "/../" in normalized or normalized == "..":
-                raise RuntimeError(f"ZIP 包含非法路径：{raw_name}")
-            dest_path = os.path.abspath(os.path.join(target_abs, normalized))
-            if not (dest_path == target_abs or dest_path.startswith(target_abs + os.sep)):
-                raise RuntimeError(f"ZIP 包含越界路径：{raw_name}")
-
-            if info.is_dir() or normalized.endswith("/"):
-                os.makedirs(dest_path, exist_ok=True)
-                continue
-
-            total_size += max(0, int(info.file_size or 0))
-            if total_size > int(max_total_uncompressed):
-                raise RuntimeError("ZIP 解压后体积过大，已拒绝处理。")
-
-            parent = os.path.dirname(dest_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with zf.open(info, 'r') as src, open(dest_path, 'wb') as dst:
-                shutil.copyfileobj(src, dst)
+    max_total = int(max_total_uncompressed)
+    policy = ZipExtractionPolicy(
+        max_members=4096,
+        # 旧逻辑只限制总大小；让单文件上限与总上限一致，不额外收紧正常提交。
+        max_file_bytes=max_total,
+        max_total_bytes=max_total,
+        max_compression_ratio=500.0,
+        require_non_empty=True,
+        cleanup_on_error=True,
+    )
+    try:
+        extract_zip(zip_abs, target_abs, policy=policy)
+    except ArchiveExtractionError as exc:
+        member = exc.member_name or ""
+        messages = {
+            'empty_archive': "ZIP 压缩包为空。",
+            'too_many_members': "ZIP 文件数量过多，已拒绝处理。",
+            'total_too_large': "ZIP 解压后体积过大，已拒绝处理。",
+            'file_too_large': "ZIP 中单个文件体积过大，已拒绝处理。",
+            'compression_ratio': "ZIP 包含异常压缩比文件，已拒绝处理。",
+            'symlink': f"ZIP 包含符号链接：{member}",
+            'encrypted_member': f"ZIP 包含加密文件：{member}",
+            'duplicate_target': f"ZIP 包含重复路径：{member}",
+            'target_conflict': f"ZIP 包含冲突路径：{member}",
+            'absolute_path': f"ZIP 包含非法路径：{member}",
+            'path_traversal': f"ZIP 包含非法路径：{member}",
+            'outside_destination': f"ZIP 包含越界路径：{member}",
+            'size_mismatch': f"ZIP 文件大小校验失败：{member}",
+        }
+        raise RuntimeError(messages.get(exc.reason, "ZIP 解压失败。")) from exc
 
 
 def _find_main_tex(extracted_dir):
