@@ -11,7 +11,7 @@ services:
       --collation-server=utf8mb4_0900_ai_ci
     environment:
       MYSQL_ROOT_PASSWORD: ci_root_password
-      MYSQL_DATABASE: myojdb
+      MYSQL_DATABASE: myojdb_test
     volumes:
       - ../../myojdb.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
@@ -37,6 +37,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    environment:
+      NUMOJ_TEST_ENV: "1"
     volumes:
       - ../../test-results:/app/test-results
     command: ["bash", "tests/ci/run-ci.sh"]

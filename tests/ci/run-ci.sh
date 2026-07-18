@@ -11,6 +11,10 @@ mkdir -p test-results judger
 export OJ_LIVE_AI=0
 echo ">>> CI 使用占位符 AI 配置，AI live 测试将 skip (OJ_LIVE_AI=0)"
 
+# tests/conftest.py 在任何建库、清表或 FLUSHDB 前都会验证此显式开关，
+# 并同时校验专用测试库、非零 Redis DB、主机与检出路径。
+: "${NUMOJ_TEST_ENV:?必须由隔离的 CI 容器显式设置 NUMOJ_TEST_ENV=1}"
+
 # 逐模块有序列表（unit → db → CLI e2e）
 MODULES=(
   "tests/unit"
