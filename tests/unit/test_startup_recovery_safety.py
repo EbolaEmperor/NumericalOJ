@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import types
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -34,6 +35,18 @@ class _FakeTask:
 
     def apply_async(self, *, args, countdown):
         self.calls.append((list(args), countdown))
+
+
+class _ResultTask(_FakeTask):
+    def __init__(self):
+        super().__init__()
+        self.task_ids = []
+
+    def apply_async(self, *, args, countdown, task_id=None):
+        super().apply_async(args=args, countdown=countdown)
+        resolved_task_id = task_id or f'task-{len(self.calls)}'
+        self.task_ids.append(resolved_task_id)
+        return types.SimpleNamespace(id=resolved_task_id)
 
 
 def test_elo_safe_seed_is_idempotent_and_full_recovery_can_replace_owner():
@@ -85,6 +98,173 @@ def test_paused_probe_safe_seed_does_not_duplicate_an_existing_owner_chain():
     )
 
     assert len(task.calls) == 1
+
+
+def test_watchdog_requeues_only_old_standard_ranking_submission_without_task_id(
+        monkeypatch):
+    old = datetime.now() - timedelta(minutes=20)
+    rows = [
+        {
+            'id': 71,
+            'competition_id': 9,
+            'status': 'Judging',
+            'scoring_mode': 'absolute',
+            'judge_task_id': None,
+            'created_at': old,
+        },
+        {
+            'id': 72,
+            'competition_id': 9,
+            'status': 'Judging',
+            'scoring_mode': 'absolute',
+            'judge_task_id': 'already-enqueued',
+            'created_at': old,
+        },
+        {
+            'id': 73,
+            'competition_id': 9,
+            'status': 'Judging',
+            'scoring_mode': 'absolute',
+            'judge_task_id': None,
+            'created_at': datetime.now(),
+        },
+    ]
+    redis_client = _FakeRedis()
+    task = _ResultTask()
+    reservations = []
+    monkeypatch.setattr(startup_requeue, '_redis_client', lambda: redis_client)
+    monkeypatch.setattr(startup_requeue.uuid, 'uuid4', lambda: 'dispatch-71')
+    monkeypatch.setattr(
+        startup_requeue,
+        'get_incomplete_ranking_submissions',
+        lambda: rows,
+    )
+    monkeypatch.setattr(
+        startup_requeue,
+        'reserve_standard_ranking_evaluation',
+        lambda submission_id, task_id, **kwargs: reservations.append(
+            (submission_id, task_id, kwargs)
+        ) or 1,
+    )
+
+    assert startup_requeue._requeue_orphaned_standard_ranking_submissions(task) == 1
+    assert task.calls == [([71], 0)]
+    assert task.task_ids == ['dispatch-71']
+    assert reservations == [(
+        71,
+        'dispatch-71',
+        {'stale_after_seconds': startup_requeue._RANKING_TASK_LEASE_SECONDS},
+    )]
+
+
+def test_watchdog_initializes_old_elo_submission_before_burst(monkeypatch):
+    row = {
+        'id': 81,
+        'competition_id': 19,
+        'username': 'student',
+        'status': 'Judging',
+        'scoring_mode': 'elo',
+        'judge_task_id': None,
+        'elo_initial_rating': 1600,
+        'created_at': datetime.now() - timedelta(minutes=20),
+    }
+    initialized = []
+    burst = _ResultTask()
+    monkeypatch.setattr(startup_requeue, '_redis_client', lambda: _FakeRedis())
+    monkeypatch.setattr(
+        startup_requeue,
+        'get_incomplete_ranking_submissions',
+        lambda: [row],
+    )
+    monkeypatch.setattr(
+        startup_requeue,
+        'activate_elo_submission',
+        lambda submission_id, competition_id, username, rating, **kwargs: initialized.append(
+            (submission_id, competition_id, username, rating, kwargs)
+        ),
+    )
+
+    assert startup_requeue._requeue_orphaned_standard_ranking_submissions(
+        None,
+        burst,
+    ) == 1
+    assert initialized == [(81, 19, 'student', 1600.0, {'keep_count': 2})]
+    assert burst.calls == [([19, 81], 3)]
+
+
+def test_ranking_watchdog_persists_task_reservation_before_dispatch(monkeypatch):
+    row = {
+        'id': 91,
+        'competition_id': 29,
+        'status': 'Judging',
+        'scoring_mode': 'absolute',
+        'judge_task_id': None,
+        'created_at': datetime.now() - timedelta(minutes=20),
+    }
+    redis_client = _FakeRedis()
+    task = _ResultTask()
+    monkeypatch.setattr(startup_requeue, '_redis_client', lambda: redis_client)
+    monkeypatch.setattr(startup_requeue.uuid, 'uuid4', lambda: 'dispatch-91')
+    monkeypatch.setattr(
+        startup_requeue,
+        'get_incomplete_ranking_submissions',
+        lambda: [row],
+    )
+    monkeypatch.setattr(
+        startup_requeue,
+        'reserve_standard_ranking_evaluation',
+        lambda submission_id, task_id, **_kwargs: int(
+            (submission_id, task_id) == (91, 'dispatch-91')
+        ),
+    )
+
+    assert startup_requeue._requeue_orphaned_standard_ranking_submissions(task) == 1
+    claim_key = startup_requeue._RANKING_REQUEUE_ITEM_KEY_FMT.format(submission_id=91)
+    assert claim_key in redis_client.values
+    assert task.calls == [([91], 0)]
+    assert task.task_ids == ['dispatch-91']
+
+
+def test_ranking_watchdog_releases_database_reservation_when_dispatch_fails(
+        monkeypatch):
+    row = {
+        'id': 101,
+        'competition_id': 39,
+        'status': 'Judging',
+        'scoring_mode': 'absolute',
+        'judge_task_id': None,
+        'created_at': datetime.now() - timedelta(minutes=20),
+    }
+    redis_client = _FakeRedis()
+    released = []
+    task = _ResultTask()
+    monkeypatch.setattr(startup_requeue, '_redis_client', lambda: redis_client)
+    monkeypatch.setattr(startup_requeue.uuid, 'uuid4', lambda: 'dispatch-101')
+    monkeypatch.setattr(
+        startup_requeue,
+        'get_incomplete_ranking_submissions',
+        lambda: [row],
+    )
+    monkeypatch.setattr(
+        startup_requeue,
+        'reserve_standard_ranking_evaluation',
+        lambda *_args, **_kwargs: 1,
+    )
+    monkeypatch.setattr(
+        startup_requeue,
+        'release_standard_ranking_evaluation',
+        lambda submission_id, task_id: released.append((submission_id, task_id)),
+    )
+
+    def fail_dispatch(**_kwargs):
+        raise OSError('broker unavailable')
+
+    monkeypatch.setattr(task, 'apply_async', fail_dispatch)
+
+    assert startup_requeue._requeue_orphaned_standard_ranking_submissions(task) == 0
+    assert released == [(101, 'dispatch-101')]
+    claim_key = startup_requeue._RANKING_REQUEUE_ITEM_KEY_FMT.format(submission_id=101)
+    assert claim_key not in redis_client.values
 
 
 def test_recovery_cli_requires_explicit_worker_stop_confirmation(monkeypatch):

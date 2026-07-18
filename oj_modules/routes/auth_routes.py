@@ -48,7 +48,7 @@ def _wants_json_response():
 def _json_or_error(message, status=400):
     if _wants_json_response():
         return jsonify(success=False, message=message), status
-    return render_template('error.html', message=message), status
+    return render_template('shared/error.html', message=message), status
 
 
 # ---- 限流参数 ----
@@ -138,11 +138,11 @@ def login():
 
         username_ok, username, username_msg = validate_username(username)
         if not username_ok:
-            return render_template('login.html', error_message=username_msg, success_message=None)
+            return render_template('auth/login.html', error_message=username_msg, success_message=None)
 
         # 登录尝试限流（按用户名），减缓离线/在线暴力破解。
         if not rate_limit_hit(_rds, f'login:{username}', _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW)[0]:
-            return render_template('login.html', error_message="尝试过于频繁，请稍后再试", success_message=None)
+            return render_template('auth/login.html', error_message="尝试过于频繁，请稍后再试", success_message=None)
 
         user_record = get_user_by_username(username)
         if user_record:
@@ -156,10 +156,10 @@ def login():
                         pass
                 session['username'] = username
                 return redirect(url_for('problem_core.problem_list'))
-        return render_template('login.html', error_message="用户名或密码错误", success_message=None)
+        return render_template('auth/login.html', error_message="用户名或密码错误", success_message=None)
 
     success_message = request.args.get('success')
-    return render_template('login.html', error_message=None, success_message=success_message)
+    return render_template('auth/login.html', error_message=None, success_message=success_message)
 
 
 @auth_bp.route('/send_code', methods=['POST'])
@@ -194,14 +194,14 @@ def register():
             user_class = None
 
         if not all([username, password, email, code, user_class]):
-            return render_template('register.html', error_message="所有字段不能为空", classes=public_classes)
+            return render_template('auth/register.html', error_message="所有字段不能为空", classes=public_classes)
 
         username_ok, username, username_msg = validate_username(username)
         if not username_ok:
-            return render_template('register.html', error_message=username_msg, classes=public_classes)
+            return render_template('auth/register.html', error_message=username_msg, classes=public_classes)
 
         if not _verify_attempt_allowed(email):
-            return render_template('register.html', error_message="验证次数过多，请稍后再试", classes=public_classes)
+            return render_template('auth/register.html', error_message="验证次数过多，请稍后再试", classes=public_classes)
 
         conn = get_db_connection()
         try:
@@ -213,15 +213,15 @@ def register():
             conn.close()
 
         if not record or record['code'] != code or datetime.now() > record['expires_at']:
-            return render_template('register.html', error_message="验证码错误或已过期", classes=public_classes)
+            return render_template('auth/register.html', error_message="验证码错误或已过期", classes=public_classes)
 
         if get_user_by_username(username) or get_user_by_email(email):
-            return render_template('register.html', error_message="用户名或邮箱已被注册", classes=public_classes)
+            return render_template('auth/register.html', error_message="用户名或邮箱已被注册", classes=public_classes)
 
         create_user(username, hash_password(password), email, user_class)
         return redirect(url_for('auth.login', success="注册成功，请登录"))
 
-    return render_template('register.html', classes=public_classes)
+    return render_template('auth/register.html', classes=public_classes)
 
 
 @auth_bp.route('/forgot_password', methods=['GET', 'POST'])
@@ -290,7 +290,7 @@ def forgot_password():
             flash('密码重置成功，请重新登录', 'success')
             return redirect(url_for('auth.login'))
 
-    return render_template('forgot_password.html', step=step, email=request.args.get('email'))
+    return render_template('auth/forgot_password.html', step=step, email=request.args.get('email'))
 
 
 @auth_bp.route('/send_password_code', methods=['POST'])

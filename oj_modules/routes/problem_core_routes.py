@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 import markdown
-from flask import Blueprint, Response, flash, jsonify, redirect, render_template, request, session, stream_with_context, url_for
+from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, session, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
@@ -33,11 +33,14 @@ from oj_modules.db_services import (
     get_user_by_username,
     mark_submission_archive_failed,
     overwrite_written_submission,
-    reserve_submission_quota,
     upsert_agent_run_snapshot,
 )
 from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
 from oj_modules.markdown_utils import sanitize_html
+from oj_modules.written_submission_artifacts import (
+    WrittenSubmissionArtifactError,
+    publish_manual_written_submission,
+)
 
 
 problem_core_bp = Blueprint('problem_core', __name__)
@@ -288,6 +291,13 @@ def _record_archive_failure(submission_id, counted_submission_limit):
             '提交归档失败状态与配额补偿写入失败',
             extra={'submission_id': submission_id},
         )
+
+
+def _load_expected_written_submission(username, problem_id, expected_id):
+    latest = get_latest_written_submission(username, problem_id)
+    if latest and int(latest['id']) == int(expected_id):
+        return latest
+    return None
 
 
 def get_user_classes_cached(user_id):
@@ -745,7 +755,7 @@ def problem_list():
         return redirect(url_for('auth.login'))
 
     context = build_problem_list_context(user)
-    return render_template('problem_list.html', **context)
+    return render_template('problems/list.html', **context)
 
 
 @problem_core_bp.route('/problem/<int:problem_id>', methods=['GET'])
@@ -761,7 +771,7 @@ def problem_detail(problem_id):
         flash('无权限访问该题目', 'danger')
         return redirect(url_for('problem_core.problem_list'))
 
-    return render_template('problem_detail.html', **context)
+    return render_template('problems/detail.html', **context)
 
 
 @problem_core_bp.route('/admin/agent_solve_problem/<int:problem_id>', methods=['POST'])
@@ -927,7 +937,7 @@ def admin_agent_run(task_id):
 
     latest_submission_id = state.get("latest_submission_id") or state.get("final_submission_id")
     return render_template(
-        'agent_run.html',
+        'agents/run.html',
         user=user,
         task_id=task_id,
         problem=problem,
@@ -1199,29 +1209,49 @@ def submit_solution(problem_id):
                 existing = get_latest_written_submission(user['username'], problem_id)
                 if existing:
                     submission_id = existing['id']
-                    try:
-                        if counted_submission_limit is not None:
-                            reserve_submission_quota(
-                                user['username'], problem_id, counted_submission_limit,
-                                user_id=user['id'],
-                            )
-                    except SubmissionLimitExceeded:
-                        return _submission_limit_redirect(problem_id, submission_limit)
-                    try:
-                        # 只有成功预占配额后才覆盖旧文件，避免达到上限时破坏已有提交。
-                        old_folder = os.path.join('uploads', str(submission_id))
-                        if os.path.isdir(old_folder):
-                            import shutil
-                            shutil.rmtree(old_folder)
-                        os.makedirs(old_folder)
-                        file.save(os.path.join(old_folder, filename))
-                        overwrite_written_submission(submission_id, filename)
-                        archive_submission_file_by_id(
-                            submission_id, os.path.join(old_folder, filename), filename, raise_errors=True,
+
+                    def overwrite_record(expected_id, new_filename, expected_snapshot):
+                        return overwrite_written_submission(
+                            expected_id,
+                            new_filename,
+                            submission_limit=counted_submission_limit,
+                            username=user['username'],
+                            problem_id=problem_id,
+                            user_id=user['id'],
+                            expected_submission=expected_snapshot,
                         )
-                    except Exception as e:
-                        _record_archive_failure(submission_id, counted_submission_limit)
-                        flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
+
+                    try:
+                        publish_manual_written_submission(
+                            uploaded_file=file,
+                            filename=filename,
+                            previous_submission=existing,
+                            problem=problem,
+                            user=user,
+                            classes=get_user_classes_cached(user['id']),
+                            overwrite_record=overwrite_record,
+                            load_current_record=lambda expected_id: (
+                                _load_expected_written_submission(
+                                    existing['username'], problem_id, expected_id,
+                                )
+                            ),
+                            max_bytes=int(
+                                current_app.config.get('MAX_CONTENT_LENGTH')
+                                or 256 * 1024 * 1024
+                            ),
+                        )
+                    except Exception as exc:
+                        if isinstance(exc.__cause__, SubmissionLimitExceeded):
+                            return _submission_limit_redirect(problem_id, submission_limit)
+                        if isinstance(exc, (WrittenSubmissionArtifactError, ValueError)):
+                            error_message = str(exc)
+                        else:
+                            logger.exception(
+                                '人工作业覆盖出现未预期异常',
+                                extra={'submission_id': submission_id},
+                            )
+                            error_message = '新作业发布失败，已保留上一份有效作业'
+                        flash(error_message, 'danger')
                         return redirect(url_for('submission.submission_detail', submission_id=submission_id))
                     return redirect(url_for('submission.submission_detail', submission_id=submission_id))
                 # 首次提交：走普通 INSERT 流程（下方）
@@ -1269,7 +1299,7 @@ def submit_solution(problem_id):
     if error_code == "forbidden":
         flash('无权限访问该题目', 'danger')
         return redirect(url_for('problem_core.problem_list'))
-    return render_template('problem_detail.html', **context)
+    return render_template('problems/detail.html', **context)
 
 
 @problem_core_bp.route('/admin/agent_tasks')
@@ -1299,7 +1329,7 @@ def admin_agent_tasks():
     page_numbers = list(range(page_start, page_end + 1))
 
     return render_template(
-        'admin_agent_tasks.html',
+        'admin/agent_tasks.html',
         user=user,
         agent_runs=runs,
         current_page=page,
@@ -1330,7 +1360,7 @@ def all_submissions():
     page_numbers = list(range(page_start, page_end + 1))
 
     return render_template(
-        'all_submission.html',
+        'submissions/all.html',
         submissions=submissions,
         user=user,
         current_page=page,

@@ -1,0 +1,62 @@
+{% if user and (user.is_admin == 1 or class_adjust_enabled) %}
+<!-- 班级管理 Modal -->
+<div class="modal fade" id="classManagerModal" tabindex="-1" aria-labelledby="classManagerLabel" aria-hidden="true"
+  data-is-admin="{% if user and user.is_admin == 1 %}1{% else %}0{% endif %}"
+  data-class-adjust-enabled="{% if class_adjust_enabled %}1{% else %}0{% endif %}"
+  data-classes-url="{{ url_for('class_management.get_my_classes') }}"
+  data-join-class-url="{{ url_for('class_management.join_class') }}"
+  data-leave-class-url="{{ url_for('class_management.leave_class') }}"
+  data-set-primary-class-url="{{ url_for('class_management.set_primary_class') }}"
+  data-class-adjust-url="{{ url_for('homework.admin_class_adjust') }}">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+
+      <div class="modal-header">
+        <h5 class="modal-title" id="classManagerLabel">
+          <i class="fas fa-users-cog me-2"></i> 调整班级
+        </h5>
+        {% if user.is_admin == 1 %}
+        <div class="d-flex align-items-center ms-3 gap-2">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="classAdjustSwitch" {% if class_adjust_enabled %}checked{% endif %}>
+          </div>
+          <span id="classAdjustLabel">{% if class_adjust_enabled %}允许{% else %}禁止{% endif %}</span>
+        </div>
+        {% endif %}
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+
+      <div class="modal-body">
+        <h6 class="mb-2">我的班级</h6>
+        <div id="myClassesBox" class="list-group mb-3">
+          <div class="list-group-item text-muted">
+            <span class="math-curve-loader" data-math-curve-loader data-size="sm">
+              <span class="math-curve-loader__label">正在加载班级…</span>
+            </span>
+          </div>
+        </div>
+
+        <hr>
+
+        <h6 class="mb-2">加入新班级</h6>
+        <div class="d-flex gap-2 align-items-center">
+          <select id="joinClassSelect" class="form-select class-join-select">
+            <option value="">请选择班级</option>
+          </select>
+          <button class="btn btn-outline-success" id="joinClassBtn">
+            <i class="fas fa-user-plus me-1"></i> 加入
+          </button>
+        </div>
+        <div class="form-text mt-2">调整班级后，请等待 10 秒喝一口茶，再刷新页面。</div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+          <i class="fas fa-times me-1"></i> 关闭
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endif %}

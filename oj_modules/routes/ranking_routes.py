@@ -11,29 +11,26 @@ import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 import uuid
 from datetime import datetime
 
 import markdown
 from flask import (
-    Blueprint, Response, abort, flash, jsonify, redirect, render_template, request,
-    send_file, session, stream_with_context, url_for,
+    Blueprint, Response, abort, current_app, flash, jsonify, redirect,
+    render_template, request, send_file, session, stream_with_context, url_for,
 )
 from werkzeug.utils import secure_filename
 
-try:
-    import redis as _redis
-except Exception:  # pragma: no cover
-    _redis = None
-
 import config as _cfg
-from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.db_services import (
     get_all_classes_except_admin, get_user_by_username, get_users_in_classes,
 )
 from oj_modules.markdown_utils import sanitize_html
+from oj_modules.redis_clients import create_optional_redis_client
 from oj_modules.security_utils import rate_limit_hit
 from oj_modules.ranking_db import (
+    activate_elo_submission,
     competition_attachments_dir,
     competition_dir,
     competition_reference_dir,
@@ -42,7 +39,7 @@ from oj_modules.ranking_db import (
     create_appeal,
     create_competition,
     create_competition_file,
-    create_ranking_submission,
+    create_ranking_artifact_submission,
     delete_competition,
     delete_competition_file,
     delete_elo_match_and_revert,
@@ -59,7 +56,6 @@ from oj_modules.ranking_db import (
     get_submission_quota,
     get_submission_stats,
     invalidate_ranking_submission_attempt,
-    init_submission_elo_state,
     list_submissions_for_bulk_rejudge,
     list_appeals,
     list_all_submissions,
@@ -71,8 +67,10 @@ from oj_modules.ranking_db import (
     rebuild_elo_history,
     reset_competition_limit_window,
     reset_elo_state,
+    release_standard_ranking_evaluation,
+    reserve_standard_ranking_evaluation,
     resolve_appeal,
-    retire_excess_user_submissions,
+    RankingSubmissionCommitUnknown,
     RankingSubmissionQuotaExceeded,
     set_elo_running,
     set_agent_judge_task_id,
@@ -81,7 +79,6 @@ from oj_modules.ranking_db import (
     update_competition,
     update_competition_reference_answer,
     update_competition_scoring_script,
-    update_submission_files,
     update_submission_result,
 )
 from oj_modules.ranking_agent_judge_db import (
@@ -384,6 +381,28 @@ def _submit_error_response(competition_id, message, category='warning', status=4
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
 
+def _submit_commit_unknown_response(competition_id, exc):
+    """把 commit 结果未知呈现为可恢复的待确认状态，避免用户立即重复提交。"""
+    submission_id = int(exc.submission_id)
+    message = (
+        f'提交 #{submission_id} 的状态暂时无法确认，请勿立即重复提交。'
+        '系统会自动核验并补发评测；15 分钟后若历史提交仍不可见，再重试或联系管理员。'
+    )
+    current_app.logger.error(
+        '打榜赛提交 commit 结果待确认',
+        extra={'submission_id': submission_id, 'competition_id': int(competition_id)},
+    )
+    if _wants_json_response():
+        return jsonify(
+            success=False,
+            pending_confirmation=True,
+            submission_id=submission_id,
+            message=message,
+        ), 202
+    flash(message, 'warning')
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+
+
 def _fake_agent_judge_delay_seconds():
     raw = os.getenv('NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS')
     if raw is None:
@@ -412,15 +431,7 @@ def _page_window(current_page, total_pages, radius=5):
 
 
 def _redis_client():
-    if _redis is None:
-        return None
-    try:
-        return _redis.StrictRedis(
-            host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB),
-            decode_responses=True,
-        )
-    except Exception:
-        return None
+    return create_optional_redis_client(verify_connection=False)
 
 
 def _ranking_task_ref_for_mode(scoring_mode):
@@ -771,6 +782,56 @@ def _ensure_dir(path):
         os.makedirs(path, exist_ok=True)
 
 
+def _create_uploaded_ranking_submission(
+        competition_id, username, *, code_file, code_name,
+        answer_file=None, answer_name=None, base_model=None,
+        enforce_quota=False, agent_endpoint_id=None,
+        code_label='代码文件', answer_label='答案文件'):
+    """先完整暂存并校验上传文件，再在配额事务内登记提交。
+
+    临时目录与最终提交目录位于同一文件系统，因此数据层可以用 ``os.replace`` 安装文件；
+    无论上传、大小校验、配额检查或数据库元数据更新在哪一步失败，临时目录都会清理。
+    """
+    staging_root = os.path.dirname(submission_dir('staging'))
+    _ensure_dir(staging_root)
+    staging_dir = tempfile.mkdtemp(prefix='.upload-', dir=staging_root)
+
+    # 答案格式也可能是 zip；两个上传使用同名文件时必须拆成不同目标名，避免后者覆盖前者。
+    if answer_name and answer_name == code_name:
+        answer_name = f'answer_{answer_name}'
+
+    def _stage(upload, filename, max_bytes, label):
+        path = os.path.join(staging_dir, filename)
+        upload.save(path)
+        size = os.path.getsize(path)
+        if size > max_bytes:
+            raise ValueError(f'{label}超过 {max_bytes // (1024 * 1024)}MB 限制')
+        return path
+
+    try:
+        code_staged_path = _stage(
+            code_file, code_name, CODE_ZIP_MAX_BYTES, code_label,
+        )
+        answer_staged_path = None
+        if answer_file is not None:
+            answer_staged_path = _stage(
+                answer_file, answer_name, ANSWER_MAX_BYTES, answer_label,
+            )
+        return create_ranking_artifact_submission(
+            competition_id,
+            username,
+            code_staged_path=code_staged_path,
+            code_filename=code_name,
+            answer_staged_path=answer_staged_path,
+            answer_filename=answer_name,
+            base_model=base_model,
+            enforce_quota=enforce_quota,
+            agent_endpoint_id=agent_endpoint_id,
+        )
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
 def _render_description(text):
     if not text:
         return ''
@@ -790,7 +851,7 @@ def ranking_list():
     is_admin = user.get('is_admin') == 1
     competitions = list_competitions(include_inactive=is_admin)
     return render_template(
-        'ranking_list.html',
+        'ranking/list.html',
         user=user,
         competitions=competitions,
     )
@@ -988,7 +1049,7 @@ def ranking_detail(competition_id):
         appeal_stats = get_appeal_stats(competition_id)
 
     return render_template(
-        'ranking_detail.html',
+        'ranking/detail.html',
         user=user,
         is_admin=is_admin,
         competition=comp,
@@ -1217,7 +1278,7 @@ def ranking_submissions_json(competition_id):
     is_agent_judge = (str(comp.get('scoring_mode') or 'absolute').lower() == 'agent_judge')
     is_reverse_judge = (str(comp.get('scoring_mode') or 'absolute').lower() == 'reverse_judge')
     rows_html = render_template(
-        '_ranking_submission_rows.html',
+        'ranking/components/submission_rows.html',
         all_submissions=rows,
         competition=comp,
         is_elo=is_elo,
@@ -1226,7 +1287,7 @@ def ranking_submissions_json(competition_id):
         is_reverse_judge=is_reverse_judge,
     )
     pagination_html = render_template(
-        '_ranking_submission_pagination.html',
+        'ranking/components/pagination.html',
         competition=comp,
         current_page=page,
         total_pages=total_pages,
@@ -1407,7 +1468,7 @@ def ranking_matches_json(competition_id):
     page_numbers = _page_window(current_page, total_pages)
 
     html = render_template(
-        '_ranking_matches_inner.html',
+        'ranking/components/matches.html',
         matches=matches,
         competition=comp,
         user=user,
@@ -1477,27 +1538,25 @@ def ranking_submit(competition_id):
             return _submit_error_response(competition_id, '请上传反向评测题目包（.zip）', category='danger')
         if not (code_file.filename or '').lower().endswith('.zip'):
             return _submit_error_response(competition_id, '反向评测题目包必须是 .zip', category='danger')
+        code_name = _safe_filename(code_file.filename, fallback='reverse_judge.zip')
+        if not code_name.lower().endswith('.zip'):
+            code_name += '.zip'
         try:
-            submission_id = create_ranking_submission(
-                competition_id, user.get('username'), enforce_quota=not is_admin,
+            submission_id = _create_uploaded_ranking_submission(
+                competition_id,
+                user.get('username'),
+                code_file=code_file,
+                code_name=code_name,
+                code_label='题目包',
+                enforce_quota=not is_admin,
                 agent_endpoint_id=endpoint_id,
             )
         except RankingSubmissionQuotaExceeded as e:
             return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
-        target_dir = submission_dir(submission_id)
-        _ensure_dir(target_dir)
-        code_name = _safe_filename(code_file.filename, fallback='reverse_judge.zip')
-        if not code_name.lower().endswith('.zip'):
-            code_name += '.zip'
-        code_path = os.path.join(target_dir, code_name)
-        try:
-            code_file.save(code_path)
-            if os.path.getsize(code_path) > CODE_ZIP_MAX_BYTES:
-                raise ValueError(f'题目包超过 {CODE_ZIP_MAX_BYTES // (1024*1024)}MB 限制')
+        except RankingSubmissionCommitUnknown as exc:
+            return _submit_commit_unknown_response(competition_id, exc)
         except Exception as e:
-            shutil.rmtree(target_dir, ignore_errors=True)
             return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
-        update_submission_files(submission_id, None, None, code_name, code_path, base_model=None)
         attempt_id = begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
         if _reverse_judge_task is None:
             flash('已接收提交，但反向评测任务未初始化，请联系管理员', 'warning')
@@ -1529,26 +1588,24 @@ def ranking_submit(competition_id):
             return _submit_error_response(competition_id, '请上传代码文件（.zip）', category='danger')
         if not (code_file.filename or '').lower().endswith('.zip'):
             return _submit_error_response(competition_id, '代码文件必须是 .zip', category='danger')
-        try:
-            submission_id = create_ranking_submission(
-                competition_id, user.get('username'), enforce_quota=not is_admin,
-            )
-        except RankingSubmissionQuotaExceeded as e:
-            return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
-        target_dir = submission_dir(submission_id)
-        _ensure_dir(target_dir)
         code_name = _safe_filename(code_file.filename, fallback='code.zip')
         if not code_name.lower().endswith('.zip'):
             code_name += '.zip'
-        code_path = os.path.join(target_dir, code_name)
         try:
-            code_file.save(code_path)
-            if os.path.getsize(code_path) > CODE_ZIP_MAX_BYTES:
-                raise ValueError(f'代码文件超过 {CODE_ZIP_MAX_BYTES // (1024*1024)}MB 限制')
+            submission_id = _create_uploaded_ranking_submission(
+                competition_id,
+                user.get('username'),
+                code_file=code_file,
+                code_name=code_name,
+                base_model=base_model,
+                enforce_quota=not is_admin,
+            )
+        except RankingSubmissionQuotaExceeded as e:
+            return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
+        except RankingSubmissionCommitUnknown as exc:
+            return _submit_commit_unknown_response(competition_id, exc)
         except Exception as e:
-            shutil.rmtree(target_dir, ignore_errors=True)
             return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
-        update_submission_files(submission_id, None, None, code_name, code_path, base_model=base_model)
         # agent_judge：入队即置「等待评测(Queued)」，被评测 worker 取到执行时才转「评测中」。
         attempt_id = begin_agent_judge_attempt(submission_id, status='Queued', reset_result=True)
         if _agent_judge_task is None:
@@ -1579,15 +1636,6 @@ def ranking_submit(competition_id):
     if not code_name_raw.lower().endswith('.zip'):
         return _submit_error_response(competition_id, '代码文件必须是 .zip', category='danger')
 
-    try:
-        submission_id = create_ranking_submission(
-            competition_id, user.get('username'), enforce_quota=not is_admin,
-        )
-    except RankingSubmissionQuotaExceeded as e:
-        return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
-    target_dir = submission_dir(submission_id)
-    _ensure_dir(target_dir)
-
     answer_name = _safe_filename(answer_name_raw, fallback=f'answer{answer_ext}')
     if not answer_name.lower().endswith(answer_ext):
         answer_name += answer_ext
@@ -1595,30 +1643,34 @@ def ranking_submit(competition_id):
     if not code_name.lower().endswith('.zip'):
         code_name += '.zip'
 
-    answer_path = os.path.join(target_dir, answer_name)
-    code_path = os.path.join(target_dir, code_name)
     try:
-        answer_file.save(answer_path)
-        code_file.save(code_path)
+        submission_id = _create_uploaded_ranking_submission(
+            competition_id,
+            user.get('username'),
+            code_file=code_file,
+            code_name=code_name,
+            answer_file=answer_file,
+            answer_name=answer_name,
+            base_model=base_model,
+            enforce_quota=not is_admin,
+        )
+    except RankingSubmissionQuotaExceeded as e:
+        return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
+    except RankingSubmissionCommitUnknown as exc:
+        return _submit_commit_unknown_response(competition_id, exc)
     except Exception as e:
         return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
-
-    try:
-        if os.path.getsize(answer_path) > ANSWER_MAX_BYTES:
-            raise ValueError(f'答案文件超过 {ANSWER_MAX_BYTES // (1024*1024)}MB 限制')
-        if os.path.getsize(code_path) > CODE_ZIP_MAX_BYTES:
-            raise ValueError(f'代码文件超过 {CODE_ZIP_MAX_BYTES // (1024*1024)}MB 限制')
-    except Exception as e:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        return _submit_error_response(competition_id, str(e), category='danger')
-
-    update_submission_files(submission_id, answer_name, answer_path, code_name, code_path, base_model=base_model)
 
     if scoring_mode == 'elo':
         # 初始化 ELO 状态、退役同用户更早提交、调度即时补战
         initial_rating = float(comp.get('elo_initial_rating') or 1500)
-        init_submission_elo_state(submission_id, initial_rating)
-        retire_excess_user_submissions(competition_id, user.get('username'), keep_count=2)
+        activate_elo_submission(
+            submission_id,
+            competition_id,
+            user.get('username'),
+            initial_rating,
+            keep_count=2,
+        )
         if _elo_initial_burst_task is not None:
             try:
                 _elo_initial_burst_task.apply_async(
@@ -1631,10 +1683,22 @@ def ranking_submit(competition_id):
         if _evaluate_ranking_task is None:
             flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
         else:
+            dispatch_task_id = str(uuid.uuid4())
             try:
-                async_result = _evaluate_ranking_task.apply_async(args=[submission_id])
-                set_agent_judge_task_id(submission_id, None, async_result.id)
+                if not reserve_standard_ranking_evaluation(
+                        submission_id,
+                        dispatch_task_id,
+                ):
+                    raise RuntimeError('无法取得普通评测数据库租约')
+                _evaluate_ranking_task.apply_async(
+                    args=[submission_id],
+                    task_id=dispatch_task_id,
+                )
             except Exception as e:
+                try:
+                    release_standard_ranking_evaluation(submission_id, dispatch_task_id)
+                except Exception:
+                    pass
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
         flash('提交成功，正在评测中', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
@@ -2817,9 +2881,13 @@ def ranking_appeals_json(competition_id):
     )
     total_pages = max(1, (total + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
     page_numbers = _page_window(page, total_pages)
-    rows_html = render_template('_ranking_appeal_rows.html', all_appeals=rows, competition=comp)
+    rows_html = render_template(
+        'ranking/components/appeal_rows.html',
+        all_appeals=rows,
+        competition=comp,
+    )
     pagination_html = render_template(
-        '_ranking_submission_pagination.html',
+        'ranking/components/pagination.html',
         competition=comp, current_page=page, total_pages=total_pages,
         page_numbers=page_numbers, submission_search_q=q, tab='appeals',
     )
@@ -2847,7 +2915,7 @@ def ranking_appeal_review(competition_id, appeal_id):
     if snapshot:
         snapshot = _render_snapshot_html(snapshot)
     return render_template(
-        'ranking_appeal_review.html',
+        'ranking/appeal_review.html',
         user=user, is_admin=True, competition=comp,
         appeal=appeal, submission=submission, snapshot=snapshot,
     )

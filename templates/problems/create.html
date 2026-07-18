@@ -1,0 +1,432 @@
+{% extends "layouts/site.html" %}
+{% block title %}添加题目 - {{ super() }}{% endblock %}
+{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block content %}
+<h2><i class="fas fa-pencil-alt me-2"></i> 添加新题目</h2>
+
+{% if error_message %}
+  <div class="alert alert-danger" role="alert">
+    {{ error_message }}
+  </div>
+{% endif %}
+
+<form id="addProblemForm" method="POST" action="{{ url_for('admin_problem.add_problem') }}">
+  
+  <!-- 第一行：标题、类型、语言 -->
+  <div class="row mb-3">
+    <div class="col-md-6">
+      <label for="titleInput" class="form-label"><i class="fas fa-heading me-2"></i> 题目标题</label>
+      <input type="text" class="form-control" id="titleInput" name="title" required>
+    </div>
+    <!-- 题目类型 -->
+    <div class="col-md-3">
+      <label for="problemTypeSelect" class="form-label">
+        <i class="fas fa-question me-2"></i> 题目类型
+      </label>
+      <select class="form-select" id="problemTypeSelect" name="type" required>
+        <option value="1" selected>编程题</option>
+        <option value="2">书面作业</option>
+      </select>
+    </div>
+
+    <!-- 题目语言（仅编程题显示） -->
+    <div class="col-md-3" id="langField">
+      <label for="langSelect" class="form-label">
+        <i class="fas fa-language me-2"></i> 语言
+      </label>
+      <select class="form-select" id="langSelect" name="lang">
+        <option value="matlab" selected>MATLAB</option>
+        <option value="c">C</option>
+        <option value="cpp">C++</option>
+        <option value="python">Python</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- 第二行：时限、提交次数限制（仅编程题显示） -->
+  <div class="row mb-3" id="programmingConfigFields">
+    <!-- 时限 -->
+    <div class="col-md-6" id="timeLimitField">
+      <label for="timeLimitInput" class="form-label">
+        <i class="fas fa-stopwatch me-2"></i> 测试点时限 (毫秒 ms)
+      </label>
+      <input type="number" class="form-control" id="timeLimitInput" name="time_limit" value="2000" required>
+    </div>
+
+    <!-- 提交次数限制 -->
+    <div class="col-md-6">
+      <label for="submissionLimitInput" class="form-label">
+        <i class="fas fa-check-circle me-2"></i> 提交次数限制
+      </label>
+      <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" value="10" min="1" required>
+    </div>
+  </div>
+
+  <div id="programmingGradingFields" class="mb-3">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label for="programmingGradingModeSelect" class="form-label">
+          <i class="fas fa-sliders me-2"></i> 批改模式
+        </label>
+        <select class="form-select" id="programmingGradingModeSelect" name="programming_grading_mode" onchange="_toggleProgrammingImageFields(this.value)">
+          <option value="1" selected>传统交互</option>
+          <option value="2">批改图片</option>
+          <option value="3">Promptly</option>
+        </select>
+      </div>
+      <div class="col-md-6 d-none" id="programmingOutputFilenameField">
+        <label for="programmingOutputFilenameInput" class="form-label">
+          <i class="fas fa-image me-2"></i> 输出文件名
+        </label>
+        <input
+          type="text"
+          class="form-control"
+          id="programmingOutputFilenameInput"
+          name="programming_output_filename"
+          value="output.png"
+          placeholder="例如：output.png">
+      </div>
+      <div class="col-md-6 d-none" id="programmingGradingModelField">
+        <label for="programmingGradingModelSelect" class="form-label">
+          <i class="fas fa-robot me-2"></i> 批改模型
+        </label>
+        <select class="form-select" id="programmingGradingModelSelect" name="programming_grading_model">
+          {% set default_programming_model = default_programming_grading_model %}
+          {% for model_option in programming_grading_model_options %}
+          <option value="{{ model_option }}" {% if model_option == default_programming_model %}selected{% endif %}>
+            {% if 'vl' in model_option %}
+              Qwen3-VL
+            {% elif 'qwen3.5-plus' in model_option %}
+              Qwen-3.5-plus
+            {% else %}
+              {{ model_option }}
+            {% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12 d-none" id="programmingGradingPromptField">
+        <label for="programmingGradingPromptInput" class="form-label">
+          <i class="fas fa-list-check me-2"></i>
+          <span id="programmingGradingPromptLabelText">评分标准</span>
+        </label>
+        <textarea
+          class="form-control"
+          id="programmingGradingPromptInput"
+          name="programming_grading_prompt"
+          rows="6"
+          placeholder="例如：图像内容与题意完全一致记 1 分；若缺少关键元素、布局错误、标注错误或未按要求绘图记 0 分。"></textarea>
+      </div>
+      <div class="col-12 d-none" id="promptlyReviewConfigField">
+        <div class="border rounded p-3">
+          <div class="mb-3">
+            <label for="promptlyBriefInput" class="form-label">
+              <i class="fas fa-align-left me-2"></i> 简要题意
+            </label>
+            <textarea
+              class="form-control"
+              id="promptlyBriefInput"
+              rows="3"
+              placeholder="用几句话概括题目要求，供 prompt 审查模型判断学生思路是否符合题意。"></textarea>
+          </div>
+          <div class="mb-3">
+            <label for="promptlyRequirementsInput" class="form-label">
+              <i class="fas fa-list-check me-2"></i> Prompt 要求
+            </label>
+            <textarea
+              class="form-control"
+              id="promptlyRequirementsInput"
+              rows="4"
+              placeholder="说明学生 prompt 至少需要包含哪些算法、数据结构、状态维护或边界处理。"></textarea>
+          </div>
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <label class="form-label mb-0">
+              <i class="fas fa-comments me-2"></i> 示例回复
+            </label>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="addPromptlyExampleBtn">
+              <i class="fas fa-plus me-1"></i> 添加
+            </button>
+          </div>
+          <div id="promptlyExampleList" class="d-grid gap-2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 书面作业提示 -->
+  <div id="writtenAssignmentFields" class="mb-3" style="display:none;">
+    <p>书面作业：学生将通过提交文件来完成作业，老师需要人工批改。</p>
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label for="writtenGradingModeSelect" class="form-label">
+          <i class="fas fa-sliders me-2"></i> 批改模式
+        </label>
+        <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode" onchange="_toggleAiGradingFields(this.value)">
+          <option value="1" selected>OCR + 文本批改</option>
+          <option value="2">直接批改图片</option>
+          <option value="3">tex 文本批改</option>
+          <option value="4">纯人工批改</option>
+        </select>
+      </div>
+      <div class="col-md-6" id="writtenGradingModelField">
+        <label for="writtenGradingModelSelect" class="form-label">
+          <i class="fas fa-robot me-2"></i> 批改模型
+        </label>
+        <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
+          {% set default_written_model = default_written_grading_model %}
+          {% for model_option in written_grading_model_options %}
+          <option value="{{ model_option }}" {% if model_option == default_written_model %}selected{% endif %}>{{ model_option }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12" id="writtenGradingPromptField">
+        <label for="writtenGradingPromptInput" class="form-label">
+          <i class="fas fa-list-check me-2"></i> 评分标准
+        </label>
+        <textarea
+          class="form-control"
+          id="writtenGradingPromptInput"
+          name="written_grading_prompt"
+          rows="6"
+          placeholder="例如：步骤完整性 2 分、关键结论正确性 2 分、表达规范性 1 分；若缺失边界条件，最多给 4 分。">{{ default_written_grading_prompt or '' }}</textarea>
+      </div>
+      <script>
+        function _toggleAiGradingFields(mode) {
+          const hide = mode === '4';
+          document.getElementById('writtenGradingModelField').style.display = hide ? 'none' : '';
+          document.getElementById('writtenGradingPromptField').style.display = hide ? 'none' : '';
+        }
+
+        function _toggleProgrammingImageFields(mode) {
+          const isImageMode = mode === '2';
+          const isPromptlyMode = mode === '3';
+          const promptField = document.getElementById('programmingGradingPromptField');
+          const promptLabel = document.getElementById('programmingGradingPromptLabelText');
+          const promptInput = document.getElementById('programmingGradingPromptInput');
+          const promptlyField = document.getElementById('promptlyReviewConfigField');
+          document.getElementById('programmingOutputFilenameField').classList.toggle('d-none', !isImageMode);
+          document.getElementById('programmingGradingModelField').classList.toggle('d-none', !(isImageMode || isPromptlyMode));
+          promptField.classList.toggle('d-none', !isImageMode);
+          if (promptlyField) promptlyField.classList.toggle('d-none', !isPromptlyMode);
+          if (isPromptlyMode) {
+            initPromptlyReviewConfig();
+            serializePromptlyReviewConfig();
+          } else {
+            promptLabel.textContent = '评分标准';
+            promptInput.placeholder = '例如：图像内容与题意完全一致记 1 分；若缺少关键元素、布局错误、标注错误或未按要求绘图记 0 分。';
+          }
+        }
+
+        let promptlyReviewInitialized = false;
+
+        function parsePromptlyReviewConfig(raw) {
+          try {
+            const obj = JSON.parse(raw || '{}');
+            return {
+              brief: obj.brief || obj.problem_brief || obj.summary || obj.context || '',
+              prompt_requirements: obj.prompt_requirements || obj.requirements || obj.prompt_rules || '',
+              example_replies: Array.isArray(obj.example_replies)
+                ? obj.example_replies
+                : (Array.isArray(obj.examples) ? obj.examples : [])
+            };
+          } catch (_) {
+            return {
+              brief: raw || '',
+              prompt_requirements: '',
+              example_replies: []
+            };
+          }
+        }
+
+        function addPromptlyExample(value) {
+          const list = document.getElementById('promptlyExampleList');
+          if (!list) return;
+          const row = document.createElement('div');
+          row.className = 'input-group promptly-example-row';
+          const textarea = document.createElement('textarea');
+          textarea.className = 'form-control promptly-example-input';
+          textarea.rows = 2;
+          textarea.placeholder = '例如：请补充具体算法思路，说明使用的数据结构和关键更新规则。';
+          textarea.value = value || '';
+          textarea.addEventListener('input', serializePromptlyReviewConfig);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-outline-danger';
+          btn.innerHTML = '<i class="fas fa-trash"></i>';
+          btn.addEventListener('click', function() {
+            row.remove();
+            serializePromptlyReviewConfig();
+          });
+          row.appendChild(textarea);
+          row.appendChild(btn);
+          list.appendChild(row);
+        }
+
+        function serializePromptlyReviewConfig() {
+          const promptInput = document.getElementById('programmingGradingPromptInput');
+          const briefInput = document.getElementById('promptlyBriefInput');
+          const requirementsInput = document.getElementById('promptlyRequirementsInput');
+          if (!promptInput || !briefInput || !requirementsInput) return;
+          const examples = Array.from(document.querySelectorAll('.promptly-example-input'))
+            .map(el => (el.value || '').trim())
+            .filter(Boolean);
+          promptInput.value = JSON.stringify({
+            brief: (briefInput.value || '').trim(),
+            prompt_requirements: (requirementsInput.value || '').trim(),
+            example_replies: examples
+          }, null, 2);
+        }
+
+        function initPromptlyReviewConfig() {
+          if (promptlyReviewInitialized) return;
+          promptlyReviewInitialized = true;
+          const promptInput = document.getElementById('programmingGradingPromptInput');
+          const briefInput = document.getElementById('promptlyBriefInput');
+          const requirementsInput = document.getElementById('promptlyRequirementsInput');
+          const addBtn = document.getElementById('addPromptlyExampleBtn');
+          const list = document.getElementById('promptlyExampleList');
+          if (!promptInput || !briefInput || !requirementsInput || !list) return;
+          const config = parsePromptlyReviewConfig(promptInput.value || '');
+          briefInput.value = config.brief || '';
+          requirementsInput.value = config.prompt_requirements || '';
+          list.innerHTML = '';
+          const examples = (config.example_replies || []).filter(Boolean);
+          if (examples.length) {
+            examples.forEach(addPromptlyExample);
+          } else {
+            addPromptlyExample('');
+          }
+          briefInput.addEventListener('input', serializePromptlyReviewConfig);
+          requirementsInput.addEventListener('input', serializePromptlyReviewConfig);
+          if (addBtn) {
+            addBtn.addEventListener('click', function() {
+              addPromptlyExample('');
+              serializePromptlyReviewConfig();
+            });
+          }
+          const form = document.querySelector('form[method="POST"]');
+          if (form) {
+            form.addEventListener('submit', function() {
+              const mode = document.getElementById('programmingGradingModeSelect');
+              if (mode && mode.value === '3') serializePromptlyReviewConfig();
+            });
+          }
+        }
+      </script>
+    </div>
+  </div>
+
+  <div class="mb-3">
+    <label for="contentTextArea" class="form-label"><i class="fab fa-markdown me-2"></i> 题面 (Markdown + LaTeX)</label>
+    <textarea class="form-control" id="contentTextArea" name="content" rows="10" required></textarea>
+    <small class="text-muted">可使用 Markdown + LaTeX 语法；如行内公式可用 \$...\$ 或 \\(...\\)。</small>
+  </div>
+
+  <div class="row mb-3">
+    <div id="programmingFields" class="col-md-6">
+      <label class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
+      <div class="card">
+        <div class="card-body p-0">
+          <textarea id="initialCode" name="initial_code" style="display:none;"></textarea>
+          <div id="initialCodeEditorBox"></div>
+        </div>
+      </div>
+      <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
+    </div>
+
+    <div id="testLibFields" class="col-md-6">
+      <label class="form-label"><i class="fas fa-code me-2"></i> 交互库代码 (可选)</label>
+      <div class="card">
+        <div class="card-body p-0">
+          <textarea id="testCode" name="test_code" style="display:none;"></textarea>
+          <div id="testCodeEditorBox"></div>
+        </div>
+      </div>
+      <small class="text-muted">
+        这段代码用作交互库/评测模板。学生代码将会粘贴到 <code>%%user_code_here</code> 所在位置。
+      </small>
+    </div>
+  </div>
+
+  <div class="mb-3" id="forbiddenFuncDiv">
+    <label for="forbiddenFuncInput" class="form-label"><i class="fas fa-ban me-2"></i> 禁用函数 (可选)</label>
+    <input type="text" class="form-control" id="forbiddenFuncInput" name="forbidden_func" placeholder="例如：system, popen, fork">
+    <small class="text-muted">可以输入多个函数名，用逗号分隔。</small>
+  </div>
+
+  <button type="submit" class="btn btn-outline-success"><i class="fas fa-check"></i> 确认添加</button>
+</form>
+
+{% include 'components/editor/codemirror.html' %}
+
+<script>
+  function getModeByLang(lang) {
+    if (lang === 'cpp') return 'text/x-c++src';
+    if (lang === 'c') return 'text/x-csrc';
+    if (lang === 'python' || lang === 'py') return 'python';
+    return 'octave';
+  }
+
+  const formEl = document.getElementById('addProblemForm');
+  const problemTypeSelect = document.getElementById('problemTypeSelect');
+  const langSelect = document.getElementById('langSelect');
+
+  var initialCodeEditor = CodeMirror(document.getElementById('initialCodeEditorBox'), {
+    value: document.getElementById('initialCode').value || '',
+    mode: getModeByLang(langSelect.value),
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    matchBrackets: true,
+    autofocus: true,
+    extraKeys: {"Tab": "indentMore","Shift-Tab": "indentLess"}
+  });
+  initialCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  initialCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  var testCodeEditor = CodeMirror(document.getElementById('testCodeEditorBox'), {
+    value: document.getElementById('testCode').value || '',
+    mode: getModeByLang(langSelect.value),
+    theme: 'eclipse',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    matchBrackets: true,
+    autofocus: false,
+    extraKeys: {"Tab": "indentMore","Shift-Tab": "indentLess"}
+  });
+  testCodeEditor.getWrapperElement().style.fontFamily = "monospace";
+  testCodeEditor.getWrapperElement().style.fontSize = "14px";
+
+  function syncVisibility() {
+    const isProgramming = (problemTypeSelect.value === '1');
+    document.getElementById('programmingFields').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('testLibFields').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('forbiddenFuncDiv').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('programmingGradingFields').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('writtenAssignmentFields').style.display = isProgramming ? 'none' : 'block';
+    document.getElementById('langField').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('programmingConfigFields').style.display = isProgramming ? 'flex' : 'none';
+  }
+  // 立即执行一次，确保初始可见性正确
+  syncVisibility();
+  _toggleProgrammingImageFields(document.getElementById('programmingGradingModeSelect').value);
+  _toggleAiGradingFields(document.getElementById('writtenGradingModeSelect').value);
+  problemTypeSelect.addEventListener('change', syncVisibility);
+
+  langSelect.addEventListener('change', function() {
+    const mode = getModeByLang(this.value);
+    initialCodeEditor.setOption('mode', mode);
+    testCodeEditor.setOption('mode', mode);
+  });
+
+  // 仅绑定到当前这个表单，提交前回填隐藏 textarea 的值
+  formEl.addEventListener('submit', function() {
+    document.getElementById('initialCode').value = initialCodeEditor.getValue();
+    document.getElementById('testCode').value = testCodeEditor.getValue();
+  });
+</script>
+{% endblock %}

@@ -5,6 +5,10 @@ import re
 
 from flask import Blueprint, current_app, flash, jsonify, render_template, request, session
 
+from oj_modules.class_membership_services import (
+    MembershipNotFoundError,
+    set_primary_membership,
+)
 from oj_modules.db_services import (
     delete_user_problem_max_score,
     get_all_classes,
@@ -123,7 +127,7 @@ def user_management():
 
     classes = get_all_classes()
     return render_template(
-        'admin_user_management.html',
+        'admin/users.html',
         users=users,
         classes=classes,
         user=user,
@@ -159,38 +163,22 @@ def edit_user_ajax():
     if old_class_en == new_class['class_en'] and user.get('class_cn') == new_class['class_cn'] and user.get('is_admin') == give_admin:
         return jsonify({'success': True, 'message': '主班级未变化', 'user_id': user_id, 'new_class': new_class})
 
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "UPDATE users SET class=%s, class_cn=%s, is_admin=%s WHERE id=%s",
-                (new_class['class_en'], new_class['class_cn'], give_admin, user_id),
-            )
-
-            if old_class_en:
-                cursor.execute("UPDATE class_table SET class_cnt=class_cnt-1 WHERE class_en=%s", (old_class_en,))
-            cursor.execute("UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s", (new_class['class_en'],))
-
-            try:
-                cursor.execute("UPDATE user_class_map SET is_primary=0 WHERE user_id=%s", (user_id,))
-                cursor.execute(
-                    """
-                    INSERT INTO user_class_map (user_id, class_en, is_primary)
-                    VALUES (%s, %s, 1)
-                    ON DUPLICATE KEY UPDATE is_primary=VALUES(is_primary)
-                    """,
-                    (user_id, new_class['class_en']),
-                )
-            except Exception:
-                pass
-
-        conn.commit()
-
-    except Exception as e:
-        conn.rollback()
+        set_primary_membership(
+            user_id,
+            new_class['class_en'],
+            new_class['class_cn'],
+            give_admin,
+            create_if_missing=True,
+        )
+    except MembershipNotFoundError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    except Exception:
+        current_app.logger.exception(
+            '管理员修改用户主班级事务失败',
+            extra={'user_id': user_id, 'class_en': new_class['class_en']},
+        )
         return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500
-    finally:
-        conn.close()
 
     _invalidate_problem_list_cache_for_user(user_id=user_id, username=user.get('username'))
     flash(f"已将 userID={user_id} 的主班级修改为 {new_class['class_cn']}", 'success')

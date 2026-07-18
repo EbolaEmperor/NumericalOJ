@@ -1,0 +1,1001 @@
+{% extends "layouts/site.html" %}
+
+{% block title %}代码仓库管理 - Numerical OJ{% endblock %}
+
+{% block content %}
+<div class="container-fluid p-0" style="height: calc(100vh - 56px);">
+    <div class="row h-100 g-0">
+        <!-- 左侧文件列表 -->
+        <div class="col-md-3 bg-light border-end" style="min-height: 100%;">
+            <div class="p-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="mb-0">我的代码仓库</h5>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="createNewFile()">
+                            <i class="fas fa-plus"></i> 新建
+                        </button>
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="uploadFile()">
+                            <i class="fas fa-upload"></i> 上传
+                        </button>
+                    </div>
+                </div>
+                <div class="d-grid gap-2 mb-3">
+                    <button id="structuredIndexBuildBtn" type="button" class="btn btn-warning btn-sm" onclick="startStructuredIndexBuild()">
+                        <i class="fas fa-sitemap"></i> 结构化整理
+                    </button>
+                    <button type="button" class="btn btn-outline-success btn-sm" onclick="openSemanticSearch()">
+                        <i class="fas fa-search"></i> 语义检索
+                    </button>
+                    <div id="indexJobStatus" class="small text-muted"></div>
+                </div>
+                
+                <!-- 文件列表 -->
+                <div id="fileList" class="list-group">
+                    <div class="text-center text-muted p-3">
+                        <span class="math-curve-loader" data-math-curve-loader data-size="md">
+                            <span class="math-curve-loader__label">正在加载文件…</span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧编辑器 -->
+        <div class="col-md-9 d-flex flex-column" style="min-height: 100%;">
+            <!-- 文件标签栏 -->
+            <div class="bg-light border-bottom p-2" id="fileTabBar" style="min-height: 50px;">
+                <div id="welcomeTab" class="text-center text-muted p-3">
+                    <i class="fas fa-code fa-3x mb-3"></i>
+                    <h5>欢迎使用代码仓库</h5>
+                    <p>选择左侧的文件开始编辑，或创建新文件</p>
+                </div>
+                <div id="fileTab" class="d-none">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="d-flex align-items-center">
+                            <span id="currentFileName" class="fw-bold"></span>
+                            <span id="fileModified" class="text-danger ms-2 d-none">*</span>
+                        </div>
+                        <div class="btn-group">
+                            <button id="rebuildCurrentFileIndexBtn" type="button" class="btn btn-outline-warning btn-sm" onclick="rebuildCurrentFileIndex()" disabled>
+                                <i class="fas fa-redo"></i> 重建索引
+                            </button>
+                            <button type="button" class="btn btn-success btn-sm" onclick="saveFile()">
+                                <i class="fas fa-save"></i> 保存
+                            </button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="deleteFile()">
+                                <i class="fas fa-trash"></i> 删除
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="closeFile()">
+                                <i class="fas fa-times"></i> 关闭
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 代码编辑器 -->
+            <div class="flex-grow-1" style="position: relative;">
+                <textarea id="codeEditor" class="form-control border-0" style="width: 100%; height: 100%; resize: none; font-family: 'Courier New', monospace; font-size: 14px;" placeholder="在这里编写代码..."></textarea>
+                <div id="codeMirrorContainer" style="height: 100%;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 语义检索模态框 -->
+<div class="modal fade" id="semanticSearchModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">代码仓库语义检索</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-8">
+                        <label for="semanticQuery" class="form-label">查询语句</label>
+                        <input type="text" class="form-control" id="semanticQuery" placeholder="例如：计算前缀和的函数">
+                    </div>
+                    <div class="col-md-2">
+                        <label for="semanticTopK" class="form-label">Top-K</label>
+                        <select class="form-select" id="semanticTopK">
+                            <option value="3">3</option>
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 d-grid">
+                        <button type="button" class="btn btn-success" onclick="searchRepositorySemantic()">
+                            检索
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-3 text-muted small" id="semanticSearchMeta"></div>
+                <div class="mt-3" id="semanticSearchResults">
+                    <div class="text-muted">请输入查询语句后点击检索。</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 新建文件模态框 -->
+<div class="modal fade" id="newFileModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">新建文件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="newFileForm">
+                    <div class="mb-3">
+                        <label for="newFileName" class="form-label">文件名</label>
+                        <input type="text" class="form-control" id="newFileName" placeholder="例如: myheader.h" required>
+                        <div class="form-text">支持的文件类型: .h, .hpp, .c, .cpp</div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmCreateFile()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 文件上传模态框 -->
+<div class="modal fade" id="uploadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">上传文件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="uploadFile" class="form-label">选择文件</label>
+                        <input type="file" class="form-control" id="uploadFile" accept=".h,.hpp,.c,.cpp" required>
+                        <div class="form-text">支持的文件类型: .h, .hpp, .c, .cpp (最大100KB)</div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmUploadFile()">上传</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* 文件列表样式 */
+.file-item {
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.file-item:hover {
+    background-color: #e9ecef !important;
+}
+
+.file-item.active {
+    background-color: #007bff !important;
+    color: white !important;
+}
+
+/* 编辑器样式 */
+#codeEditor {
+    outline: none;
+    border: none !important;
+    background-color: #f8f9fa;
+}
+
+#codeEditor:focus {
+    box-shadow: none;
+    background-color: white;
+}
+
+/* CodeMirror 样式 */
+#codeMirrorContainer .CodeMirror {
+    height: 100%;
+    border: none;
+    font-family: 'Courier New', Monaco, 'Lucida Console', monospace;
+    font-size: 14px;
+}
+
+#codeMirrorContainer .CodeMirror-scroll {
+    overflow: auto;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+.semantic-hit-card {
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+    background: #fff;
+}
+
+.semantic-hit-code {
+    margin-top: 8px;
+    max-height: 220px;
+    overflow: auto;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 12px;
+    white-space: pre-wrap;
+}
+</style>
+
+{% include 'components/editor/codemirror.html' %}
+
+<script>
+let currentFileId = null;
+let currentFileName = '';
+let isModified = false;
+let originalContent = '';
+let codeMirrorEditor = null;
+let currentIndexJobId = null;
+let indexStatusTimer = null;
+let isStartingIndexBuild = false;
+let isStartingFileRebuild = false;
+
+const repositoryIndexStageLabelMap = {
+    prepare: '准备阶段',
+    file_prepare: '文件预处理',
+    clang_ast: 'clang AST 解析',
+    syntax_parse: '语法树解析',
+    class_structuring: '类声明结构化',
+    function_structuring: '函数结构化',
+    embedding: '向量化',
+    persist: '写入索引',
+    file_done: '文件完成',
+    completed: '全部完成',
+    canceled: '任务取消',
+    failed: '任务失败',
+};
+
+function parseRepositoryIndexProgressMessage(rawMessage) {
+    const text = String(rawMessage || '').trim();
+    if (!text) {
+        return { stage: '', detail: '' };
+    }
+    const match = text.match(/^\[stage:([a-z_]+)\]\s*(.*)$/i);
+    if (!match) {
+        return { stage: '', detail: text };
+    }
+    const stage = String(match[1] || '').toLowerCase();
+    const detail = String(match[2] || '').trim();
+    return { stage, detail };
+}
+
+// 页面加载完成后初始化
+document.addEventListener('DOMContentLoaded', function() {
+    loadFileList();
+    initializeCodeMirror();
+    resumeIndexJobStatus();
+    
+    // 监听键盘快捷键
+    document.addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.key === 's') {
+            e.preventDefault();
+            if (currentFileId !== null) {
+                saveFile();
+            }
+        }
+    });
+});
+
+// 初始化CodeMirror编辑器
+function initializeCodeMirror() {
+    const textarea = document.getElementById('codeEditor');
+    
+    codeMirrorEditor = CodeMirror.fromTextArea(textarea, {
+        mode: 'text/x-csrc', // 默认C语言模式
+        theme: 'eclipse',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 4,
+        tabSize: 4,
+        matchBrackets: true,
+        autoCloseBrackets: true,
+        autofocus: false,
+        extraKeys: { "Tab": "indentMore", "Shift-Tab": "indentLess" }
+    });
+    
+    codeMirrorEditor.getWrapperElement().style.fontFamily = "monospace";
+    codeMirrorEditor.getWrapperElement().style.fontSize = "14px";
+    
+    // 监听编辑器内容变化
+    codeMirrorEditor.on('change', function() {
+        if (currentFileId !== null) {
+            const currentContent = codeMirrorEditor.getValue();
+            isModified = (currentContent !== originalContent);
+            updateModifiedStatus();
+        }
+    });
+    
+    // 设置编辑器高度
+    codeMirrorEditor.setSize(null, '100%');
+    
+    // 隐藏原始textarea
+    textarea.style.display = 'none';
+}
+
+// 根据文件名获取CodeMirror模式
+function getCodeMirrorMode(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    switch (ext) {
+        case 'c':
+            return 'text/x-csrc';
+        case 'h':
+        case 'hpp':
+        case 'cpp':
+            return 'text/x-c++src';
+        case 'py':
+            return 'python';
+        default:
+            return 'text/x-csrc'; // 默认C语言
+    }
+}
+
+// 加载文件列表
+function loadFileList() {
+    fetch('/api/repository/files')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                renderFileList(data.files);
+            } else {
+                showAlert('error', data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showAlert('error', '加载文件列表失败');
+        });
+}
+
+// 渲染文件列表
+function renderFileList(files) {
+    const fileList = document.getElementById('fileList');
+    
+    if (files.length === 0) {
+        fileList.innerHTML = `
+            <div class="text-center text-muted p-3">
+                <i class="fas fa-folder-open fa-2x mb-2"></i>
+                <p>暂无文件</p>
+                <small>点击"新建"或"上传"按钮添加文件</small>
+            </div>
+        `;
+        return;
+    }
+    
+    let html = '';
+    files.forEach(file => {
+        const icon = getFileIcon(file.filename);
+        html += `
+            <div class="list-group-item file-item" data-file-id="${file.id}" onclick="openFile(${file.id}, '${file.filename}')">
+                <div class="d-flex align-items-center">
+                    <i class="${icon} me-2"></i>
+                    <div class="flex-grow-1">
+                        <div class="fw-bold">${file.filename}</div>
+                        <small class="text-muted">${file.file_size_kb} KB • ${file.updated_at}</small>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    fileList.innerHTML = html;
+}
+
+// 获取文件图标
+function getFileIcon(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    switch (ext) {
+        case 'h':
+        case 'hpp':
+            return 'fas fa-file-code text-primary';
+        case 'c':
+        case 'cpp':
+            return 'fas fa-file-code text-success';
+        default:
+            return 'fas fa-file text-secondary';
+    }
+}
+
+// 打开文件
+function openFile(fileId, filename) {
+    if (isModified) {
+        if (!confirm('当前文件有未保存的更改，是否放弃更改？')) {
+            return;
+        }
+    }
+    
+    fetch(`/api/repository/file/${fileId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                currentFileId = fileId;
+                currentFileName = data.filename;
+                originalContent = data.content;
+                isModified = false;
+                
+                // 设置CodeMirror编辑器内容和语法高亮模式
+                if (codeMirrorEditor) {
+                    const mode = getCodeMirrorMode(data.filename);
+                    codeMirrorEditor.setOption('mode', mode);
+                    codeMirrorEditor.setValue(data.content);
+                    codeMirrorEditor.clearHistory(); // 清除编辑历史
+                }
+                
+                document.getElementById('currentFileName').textContent = data.filename;
+                
+                // 切换界面
+                document.getElementById('welcomeTab').classList.add('d-none');
+                document.getElementById('fileTab').classList.remove('d-none');
+                
+                // 更新文件列表选中状态
+                document.querySelectorAll('.file-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                document.querySelector(`[data-file-id="${fileId}"]`).classList.add('active');
+                
+                updateModifiedStatus();
+                updateCurrentFileRebuildButtonState();
+            } else {
+                showAlert('error', data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showAlert('error', '打开文件失败');
+        });
+}
+
+// 关闭文件
+function closeFile() {
+    if (isModified) {
+        if (!confirm('当前文件有未保存的更改，是否放弃更改？')) {
+            return;
+        }
+    }
+    
+    currentFileId = null;
+    currentFileName = '';
+    isModified = false;
+    originalContent = '';
+    
+    // 清空CodeMirror编辑器
+    if (codeMirrorEditor) {
+        codeMirrorEditor.setValue('');
+        codeMirrorEditor.setOption('mode', 'text/x-csrc');
+    }
+    
+    document.getElementById('welcomeTab').classList.remove('d-none');
+    document.getElementById('fileTab').classList.add('d-none');
+    
+    // 清除文件列表选中状态
+    document.querySelectorAll('.file-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    updateCurrentFileRebuildButtonState();
+}
+
+// 保存文件
+function saveFile() {
+    if (currentFileId === null) return;
+    
+    // 从CodeMirror编辑器获取内容
+    const content = codeMirrorEditor ? codeMirrorEditor.getValue() : document.getElementById('codeEditor').value;
+    
+    fetch('/api/repository/file', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            file_id: currentFileId,
+            filename: currentFileName,
+            content: content
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            originalContent = content;
+            isModified = false;
+            updateModifiedStatus();
+            showAlert('success', data.message);
+            loadFileList(); // 刷新文件列表
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '保存文件失败');
+    });
+}
+
+// 删除文件
+function deleteFile() {
+    if (currentFileId === null) return;
+    
+    if (!confirm(`确定要删除文件 "${currentFileName}" 吗？此操作不可恢复。`)) {
+        return;
+    }
+    
+    fetch(`/api/repository/file/${currentFileId}`, {
+        method: 'DELETE'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.message);
+            closeFile();
+            loadFileList();
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '删除文件失败');
+    });
+}
+
+// 创建新文件
+function createNewFile() {
+    document.getElementById('newFileName').value = '';
+    new bootstrap.Modal(document.getElementById('newFileModal')).show();
+}
+
+// 确认创建文件
+function confirmCreateFile() {
+    const filename = document.getElementById('newFileName').value.trim();
+    
+    if (!filename) {
+        showAlert('error', '请输入文件名');
+        return;
+    }
+    
+    // 验证文件扩展名
+    if (!/\.(h|hpp|c|cpp)$/i.test(filename)) {
+        showAlert('error', '只允许创建 .h, .hpp, .c, .cpp 文件');
+        return;
+    }
+    
+    fetch('/api/repository/file', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            filename: filename,
+            content: ''
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.message);
+            bootstrap.Modal.getInstance(document.getElementById('newFileModal')).hide();
+            loadFileList();
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '创建文件失败');
+    });
+}
+
+// 上传文件
+function uploadFile() {
+    document.getElementById('uploadFile').value = '';
+    new bootstrap.Modal(document.getElementById('uploadModal')).show();
+}
+
+// 确认上传文件
+function confirmUploadFile() {
+    const fileInput = document.getElementById('uploadFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        showAlert('error', '请选择文件');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    fetch('/api/repository/upload', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.message);
+            bootstrap.Modal.getInstance(document.getElementById('uploadModal')).hide();
+            loadFileList();
+        } else {
+            showAlert('error', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '上传文件失败');
+    });
+}
+
+function startStructuredIndexBuild() {
+    if (isStartingIndexBuild) {
+        return;
+    }
+    isStartingIndexBuild = true;
+    const btn = document.getElementById('structuredIndexBuildBtn');
+    if (btn) {
+        btn.disabled = true;
+    }
+
+    const startBuild = (forceRestart) => fetch('/api/repository/index/build', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            force_restart: !!forceRestart
+        })
+    })
+    .then(response => response.json());
+
+    startBuild(false)
+    .then(data => {
+        if (data && data.need_confirm) {
+            const confirmed = window.confirm('上一个整理任务正在运行，是否终止？');
+            if (!confirmed) {
+                return null;
+            }
+            return startBuild(true);
+        }
+        return data || null;
+    })
+    .then(data => {
+        if (!data) {
+            return;
+        }
+        if (!data.success) {
+            showAlert('error', data.message || '启动结构化整理失败');
+            return;
+        }
+        currentIndexJobId = data.job_id;
+        try {
+            localStorage.setItem('repositoryIndexJobId', String(currentIndexJobId));
+        } catch (e) {}
+        showAlert('success', data.message || '结构化整理任务已启动');
+        pollIndexJobStatus(currentIndexJobId);
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '启动结构化整理失败');
+    })
+    .finally(() => {
+        isStartingIndexBuild = false;
+        if (btn) {
+            btn.disabled = false;
+        }
+    });
+}
+
+function updateCurrentFileRebuildButtonState() {
+    const btn = document.getElementById('rebuildCurrentFileIndexBtn');
+    if (!btn) {
+        return;
+    }
+    btn.disabled = !(Number.isFinite(Number(currentFileId)) && Number(currentFileId) > 0) || isStartingFileRebuild;
+}
+
+function rebuildCurrentFileIndex() {
+    const fileId = Number(currentFileId || 0);
+    if (!Number.isFinite(fileId) || fileId <= 0) {
+        showAlert('error', '请先打开一个文件');
+        return;
+    }
+    if (isStartingFileRebuild) {
+        return;
+    }
+    isStartingFileRebuild = true;
+    updateCurrentFileRebuildButtonState();
+
+    const startRebuild = (forceRestart) => fetch('/api/repository/index/rebuild_file', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            file_id: fileId,
+            force_restart: !!forceRestart
+        })
+    })
+    .then(response => response.json());
+
+    startRebuild(false)
+    .then(data => {
+        if (data && data.need_confirm) {
+            const confirmed = window.confirm('上一个整理任务正在运行，是否终止？');
+            if (!confirmed) {
+                return null;
+            }
+            return startRebuild(true);
+        }
+        return data || null;
+    })
+    .then(data => {
+        if (!data) {
+            return;
+        }
+        if (!data.success) {
+            showAlert('error', data.message || '启动单文件索引重建失败');
+            return;
+        }
+        currentIndexJobId = data.job_id;
+        try {
+            localStorage.setItem('repositoryIndexJobId', String(currentIndexJobId));
+        } catch (e) {}
+        showAlert('success', data.message || '单文件索引重建任务已启动');
+        pollIndexJobStatus(currentIndexJobId);
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        showAlert('error', '启动单文件索引重建失败');
+    })
+    .finally(() => {
+        isStartingFileRebuild = false;
+        updateCurrentFileRebuildButtonState();
+    });
+}
+
+function pollIndexJobStatus(jobId) {
+    if (!jobId) return;
+    if (indexStatusTimer) {
+        clearInterval(indexStatusTimer);
+        indexStatusTimer = null;
+    }
+
+    const statusEl = document.getElementById('indexJobStatus');
+    const updateOnce = () => {
+        fetch(`/api/repository/index/status/${jobId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) {
+                    statusEl.textContent = '任务状态查询失败';
+                    return;
+                }
+                const job = data.job || {};
+                const progress = Number(job.progress || 0);
+                const parsedProgress = parseRepositoryIndexProgressMessage(job.progress_message);
+                const stageLabel = repositoryIndexStageLabelMap[parsedProgress.stage] || '';
+                const detail = parsedProgress.detail;
+                const stageText = stageLabel ? `【${stageLabel}】` : '';
+                const statusText =
+                    `整理任务 #${jobId}：${job.status || 'unknown'} (${progress}%)，文件 ${job.processed_files || 0}/${job.total_files || 0}` +
+                    `${stageText ? `，${stageText}` : ''}` +
+                    `${detail ? `，${detail}` : ''}`;
+
+                if (job.status === 'pending' || job.status === 'running') {
+                    MathCurveLoader.update(statusEl, statusText, {size: 'sm'});
+                } else {
+                    statusEl.textContent = statusText;
+                }
+
+                if (job.status === 'success') {
+                    clearInterval(indexStatusTimer);
+                    indexStatusTimer = null;
+                    try {
+                        localStorage.removeItem('repositoryIndexJobId');
+                    } catch (e) {}
+                    showAlert('success', `结构化整理完成：${job.total_chunks || 0} 个函数 chunk，${job.total_classes || 0} 个类`);
+                } else if (job.status === 'failed') {
+                    clearInterval(indexStatusTimer);
+                    indexStatusTimer = null;
+                    try {
+                        localStorage.removeItem('repositoryIndexJobId');
+                    } catch (e) {}
+                    showAlert('error', job.error_message || '结构化整理失败');
+                } else if (job.status === 'canceled') {
+                    clearInterval(indexStatusTimer);
+                    indexStatusTimer = null;
+                    try {
+                        localStorage.removeItem('repositoryIndexJobId');
+                    } catch (e) {}
+                    showAlert('warning', job.error_message || '结构化整理已取消');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusEl.textContent = '任务状态查询失败';
+            });
+    };
+
+    updateOnce();
+    indexStatusTimer = setInterval(updateOnce, 1500);
+}
+
+function resumeIndexJobStatus() {
+    let localJobId = null;
+    try {
+        localJobId = localStorage.getItem('repositoryIndexJobId');
+    } catch (e) {}
+
+    if (localJobId) {
+        const parsed = Number(localJobId);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            currentIndexJobId = parsed;
+            pollIndexJobStatus(parsed);
+            return;
+        }
+    }
+
+    fetch('/api/repository/index/status/active')
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success || !data.has_active || !data.job) {
+                return;
+            }
+            const activeId = Number(data.job.id || 0);
+            if (!Number.isFinite(activeId) || activeId <= 0) {
+                return;
+            }
+            currentIndexJobId = activeId;
+            try {
+                localStorage.setItem('repositoryIndexJobId', String(activeId));
+            } catch (e) {}
+            pollIndexJobStatus(activeId);
+        })
+        .catch(error => {
+            console.error('Error:', error);
+        });
+}
+
+function openSemanticSearch() {
+    document.getElementById('semanticQuery').value = '';
+    document.getElementById('semanticSearchMeta').textContent = '';
+    document.getElementById('semanticSearchResults').innerHTML = '<div class="text-muted">请输入查询语句后点击检索。</div>';
+    new bootstrap.Modal(document.getElementById('semanticSearchModal')).show();
+}
+
+function escapeHtml(raw) {
+    return String(raw || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function searchRepositorySemantic() {
+    const query = document.getElementById('semanticQuery').value.trim();
+    const topK = Number(document.getElementById('semanticTopK').value || 5);
+    const resultEl = document.getElementById('semanticSearchResults');
+    const metaEl = document.getElementById('semanticSearchMeta');
+
+    if (!query) {
+        showAlert('error', '请输入查询语句');
+        return;
+    }
+
+    resultEl.innerHTML = '<div class="text-muted">' + MathCurveLoader.markup('检索中…', 'md') + '</div>';
+    metaEl.textContent = '';
+
+    fetch('/api/repository/index/search', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            query: query,
+            top_k: topK,
+            score_threshold: 0.05
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (!data.success) {
+            resultEl.innerHTML = `<div class="text-danger">${escapeHtml(data.message || '检索失败')}</div>`;
+            return;
+        }
+
+        const hits = data.hits || [];
+        metaEl.textContent = `检索模型：${data.embedding_model || 'unknown'}，命中 ${hits.length} 条`;
+        if (hits.length === 0) {
+            resultEl.innerHTML = '<div class="text-muted">未命中结果。请先执行“结构化整理”，或更换检索语句。</div>';
+            return;
+        }
+
+        let html = '';
+        hits.forEach((hit, idx) => {
+            const scoreText = Number(hit.score || 0).toFixed(4);
+            html += `
+                <div class="semantic-hit-card">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="fw-bold">${idx + 1}. ${escapeHtml(hit.qualified_name || '')}</div>
+                        <span class="badge text-bg-primary">score=${scoreText}</span>
+                    </div>
+                    <div class="small text-muted mt-1">
+                        ${escapeHtml(hit.filename || '')} · 行 ${escapeHtml(hit.start_line || '-')}-${escapeHtml(hit.end_line || '-')}
+                        ${hit.access ? ` · ${escapeHtml(hit.access)}` : ''}
+                    </div>
+                    <div class="small mt-2"><strong>签名：</strong>${escapeHtml(hit.signature || '')}</div>
+                    <div class="small mt-1"><strong>说明：</strong>${escapeHtml(hit.summary || '')}</div>
+                    <pre class="semantic-hit-code">${escapeHtml(hit.code || '')}</pre>
+                </div>
+            `;
+        });
+        resultEl.innerHTML = html;
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        resultEl.innerHTML = '<div class="text-danger">检索失败，请稍后重试</div>';
+    });
+}
+
+// 更新修改状态显示
+function updateModifiedStatus() {
+    const modifiedIndicator = document.getElementById('fileModified');
+    if (isModified) {
+        modifiedIndicator.classList.remove('d-none');
+    } else {
+        modifiedIndicator.classList.add('d-none');
+    }
+}
+
+// 显示提示信息
+function showAlert(type, message) {
+    const alertClass = type === 'success' ? 'alert-success' : 'alert-danger';
+    const alertHtml = `
+        <div class="alert ${alertClass} alert-dismissible fade show position-fixed" 
+             style="top: 70px; right: 20px; z-index: 1050; min-width: 300px;">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+    
+    const alertContainer = document.createElement('div');
+    alertContainer.innerHTML = alertHtml;
+    document.body.appendChild(alertContainer);
+    
+    // 3秒后自动移除
+    setTimeout(() => {
+        const alert = alertContainer.querySelector('.alert');
+        if (alert) {
+            bootstrap.Alert.getOrCreateInstance(alert).close();
+        }
+    }, 3000);
+}
+</script>
+{% endblock %}

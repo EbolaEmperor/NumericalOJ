@@ -34,6 +34,11 @@ from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.routes.health_routes import create_health_blueprint
 from oj_modules.request_security import install_same_origin_protection
+from oj_modules.redis_clients import (
+    create_binary_redis_client,
+    create_blocking_redis_client,
+    create_text_redis_client,
+)
 from oj_modules.api import API_BLUEPRINTS
 from oj_modules.tasks import (
     init_agent_progress_cache,
@@ -66,26 +71,12 @@ from oj_modules.startup_requeue import (
     seed_pending_requeue_watchdog,
 )
 
-import redis
-
 # Redis 连接
-_REDIS_SOCKET_TIMEOUT = max(
-    0.1, float(getattr(_cfg, 'REDIS_SOCKET_TIMEOUT_SECONDS', 3.0)),
-)
-_REDIS_CLIENT_OPTIONS = {
-    'host': REDIS_HOST,
-    'port': int(REDIS_PORT),
-    'db': int(REDIS_DB),
-    'socket_connect_timeout': _REDIS_SOCKET_TIMEOUT,
-    'socket_timeout': _REDIS_SOCKET_TIMEOUT,
-    'health_check_interval': 30,
-}
-rds = redis.StrictRedis(**_REDIS_CLIENT_OPTIONS, decode_responses=True)
+rds = create_text_redis_client()
 # 用于存储二进制数据（如 ZIP 文件）的 Redis 连接
-rds_binary = redis.StrictRedis(
-    **_REDIS_CLIENT_OPTIONS,
-    decode_responses=False,
-)
+rds_binary = create_binary_redis_client()
+# 用于 Pub/Sub 等可能阻塞的读取，避免普通请求的短读超时中断长轮询。
+rds_blocking = create_blocking_redis_client()
 
 def _load_secret_key():
     """会话签名密钥来源（按优先级）：
@@ -198,7 +189,7 @@ def _handle_unexpected_error(e):
     if wants_json:
         return jsonify(success=False, message='服务器内部错误，请稍后再试'), 500
     try:
-        return render_template('error.html', message='服务器内部错误，请稍后再试'), 500
+        return render_template('shared/error.html', message='服务器内部错误，请稍后再试'), 500
     except Exception:
         return '服务器内部错误，请稍后再试', 500
 
@@ -282,6 +273,8 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     evaluate_submission,
     transcribe_written_homework_to_latex,
     promptly_task=promptly_generate_submission,
+    ranking_task=evaluate_ranking_submission,
+    elo_initial_burst_task=ranking_elo_initial_burst,
     agent_judge_task=evaluate_ranking_agent_judge,
     reverse_judge_task=evaluate_ranking_reverse_judge,
 )
@@ -315,13 +308,13 @@ init_auth_module(rds)
 # 初始化 AI 模块（ask_ai_code_marks 限流依赖 Redis）
 init_ai_module(rds)
 # 初始化 submission 状态快照缓存（Redis）
-init_submission_snapshot_cache(rds)
+init_submission_snapshot_cache(rds, blocking_client=rds_blocking)
 # 初始化 agent 运行状态缓存（Redis）
-init_agent_progress_cache(rds)
+init_agent_progress_cache(rds, blocking_client=rds_blocking)
 # 初始化打榜赛 Agent 评测进度缓存（Redis）
-init_judge_progress_cache(rds)
+init_judge_progress_cache(rds, blocking_client=rds_blocking)
 # 初始化打榜赛反向评测进度缓存（Redis）
-init_reverse_judge_progress_cache(rds)
+init_reverse_judge_progress_cache(rds, blocking_client=rds_blocking)
 # 初始化打榜赛「批量评测」探测进度缓存（Redis）
 init_batch_progress_cache(rds)
 # 初始化打榜赛「批量重测」进度缓存（Redis）

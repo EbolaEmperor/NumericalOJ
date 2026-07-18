@@ -6,8 +6,8 @@
     - README.md
     - oj.py
     - config.py
-    - celery.conf
-    - web.conf
+    - deploy/supervisor/celery.conf
+    - deploy/supervisor/web.conf
 - name: Web应用与数据层
   description: Flask 壳、蓝图与 JSON API、认证、数据库连接池和安全工具。
   content: zh/2-Web应用与数据层.md
@@ -70,7 +70,7 @@
   paths:
     - README.md
     - config.py
-    - celery.conf
-    - web.conf
+    - deploy/supervisor/celery.conf
+    - deploy/supervisor/web.conf
     - tests/
     - skills/

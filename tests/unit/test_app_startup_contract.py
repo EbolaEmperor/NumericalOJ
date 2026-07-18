@@ -38,14 +38,14 @@ def test_importing_oj_does_not_run_recovery_or_scheduling_jobs():
     assert actual == set()
 
 
-def test_production_web_runs_schema_then_uses_central_gunicorn_config():
-    config = (ROOT / 'web.conf').read_text(encoding='utf-8')
+def test_production_web_uses_central_gunicorn_config_without_schema_side_effects():
+    config = (ROOT / 'deploy' / 'supervisor' / 'web.conf').read_text(encoding='utf-8')
 
-    schema_position = config.index('scripts/init_db_schema.py')
     gunicorn_position = config.index('-m gunicorn')
 
-    assert schema_position < gunicorn_position
-    assert '--config gunicorn.conf.py' in config
+    assert gunicorn_position >= 0
+    assert 'scripts/init_db_schema.py' not in config
+    assert '--config deploy/gunicorn.py' in config
     assert 'scripts/run_startup_jobs.py' not in config
     assert '--workers' not in config
     assert '--threads' not in config
@@ -77,7 +77,7 @@ def test_destructive_recovery_is_separate_from_safe_scheduler_bootstrap():
 
 
 def test_gunicorn_config_preserves_single_worker_and_sse_capacity():
-    settings = runpy.run_path(str(ROOT / 'gunicorn.conf.py'))
+    settings = runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
 
     assert settings['worker_class'] == 'gthread'
     assert settings['workers'] == 1
@@ -87,7 +87,7 @@ def test_gunicorn_config_preserves_single_worker_and_sse_capacity():
 
 
 def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
-    settings = runpy.run_path(str(ROOT / 'gunicorn.conf.py'))
+    settings = runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
     calls = []
     fake_oj = types.ModuleType('oj')
     fake_oj.ensure_background_schedulers = lambda: calls.append('ensure')
@@ -104,8 +104,8 @@ def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
 
 
 def test_web_and_celery_supervisors_do_not_share_pid_or_log_files():
-    web_config = (ROOT / 'web.conf').read_text(encoding='utf-8')
-    celery_config = (ROOT / 'celery.conf').read_text(encoding='utf-8')
+    web_config = (ROOT / 'deploy' / 'supervisor' / 'web.conf').read_text(encoding='utf-8')
+    celery_config = (ROOT / 'deploy' / 'supervisor' / 'celery.conf').read_text(encoding='utf-8')
 
     assert 'pidfile=/tmp/noj_web_supervisord.pid' in web_config
     assert 'pidfile=/tmp/noj_celery_supervisord.pid' in celery_config

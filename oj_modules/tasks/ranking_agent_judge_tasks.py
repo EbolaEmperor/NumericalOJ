@@ -17,11 +17,6 @@ import urllib.request
 import zipfile
 
 try:
-    import redis as _redis
-except Exception:  # pragma: no cover
-    _redis = None
-
-try:
     from celery.exceptions import MaxRetriesExceededError, Retry
 except Exception:  # pragma: no cover
     class MaxRetriesExceededError(Exception):
@@ -30,9 +25,12 @@ except Exception:  # pragma: no cover
         pass
 
 import config as _cfg
-from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.archive_utils import ZipExtractionPolicy, extract_zip
 from oj_modules import ranking_agent_judge as aj
+from oj_modules.redis_clients import (
+    RedisClientProfile,
+    create_optional_redis_client,
+)
 from oj_modules.ranking_db import (
     get_competition, get_ranking_submission, list_competition_files,
     set_agent_judge_task_id, set_submission_status_for_attempt,
@@ -113,29 +111,34 @@ OPENCODE_HELLO_TIMEOUT_SECONDS = max(
 )
 
 _judge_rds = None
+_judge_blocking_rds = None
 _TERMINAL_STATUSES = {'Accepted', 'Error'}
 _UNTRUSTED_RESULT_MAX_BYTES = 1024 * 1024
 _UNTRUSTED_SESSION_STATE_MAX_BYTES = 256 * 1024
 
 
-def init_judge_progress_cache(redis_client):
-    global _judge_rds
+def init_judge_progress_cache(redis_client, blocking_client=None):
+    global _judge_rds, _judge_blocking_rds
     _judge_rds = redis_client
+    _judge_blocking_rds = redis_client if blocking_client is None else blocking_client
 
 
 def _ensure_judge_redis():
     global _judge_rds
     if _judge_rds is not None:
         return _judge_rds
-    if _redis is None:
-        return None
-    try:
-        _judge_rds = _redis.StrictRedis(host=REDIS_HOST, port=int(REDIS_PORT),
-                                        db=int(REDIS_DB), decode_responses=True)
-        _judge_rds.ping()
-    except Exception:
-        _judge_rds = None
+    _judge_rds = create_optional_redis_client()
     return _judge_rds
+
+
+def _ensure_judge_blocking_redis():
+    global _judge_blocking_rds
+    if _judge_blocking_rds is not None:
+        return _judge_blocking_rds
+    _judge_blocking_rds = create_optional_redis_client(
+        RedisClientProfile.BLOCKING,
+    )
+    return _judge_blocking_rds
 
 
 def _read_untrusted_regular_file(path, max_bytes):
@@ -194,7 +197,7 @@ def _judge_progress_channel(submission_id):
 
 
 def subscribe_judge_run_events(submission_id):
-    client = _ensure_judge_redis()
+    client = _ensure_judge_blocking_redis()
     if client is None:
         return None
     try:

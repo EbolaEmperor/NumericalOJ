@@ -10,12 +10,7 @@ Secondary store: MySQL           — persistent, survives Redis flushes.
 import json
 import time
 
-try:
-    import redis as _redis_mod
-except ImportError:
-    _redis_mod = None
-
-from config import REDIS_HOST, REDIS_PORT, REDIS_DB
+from oj_modules.redis_clients import create_optional_redis_client
 
 _TASK_KEY_PREFIX = "ai_detection:task:"
 _RECENT_TASKS_KEY = "ai_detection:recent_tasks"  # sorted set: score=submitted_ts
@@ -29,18 +24,7 @@ def _get_redis():
     global _rds
     if _rds is not None:
         return _rds
-    if _redis_mod is None:
-        return None
-    try:
-        _rds = _redis_mod.StrictRedis(
-            host=REDIS_HOST,
-            port=int(REDIS_PORT),
-            db=int(REDIS_DB),
-            decode_responses=True,
-        )
-        _rds.ping()
-    except Exception:
-        _rds = None
+    _rds = create_optional_redis_client()
     return _rds
 
 

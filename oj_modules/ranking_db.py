@@ -11,6 +11,7 @@
 
 import os
 import json
+import logging
 import shutil
 import uuid
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ from oj_modules.ranking_agent_judge import normalize_orchestration_mode
 
 
 _ranking_tables_ready = False
+logger = logging.getLogger(__name__)
 
 RANKING_UPLOAD_ROOT = 'ranking_uploads'
 ATTACHMENT_SUBDIR = 'attachments'
@@ -37,6 +39,16 @@ class RankingSubmissionQuotaExceeded(Exception):
     def __init__(self, quota):
         self.quota = quota
         super().__init__('ranking submission quota exceeded')
+
+
+class RankingSubmissionCommitUnknown(RuntimeError):
+    """数据库 commit 结果无法确认；文件会保留以避免破坏可能已提交的记录。"""
+
+    def __init__(self, submission_id):
+        self.submission_id = int(submission_id)
+        super().__init__(
+            f'提交 {self.submission_id} 的数据库结果无法确认；文件已保留待核验'
+        )
 
 
 def quota_window_bounds(anchor, now, window_seconds=RANK_LIMIT_WINDOW_SECONDS):
@@ -663,63 +675,112 @@ def _attach_agent_endpoint_labels(rows, *, label_key='agent_endpoint_label',
     return rows
 
 
+def _normalize_submission_source(source):
+    return 'batch' if str(source or '').strip().lower() == 'batch' else 'self'
+
+
+def _record_submission_metric(submission_id):
+    """每日计数是派生指标，失败不得让调用方误判业务提交失败。"""
+    try:
+        bump_daily_submission_count()
+    except Exception:
+        logger.exception(
+            '打榜赛提交已成功，但每日提交计数更新失败',
+            extra={'submission_id': int(submission_id)},
+        )
+
+
+def _lock_submission_quota(cursor, competition_id, username, *, source, enforce_quota):
+    """在当前事务内按用户串行化并执行权威配额检查。
+
+    文件型提交会在拿锁前先把上传内容写入同文件系统的临时目录，随后在这把锁保护的
+    事务中插入行、安装文件并写元数据。这样既不延长网络上传阶段的锁持有时间，也不
+    会让同一用户的并发提交绕过 48 小时窗口上限。锁定稳定的 ``users`` 行而不是比赛
+    行，避免不同学生向同一比赛提交时被全局串行化。
+    """
+    if not enforce_quota or source != 'self':
+        return
+    cursor.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE username = %s
+        FOR UPDATE
+        """,
+        (username,),
+    )
+    if not cursor.fetchone():
+        raise LookupError('提交用户不存在')
+    cursor.execute(
+        """
+        SELECT id, submit_limit_per_window, limit_window_start, created_at
+        FROM ranking_competitions
+        WHERE id = %s
+        """,
+        (competition_id,),
+    )
+    comp = cursor.fetchone()
+    if not comp:
+        return
+    cursor.execute("SELECT NOW() AS now")
+    now_row = cursor.fetchone() or {}
+    now = now_row.get('now') or datetime.now()
+    quota = _ranking_submission_quota_with_cursor(
+        cursor, competition_id, username, comp, now,
+    )
+    if quota is not None and quota['remaining'] <= 0:
+        raise RankingSubmissionQuotaExceeded(quota)
+
+
+def _insert_ranking_submission(cursor, competition_id, username, *, source,
+                               agent_endpoint_id=None):
+    endpoint_id = None
+    if agent_endpoint_id not in (None, '', 'null'):
+        try:
+            endpoint_id = int(agent_endpoint_id)
+        except (TypeError, ValueError):
+            endpoint_id = None
+    endpoint_harness, endpoint_model = _agent_endpoint_snapshot_with_cursor(
+        cursor, competition_id, endpoint_id,
+    )
+    cursor.execute(
+        """
+        INSERT INTO ranking_submissions
+            (competition_id, username, status, source, agent_endpoint_id,
+             agent_endpoint_harness, agent_endpoint_model)
+        VALUES (%s, %s, 'Pending', %s, %s, %s, %s)
+        """,
+        (
+            competition_id, username, source, endpoint_id,
+            endpoint_harness, endpoint_model,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
 def create_ranking_submission(competition_id, username, source='self', enforce_quota=False,
                               agent_endpoint_id=None):
     """新建一条打榜赛提交。source：'self'=学生自交（计入 48h 配额）、
     'batch'=管理员批量拉取（不计入学生配额）。
 
     当 enforce_quota=True 且 source='self' 时，使用同一事务里的 ``SELECT ... FOR UPDATE``
-    锁住比赛行，重新计算当前窗口用量并插入提交，避免并发请求同时通过前置 COUNT 检查。
+    锁住用户行，重新计算当前窗口用量并插入提交，避免同一用户的并发请求同时通过前置
+    COUNT 检查，同时不阻塞其他学生提交。
     """
-    src = 'batch' if str(source or '').strip().lower() == 'batch' else 'self'
+    src = _normalize_submission_source(source)
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            if enforce_quota and src == 'self':
-                cursor.execute(
-                    """
-                    SELECT id, submit_limit_per_window, limit_window_start, created_at
-                    FROM ranking_competitions
-                    WHERE id = %s
-                    FOR UPDATE
-                    """,
-                    (competition_id,),
-                )
-                comp = cursor.fetchone()
-                if comp:
-                    cursor.execute("SELECT NOW() AS now")
-                    now_row = cursor.fetchone() or {}
-                    now = now_row.get('now') or datetime.now()
-                    quota = _ranking_submission_quota_with_cursor(
-                        cursor, competition_id, username, comp, now,
-                    )
-                    if quota is not None and quota['remaining'] <= 0:
-                        conn.rollback()
-                        raise RankingSubmissionQuotaExceeded(quota)
-            endpoint_id = None
-            if agent_endpoint_id not in (None, '', 'null'):
-                try:
-                    endpoint_id = int(agent_endpoint_id)
-                except (TypeError, ValueError):
-                    endpoint_id = None
-            endpoint_harness, endpoint_model = _agent_endpoint_snapshot_with_cursor(
-                cursor, competition_id, endpoint_id,
+            _lock_submission_quota(
+                cursor, competition_id, username,
+                source=src, enforce_quota=enforce_quota,
             )
-            cursor.execute(
-                """
-                INSERT INTO ranking_submissions
-                    (competition_id, username, status, source, agent_endpoint_id,
-                     agent_endpoint_harness, agent_endpoint_model)
-                VALUES (%s, %s, 'Pending', %s, %s, %s, %s)
-                """,
-                (
-                    competition_id, username, src, endpoint_id,
-                    endpoint_harness, endpoint_model,
-                ),
+            new_id = _insert_ranking_submission(
+                cursor, competition_id, username, source=src,
+                agent_endpoint_id=agent_endpoint_id,
             )
-            new_id = cursor.lastrowid
         conn.commit()
-        bump_daily_submission_count()
+        _record_submission_metric(new_id)
         return int(new_id)
     except Exception:
         try:
@@ -729,6 +790,133 @@ def create_ranking_submission(competition_id, username, source='self', enforce_q
         raise
     finally:
         conn.close()
+
+
+def _artifact_destination(target_dir, filename):
+    """返回提交文件目标路径，并拒绝任何目录穿越或空文件名。"""
+    name = str(filename or '')
+    if not name or name in ('.', '..') or os.path.basename(name) != name:
+        raise ValueError(f'非法提交文件名：{name!r}')
+    return os.path.join(target_dir, name)
+
+
+def _artifact_commit_matches(submission_id, installed, code_filename, answer_filename):
+    """用新连接确认一次结果不确定的 commit 是否已经对外可见。"""
+    row = get_ranking_submission(submission_id)
+    if not row:
+        return False
+    expected = {
+        'code_filename': code_filename,
+        'code_path': installed['code'],
+        'answer_filename': answer_filename,
+        'answer_path': installed.get('answer'),
+    }
+    if any(row.get(key) != value for key, value in expected.items()):
+        return False
+    return all(os.path.isfile(path) for path in installed.values())
+
+
+def create_ranking_artifact_submission(
+        competition_id, username, *, code_staged_path, code_filename,
+        answer_staged_path=None, answer_filename=None, base_model=None,
+        source='self', enforce_quota=False, agent_endpoint_id=None):
+    """原子登记一条已经完成落盘与大小校验的文件型提交。
+
+    调用方先把上传内容放到 ``ranking_uploads/submissions`` 下的临时目录并完成校验；
+    本函数再在配额锁所在的数据库事务内创建提交行、原子移动文件、写入最终路径。
+    文件安装或元数据更新失败时，数据库回滚并移除目标目录。若 ``commit()`` 本身返回
+    错误，结果可能已在服务端提交：此时用新连接确认，已提交则按成功返回；无法确认则
+    保留目标目录并抛出明确异常，绝不删除可能已被数据库引用的文件。每日计数是派生
+    指标，不影响业务提交结果。
+    """
+    staged_artifacts = [('code', code_staged_path, code_filename)]
+    if answer_staged_path is not None or answer_filename is not None:
+        staged_artifacts.append(('answer', answer_staged_path, answer_filename))
+    filenames = [str(item[2] or '') for item in staged_artifacts]
+    if len(set(filenames)) != len(filenames):
+        raise ValueError('提交文件名不能重复')
+    for kind, staged_path, filename in staged_artifacts:
+        if not staged_path or not os.path.isfile(staged_path):
+            raise ValueError(f'{kind} 暂存文件不存在')
+        # 在开启事务前验证文件名；目标目录要等拿到自增 ID 后才能确定。
+        _artifact_destination('', filename)
+
+    src = _normalize_submission_source(source)
+    conn = get_db_connection()
+    target_dir = None
+    target_created = False
+    commit_attempted = False
+    installed = {}
+    try:
+        with conn.cursor() as cursor:
+            _lock_submission_quota(
+                cursor, competition_id, username,
+                source=src, enforce_quota=enforce_quota,
+            )
+            new_id = _insert_ranking_submission(
+                cursor, competition_id, username, source=src,
+                agent_endpoint_id=agent_endpoint_id,
+            )
+            target_dir = submission_dir(new_id)
+            os.makedirs(target_dir, exist_ok=False)
+            target_created = True
+
+            for kind, staged_path, filename in staged_artifacts:
+                destination = _artifact_destination(target_dir, filename)
+                os.replace(staged_path, destination)
+                installed[kind] = destination
+
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET answer_filename = %s, answer_path = %s,
+                    code_filename = %s, code_path = %s,
+                    base_model = %s,
+                    status = 'Judging'
+                WHERE id = %s
+                """,
+                (
+                    answer_filename, installed.get('answer'),
+                    code_filename, installed['code'],
+                    (base_model or None), new_id,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                raise RuntimeError(f'提交 {new_id} 的文件元数据写入失败')
+        commit_attempted = True
+        conn.commit()
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if commit_attempted:
+            try:
+                committed = _artifact_commit_matches(
+                    new_id,
+                    installed,
+                    code_filename,
+                    answer_filename,
+                )
+            except Exception as verification_exc:
+                raise RankingSubmissionCommitUnknown(new_id) from verification_exc
+            if committed:
+                logger.warning(
+                    '打榜赛提交 commit 返回错误，但已由新连接确认成功',
+                    extra={'submission_id': int(new_id)},
+                )
+            else:
+                raise RankingSubmissionCommitUnknown(new_id) from exc
+        elif target_created:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise
+        else:
+            raise
+    finally:
+        conn.close()
+
+    _record_submission_metric(new_id)
+    return int(new_id)
 
 
 def update_submission_files(submission_id, answer_filename, answer_path, code_filename, code_path, base_model=None):
@@ -783,19 +971,20 @@ def set_submission_agent_endpoint(submission_id, endpoint_id):
         conn.close()
 
 
+def _serialize_grade_details(grade_details):
+    if grade_details is None or isinstance(grade_details, str):
+        return grade_details
+    try:
+        return json.dumps(grade_details, ensure_ascii=False)
+    except Exception:
+        return str(grade_details)
+
+
 def update_submission_result(submission_id, score, status, grade_details=None, error_message=None):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            details_text = None
-            if grade_details is not None:
-                if isinstance(grade_details, str):
-                    details_text = grade_details
-                else:
-                    try:
-                        details_text = json.dumps(grade_details, ensure_ascii=False)
-                    except Exception:
-                        details_text = str(grade_details)
+            details_text = _serialize_grade_details(grade_details)
             cursor.execute(
                 """
                 UPDATE ranking_submissions
@@ -805,6 +994,45 @@ def update_submission_result(submission_id, score, status, grade_details=None, e
                 (score, status, details_text, error_message, submission_id),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def update_standard_ranking_result_for_task(
+        submission_id, task_id, score, status, grade_details=None, error_message=None):
+    """仅允许仍持有数据库租约的普通评测任务写入终态。"""
+    normalized_task_id = str(task_id or '').strip()[:64]
+    if not normalized_task_id:
+        raise ValueError('task_id 不能为空')
+    details_text = _serialize_grade_details(grade_details)
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET score = %s,
+                    status = %s,
+                    grade_details = %s,
+                    error_message = %s,
+                    judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND judge_task_id = %s
+                """,
+                (
+                    score, status, details_text, error_message,
+                    int(submission_id), normalized_task_id,
+                ),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
@@ -927,6 +1155,137 @@ def set_agent_judge_task_id(submission_id, attempt_id, task_id):
             affected = cursor.rowcount
         conn.commit()
         return int(affected or 0)
+    finally:
+        conn.close()
+
+
+def reserve_standard_ranking_evaluation(
+        submission_id, task_id, *, stale_after_seconds=1800, force=False):
+    """为普通打榜评测持久预留一个 Celery task id。
+
+    首次领取只接受 ``Judging + task_id=NULL``；已有任务只有心跳超过租约后才能被新
+    task id 替换。数据库 CAS 是防重真相，Redis claim 只负责削减竞争。
+    """
+    normalized_task_id = str(task_id or '').strip()[:64]
+    if not normalized_task_id:
+        raise ValueError('task_id 不能为空')
+    stale_after_seconds = max(1, int(stale_after_seconds))
+    eligibility_sql = "status IN ('Judging', 'Queued')" if force else """
+        (
+            (status = 'Judging' AND judge_task_id IS NULL)
+            OR (
+                status IN ('Judging', 'Queued')
+                AND TIMESTAMPDIFF(
+                    SECOND,
+                    COALESCE(judge_heartbeat_at, created_at),
+                    CURRENT_TIMESTAMP
+                ) >= %s
+            )
+        )
+    """
+    eligibility_params = () if force else (stale_after_seconds,)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE ranking_submissions
+                SET status = 'Queued',
+                    judge_task_id = %s,
+                    judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                  AND {eligibility_sql}
+                """,
+                (normalized_task_id, int(submission_id), *eligibility_params),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def release_standard_ranking_evaluation(submission_id, task_id):
+    """仅由仍持有 task id 的发送方释放尚未成功入 broker 的预留。"""
+    normalized_task_id = str(task_id or '').strip()[:64]
+    if not normalized_task_id:
+        return 0
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET status = 'Judging',
+                    judge_task_id = NULL,
+                    judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                  AND status = 'Queued'
+                  AND judge_task_id = %s
+                """,
+                (int(submission_id), normalized_task_id),
+            )
+            affected = cursor.rowcount
+        conn.commit()
+        return int(affected or 0)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def claim_standard_ranking_evaluation(submission_id, task_id):
+    """评测任务开始时确认自身仍是数据库记录的当前所有者。"""
+    normalized_task_id = str(task_id or '').strip()[:64]
+    if not normalized_task_id:
+        raise ValueError('task_id 不能为空')
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ranking_submissions
+                SET status = 'Judging',
+                    judge_task_id = %s,
+                    judge_heartbeat_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                  AND status IN ('Judging', 'Queued')
+                  AND (judge_task_id IS NULL OR judge_task_id = %s)
+                """,
+                (normalized_task_id, int(submission_id), normalized_task_id),
+            )
+            affected = cursor.rowcount
+            if not affected:
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM ranking_submissions
+                    WHERE id = %s
+                      AND status IN ('Judging', 'Queued')
+                      AND judge_task_id = %s
+                    LIMIT 1
+                    """,
+                    (int(submission_id), normalized_task_id),
+                )
+                affected = 1 if cursor.fetchone() else 0
+        conn.commit()
+        return int(affected or 0)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
@@ -1100,7 +1459,7 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
                 (answer_name, answer_path, code_name, code_path, new_id),
             )
         conn.commit()
-        bump_daily_submission_count()
+        _record_submission_metric(new_id)
         return int(new_id), source
     finally:
         conn.close()
@@ -1145,11 +1504,10 @@ def get_ranking_submission(submission_id):
 def get_incomplete_ranking_submissions():
     """返回所有卡在 'Judging' / 'Queued' 的打榜赛提交，用于进程启动时重新入队。
 
-    'Judging' = 文件已上传、评测任务已入队，但重启时丢失。'Queued' = agent_judge 已入队但
-    评测 worker 并发已满、尚未开始（重启后队列清空，同样需要补入队）。连带返回所属比赛的
-    scoring_mode 与 elo_initial_rating，便于按模式分派：
-      - 绝对分模式：重新 .delay() 给评测任务；
-      - ELO 模式：补做入池（init_submission_elo_state -> Active）+ 补发 initial-burst。
+    'Judging' = 文件已上传或 worker 已开始执行；'Queued' = 已取得持久 task-id 租约但
+    worker 尚未开始。连带返回所属比赛和用户信息，便于按模式恢复：
+      - 绝对分模式：以数据库 task-id 租约防重后重新入队；
+      - ELO 模式：同事务激活新提交并退役超额旧提交，再补发 initial-burst。
     'Pending'（尚未上传文件，无可评内容）与 'Active' ELO（已由 matchmaker tick 接管）
     不在此列。
     """
@@ -1158,7 +1516,7 @@ def get_incomplete_ranking_submissions():
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT s.id, s.competition_id, s.status,
+                SELECT s.id, s.competition_id, s.username, s.status,
                        s.score, s.grade_details,
                        s.judge_attempt_id, s.judge_task_id, s.judge_heartbeat_at,
                        s.agent_endpoint_id,
@@ -1470,54 +1828,72 @@ def submission_dir(submission_id):
 
 # ---------- ELO Mode ----------
 
-def init_submission_elo_state(submission_id, rating):
-    """新提交进入 ELO 池：写入初始分、清零对战次数、置入池标志，状态切换为 Active。"""
+def _retire_excess_user_submissions_with_cursor(
+        cursor, competition_id, username, keep_count):
+    cursor.execute(
+        """
+        SELECT id FROM ranking_submissions
+        WHERE competition_id = %s AND username = %s AND elo_in_pool = 1
+        ORDER BY created_at DESC, id DESC
+        """,
+        (competition_id, username),
+    )
+    rows = cursor.fetchall() or []
+    ids = [int(row['id']) for row in rows]
+    keep = set(ids[:max(0, int(keep_count))])
+    retire = [submission_id for submission_id in ids if submission_id not in keep]
+    if retire:
+        placeholders = ','.join(['%s'] * len(retire))
+        cursor.execute(
+            f"UPDATE ranking_submissions"
+            f" SET elo_in_pool = 0, status = 'Retired'"
+            f" WHERE id IN ({placeholders})",
+            tuple(retire),
+        )
+    return retire
+
+
+def activate_elo_submission(submission_id, competition_id, username, rating, *, keep_count=2):
+    """原子激活 ELO 提交并退役同用户超出保留数的旧提交。"""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # 与打榜提交配额使用同一稳定用户行，串行化同用户的并发 ELO 激活。
+            cursor.execute(
+                "SELECT id FROM users WHERE username = %s FOR UPDATE",
+                (username,),
+            )
+            if not cursor.fetchone():
+                raise LookupError('ELO 提交用户不存在')
             cursor.execute(
                 """
                 UPDATE ranking_submissions
                 SET elo_rating = %s, score = %s,
                     elo_match_count = 0, elo_in_pool = 1,
                     status = 'Active'
-                WHERE id = %s
+                WHERE id = %s AND competition_id = %s AND username = %s
                 """,
-                (float(rating), float(rating), int(submission_id)),
+                (
+                    float(rating), float(rating), int(submission_id),
+                    int(competition_id), username,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                raise LookupError('ELO 提交不存在或归属不匹配')
+            retired = _retire_excess_user_submissions_with_cursor(
+                cursor,
+                int(competition_id),
+                username,
+                keep_count,
             )
         conn.commit()
-    finally:
-        conn.close()
-
-
-def retire_excess_user_submissions(competition_id, username, keep_count=2):
-    """同一用户在某场赛事的池内提交超过 keep_count 份时，把更早的退役。
-    退役提交：elo_in_pool=0，status='Retired'。返回被退役的提交 id 列表。"""
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id FROM ranking_submissions
-                WHERE competition_id = %s AND username = %s AND elo_in_pool = 1
-                ORDER BY created_at DESC, id DESC
-                """,
-                (competition_id, username),
-            )
-            rows = cursor.fetchall() or []
-            ids = [int(r['id']) for r in rows]
-            keep = set(ids[: max(0, int(keep_count))])
-            retire = [i for i in ids if i not in keep]
-            if retire:
-                placeholders = ','.join(['%s'] * len(retire))
-                cursor.execute(
-                    f"UPDATE ranking_submissions"
-                    f" SET elo_in_pool = 0, status = 'Retired'"
-                    f" WHERE id IN ({placeholders})",
-                    tuple(retire),
-                )
-        conn.commit()
-        return retire
+        return retired
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 

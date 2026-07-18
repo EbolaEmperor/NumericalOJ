@@ -1,0 +1,427 @@
+    {# ========== 所有提交（管理员） ========== #}
+    {% if tab == 'all_submissions' and is_admin %}
+      {% set max_score = competition.max_score or 100 %}
+      {% set total_subs = (submission_stats.total if submission_stats else 0) %}
+      {% set unique_users = (submission_stats.unique_users if submission_stats else 0) %}
+      {% set accepted_count = (submission_stats.accepted if submission_stats else 0) %}
+      {% set top_score = (submission_stats.top_score if submission_stats else None) %}
+      {% set has_top = (top_score is not none) %}
+      {% set acc_rate = (accepted_count * 100.0 / total_subs) if total_subs else 0 %}
+
+      <!-- 统计条 -->
+      <div class="submissions-stats mb-3">
+        <div class="sub-stat">
+          <div class="sub-stat-value">{{ total_subs }}</div>
+          <div class="sub-stat-label"><i class="fas fa-paper-plane me-1"></i>总提交</div>
+        </div>
+        <div class="sub-stat">
+          <div class="sub-stat-value">{{ unique_users }}</div>
+          <div class="sub-stat-label"><i class="fas fa-user-friends me-1"></i>参赛用户</div>
+        </div>
+        <div class="sub-stat">
+          <div class="sub-stat-value">{{ accepted_count }}<span class="sub-stat-sub"> / {{ total_subs }} · {{ '%.1f'|format(acc_rate) }}%</span></div>
+          <div class="sub-stat-label"><i class="fas fa-check-circle me-1"></i>通过</div>
+        </div>
+        <div class="sub-stat">
+          <div class="sub-stat-value">
+            {% if has_top %}{{ '%.2f'|format(top_score) }}<span class="sub-stat-sub"> / {{ max_score }}</span>{% else %}—{% endif %}
+          </div>
+          <div class="sub-stat-label"><i class="fas fa-trophy me-1"></i>最高分</div>
+        </div>
+      </div>
+
+      <!-- 工具条 -->
+      <div class="submissions-toolbar d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">
+        <div class="fw-semibold"><i class="fas fa-clipboard-list me-2 text-primary"></i>所有提交</div>
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <button type="button"
+                  class="rk-bulk-open"
+                  data-bs-toggle="modal"
+                  data-bs-target="#rankingBulkRejudgeModal"
+                  {% if total_subs == 0 %}disabled{% endif %}>
+            <i class="fas fa-rotate-right"></i><span>批量重测</span>
+          </button>
+          {% if total_subs > 0 %}
+          <div class="submissions-search">
+            <i class="fas fa-search"></i>
+            <input type="search" id="subSearch" class="form-control form-control-sm"
+                   placeholder="按用户名筛选…" autocomplete="off"
+                   value="{{ submission_search_q }}">
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="modal fade rk-bulk-modal" id="rankingBulkRejudgeModal" tabindex="-1" aria-labelledby="rankingBulkRejudgeLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content"
+               data-filter-url="{{ url_for('ranking.ranking_bulk_rejudge_filter', competition_id=competition.id) }}"
+               data-start-url="{{ url_for('ranking.ranking_bulk_rejudge_start', competition_id=competition.id) }}"
+               data-status-url-template="{{ url_for('ranking.ranking_bulk_rejudge_status', competition_id=competition.id, job_id='__JOB_ID__') }}"
+               data-is-elo="{{ 1 if is_elo else 0 }}">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="rankingBulkRejudgeLabel">批量重测</h5>
+                <div class="rk-bulk-subtitle">在原提交记录上清空旧结果并重新入队，按评测队列并发限制执行。</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <div class="rk-bulk-filters">
+                <label class="rk-bulk-field">
+                  <span>起始时间</span>
+                  <input type="datetime-local" id="rkBulkStart">
+                </label>
+                <label class="rk-bulk-field">
+                  <span>结束时间</span>
+                  <input type="datetime-local" id="rkBulkEnd">
+                </label>
+                <label class="rk-bulk-field">
+                  <span>用户</span>
+                  <input type="text" id="rkBulkUsername" placeholder="用户名包含">
+                </label>
+                <button type="button" class="rk-bulk-filter-btn" id="rkBulkFilterBtn">
+                  <i class="fas fa-filter"></i><span>筛选</span>
+                </button>
+              </div>
+
+              <div class="rk-bulk-statuses" aria-label="状态筛选">
+                <label><input type="checkbox" class="rk-bulk-status" value="judging"><span>评测中</span></label>
+                <label><input type="checkbox" class="rk-bulk-status" value="waiting"><span>等待评测</span></label>
+                <label><input type="checkbox" class="rk-bulk-status" value="accepted"><span>通过</span></label>
+                <label><input type="checkbox" class="rk-bulk-status" value="abnormal"><span>异常</span></label>
+              </div>
+
+              <div class="rk-bulk-result-head">
+                <div id="rkBulkSummary"></div>
+                <div class="rk-bulk-select">
+                  <label><input type="checkbox" id="rkBulkMaster" disabled><span>全选</span></label>
+                </div>
+              </div>
+
+              <div class="rk-bulk-results" id="rkBulkResults" aria-live="polite">
+                <div class="rk-bulk-empty">暂无筛选结果</div>
+              </div>
+
+              <div class="rk-bulk-progress d-none" id="rkBulkProgressWrap">
+                <div class="rk-bulk-progress-track">
+                  <div class="rk-bulk-progress-bar" id="rkBulkProgressBar" style="width:0%">0%</div>
+                </div>
+                <div class="rk-bulk-progress-text" id="rkBulkProgressText">尚未开始</div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="rk-bulk-secondary" data-bs-dismiss="modal">关闭</button>
+              <button type="button" class="rk-bulk-primary" id="rkBulkStartBtn" disabled>
+                <i class="fas fa-play"></i><span>确认重测</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {% if total_subs == 0 %}
+        <div class="card submissions-card">
+          <div class="submissions-empty">
+            <i class="fas fa-inbox submissions-empty-icon"></i>
+            <div class="mt-3 fw-semibold">暂无提交</div>
+            <div class="text-muted small mt-1">尚未有选手提交作品。</div>
+          </div>
+        </div>
+      {% else %}
+        <div id="subTbody" class="aj-subs"
+             data-json-url="{{ url_for('ranking.ranking_submissions_json', competition_id=competition.id) }}"
+             data-current-page="{{ current_page }}">
+          {% include 'ranking/components/submission_rows.html' %}
+        </div>
+      {% endif %}
+
+      {% if total_subs > 0 %}
+      <div id="subPagination" class="submissions-pagination mt-3">
+        {% include 'ranking/components/pagination.html' %}
+      </div>
+
+      <script>
+        (function () {
+          var input = document.getElementById('subSearch');
+          var tbody = document.getElementById('subTbody');
+          var paginationEl = document.getElementById('subPagination');
+          if (!tbody) return;
+
+          var jsonUrl = tbody.getAttribute('data-json-url');
+          var currentPage = parseInt(tbody.getAttribute('data-current-page') || '1', 10) || 1;
+          var currentQ = input ? (input.value || '') : '';
+          var debounceTimer = null;
+          var reqToken = 0;
+
+          function loadPage(page, q) {
+            var token = ++reqToken;
+            var url = jsonUrl + '?page=' + encodeURIComponent(page) + '&q=' + encodeURIComponent(q || '');
+            fetch(url, { credentials: 'same-origin' })
+              .then(function (r) {
+                if (!r.ok) throw new Error('http ' + r.status);
+                return r.json();
+              })
+              .then(function (data) {
+                if (token !== reqToken) return;  // 已被新请求覆盖
+                if (typeof data.rows_html === 'string') tbody.innerHTML = data.rows_html;
+                if (paginationEl) paginationEl.innerHTML = data.pagination_html || '';
+                currentPage = data.page || 1;
+                var qs = '?tab=all_submissions&page=' + currentPage + (q ? '&q=' + encodeURIComponent(q) : '');
+                history.replaceState(null, '', window.location.pathname + qs);
+              })
+              .catch(function (e) { console.warn('submissions_json failed:', e); });
+          }
+
+          if (input) {
+            input.addEventListener('input', function () {
+              clearTimeout(debounceTimer);
+              var q = (this.value || '').trim();
+              currentQ = q;
+              debounceTimer = setTimeout(function () {
+                loadPage(1, currentQ);
+              }, 250);
+            });
+          }
+          if (paginationEl) {
+            paginationEl.addEventListener('click', function (e) {
+              var a = e.target.closest('a.page-link[data-page]');
+              if (!a) return;
+              e.preventDefault();
+              var p = parseInt(a.getAttribute('data-page'), 10);
+              if (!isNaN(p) && p >= 1) loadPage(p, currentQ);
+            });
+          }
+          window.__rankingReloadSubmissions = function () {
+            loadPage(currentPage, currentQ);
+          };
+        })();
+      </script>
+      {% endif %}
+
+      <script>
+        (function () {
+          var modal = document.getElementById('rankingBulkRejudgeModal');
+          if (!modal) return;
+          var content = modal.querySelector('.modal-content');
+          var filterUrl = content.getAttribute('data-filter-url');
+          var startUrl = content.getAttribute('data-start-url');
+          var statusUrlTemplate = content.getAttribute('data-status-url-template');
+          var isElo = content.getAttribute('data-is-elo') === '1';
+
+          var startInput = document.getElementById('rkBulkStart');
+          var endInput = document.getElementById('rkBulkEnd');
+          var usernameInput = document.getElementById('rkBulkUsername');
+          var filterBtn = document.getElementById('rkBulkFilterBtn');
+          var master = document.getElementById('rkBulkMaster');
+          var results = document.getElementById('rkBulkResults');
+          var summary = document.getElementById('rkBulkSummary');
+          var startBtn = document.getElementById('rkBulkStartBtn');
+          var progressWrap = document.getElementById('rkBulkProgressWrap');
+          var progressBar = document.getElementById('rkBulkProgressBar');
+          var progressText = document.getElementById('rkBulkProgressText');
+          var timer = null;
+          var state = { rows: [], selected: new Set(), maxSelected: 500, tooMany: false, running: false, jobId: null };
+
+          var statusLabel = {
+            Accepted: '通过', Active: '对战中', Retired: '已退役',
+            Judging: '评测中', Queued: '等待评测', Pending: '待评测', Error: '异常'
+          };
+
+          function esc(v) {
+            return String(v == null ? '' : v)
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+          }
+          function selectedStatuses() {
+            return Array.prototype.slice.call(modal.querySelectorAll('.rk-bulk-status:checked'))
+              .map(function (el) { return el.value; });
+          }
+          function scoreText(row) {
+            if (row.score === null || row.score === undefined || row.score === '') return '—';
+            var n = Number(row.score);
+            if (!Number.isFinite(n)) return String(row.score);
+            return isElo ? String(Math.round(n)) : n.toFixed(2);
+          }
+          function statusClass(status) {
+            if (status === 'Accepted' || status === 'Active') return 'ok';
+            if (status === 'Judging' || status === 'Queued' || status === 'Pending') return 'info';
+            if (status === 'Error') return 'err';
+            return 'muted';
+          }
+          function updateSummary() {
+            var count = state.selected.size;
+            var total = state.rows.length;
+            var over = count > state.maxSelected;
+            startBtn.disabled = state.running || state.tooMany || count === 0 || over;
+            master.disabled = state.running || state.tooMany || total === 0;
+            master.checked = total > 0 && count === total;
+            master.indeterminate = count > 0 && count < total;
+            if (state.tooMany) return;
+            if (over) summary.textContent = '已选择 ' + count + ' 条，超过单次上限 ' + state.maxSelected + ' 条。';
+            else if (total > 0) summary.textContent = '筛选出 ' + total + ' 条，已选择 ' + count + ' 条。';
+            else summary.textContent = '暂无筛选结果。';
+          }
+          function renderRows() {
+            if (!state.rows.length) {
+              results.innerHTML = '<div class="rk-bulk-empty">暂无筛选结果</div>';
+              updateSummary();
+              return;
+            }
+            results.innerHTML = state.rows.map(function (row) {
+              var id = Number(row.id);
+              var checked = state.selected.has(id) ? ' checked' : '';
+              var disabled = state.running || state.tooMany ? ' disabled' : '';
+              var label = statusLabel[row.status] || row.status || '-';
+              return '<div class="rk-bulk-row">' +
+                '<label class="rk-bulk-check"><input type="checkbox" class="rk-bulk-row-check" data-id="' + id + '"' + checked + disabled + '><span>#' + id + '</span></label>' +
+                '<div class="rk-bulk-cell rk-user">' + esc(row.username || '') + '</div>' +
+                '<div class="rk-bulk-pill ' + statusClass(row.status) + '">' + esc(label) + '</div>' +
+                '<div class="rk-bulk-cell rk-score">' + esc(scoreText(row)) + '</div>' +
+                '<div class="rk-bulk-cell rk-model">' + esc(row.base_model || '—') + '</div>' +
+                '<div class="rk-bulk-cell rk-time">' + esc(row.created_at || '') + '</div>' +
+                '</div>';
+            }).join('');
+            updateSummary();
+          }
+          function filterPayload() {
+            return {
+              start: (startInput.value || '').trim(),
+              end: (endInput.value || '').trim(),
+              username: (usernameInput.value || '').trim(),
+              statuses: selectedStatuses()
+            };
+          }
+          function setProgress(pct, processed, total, requeued, failed) {
+            pct = Math.max(0, Math.min(100, Number(pct) || 0));
+            progressBar.style.width = pct + '%';
+            progressBar.textContent = pct + '%';
+            var text = '重测入队进度 ' + processed + ' / ' + total + '，已入队 ' + requeued + '，失败 ' + failed;
+            if (pct < 100) MathCurveLoader.update(progressText, text, {size: 'sm'});
+            else progressText.textContent = text;
+          }
+          function poll() {
+            if (!state.jobId) return;
+            var url = statusUrlTemplate.replace('__JOB_ID__', encodeURIComponent(state.jobId));
+            fetch(url, { credentials: 'same-origin' })
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                if (!data.success) return;
+                setProgress(data.progress || 0, data.processed || 0, data.total || 0,
+                  data.requeued || data.created || 0, data.failed || 0);
+                if (data.done) {
+                  state.running = false;
+                  filterBtn.disabled = false;
+                  if (timer) clearInterval(timer);
+                  timer = null;
+                  progressBar.classList.add('is-done');
+                  progressText.textContent += '。重测已入队，原提交将按队列并发限制重新评测。';
+                  state.selected.clear();
+                  renderRows();
+                  if (typeof window.__rankingReloadSubmissions === 'function') {
+                    window.__rankingReloadSubmissions();
+                  }
+                }
+              })
+              .catch(function () {});
+          }
+
+          results.addEventListener('change', function (e) {
+            var cb = e.target.closest('.rk-bulk-row-check');
+            if (!cb) return;
+            var id = Number(cb.getAttribute('data-id'));
+            if (!id) return;
+            if (cb.checked) state.selected.add(id);
+            else state.selected.delete(id);
+            updateSummary();
+          });
+          master.addEventListener('change', function () {
+            state.selected.clear();
+            if (master.checked) {
+              state.rows.forEach(function (row) { state.selected.add(Number(row.id)); });
+            }
+            renderRows();
+          });
+          filterBtn.addEventListener('click', function () {
+            var payload = filterPayload();
+            if (payload.start && payload.end && payload.start > payload.end) {
+              window.alert('起始时间不能晚于结束时间');
+              return;
+            }
+            filterBtn.disabled = true;
+            startBtn.disabled = true;
+            MathCurveLoader.update(summary, '筛选中…', {size: 'sm'});
+            fetch(filterUrl, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                filterBtn.disabled = false;
+                if (!data.success) {
+                  state.rows = [];
+                  state.selected.clear();
+                  summary.textContent = data.message || '筛选失败';
+                  renderRows();
+                  return;
+                }
+                state.rows = data.submissions || [];
+                state.selected.clear();
+                state.maxSelected = data.max_selected || state.maxSelected;
+                state.tooMany = !!data.too_many;
+                if (state.tooMany) {
+                  summary.textContent = '命中 ' + data.total + ' 条，超过显示上限 ' + data.max_results + ' 条，请缩小筛选范围。';
+                } else {
+                  summary.textContent = '筛选出 ' + state.rows.length + ' 条，已选择 0 条。';
+                }
+                renderRows();
+              })
+              .catch(function () {
+                filterBtn.disabled = false;
+                summary.textContent = '筛选请求失败';
+              });
+          });
+          startBtn.addEventListener('click', function () {
+            var ids = Array.from(state.selected);
+            if (!ids.length || ids.length > state.maxSelected) return;
+            var ok = window.confirm('将在原提交记录上重测 ' + ids.length + ' 条提交，入队间隔为 2 秒。确认开始吗？');
+            if (!ok) return;
+            state.running = true;
+            filterBtn.disabled = true;
+            startBtn.disabled = true;
+            master.disabled = true;
+            progressWrap.classList.remove('d-none');
+            progressBar.classList.remove('is-done');
+            setProgress(0, 0, ids.length, 0, 0);
+            fetch(startUrl, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ submission_ids: ids })
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (data) {
+                if (!data.success) {
+                  state.running = false;
+                  filterBtn.disabled = false;
+                  progressText.textContent = data.message || '启动失败';
+                  updateSummary();
+                  return;
+                }
+                state.jobId = data.job_id;
+                if (timer) clearInterval(timer);
+                timer = setInterval(poll, 1000);
+                poll();
+              })
+              .catch(function () {
+                state.running = false;
+                filterBtn.disabled = false;
+                progressText.textContent = '启动请求失败';
+                updateSummary();
+              });
+          });
+        })();
+      </script>
+    {% endif %}

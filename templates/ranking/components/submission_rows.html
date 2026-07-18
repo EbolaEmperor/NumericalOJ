@@ -1,0 +1,12 @@
+{# 「所有提交」卡片片段。被主模板首屏 include，也被 submissions_json AJAX 端点重新渲染。
+   期望上下文变量：all_submissions, competition, is_elo, max_score, is_agent_judge #}
+{% from 'ranking/components/submission_card.html' import render_sub_card %}
+{% set _is_aj = is_agent_judge if is_agent_judge is defined else False %}
+{% set _is_rj = is_reverse_judge if is_reverse_judge is defined else False %}
+{% if all_submissions %}
+  {% for s in all_submissions %}
+    {{ render_sub_card(s, competition, is_elo, _is_aj, max_score, true, true, _is_rj) }}
+  {% endfor %}
+{% else %}
+  <div class="aj-subs-empty"><i class="fas fa-search me-1 opacity-50"></i>没有匹配的提交</div>
+{% endif %}

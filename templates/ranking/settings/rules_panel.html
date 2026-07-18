@@ -1,0 +1,136 @@
+      <!-- 评分规则 -->
+      <div class="card mb-3 agent-rules-only" id="agentJudgeRulesCard"
+           {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
+        <div class="card-header"><i class="fas fa-list-check me-2"></i> 评分规则</div>
+        <div class="card-body aj-rules">
+          <div class="aj-rules-head">
+            <div class="aj-rules-head-left">
+              <span class="aj-count" id="rulesCountLabel">共 0 条规则</span>
+              <div class="aj-view-tabs" role="tablist" aria-label="评分规则视图">
+                <button type="button" class="aj-view-tab active" data-rules-view="text" role="tab" aria-selected="true">文本</button>
+                <button type="button" class="aj-view-tab" data-rules-view="topo" role="tab" aria-selected="false">拓扑</button>
+              </div>
+            </div>
+            <span class="aj-total">满分 <b id="rulesTotalValue">0</b> 分</span>
+          </div>
+          <div id="rulesEditor" class="aj-view"></div>
+          <div id="rulesTopoView" class="aj-view" hidden>
+            <div class="aj-topo-layout">
+              <div class="aj-topo-main">
+                <div id="rulesTopoCanvas" class="aj-topo-canvas"></div>
+              </div>
+              <aside class="aj-topo-panel" aria-label="拓扑工具">
+                <div class="aj-topo-actions">
+                  <button type="button" class="aj-topo-icon-btn" id="addTopoNodeBtn" aria-label="增加节点" title="增加节点">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="5"></circle>
+                      <path d="M12 9v6"></path>
+                      <path d="M9 12h6"></path>
+                      <path d="M12 2v3"></path>
+                      <path d="M12 19v3"></path>
+                      <path d="M2 12h3"></path>
+                      <path d="M19 12h3"></path>
+                    </svg>
+                  </button>
+                  <div class="aj-topo-delete-wrap">
+                    <button type="button" class="aj-topo-icon-btn" id="deleteTopoNodeBtn" aria-label="删除节点" title="删除节点">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 7h16"></path>
+                        <path d="M9 7V4h6v3"></path>
+                        <path d="M7 7l1 13h8l1-13"></path>
+                        <path d="M10 11v5"></path>
+                        <path d="M14 11v5"></path>
+                      </svg>
+                    </button>
+                    <button type="button" class="aj-topo-confirm-btn" id="confirmDeleteTopoNodeBtn" aria-label="确认删除" title="确认删除" disabled>
+                      <i class="fas fa-check"></i>
+                    </button>
+                  </div>
+                  <button type="button" class="aj-topo-icon-btn" id="showAddEdgeBtn" aria-label="添加连接" title="添加连接">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="5" cy="12" r="2.5"></circle>
+                      <path d="M8 12h8.5"></path>
+                      <path d="M14 8.5 17.5 12 14 15.5"></path>
+                      <circle cx="20" cy="12" r="2.5"></circle>
+                    </svg>
+                  </button>
+                  <button type="button" class="aj-topo-icon-btn" id="simplifyTopoBtn" aria-label="简化拓扑关系" title="简化拓扑关系">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="5" cy="17" r="2"></circle>
+                      <circle cx="12" cy="7" r="2"></circle>
+                      <circle cx="19" cy="17" r="2"></circle>
+                      <path d="M6.5 15.2 10.5 8.8"></path>
+                      <path d="M13.5 8.8 17.5 15.2"></path>
+                      <path d="M7.5 17h9"></path>
+                      <path d="M8 20 16 14"></path>
+                    </svg>
+                  </button>
+                </div>
+              </aside>
+            </div>
+          </div>
+          <button type="button" class="aj-add" id="addRuleBtn">
+            <i class="fas fa-plus"></i> 添加规则
+          </button>
+          <div class="aj-foot">
+            <button type="button" class="aj-save" id="saveRulesBtn"><i class="fas fa-save me-1"></i> 保存规则</button>
+            <span class="small" id="saveRulesHint"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal fade aj-rule-modal" id="ajRuleModal" tabindex="-1" aria-labelledby="ajRuleModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="ajRuleModalLabel">编辑规则</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <input type="hidden" id="ajRuleModalIndex">
+              <div class="mb-3">
+                <label class="form-label" for="ajRuleModalName">规则名称</label>
+                <input type="text" class="form-control" id="ajRuleModalName" maxlength="120" placeholder="规则名称">
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="ajRuleModalText">规则原文</label>
+                <textarea class="form-control" id="ajRuleModalText" placeholder="用自然语言描述这条评分规则……"></textarea>
+              </div>
+              <div>
+                <label class="form-label" for="ajRuleModalValue">分值</label>
+                <input type="number" min="0" step="0.5" class="form-control" id="ajRuleModalValue">
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="button" class="btn btn-success" id="ajRuleModalSave">保存修改</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal fade" id="ajDeleteRulesModal" tabindex="-1" aria-labelledby="ajDeleteRulesModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="ajDeleteRulesModalLabel">确认删除规则</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <div class="d-flex align-items-start gap-3">
+                <div class="aj-delete-warn-icon"><i class="fas fa-trash-can"></i></div>
+                <div>
+                  <div class="fw-semibold mb-1" id="ajDeleteRulesSummary"></div>
+                  <div class="text-muted small">删除后将重新计算所有规则编号和依赖编号。</div>
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="button" class="btn btn-danger" id="ajDeleteRulesConfirm">确认删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <script>
+        window.__JUDGE_RULES__ = {{ judge_rules|tojson }};
+        window.__SAVE_RULES_URL__ = "{{ url_for('ranking.ranking_save_judge_rules', competition_id=competition.id) }}";
+      </script>

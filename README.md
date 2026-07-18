@@ -15,8 +15,8 @@ NumericalOJ 是面向高校教学的中文在线评测系统，支持 MATLAB/Oct
 
 系统有两个逻辑执行边界，二者必须同时可用：
 
-1. **Web 服务**：`oj.py` 创建 Flask 应用，生产由 `web.conf` 通过 Gunicorn 监听 `2025`，提供页面、HTTP API、健康检查，并完成 Celery 任务注册与依赖装配。
-2. **Celery worker 组**：`celery.conf` 管理三个独立 worker：
+1. **Web 服务**：`oj.py` 创建 Flask 应用，生产由 `deploy/supervisor/web.conf` 通过 Gunicorn 监听 `2025`，提供页面、HTTP API、健康检查，并完成 Celery 任务注册与依赖装配。
+2. **Celery worker 组**：`deploy/supervisor/celery.conf` 管理三个独立 worker：
    - `celery`：普通判题、书面作业、检测、索引等常规后台任务；
    - `agent`：耗时较长的 AI 智能体任务，生产配置并发为 1；
    - `judge`：打榜赛 Agent-as-Judge 与反向评测任务。
@@ -45,19 +45,19 @@ NumericalOJ 是面向高校教学的中文在线评测系统，支持 MATLAB/Oct
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements/production.txt
 ```
 
 依赖按用途分层，文件中的直接依赖使用精确版本：
 
-- `requirements.txt`：生产运行依赖；
-- `requirements-test.txt`：pytest 等测试工具；
-- `requirements-optional.txt`：非默认的本地 embedding 后端等重量级能力。
+- `requirements/production.txt`：生产运行依赖；
+- `requirements/test.txt`：pytest 等测试工具；
+- `requirements/optional.txt`：非默认的本地 embedding 后端等重量级能力。
 
 开发环境通常安装前两层：
 
 ```bash
-python -m pip install -r requirements.txt -r requirements-test.txt
+python -m pip install -r requirements/production.txt -r requirements/test.txt
 ```
 
 升级依赖时必须显式修改版本，并至少通过全部纯单元测试；涉及数据库、Redis、Docker 或外部协议时，还要通过对应的隔离测试。
@@ -69,7 +69,7 @@ python -m pip install -r requirements.txt -r requirements-test.txt
 仓库中的 `config.py` 是可运行模板，生产部署的同名文件包含私密配置，部署时不得覆盖。至少确认以下设置：
 
 - `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` / `MYSQL_USERNAME` / `MYSQL_PASSWORD`；
-- `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB`；
+- `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` 与普通、阻塞读取的超时；
 - `SECRET_KEY`、SMTP 和 DashScope/Qwen 配置；
 - `JUDGER_*` 与 `AGENT_JUDGE_*` 镜像、资源和超时设置。
 
@@ -83,11 +83,11 @@ python -m pip install -r requirements.txt -r requirements-test.txt
 
 ```bash
 mysql -u root -p -e "CREATE DATABASE myojdb CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
-mysql -u root -p myojdb < myojdb.sql
+mysql -u root -p myojdb < database/bootstrap.sql
 python scripts/init_db_schema.py
 ```
 
-`scripts/init_db_schema.py` 会基于 `myojdb.sql` 创建缺失的库、表、列和索引，并同步已识别的列类型；启动配置也会先运行它。它目前**不是版本化迁移系统**：没有 migration 版本表，也不负责删除/重命名、数据回填或任意约束变更。涉及这些操作时必须编写显式、可审计的迁移方案，并准备备份与回滚路径，不能仅依赖启动脚本。
+`scripts/init_db_schema.py` 会解析 `database/bootstrap.sql` 中的结构定义，创建缺失的库、表、列和索引，并同步已识别的列类型。生产进程启动不会隐式执行它；结构同步只有部署状态机一个所有者。它目前**不是版本化迁移系统**：没有 migration 版本表，也不负责删除/重命名、数据回填或任意约束变更。
 
 默认管理员为 `admin` / `admin123`，首次登录后必须立即修改密码。
 
@@ -113,26 +113,27 @@ docker build -f docker/agent_judge-lite/Dockerfile \
   -t numericaloj-agent-judge-lite:latest docker
 ```
 
-`local_dev.conf` 已把两个沙箱切换为 lite 镜像；生产默认使用完整镜像。修改 `docker/agent_judge/report` 或 `docker/agent_judge/run_harness` 后必须重建 Agent-as-Judge 镜像。
+`deploy/supervisor/local-dev.conf` 已把两个沙箱切换为 lite 镜像；生产默认使用完整镜像。修改 `docker/agent_judge/report` 或 `docker/agent_judge/run_harness` 后必须重建 Agent-as-Judge 镜像。
 
 ## 启动
 
-首次安装或没有待恢复任务时，生产风格的双边界启动：
+生产首次安装与升级统一执行 `bash deploy.sh`。下面两个 Supervisor 配置使用部署状态中的 `current-venv`，只适合在至少一次成功部署后做人工重启，不是本地开发入口：
 
 ```bash
-supervisord -c web.conf
-supervisord -c celery.conf
+supervisord -c deploy/supervisor/web.conf
+supervisord -c deploy/supervisor/celery.conf
 ```
 
-`web.conf` 先执行结构同步，再按 `gunicorn.conf.py` 启动 Gunicorn；应用装载完成后，worker 通过 `post_worker_init` 幂等确保后台自调度链存在，不会清理或重投正在执行的 Celery 任务。当前配置使用单 worker、64 个 `gthread` 线程承载 SSE，不按请求数回收 worker；`python oj.py` 仅作为本地开发入口。
+生产 Supervisor 只管理进程，不执行 DDL。Web 通过 `deploy/gunicorn.py` 启动；worker 的 `post_worker_init` 只幂等确保后台自调度链存在，不会清理或重投正在执行的 Celery 任务。当前配置使用单 worker、64 个 `gthread` 线程承载 SSE，不按请求数回收 worker；`python oj.py` 仅作为本地开发入口。
 
-完整停止两个应用边界后，如需恢复停机前的未完成任务，必须在 Celery 仍处于停止状态时显式执行：
+完整停止两个应用边界后，如需人工恢复停机前的未完成任务，必须在 Celery 仍处于停止状态时使用当前部署虚拟环境显式执行：
 
 ```bash
-python3 scripts/init_db_schema.py
-python3 scripts/recover_pending_tasks.py --confirm-celery-stopped
-supervisord -c web.conf
-supervisord -c celery.conf
+/home/ebola/.numericaloj-deploy/current-venv/bin/python3 scripts/init_db_schema.py
+/home/ebola/.numericaloj-deploy/current-venv/bin/python3 \
+  scripts/recover_pending_tasks.py --confirm-celery-stopped
+supervisord -c deploy/supervisor/web.conf
+supervisord -c deploy/supervisor/celery.conf
 ```
 
 恢复脚本会检查本机进程和 Celery ping；只重启 Web、Gunicorn worker 重建或 HUP reload 时不得运行它。
@@ -140,7 +141,7 @@ supervisord -c celery.conf
 本地 `.venv` + lite 镜像可以使用单个开发配置：
 
 ```bash
-supervisord -c local_dev.conf
+supervisord -c deploy/supervisor/local-dev.conf
 ```
 
 也可以在完成结构同步后手工启动：
@@ -183,6 +184,20 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 
 任何测试（包括纯单元测试和容器测试）都禁止在生产主机 `why-server`（hostname `computing`）上运行。
 
+## 一键部署
+
+提交并验证本地改动后，在仓库根执行：
+
+```bash
+bash deploy.sh
+```
+
+脚本会验证固定生产目标、同步候选版本、按 `requirements/production.txt` 内容摘要复用经过只读完整性校验的 Python 虚拟环境、按 Docker context 变化构建并冒烟验证 commit-tagged 镜像，并在停机前检查代码目录、部署状态目录和 Docker data-root 的剩余空间。随后它会停止现有 Web/Celery、备份数据库、按受管清单激活代码、同步结构、恢复未完成任务，再原子切换运行环境与镜像并重启。最后会检查 Supervisor、两个健康端点，以及三个 Celery worker 的精确队列映射。首次部署、远端基线不可识别或需要强制重建全部镜像时使用 `bash deploy.sh --rebuild-all`。
+
+默认最低余量为代码目录 10 GiB、部署状态目录 10 GiB、Docker data-root 20 GiB；确需调整时分别设置 `NUMOJ_DEPLOY_MIN_TARGET_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_STATE_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_DOCKER_FREE_BYTES`。阈值检查失败会在停服前终止发布。
+
+部署使用远端锁防止并发；失败时恢复旧代码、旧虚拟环境指针与旧镜像并尝试重启，数据库备份只保留不自动回灌。生产 `config.py` 和运行数据永不覆盖；`static/` 只允许新增或内容完全相同的文件，拒绝覆盖既有资产。脚本不会修改系统 Python 或全局 site-packages。
+
 ## 目录边界
 
 - `oj.py`：应用装配、Celery 注册、幂等调度引导与显式停机恢复入口；
@@ -191,8 +206,12 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 - `oj_modules/db_services.py`、`oj_modules/ranking*_db.py`：数据访问；
 - `oj_modules/judger_core.py`、`oj_modules/docker_sandbox.py`：普通判题与容器沙箱；
 - `oj_modules/*_services.py`：可复用业务服务；
-- `templates/`、`static/`：服务端模板和静态资源；
-- `scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`、`myojdb.sql`：结构同步与显式停机恢复工具；
+- `templates/`、`static/`：按业务域组织的服务端模板和静态资源；
+- `deploy/`、`deploy.sh`：生产进程配置和带备份/回滚的一键部署状态机；
+- `database/bootstrap.sql`：新安装结构与开发种子基线；
+- `requirements/`：生产、测试和可选依赖分层；
+- `scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`：结构同步与显式停机恢复工具；
 - `tests/unit`、`tests/db`、`tests/e2e`：按基础设施依赖分层的测试。
 
 维护规则、变更清单、测试矩阵和发布/回滚原则见 [`docs/maintenance.md`](docs/maintenance.md)。生产部署约束见 [`CLAUDE.md`](CLAUDE.md)。
+治理前基线与本轮逐项验收分别见 [`docs/reviews/initial-maintainability-review.md`](docs/reviews/initial-maintainability-review.md) 和 [`docs/reviews/2026-07-maintainability-follow-up.md`](docs/reviews/2026-07-maintainability-follow-up.md)。

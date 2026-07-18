@@ -27,14 +27,9 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-try:
-    import redis as _redis
-except Exception:  # pragma: no cover
-    _redis = None
-
 import config as _cfg
-from config import REDIS_DB, REDIS_HOST, REDIS_PORT
 from oj_modules.db_services import get_users_in_classes
+from oj_modules.redis_clients import create_optional_redis_client
 from oj_modules.ranking_db import (
     begin_agent_judge_attempt,
     create_ranking_submission, delete_ranking_submission, get_competition, get_ranking_submission,
@@ -75,15 +70,7 @@ def _ensure_rds():
     global _batch_rds
     if _batch_rds is not None:
         return _batch_rds
-    if _redis is None:
-        return None
-    try:
-        _batch_rds = _redis.StrictRedis(
-            host=REDIS_HOST, port=int(REDIS_PORT), db=int(REDIS_DB), decode_responses=True,
-        )
-        _batch_rds.ping()
-    except Exception:
-        _batch_rds = None
+    _batch_rds = create_optional_redis_client()
     return _batch_rds
 
 

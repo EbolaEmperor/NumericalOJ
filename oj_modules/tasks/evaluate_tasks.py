@@ -14,16 +14,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from oj_modules import judger_core as core
 
-try:
-    import redis
-except Exception:
-    redis = None
-
 from config import (
     EVALUATE_SUBMISSION_LOCK_TTL_SECONDS,
-    REDIS_DB,
-    REDIS_HOST,
-    REDIS_PORT,
 )
 from oj_modules.ai_utils import evaluate_program_output_image_with_ai
 from oj_modules.db_services import (
@@ -39,6 +31,7 @@ from oj_modules.db_services import (
     update_submission_evaluation,
     update_submission_status,
 )
+from oj_modules.redis_clients import create_optional_redis_client
 
 
 EVALUATE_TASK_NAME = "oj.evaluate_submission"
@@ -187,19 +180,8 @@ def _get_lock_redis_client():
     global _lock_rds
     if _lock_rds is not None:
         return _lock_rds
-    if redis is None:
-        return None
 
-    try:
-        _lock_rds = redis.StrictRedis(
-            host=REDIS_HOST,
-            port=int(REDIS_PORT),
-            db=int(REDIS_DB),
-            decode_responses=True,
-        )
-        _lock_rds.ping()
-    except Exception:
-        _lock_rds = None
+    _lock_rds = create_optional_redis_client()
     return _lock_rds
 
 

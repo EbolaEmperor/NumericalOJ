@@ -124,7 +124,7 @@ def dashboard():
     problems.sort(key=lambda p: p['id'])
 
     return render_template(
-        'ai_detection_dashboard.html',
+        'admin/ai_detection.html',
         user=user,
         summary=summary,
         classes=classes,
@@ -217,7 +217,7 @@ def problem_detail(problem_id):
             r['_signals'] = []
 
     return render_template(
-        'ai_detection_dashboard.html',
+        'admin/ai_detection.html',
         user=user,
         view='problem',
         problem=problem,
@@ -245,7 +245,7 @@ def student_detail(username):
             r['_signals'] = []
 
     return render_template(
-        'ai_detection_dashboard.html',
+        'admin/ai_detection.html',
         user=user,
         view='student',
         target_username=username,

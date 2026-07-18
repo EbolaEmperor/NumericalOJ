@@ -10,11 +10,19 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RANKING = (ROOT / "templates" / "ranking_detail.html").read_text(encoding="utf-8")
-JUDGE_MODAL = (ROOT / "templates" / "_judge_detail_modal.html").read_text(encoding="utf-8")
-REVERSE_MODAL = (ROOT / "templates" / "_reverse_judge_detail_modal.html").read_text(encoding="utf-8")
-TRACE_RENDERER = (ROOT / "templates" / "_agent_execution_trace.html").read_text(encoding="utf-8")
-SUB_CARD = (ROOT / "templates" / "_ranking_sub_card.html").read_text(encoding="utf-8")
+RANKING = (ROOT / "templates" / "ranking" / "detail.html").read_text(encoding="utf-8")
+JUDGE_MODAL = (
+    ROOT / "templates" / "ranking" / "modals" / "judge_detail.html"
+).read_text(encoding="utf-8")
+REVERSE_MODAL = (
+    ROOT / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
+).read_text(encoding="utf-8")
+TRACE_RENDERER = (
+    ROOT / "templates" / "ranking" / "scripts" / "execution_trace.html"
+).read_text(encoding="utf-8")
+SUB_CARD = (
+    ROOT / "templates" / "ranking" / "components" / "submission_card.html"
+).read_text(encoding="utf-8")
 
 
 def _assert_three_tabs_in_order(template):
@@ -26,25 +34,24 @@ def _assert_three_tabs_in_order(template):
     )
 
 
-def test_both_agent_judge_modals_add_trace_tab_to_the_right_of_detail():
-    _assert_three_tabs_in_order(RANKING)
+def test_shared_agent_judge_modal_adds_trace_tab_to_the_right_of_detail():
     _assert_three_tabs_in_order(JUDGE_MODAL)
-    for template in (RANKING, JUDGE_MODAL):
-        assert 'id="judgeModalTopo"' in template
-        assert 'id="judgeModalRules"' in template
-        assert 'id="judgeModalTrace"' in template
+    assert 'id="judgeModalTopo"' in JUDGE_MODAL
+    assert 'id="judgeModalRules"' in JUDGE_MODAL
+    assert 'id="judgeModalTrace"' in JUDGE_MODAL
 
 
 def test_reverse_and_agent_judge_use_one_shared_trace_renderer():
-    assert "{% include '_agent_execution_trace.html' %}" in REVERSE_MODAL
-    assert "{% include '_agent_execution_trace.html' %}" in JUDGE_MODAL
-    assert "{% include '_agent_execution_trace.html' %}" in RANKING
+    trace_include = "{% include 'ranking/scripts/execution_trace.html' %}"
+    assert trace_include in REVERSE_MODAL
+    assert trace_include in JUDGE_MODAL
+    assert "{% include 'ranking/modals/judge_detail.html' %}" in RANKING
+    assert "{% include 'ranking/modals/reverse_judge_detail.html' %}" in RANKING
     assert "keyPrefix:'reverse-judge', showThinkingLoader:true" in REVERSE_MODAL
-    for template in (JUDGE_MODAL, RANKING):
-        assert (
-            "keyPrefix:'agent-judge', showThinkingLoader:true, "
-            "showPendingLoader:true"
-        ) in template
+    assert (
+        "keyPrefix:'agent-judge', showThinkingLoader:true, "
+        "showPendingLoader:true"
+    ) in JUDGE_MODAL
     assert "function renderMessageHtml" not in REVERSE_MODAL
 
 
@@ -58,20 +65,18 @@ def test_agent_judge_trace_uses_bottom_thinking_and_large_pending_loaders():
     assert 'data-icon-only="true" data-size="lg"' in TRACE_RENDERER
     assert 'class="agent-trace-thinking"' in TRACE_RENDERER
     assert "thinkingLoaderHtml(thinkingWord)" in TRACE_RENDERER
-    for template in (JUDGE_MODAL, RANKING):
-        assert "status: snap.status === 'Judging' ? 'running'" in template
-        assert "? 'pending' : (snap.status === 'Error'" in template
+    assert "status: snap.status === 'Judging' ? 'running'" in JUDGE_MODAL
+    assert "? 'pending' : (snap.status === 'Error'" in JUDGE_MODAL
 
 
 def test_judging_status_shows_stable_inline_loader_before_progress_bar():
-    for template in (JUDGE_MODAL, RANKING):
-        assert "function renderJudgeStatus(element, snap)" in template
-        assert "snap.status !== 'Judging'" in template
-        assert "data-judge-status-loader" in template
-        assert 'data-icon-only="true" data-size="xs"' in template
-        assert "element.querySelector('[data-judge-status-text]').textContent = text" in template
-        assert "renderJudgeStatus(status, snap)" in template
-        assert "d-inline-flex align-items-center gap-1" in template
+    assert "function renderJudgeStatus(element, snap)" in JUDGE_MODAL
+    assert "snap.status !== 'Judging'" in JUDGE_MODAL
+    assert "data-judge-status-loader" in JUDGE_MODAL
+    assert 'data-icon-only="true" data-size="xs"' in JUDGE_MODAL
+    assert "element.querySelector('[data-judge-status-text]').textContent = text" in JUDGE_MODAL
+    assert "renderJudgeStatus(status, snap)" in JUDGE_MODAL
+    assert "d-inline-flex align-items-center gap-1" in JUDGE_MODAL
 
 
 def test_shared_renderer_reconciles_by_stable_source_offset_identity():
@@ -165,15 +170,14 @@ def test_trace_window_state_survives_incremental_events_and_keeps_history_off_do
 
 
 def test_default_view_tracks_status_without_overriding_manual_selection():
-    for template in (RANKING, JUDGE_MODAL):
-        assert "['Judging', 'Queued', 'Pending']" in template
-        assert "? 'trace' : 'detail'" in template
-        assert "if (!judgeViewManuallySelected)" in template
-        assert "setJudgeView(tab.dataset.judgeView, true)" in template
-        assert "applyDefaultJudgeView(snap.status)" in template
-        assert "var executionTrace = snap.execution_trace" in template
-        assert "currentJudgeResultSignature" in template
-        assert "signature === currentJudgeResultSignature" in template
-        assert "trace.trace_id" not in template
-        assert "executionTrace.trace_id || snap.attempt_trace_id" in template
+    assert "['Judging', 'Queued', 'Pending']" in JUDGE_MODAL
+    assert "? 'trace' : 'detail'" in JUDGE_MODAL
+    assert "if (!judgeViewManuallySelected)" in JUDGE_MODAL
+    assert "setJudgeView(tab.dataset.judgeView, true)" in JUDGE_MODAL
+    assert "applyDefaultJudgeView(snap.status)" in JUDGE_MODAL
+    assert "var executionTrace = snap.execution_trace" in JUDGE_MODAL
+    assert "currentJudgeResultSignature" in JUDGE_MODAL
+    assert "signature === currentJudgeResultSignature" in JUDGE_MODAL
+    assert "trace.trace_id" not in JUDGE_MODAL
+    assert "executionTrace.trace_id || snap.attempt_trace_id" in JUDGE_MODAL
     assert 'data-submission-status="{{ s.status }}"' in SUB_CARD

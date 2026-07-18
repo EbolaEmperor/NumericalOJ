@@ -461,7 +461,7 @@ def get_circle_cat_leaderboard(limit=10):
 @game_bp.route('/games/circle-cat')
 def circle_cat():
     return render_template(
-        'circle_cat.html',
+        'games/circle_cat.html',
         user=current_user(),
         leaderboard=get_circle_cat_leaderboard(limit=10),
     )

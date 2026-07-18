@@ -1,0 +1,116 @@
+{# ELO 对战数据：列表 + 分页。被 ranking/detail.html include，也被 ranking_matches_json 单独渲染用于 AJAX 局部刷新。
+   需要的上下文：matches, matches_mine, competition, user, is_admin, current_page, total_pages, page_numbers #}
+{% if not matches %}
+  <div class="matches-empty">
+    <div class="matches-empty-icon"><i class="fas fa-chess-board"></i></div>
+    <div class="matches-empty-title">
+      {% if matches_mine %}你还没有踏上擂台{% else %}擂台尚无对决{% endif %}
+    </div>
+    <div class="matches-empty-hint">
+      {% if competition.elo_running != 1 %}
+        动态评分尚未启动，匹配引擎不会调度对战。
+      {% else %}
+        等待匹配引擎调度首场对战，每 {{ competition.elo_match_interval_seconds or 60 }} 秒一轮。
+      {% endif %}
+    </div>
+  </div>
+{% else %}
+  <div class="matches-list">
+    {% for m in matches %}
+      {% set delta_a = (m.rating_a_after or 0) - (m.rating_a_before or 0) %}
+      {% set delta_b = (m.rating_b_after or 0) - (m.rating_b_before or 0) %}
+      {% set winner = m.winner|int %}
+      {% set ts = (m.created_at or '')|string %}
+      {% set is_me_a = user and m.username_a and m.username_a == user.username %}
+      {% set is_me_b = user and m.username_b and m.username_b == user.username %}
+      <article class="match-row{% if winner == -1 %} is-failed{% elif winner == 0 %} is-draw{% endif %}{% if is_me_a or is_me_b %} is-mine{% endif %}">
+        <time class="match-time">
+          <span class="match-time-date">{{ ts[5:10] if ts|length >= 10 else ts }}</span>
+          <span class="match-time-clock">{{ ts[11:16] if ts|length >= 16 else '' }}</span>
+        </time>
+
+        <div class="match-side match-side-a {% if winner == 1 %}match-winner{% elif winner == 2 %}match-loser{% endif %}">
+          <span class="match-username">
+            {% if is_me_a %}<span class="match-me-tag" aria-hidden="true">YOU</span>{% endif %}
+            {{ m.username_a or ('sub#' ~ m.submission_a_id) }}
+          </span>
+          <span class="match-stats">
+            <span class="match-rating">{{ '%.0f'|format(m.rating_a_before or 0) }}</span>
+            <span class="match-delta {% if delta_a > 0 %}is-up{% elif delta_a < 0 %}is-down{% endif %}">{{ '%+.0f'|format(delta_a) }}</span>
+          </span>
+        </div>
+
+        <div class="match-vs"
+             {% if winner == 1 %}data-victor="a"{% elif winner == 2 %}data-victor="b"{% elif winner == 0 %}data-victor="draw"{% elif winner == -1 %}data-victor="none"{% endif %}>
+          {% if winner == -1 %}
+            <span class="match-vs-failed" title="评测脚本失败">N/C</span>
+          {% elif winner == 0 %}
+            <span class="match-vs-draw" title="平局">DRAW</span>
+          {% else %}
+            <span class="match-vs-badge" title="{% if winner == 1 %}A 胜{% else %}B 胜{% endif %}">
+              {% if winner == 1 %}
+                <i class="fas fa-caret-left"></i>
+              {% else %}
+                <i class="fas fa-caret-right"></i>
+              {% endif %}
+            </span>
+          {% endif %}
+        </div>
+
+        <div class="match-side match-side-b {% if winner == 2 %}match-winner{% elif winner == 1 %}match-loser{% endif %}">
+          <span class="match-stats">
+            <span class="match-delta {% if delta_b > 0 %}is-up{% elif delta_b < 0 %}is-down{% endif %}">{{ '%+.0f'|format(delta_b) }}</span>
+            <span class="match-rating">{{ '%.0f'|format(m.rating_b_before or 0) }}</span>
+          </span>
+          <span class="match-username">
+            {{ m.username_b or ('sub#' ~ m.submission_b_id) }}
+            {% if is_me_b %}<span class="match-me-tag" aria-hidden="true">YOU</span>{% endif %}
+          </span>
+        </div>
+
+        <div class="match-action">
+          <button type="button" class="match-detail-btn" data-match-id="{{ m.id }}">
+            <span>详情</span>
+            <i class="fas fa-arrow-right" aria-hidden="true"></i>
+          </button>
+          {% if is_admin %}
+            {% if winner == -1 %}
+              {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？该场为评测失败记录，删除后不会影响双方分数。' %}
+            {% elif winner == 0 %}
+              {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？\n该场为平局，曾让 A {0:+.0f} 分、B {1:+.0f} 分，删除后将在当前 ELO 上撤销这两个变化。'.format(delta_a, delta_b) %}
+            {% else %}
+              {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？\n该场曾让 A {0:+.0f} 分、B {1:+.0f} 分，删除后将在当前 ELO 上撤销这两个变化。'.format(delta_a, delta_b) %}
+            {% endif %}
+            <button type="button" class="match-delete-btn"
+                    data-match-id="{{ m.id }}"
+                    data-delete-url="{{ url_for('ranking.ranking_delete_match', competition_id=competition.id, match_id=m.id) }}"
+                    data-confirm="{{ confirm_text }}"
+                    title="删除对战并撤销分数变动" aria-label="删除对战 #{{ m.id }}">
+              <i class="fas fa-trash" aria-hidden="true"></i>
+            </button>
+          {% endif %}
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% if total_pages > 1 %}
+<footer class="matches-pagination">
+  <nav aria-label="分页">
+    <ul class="pagination mb-0">
+      <li class="page-item {% if current_page <= 1 %}disabled{% endif %}">
+        <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page-1, mine=(1 if matches_mine else None)) }}" aria-label="上一页">‹</a>
+      </li>
+      {% for p in page_numbers %}
+        <li class="page-item {% if p == current_page %}active{% endif %}">
+          <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=p, mine=(1 if matches_mine else None)) }}">{{ p }}</a>
+        </li>
+      {% endfor %}
+      <li class="page-item {% if current_page >= total_pages %}disabled{% endif %}">
+        <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page+1, mine=(1 if matches_mine else None)) }}" aria-label="下一页">›</a>
+      </li>
+    </ul>
+  </nav>
+</footer>
+{% endif %}

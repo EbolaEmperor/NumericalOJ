@@ -17,9 +17,10 @@ import traceback
 import pymysql
 
 from oj_modules.ranking_db import (
+    claim_standard_ranking_evaluation,
     get_competition,
     get_ranking_submission,
-    update_submission_result,
+    update_standard_ranking_result_for_task,
 )
 
 
@@ -85,34 +86,62 @@ def _run_scoring_script(script_path, user_answer_path, reference_answer_path, ma
     return score_num, details
 
 
-def _evaluate(submission_id):
+def _finish_task(
+        submission_id, task_id, score, status, response, *,
+        grade_details=None, error_message=None):
+    if not update_standard_ranking_result_for_task(
+            submission_id,
+            task_id,
+            score,
+            status,
+            grade_details=grade_details,
+            error_message=error_message,
+    ):
+        return {
+            'success': True,
+            'skipped': True,
+            'message': '评测租约已被新任务替换，丢弃旧任务结果',
+        }
+    return response
+
+
+def _evaluate(submission_id, task_id):
     submission = get_ranking_submission(submission_id)
     if not submission:
         return {'success': False, 'message': f'提交 #{submission_id} 不存在'}
 
     competition = get_competition(submission.get('competition_id'))
     if not competition:
-        update_submission_result(
-            submission_id, None, 'Error',
-            grade_details=None, error_message='比赛不存在或已被删除',
+        return _finish_task(
+            submission_id,
+            task_id,
+            None,
+            'Error',
+            {'success': False, 'message': '比赛不存在'},
+            error_message='比赛不存在或已被删除',
         )
-        return {'success': False, 'message': '比赛不存在'}
 
     answer_path = submission.get('answer_path')
     if not answer_path or not os.path.isfile(answer_path):
-        update_submission_result(
-            submission_id, None, 'Error',
-            grade_details=None, error_message='用户答案文件不存在',
+        return _finish_task(
+            submission_id,
+            task_id,
+            None,
+            'Error',
+            {'success': False, 'message': '用户答案文件不存在'},
+            error_message='用户答案文件不存在',
         )
-        return {'success': False, 'message': '用户答案文件不存在'}
 
     ref_path = competition.get('reference_answer_path')
     if not ref_path or not os.path.isfile(ref_path):
-        update_submission_result(
-            submission_id, None, 'Error',
-            grade_details=None, error_message='赛事尚未配置标准答案文件',
+        return _finish_task(
+            submission_id,
+            task_id,
+            None,
+            'Error',
+            {'success': False, 'message': '赛事尚未配置标准答案'},
+            error_message='赛事尚未配置标准答案文件',
         )
-        return {'success': False, 'message': '赛事尚未配置标准答案'}
 
     max_score = int(competition.get('max_score') or 100)
     scoring_script = competition.get('scoring_script_path')
@@ -120,11 +149,14 @@ def _evaluate(submission_id):
     script_timeout = int(competition.get('scoring_script_timeout_seconds')
                          or DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS)
     if not has_script:
-        update_submission_result(
-            submission_id, None, 'Error',
-            grade_details=None, error_message='赛事尚未配置评分脚本',
+        return _finish_task(
+            submission_id,
+            task_id,
+            None,
+            'Error',
+            {'success': False, 'message': '赛事尚未配置评分脚本'},
+            error_message='赛事尚未配置评分脚本',
         )
-        return {'success': False, 'message': '赛事尚未配置评分脚本'}
 
     try:
         score, details = _run_scoring_script(
@@ -132,12 +164,14 @@ def _evaluate(submission_id):
             timeout_seconds=script_timeout,
         )
     except Exception as e:
-        update_submission_result(
-            submission_id, None, 'Error',
-            grade_details=None,
+        return _finish_task(
+            submission_id,
+            task_id,
+            None,
+            'Error',
+            {'success': False, 'message': str(e)},
             error_message=f'评测失败：{e}\n{traceback.format_exc()[-1000:]}',
         )
-        return {'success': False, 'message': str(e)}
 
     # 封顶/下限保护
     try:
@@ -148,11 +182,14 @@ def _evaluate(submission_id):
         score_num = 0.0
     score_num = max(0.0, min(score_num, float(max_score)))
 
-    update_submission_result(
-        submission_id, score_num, 'Accepted',
-        grade_details=details, error_message=None,
+    return _finish_task(
+        submission_id,
+        task_id,
+        score_num,
+        'Accepted',
+        {'success': True, 'score': score_num},
+        grade_details=details,
     )
-    return {'success': True, 'score': score_num}
 
 
 def register_ranking_evaluate_task(celery_app):
@@ -166,15 +203,27 @@ def register_ranking_evaluate_task(celery_app):
     )
     def evaluate_ranking_submission(self, submission_id):
         try:
-            return _evaluate(int(submission_id))
+            normalized_submission_id = int(submission_id)
+            task_id = str(getattr(self.request, 'id', '') or '').strip()
+            if not task_id:
+                raise RuntimeError('普通打榜评测缺少 Celery task id')
+            if not claim_standard_ranking_evaluation(normalized_submission_id, task_id):
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'message': '旧任务已失去数据库租约，跳过重复评测',
+                }
+            return _evaluate(normalized_submission_id, task_id)
         except Exception as e:
             if isinstance(e, _MYSQL_RETRY_ERRORS):
                 raise
             # 捕获再抛出，以便 Celery 正常记录异常
             try:
-                update_submission_result(
-                    int(submission_id), None, 'Error',
-                    grade_details=None,
+                update_standard_ranking_result_for_task(
+                    int(submission_id),
+                    str(getattr(self.request, 'id', '') or '').strip(),
+                    None,
+                    'Error',
                     error_message=f'评测任务异常：{e}',
                 )
             except Exception:

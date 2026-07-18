@@ -13,11 +13,6 @@ import time
 import pymysql
 from flask import session
 
-try:
-    import redis
-except Exception:
-    redis = None
-
 from config import (
     AI_TUTOR_MODEL,
     MYSQL_CONNECT_TIMEOUT,
@@ -28,9 +23,6 @@ from config import (
     MYSQL_POOL_WAIT_TIMEOUT,
     MYSQL_USERNAME,
     QWEN_TEXT_MODEL,
-    REDIS_DB,
-    REDIS_HOST,
-    REDIS_PORT,
     SUBMISSION_SNAPSHOT_TTL_SECONDS,
     QWEN_OMNI_MODEL,
 )
@@ -40,6 +32,10 @@ _MYSQL_HOST = getattr(_config, 'MYSQL_HOST', '127.0.0.1')
 _MYSQL_PORT = int(getattr(_config, 'MYSQL_PORT', 3306))
 _MYSQL_DB = getattr(_config, 'MYSQL_DB', 'myojdb')
 from oj_modules.ai_utils import _normalize_ai_code_issues
+from oj_modules.redis_clients import (
+    RedisClientProfile,
+    create_optional_redis_client,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -83,6 +79,7 @@ def safe_table_name(name):
 _settings_table_ready = False
 _agent_runs_table_ready = False
 _submission_snapshot_rds = None
+_submission_snapshot_blocking_rds = None
 _submission_snapshot_ttl_seconds = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 # problems 表惰性补列的「已补加」缓存改用 _ensured_problem_columns 集合（见 _ensure_problem_column）。
 _daily_submission_stats_table_ready = False
@@ -317,8 +314,9 @@ def get_db_connection():
     return _get_db_pool().acquire()
 
 
-# Schema creation and migration is handled by scripts/init_db_schema.py before
-# the web and Celery processes start. Runtime data paths must not issue DDL.
+# Schema synchronization is owned by the explicit deploy/bootstrap workflow in
+# scripts/init_db_schema.py. Process startup and runtime data paths must not
+# issue DDL.
 
 
 def _schema_is_managed_at_startup(*args, **kwargs):
@@ -424,9 +422,13 @@ def ensure_submission_prompt_generation_error_column():
     return _schema_is_managed_at_startup()
 
 
-def init_submission_snapshot_cache(redis_client, ttl_seconds=None):
-    global _submission_snapshot_rds, _submission_snapshot_ttl_seconds
+def init_submission_snapshot_cache(redis_client, ttl_seconds=None, blocking_client=None):
+    global _submission_snapshot_rds, _submission_snapshot_blocking_rds
+    global _submission_snapshot_ttl_seconds
     _submission_snapshot_rds = redis_client
+    _submission_snapshot_blocking_rds = (
+        redis_client if blocking_client is None else blocking_client
+    )
     if ttl_seconds is not None:
         try:
             _submission_snapshot_ttl_seconds = max(60, int(ttl_seconds))
@@ -438,20 +440,18 @@ def _ensure_submission_snapshot_redis():
     global _submission_snapshot_rds
     if _submission_snapshot_rds is not None:
         return _submission_snapshot_rds
-    if redis is None:
-        return None
-
-    try:
-        _submission_snapshot_rds = redis.StrictRedis(
-            host=REDIS_HOST,
-            port=int(REDIS_PORT),
-            db=int(REDIS_DB),
-            decode_responses=True,
-        )
-        _submission_snapshot_rds.ping()
-    except Exception:
-        _submission_snapshot_rds = None
+    _submission_snapshot_rds = create_optional_redis_client()
     return _submission_snapshot_rds
+
+
+def _ensure_submission_snapshot_blocking_redis():
+    global _submission_snapshot_blocking_rds
+    if _submission_snapshot_blocking_rds is not None:
+        return _submission_snapshot_blocking_rds
+    _submission_snapshot_blocking_rds = create_optional_redis_client(
+        RedisClientProfile.BLOCKING,
+    )
+    return _submission_snapshot_blocking_rds
 
 
 def _submission_snapshot_key(submission_id):
@@ -598,7 +598,7 @@ def get_submission_status_snapshot(submission_id, prefer_cache=True):
 
 
 def subscribe_submission_status_events(submission_id):
-    client = _ensure_submission_snapshot_redis()
+    client = _ensure_submission_snapshot_blocking_redis()
     if client is None:
         return None
     try:
@@ -1635,11 +1635,78 @@ def get_latest_written_submission(username, problem_id):
         conn.close()
 
 
-def overwrite_written_submission(submission_id, new_filename):
-    """Reset an existing written submission to Pending with a new filename."""
+def _written_submission_snapshot_matches(current, expected):
+    """比较人工覆盖依赖的并发控制字段。"""
+    if not isinstance(expected, dict):
+        return False
+    for field in (
+        'id', 'username', 'problem_id', 'test_points',
+        'score', 'status', 'created_at',
+    ):
+        current_value = current.get(field)
+        expected_value = expected.get(field)
+        if current_value == expected_value:
+            continue
+        if str(current_value) != str(expected_value):
+            return False
+    return True
+
+
+def overwrite_written_submission(
+    submission_id,
+    new_filename,
+    *,
+    submission_limit=None,
+    username=None,
+    problem_id=None,
+    user_id=None,
+    expected_submission=None,
+):
+    """CAS 更新人工书面提交，并在同一事务预占配额。
+
+    文件发布层必须先把不可变 generation 完整落盘，再传入它在文件锁内读取的
+    ``expected_submission``。本函数在 ``FOR UPDATE`` 下重新读取权威快照；任一字段已
+    被评分或其他请求推进时整笔事务回滚，绝不靠事后盲写旧快照补偿。
+    """
+    if not isinstance(expected_submission, dict):
+        raise ValueError('人工书面作业覆盖必须提供预期提交快照')
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            effective_username = None
+            if submission_limit is not None:
+                if problem_id is None:
+                    raise ValueError('预占提交配额时必须提供 problem_id')
+                user = _lock_submission_user_with_cursor(
+                    cursor, username=username, user_id=user_id,
+                )
+                effective_username = user['username']
+            cursor.execute(
+                """SELECT id, username, problem_id, test_points,
+                          score, status, created_at
+                   FROM submissions WHERE id=%s FOR UPDATE""",
+                (submission_id,),
+            )
+            submission = cursor.fetchone()
+            if not submission:
+                raise LookupError('待覆盖的书面作业提交不存在')
+            if problem_id is not None and int(submission['problem_id']) != int(problem_id):
+                raise ValueError('待覆盖提交与题目不匹配')
+            if effective_username is not None and submission['username'] != effective_username:
+                raise ValueError('待覆盖提交与当前用户不匹配')
+            if not _written_submission_snapshot_matches(
+                    submission, expected_submission,
+            ):
+                raise RuntimeError('待覆盖的书面作业已被其他流程更新')
+
+            if submission_limit is not None:
+                _reserve_submission_quota_with_cursor(
+                    cursor,
+                    effective_username,
+                    problem_id,
+                    submission_limit,
+                )
+
             test_points_str = json.dumps(new_filename, ensure_ascii=False)
             cursor.execute(
                 """UPDATE submissions
@@ -1648,10 +1715,24 @@ def overwrite_written_submission(submission_id, new_filename):
                     WHERE id=%s""",
                 (test_points_str, submission_id),
             )
+            if int(cursor.rowcount or 0) != 1:
+                raise RuntimeError('书面作业提交指针更新失败')
         conn.commit()
-        refresh_submission_status_snapshot(submission_id)
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
+
+    try:
+        refresh_submission_status_snapshot(submission_id)
+    except Exception:
+        # 数据库事务已成功；派生快照不可让调用方误判为需要回滚。
+        logger.exception(
+            '书面作业覆盖后状态快照刷新失败',
+            extra={'submission_id': submission_id},
+        )
+    return submission
 
 
 def get_submissions_by_user_and_problem(username, problem_id):

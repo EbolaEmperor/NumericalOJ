@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+from collections import OrderedDict
+from types import SimpleNamespace
+
 
 def test_problem_test_code_schema_definition_is_longtext():
     from scripts import init_db_schema
@@ -37,3 +40,45 @@ def test_reverse_quality_gate_schema_has_config_and_isolated_endpoint_pool():
     )
     assert "idx_aje_comp_pool" in endpoints.indexes
     assert "(`competition_id`,`pool_kind`)" in endpoints.indexes["idx_aje_comp_pool"]
+
+
+def test_empty_database_dry_run_plans_full_schema_without_connecting_to_it(monkeypatch):
+    from scripts import init_db_schema
+
+    specs = OrderedDict(
+        [
+            (
+                "users",
+                init_db_schema.TableSpec(
+                    name="users",
+                    create_sql="CREATE TABLE `users` (`id` INT PRIMARY KEY) ENGINE=InnoDB",
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(init_db_schema, "_load_config", lambda: SimpleNamespace(MYSQL_DB="empty_db"))
+    monkeypatch.setattr(init_db_schema, "_load_schema_specs", lambda: specs)
+
+    def fake_ensure(_config, dry_run, actions):
+        assert dry_run is True
+        actions.append("CREATE DATABASE IF NOT EXISTS `empty_db`")
+        return False
+
+    monkeypatch.setattr(init_db_schema, "_ensure_database", fake_ensure)
+    monkeypatch.setattr(
+        init_db_schema,
+        "_connect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry-run must not connect to an absent database")
+        ),
+    )
+
+    actions = init_db_schema.init_schema(dry_run=True)
+
+    assert actions == [
+        "CREATE DATABASE IF NOT EXISTS `empty_db`",
+        "USE `empty_db`",
+        "SET FOREIGN_KEY_CHECKS=0",
+        specs["users"].create_sql,
+        "SET FOREIGN_KEY_CHECKS=1",
+    ]

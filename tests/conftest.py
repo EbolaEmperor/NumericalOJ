@@ -121,7 +121,7 @@ def _ensure_schema():
     conn.close()
 
     if need_load:
-        dump = OJ_ROOT / 'myojdb.sql'
+        dump = OJ_ROOT / 'database' / 'bootstrap.sql'
         # 优先用 mysql CLI 导入（镜像内已装 default-mysql-client）
         with open(dump, 'rb') as fh:
             subprocess.run(

@@ -1,0 +1,18 @@
+{% extends "layouts/base.html" %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/layout.css') }}">
+{% endblock %}
+
+{% block body %}
+{% include 'components/layout/navigation.html' %}
+{% include 'components/layout/password_modal.html' %}
+{% include 'components/layout/class_manager_modal.html' %}
+{% include 'components/layout/flash_messages.html' %}
+
+<div class="{% block content_container_class %}container mt-4{% endblock %}">
+  {% block content %}{% endblock %}
+</div>
+
+<script src="{{ url_for('static', filename='app/layout.js') }}"></script>
+{% endblock %}

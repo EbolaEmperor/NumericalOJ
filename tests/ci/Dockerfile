@@ -35,10 +35,10 @@ RUN test "$(command -v python3)" = "/usr/local/bin/python3"; \
     pip3 --version | grep -F '(python 3.12)'
 
 WORKDIR /app
-COPY requirements.txt requirements-test.txt /app/
+COPY requirements/production.txt requirements/test.txt /app/requirements/
 # pip 走清华镜像（IPv4 可达），避免 pypi.org IPv6 超时。
 RUN python3 -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-        -r requirements.txt -r requirements-test.txt
+        -r requirements/production.txt -r requirements/test.txt
 
 # 复制仓库代码（.dockerignore 排除无关项），再用 CI 配置覆盖 config.py
 COPY . /app/
