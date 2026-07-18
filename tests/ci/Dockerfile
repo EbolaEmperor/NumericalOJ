@@ -1,5 +1,5 @@
 # NumericalOJ 测试镜像：真实工具链 + python 依赖
-FROM debian:12-slim
+FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -16,7 +16,6 @@ RUN set -eux; \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-dev \
         build-essential gcc g++ \
         octave \
         libopenblas-dev liblapacke-dev \
@@ -28,10 +27,17 @@ RUN set -eux; \
         texlive-lang-chinese fonts-noto-cjk latexmk; \
     rm -rf /var/lib/apt/lists/*
 
+# Octave 等 Debian 包可能传递安装系统 Python，但测试入口必须始终使用
+# 官方基础镜像的 /usr/local Python 3.12 及与之绑定的 pip3。
+RUN test "$(command -v python3)" = "/usr/local/bin/python3"; \
+    test "$(command -v pip3)" = "/usr/local/bin/pip3"; \
+    python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'; \
+    pip3 --version | grep -F '(python 3.12)'
+
 WORKDIR /app
 COPY requirements.txt requirements-test.txt /app/
 # pip 走清华镜像（IPv4 可达），避免 pypi.org IPv6 超时。
-RUN pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
+RUN python3 -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
         -r requirements.txt -r requirements-test.txt
 
 # 复制仓库代码（.dockerignore 排除无关项），再用 CI 配置覆盖 config.py

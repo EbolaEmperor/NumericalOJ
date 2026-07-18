@@ -2,6 +2,20 @@
 # 在 test 容器内逐个模块顺序跑 pytest，逐模块打印结果 + JUnit XML，任一失败整体非零退出。
 set -u
 
+python3 - <<'PY' || exit 2
+import subprocess
+import sys
+
+if sys.version_info[:2] != (3, 12):
+    raise SystemExit(f"CI 必须使用 Python 3.12，当前为 {sys.version.split()[0]}")
+
+pip_version = subprocess.check_output(["pip3", "--version"], text=True).strip()
+if "(python 3.12)" not in pip_version:
+    raise SystemExit(f"pip3 未绑定 Python 3.12：{pip_version}")
+
+print(f">>> CI Python 基线：{sys.version.split()[0]} / {pip_version}")
+PY
+
 cd /app
 # 判题运行根用内置默认 <OJ_ROOT>/judger（/app/judger）；不再预建 /tmp/judger_runs。
 mkdir -p test-results judger
