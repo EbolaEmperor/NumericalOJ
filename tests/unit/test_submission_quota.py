@@ -1,0 +1,340 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+from flask import Flask
+
+from oj_modules import db_services
+from oj_modules.routes import problem_core_routes
+
+
+class _QuotaStore:
+    def __init__(self, *, fail_submission_insert=False):
+        self.lock = threading.Lock()
+        self.submission_count = 0
+        self.submissions = 0
+        self.problem_count = 0
+        self.next_submission_id = 1
+        self.fail_submission_insert = fail_submission_insert
+        self.sql = []
+
+
+class _FakeCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.lastrowid = None
+        self.rowcount = 0
+        self._result = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def _begin_locked_transaction(self):
+        if self.connection.locked:
+            return
+        self.connection.store.lock.acquire()
+        self.connection.locked = True
+        self.connection.local_submission_count = self.connection.store.submission_count
+        self.connection.local_submissions = self.connection.store.submissions
+        self.connection.local_problem_count = self.connection.store.problem_count
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        self.connection.store.sql.append(normalized)
+        self.rowcount = 0
+        self._result = None
+
+        if normalized.startswith("INSERT INTO submission_limits"):
+            self._begin_locked_transaction()
+            self.rowcount = 1
+        elif normalized.startswith("SELECT submission_count FROM submission_limits"):
+            self._result = {"submission_count": self.connection.local_submission_count}
+        elif "SET submission_count=submission_count+1" in normalized:
+            self.connection.local_submission_count += 1
+            self.rowcount = 1
+        elif "SET submission_count=GREATEST(submission_count-1, 0)" in normalized:
+            self._begin_locked_transaction()
+            if self.connection.local_submission_count > 0:
+                self.connection.local_submission_count -= 1
+                self.rowcount = 1
+        elif normalized.startswith("SELECT id FROM problems") and normalized.endswith("FOR UPDATE"):
+            self._begin_locked_transaction()
+            self._result = {"id": params[0]}
+        elif normalized.startswith("SELECT COUNT(*) FROM submissions"):
+            self._result = {"COUNT(*)": self.connection.local_submissions}
+        elif normalized.startswith("SELECT id, is_admin, class FROM users"):
+            self._result = {"id": 1, "username": params[0], "is_admin": 1, "class": None}
+        elif normalized.startswith("UPDATE problems SET cnt=cnt+1"):
+            self.connection.local_problem_count += 1
+            self.rowcount = 1
+        elif normalized.startswith("INSERT INTO submissions"):
+            if self.connection.store.fail_submission_insert:
+                raise RuntimeError("injected submission insert failure")
+            if not self.connection.locked:
+                self._begin_locked_transaction()
+            self.lastrowid = self.connection.store.next_submission_id
+            self.connection.store.next_submission_id += 1
+            self.connection.local_submissions += 1
+            self.rowcount = 1
+        else:
+            raise AssertionError(f"unexpected SQL: {normalized}")
+        return self.rowcount
+
+    def fetchone(self):
+        return self._result
+
+    def fetchall(self):
+        return []
+
+
+class _FakeConnection:
+    def __init__(self, store):
+        self.store = store
+        self.locked = False
+        self.local_submission_count = store.submission_count
+        self.local_submissions = store.submissions
+        self.local_problem_count = store.problem_count
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+    def commit(self):
+        self.commit_count += 1
+        if self.locked:
+            self.store.submission_count = self.local_submission_count
+            self.store.submissions = self.local_submissions
+            self.store.problem_count = self.local_problem_count
+            self.locked = False
+            self.store.lock.release()
+
+    def rollback(self):
+        self.rollback_count += 1
+        if self.locked:
+            self.locked = False
+            self.store.lock.release()
+
+    def close(self):
+        if self.locked:
+            self.rollback()
+
+
+def _install_fake_submission_db(monkeypatch, store, *, problem_type=1):
+    connections = []
+
+    def connection_factory():
+        connection = _FakeConnection(store)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(db_services, "get_problem", lambda _problem_id: {"type": problem_type})
+    monkeypatch.setattr(db_services, "get_db_connection", connection_factory)
+    monkeypatch.setattr(db_services, "refresh_submission_status_snapshot", lambda _sid: None)
+    monkeypatch.setattr(db_services, "bump_daily_submission_count", lambda: None)
+    return connections
+
+
+def _create_counted_submission():
+    return db_services.create_submission(
+        problem_id=7,
+        problem_title="并发题",
+        username="student",
+        code="print(1)",
+        score=0,
+        test_points=[],
+        submission_limit=1,
+    )
+
+
+def test_concurrent_counted_submissions_cannot_cross_limit(monkeypatch):
+    store = _QuotaStore()
+    _install_fake_submission_db(monkeypatch, store)
+    start_barrier = threading.Barrier(2)
+
+    def load_problem(_problem_id):
+        start_barrier.wait(timeout=2)
+        return {"type": 1}
+
+    monkeypatch.setattr(db_services, "get_problem", load_problem)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(_create_counted_submission) for _ in range(2)]
+
+    results = []
+    errors = []
+    for future in futures:
+        try:
+            results.append(future.result())
+        except Exception as exc:  # 测试需要保留线程中的明确异常类型
+            errors.append(exc)
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], db_services.SubmissionLimitExceeded)
+    assert errors[0].limit == 1
+    assert store.submission_count == 1
+    assert store.submissions == 1
+    assert any(sql.endswith("FOR UPDATE") for sql in store.sql)
+
+
+def test_uncounted_submission_does_not_touch_quota(monkeypatch):
+    store = _QuotaStore()
+    _install_fake_submission_db(monkeypatch, store)
+
+    submission_id = db_services.create_submission(
+        7, "Agent 提交", "student", "print(1)", 0, [],
+    )
+
+    assert submission_id == 1
+    assert store.submission_count == 0
+    assert not any("submission_limits" in sql for sql in store.sql)
+
+
+def test_submission_insert_failure_rolls_back_reserved_quota(monkeypatch):
+    store = _QuotaStore(fail_submission_insert=True)
+    connections = _install_fake_submission_db(monkeypatch, store)
+
+    with pytest.raises(RuntimeError, match="injected submission insert failure"):
+        _create_counted_submission()
+
+    assert store.submission_count == 0
+    assert store.submissions == 0
+    assert connections[0].commit_count == 0
+    assert connections[0].rollback_count >= 1
+
+
+def test_release_submission_quota_is_atomic_and_never_negative(monkeypatch):
+    store = _QuotaStore()
+    store.submission_count = 1
+    _install_fake_submission_db(monkeypatch, store)
+
+    assert db_services.release_submission_quota("student", 7) is True
+    assert db_services.release_submission_quota("student", 7) is False
+    assert store.submission_count == 0
+
+
+def test_written_first_submission_counters_and_insert_commit_together(monkeypatch):
+    store = _QuotaStore()
+    connections = _install_fake_submission_db(monkeypatch, store, problem_type=2)
+
+    submission_id = db_services.create_submission(
+        9, "书面题", "student", " ", 0, ["answer.pdf"],
+    )
+
+    assert submission_id == 1
+    assert store.submissions == 1
+    assert store.problem_count == 1
+    assert connections[0].commit_count == 1
+
+
+def _route_app():
+    app = Flask(__name__)
+    app.secret_key = "test-secret"
+    return app
+
+
+def _install_submit_route_fakes(monkeypatch):
+    user = {"id": 1, "username": "student", "is_admin": 0}
+    problem = {
+        "id": 7,
+        "title": "并发题",
+        "type": 1,
+        "submission_limit": 1,
+        "programming_grading_mode": 1,
+    }
+    monkeypatch.setattr(problem_core_routes, "current_user", lambda: user)
+    monkeypatch.setattr(problem_core_routes, "get_problem", lambda _pid: problem)
+    monkeypatch.setattr(problem_core_routes, "get_homeworks", lambda _user: [])
+    monkeypatch.setattr(problem_core_routes, "can_submit", lambda *_args: True)
+    monkeypatch.setattr(problem_core_routes, "get_remaining_submissions", lambda *_args: 1)
+    monkeypatch.setattr(problem_core_routes, "url_for", lambda endpoint, **values: f"/{endpoint}")
+    return user, problem
+
+
+def test_submit_route_handles_limit_exception_without_queueing(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    queued = []
+    monkeypatch.setattr(
+        problem_core_routes,
+        "_evaluate_submission_task",
+        type("Task", (), {"delay": lambda self, submission_id: queued.append(submission_id)})(),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "create_submission",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            db_services.SubmissionLimitExceeded("student", 7, 1, 1)
+        ),
+    )
+
+    with _route_app().test_request_context(
+        "/submit/7", method="POST", data={"code": "print(1)"},
+    ):
+        response = problem_core_routes.submit_solution(7)
+
+    assert response.status_code == 302
+    assert queued == []
+
+
+def test_archive_failure_releases_counted_submission_quota(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    released = []
+    statuses = []
+    monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 31)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "archive_submission_by_id",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("archive failed")),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "release_submission_quota",
+        lambda username, problem_id: released.append((username, problem_id)),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "update_submission_status",
+        lambda submission_id, status: statuses.append((submission_id, status)),
+    )
+
+    with _route_app().test_request_context(
+        "/submit/7", method="POST", data={"code": "print(1)"},
+    ):
+        response = problem_core_routes.submit_solution(7)
+
+    assert response.status_code == 302
+    assert released == [("student", 7)]
+    assert statuses == [(31, "Error")]
+
+
+def test_quota_compensation_failure_does_not_hide_original_submission_error(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    statuses = []
+    monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 32)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "archive_submission_by_id",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("archive failed")),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "release_submission_quota",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("quota database failed")),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "update_submission_status",
+        lambda submission_id, status: statuses.append((submission_id, status)),
+    )
+
+    with _route_app().test_request_context(
+        "/submit/7", method="POST", data={"code": "print(1)"},
+    ):
+        response = problem_core_routes.submit_solution(7)
+
+    assert response.status_code == 302
+    assert statuses == [(32, "Error")]

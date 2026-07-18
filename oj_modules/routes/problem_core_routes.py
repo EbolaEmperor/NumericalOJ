@@ -3,6 +3,7 @@
 
 import os
 import json
+import logging
 import re
 import time
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from flask import Blueprint, Response, flash, jsonify, redirect, render_template
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
+    SubmissionLimitExceeded,
     archive_submission_by_id,
     archive_submission_file_by_id,
     can_submit,
@@ -29,8 +31,9 @@ from oj_modules.db_services import (
     get_today_submission_total_from_counter,
     get_user_classes,
     get_user_by_username,
-    increment_submission_count,
     overwrite_written_submission,
+    release_submission_quota,
+    reserve_submission_quota,
     update_submission_status,
     upsert_agent_run_snapshot,
 )
@@ -39,6 +42,7 @@ from oj_modules.markdown_utils import sanitize_html
 
 
 problem_core_bp = Blueprint('problem_core', __name__)
+logger = logging.getLogger(__name__)
 
 _evaluate_submission_task = None
 _promptly_generate_submission_task = None
@@ -266,6 +270,24 @@ def current_user():
         "value": user,
     }
     return user
+
+
+def _submission_limit_redirect(problem_id, submission_limit):
+    flash(f'您对此题的提交次数已达到上限（{submission_limit}次）！', 'danger')
+    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+
+
+def _release_quota_if_counted(username, problem_id, counted_submission_limit):
+    if counted_submission_limit is not None:
+        try:
+            release_submission_quota(username, problem_id)
+        except Exception:
+            # 这是失败路径中的补偿动作；保留原始提交错误响应，同时把配额泄漏
+            # 作为可运维告警记录，避免二次异常掩盖首次故障。
+            logger.exception(
+                '提交失败后的配额释放失败',
+                extra={'username': username, 'problem_id': problem_id},
+            )
 
 
 def get_user_classes_cached(user_id):
@@ -1067,13 +1089,11 @@ def submit_solution(problem_id):
                 return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
     submission_limit = problem.get('submission_limit', 10)
+    counted_submission_limit = submission_limit if user['is_admin'] != 1 else None
 
     if user['is_admin'] != 1:
         if not can_submit(user['username'], problem_id, submission_limit):
-            flash(f'您对此题的提交次数已达到上限（{submission_limit}次）！', 'danger')
-            return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
-
-    remaining_submissions = get_remaining_submissions(user['username'], problem_id, submission_limit) if user['is_admin'] != 1 else None
+            return _submission_limit_redirect(problem_id, submission_limit)
 
     if request.method == 'POST':
         if problem['type'] == 1:
@@ -1087,26 +1107,30 @@ def submit_solution(problem_id):
                     flash('Prompt 不能为空。', 'danger')
                     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
-                submission_id = create_submission(
-                    problem_id=problem_id,
-                    problem_title=problem['title'],
-                    username=user['username'],
-                    code="",
-                    score=0,
-                    test_points=[],
-                    status="Generating",
-                    prompt_text=prompt_text,
-                    generated_from_prompt=True,
-                )
+                try:
+                    submission_id = create_submission(
+                        problem_id=problem_id,
+                        problem_title=problem['title'],
+                        username=user['username'],
+                        code="",
+                        score=0,
+                        test_points=[],
+                        status="Generating",
+                        prompt_text=prompt_text,
+                        generated_from_prompt=True,
+                        submission_limit=counted_submission_limit,
+                    )
+                except SubmissionLimitExceeded:
+                    return _submission_limit_redirect(problem_id, submission_limit)
                 try:
                     archive_submission_by_id(submission_id, raise_errors=True)
                 except Exception as e:
+                    _release_quota_if_counted(
+                        user['username'], problem_id, counted_submission_limit,
+                    )
                     update_submission_status(submission_id, "Error")
                     flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                     return redirect(url_for('submission.submission_detail', submission_id=submission_id))
-
-                if user['is_admin'] != 1:
-                    increment_submission_count(user['username'], problem_id)
 
                 if _promptly_generate_submission_task is None:
                     flash('提交成功，但 Promptly 生成任务未初始化。', 'warning')
@@ -1120,23 +1144,27 @@ def submit_solution(problem_id):
                 flash('代码不能为空。', 'danger')
                 return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
-            submission_id = create_submission(
-                problem_id=problem_id,
-                problem_title=problem['title'],
-                username=user['username'],
-                code=code,
-                score=0,
-                test_points=[],
-            )
+            try:
+                submission_id = create_submission(
+                    problem_id=problem_id,
+                    problem_title=problem['title'],
+                    username=user['username'],
+                    code=code,
+                    score=0,
+                    test_points=[],
+                    submission_limit=counted_submission_limit,
+                )
+            except SubmissionLimitExceeded:
+                return _submission_limit_redirect(problem_id, submission_limit)
             try:
                 archive_submission_by_id(submission_id, raise_errors=True)
             except Exception as e:
+                _release_quota_if_counted(
+                    user['username'], problem_id, counted_submission_limit,
+                )
                 update_submission_status(submission_id, "Error")
                 flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                 return redirect(url_for('submission.submission_detail', submission_id=submission_id))
-
-            if user['is_admin'] != 1:
-                increment_submission_count(user['username'], problem_id)
 
             if _evaluate_submission_task is None:
                 flash('提交成功，但评测任务未初始化。', 'warning')
@@ -1175,51 +1203,63 @@ def submit_solution(problem_id):
                 existing = get_latest_written_submission(user['username'], problem_id)
                 if existing:
                     submission_id = existing['id']
-                    # 清空旧文件
-                    old_folder = os.path.join('uploads', str(submission_id))
-                    if os.path.isdir(old_folder):
-                        import shutil
-                        shutil.rmtree(old_folder)
-                    os.makedirs(old_folder)
-                    file.save(os.path.join(old_folder, filename))
-                    overwrite_written_submission(submission_id, filename)
                     try:
+                        if counted_submission_limit is not None:
+                            reserve_submission_quota(
+                                user['username'], problem_id, counted_submission_limit,
+                            )
+                    except SubmissionLimitExceeded:
+                        return _submission_limit_redirect(problem_id, submission_limit)
+                    try:
+                        # 只有成功预占配额后才覆盖旧文件，避免达到上限时破坏已有提交。
+                        old_folder = os.path.join('uploads', str(submission_id))
+                        if os.path.isdir(old_folder):
+                            import shutil
+                            shutil.rmtree(old_folder)
+                        os.makedirs(old_folder)
+                        file.save(os.path.join(old_folder, filename))
+                        overwrite_written_submission(submission_id, filename)
                         archive_submission_file_by_id(
                             submission_id, os.path.join(old_folder, filename), filename, raise_errors=True,
                         )
                     except Exception as e:
+                        _release_quota_if_counted(
+                            user['username'], problem_id, counted_submission_limit,
+                        )
                         update_submission_status(submission_id, "Error")
                         flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                         return redirect(url_for('submission.submission_detail', submission_id=submission_id))
-                    if user['is_admin'] != 1:
-                        increment_submission_count(user['username'], problem_id)
                     return redirect(url_for('submission.submission_detail', submission_id=submission_id))
                 # 首次提交：走普通 INSERT 流程（下方）
 
-            submission_id = create_submission(
-                problem_id=problem_id,
-                problem_title=problem['title'],
-                username=user['username'],
-                code=" ",
-                score=0,
-                test_points=[filename],
-            )
+            try:
+                submission_id = create_submission(
+                    problem_id=problem_id,
+                    problem_title=problem['title'],
+                    username=user['username'],
+                    code=" ",
+                    score=0,
+                    test_points=[filename],
+                    submission_limit=counted_submission_limit,
+                )
+            except SubmissionLimitExceeded:
+                return _submission_limit_redirect(problem_id, submission_limit)
 
             upload_folder = os.path.join('uploads', f"{submission_id}")
-            if not os.path.exists(upload_folder):
-                os.makedirs(upload_folder)
-
-            file_path = os.path.join(upload_folder, filename)
-            file.save(file_path)
             try:
+                if not os.path.exists(upload_folder):
+                    os.makedirs(upload_folder)
+
+                file_path = os.path.join(upload_folder, filename)
+                file.save(file_path)
                 archive_submission_file_by_id(submission_id, file_path, filename, raise_errors=True)
             except Exception as e:
+                _release_quota_if_counted(
+                    user['username'], problem_id, counted_submission_limit,
+                )
                 update_submission_status(submission_id, "Error")
                 flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
                 return redirect(url_for('submission.submission_detail', submission_id=submission_id))
-
-            if user['is_admin'] != 1:
-                increment_submission_count(user['username'], problem_id)
 
             if written_mode != 4:
                 try:
