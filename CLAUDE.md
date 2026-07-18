@@ -1,175 +1,254 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件是本仓库的开发与运维约束。系统概览见 `README.md`，长期维护规则见 `docs/maintenance.md`。
 
-## What this is
+## 不可违反的边界
 
-The production deployment lives on the `why-server` host at `/home/ebola/oj/`; the local checkout is synced there via `scp` / `rsync` (see [Deployment to why-server](#deployment-to-why-server) for the full procedure).
+- 工作语言为中文；用户可见文案和既有中文注释保持同一风格。
+- Python 基线是 **3.12**，以 `.python-version` 和 GitHub Actions 为准。
+- 生产部署位于 `why-server:/home/ebola/oj/`，该主机的 hostname 是 `computing`。
+- 未经用户明确要求，不得向生产部署、写生产数据、运行迁移或重启服务。
+- **生产主机禁止运行任何测试**，包括纯单测、pytest、Compose、CI 脚本和测试容器。
+- 生产 `config.py` 和 `static/` 可能包含本地仓库没有的内容，不得用全量同步覆盖或删除。
 
-NumericalOJ is a Chinese-language educational online judge for MATLAB/Octave, C, C++, and Python. Beyond standard programming-judge features it ships:
+## 运行架构
 
-- Class management (per-class assignments, score export, submission-count limits, code plagiarism / AI-generated-code detection).
-- Programming problems with AI-tutor feedback after evaluation, and AI agents that can solve problems / generate test data.
-- Written-homework problems graded by AI after LaTeX OCR transcription of submitted images.
-- A per-user header-file repository (`user_libraries/`, `library/`) that programming submissions can `#include`, with vector-indexed search.
-- Forum, ranking-style competitions, and a small games surface.
-
-The README (`README.md`) is in Chinese and is mostly deployment-focused.
-
-## Running the system
-
-There are **two** processes; both must run together for the app to work end-to-end:
+系统有两个逻辑执行边界：Web 服务和 Celery worker 组。整体依赖 MySQL 与 Redis；执行判题任务的 worker 还必须能访问 Docker daemon。
 
 ```bash
-# 0. Schema init / migration (non-destructive; creates missing tables, adds/migrates columns)
+# 0. 同步数据库结构；web.conf / celery.conf 也会在启动 worker 前执行
 python3 scripts/init_db_schema.py
 
-# 1. Web app (Flask, port 2025) — serves UI + API, registers Celery tasks
+# 1. 本地开发 Web，端口 2025
 python3 oj.py
-# or under supervisord (web.conf runs scripts/init_db_schema.py before oj.py):
+# 生产由 web.conf 启动 Gunicorn
 supervisord -c web.conf
 
-# 2. Celery workers — judging + AI agents + Agent-as-Judge, three queues
-# celery.conf also runs scripts/init_db_schema.py before each worker process.
+# 2. Celery worker 组
 supervisord -c celery.conf
-# Equivalent after schema init: celery -A oj.celery worker -Q celery   (judging + in-process sandbox)
-#                           celery -A oj.celery worker -Q agent -c 1  (AI agents)
-#                           celery -A oj.celery worker -Q judge -c 2  (打榜赛 Agent-as-Judge, runs Docker containers)
-
-# Plus: redis-server (broker + caches), mysqld (myojdb)
+# 等价的队列边界：
+celery -A oj.celery worker -Q celery -c 16
+celery -A oj.celery worker -Q agent -c 1
+celery -A oj.celery worker -Q judge -c 16
 ```
 
-The sandboxed code execution runs **in-process inside the Celery `celery`-queue worker** (`oj_modules/judger_core.py`, called directly by `evaluate_tasks.py`) — there is no longer a separate judger HTTP service on port 5050. The web app only needs Redis (`REDIS_HOST/PORT/DB` in `config.py`) reachable. Because the sandbox shells out to `gcc`/`g++`/`python3`/`octave`, the Celery worker host must have those toolchains (and Intel MKL, if used); run dirs live under `JUDGER_RUN_ROOT` (default `<OJ_ROOT>/tmp/judger_runs`).
+- `celery`：普通判题、书面作业、检测、索引等常规后台任务；
+- `agent`：AI 解题、造数据和 Promptly 等长任务；
+- `judge`：打榜赛 Agent-as-Judge、反向评测等隔离任务。
 
-DB bootstrap: `mysql -u root -p -e "CREATE DATABASE myojdb CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;" && mysql -u root -p myojdb < myojdb.sql`. Default admin is `admin` / `admin123`.
+普通判题的调用链是 `evaluate_tasks.py -> judger_core.py -> docker_sandbox.py -> Docker`。`judger_core.py` 作为库在 `celery` worker 内运行，但**用户代码在 Docker 容器内执行**；不存在旧的 `5050` 判题 HTTP 服务，也不再使用宿主进程 RLIMIT 沙箱。默认运行目录为 `<OJ_ROOT>/judger/<sid>`。
 
-There **is** a pytest suite under `tests/` (`tests/unit`, `tests/db`, `tests/e2e`, plus `tests/ci` infra) with `pytest.ini` and `tests/conftest.py` (DB-resetting fixtures). Always sanity-check changes with `python3 -m py_compile <file>`, and run the relevant tests before deploying:
+`oj.py` 在导入时创建 Flask/Celery 对象并注册任务；恢复、ELO tick 和 watchdog 等有副作用的启动工作统一由 `run_startup_jobs()` 完成。本地直接执行 `python oj.py` 时由主入口调用，生产 `web.conf` 则先执行 `scripts/run_startup_jobs.py`，再启动 Gunicorn。新增启动行为不得重新变成 import-time 写操作。
 
-- Infra-free pure-logic tests can run on local/dev machines, but **never on `why-server` / host `computing`**: `pytest tests/unit/test_judger_core.py tests/unit/test_security_regression.py tests/unit/test_grading_and_compare.py tests/unit/test_sandbox_limits.py`.
-- `tests/db` needs MySQL + Redis and must run only on a local machine or another non-production server with clearly disposable services.
-- `tests/e2e/` is the CLI-driven end-to-end path: each file starts a local Flask service against disposable MySQL/Redis and drives real HTTP routes through `skills/numoj-admin/scripts/numoj_admin.py` and `skills/numoj-user/scripts/numoj_user.py`, split by auth, problem/submission, homework/class, repository/forum, ranking, AI-detection, and help-matrix scenarios. It must run only on a local machine or another non-production server.
-- CI/full-suite test runs, including anything under `tests/ci/`, are **forbidden on `why-server` / host `computing`**. If they must be run manually, run them locally or on a separate non-production server; never use the production host as a CI runner. A lightweight GitHub Actions gate (`.github/workflows/ci.yml`) runs `compileall` + the infra-free unit tests on every push/PR.
+健康检查：
 
-### Local full test workflow
+- `GET /health/live`：仅检查 Web 进程能否响应；
+- `GET /health/ready`：执行 Redis `PING` 和 MySQL `SELECT 1`，任一失败返回 503。
 
-Use this workflow only on a local/dev checkout with local MySQL/Redis targets, never on `why-server` / host `computing`.
+## 依赖与配置
 
-1. **Back up the local MySQL database and stop local NumOJ services.** Confirm hostname, checkout path, `config.py` MySQL host/database, and Redis target first. Before taking the dump, sanity-check that the default admin account is still `class='Cadmin'`, `class_cn='管理员'`, and `is_admin=1`; if not, fix the local baseline first instead of preserving a broken backup. Dump the local database (default `myojdb`) to a timestamped file outside the repo, then stop any local Flask/Celery/supervisord processes that could hold port `2025` or mutate the database while tests run.
-2. **Run the complete local unit and e2e suites.** Run all `tests/unit` first, then all `tests/e2e`. The e2e fixtures start their own Flask and Celery subprocesses and refuse known production targets.
-3. **Fix failures and repeat from step 2.** If any unit or e2e test fails, fix the code or test fixture issue, then rerun the complete `tests/unit` + `tests/e2e` cycle. Do not restore the database until the suite is clean or the run is explicitly abandoned.
-4. **Restore local state and restart services.** After the suite is clean, restore the local MySQL database from the backup, recheck that the default admin account is still `class='Cadmin'`, `class_cn='管理员'`, and `is_admin=1`, then restart the normal local services: NumOJ Flask, Celery workers for `celery`, `agent`, and `judge`, and ensure the local judging Docker image used by the workers exists (`numericaloj-judger-lite:latest` for `local_dev.conf`, or the configured image). Recheck that `127.0.0.1:2025` is serving after restart.
+依赖文件中的直接依赖使用精确版本，职责如下：
 
-### Data safety boundary
+- `requirements.txt`：生产运行依赖；
+- `requirements-test.txt`：测试工具；
+- `requirements-optional.txt`：默认路径不需要的重量级可选能力。
 
-There has been a real production incident where unit tests were run directly on `why-server` (the production host's own hostname is `computing`) and the production database was cleared. Avoid repeating this class of failure:
+不要通过在文档中列出零散 `pip install` 命令来绕过依赖文件。新增默认功能的 import 必须同步进入 `requirements.txt`；仅用于测试或可选后端的包分别进入对应分层。依赖升级必须作为显式变更并运行相应测试。
 
-- **Never run any tests on `why-server` / host `computing`, including infra-free unit tests, DB tests, CLI e2e smoke tests, CI scripts, Docker-Compose test runners, or isolated test containers.** The production host is for serving the app and explicit deploy/ops work only, not for verification runs.
-- **Never run `pytest` in the production checkout (`why-server:/home/ebola/oj/`) or in any shell that is using the production `config.py`, production MySQL database (`myojdb`), or production Redis.** The test fixtures can reset tables and must be treated as destructive when pointed at live services.
-- **Never run DB-resetting tests, CLI e2e smoke tests, migrations, seed scripts, SQL imports, or repair scripts against production data unless the user explicitly asks for that exact production operation.** Before any such command, confirm the hostname, working directory, config file, database host, database name, and Redis target.
-- **CI tests must not run on `why-server` / host `computing`, even if they claim to use isolated infrastructure.** There is intentionally no remote-run helper script; run tests only from a local/dev machine or a separate CI runner.
-- **Read-only production inspection is allowed; production writes are not implicit.** Safe production operations are limited to read-only SQL (`SELECT`, `SHOW`, `EXPLAIN`), log inspection, process inspection, and the explicit deploy procedure. Any production data write, delete, truncate, import, migration, or script with side effects requires explicit user approval and a backup/rollback plan.
-- **Before running a command that might touch data, prove it is not production.** If the target cannot be clearly identified as local, containerized, disposable, or backed up, stop and ask instead of guessing.
+仓库尚未提供带哈希的完整传递依赖锁文件；不得把直接 pin 描述为位级可复现构建，后续应在 Python 3.12 上生成并由 CI 校验 lock。
 
-There is no separate lint config or build step.
+`config.py` 是受版本控制的模板。它会读取根目录下可选的 `.env`，但这不是全部配置的自动映射：只有显式调用 `os.getenv` 或环境变量优先读取器的选项才接受环境覆盖；MySQL、邮件等直接赋值项仍由部署专用 `config.py` 配置。已有进程环境变量优先于 `.env`，`.env` 不得入库。
 
-Cross-cutting helpers added during the 2026 hardening pass — prefer these over re-implementing:
-- `oj_modules/auth_helpers.py` — single source of `current_user`/`is_admin` + `login_required`/`admin_required` decorators (don't re-define per route module; `problem_core_routes` keeps a memoized variant on purpose).
-- `oj_modules/security_utils.py` — `hash_password`/`verify_password` (werkzeug KDF, verify-then-rehash of legacy sha256) and `rate_limit_hit`/`cooldown_active` (Redis, fail-open).
-- `oj_modules/markdown_utils.py` — `sanitize_html`/`render_markdown` (bleach allowlist, regex-scrub fallback). Every Markdown sink rendered with `| safe` MUST pass through `sanitize_html`.
-- `oj_modules/db_services.py::safe_table_name(name)` — MUST wrap any class/dynamic table name interpolated into SQL (the per-class-table f-string pattern).
+关键设置：
 
-## Deployment to why-server
+- `MYSQL_*`、`REDIS_*`：基础设施；
+- `DASHSCOPE_*`、`QWEN_*`、`AI_TUTOR_MODEL`：AI 调用；
+- `REPOSITORY_*`：代码仓库解析、embedding 与 FAISS；
+- `JUDGER_DOCKER_*`：普通判题镜像和容器资源；
+- `AGENT_JUDGE_*`：Agent-as-Judge 镜像、资源与超时；
+- `SECRET_KEY`、`SESSION_COOKIE_SECURE`、`CONTENT_SECURITY_POLICY`：Web 安全；
+- `CSRF_TRUSTED_ORIGINS`：反向代理导致应用内外 Origin 不同时，显式列出可信的公开站点 Origin。
 
-When the user asks you to deploy, follow this procedure end-to-end. Don't push code to `why-server` unless deployment is explicitly requested.
+`REDIS_SOCKET_TIMEOUT_SECONDS` 默认 3 秒，避免健康检查和请求线程在 Redis 网络故障时无限等待。
 
-1. **Sync the local code to `why-server:/home/ebola/oj/`.** The canonical command lives in `.claude/settings.local.json` — it's an `rsync -avz` that already excludes `config.py`, `static/`, `__pycache__`, `.git`, `tmp/`, and `uploads/`. Use that command (or an equivalent `scp` for individual files); never copy the whole tree without those exclusions.
-2. **Find and kill the existing supervisord processes** on the remote host: run `ps aux | grep "supervisor"` over SSH, identify the PIDs of the two app supervisords (`web.conf`, `celery.conf`), and kill them. Leave the system supervisord (`/etc/supervisor/supervisord.conf`, owned by `root`) alone. The old `judger.conf` group no longer exists; if a stale judger supervisord / `judger/app.py` is still running from a previous deploy, kill it too. **Kill by explicit PID, not `pkill -f <pattern>`** — a `pkill -f` pattern can match the very SSH shell running it and abort the command midway.
-3. **Restart the two supervisord groups** in this order: `web.conf`, then `celery.conf`. Each is launched as `supervisord -c <name>.conf` from `/home/ebola/oj/`.
+## 数据库结构与迁移能力
 
-### Agent-as-Judge image (打榜赛 `agent_judge` mode)
+`myojdb.sql` 是当前结构基线，`scripts/init_db_schema.py` 会：
 
-The `agent_judge` ranking mode judges submissions inside a prebuilt Docker image (`numericaloj-agent-judge:latest`) that bundles the Agent Harness CLIs (`claude`, `codex`, `opencode`) + toolchain. `rsync` does **not** rebuild it — after changing `docker/agent_judge/*`, rebuild once on the host: `docker build -t numericaloj-agent-judge:latest docker/agent_judge`. The `celery_agent_judge` worker (`-Q judge`, local config keeps the production concurrency at `-c 16`) runs `docker run` per submission; the host must have Docker and the worker user must be in the `docker` group. Do **not** add `--cap-drop ALL` to that `docker run` — it removes `CAP_DAC_OVERRIDE`, breaking both result-file writes and in-container `apt`. Per-competition model creds (harness / base_url / api_key / model) live in MySQL, not `config.py`; the `AGENT_JUDGE_*` infra knobs are read via `getattr(config, ...)` defaults so the remote `config.py` needs no edits.
+- 创建缺失的数据库、表和动态班级作业表；
+- 添加缺失列和索引；
+- 在识别到列类型差异时修改列类型；
+- 使用 MySQL advisory lock 避免多个进程同时同步。
 
-There is also a local lightweight image at `docker/agent_judge-lite/` (`numericaloj-agent-judge-lite:latest`). It excludes Intel MKL, Octave, heavy OCR/ML/browser stacks, `texlive-full`, Chinese TeX packages, Codex, and opencode; it keeps Claude Code, OpenBLAS/LAPACK/Eigen, basic English LaTeX, and common Python scientific packages. Build it with `docker build -f docker/agent_judge-lite/Dockerfile -t numericaloj-agent-judge-lite:latest docker`. The judge worker reads `AGENT_JUDGE_DOCKER_IMAGE` from the environment before `config.py`; `local_dev.conf` sets that variable to the lite image for this checkout, while production remains on `numericaloj-agent-judge:latest` by default.
+它不会删除或重命名表/列，不负责数据回填，也没有 migration 版本表或已执行迁移账本。换言之，仓库目前**没有版本化迁移系统**。涉及删除、重命名、回填、约束或语义变化时：
 
-### Frontend-only fast path
+1. 编写单独、幂等、可审计的迁移；
+2. 在一次性数据库验证并记录前后置条件；
+3. 部署前备份，定义代码与数据回滚路径；
+4. 不要假设启动脚本能表达或回滚该变更。
 
-If the change touches **only** templates (`templates/*.html`) or other client-side assets, `scp` the modified files over and stop there — do **not** kill or restart supervisord. The Flask app runs in debug mode and auto-reloads templates on each request, so the change is live as soon as the file lands. Reserve the full kill-and-restart procedure above for Python or config changes that the running interpreter wouldn't pick up.
+所有业务连接必须经 `oj_modules.db_services.get_db_connection()` 或相应数据层取得，不要直接新建 PyMySQL 连接。动态表名必须先经 `safe_table_name()` 校验。
 
-### Remote files that must NOT be overwritten
+## 测试与数据安全
 
-These two paths on `why-server` are append-only — you may add to them, but never overwrite or delete what's already there:
+测试分层：
 
-- **`static/`** — production may host extra vendored assets that aren't in the local checkout. If you need a new asset, `scp` it in additively; never `rsync --delete` this directory.
-- **`config.py`** — holds the production DashScope API keys, MySQL password, mail SMTP credentials, etc. The local `config.py` is a placeholder template and must not clobber the remote copy. If a new config knob is genuinely required, ask the user to add it manually on the server, or add code that reads from a separate file with a sensible fallback.
+- `tests/unit`：无 MySQL/Redis 的纯逻辑测试；GitHub Actions 在每次 push/PR 运行全部该目录测试；
+- `tests/db`：真实 MySQL/Redis 数据层测试，会重置目标数据；
+- `tests/e2e`：启动本地 Flask 与 Celery，通过 `numoj-admin` / `numoj-user` CLI 走真实 HTTP；
+- `tests/ci`：在本地或独立非生产服务器编排一次性 MySQL/Redis 和完整测试。
 
-The default `rsync` command in `.claude/settings.local.json` already excludes `config.py`; it does **not** exclude `static/`, so be careful when adjusting flags.
+日常最低门禁：
 
-## Configuration
+```bash
+python3 -m compileall -q oj.py oj_modules tests
+python3 -m pytest -q tests/unit
+```
 
-`config.py` is **tracked in git as a template with placeholder values** — fill in MySQL credentials, mail SMTP, and DashScope (Aliyun Qwen) keys before the app will work. There is no separate `.env`. Keys to know:
+推荐的完整测试：
 
-- `MYSQL_*`, `REDIS_*` — infra.
-- `DASHSCOPE_*`, `QWEN_*_MODEL`, `AI_TUTOR_MODEL` — Aliyun DashScope endpoints used everywhere AI is involved (tutor feedback, written-homework grading, agent solver, embeddings).
-- `MATLAB_AI_DETECT_*` — points at a self-hosted vLLM-served fine-tuned detector for MATLAB AI-generated code.
-- `REPOSITORY_*` — vector-search config for the user-library repository (FAISS index under `tmp/repository_vector_index`).
-- `AGENT_*` — limits for the problem-solving / test-data-generation agents (max rounds, submit limit, context size, memory). `AGENT_MAX_ROUNDS` is now actually enforced in the agent ReAct loops.
+```bash
+docker compose -f tests/ci/docker-compose.local.yml \
+  up --build --abort-on-container-exit --exit-code-from test
+docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
+```
 
-**Optional hardening knobs (all read via `getattr(config, ...)` / env with safe defaults — the remote `config.py` needs no edits):**
-- `SECRET_KEY` (config) — Flask session-signing key. If absent, a random key is generated and persisted to `tmp/secret_key` (gitignored, stable across restarts). The old hardcoded key is gone.
-- `FLASK_DEBUG` (config, default `False`) — never enable in production (Werkzeug debugger = RCE). Templates still hot-reload via `TEMPLATES_AUTO_RELOAD` even with debug off, so the frontend fast-path still works.
-- `SESSION_COOKIE_SECURE` (config, default `False`) — set `True` once served over HTTPS. `HttpOnly` + `SameSite=Lax` are always on.
-- `CONTENT_SECURITY_POLICY` (config) — overrides the default permissive CSP set in `oj.py`'s `after_request`.
-- `JUDGER_RLIMIT_NPROC_HEADROOM` (env, default 1024) / `JUDGER_RLIMIT_NPROC_ABS` (env, default 0=off) / `JUDGER_RLIMIT_FSIZE_BYTES` / `JUDGER_GUARD_TIMEOUT_BUFFER_SEC` (env) — sandbox fork-bomb / disk-fill / Python-timeout-backstop tuning. **`RLIMIT_NPROC` is per-real-UID system-wide**, and judging shares the `ebola` UID with web/celery/MKL threads, so the cap is set to *current UID task count + HEADROOM* (never a fixed small absolute — a fixed 256 caused the 2026-06-06 outage when the UID's live thread count exceeded it and every sandbox `fork()` got EAGAIN). `_ABS` forces a fixed absolute value as an escape hatch.
-- `JUDGER_RLIMIT_CPU_STARTUP_BUFFER_SEC` (env, default 30) — **`RLIMIT_CPU` caps *aggregate* CPU-seconds across all threads, not wall-clock.** A multithreaded runtime (Octave/MATLAB BLAS/MKL needs ~4 CPU-s of multi-thread work just to start) blows past a wall-clock-sized CPU cap in milliseconds, so the cap is computed as `cpu_count × ⌈wall_TLE⌉ + STARTUP_BUFFER` — a loose backstop above the legitimate ceiling, with the coreutils `timeout` (wall-clock) as the real bound. A fixed `RLIMIT_CPU = wall_TLE` caused the 2026-06-06 Octave "all Nonzero Exit Status" outage (every octave submission SIGKILLed at startup).
-- `JUDGER_OCTAVE_RLIMIT_AS` (env, default off) — Octave gets CPU (multithread-aware, see above) / NPROC / FSIZE limits, but `RLIMIT_AS` is opt-in (it historically broke Octave/MKL virtual-memory reservations). Verify Octave's virtual footprint before enabling.
+任何会建库、清表、删动态班级表或 `FLUSHDB` 的 fixture 都必须先通过 `tests/environment_guard.py` 的 fail-closed 校验。直接运行 `tests/db` / `tests/e2e` 时必须同时满足：
 
-Note: after editing `docker/agent_judge/report` or `docker/agent_judge/run_harness`, rebuild the agent-judge image (`docker build -t numericaloj-agent-judge:latest docker/agent_judge`).
+- 显式设置 `NUMOJ_TEST_ENV=1`；
+- MySQL 名称含测试标记，例如 `myojdb_test`，禁止默认库 `myojdb`；
+- Redis 使用大于 0 的专用 DB；
+- MySQL/Redis 仅指向 loopback 或测试 Compose 服务名；
+- 当前主机不是 `why-server` / `computing`，检出目录不是 `/home/ebola/oj`。
 
-## Architecture
+不能证明目标可丢弃时必须停止，不能通过放宽 guard、捕获错误或改名绕过。
 
-### Two-process boundary (important)
+### 生产安全边界
 
-The code-execution sandbox is an **in-process library** (`oj_modules/judger_core.py`) that the Celery `celery`-queue worker calls directly from `evaluate_tasks.py`. (It used to be a separate Flask service on port 5050 with an `ALLOWED_IPS` whitelist; that service was removed.) API: `run_single(language, data)` for one-shot Octave/C/C++/Python runs; `batch_evaluate_stream(language, data)` — a **generator** yielding `compile` / `test_result` / `done` events, the in-process replacement for the old NDJSON stream that preserves live per-test-point snapshot updates; and `batch_evaluate(language, data)` (non-stream). The `data` and result dicts keep the same field shape as the old HTTP payloads. Sandboxing is `coreutils timeout` + `RLIMIT_CPU` + `RLIMIT_AS` (set in a `preexec_fn`, which works in Celery prefork — forked — workers), plus a regex-based forbidden-function filter (`check_forbidden`) on user code. The C/C++ compilers add `-I <OJ_ROOT>/library` for shared headers; per-submission user header files arrive in the `user_files` field and are written into the run directory (`JUDGER_RUN_ROOT/<sid>`).
+历史上曾发生测试误连生产并清库的事故，因此：
 
-### Web app composition (`oj.py`)
+- 不得在生产路径或读取生产 `config.py` 的 shell 中运行测试；
+- 不得针对生产执行测试 fixture、seed、SQL import、修复脚本或数据重置；
+- 生产默认只允许只读检查：`SELECT`、`SHOW`、`EXPLAIN`、日志和进程检查；
+- 生产写入、DDL、导入和修复必须由用户明确授权，并先给出备份与回滚方案。
 
-`oj.py` is a thin shell. It:
+## 模块边界与复用约定
 
-1. Creates the Flask app and Redis clients (`rds` decoded; `rds_binary` raw bytes for ZIP/binary cache values).
-2. Registers ~15 Blueprints from `oj_modules/routes/*.py`. Each route module owns a feature surface (auth, problem-core, submissions, admin-problem, admin-user, homework, ranking, repository, AI-detection, AI tutor, class management, forum, grading, rejudge, games).
-3. Constructs a single Celery app (`oj.celery`, two queues: `celery` for judging, `agent` for the slower AI-agent tasks) and calls each `register_*_task(celery, ...)` factory in `oj_modules/tasks/__init__.py` to obtain bound task references.
-4. Calls `init_*_module(...)` on the route modules that need Celery task references or Redis, plus `init_submission_snapshot_cache(rds)` and `init_agent_progress_cache(rds)`.
+- `oj.py`：应用组合根；负责注册 Blueprint、Celery 任务和显式启动工作，不承载新业务逻辑。
+- `oj_modules/routes/`、`oj_modules/api/`：HTTP 适配层；解析请求、鉴权、调用服务并构造响应。
+- `oj_modules/tasks/`：Celery 适配层；处理重试、进度、锁和后台工作流。
+- `db_services.py`、`ranking_db.py`、`ranking_*_db.py`：数据访问与事务边界。
+- `*_services.py` 及领域 helper：可复用业务逻辑，不依赖 Flask request/session。
+- `judger_core.py`、`docker_sandbox.py`：普通判题协议和容器执行原语。
+- `templates/`、`static/`：服务端页面；不要继续把大型页面逻辑堆进单个模板。
 
-The `register → init` pattern is load-bearing: route modules **do not import Celery tasks directly**; they receive bound task callables via `init_*_module`. When adding a new background task, follow this pattern — write `register_xxx_task(celery_app, ...)` returning the bound task, expose it from `oj_modules/tasks/__init__.py`, then have `oj.py` pass it into the relevant route module's `init_xxx_module`.
+新增后台任务继续使用现有 `register -> init` 模式：任务模块提供 `register_xxx_task(celery, ...)` 并返回绑定任务，`oj.py` 再把任务注入路由。路由不得直接导入任务私有实现。
 
-### Module layout
+跨模块 helper：
 
-- `oj_modules/db_services.py` (~2k lines) — the catch-all DB layer. Owns a hand-rolled MySQL connection pool (`_PooledConnectionProxy`) configured via `MYSQL_POOL_*`; **always use `get_db_connection()` from here, never construct pymysql connections directly**, otherwise the pool semantics break. Also lazy-creates and migrates a few columns/tables on first access (the `_*_ready` flags).
-- `oj_modules/ai_utils.py` — DashScope wrappers, prompts, image-aware grading helpers, response normalization. Anything that talks to Qwen models lives here.
-- `oj_modules/tasks/` — Celery task definitions. `evaluate_tasks.py` is the judging pipeline (runs the sandbox in-process via `oj_modules/judger_core.py`). `agent_solve_task.py`, `agent_generate_testdata_task.py`, `agent_solve_helpers.py`, `agent_generate_helpers.py`, `agent_shared.py` implement the multi-round AI agents. `written_homework_tasks.py` does LaTeX OCR + grading. `ai_detection_tasks.py` runs the AI-code detector. `repository_index_tasks.py` builds FAISS indexes for the user-library repository. `ranking_evaluate_tasks.py` is the ranking-competition judge.
-- `oj_modules/ai_detection/` — orchestration for AI-generated-code detection (LLM-based + behavioral signals) with `detector.py` combining them. Final score = `min(1.0, llm_score + behavior_score * 0.3)`.
-- `oj_modules/repository_index_services.py` — FAISS-backed vector search over user-library code chunks; embeddings via Qwen `text-embedding-v4`.
-- `oj_modules/ranking_db.py` — ranking-competition data layer.
-- `templates/` is flat (no subdirs); `layout.html` is the base, `layout_embedded.html` for iframe-style views.
-- `static/` bundles vendored Bootstrap, CodeMirror, MathJax, FontAwesome.
+- `auth_helpers.py`：`current_user` / `is_admin` 与登录、管理员装饰器；
+- `security_utils.py`：密码哈希、旧哈希升级、限流与冷却；
+- `markdown_utils.py`：Markdown 渲染和 HTML 清洗；所有配合 `| safe` 的内容必须先清洗；
+- `archive_utils.py`：带成员数、单文件大小、总大小、压缩率和路径校验的 ZIP 解压；
+- `db_services.safe_table_name()`：动态 SQL 标识符校验。
 
-### Database
+禁止在路由/任务里复制这些能力。三个以上同前缀同职责文件应考虑归入子目录并简化名称，但不要为目录整齐引入无意义实体。
 
-MySQL schema lives in `myojdb.sql`. Core tables: `users`, `class_table`, `user_class_map`, `problems`, `submissions`, `submission_test_points`, `submission_limits`, `ac_record`, `max_score`, `agent_task_runs`, `forum_threads`, `forum_replies`, `final_exam_scores`, `verification_codes`, `user_code_repository`, `repository_index_jobs`, `repository_function_chunks`, `repository_class_metadata`, `repository_chunk_embeddings`, `ai_detection_results`, `ai_detection_tasks`. Per-user-per-problem submission count is capped (default 5) by `submission_limits`. Submissions have a Redis snapshot cache (`init_submission_snapshot_cache`) used by the live UI; DB is the source of truth.
+## Docker 镜像
 
-### Cache and locks (Redis)
+普通判题：
 
-- DB `0` (configurable) holds: Celery broker/backend, submission status snapshots (`SUBMISSION_SNAPSHOT_TTL_SECONDS`), evaluation locks (`EVALUATE_SUBMISSION_LOCK_TTL_SECONDS`, prevents double-judging on retry), the self-scheduling Pending requeue watchdog owner/items, agent run progress + pubsub event streams.
-- A second binary-decoded client `rds_binary` is used for cached ZIP / binary blobs (e.g., bulk homework downloads).
+```bash
+docker build -t numericaloj-judger:latest docker/judger
+docker build -t numericaloj-judger-lite:latest docker/judger-lite
+```
 
-## Conventions worth knowing
+lite 镜像使用 OpenBLAS/LAPACKE；完整镜像提供 Intel MKL 与完整 TeX。`local_dev.conf` 使用 lite，生产默认使用 `numericaloj-judger:latest`。
 
-- The repo's working language is Chinese: most user-visible strings, status names, and a lot of comments are in Chinese. Keep that style when editing UI / templates / messages.
-- 设计前端时，不要增加解释性文字，追求极致简洁、极致美观。
-- Forbidden-function checking: the problem's comma-separated forbidden list is passed to `judger_core.check_forbidden`, which regex-matches `<func>(` (and special-cases the literal `\` for Octave). If you add a language, mirror this contract.
-- Time limits are passed in **nanoseconds**; memory limits arrive in bytes and `judger_core` multiplies by 10 internally before applying `RLIMIT_AS` (legacy quirk — keep it consistent across the `run_*` / `batch_*` functions).
-- The competitions material under `competitions/` is gitignored; treat it as scratch / dataset work, not part of the deployed app.
-- `.codex/skills/matlab-problem-setter/` is a Codex skill for scaffolding MATLAB problem packages — useful as a reference for the expected problem-package structure (`problem.md`, `data/*.in`/`*.out`, `interactor.m`, `template.m`, `solution.m`, `config.json`), even when working from Claude Code.
-- `fix-tools/` holds one-off SQL scripts for data repair; not run automatically.
-- Production deploy target is `why-server:/home/ebola/oj/` — see [Deployment to why-server](#deployment-to-why-server). Don't push there unless the user explicitly asks for a deploy.
+Agent-as-Judge：
+
+```bash
+docker build -t numericaloj-agent-judge:latest docker/agent_judge
+docker build -f docker/agent_judge-lite/Dockerfile \
+  -t numericaloj-agent-judge-lite:latest docker
+```
+
+修改 `docker/agent_judge/report` 或 `run_harness` 后必须重建镜像。不要给 Agent-as-Judge 的 `docker run` 增加 `--cap-drop ALL`：它会移除容器写结果和运行期 apt 所需的 `CAP_DAC_OVERRIDE`。每个比赛的 harness、base URL、API key、model 位于 MySQL，不在 `config.py`。
+
+## 部署到 why-server
+
+只有用户明确要求部署时才执行以下流程。
+
+### 1. 部署前检查
+
+- 确认当前提交、变更文件、配置兼容性和对应测试结果；
+- 结构或数据变更先做生产备份并准备回滚脚本；
+- Dockerfile 或镜像内脚本变更，记录旧镜像 ID/标签以便回滚；
+- 确认远端目标严格为 `why-server:/home/ebola/oj/`。
+
+### 2. 同步代码
+
+使用 `rsync -avz` 或逐文件 `scp`，至少排除：
+
+```text
+config.py
+static/
+.git/
+__pycache__/
+tmp/
+uploads/
+judger/
+ranking_uploads/
+```
+
+不得使用 `--delete`。生产 `config.py` 含密钥，只能由用户手工维护或在明确授权下增量修改。生产 `static/` 可能包含仓库外资产，只能按明确清单增量添加，不能批量覆盖或删除。
+
+### 3. 重建必要镜像
+
+- 修改 `docker/judger/**`：重建 `numericaloj-judger:latest`；
+- 修改 `docker/agent_judge/**`：重建 `numericaloj-agent-judge:latest`；
+- 仅 Python/模板变更不需要重建镜像。
+
+若 `requirements*.txt` 发生变化，必须在重启前用生产服务实际使用的 Python 解释器安装对应依赖；不要临时安装未记录版本。本分支首次部署需要安装新增的 Gunicorn。
+
+### 4. 重启
+
+在远端用 `ps` 找到分别使用 `web.conf` 和 `celery.conf` 的两个应用 supervisord PID，只 kill 明确 PID。不要使用 `pkill -f`；不要停止 root 管理的 `/etc/supervisor/supervisord.conf`。旧版若仍有 `judger.conf` / `judger/app.py` 进程，也只能按明确 PID 清理。
+
+从 `/home/ebola/oj/` 按顺序启动：
+
+```bash
+supervisord -c web.conf
+supervisord -c celery.conf
+```
+
+`web.conf` 与 `celery.conf` 使用独立的 pidfile 和 supervisord 日志，排障时不要混淆两组进程。
+`web.conf` 使用单进程、八线程的 Gunicorn `gthread` worker，以兼容现有进程内缓存和流式响应；修改 worker 数、线程数或超时前必须验证这些约束。
+
+### 5. 验证
+
+```bash
+curl -f http://127.0.0.1:2025/health/live
+curl -f http://127.0.0.1:2025/health/ready
+```
+
+随后检查三类 Celery worker 进程和对应日志，并做一个不修改生产数据的页面/API 冒烟检查。不得用 pytest 代替生产验证。
+
+### 6. 回滚
+
+- 代码异常：同步上一个已知正常提交并按同样顺序重启；
+- 镜像异常：恢复部署前记录的镜像 ID/标签，再重启 Celery；
+- 数据库异常：只执行部署前设计并验证过的回滚方案；启动同步脚本没有自动 down migration；
+- 回滚后重新检查 `/health/live`、`/health/ready` 和 worker 日志。
+
+### 前端快速路径
+
+仅修改模板时，可以逐文件 `scp` 到 `templates/`，无需重启。生产 `FLASK_DEBUG` 应保持关闭；模板实时生效依赖 `TEMPLATES_AUTO_RELOAD=True`，不是 debug reloader。静态资产仍受上面的远端保护规则约束。
+
+## 其他约定
+
+- 禁用函数列表以逗号分隔，`judger_core.check_forbidden()` 按函数调用模式匹配；新增语言应保持该契约。
+- 判题时间限制在任务与核心之间以纳秒传递；不要在边界中悄悄改单位。
+- `competitions/` 是 gitignored 的数据集/临时工作区，不属于部署代码。
+- `fix-tools/` 是一次性修复脚本，不会自动运行，生产执行必须单独授权。
+- `.codex/skills/matlab-problem-setter/` 描述 MATLAB 题包格式，可作为出题结构参考。
