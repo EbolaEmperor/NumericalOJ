@@ -3,10 +3,10 @@
 
 import atexit
 import json
+import logging
 import os
 import queue
 import re
-import sys
 import threading
 import time
 
@@ -42,7 +42,25 @@ _MYSQL_DB = getattr(_config, 'MYSQL_DB', 'myojdb')
 from oj_modules.ai_utils import _normalize_ai_code_issues
 
 
+logger = logging.getLogger(__name__)
+
+
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
+
+
+class SubmissionLimitExceeded(RuntimeError):
+    """用户在一道普通题上的可计费提交次数已用尽。"""
+
+    def __init__(self, username, problem_id, limit, current_count):
+        self.username = username
+        self.problem_id = int(problem_id)
+        self.limit = int(limit)
+        self.current_count = int(current_count)
+        super().__init__(
+            f"submission limit exceeded: user={username!r}, "
+            f"problem_id={problem_id}, count={current_count}, limit={limit}"
+        )
+
 
 # 每个班级对应一张以「班级英文名」命名的动态表，多处 SQL 需要把表名拼进语句。
 # 表名无法用占位符参数化，因此用统一白名单校验作为防 SQL 注入的最后防线：
@@ -1428,21 +1446,38 @@ def create_submission(
     prompt_text=None,
     generated_from_prompt=False,
     prompt_generation_error=None,
+    submission_limit=None,
 ):
+    """创建提交；传入 ``submission_limit`` 时在同一事务内原子占用一次配额。"""
     # 先在获取连接前查好题目，避免占着连接再去 get_db_connection() 形成嵌套占用、放大连接池压力。
     problem = get_problem(problem_id)
     problem_type = problem['type']
     subid = None
     conn = get_db_connection()
     try:
-        if problem_type == 2:
-            with conn.cursor() as cursor:
+        with conn.cursor() as cursor:
+            if submission_limit is not None:
+                _reserve_submission_quota_with_cursor(
+                    cursor,
+                    username=username,
+                    problem_id=problem_id,
+                    max_submissions=submission_limit,
+                )
+
+            if problem_type == 2:
+                # 书面题首次提交会更新题目/班级计数。先锁题目行，使同一题目的
+                # 并发首次提交串行化，且计数与 submissions INSERT 同事务提交。
+                cursor.execute("SELECT id FROM problems WHERE id=%s FOR UPDATE", (problem_id,))
                 sql = "SELECT COUNT(*) FROM submissions WHERE username=%s AND problem_id=%s"
                 cursor.execute(sql, (username, problem_id))
                 total_submissions = cursor.fetchone()['COUNT(*)']
                 if total_submissions == 0:
-                    user = get_user_by_username(username)
-                    if user["is_admin"] != 1:
+                    cursor.execute(
+                        "SELECT id, is_admin, class FROM users WHERE username=%s",
+                        (username,),
+                    )
+                    user = cursor.fetchone()
+                    if user and user["is_admin"] != 1:
                         # 班级以 user_class_map 为权威来源（users.class 单列可能为空/过期——恢复后的
                         # 学生班级关系保存在 user_class_map 里；旧代码直接读 user["class"]=None，
                         # 会让 safe_table_name(None) 抛错、整份提交 500，而管理员走不到这分支故不受影响）。
@@ -1462,9 +1497,7 @@ def create_submission(
                                 pass   # 班级名异常/班级表缺失不影响提交本身
                     sql = "UPDATE problems SET cnt=cnt+1 WHERE id=%s"
                     cursor.execute(sql, (problem_id,))
-            conn.commit()
 
-        with conn.cursor() as cursor:
             test_points_str = '\n'.join([json.dumps(tp, ensure_ascii=False) for tp in test_points])
             sql = """INSERT INTO submissions
                      (problem_id, username, code, score, test_points, status, problem_title, problem_type,
@@ -1485,13 +1518,22 @@ def create_submission(
             ))
             # 需要在 cursor 生命周期内读取 lastrowid，避免偶发拿到无效 id
             subid = cursor.lastrowid
+            if not subid:
+                raise RuntimeError("create_submission: failed to get valid submission id")
         conn.commit()
-        if not subid:
-            raise RuntimeError("create_submission: failed to get valid submission id")
-        refresh_submission_status_snapshot(subid)
-        bump_daily_submission_count()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
+
+    # 缓存和统计不属于提交事务；主记录已成功持久化后，不应因派生路径
+    # 短暂失败向用户返回 500，否则用户重试会产生实际已提交的重复记录。
+    try:
+        refresh_submission_status_snapshot(subid)
+    except Exception:
+        logger.exception('提交状态快照刷新失败', extra={'submission_id': subid})
+    bump_daily_submission_count()
     return subid
 
 
@@ -1796,17 +1838,75 @@ def get_user_submission_count(username, problem_id):
         conn.close()
 
 
-def increment_submission_count(username, problem_id):
+def _normalize_submission_limit(max_submissions):
+    try:
+        return max(0, int(max_submissions))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_submissions must be an integer") from exc
+
+
+def _reserve_submission_quota_with_cursor(cursor, username, problem_id, max_submissions):
+    """在调用方事务内锁定并递增配额；唯一键负责序列化首次并发创建。"""
+    limit = _normalize_submission_limit(max_submissions)
+    cursor.execute(
+        """INSERT INTO submission_limits (username, problem_id, submission_count)
+           VALUES (%s, %s, 0)
+           ON DUPLICATE KEY UPDATE problem_id=VALUES(problem_id)""",
+        (username, problem_id),
+    )
+    cursor.execute(
+        """SELECT submission_count FROM submission_limits
+           WHERE username=%s AND problem_id=%s FOR UPDATE""",
+        (username, problem_id),
+    )
+    row = cursor.fetchone() or {}
+    current_count = int(row.get('submission_count') or 0)
+    if current_count >= limit:
+        raise SubmissionLimitExceeded(username, problem_id, limit, current_count)
+    cursor.execute(
+        """UPDATE submission_limits
+           SET submission_count=submission_count+1, updated_at=CURRENT_TIMESTAMP
+           WHERE username=%s AND problem_id=%s""",
+        (username, problem_id),
+    )
+    return current_count + 1
+
+
+def reserve_submission_quota(username, problem_id, max_submissions=10):
+    """原子预占一次提交配额，达到上限时抛出 SubmissionLimitExceeded。"""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = """INSERT INTO submission_limits (username, problem_id, submission_count)
-                     VALUES (%s, %s, 1)
-                     ON DUPLICATE KEY UPDATE
-                     submission_count = submission_count + 1,
-                     updated_at = CURRENT_TIMESTAMP"""
-            cursor.execute(sql, (username, problem_id))
+            count = _reserve_submission_quota_with_cursor(
+                cursor, username, problem_id, max_submissions,
+            )
         conn.commit()
+        return count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def release_submission_quota(username, problem_id):
+    """补偿一次已预占但未形成有效提交的配额；计数不会降到零以下。"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """UPDATE submission_limits
+                   SET submission_count=GREATEST(submission_count-1, 0),
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE username=%s AND problem_id=%s AND submission_count>0""",
+                (username, problem_id),
+            )
+            released = cursor.rowcount > 0
+        conn.commit()
+        return released
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -2343,7 +2443,7 @@ def ensure_daily_submission_stats_table():
 
 
 def bump_daily_submission_count():
-    """Best-effort：捕获所有异常并打印到 stderr，永不向调用方抛出，避免统计表问题阻塞提交写入。"""
+    """Best-effort：记录异常但不阻塞提交写入。"""
     try:
         conn = get_db_connection()
         try:
@@ -2356,8 +2456,8 @@ def bump_daily_submission_count():
             conn.commit()
         finally:
             conn.close()
-    except Exception as e:
-        print(f'[daily_submission_stats] bump failed: {e}', file=sys.stderr)
+    except Exception:
+        logger.exception('每日提交计数更新失败')
 
 
 def get_today_submission_total_from_counter():
