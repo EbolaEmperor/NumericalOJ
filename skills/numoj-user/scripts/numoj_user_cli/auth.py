@@ -36,7 +36,7 @@ def logout(args: argparse.Namespace) -> None:
     cfg = common.load_config(args.config)
     if cfg.get("cookies"):
         try:
-            common.client_from_args(args, require_auth=False).request("GET", "/logout")
+            common.client_from_args(args, require_auth=False).request("POST", "/logout")
         except Exception:
             pass
     cfg.pop("cookies", None)

@@ -332,15 +332,37 @@ init_bulk_rejudge_progress_cache(rds)
 ###############################################################################
 
 
-def run_startup_jobs():
-    """启动只应由 Web 服务进程执行的恢复与自调度任务。
-
-    保持该入口显式，避免 Celery、测试或管理脚本仅仅导入 ``oj`` 时就向
-    Redis/Celery 写入任务。
-    """
+def ensure_background_schedulers():
+    """幂等确保后台自调度链存在；Web worker 重建时重复调用也安全。"""
     # 启动 ELO 匹配 tick 链路（自调度，全局单链）。
-    seed_elo_matchmaker_tick(rds, ranking_elo_matchmaker_tick)
-    # 启动时把数据库里残留的 pending/评测中任务重新入队（重启后队列会清空）。
+    seed_elo_matchmaker_tick(
+        rds,
+        ranking_elo_matchmaker_tick,
+        reset_owner=False,
+    )
+
+    # 不重置已有 owner。Gunicorn worker 重建不等于 Celery 已全部停止，不能借此
+    # 清运行锁或另起一条调度链。
+    seed_pending_requeue_watchdog(
+        rds,
+        pending_requeue_watchdog,
+        reset_owner=False,
+        countdown=180,
+    )
+    seed_agent_judge_paused_probe(
+        rds,
+        ranking_agent_judge_paused_probe,
+        reset_owner=False,
+        countdown=300,
+    )
+
+
+def recover_pending_after_all_workers_stopped():
+    """在已确认所有 Celery worker 停止后执行破坏性恢复并重建调度链。
+
+    该入口会清理运行锁、重置 Running 状态并重新投递任务，不能挂到 Web/Gunicorn
+    生命周期。运维只能通过带停机确认的 ``scripts/recover_pending_tasks.py`` 调用。
+    """
     requeue_pending_on_startup(
         evaluate_task=evaluate_submission,
         written_task=transcribe_written_homework_to_latex,
@@ -350,7 +372,12 @@ def run_startup_jobs():
         agent_judge_task=evaluate_ranking_agent_judge,
         reverse_judge_task=evaluate_ranking_reverse_judge,
     )
-    # 重启恢复完成后换新 owner，让旧 watchdog ETA 消息醒来后 no-op。
+    seed_elo_matchmaker_tick(
+        rds,
+        ranking_elo_matchmaker_tick,
+        reset_owner=True,
+    )
+    # 完整 worker 停机后，旧链已经死亡；换新 owner，让残留 ETA 消息醒来后 no-op。
     seed_pending_requeue_watchdog(
         rds,
         pending_requeue_watchdog,
@@ -367,13 +394,13 @@ def run_startup_jobs():
 
 
 if __name__ == '__main__':
-    # 启动时把数据库里残留的 pending/评测中任务重新入队（重启后队列会清空）。
-    # 仅在真正提供服务的进程里执行一次：
+    # 仅确保幂等的后台调度链存在；破坏性任务恢复必须走显式运维脚本。
+    # 只在真正提供服务的进程里执行：
     #   - Celery worker 以 `oj.celery` 方式 import 本模块，__name__ != '__main__'，
     #     不会进入这里；
     #   - debug 模式下 Werkzeug reloader 会让父子两个进程都跑 __main__，用
     #     WERKZEUG_RUN_MAIN 守卫，只在真正服务的子进程里跑一次。
     if (not app.debug) or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        run_startup_jobs()
+        ensure_background_schedulers()
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

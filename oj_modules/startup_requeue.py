@@ -2,16 +2,17 @@
 # -*- coding: utf-8 -*-
 """进程启动时重新入队历史 pending 任务，并周期性回收卡住的 pending。
 
-两个 app supervisor 进程（web / celery）重启后，Celery 队列里原本累积的任务
-会丢失，导致数据库里仍处于“排队中 / 评测中”的提交永远卡住。本模块在 web 进程启动
-时扫描 MySQL，把这些未完成的提交重新发回 Celery 队列。
+两个 app supervisor 进程（web / celery）完整停止后，Celery 队列里原本累积的任务
+可能丢失，导致数据库里仍处于“排队中 / 评测中”的提交永远卡住。本模块可在明确的
+停机恢复步骤中扫描 MySQL，把这些未完成的提交重新发回 Celery 队列。
 
-只应在 web 进程启动时调用一次（见 oj.py 的 __main__ 守卫），不要在 Celery worker
-里运行；任何异常都不会向外抛出——重新入队失败绝不能阻止 web 进程启动。
+破坏性恢复只应通过 ``scripts/recover_pending_tasks.py`` 在所有 Celery worker 已确认
+停止后调用，不得绑定 Web/Gunicorn worker 生命周期，也不要在 Celery worker 里运行；
+单条重新入队失败不会中断其余记录的恢复。
 
-注意：清僵尸锁 + 重跑 Running 的前提是“所有 worker 都已死亡”（标准部署流程会同时
-重启两个 app supervisor）。若只重启 web 进程而 Celery worker 仍在评测，理论上可能对某条
-正在评测的 Running 提交造成重复评测；现行部署流程不会出现这种情况。
+注意：清僵尸锁 + 重跑 Running 的前提是“所有 worker 都已死亡”。若只重启 Web
+进程而 Celery worker 仍在评测，该操作会造成重复评测或任务丢失，因此自动启动路径
+只能幂等确保调度链存在，绝不能调用本模块的破坏性恢复入口。
 """
 
 import json
@@ -747,7 +748,8 @@ def seed_pending_requeue_watchdog(redis_client, watchdog_task, *,
 
         owner_id = redis_client.get(_PENDING_REQUEUE_OWNER_KEY)
         if owner_id:
-            watchdog_task.apply_async(args=[owner_id], countdown=countdown)
+            # owner 尚存说明已有链仍被视为存活。Web worker 重建时不能仅凭同一
+            # owner 再投一条 ETA 消息，否则两条任务会各自续订并永久并行。
             return
 
         new_owner_id = uuid.uuid4().hex

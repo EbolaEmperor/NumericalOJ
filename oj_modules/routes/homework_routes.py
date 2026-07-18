@@ -2085,7 +2085,7 @@ def generate_plagiarism_report(plagiarism_results, repository_results=None):
     return report
 
 
-@homework_bp.route('/export_student_codes')
+@homework_bp.post('/export_student_codes')
 def export_student_codes():
     user = current_user()
     if not is_admin(user):
@@ -2094,7 +2094,8 @@ def export_student_codes():
     if _export_task is None:
         return jsonify({'success': False, 'message': '导出模块未初始化'}), 500
 
-    selected_class = request.args.get('sclass')
+    payload = request.get_json(silent=True) or {}
+    selected_class = request.form.get('sclass') or payload.get('sclass')
     if not selected_class:
         return jsonify({'success': False, 'message': '班级参数错误'}), 400
 

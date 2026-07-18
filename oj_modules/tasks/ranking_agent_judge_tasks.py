@@ -725,7 +725,8 @@ def seed_agent_judge_paused_probe(redis_client, paused_probe_task, *,
 
         owner_id = redis_client.get(PAUSED_PROBE_OWNER_KEY)
         if owner_id:
-            paused_probe_task.apply_async(args=[owner_id], countdown=countdown)
+            # 已有 owner 时不补发同 owner 任务，避免 Web worker 重建制造永久
+            # 并行的自调度链；完整停机恢复由 reset_owner=True 显式重建。
             return
 
         owner_id = secrets.token_hex(16)
