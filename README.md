@@ -66,7 +66,10 @@ python -m pip install -r requirements/production.txt -r requirements/test.txt
 
 ## 配置
 
-仓库中的 `config.py` 是可运行模板，生产部署的同名文件包含私密配置，部署时不得覆盖。至少确认以下设置：
+仓库中的 `config.py` 是可运行的默认配置，并会在最后加载 Git 忽略的
+`config_local.py`。生产密钥和部署专用设置必须写在 `config_local.py` 中，不能直接
+修改受版本控制的 `config.py`；这样正常的 `git pull --ff-only` 可以更新配置默认值，
+同时不会覆盖生产密钥。至少确认以下设置：
 
 - `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` / `MYSQL_USERNAME` / `MYSQL_PASSWORD`；
 - `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` 与普通、阻塞读取的超时；
@@ -75,7 +78,7 @@ python -m pip install -r requirements/production.txt -r requirements/test.txt
 
 浏览器写请求统一校验 `Origin` / `Referer`。反向代理下若公开 Origin 与应用看到的 Host 不同，用 `CSRF_TRUSTED_ORIGINS` 显式列出可信 Origin；不要用通配符放开。
 
-`config.py` 会读取仓库根目录下可选的 `.env`，并且不会覆盖进程中已经存在的环境变量。需要注意：它不是自动映射全部配置项的通用设置系统；只有显式使用 `os.getenv(...)` 或“环境变量优先”的配置读取器的选项才会生效。数据库、邮件等直接赋值项仍应在部署专用的 `config.py` 中配置。`.env` 已被 Git 忽略，不得提交密钥。
+`config.py` 会读取仓库根目录下可选的 `.env`，并且不会覆盖进程中已经存在的环境变量。需要注意：它不是自动映射全部配置项的通用设置系统；只有显式使用 `os.getenv(...)` 或“环境变量优先”的配置读取器的选项才会生效。数据库、邮件、列表等完整 Python 配置使用 `config_local.py` 覆盖默认值。`.env` 与 `config_local.py` 均已被 Git 忽略，不得提交密钥。
 
 ## 数据库初始化与结构同步
 
@@ -195,9 +198,14 @@ bash deploy.sh
 
 `deploy.sh` 不负责拉取或同步代码，也不校验主机名、用户名、固定安装目录和 Git 状态；它以脚本所在目录为项目根，因此同一份 checkout 放在任意目录都可执行。脚本中没有测试、HTTP 探针或业务请求。
 
+部署需要 Python 3.12。脚本依次查找 `NUMOJ_PYTHON`、项目内
+`.deploy/bootstrap-python/bin/python3.12`、PATH 中的 `python3.12` 和 `python3`，
+并拒绝使用其他版本。系统 Python 不是 3.12 时，可预先在 Git 忽略的
+`.deploy/bootstrap-python/` 准备专用解释器，不需要修改系统 Python 或全局 PATH。
+
 每次部署先清理由本脚本标记、因异常中断遗留的候选镜像标签，再在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖，把普通判题和 Agent-as-Judge 镜像构建为候选标签，并以 `--single-transaction` 原子备份当前数据库；这些步骤不会修改仍在运行的环境。随后脚本确认两套 Supervisor 均可管理，依次停止 Celery/Web，切换虚拟环境，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签并依次启动 Celery/Web。最后再次确认两组 Supervisor 实际配置中的全部进程稳定进入 `RUNNING`，这是启动结果确认，不是测试；成功后只清理由本脚本标记的旧 dangling 镜像。
 
-主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。脚本不会修改 `config.py`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或回灌备份。失败时会报告准确阶段并保留部署前备份；如果失败发生在停服之后，修复原因后重新执行脚本，不要在没有判断 schema 兼容性的情况下自动回灌。
+主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。脚本不会修改 `config_local.py`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或回灌备份。失败时会报告准确阶段并保留部署前备份；如果失败发生在停服之后，修复原因后重新执行脚本，不要在没有判断 schema 兼容性的情况下自动回灌。
 
 ## 目录边界
 

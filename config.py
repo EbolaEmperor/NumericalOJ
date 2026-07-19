@@ -131,3 +131,13 @@ JUDGER_DOCKER_MEM_LIMIT = "1g"
 JUDGER_DOCKER_CPU_LIMIT = "2"
 JUDGER_DOCKER_PIDS_LIMIT = "128"
 JUDGER_DOCKER_NETWORK = "none"
+
+
+# 生产与个人环境的完整本地覆盖。该文件不受版本控制，适合保存无法仅靠
+# .env 表达的密钥、列表和其他 Python 配置。只忽略“文件不存在”；如果本地
+# 配置自身导入失败，应让进程启动失败并暴露真实原因。
+try:
+    from config_local import *  # noqa: F403
+except ModuleNotFoundError as exc:
+    if exc.name != "config_local":
+        raise
