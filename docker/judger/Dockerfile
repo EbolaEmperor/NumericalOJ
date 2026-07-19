@@ -1,4 +1,6 @@
-FROM debian:bookworm-slim
+# 固定到生产 default builder 已缓存、并用于当前稳定镜像的基础镜像。
+# 升级基础系统时应显式更新摘要，并在维护窗口预热新的重型工具链缓存。
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
 
 ENV DEBIAN_FRONTEND=noninteractive
 

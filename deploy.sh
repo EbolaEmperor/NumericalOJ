@@ -18,6 +18,7 @@ WEB_STOP_TIMEOUT_SECONDS=60
 CELERY_STOP_TIMEOUT_SECONDS=1960
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+DOCKER_BUILDER="${NUMOJ_DOCKER_BUILDER:-default}"
 JUDGER_STABLE='numericaloj-judger:latest'
 AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'
 JUDGER_CANDIDATE="numericaloj-judger:deploy-$RUN_ID"
@@ -87,6 +88,14 @@ if ! flock -n 9; then
   printf '本机已有 NumericalOJ 部署正在运行。\n' >&2
   exit 1
 fi
+
+if ! docker buildx inspect "$DOCKER_BUILDER" >/dev/null 2>&1; then
+  printf 'Docker builder 不存在或不可用：%s\n' "$DOCKER_BUILDER" >&2
+  exit 1
+fi
+docker_cache_root="$(docker info --format '{{.DockerRootDir}}')"
+printf '使用 Docker builder %s（缓存位于 %s）。\n' \
+  "$DOCKER_BUILDER" "$docker_cache_root"
 
 resolve_bootstrap_python() {
   local candidate
@@ -228,19 +237,45 @@ build_candidate_image() {
   local stable="$1"
   local candidate="$2"
   local context="$3"
+  shift 3
+  local cache_markers=("$@")
   local stable_id
+  local cache_descriptions
+  local cache_marker
   local cache_args=()
 
-  if stable_id="$(
-    docker image inspect --format '{{.Id}}' "$stable" 2>/dev/null
-  )"; then
-    printf '检测到 Docker 构建缓存源：%s (%s)\n' "$stable" "$stable_id"
-    cache_args+=(--cache-from "$stable")
-  else
-    printf '未检测到 Docker 构建缓存源：%s；本次将冷构建。\n' "$stable"
+  stable_id="$(
+    docker image inspect --format '{{.Id}}' "$stable" 2>/dev/null || true
+  )"
+  if [[ -z "$stable_id" ]]; then
+    printf '未检测到稳定镜像 %s；为避免冷构建，拒绝继续部署。\n' \
+      "$stable" >&2
+    return 1
   fi
 
+  cache_descriptions="$(
+    docker buildx du \
+      --builder "$DOCKER_BUILDER" \
+      --format '{{.Description}}'
+  )" || {
+    printf '无法读取 Docker builder %s 的步骤缓存。\n' \
+      "$DOCKER_BUILDER" >&2
+    return 1
+  }
+  for cache_marker in "${cache_markers[@]}"; do
+    if [[ "$cache_descriptions" != *"$cache_marker"* ]]; then
+      printf 'Docker builder %s 缺少关键步骤缓存：%s；为避免冷构建，拒绝继续部署。\n' \
+        "$DOCKER_BUILDER" "$cache_marker" >&2
+      return 1
+    fi
+  done
+
+  printf '使用 Docker builder %s 的步骤缓存；稳定镜像：%s (%s)\n' \
+    "$DOCKER_BUILDER" "$stable" "$stable_id"
+  cache_args+=(--cache-from "$stable")
+
   DOCKER_BUILDKIT=1 docker build \
+    --builder "$DOCKER_BUILDER" \
     --build-arg BUILDKIT_INLINE_CACHE=1 \
     "${cache_args[@]}" \
     --label "$MANAGED_IMAGE_LABEL" \
@@ -280,9 +315,14 @@ rm -rf -- "$CANDIDATE_VENV"
 
 phase='构建判题镜像'
 build_candidate_image \
-  "$JUDGER_STABLE" "$JUDGER_CANDIDATE" docker/judger
+  "$JUDGER_STABLE" "$JUDGER_CANDIDATE" docker/judger \
+  'debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df' \
+  'texlive-full' 'intel-oneapi-mkl-devel'
 build_candidate_image \
-  "$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" docker/agent_judge
+  "$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" docker/agent_judge \
+  'node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5' \
+  'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
+  'playwright install chromium'
 
 phase='备份数据库'
 backup_target="$BACKUP_DIR/mysql-$RUN_ID.sql.gz"

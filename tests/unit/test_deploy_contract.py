@@ -91,12 +91,28 @@ def test_deploy_prepares_candidates_before_stopping_and_then_restarts_everything
 def test_deploy_detects_and_imports_stable_docker_build_cache():
     script = _read("deploy.sh")
 
+    assert 'DOCKER_BUILDER="${NUMOJ_DOCKER_BUILDER:-default}"' in script
     assert "JUDGER_STABLE='numericaloj-judger:latest'" in script
     assert "AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'" in script
+    assert 'docker buildx inspect "$DOCKER_BUILDER"' in script
+    assert "docker info --format '{{.DockerRootDir}}'" in script
+    assert "docker buildx du" in script
+    assert '--builder "$DOCKER_BUILDER"' in script
     assert "docker image inspect --format '{{.Id}}' \"$stable\"" in script
     assert 'cache_args+=(--cache-from "$stable")' in script
     assert "DOCKER_BUILDKIT=1 docker build" in script
     assert "--build-arg BUILDKIT_INLINE_CACHE=1" in script
+    for marker in (
+        "debian:bookworm-slim@sha256:60eac759",
+        "node:20-bookworm@sha256:8f693eaa",
+        "intel-oneapi-mkl-devel",
+        "torch torchvision",
+        "paddlepaddle paddleocr",
+        "playwright install chromium",
+    ):
+        assert marker in script
+    assert "为避免冷构建，拒绝继续部署" in script
+    assert "本次将冷构建" not in script
 
 
 def test_deploy_uses_bounded_project_local_runtime_state():
