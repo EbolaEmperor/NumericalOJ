@@ -136,26 +136,25 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 
 - 发布对象必须对应已知提交；禁止把未记录的远端手改当作新基线。
 - `config.py`、`static/`、上传、运行目录和密钥不随代码全量覆盖。
-- Web 与 Celery 是两个发布边界；Python 变更按项目既定顺序完成显式停机恢复后再启动 `web -> celery`，变更本身必须兼容短暂的混合版本窗口。
+- Web 与 Celery 是两个发布边界；Python 变更按项目既定顺序完成显式停机恢复后再启动 `celery -> web`，避免 Web 在 worker 尚不可用时接受新任务。
 - Gunicorn worker 重建、Web-only 重启和 HUP reload 只能执行幂等调度引导；清锁、重置 Running 或重投任务的恢复必须确认全部 Celery worker 已停止，并由独立命令触发。
 - Docker 变更单独构建并记录旧镜像 ID；长期应使用不可变版本标签，而不是只依赖 `latest`。
 - schema 先采用向后兼容扩展，再发布读取新结构的代码；没有验证兼容窗口时不做不可逆 DDL。
 
 ### 发布步骤
 
-生产发布统一由根目录的 `bash deploy.sh` 执行，脚本将以下步骤实现为持锁状态机：
+生产发布由运维人员先在目标 checkout 执行 `git pull --ff-only`，再运行根目录的 `bash deploy.sh`。脚本不拉取代码，也不校验主机名、用户名、固定目录或 Git 状态；调用方负责确认当前版本。其原地部署顺序为：
 
-1. 验证工作树、完整提交 SHA、固定远端 hostname 与目标路径，并把候选版本同步到隔离 staging。
-2. 在停服前按生产 requirements 内容摘要构建或校验可复用的只读 Python 虚拟环境；根据上次成功提交与 Docker context 差异构建并冒烟验证不可变候选镜像，首次部署或 `--rebuild-all` 重建全部生产镜像。
-3. 优先通过独立 Supervisor socket 优雅停止 Web/Celery；旧配置迁移时仅操作验证过 cwd 与 cmdline 的明确 PID。
-4. 停服后备份数据库和当前代码，再激活候选版本。
-5. 显式运行一次结构同步和停机任务恢复，原子切换虚拟环境与镜像后依次启动 `deploy/supervisor/web.conf`、`deploy/supervisor/celery.conf`。
-6. 检查 Supervisor 状态、`/health/live`、`/health/ready` 和三个唯一 Celery 节点的精确队列映射；全部成功后才更新部署提交与清单。
-7. 失败时恢复旧代码与旧镜像并尝试重启；数据库备份保留供人工判断，不自动回灌。
+1. 取得覆盖主机共享 Supervisor/Docker 资源的主机级锁，清理异常中断遗留且带本项目 label 的 `deploy-*` 镜像标签，再在项目内双槽虚拟环境的非活动槽安装 `requirements/production.txt`。
+2. 每次都把普通判题和 Agent-as-Judge 两个镜像构建为候选标签，不在部署脚本中运行测试或镜像冒烟。
+3. 使用 `mysqldump --single-transaction` 生成原子 gzip 备份；数据库尚不存在时生成明确占位记录。备份在停服前完成，避免备份工具失败扩大服务中断；它是结构变更前的一致性快照，不承诺包含随后停机窗口前的新增写入。
+4. 先确认两套 Supervisor 都可管理，再优雅停止 Celery、最后停止 Web；Celery 排空期间 Web 仍可接收请求并让新任务在队列中等待。首次从根目录 `web.conf` / `celery.conf` 迁移时，只终止 UID、工作目录、Supervisor 入口和配置参数全部精确匹配的旧进程；其他控制文件缺失场景失败关闭，不按模糊进程名杀进程。外层等待上限必须严格大于 Supervisor 的 `stopwaitsecs`。
+5. 切换项目内 `.deploy/current-venv`，只执行一次 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个镜像的 `latest` 标签。
+6. 依次启动 `deploy/supervisor/celery.conf`、`deploy/supervisor/web.conf`；两组均完成各自稳定启动窗口后，再从 Supervisor status 复核全部进程仍为 `RUNNING`，最后清理由本脚本 label 标记的旧 dangling 镜像。
 
-部署脚本保护生产 `config.py`、可选 `.env`、上传和运行目录；`static/` 只允许新增或内容完全一致的文件。Git 受管路径由新旧部署清单确定所有权，激活和回滚显式支持文件与目录互换，不覆盖清单外路径。Python 依赖安装在按生产 requirements 内容摘要寻址、全树哈希封印的只读虚拟环境中，通过 `current-venv` 原子切换；系统解释器和全局 site-packages 不被修改。停服前会再次检查生产目录、部署状态目录与 Docker data-root 的可用空间，默认阈值分别为 10 GiB、10 GiB、20 GiB，阈值不可读取或不满足时失败关闭。
+部署脚本只修改项目内 `.deploy/`、两个生产镜像标签和 Supervisor 进程，不修改 `config.py`、`.env`、`static/`、上传目录或业务运行目录。系统解释器和全局 site-packages 不被修改。数据库同步器只创建缺失结构和同步已识别列类型，不导入 bootstrap、不删除表/列、不清空数据；部署前备份是额外保护，不代表任意 DDL 都可以无审阅执行。
 
-部署状态采用保守保留策略，不在发布关键路径自动删除可回滚证据：失败与成功路径都会清理 staging 和 `.partial`，`runs/`、`venvs/`、`releases/`、数据库备份及 commit 镜像由运维巡检。每 10 次发布或磁盘可用空间低于 20% 时检查一次；至少保留当前版本和两个已验证的历史版本及其代码包、venv、运行日志和镜像。数据库备份至少保留 5 份且不少于 30 天，只有在外部备份存在并完成恢复抽查后才能清理；部署审计日志至少保留 90 天。清理前必须确认部署锁空闲，以 `current` 及最近成功 run 中记录的 revision、venv 和 image ID 生成明确白名单，禁止使用无边界 `rm`、`docker system prune` 或按模糊名称删除。
+`.deploy/venvs/` 仅保留两个轮换槽，下一次部署会重建非活动槽。`.deploy/backups/` 不在发布关键路径自动清理：数据库备份至少保留 5 份且不少于 30 天，只有在外部备份存在并完成恢复抽查后才能清理。部署失败发生在停服前时原服务不受影响；发生在停服后时保持失败现场，修复后重跑。不要自动回灌备份，因为 MySQL DDL 可能已部分提交，应先判断向前修复还是人工恢复。
 
 ### 回滚原则
 
