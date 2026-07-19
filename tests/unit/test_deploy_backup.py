@@ -63,7 +63,9 @@ def test_backup_streams_mysqldump_to_an_atomic_gzip(monkeypatch, tmp_path):
     assert gzip.decompress(output.read_bytes()) == b"CREATE TABLE example (id INT);\n"
     assert "--single-transaction" in process.args
     assert "--routines" in process.args
-    assert "--connect-timeout=5" in process.args
+    assert not any(
+        argument.startswith("--connect-timeout") for argument in process.args
+    )
     assert process.args[-1] == "myojdb"
     assert all("secret-value" not in argument for argument in process.args)
     assert process.environment["MYSQL_PWD"] == "secret-value"

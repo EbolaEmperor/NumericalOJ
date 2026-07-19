@@ -34,12 +34,14 @@ def _database_exists(settings: MySQLSettings) -> bool:
 
 
 def _dump_command(settings: MySQLSettings) -> list[str]:
+    # MySQL 8.4's mysqldump rejects the mysql-client-only --connect-timeout
+    # option. _database_exists() already performs a bounded PyMySQL connection
+    # before the dump process is started.
     return [
         "mysqldump",
         f"--host={settings.host}",
         f"--port={settings.port}",
         f"--user={settings.user}",
-        f"--connect-timeout={settings.connect_timeout}",
         "--single-transaction",
         "--routines",
         "--triggers",
