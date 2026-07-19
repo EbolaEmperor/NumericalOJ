@@ -296,7 +296,6 @@ build_candidate_image() {
   local source_digest
   local stable_source_digest
   local candidate_source_digest
-  local cache_args=()
 
   stable_id="$(
     docker image inspect --format '{{.Id}}' "$stable" 2>/dev/null || true
@@ -335,12 +334,10 @@ build_candidate_image() {
 
   printf '使用 Docker builder %s 的步骤缓存；稳定镜像：%s (%s)\n' \
     "$DOCKER_BUILDER" "$stable" "$stable_id"
-  cache_args+=(--cache-from "$stable")
 
   DOCKER_BUILDKIT=1 docker build \
     --builder "$DOCKER_BUILDER" \
     --build-arg BUILDKIT_INLINE_CACHE=1 \
-    "${cache_args[@]}" \
     --label "$MANAGED_IMAGE_LABEL" \
     --label "$SOURCE_IMAGE_LABEL=$source_digest" \
     --tag "$candidate" \

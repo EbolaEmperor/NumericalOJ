@@ -98,8 +98,8 @@ RUN pip3 install --no-cache-dir --break-system-packages --force-reinstall "numpy
 ARG CLAUDE_CODE_VERSION=2.1.197
 ARG CODEX_CLI_VERSION=0.144.5
 ARG OPENCODE_VERSION=1.18.3
-ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=3.0.12
-ARG AI_SDK_ANTHROPIC_VERSION=4.0.16
+ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=2.0.51
+ARG AI_SDK_ANTHROPIC_VERSION=3.0.85
 RUN npm install -g \
         @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
         @openai/codex@${CODEX_CLI_VERSION} \

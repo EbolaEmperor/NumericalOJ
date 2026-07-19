@@ -88,7 +88,7 @@ def test_deploy_prepares_candidates_before_stopping_and_then_restarts_everything
     assert 'pkill' not in script
 
 
-def test_deploy_detects_and_imports_stable_docker_build_cache():
+def test_deploy_detects_and_uses_daemon_docker_build_cache():
     script = _read("deploy.sh")
 
     assert 'DOCKER_BUILDER="${NUMOJ_DOCKER_BUILDER:-default}"' in script
@@ -105,7 +105,7 @@ def test_deploy_detects_and_imports_stable_docker_build_cache():
     assert 'if [[ "$stable_source_digest" == "$source_digest" ]]' in script
     assert 'docker tag "$stable" "$candidate"' in script
     assert '--label "$SOURCE_IMAGE_LABEL=$source_digest"' in script
-    assert 'cache_args+=(--cache-from "$stable")' in script
+    assert '--cache-from "$stable"' not in script
     assert "DOCKER_BUILDKIT=1 docker build" in script
     assert "--build-arg BUILDKIT_INLINE_CACHE=1" in script
     for marker in (
