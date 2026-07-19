@@ -80,7 +80,7 @@ rds_blocking = create_blocking_redis_client()
 
 def _load_secret_key():
     """会话签名密钥来源（按优先级）：
-    1. config.py 的 SECRET_KEY（生产 config.py 不被 rsync 覆盖，建议在此设置固定值）；
+    1. .env 的 SECRET_KEY（生产环境必须设置固定值）；
     2. <OJ_ROOT>/tmp/secret_key 文件（首次自动生成并持久化，跨重启稳定、且不入 git）。
     绝不再使用历史硬编码常量，否则任何人都能伪造管理员会话 cookie。"""
     key = getattr(_cfg, 'SECRET_KEY', None)
@@ -108,13 +108,13 @@ def _load_secret_key():
 app = Flask(__name__)
 app.secret_key = _load_secret_key()
 # DEBUG 默认关闭：生产环境绝不能开 Werkzeug 交互式调试器（源码/变量泄露 + RCE 控制台）。
-# 本地开发可在 config.py 设 FLASK_DEBUG = True。
+# 本地开发可在 .env 设 FLASK_DEBUG=true。
 app.config['DEBUG'] = bool(getattr(_cfg, 'FLASK_DEBUG', False))
 # 即便 DEBUG 关闭也保留模板热重载，保证「scp 模板即生效」的前端快速路径不受影响。
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
 # 会话 Cookie 加固：HttpOnly 防 JS 窃取；SameSite=Lax 阻断跨站 POST CSRF；
-# Secure 仅在 HTTPS 下回传（默认关闭以兼容内网 HTTP，部署 HTTPS 后可在 config.py 置 True）。
+# Secure 仅在 HTTPS 下回传（默认关闭以兼容内网 HTTP，部署 HTTPS 后可在 .env 置 true）。
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
@@ -163,14 +163,16 @@ def inject_globals():
 
 
 # 默认 CSP：考虑到现有页面大量内联脚本/样式与本地打包资源，采用「不破坏现网」的宽松策略，
-# 但仍通过 object-src/frame-ancestors/base-uri 缓解点击劫持与 base 标签劫持。可在 config.py
+# 但仍通过 object-src/frame-ancestors/base-uri 缓解点击劫持与 base 标签劫持。可在 .env
 # 用 CONTENT_SECURITY_POLICY 覆盖以逐步收紧。
 _DEFAULT_CSP = (
     "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; "
     "img-src 'self' data: blob: https:; "
     "object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
 )
-_CONTENT_SECURITY_POLICY = getattr(_cfg, 'CONTENT_SECURITY_POLICY', _DEFAULT_CSP)
+_CONTENT_SECURITY_POLICY = (
+    getattr(_cfg, 'CONTENT_SECURITY_POLICY', None) or _DEFAULT_CSP
+)
 
 
 @app.errorhandler(Exception)

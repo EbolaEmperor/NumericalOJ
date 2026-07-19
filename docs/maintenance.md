@@ -135,7 +135,7 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 ### 发布原则
 
 - 发布对象必须对应已知提交；禁止把未记录的远端手改当作新基线。
-- `config_local.py`、`static/` 的生产额外资产、上传、运行目录和密钥不随代码全量覆盖。
+- `.env`、`static/` 的生产额外资产、上传、运行目录和密钥不随代码全量覆盖。
 - Web 与 Celery 是两个发布边界；Python 变更按项目既定顺序完成显式停机恢复后再启动 `celery -> web`，避免 Web 在 worker 尚不可用时接受新任务。
 - Gunicorn worker 重建、Web-only 重启和 HUP reload 只能执行幂等调度引导；清锁、重置 Running 或重投任务的恢复必须确认全部 Celery worker 已停止，并由独立命令触发。
 - Docker 变更单独构建并记录旧镜像 ID；长期应使用不可变版本标签，而不是只依赖 `latest`。
@@ -147,14 +147,14 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 
 1. 取得覆盖主机共享 Supervisor/Docker 资源的主机级锁，清理异常中断遗留且带本项目 label 的 `deploy-*` 镜像标签，再在项目内双槽虚拟环境的非活动槽安装 `requirements/production.txt`。
    引导解释器必须是 Python 3.12；脚本支持 `NUMOJ_PYTHON`、项目内 `.deploy/bootstrap-python` 和 PATH 自动发现，不依赖系统 `python3` 恰好指向 3.12。
-   在任何依赖安装、镜像构建或数据库连接前，脚本会 fail-closed 校验 `config_local.py` 已加载、属于部署用户且权限不向 group/other 开放，并检查必要的 MySQL 配置非空。
+   在任何依赖安装、镜像构建或数据库连接前，脚本会 fail-closed 校验 `.env` 已加载、属于部署用户、是普通文件且权限为 `0400` 或 `0600`，并检查必要的 MySQL、Redis 和会话配置。
 2. 每次都把普通判题和 Agent-as-Judge 两个镜像构建为候选标签，不在部署脚本中运行测试或镜像冒烟。
 3. 使用 `mysqldump --single-transaction` 生成原子 gzip 备份；数据库尚不存在时生成明确占位记录。备份在停服前完成，避免备份工具失败扩大服务中断；它是结构变更前的一致性快照，不承诺包含随后停机窗口前的新增写入。
 4. 先确认两套 Supervisor 都可管理，再优雅停止 Celery、最后停止 Web；Celery 排空期间 Web 仍可接收请求并让新任务在队列中等待。首次从根目录 `web.conf` / `celery.conf` 迁移时，只终止 UID、工作目录、Supervisor 入口和配置参数全部精确匹配的旧进程；其他控制文件缺失场景失败关闭，不按模糊进程名杀进程。外层等待上限必须严格大于 Supervisor 的 `stopwaitsecs`。
 5. 切换项目内 `.deploy/current-venv`，只执行一次 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个镜像的 `latest` 标签。
 6. 依次启动 `deploy/supervisor/celery.conf`、`deploy/supervisor/web.conf`；两组均完成各自稳定启动窗口后，再从 Supervisor status 复核全部进程仍为 `RUNNING`，最后清理由本脚本 label 标记的旧 dangling 镜像。
 
-部署脚本只修改项目内 `.deploy/`、两个生产镜像标签和 Supervisor 进程，不修改 `config_local.py`、`.env`、`static/`、上传目录或业务运行目录。系统解释器和全局 site-packages 不被修改。数据库同步器只创建缺失结构和同步已识别列类型，不导入 bootstrap、不删除表/列、不清空数据；部署前备份是额外保护，不代表任意 DDL 都可以无审阅执行。
+部署脚本只修改项目内 `.deploy/`、两个生产镜像标签和 Supervisor 进程，不修改 `.env`、`static/`、上传目录或业务运行目录。系统解释器和全局 site-packages 不被修改。数据库同步器只创建缺失结构和同步已识别列类型，不导入 bootstrap、不删除表/列、不清空数据；部署前备份是额外保护，不代表任意 DDL 都可以无审阅执行。
 
 `.deploy/venvs/` 仅保留两个轮换槽，下一次部署会重建非活动槽。`.deploy/backups/` 不在发布关键路径自动清理：数据库备份至少保留 5 份且不少于 30 天，只有在外部备份存在并完成恢复抽查后才能清理。部署失败发生在停服前时原服务不受影响；发生在停服后时保持失败现场，修复后重跑。不要自动回灌备份，因为 MySQL DDL 可能已部分提交，应先判断向前修复还是人工恢复。
 

@@ -27,6 +27,7 @@ test-results/
 
 # ===== 本地配置 / 运行时目录 =====
 .env
+# 旧版生产覆盖文件已不再加载；继续忽略，避免迁移期间遗留密钥被误提交。
 config_local.py
 backups/
 user_libraries/
