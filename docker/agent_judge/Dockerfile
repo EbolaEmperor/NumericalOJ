@@ -1,15 +1,9 @@
 # 打榜赛 Agent-as-Judge 评测镜像：预装 Agent Harness CLI + 常见工具链 + report 命令。
 # 构建（在 why-server 上一次性执行）：
 #   docker build -t numericaloj-agent-judge:latest docker/agent_judge
-FROM node:20-bookworm
-
-# Agent Harness 属于判题协议的一部分，版本漂移会直接改变评分行为。升级必须显式改这里并
-# 重建、验证镜像；仍可在受控构建中通过 --build-arg 覆盖做兼容性测试。
-ARG CLAUDE_CODE_VERSION=2.1.197
-ARG CODEX_CLI_VERSION=0.144.5
-ARG OPENCODE_VERSION=1.18.3
-ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=3.0.12
-ARG AI_SDK_ANTHROPIC_VERSION=4.0.16
+# 固定到生产 default builder 已缓存、并用于当前稳定镜像的基础镜像。
+# 升级基础系统时应显式更新摘要，并在维护窗口预热新的重型工具链缓存。
+FROM node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
 
 ENV DEBIAN_FRONTEND=noninteractive
 # 关闭 claude CLI 的非必要外联（遥测/自动更新/错误上报）——受限容器内若开启会卡住
@@ -98,6 +92,14 @@ RUN pip3 install --no-cache-dir --break-system-packages playwright \
 RUN pip3 install --no-cache-dir --break-system-packages --force-reinstall "numpy<2"
 
 # 预装 Agent Harness CLI（关键：不放进评测关键路径）
+# Agent Harness 属于判题协议的一部分，版本漂移会直接改变评分行为。升级必须显式改这里并
+# 重建、验证镜像；ARG 特意紧邻唯一使用它们的步骤，避免版本更新使前面的 30GB 工具链
+# 缓存全部失效。仍可在受控构建中通过 --build-arg 覆盖做兼容性测试。
+ARG CLAUDE_CODE_VERSION=2.1.197
+ARG CODEX_CLI_VERSION=0.144.5
+ARG OPENCODE_VERSION=1.18.3
+ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=3.0.12
+ARG AI_SDK_ANTHROPIC_VERSION=4.0.16
 RUN npm install -g \
         @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
         @openai/codex@${CODEX_CLI_VERSION} \
