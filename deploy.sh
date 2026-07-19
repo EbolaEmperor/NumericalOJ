@@ -131,35 +131,75 @@ BOOTSTRAP_PYTHON="$(resolve_bootstrap_python)"
 printf '使用 Python 3.12：%s\n' "$BOOTSTRAP_PYTHON"
 
 phase='校验生产本地配置'
-LOCAL_CONFIG="$ROOT_DIR/config_local.py"
-[[ -f "$LOCAL_CONFIG" && ! -L "$LOCAL_CONFIG" && -r "$LOCAL_CONFIG" ]] || {
-  printf '缺少仅当前用户可读的生产配置文件: %s\n' "$LOCAL_CONFIG" >&2
+ENV_FILE="$ROOT_DIR/.env"
+[[ -f "$ENV_FILE" && ! -L "$ENV_FILE" && -r "$ENV_FILE" ]] || {
+  printf '缺少仅当前用户可读的生产配置文件: %s\n' "$ENV_FILE" >&2
   exit 1
 }
-"$BOOTSTRAP_PYTHON" -c '
+PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B -c '
 import os
 from pathlib import Path
 import stat
 import sys
 
 path = Path(sys.argv[1])
-metadata = path.stat(follow_symlinks=False)
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+try:
+    descriptor = os.open(path, flags)
+except OSError as exc:
+    raise SystemExit(f"无法安全打开生产配置: {path}") from exc
+try:
+    metadata = os.fstat(descriptor)
+finally:
+    os.close(descriptor)
 mode = stat.S_IMODE(metadata.st_mode)
 if not stat.S_ISREG(metadata.st_mode):
     raise SystemExit(f"生产配置不是普通文件: {path}")
 if metadata.st_uid != os.geteuid():
     raise SystemExit(f"生产配置不属于当前部署用户: {path}")
-if not (mode & stat.S_IRUSR) or mode & 0o077:
-    raise SystemExit(f"生产配置权限必须仅允许当前用户读取: {path} mode={mode:04o}")
+if mode not in (0o400, 0o600):
+    raise SystemExit(f"生产配置权限必须是 0400 或 0600: {path} mode={mode:04o}")
+if metadata.st_size > 1024 * 1024:
+    raise SystemExit(f"生产配置文件异常过大: {path}")
+fingerprint = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
 
 import config
 
-if not config.LOCAL_CONFIG_LOADED:
-    raise SystemExit("生产本地配置没有被 config.py 加载")
-for name in ("MYSQL_USERNAME", "MYSQL_PASSWORD"):
-    if not str(getattr(config, name, "") or "").strip():
-        raise SystemExit(f"生产本地配置缺少必填项: {name}")
-' "$LOCAL_CONFIG"
+after = path.stat(follow_symlinks=False)
+after_fingerprint = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+if after_fingerprint != fingerprint:
+    raise SystemExit("生产配置在校验过程中发生变化")
+if not config.ENV_FILE_LOADED:
+    raise SystemExit("生产 .env 没有被 config.py 加载")
+
+required_strings = (
+    "SECRET_KEY",
+    "MYSQL_HOST",
+    "MYSQL_DB",
+    "MYSQL_USERNAME",
+    "MYSQL_PASSWORD",
+    "REDIS_HOST",
+)
+required_in_file = required_strings + (
+    "MYSQL_PORT",
+    "REDIS_PORT",
+    "REDIS_DB",
+)
+missing = sorted(set(required_in_file) - set(config.ENV_FILE_KEYS))
+if missing:
+    raise SystemExit("生产 .env 缺少必填项: " + ", ".join(missing))
+for name in required_strings:
+    value = getattr(config, name, None)
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"生产 .env 的必填字符串无效: {name}")
+for name in ("MYSQL_PORT", "REDIS_PORT"):
+    value = getattr(config, name, None)
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+        raise SystemExit(f"生产 .env 的端口无效: {name}")
+redis_db = getattr(config, "REDIS_DB", None)
+if not isinstance(redis_db, int) or isinstance(redis_db, bool) or redis_db < 0:
+    raise SystemExit("生产 .env 的 REDIS_DB 无效")
+' "$ENV_FILE"
 
 remove_stale_candidate_tags() {
   local reference

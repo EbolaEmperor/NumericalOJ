@@ -119,10 +119,13 @@ def test_deploy_fails_closed_without_private_production_config():
     image_build = script.index("phase='构建判题镜像'")
     database_backup = script.index("phase='备份数据库'")
     assert config_check < dependency_install < image_build < database_backup
-    assert 'LOCAL_CONFIG="$ROOT_DIR/config_local.py"' in script
-    assert "config.LOCAL_CONFIG_LOADED" in script
+    assert 'ENV_FILE="$ROOT_DIR/.env"' in script
+    assert "config.ENV_FILE_LOADED" in script
+    assert "config.ENV_FILE_KEYS" in script
     assert "metadata.st_uid != os.geteuid()" in script
-    assert "mode & 0o077" in script
+    assert "mode not in (0o400, 0o600)" in script
+    assert "PYTHONDONTWRITEBYTECODE=1" in script
+    assert "source .env" not in script
 
 
 def test_deploy_can_migrate_the_exact_legacy_supervisor_processes():
