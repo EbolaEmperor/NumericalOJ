@@ -9,7 +9,7 @@
 - 生产部署位于 `why-server:/home/ebola/oj/`，该主机的 hostname 是 `computing`。
 - 未经用户明确要求，不得向生产部署、写生产数据、运行迁移或重启服务。
 - **生产主机禁止运行任何测试**，包括纯单测、pytest、Compose、CI 脚本和测试容器。
-- 生产 `config.py` 和 `static/` 可能包含本地仓库没有的内容，不得用全量同步覆盖或删除。
+- 生产 `config_local.py` 和 `static/` 的额外资产可能包含本地仓库没有的内容，不得用全量同步覆盖或删除。
 
 ## 运行架构
 
@@ -57,7 +57,7 @@ celery -A oj.celery worker -Q judge -c 16
 
 仓库尚未提供带哈希的完整传递依赖锁文件；不得把直接 pin 描述为位级可复现构建，后续应在 Python 3.12 上生成并由 CI 校验 lock。
 
-`config.py` 是受版本控制的模板。它会读取根目录下可选的 `.env`，但这不是全部配置的自动映射：只有显式调用 `os.getenv` 或环境变量优先读取器的选项才接受环境覆盖；MySQL、邮件等直接赋值项仍由部署专用 `config.py` 配置。已有进程环境变量优先于 `.env`，`.env` 不得入库。
+`config.py` 是受版本控制的默认配置。它会读取根目录下可选的 `.env`，并在最后加载 Git 忽略的 `config_local.py`；生产密钥、MySQL、邮件、列表等部署专用设置必须放在 `config_local.py`，不得直接修改 tracked 的 `config.py`。只有显式调用 `os.getenv` 或环境变量优先读取器的选项才接受 `.env` 覆盖；已有进程环境变量优先于 `.env`。`.env` 和 `config_local.py` 均不得入库。
 
 关键设置：
 
@@ -111,7 +111,7 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 
 历史上曾发生测试误连生产并清库的事故，因此：
 
-- 不得在生产路径或读取生产 `config.py` 的 shell 中运行测试；
+- 不得在生产路径或加载生产 `config.py` / `config_local.py` 的 shell 中运行测试；
 - 不得针对生产执行测试 fixture、seed、SQL import、修复脚本或数据重置；
 - 生产默认只允许只读检查：`SELECT`、`SHOW`、`EXPLAIN`、日志和进程检查；
 - 生产写入、DDL、导入和修复必须由用户明确授权，并先给出备份与回滚方案。
@@ -173,6 +173,10 @@ bash deploy.sh
 
 `deploy.sh` 是唯一生产发布入口，但不负责 `git pull`，也不检测 hostname、用户名、固定安装目录或 Git 状态。它从自身路径确定项目根，可在任意目录中的 checkout 执行。脚本内部禁止运行 pytest、Compose、HTTP 探针或其他测试逻辑。
 
+部署引导解释器必须是 Python 3.12。脚本依次接受 `NUMOJ_PYTHON`、项目内
+`.deploy/bootstrap-python/bin/python3.12`、PATH 中的 `python3.12` 或版本恰当的
+`python3`；不得为了部署修改系统 Python 或全局 site-packages。
+
 1. 持有主机级锁并清理异常中断遗留的受管候选镜像标签，再在 `.deploy/venvs/` 的非活动槽安装固定生产依赖；
 2. 每次都构建普通判题与 Agent-as-Judge 候选镜像；
 3. 在停服前原子备份 MySQL 数据库，避免备份失败导致服务中断；
@@ -180,7 +184,7 @@ bash deploy.sh
 5. 切换 `.deploy/current-venv`，执行一次非破坏性 schema 同步和停机任务恢复；
 6. 切换两个生产镜像标签，依次启动 Celery/Web，并在两组均启动后再次确认 Supervisor 配置中的全部进程稳定进入 `RUNNING`。
 
-脚本不复制、覆盖或删除代码文件，因此生产 `config.py`、`.env`、`static/`、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置；脚本本身只写 `.deploy/`、数据库备份、Docker 标签和进程状态。生产 `config.py` 是跟踪文件时，应预先采用不会被 pull 覆盖的配置管理方式。
+脚本不复制、覆盖或删除代码文件，因此生产 `config_local.py`、`.env`、`static/` 的额外资产、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置；脚本本身只写 `.deploy/`、数据库备份、Docker 标签和进程状态。`config_local.py` 必须保持 Git 忽略，正常拉取只更新 tracked 的 `config.py` 默认值。
 
 部署脚本不修改系统 Python 或全局 site-packages；两个项目内 venv 槽轮换，避免安装依赖时改变仍在运行的解释器。数据库备份保存在 `.deploy/backups/`，不自动回灌。若结构同步或启动在停服后失败，保留现场并修复后重跑；先判断 DDL 是否已提交，不得机械恢复备份。`deploy/supervisor/web.conf` 与 `celery.conf` 使用独立 socket、pidfile 和日志；Web 保持单进程、64 线程的 Gunicorn `gthread` 配置，修改并发或回收策略前必须重新验证 SSE 与进程内状态约束。
 

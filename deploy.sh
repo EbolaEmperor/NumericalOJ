@@ -73,7 +73,7 @@ trap 'exit 130' HUP INT TERM
 cd "$ROOT_DIR"
 install -d -m 0700 "$STATE_DIR" "$VENV_ROOT" "$BACKUP_DIR"
 
-for command_name in docker flock mysqldump pgrep python3; do
+for command_name in docker flock mysqldump pgrep; do
   command -v "$command_name" >/dev/null || {
     printf '缺少部署命令: %s\n' "$command_name" >&2
     exit 1
@@ -86,11 +86,49 @@ if ! flock -n 9; then
   exit 1
 fi
 
-python_version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-if [[ "$python_version" != '3.12' ]]; then
-  printf '生产部署要求 Python 3.12，当前 python3 为 %s。\n' "$python_version" >&2
-  exit 1
-fi
+resolve_bootstrap_python() {
+  local candidate
+  local resolved
+  local version
+  local candidates=()
+
+  if [[ -n "${NUMOJ_PYTHON:-}" ]]; then
+    candidates+=("$NUMOJ_PYTHON")
+  fi
+  candidates+=(
+    "$STATE_DIR/bootstrap-python/bin/python3.12"
+    "$STATE_DIR/bootstrap-python/bin/python3"
+    python3.12
+    python3
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ "$candidate" == */* ]]; then
+      [[ -x "$candidate" ]] || continue
+      resolved="$candidate"
+    else
+      resolved="$(command -v "$candidate" 2>/dev/null || true)"
+      [[ -n "$resolved" ]] || continue
+    fi
+    version="$(
+      "$resolved" -c \
+        'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
+        2>/dev/null || true
+    )"
+    if [[ "$version" == '3.12' ]]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  done
+
+  printf '%s\n' \
+    '生产部署要求 Python 3.12。请安装 python3.12，设置 NUMOJ_PYTHON，' \
+    '或准备 .deploy/bootstrap-python/bin/python3.12。' >&2
+  return 1
+}
+
+BOOTSTRAP_PYTHON="$(resolve_bootstrap_python)"
+printf '使用 Python 3.12：%s\n' "$BOOTSTRAP_PYTHON"
 
 remove_stale_candidate_tags() {
   local reference
@@ -138,7 +176,7 @@ CANDIDATE_SUPERVISORCTL="$CANDIDATE_VENV/bin/supervisorctl"
 
 phase='准备 Python 运行环境'
 rm -rf -- "$CANDIDATE_VENV"
-python3 -m venv "$CANDIDATE_VENV"
+"$BOOTSTRAP_PYTHON" -m venv "$CANDIDATE_VENV"
 "$CANDIDATE_PYTHON" -m pip install \
   --disable-pip-version-check \
   --requirement requirements/production.txt

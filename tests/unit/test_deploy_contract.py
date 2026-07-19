@@ -100,6 +100,17 @@ def test_deploy_uses_bounded_project_local_runtime_state():
     assert 'BACKUP_DIR="$STATE_DIR/backups"' in script
 
 
+def test_deploy_discovers_python_312_without_requiring_system_python3():
+    script = _read("deploy.sh")
+
+    assert '"$STATE_DIR/bootstrap-python/bin/python3.12"' in script
+    assert "${NUMOJ_PYTHON:-}" in script
+    assert "python3.12" in script
+    assert 'BOOTSTRAP_PYTHON="$(resolve_bootstrap_python)"' in script
+    assert '"$BOOTSTRAP_PYTHON" -m venv "$CANDIDATE_VENV"' in script
+    assert 'python3 -m venv "$CANDIDATE_VENV"' not in script
+
+
 def test_deploy_can_migrate_the_exact_legacy_supervisor_processes():
     script = _read("deploy.sh")
 
