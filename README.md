@@ -215,7 +215,7 @@ bash deploy.sh
 用户所有的普通文件、权限为 `0400` 或 `0600`，并检查必要的 MySQL、Redis 和会话配置；校验失败会
 在停服前直接退出。
 
-每次部署先清理由本脚本标记、因异常中断遗留的候选镜像标签，再在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖，把普通判题和 Agent-as-Judge 镜像构建为候选标签，并以 `--single-transaction` 原子备份当前数据库；这些步骤不会修改仍在运行的环境。随后脚本确认两套 Supervisor 均可管理，依次停止 Celery/Web，切换虚拟环境，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签并依次启动 Celery/Web。最后再次确认两组 Supervisor 实际配置中的全部进程稳定进入 `RUNNING`，这是启动结果确认，不是测试；成功后只清理由本脚本标记的旧 dangling 镜像。
+每次部署先清理由本脚本标记、因异常中断遗留的候选镜像标签，再在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖。构建普通判题和 Agent-as-Judge 候选镜像时，脚本会先检测对应的本地 `latest` 稳定镜像：存在就通过 `--cache-from` 导入并写入 BuildKit inline cache 元数据，缺失时才冷构建。随后脚本以 `--single-transaction` 原子备份当前数据库；这些步骤不会修改仍在运行的环境。脚本再确认两套 Supervisor 均可管理，依次停止 Celery/Web，切换虚拟环境，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签并依次启动 Celery/Web。最后再次确认两组 Supervisor 实际配置中的全部进程稳定进入 `RUNNING`，这是启动结果确认，不是测试；成功后只清理由本脚本标记的旧 dangling 镜像。
 
 主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。脚本不会修改 `.env`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或回灌备份。失败时会报告准确阶段并保留部署前备份；如果失败发生在停服之后，修复原因后重新执行脚本，不要在没有判断 schema 兼容性的情况下自动回灌。
 

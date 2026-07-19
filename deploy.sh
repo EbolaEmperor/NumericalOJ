@@ -18,6 +18,8 @@ WEB_STOP_TIMEOUT_SECONDS=60
 CELERY_STOP_TIMEOUT_SECONDS=1960
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+JUDGER_STABLE='numericaloj-judger:latest'
+AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'
 JUDGER_CANDIDATE="numericaloj-judger:deploy-$RUN_ID"
 AGENT_JUDGE_CANDIDATE="numericaloj-agent-judge:deploy-$RUN_ID"
 MANAGED_IMAGE_LABEL='org.numericaloj.deploy-managed=true'
@@ -222,6 +224,30 @@ remove_stale_candidate_tags() {
   done
 }
 
+build_candidate_image() {
+  local stable="$1"
+  local candidate="$2"
+  local context="$3"
+  local stable_id
+  local cache_args=()
+
+  if stable_id="$(
+    docker image inspect --format '{{.Id}}' "$stable" 2>/dev/null
+  )"; then
+    printf '检测到 Docker 构建缓存源：%s (%s)\n' "$stable" "$stable_id"
+    cache_args+=(--cache-from "$stable")
+  else
+    printf '未检测到 Docker 构建缓存源：%s；本次将冷构建。\n' "$stable"
+  fi
+
+  DOCKER_BUILDKIT=1 docker build \
+    --build-arg BUILDKIT_INLINE_CACHE=1 \
+    "${cache_args[@]}" \
+    --label "$MANAGED_IMAGE_LABEL" \
+    --tag "$candidate" \
+    "$context"
+}
+
 phase='清理遗留候选镜像'
 remove_stale_candidate_tags
 
@@ -253,10 +279,10 @@ rm -rf -- "$CANDIDATE_VENV"
   --requirement requirements/production.txt
 
 phase='构建判题镜像'
-docker build --label "$MANAGED_IMAGE_LABEL" \
-  --tag "$JUDGER_CANDIDATE" docker/judger
-docker build --label "$MANAGED_IMAGE_LABEL" \
-  --tag "$AGENT_JUDGE_CANDIDATE" docker/agent_judge
+build_candidate_image \
+  "$JUDGER_STABLE" "$JUDGER_CANDIDATE" docker/judger
+build_candidate_image \
+  "$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" docker/agent_judge
 
 phase='备份数据库'
 backup_target="$BACKUP_DIR/mysql-$RUN_ID.sql.gz"
@@ -428,8 +454,8 @@ ln -s "venvs/$candidate_slot" "$CURRENT_VENV_TEMP"
 "$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py --confirm-celery-stopped
 
 phase='切换判题镜像'
-docker tag "$JUDGER_CANDIDATE" numericaloj-judger:latest
-docker tag "$AGENT_JUDGE_CANDIDATE" numericaloj-agent-judge:latest
+docker tag "$JUDGER_CANDIDATE" "$JUDGER_STABLE"
+docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"
 
 wait_for_programs() {
   local config="$1"

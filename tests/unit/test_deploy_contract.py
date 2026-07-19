@@ -57,9 +57,15 @@ def test_deploy_prepares_candidates_before_stopping_and_then_restarts_everything
 
     positions = [script.index(phase) for phase in phases]
     assert positions == sorted(positions)
-    assert '--tag "$JUDGER_CANDIDATE" docker/judger' in script
-    assert '--tag "$AGENT_JUDGE_CANDIDATE" docker/agent_judge' in script
-    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 2
+    assert (
+        '"$JUDGER_STABLE" "$JUDGER_CANDIDATE" docker/judger' in script
+    )
+    assert (
+        '"$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" '
+        "docker/agent_judge" in script
+    )
+    assert 'build_candidate_image' in script
+    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 1
     assert "numericaloj-judger:deploy-*" in script
     assert "numericaloj-agent-judge:deploy-*" in script
     assert 'remove_stale_candidate_tags' in script
@@ -67,10 +73,9 @@ def test_deploy_prepares_candidates_before_stopping_and_then_restarts_everything
     assert "deploy/backup_database.py --output" in script
     assert "scripts/init_db_schema.py" in script
     assert "scripts/recover_pending_tasks.py --confirm-celery-stopped" in script
-    assert 'docker tag "$JUDGER_CANDIDATE" numericaloj-judger:latest' in script
+    assert 'docker tag "$JUDGER_CANDIDATE" "$JUDGER_STABLE"' in script
     assert (
-        'docker tag "$AGENT_JUDGE_CANDIDATE" '
-        "numericaloj-agent-judge:latest" in script
+        'docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"' in script
     )
     stop_phase = script.index("phase='停止现有服务'")
     celery_stop = script.index("  'Celery' celery", stop_phase)
@@ -81,6 +86,17 @@ def test_deploy_prepares_candidates_before_stopping_and_then_restarts_everything
         "phase='启动 Web 服务'"
     )
     assert 'pkill' not in script
+
+
+def test_deploy_detects_and_imports_stable_docker_build_cache():
+    script = _read("deploy.sh")
+
+    assert "JUDGER_STABLE='numericaloj-judger:latest'" in script
+    assert "AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'" in script
+    assert "docker image inspect --format '{{.Id}}' \"$stable\"" in script
+    assert 'cache_args+=(--cache-from "$stable")' in script
+    assert "DOCKER_BUILDKIT=1 docker build" in script
+    assert "--build-arg BUILDKIT_INLINE_CACHE=1" in script
 
 
 def test_deploy_uses_bounded_project_local_runtime_state():
