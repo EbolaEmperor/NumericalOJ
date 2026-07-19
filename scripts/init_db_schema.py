@@ -22,9 +22,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.mysql_admin import (  # noqa: E402
+    IDENTIFIER_RE,
+    connect_mysql,
+    database_exists,
+    database_name_from_config,
+    load_config,
+    settings_from_config,
+)
+
 DATABASE_BOOTSTRAP_SQL = ROOT / "database" / "bootstrap.sql"
 SKIP_DUMP_TABLES = {"Cdemo2024", "Ctest"}
-IDENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
 SCHEMA_LOCK_NAME = "numericaloj:init_db_schema"
 SCHEMA_LOCK_TIMEOUT_SECONDS = 120
 
@@ -50,27 +61,15 @@ class TableSpec:
 
 
 def _load_config():
-    sys.path.insert(0, str(ROOT))
-    import config  # noqa: WPS433
-
-    return config
+    return load_config()
 
 
 def _connect(config, with_db=True):
-    import pymysql  # noqa: WPS433
-
-    kwargs = {
-        "host": getattr(config, "MYSQL_HOST", "127.0.0.1"),
-        "port": int(getattr(config, "MYSQL_PORT", 3306)),
-        "user": getattr(config, "MYSQL_USERNAME"),
-        "password": getattr(config, "MYSQL_PASSWORD"),
-        "charset": "utf8mb4",
-        "cursorclass": pymysql.cursors.DictCursor,
-        "autocommit": False,
-    }
-    if with_db:
-        kwargs["database"] = getattr(config, "MYSQL_DB", "myojdb")
-    return pymysql.connect(**kwargs)
+    return connect_mysql(
+        settings_from_config(config),
+        with_database=with_db,
+        dict_rows=True,
+    )
 
 
 def _normalize_create_sql(sql: str) -> str:
@@ -196,7 +195,7 @@ def _table_exists(cursor, table: str) -> bool:
 
 
 def _quote_identifier(name: str) -> str:
-    if not IDENT_RE.match(name):
+    if not IDENTIFIER_RE.fullmatch(name):
         raise ValueError(f"invalid identifier: {name!r}")
     return f"`{name}`"
 
@@ -290,24 +289,17 @@ def _sync_dynamic_class_tables(cursor, dry_run: bool, actions: list[str]) -> Non
     cursor.execute("SELECT class_en FROM class_table")
     for row in cursor.fetchall() or []:
         class_en = str(row.get("class_en") or "").strip()
-        if not class_en or not IDENT_RE.match(class_en):
+        if not class_en or not IDENTIFIER_RE.fullmatch(class_en):
             continue
         _sync_table(cursor, _class_table_spec(class_en), dry_run, actions)
 
 
 def _ensure_database(config, dry_run: bool, actions: list[str]) -> bool:
-    db_name = getattr(config, "MYSQL_DB", "myojdb")
-    if not IDENT_RE.match(db_name):
-        raise ValueError(f"invalid database name: {db_name!r}")
+    db_name = database_name_from_config(config)
     conn = _connect(config, with_db=False)
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA "
-                "WHERE SCHEMA_NAME=%s",
-                (db_name,),
-            )
-            database_exists = cursor.fetchone() is not None
+            exists = database_exists(cursor, db_name)
             sql = (
                 f"CREATE DATABASE IF NOT EXISTS {_quote_identifier(db_name)} "
                 "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
@@ -319,12 +311,12 @@ def _ensure_database(config, dry_run: bool, actions: list[str]) -> bool:
             conn.commit()
     finally:
         conn.close()
-    return database_exists
+    return exists
 
 
 def _plan_empty_database(config, specs, actions: list[str]) -> None:
     """为空服务器生成完整计划，避免 dry-run 连接尚不存在的数据库。"""
-    db_name = getattr(config, "MYSQL_DB", "myojdb")
+    db_name = database_name_from_config(config)
     actions.append(f"USE {_quote_identifier(db_name)}")
     actions.append("SET FOREIGN_KEY_CHECKS=0")
     actions.extend(spec.create_sql for spec in specs.values())

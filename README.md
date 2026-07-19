@@ -117,7 +117,7 @@ docker build -f docker/agent_judge-lite/Dockerfile \
 
 ## 启动
 
-生产首次安装与升级统一执行 `bash deploy.sh`。下面两个 Supervisor 配置使用部署状态中的 `current-venv`，只适合在至少一次成功部署后做人工重启，不是本地开发入口：
+生产首次安装与升级统一执行 `bash deploy.sh`。下面两个 Supervisor 配置使用项目内 `.deploy/current-venv`，只适合在至少一次成功部署后做人工重启，不是本地开发入口：
 
 ```bash
 supervisord -c deploy/supervisor/web.conf
@@ -129,8 +129,8 @@ supervisord -c deploy/supervisor/celery.conf
 完整停止两个应用边界后，如需人工恢复停机前的未完成任务，必须在 Celery 仍处于停止状态时使用当前部署虚拟环境显式执行：
 
 ```bash
-/home/ebola/.numericaloj-deploy/current-venv/bin/python3 scripts/init_db_schema.py
-/home/ebola/.numericaloj-deploy/current-venv/bin/python3 \
+.deploy/current-venv/bin/python3 scripts/init_db_schema.py
+.deploy/current-venv/bin/python3 \
   scripts/recover_pending_tasks.py --confirm-celery-stopped
 supervisord -c deploy/supervisor/web.conf
 supervisord -c deploy/supervisor/celery.conf
@@ -186,17 +186,18 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 
 ## 一键部署
 
-提交并验证本地改动后，在仓库根执行：
+在部署目录拉取目标版本后原地执行：
 
 ```bash
+git pull --ff-only
 bash deploy.sh
 ```
 
-脚本会验证固定生产目标、同步候选版本、按 `requirements/production.txt` 内容摘要复用经过只读完整性校验的 Python 虚拟环境、按 Docker context 变化构建并冒烟验证 commit-tagged 镜像，并在停机前检查代码目录、部署状态目录和 Docker data-root 的剩余空间。随后它会停止现有 Web/Celery、备份数据库、按受管清单激活代码、同步结构、恢复未完成任务，再原子切换运行环境与镜像并重启。最后会检查 Supervisor、两个健康端点，以及三个 Celery worker 的精确队列映射。首次部署、远端基线不可识别或需要强制重建全部镜像时使用 `bash deploy.sh --rebuild-all`。
+`deploy.sh` 不负责拉取或同步代码，也不校验主机名、用户名、固定安装目录和 Git 状态；它以脚本所在目录为项目根，因此同一份 checkout 放在任意目录都可执行。脚本中没有测试、HTTP 探针或业务请求。
 
-默认最低余量为代码目录 10 GiB、部署状态目录 10 GiB、Docker data-root 20 GiB；确需调整时分别设置 `NUMOJ_DEPLOY_MIN_TARGET_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_STATE_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_DOCKER_FREE_BYTES`。阈值检查失败会在停服前终止发布。
+每次部署先清理由本脚本标记、因异常中断遗留的候选镜像标签，再在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖，把普通判题和 Agent-as-Judge 镜像构建为候选标签，并以 `--single-transaction` 原子备份当前数据库；这些步骤不会修改仍在运行的环境。随后脚本确认两套 Supervisor 均可管理，依次停止 Celery/Web，切换虚拟环境，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签并依次启动 Celery/Web。最后再次确认两组 Supervisor 实际配置中的全部进程稳定进入 `RUNNING`，这是启动结果确认，不是测试；成功后只清理由本脚本标记的旧 dangling 镜像。
 
-部署使用远端锁防止并发；失败时恢复旧代码、旧虚拟环境指针与旧镜像并尝试重启，数据库备份只保留不自动回灌。生产 `config.py` 和运行数据永不覆盖；`static/` 只允许新增或内容完全相同的文件，拒绝覆盖既有资产。脚本不会修改系统 Python 或全局 site-packages。
+主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。脚本不会修改 `config.py`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或回灌备份。失败时会报告准确阶段并保留部署前备份；如果失败发生在停服之后，修复原因后重新执行脚本，不要在没有判断 schema 兼容性的情况下自动回灌。
 
 ## 目录边界
 
@@ -207,10 +208,10 @@ bash deploy.sh
 - `oj_modules/judger_core.py`、`oj_modules/docker_sandbox.py`：普通判题与容器沙箱；
 - `oj_modules/*_services.py`：可复用业务服务；
 - `templates/`、`static/`：按业务域组织的服务端模板和静态资源；
-- `deploy/`、`deploy.sh`：生产进程配置和带备份/回滚的一键部署状态机；
+- `deploy/`、`deploy.sh`：生产进程配置、数据库备份和原地一键部署；
 - `database/bootstrap.sql`：新安装结构与开发种子基线；
 - `requirements/`：生产、测试和可选依赖分层；
-- `scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`：结构同步与显式停机恢复工具；
+- `scripts/mysql_admin.py`、`scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`：运维数据库连接、结构同步与显式停机恢复工具；
 - `tests/unit`、`tests/db`、`tests/e2e`：按基础设施依赖分层的测试。
 
 维护规则、变更清单、测试矩阵和发布/回滚原则见 [`docs/maintenance.md`](docs/maintenance.md)。生产部署约束见 [`CLAUDE.md`](CLAUDE.md)。

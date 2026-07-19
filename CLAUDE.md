@@ -21,10 +21,10 @@ python3 scripts/init_db_schema.py
 
 # 1. 本地开发 Web，端口 2025
 python3 oj.py
-# 生产由 deploy.sh 准备 current-venv 后，通过独立配置启动 Gunicorn
+# 生产由 deploy.sh 准备项目内 .deploy/current-venv 后启动 Gunicorn
 supervisord -c deploy/supervisor/web.conf
 
-# 2. 生产 Celery worker 组（同样要求已有成功部署的 current-venv）
+# 2. 生产 Celery worker 组（同样要求已有成功部署的 .deploy/current-venv）
 supervisord -c deploy/supervisor/celery.conf
 # 等价的队列边界：
 celery -A oj.celery worker -Q celery -c 16
@@ -162,37 +162,31 @@ docker build -f docker/agent_judge-lite/Dockerfile \
 
 修改 `docker/agent_judge/report` 或 `run_harness` 后必须重建镜像。不要给 Agent-as-Judge 的 `docker run` 增加 `--cap-drop ALL`：它会移除容器写结果和运行期 apt 所需的 `CAP_DAC_OVERRIDE`。每个比赛的 harness、base URL、API key、model 位于 MySQL，不在 `config.py`。
 
-## 部署到 why-server
+## 生产目录内原地部署
 
-只有用户明确要求部署时，才在已提交且工作树干净的分支上执行：
+只有用户明确要求部署时才能操作生产。运维人员先进入目标 checkout，拉取目标版本，再原地执行：
 
 ```bash
+git pull --ff-only
 bash deploy.sh
 ```
 
-`deploy.sh` 是唯一生产发布入口，固定验证目标为 `why-server:/home/ebola/oj/`，并完成以下状态机：
+`deploy.sh` 是唯一生产发布入口，但不负责 `git pull`，也不检测 hostname、用户名、固定安装目录或 Git 状态。它从自身路径确定项目根，可在任意目录中的 checkout 执行。脚本内部禁止运行 pytest、Compose、HTTP 探针或其他测试逻辑。
 
-1. 本地与远端预检，创建按完整 Git SHA 隔离的 staging，并按 `requirements/production.txt` 内容摘要构建或复用经过只读树哈希校验的虚拟环境；
-2. 按 Docker context 变化在停服前构建并冒烟验证 commit-tagged 候选镜像；首次部署、基线不可识别或显式 `--rebuild-all` 时重建全部生产镜像；
-3. 使用有保守默认值的可配置阈值检查生产目录、部署状态目录与 Docker data-root 的磁盘余量，再通过独立 Supervisor socket 优雅停止 Web/Celery；首次迁移时只对验证过 cwd 与 cmdline 的明确 PID 回退，不使用 `pkill -f`；
-4. 备份数据库和当前代码后激活候选版本；
-5. 只执行一次 `scripts/init_db_schema.py`，并在全部 Celery 已停止时恢复未完成任务；
-6. 原子切换按依赖摘要寻址的只读虚拟环境与镜像，依次启动 Web/Celery，验证 live/ready、Supervisor 状态与三个 worker 的精确队列映射；
-7. 全部成功后才记录部署提交；失败时恢复旧代码与旧镜像并尝试重启，数据库备份只保留、不自动回灌。
+1. 持有主机级锁并清理异常中断遗留的受管候选镜像标签，再在 `.deploy/venvs/` 的非活动槽安装固定生产依赖；
+2. 每次都构建普通判题与 Agent-as-Judge 候选镜像；
+3. 在停服前原子备份 MySQL 数据库，避免备份失败导致服务中断；
+4. 确认两套 Supervisor 可管理，再依次停止 Celery/Web；首次迁移只终止身份精确匹配的旧版 Supervisor，不使用 `pkill -f`；
+5. 切换 `.deploy/current-venv`，执行一次非破坏性 schema 同步和停机任务恢复；
+6. 切换两个生产镜像标签，依次启动 Celery/Web，并在两组均启动后再次确认 Supervisor 配置中的全部进程稳定进入 `RUNNING`。
 
-生产 `config.py`、上传与运行目录不进入同步。`static/` 按追加式目录处理：只安装缺失文件，若远端同名文件内容不同则拒绝部署。删除的 Git 跟踪代码只依据上一次成功部署清单逐项清理，不对项目目录执行无边界 `--delete`。
+脚本不复制、覆盖或删除代码文件，因此生产 `config.py`、`.env`、`static/`、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置；脚本本身只写 `.deploy/`、数据库备份、Docker 标签和进程状态。生产 `config.py` 是跟踪文件时，应预先采用不会被 pull 覆盖的配置管理方式。
 
-强制重建两个生产镜像：
-
-```bash
-bash deploy.sh --rebuild-all
-```
-
-部署脚本不修改系统 Python 或全局 site-packages；相同的生产依赖摘要复用 `/home/ebola/.numericaloj-deploy/venvs/py312-<requirements-sha256>`，每次复用前后都校验只读权限、完整树哈希、`pip check`、关键 import 和 Python 3.12，再原子切换 `current-venv`，部署 run 仍分别记录 revision、venv 路径和依赖摘要。失败则恢复旧指针。默认磁盘最低余量是生产目录 10 GiB、状态目录 10 GiB、Docker data-root 20 GiB，可分别用 `NUMOJ_DEPLOY_MIN_TARGET_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_STATE_FREE_BYTES`、`NUMOJ_DEPLOY_MIN_DOCKER_FREE_BYTES` 调整；任一检查无法执行或余量不足都会在停服前失败关闭。`deploy/supervisor/web.conf` 与 `celery.conf` 使用独立 socket、pidfile 和日志；Web 保持单进程、64 线程的 Gunicorn `gthread` 配置，修改并发或回收策略前必须重新验证 SSE 与进程内状态约束。
+部署脚本不修改系统 Python 或全局 site-packages；两个项目内 venv 槽轮换，避免安装依赖时改变仍在运行的解释器。数据库备份保存在 `.deploy/backups/`，不自动回灌。若结构同步或启动在停服后失败，保留现场并修复后重跑；先判断 DDL 是否已提交，不得机械恢复备份。`deploy/supervisor/web.conf` 与 `celery.conf` 使用独立 socket、pidfile 和日志；Web 保持单进程、64 线程的 Gunicorn `gthread` 配置，修改并发或回收策略前必须重新验证 SSE 与进程内状态约束。
 
 ### 前端快速路径
 
-仅修改模板时，可以逐文件 `scp` 到 `templates/`，无需重启。生产 `FLASK_DEBUG` 应保持关闭；模板实时生效依赖 `TEMPLATES_AUTO_RELOAD=True`，不是 debug reloader。静态资产仍受上面的远端保护规则约束。
+仅修改模板时，在生产 checkout 完成 `git pull` 后无需运行部署脚本或重启。生产 `FLASK_DEBUG` 应保持关闭；模板实时生效依赖 `TEMPLATES_AUTO_RELOAD=True`，不是 debug reloader。
 
 页面统一从 `templates/layouts/base.html` 派生的 site/embedded 布局继承。MathJax 是显式 opt-in 资源；新增公式页面覆盖 `mathjax` block，普通页面不得把它重新放回全局布局。排名规则拓扑统一调用 `static/app/ranking/topology.js`，提交列表统一复用 `templates/submissions/components/table.html`，不要复制页面私有版本。
 
