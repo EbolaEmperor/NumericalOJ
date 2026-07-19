@@ -99,6 +99,12 @@ def test_deploy_detects_and_imports_stable_docker_build_cache():
     assert "docker buildx du" in script
     assert '--builder "$DOCKER_BUILDER"' in script
     assert "docker image inspect --format '{{.Id}}' \"$stable\"" in script
+    assert "SOURCE_IMAGE_LABEL='org.numericaloj.source-sha256'" in script
+    assert "docker_source_digest" in script
+    assert "image_source_digest" in script
+    assert 'if [[ "$stable_source_digest" == "$source_digest" ]]' in script
+    assert 'docker tag "$stable" "$candidate"' in script
+    assert '--label "$SOURCE_IMAGE_LABEL=$source_digest"' in script
     assert 'cache_args+=(--cache-from "$stable")' in script
     assert "DOCKER_BUILDKIT=1 docker build" in script
     assert "--build-arg BUILDKIT_INLINE_CACHE=1" in script

@@ -24,6 +24,7 @@ AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'
 JUDGER_CANDIDATE="numericaloj-judger:deploy-$RUN_ID"
 AGENT_JUDGE_CANDIDATE="numericaloj-agent-judge:deploy-$RUN_ID"
 MANAGED_IMAGE_LABEL='org.numericaloj.deploy-managed=true'
+SOURCE_IMAGE_LABEL='org.numericaloj.source-sha256'
 phase='初始化'
 database_backup=''
 restart_started=0
@@ -233,6 +234,56 @@ remove_stale_candidate_tags() {
   done
 }
 
+docker_source_digest() {
+  local context="$1"
+  local inputs=()
+
+  case "$context" in
+    docker/judger)
+      inputs=(Dockerfile)
+      ;;
+    docker/agent_judge)
+      inputs=(Dockerfile report run_harness)
+      ;;
+    *)
+      printf '没有定义 Docker 构建输入清单：%s\n' "$context" >&2
+      return 1
+      ;;
+  esac
+
+  "$BOOTSTRAP_PYTHON" - "$context" "${inputs[@]}" <<'PY'
+import hashlib
+from pathlib import Path
+import stat
+import sys
+
+root = Path(sys.argv[1])
+digest = hashlib.sha256(b"NumericalOJ Docker source v1\0")
+for relative_name in sys.argv[2:]:
+    path = root / relative_name
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise SystemExit(f"Docker 构建输入必须是普通文件: {path}")
+    name = relative_name.encode("utf-8")
+    digest.update(len(name).to_bytes(8, "big"))
+    digest.update(name)
+    digest.update(stat.S_IMODE(metadata.st_mode).to_bytes(4, "big"))
+    digest.update(metadata.st_size.to_bytes(8, "big"))
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+print(digest.hexdigest())
+PY
+}
+
+image_source_digest() {
+  local image="$1"
+
+  docker image inspect \
+    --format "{{if .Config.Labels}}{{index .Config.Labels \"$SOURCE_IMAGE_LABEL\"}}{{end}}" \
+    "$image" 2>/dev/null || true
+}
+
 build_candidate_image() {
   local stable="$1"
   local candidate="$2"
@@ -242,6 +293,9 @@ build_candidate_image() {
   local stable_id
   local cache_descriptions
   local cache_marker
+  local source_digest
+  local stable_source_digest
+  local candidate_source_digest
   local cache_args=()
 
   stable_id="$(
@@ -251,6 +305,15 @@ build_candidate_image() {
     printf '未检测到稳定镜像 %s；为避免冷构建，拒绝继续部署。\n' \
       "$stable" >&2
     return 1
+  fi
+
+  source_digest="$(docker_source_digest "$context")" || return 1
+  stable_source_digest="$(image_source_digest "$stable")"
+  if [[ "$stable_source_digest" == "$source_digest" ]]; then
+    printf 'Docker 构建输入未变化，直接复用稳定镜像：%s (%s)\n' \
+      "$stable" "$source_digest"
+    docker tag "$stable" "$candidate"
+    return
   fi
 
   cache_descriptions="$(
@@ -279,8 +342,15 @@ build_candidate_image() {
     --build-arg BUILDKIT_INLINE_CACHE=1 \
     "${cache_args[@]}" \
     --label "$MANAGED_IMAGE_LABEL" \
+    --label "$SOURCE_IMAGE_LABEL=$source_digest" \
     --tag "$candidate" \
     "$context"
+
+  candidate_source_digest="$(image_source_digest "$candidate")"
+  if [[ "$candidate_source_digest" != "$source_digest" ]]; then
+    printf '候选镜像缺少预期的构建输入指纹：%s\n' "$candidate" >&2
+    return 1
+  fi
 }
 
 phase='清理遗留候选镜像'
