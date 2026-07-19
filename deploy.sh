@@ -130,6 +130,37 @@ resolve_bootstrap_python() {
 BOOTSTRAP_PYTHON="$(resolve_bootstrap_python)"
 printf '使用 Python 3.12：%s\n' "$BOOTSTRAP_PYTHON"
 
+phase='校验生产本地配置'
+LOCAL_CONFIG="$ROOT_DIR/config_local.py"
+[[ -f "$LOCAL_CONFIG" && ! -L "$LOCAL_CONFIG" && -r "$LOCAL_CONFIG" ]] || {
+  printf '缺少仅当前用户可读的生产配置文件: %s\n' "$LOCAL_CONFIG" >&2
+  exit 1
+}
+"$BOOTSTRAP_PYTHON" -c '
+import os
+from pathlib import Path
+import stat
+import sys
+
+path = Path(sys.argv[1])
+metadata = path.stat(follow_symlinks=False)
+mode = stat.S_IMODE(metadata.st_mode)
+if not stat.S_ISREG(metadata.st_mode):
+    raise SystemExit(f"生产配置不是普通文件: {path}")
+if metadata.st_uid != os.geteuid():
+    raise SystemExit(f"生产配置不属于当前部署用户: {path}")
+if not (mode & stat.S_IRUSR) or mode & 0o077:
+    raise SystemExit(f"生产配置权限必须仅允许当前用户读取: {path} mode={mode:04o}")
+
+import config
+
+if not config.LOCAL_CONFIG_LOADED:
+    raise SystemExit("生产本地配置没有被 config.py 加载")
+for name in ("MYSQL_USERNAME", "MYSQL_PASSWORD"):
+    if not str(getattr(config, name, "") or "").strip():
+        raise SystemExit(f"生产本地配置缺少必填项: {name}")
+' "$LOCAL_CONFIG"
+
 remove_stale_candidate_tags() {
   local reference
   local tags

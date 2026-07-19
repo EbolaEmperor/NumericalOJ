@@ -202,6 +202,9 @@ bash deploy.sh
 `.deploy/bootstrap-python/bin/python3.12`、PATH 中的 `python3.12` 和 `python3`，
 并拒绝使用其他版本。系统 Python 不是 3.12 时，可预先在 Git 忽略的
 `.deploy/bootstrap-python/` 准备专用解释器，不需要修改系统 Python 或全局 PATH。
+在安装依赖、构建镜像或连接数据库前，脚本还会要求 `config_local.py` 已成功加载、
+归当前部署用户所有且不向 group/other 开放，并检查必要的 MySQL 配置非空；校验失败会
+在停服前直接退出。
 
 每次部署先清理由本脚本标记、因异常中断遗留的候选镜像标签，再在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖，把普通判题和 Agent-as-Judge 镜像构建为候选标签，并以 `--single-transaction` 原子备份当前数据库；这些步骤不会修改仍在运行的环境。随后脚本确认两套 Supervisor 均可管理，依次停止 Celery/Web，切换虚拟环境，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签并依次启动 Celery/Web。最后再次确认两组 Supervisor 实际配置中的全部进程稳定进入 `RUNNING`，这是启动结果确认，不是测试；成功后只清理由本脚本标记的旧 dangling 镜像。
 

@@ -136,8 +136,16 @@ JUDGER_DOCKER_NETWORK = "none"
 # 生产与个人环境的完整本地覆盖。该文件不受版本控制，适合保存无法仅靠
 # .env 表达的密钥、列表和其他 Python 配置。只忽略“文件不存在”；如果本地
 # 配置自身导入失败，应让进程启动失败并暴露真实原因。
+LOCAL_CONFIG_LOADED = False
+_local_config_path = Path(__file__).resolve().with_name("config_local.py")
 try:
-    from config_local import *  # noqa: F403
-except ModuleNotFoundError as exc:
-    if exc.name != "config_local":
-        raise
+    _local_config_source = _local_config_path.read_text(encoding="utf-8")
+except FileNotFoundError:
+    pass
+else:
+    exec(
+        compile(_local_config_source, str(_local_config_path), "exec"),
+        globals(),
+        globals(),
+    )
+    LOCAL_CONFIG_LOADED = True
