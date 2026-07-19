@@ -147,6 +147,7 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 
 1. 取得覆盖主机共享 Supervisor/Docker 资源的主机级锁，清理异常中断遗留且带本项目 label 的 `deploy-*` 镜像标签，再在项目内双槽虚拟环境的非活动槽安装 `requirements/production.txt`。
    引导解释器必须是 Python 3.12；脚本支持 `NUMOJ_PYTHON`、项目内 `.deploy/bootstrap-python` 和 PATH 自动发现，不依赖系统 `python3` 恰好指向 3.12。
+   在任何依赖安装、镜像构建或数据库连接前，脚本会 fail-closed 校验 `config_local.py` 已加载、属于部署用户且权限不向 group/other 开放，并检查必要的 MySQL 配置非空。
 2. 每次都把普通判题和 Agent-as-Judge 两个镜像构建为候选标签，不在部署脚本中运行测试或镜像冒烟。
 3. 使用 `mysqldump --single-transaction` 生成原子 gzip 备份；数据库尚不存在时生成明确占位记录。备份在停服前完成，避免备份工具失败扩大服务中断；它是结构变更前的一致性快照，不承诺包含随后停机窗口前的新增写入。
 4. 先确认两套 Supervisor 都可管理，再优雅停止 Celery、最后停止 Web；Celery 排空期间 Web 仍可接收请求并让新任务在队列中等待。首次从根目录 `web.conf` / `celery.conf` 迁移时，只终止 UID、工作目录、Supervisor 入口和配置参数全部精确匹配的旧进程；其他控制文件缺失场景失败关闭，不按模糊进程名杀进程。外层等待上限必须严格大于 Supervisor 的 `stopwaitsecs`。

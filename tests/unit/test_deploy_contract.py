@@ -111,6 +111,20 @@ def test_deploy_discovers_python_312_without_requiring_system_python3():
     assert 'python3 -m venv "$CANDIDATE_VENV"' not in script
 
 
+def test_deploy_fails_closed_without_private_production_config():
+    script = _read("deploy.sh")
+
+    config_check = script.index("phase='校验生产本地配置'")
+    dependency_install = script.index("phase='准备 Python 运行环境'")
+    image_build = script.index("phase='构建判题镜像'")
+    database_backup = script.index("phase='备份数据库'")
+    assert config_check < dependency_install < image_build < database_backup
+    assert 'LOCAL_CONFIG="$ROOT_DIR/config_local.py"' in script
+    assert "config.LOCAL_CONFIG_LOADED" in script
+    assert "metadata.st_uid != os.geteuid()" in script
+    assert "mode & 0o077" in script
+
+
 def test_deploy_can_migrate_the_exact_legacy_supervisor_processes():
     script = _read("deploy.sh")
 

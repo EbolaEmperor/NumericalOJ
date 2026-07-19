@@ -176,6 +176,8 @@ bash deploy.sh
 部署引导解释器必须是 Python 3.12。脚本依次接受 `NUMOJ_PYTHON`、项目内
 `.deploy/bootstrap-python/bin/python3.12`、PATH 中的 `python3.12` 或版本恰当的
 `python3`；不得为了部署修改系统 Python 或全局 site-packages。
+生产部署还必须在任何数据库连接前 fail-closed 校验 `config_local.py` 已加载、属于
+当前部署用户且权限不向 group/other 开放；不得把缺失本地配置静默降级为 tracked 默认值。
 
 1. 持有主机级锁并清理异常中断遗留的受管候选镜像标签，再在 `.deploy/venvs/` 的非活动槽安装固定生产依赖；
 2. 每次都构建普通判题与 Agent-as-Judge 候选镜像；

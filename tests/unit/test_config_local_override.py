@@ -30,11 +30,11 @@ def _run_config_import(tmp_path, *, local_source=None, expression="None"):
 def test_config_imports_without_local_override(tmp_path):
     result = _run_config_import(
         tmp_path,
-        expression="config.MYSQL_USERNAME",
+        expression="(config.MYSQL_USERNAME, config.LOCAL_CONFIG_LOADED)",
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "oj"
+    assert result.stdout.strip() == "('oj', False)"
 
 
 def test_config_local_overrides_tracked_defaults(tmp_path):
@@ -45,12 +45,17 @@ def test_config_local_overrides_tracked_defaults(tmp_path):
             "CUSTOM_PRODUCTION_SETTING = ['kept-local']\n"
         ),
         expression=(
-            "(config.MYSQL_USERNAME, config.CUSTOM_PRODUCTION_SETTING)"
+            "(config.MYSQL_USERNAME, config.CUSTOM_PRODUCTION_SETTING, "
+            "config.LOCAL_CONFIG_LOADED)"
         ),
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "('production-user', ['kept-local'])"
+    assert result.stdout.strip() == (
+        "('production-user', ['kept-local'], True)"
+    )
+    pycache = tmp_path / "__pycache__"
+    assert not list(pycache.glob("config_local*.pyc"))
 
 
 def test_config_local_import_errors_are_not_hidden(tmp_path):
