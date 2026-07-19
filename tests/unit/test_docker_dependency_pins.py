@@ -60,3 +60,10 @@ def test_agent_harness_args_do_not_invalidate_heavy_toolchain_cache():
     harness_install = dockerfile.index('RUN npm install -g')
 
     assert heavy_tail < first_harness_arg < harness_install
+
+
+def test_agent_ai_sdk_pins_support_the_cached_node_20_base():
+    dockerfile = _dockerfile('docker/agent_judge/Dockerfile')
+
+    assert 'ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=2.0.51' in dockerfile
+    assert 'ARG AI_SDK_ANTHROPIC_VERSION=3.0.85' in dockerfile
