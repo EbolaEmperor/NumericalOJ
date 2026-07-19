@@ -31,6 +31,8 @@ test-results/
 config_local.py
 backups/
 user_libraries/
+# 用户与课程共享头文件仓库；生产内容独立持久化，不随代码发布覆盖。
+library/
 tmp/
 uploads/
 # 判题运行目录（JUDGER_RUN_ROOT 默认 <OJ_ROOT>/judger）：每次评测的 eoj-* 子目录是
