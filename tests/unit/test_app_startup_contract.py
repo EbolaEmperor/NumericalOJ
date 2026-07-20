@@ -1,4 +1,5 @@
 import ast
+import configparser
 from pathlib import Path
 import runpy
 import sys
@@ -185,6 +186,39 @@ def test_local_development_supervisor_also_uses_project_local_logs():
     assert logfile_lines
     assert all('%(here)s/../../logs/' in line for line in logfile_lines)
     assert '/tmp/' not in '\n'.join(logfile_lines)
+
+
+def test_business_processes_preserve_container_readable_file_modes():
+    expected_programs = {
+        'web.conf': ('program:web',),
+        'celery.conf': (
+            'program:celery_judge',
+            'program:celery_agent',
+            'program:celery_agent_judge',
+        ),
+        'local-dev.conf': (
+            'program:web',
+            'program:celery_judge',
+            'program:celery_agent',
+            'program:celery_agent_judge',
+        ),
+    }
+
+    for filename, programs in expected_programs.items():
+        parser = configparser.RawConfigParser()
+        parser.read(ROOT / 'deploy' / 'supervisor' / filename, encoding='utf-8')
+
+        assert parser.get('supervisord', 'umask') == '0077'
+        for program in programs:
+            assert parser.get(program, 'umask') == '0022'
+
+    observability = configparser.RawConfigParser()
+    observability.read(
+        ROOT / 'deploy' / 'supervisor' / 'observability.conf',
+        encoding='utf-8',
+    )
+    assert observability.get('supervisord', 'umask') == '0077'
+    assert not observability.has_option('program:log_collector', 'umask')
 
 
 def test_logging_bootstrap_sets_web_service_and_configures_once(monkeypatch):
