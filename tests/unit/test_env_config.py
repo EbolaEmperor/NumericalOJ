@@ -66,6 +66,20 @@ def test_config_imports_template_defaults_without_private_env(tmp_path):
     assert result.stdout.strip() == "('oj', False, 'int', True)"
 
 
+def test_logging_config_template_defaults_are_strictly_typed(tmp_path):
+    result = _run_config_import(
+        tmp_path,
+        expression=(
+            "(config.LOG_LEVEL, config.LOG_TRUSTED_PROXY_CIDRS, "
+            "type(config.LOG_LEVEL).__name__, "
+            "type(config.LOG_TRUSTED_PROXY_CIDRS).__name__)"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "('INFO', [], 'str', 'list')"
+
+
 def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
     password = '  pa#ss=word$HOME\\tail"  '
     env_source = "\n".join(
@@ -142,6 +156,51 @@ def test_process_environment_has_priority_over_env_file(tmp_path):
     assert result.stdout.strip() == "('process-user', 'true', False)"
 
 
+def test_logging_process_environment_has_priority_over_env_file(tmp_path):
+    result = _run_config_import(
+        tmp_path,
+        env_source=(
+            'LOG_LEVEL="DEBUG"\n'
+            'LOG_TRUSTED_PROXY_CIDRS=["10.0.0.0/8"]\n'
+        ),
+        process_overrides={
+            "LOG_LEVEL": "WARNING",
+            "LOG_TRUSTED_PROXY_CIDRS": '["192.0.2.0/24","2001:db8::/32"]',
+        },
+        expression="(config.LOG_LEVEL, config.LOG_TRUSTED_PROXY_CIDRS)",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (
+        "('WARNING', ['192.0.2.0/24', '2001:db8::/32'])"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    (
+        '["127.0.0.1/32", "2001:db8::/32"]',
+        "[]",
+    ),
+)
+def test_env_str_list_accepts_only_string_arrays(monkeypatch, raw_value):
+    import config
+
+    monkeypatch.setitem(config._config_values, "TEST_LOG_CIDRS", raw_value)
+
+    assert config._env_str_list("TEST_LOG_CIDRS") == json.loads(raw_value)
+
+
+@pytest.mark.parametrize("raw_value", ('"10.0.0.0/8"', '["10.0.0.0/8", 7]', '{}'))
+def test_env_str_list_rejects_non_string_arrays(monkeypatch, raw_value):
+    import config
+
+    monkeypatch.setitem(config._config_values, "TEST_LOG_CIDRS", raw_value)
+
+    with pytest.raises(ValueError, match="必须是 JSON 字符串数组"):
+        config._env_str_list("TEST_LOG_CIDRS")
+
+
 @pytest.mark.parametrize(
     ("env_source", "error_fragment", "secret_fragment"),
     (
@@ -154,6 +213,11 @@ def test_process_environment_has_priority_over_env_file(tmp_path):
             "CSRF_TRUSTED_ORIGINS=not-a-list-secret\n",
             "CSRF_TRUSTED_ORIGINS",
             "not-a-list-secret",
+        ),
+        (
+            "LOG_TRUSTED_PROXY_CIDRS=not-a-proxy-list-secret\n",
+            "LOG_TRUSTED_PROXY_CIDRS",
+            "not-a-proxy-list-secret",
         ),
         ("LATEX_OCR_STREAM_EMIT_INTERVAL=nan\n", "有限数字", "nan"),
         (

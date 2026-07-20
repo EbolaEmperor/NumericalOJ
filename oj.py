@@ -11,6 +11,16 @@ from celery import Celery
 # config.py
 from config import *
 import config as _cfg
+from oj_modules.observability import (
+    configure_logging,
+    install_celery_observability,
+    install_flask_observability,
+)
+
+
+os.environ.setdefault('NUMOJ_SERVICE_NAME', 'web')
+configure_logging(level=getattr(_cfg, 'LOG_LEVEL', 'INFO'))
+
 from oj_modules.db_services import (
     get_db_connection,
     get_user_by_username,
@@ -119,6 +129,10 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=bool(getattr(_cfg, 'SESSION_COOKIE_SECURE', False)),
+)
+install_flask_observability(
+    app,
+    trusted_proxy_cidrs=getattr(_cfg, 'LOG_TRUSTED_PROXY_CIDRS', ()),
 )
 install_same_origin_protection(
     app,
@@ -230,6 +244,10 @@ def index():
 celery = Celery('oj', 
                 broker=CELERY_BROKER_URL, 
                 backend=CELERY_RESULT_BACKEND)
+install_celery_observability(
+    celery,
+    level=getattr(_cfg, 'LOG_LEVEL', 'INFO'),
+)
 celery.conf.task_routes = {
     'oj.agent.solve_problem': {'queue': 'agent'},
     'oj.agent.generate_testdata': {'queue': 'agent'},

@@ -10,10 +10,13 @@ BACKUP_DIR="$STATE_DIR/backups"
 LOCK_FILE='/tmp/noj_deploy.lock'
 WEB_CONFIG="$ROOT_DIR/deploy/supervisor/web.conf"
 CELERY_CONFIG="$ROOT_DIR/deploy/supervisor/celery.conf"
+OBSERVABILITY_CONFIG="$ROOT_DIR/deploy/supervisor/observability.conf"
 WEB_PIDFILE='/tmp/noj_web_supervisord.pid'
 WEB_SOCKET='/tmp/noj_web_supervisor.sock'
 CELERY_PIDFILE='/tmp/noj_celery_supervisord.pid'
 CELERY_SOCKET='/tmp/noj_celery_supervisor.sock'
+OBSERVABILITY_PIDFILE='/tmp/noj_observability_supervisord.pid'
+OBSERVABILITY_SOCKET='/tmp/noj_observability_supervisor.sock'
 WEB_STOP_TIMEOUT_SECONDS=60
 CELERY_STOP_TIMEOUT_SECONDS=1960
 
@@ -141,6 +144,9 @@ resolve_bootstrap_python() {
 
 BOOTSTRAP_PYTHON="$(resolve_bootstrap_python)"
 printf '使用 Python 3.12：%s\n' "$BOOTSTRAP_PYTHON"
+
+phase='初始化日志目录'
+PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B scripts/log_admin.py init >/dev/null
 
 phase='校验生产本地配置'
 ENV_FILE="$ROOT_DIR/.env"
@@ -532,6 +538,38 @@ stop_supervisor() {
   rm -f -- "$pidfile" "$socket"
 }
 
+stop_observability_best_effort() {
+  local pid
+  local deadline
+  pid="$(supervisor_pid "$OBSERVABILITY_CONFIG" || true)"
+  if [[ -z "$pid" ]]; then
+    if [[ -r "$OBSERVABILITY_PIDFILE" ]]; then
+      pid="$(tr -d '[:space:]' <"$OBSERVABILITY_PIDFILE")"
+      if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+        printf '警告：日志采集 Supervisor PID %s 存活但不可管理，本次保留旧采集器。\n' \
+          "$pid" >&2
+        return 0
+      fi
+    fi
+    rm -f -- "$OBSERVABILITY_PIDFILE" "$OBSERVABILITY_SOCKET"
+    return 0
+  fi
+
+  if ! "$CANDIDATE_SUPERVISORCTL" -c "$OBSERVABILITY_CONFIG" shutdown >/dev/null; then
+    printf '警告：日志采集 Supervisor 无法停止，本次保留旧采集器。\n' >&2
+    return 0
+  fi
+  deadline=$((SECONDS + 30))
+  while kill -0 "$pid" 2>/dev/null; do
+    if ((SECONDS >= deadline)); then
+      printf '警告：日志采集 Supervisor 未按时退出，本次保留现场。\n' >&2
+      return 0
+    fi
+    sleep 1
+  done
+  rm -f -- "$OBSERVABILITY_PIDFILE" "$OBSERVABILITY_SOCKET"
+}
+
 phase='确认现有服务可管理'
 legacy_web_pids="$(legacy_supervisor_pids web)"
 legacy_celery_pids="$(legacy_supervisor_pids celery)"
@@ -550,6 +588,7 @@ stop_supervisor \
 stop_supervisor \
   'Web' web "$WEB_CONFIG" "$WEB_PIDFILE" "$WEB_SOCKET" \
   "$WEB_STOP_TIMEOUT_SECONDS" "$web_supervisor_pid" "$legacy_web_pids"
+stop_observability_best_effort
 
 phase='切换运行环境并更新数据库结构'
 rm -f -- "$CURRENT_VENV_TEMP"
@@ -566,7 +605,7 @@ docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"
 
 wait_for_programs() {
   local config="$1"
-  local attempts=120
+  local attempts="${2:-120}"
   local status=''
   local name
   local state
@@ -598,6 +637,15 @@ wait_for_programs() {
 }
 
 restart_started=1
+phase='启动统一日志采集'
+if "$CANDIDATE_SUPERVISORD" -c "$OBSERVABILITY_CONFIG" 9>&-; then
+  if ! wait_for_programs "$OBSERVABILITY_CONFIG" 15; then
+    printf '警告：统一日志采集器未稳定运行；业务服务继续启动，请运行日志 doctor 检查。\n' >&2
+  fi
+else
+  printf '警告：统一日志采集 Supervisor 启动失败；业务服务继续启动。\n' >&2
+fi
+
 phase='启动 Celery 服务'
 "$CANDIDATE_SUPERVISORD" -c "$CELERY_CONFIG" 9>&-
 wait_for_programs "$CELERY_CONFIG"

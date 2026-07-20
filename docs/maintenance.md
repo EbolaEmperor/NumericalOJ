@@ -152,7 +152,7 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 3. 使用 `mysqldump --single-transaction` 生成原子 gzip 备份；数据库尚不存在时生成明确占位记录。备份在停服前完成，避免备份工具失败扩大服务中断；它是结构变更前的一致性快照，不承诺包含随后停机窗口前的新增写入。
 4. 先确认两套 Supervisor 都可管理，再优雅停止 Celery、最后停止 Web；Celery 排空期间 Web 仍可接收请求并让新任务在队列中等待。首次从根目录 `web.conf` / `celery.conf` 迁移时，只终止 UID、工作目录、Supervisor 入口和配置参数全部精确匹配的旧进程；其他控制文件缺失场景失败关闭，不按模糊进程名杀进程。外层等待上限必须严格大于 Supervisor 的 `stopwaitsecs`。
 5. 切换项目内 `.deploy/current-venv`，只执行一次 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个镜像的 `latest` 标签。
-6. 依次启动 `deploy/supervisor/celery.conf`、`deploy/supervisor/web.conf`；两组均完成各自稳定启动窗口后，再从 Supervisor status 复核全部进程仍为 `RUNNING`，最后清理由本脚本 label 标记的旧 dangling 镜像。
+6. 最佳努力启动 `deploy/supervisor/observability.conf`，再依次启动 `celery.conf`、`web.conf`；两组业务服务均完成各自稳定启动窗口后，再从 Supervisor status 复核全部业务进程仍为 `RUNNING`，最后清理由本脚本 label 标记的旧 dangling 镜像。日志采集异常必须告警，但不能使健康的业务服务回滚。
 
 部署脚本只修改项目内 `.deploy/`、两个生产镜像标签和 Supervisor 进程，不修改 `.env`、`static/`、上传目录或业务运行目录。系统解释器和全局 site-packages 不被修改。数据库同步器只创建缺失结构和同步已识别列类型，不导入 bootstrap、不删除表/列、不清空数据；部署前备份是额外保护，不代表任意 DDL 都可以无审阅执行。
 
@@ -166,7 +166,29 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 - 数据写入语义已变化时，不能只回滚代码；先判断新旧版本能否共同读取现有数据。
 - 回滚完成后重复健康、worker 和只读业务验证，并保留故障现场日志。
 
-## 6. 技术债优先级
+## 6. 日志与审计规则
+
+- 运行时日志根固定为项目内 `logs/`，整个目录不入 Git；Supervisor 活动日志和组件
+  stdout 也不得回退到 `/tmp`。PID、socket、锁不是日志，继续使用 `/tmp`。
+- 应用事件采用 `numericaloj.log` v1 单行 JSON。业务事实在数据库 commit 成功后的数据层
+  出口记录，HTTP 动作在路由/请求钩子记录，Celery 生命周期由 signals 记录；同一事实
+  不得在三层重复冒充成功。
+- 每次登录 POST 都必须产生 success/failure/denied 之一；每次普通、书面覆盖、Agent、
+  Promptly、打榜和后台批量提交都必须产生提交审计事件。日志不是业务事实库；若未来要求
+  与事务严格零丢失，应引入数据库 outbox，不能假设文件写入和 MySQL commit 原子。
+- request ID 由服务端生成并通过 Celery header 白名单传播。客户端 IP 只在直连 peer 属于
+  `LOG_TRUSTED_PROXY_CIDRS` 时解析 `X-Forwarded-For`；认证限流和审计必须共用同一解析器。
+- 只允许记录必要元数据。源码、Prompt、答案、请求体、任务 args/result、密码、验证码、
+  Cookie、Authorization、API key 和带凭据 URL 禁止入日志；内容只记字节数和 SHA-256。
+- 共享 JSONL 只能由 `scripts/log_admin.py serve` 单写和轮转，多进程业务代码不得直接挂
+  `RotatingFileHandler` 写同一文件。采集器失败时应用走 stdout 降级，不能影响业务事务。
+- MySQL、Redis、Docker 默认只读取 systemd journal 中的 daemon 诊断日志。禁止为了本
+  项目自动开启 MySQL general query、Redis `MONITOR`、Docker debug 或全容器 stdout。
+  journal 权限由主机运维显式授予；远程服务必须配置外部日志出口。
+- 日常用 `scripts/log_admin.py status|tail|find|validate|doctor` 检查。轮转上限是容量边界，
+  不是合规留存承诺；若有固定留存期或跨主机灾备要求，应接入外部不可变日志平台。
+
+## 7. 技术债优先级
 
 优先级按“事故损失 × 发生概率 × 修复后的复用范围”排序，而不是按文件大小排序。
 
@@ -201,7 +223,7 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 
 完成标准：前端热点页面可以局部修改和测试；新边界具有类型/契约检查；同一提交在 CI 与部署环境解析为同一依赖图。
 
-## 7. 前端模板结构
+## 8. 前端模板结构
 
 模板按“布局 → 跨域组件 → 业务域页面 → 业务域局部组件”组织：
 
@@ -230,7 +252,7 @@ templates/
 - 大页面先沿用户可独立理解和测试的功能面拆分；不要按任意行数切成缺少语义的碎片。
 - 模板移动、include 契约、单例 DOM、MathJax 边界和静态 JavaScript 语法由前端契约测试保护；交互变化仍需补对应路由测试和浏览器关键流程验证。
 
-## 8. 周期性维护指标
+## 9. 周期性维护指标
 
 每个版本或每月记录趋势，不把指标本身当目标：
 

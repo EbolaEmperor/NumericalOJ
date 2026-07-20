@@ -21,7 +21,9 @@ keepalive = 5
 max_requests = 0
 max_requests_jitter = 0
 
-accesslog = "-"
+# Flask 请求钩子已经输出不含查询串、Referer、Cookie 的结构化访问事件。
+# 关闭 Gunicorn 文本 access log，避免重复记录和 URL 中的敏感参数泄漏。
+accesslog = None
 errorlog = "-"
 
 

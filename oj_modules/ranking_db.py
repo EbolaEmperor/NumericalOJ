@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from oj_modules.db_services import bump_daily_submission_count, get_db_connection
+from oj_modules.observability import emit_audit, safe_file_fingerprint
 from oj_modules.ranking_agent_judge import normalize_orchestration_mode
 
 
@@ -690,6 +691,55 @@ def _record_submission_metric(submission_id):
         )
 
 
+def _artifact_audit_metadata(path, artifact_type):
+    return safe_file_fingerprint(path, artifact_type=artifact_type)
+
+
+def _audit_ranking_submission_created(
+        submission_id, competition_id, username, *, source, status,
+        origin, agent_endpoint_id=None, base_model=None, artifacts=None,
+        parent_submission_id=None):
+    emit_audit(
+        'submissions',
+        action='submission.created',
+        outcome='success',
+        message='打榜赛提交已创建',
+        submission={
+            'id': int(submission_id),
+            'kind': 'ranking',
+            'origin': origin,
+            'source': source,
+            'initial_status': status,
+            'parent_id': parent_submission_id,
+            'agent_endpoint_id': agent_endpoint_id,
+            'base_model': base_model,
+        },
+        competition={'id': int(competition_id)},
+        user={'name': username},
+        artifacts=[artifact for artifact in (artifacts or ()) if artifact],
+    )
+
+
+def _audit_ranking_artifacts_attached(
+        submission_id, *, status, base_model=None, origin=None, artifacts=None):
+    submission = {
+        'id': int(submission_id),
+        'kind': 'ranking',
+        'base_model': base_model,
+        'status': status,
+    }
+    if origin:
+        submission['origin'] = origin
+    emit_audit(
+        'submissions',
+        action='submission.artifacts.attached',
+        outcome='success',
+        message='打榜赛提交文件已关联',
+        submission=submission,
+        artifacts=[artifact for artifact in (artifacts or ()) if artifact],
+    )
+
+
 def _lock_submission_quota(cursor, competition_id, username, *, source, enforce_quota):
     """在当前事务内按用户串行化并执行权威配额检查。
 
@@ -781,6 +831,15 @@ def create_ranking_submission(competition_id, username, source='self', enforce_q
             )
         conn.commit()
         _record_submission_metric(new_id)
+        _audit_ranking_submission_created(
+            new_id,
+            competition_id,
+            username,
+            source=src,
+            status='Pending',
+            origin='git_or_batch',
+            agent_endpoint_id=agent_endpoint_id,
+        )
         return int(new_id)
     except Exception:
         try:
@@ -916,6 +975,20 @@ def create_ranking_artifact_submission(
         conn.close()
 
     _record_submission_metric(new_id)
+    _audit_ranking_submission_created(
+        new_id,
+        competition_id,
+        username,
+        source=src,
+        status='Judging',
+        origin='artifact_upload',
+        agent_endpoint_id=agent_endpoint_id,
+        base_model=base_model,
+        artifacts=(
+            _artifact_audit_metadata(installed.get('code'), 'code'),
+            _artifact_audit_metadata(installed.get('answer'), 'answer'),
+        ),
+    )
     return int(new_id)
 
 
@@ -935,9 +1008,20 @@ def update_submission_files(submission_id, answer_filename, answer_path, code_fi
                 (answer_filename, answer_path, code_filename, code_path,
                  (base_model or None), submission_id),
             )
+            affected = int(cursor.rowcount or 0)
         conn.commit()
     finally:
         conn.close()
+    if affected:
+        _audit_ranking_artifacts_attached(
+            submission_id,
+            status='Judging',
+            base_model=base_model,
+            artifacts=(
+                _artifact_audit_metadata(code_path, 'code'),
+                _artifact_audit_metadata(answer_path, 'answer'),
+            ),
+        )
 
 
 def set_submission_agent_endpoint(submission_id, endpoint_id):
@@ -1431,6 +1515,18 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
     if not new_id:
         raise RuntimeError("clone_ranking_submission_for_rejudge: failed to get valid submission id")
 
+    _audit_ranking_submission_created(
+        new_id,
+        source['competition_id'],
+        source.get('username') or '',
+        source='batch',
+        status=new_status,
+        origin='admin_rejudge_clone',
+        agent_endpoint_id=source.get('agent_endpoint_id'),
+        base_model=source.get('base_model'),
+        parent_submission_id=int(source_submission_id),
+    )
+
     target_dir = submission_dir(new_id)
     try:
         answer_name, answer_path = _copy_submission_artifact(
@@ -1460,6 +1556,16 @@ def clone_ranking_submission_for_rejudge(source_submission_id, *, competition_id
             )
         conn.commit()
         _record_submission_metric(new_id)
+        _audit_ranking_artifacts_attached(
+            new_id,
+            status=new_status,
+            origin='admin_rejudge_clone',
+            base_model=source.get('base_model'),
+            artifacts=(
+                _artifact_audit_metadata(code_path, 'code'),
+                _artifact_audit_metadata(answer_path, 'answer'),
+            ),
+        )
         return int(new_id), source
     finally:
         conn.close()
@@ -1473,7 +1579,16 @@ def delete_ranking_submission(submission_id):
             cursor.execute("DELETE FROM ranking_submissions WHERE id = %s", (submission_id,))
             affected = cursor.rowcount
         conn.commit()
-        return int(affected or 0)
+        affected = int(affected or 0)
+        if affected:
+            emit_audit(
+                'submissions',
+                action='submission.deleted',
+                outcome='success',
+                message='打榜赛提交已删除',
+                submission={'id': int(submission_id), 'kind': 'ranking'},
+            )
+        return affected
     finally:
         conn.close()
 

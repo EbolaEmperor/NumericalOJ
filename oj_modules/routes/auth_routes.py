@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import logging
 import random
 import smtplib
 from datetime import datetime, timedelta
@@ -25,9 +26,15 @@ from oj_modules.security_utils import (
     validate_username,
     verify_password,
 )
+from oj_modules.observability import (
+    client_ip,
+    emit_audit,
+    request_audit_fields,
+)
 
 
 auth_bp = Blueprint('auth', __name__)
+logger = logging.getLogger(__name__)
 
 # Redis 客户端（限流）。由 oj.py 的 init_auth_module 注入；为空时限流 fail-open。
 _rds = None
@@ -62,10 +69,35 @@ _LOGIN_WINDOW = 900
 
 
 def _client_ip():
-    fwd = request.headers.get('X-Forwarded-For', '')
-    if fwd:
-        return fwd.split(',')[0].strip()
-    return request.remote_addr or 'unknown'
+    return client_ip(request)
+
+
+def _audit_auth(action, outcome, *, reason=None, user=None, username=None, **details):
+    try:
+        fields = request_audit_fields(request)
+        fields['authentication'] = {
+            'method': 'password',
+            'reason': reason,
+            **details,
+        }
+        if user:
+            fields['user'] = {
+                'id': user.get('id'),
+                'name': user.get('username') or username,
+                'is_admin': bool(user.get('is_admin')),
+            }
+        elif username:
+            fields['user'] = {'name': username}
+        emit_audit(
+            'auth',
+            action=action,
+            outcome=outcome,
+            message=f'认证事件：{action}',
+            **fields,
+        )
+    except Exception:
+        # 认证结果不能因可观测性故障而被反转；原始请求仍由访问日志兜底。
+        pass
 
 
 def _update_password_hash(*, user_id=None, email=None, new_hash=None):
@@ -125,8 +157,8 @@ def send_verification_code(email, code_type):
             server.login(MAIL_USERNAME, MAIL_PASSWORD)
             server.sendmail(MAIL_USERNAME, [email], msg.as_string())
         return True
-    except Exception as e:
-        print(f"邮件发送失败: {e}")
+    except Exception:
+        logger.exception('验证码邮件发送失败')
         return False
 
 
@@ -138,10 +170,16 @@ def login():
 
         username_ok, username, username_msg = validate_username(username)
         if not username_ok:
+            _audit_auth(
+                'login', 'failure', reason='invalid_username', username=username,
+            )
             return render_template('auth/login.html', error_message=username_msg, success_message=None)
 
         # 登录尝试限流（按用户名），减缓离线/在线暴力破解。
         if not rate_limit_hit(_rds, f'login:{username}', _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW)[0]:
+            _audit_auth(
+                'login', 'denied', reason='rate_limited', username=username,
+            )
             return render_template('auth/login.html', error_message="尝试过于频繁，请稍后再试", success_message=None)
 
         user_record = get_user_by_username(username)
@@ -155,7 +193,16 @@ def login():
                     except Exception:
                         pass
                 session['username'] = username
+                _audit_auth(
+                    'login',
+                    'success',
+                    user=user_record,
+                    password_rehashed=bool(needs_rehash),
+                )
                 return redirect(url_for('problem_core.problem_list'))
+        _audit_auth(
+            'login', 'failure', reason='invalid_credentials', username=username,
+        )
         return render_template('auth/login.html', error_message="用户名或密码错误", success_message=None)
 
     success_message = request.args.get('success')
@@ -218,7 +265,13 @@ def register():
         if get_user_by_username(username) or get_user_by_email(email):
             return render_template('auth/register.html', error_message="用户名或邮箱已被注册", classes=public_classes)
 
-        create_user(username, hash_password(password), email, user_class)
+        user_id = create_user(username, hash_password(password), email, user_class)
+        _audit_auth(
+            'register',
+            'success',
+            user={'id': user_id, 'username': username, 'is_admin': False},
+            account={'class': user_class.get('class_en')},
+        )
         return redirect(url_for('auth.login', success="注册成功，请登录"))
 
     return render_template('auth/register.html', classes=public_classes)
@@ -276,6 +329,7 @@ def forgot_password():
                 flash('验证码错误或已过期', 'danger')
                 return redirect(url_for('auth.forgot_password', step='verify', email=email))
 
+            user = get_user_by_email(email)
             _update_password_hash(email=email, new_hash=hash_password(new_password))
 
             conn = get_db_connection()
@@ -288,6 +342,7 @@ def forgot_password():
                 conn.close()
 
             flash('密码重置成功，请重新登录', 'success')
+            _audit_auth('password.reset', 'success', user=user)
             return redirect(url_for('auth.login'))
 
     return render_template('auth/forgot_password.html', step=step, email=request.args.get('email'))
@@ -355,6 +410,8 @@ def change_password():
     finally:
         conn.close()
 
+    _audit_auth('password.change', 'success', user=user)
+
     if _wants_json_response():
         return jsonify(success=True, message="密码修改成功")
     return redirect(url_for('problem_core.problem_list', success="密码修改成功"))
@@ -362,5 +419,11 @@ def change_password():
 
 @auth_bp.post('/logout')
 def logout():
-    session.pop('username', None)
+    username = session.pop('username', None)
+    _audit_auth(
+        'logout',
+        'success' if username else 'unknown',
+        reason=None if username else 'no_session',
+        username=username,
+    )
     return redirect(url_for('auth.login'))

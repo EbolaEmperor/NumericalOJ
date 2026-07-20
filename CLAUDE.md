@@ -184,11 +184,28 @@ bash deploy.sh
 3. 在停服前原子备份 MySQL 数据库，避免备份失败导致服务中断；
 4. 确认两套 Supervisor 可管理，再依次停止 Celery/Web；首次迁移只终止身份精确匹配的旧版 Supervisor，不使用 `pkill -f`；
 5. 切换 `.deploy/current-venv`，执行一次非破坏性 schema 同步和停机任务恢复；
-6. 切换两个生产镜像标签，依次启动 Celery/Web，并在两组均启动后再次确认 Supervisor 配置中的全部进程稳定进入 `RUNNING`。
+6. 切换两个生产镜像标签，最佳努力启动统一日志采集器，再依次启动 Celery/Web，并在两组业务服务均启动后再次确认 Supervisor 配置中的全部进程稳定进入 `RUNNING`。
 
 脚本不复制、覆盖或删除代码文件，因此生产 `.env`、`static/` 的额外资产、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置；脚本本身只写 `.deploy/`、数据库备份、Docker 标签和进程状态。正常拉取只更新 tracked 的 `config.py` 解析逻辑和 `.env.tmpl` 模板，不覆盖 `.env`。
 
-部署脚本不修改系统 Python 或全局 site-packages；两个项目内 venv 槽轮换，避免安装依赖时改变仍在运行的解释器。数据库备份保存在 `.deploy/backups/`，不自动回灌。若结构同步或启动在停服后失败，保留现场并修复后重跑；先判断 DDL 是否已提交，不得机械恢复备份。`deploy/supervisor/web.conf` 与 `celery.conf` 使用独立 socket、pidfile 和日志；Web 保持单进程、64 线程的 Gunicorn `gthread` 配置，修改并发或回收策略前必须重新验证 SSE 与进程内状态约束。
+部署脚本不修改系统 Python 或全局 site-packages；两个项目内 venv 槽轮换，避免安装依赖时改变仍在运行的解释器。数据库备份保存在 `.deploy/backups/`，不自动回灌。若结构同步或启动在停服后失败，保留现场并修复后重跑；先判断 DDL 是否已提交，不得机械恢复备份。`deploy/supervisor/web.conf`、`celery.conf` 与 `observability.conf` 使用独立 socket、pidfile 和项目内日志；Web 保持单进程、64 线程的 Gunicorn `gthread` 配置，修改并发或回收策略前必须重新验证 SSE 与进程内状态约束。
+
+## 日志与审计
+
+统一日志实现位于 `oj_modules/observability/`，管理入口是 `scripts/log_admin.py`。所有持久
+日志写入 Git 忽略的项目内 `logs/`；共享 JSONL 只能由单写采集器轮转，Web/Celery 同时
+保留组件 stdout 作为采集器故障时的降级副本。新增事件必须沿用版本化 schema、递归脱敏
+和 request/task 上下文，不得自行拼 JSON 或直接创建共享文件 handler。
+
+登录审计必须记录可信客户端 IP、peer IP、User-Agent/Client Hints 和结果；提交审计必须
+覆盖普通、Promptly、Agent、书面覆盖、打榜、批量和重测创建入口，但只能记录 ID、状态、
+来源、长度和 SHA-256。严禁写入密码、验证码、Cookie、Authorization、API key、源码、
+Prompt、答案、任务参数/返回值和评测 stdout/stderr 原文。
+
+`LOG_TRUSTED_PROXY_CIDRS` 是唯一可信代理名单；默认不信任 `X-Forwarded-For`。基础设施采集
+只读 systemd journal 中的 MySQL/Redis/Docker daemon 日志，不自动开启查询日志、Redis
+`MONITOR`、Docker debug 或容器 stdout。生产日志账号的 journal 权限由运维显式配置，权限
+不足必须在 `python scripts/log_admin.py doctor` 中可见，但不阻断业务部署。
 
 ### 前端快速路径
 
