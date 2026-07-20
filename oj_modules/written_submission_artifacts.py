@@ -23,6 +23,7 @@ import time
 from uuid import uuid4
 
 from oj_modules import submission_archive
+from oj_modules.observability import emit_audit
 
 
 logger = logging.getLogger(__name__)
@@ -343,6 +344,35 @@ def _rollback_prepared(paths, data, archive_swap):
     return errors
 
 
+def _audit_published_submission(*, submission_id, token, data, destination, problem, user):
+    try:
+        size = Path(destination).stat().st_size
+    except OSError:
+        size = None
+    emit_audit(
+        "submissions",
+        action="submission.artifact.published",
+        outcome="success",
+        message="人工书面提交文件已发布",
+        submission={
+            "id": submission_id,
+            "kind": "written",
+            "origin": "manual_overwrite",
+            "publication_id": token,
+        },
+        problem={"id": (problem or {}).get("id")},
+        user={
+            "id": (user or {}).get("id"),
+            "name": (user or {}).get("username"),
+        },
+        artifact={
+            "type": "written",
+            "bytes": size,
+            "sha256": data.get("sha256"),
+        },
+    )
+
+
 def publish_manual_written_submission(
     *,
     uploaded_file,
@@ -471,6 +501,14 @@ def publish_manual_written_submission(
                         "人工作业已提交，残留产物将由恢复器清理",
                         extra={"submission_id": submission_id, "token": token},
                     )
+                _audit_published_submission(
+                    submission_id=submission_id,
+                    token=token,
+                    data=data,
+                    destination=paths["upload_destination"],
+                    problem=problem,
+                    user=user,
+                )
                 return paths["upload_destination"]
 
             if not journal_written:
@@ -493,6 +531,14 @@ def publish_manual_written_submission(
                     "人工作业发布成功，残留产物将由恢复器清理",
                     extra={"submission_id": submission_id, "token": token},
                 )
+            _audit_published_submission(
+                submission_id=submission_id,
+                token=token,
+                data=data,
+                destination=paths["upload_destination"],
+                problem=problem,
+                user=user,
+            )
             return paths["upload_destination"]
         finally:
             if not journal_written:

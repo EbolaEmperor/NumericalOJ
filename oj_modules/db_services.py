@@ -32,6 +32,12 @@ _MYSQL_HOST = getattr(_config, 'MYSQL_HOST', '127.0.0.1')
 _MYSQL_PORT = int(getattr(_config, 'MYSQL_PORT', 3306))
 _MYSQL_DB = getattr(_config, 'MYSQL_DB', 'myojdb')
 from oj_modules.ai_utils import _normalize_ai_code_issues
+from oj_modules.observability import (
+    content_fingerprint,
+    current_context,
+    emit_audit,
+    safe_file_fingerprint,
+)
 from oj_modules.redis_clients import (
     RedisClientProfile,
     create_optional_redis_client,
@@ -1044,6 +1050,7 @@ def create_user(username, password_hash, email, user_class):
         raise
     finally:
         conn.close()
+    return int(user_id)
 
 
 def rename_user(user_id, new_username):
@@ -1611,6 +1618,38 @@ def create_submission(
     finally:
         conn.close()
 
+    task_name = str(current_context().get('task_name') or '')
+    if generated_from_prompt:
+        origin = 'promptly'
+    elif task_name.startswith('oj.agent.'):
+        origin = 'agent'
+    elif str(problem_type).strip() == '2':
+        origin = 'written'
+    else:
+        origin = 'web'
+    emit_audit(
+        'submissions',
+        action='submission.created',
+        outcome='success',
+        message='题目提交已创建',
+        submission={
+            'id': int(subid),
+            'kind': 'problem',
+            'origin': origin,
+            'initial_status': status,
+            'generated_from_prompt': bool(generated_from_prompt),
+            'score': score,
+            'test_point_count': len(test_points or ()),
+            'submission_limit': submission_limit,
+        },
+        problem={'id': problem_id, 'type': problem_type},
+        user={'id': user.get('id'), 'name': effective_username},
+        content={
+            'code': content_fingerprint(code),
+            'prompt': content_fingerprint(prompt_text),
+        },
+    )
+
     # 缓存和统计不属于提交事务；主记录已成功持久化后，不应因派生路径
     # 短暂失败向用户返回 500，否则用户重试会产生实际已提交的重复记录。
     try:
@@ -1732,6 +1771,21 @@ def overwrite_written_submission(
             '书面作业覆盖后状态快照刷新失败',
             extra={'submission_id': submission_id},
         )
+    emit_audit(
+        'submissions',
+        action='submission.revision.committed',
+        outcome='success',
+        message='人工书面提交的新版本已切换',
+        submission={
+            'id': int(submission_id),
+            'kind': 'written',
+            'origin': 'manual_overwrite',
+            'initial_status': 'Pending',
+            'previous_status': submission.get('status'),
+        },
+        problem={'id': submission.get('problem_id')},
+        user={'id': user_id, 'name': submission.get('username')},
+    )
     return submission
 
 
@@ -1883,7 +1937,23 @@ def archive_submission_file_by_id(submission_id, source_path, preferred_filename
     try:
         archive_submission_by_id(submission_id, raise_errors=raise_errors)
         from oj_modules.submission_archive import archive_uploaded_submission_file
-        return archive_uploaded_submission_file(submission_id, source_path, preferred_filename)
+        archived_path = archive_uploaded_submission_file(
+            submission_id, source_path, preferred_filename,
+        )
+        if archived_path:
+            artifact = safe_file_fingerprint(
+                source_path,
+                artifact_type='written',
+            )
+            emit_audit(
+                'submissions',
+                action='submission.artifact.archived',
+                outcome='success',
+                message='题目提交文件已归档',
+                submission={'id': int(submission_id), 'kind': 'written'},
+                artifact=artifact,
+            )
+        return archived_path
     except Exception as e:
         if raise_errors:
             raise

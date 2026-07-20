@@ -129,9 +129,10 @@ docker build -f docker/agent_judge-lite/Dockerfile \
 
 ## 启动
 
-生产首次安装与升级统一执行 `bash deploy.sh`。下面两个 Supervisor 配置使用项目内 `.deploy/current-venv`，只适合在至少一次成功部署后做人工重启，不是本地开发入口：
+生产首次安装与升级统一执行 `bash deploy.sh`。下面三个 Supervisor 配置使用项目内 `.deploy/current-venv`，只适合在至少一次成功部署后做人工重启，不是本地开发入口：
 
 ```bash
+supervisord -c deploy/supervisor/observability.conf
 supervisord -c deploy/supervisor/web.conf
 supervisord -c deploy/supervisor/celery.conf
 ```
@@ -153,6 +154,7 @@ supervisord -c deploy/supervisor/celery.conf
 本地 `.venv` + lite 镜像可以使用单个开发配置：
 
 ```bash
+python scripts/log_admin.py init
 supervisord -c deploy/supervisor/local-dev.conf
 ```
 
@@ -174,6 +176,56 @@ curl -f http://127.0.0.1:2025/health/ready
 
 - `/health/live` 只证明 Web 进程能响应；
 - `/health/ready` 会检查 MySQL 与 Redis，任一不可用时返回 HTTP 503。
+
+## 日志与审计
+
+所有持久日志都位于 Git 忽略的项目内 `logs/`，PID、Supervisor socket 和部署锁仍放在
+`/tmp`，它们不是日志，且需要维持跨 checkout 的主机级进程识别语义。目录由
+`deploy.sh` 或以下命令以 `0700` 权限创建：
+
+```bash
+python scripts/log_admin.py init
+python scripts/log_admin.py status
+python scripts/log_admin.py tail audit.auth --lines 50
+python scripts/log_admin.py find --submission-id 123
+python scripts/log_admin.py validate
+python scripts/log_admin.py doctor
+```
+
+日志按用途分开，活动 JSONL 由单个采集进程写入并轮转，避免 Gunicorn 线程和 Celery
+prefork 进程竞争同一个文件：
+
+```text
+logs/
+├── access/http.jsonl
+├── audit/auth.jsonl
+├── audit/submissions.jsonl
+├── infrastructure/{mysql,redis,docker,collector}.jsonl
+├── runtime/{application,tasks}.jsonl
+├── services/*.log
+├── supervisor/*.log
+├── state/
+└── run/events.sock
+```
+
+结构化事件使用版本化 schema，并通过 request ID、Celery task ID、submission ID 关联。
+登录成功、失败、限流与退出会记录可信来源 IP、直连 peer、原始 User-Agent 和浏览器
+Client Hints；普通、Promptly、Agent、书面覆盖及打榜提交会记录业务 ID、来源、初始状态、
+内容字节数与 SHA-256，不记录源码、Prompt、答案、密码、验证码、Cookie、Authorization
+或 API key。应用始终同时写组件 stdout；采集器暂时不可用时业务继续运行，事件仍可在
+`logs/services/` 的组件日志中追查。
+
+默认不信任客户端提供的 `X-Forwarded-For`。反向代理部署必须在 `.env` 的
+`LOG_TRUSTED_PROXY_CIDRS` 中明确列出与应用直连的代理网段，否则登录限流和审计会使用
+代理的直连地址。这是安全默认值，不能配置成无边界的公网网段。
+
+独立的 `observability.conf` 最佳努力读取 systemd journal 中的
+`mysql/mysqld/mariadb`、`redis/redis-server` 与 `docker` daemon 日志，游标和状态保存在
+`logs/state/`。生产部署用户必须具有 journal 只读权限；`doctor` 会显示采集器状态，权限
+不足不会阻止 Web/Celery 启动。此链路只采集 daemon 诊断日志，不会自动开启 MySQL
+general/slow query log、Redis `MONITOR`、Docker debug 或判题容器 stdout，因为这些模式既
+有显著 IO 成本，也可能泄露用户代码和凭据。远程/托管基础设施需要由服务方把日志送到
+本机 journal 或另行接入外部日志平台。
 
 ## 测试
 
@@ -215,7 +267,7 @@ bash deploy.sh
 用户所有的普通文件、权限为 `0400` 或 `0600`，并检查必要的 MySQL、Redis 和会话配置；校验失败会
 在停服前直接退出。
 
-每次部署先清理由本脚本标记、因异常中断遗留的候选镜像标签，再在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖。处理普通判题和 Agent-as-Judge 候选镜像时，脚本先计算 Dockerfile 与实际 `COPY` 输入的精确指纹；稳定镜像的指纹相同时直接复用，不调用构建。确需更新镜像时，脚本显式使用 `default` BuildKit builder（可通过 `NUMOJ_DOCKER_BUILDER` 覆盖）及其 Docker daemon 全局步骤缓存；生产默认缓存位于 Docker data root，而不是项目目录。脚本还会检测本地 `latest` 稳定镜像和各镜像的关键重型步骤缓存线索，并在候选镜像中写入 inline cache 元数据；任一前提缺失时会在停服前失败关闭。不会把本地稳定标签误当成远端 registry cache 源。两个 Dockerfile 的基础镜像摘要固定，Agent Harness 的版本参数紧邻最终 npm 层，避免无关更新使 TeX、MKL、Torch 等缓存链整体失效。随后脚本以 `--single-transaction` 原子备份当前数据库；这些步骤不会修改仍在运行的环境。脚本再确认两套 Supervisor 均可管理，依次停止 Celery/Web，切换虚拟环境，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签并依次启动 Celery/Web。最后再次确认两组 Supervisor 实际配置中的全部进程稳定进入 `RUNNING`，这是启动结果确认，不是测试；成功后只清理由本脚本标记的旧 dangling 镜像。
+每次部署先创建安全日志目录，再清理由本脚本标记、因异常中断遗留的候选镜像标签，并在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖。处理普通判题和 Agent-as-Judge 候选镜像时，脚本先计算 Dockerfile 与实际 `COPY` 输入的精确指纹；稳定镜像的指纹相同时直接复用，不调用构建。确需更新镜像时，脚本显式使用 `default` BuildKit builder（可通过 `NUMOJ_DOCKER_BUILDER` 覆盖）及其 Docker daemon 全局步骤缓存；生产默认缓存位于 Docker data root，而不是项目目录。脚本还会检测本地 `latest` 稳定镜像和各镜像的关键重型步骤缓存线索，并在候选镜像中写入 inline cache 元数据；任一前提缺失时会在停服前失败关闭。不会把本地稳定标签误当成远端 registry cache 源。两个 Dockerfile 的基础镜像摘要固定，Agent Harness 的版本参数紧邻最终 npm 层，避免无关更新使 TeX、MKL、Torch 等缓存链整体失效。随后脚本以 `--single-transaction` 原子备份当前数据库；这些步骤不会修改仍在运行的环境。脚本再确认两套业务 Supervisor 均可管理，依次停止 Celery/Web，切换虚拟环境，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签。统一日志采集 Supervisor 以最佳努力先行启动，随后依次启动 Celery/Web；最后再次确认两组业务 Supervisor 实际配置中的全部进程稳定进入 `RUNNING`，这是启动结果确认，不是测试。日志采集异常会明确告警但不会回滚健康的业务服务；成功后只清理由本脚本标记的旧 dangling 镜像。
 
 主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。脚本不会修改 `.env`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或回灌备份。失败时会报告准确阶段并保留部署前备份；如果失败发生在停服之后，修复原因后重新执行脚本，不要在没有判断 schema 兼容性的情况下自动回灌。
 
@@ -227,6 +279,7 @@ bash deploy.sh
 - `oj_modules/db_services.py`、`oj_modules/ranking*_db.py`：数据访问；
 - `oj_modules/judger_core.py`、`oj_modules/docker_sandbox.py`：普通判题与容器沙箱；
 - `oj_modules/*_services.py`：可复用业务服务；
+- `oj_modules/observability/`、`scripts/log_admin.py`：结构化事件、上下文传播、日志采集与运维查询；
 - `templates/`、`static/`：按业务域组织的服务端模板和静态资源；
 - `deploy/`、`deploy.sh`：生产进程配置、数据库备份和原地一键部署；
 - `database/bootstrap.sql`：新安装结构与开发种子基线；

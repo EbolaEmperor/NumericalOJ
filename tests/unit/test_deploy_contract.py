@@ -44,6 +44,7 @@ def test_deploy_is_an_in_place_entry_without_environment_whitelists_or_tests():
 def test_deploy_prepares_candidates_before_stopping_and_then_restarts_everything():
     script = _read("deploy.sh")
     phases = [
+        "phase='初始化日志目录'",
         "phase='准备 Python 运行环境'",
         "phase='构建判题镜像'",
         "phase='备份数据库'",
@@ -51,6 +52,7 @@ def test_deploy_prepares_candidates_before_stopping_and_then_restarts_everything
         "phase='停止现有服务'",
         "phase='切换运行环境并更新数据库结构'",
         "phase='切换判题镜像'",
+        "phase='启动统一日志采集'",
         "phase='启动 Celery 服务'",
         "phase='启动 Web 服务'",
     ]
@@ -132,10 +134,41 @@ def test_deploy_uses_bounded_project_local_runtime_state():
     assert 'exec 9>>"$LOCK_FILE"' in script
     assert '"$STATE_DIR/deploy.lock"' not in script
     assert "flock -n 9" in script
-    assert script.count('"$CANDIDATE_SUPERVISORD" -c ') == 2
+    assert script.count('"$CANDIDATE_SUPERVISORD" -c ') == 3
+    assert script.count('"$CANDIDATE_SUPERVISORD" -c "$OBSERVABILITY_CONFIG" 9>&-') == 1
     assert script.count('"$CANDIDATE_SUPERVISORD" -c "$CELERY_CONFIG" 9>&-') == 1
     assert script.count('"$CANDIDATE_SUPERVISORD" -c "$WEB_CONFIG" 9>&-') == 1
     assert 'BACKUP_DIR="$STATE_DIR/backups"' in script
+
+
+def test_deploy_initializes_and_best_effort_restarts_log_collector():
+    script = _read("deploy.sh")
+
+    init_position = script.index("phase='初始化日志目录'")
+    config_check_position = script.index("phase='校验生产本地配置'")
+    stop_phase_position = script.index("phase='停止现有服务'")
+    stop_position = script.index(
+        "\nstop_observability_best_effort\n",
+        stop_phase_position,
+    )
+    switch_position = script.index("phase='切换运行环境并更新数据库结构'")
+    start_position = script.index("phase='启动统一日志采集'")
+    celery_position = script.index("phase='启动 Celery 服务'")
+
+    assert init_position < config_check_position
+    assert stop_phase_position < stop_position < switch_position
+    assert switch_position < start_position < celery_position
+    assert (
+        '"$BOOTSTRAP_PYTHON" -B scripts/log_admin.py init >/dev/null'
+        in script
+    )
+    assert (
+        'if "$CANDIDATE_SUPERVISORD" -c "$OBSERVABILITY_CONFIG" 9>&-; then'
+        in script
+    )
+    assert 'wait_for_programs "$OBSERVABILITY_CONFIG" 15' in script
+    assert script.count('业务服务继续启动') == 2
+    assert 'exit 1' not in script[start_position:celery_position]
 
 
 def test_deploy_discovers_python_312_without_requiring_system_python3():
@@ -279,7 +312,7 @@ def test_supervisor_config_keeps_the_expected_process_topology():
     from supervisor.options import ServerOptions
 
     groups = {}
-    for config_name in ("web.conf", "celery.conf"):
+    for config_name in ("web.conf", "celery.conf", "observability.conf"):
         options = ServerOptions()
         options.configfile = str(ROOT / "deploy" / "supervisor" / config_name)
         options.process_config(False)
@@ -293,12 +326,14 @@ def test_supervisor_config_keeps_the_expected_process_topology():
     assert groups == {
         "web": {"web"},
         "celery": {"celery_judge", "celery_agent", "celery_agent_judge"},
+        "log_collector": {"log_collector"},
     }
 
 
 def test_production_supervisors_use_the_project_local_deploy_venv_only():
     web = _read("deploy/supervisor/web.conf")
     celery = _read("deploy/supervisor/celery.conf")
+    observability = _read("deploy/supervisor/observability.conf")
 
     assert "init_db_schema.py" not in web
     assert "init_db_schema.py" not in celery
@@ -306,11 +341,17 @@ def test_production_supervisors_use_the_project_local_deploy_venv_only():
     assert celery.count(
         '"%(here)s/../../.deploy/current-venv/bin/python3" -m celery'
     ) == 3
+    assert (
+        '"%(here)s/../../.deploy/current-venv/bin/python3" '
+        '-B scripts/log_admin.py serve'
+    ) in observability
     assert celery.count("startsecs=10") == 3
     assert "/home/" not in web
     assert "/home/" not in celery
+    assert "/home/" not in observability
     assert "[unix_http_server]" in web
     assert "[unix_http_server]" in celery
+    assert "[unix_http_server]" in observability
 
 
 def test_obsolete_remote_release_helpers_are_removed():

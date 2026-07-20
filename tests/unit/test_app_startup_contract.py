@@ -3,9 +3,12 @@ from pathlib import Path
 import runpy
 import sys
 import types
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+OJ_PATH = ROOT / 'oj.py'
 
 
 def _called_name(node):
@@ -15,6 +18,39 @@ def _called_name(node):
     if isinstance(function, ast.Attribute):
         return function.attr
     return None
+
+
+def _tree():
+    return ast.parse(OJ_PATH.read_text(encoding='utf-8'), filename=str(OJ_PATH))
+
+
+def _top_level_call(name):
+    matches = [
+        statement
+        for statement in _tree().body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and _called_name(statement.value) == name
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _execute(statements, namespace):
+    module = ast.Module(body=statements, type_ignores=[])
+    exec(compile(module, str(OJ_PATH), 'exec'), namespace)
+
+
+def _logging_bootstrap_statements():
+    install_lineno = _top_level_call('install_flask_observability').lineno
+    return [
+        statement
+        for statement in _tree().body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and _called_name(statement.value) in {'setdefault', 'configure_logging'}
+        and statement.lineno < install_lineno
+    ]
 
 
 def test_importing_oj_does_not_run_recovery_or_scheduling_jobs():
@@ -84,6 +120,8 @@ def test_gunicorn_config_preserves_single_worker_and_sse_capacity():
     assert settings['threads'] == 64
     assert settings['max_requests'] == 0
     assert settings['max_requests_jitter'] == 0
+    assert settings['accesslog'] is None
+    assert settings['errorlog'] == '-'
 
 
 def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
@@ -103,11 +141,141 @@ def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
     assert logged == ['Ensuring NumericalOJ background schedulers in the Web worker']
 
 
-def test_web_and_celery_supervisors_do_not_share_pid_or_log_files():
-    web_config = (ROOT / 'deploy' / 'supervisor' / 'web.conf').read_text(encoding='utf-8')
-    celery_config = (ROOT / 'deploy' / 'supervisor' / 'celery.conf').read_text(encoding='utf-8')
+def test_supervisors_keep_distinct_runtime_controls_and_project_local_logs():
+    configs = {
+        name: (ROOT / 'deploy' / 'supervisor' / f'{name}.conf').read_text(
+            encoding='utf-8',
+        )
+        for name in ('web', 'celery', 'observability')
+    }
 
-    assert 'pidfile=/tmp/noj_web_supervisord.pid' in web_config
-    assert 'pidfile=/tmp/noj_celery_supervisord.pid' in celery_config
-    assert 'logfile=/tmp/noj_web_supervisord.log' in web_config
-    assert 'logfile=/tmp/noj_celery_supervisord.log' in celery_config
+    pidfiles = set()
+    sockets = set()
+    for name, config in configs.items():
+        assert f'pidfile=/tmp/noj_{name}_supervisord.pid' in config
+        assert f'file=/tmp/noj_{name}_supervisor.sock' in config
+        assert 'logfile=%(here)s/../../logs/supervisor/' in config
+        assert 'stdout_logfile=%(here)s/../../logs/services/' in config
+        assert 'childlogdir=%(here)s/../../logs/services' in config
+        assert 'umask=0077' in config
+        assert '/tmp/' not in '\n'.join(
+            line for line in config.splitlines() if 'logfile=' in line
+        )
+        pidfiles.add(
+            next(line for line in config.splitlines() if line.startswith('pidfile='))
+        )
+        sockets.add(
+            next(line for line in config.splitlines() if line.startswith('file='))
+        )
+
+    assert len(pidfiles) == len(configs)
+    assert len(sockets) == len(configs)
+
+
+def test_local_development_supervisor_also_uses_project_local_logs():
+    config = (ROOT / 'deploy' / 'supervisor' / 'local-dev.conf').read_text(
+        encoding='utf-8',
+    )
+    logfile_lines = [
+        line for line in config.splitlines() if 'logfile=' in line
+    ]
+
+    assert 'logfile=%(here)s/../../logs/supervisor/local-dev.log' in config
+    assert 'childlogdir=%(here)s/../../logs/services' in config
+    assert logfile_lines
+    assert all('%(here)s/../../logs/' in line for line in logfile_lines)
+    assert '/tmp/' not in '\n'.join(logfile_lines)
+
+
+def test_logging_bootstrap_sets_web_service_and_configures_once(monkeypatch):
+    import os
+
+    configure_logging = MagicMock()
+    monkeypatch.delenv('NUMOJ_SERVICE_NAME', raising=False)
+    _execute(
+        _logging_bootstrap_statements(),
+        {
+            'os': os,
+            '_cfg': SimpleNamespace(LOG_LEVEL='DEBUG'),
+            'configure_logging': configure_logging,
+        },
+    )
+
+    assert os.environ['NUMOJ_SERVICE_NAME'] == 'web'
+    configure_logging.assert_called_once_with(level='DEBUG')
+
+
+def test_logging_bootstrap_preserves_worker_service_name(monkeypatch):
+    import os
+
+    configure_logging = MagicMock()
+    monkeypatch.setenv('NUMOJ_SERVICE_NAME', 'worker-judge')
+    _execute(
+        _logging_bootstrap_statements(),
+        {
+            'os': os,
+            '_cfg': SimpleNamespace(LOG_LEVEL='WARNING'),
+            'configure_logging': configure_logging,
+        },
+    )
+
+    assert os.environ['NUMOJ_SERVICE_NAME'] == 'worker-judge'
+    configure_logging.assert_called_once_with(level='WARNING')
+
+
+def test_logging_bootstrap_precedes_all_business_module_imports():
+    tree = _tree()
+    observability_import = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == 'oj_modules.observability'
+    )
+    first_business_import = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith('oj_modules.')
+        and node.module != 'oj_modules.observability'
+    )
+    bootstrap = _logging_bootstrap_statements()
+
+    assert len(bootstrap) == 2
+    assert observability_import.lineno < bootstrap[0].lineno
+    assert bootstrap[0].lineno < bootstrap[1].lineno < first_business_import.lineno
+
+
+def test_flask_observability_is_installed_once_with_proxy_config():
+    app = object()
+    install = MagicMock()
+    _execute(
+        [_top_level_call('install_flask_observability')],
+        {
+            'app': app,
+            '_cfg': SimpleNamespace(
+                LOG_TRUSTED_PROXY_CIDRS=['10.0.0.0/8', '2001:db8::/32'],
+            ),
+            'install_flask_observability': install,
+        },
+    )
+
+    install.assert_called_once_with(
+        app,
+        trusted_proxy_cidrs=['10.0.0.0/8', '2001:db8::/32'],
+    )
+
+
+def test_celery_observability_is_installed_once_with_log_level():
+    celery = object()
+    install = MagicMock()
+    _execute(
+        [_top_level_call('install_celery_observability')],
+        {
+            'celery': celery,
+            '_cfg': SimpleNamespace(LOG_LEVEL='ERROR'),
+            'install_celery_observability': install,
+        },
+    )
+
+    install.assert_called_once_with(celery, level='ERROR')
