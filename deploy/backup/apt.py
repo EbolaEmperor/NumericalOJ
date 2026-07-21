@@ -274,11 +274,9 @@ def _verify_bootstrap_metadata(
         run,
         [
             DPKG_DEB,
-            "-f",
+            "--show",
+            "--showformat=${Package}\\n${Version}\\n${Architecture}\\n",
             str(path),
-            "Package",
-            "Version",
-            "Architecture",
         ],
         purpose="读取 Percona 引导包元数据",
     )
