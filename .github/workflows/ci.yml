@@ -20,7 +20,7 @@ jobs:
           python-version: '3.12'
       - name: py_compile all sources
         run: |
-          python -m compileall -q oj.py oj_modules tests
+          python -m compileall -q oj.py oj_modules deploy tests
 
   unit:
     runs-on: ubuntu-latest

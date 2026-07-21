@@ -82,7 +82,7 @@ oj.py 只负责把上述组件装配起来
 
 | 层级 | 基础设施 | 是否破坏数据 | 典型命令 | 使用场景 |
 | --- | --- | --- | --- | --- |
-| 语法 | 无 | 否 | `python -m compileall -q oj.py oj_modules tests` | 所有 Python 变更 |
+| 语法 | 无 | 否 | `python -m compileall -q oj.py oj_modules deploy tests` | 所有 Python 变更 |
 | 单元 | 无 | 否 | `python -m pytest -q tests/unit` | 所有逻辑、边界和回归变更 |
 | DB | 一次性 MySQL + Redis | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/db` | 查询、事务、schema、缓存一致性 |
 | E2E | 一次性 MySQL + Redis，本地 Flask/Celery，部分场景需 Docker | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/e2e` | 路由、CLI、跨进程工作流 |
@@ -149,14 +149,52 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
    引导解释器必须是 Python 3.12；脚本支持 `NUMOJ_PYTHON`、项目内 `.deploy/bootstrap-python` 和 PATH 自动发现，不依赖系统 `python3` 恰好指向 3.12。
    在任何依赖安装、镜像构建或数据库连接前，脚本会 fail-closed 校验 `.env` 已加载、属于部署用户、是普通文件且权限为 `0400` 或 `0600`，并检查必要的 MySQL、Redis 和会话配置。
 2. 普通判题和 Agent-as-Judge 镜像均带 Dockerfile 与实际 `COPY` 输入的确定性指纹；稳定镜像指纹与当前输入相同时只创建候选标签，不调用构建。输入确有变化时，构建显式绑定 `default` BuildKit builder（可用 `NUMOJ_DOCKER_BUILDER` 覆盖），直接复用 Docker data root 中的 daemon 全局步骤缓存；不要复制或修改 `/var/lib/docker` 的底层文件。脚本要求本地 `latest` 稳定镜像及 TeX、MKL、Torch、Paddle、Playwright 等关键重型步骤缓存线索均存在，并在候选镜像中写入 inline cache 元数据。任一前提缺失时在停服前失败关闭。缓存线索用于排除明确缺失，最终命中仍以 BuildKit 输出为准；本地稳定标签不传给 registry 型 `--cache-from`，避免无意义的镜像代理请求。Docker 基础镜像固定到已验证摘要，只有最终 npm 层使用的 Harness 版本参数紧邻该层声明，避免缓存键无谓向前扩散。
-3. 使用 `mysqldump --single-transaction` 生成原子 gzip 备份；数据库尚不存在时生成明确占位记录。备份在停服前完成，避免备份工具失败扩大服务中断；它是结构变更前的一致性快照，不承诺包含随后停机窗口前的新增写入。
+3. 使用服务端查询结果确定唯一备份计划；不得根据客户端版本猜测，也不得加 `--no-server-version-check` 绕过兼容检查。固定矩阵如下：
+
+   | 服务端 | 首选工具 | 固定上游版本 | APT 包 / 仓库 |
+   | --- | --- | --- | --- |
+   | Oracle MySQL / Percona Server 8.0.34+ | XtraBackup 8.0 | `8.0.35-36` | `percona-xtrabackup-80` / `pxb-80` |
+   | Oracle MySQL / Percona Server 8.4.x | XtraBackup 8.4 | `8.4.0-6` | `percona-xtrabackup-84` / `pxb-84-lts` |
+   | 其他版本或发行方（包括 MariaDB） | `mysqldump` | 系统 MySQL 客户端 | 仅备份 `MYSQL_DB` |
+
+   XtraBackup 缺失或版本不匹配时，脚本在停服前通过交互式 `sudo` 使用 Debian APT 自动安装或切换到矩阵中的精确版本；安装失败才允许把本次计划确定为逻辑备份。软件包动作必须先模拟，禁止删除或升级 MySQL server、Docker、systemd 等宿主关键包。物理计划在 Celery 排空期间以受管后台进程刷新 sudo ticket，停服后所有 sudo 操作都使用 `-n`，认证丢失立即失败而不再次等待密码。计划写入后，停服阶段不得因 XtraBackup 执行或 prepare 失败临时回退；本机 datadir、socket、root socket 身份或容量无法验证时也必须在停服前失败关闭。
 4. 先确认两套 Supervisor 都可管理，再优雅停止 Celery、最后停止 Web；Celery 排空期间 Web 仍可接收请求并让新任务在队列中等待。首次从根目录 `web.conf` / `celery.conf` 迁移时，只终止 UID、工作目录、Supervisor 入口和配置参数全部精确匹配的旧进程；其他控制文件缺失场景失败关闭，不按模糊进程名杀进程。外层等待上限必须严格大于 Supervisor 的 `stopwaitsecs`。
-5. 切换项目内 `.deploy/current-venv`，只执行一次 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个镜像的 `latest` 标签。
-6. 最佳努力启动 `deploy/supervisor/observability.conf`，再依次启动 `celery.conf`、`web.conf`；两组业务服务均完成各自稳定启动窗口后，再从 Supervisor status 复核全部业务进程仍为 `RUNNING`，最后清理由本脚本 label 标记的旧 dangling 镜像。日志采集异常必须告警，但不能使健康的业务服务回滚。
+5. 全部应用写入者停止后创建 RPO 0 的部署回滚点。停止完成后必须再次扫描并拒绝额外漂移的 Web/worker 进程。物理路径备份整个 MySQL 实例，不压缩，并且必须完成 `xtrabackup --prepare` 及 checkpoint/关键元文件验证；逻辑 fallback 只导出配置的 `MYSQL_DB`，使用 gzip level 1，持续显示原始字节、压缩字节、吞吐与耗时，并在发布前完整重读 gzip 流校验 CRC。逻辑路径先写同文件系统临时文件，fsync 后原子发布产物和版本化清单；物理路径先由 `privileged.py` 以 dirfd/inode 固定受管目录并将根与 `physical/` 硬化为 root:root `0711`，再直接写入 root:root `0700` 的隔离 run-id 目录，只有 prepare 和验证完成后发布清单，中途失败的目录与失败清单原地保留。密码不得进入 argv、环境、输出或清单。
+6. 只有备份验证成功后，才切换项目内 `.deploy/current-venv`，执行一次 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个镜像的 `latest` 标签。结构同步失败立即停止，不自动恢复数据库，也不自动重启任何版本的业务服务；保留 DDL 现场、失败阶段和回滚点供人工判断。
+7. 最佳努力启动 `deploy/supervisor/observability.conf`，再依次启动 `celery.conf`、`web.conf`；两组业务服务均完成各自稳定启动窗口后，再从 Supervisor status 按精确 namespec 集合复核全部业务进程仍为 `RUNNING`。随后重新核验逻辑产物的 gzip EOF/CRC/SHA/大小，或物理产物的 root owner、full-prepared checkpoint 与文件清单；核验成功后才能标记 deployment success，最后清理由本脚本 label 标记的旧 dangling 镜像。日志采集异常必须告警，但不能使健康的业务服务回滚。
 
-部署脚本只修改项目内 `.deploy/`、两个生产镜像标签和 Supervisor 进程，不修改 `.env`、`static/`、上传目录或业务运行目录。系统解释器和全局 site-packages 不被修改。数据库同步器只创建缺失结构和同步已识别列类型，不导入 bootstrap、不删除表/列、不清空数据；部署前备份是额外保护，不代表任意 DDL 都可以无审阅执行。
+部署脚本只修改项目内 `.deploy/`、两个生产镜像标签和 Supervisor 进程，并在需要 XtraBackup 时通过 APT 管理固定的 Percona 软件源与包；它不修改 `.env`、`static/`、上传目录、业务运行目录、系统 Python 或全局 site-packages。部署辅助 Python 统一维护在 `deploy/`，`deploy.sh` 只做 shell 流程编排，不允许 heredoc Python 或 `python -c`。数据库同步器只创建缺失结构和同步已识别列类型，不导入 bootstrap、不删除表/列、不清空数据；部署前备份是额外保护，不代表任意 DDL 都可以无审阅执行。
 
-`.deploy/venvs/` 仅保留两个轮换槽，下一次部署会重建非活动槽。`.deploy/backups/` 不在发布关键路径自动清理：数据库备份至少保留 5 份且不少于 30 天，只有在外部备份存在并完成恢复抽查后才能清理。部署失败发生在停服前时原服务不受影响；发生在停服后时保持失败现场，修复后重跑。不要自动回灌备份，因为 MySQL DDL 可能已部分提交，应先判断向前修复还是人工恢复。
+数据库备份实现按职责位于 `deploy/backup/`：兼容策略、APT 引导、物理执行、路径安全、dirfd 最小特权操作和状态编排相互独立；稳定入口仍是 `deploy/backup_database.py`。版本矩阵只能在 `policy.py` 修改，其他模块必须引用同一 `ReleaseSpec`，不得复制服务端版本判断。
+
+`.deploy/venvs/` 仅保留两个轮换槽，下一次部署会重建非活动槽。`.deploy/backups/` 按 `physical/`、`logical/`、`manifests/` 和 `plans/` 分区；物理产物为 root 所有且权限 `0700`，受管根与 `physical/` 为 root:root `0711`，逻辑产物、计划与清单权限为 `0600`。`plans/.deployment-generation` 在主机锁内分配持久化单调序号；留存按该因果序号而非墙上时间排序，并始终保护当前 `run-id`。新的回滚点完整发布前不得删除任何旧回滚点；只有 Web/Celery 全部恢复为 `RUNNING` 且真实产物再次验证成功后，才按清单删除超出最近 2 个的成功部署回滚点。物理目录删除也必须由 `privileged.py` 在同一提权边界内固定并复核 inode 后以 dirfd 递归完成，不得恢复为检查后直接 `sudo rm`。`pending`、`failed`、无清单及旧格式产物均需人工处置，永不自动删除。部署失败发生在停服前时原服务不受影响；发生在停服后时保持失败现场，修复后重跑。不要自动回灌备份，因为 MySQL DDL 可能已部分提交，应先判断向前修复还是人工恢复。
+
+### 人工恢复 Runbook
+
+恢复是独立的破坏性生产操作，必须在获得本次恢复的单独授权后才能执行。`deploy.sh` 只创建和管理回滚点，永远不自动回灌，也不得把下列步骤嵌入部署流程。
+
+1. 选择 `backup_status=complete` 的 manifest，保留当前数据和失败现场，核对 manifest/plan 中的备份方式、MySQL 版本和产物路径；物理备份还必须核对 `server_uuid`、规范化 `datadir` 和 XtraBackup 精确包版本。`deployment_status=pending/failed` 不代表备份本身无效，但必须先结合 `failure_phase` 和 DDL 已提交状态完成人工判断；不得使用 `backup_status=failed` 或缺失完整性事实的产物。
+2. 先在独立的一次性 MySQL 实例上演练完整恢复：使用与 manifest 相同的 MySQL 发行方和精确版本，物理备份还要使用清单记录的 XtraBackup 精确版本。验证表数、关键业务读取和应用兼容性，记录演练结果后再进入生产操作。
+3. 生产恢复前停止 Web 和全部 Celery worker，确认 NumericalOJ 不再写入。物理恢复还必须停止 MySQL，确认没有 `mysqld` 进程使用目标 `datadir`；先把现有 `datadir` 作为独立现场保留，不得直接删除或覆盖。
+
+逻辑备份只能导入到运维人员明确准备的目标库。MySQL 凭据放在权限 `0600` 的临时 option file，禁止出现在 argv 或环境变量中；先校验 gzip，再在开启 `pipefail` 的 shell 中导入：
+
+```bash
+gzip -t -- "$ARTIFACT"
+set -o pipefail
+gzip -dc -- "$ARTIFACT" | \
+  /usr/bin/mysql --defaults-extra-file="$CREDENTIALS" --database="$DATABASE"
+```
+
+物理备份的 `$ARTIFACT` 必须是 manifest 指向且已 prepare 的 run-id 目录，目标 MySQL 的发行方、精确版本和规范化 `$DATADIR` 必须与 manifest/plan 核对一致。在 MySQL 停止、目标 `datadir` 已安全腾空且 XtraBackup 版本已校验的前提下，才能执行：
+
+```bash
+sudo /usr/bin/xtrabackup --copy-back --target-dir="$ARTIFACT"
+sudo /usr/bin/chown -R mysql:mysql "$DATADIR"
+sudo /usr/bin/systemctl start mysql
+```
+
+恢复后首先执行只读查询 `SELECT VERSION(), @@server_uuid, @@datadir`。精确版本必须与 manifest 一致；物理恢复的 UUID 和规范化数据目录还必须与 plan 一致，逻辑恢复则与导入前审批记录的目标实例一致。再完成表数、关键数据和应用只读验证。任一身份或数据校验失败时立即停止，不启动业务服务；全部验证通过后再按经过审批的恢复计划启动 Celery/Web。
 
 ### 回滚原则
 
