@@ -88,7 +88,7 @@ Redis 客户端统一由 `oj_modules/redis_clients.py` 创建。普通命令的 
 
 ## 测试与数据安全
 
-GitHub Actions 在每次 push/PR 运行全部 `tests/unit`。`tests/db`、`tests/e2e` 和 `tests/ci` 会操作真实 MySQL/Redis，只能使用一次性基础设施；完整分层、命令和选测规则以 `docs/maintenance.md` 第 3 节为唯一详细来源。
+GitHub Actions 在每次 push/PR 运行语法检查、全部 `tests/unit`，并在 GitHub-hosted runner 的一次性 MySQL/Redis 上运行全部 `tests/db` 与 `tests/e2e`。判题 E2E 使用 CI 构建的 lite Docker 镜像；真实外部 AI 因无测试密钥而跳过。`tests/db`、`tests/e2e` 和 `tests/ci` 会操作真实 MySQL/Redis，只能使用一次性基础设施；完整分层、命令和选测规则以 `docs/maintenance.md` 第 3 节为唯一详细来源。
 
 日常最低门禁：
 

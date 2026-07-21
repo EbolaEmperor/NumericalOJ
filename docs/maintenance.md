@@ -90,6 +90,8 @@ oj.py 只负责把上述组件装配起来
 | E2E | 一次性 MySQL + Redis，本地 Flask/Celery，部分场景需 Docker | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/e2e` | 路由、CLI、跨进程工作流 |
 | 完整隔离 | Docker Compose | **只破坏测试数据卷** | `docker compose -f tests/ci/docker-compose.local.yml up --build --abort-on-container-exit --exit-code-from test` | 合并前或高风险变更 |
 
+GitHub Actions 对每次 push/PR 执行语法、unit、DB 和 E2E。集成 job 使用 GitHub-hosted runner 上的一次性 MySQL 8.4/Redis 服务，构建 `numericaloj-judger-lite` 后运行真实 C/C++/Python/Octave 判题；JUnit 结果作为 artifact 保留。只有需要外部密钥的 live AI 测试默认跳过，平台具备 Node、loopback、符号链接、FIFO 与 Docker 的测试不得仅因运行在 GitHub 上而跳过。
+
 生产健康检查不属于测试矩阵，也不得嵌入 `deploy.sh`。部署完成后，运维人员可以在生产主机人工执行只读的 `curl -f http://127.0.0.1:2025/health/live` 与 `curl -f http://127.0.0.1:2025/health/ready`；前者只证明 Web 可响应，后者还检查 MySQL 与 Redis。它们不能替代发布前测试。
 
 DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性测试服务时才能执行；配置来源可以是显式环境变量、测试 `.env`，或测试镜像构建时由 `tests/ci/config.ci.py` 提供的隔离配置，不得为测试手工改写受版本控制的生产配置桥接层。安全门同时要求：

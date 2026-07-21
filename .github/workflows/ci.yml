@@ -1,39 +1,151 @@
 name: CI
 
-# 轻量 CI 门禁：每次 push / PR 都跑。
-# - compile：对全部 Python 文件做 py_compile（零依赖、必过的语法门禁）。
-# - unit：安装依赖后跑全部「无需 MySQL/Redis/编译器」的纯逻辑单测。
-# 需要真实 gcc/g++/octave/MySQL/Redis 的完整 CLI e2e 测试见 tests/ci/
-# （Docker Compose，只能在本地或非生产服务器运行，禁止在 why-server/computing 上跑）。
-
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   compile:
-    runs-on: ubuntu-latest
+    name: Python syntax
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: py_compile all sources
+      - name: Compile all tracked Python entry points
         run: |
-          python -m compileall -q oj.py oj_modules deploy tests
+          python -m compileall -q config.py oj.py oj_modules deploy scripts skills tests
+          python -m py_compile docker/agent_judge/report docker/agent_judge/run_harness
 
   unit:
-    runs-on: ubuntu-latest
+    name: Unit tests
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: 'requirements/*.txt'
-      - name: Install dependencies
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements/production.txt -r requirements/test.txt
-      - name: Run infra-free unit tests
-        run: python -m pytest -q tests/unit
+          python -m pip install \
+            -r requirements/production.txt \
+            -r requirements/test.txt
+      - name: Run infrastructure-free unit tests
+        run: |
+          mkdir -p test-results logs/supervisor logs/services
+          python -m pytest tests/unit \
+            --junitxml=test-results/tests_unit.xml
+      - name: Upload unit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: test-results/*.xml
+          if-no-files-found: error
+          retention-days: 14
+
+  integration:
+    name: MySQL, Redis, CLI and Docker E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    services:
+      mysql:
+        image: mysql:8.4.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci_root_password
+          MYSQL_DATABASE: myojdb_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pci_root_password"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      NUMOJ_TEST_ENV: '1'
+      OJ_LIVE_AI: '0'
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: '3306'
+      MYSQL_DB: myojdb_test
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ci_root_password
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: '6379'
+      REDIS_DB: '15'
+      JUDGER_DOCKER_IMAGE: numericaloj-judger-lite:latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Install host test toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            default-mysql-client \
+            fonts-noto-cjk \
+            latexmk \
+            redis-tools \
+            texlive-fonts-recommended \
+            texlive-lang-chinese \
+            texlive-latex-recommended \
+            texlive-xetex
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            -r requirements/production.txt \
+            -r requirements/test.txt
+      - name: Verify isolated CI environment
+        run: |
+          python -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+          mysql --version
+          redis-cli --version
+          node --version
+          docker version
+          xelatex --version | head -n 1
+      - name: Run database integration tests
+        run: bash tests/ci/run-ci.sh tests/db
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build the real judge image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/judger-lite
+          load: true
+          tags: numericaloj-judger-lite:latest
+          cache-from: type=gha,scope=judger-lite
+          cache-to: type=gha,mode=max,scope=judger-lite
+      - name: Run CLI and Docker end-to-end tests
+        run: bash tests/ci/run-ci.sh tests/e2e
+      - name: Upload integration test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: test-results/*.xml
+          if-no-files-found: warn
+          retention-days: 14
