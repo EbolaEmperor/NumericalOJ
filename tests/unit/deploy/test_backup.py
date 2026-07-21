@@ -428,6 +428,24 @@ def test_option_file_rejects_multiline_credentials_and_cleans_up(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_xtrabackup_option_file_is_private_socket_bound_and_ephemeral(tmp_path):
+    settings = backup.settings_from_config(_config())
+
+    with backup.xtrabackup_option_file(
+        settings, tmp_path, "/run/mysqld/mysqld.sock"
+    ) as option_file:
+        body = option_file.read_text(encoding="utf-8")
+        assert option_file.stat().st_mode & 0o777 == 0o600
+        assert "[client]" in body
+        assert "[xtrabackup]" in body
+        assert 'user="oj-user"' in body
+        assert 'password="secret-value"' in body
+        assert 'socket="/run/mysqld/mysqld.sock"' in body
+        assert "protocol=SOCKET" in body
+
+    assert not option_file.exists()
+
+
 def _discovery(*, version="10.11.6-MariaDB", comment="MariaDB Server"):
     return backup.DatabaseDiscovery(
         snapshot=backup.DatabaseSnapshot(
@@ -823,7 +841,10 @@ def test_successful_physical_backup_writes_a_complete_pending_manifest(
 
     executed = {}
 
-    def execute(_plan, target):
+    def execute(_plan, target, *, mysql_defaults_file):
+        assert mysql_defaults_file.stat().st_mode & 0o777 == 0o600
+        assert "secret-value" in mysql_defaults_file.read_text(encoding="utf-8")
+        executed["defaults_file"] = mysql_defaults_file
         target.mkdir()
         result = backup.xtrabackup.XtraBackupResult(
             target=str(target),
@@ -849,6 +870,7 @@ def test_successful_physical_backup_writes_a_complete_pending_manifest(
     assert document["prepared"] is True
     assert document["restore_verified_at"] is None
     assert document["tool"]["package_version"] == plan.package_version
+    assert not executed["defaults_file"].exists()
 
     monkeypatch.setattr(
         backup.xtrabackup,
