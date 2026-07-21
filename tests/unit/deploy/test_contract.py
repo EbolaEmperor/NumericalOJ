@@ -457,6 +457,11 @@ def test_deploy_rejects_drift_processes_after_every_stop_and_before_backup():
 def test_supervisor_config_keeps_the_expected_process_topology():
     from supervisor.options import ServerOptions
 
+    # Supervisor 在解析配置时要求日志父目录已经存在。生产由 deploy.sh 创建；
+    # clean checkout 的单测显式准备这些 Git 忽略运行目录，避免依赖开发机残留状态。
+    for relative in ("logs/supervisor", "logs/services"):
+        (ROOT / relative).mkdir(parents=True, exist_ok=True)
+
     groups = {}
     for config_name in ("web.conf", "celery.conf", "observability.conf"):
         options = ServerOptions()

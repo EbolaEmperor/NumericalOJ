@@ -16,12 +16,16 @@ if "(python 3.12)" not in pip_version:
 print(f">>> CI Python 基线：{sys.version.split()[0]} / {pip_version}")
 PY
 
-cd /app
-# 判题运行根用内置默认 <OJ_ROOT>/judger（/app/judger）；不再预建 /tmp/judger_runs。
-mkdir -p test-results judger
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+# 判题运行根使用内置默认 <OJ_ROOT>/judger；同时创建 clean checkout 中不存在的
+# Git 忽略运行目录，使同一个入口既能在 /app 容器内运行，也能直接用于 GitHub runner。
+mkdir -p \
+  test-results judger tmp uploads ranking_uploads user_libraries library \
+  logs/supervisor logs/services
 
-# CI 不读取生产 config.py。真实 AI 链路测试默认 skip；需要验证外部 AI 服务时，
-# 使用单独的非生产配置和专门流程，不要把生产密钥挂进 CI 容器。
+# CI 不读取生产私有 .env：Compose 镜像使用 config.ci.py，GitHub runner 使用受控环境
+# 变量覆盖 tracked config.py。真实 AI 链路默认 skip；不要把生产密钥挂进 CI。
 export OJ_LIVE_AI=0
 echo ">>> CI 使用占位符 AI 配置，AI live 测试将 skip (OJ_LIVE_AI=0)"
 
@@ -29,12 +33,17 @@ echo ">>> CI 使用占位符 AI 配置，AI live 测试将 skip (OJ_LIVE_AI=0)"
 # 并同时校验专用测试库、非零 Redis DB、主机与检出路径。
 : "${NUMOJ_TEST_ENV:?必须由隔离的 CI 容器显式设置 NUMOJ_TEST_ENV=1}"
 
-# 逐模块有序列表（unit → db → CLI e2e）
-MODULES=(
-  "tests/unit"
-  "tests/db"
-  "tests/e2e"
-)
+# 默认执行 unit → db → CLI e2e；传入路径时只运行调用方指定的模块。
+# GitHub Actions 用独立 job 跑 unit，再让带 MySQL/Redis/Docker 的 job 跑 db/e2e。
+if (($#)); then
+  MODULES=("$@")
+else
+  MODULES=(
+    "tests/unit"
+    "tests/db"
+    "tests/e2e"
+  )
+fi
 
 declare -a NAMES
 declare -a RESULTS
