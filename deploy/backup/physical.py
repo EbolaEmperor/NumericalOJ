@@ -949,7 +949,8 @@ def _inventory_backup(
         FIND_BINARY,
         target,
         "-xdev",
-        "-printf=%y\\t%s\\n",
+        "-printf",
+        "%y\\t%s\\n",
     )
     if runner is not None:
         result = _run(command, runner=runner, capture_output=True)
