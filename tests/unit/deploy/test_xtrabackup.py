@@ -230,7 +230,7 @@ class FakeRunner:
             pass
         elif command == [str(self.binary), "--version"]:
             stderr = (
-                f"xtrabackup version {self.plan.upstream_version} "
+                f"{self.binary} version {self.plan.upstream_version} "
                 "based on MySQL server\n"
             )
         elif str(xtrabackup.MYSQL_BINARY) in command:
