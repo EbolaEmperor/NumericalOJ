@@ -5,7 +5,7 @@
 - create_submission（status='Pending'，返回 lastrowid，test_points 序列化往返）
 - get_submission_by_id（解析 test_points / None / []）
 - update_submission_status / update_submission_evaluation
-- get_user_submission_count / increment_submission_count / can_submit / get_remaining_submissions
+- get_user_submission_count / reserve_submission_quota / can_submit / get_remaining_submissions
   （默认上限 10；problem['submission_limit'] 作为参数覆盖）
 - get_incomplete_submissions（Pending/Waiting/Running，id 升序）
 - get_submissions_in_time_range
@@ -96,11 +96,11 @@ def test_submission_count_default_zero():
     assert db.get_user_submission_count('countuser1', pid) == 0
 
 
-def test_increment_submission_count():
+def test_reserve_submission_quota_increments_count():
     h.make_user('countuser2')
     pid = h.make_problem(lang='python', type=1)
-    db.increment_submission_count('countuser2', pid)
-    db.increment_submission_count('countuser2', pid)
+    assert db.reserve_submission_quota('countuser2', pid) == 1
+    assert db.reserve_submission_quota('countuser2', pid) == 2
     assert db.get_user_submission_count('countuser2', pid) == 2
 
 
@@ -111,7 +111,7 @@ def test_can_submit_and_remaining_default_cap_10():
     assert db.can_submit('countuser3', pid) is True
     assert db.get_remaining_submissions('countuser3', pid) == 10
     for _ in range(10):
-        db.increment_submission_count('countuser3', pid)
+        db.reserve_submission_quota('countuser3', pid, max_submissions=10)
     assert db.get_user_submission_count('countuser3', pid) == 10
     assert db.can_submit('countuser3', pid) is False
     assert db.get_remaining_submissions('countuser3', pid) == 0
@@ -125,10 +125,10 @@ def test_can_submit_uses_problem_submission_limit_override():
     limit = problem['submission_limit']
     assert limit == 3
     for _ in range(2):
-        db.increment_submission_count('countuser4', pid)
+        db.reserve_submission_quota('countuser4', pid, max_submissions=limit)
     assert db.can_submit('countuser4', pid, max_submissions=limit) is True
     assert db.get_remaining_submissions('countuser4', pid, max_submissions=limit) == 1
-    db.increment_submission_count('countuser4', pid)
+    db.reserve_submission_quota('countuser4', pid, max_submissions=limit)
     assert db.can_submit('countuser4', pid, max_submissions=limit) is False
     assert db.get_remaining_submissions('countuser4', pid, max_submissions=limit) == 0
 
