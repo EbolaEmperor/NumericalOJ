@@ -2,6 +2,8 @@
 
 本文定义新代码与渐进式重构的共同标准。目标不是一次性“重写干净”，而是在不破坏教学业务和生产数据的前提下，持续降低理解、修改、验证和回滚成本。
 
+当前运行方式与目录概览以 `README.md` 为准，必须遵守的开发和生产边界以 `CLAUDE.md` 为准；本手册只维护跨版本仍应成立的设计、验证、发布与恢复规则。`docs/reviews/` 是带日期的历史审阅快照，不作为当前操作说明。
+
 ## 1. 架构边界
 
 NumericalOJ 保持模块化单体，不因文件较大就拆微服务。只有当独立部署、资源隔离或故障隔离带来可验证收益时，才新增进程边界。
@@ -28,7 +30,7 @@ evaluate task ─> judger_core ─> docker_sandbox ─> Docker
 oj.py 只负责把上述组件装配起来
 ```
 
-现有代码尚未完全满足该方向；规则用于约束新增代码，并优先从高频修改点渐进收口。不要为了“分层”创建只转发一次调用的空壳类。
+该方向用于约束新增代码和高频修改点的渐进收口。不要为了“分层”创建只转发一次调用的空壳类。
 
 ### 依赖与复用规则
 
@@ -60,13 +62,13 @@ oj.py 只负责把上述组件装配起来
 - 对用户、题目、提交、比赛等标识使用稳定主键；用户名等可变字段不能充当隐式外键而没有统一更新策略。
 - 新增 ZIP/上传处理时设置成员数、单文件、总解压大小、压缩率与路径穿越限制。
 - 临时上传和解压目录必须按请求/任务隔离，并在所有成功、失败和提前返回路径清理；需要长期保留的产物先显式复制到稳定目录。
-- 文件系统与数据库共同发布时，必须明确提交点和崩溃恢复依据。先写不可变代次，再用数据库锁定快照做 CAS；跨进程恢复使用持久 journal，不能用进程内回调或无条件“写回旧快照”猜测最终状态。
+- 文件系统与数据库共同发布时，必须明确提交点和崩溃恢复依据，并按故障模型选择不可变代次、CAS、outbox 或持久 journal；不能用进程内回调或无条件“写回旧快照”猜测最终状态。已有书面作业产物应复用 `written_submission_artifacts.py` 的既定协议，不得复制一套近似实现。
 - UI 改动优先拆模板 partial 和独立静态模块，不继续扩大单文件内联 JS/CSS。
 
 ### 依赖与配置
 
 - 默认运行路径所需包进入 `requirements/production.txt`，测试工具进入 `requirements/test.txt`，重量级非默认能力进入 `requirements/optional.txt`。
-- 所有依赖精确 pin；升级时记录原因与兼容验证，不在生产临时 `pip install`。
+- 直接依赖必须精确 pin；在 Python 3.12 上生成并校验完整传递依赖 lock 之前，不得宣称构建已位级可复现。升级时记录原因与兼容验证，不在生产临时 `pip install`。
 - 新配置必须定义来源、类型、默认值、敏感性和是否需要重启；环境覆盖规则要有测试。
 - 密钥不得写入仓库、日志、测试 fixture、镜像层或示例输出。
 
@@ -82,14 +84,15 @@ oj.py 只负责把上述组件装配起来
 
 | 层级 | 基础设施 | 是否破坏数据 | 典型命令 | 使用场景 |
 | --- | --- | --- | --- | --- |
-| 语法 | 无 | 否 | `python -m compileall -q oj.py oj_modules deploy tests` | 所有 Python 变更 |
+| 语法 | 无 | 否 | `python -m compileall -q config.py oj.py oj_modules deploy scripts skills tests && python -m py_compile docker/agent_judge/report docker/agent_judge/run_harness` | 所有受版本控制的 Python 源码变更 |
 | 单元 | 无 | 否 | `python -m pytest -q tests/unit` | 所有逻辑、边界和回归变更 |
 | DB | 一次性 MySQL + Redis | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/db` | 查询、事务、schema、缓存一致性 |
 | E2E | 一次性 MySQL + Redis，本地 Flask/Celery，部分场景需 Docker | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/e2e` | 路由、CLI、跨进程工作流 |
 | 完整隔离 | Docker Compose | **只破坏测试数据卷** | `docker compose -f tests/ci/docker-compose.local.yml up --build --abort-on-container-exit --exit-code-from test` | 合并前或高风险变更 |
-| 部署探针 | 生产 Web/MySQL/Redis | 否 | `curl -f http://127.0.0.1:2025/health/live`、`curl -f http://127.0.0.1:2025/health/ready` | 部署后验证，不替代测试 |
 
-DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直接执行。安全门同时要求：
+生产健康检查不属于测试矩阵，也不得嵌入 `deploy.sh`。部署完成后，运维人员可以在生产主机人工执行只读的 `curl -f http://127.0.0.1:2025/health/live` 与 `curl -f http://127.0.0.1:2025/health/ready`；前者只证明 Web 可响应，后者还检查 MySQL 与 Redis。它们不能替代发布前测试。
+
+DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性测试服务时才能执行；配置来源可以是显式环境变量、测试 `.env`，或测试镜像构建时由 `tests/ci/config.ci.py` 提供的隔离配置，不得为测试手工改写受版本控制的生产配置桥接层。安全门同时要求：
 
 - `NUMOJ_TEST_ENV=1`；
 - MySQL 库名为 `*_test`、`test_*` 或含 `_test_`，且绝不能是 `myojdb`；
@@ -111,22 +114,22 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 
 ## 4. 数据库变更规则
 
-### 当前能力
+### 同步器支持范围
 
 仓库以 `database/bootstrap.sql` 为新安装结构与开发种子基线，`scripts/init_db_schema.py` 在显式调用时补齐缺失库/表/列/索引，并同步可识别的列类型。它使用 advisory lock，但**没有版本化 migration、迁移历史或自动 down migration**，也不表达删除、重命名、数据回填和复杂约束演进。生产 Supervisor 不执行结构同步；生产中只有部署状态机拥有这一职责。
 
 因此，“启动成功”不等于所有历史数据库都完成了语义迁移，`--dry-run` 也只能显示当前同步器能识别的 DDL。
 
-### 现阶段变更流程
+### 数据库变更流程
 
 1. 先选择兼容策略，优先 expand-contract：新增兼容结构，双读/双写或回填，切换读取，最后在后续版本清理旧结构。
 2. 更新 `database/bootstrap.sql` 作为新安装基线。
-3. 只涉及缺失列/索引或列类型时，验证 `init_db_schema.py --dry-run` 与实际执行结果。
+3. 只涉及缺失列/索引或列类型时，验证 `python3 scripts/init_db_schema.py --dry-run` 与实际执行结果。
 4. 涉及重命名、删除、回填、约束或大表操作时，新增独立迁移脚本，包含前置检查、幂等判断、分批策略和失败恢复。
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
-6. 部署前备份并记录恢复命令；生产执行需要单独授权。
+6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
 
-### 目标状态
+### 版本化迁移前置要求
 
 引入版本化迁移工具前，应先定义：迁移编号与不可变性、执行账本、锁、超时、大表策略、数据迁移与 DDL 分离、备份验证、向前修复原则。不要把现有启动同步器直接包装成“已版本化迁移”。
 
@@ -138,46 +141,41 @@ DB/E2E 命令只有在 `config.py` 已明确指向专用测试服务时才能直
 - `.env`、`static/` 的生产额外资产、上传、运行目录和密钥不随代码全量覆盖。
 - Web 与 Celery 是两个发布边界；Python 变更按项目既定顺序完成显式停机恢复后再启动 `celery -> web`，避免 Web 在 worker 尚不可用时接受新任务。
 - Gunicorn worker 重建、Web-only 重启和 HUP reload 只能执行幂等调度引导；清锁、重置 Running 或重投任务的恢复必须确认全部 Celery worker 已停止，并由独立命令触发。
-- Docker 变更单独构建并记录旧镜像 ID；长期应使用不可变版本标签，而不是只依赖 `latest`。
 - schema 先采用向后兼容扩展，再发布读取新结构的代码；没有验证兼容窗口时不做不可逆 DDL。
+- 代码或镜像回退必须视为一次新的已知提交部署，并先验证当前 schema 与数据语义兼容。当前流程不持久保留旧镜像标签，不得假设本机仍存在可直接恢复的旧镜像。
 
 ### 发布步骤
 
 生产发布由运维人员先在目标 checkout 执行 `git pull --ff-only`，再运行根目录的 `bash deploy.sh`。脚本不拉取代码，也不校验主机名、用户名、固定目录或 Git 状态；调用方负责确认当前版本。其原地部署顺序为：
 
-1. 取得覆盖主机共享 Supervisor/Docker 资源的主机级锁，清理异常中断遗留且带本项目 label 的 `deploy-*` 镜像标签，再在项目内双槽虚拟环境的非活动槽安装 `requirements/production.txt`。
-   引导解释器必须是 Python 3.12；脚本支持 `NUMOJ_PYTHON`、项目内 `.deploy/bootstrap-python` 和 PATH 自动发现，不依赖系统 `python3` 恰好指向 3.12。
-   在任何依赖安装、镜像构建或数据库连接前，脚本会 fail-closed 校验 `.env` 已加载、属于部署用户、是普通文件且权限为 `0400` 或 `0600`，并检查必要的 MySQL、Redis 和会话配置。
-2. 普通判题和 Agent-as-Judge 镜像均带 Dockerfile 与实际 `COPY` 输入的确定性指纹；稳定镜像指纹与当前输入相同时只创建候选标签，不调用构建。输入确有变化时，构建显式绑定 `default` BuildKit builder（可用 `NUMOJ_DOCKER_BUILDER` 覆盖），直接复用 Docker data root 中的 daemon 全局步骤缓存；不要复制或修改 `/var/lib/docker` 的底层文件。脚本要求本地 `latest` 稳定镜像及 TeX、MKL、Torch、Paddle、Playwright 等关键重型步骤缓存线索均存在，并在候选镜像中写入 inline cache 元数据。任一前提缺失时在停服前失败关闭。缓存线索用于排除明确缺失，最终命中仍以 BuildKit 输出为准；本地稳定标签不传给 registry 型 `--cache-from`，避免无意义的镜像代理请求。Docker 基础镜像固定到已验证摘要，只有最终 npm 层使用的 Harness 版本参数紧邻该层声明，避免缓存键无谓向前扩散。
-3. 使用服务端查询结果确定唯一备份计划；不得根据客户端版本猜测，也不得加 `--no-server-version-check` 绕过兼容检查。固定矩阵如下：
+1. 取得覆盖主机共享 Supervisor、Docker 和备份状态的主机级锁。引导解释器必须是 Python 3.12；在安装依赖、构建镜像或连接数据库前，fail-closed 校验生产 `.env` 的加载状态、属主、文件类型、权限与必填配置。
+2. 在停服前重建非活动 venv，并为普通判题和 Agent-as-Judge 准备候选镜像。构建输入未变化时可以复用稳定镜像；发生变化时必须证明本地稳定镜像和关键构建缓存可用，否则在停服前退出。具体指纹、缓存条件和基础镜像由 `deploy.sh`、Dockerfile 与契约测试维护，不在手册复制。
+3. 以 MySQL 服务端查询结果生成唯一备份计划，兼容矩阵只在 `deploy/backup/policy.py` 维护。兼容的本机 Oracle MySQL/Percona Server 使用固定版本 XtraBackup；无兼容映射时使用逻辑备份。XtraBackup 缺失或版本不匹配时，先通过交互式 `sudo` 与 Debian APT 供应固定版本；APT 动作必须先模拟、限制在审核后的包集合内，并拒绝连带改动 MySQL、Docker 等宿主关键服务。供应阶段的 sudo、APT、仓库、dpkg 或二进制校验失败可以把计划确定为逻辑备份。一旦供应成功，物理 plan 的 MySQL 身份、socket/datadir、root socket、容量或后续执行条件验证失败都必须直接停止；计划冻结后不得因备份或 prepare 失败临时换策略。交互认证与凭据保活必须在停服前完成，停服后只能使用 `sudo -n`，凭据失效立即停止。
+4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
+5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
+6. 只有回滚点验证成功后，才切换 `.deploy/current-venv`，执行一次非破坏性结构同步和显式停机任务恢复，再切换生产镜像标签。结构同步或恢复失败立即停止，不自动恢复数据库，也不自动重启业务服务；保留 DDL 现场、失败阶段和回滚点供人工判断。
+7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功并执行留存清理。日志采集异常必须告警，但不能阻断健康的业务服务。
 
-   | 服务端 | 首选工具 | 固定上游版本 | APT 包 / 仓库 |
-   | --- | --- | --- | --- |
-   | Oracle MySQL / Percona Server 8.0.34+ | XtraBackup 8.0 | `8.0.35-36` | `percona-xtrabackup-80` / `pxb-80` |
-   | Oracle MySQL / Percona Server 8.4.x | XtraBackup 8.4 | `8.4.0-6` | `percona-xtrabackup-84` / `pxb-84-lts` |
-   | 其他版本或发行方（包括 MariaDB） | `mysqldump` | 系统 MySQL 客户端 | 仅备份 `MYSQL_DB` |
+`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在需要 XtraBackup 时通过 APT 管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
 
-   XtraBackup 缺失或版本不匹配时，脚本在停服前通过交互式 `sudo` 使用 Debian APT 自动安装或切换到矩阵中的精确版本；安装失败才允许把本次计划确定为逻辑备份。软件包动作必须先模拟，禁止删除或升级 MySQL server、Docker、systemd 等宿主关键包。物理计划在 Celery 排空期间以受管后台进程刷新 sudo ticket，停服后所有 sudo 操作都使用 `-n`，认证丢失立即失败而不再次等待密码。计划写入后，停服阶段不得因 XtraBackup 执行或 prepare 失败临时回退；本机 datadir、socket、root socket 身份或容量无法验证时也必须在停服前失败关闭。
-4. 先确认两套 Supervisor 都可管理，再优雅停止 Celery、最后停止 Web；Celery 排空期间 Web 仍可接收请求并让新任务在队列中等待。首次从根目录 `web.conf` / `celery.conf` 迁移时，只终止 UID、工作目录、Supervisor 入口和配置参数全部精确匹配的旧进程；其他控制文件缺失场景失败关闭，不按模糊进程名杀进程。外层等待上限必须严格大于 Supervisor 的 `stopwaitsecs`。
-5. 全部应用写入者停止后创建 RPO 0 的部署回滚点。停止完成后必须再次扫描并拒绝额外漂移的 Web/worker 进程。物理路径备份整个 MySQL 实例，不压缩，并且必须完成 `xtrabackup --prepare` 及 checkpoint/关键元文件验证；逻辑 fallback 只导出配置的 `MYSQL_DB`，使用 gzip level 1，持续显示原始字节、压缩字节、吞吐与耗时，并在发布前完整重读 gzip 流校验 CRC。逻辑路径先写同文件系统临时文件，fsync 后原子发布产物和版本化清单；物理路径先由 `privileged.py` 以 dirfd/inode 固定受管目录并将根与 `physical/` 硬化为 root:root `0711`，再直接写入 root:root `0700` 的隔离 run-id 目录，只有 prepare 和验证完成后发布清单，中途失败的目录与失败清单原地保留。密码不得进入 argv、环境、输出或清单。
-6. 只有备份验证成功后，才切换项目内 `.deploy/current-venv`，执行一次 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个镜像的 `latest` 标签。结构同步失败立即停止，不自动恢复数据库，也不自动重启任何版本的业务服务；保留 DDL 现场、失败阶段和回滚点供人工判断。
-7. 最佳努力启动 `deploy/supervisor/observability.conf`，再依次启动 `celery.conf`、`web.conf`；两组业务服务均完成各自稳定启动窗口后，再从 Supervisor status 按精确 namespec 集合复核全部业务进程仍为 `RUNNING`。随后重新核验逻辑产物的 gzip EOF/CRC/SHA/大小，或物理产物的 root owner、full-prepared checkpoint 与文件清单；核验成功后才能标记 deployment success，最后清理由本脚本 label 标记的旧 dangling 镜像。日志采集异常必须告警，但不能使健康的业务服务回滚。
+部署专用 Python 辅助实现统一维护在 `deploy/`；日志、结构同步和停机恢复继续复用 `scripts/` 中的通用运维入口。`deploy.sh` 只做 Shell 流程编排，不允许 heredoc Python 或 `python -c`。数据库备份实现按兼容策略、APT、物理执行、路径安全、特权操作和状态编排分层；稳定入口是 `deploy/backup_database.py`，服务端兼容判断不得在 `policy.py` 之外复制。
 
-部署脚本只修改项目内 `.deploy/`、两个生产镜像标签和 Supervisor 进程，并在需要 XtraBackup 时通过 APT 管理固定的 Percona 软件源与包；它不修改 `.env`、`static/`、上传目录、业务运行目录、系统 Python 或全局 site-packages。部署辅助 Python 统一维护在 `deploy/`，`deploy.sh` 只做 shell 流程编排，不允许 heredoc Python 或 `python -c`。数据库同步器只创建缺失结构和同步已识别列类型，不导入 bootstrap、不删除表/列、不清空数据；部署前备份是额外保护，不代表任意 DDL 都可以无审阅执行。
+`.deploy/venvs/` 只使用两个轮换槽。数据库备份按物理产物、逻辑产物、计划与 manifest 分区；留存使用持久化单调 generation，而不是可能回拨的墙上时间，并始终保护本次 run。只有 Web/Celery 恢复且真实产物再次验证成功后，才保留最近 2 个成功部署回滚点；`pending`、`failed`、未知或旧格式产物永不自动删除。停服前失败可能留下候选 venv/镜像、日志目录、APT 或备份目录状态，但现有 Web/Celery 不会被停止；停服后失败则保持服务停止和现场。任何失败都不得触发机械回灌，应先判断 DDL 是否已提交，再选择向前修复或人工恢复。
 
-数据库备份实现按职责位于 `deploy/backup/`：兼容策略、APT 引导、物理执行、路径安全、dirfd 最小特权操作和状态编排相互独立；稳定入口仍是 `deploy/backup_database.py`。版本矩阵只能在 `policy.py` 修改，其他模块必须引用同一 `ReleaseSpec`，不得复制服务端版本判断。
-
-`.deploy/venvs/` 仅保留两个轮换槽，下一次部署会重建非活动槽。`.deploy/backups/` 按 `physical/`、`logical/`、`manifests/` 和 `plans/` 分区；物理产物为 root 所有且权限 `0700`，受管根与 `physical/` 为 root:root `0711`，逻辑产物、计划与清单权限为 `0600`。`plans/.deployment-generation` 在主机锁内分配持久化单调序号；留存按该因果序号而非墙上时间排序，并始终保护当前 `run-id`。新的回滚点完整发布前不得删除任何旧回滚点；只有 Web/Celery 全部恢复为 `RUNNING` 且真实产物再次验证成功后，才按清单删除超出最近 2 个的成功部署回滚点。物理目录删除也必须由 `privileged.py` 在同一提权边界内固定并复核 inode 后以 dirfd 递归完成，不得恢复为检查后直接 `sudo rm`。`pending`、`failed`、无清单及旧格式产物均需人工处置，永不自动删除。部署失败发生在停服前时原服务不受影响；发生在停服后时保持失败现场，修复后重跑。不要自动回灌备份，因为 MySQL DDL 可能已部分提交，应先判断向前修复还是人工恢复。
+逻辑产物、计划和 manifest 只能由部署用户读取，物理产物只能由 root 读取。备份路径出现符号链接、属主、设备或 inode 漂移时必须 fail-closed；任何特权清理只能作用于身份已重新绑定并验证的受管备份根，禁止退化为对字符串路径直接执行 `sudo rm`。
 
 ### 人工恢复 Runbook
 
 恢复是独立的破坏性生产操作，必须在获得本次恢复的单独授权后才能执行。`deploy.sh` 只创建和管理回滚点，永远不自动回灌，也不得把下列步骤嵌入部署流程。
 
-1. 选择 `backup_status=complete` 的 manifest，保留当前数据和失败现场，核对 manifest/plan 中的备份方式、MySQL 版本和产物路径；物理备份还必须核对 `server_uuid`、规范化 `datadir` 和 XtraBackup 精确包版本。`deployment_status=pending/failed` 不代表备份本身无效，但必须先结合 `failure_phase` 和 DDL 已提交状态完成人工判断；不得使用 `backup_status=failed` 或缺失完整性事实的产物。
-2. 先在独立的一次性 MySQL 实例上演练完整恢复：使用与 manifest 相同的 MySQL 发行方和精确版本，物理备份还要使用清单记录的 XtraBackup 精确版本。验证表数、关键业务读取和应用兼容性，记录演练结果后再进入生产操作。
-3. 生产恢复前停止 Web 和全部 Celery worker，确认 NumericalOJ 不再写入。物理恢复还必须停止 MySQL，确认没有 `mysqld` 进程使用目标 `datadir`；先把现有 `datadir` 作为独立现场保留，不得直接删除或覆盖。
+1. 选择 `backup_status=complete` 的 manifest，保留当前数据和失败现场，核对 manifest/plan 中的备份方式、MySQL 版本和产物路径；物理备份还必须核对 `server_uuid`、规范化 `datadir` 和 XtraBackup 精确包版本。`deployment_status=pending/failed` 不代表备份本身无效，但必须先结合 `failure_phase` 和 DDL 已提交状态完成人工判断；不得使用 `backup_status=failed`、`retention_status=deleting` 或缺失完整性事实的产物。
+2. 在演练和生产恢复前，把 manifest、plan、run-id、generation 与真实产物重新绑定，并执行与部署成功前等价的只读验证。逻辑备份必须复核普通文件/属主/权限、压缩大小，并完整解压校验 gzip CRC、原始字节数和 SHA-256；物理备份必须复核 root 属主、full-prepared checkpoint、文件数/总大小、工具版本和服务器身份。`mark-success` 会修改状态，不是恢复校验命令；在提供独立只读 verify 子命令前，必须使用经过审阅且不改写清单的验证流程。
+3. 先在独立的一次性 MySQL 实例上演练完整恢复：使用与 manifest 相同的 MySQL 发行方和精确版本，物理备份还要使用清单记录的 XtraBackup 精确版本。验证表数、关键业务读取和应用兼容性，记录演练结果后再进入生产操作。
+4. 生产恢复前停止 Web 和全部 Celery worker，确认 NumericalOJ 不再写入。物理恢复还必须停止 MySQL，确认没有 `mysqld` 进程使用目标 `datadir`；先把现有 `datadir` 作为独立现场保留，不得直接删除或覆盖。
 
-逻辑备份只能导入到运维人员明确准备的目标库。MySQL 凭据放在权限 `0600` 的临时 option file，禁止出现在 argv 或环境变量中；先校验 gzip，再在开启 `pipefail` 的 shell 中导入：
+`database_existed=false` 的逻辑产物只是经过完整性校验的“原数据库不存在”占位记录，不包含可恢复 SQL，禁止按普通逻辑备份导入。若确需恢复到“数据库不存在”的状态，必须保留当前实例并取得单独的破坏性操作授权。
+
+普通逻辑备份只能导入到新建或已确认清空、且与审批记录和 manifest 一致的目标库；禁止叠加到状态未知的旧库，否则备份中不存在的表会被错误保留。MySQL 凭据放在权限 `0600` 的临时 option file，禁止出现在 argv 或环境变量中。完成上述 manifest-bound 验证后，导入前仍要就地检查 gzip，并在开启 `pipefail` 的 shell 中导入：
 
 ```bash
 gzip -t -- "$ARTIFACT"
@@ -198,8 +196,8 @@ sudo /usr/bin/systemctl start mysql
 
 ### 回滚原则
 
-- 代码失败：恢复上一个已知正常提交并重启两个边界。
-- worker/镜像失败：恢复旧镜像并重启 Celery；Web 未受影响时不做无关重启。
+- 代码或镜像失败：选择上一个已知正常提交，先确认 schema 与数据语义兼容，再按完整发布流程重新部署；不得假设旧镜像标签仍存在。
+- 只影响单一运行边界且不涉及代码、依赖、镜像或 schema 变化时，才允许只重启该边界；不能证明隔离性时按完整发布处理。
 - schema 失败：只执行预先验证的回滚或向前修复；启动同步器无法自动降级。
 - 数据写入语义已变化时，不能只回滚代码；先判断新旧版本能否共同读取现有数据。
 - 回滚完成后重复健康、worker 和只读业务验证，并保留故障现场日志。
@@ -207,16 +205,16 @@ sudo /usr/bin/systemctl start mysql
 ## 6. 日志与审计规则
 
 - 运行时日志根固定为项目内 `logs/`，整个目录不入 Git；Supervisor 活动日志和组件
-  stdout 也不得回退到 `/tmp`。PID、socket、锁不是日志，继续使用 `/tmp`。
+  stdout 也不得回退到 `/tmp`。Supervisor 的 PID/socket 和部署锁继续使用 `/tmp`；日志采集器自己的 socket/lock 位于 `logs/run/`，不得混为一谈。
 - 应用事件采用 `numericaloj.log` v1 单行 JSON。业务事实在数据库 commit 成功后的数据层
   出口记录，HTTP 动作在路由/请求钩子记录，Celery 生命周期由 signals 记录；同一事实
   不得在三层重复冒充成功。
-- 每次登录 POST 都必须产生 success/failure/denied 之一；每次普通、书面覆盖、Agent、
-  Promptly、打榜和后台批量提交都必须产生提交审计事件。日志不是业务事实库；若未来要求
+- 每次登录 POST 都必须产生 success/failure/denied 之一，并记录可信客户端 IP、直连 peer IP、User-Agent 与 Client Hints；每次普通、书面覆盖、Agent、
+  Promptly、打榜、后台批量和重测创建都必须产生提交审计事件。日志不是业务事实库；若未来要求
   与事务严格零丢失，应引入数据库 outbox，不能假设文件写入和 MySQL commit 原子。
 - request ID 由服务端生成并通过 Celery header 白名单传播。客户端 IP 只在直连 peer 属于
   `LOG_TRUSTED_PROXY_CIDRS` 时解析 `X-Forwarded-For`；认证限流和审计必须共用同一解析器。
-- 只允许记录必要元数据。源码、Prompt、答案、请求体、任务 args/result、密码、验证码、
+- 只允许记录必要元数据。源码、Prompt、答案、请求体、任务 args/result、评测 stdout/stderr 原文、密码、验证码、
   Cookie、Authorization、API key 和带凭据 URL 禁止入日志；内容只记字节数和 SHA-256。
 - 共享 JSONL 只能由 `scripts/log_admin.py serve` 单写和轮转，多进程业务代码不得直接挂
   `RotatingFileHandler` 写同一文件。采集器失败时应用走 stdout 降级，不能影响业务事务。
@@ -226,42 +224,7 @@ sudo /usr/bin/systemctl start mysql
 - 日常用 `scripts/log_admin.py status|tail|find|validate|doctor` 检查。轮转上限是容量边界，
   不是合规留存承诺；若有固定留存期或跨主机灾备要求，应接入外部不可变日志平台。
 
-## 7. 技术债优先级
-
-优先级按“事故损失 × 发生概率 × 修复后的复用范围”排序，而不是按文件大小排序。
-
-### P0：数据安全与业务正确性
-
-- 保持并扩展破坏性测试 fail-closed 守卫；任何新清理/修复工具都先验证目标。
-- 保持用户重命名等现有关键写入的单事务保证，并继续将配额扣减、多表状态迁移等路径收口为单事务，以并发测试验证。
-- 为写操作建立清晰的不变量、唯一约束、行锁/幂等键，消除“先查后写”的竞态。
-- 为生产 schema/data 操作建立强制备份、审批和恢复验证。
-
-完成标准：可证明不会误连生产；关键多表操作不存在可复现的部分提交；配额与幂等在并发测试下成立。
-
-### P1：演进成本与可观测性
-
-- 引入正式版本化迁移账本，覆盖数据回填和 expand-contract 流程。
-- 逐步把 `oj.py` 变成可测试的应用工厂/组合根，消除模块全局注入和 import-time 外部副作用。
-- 持续压测当前 Gunicorn 单 worker、64 `gthread` 的 SSE 容量、超时和优雅停机；单 worker 下不按请求数回收，消除进程内状态后再用多 worker 滚动替换，并长期考虑把长连接与普通请求隔离。
-- 按业务域拆分 `db_services.py`、超大路由和任务编排；先拆高频变更与高事故面，不做全量 ORM 重写。
-- 统一结构化日志、错误分类、任务/请求关联 ID 与关键指标，减少宽泛捕获和静默失败。
-- 将跨模块 dict、字符串状态和事件协议收口为有类型的唯一定义，并增加契约测试。
-
-完成标准：迁移可追踪；导入核心模块不连接外部服务或写业务状态；主要故障能从日志定位到请求/任务/提交；热点模块职责可以独立测试。
-
-### P2：开发效率与前端模块化
-
-- 拆分超大模板中的内联 JS/CSS，建立页面级静态模块和可复用 partial。
-- 逐步补齐类型标注、静态检查和轻量 lint，先覆盖服务边界与新代码。
-- 增加 API/CLI 契约、关键浏览器流程和失败路径测试，按风险观察覆盖率而非追求单一百分比。
-- 建立依赖与基础镜像定期升级、漏洞审计和可重复构建流程。
-- 在 Python 3.12 基线上生成并校验带哈希的完整传递依赖锁；当前精确固定的只是直接依赖。
-- 将部署工件版本化，减少手工 rsync/kill 的操作差异。
-
-完成标准：前端热点页面可以局部修改和测试；新边界具有类型/契约检查；同一提交在 CI 与部署环境解析为同一依赖图。
-
-## 8. 前端模板结构
+## 7. 前端模板结构
 
 模板按“布局 → 跨域组件 → 业务域页面 → 业务域局部组件”组织：
 
@@ -281,18 +244,18 @@ templates/
 
 维护规则：
 
-- 路由始终用完整域路径调用 `render_template()`；模板始终从 `layouts/site.html` 或 `layouts/embedded.html` 继承，不依赖根目录兼容别名。
+- 路由始终用完整域路径调用 `render_template()`；常规业务页面从 `layouts/site.html` 或 `layouts/embedded.html` 继承，不依赖根目录兼容别名。partial 不继承布局，独立完整错误页等明确例外保持自包含。
 - 跨页面且不包含业务分支的 UI 才进入 `components/`；只被一个页面使用的片段留在该业务域，避免制造全局碎片。
 - AJAX 返回的 HTML 与首屏必须复用同一 component，不能复制第二套行/卡片实现。
 - Modal 是页面级单例，由页面骨架包含一次；tab 只触发它，不各自携带一份同名 DOM 和脚本。
-- 业务脚本使用唯一 `window` namespace 或模块入口，并保证重复 include 不会重复注册全局监听器。新增绝对 `/api/...` 请求前先复用统一请求封装。
+- 业务脚本使用唯一 `window` namespace 或模块入口，并保证重复 include 不会重复注册全局监听器。AJAX 请求应在业务域入口集中处理鉴权、错误与 JSON 解析；同一处理逻辑跨页面重复时再建立共享请求封装，不在模板中继续复制。
 - 重型展示依赖默认不进入基础布局；MathJax 等资源由确实需要它的页面显式覆盖 block。共享算法只保留一个参数化实现，页面不得复制后再改常量。
 - 大页面先沿用户可独立理解和测试的功能面拆分；不要按任意行数切成缺少语义的碎片。
-- 模板移动、include 契约、单例 DOM、MathJax 边界和静态 JavaScript 语法由前端契约测试保护；交互变化仍需补对应路由测试和浏览器关键流程验证。
+- 模板移动、include 契约、单例 DOM 与 MathJax 边界由前端契约测试保护；列入前端资产清单的关键静态 JavaScript 必须通过语法检查。交互变化仍需补对应路由测试和浏览器关键流程验证。
 
-## 9. 周期性维护指标
+## 8. 周期性维护指标
 
-每个版本或每月记录趋势，不把指标本身当目标：
+每个版本或每月在带日期的审阅记录、发布复盘或监控系统中记录趋势，不把易变数值写回本手册，也不把指标本身当目标：
 
 - 最大文件/函数及其变更频率；
 - 宽泛异常捕获和静默失败数量；
