@@ -11,6 +11,7 @@ from tests.environment_guard import (
     assert_disposable_test_target,
     unsafe_environment_reasons,
 )
+from tests import conftest as test_fixtures
 
 
 def _target(**overrides) -> DestructiveTestTarget:
@@ -122,3 +123,39 @@ def test_assertion_reports_every_unsafe_fact_at_once():
     assert "MYSQL_DB" in message
     assert "REDIS_HOST" in message
     assert "REDIS_DB" in message
+
+
+def test_filesystem_reset_removes_stale_ranking_artifacts(tmp_path, monkeypatch):
+    ranking_root = tmp_path / "ranking_uploads"
+    stale_submission = ranking_root / "submissions" / "1" / "answer.zip"
+    stale_submission.parent.mkdir(parents=True)
+    stale_submission.write_bytes(b"stale")
+    monkeypatch.setattr(test_fixtures, "OJ_ROOT", tmp_path)
+    monkeypatch.setattr(
+        test_fixtures,
+        "_assert_destructive_test_environment",
+        lambda: None,
+    )
+
+    test_fixtures._reset_test_filesystem_artifacts()
+
+    assert ranking_root.is_dir()
+    assert not list(ranking_root.iterdir())
+
+
+def test_filesystem_reset_refuses_symlinked_artifact_root(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    (tmp_path / "ranking_uploads").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(test_fixtures, "OJ_ROOT", tmp_path)
+    monkeypatch.setattr(
+        test_fixtures,
+        "_assert_destructive_test_environment",
+        lambda: None,
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="拒绝清理异常测试产物根目录"):
+        test_fixtures._reset_test_filesystem_artifacts()
+
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
