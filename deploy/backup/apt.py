@@ -686,12 +686,24 @@ def _provision_xtrabackup_impl(
     _validate_repository_file(
         release, codename, sources_directory=sources_directory
     )
+    repository_file = (
+        sources_directory / f"percona-{release.apt_repository}-release.list"
+    )
+    # Unrelated third-party repositories must not decide whether the pinned
+    # Percona package can be provisioned.  Preserve their cached indexes and
+    # refresh only the source file whose exact contents were validated above.
     _checked(
         run,
         _sudo_command(
             [
                 APT_GET,
                 *APT_SECURITY_OPTIONS,
+                "-o",
+                f"Dir::Etc::sourcelist={repository_file}",
+                "-o",
+                "Dir::Etc::sourceparts=-",
+                "-o",
+                "APT::Get::List-Cleanup=0",
                 "-o",
                 "APT::Update::Error-Mode=any",
                 "update",

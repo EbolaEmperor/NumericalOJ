@@ -513,6 +513,7 @@ def test_public_provisioner_runs_the_complete_pinned_install_flow(
     )
     sources.mkdir()
     tmp_path.chmod(0o700)
+    repository_file = sources / f"percona-{release.apt_repository}-release.list"
 
     installed: dict[str, str] = {}
     calls: list[tuple[list[str], dict[str, object]]] = []
@@ -576,8 +577,7 @@ def test_public_provisioner_runs_the_complete_pinned_install_flow(
             fingerprint = percona_apt.PERCONA_RELEASE.key_fingerprint
             return _result(command, stdout=f"fpr:::::::::{fingerprint}:\n")
         if percona_apt.PERCONA_RELEASE_COMMAND in command:
-            source = sources / f"percona-{release.apt_repository}-release.list"
-            source.write_text(
+            repository_file.write_text(
                 "deb "
                 f"[signed-by={percona_apt.PERCONA_KEYRING}] "
                 f"{percona_apt.PERCONA_REPO_ROOT}/"
@@ -651,6 +651,15 @@ def test_public_provisioner_runs_the_complete_pinned_install_flow(
         "-f=${Status}\t${Version}\n",
         release.package_name,
     ] in [command for command, _ in calls]
+    update_command = next(
+        command
+        for command, _ in calls
+        if percona_apt.APT_GET in command and "update" in command
+    )
+    assert f"Dir::Etc::sourcelist={repository_file}" in update_command
+    assert "Dir::Etc::sourceparts=-" in update_command
+    assert "APT::Get::List-Cleanup=0" in update_command
+    assert "APT::Update::Error-Mode=any" in update_command
     assert any(
         percona_apt.PERCONA_RELEASE_COMMAND in command for command, _ in calls
     )
