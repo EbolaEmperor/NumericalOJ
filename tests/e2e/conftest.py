@@ -193,14 +193,23 @@ def _assert_port_free(host: str = "127.0.0.1", port: int = 2025) -> None:
     pytest.fail(f"Refusing to run CLI e2e tests: {host}:{port} is already in use.")
 
 
-def _wait_for_http(proc: subprocess.Popen[str], url: str, timeout: float = 60.0) -> None:
+def _read_process_log(log_path: Path) -> str:
+    try:
+        return log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"<无法读取进程日志 {log_path}: {exc}>"
+
+
+def _wait_for_http(
+        proc: subprocess.Popen[str],
+        url: str,
+        log_path: Path,
+        timeout: float = 60.0) -> None:
     deadline = time.time() + timeout
     last_error: Any = None
     while time.time() < deadline:
         if proc.poll() is not None:
-            output = ""
-            if proc.stdout is not None:
-                output = proc.stdout.read()
+            output = _read_process_log(log_path)
             pytest.fail(f"Local Flask server exited early with {proc.returncode}:\n{output}")
         try:
             with urllib.request.urlopen(url, timeout=1.0) as resp:
@@ -228,7 +237,7 @@ def _terminate_process(proc: subprocess.Popen[str]) -> None:
 
 
 @pytest.fixture
-def local_numoj_server() -> str:
+def local_numoj_server(tmp_path: Path) -> str:
     _assert_disposable_environment()
     _assert_port_free()
     env = os.environ.copy()
@@ -247,11 +256,15 @@ def local_numoj_server() -> str:
     env["NUMOJ_FAKE_PROMPTLY_REVIEW_REPLY"] = "Please explain the monotonic deque and expired index handling."
     env["NUMOJ_FAKE_PROMPTLY_CODE"] = "print('hello')\n"
     quality_gate_server, quality_gate_thread = _start_quality_gate_stub()
+    web_log_path = tmp_path / "numoj-web.log"
+    celery_log_path = tmp_path / "numoj-celery.log"
+    web_log = web_log_path.open("w", encoding="utf-8")
+    celery_log = celery_log_path.open("w", encoding="utf-8")
     web_proc = subprocess.Popen(
         [sys.executable, "-B", "oj.py"],
         cwd=ROOT,
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=web_log,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -271,21 +284,21 @@ def local_numoj_server() -> str:
         ],
         cwd=ROOT,
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=celery_log,
         stderr=subprocess.STDOUT,
         text=True,
     )
     try:
-        _wait_for_http(web_proc, f"{BASE_URL}/login")
+        _wait_for_http(web_proc, f"{BASE_URL}/login", web_log_path)
         if celery_proc.poll() is not None:
-            output = ""
-            if celery_proc.stdout is not None:
-                output = celery_proc.stdout.read()
+            output = _read_process_log(celery_log_path)
             pytest.fail(f"Local Celery worker exited early with {celery_proc.returncode}:\n{output}")
         yield BASE_URL
     finally:
         _terminate_process(celery_proc)
         _terminate_process(web_proc)
+        celery_log.close()
+        web_log.close()
         quality_gate_server.shutdown()
         quality_gate_server.server_close()
         quality_gate_thread.join(timeout=5)
