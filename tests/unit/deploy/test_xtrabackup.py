@@ -416,6 +416,10 @@ def test_execute_full_backup_runs_backup_then_prepare_and_validates_result(
         if command and command[0] == str(xtrabackup.SUDO_BINARY)
         and command != [str(xtrabackup.SUDO_BINARY), "-v"]
     )
+    find_command = next(
+        command for command in commands if str(xtrabackup.FIND_BINARY) in command
+    )
+    assert find_command[-2:] == ["-printf", "%y\\t%s\\n"]
     assert result.to_dict() == {
         "target": str(target),
         "backup_type": "full-prepared",
