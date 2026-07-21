@@ -49,7 +49,7 @@ jobs:
             --junitxml=test-results/tests_unit.xml
       - name: Upload unit test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: unit-test-results
           path: test-results/*.xml
@@ -130,9 +130,9 @@ jobs:
       - name: Run database integration tests
         run: bash tests/ci/run-ci.sh tests/db
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Build the real judge image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: docker/judger-lite
           load: true
@@ -143,7 +143,7 @@ jobs:
         run: bash tests/ci/run-ci.sh tests/e2e
       - name: Upload integration test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: integration-test-results
           path: test-results/*.xml
