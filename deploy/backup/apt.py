@@ -506,7 +506,7 @@ def _key_fingerprints(run: Runner) -> set[str]:
 
 def _bootstrap_is_valid(run: Runner, package: BootstrapPackage) -> bool:
     query = run(
-        [DPKG_QUERY, "-W", "-f=${db:Status}\t${Version}\n", package.package],
+        [DPKG_QUERY, "-W", "-f=${Status}\t${Version}\n", package.package],
         env=None,
         check=False,
     )
@@ -608,7 +608,7 @@ def _installed_xtrabackup_is_valid(
     run: Runner,
 ) -> bool:
     query = run(
-        [DPKG_QUERY, "-W", "-f=${db:Status}\t${Version}\n", release.package_name],
+        [DPKG_QUERY, "-W", "-f=${Status}\t${Version}\n", release.package_name],
         env=None,
         check=False,
     )

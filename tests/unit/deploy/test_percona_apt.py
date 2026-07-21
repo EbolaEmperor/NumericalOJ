@@ -639,6 +639,18 @@ def test_public_provisioner_runs_the_complete_pinned_install_flow(
     assert installed[release.package_name] == package_version
     assert not bootstrap_path.exists()
     assert sum(command == [percona_apt.SUDO, "-v"] for command, _ in calls) == 1
+    assert [
+        percona_apt.DPKG_QUERY,
+        "-W",
+        "-f=${Status}\t${Version}\n",
+        percona_apt.PERCONA_RELEASE.package,
+    ] in [command for command, _ in calls]
+    assert [
+        percona_apt.DPKG_QUERY,
+        "-W",
+        "-f=${Status}\t${Version}\n",
+        release.package_name,
+    ] in [command for command, _ in calls]
     assert any(
         percona_apt.PERCONA_RELEASE_COMMAND in command for command, _ in calls
     )
