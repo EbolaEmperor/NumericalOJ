@@ -30,7 +30,11 @@ MANAGED_IMAGE_LABEL='org.numericaloj.deploy-managed=true'
 SOURCE_IMAGE_LABEL='org.numericaloj.source-sha256'
 phase='初始化'
 database_backup=''
+backup_plan="$BACKUP_DIR/plans/$RUN_ID.json"
+backup_manifest="$BACKUP_DIR/manifests/$RUN_ID.manifest.json"
 restart_started=0
+sudo_keepalive_pid=''
+SUDO_KEEPALIVE_STOP="$STATE_DIR/.sudo-keepalive-$RUN_ID.stop"
 CURRENT_VENV_TEMP="$STATE_DIR/.current-venv-$RUN_ID"
 
 usage() {
@@ -38,6 +42,67 @@ usage() {
     '用法: bash deploy.sh' \
     '' \
     '请先在当前项目目录完成 git pull，再执行本脚本。'
+}
+
+stop_sudo_keepalive() {
+  if [[ -n "$sudo_keepalive_pid" ]]; then
+    if ! /usr/bin/touch -- "$SUDO_KEEPALIVE_STOP"; then
+      printf '无法写入 sudo 保活停止标记：%s\n' \
+        "$SUDO_KEEPALIVE_STOP" >&2
+      sudo_keepalive_pid=''
+      return 0
+    fi
+    wait "$sudo_keepalive_pid" >/dev/null 2>&1 || true
+    sudo_keepalive_pid=''
+  fi
+  rm -f -- "$SUDO_KEEPALIVE_STOP"
+  return 0
+}
+
+start_sudo_keepalive() {
+  local deployment_pid=$$
+  local remaining
+
+  rm -f -- "$SUDO_KEEPALIVE_STOP"
+  /usr/bin/sudo -v
+  (
+    while [[ ! -e "$SUDO_KEEPALIVE_STOP" ]] \
+        && [[ -d "/proc/$deployment_pid" ]]; do
+      /usr/bin/sudo -n -v || exit 1
+      for ((remaining = 0; remaining < 30; remaining++)); do
+        [[ -e "$SUDO_KEEPALIVE_STOP" ]] && exit 0
+        [[ -d "/proc/$deployment_pid" ]] || exit 0
+        /usr/bin/sleep 1
+      done
+    done
+  ) 9>&- &
+  sudo_keepalive_pid=$!
+}
+
+assert_sudo_keepalive() {
+  local checkpoint="$1"
+  local running_pid
+  local running=0
+  local wait_status=0
+
+  [[ -n "$sudo_keepalive_pid" ]] || return 0
+  while IFS= read -r running_pid; do
+    if [[ "$running_pid" == "$sudo_keepalive_pid" ]]; then
+      running=1
+      break
+    fi
+  done < <(jobs -pr)
+  if [[ "$running" -ne 1 ]]; then
+    wait "$sudo_keepalive_pid" >/dev/null 2>&1 || wait_status=$?
+    sudo_keepalive_pid=''
+    printf 'sudo 保活任务在%s前异常退出（退出码：%s）。\n' \
+      "$checkpoint" "$wait_status" >&2
+    return 1
+  fi
+  if ! /usr/bin/sudo -n -v; then
+    printf 'sudo 凭据在%s前已失效。\n' "$checkpoint" >&2
+    return 1
+  fi
 }
 
 if (($#)); then
@@ -58,7 +123,16 @@ cleanup() {
   local exit_code=$?
   trap - EXIT HUP INT TERM
   set +e
+  stop_sudo_keepalive || true
   rm -f -- "$CURRENT_VENV_TEMP"
+  if [[ "$exit_code" -ne 0 && -f "$backup_manifest" \
+      && -x "${CANDIDATE_PYTHON:-}" ]]; then
+    if ! "$CANDIDATE_PYTHON" -B deploy/backup_database.py mark-failed \
+        --manifest "$backup_manifest" --phase "$phase"; then
+      printf '警告：无法把部署失败阶段写入备份清单：%s\n' \
+        "$backup_manifest" >&2
+    fi
+  fi
   if [[ "$exit_code" -ne 0 && "$restart_started" -eq 1 \
       && -x "${CANDIDATE_SUPERVISORCTL:-}" ]]; then
     "$CANDIDATE_SUPERVISORCTL" -c "$WEB_CONFIG" shutdown >/dev/null 2>&1 || true
@@ -69,7 +143,11 @@ cleanup() {
   if [[ "$exit_code" -ne 0 ]]; then
     printf '部署失败（阶段：%s，退出码：%s）。\n' "$phase" "$exit_code" >&2
     if [[ -n "$database_backup" ]]; then
-      printf '部署前数据库备份：%s\n' "$database_backup" >&2
+      printf '已验证的部署前数据库备份清单：%s\n' \
+        "$database_backup" >&2
+    elif [[ -f "$backup_manifest" ]]; then
+      printf '数据库备份失败清单（不可作为回滚点）：%s\n' \
+        "$backup_manifest" >&2
     fi
   fi
   exit "$exit_code"
@@ -78,15 +156,14 @@ trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 
 cd "$ROOT_DIR"
-install -d -m 0700 "$STATE_DIR" "$VENV_ROOT" "$BACKUP_DIR"
+install -d -m 0700 "$STATE_DIR" "$VENV_ROOT"
 
-for command_name in docker flock mysqldump pgrep; do
+for command_name in docker flock pgrep; do
   command -v "$command_name" >/dev/null || {
     printf '缺少部署命令: %s\n' "$command_name" >&2
     exit 1
   }
 done
-
 exec 9>>"$LOCK_FILE"
 if ! flock -n 9; then
   printf '本机已有 NumericalOJ 部署正在运行。\n' >&2
@@ -125,12 +202,8 @@ resolve_bootstrap_python() {
       resolved="$(command -v "$candidate" 2>/dev/null || true)"
       [[ -n "$resolved" ]] || continue
     fi
-    version="$(
-      "$resolved" -c \
-        'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
-        2>/dev/null || true
-    )"
-    if [[ "$version" == '3.12' ]]; then
+    version="$("$resolved" --version 2>&1 || true)"
+    if [[ "$version" =~ ^Python[[:space:]]+3\.12([.]|$) ]]; then
       printf '%s\n' "$resolved"
       return 0
     fi
@@ -154,70 +227,8 @@ ENV_FILE="$ROOT_DIR/.env"
   printf '缺少仅当前用户可读的生产配置文件: %s\n' "$ENV_FILE" >&2
   exit 1
 }
-PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B -c '
-import os
-from pathlib import Path
-import stat
-import sys
-
-path = Path(sys.argv[1])
-flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-try:
-    descriptor = os.open(path, flags)
-except OSError as exc:
-    raise SystemExit(f"无法安全打开生产配置: {path}") from exc
-try:
-    metadata = os.fstat(descriptor)
-finally:
-    os.close(descriptor)
-mode = stat.S_IMODE(metadata.st_mode)
-if not stat.S_ISREG(metadata.st_mode):
-    raise SystemExit(f"生产配置不是普通文件: {path}")
-if metadata.st_uid != os.geteuid():
-    raise SystemExit(f"生产配置不属于当前部署用户: {path}")
-if mode not in (0o400, 0o600):
-    raise SystemExit(f"生产配置权限必须是 0400 或 0600: {path} mode={mode:04o}")
-if metadata.st_size > 1024 * 1024:
-    raise SystemExit(f"生产配置文件异常过大: {path}")
-fingerprint = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
-
-import config
-
-after = path.stat(follow_symlinks=False)
-after_fingerprint = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-if after_fingerprint != fingerprint:
-    raise SystemExit("生产配置在校验过程中发生变化")
-if not config.ENV_FILE_LOADED:
-    raise SystemExit("生产 .env 没有被 config.py 加载")
-
-required_strings = (
-    "SECRET_KEY",
-    "MYSQL_HOST",
-    "MYSQL_DB",
-    "MYSQL_USERNAME",
-    "MYSQL_PASSWORD",
-    "REDIS_HOST",
-)
-required_in_file = required_strings + (
-    "MYSQL_PORT",
-    "REDIS_PORT",
-    "REDIS_DB",
-)
-missing = sorted(set(required_in_file) - set(config.ENV_FILE_KEYS))
-if missing:
-    raise SystemExit("生产 .env 缺少必填项: " + ", ".join(missing))
-for name in required_strings:
-    value = getattr(config, name, None)
-    if not isinstance(value, str) or not value.strip():
-        raise SystemExit(f"生产 .env 的必填字符串无效: {name}")
-for name in ("MYSQL_PORT", "REDIS_PORT"):
-    value = getattr(config, name, None)
-    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
-        raise SystemExit(f"生产 .env 的端口无效: {name}")
-redis_db = getattr(config, "REDIS_DB", None)
-if not isinstance(redis_db, int) or isinstance(redis_db, bool) or redis_db < 0:
-    raise SystemExit("生产 .env 的 REDIS_DB 无效")
-' "$ENV_FILE"
+PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+  deploy/preflight.py validate-config "$ENV_FILE"
 
 remove_stale_candidate_tags() {
   local reference
@@ -257,29 +268,8 @@ docker_source_digest() {
       ;;
   esac
 
-  "$BOOTSTRAP_PYTHON" - "$context" "${inputs[@]}" <<'PY'
-import hashlib
-from pathlib import Path
-import stat
-import sys
-
-root = Path(sys.argv[1])
-digest = hashlib.sha256(b"NumericalOJ Docker source v1\0")
-for relative_name in sys.argv[2:]:
-    path = root / relative_name
-    metadata = path.lstat()
-    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
-        raise SystemExit(f"Docker 构建输入必须是普通文件: {path}")
-    name = relative_name.encode("utf-8")
-    digest.update(len(name).to_bytes(8, "big"))
-    digest.update(name)
-    digest.update(stat.S_IMODE(metadata.st_mode).to_bytes(4, "big"))
-    digest.update(metadata.st_size.to_bytes(8, "big"))
-    with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            digest.update(chunk)
-print(digest.hexdigest())
-PY
+  "$BOOTSTRAP_PYTHON" -B deploy/preflight.py \
+    docker-source-digest "$context" "${inputs[@]}"
 }
 
 image_source_digest() {
@@ -397,11 +387,6 @@ build_candidate_image \
   'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
   'playwright install chromium'
 
-phase='备份数据库'
-backup_target="$BACKUP_DIR/mysql-$RUN_ID.sql.gz"
-"$CANDIDATE_PYTHON" deploy/backup_database.py --output "$backup_target"
-database_backup="$backup_target"
-
 supervisor_pid() {
   local config="$1"
   local pid
@@ -443,6 +428,18 @@ unmanaged_processes() {
     fi
   done
   printf '%s\n' "$found"
+}
+
+assert_service_stopped() {
+  local label="$1"
+  local kind="$2"
+  local unmanaged
+
+  unmanaged="$(unmanaged_processes "$kind")"
+  if [[ -n "$unmanaged" ]]; then
+    printf '%s 停止后仍有相关进程：%s\n' "$label" "$unmanaged" >&2
+    return 1
+  fi
 }
 
 resolve_supervisor() {
@@ -494,7 +491,6 @@ stop_supervisor() {
   local timeout="$6"
   local pid="$7"
   local legacy_pids="$8"
-  local unmanaged
 
   if [[ "$pid" == 'LEGACY' ]]; then
     printf '正在停止旧版 %s 服务（Supervisor PID %s）...\n' \
@@ -504,38 +500,27 @@ stop_supervisor() {
       --service "$kind" \
       --expected-pids "$legacy_pids" \
       --timeout "$timeout"
-    unmanaged="$(unmanaged_processes "$kind")"
-    if [[ -n "$unmanaged" ]]; then
-      printf '旧版 %s Supervisor 已退出，但仍有相关进程：%s\n' \
-        "$label" "$unmanaged" >&2
-      return 1
-    fi
     rm -f -- "$pidfile" "$socket"
-    return 0
-  fi
-
-  if [[ "$pid" == 'ABSENT' ]]; then
+  elif [[ "$pid" == 'ABSENT' ]]; then
     rm -f -- "$pidfile" "$socket"
     printf '%s 服务未运行，跳过停止。\n' "$label"
-    return 0
-  fi
-  if ! kill -0 "$pid" 2>/dev/null; then
+  elif ! kill -0 "$pid" 2>/dev/null; then
     rm -f -- "$pidfile" "$socket"
     printf '%s 服务已退出，跳过停止。\n' "$label"
-    return 0
+  else
+    printf '正在停止 %s 服务（Supervisor PID %s）...\n' "$label" "$pid"
+    "$CANDIDATE_SUPERVISORCTL" -c "$config" shutdown >/dev/null
+    local deadline=$((SECONDS + timeout))
+    while kill -0 "$pid" 2>/dev/null; do
+      if ((SECONDS >= deadline)); then
+        printf '等待 %s 服务退出超时。\n' "$label" >&2
+        return 1
+      fi
+      sleep 1
+    done
+    rm -f -- "$pidfile" "$socket"
   fi
-
-  printf '正在停止 %s 服务（Supervisor PID %s）...\n' "$label" "$pid"
-  "$CANDIDATE_SUPERVISORCTL" -c "$config" shutdown >/dev/null
-  local deadline=$((SECONDS + timeout))
-  while kill -0 "$pid" 2>/dev/null; do
-    if ((SECONDS >= deadline)); then
-      printf '等待 %s 服务退出超时。\n' "$label" >&2
-      return 1
-    fi
-    sleep 1
-  done
-  rm -f -- "$pidfile" "$socket"
+  assert_service_stopped "$label" "$kind"
 }
 
 stop_observability_best_effort() {
@@ -570,6 +555,25 @@ stop_observability_best_effort() {
   rm -f -- "$OBSERVABILITY_PIDFILE" "$OBSERVABILITY_SOCKET"
 }
 
+phase='准备数据库备份计划'
+"$CANDIDATE_PYTHON" -B deploy/backup_database.py preflight \
+  --plan "$backup_plan" \
+  --backup-root "$BACKUP_DIR" \
+  --run-id "$RUN_ID"
+backup_strategy="$("$CANDIDATE_PYTHON" -B deploy/backup_database.py strategy \
+  --plan "$backup_plan")"
+case "$backup_strategy" in
+  physical)
+    start_sudo_keepalive
+    ;;
+  logical)
+    ;;
+  *)
+    printf '数据库备份计划返回未知策略：%s\n' "$backup_strategy" >&2
+    exit 1
+    ;;
+esac
+
 phase='确认现有服务可管理'
 legacy_web_pids="$(legacy_supervisor_pids web)"
 legacy_celery_pids="$(legacy_supervisor_pids celery)"
@@ -582,20 +586,29 @@ celery_supervisor_pid="$(
 )"
 
 phase='停止现有服务'
+assert_sudo_keepalive '停止 Celery'
 stop_supervisor \
   'Celery' celery "$CELERY_CONFIG" "$CELERY_PIDFILE" "$CELERY_SOCKET" \
   "$CELERY_STOP_TIMEOUT_SECONDS" "$celery_supervisor_pid" "$legacy_celery_pids"
+assert_sudo_keepalive 'Celery 停止完成'
 stop_supervisor \
   'Web' web "$WEB_CONFIG" "$WEB_PIDFILE" "$WEB_SOCKET" \
   "$WEB_STOP_TIMEOUT_SECONDS" "$web_supervisor_pid" "$legacy_web_pids"
 stop_observability_best_effort
+assert_service_stopped 'Celery' celery
+assert_service_stopped 'Web' web
+
+phase='创建并验证数据库回滚点'
+assert_sudo_keepalive '数据库备份'
+"$CANDIDATE_PYTHON" -B deploy/backup_database.py backup \
+  --plan "$backup_plan" \
+  --manifest "$backup_manifest"
+database_backup="$backup_manifest"
 
 phase='切换运行环境并更新数据库结构'
 rm -f -- "$CURRENT_VENV_TEMP"
 ln -s "venvs/$candidate_slot" "$CURRENT_VENV_TEMP"
-"$CANDIDATE_PYTHON" -c \
-  'import os, sys; os.replace(sys.argv[1], sys.argv[2])' \
-  "$CURRENT_VENV_TEMP" "$CURRENT_VENV"
+mv -Tf -- "$CURRENT_VENV_TEMP" "$CURRENT_VENV"
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 "$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py --confirm-celery-stopped
 
@@ -605,41 +618,74 @@ docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"
 
 wait_for_programs() {
   local config="$1"
-  local attempts="${2:-120}"
+  local attempts="$2"
+  shift 2
+  local expected_names=("$@")
   local status=''
+  local supervisorctl_status=0
   local name
   local state
   local ignored
-  local seen
-  local all_running
+  local expected_name
+  local seen_name
+  local name_expected
+  local duplicate
+  local valid
+  local seen_names=()
 
   while ((attempts > 0)); do
-    status="$("$CANDIDATE_SUPERVISORCTL" -c "$config" status 2>/dev/null || true)"
-    seen=0
-    all_running=1
-    while read -r name state ignored; do
-      [[ -n "$name" ]] || continue
-      seen=1
-      if [[ "$state" != 'RUNNING' ]]; then
-        all_running=0
-        break
+    supervisorctl_status=0
+    if status="$(
+      "$CANDIDATE_SUPERVISORCTL" -c "$config" status 2>/dev/null
+    )"; then
+      supervisorctl_status=0
+    else
+      supervisorctl_status=$?
+    fi
+    if [[ "$supervisorctl_status" -eq 0 ]]; then
+      valid=1
+      seen_names=()
+      while read -r name state ignored; do
+        [[ -n "$name" ]] || continue
+        name_expected=0
+        for expected_name in "${expected_names[@]}"; do
+          if [[ "$name" == "$expected_name" ]]; then
+            name_expected=1
+            break
+          fi
+        done
+        duplicate=0
+        for seen_name in "${seen_names[@]}"; do
+          if [[ "$name" == "$seen_name" ]]; then
+            duplicate=1
+            break
+          fi
+        done
+        if [[ "$name_expected" -ne 1 || "$duplicate" -eq 1 \
+            || "$state" != 'RUNNING' ]]; then
+          valid=0
+          break
+        fi
+        seen_names+=("$name")
+      done <<<"$status"
+      if [[ "$valid" -eq 1 \
+          && "${#seen_names[@]}" -eq "${#expected_names[@]}" ]]; then
+        return 0
       fi
-    done <<<"$status"
-    if [[ "$seen" -eq 1 && "$all_running" -eq 1 ]]; then
-      return 0
     fi
     sleep 1
     attempts=$((attempts - 1))
   done
 
-  printf '服务未在预期时间内进入 RUNNING：\n%s\n' "$status" >&2
+  printf '服务未在预期时间内以完整拓扑进入 RUNNING（supervisorctl=%s）：\n%s\n' \
+    "$supervisorctl_status" "$status" >&2
   return 1
 }
 
 restart_started=1
 phase='启动统一日志采集'
 if "$CANDIDATE_SUPERVISORD" -c "$OBSERVABILITY_CONFIG" 9>&-; then
-  if ! wait_for_programs "$OBSERVABILITY_CONFIG" 15; then
+  if ! wait_for_programs "$OBSERVABILITY_CONFIG" 15 log_collector; then
     printf '警告：统一日志采集器未稳定运行；业务服务继续启动，请运行日志 doctor 检查。\n' >&2
   fi
 else
@@ -648,16 +694,30 @@ fi
 
 phase='启动 Celery 服务'
 "$CANDIDATE_SUPERVISORD" -c "$CELERY_CONFIG" 9>&-
-wait_for_programs "$CELERY_CONFIG"
+wait_for_programs "$CELERY_CONFIG" 120 \
+  celery:celery_judge celery:celery_agent celery:celery_agent_judge
 
 phase='启动 Web 服务'
 "$CANDIDATE_SUPERVISORD" -c "$WEB_CONFIG" 9>&-
-wait_for_programs "$WEB_CONFIG"
+wait_for_programs "$WEB_CONFIG" 120 web
 
 phase='确认全部服务状态'
-wait_for_programs "$CELERY_CONFIG"
-wait_for_programs "$WEB_CONFIG"
+wait_for_programs "$CELERY_CONFIG" 120 \
+  celery:celery_judge celery:celery_agent celery:celery_agent_judge
+wait_for_programs "$WEB_CONFIG" 120 web
+
+phase='确认数据库回滚点状态'
+"$CANDIDATE_PYTHON" -B deploy/backup_database.py mark-success \
+  --manifest "$backup_manifest" \
+  --plan "$backup_plan"
 restart_started=0
+if ! "$CANDIDATE_PYTHON" -B deploy/backup_database.py prune \
+    --backup-root "$BACKUP_DIR" \
+    --keep-success 2 \
+    --protect-run-id "$RUN_ID"; then
+  printf '警告：历史数据库备份清理失败，请根据 manifest 人工检查。\n' >&2
+fi
+stop_sudo_keepalive
 
 phase='清理旧判题镜像'
 if ! docker image prune --force --filter "label=$MANAGED_IMAGE_LABEL" >/dev/null; then
@@ -665,4 +725,4 @@ if ! docker image prune --force --filter "label=$MANAGED_IMAGE_LABEL" >/dev/null
 fi
 
 phase='完成'
-printf 'NumericalOJ 部署完成。数据库备份：%s\n' "$database_backup"
+printf 'NumericalOJ 部署完成。数据库备份清单：%s\n' "$database_backup"
