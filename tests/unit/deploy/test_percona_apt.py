@@ -169,6 +169,32 @@ def test_bootstrap_download_removes_untrusted_partial_file(tmp_path, failure):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_bootstrap_metadata_uses_unambiguous_dpkg_show_format(tmp_path):
+    package = percona_apt.PERCONA_RELEASE
+    archive = tmp_path / "percona-release.deb"
+    archive.write_bytes(b"validated elsewhere")
+    calls = []
+
+    def run(command, *, env=None, check=False):
+        calls.append(list(command))
+        return _result(
+            command,
+            stdout=(
+                f"{package.package}\n{package.version}\n"
+                f"{package.architecture}\n"
+            ),
+        )
+
+    percona_apt._verify_bootstrap_metadata(archive, package, run)
+
+    assert calls == [[
+        percona_apt.DPKG_DEB,
+        "--show",
+        "--showformat=${Package}\\n${Version}\\n${Architecture}\\n",
+        str(archive),
+    ]]
+
+
 def test_bootstrap_network_error_is_normalized_for_fallback_policy(tmp_path):
     tmp_path.chmod(0o700)
 
