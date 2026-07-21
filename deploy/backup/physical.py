@@ -52,7 +52,7 @@ DU_BINARY = Path("/usr/bin/du")
 
 _PACKAGE_ARCH_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _XTRABACKUP_VERSION_RE = re.compile(
-    r"(?:^|\s)xtrabackup\s+version\s+(?P<version>[^\s,]+)",
+    r"(?:^|\s)(?:/[^\s]*/)?xtrabackup\s+version\s+(?P<version>[^\s,]+)",
     re.IGNORECASE,
 )
 _SAFE_ENV_KEYS = ("LANG", "LANGUAGE", "LC_CTYPE", "TERM")
