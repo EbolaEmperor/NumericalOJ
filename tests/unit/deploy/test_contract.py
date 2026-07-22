@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -454,13 +455,23 @@ def test_deploy_rejects_drift_processes_after_every_stop_and_before_backup():
     assert "assert_service_stopped 'Web' web" in stopped_section
 
 
-def test_supervisor_config_keeps_the_expected_process_topology():
+def test_supervisor_config_keeps_the_expected_process_topology(tmp_path):
     from supervisor.options import ServerOptions
+
+    supervisor_dir = tmp_path / "deploy" / "supervisor"
+    supervisor_dir.mkdir(parents=True)
+    (tmp_path / "logs" / "supervisor").mkdir(parents=True)
+    (tmp_path / "logs" / "services").mkdir(parents=True)
 
     groups = {}
     for config_name in ("web.conf", "celery.conf", "observability.conf"):
+        config_path = supervisor_dir / config_name
+        shutil.copyfile(
+            ROOT / "deploy" / "supervisor" / config_name,
+            config_path,
+        )
         options = ServerOptions()
-        options.configfile = str(ROOT / "deploy" / "supervisor" / config_name)
+        options.configfile = str(config_path)
         options.process_config(False)
         groups.update(
             {
