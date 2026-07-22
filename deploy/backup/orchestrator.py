@@ -511,7 +511,14 @@ def create_preflight_plan(
         else:
             metadata = query_xtrabackup_metadata(settings)
             prepare = physical_plan_preparer or xtrabackup.prepare_plan
-            physical_plan = prepare(metadata, mysql_host=settings.host)
+            with xtrabackup_option_file(
+                settings, layout["plans"], metadata.socket
+            ) as defaults_file:
+                physical_plan = prepare(
+                    metadata,
+                    mysql_host=settings.host,
+                    mysql_defaults_file=defaults_file,
+                )
             if physical_plan is None:
                 raise PreflightError("已 provision 的服务端未能生成 physical plan")
             harden = physical_layout_hardener or harden_physical_backup_layout
@@ -587,6 +594,50 @@ def mysql_option_file(
                 f"user={_option_file_value(settings.user)}",
                 f"password={_option_file_value(settings.password)}",
                 "protocol=TCP",
+                "",
+            )
+        ).encode("utf-8")
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        descriptor = -1
+        yield path
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        path.unlink(missing_ok=True)
+
+
+@contextmanager
+def xtrabackup_option_file(
+    settings: MySQLSettings,
+    directory: Path,
+    mysql_socket: str,
+) -> Iterator[Path]:
+    """Create a short-lived option file for the local physical-backup client."""
+
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=".xtrabackup-credentials-", suffix=".cnf", dir=directory
+    )
+    path = Path(raw_path)
+    try:
+        os.fchmod(descriptor, 0o600)
+        user = _option_file_value(settings.user)
+        password = _option_file_value(settings.password)
+        socket = _option_file_value(mysql_socket)
+        body = "\n".join(
+            (
+                "[client]",
+                f"user={user}",
+                f"password={password}",
+                f"socket={socket}",
+                "protocol=SOCKET",
+                "",
+                "[xtrabackup]",
+                f"user={user}",
+                f"password={password}",
+                f"socket={socket}",
                 "",
             )
         ).encode("utf-8")
@@ -1757,7 +1808,14 @@ def execute_backup_plan(
     started = time.monotonic()
     execute = physical_executor or xtrabackup.execute_full_backup
     try:
-        result = execute(physical_plan, artifact)
+        with xtrabackup_option_file(
+            settings, layout["plans"], physical_plan.mysql_socket
+        ) as defaults_file:
+            result = execute(
+                physical_plan,
+                artifact,
+                mysql_defaults_file=defaults_file,
+            )
     except BaseException as exc:
         try:
             _publish_new_json(

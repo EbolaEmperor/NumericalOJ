@@ -230,7 +230,7 @@ class FakeRunner:
             pass
         elif command == [str(self.binary), "--version"]:
             stderr = (
-                f"xtrabackup version {self.plan.upstream_version} "
+                f"{self.binary} version {self.plan.upstream_version} "
                 "based on MySQL server\n"
             )
         elif str(xtrabackup.MYSQL_BINARY) in command:
@@ -346,14 +346,46 @@ def test_root_socket_preflight_requires_the_same_server_uuid(installed_backend):
         xtrabackup.preflight_root_socket(plan, runner=mismatch_runner)
 
 
+def test_root_socket_preflight_uses_validated_ephemeral_credentials(
+    installed_backend, tmp_path
+):
+    plan, _, runner = installed_backend
+    defaults_file = tmp_path / "mysql.cnf"
+    defaults_file.write_text("[client]\npassword=secret\n", encoding="utf-8")
+    defaults_file.chmod(0o600)
+
+    xtrabackup.preflight_root_socket(
+        plan,
+        mysql_defaults_file=defaults_file,
+        runner=runner,
+    )
+
+    command, kwargs = next(
+        call for call in runner.calls if str(xtrabackup.MYSQL_BINARY) in call[0]
+    )
+    assert command[4] == f"--defaults-file={defaults_file}"
+    assert "--no-defaults" not in command
+    assert "--user=root" not in command
+    assert not any("secret" in argument for argument in command)
+    assert not any("PASSWORD" in key or "PWD" in key for key in kwargs["env"])
+
+
 def test_execute_full_backup_runs_backup_then_prepare_and_validates_result(
     installed_backend, tmp_path
 ):
     plan, _, runner = installed_backend
     target = tmp_path / "backups" / "mysql-run"
     target.parent.mkdir()
+    defaults_file = tmp_path / "mysql.cnf"
+    defaults_file.write_text("[xtrabackup]\npassword=secret\n", encoding="utf-8")
+    defaults_file.chmod(0o600)
 
-    result = xtrabackup.execute_full_backup(plan, target, runner=runner)
+    result = xtrabackup.execute_full_backup(
+        plan,
+        target,
+        mysql_defaults_file=defaults_file,
+        runner=runner,
+    )
 
     commands = [call[0] for call in runner.calls]
     backup_index = next(index for index, command in enumerate(commands) if "--backup" in command)
@@ -367,7 +399,9 @@ def test_execute_full_backup_runs_backup_then_prepare_and_validates_result(
         "--",
         str(runner.binary),
     ]
-    assert "--no-defaults" in backup_command
+    assert f"--defaults-file={defaults_file}" in backup_command
+    assert "--no-defaults" not in backup_command
+    assert "--user=root" not in backup_command
     assert "--strict" in backup_command
     assert "--check-privileges" in backup_command
     assert "--parallel=4" in backup_command
@@ -382,6 +416,10 @@ def test_execute_full_backup_runs_backup_then_prepare_and_validates_result(
         if command and command[0] == str(xtrabackup.SUDO_BINARY)
         and command != [str(xtrabackup.SUDO_BINARY), "-v"]
     )
+    find_command = next(
+        command for command in commands if str(xtrabackup.FIND_BINARY) in command
+    )
+    assert find_command[-2:] == ["-printf", "%y\\t%s\\n"]
     assert result.to_dict() == {
         "target": str(target),
         "backup_type": "full-prepared",

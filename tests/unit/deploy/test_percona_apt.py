@@ -169,6 +169,32 @@ def test_bootstrap_download_removes_untrusted_partial_file(tmp_path, failure):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_bootstrap_metadata_uses_unambiguous_dpkg_show_format(tmp_path):
+    package = percona_apt.PERCONA_RELEASE
+    archive = tmp_path / "percona-release.deb"
+    archive.write_bytes(b"validated elsewhere")
+    calls = []
+
+    def run(command, *, env=None, check=False):
+        calls.append(list(command))
+        return _result(
+            command,
+            stdout=(
+                f"{package.package}\n{package.version}\n"
+                f"{package.architecture}\n"
+            ),
+        )
+
+    percona_apt._verify_bootstrap_metadata(archive, package, run)
+
+    assert calls == [[
+        percona_apt.DPKG_DEB,
+        "--show",
+        "--showformat=${Package}\\n${Version}\\n${Architecture}\\n",
+        str(archive),
+    ]]
+
+
 def test_bootstrap_network_error_is_normalized_for_fallback_policy(tmp_path):
     tmp_path.chmod(0o700)
 
@@ -487,6 +513,7 @@ def test_public_provisioner_runs_the_complete_pinned_install_flow(
     )
     sources.mkdir()
     tmp_path.chmod(0o700)
+    repository_file = sources / f"percona-{release.apt_repository}-release.list"
 
     installed: dict[str, str] = {}
     calls: list[tuple[list[str], dict[str, object]]] = []
@@ -550,8 +577,7 @@ def test_public_provisioner_runs_the_complete_pinned_install_flow(
             fingerprint = percona_apt.PERCONA_RELEASE.key_fingerprint
             return _result(command, stdout=f"fpr:::::::::{fingerprint}:\n")
         if percona_apt.PERCONA_RELEASE_COMMAND in command:
-            source = sources / f"percona-{release.apt_repository}-release.list"
-            source.write_text(
+            repository_file.write_text(
                 "deb "
                 f"[signed-by={percona_apt.PERCONA_KEYRING}] "
                 f"{percona_apt.PERCONA_REPO_ROOT}/"
@@ -613,6 +639,27 @@ def test_public_provisioner_runs_the_complete_pinned_install_flow(
     assert installed[release.package_name] == package_version
     assert not bootstrap_path.exists()
     assert sum(command == [percona_apt.SUDO, "-v"] for command, _ in calls) == 1
+    assert [
+        percona_apt.DPKG_QUERY,
+        "-W",
+        "-f=${Status}\t${Version}\n",
+        percona_apt.PERCONA_RELEASE.package,
+    ] in [command for command, _ in calls]
+    assert [
+        percona_apt.DPKG_QUERY,
+        "-W",
+        "-f=${Status}\t${Version}\n",
+        release.package_name,
+    ] in [command for command, _ in calls]
+    update_command = next(
+        command
+        for command, _ in calls
+        if percona_apt.APT_GET in command and "update" in command
+    )
+    assert f"Dir::Etc::sourcelist={repository_file}" in update_command
+    assert "Dir::Etc::sourceparts=-" in update_command
+    assert "APT::Get::List-Cleanup=0" in update_command
+    assert "APT::Update::Error-Mode=any" in update_command
     assert any(
         percona_apt.PERCONA_RELEASE_COMMAND in command for command, _ in calls
     )

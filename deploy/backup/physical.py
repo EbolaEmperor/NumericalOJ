@@ -52,7 +52,7 @@ DU_BINARY = Path("/usr/bin/du")
 
 _PACKAGE_ARCH_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _XTRABACKUP_VERSION_RE = re.compile(
-    r"(?:^|\s)xtrabackup\s+version\s+(?P<version>[^\s,]+)",
+    r"(?:^|\s)(?:/[^\s]*/)?xtrabackup\s+version\s+(?P<version>[^\s,]+)",
     re.IGNORECASE,
 )
 _SAFE_ENV_KEYS = ("LANG", "LANGUAGE", "LC_CTYPE", "TERM")
@@ -81,7 +81,7 @@ class InstallationValidationError(XtraBackupError):
 
 
 class RootSocketAuthenticationError(XtraBackupError):
-    """OS root cannot authenticate as MySQL root over the local Unix socket."""
+    """Privileged local authentication cannot prove the planned MySQL instance."""
 
 
 class BackupValidationError(XtraBackupError):
@@ -635,10 +635,11 @@ def prepare_plan(
     metadata: ServerMetadata,
     *,
     mysql_host: str,
+    mysql_defaults_file: Path | None = None,
     installer: Callable[[ReleaseSpec], None] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> XtraBackupPlan | None:
-    """Validate/install a supported backend and preflight root socket access.
+    """Validate/install a supported backend and preflight local socket access.
 
     ``None`` means that the server has no compatible fixed mapping.  Installation
     and validation failures remain exceptions so the deployment orchestrator can
@@ -671,24 +672,47 @@ def prepare_plan(
         validate_installation(plan, runner=runner)
 
     authenticate_sudo(runner=runner)
-    preflight_root_socket(plan, runner=runner)
+    preflight_root_socket(
+        plan,
+        mysql_defaults_file=mysql_defaults_file,
+        runner=runner,
+    )
     return plan
+
+
+def _mysql_defaults_argument(path: Path) -> str:
+    path = _absolute_lexical_path(path, "MySQL defaults file")
+    _assert_no_symlink_components(path)
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise EnvironmentValidationError(
+            "MySQL defaults file 必须是当前用户所有且权限为 0600 的普通文件"
+        )
+    return f"--defaults-file={path}"
 
 
 def preflight_root_socket(
     plan: XtraBackupPlan,
     *,
+    mysql_defaults_file: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> None:
-    """Prove root socket auth reaches the exact application-connected instance."""
+    """Prove privileged socket auth reaches the application-connected instance."""
 
     _, mysql_socket = validate_plan_environment(plan)
+    if mysql_defaults_file is None:
+        defaults_arguments = ("--no-defaults", "--user=root")
+    else:
+        defaults_arguments = (_mysql_defaults_argument(mysql_defaults_file),)
     result = _run(
         _sudo_command(
             MYSQL_BINARY,
-            "--no-defaults",
+            *defaults_arguments,
             "--protocol=socket",
-            "--user=root",
             f"--socket={mysql_socket}",
             "--batch",
             "--skip-column-names",
@@ -700,7 +724,7 @@ def preflight_root_socket(
     root_socket_uuid = (result.stdout or "").strip()
     if root_socket_uuid != plan.server_uuid:
         raise RootSocketAuthenticationError(
-            "sudo root socket 无法验证同一 MySQL 实例: "
+            "sudo 本地 socket 无法验证同一 MySQL 实例: "
             f"application_uuid={plan.server_uuid}, root_socket_uuid={root_socket_uuid!r}"
         )
 
@@ -925,7 +949,8 @@ def _inventory_backup(
         FIND_BINARY,
         target,
         "-xdev",
-        "-printf=%y\\t%s\\n",
+        "-printf",
+        "%y\\t%s\\n",
     )
     if runner is not None:
         result = _run(command, runner=runner, capture_output=True)
@@ -1011,6 +1036,7 @@ def execute_full_backup(
     plan: XtraBackupPlan,
     target: Path,
     *,
+    mysql_defaults_file: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> XtraBackupResult:
     """Create, prepare, and validate one full instance backup.
@@ -1022,7 +1048,11 @@ def execute_full_backup(
     datadir, mysql_socket = validate_plan_environment(plan)
     validate_installation(plan, runner=runner)
     validate_sudo_ticket(runner=runner)
-    preflight_root_socket(plan, runner=runner)
+    preflight_root_socket(
+        plan,
+        mysql_defaults_file=mysql_defaults_file,
+        runner=runner,
+    )
     target = validate_new_target(target, datadir)
 
     _run(
@@ -1043,14 +1073,16 @@ def execute_full_backup(
     )
     _assert_root_target(target, runner=runner)
 
-    connection_arguments = (
-        "--user=root",
-        f"--socket={mysql_socket}",
-    )
+    if mysql_defaults_file is None:
+        defaults_arguments = ("--no-defaults",)
+        connection_arguments = ("--user=root", f"--socket={mysql_socket}")
+    else:
+        defaults_arguments = (_mysql_defaults_argument(mysql_defaults_file),)
+        connection_arguments = (f"--socket={mysql_socket}",)
     _run(
         _sudo_command(
             XTRABACKUP_BINARY,
-            "--no-defaults",
+            *defaults_arguments,
             "--backup",
             "--strict",
             "--check-privileges",
