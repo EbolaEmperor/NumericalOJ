@@ -1,117 +1,104 @@
-{# 桌面与移动导航。 #}
-<nav class="navbar navbar-expand-lg navbar-light bg-light d-none d-lg-block layout-navbar layout-nav-compact">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="{{ url_for('problem_core.problem_list') }}"><strong>Numerical OJ</strong></a>
-    <div class="collapse navbar-collapse">
-      <ul class="navbar-nav me-auto">
-        {% if user %}
-        {% if user.is_admin == 1 %}
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
-            <i class="fas fa-book me-2"></i> <!-- 实心书籍图标 -->
-            <span data-problem-list-label="desktop">题目列表</span>
-          </a>
-        </li>
-        {% else %}
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('problem_core.problem_list') }}">
-            <i class="fas fa-tasks me-2"></i> <!-- 实心书籍图标 -->
-            我的作业
-          </a>
-        </li>
-        {% endif %}
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('problem_core.all_submissions') }}">
-            <i class="fas fa-chart-pie me-2"></i> <!-- 实心饼图图标 -->
-            提交记录
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('repository.code_repository') }}">
-            <i class="fas fa-code me-2"></i>
-            代码仓库
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('ranking.ranking_list') }}">
-            <i class="fas fa-trophy me-2"></i>
-            打榜赛
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('game.circle_cat') }}">
-            <i class="fas fa-cat me-2"></i>
-            围住小猫
-          </a>
-        </li>
-        {% endif %}
-        {% if user and user.is_admin == 1 %}
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('admin_user.user_management') }}">
-              <i class="fas fa-users me-2"></i>
-              用户管理
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('homework.admin_homework') }}">
-              <i class="fas fa-tasks me-2"></i>
-              作业管理
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('problem_core.admin_agent_tasks') }}">
-              <i class="fas fa-robot me-2"></i>
-              Agent 任务
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('ai_detection.dashboard') }}">
-              <i class="fas fa-shield-alt me-2"></i>
-              AI 检测
-            </a>
-          </li>
-        {% endif %}
-      </ul>
-      <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-        {% if session.get('username') %}
-          <li class="nav-item me-3">
-            <span class="nav-link disabled">你好，{{ session.get('username') }}</span>
-          </li>
-          {% if user and (user.is_admin == 1 or class_adjust_enabled) %}
-          <li class="nav-item me-3">
-            <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#classManagerModal">
-              <i class="fas fa-users-cog me-2"></i>
-              调整班级
-            </a>
-          </li>
-          {% endif %}
-          <!-- 新增修改密码按钮 -->
-          <li class="nav-item me-3">
-            <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal">
-              <i class="fas fa-key me-2"></i>
-              修改密码
-            </a>
-          </li>
-          <li class="nav-item">
-            <form method="post" action="{{ url_for('auth.logout') }}">
-              <button type="submit" class="nav-link border-0 bg-transparent">
-              <i class="fas fa-sign-out-alt me-2"></i>
-              注销
-              </button>
-            </form>
-          </li>
-        {% else %}
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('auth.login') }}"><i class="fas fa-sign-in-alt"></i> 登录</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('auth.register') }}"><i class="fas fa-user-plus"></i> 注册</a>
-          </li>
-        {% endif %}
-      </ul>
+{# 桌面侧栏与原有移动导航。992px 以下的结构和入口保持不变。 #}
+{% from 'components/layout/icons.html' import icon %}
+{% set active_endpoint = request.endpoint or '' %}
+{% if user %}
+<aside class="numoj-sidebar d-none d-lg-flex" data-numoj-sidebar data-navigation-url="{{ url_for('problem_core.layout_navigation_data') }}" aria-label="桌面主导航">
+  <a class="numoj-brand" href="{{ url_for('problem_core.problem_list') }}" aria-label="Numerical OJ 首页">
+    <span class="numoj-brand-mark" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M4 20Q8 4 12 12T20 4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+    </span>
+    <span class="numoj-brand-copy">
+      <strong>Numerical OJ</strong>
+      <small>AI-NATIVE JUDGE</small>
+    </span>
+  </a>
+
+  <nav class="numoj-sidebar-nav">
+    <section class="numoj-nav-group" aria-labelledby="numoj-nav-workspace">
+      <h2 id="numoj-nav-workspace">WORKSPACE</h2>
+      <a class="numoj-nav-item{% if active_endpoint in ('problem_core.problem_list', 'problem_core.problem_detail') and request.args.get('source') != 'library' %} active{% endif %}" href="{{ url_for('problem_core.problem_list') }}" title="{{ '班级作业' if user.is_admin == 1 else '我的作业' }}">
+        {{ icon('homework') }}
+        <span class="numoj-nav-label">{{ '班级作业' if user.is_admin == 1 else '我的作业' }}</span>
+        <span class="numoj-nav-count d-none" data-numoj-nav-count="homeworks"></span>
+      </a>
+      <a class="numoj-nav-item{% if active_endpoint == 'problem_core.all_submissions' or request.blueprint == 'submission' %} active{% endif %}" href="{{ url_for('problem_core.all_submissions') }}" title="提交记录">
+        {{ icon('submissions') }}
+        <span class="numoj-nav-label">提交记录</span>
+        <span class="numoj-nav-count d-none" data-numoj-nav-count="submissions"></span>
+      </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'repository' %} active{% endif %}" href="{{ url_for('repository.code_repository') }}" title="代码仓库">
+        {{ icon('repository') }}<span class="numoj-nav-label">代码仓库</span>
+      </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'forum' %} active{% endif %}" href="{{ url_for('forum.forum_index') }}" title="讨论区">
+        {{ icon('forum') }}<span class="numoj-nav-label">讨论区</span>
+      </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'ranking' %} active{% endif %}" href="{{ url_for('ranking.ranking_list') }}" title="打榜赛">
+        {{ icon('ranking') }}<span class="numoj-nav-label">打榜赛</span>
+      </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'game' %} active{% endif %}" href="{{ url_for('game.circle_cat') }}" title="围住小猫">
+        {{ icon('game') }}<span class="numoj-nav-label">围住小猫</span>
+      </a>
+    </section>
+
+    {% if user.is_admin == 1 %}
+    <section class="numoj-nav-group" aria-labelledby="numoj-nav-admin">
+      <h2 id="numoj-nav-admin">ADMIN</h2>
+      <a class="numoj-nav-item{% if active_endpoint == 'problem_core.problem_library' or active_endpoint == 'problem_core.problem_detail' and request.args.get('source') == 'library' %} active{% endif %}" href="{{ url_for('problem_core.problem_library') }}" title="总题库">
+        {{ icon('library') }}<span class="numoj-nav-label">总题库</span>
+        <span class="numoj-nav-count d-none" data-numoj-nav-count="problems"></span>
+      </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'admin_user' %} active{% endif %}" href="{{ url_for('admin_user.user_management') }}" title="用户管理">
+        {{ icon('users') }}<span class="numoj-nav-label">用户管理</span>
+        <span class="numoj-nav-count d-none" data-numoj-nav-count="users"></span>
+      </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'homework' %} active{% endif %}" href="{{ url_for('homework.admin_homework') }}" title="作业管理">
+        {{ icon('admin-homework') }}<span class="numoj-nav-label">作业管理</span>
+      </a>
+      <a class="numoj-nav-item{% if active_endpoint in ('problem_core.admin_agent_tasks', 'problem_core.admin_agent_run') %} active{% endif %}" href="{{ url_for('problem_core.admin_agent_tasks') }}" title="Agent 任务">
+        {{ icon('agent') }}<span class="numoj-nav-label">Agent 任务</span>
+        <span class="numoj-nav-dot d-none" data-numoj-agent-active aria-label="存在运行中的 Agent 任务"></span>
+      </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'ai_detection' %} active{% endif %}" href="{{ url_for('ai_detection.dashboard') }}" title="AI 检测">
+        {{ icon('ai') }}<span class="numoj-nav-label">AI 检测</span>
+      </a>
+    </section>
+    {% endif %}
+
+    <section class="numoj-nav-group" aria-labelledby="numoj-nav-user">
+      <h2 id="numoj-nav-user">USER</h2>
+      <a class="numoj-nav-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal" title="修改密码">
+        {{ icon('password') }}<span class="numoj-nav-label">修改密码</span>
+      </a>
+      {% if user.is_admin == 1 or class_adjust_enabled %}
+      <a class="numoj-nav-item" href="#" data-bs-toggle="modal" data-bs-target="#classManagerModal" title="调整班级">
+        {{ icon('classes') }}<span class="numoj-nav-label">调整班级</span>
+      </a>
+      {% endif %}
+      <form class="numoj-logout-form" method="post" action="{{ url_for('auth.logout') }}">
+        <button type="submit" class="numoj-nav-item" title="登出">
+          {{ icon('logout') }}<span class="numoj-nav-label">登出</span>
+        </button>
+      </form>
+    </section>
+  </nav>
+
+  <footer class="numoj-sidebar-footer">
+    <div class="numoj-user-summary">
+      <span class="numoj-avatar">{{ (user.username or 'U')[:2]|upper }}</span>
+      <span class="numoj-user-copy">
+        <strong>{{ user.username }}</strong>
+        <small>{{ '教师' if user.is_admin == 1 else '学生' }}{% if user.class_cn %} · {{ user.class_cn }}{% endif %}</small>
+      </span>
     </div>
-  </div>
-</nav>
+    <button class="numoj-sidebar-toggle" type="button" data-numoj-sidebar-toggle aria-label="收起侧边栏" title="收起侧边栏">
+      <span class="numoj-collapse-expanded">{{ icon('collapse-left') }}</span>
+      <span class="numoj-collapse-collapsed">{{ icon('collapse-right') }}</span>
+    </button>
+  </footer>
+</aside>
+{% endif %}
 
 <!-- 移动端右上角按钮 -->
 <button class="btn btn-outline-primary d-lg-none position-fixed top-0 end-0 m-3" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasNavbar" aria-controls="offcanvasNavbar">
@@ -212,7 +199,7 @@
           <form method="post" action="{{ url_for('auth.logout') }}">
             <button type="submit" class="nav-link border-0 bg-transparent">
             <i class="fas fa-sign-out-alt me-2"></i>
-            注销
+            登出
             </button>
           </form>
         </li>

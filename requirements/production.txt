@@ -22,7 +22,11 @@ httpx==0.28.1
 faiss-cpu==1.14.3
 tree-sitter==0.25.2
 tree-sitter-cpp==0.23.4
+tree-sitter-matlab==1.3.0
 pypdfium2==5.12.1
+
+# Python editor semantic highlighting uses the open-source language server.
+basedpyright==1.39.9
 
 # supervisord is the checked-in process manager used by deploy/supervisor/.
 supervisor==4.3.0

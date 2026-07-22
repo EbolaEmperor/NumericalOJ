@@ -1,4 +1,5 @@
 {% extends "layouts/site.html" %}
+{% block content_container_class %}container mt-4 numoj-problems-content{% endblock %}
 {% block title %}
   {% if user and user.is_admin != 1 %}
     我的作业 - {{ super() }}
@@ -26,6 +27,8 @@
     .student-hw-row { align-items: flex-start; }
   }
 </style>
+{% include 'problems/desktop/list.html' %}
+<div class="d-lg-none">
 <div class="container my-4">
   <div class="row">
     <!-- 左侧内容：题目列表 -->
@@ -285,6 +288,7 @@
     </div>
   </div>
 </div>
+</div>
 
 <!-- 抄袭提示模态框 -->
 <div class="modal fade" id="plagiarismNoticeModal" tabindex="-1" aria-hidden="true">
@@ -346,12 +350,26 @@ function deleteProblem(problemId) {
 </script>
 {% endif %}
 
-<script src="{{ url_for('static', filename='vendor/chartjs/chart.umd.min.js') }}"></script>
-<script src="{{ url_for('static', filename='vendor/chartjs/chartjs-plugin-datalabels.min.js') }}"></script>
-
 <script>
-  const ctx = document.getElementById('submissionChart').getContext('2d');
-  const submissionChart = new Chart(ctx, {
+(() => {
+  if (!window.matchMedia('(max-width: 991.98px)').matches) return;
+  const canvas = document.getElementById('submissionChart');
+  if (!canvas) return;
+
+  function loadScript(path) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = path;
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
+  loadScript({{ url_for('static', filename='vendor/chartjs/chart.umd.min.js')|tojson }})
+    .then(() => loadScript({{ url_for('static', filename='vendor/chartjs/chartjs-plugin-datalabels.min.js')|tojson }}))
+    .then(() => {
+  const submissionChart = new Chart(canvas.getContext('2d'), {
     type: 'bar',
     data: {
       labels: {{ last_10_days|tojson }},
@@ -387,6 +405,9 @@ function deleteProblem(problemId) {
   });
   submissionChart.options.plugins.datalabels = { anchor: 'end', align: 'top', color: '#000', font: { weight: 'bold' }, formatter: v => v };
   submissionChart.update();
+    })
+    .catch(() => {});
+})();
 </script>
 
 <script>
@@ -412,10 +433,15 @@ const matlabTips = [
 let currentTipIndex = Math.floor(Math.random() * matlabTips.length);
 function refreshTip() {
   currentTipIndex = (currentTipIndex + 1) % matlabTips.length;
-  document.getElementById('matlab-tip').innerText = matlabTips[currentTipIndex];
+  const tip = matlabTips[currentTipIndex];
+  document.querySelectorAll('[data-numoj-tip]').forEach(element => { element.innerText = tip; });
+  const legacyTip = document.getElementById('matlab-tip');
+  if (legacyTip) legacyTip.innerText = tip;
 }
 refreshTip();
-document.getElementById('refresh-btn').addEventListener('click', refreshTip);
+document.querySelectorAll('[data-numoj-tip-refresh]').forEach(button => button.addEventListener('click', refreshTip));
+const legacyTipButton = document.getElementById('refresh-btn');
+if (legacyTipButton) legacyTipButton.addEventListener('click', refreshTip);
 
 // GitHub 开源项目推荐
 const githubProjects = [
@@ -445,16 +471,27 @@ function refreshProjects() {
     const p = githubProjects[Math.floor(Math.random() * githubProjects.length)];
     if (!selected.includes(p)) selected.push(p);
   }
-  const list = document.getElementById("github-projects-list");
-  list.innerHTML = "";
-  selected.forEach(p => {
-    const li = document.createElement("li");
-    li.innerHTML = `<a href="${p.url}" target="_blank" rel="noopener noreferrer" class="ms-2 text-decoration-none">${p.name}</a>`;
-    list.appendChild(li);
+  const lists = [...document.querySelectorAll('[data-numoj-projects]')];
+  const legacyList = document.getElementById("github-projects-list");
+  if (legacyList) lists.push(legacyList);
+  lists.forEach(list => {
+    list.innerHTML = "";
+    selected.forEach(p => {
+      const li = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = p.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = p.name;
+      li.appendChild(link);
+      list.appendChild(li);
+    });
   });
 }
 refreshProjects();
-document.getElementById('projects-refresh-btn').addEventListener('click', refreshProjects);
+document.querySelectorAll('[data-numoj-projects-refresh]').forEach(button => button.addEventListener('click', refreshProjects));
+const legacyProjectsButton = document.getElementById('projects-refresh-btn');
+if (legacyProjectsButton) legacyProjectsButton.addEventListener('click', refreshProjects);
 </script>
 
 <script>

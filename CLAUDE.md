@@ -179,7 +179,7 @@ bash deploy.sh
 生产部署还必须在任何数据库连接前 fail-closed 校验 `.env` 已加载、属于当前部署用户、
 是普通文件且权限为 `0400` 或 `0600`；不得把缺失本地配置静默降级为模板默认值。
 
-1. 持有主机级锁并清理异常中断遗留的受管候选镜像标签，再在 `.deploy/venvs/` 的非活动槽安装固定生产依赖；
+1. 持有主机级锁并校验生产配置；若 `clangd --version` 或 `bwrap --version` 不可用，先模拟并通过 Debian APT 安装精确 candidate 版本，拒绝卸载、改动既有依赖或触碰宿主关键包；再清理异常中断遗留的受管候选镜像标签，在 `.deploy/venvs/` 的非活动槽安装固定生产依赖，并核验受沙箱保护的 clangd、BasedPyright 与 Tree-sitter MATLAB 解析器；
 2. 每次都为普通判题与 Agent-as-Judge 准备候选镜像；构建输入指纹未变化时复用稳定镜像并创建候选标签，变化时才重新构建；
 3. 停服前以服务端 `SELECT VERSION()` 等查询为准生成唯一备份计划。兼容的本机 MySQL 8.0/8.4 使用仓库固定版本的 XtraBackup；缺失或版本不匹配时，通过交互式 `sudo` 和 Debian APT 自动安装。服务器不兼容，或自动安装失败时，计划才允许回退到 `mysqldump`；
 4. 确认两套 Supervisor 可管理，再依次停止 Celery/Web；首次迁移只终止身份精确匹配的旧版 Supervisor，不使用 `pkill -f`；
@@ -187,7 +187,7 @@ bash deploy.sh
 6. 切换 `.deploy/current-venv`，执行一次非破坏性 schema 同步和停机任务恢复；
 7. 切换两个生产镜像标签，最佳努力启动统一日志采集器，再依次启动 Celery/Web，并在两组业务服务均启动后再次确认 Supervisor 配置中的精确进程集合全部稳定进入 `RUNNING`；重新核验真实备份产物后才把回滚点标记为成功。
 
-脚本不复制、覆盖或删除代码文件，因此生产 `.env`、`static/` 的额外资产、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置。除按需通过 APT 管理固定版本 XtraBackup 及其 Percona 软件源外，脚本只写 `.deploy/`、数据库备份、Docker 标签和进程状态。正常拉取只更新 tracked 的 `config.py` 解析逻辑和 `.env.tmpl` 模板，不覆盖 `.env`。部署用 Python 辅助程序统一放在 `deploy/`，不得在 `deploy.sh` 中内嵌 Python 源码或 `python -c`。
+脚本不复制、覆盖或删除代码文件，因此生产 `.env`、`static/` 的额外资产、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置。除按需通过 APT 管理 clangd、Bubblewrap 的精确 candidate 版本、固定版本 XtraBackup 及其 Percona 软件源外，脚本只写 `.deploy/`、数据库备份、Docker 标签和进程状态。正常拉取只更新 tracked 的 `config.py` 解析逻辑和 `.env.tmpl` 模板，不覆盖 `.env`。部署用 Python 辅助程序统一放在 `deploy/`，不得在 `deploy.sh` 中内嵌 Python 源码或 `python -c`。
 
 部署脚本不修改系统 Python 或全局 site-packages；两个项目内 venv 槽轮换，避免安装依赖时改变仍在运行的解释器。数据库备份保存在 `.deploy/backups/`：物理备份为 root 所有且权限 `0700`，其受管根与 `physical/` 由特权 helper 固定为 root:root `0711`；逻辑备份与清单为部署用户私有。留存顺序使用持久化单调 generation，不使用可能回拨的墙上时钟，并始终显式保护本次 run。只有业务服务全部恢复为 `RUNNING` 且真实产物再次通过 CRC/SHA 或 prepared 校验后，才按清单保留最近 2 个成功部署回滚点；失败或待人工处理的回滚点永不自动删除。脚本不自动回灌。若结构同步或启动在停服后失败，立即停止、记录失败阶段并保留现场；先判断 DDL 是否已提交，再由人工决定向前修复或恢复备份。`deploy/supervisor/web.conf`、`celery.conf` 与 `observability.conf` 使用独立 socket、pidfile 和项目内日志；Web 保持单进程、64 线程的 Gunicorn `gthread` 配置，修改并发或回收策略前必须重新验证 SSE 与进程内状态约束。
 

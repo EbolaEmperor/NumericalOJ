@@ -1,0 +1,32 @@
+{# Monaco 仅在桌面编程题按需加载；运行资产固定并由本仓库托管。 #}
+<script>
+  window.MonacoEnvironment = {
+    getWorkerUrl: function() {
+      return {{ url_for('static', filename='vendor/monaco/editor.worker.js')|tojson }};
+    }
+  };
+  window.NumOJMonacoReady = new Promise(function(resolve) {
+    if (!window.matchMedia('(min-width: 992px)').matches) {
+      resolve(null);
+      return;
+    }
+    var stylesheetReady = new Promise(function(done) {
+      var stylesheet = document.createElement('link');
+      stylesheet.rel = 'stylesheet';
+      stylesheet.href = {{ url_for('static', filename='vendor/monaco/editor.css')|tojson }};
+      stylesheet.onload = done;
+      stylesheet.onerror = done;
+      document.head.appendChild(stylesheet);
+    });
+    var script = document.createElement('script');
+    script.src = {{ url_for('static', filename='vendor/monaco/editor.js')|tojson }};
+    script.async = true;
+    script.onload = function() {
+      stylesheetReady.then(function() {
+        resolve(window.NumericalOJMonaco || null);
+      });
+    };
+    script.onerror = function() { resolve(null); };
+    document.head.appendChild(script);
+  });
+</script>

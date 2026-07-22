@@ -135,6 +135,83 @@ def test_shared_layout_and_editor_fragments_have_one_canonical_source():
         assert source.count(editor_include) == 1
 
 
+def test_non_credential_text_fields_opt_out_of_password_managers():
+    users = (TEMPLATES / "admin" / "users.html").read_text(encoding="utf-8")
+    repository = (TEMPLATES / "repository" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'name="user_search"' in users
+    assert 'name="username"' not in users
+    for marker in ('autocomplete="off"', "data-1p-ignore", 'data-lpignore="true"'):
+        assert marker in users
+        assert marker in repository
+
+    assert "codeMirrorEditor.getInputField()" in repository
+    assert "editorInput.setAttribute('autocomplete', 'off')" in repository
+    assert "editorInput.setAttribute('data-bwignore', '')" in repository
+
+
+def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
+    detail = (TEMPLATES / "problems" / "detail.html").read_text(encoding="utf-8")
+    layout = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
+    editor = (ROOT / "static" / "app" / "problem-editor.js").read_text(
+        encoding="utf-8"
+    )
+    monaco_entry = (ROOT / "frontend" / "monaco" / "editor.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "problem-detail-content-shell" in detail
+    assert "problem-code-submit-form" in detail
+    assert "problem-editor-toolbar" in detail
+    assert "problem-editor-actions" in detail
+    assert "problem-heading-layout" in detail
+    assert "problem-heading-info" in detail
+    assert 'id="desktopEditorShell"' in detail
+    assert 'id="monacoEditorLoading"' in detail
+    assert "代码编辑器正在加载" in detail
+    assert 'data-size="lg"' in detail
+    assert "recent-submissions-panel" in detail
+    assert "recent-submissions-card" in detail
+    assert 'class="recent-submissions-panel d-lg-none"' in detail
+    assert "recent-submission-arrow" in detail
+    for status, abbreviation in (
+        ("Accepted", "AC"),
+        ("Unaccepted", "WA"),
+        ("Compile Error", "CE"),
+    ):
+        assert f"'{status}': '{abbreviation}'" in detail
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in layout
+    assert ".numoj-content.problem-detail-content-shell" in layout
+    assert ".submission-status.accepted" in layout
+    assert ".submission-status.unaccepted" in layout
+    assert ".submission-status.compile-error" in layout
+    assert ".recent-submissions-card" in layout
+    assert ".problem-heading-layout.has-recent-submissions" in layout
+    assert ".problem-prompt-submit-form" in layout
+    assert ".problem-editor-loading-state" in layout
+    assert 'data-editor-state="ready"' in layout
+    assert "revealMonacoEditor(instance)" in editor
+    assert "registerSemanticTokens(monaco)" in editor
+    assert "registerDocumentSemanticTokensProvider" in editor
+    assert "'py', 'python', 'matlab', 'octave'" in editor
+    assert "/api/editor/semantic-token-legend" in editor
+    assert "/api/editor/semantic-tokens" in editor
+    assert "monaco.prepareTextMateHighlighting()" in editor
+    assert "editorTheme = 'dark-plus'" in editor
+    assert "theme: editorTheme" in editor
+    assert "'semanticHighlighting.enabled': true" in editor
+    assert 'from "@shikijs/monaco"' in monaco_entry
+    assert "darkPlusSemanticRules" in monaco_entry
+    assert '{ token: "class", foreground: "4EC9B0" }' in monaco_entry
+    assert '{ token: "method", foreground: "DCDCAA" }' in monaco_entry
+    assert 'from "@shikijs/langs/cpp"' in monaco_entry
+    assert 'from "@shikijs/themes/dark-plus"' in monaco_entry
+    assert "createJavaScriptRegexEngine()" in monaco_entry
+    assert "numoj-light" not in editor
+
+
 def test_submission_lists_share_table_markup_and_styles():
     component = TEMPLATES / "submissions" / "components" / "table.html"
     stylesheet = ROOT / "static" / "app" / "submissions.css"

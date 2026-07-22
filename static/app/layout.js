@@ -1,6 +1,83 @@
 (function () {
   'use strict';
 
+  function initDesktopSidebar() {
+    const shell = document.querySelector('[data-numoj-shell]');
+    const sidebar = document.querySelector('[data-numoj-sidebar]');
+    const toggle = document.querySelector('[data-numoj-sidebar-toggle]');
+    if (!shell || !sidebar || !toggle) return;
+
+    const media = window.matchMedia('(min-width: 992px)');
+    const storageKey = 'numoj.desktopSidebarCollapsed';
+
+    function readStoredState() {
+      try {
+        return window.localStorage.getItem(storageKey) === '1';
+      } catch (_error) {
+        return false;
+      }
+    }
+
+    function writeStoredState(collapsed) {
+      try {
+        window.localStorage.setItem(storageKey, collapsed ? '1' : '0');
+      } catch (_error) {
+        // 存储被浏览器禁用时，当前页面内仍可正常折叠。
+      }
+    }
+
+    function applyState(collapsed) {
+      const effective = media.matches && collapsed;
+      shell.classList.toggle('is-sidebar-collapsed', effective);
+      toggle.setAttribute('aria-expanded', effective ? 'false' : 'true');
+      toggle.setAttribute('aria-label', effective ? '展开侧边栏' : '收起侧边栏');
+      toggle.setAttribute('title', effective ? '展开侧边栏' : '收起侧边栏');
+    }
+
+    let collapsed = readStoredState();
+    applyState(collapsed);
+
+    toggle.addEventListener('click', () => {
+      collapsed = !shell.classList.contains('is-sidebar-collapsed');
+      writeStoredState(collapsed);
+      applyState(collapsed);
+    });
+
+    const onMediaChange = () => applyState(collapsed);
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', onMediaChange);
+    } else if (typeof media.addListener === 'function') {
+      media.addListener(onMediaChange);
+    }
+  }
+
+  function initDesktopNavigationData() {
+    if (!window.matchMedia('(min-width: 992px)').matches) return;
+    const sidebar = document.querySelector('[data-numoj-sidebar]');
+    if (!sidebar?.dataset.navigationUrl) return;
+
+    const url = new URL(sidebar.dataset.navigationUrl, window.location.origin);
+    const selectedClass = new URLSearchParams(window.location.search).get('class_en');
+    if (selectedClass) url.searchParams.set('class_en', selectedClass);
+
+    fetch(url.toString(), { headers: { Accept: 'application/json' } })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!data.success) return;
+        const counts = data.counts || {};
+        Object.entries(counts).forEach(([name, value]) => {
+          const target = sidebar.querySelector(`[data-numoj-nav-count="${name}"]`);
+          if (!target) return;
+          target.textContent = String(value);
+          target.classList.remove('d-none');
+        });
+        if (data.agent_active) {
+          sidebar.querySelector('[data-numoj-agent-active]')?.classList.remove('d-none');
+        }
+      })
+      .catch(() => {});
+  }
+
   function initAdaptiveNavigation() {
     const compactClass = 'layout-nav-compact';
 
@@ -323,6 +400,8 @@
     });
   }
 
+  initDesktopSidebar();
+  initDesktopNavigationData();
   initAdaptiveNavigation();
   initClassManager();
   initPasswordForm();

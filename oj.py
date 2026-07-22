@@ -4,7 +4,7 @@
 import os
 import secrets
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for, session
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 from werkzeug.exceptions import HTTPException
 from celery import Celery
 
@@ -16,17 +16,15 @@ from oj_modules.observability import (
     install_celery_observability,
     install_flask_observability,
 )
-
-
 os.environ.setdefault('NUMOJ_SERVICE_NAME', 'web')
 configure_logging(level=getattr(_cfg, 'LOG_LEVEL', 'INFO'))
 
 from oj_modules.db_services import (
     get_db_connection,
-    get_user_by_username,
     init_submission_snapshot_cache,
     is_class_adjust_enabled,
 )
+from oj_modules.auth_helpers import current_user
 from oj_modules.routes.submission_routes import submission_bp
 from oj_modules.routes.admin_problem_routes import admin_problem_bp
 from oj_modules.routes.repository_routes import repository_bp, init_repository_index_module
@@ -38,6 +36,10 @@ from oj_modules.routes.rejudge_routes import rejudge_bp, init_rejudge_module
 from oj_modules.routes.admin_user_routes import admin_user_bp
 from oj_modules.routes.homework_routes import homework_bp, init_homework_module
 from oj_modules.routes.auth_routes import auth_bp, init_auth_module
+from oj_modules.routes.editor_language_routes import (
+    editor_language_bp,
+    init_editor_language_module,
+)
 from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_core_module
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
@@ -156,6 +158,7 @@ app.register_blueprint(rejudge_bp)
 app.register_blueprint(admin_user_bp)
 app.register_blueprint(homework_bp)
 app.register_blueprint(auth_bp)
+app.register_blueprint(editor_language_bp)
 app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
 app.register_blueprint(game_bp)
@@ -169,11 +172,11 @@ for _api_bp in API_BLUEPRINTS:
 ###############################################################################
 @app.context_processor
 def inject_globals():
-    # 提供到所有模板：class_adjust_enabled
     try:
-        return { 'class_adjust_enabled': is_class_adjust_enabled() }
+        class_adjust_enabled = is_class_adjust_enabled()
     except Exception:
-        return { 'class_adjust_enabled': True }
+        class_adjust_enabled = True
+    return {'class_adjust_enabled': class_adjust_enabled}
 
 
 # 默认 CSP：考虑到现有页面大量内联脚本/样式与本地打包资源，采用「不破坏现网」的宽松策略，
@@ -223,8 +226,6 @@ def _set_security_headers(resp):
 ###############################################################################
 #  会话 / 权限
 ###############################################################################
-from oj_modules.auth_helpers import current_user  # 统一会话/权限实现
-
 ###############################################################################
 #  路由
 ###############################################################################
@@ -327,6 +328,7 @@ init_ranking_module(
 init_auth_module(rds)
 # 初始化 AI 模块（ask_ai_code_marks 限流依赖 Redis）
 init_ai_module(rds)
+init_editor_language_module(rds)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds, blocking_client=rds_blocking)
 # 初始化 agent 运行状态缓存（Redis）

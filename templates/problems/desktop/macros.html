@@ -1,0 +1,15 @@
+{% macro submission_metric(metrics) -%}
+  {% set values = metrics or {} %}
+  {% set pass_rate = values.get('pass_rate') %}
+  {% set submission_count = values.get('submission_count', 0) %}
+  {% set percent = ((pass_rate * 100) + 0.5)|int if pass_rate is not none else 0 %}
+  <div class="numoj-row-metric">
+    <div>
+      <span>{{ percent ~ '%' if pass_rate is not none else '—' }}</span>
+      <span>n={{ submission_count }}</span>
+    </div>
+    <div class="numoj-progress" aria-label="{{ '通过率 ' ~ percent ~ '%' if pass_rate is not none else '暂无终态提交' }}">
+      <span style="width: {{ percent }}%"></span>
+    </div>
+  </div>
+{%- endmacro %}

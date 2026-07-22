@@ -11,6 +11,21 @@ on:
   pull_request:
 
 jobs:
+  frontend-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Rebuild checked-in Monaco assets
+        run: |
+          npm ci
+          npm run build:monaco
+      - name: Verify generated assets are current
+        run: git diff --exit-code -- static/vendor/monaco
+
   compile:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,2 @@
+# esbuild preserves significant tabs/newlines inside bundled template literals.
+static/vendor/monaco/editor.js whitespace=-trailing-space

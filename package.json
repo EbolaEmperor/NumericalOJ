@@ -1,0 +1,16 @@
+{
+  "name": "numericaloj-frontend-assets",
+  "private": true,
+  "scripts": {
+    "build:monaco": "node scripts/build_monaco.mjs"
+  },
+  "devDependencies": {
+    "@shikijs/monaco": "4.3.1",
+    "esbuild": "0.25.9",
+    "monaco-editor": "0.56.0",
+    "shiki": "4.3.1"
+  },
+  "overrides": {
+    "dompurify": "3.4.12"
+  }
+}

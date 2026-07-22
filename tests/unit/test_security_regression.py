@@ -13,6 +13,30 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from flask import Flask, session
+
+
+# ---------------- 会话用户请求内复用 ----------------
+def test_current_user_reuses_request_lookup_and_tracks_session_changes(monkeypatch):
+    from oj_modules import auth_helpers
+
+    app = Flask(__name__)
+    app.secret_key = 'test'
+    lookups = []
+
+    def load_user(username):
+        lookups.append(username)
+        return {'username': username}
+
+    monkeypatch.setattr(auth_helpers, 'get_user_by_username', load_user)
+    with app.test_request_context('/'):
+        session['username'] = 'alice'
+        assert auth_helpers.current_user() == {'username': 'alice'}
+        assert auth_helpers.current_user() == {'username': 'alice'}
+        session['username'] = 'bob'
+        assert auth_helpers.current_user() == {'username': 'bob'}
+
+    assert lookups == ['alice', 'bob']
 
 
 # ---------------- safe_table_name ----------------

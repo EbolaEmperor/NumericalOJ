@@ -230,6 +230,10 @@ ENV_FILE="$ROOT_DIR/.env"
 PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
   deploy/preflight.py validate-config "$ENV_FILE"
 
+phase='准备编辑器语言服务宿主运行时'
+PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+  deploy/system_packages.py ensure-editor-runtime
+
 remove_stale_candidate_tags() {
   local reference
   local tags
@@ -375,6 +379,10 @@ rm -rf -- "$CANDIDATE_VENV"
 "$CANDIDATE_PYTHON" -m pip install \
   --disable-pip-version-check \
   --requirement requirements/production.txt
+
+phase='核验编辑器语言服务'
+PYTHONDONTWRITEBYTECODE=1 "$CANDIDATE_PYTHON" -B \
+  deploy/verify_editor_runtime.py
 
 phase='构建判题镜像'
 build_candidate_image \
