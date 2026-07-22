@@ -2,6 +2,8 @@
 
 本目录是 NumericalOJ 的容器化测试配置：在 **独立 MySQL + Redis + 真实判题工具链（gcc/g++/python3/octave）** 的隔离环境中逐模块跑 pytest。端到端验证统一走 `tests/e2e/`：先启动本地 Flask 服务，再通过 `numoj-admin` / `numoj-user` CLI 操作真实 HTTP 路由；测试按 auth、problem/submission、homework/class、repository/forum、ranking、AI detection 和 help matrix 分类拆分。
 
+GitHub Actions 直接在 GitHub-hosted runner 上连接一次性 MySQL 8.4/Redis 服务，并构建 `numericaloj-judger-lite` 运行真实 Docker 判题 E2E。这样判题目录与 Docker daemon 位于同一宿主路径，不需要把 Docker socket 挂进测试容器。Actions 执行 unit、DB、E2E 全部测试；只有需要外部密钥的 live AI 测试默认 skip，JUnit XML 会上传为 workflow artifact。
+
 **CI/test 绝对禁止在 `why-server` 上运行。** `why-server` 是本地 SSH config 里的生产主机别名，该主机自己的 hostname 是 `computing`；两者都视为同一台生产主机。生产主机只能用于生产部署和明确的运维操作；即使使用 Docker、独立目录、独立容器、独立 MySQL/Redis，也不能把它作为 CI runner。需要手动跑 CI 时，只能在本地开发机或另一台非生产服务器上运行。
 
 ---
@@ -98,7 +100,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 | `docker-compose.local.yml` | 推荐的本地/非生产 CI compose 文件；编排独立 `mysql`、`redis`、`test`，不挂载生产路径。 |
 | `docker-compose.ci.yml` | 历史主机专用 compose 文件，包含宿主 MKL 挂载；日常 CI 优先使用 `docker-compose.local.yml`，且任何 compose 文件都不能在 `why-server` / host `computing` 上运行。 |
 | `config.ci.py` | 自包含 CI 配置。MySQL/Redis 指向 compose 服务名 `mysql`/`redis`，使用 `myojdb_test` / Redis DB 15；AI/SMTP 使用测试占位值，测试中网络 AI 通常 mock 或 skip。 |
-| `run-ci.sh` | 在 `test` 容器内逐模块顺序跑 pytest（unit -> db -> CLI e2e），逐模块打印结果并写 JUnit XML；任一模块失败则整体非零退出。 |
+| `run-ci.sh` | 在容器或 GitHub runner 上逐模块顺序跑 pytest（默认 unit -> db -> CLI e2e，也可传入模块路径），逐模块打印结果并写 JUnit XML；任一模块失败则整体非零退出。 |
 | `INSTALL-DOCKER.md` | Docker 安装记录和排错参考；不要把 `why-server` / `computing` 作为 CI 运行目标。 |
 
 构建上下文排除项在仓库根的 `.dockerignore`，用于减少 Docker build 上下文。

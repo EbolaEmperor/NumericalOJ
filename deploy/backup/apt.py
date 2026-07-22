@@ -274,11 +274,9 @@ def _verify_bootstrap_metadata(
         run,
         [
             DPKG_DEB,
-            "-f",
+            "--show",
+            "--showformat=${Package}\\n${Version}\\n${Architecture}\\n",
             str(path),
-            "Package",
-            "Version",
-            "Architecture",
         ],
         purpose="读取 Percona 引导包元数据",
     )
@@ -508,7 +506,7 @@ def _key_fingerprints(run: Runner) -> set[str]:
 
 def _bootstrap_is_valid(run: Runner, package: BootstrapPackage) -> bool:
     query = run(
-        [DPKG_QUERY, "-W", "-f=${db:Status}\t${Version}\n", package.package],
+        [DPKG_QUERY, "-W", "-f=${Status}\t${Version}\n", package.package],
         env=None,
         check=False,
     )
@@ -610,7 +608,7 @@ def _installed_xtrabackup_is_valid(
     run: Runner,
 ) -> bool:
     query = run(
-        [DPKG_QUERY, "-W", "-f=${db:Status}\t${Version}\n", release.package_name],
+        [DPKG_QUERY, "-W", "-f=${Status}\t${Version}\n", release.package_name],
         env=None,
         check=False,
     )
@@ -688,12 +686,24 @@ def _provision_xtrabackup_impl(
     _validate_repository_file(
         release, codename, sources_directory=sources_directory
     )
+    repository_file = (
+        sources_directory / f"percona-{release.apt_repository}-release.list"
+    )
+    # Unrelated third-party repositories must not decide whether the pinned
+    # Percona package can be provisioned.  Preserve their cached indexes and
+    # refresh only the source file whose exact contents were validated above.
     _checked(
         run,
         _sudo_command(
             [
                 APT_GET,
                 *APT_SECURITY_OPTIONS,
+                "-o",
+                f"Dir::Etc::sourcelist={repository_file}",
+                "-o",
+                "Dir::Etc::sourceparts=-",
+                "-o",
+                "APT::Get::List-Cleanup=0",
                 "-o",
                 "APT::Update::Error-Mode=any",
                 "update",

@@ -13,6 +13,7 @@ import hashlib
 import os
 import pathlib
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -52,6 +53,7 @@ CORE_TABLES = [
 ADMIN_USERNAME = 'admin'
 ADMIN_PASSWORD = 'admin123'
 SEED_CLASSES = [('Cadmin', '管理员'), ('Cclass1', '测试班级')]
+TEST_FILESYSTEM_ROOTS = ('ranking_uploads',)
 
 
 def sha256_hex(text):
@@ -157,9 +159,22 @@ def _flush_redis():
         pass
 
 
+def _reset_test_filesystem_artifacts():
+    """清空与已重置数据库 ID 绑定的测试文件，避免跨用例目录冲突。"""
+    _assert_destructive_test_environment()
+    for relative_path in TEST_FILESYSTEM_ROOTS:
+        root = OJ_ROOT / relative_path
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            pytest.fail(f"拒绝清理异常测试产物根目录：{root}", pytrace=False)
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(mode=0o700, parents=True)
+
+
 def _reset_db():
     _assert_destructive_test_environment()
     _flush_redis()
+    _reset_test_filesystem_artifacts()
     conn = _raw_conn(db=MYSQL_DB)
     try:
         with conn.cursor() as cur:
