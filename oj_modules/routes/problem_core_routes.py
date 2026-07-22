@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 import markdown
-from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, session, stream_with_context, url_for
+from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
@@ -29,13 +29,21 @@ from oj_modules.db_services import (
     get_remaining_submissions,
     get_submission_summaries_by_user_and_problem,
     get_today_submission_total_from_counter,
-    get_user_classes,
-    get_user_by_username,
     mark_submission_archive_failed,
     overwrite_written_submission,
     upsert_agent_run_snapshot,
 )
 from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
+from oj_modules.auth_helpers import current_user
+from oj_modules.dashboard_services import (
+    attach_submission_metrics,
+    clear_dashboard_cache,
+    get_class_activity,
+    get_layout_navigation_context,
+    get_problem_submission_metrics,
+    select_visible_class,
+    visible_classes_for_user_cached,
+)
 from oj_modules.markdown_utils import sanitize_html
 from oj_modules.written_submission_artifacts import (
     WrittenSubmissionArtifactError,
@@ -51,14 +59,10 @@ _promptly_generate_submission_task = None
 _transcribe_written_homework_task = None
 _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
-_USER_CLASSES_CACHE_TTL_SECONDS = 30
 _HOMEWORKS_CACHE_TTL_SECONDS = 10
 _CLASS_GRADES_CACHE_TTL_SECONDS = 20
-_USER_CACHE_TTL_SECONDS = 30
-_user_classes_cache = {}
 _homeworks_cache = {}
 _class_grades_cache = {}
-_user_cache = {}
 
 
 def invalidate_problem_list_cache_for_user(user_id=None, username=None):
@@ -66,13 +70,12 @@ def invalidate_problem_list_cache_for_user(user_id=None, username=None):
     失效指定用户在 problem list 相关路径上的缓存。
     """
     if user_id is not None:
-        _user_classes_cache.pop(user_id, None)
+        clear_dashboard_cache()
         for cache_key in list(_homeworks_cache.keys()):
             if cache_key[0] == user_id:
                 _homeworks_cache.pop(cache_key, None)
 
     if username:
-        _user_cache.pop(username, None)
         for cache_key in list(_class_grades_cache.keys()):
             if cache_key[0] == username:
                 _class_grades_cache.pop(cache_key, None)
@@ -84,6 +87,8 @@ def invalidate_problem_list_cache_for_class(class_en):
     """
     if not class_en:
         return
+
+    clear_dashboard_cache()
 
     for cache_key in list(_homeworks_cache.keys()):
         class_list = cache_key[1]
@@ -100,10 +105,9 @@ def invalidate_problem_list_cache_all():
     """
     全量失效 problem list 相关缓存。
     """
-    _user_classes_cache.clear()
+    clear_dashboard_cache()
     _homeworks_cache.clear()
     _class_grades_cache.clear()
-    _user_cache.clear()
 
 
 def _strip_problem_title_tags(title):
@@ -257,23 +261,6 @@ def _get_agent_run_state(task_id):
     return _build_agent_state_from_async_result(task_id)
 
 
-def current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    now_ts = time.time()
-    cached = _user_cache.get(username)
-    if cached and now_ts < cached["expires_at"]:
-        return cached["value"]
-
-    user = get_user_by_username(username)
-    _user_cache[username] = {
-        "expires_at": now_ts + _USER_CACHE_TTL_SECONDS,
-        "value": user,
-    }
-    return user
-
-
 def _submission_limit_redirect(problem_id, submission_limit):
     flash(f'您对此题的提交次数已达到上限（{submission_limit}次）！', 'danger')
     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
@@ -301,17 +288,7 @@ def _load_expected_written_submission(username, problem_id, expected_id):
 
 
 def get_user_classes_cached(user_id):
-    now_ts = time.time()
-    cached = _user_classes_cache.get(user_id)
-    if cached and now_ts < cached["expires_at"]:
-        return cached["value"]
-
-    classes = get_user_classes(user_id)
-    _user_classes_cache[user_id] = {
-        "expires_at": now_ts + _USER_CLASSES_CACHE_TTL_SECONDS,
-        "value": classes,
-    }
-    return classes
+    return visible_classes_for_user_cached({"id": user_id, "is_admin": 0})
 
 
 def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=None):
@@ -352,6 +329,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
             f"""
             SELECT t.class_en, t.id, t.problem_id, t.ranking_competition_id, t.ddl, t.complete_cnt,
                    p.title AS problem_title, p.max_score AS total_score,
+                   p.type AS problem_type, p.lang AS problem_lang,
                    ar.is_ac, ms.score AS user_score,
                    rc.title AS rk_title, rc.max_score AS rk_total, rc.scoring_mode AS rk_mode,
                    rk.rk_best
@@ -389,6 +367,9 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                     "ddl": row["ddl"],
                     "complete_cnt": row["complete_cnt"],
                     "problem_title": row.get("rk_title") or row.get("problem_title") or f"打榜赛 {rcid}",
+                    "problem_type": None,
+                    "problem_lang": None,
+                    "scoring_mode": row.get("rk_mode") or "absolute",
                     "total_score": (None if is_elo else row.get("rk_total")),
                     "is_completed": (best is not None),
                     "max_score": best,
@@ -407,6 +388,8 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                     "ddl": row["ddl"],
                     "complete_cnt": row["complete_cnt"],
                     "problem_title": row.get("problem_title"),
+                    "problem_type": row.get("problem_type"),
+                    "problem_lang": row.get("problem_lang"),
                     "total_score": row.get("total_score"),
                     "is_completed": (row.get("is_ac") == 1),
                     "max_score": row.get("user_score"),
@@ -587,48 +570,111 @@ def get_today_submission_counts():
     return total_submissions, total_accepted
 
 
-def build_problem_list_context(user):
-    """
-    组装题库页的完整数据上下文。
-    HTML 页面和 JSON API 共用这里，避免 CLI 再从模板 HTML 里反向解析信息。
-    """
+def _base_problem_list_context():
     total_submissions, total_accepted = get_today_submission_counts()
     last_10_days, daily_counts = get_last_10_days_counts_from_counter()
-
-    context = {
-        "user": user,
+    return {
         "total_submissions": total_submissions,
         "total_accepted": total_accepted,
         "total_grade": 100,
         "last_10_days": last_10_days,
         "daily_counts": daily_counts,
+        "now": datetime.now(),
     }
 
-    if user['is_admin'] == 1:
+
+def _selected_class_context(context, classes, requested_class_en):
+    selected_class = select_visible_class(classes, requested_class_en)
+    context["selected_class"] = selected_class
+    context["selected_class_en"] = (
+        selected_class.get("class_en") if selected_class else None
+    )
+    context["selected_class_cn"] = (
+        selected_class.get("class_cn") if selected_class else None
+    )
+    return selected_class
+
+
+def build_problem_list_context(
+    user,
+    *,
+    admin_class_view=False,
+    selected_class_en=None,
+    include_dashboard=False,
+):
+    """
+    组装题库页的完整数据上下文。
+    HTML 页面和 JSON API 共用这里，避免 CLI 再从模板 HTML 里反向解析信息。
+    """
+    context = _base_problem_list_context()
+    context["user"] = user
+
+    if user['is_admin'] == 1 and not admin_class_view:
         context["problems"] = get_all_problems()
         context["view_mode"] = "admin"
         return context
 
+    if user['is_admin'] == 1:
+        classes = visible_classes_for_user_cached(user)
+        context["classes"] = classes
+        # 旧移动端仍使用管理员总题库列表；桌面端使用下面的班级作业上下文。
+        context["problems"] = get_all_problems()
+        selected_class = _selected_class_context(context, classes, selected_class_en)
+        if not selected_class:
+            context.update({
+                "selected_homeworks": [],
+                "class_activity": [],
+                "view_mode": "admin_class_empty",
+            })
+            return context
+
+        class_en = selected_class["class_en"]
+        selected_homeworks = _get_homeworks_for_classes(
+            user["id"], [class_en], username=user.get("username")
+        ).get(class_en, [])
+        context.update({
+            "selected_homeworks": attach_submission_metrics(
+                selected_homeworks, class_en=class_en
+            ),
+            "class_activity": get_class_activity(class_en),
+            "view_mode": "admin_class",
+        })
+        return context
+
     classes = get_user_classes_cached(user['id'])
-    now_ts = datetime.now()
-    context["now"] = now_ts
     context["classes"] = classes
 
     if not classes:
         context["homeworks"] = []
+        if include_dashboard:
+            context["selected_homeworks"] = []
+            context["class_activity"] = []
         context["view_mode"] = "student_empty"
         return context
 
     if len(classes) == 1:
         cls = classes[0]['class_en']
         homeworks_map, grades_map = get_homeworks_and_grades_map(user['id'], user['username'], [cls])
+        homeworks = homeworks_map.get(cls, [])
         context.update({
-            "homeworks": homeworks_map.get(cls, []),
+            "homeworks": homeworks,
             "single_class_en": cls,
             "single_class_cn": classes[0]['class_cn'],
             "class_grades": grades_map.get(cls),
             "view_mode": "student_single_class",
         })
+        if include_dashboard:
+            dashboard_homeworks = attach_submission_metrics(
+                homeworks,
+                class_en=cls,
+            )
+            context.update({
+                "selected_class": classes[0],
+                "selected_class_en": cls,
+                "selected_class_cn": classes[0]['class_cn'],
+                "selected_homeworks": dashboard_homeworks,
+                "class_activity": get_class_activity(cls),
+            })
         return context
 
     class_en_list = [c['class_en'] for c in classes]
@@ -652,10 +698,66 @@ def build_problem_list_context(user):
 
     context["homeworks_by_class"] = homeworks_by_class
     context["view_mode"] = "student_multi_class"
+    if not include_dashboard:
+        return context
+
+    selected_class = _selected_class_context(context, classes, selected_class_en)
+    selected_homeworks = []
+    if selected_class:
+        for block in homeworks_by_class:
+            if block["class_en"] == selected_class["class_en"]:
+                selected_homeworks = block["hw_list"]
+                break
+        selected_homeworks = attach_submission_metrics(
+            selected_homeworks, class_en=selected_class["class_en"]
+        )
+    context["selected_homeworks"] = selected_homeworks
+    context["class_activity"] = (
+        get_class_activity(selected_class["class_en"]) if selected_class else []
+    )
     return context
 
 
-def build_problem_detail_context(user, problem_id):
+def build_problem_library_context(user):
+    """构造管理员总题库桌面视图，不混入班级 DDL。"""
+    context = _base_problem_list_context()
+    problems = [dict(problem) for problem in (get_all_problems() or [])]
+    metrics = get_problem_submission_metrics(
+        [problem.get("id") for problem in problems]
+    )
+    for problem in problems:
+        problem["submission_metrics"] = metrics.get(int(problem["id"]))
+    context.update({
+        "user": user,
+        "problems": problems,
+        "view_mode": "admin_library",
+    })
+    return context
+
+
+def _get_selected_problem_homework(user, class_en, problem_id):
+    """仅从用户可见的指定班级读取普通题作业。"""
+    if not class_en:
+        return None
+    selected_class = select_visible_class(
+        visible_classes_for_user_cached(user), class_en
+    )
+    if not selected_class or selected_class.get("class_en") != class_en:
+        return None
+    class_homeworks = _get_homeworks_for_classes(
+        user["id"], [class_en], username=user.get("username")
+    ).get(class_en, [])
+    return next(
+        (
+            item for item in class_homeworks
+            if item.get("kind") == "problem"
+            and item.get("problem_id") == problem_id
+        ),
+        None,
+    )
+
+
+def build_problem_detail_context(user, problem_id, selected_class_en=None):
     """
     组装题目详情页的完整数据上下文。
     返回 (context, error_code)，error_code 为 not_found / forbidden / None。
@@ -664,10 +766,24 @@ def build_problem_detail_context(user, problem_id):
     if not problem:
         return None, "not_found"
 
+    homework = None
     if user['is_admin'] != 1:
         homeworks = get_homeworks(user)
-        if not any(hw['problem_id'] == problem_id for hw in homeworks):
+        homework = next(
+            (item for item in homeworks if item['problem_id'] == problem_id),
+            None,
+        )
+        if homework is None:
             return None, "forbidden"
+        selected_homework = _get_selected_problem_homework(
+            user, selected_class_en, problem_id
+        )
+        if selected_homework:
+            homework = selected_homework
+    elif selected_class_en:
+        homework = _get_selected_problem_homework(
+            user, selected_class_en, problem_id
+        )
 
     rendered_content = sanitize_html(markdown.markdown(
         problem['content'],
@@ -698,6 +814,7 @@ def build_problem_detail_context(user, problem_id):
         "initial_code": initial_code,
         "remaining_submissions": remaining_submissions,
         "can_submit": can_submit_flag,
+        "homework": homework,
     }, None
 
 
@@ -754,8 +871,43 @@ def problem_list():
     if not user:
         return redirect(url_for('auth.login'))
 
-    context = build_problem_list_context(user)
+    context = build_problem_list_context(
+        user,
+        admin_class_view=(int(user.get('is_admin') or 0) == 1),
+        selected_class_en=request.args.get('class_en'),
+        include_dashboard=True,
+    )
     return render_template('problems/list.html', **context)
+
+
+@problem_core_bp.route('/api/layout-navigation', methods=['GET'])
+def layout_navigation_data():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='请先登录'), 401
+    try:
+        context = get_layout_navigation_context(
+            user,
+            selected_class_en=request.args.get('class_en'),
+        )
+    except Exception:
+        logger.exception('加载桌面导航计数失败')
+        context = {"counts": {}, "agent_active": False}
+    return jsonify(success=True, **context)
+
+
+@problem_core_bp.route('/problems/all', methods=['GET'])
+def problem_library():
+    user = current_user()
+    if not user:
+        return redirect(url_for('auth.login'))
+    if int(user.get('is_admin') or 0) != 1:
+        flash('无权限访问总题库', 'danger')
+        return redirect(url_for('problem_core.problem_list'))
+    return render_template(
+        'problems/list.html',
+        **build_problem_library_context(user),
+    )
 
 
 @problem_core_bp.route('/problem/<int:problem_id>', methods=['GET'])
@@ -764,7 +916,11 @@ def problem_detail(problem_id):
     if not user:
         return redirect(url_for('auth.login'))
 
-    context, error_code = build_problem_detail_context(user, problem_id)
+    context, error_code = build_problem_detail_context(
+        user,
+        problem_id,
+        selected_class_en=request.args.get('class_en'),
+    )
     if error_code == "not_found":
         return "<h3>题目不存在</h3>"
     if error_code == "forbidden":

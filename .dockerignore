@@ -1,11 +1,14 @@
 # Build context excludes (used by tests/ci/Dockerfile; context is repo root).
 .git
+.venv/
+node_modules/
 __pycache__
 *.pyc
 tmp/
 uploads/
 logs/
-static/
 competitions/
+design_candidates/
 docs/
+ranking_uploads/
 test-results/

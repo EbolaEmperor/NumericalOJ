@@ -1039,6 +1039,7 @@ CREATE TABLE `ranking_submissions` (
   KEY `idx_rs_comp_user` (`competition_id`,`username`),
   KEY `idx_rs_comp_score` (`competition_id`,`score`),
   KEY `idx_rs_comp_created` (`competition_id`,`created_at`),
+  KEY `idx_rs_created_source` (`created_at`,`source`),
   KEY `idx_rs_judge_attempt` (`judge_attempt_id`),
   KEY `idx_rs_judge_task` (`judge_task_id`),
   KEY `idx_rs_agent_endpoint` (`agent_endpoint_id`),

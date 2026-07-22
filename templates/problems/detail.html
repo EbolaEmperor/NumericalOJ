@@ -1,59 +1,113 @@
 {% extends "layouts/site.html" %}
+{% from 'components/problem_macros.html' import language_label %}
 {% block title %}{{ problem.title }} - {{ super() }}{% endblock %}
 {% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block content_container_class %}container problem-detail-content-shell mt-4{% endblock %}
 
 {% block content %}
 {% set plang = (problem.lang or 'matlab')|lower %}
-{% set lang_label = 
-  'MATLAB' if (plang or 'matlab') == 'matlab' 
-  else 'C++' if (plang or '') == 'cpp' 
-  else 'C' if (plang or '') == 'c' 
-  else 'Python' %}
+{% set lang_label = language_label(plang)|trim %}
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
 {% set programming_mode = (problem.programming_grading_mode or 1)|int %}
+{% set status_abbreviations = {
+  'Accepted': 'AC',
+  'Unaccepted': 'WA',
+  'Wrong Answer': 'WA',
+  'Compile Error': 'CE',
+  'Runtime Error': 'RE',
+  'Time Limit Exceeded': 'TL',
+  'Memory Limit Exceeded': 'ML',
+  'Forbidden': 'FB',
+  'No Output': 'NO',
+  'Nonzero Exit Status': 'NZ',
+  'Pending': 'PD',
+  'Waiting': 'WT',
+  'Running': 'RN',
+  'Generating': 'GN',
+  'Error': 'ER'
+} %}
 
 <div class="problem-detail-page">
+<nav class="numoj-breadcrumb d-none d-lg-flex" aria-label="面包屑导航">
+  {% if request.args.get('source') == 'library' and user.is_admin == 1 %}
+    <a href="{{ url_for('problem_core.problem_library') }}">总题库</a>
+  {% else %}
+    <a href="{{ url_for('problem_core.problem_list', class_en=request.args.get('class_en')) }}">{{ '班级作业' if user.is_admin == 1 else '我的作业' }}</a>
+  {% endif %}
+  <span aria-hidden="true">›</span><span>P{{ '%04d'|format(problem.id) }}</span>
+  <span aria-hidden="true">›</span><strong>{{ problem.title }}</strong>
+</nav>
 <div class="row problem-detail-row">
   <!-- 隐藏的元数据，避免在 <script> 内直接注入 Jinja -->
   <div id="problemMeta" data-problem-id="{{ problem.id }}" style="display:none"></div>
   <!-- 左侧：题面描述 -->
   <div class="col-md-6 mb-3 problem-col-left">
     <div class="problem-header mb-3">
-      <div class="problem-title-row">
-        <h2 class="mb-0 problem-title-singleline" id="problemTitleHeading">
-          <strong>{{ problem.id }}.</strong> {{ problem.title }}
-        </h2>
-      </div>
-      {% if user and user.is_admin == 1 %}
-      <div class="problem-admin-actions mt-2">
-        <button
-          type="button"
-          class="btn btn-outline-primary"
-          id="btnAgentSolve"
-          title="AI Agent 自动解题"
-          data-bs-toggle="modal"
-          data-bs-target="#agentSolveModal">
-          <i class="fas fa-robot me-1"></i> 解题
-        </button>
-        {% if problem.type == 1 %}
-        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#agentGenerateDataModal">
-          <i class="fas fa-robot me-1"></i> 造数据
-        </button>
+      <div class="problem-heading-layout{% if last_submissions and last_submissions|length > 0 %} has-recent-submissions{% endif %}">
+        <div class="problem-heading-info">
+          <div class="numoj-problem-kickers d-none d-lg-flex">
+            <span>{{ '编程题' if problem.type == 1 else '书面题' }}</span>
+            {% if problem.lang %}<span>{{ lang_label }}</span>{% endif %}
+            {% if homework and homework.ddl %}<span class="deadline">DDL {{ homework.ddl.strftime('%m-%d %H:%M') }}</span>{% endif %}
+          </div>
+          <div class="problem-title-row">
+            <h2 class="mb-0 problem-title-singleline" id="problemTitleHeading">
+              <strong>{{ problem.id }}.</strong> {{ problem.title }}
+            </h2>
+          </div>
+          {% if user and user.is_admin == 1 %}
+          <div class="problem-admin-actions mt-2">
+            <button
+              type="button"
+              class="btn btn-outline-primary"
+              id="btnAgentSolve"
+              title="AI Agent 自动解题"
+              data-bs-toggle="modal"
+              data-bs-target="#agentSolveModal">
+              <i class="fas fa-robot me-1"></i> 解题
+            </button>
+            {% if problem.type == 1 %}
+            <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#agentGenerateDataModal">
+              <i class="fas fa-robot me-1"></i> 造数据
+            </button>
+            {% endif %}
+            <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
+              <i class="fas fa-pencil-alt me-1"></i> 编辑
+            </a>
+            <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
+              <i class="fas fa-cloud-upload-alt me-1"></i> 上传
+            </button>
+            <button type="button" class="btn btn-outline-danger" id="btnRejudge">
+              <i class="fas fa-redo-alt me-1"></i> 重测
+            </button>
+            <button type="button" class="btn btn-outline-info" id="btnViewScores">
+              <i class="fas fa-chart-bar me-1"></i> 统计
+            </button>
+          </div>
+          {% endif %}
+        </div>
+        {% if last_submissions and last_submissions|length > 0 %}
+        <aside class="recent-submissions-card d-none d-lg-block" aria-label="最近提交">
+          <ul>
+            {% for sub in last_submissions %}
+              {% set normalized_status = sub.status | lower | replace(' ', '-') %}
+              <li>
+                <span class="badge submission-status {{ normalized_status }}" title="{{ sub.status }}">
+                  {{ status_abbreviations.get(sub.status, 'UN') }}
+                </span>
+                <span class="recent-submission-score">{{ sub.score }}/{{ problem.max_score }}</span>
+                <a href="{{ url_for('submission.submission_detail', submission_id=sub.id) }}"
+                   class="recent-submission-arrow" aria-label="查看提交 {{ sub.id }} 详情" title="查看详情">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path d="M3.5 8h8M8.5 4.5 12 8l-3.5 3.5"></path>
+                  </svg>
+                </a>
+              </li>
+            {% endfor %}
+          </ul>
+        </aside>
         {% endif %}
-        <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
-          <i class="fas fa-pencil-alt me-1"></i> 编辑
-        </a>
-        <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
-          <i class="fas fa-cloud-upload-alt me-1"></i> 上传
-        </button>
-        <button type="button" class="btn btn-outline-danger" id="btnRejudge">
-          <i class="fas fa-redo-alt me-1"></i> 重测
-        </button>
-        <button type="button" class="btn btn-outline-info" id="btnViewScores">
-          <i class="fas fa-chart-bar me-1"></i> 统计
-        </button>
       </div>
-      {% endif %}
     </div>
 
     <div class="problem-content my-3">
@@ -64,8 +118,8 @@
   <!-- 右侧：提交作业 -->
   <div class="col-md-6 problem-col-right">
     {% if problem.type == 1 and programming_mode == 3 %}
-      <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
-        <div class="d-flex justify-content-between align-items-end mb-2">
+      <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4 problem-submit-form problem-prompt-submit-form">
+        <div class="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar">
           <label for="promptEditor" class="form-label mb-0 code-label-wrap">
             <span class="code-title-line">
               <i class="fas fa-terminal me-2"></i> Prompt
@@ -106,8 +160,8 @@
           placeholder="请描述你的解题思路，包括算法或数据结构、关键步骤、状态更新和边界处理。后台会先审查 prompt，通过后再生成代码并评测。"></textarea>
       </form>
     {% elif problem.type == 1 %}
-      <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4">
-        <div class="d-flex justify-content-between align-items-end mb-2">
+      <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4 problem-submit-form problem-code-submit-form">
+        <div class="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar">
           <label for="codeEditor" class="form-label mb-0 code-label-wrap">
             <span class="code-title-line">
               <i class="fas fa-code me-2"></i> 代码
@@ -130,11 +184,11 @@
                 </small>
               {% endif %}
             {% endif %}
-            <div class="{% if user.is_admin != 1 %}student-code-actions{% endif %}">
-              <button type="button" class="btn btn-outline-secondary {% if user.is_admin == 1 %}me-2{% endif %}" id="loadLastCodeBtn" title="复制上次代码">
+            <div class="problem-editor-actions{% if user.is_admin != 1 %} student-code-actions{% endif %}">
+              <button type="button" class="btn btn-outline-secondary" id="loadLastCodeBtn" title="复用上次代码">
                 <i class="fas fa-copy me-1"></i>
                 <span class="d-inline d-md-none">复用</span>
-                <span class="d-none d-md-inline">复制上次代码</span>
+                <span class="d-none d-md-inline">复用上次代码</span>
               </button>
               {% if user.is_admin != 1 %}
                 <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
@@ -149,16 +203,33 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card problem-editor-card">
           <div class="card-body p-0">
             <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
             <div id="codeMirrorContainer"></div>
+            <div
+              id="desktopEditorShell"
+              class="problem-editor-desktop-shell"
+              data-editor-state="loading"
+              aria-busy="true">
+              <div id="monacoEditorLoading" class="problem-editor-loading-state">
+                <span
+                  class="math-curve-loader problem-editor-loading-indicator"
+                  data-math-curve-loader
+                  data-size="lg"
+                  data-color-a="#fb923c"
+                  data-color-b="#f97316">
+                  <span class="math-curve-loader__label">代码编辑器正在加载</span>
+                </span>
+              </div>
+              <div id="monacoEditorContainer" data-language="{{ plang }}" hidden></div>
+            </div>
           </div>
         </div>
       </form>
     {% elif problem.type == 2 %}
       {% set written_mode = (problem.written_grading_mode or 1)|int %}
-      <form method="POST" action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4">
+      <form method="POST" action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4 problem-submit-form">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <label for="file" class="form-label mb-0"><i class="fas fa-file-alt me-2"></i> 上传文件</label>
           <div>
@@ -203,6 +274,7 @@
       </form>
     {% endif %}
 
+    <section class="recent-submissions-panel d-lg-none" aria-label="最近提交">
     {% if last_submissions and last_submissions|length > 0 %}
       <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 class="mb-0"><i class="fas fa-history me-2"></i> 最近提交记录</h5>
@@ -212,10 +284,11 @@
       </div>
       <ul class="list-group">
         {% for sub in last_submissions %}
+          {% set normalized_status = sub.status | lower | replace(' ', '-') %}
           <li class="list-group-item d-flex justify-content-between align-items-center">
             <div>
-              <span class="badge {{ sub.status | lower | replace(' ', '-') }}">
-                {{ sub.status }}
+              <span class="badge submission-status {{ normalized_status }}" title="{{ sub.status }}">
+                {{ status_abbreviations.get(sub.status, 'UN') }}
               </span>
               <span class="ms-2"><i class="fas fa-trophy"></i> {{ sub.score }}</span>
             </div>
@@ -234,6 +307,7 @@
         </a>
       </div>
     {% endif %}
+    </section>
   </div>
 </div>
 </div>
@@ -606,6 +680,18 @@
   .problem-col-right .card .CodeMirror {
     border-radius: 6px;
   }
+  #monacoEditorContainer {
+    height: 500px;
+  }
+  .numoj-code-textarea-fallback {
+    display: block;
+    width: 100%;
+    min-height: 500px;
+    padding: 1rem;
+    border: 0;
+    resize: vertical;
+    font: 14px/1.55 "SFMono-Regular", Consolas, monospace;
+  }
 
   /* ===== 最近提交列表 ===== */
   .problem-col-right .list-group-item {
@@ -637,7 +723,12 @@
   }
 </style>
 
+{% if problem.type == 1 and programming_mode != 3 %}
+{% set codemirror_mobile_only = true %}
 {% include 'components/editor/codemirror.html' %}
+{% include 'components/editor/monaco.html' %}
+<script defer src="{{ url_for('static', filename='app/problem-editor.js') }}"></script>
+{% endif %}
 
 <script>
 (function() {
@@ -685,70 +776,6 @@
   });
 })();
 </script>
-
-{% if problem.type == 1 %}
-<script>
-  var pl = '{{ plang or "matlab" }}';
-  var mode = (pl === 'cpp') ? 'text/x-c++src'
-           : (pl === 'c') ? 'text/x-csrc'
-           : (pl === 'python' || pl === 'py') ? 'python'
-           : 'octave';
-
-  var editor = CodeMirror.fromTextArea(document.getElementById('codeEditor'), {
-    mode: mode,
-    theme: 'eclipse',
-    lineNumbers: true,
-    lineWrapping: true,
-    indentUnit: 4,
-    tabSize: 4,
-    matchBrackets: true,
-    autofocus: true,
-    extraKeys: { "Tab": "indentMore", "Shift-Tab": "indentLess" }
-  });
-  editor.getWrapperElement().style.fontFamily = "monospace";
-  editor.getWrapperElement().style.fontSize = "14px";
-
-  function resizeEditor() { editor.setSize(null, (window.innerWidth <= 768) ? "300px" : "500px"); }
-  resizeEditor();
-  window.addEventListener('resize', resizeEditor);
-
-  document.querySelector('form').addEventListener('submit', function() {
-    document.getElementById('codeEditor').value = editor.getValue();
-  });
-
-  // 加载上次代码按钮
-  document.getElementById('loadLastCodeBtn')?.addEventListener('click', function() {
-    const problemId = document.getElementById('problemMeta')?.dataset.problemId;
-    const btn = this;
-    const originalHtml = btn.innerHTML;
-    
-    // 禁用按钮并显示加载中
-    btn.disabled = true;
-    btn.innerHTML = MathCurveLoader.markup('加载中…', 'xs');
-    
-    fetch(`/api/get_last_submission_code/${problemId}`)
-      .then(response => response.json())
-      .then(data => {
-        btn.disabled = false;
-        btn.innerHTML = originalHtml;
-        
-        if (data.success) {
-          // 将代码加载到 CodeMirror 编辑器中
-          editor.setValue(data.code);
-        } else {
-          // 显示错误提示
-          alert(data.message || '加载失败');
-        }
-      })
-      .catch(error => {
-        btn.disabled = false;
-        btn.innerHTML = originalHtml;
-        alert('请求失败，请稍后再试');
-        console.error('Error:', error);
-      });
-  });
-</script>
-{% endif %}
 
 {% if user and user.is_admin == 1 %}
 <script>

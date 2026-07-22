@@ -267,6 +267,20 @@ bash deploy.sh
 用户所有的普通文件、权限为 `0400` 或 `0600`，并检查必要的 MySQL、Redis 和会话配置；校验失败会
 在停服前直接退出。
 
+Web 端的 C/C++ Monaco 编辑器通过常驻 `clangd` 进程取得实时语义令牌。clangd 与
+BasedPyright 都在禁网、仅暴露运行时和临时工作区的进程沙箱中解析不可信源码；生产
+Linux 使用 Bubblewrap，macOS 本地开发使用系统 Sandbox。部署脚本会在停服前核验
+`clangd --version` 与 `bwrap --version`；缺失时才通过交互式 `sudo` 和 Debian APT
+安装仓库当前 candidate 的精确版本。安装前必须完成 APT 模拟，拒绝卸载、改动既有
+依赖或触碰 MySQL、Docker、Python 等宿主关键包，安装后同时核验 dpkg 版本与可执行
+文件。任一步失败都会在现有服务仍运行时终止部署。
+
+Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 BasedPyright 提供真实语义
+令牌；MATLAB/Octave 编辑器使用固定版本的 Tree-sitter MATLAB 解析函数、参数、赋值、
+属性和方法等结构，但不执行用户代码，也不把这种结构化高亮描述为动态类型推断。
+两项运行时都随生产 venv 安装，并在构建镜像和停服前完成可执行文件或解析器自检；
+任一服务不可用时，桌面编辑器保留本地 Shiki 词法高亮作为降级路径。
+
 每次部署先创建安全日志目录，再清理由本脚本标记、因异常中断遗留的候选镜像标签，并在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖。处理普通判题和 Agent-as-Judge 候选镜像时，脚本先计算 Dockerfile 与实际 `COPY` 输入的精确指纹；稳定镜像的指纹相同时直接复用，不调用构建。确需更新镜像时，脚本显式使用 `default` BuildKit builder（可通过 `NUMOJ_DOCKER_BUILDER` 覆盖）及其 Docker daemon 全局步骤缓存；生产默认缓存位于 Docker data root，而不是项目目录。脚本还会检测本地 `latest` 稳定镜像和各镜像的关键重型步骤缓存线索，并在候选镜像中写入 inline cache 元数据；任一前提缺失时会在停服前失败关闭。
 
 候选环境和镜像就绪后，脚本以 MySQL 服务端查询结果选择备份方案。本机 Oracle MySQL / Percona Server 8.0.34+ 固定使用 XtraBackup `8.0.35-36`，8.4.x 固定使用 `8.4.0-6`；缺少或版本不匹配时会先通过交互式 `sudo` 与 Debian APT 自动安装。服务器版本或发行方不兼容，或自动安装失败时，才改为带进度的 `mysqldump` 计划。APT 变更以及版本、身份、权限和容量预检都发生在停服前；物理计划会在 Celery 排空期间维持已取得的 sudo ticket，真正执行时只接受非交互认证，避免全停服后再次等待密码。
@@ -275,7 +289,7 @@ bash deploy.sh
 
 主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。物理备份路径由最小特权 helper 以 dirfd 固定 inode 并硬化，留存按持久化单调 generation 排序且显式保护本次 run，不依赖主机墙上时钟。成功启动全部业务进程后，按清单保留最近 2 个成功部署回滚点；失败、待处理和旧格式备份不自动删除。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。
 
-脚本不会修改 `.env`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或自动回灌备份；仅在需要时通过 APT 管理固定版本的 XtraBackup。部署辅助 Python 全部位于 `deploy/`，`deploy.sh` 本身不内嵌 Python。schema 或启动失败会记录准确阶段、保持业务停服并保留现场，必须先判断 DDL 是否已经提交，再由人工决定向前修复或恢复。
+脚本不会修改 `.env`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或自动回灌备份；仅在需要时通过 APT 管理 clangd、Bubblewrap 的精确 candidate 版本和固定版本的 XtraBackup。部署辅助 Python 全部位于 `deploy/`，`deploy.sh` 本身不内嵌 Python。schema 或启动失败会记录准确阶段、保持业务停服并保留现场，必须先判断 DDL 是否已经提交，再由人工决定向前修复或恢复。
 
 ## 目录边界
 

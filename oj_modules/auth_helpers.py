@@ -10,7 +10,7 @@
 
 from functools import wraps
 
-from flask import jsonify, redirect, request, session, url_for
+from flask import g, jsonify, redirect, request, session, url_for
 
 from oj_modules.db_services import get_user_by_username
 
@@ -18,9 +18,16 @@ from oj_modules.db_services import get_user_by_username
 def current_user():
     """返回当前登录用户的完整记录（含 is_admin 字段），未登录返回 None。"""
     username = session.get('username')
+    if getattr(g, '_numoj_current_username', object()) == username:
+        return getattr(g, '_numoj_current_user', None)
     if not username:
+        g._numoj_current_username = None
+        g._numoj_current_user = None
         return None
-    return get_user_by_username(username)
+    user = get_user_by_username(username)
+    g._numoj_current_username = username
+    g._numoj_current_user = user
+    return user
 
 
 def is_admin(user):

@@ -1,7 +1,11 @@
 {% extends "layouts/base.html" %}
 
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/layout.css') }}">
+{% endblock %}
+
 {% block body %}
-<div class="{% block content_container_class %}container-fluid mt-2 px-2{% endblock %}">
+<div class="numoj-embedded-page {% block content_container_class %}container-fluid mt-2 px-2{% endblock %}">
   {% block content %}{% endblock %}
 </div>
 {% endblock %}

@@ -1,0 +1,159 @@
+{% from 'components/problem_macros.html' import language_label %}
+{% from 'problems/desktop/macros.html' import submission_metric %}
+<section class="numoj-problem-dashboard d-none d-lg-block" aria-labelledby="problem-dashboard-title">
+  {% set is_library = view_mode == 'admin_library' %}
+  <header class="numoj-page-header">
+    <div>
+      <p class="numoj-eyebrow">{{ 'PROBLEM LIBRARY' if is_library else 'CLASS WORKSPACE' }}</p>
+      <h1 id="problem-dashboard-title">
+        {% if is_library %}总题库{% elif selected_class_cn %}{{ selected_class_cn }}{% elif user.is_admin == 1 %}班级作业{% else %}我的作业{% endif %}
+      </h1>
+    </div>
+    {% if user.is_admin == 1 %}
+    <a href="{{ url_for('admin_problem.add_problem') }}" class="btn btn-primary numoj-primary-action">
+      <span aria-hidden="true">＋</span> 添加题目
+    </a>
+    {% endif %}
+  </header>
+
+  <div class="numoj-dashboard-grid{% if is_library %} numoj-library-grid{% endif %}">
+    <div class="numoj-dashboard-main">
+      <section class="numoj-panel numoj-assignment-panel" aria-label="{{ '全部题目' if is_library else '班级作业列表' }}">
+        {% if not is_library and classes %}
+        <div class="numoj-class-switcher" role="navigation" aria-label="选择班级">
+          <span class="numoj-class-switcher-label">CLASS</span>
+          <div class="numoj-class-tabs">
+            {% for cls in classes %}
+            <a class="numoj-class-tab{% if cls.class_en == selected_class_en %} active{% endif %}"
+               href="{{ url_for('problem_core.problem_list', class_en=cls.class_en) }}"
+               {% if cls.class_en == selected_class_en %}aria-current="page"{% endif %}>
+              {{ cls.class_cn }}{% if cls.is_primary %}<span class="visually-hidden">（主班级）</span>{% endif %}
+            </a>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+
+        <div class="numoj-assignment-list">
+          {% if is_library %}
+            {% for p in problems %}
+              <article class="numoj-assignment-row">
+                <div class="numoj-row-state neutral" aria-hidden="true"></div>
+                <div class="numoj-row-identity">
+                  <div class="numoj-row-title-line">
+                    <span class="numoj-row-id">P{{ '%04d'|format(p.id) }}</span>
+                    <a href="{{ url_for('problem_core.problem_detail', problem_id=p.id, source='library') }}">{{ p.title }}</a>
+                  </div>
+                  <div class="numoj-row-tags">
+                    <span>{{ '编程题' if p.type == 1 else '书面题' }}</span>
+                    {% if p.lang %}<span>{{ language_label(p.lang) }}</span>{% endif %}
+                  </div>
+                </div>
+                {{ submission_metric(p.submission_metrics) }}
+                <div class="numoj-row-actions">
+                  <button type="button" class="numoj-icon-button numoj-delete-button" onclick="deleteProblem({{ p.id }})" aria-label="删除题目 {{ p.title }}" title="删除题目">×</button>
+                  <a class="numoj-row-arrow" href="{{ url_for('problem_core.problem_detail', problem_id=p.id, source='library') }}" aria-label="查看 {{ p.title }}">›</a>
+                </div>
+              </article>
+            {% else %}
+              <div class="numoj-empty-state">总题库暂无题目</div>
+            {% endfor %}
+          {% else %}
+            {% for hw in selected_homeworks or [] %}
+              <article class="numoj-assignment-row">
+                {% if user.is_admin != 1 %}
+                  {% if hw.plagiarism_notice %}
+                    <button type="button" class="numoj-row-state warning" onclick='showPlagiarismNotice({{ hw.plagiarism_notice|tojson }})' aria-label="查看抄袭记录" title="查看抄袭记录">!</button>
+                  {% elif hw.is_completed %}
+                    <div class="numoj-row-state complete" aria-label="已完成">✓</div>
+                  {% elif hw.has_submission %}
+                    <div class="numoj-row-state failed" aria-label="有提交但未通过">×</div>
+                  {% else %}
+                    <div class="numoj-row-state neutral" aria-label="未提交"></div>
+                  {% endif %}
+                {% else %}
+                  <div class="numoj-row-state neutral" aria-hidden="true"></div>
+                {% endif %}
+                <div class="numoj-row-identity">
+                  <div class="numoj-row-title-line">
+                    <span class="numoj-row-id">H{{ '%04d'|format(hw.id) }}</span>
+                    {% if hw.kind == 'ranking' %}
+                      <a href="{{ url_for('ranking.ranking_detail', competition_id=hw.competition_id) }}">{{ hw.problem_title }}</a>
+                    {% else %}
+                      <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id, class_en=selected_class_en) }}">{{ hw.problem_title }}</a>
+                    {% endif %}
+                  </div>
+                  <div class="numoj-row-tags">
+                    <span>{{ '打榜赛' if hw.kind == 'ranking' else ('书面题' if hw.problem_type == 2 else '编程题') }}</span>
+                    {% if hw.problem_lang %}<span>{{ language_label(hw.problem_lang) }}</span>{% endif %}
+                  </div>
+                </div>
+                {{ submission_metric(hw.submission_metrics) }}
+                <div class="numoj-row-deadline">
+                  {% if hw.ddl %}
+                    {% set remaining = (hw.ddl - now).total_seconds() %}
+                    <strong>{{ hw.ddl.strftime('%m-%d %H:%M') }}</strong>
+                    {% if remaining < 0 %}<span class="expired">已截止</span>
+                    {% elif remaining < 86400 %}<span class="urgent">剩 {{ (remaining / 3600)|round(0, 'ceil')|int }} 小时</span>
+                    {% else %}<span>剩 {{ (remaining / 86400)|round(0, 'ceil')|int }} 天</span>{% endif %}
+                  {% else %}
+                    <span>无截止时间</span>
+                  {% endif %}
+                </div>
+                {% if hw.kind == 'ranking' %}
+                  <a class="numoj-row-arrow" href="{{ url_for('ranking.ranking_detail', competition_id=hw.competition_id) }}" aria-label="查看 {{ hw.problem_title }}">›</a>
+                {% else %}
+                  <a class="numoj-row-arrow" href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id, class_en=selected_class_en) }}" aria-label="查看 {{ hw.problem_title }}">›</a>
+                {% endif %}
+              </article>
+            {% else %}
+              <div class="numoj-empty-state">{{ '请选择一个班级' if classes and not selected_class_en else '该班级暂无作业' }}</div>
+            {% endfor %}
+          {% endif %}
+        </div>
+      </section>
+    </div>
+
+    <aside class="numoj-dashboard-aside" aria-label="学习辅助信息">
+      {% if not is_library %}
+      <section class="numoj-panel numoj-activity-card">
+        <header><h2>班级活跃度</h2><span>近 12 周</span></header>
+        <div class="numoj-heatmap-frame">
+          <div class="numoj-weekday-labels" aria-hidden="true"><span>一</span><span>三</span><span>五</span><span>日</span></div>
+          <div class="numoj-heatmap" role="img" aria-label="{{ selected_class_cn or '当前班级' }}近十二周提交活跃度">
+            {% for item in class_activity or [] %}
+            <span class="level-{{ item.intensity }}{% if item.future %} future{% endif %}" title="{{ item.day.strftime('%Y-%m-%d') }}：{{ item.count }} 次提交"></span>
+            {% endfor %}
+          </div>
+        </div>
+        <footer>
+          <span>{{ class_activity[0].day.strftime('%m/%d') if class_activity else '' }}</span>
+          <span class="numoj-heatmap-legend">少 <i class="level-1"></i><i class="level-2"></i><i class="level-3"></i><i class="level-4"></i> 多</span>
+          <span>更新至今日</span>
+        </footer>
+      </section>
+      {% endif %}
+
+      <section class="numoj-panel numoj-tip-card">
+        <header><h2><span class="numoj-terminal-mark" aria-hidden="true">›_</span>C++ 编程小贴士</h2><span>TIP</span></header>
+        <p data-numoj-tip></p>
+        <button type="button" class="numoj-text-button" data-numoj-tip-refresh>换一条小贴士</button>
+      </section>
+
+      <section class="numoj-panel numoj-resource-card">
+        <header><h2>GitHub 优质项目</h2></header>
+        <ul data-numoj-projects></ul>
+        <button type="button" class="numoj-text-button" data-numoj-projects-refresh>换一组项目</button>
+      </section>
+
+      <section class="numoj-panel numoj-resource-card">
+        <header><h2>相关资源</h2></header>
+        <ul>
+          <li><a href="https://www.mathworks.com/" target="_blank" rel="noopener noreferrer"><span>MATLAB 官网<small>mathworks.com</small></span><b>↗</b></a></li>
+          <li><a href="https://www.baltamatica.com" target="_blank" rel="noopener noreferrer"><span>北太天元<small>baltamatica.com</small></span><b>↗</b></a></li>
+          <li><a href="https://zju_math.pages.zjusct.io/mathweb/" target="_blank" rel="noopener noreferrer"><span>数学之韵 · ZJU<small>zju_math.pages.zjusct.io</small></span><b>↗</b></a></li>
+        </ul>
+      </section>
+    </aside>
+  </div>
+</section>

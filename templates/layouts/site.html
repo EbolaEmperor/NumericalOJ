@@ -5,13 +5,18 @@
 {% endblock %}
 
 {% block body %}
-{% include 'components/layout/navigation.html' %}
-{% include 'components/layout/password_modal.html' %}
-{% include 'components/layout/class_manager_modal.html' %}
-{% include 'components/layout/flash_messages.html' %}
+{% set layout_user = user|default(none) %}
+<div class="numoj-site-shell{% if layout_user %} numoj-site-shell-authenticated{% else %} numoj-site-shell-guest{% endif %}" data-numoj-shell>
+  {% include 'components/layout/navigation.html' %}
+  <main class="numoj-site-main">
+    {% include 'components/layout/password_modal.html' %}
+    {% include 'components/layout/class_manager_modal.html' %}
+    {% include 'components/layout/flash_messages.html' %}
 
-<div class="{% block content_container_class %}container mt-4{% endblock %}">
-  {% block content %}{% endblock %}
+    <div class="numoj-content {% block content_container_class %}container mt-4{% endblock %}">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
 </div>
 
 <script src="{{ url_for('static', filename='app/layout.js') }}"></script>

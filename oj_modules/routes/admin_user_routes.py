@@ -46,7 +46,13 @@ def user_management():
         return "<h3>无权限</h3>"
 
     page = request.args.get('page', 1, type=int)
-    search_username = request.args.get('username', '').strip()
+    # 保留 `username` 作为旧书签的兼容参数；页面使用中性的 `user_search`，
+    # 避免密码管理器把筛选框误判成登录账号字段。
+    search_username = (
+        request.args.get('user_search')
+        or request.args.get('username')
+        or ''
+    ).strip()
     search_class = request.args.get('class', '').strip()
     per_page = 50
 

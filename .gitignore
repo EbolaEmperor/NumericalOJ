@@ -1,9 +1,14 @@
 # ===== 编辑器与系统元数据 =====
 .vscode/
+node_modules/
+npm-debug.log*
 # macOS 文件系统元数据
 .DS_Store
 */.DS_Store
 .DS_Store?
+
+# 本地 UI 方案探索稿与预览截图；正式实现位于 templates/static/frontend。
+/design_candidates/
 
 competitions/*
 
