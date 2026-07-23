@@ -23,13 +23,16 @@ from oj_modules.db_services import (
     get_agent_run_by_task_id,
     get_agent_runs_paginated,
     get_db_connection,
+    get_filtered_submissions_paginated,
     get_last_10_days_counts_from_counter,
     get_latest_written_submission,
     get_problem,
     get_remaining_submissions,
+    get_submission_problem_options,
     get_submission_summaries_by_user_and_problem,
     get_today_submission_total_from_counter,
     mark_submission_archive_failed,
+    normalize_submission_list_status_filter,
     overwrite_written_submission,
     upsert_agent_run_snapshot,
 )
@@ -602,6 +605,7 @@ def build_problem_list_context(
     admin_class_view=False,
     selected_class_en=None,
     include_dashboard=False,
+    include_class_activity=True,
 ):
     """
     组装题库页的完整数据上下文。
@@ -637,7 +641,9 @@ def build_problem_list_context(
             "selected_homeworks": attach_submission_metrics(
                 selected_homeworks, class_en=class_en
             ),
-            "class_activity": get_class_activity(class_en),
+            "class_activity": (
+                get_class_activity(class_en) if include_class_activity else []
+            ),
             "view_mode": "admin_class",
         })
         return context
@@ -674,7 +680,9 @@ def build_problem_list_context(
                 "selected_class_en": cls,
                 "selected_class_cn": classes[0]['class_cn'],
                 "selected_homeworks": dashboard_homeworks,
-                "class_activity": get_class_activity(cls),
+                "class_activity": (
+                    get_class_activity(cls) if include_class_activity else []
+                ),
             })
         return context
 
@@ -714,7 +722,9 @@ def build_problem_list_context(
         )
     context["selected_homeworks"] = selected_homeworks
     context["class_activity"] = (
-        get_class_activity(selected_class["class_en"]) if selected_class else []
+        get_class_activity(selected_class["class_en"])
+        if selected_class and include_class_activity
+        else []
     )
     return context
 
@@ -819,53 +829,6 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
     }, None
 
 
-def get_submissions_by_user_paginated(username, page=1, per_page=20):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            count_sql = "SELECT COUNT(*) AS total FROM submissions WHERE username=%s"
-            cursor.execute(count_sql, (username,))
-            total = cursor.fetchone()['total']
-            total_pages = (total + per_page - 1) // per_page
-
-            data_sql = """
-                SELECT id, problem_id, username, status, score, problem_title, created_at
-                FROM submissions
-                WHERE username=%s
-                ORDER BY id DESC
-                LIMIT %s OFFSET %s
-            """
-            offset = (page - 1) * per_page
-            cursor.execute(data_sql, (username, per_page, offset))
-            submissions = cursor.fetchall()
-            return submissions, total_pages
-    finally:
-        conn.close()
-
-
-def get_all_submissions_paginated(page=1, per_page=20):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            count_sql = "SELECT COUNT(*) AS total FROM submissions"
-            cursor.execute(count_sql)
-            total = cursor.fetchone()['total']
-            total_pages = (total + per_page - 1) // per_page
-
-            data_sql = """
-                SELECT id, problem_id, username, status, score, problem_title, created_at
-                FROM submissions
-                ORDER BY id DESC
-                LIMIT %s OFFSET %s
-            """
-            offset = (page - 1) * per_page
-            cursor.execute(data_sql, (per_page, offset))
-            submissions = cursor.fetchall()
-            return submissions, total_pages
-    finally:
-        conn.close()
-
-
 @problem_core_bp.route('/problems', methods=['GET'])
 def problem_list():
     user = current_user()
@@ -877,8 +840,62 @@ def problem_list():
         admin_class_view=(int(user.get('is_admin') or 0) == 1),
         selected_class_en=request.args.get('class_en'),
         include_dashboard=True,
+        include_class_activity=False,
     )
     return render_template('problems/list.html', **context)
+
+
+@problem_core_bp.route('/api/class-activity', methods=['GET'])
+def class_activity_data():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='请先登录'), 401
+
+    classes = visible_classes_for_user_cached(user)
+    requested_class_en = str(request.args.get('class_en') or '').strip()
+    if requested_class_en:
+        selected_class = next(
+            (
+                item
+                for item in classes
+                if item.get('class_en') == requested_class_en
+            ),
+            None,
+        )
+        if not selected_class:
+            return jsonify(success=False, message='无权查看该班级'), 403
+    else:
+        selected_class = select_visible_class(classes)
+
+    if not selected_class:
+        return jsonify(
+            success=True,
+            class_en=None,
+            class_cn=None,
+            activity=[],
+        )
+
+    class_en = selected_class['class_en']
+    try:
+        activity = get_class_activity(class_en)
+    except Exception:
+        logger.exception('加载班级活跃度失败：class_en=%s', class_en)
+        return jsonify(success=False, message='班级活跃度加载失败'), 500
+
+    return jsonify(
+        success=True,
+        class_en=class_en,
+        class_cn=selected_class.get('class_cn'),
+        activity=[
+            {
+                'day': item['day'].isoformat(),
+                'count': int(item.get('count') or 0),
+                'intensity': int(item.get('intensity') or 0),
+                'future': bool(item.get('future')),
+            }
+            for item in activity
+        ],
+    )
 
 
 @problem_core_bp.route('/api/layout-navigation', methods=['GET'])
@@ -1502,18 +1519,55 @@ def all_submissions():
         return redirect(url_for('auth.login'))
 
     page = max(1, request.args.get('page', 1, type=int))
-    per_page = 20
+    per_page = 30
+    query = str(request.args.get('q') or '').strip()[:120]
+    status_filter = normalize_submission_list_status_filter(
+        request.args.get('status')
+    )
+    problem_id = request.args.get('problem_id', type=int)
+    if not problem_id or problem_id < 1:
+        problem_id = None
 
-    if user['is_admin']:
-        submissions, total_pages = get_all_submissions_paginated(page=page, per_page=per_page)
-    else:
-        submissions, total_pages = get_submissions_by_user_paginated(user['username'], page=page, per_page=per_page)
+    scope_username = None if user['is_admin'] else user['username']
+    submissions, page, total_pages = get_filtered_submissions_paginated(
+        username=scope_username,
+        page=page,
+        per_page=per_page,
+        query=query,
+        status_filter=status_filter,
+        problem_id=problem_id,
+        include_test_points=True,
+    )
     for sub in submissions:
         sub['display_problem_title'] = _strip_problem_title_tags(sub.get('problem_title'))
         sub['is_ac'] = (sub.get('status') == 'Accepted')
+        sub['display_language'] = str(sub.get('lang') or '—').upper()
+        max_score = sub.get('max_score')
+        try:
+            max_score = int(max_score) if max_score is not None else None
+        except (TypeError, ValueError):
+            max_score = None
+        sub['display_max_score'] = (
+            max_score
+            if max_score is not None and max_score > 0
+            else (sub.get('test_points_count') or None)
+        )
 
-    page_start = max(1, page - 10)
-    page_end = min(total_pages, page + 10)
+    problem_options = get_submission_problem_options(username=scope_username)
+    current_problem_label = ''
+    for option in problem_options:
+        option['display_problem_title'] = _strip_problem_title_tags(
+            option.get('problem_title')
+        )
+        option['filter_label'] = (
+            f"P{int(option['problem_id']):04d} · "
+            f"{option['display_problem_title']}"
+        )
+        if int(option['problem_id']) == int(problem_id or 0):
+            current_problem_label = option['filter_label']
+
+    page_start = max(1, page - 3)
+    page_end = min(total_pages, page + 3)
     page_numbers = list(range(page_start, page_end + 1))
 
     return render_template(
@@ -1523,4 +1577,11 @@ def all_submissions():
         current_page=page,
         total_pages=total_pages,
         page_numbers=page_numbers,
+        problem_options=problem_options,
+        current_problem_label=current_problem_label,
+        filters={
+            'q': query,
+            'status': status_filter,
+            'problem_id': problem_id,
+        },
     )

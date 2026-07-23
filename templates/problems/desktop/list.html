@@ -159,18 +159,28 @@
 
     <aside class="numoj-dashboard-aside" aria-label="学习辅助信息">
       {% if not is_library %}
-      <section class="numoj-panel numoj-activity-card">
+      <section
+        class="numoj-panel numoj-activity-card"
+        data-numoj-class-activity
+        data-activity-url="{{ url_for('problem_core.class_activity_data', class_en=selected_class_en) }}"
+      >
         <header><h2>班级活跃度</h2><span>近 12 周</span></header>
         <div class="numoj-heatmap-frame">
-          <div class="numoj-weekday-labels" aria-hidden="true"><span>一</span><span>三</span><span>五</span><span>日</span></div>
-          <div class="numoj-heatmap" role="img" aria-label="{{ selected_class_cn or '当前班级' }}近十二周提交活跃度">
-            {% for item in class_activity or [] %}
-            <span class="level-{{ item.intensity }}{% if item.future %} future{% endif %}" title="{{ item.day.strftime('%Y-%m-%d') }}：{{ item.count }} 次提交"></span>
-            {% endfor %}
+          <div class="numoj-heatmap-loading" data-numoj-activity-loading role="status">
+            <span class="math-curve-loader" data-math-curve-loader data-size="sm">
+              <span class="math-curve-loader__label">正在加载班级活跃度…</span>
+            </span>
+          </div>
+          <div class="numoj-weekday-labels" data-numoj-activity-weekdays aria-hidden="true" hidden><span>一</span><span>三</span><span>五</span><span>日</span></div>
+          <div class="numoj-heatmap" data-numoj-activity-grid role="img" aria-label="{{ selected_class_cn or '当前班级' }}近十二周提交活跃度" hidden></div>
+          <div class="numoj-heatmap-message" data-numoj-activity-empty hidden>当前没有可展示的班级活跃度</div>
+          <div class="numoj-heatmap-message numoj-heatmap-error" data-numoj-activity-error hidden>
+            <span data-numoj-activity-error-text>班级活跃度加载失败</span>
+            <button type="button" class="numoj-text-button" data-numoj-activity-retry>重试</button>
           </div>
         </div>
-        <footer>
-          <span>{{ class_activity[0].day.strftime('%m/%d') if class_activity else '' }}</span>
+        <footer data-numoj-activity-footer hidden>
+          <span data-numoj-activity-start></span>
           <span class="numoj-heatmap-legend">少 <i class="level-1"></i><i class="level-2"></i><i class="level-3"></i><i class="level-4"></i> 多</span>
           <span>更新至今日</span>
         </footer>

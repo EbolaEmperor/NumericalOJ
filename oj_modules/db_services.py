@@ -1882,6 +1882,189 @@ def get_submission_summaries_by_user_and_problem_paginated(username, problem_id,
         conn.close()
 
 
+_SUBMISSION_LIST_STATUS_FILTERS = {
+    "accepted": ("s.status = %s", ("Accepted",)),
+    "wrong_answer": ("s.status = %s", ("Wrong Answer",)),
+    "unaccepted": ("s.status = %s", ("Unaccepted",)),
+    "compile_error": ("s.status = %s", ("Compile Error",)),
+    "in_progress": (
+        "s.status IN (%s, %s, %s, %s)",
+        ("Pending", "Waiting", "Running", "Generating"),
+    ),
+    "other": (
+        """
+        (
+            s.status IS NULL
+            OR s.status NOT IN (
+                %s, %s, %s, %s, %s, %s, %s, %s
+            )
+        )
+        """,
+        (
+            "Accepted",
+            "Wrong Answer",
+            "Unaccepted",
+            "Compile Error",
+            "Pending",
+            "Waiting",
+            "Running",
+            "Generating",
+        ),
+    ),
+}
+
+
+def normalize_submission_list_status_filter(value):
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in _SUBMISSION_LIST_STATUS_FILTERS else ""
+
+
+def _build_submission_list_where(
+    *,
+    username=None,
+    query="",
+    status_filter="",
+    problem_id=None,
+):
+    clauses = []
+    params = []
+
+    if username:
+        clauses.append("s.username = %s")
+        params.append(str(username))
+
+    normalized_status = normalize_submission_list_status_filter(status_filter)
+    if normalized_status:
+        status_sql, status_params = _SUBMISSION_LIST_STATUS_FILTERS[normalized_status]
+        clauses.append(status_sql)
+        params.extend(status_params)
+
+    try:
+        normalized_problem_id = int(problem_id) if problem_id not in (None, "") else None
+    except (TypeError, ValueError):
+        normalized_problem_id = None
+    if normalized_problem_id is not None and normalized_problem_id > 0:
+        clauses.append("s.problem_id = %s")
+        params.append(normalized_problem_id)
+
+    search_text = str(query or "").strip()
+    if search_text:
+        search_clauses = ["s.problem_title LIKE %s"]
+        search_params = [f"%{search_text}%"]
+        if search_text.isdigit():
+            search_clauses.extend(("s.id = %s", "s.problem_id = %s"))
+            search_params.extend((int(search_text), int(search_text)))
+        if username is None:
+            search_clauses.append("s.username LIKE %s")
+            search_params.append(f"%{search_text}%")
+        clauses.append("(" + " OR ".join(search_clauses) + ")")
+        params.extend(search_params)
+
+    where_sql = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return where_sql, tuple(params)
+
+
+def get_filtered_submissions_paginated(
+    *,
+    username=None,
+    page=1,
+    per_page=30,
+    query="",
+    status_filter="",
+    problem_id=None,
+    include_test_points=True,
+):
+    """按权限范围筛选提交列表，并在同一次分页查询中带出列表展示字段。"""
+    page = max(1, int(page or 1))
+    per_page = max(1, min(100, int(per_page or 30)))
+    where_sql, params = _build_submission_list_where(
+        username=username,
+        query=query,
+        status_filter=status_filter,
+        problem_id=problem_id,
+    )
+    test_points_column = ", s.test_points" if include_test_points else ""
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS total FROM submissions s" + where_sql,
+                params,
+            )
+            total = int((cursor.fetchone() or {}).get("total") or 0)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            page = min(page, total_pages)
+            offset = (page - 1) * per_page
+
+            cursor.execute(
+                f"""
+                SELECT
+                    s.id,
+                    s.problem_id,
+                    s.username,
+                    s.status,
+                    s.score,
+                    s.problem_title,
+                    s.problem_type,
+                    s.created_at
+                    {test_points_column},
+                    p.lang,
+                    p.max_score
+                FROM submissions s
+                LEFT JOIN problems p ON p.id = s.problem_id
+                {where_sql}
+                ORDER BY s.id DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + (per_page, offset),
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    if include_test_points:
+        for row in rows:
+            points = _parse_test_points(row.get("test_points"))
+            row["test_points"] = [
+                point for point in points
+                if isinstance(point, dict)
+            ]
+            row["test_points_count"] = len(row["test_points"])
+
+    return rows, page, total_pages
+
+
+def get_submission_problem_options(*, username=None):
+    """返回当前权限范围内确实出现过提交的题目，供统一提交页筛选。"""
+    where_sql = " WHERE s.username = %s" if username else ""
+    params = (str(username),) if username else ()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    s.problem_id,
+                    COALESCE(
+                        MAX(NULLIF(p.title, '')),
+                        MAX(NULLIF(s.problem_title, '')),
+                        CONCAT('Problem ', s.problem_id)
+                    ) AS problem_title,
+                    MAX(s.id) AS latest_submission_id
+                FROM submissions s
+                LEFT JOIN problems p ON p.id = s.problem_id
+                {where_sql}
+                GROUP BY s.problem_id
+                ORDER BY latest_submission_id DESC
+                """,
+                params,
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
 def get_submissions_by_user(username):
     conn = get_db_connection()
     try:
@@ -1929,6 +2112,38 @@ def get_submission_by_id(submission_id):
                 submission['test_points'] = [
                     json.loads(line) for line in submission['test_points'].strip().split('\n') if line.strip()
                 ]
+            return submission
+    finally:
+        conn.close()
+
+
+def get_submission_panel_by_id(submission_id):
+    """读取详情面板所需的最小提交字段，避免加载源码与 Prompt。"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    username,
+                    problem_id,
+                    problem_title,
+                    problem_type,
+                    status,
+                    score,
+                    created_at,
+                    test_points
+                FROM submissions
+                WHERE id=%s
+                """,
+                (submission_id,),
+            )
+            submission = cursor.fetchone()
+            if submission:
+                submission["test_points"] = _parse_test_points(
+                    submission.get("test_points")
+                )
             return submission
     finally:
         conn.close()

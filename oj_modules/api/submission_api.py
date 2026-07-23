@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Blueprint, request
+from flask import Blueprint, request, url_for
 
 from oj_modules.api.helpers import (
     apply_limit,
@@ -15,19 +15,19 @@ from oj_modules.api.helpers import (
 )
 from oj_modules.auth_helpers import current_user, is_admin
 from oj_modules.db_services import (
+    get_filtered_submissions_paginated,
     get_cached_ai_code_marks_for_submission,
     get_problem,
     get_submission_by_id,
+    get_submission_panel_by_id,
     get_submission_summaries_by_user_and_problem_paginated,
-)
-from oj_modules.routes.problem_core_routes import (
-    get_all_submissions_paginated,
-    get_submissions_by_user_paginated,
+    normalize_submission_list_status_filter,
 )
 from oj_modules.routes.submission_routes import (
     _load_written_submission_latex_and_error,
     _render_written_markdown_to_html,
     _strip_problem_title_tags,
+    _summarize_panel_test_points,
 )
 
 
@@ -62,6 +62,56 @@ def _submission_detail_payload(submission):
     }
 
 
+def _submission_panel_payload(submission, raw_problem, user):
+    test_points = _summarize_panel_test_points(submission.get("test_points"))
+    problem = {
+        "id": (raw_problem or {}).get("id") or submission.get("problem_id"),
+        "title": (
+            _strip_problem_title_tags((raw_problem or {}).get("title"))
+            or _strip_problem_title_tags(submission.get("problem_title"))
+        ),
+        "lang": (raw_problem or {}).get("lang") or "",
+        "max_score": (raw_problem or {}).get("max_score"),
+    }
+    if not problem.get("max_score") and test_points:
+        problem["max_score"] = len(test_points)
+
+    submission_id = int(submission["id"])
+    return {
+        "submission": {
+            "id": submission_id,
+            "username": submission.get("username"),
+            "problem_id": submission.get("problem_id"),
+            "problem_title": _strip_problem_title_tags(
+                submission.get("problem_title")
+            ),
+            "problem_type": submission.get("problem_type"),
+            "status": submission.get("status"),
+            "score": submission.get("score"),
+            "created_at": submission.get("created_at"),
+        },
+        "problem": problem,
+        "test_points": test_points,
+        "detail_url": url_for(
+            "submission.submission_detail",
+            submission_id=submission_id,
+        ),
+        "status_stream_url": url_for(
+            "submission.submission_status_stream",
+            submission_id=submission_id,
+            view="panel",
+        ),
+        "rejudge_url": (
+            url_for(
+                "rejudge.rejudge_submission",
+                submission_id=submission_id,
+            )
+            if is_admin(user)
+            else None
+        ),
+    }
+
+
 @submission_api_bp.route("/submissions", methods=["GET"])
 def submissions():
     user = current_user()
@@ -70,14 +120,31 @@ def submissions():
 
     page = clamp_page(request.args.get("page", 1))
     limit = clamp_limit(request.args.get("limit"), default=None)
-    per_page = 20
+    requested_per_page = clamp_limit(
+        request.args.get("per_page"),
+        default=20,
+        max_limit=100,
+    )
+    per_page = max(1, int(requested_per_page or 20))
+    query = str(request.args.get("q") or "").strip()[:120]
+    status_filter = normalize_submission_list_status_filter(
+        request.args.get("status")
+    )
+    problem_id = request.args.get("problem_id", type=int)
+    if not problem_id or problem_id < 1:
+        problem_id = None
 
-    if user.get("is_admin"):
-        rows, total_pages = get_all_submissions_paginated(page=page, per_page=per_page)
-        scope = "all"
-    else:
-        rows, total_pages = get_submissions_by_user_paginated(user["username"], page=page, per_page=per_page)
-        scope = "mine"
+    scope = "all" if user.get("is_admin") else "mine"
+    scope_username = None if user.get("is_admin") else user["username"]
+    rows, page, total_pages = get_filtered_submissions_paginated(
+        username=scope_username,
+        page=page,
+        per_page=per_page,
+        query=query,
+        status_filter=status_filter,
+        problem_id=problem_id,
+        include_test_points=False,
+    )
 
     decorated = [_decorate_submission_summary(row) for row in rows]
     visible = apply_limit(decorated, limit)
@@ -91,6 +158,11 @@ def submissions():
         submission_ids=[row["id"] for row in visible],
         submissions=visible,
         count=len(visible),
+        filters={
+            "q": query,
+            "status": status_filter,
+            "problem_id": problem_id,
+        },
     )
 
 
@@ -127,13 +199,23 @@ def submission_detail(submission_id):
     if not user:
         return json_error("请先登录", 401)
 
-    submission = get_submission_by_id(submission_id)
+    panel_view = str(request.args.get("view") or "").strip().lower() == "panel"
+    submission = (
+        get_submission_panel_by_id(submission_id)
+        if panel_view
+        else get_submission_by_id(submission_id)
+    )
     if not submission:
         return json_error("提交记录不存在", 404)
     if submission.get("username") != user.get("username") and not is_admin(user):
         return json_error("无权查看他人提交", 403)
 
     raw_problem = get_problem(submission.get("problem_id"))
+    if panel_view:
+        return json_success(
+            **_submission_panel_payload(submission, raw_problem, user)
+        )
+
     problem = public_problem(raw_problem)
     plang = ((raw_problem or {}).get("lang") or "matlab").lower()
     cached_ai_code_marks = None

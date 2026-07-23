@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import MagicMock
 
 from flask import Flask
@@ -120,6 +120,34 @@ def test_student_api_context_skips_dashboard_aggregation(monkeypatch):
     assert "selected_homeworks" not in context
     assert "class_activity" not in context
     attach_metrics.assert_not_called()
+    class_activity.assert_not_called()
+
+
+def test_problem_list_context_can_defer_class_activity(monkeypatch):
+    _stub_base_context(monkeypatch)
+    classes = [{"class_en": "C1", "class_cn": "一班", "is_primary": 1}]
+    monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: classes)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "get_homeworks_and_grades_map",
+        lambda *_args: ({"C1": [{"id": 1, "problem_id": 11}]}, {}),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "attach_submission_metrics",
+        lambda rows, **_kwargs: rows,
+    )
+    class_activity = MagicMock()
+    monkeypatch.setattr(problem_core_routes, "get_class_activity", class_activity)
+
+    context = problem_core_routes.build_problem_list_context(
+        {"id": 8, "username": "student", "is_admin": 0},
+        include_dashboard=True,
+        include_class_activity=False,
+    )
+
+    assert context["selected_class_en"] == "C1"
+    assert context["class_activity"] == []
     class_activity.assert_not_called()
 
 
@@ -248,6 +276,7 @@ def test_problem_routes_forward_class_query_and_protect_total_library(monkeypatc
         admin_class_view=True,
         selected_class_en="C2",
         include_dashboard=True,
+        include_class_activity=False,
     )
 
     monkeypatch.setattr(problem_core_routes, "current_user", lambda: {"id": 8, "is_admin": 0})
@@ -256,6 +285,74 @@ def test_problem_routes_forward_class_query_and_protect_total_library(monkeypatc
         response = problem_core_routes.problem_library()
     assert response.status_code == 302
     assert response.location.endswith("/problem_core.problem_list")
+
+
+def test_class_activity_endpoint_returns_authorized_class_data(monkeypatch):
+    app = Flask(__name__)
+    user = {"id": 8, "username": "student", "is_admin": 0}
+    monkeypatch.setattr(problem_core_routes, "current_user", lambda: user)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "visible_classes_for_user_cached",
+        lambda _user: [
+            {"class_en": "C1", "class_cn": "一班", "is_primary": 1},
+        ],
+    )
+    load_activity = MagicMock(return_value=[
+        {
+            "day": date(2026, 7, 20),
+            "count": 7,
+            "intensity": 3,
+            "future": False,
+        }
+    ])
+    monkeypatch.setattr(problem_core_routes, "get_class_activity", load_activity)
+
+    with app.test_request_context("/api/class-activity?class_en=C1"):
+        response = problem_core_routes.class_activity_data()
+
+    assert response.get_json() == {
+        "success": True,
+        "class_en": "C1",
+        "class_cn": "一班",
+        "activity": [
+            {
+                "day": "2026-07-20",
+                "count": 7,
+                "intensity": 3,
+                "future": False,
+            }
+        ],
+    }
+    load_activity.assert_called_once_with("C1")
+
+
+def test_class_activity_endpoint_rejects_unseen_class(monkeypatch):
+    app = Flask(__name__)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "current_user",
+        lambda: {"id": 8, "username": "student", "is_admin": 0},
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "visible_classes_for_user_cached",
+        lambda _user: [
+            {"class_en": "C1", "class_cn": "一班", "is_primary": 1},
+        ],
+    )
+    load_activity = MagicMock()
+    monkeypatch.setattr(problem_core_routes, "get_class_activity", load_activity)
+
+    with app.test_request_context("/api/class-activity?class_en=C2"):
+        response, status = problem_core_routes.class_activity_data()
+
+    assert status == 403
+    assert response.get_json() == {
+        "success": False,
+        "message": "无权查看该班级",
+    }
+    load_activity.assert_not_called()
 
 
 def test_layout_navigation_endpoint_returns_fail_open_counts(monkeypatch):

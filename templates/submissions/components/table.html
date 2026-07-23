@@ -1,101 +1,265 @@
-{% macro pagination(endpoint, current_page, total_pages, page_numbers, problem_id=none) -%}
-<nav aria-label="Submission pagination" class="mb-3">
-  <ul class="pagination submission-pagination justify-content-center">
-    {% if current_page > 1 %}
-      <li class="page-item">
-        <a class="page-link" href="{{ url_for(endpoint, problem_id=problem_id, page=current_page-1) if problem_id is not none else url_for(endpoint, page=current_page-1) }}">
-          &laquo; 上一页
+{% macro status_badge(status) -%}
+  {% set verdict = (status or 'Unknown') | lower | replace(' ', '-') %}
+  <span class="submission-verdict submission-verdict--{{ verdict }}" data-detail-status-badge>
+    <span class="submission-verdict__dot" aria-hidden="true"></span>
+    <span data-detail-status-text>{{ status or 'Unknown' }}</span>
+  </span>
+{%- endmacro %}
+
+{% macro test_point_spark(test_points) -%}
+  {% set points = test_points or [] %}
+  {% if points %}
+    <span
+      class="submission-test-spark"
+      aria-label="共 {{ points | length }} 个测试点"
+      title="共 {{ points | length }} 个测试点"
+    >
+      {% for point in points[:18] %}
+        {% set point_status = point.get('status', 'Unknown') %}
+        {% if point_status == 'Accepted' %}
+          {% set point_class = 'accepted' %}
+        {% elif point_status in ['Pending', 'Waiting', 'Running', 'Generating'] %}
+          {% set point_class = 'active' %}
+        {% elif point_status in ['Time Limit Exceeded', 'Memory Limit Exceeded'] %}
+          {% set point_class = 'limit' %}
+        {% elif point_status in ['Wrong Answer', 'Unaccepted', 'Compile Error', 'Runtime Error', 'Error', 'Forbidden', 'No Output', 'Nonzero Exit Status'] %}
+          {% set point_class = 'failed' %}
+        {% else %}
+          {% set point_class = 'neutral' %}
+        {% endif %}
+        <span class="submission-test-spark__bar is-{{ point_class }}" aria-hidden="true"></span>
+      {% endfor %}
+      {% if points | length > 18 %}
+        <span class="submission-test-spark__more">+{{ (points | length) - 18 }}</span>
+      {% endif %}
+    </span>
+  {% else %}
+    <span class="submission-test-spark__empty" aria-label="暂无测试点">—</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro pagination(endpoint, current_page, total_pages, page_numbers, filters) -%}
+  {% if total_pages > 1 %}
+  <nav class="submission-pagination" aria-label="提交记录分页">
+    <span class="submission-pagination__summary">
+      第 <strong>{{ current_page }}</strong> / {{ total_pages }} 页
+    </span>
+    <div class="submission-pagination__links">
+      {% if current_page > 1 %}
+        <a
+          class="submission-page-link submission-page-link--wide"
+          href="{{ url_for(endpoint, page=current_page-1, q=filters.q, status=filters.status, problem_id=filters.problem_id) }}"
+          rel="prev"
+        >
+          <i class="fas fa-arrow-left" aria-hidden="true"></i>
+          上一页
         </a>
-      </li>
-    {% endif %}
-    {% for page in page_numbers %}
-      <li class="page-item {% if page == current_page %}active{% endif %}">
-        <a class="page-link" href="{{ url_for(endpoint, problem_id=problem_id, page=page) if problem_id is not none else url_for(endpoint, page=page) }}">{{ page }}</a>
-      </li>
-    {% endfor %}
-    {% if current_page < total_pages %}
-      <li class="page-item">
-        <a class="page-link" href="{{ url_for(endpoint, problem_id=problem_id, page=current_page+1) if problem_id is not none else url_for(endpoint, page=current_page+1) }}">
-          下一页 &raquo;
+      {% endif %}
+      {% for page in page_numbers %}
+        <a
+          class="submission-page-link{% if page == current_page %} is-active{% endif %}"
+          href="{{ url_for(endpoint, page=page, q=filters.q, status=filters.status, problem_id=filters.problem_id) }}"
+          {% if page == current_page %}aria-current="page"{% endif %}
+        >{{ page }}</a>
+      {% endfor %}
+      {% if current_page < total_pages %}
+        <a
+          class="submission-page-link submission-page-link--wide"
+          href="{{ url_for(endpoint, page=current_page+1, q=filters.q, status=filters.status, problem_id=filters.problem_id) }}"
+          rel="next"
+        >
+          下一页
+          <i class="fas fa-arrow-right" aria-hidden="true"></i>
         </a>
-      </li>
-    {% endif %}
-  </ul>
-</nav>
+      {% endif %}
+    </div>
+  </nav>
+  {% endif %}
 {%- endmacro %}
 
 {% macro submission_table(submissions, user) -%}
-<div class="list-group submission-table">
-  <div class="list-group-item bg-light d-flex text-muted small submission-table__header">
-    <div class="flex-fill d-block d-sm-none submission-table__status">
-      <i class="fas fa-circle"></i><span>状态</span>
-    </div>
-    <div class="flex-fill d-none d-sm-block submission-table__status">
-      <i class="fas fa-circle me-2"></i><span>状态</span>
-    </div>
-    <div class="flex-fill submission-table__score">
-      <i class="fas fa-trophy me-2"></i><span>得分</span>
-    </div>
-    <div class="flex-fill submission-table__problem">
-      <i class="fas fa-book me-2"></i><span>题目</span>
-    </div>
-    {% if user and user.is_admin %}
-      <div class="flex-fill d-block d-sm-none submission-table__mobile-user">
-        <i class="fas fa-user"></i>
-      </div>
-    {% endif %}
-    <div class="flex-fill d-none d-sm-block submission-table__user">
-      <i class="fas fa-user me-2"></i><span>提交者</span>
-    </div>
-    <div class="flex-fill d-none d-sm-block submission-table__time">
-      <i class="fas fa-history me-2"></i><span>提交时间</span>
-    </div>
-    <div class="d-block d-sm-none submission-table__action-mobile"></div>
-    <div class="d-none d-sm-block submission-table__action"></div>
+<div class="submission-table-panel">
+  <div class="submission-table-scroll">
+    <table class="submission-data-table">
+      <thead>
+        <tr>
+          <th scope="col" class="submission-col-id">提交号</th>
+          <th scope="col" class="submission-col-status">状态</th>
+          <th scope="col" class="submission-col-score">得分</th>
+          <th scope="col" class="submission-col-problem">题目</th>
+          <th scope="col" class="submission-col-tests">用例</th>
+          <th scope="col" class="submission-col-language">语言</th>
+          {% if user and user.is_admin %}
+            <th scope="col" class="submission-col-user">提交者</th>
+          {% endif %}
+          <th scope="col" class="submission-col-time">提交时间</th>
+          <th scope="col" class="submission-col-action">
+            <span class="visually-hidden">操作</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for submission in submissions %}
+        <tr
+          class="submission-data-row"
+          tabindex="0"
+          aria-label="提交 #{{ submission.id }}，{{ submission.status }}"
+          aria-selected="false"
+          data-submission-row
+          data-submission-id="{{ submission.id }}"
+          data-panel-url="{{ url_for('submission_api.submission_detail', submission_id=submission.id, view='panel') }}"
+          data-detail-url="{{ url_for('submission.submission_detail', submission_id=submission.id) }}"
+        >
+          <td class="submission-col-id">
+            <a
+              class="submission-id-link"
+              href="{{ url_for('submission.submission_detail', submission_id=submission.id) }}"
+              aria-label="查看提交 {{ submission.id }} 的完整详情"
+            >#{{ submission.id }}</a>
+          </td>
+          <td class="submission-col-status">{{ status_badge(submission.status) }}</td>
+          <td class="submission-col-score">
+            <span class="submission-score{% if submission.is_ac %} is-accepted{% elif not submission.score %} is-zero{% endif %}" data-row-score>
+              {{ submission.score if submission.score is not none else '—' }}
+            </span>
+            {% if submission.display_max_score %}
+              <span class="submission-score-max">/{{ submission.display_max_score }}</span>
+            {% endif %}
+          </td>
+          <td class="submission-col-problem">
+            <span class="submission-problem-title">{{ submission.display_problem_title or '未命名题目' }}</span>
+            <span class="submission-problem-id">P{{ '%04d' | format(submission.problem_id) }}</span>
+          </td>
+          <td class="submission-col-tests" data-row-test-points>
+            {{ test_point_spark(submission.test_points) }}
+          </td>
+          <td class="submission-col-language">
+            <span class="submission-language">{{ submission.display_language }}</span>
+          </td>
+          {% if user and user.is_admin %}
+            <td class="submission-col-user">{{ submission.username }}</td>
+          {% endif %}
+          <td class="submission-col-time">
+            <time datetime="{{ submission.created_at.isoformat() if submission.created_at else '' }}">
+              <span>{{ submission.created_at.strftime('%Y-%m-%d') if submission.created_at else '—' }}</span>
+              <span>{{ submission.created_at.strftime('%H:%M:%S') if submission.created_at else '' }}</span>
+            </time>
+          </td>
+          <td class="submission-col-action">
+            <a
+              class="submission-detail-link"
+              href="{{ url_for('submission.submission_detail', submission_id=submission.id) }}"
+              aria-label="打开提交 {{ submission.id }} 的完整详情"
+              title="完整详情"
+            >
+              <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
+            </a>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="{{ 9 if user and user.is_admin else 8 }}">
+            <div class="submission-empty-state">
+              <span class="submission-empty-state__icon" aria-hidden="true">
+                <i class="fas fa-inbox"></i>
+              </span>
+              <strong>没有找到提交记录</strong>
+              <span>调整搜索或筛选条件后再试。</span>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro submission_detail_panel(has_submissions, user) -%}
+<aside
+  class="submission-detail-panel"
+  aria-label="提交详情预览"
+  aria-live="polite"
+  data-submission-detail-panel
+>
+  <div class="submission-detail-loading"{% if not has_submissions %} hidden{% endif %} data-detail-loading>
+    <span class="math-curve-loader" data-math-curve-loader data-size="md">
+      <span class="math-curve-loader__label">正在加载提交详情…</span>
+    </span>
   </div>
 
-  {% for submission in submissions %}
-    <div class="list-group-item d-flex align-items-center">
-      <div class="flex-fill d-block d-sm-none submission-table__status">
-        <span class="badge {% if user and not user.is_admin %}mobile-ac-state-{{ 'ac' if submission.is_ac else 'nonac' }}{% else %}{{ submission.status | lower | replace(' ', '-') }}{% endif %}">
-          {%- if user and not user.is_admin -%}
-            {{ 'AC' if submission.is_ac else 'UA' }}
-          {%- else -%}
-            {%- if submission.status == 'Accepted' -%}A
-            {%- elif submission.status == 'Unaccepted' -%}U
-            {%- elif submission.status == 'Compile Error' -%}CE
-            {%- elif submission.status in ['Pending', 'Waiting', 'Running'] -%}P
-            {%- else -%}?{%- endif -%}
-          {%- endif -%}
-        </span>
-      </div>
-      <div class="flex-fill d-none d-sm-block submission-table__status">
-        <span class="badge {{ submission.status | lower | replace(' ', '-') }}">{{ submission.status }}</span>
-      </div>
-      <div class="flex-fill submission-table__score">{{ submission.score }}</div>
-      <div class="flex-fill text-truncate submission-table__problem">
-        {{ submission.display_problem_title or submission.problem_title }}
-      </div>
-      {% if user and user.is_admin %}
-        <div class="flex-fill text-muted d-block d-sm-none submission-table__mobile-user">{{ submission.username }}</div>
-      {% endif %}
-      <div class="flex-fill text-muted d-none d-sm-block submission-table__user">{{ submission.username }}</div>
-      <div class="flex-fill text-muted d-none d-sm-block submission-table__time">
-        <small>{{ submission.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small>
-      </div>
-      <div class="d-block d-sm-none submission-table__action-mobile">
-        <a href="{{ url_for('submission.submission_detail', submission_id=submission.id) }}"
-           class="btn btn-sm btn-outline-secondary" aria-label="查看提交详情">
-          <i class="fas fa-info-circle"></i>
-        </a>
-      </div>
-      <div class="d-none d-sm-block submission-table__action">
-        <a href="{{ url_for('submission.submission_detail', submission_id=submission.id) }}"
-           class="btn btn-sm btn-outline-secondary">
-          <i class="fas fa-info-circle"></i><span class="ms-1">详情</span>
-        </a>
-      </div>
+  <div class="submission-detail-empty"{% if has_submissions %} hidden{% endif %} data-detail-empty>
+    <span class="submission-detail-empty__mark" aria-hidden="true">
+      <i class="fas fa-arrow-pointer"></i>
+    </span>
+    <strong>选择一条提交</strong>
+    <span>点击左侧记录后，在这里查看判题摘要。</span>
+  </div>
+
+  <div class="submission-detail-error" hidden data-detail-error>
+    <span class="submission-detail-error__mark" aria-hidden="true">
+      <i class="fas fa-triangle-exclamation"></i>
+    </span>
+    <strong>详情加载失败</strong>
+    <span data-detail-error-message>请稍后重试。</span>
+    <button type="button" class="submission-button submission-button--ghost" data-detail-retry>
+      <i class="fas fa-rotate-right" aria-hidden="true"></i>
+      重试
+    </button>
+  </div>
+
+  <article class="submission-detail-content" hidden data-detail-content>
+    <header class="submission-detail-header">
+      <span class="submission-detail-id" data-detail-id>#—</span>
+      <a class="submission-icon-button" href="#" title="打开完整详情" data-detail-top-link>
+        <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
+        <span class="visually-hidden">打开完整详情</span>
+      </a>
+    </header>
+
+    <h2 class="submission-detail-title" data-detail-title>—</h2>
+    <div class="submission-detail-verdict">
+      {{ status_badge('Unknown') }}
     </div>
-  {% endfor %}
-</div>
+    <div class="submission-detail-score">
+      <strong data-detail-score>—</strong>
+      <span data-detail-max-score>/—</span>
+    </div>
+
+    <dl class="submission-detail-meta">
+      <dt>题目号</dt>
+      <dd data-detail-problem-id>—</dd>
+      <dt>语言</dt>
+      <dd data-detail-language>—</dd>
+      <dt>提交者</dt>
+      <dd data-detail-username>—</dd>
+      <dt>提交时间</dt>
+      <dd data-detail-created-at>—</dd>
+    </dl>
+
+    <section class="submission-detail-section" aria-labelledby="submissionTestPointsTitle">
+      <div class="submission-detail-section__heading">
+        <h3 id="submissionTestPointsTitle">用例结果</h3>
+        <span data-detail-test-count>0 个</span>
+      </div>
+      <div class="submission-test-matrix" data-detail-test-matrix></div>
+      <div class="submission-test-summary" data-detail-test-summary>
+        <span>暂无测试点结果。</span>
+      </div>
+    </section>
+
+    <div class="submission-detail-actions">
+      <a class="submission-button submission-button--dark" href="#" data-detail-link>
+        <i class="fas fa-code" aria-hidden="true"></i>
+        查看完整详情
+      </a>
+      {% if user and user.is_admin %}
+      <button type="button" class="submission-button submission-button--accent" data-detail-rejudge>
+        <i class="fas fa-rotate-right" aria-hidden="true"></i>
+        重测此提交
+      </button>
+      {% endif %}
+    </div>
+  </article>
+</aside>
 {%- endmacro %}
