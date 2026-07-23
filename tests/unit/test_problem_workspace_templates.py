@@ -13,6 +13,23 @@ def test_desktop_problem_templates_preserve_class_context_and_separate_library_d
     assert "source='library'" in desktop_list
     assert "class_en=selected_class_en" in desktop_list
     assert "request.args.get('class_en')" in detail
+    assert "data-numoj-class-picker" in desktop_list
+    assert 'role="listbox"' in desktop_list
+    assert "<select" not in desktop_list
+    assert "data-numoj-projects-refresh" in desktop_list
+    project_refresh = desktop_list.split(
+        "data-numoj-projects-refresh",
+        1,
+    )[1].split("</button>", 1)[0]
+    assert "fa-sync-alt" in project_refresh
+    logo_macro = desktop_list.split("{% macro class_logo", 1)[1].split(
+        "{%- endmacro %}",
+        1,
+    )[0]
+    assert "<svg" in logo_macro
+    assert "<rect" in logo_macro
+    assert "fas " not in logo_macro
+    assert "palette-" not in logo_macro
     library_rows = desktop_list.split("{% for p in problems %}", 1)[1].split(
         "{% else %}", 1
     )[0]
@@ -36,3 +53,16 @@ def test_submission_metric_renders_empty_and_cpp_values_without_undefined_errors
     assert "63%" in populated
     assert "n=8" in populated
     assert str(problem_macros.language_label("cpp")) == "C++"
+
+
+def test_problem_heading_keeps_kickers_and_problem_number_left_aligned():
+    repo = Path(__file__).resolve().parents[2]
+    detail = (repo / "templates/problems/detail.html").read_text()
+    layout_css = (repo / "static/app/layout.css").read_text()
+
+    assert 'class="problem-number"' in detail
+    assert 'class="problem-title-text"' in detail
+    assert ".problem-detail-page .problem-heading-info {" in layout_css
+    assert "align-items: flex-start;" in layout_css
+    assert ".problem-detail-page .problem-title-singleline .problem-number {" in layout_css
+    assert "flex: 0 0 auto;" in layout_css

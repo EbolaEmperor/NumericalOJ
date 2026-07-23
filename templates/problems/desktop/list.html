@@ -1,5 +1,14 @@
 {% from 'components/problem_macros.html' import language_label %}
 {% from 'problems/desktop/macros.html' import submission_metric %}
+{% macro class_logo(cls) -%}
+<span class="numoj-class-logo" aria-hidden="true">
+  <svg viewBox="0 0 7 7" focusable="false" shape-rendering="crispEdges">
+    {% for column, row in cls.logo.cells %}
+    <rect x="{{ column + 1 }}" y="{{ row + 1 }}" width="1" height="1"></rect>
+    {% endfor %}
+  </svg>
+</span>
+{%- endmacro %}
 <section class="numoj-problem-dashboard d-none d-lg-block" aria-labelledby="problem-dashboard-title">
   {% set is_library = view_mode == 'admin_library' %}
   <header class="numoj-page-header">
@@ -20,16 +29,50 @@
     <div class="numoj-dashboard-main">
       <section class="numoj-panel numoj-assignment-panel" aria-label="{{ '全部题目' if is_library else '班级作业列表' }}">
         {% if not is_library and classes %}
-        <div class="numoj-class-switcher" role="navigation" aria-label="选择班级">
+        {% set current_class = selected_class or classes[0] %}
+        <div class="numoj-class-switcher" aria-label="选择班级">
           <span class="numoj-class-switcher-label">CLASS</span>
-          <div class="numoj-class-tabs">
+          <div class="numoj-class-picker" data-numoj-class-picker>
+            <button
+              type="button"
+              class="numoj-class-picker-trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="numoj-class-picker-options"
+              data-numoj-class-picker-trigger
+              title="{{ current_class.class_cn }}"
+            >
+              {{ class_logo(current_class) }}
+              <span class="numoj-class-picker-current">{{ current_class.class_cn }}</span>
+              {% if current_class.is_primary %}
+              <span class="numoj-class-primary-label">主班级</span>
+              {% endif %}
+              <i class="fas fa-chevron-down numoj-class-picker-chevron" aria-hidden="true"></i>
+            </button>
+            <div
+              class="numoj-class-picker-menu"
+              id="numoj-class-picker-options"
+              role="listbox"
+              aria-label="可选择的班级"
+              data-numoj-class-picker-menu
+              hidden
+            >
             {% for cls in classes %}
-            <a class="numoj-class-tab{% if cls.class_en == selected_class_en %} active{% endif %}"
+            <a class="numoj-class-picker-option{% if cls.class_en == selected_class_en %} active{% endif %}"
                href="{{ url_for('problem_core.problem_list', class_en=cls.class_en) }}"
-               {% if cls.class_en == selected_class_en %}aria-current="page"{% endif %}>
-              {{ cls.class_cn }}{% if cls.is_primary %}<span class="visually-hidden">（主班级）</span>{% endif %}
+               role="option"
+               aria-selected="{{ 'true' if cls.class_en == selected_class_en else 'false' }}"
+               tabindex="-1"
+               title="{{ cls.class_cn }}">
+              {{ class_logo(cls) }}
+              <span class="numoj-class-picker-option-name">{{ cls.class_cn }}</span>
+              {% if cls.is_primary %}<span class="numoj-class-primary-label">主班级</span>{% endif %}
+              {% if cls.class_en == selected_class_en %}
+              <i class="fas fa-check numoj-class-picker-check" aria-hidden="true"></i>
+              {% endif %}
             </a>
             {% endfor %}
+            </div>
           </div>
         </div>
         {% endif %}
@@ -137,13 +180,19 @@
       <section class="numoj-panel numoj-tip-card">
         <header><h2><span class="numoj-terminal-mark" aria-hidden="true">›_</span>C++ 编程小贴士</h2><span>TIP</span></header>
         <p data-numoj-tip></p>
-        <button type="button" class="numoj-text-button" data-numoj-tip-refresh>换一条小贴士</button>
+        <button type="button" class="numoj-text-button" data-numoj-tip-refresh>
+          <i class="fas fa-sync-alt" aria-hidden="true"></i>
+          <span>换一条小贴士</span>
+        </button>
       </section>
 
       <section class="numoj-panel numoj-resource-card">
         <header><h2>GitHub 优质项目</h2></header>
         <ul data-numoj-projects></ul>
-        <button type="button" class="numoj-text-button" data-numoj-projects-refresh>换一组项目</button>
+        <button type="button" class="numoj-text-button" data-numoj-projects-refresh>
+          <i class="fas fa-sync-alt" aria-hidden="true"></i>
+          <span>换一组项目</span>
+        </button>
       </section>
 
       <section class="numoj-panel numoj-resource-card">

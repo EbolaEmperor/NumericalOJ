@@ -110,3 +110,14 @@ def test_layout_styles_and_behaviors_live_in_their_responsible_assets():
         "initPasswordForm()",
     ):
         assert initializer in LAYOUT_JS
+
+
+def test_desktop_sidebar_width_and_collapsed_items_share_one_center_axis():
+    assert "--numoj-sidebar-width: 186px;" in LAYOUT_CSS
+    collapsed_rule = LAYOUT_CSS.split(
+        ".numoj-site-shell.is-sidebar-collapsed .numoj-nav-item {",
+        1,
+    )[1].split("}", 1)[0]
+    assert "width: calc(100% - 26px);" in collapsed_rule
+    assert "margin-inline: 13px;" in collapsed_rule
+    assert "justify-content: center;" in collapsed_rule

@@ -66,6 +66,7 @@ CREATE TABLE `class_table` (
   `class_en` varchar(255) NOT NULL,
   `class_cn` varchar(255) DEFAULT NULL,
   `class_cnt` int DEFAULT '0',
+  `logo_seed` char(32) DEFAULT NULL,
   PRIMARY KEY (`class_en`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -363,10 +364,10 @@ CREATE TABLE `user_class_map` (
 
 LOCK TABLES `class_table` WRITE;
 /*!40000 ALTER TABLE `class_table` DISABLE KEYS */;
-INSERT INTO `class_table` VALUES 
-('Cadmin','管理员',1),
-('Cdemo2024','演示班级2024',0),
-('Ctest','测试班级',0);
+INSERT INTO `class_table` (`class_en`, `class_cn`, `class_cnt`, `logo_seed`) VALUES
+('Cadmin','管理员',1,NULL),
+('Cdemo2024','演示班级2024',0,NULL),
+('Ctest','测试班级',0,NULL);
 /*!40000 ALTER TABLE `class_table` ENABLE KEYS */;
 UNLOCK TABLES;
 
