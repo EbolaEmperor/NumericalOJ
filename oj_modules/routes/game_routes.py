@@ -5,7 +5,7 @@ import json
 import random
 from uuid import uuid4
 
-from flask import Blueprint, jsonify, render_template, request, session
+from flask import Blueprint, jsonify, render_template, request, send_file, session
 
 from oj_modules.db_services import get_db_connection, get_user_by_username
 
@@ -21,7 +21,103 @@ _EVEN_ROW_DIRS = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
 _ODD_ROW_DIRS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.arc_agi_3.catalog import get_arc_game, list_arc_games
+from oj_modules.arc_agi_3.services import (
+    ArcGameError,
+    ArcGameNotFound,
+    ArcInvalidAction,
+    ArcSessionBusy,
+    ArcSessionNotFound,
+    perform_arc_action,
+    start_arc_game,
+)
+from oj_modules.auth_helpers import current_user, is_admin, login_required
+
+
+def _arc_current_username():
+    user = current_user()
+    return str(user.get('username') or '') if user else ''
+
+
+@game_bp.route('/games/arc-agi-3')
+@login_required
+def arc_agi_3_index():
+    games = [game.to_public_dict() for game in list_arc_games()]
+    return render_template(
+        'games/arc_agi_3/index.html',
+        user=current_user(),
+        games=games,
+    )
+
+
+@game_bp.route('/games/arc-agi-3/<game_id>')
+@login_required
+def arc_agi_3_player(game_id):
+    game = get_arc_game(game_id)
+    if game is None:
+        return render_template(
+            'games/arc_agi_3/not_found.html',
+            user=current_user(),
+        ), 404
+    return render_template(
+        'games/arc_agi_3/player.html',
+        user=current_user(),
+        game=game.to_public_dict(),
+    )
+
+
+@game_bp.route('/games/arc-agi-3/<game_id>/preview.png')
+@login_required
+def arc_agi_3_preview(game_id):
+    game = get_arc_game(game_id)
+    if game is None or not game.preview_path.is_file():
+        return '', 404
+    return send_file(
+        game.preview_path,
+        mimetype='image/png',
+        conditional=True,
+        max_age=86400,
+    )
+
+
+@game_bp.route('/games/arc-agi-3/<game_id>/start', methods=['POST'])
+@login_required
+def arc_agi_3_start(game_id):
+    try:
+        session_id, frame_data = start_arc_game(_arc_current_username(), game_id)
+    except ArcGameNotFound as exc:
+        return jsonify(success=False, message=str(exc)), 404
+    except ArcGameError:
+        return jsonify(success=False, message='游戏启动失败，请稍后重试。'), 500
+
+    return jsonify(
+        success=True,
+        session_id=session_id,
+        game=frame_data,
+    )
+
+
+@game_bp.route('/games/arc-agi-3/session/<session_id>/action', methods=['POST'])
+@login_required
+def arc_agi_3_action(session_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        frame_data = perform_arc_action(
+            _arc_current_username(),
+            session_id,
+            data.get('action_id'),
+            data.get('data'),
+        )
+    except ArcSessionNotFound as exc:
+        return jsonify(success=False, message=str(exc)), 404
+    except ArcSessionBusy as exc:
+        return jsonify(success=False, message=str(exc)), 409
+    except ArcInvalidAction as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except ArcGameError:
+        return jsonify(success=False, message='操作执行失败，请重新开始。'), 500
+
+    return jsonify(success=True, game=frame_data)
 
 
 def ensure_circle_cat_tables():

@@ -7,6 +7,8 @@ STATE_DIR="$ROOT_DIR/.deploy"
 VENV_ROOT="$STATE_DIR/venvs"
 CURRENT_VENV="$STATE_DIR/current-venv"
 BACKUP_DIR="$STATE_DIR/backups"
+ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"
+ARC_CURRENT_SET="$ARC_DATA_ROOT/current"
 LOCK_FILE='/tmp/noj_deploy.lock'
 WEB_CONFIG="$ROOT_DIR/deploy/supervisor/web.conf"
 CELERY_CONFIG="$ROOT_DIR/deploy/supervisor/celery.conf"
@@ -36,6 +38,8 @@ restart_started=0
 sudo_keepalive_pid=''
 SUDO_KEEPALIVE_STOP="$STATE_DIR/.sudo-keepalive-$RUN_ID.stop"
 CURRENT_VENV_TEMP="$STATE_DIR/.current-venv-$RUN_ID"
+ARC_CURRENT_SET_TEMP="$ARC_DATA_ROOT/.current-$RUN_ID"
+ARC_RESULT_FILE="$ARC_DATA_ROOT/.candidate-$RUN_ID"
 
 usage() {
   printf '%s\n' \
@@ -125,6 +129,7 @@ cleanup() {
   set +e
   stop_sudo_keepalive || true
   rm -f -- "$CURRENT_VENV_TEMP"
+  rm -f -- "$ARC_CURRENT_SET_TEMP" "$ARC_RESULT_FILE"
   if [[ "$exit_code" -ne 0 && -f "$backup_manifest" \
       && -x "${CANDIDATE_PYTHON:-}" ]]; then
     if ! "$CANDIDATE_PYTHON" -B deploy/backup_database.py mark-failed \
@@ -384,6 +389,18 @@ phase='核验编辑器语言服务'
 PYTHONDONTWRITEBYTECODE=1 "$CANDIDATE_PYTHON" -B \
   deploy/verify_editor_runtime.py
 
+phase='准备 ARC-AGI-3 公开游戏'
+"$CANDIDATE_PYTHON" -B deploy/prepare_arc_agi_3.py \
+  --data-root "$ARC_DATA_ROOT" \
+  --result-file "$ARC_RESULT_FILE" \
+  --expected-count 25
+arc_candidate_target="$(tr -d '\r\n' <"$ARC_RESULT_FILE")"
+if [[ ! "$arc_candidate_target" =~ ^sets/[0-9a-f]{64}$ ]]; then
+  printf 'ARC-AGI-3 候选缓存标识无效：%s\n' \
+    "$arc_candidate_target" >&2
+  exit 1
+fi
+
 phase='构建判题镜像'
 build_candidate_image \
   "$JUDGER_STABLE" "$JUDGER_CANDIDATE" docker/judger \
@@ -617,6 +634,10 @@ phase='切换运行环境并更新数据库结构'
 rm -f -- "$CURRENT_VENV_TEMP"
 ln -s "venvs/$candidate_slot" "$CURRENT_VENV_TEMP"
 mv -Tf -- "$CURRENT_VENV_TEMP" "$CURRENT_VENV"
+rm -f -- "$ARC_CURRENT_SET_TEMP"
+ln -s "$arc_candidate_target" "$ARC_CURRENT_SET_TEMP"
+mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"
+rm -f -- "$ARC_RESULT_FILE"
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 "$CANDIDATE_PYTHON" scripts/backfill_class_logos.py
 "$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py --confirm-celery-stopped

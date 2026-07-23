@@ -1,0 +1,114 @@
+{% extends "layouts/site.html" %}
+{% block title %}{{ game.title }} · ARC-AGI-3 - {{ super() }}{% endblock %}
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/arc-agi-3.css') }}">
+{% endblock %}
+{% block content_container_class %}container-fluid p-0 arc-agi-page{% endblock %}
+{% block content %}
+<div
+  id="arcGameApp"
+  class="arc-player"
+  data-game-id="{{ game.slug }}"
+  data-start-url="{{ url_for('game.arc_agi_3_start', game_id=game.slug) }}"
+  data-action-url-template="{{ url_for('game.arc_agi_3_action', session_id='SESSION_ID') }}"
+>
+  <main class="arc-player-stage">
+    <header class="arc-stage-header">
+      <a href="{{ url_for('game.arc_agi_3_index') }}" class="arc-back-link">
+        <i class="fas fa-arrow-left" aria-hidden="true"></i>
+        <span>全部环境</span>
+      </a>
+      <div class="arc-stage-identity">
+        <span>ARC-AGI-3 / PUBLIC</span>
+        <strong>{{ game.title }}</strong>
+      </div>
+      <div class="arc-stage-progress" aria-live="polite">
+        <span>进度</span>
+        <strong><b id="arcLevelsCompleted">0</b> / <b id="arcWinLevels">{{ game.level_count }}</b></strong>
+      </div>
+    </header>
+
+    <section class="arc-canvas-wrap" id="arcCanvasWrap">
+      <canvas id="arcGameCanvas" width="64" height="64" aria-label="{{ game.title }} 游戏画面"></canvas>
+      <div class="arc-board-loader" id="arcBoardLoader" role="status">
+        <span class="arc-loader-spinner" aria-hidden="true"></span>
+        <span id="arcLoaderText">正在加载环境</span>
+      </div>
+      <div class="arc-board-message" id="arcBoardMessage" hidden>
+        <strong id="arcBoardMessageTitle"></strong>
+        <span id="arcBoardMessageText"></span>
+      </div>
+    </section>
+
+    <footer class="arc-stage-footer">
+      <span class="arc-live-dot" aria-hidden="true"></span>
+      <p id="arcStatusText">正在建立本地对局…</p>
+      <span id="arcFrameNotice"></span>
+    </footer>
+  </main>
+
+  <aside class="arc-control-panel">
+    <section class="arc-control-intro">
+      <p class="arc-kicker">ENVIRONMENT {{ game.full_id }}</p>
+      <h1>{{ game.title }}</h1>
+      <p>规则不会以文字给出。观察每次操作前后的变化，逐步推断目标。</p>
+    </section>
+
+    <section class="arc-stats">
+      <div>
+        <span>关卡</span>
+        <strong>{{ game.level_count }}</strong>
+      </div>
+      <div>
+        <span>操作</span>
+        <strong id="arcActionCount">0</strong>
+      </div>
+      <div>
+        <span>输入</span>
+        <strong>{{ game.input_label }}</strong>
+      </div>
+    </section>
+
+    <section class="arc-input-section" aria-labelledby="arc-input-title">
+      <div class="arc-section-heading">
+        <h2 id="arc-input-title">操作台</h2>
+        <span id="arcStateBadge">载入中</span>
+      </div>
+
+      <div class="arc-dpad" aria-label="方向操作">
+        <button type="button" data-arc-action="1" aria-label="向上"><i class="fas fa-arrow-up"></i></button>
+        <button type="button" data-arc-action="3" aria-label="向左"><i class="fas fa-arrow-left"></i></button>
+        <button type="button" data-arc-action="5" class="arc-dpad-center" aria-label="操作"><span>ACT</span></button>
+        <button type="button" data-arc-action="4" aria-label="向右"><i class="fas fa-arrow-right"></i></button>
+        <button type="button" data-arc-action="2" aria-label="向下"><i class="fas fa-arrow-down"></i></button>
+      </div>
+
+      <div class="arc-input-hints">
+        <p id="arcKeyboardHint"><kbd>WASD</kbd><span>或方向键移动</span></p>
+        <p id="arcClickHint"><kbd>CLICK</kbd><span>直接点击棋盘</span></p>
+        <button type="button" data-arc-action="7" class="arc-undo-button">
+          <kbd>Z</kbd><span>撤销</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="arc-session-actions">
+      <button type="button" id="arcResetLevel">
+        <i class="fas fa-rotate-left" aria-hidden="true"></i>重置本关
+      </button>
+      <button type="button" id="arcRestartGame" class="arc-primary-action">
+        <i class="fas fa-play" aria-hidden="true"></i>重新开始
+      </button>
+    </section>
+
+    <footer class="arc-player-credit">
+      <span class="arc-mini-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <p>Public game by ARC Prize Foundation · MIT</p>
+    </footer>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='app/arc-agi-3.js') }}"></script>
+{% endblock %}
