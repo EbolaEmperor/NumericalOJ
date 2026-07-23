@@ -47,6 +47,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     phases = [
         "phase='初始化日志目录'",
         "phase='准备 Python 运行环境'",
+        "phase='准备 ARC-AGI-3 公开游戏'",
         "phase='构建判题镜像'",
         "phase='准备数据库备份计划'",
         "phase='确认现有服务可管理'",
@@ -81,6 +82,14 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert "scripts/init_db_schema.py" in script
     assert "scripts/backfill_class_logos.py" in script
     assert "scripts/recover_pending_tasks.py --confirm-celery-stopped" in script
+    arc_prepare = script.index("deploy/prepare_arc_agi_3.py")
+    arc_switch = script.index(
+        'mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"'
+    )
+    assert arc_prepare < script.index("phase='停止现有服务'")
+    assert script.index("phase='创建并验证数据库回滚点'") < arc_switch
+    assert "--expected-count 25" in script
+    assert 'ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"' in script
     assert 'docker tag "$JUDGER_CANDIDATE" "$JUDGER_STABLE"' in script
     assert (
         'docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"' in script

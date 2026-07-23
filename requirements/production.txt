@@ -10,6 +10,7 @@ werkzeug==3.1.8
 requests==2.34.2
 numpy==2.5.0
 pillow==12.2.0
+arcengine==0.9.3
 openpyxl==3.1.5
 markdown==3.10.2
 pygments==2.20.0
