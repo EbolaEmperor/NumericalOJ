@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from io import BytesIO
-import json
-from pathlib import Path
 
 import pytest
 
@@ -11,7 +9,11 @@ from oj_modules import clangd_services, language_server_services
 
 class FakeClangdService(clangd_services.ClangdService):
     def __init__(self, clock=lambda: 100.0):
-        super().__init__("cpp", clock=clock)
+        super().__init__(
+            "cpp",
+            clock=clock,
+            cpp_standard_library_paths=(),
+        )
         self.notifications = []
         self.requests = []
         self._legend = {
@@ -63,21 +65,52 @@ def test_semantic_tokens_reject_oversized_or_malformed_data(monkeypatch):
         service.semantic_tokens("user:2:cpp", "int x;")
 
 
-def test_clangd_vfs_maps_only_compat_header_and_keeps_drafts(tmp_path):
-    service = clangd_services.ClangdService("cpp")
-    service._workspace = lambda: tmp_path
+def test_clangd_uses_host_cpp_standard_library_inside_sandbox(tmp_path):
+    generic_include = tmp_path / "include" / "c++" / "16"
+    target_include = generic_include / "aarch64-host"
+    target_include.mkdir(parents=True)
+    service = clangd_services.ClangdService(
+        "cpp",
+        cpp_standard_library_paths=(generic_include, target_include),
+    )
 
     options = service._initialization_options()
     flags = options["fallbackFlags"]
-    overlay = Path(flags[flags.index("-ivfsoverlay") + 1])
-    payload = json.loads(overlay.read_text())
-
-    assert payload["fallthrough"] is True
-    assert [root["name"] for root in payload["roots"]] == [
-        "/numericaloj/include/bits/stdc++.h"
+    assert flags[:3] == ["-xc++", "-std=c++20", "-nostdinc++"]
+    assert "-nostdinc" not in flags
+    assert "-ivfsoverlay" not in flags
+    assert "-include" not in flags
+    assert flags[3:] == [
+        "-isystem",
+        str(generic_include),
+        "-isystem",
+        str(target_include),
     ]
-    assert flags[flags.index("-include") + 1] == (
-        "/numericaloj/include/bits/stdc++.h"
+    assert service.sandbox_read_paths == (generic_include, target_include)
+
+
+def test_compiler_include_probe_keeps_only_real_cpp_roots(tmp_path):
+    cpp_root = tmp_path / "include" / "c++" / "16"
+    target_root = cpp_root / "aarch64-host"
+    c_root = tmp_path / "sdk" / "usr" / "include"
+    cpp_root.mkdir(parents=True)
+    target_root.mkdir()
+    c_root.mkdir(parents=True)
+
+    stderr = "\n".join(
+        (
+            '#include "..." search starts here:',
+            "#include <...> search starts here:",
+            f" {cpp_root}",
+            f" {target_root}",
+            f" {c_root}",
+            "End of search list.",
+        )
+    )
+
+    assert clangd_services._parse_compiler_include_search(stderr) == (
+        cpp_root.resolve(),
+        target_root.resolve(),
     )
 
 

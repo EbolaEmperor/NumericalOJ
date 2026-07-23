@@ -36,76 +36,6 @@
     textarea.classList.add('numoj-code-textarea-fallback');
   }
 
-  async function registerSemanticTokens(monaco) {
-    if (!['c', 'cpp', 'py', 'python', 'matlab', 'octave'].includes(language)) return null;
-    const problemId = Number(document.getElementById('problemMeta')?.dataset.problemId);
-    if (!Number.isInteger(problemId) || problemId <= 0) return null;
-
-    const legendResponse = await fetch(
-      `/api/editor/semantic-token-legend?language=${encodeURIComponent(language)}`,
-      {
-        credentials: 'same-origin',
-        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-      }
-    );
-    if (!legendResponse.ok) throw new Error('结构化高亮 legend 不可用');
-    const legendPayload = await legendResponse.json();
-    const legend = legendPayload?.legend;
-    if (!legendPayload?.success || !Array.isArray(legend?.tokenTypes)
-        || !Array.isArray(legend?.tokenModifiers)) {
-      throw new Error('结构化高亮 legend 格式无效');
-    }
-
-    let warned = false;
-    return monaco.languages.registerDocumentSemanticTokensProvider(monacoLanguage, {
-      getLegend: () => legend,
-      provideDocumentSemanticTokens: async (model, _lastResultId, cancellationToken) => {
-        const controller = new AbortController();
-        const cancellation = cancellationToken.onCancellationRequested(
-          () => controller.abort()
-        );
-        try {
-          const response = await fetch('/api/editor/semantic-tokens', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {
-              Accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Requested-With': 'XMLHttpRequest'
-            },
-            body: JSON.stringify({
-              problem_id: problemId,
-              language,
-              source: model.getValue()
-            }),
-            signal: controller.signal
-          });
-          if (!response.ok) throw new Error(`语言服务返回 ${response.status}`);
-          const payload = await response.json();
-          if (!payload?.success || !Array.isArray(payload.data)
-              || payload.data.length % 5 !== 0) {
-            throw new Error('结构化高亮 token 数据格式无效');
-          }
-          warned = false;
-          return {
-            data: new Uint32Array(payload.data),
-            resultId: String(payload.result_id || '')
-          };
-        } catch (error) {
-          if (error?.name === 'AbortError') return null;
-          if (!warned) {
-            console.warn('结构化高亮失败，已保留 TextMate 着色。', error);
-            warned = true;
-          }
-          return { data: new Uint32Array(0) };
-        } finally {
-          cancellation.dispose();
-        }
-      },
-      releaseDocumentSemanticTokens: () => {}
-    });
-  }
-
   function registerMatlab(monaco) {
     if (monaco.languages.getLanguages().some(item => item.id === 'matlab')) return;
 
@@ -181,7 +111,11 @@
       }
     }
     try {
-      await registerSemanticTokens(monaco);
+      await window.NumOJSemanticTokens.register(monaco, {
+        language,
+        monacoLanguage,
+        problemId: document.getElementById('problemMeta')?.dataset.problemId
+      });
     } catch (error) {
       console.warn('语言服务初始化失败，已保留 TextMate 着色。', error);
     }

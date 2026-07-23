@@ -180,6 +180,12 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     editor = (ROOT / "static" / "app" / "problem-editor.js").read_text(
         encoding="utf-8"
     )
+    semantic_tokens = (
+        ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    ).read_text(encoding="utf-8")
+    monaco_component = (
+        TEMPLATES / "components" / "editor" / "monaco.html"
+    ).read_text(encoding="utf-8")
     monaco_entry = (ROOT / "frontend" / "monaco" / "editor.js").read_text(
         encoding="utf-8"
     )
@@ -215,11 +221,12 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert ".problem-editor-loading-state" in layout
     assert 'data-editor-state="ready"' in layout
     assert "revealMonacoEditor(instance)" in editor
-    assert "registerSemanticTokens(monaco)" in editor
-    assert "registerDocumentSemanticTokensProvider" in editor
-    assert "'py', 'python', 'matlab', 'octave'" in editor
-    assert "/api/editor/semantic-token-legend" in editor
-    assert "/api/editor/semantic-tokens" in editor
+    assert "window.NumOJSemanticTokens.register(monaco" in editor
+    assert "registerDocumentSemanticTokensProvider" in semantic_tokens
+    assert '"py", "python", "matlab", "octave"' in semantic_tokens
+    assert "/api/editor/semantic-token-legend" in semantic_tokens
+    assert "/api/editor/semantic-tokens" in semantic_tokens
+    assert "filename='app/editor-semantic-tokens.js'" in monaco_component
     assert "monaco.prepareTextMateHighlighting()" in editor
     assert "editorTheme = 'dark-plus'" in editor
     assert "theme: editorTheme" in editor
@@ -257,7 +264,7 @@ def test_unified_submission_list_owns_one_component_and_asset_pair():
     assert "submission.submission_list" not in source
 
 
-def test_submission_detail_uses_60_40_workspace_and_shared_editor_contract():
+def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract():
     detail = (TEMPLATES / "submissions" / "detail.html").read_text(
         encoding="utf-8"
     )
@@ -287,6 +294,7 @@ def test_submission_detail_uses_60_40_workspace_and_shared_editor_contract():
     assert "submission-detail-problem-title" not in detail
     assert "<dt>题目</dt>" in detail
     assert "submissionMonacoContainer" in detail
+    assert 'data-problem-id="{{ submission.problem_id }}"' in detail
     assert "{% include 'components/editor/monaco.html' %}" in detail
     assert "{% include 'components/editor/codemirror.html' %}" in detail
     assert "filename='app/submissions/detail.css'" in detail
@@ -295,17 +303,27 @@ def test_submission_detail_uses_60_40_workspace_and_shared_editor_contract():
     assert 'class="submission-detail-disclosure submission-latex-card"' in detail
     assert "<style" not in detail
 
-    assert "grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);" in detail_css
+    assert 'grid-template-areas:\n    "summary primary"\n    "results primary";' in detail_css
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in detail_css
     assert "height: 100vh;" in detail_css
     assert "--submission-time-limit: #172554;" in detail_css
     assert "border-radius: 0;" in detail_css
     assert 'grid-template-areas:\n      "summary"\n      "primary"\n      "results";' in detail_css
+    assert "<h2>测试点结果</h2>" not in detail
+    assert "0 0 0 4px var(--submission-ink)" in detail_css
+    assert "margin-inline: auto;" in detail_css
+    assert "card.setAttribute('aria-pressed', isSelected ? 'true' : 'false')" in detail
     assert "readOnly: true" in detail_js
     assert "domReadOnly: true" in detail_js
     assert 'editorTheme = "dark-plus"' in detail_js
     assert "window.NumOJMonacoReady" in detail_js
     assert "window.NumOJCodeMirrorReady" in detail_js
+    assert "window.NumOJSemanticTokens.register(monaco" in detail_js
     assert "monaco-ai-issue-underline" in detail_js
+    assert "--math-curve-color-a: #ffffff;" in detail_css
+    assert "--math-curve-color-b: #ffffff;" in detail_css
+    assert 'data-color-a="#ffffff"' in detail
+    assert 'data-color-b="#ffffff"' in detail
 
     for source in (list_component, list_js):
         assert "wrong-answer" in source
