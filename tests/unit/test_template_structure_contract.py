@@ -152,6 +152,28 @@ def test_non_credential_text_fields_opt_out_of_password_managers():
     assert "editorInput.setAttribute('data-bwignore', '')" in repository
 
 
+def test_problem_dashboard_defers_class_activity_until_after_first_render():
+    problem_list = (TEMPLATES / "problems" / "list.html").read_text(
+        encoding="utf-8"
+    )
+    desktop_list = (TEMPLATES / "problems" / "desktop" / "list.html").read_text(
+        encoding="utf-8"
+    )
+    dashboard = (ROOT / "static" / "app" / "problem-dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    layout = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
+
+    assert "filename='app/problem-dashboard.js'" in problem_list
+    assert "data-numoj-class-activity" in desktop_list
+    assert "data-numoj-activity-loading" in desktop_list
+    assert "正在加载班级活跃度" in desktop_list
+    assert "{% for item in class_activity" not in desktop_list
+    assert "fetch(activityUrl" in dashboard
+    assert "grid.replaceChildren(fragment)" in dashboard
+    assert "min-height: 144px;" in layout
+
+
 def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     detail = (TEMPLATES / "problems" / "detail.html").read_text(encoding="utf-8")
     layout = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
@@ -212,25 +234,27 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert "numoj-light" not in editor
 
 
-def test_submission_lists_share_table_markup_and_styles():
+def test_unified_submission_list_owns_one_component_and_asset_pair():
     component = TEMPLATES / "submissions" / "components" / "table.html"
     stylesheet = ROOT / "static" / "app" / "submissions.css"
+    script = ROOT / "static" / "app" / "submissions.js"
+    page = TEMPLATES / "submissions" / "all.html"
     assert component.is_file()
     assert stylesheet.is_file()
+    assert script.is_file()
+    assert not (TEMPLATES / "submissions" / "list.html").exists()
 
     macro_import = (
         '{% from "submissions/components/table.html" import pagination, '
-        'submission_table %}'
+        'submission_detail_panel, submission_table %}'
     )
-    for name, collection in (
-        ("submissions/list.html", "user_submissions"),
-        ("submissions/all.html", "submissions"),
-    ):
-        source = (TEMPLATES / name).read_text(encoding="utf-8")
-        assert source.count(macro_import) == 1
-        assert source.count(f"submission_table({collection}, user)") == 1
-        assert source.count("filename='app/submissions.css'") == 1
-        assert 'class="list-group submission-table"' not in source
+    source = page.read_text(encoding="utf-8")
+    assert source.count(macro_import) == 1
+    assert source.count("submission_table(submissions, user)") == 1
+    assert source.count("submission_detail_panel(submissions | length > 0, user)") == 1
+    assert source.count("filename='app/submissions.css'") == 1
+    assert source.count("filename='app/submissions.js'") == 1
+    assert "submission.submission_list" not in source
 
 
 def test_rule_topology_algorithm_has_one_parameterized_source():

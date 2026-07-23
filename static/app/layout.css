@@ -1129,10 +1129,41 @@
     display: grid;
     grid-template-columns: 18px 1fr;
     gap: 8px;
+    min-height: 144px;
     padding: 14px;
     border: 1px solid var(--numoj-line);
     border-radius: 10px;
     background: var(--numoj-line-soft);
+  }
+
+  .numoj-heatmap-loading,
+  .numoj-heatmap-message {
+    grid-column: 1 / -1;
+    display: flex;
+    min-height: 84px;
+    align-items: center;
+    justify-content: center;
+    color: var(--numoj-ink-3);
+    font-size: 0.72rem;
+    text-align: center;
+  }
+
+  .numoj-heatmap-loading[hidden],
+  .numoj-heatmap-message[hidden],
+  .numoj-weekday-labels[hidden],
+  .numoj-heatmap[hidden],
+  .numoj-activity-card footer[hidden] {
+    display: none;
+  }
+
+  .numoj-heatmap-loading .math-curve-loader {
+    --math-curve-color-a: var(--numoj-brand);
+    --math-curve-color-b: var(--numoj-brand-ink);
+  }
+
+  .numoj-heatmap-error {
+    flex-direction: column;
+    gap: 8px;
   }
 
   .numoj-weekday-labels {

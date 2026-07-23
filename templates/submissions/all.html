@@ -1,33 +1,129 @@
 {% extends "layouts/site.html" %}
-{% from "submissions/components/table.html" import pagination, submission_table %}
-{% block title %}提交记录 - {{ super() }}{% endblock %}
+{% from "submissions/components/table.html" import pagination, submission_detail_panel, submission_table %}
+{% block title %}{{ '所有提交' if user.is_admin else '我的提交' }} - {{ super() }}{% endblock %}
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/submissions.css') }}">
 {% endblock %}
+{% block content_container_class %}container-fluid submission-page-shell{% endblock %}
 {% block content %}
-{% if user.is_admin %}
-<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-  <h2 class="mb-0"><i class="fas fa-chart-pie me-2"></i> 所有提交记录</h2>
-  <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#timeRangeRejudgeModal">
-    <i class="fas fa-redo-alt me-2"></i>重测
-  </button>
-</div>
-{% else %}
-<h2><i class="fas fa-chart-pie me-2"></i> {{ user['username'] }} 的提交记录</h2>
-{% endif %}
+{% set has_filters = filters.q or filters.status or filters.problem_id %}
+{% set status_options = [
+  ('', '全部'),
+  ('accepted', 'Accepted'),
+  ('wrong_answer', 'Wrong Answer'),
+  ('unaccepted', 'Unaccepted'),
+  ('compile_error', 'Compile Error'),
+  ('in_progress', '运行中'),
+  ('other', '其他')
+] %}
 
-{{ pagination('problem_core.all_submissions', current_page, total_pages, page_numbers) }}
-{{ submission_table(submissions, user) }}
+<div
+  class="submission-page"
+  data-submission-page
+  data-is-admin="{{ 'true' if user.is_admin else 'false' }}"
+  data-time-range-rejudge-url="{{ url_for('rejudge.rejudge_time_range') if user.is_admin else '' }}"
+  data-time-range-status-url="{{ url_for('rejudge.rejudge_time_range_status') if user.is_admin else '' }}"
+>
+  <header class="submission-page-header">
+    <h1>SUBMISSIONS · LIST</h1>
+  </header>
+
+  <section class="submission-filter-panel" aria-label="提交记录筛选">
+    <form
+      class="submission-filter-form"
+      action="{{ url_for('problem_core.all_submissions') }}"
+      method="get"
+      data-submission-filter-form
+    >
+      <input type="hidden" name="status" value="{{ filters.status }}">
+      <label class="submission-search-field">
+        <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+        <span class="visually-hidden">搜索提交记录</span>
+        <input
+          type="search"
+          name="q"
+          value="{{ filters.q }}"
+          maxlength="120"
+          autocomplete="off"
+          placeholder="{{ '搜索提交号、题目、提交者…' if user.is_admin else '搜索提交号、题目…' }}"
+        >
+      </label>
+
+      <label class="submission-problem-filter">
+        <i class="fas fa-book-open" aria-hidden="true"></i>
+        <span class="visually-hidden">按题目筛选</span>
+        <input
+          type="search"
+          value="{{ current_problem_label }}"
+          list="submissionProblemOptions"
+          autocomplete="off"
+          placeholder="全部题目"
+          data-problem-filter-input
+        >
+      </label>
+      <input
+        type="hidden"
+        name="problem_id"
+        value="{{ filters.problem_id or '' }}"
+        data-problem-filter-value
+      >
+      <datalist id="submissionProblemOptions">
+        {% for option in problem_options %}
+          <option value="{{ option.filter_label }}" data-problem-id="{{ option.problem_id }}"></option>
+        {% endfor %}
+      </datalist>
+
+      <button type="submit" class="submission-button submission-button--ghost">
+        应用筛选
+      </button>
+      {% if user.is_admin %}
+      <button
+        type="button"
+        class="submission-button submission-button--dark"
+        data-bs-toggle="modal"
+        data-bs-target="#timeRangeRejudgeModal"
+      >
+        <i class="fas fa-rotate-right" aria-hidden="true"></i>
+        按时间范围重测
+      </button>
+      {% endif %}
+      {% if has_filters %}
+      <a class="submission-filter-clear" href="{{ url_for('problem_core.all_submissions') }}">
+        <i class="fas fa-xmark" aria-hidden="true"></i>
+        清除
+      </a>
+      {% endif %}
+    </form>
+
+    <div class="submission-status-filters" aria-label="按状态筛选">
+      <span class="submission-filter-label">Status</span>
+      {% for value, label in status_options %}
+        <a
+          class="submission-status-chip{% if filters.status == value %} is-active{% endif %}"
+          href="{{ url_for('problem_core.all_submissions', q=filters.q, status=value, problem_id=filters.problem_id) }}"
+          {% if filters.status == value %}aria-current="true"{% endif %}
+        >{{ label }}</a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="submission-master-detail">
+    {{ submission_table(submissions, user) }}
+    {{ submission_detail_panel(submissions | length > 0, user) }}
+  </section>
+
+  {{ pagination('problem_core.all_submissions', current_page, total_pages, page_numbers, filters) }}
+</div>
 
 {% if user.is_admin %}
 <div class="modal fade" id="timeRangeRejudgeModal" tabindex="-1" aria-labelledby="timeRangeRejudgeLabel" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="timeRangeRejudgeLabel">
-          <i class="fas fa-redo-alt me-2"></i>按时间范围重测
-        </h5>
+        <h2 class="modal-title fs-5" id="timeRangeRejudgeLabel">
+          <i class="fas fa-rotate-right me-2" aria-hidden="true"></i>按时间范围重测
+        </h2>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
       </div>
       <div class="modal-body">
@@ -35,15 +131,16 @@
           <label for="rejudgeStartTime" class="form-label">起始时间</label>
           <input type="datetime-local" class="form-control" id="rejudgeStartTime">
         </div>
-        <div class="mb-0">
+        <div>
           <label for="rejudgeEndTime" class="form-label">结束时间</label>
           <input type="datetime-local" class="form-control" id="rejudgeEndTime">
         </div>
       </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-        <button type="button" class="btn btn-outline-danger" id="btnStartTimeRangeRejudge">
-          <i class="fas fa-play me-2"></i>开始重测
+        <button type="button" class="submission-button submission-button--ghost" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="submission-button submission-button--accent" id="btnStartTimeRangeRejudge">
+          <i class="fas fa-play" aria-hidden="true"></i>
+          开始重测
         </button>
       </div>
     </div>
@@ -54,7 +151,7 @@
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="timeRangeRejudgeProgressLabel">重测进度</h5>
+        <h2 class="modal-title fs-5" id="timeRangeRejudgeProgressLabel">重测进度</h2>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
       </div>
       <div class="modal-body">
@@ -66,150 +163,21 @@
             style="width: 0%;"
             aria-valuenow="0"
             aria-valuemin="0"
-            aria-valuemax="100">0%</div>
+            aria-valuemax="100"
+          >0%</div>
         </div>
         <p class="small text-muted mb-0" id="timeRangeRejudgeProgressDetail">尚未开始</p>
       </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+        <button type="button" class="submission-button submission-button--ghost" data-bs-dismiss="modal">关闭</button>
       </div>
     </div>
   </div>
 </div>
 {% endif %}
+{% endblock %}
 
-<hr/>
-
-{% if user.is_admin %}
-<script>
-  (function() {
-    var startBtn = document.getElementById("btnStartTimeRangeRejudge");
-    var startInput = document.getElementById("rejudgeStartTime");
-    var endInput = document.getElementById("rejudgeEndTime");
-    var progressBar = document.getElementById("timeRangeRejudgeProgressBar");
-    var progressDetail = document.getElementById("timeRangeRejudgeProgressDetail");
-    var progressTimer = null;
-
-    function updateProgress(percent, done, total) {
-      progressBar.style.width = percent + "%";
-      progressBar.setAttribute("aria-valuenow", percent);
-      progressBar.textContent = percent + "%";
-      var detailText = "已完成 " + done + " / " + total;
-      if (Number(percent) < 100) {
-        MathCurveLoader.update(progressDetail, detailText, { size: 'sm' });
-      } else {
-        progressDetail.textContent = detailText;
-      }
-    }
-
-    function checkProgress() {
-      fetch("{{ url_for('rejudge.rejudge_time_range_status') }}")
-        .then(function(res) { return res.json(); })
-        .then(function(data) {
-          if (!data.success) {
-            if (progressTimer) {
-              clearInterval(progressTimer);
-              progressTimer = null;
-            }
-            return;
-          }
-          updateProgress(data.progress, data.done, data.total);
-          if (data.progress >= 100 && progressTimer) {
-            clearInterval(progressTimer);
-            progressTimer = null;
-          }
-        })
-        .catch(function() {});
-    }
-
-    if (!startBtn) return;
-
-    function submitRejudgeRequest(start, end, confirmTotal) {
-      var payload = { start: start, end: end };
-      if (typeof confirmTotal === "number") {
-        payload.confirm_total = confirmTotal;
-      }
-
-      return fetch("{{ url_for('rejudge.rejudge_time_range') }}", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      }).then(function(res) { return res.json(); });
-    }
-
-    startBtn.addEventListener("click", function() {
-      var start = (startInput.value || "").trim();
-      var end = (endInput.value || "").trim();
-      if (!start || !end) {
-        alert("请选择起始时间和结束时间");
-        return;
-      }
-      if (start > end) {
-        alert("起始时间不能晚于结束时间");
-        return;
-      }
-      startBtn.disabled = true;
-      submitRejudgeRequest(start, end)
-        .then(function(data) {
-          if (!data.success) {
-            startBtn.disabled = false;
-            alert("重测失败：" + data.message);
-            return;
-          }
-          if (data.preview) {
-            if (data.too_many) {
-              startBtn.disabled = false;
-              alert(
-                "该时间范围命中 " + data.total + " 条提交，超过单次上限 " + data.max_total +
-                " 条。\n实际命中时间：" + data.min_created_at + " ~ " + data.max_created_at +
-                "\n请缩小时间范围后再重测。"
-              );
-              return;
-            }
-            var ok = confirm(
-              "该时间范围将重测 " + data.total + " 条提交。\n" +
-              "实际命中时间：" + data.min_created_at + " ~ " + data.max_created_at + "\n\n" +
-              "确认开始重测吗？"
-            );
-            if (!ok) {
-              startBtn.disabled = false;
-              return;
-            }
-            return submitRejudgeRequest(start, end, data.total).then(function(confirmData) {
-              startBtn.disabled = false;
-              if (!confirmData.success) {
-                alert("重测失败：" + confirmData.message);
-                return;
-              }
-              if (confirmData.preview) {
-                alert("提交数量已变化，请重新确认时间范围。");
-                return;
-              }
-              showProgress(confirmData.total || data.total || 0);
-            });
-          }
-
-          startBtn.disabled = false;
-          showProgress(data.total || 0);
-        })
-        .catch(function() {
-          startBtn.disabled = false;
-          alert("请求失败，请稍后再试");
-        });
-    });
-
-    function showProgress(total) {
-      var formModal = bootstrap.Modal.getInstance(document.getElementById("timeRangeRejudgeModal"));
-      if (formModal) formModal.hide();
-      var progressModal = new bootstrap.Modal(document.getElementById("timeRangeRejudgeProgressModal"));
-      progressModal.show();
-
-      updateProgress(0, 0, total);
-      if (progressTimer) clearInterval(progressTimer);
-      progressTimer = setInterval(checkProgress, 1500);
-    }
-  })();
-</script>
-{% endif %}
-
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='app/submissions.js') }}"></script>
 {% endblock %}

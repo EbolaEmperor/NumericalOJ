@@ -214,7 +214,7 @@ Prompt、答案、任务参数/返回值和评测 stdout/stderr 原文。
 
 仅修改模板时，在生产 checkout 完成 `git pull` 后无需运行部署脚本或重启。生产 `FLASK_DEBUG` 应保持关闭；模板实时生效依赖 `TEMPLATES_AUTO_RELOAD=True`，不是 debug reloader。
 
-页面统一从 `templates/layouts/base.html` 派生的 site/embedded 布局继承。MathJax 是显式 opt-in 资源；新增公式页面覆盖 `mathjax` block，普通页面不得把它重新放回全局布局。排名规则拓扑统一调用 `static/app/ranking/topology.js`，提交列表统一复用 `templates/submissions/components/table.html`，不要复制页面私有版本。
+页面统一从 `templates/layouts/base.html` 派生的 site/embedded 布局继承。MathJax 是显式 opt-in 资源；新增公式页面覆盖 `mathjax` block，普通页面不得把它重新放回全局布局。排名规则拓扑统一调用 `static/app/ranking/topology.js`；统一提交页的表格与详情面板由 `templates/submissions/components/table.html` 维护，不要在页面模板中复制私有版本。
 
 ## 其他约定
 

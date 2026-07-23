@@ -20,7 +20,6 @@ from oj_modules.db_services import (
     get_submission_by_id,
     get_submission_status_snapshot,
     subscribe_submission_status_events,
-    get_submission_summaries_by_user_and_problem_paginated,
     get_user_by_username,
 )
 
@@ -36,6 +35,31 @@ def _strip_problem_title_tags(title):
     text = re.sub(r'\s*「[^」]{1,32}」\s*', ' ', original)
     text = re.sub(r'\s+', ' ', text).strip()
     return text if text else original
+
+
+def _summarize_panel_test_points(raw_points):
+    """将测试点收敛为面板需要的摘要字段，并限制可变长输出。"""
+    points = []
+    for fallback_index, raw_point in enumerate(raw_points or (), start=1):
+        if not isinstance(raw_point, dict):
+            continue
+        try:
+            test_index = int(
+                raw_point.get("test_index")
+                or raw_point.get("index")
+                or fallback_index
+            )
+        except (TypeError, ValueError):
+            test_index = fallback_index
+        points.append({
+            "test_index": test_index,
+            "status": str(raw_point.get("status") or "Unknown"),
+            "time": raw_point.get("time"),
+            "stderr": str(raw_point.get("stderr") or "")[:600],
+            "stdout": str(raw_point.get("stdout") or "")[:600],
+            "has_output_image": bool(raw_point.get("has_output_image")),
+        })
+    return points
 
 
 from oj_modules.auth_helpers import current_user, is_admin
@@ -159,34 +183,6 @@ def _load_written_submission_latex_and_error(submission):
     return latex_text, error_text
 
 
-@submission_bp.route('/submissionslist/<int:problem_id>')
-def submission_list(problem_id):
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-
-    page = max(1, request.args.get('page', 1, type=int))
-    per_page = 30
-    subs, total_pages = get_submission_summaries_by_user_and_problem_paginated(
-        user['username'], problem_id, page=page, per_page=per_page
-    )
-    for sub in subs:
-        sub['display_problem_title'] = _strip_problem_title_tags(sub.get('problem_title'))
-        sub['is_ac'] = (sub.get('status') == 'Accepted')
-    page_start = max(1, page - 8)
-    page_end = min(total_pages, page + 8)
-    page_numbers = list(range(page_start, page_end + 1))
-    return render_template(
-        'submissions/list.html',
-        problem_id=problem_id,
-        user_submissions=subs,
-        user=user,
-        current_page=page,
-        total_pages=total_pages,
-        page_numbers=page_numbers,
-    )
-
-
 @submission_bp.route('/submission_detail/<int:submission_id>')
 def submission_detail(submission_id):
     user = current_user()
@@ -280,6 +276,7 @@ def submission_status_stream(submission_id):
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
+    panel_view = str(request.args.get('view') or '').strip().lower() == 'panel'
     initial_snapshot = _get_authorized_submission_snapshot(submission_id, user)
     if not initial_snapshot:
         return jsonify({'error': 'Submission not found'}), 404
@@ -292,6 +289,20 @@ def submission_status_stream(submission_id):
             snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
             or snapshot.get('score') is None
         )
+        if panel_view:
+            test_points = _summarize_panel_test_points(
+                snapshot.get('test_points')
+            )
+            return {
+                'submission_id': snapshot.get('id'),
+                'status': snapshot.get('status'),
+                'score': snapshot.get('score'),
+                'is_judging': is_judging,
+                'test_points_count': len(test_points),
+                'test_points': test_points,
+                'last_updated': snapshot.get('last_updated', ''),
+            }
+
         payload = {
             'submission_id': snapshot.get('id'),
             'problem_type': snapshot.get('problem_type'),

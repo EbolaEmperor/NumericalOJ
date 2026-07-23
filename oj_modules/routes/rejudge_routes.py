@@ -108,6 +108,34 @@ def rejudge_problem(problem_id):
     return jsonify(success=True, message="已开始重测")
 
 
+@rejudge_bp.route(
+    '/admin/rejudge_submission/<int:submission_id>',
+    methods=['POST'],
+)
+def rejudge_submission(submission_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message="无权限"), 403
+
+    if _rejudge_task is None or _rds is None:
+        return jsonify(success=False, message="重测模块未初始化"), 500
+
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return jsonify(success=False, message="提交记录不存在"), 404
+
+    _enqueue_rejudge(
+        [submission],
+        f"rejudge:submission:{submission_id}",
+        clear_running_lock=True,
+    )
+    return jsonify(
+        success=True,
+        message="已开始重测",
+        submission_id=submission_id,
+    )
+
+
 @rejudge_bp.route('/admin/rejudge_status/<int:problem_id>', methods=['GET'])
 def rejudge_status(problem_id):
     if _rds is None:
