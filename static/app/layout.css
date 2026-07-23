@@ -1157,8 +1157,18 @@
   }
 
   .numoj-heatmap-loading .math-curve-loader {
+    flex-direction: column;
+    gap: 10px;
     --math-curve-color-a: var(--numoj-brand);
     --math-curve-color-b: var(--numoj-brand-ink);
+  }
+
+  .numoj-heatmap-loading .math-curve-loader__label {
+    order: 2;
+    color: var(--numoj-ink-3);
+    font-size: 0.68rem;
+    font-weight: 500;
+    line-height: 1.4;
   }
 
   .numoj-heatmap-error {

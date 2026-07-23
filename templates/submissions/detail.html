@@ -1372,6 +1372,7 @@
     fetch('{{ url_for("ai.ask_ai_code_marks") }}', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      mathCurveLoader: false,
       body: JSON.stringify({
         submission_id: {{ submission.id }}
       })

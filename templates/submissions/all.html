@@ -108,12 +108,12 @@
     </div>
   </section>
 
+  {{ pagination('problem_core.all_submissions', current_page, total_pages, page_numbers, filters) }}
+
   <section class="submission-master-detail">
     {{ submission_table(submissions, user) }}
     {{ submission_detail_panel(submissions | length > 0, user) }}
   </section>
-
-  {{ pagination('problem_core.all_submissions', current_page, total_pages, page_numbers, filters) }}
 </div>
 
 {% if user.is_admin %}

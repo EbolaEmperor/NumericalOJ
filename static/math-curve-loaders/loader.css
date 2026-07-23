@@ -72,15 +72,17 @@
 .math-curve-loader-overlay__card {
   min-width: min(17rem, calc(100vw - 2.5rem));
   padding: 1.25rem 1.5rem;
-  border: 1px solid rgba(99, 102, 241, 0.16);
+  border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 1.15rem;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 20px 60px rgba(30, 64, 175, 0.16);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.16);
   color: #334155;
   text-align: center;
 }
 
 .math-curve-loader-overlay__card .math-curve-loader {
+  --math-curve-color-a: #1e293b;
+  --math-curve-color-b: #0f172a;
   flex-direction: column;
 }
 
@@ -93,15 +95,8 @@
 @media (prefers-color-scheme: dark) {
   .math-curve-loader-overlay {
     background:
-      radial-gradient(circle at 50% 42%, rgba(56, 189, 248, 0.14), transparent 34%),
-      rgba(15, 23, 42, 0.84);
-  }
-
-  .math-curve-loader-overlay__card {
-    border-color: rgba(56, 189, 248, 0.2);
-    background: rgba(30, 41, 59, 0.96);
-    box-shadow: 0 20px 60px rgba(2, 6, 23, 0.36);
-    color: #e2e8f0;
+      radial-gradient(circle at 50% 42%, rgba(148, 163, 184, 0.18), transparent 34%),
+      rgba(15, 23, 42, 0.78);
   }
 }
 
