@@ -618,6 +618,7 @@ rm -f -- "$CURRENT_VENV_TEMP"
 ln -s "venvs/$candidate_slot" "$CURRENT_VENV_TEMP"
 mv -Tf -- "$CURRENT_VENV_TEMP" "$CURRENT_VENV"
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
+"$CANDIDATE_PYTHON" scripts/backfill_class_logos.py
 "$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py --confirm-celery-stopped
 
 phase='切换判题镜像'

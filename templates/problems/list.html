@@ -493,6 +493,7 @@ document.querySelectorAll('[data-numoj-projects-refresh]').forEach(button => but
 const legacyProjectsButton = document.getElementById('projects-refresh-btn');
 if (legacyProjectsButton) legacyProjectsButton.addEventListener('click', refreshProjects);
 </script>
+<script src="{{ url_for('static', filename='app/class-picker.js') }}"></script>
 
 <script>
 function showPlagiarismNotice(message) {

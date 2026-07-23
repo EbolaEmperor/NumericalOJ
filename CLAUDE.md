@@ -184,7 +184,7 @@ bash deploy.sh
 3. 停服前以服务端 `SELECT VERSION()` 等查询为准生成唯一备份计划。兼容的本机 MySQL 8.0/8.4 使用仓库固定版本的 XtraBackup；缺失或版本不匹配时，通过交互式 `sudo` 和 Debian APT 自动安装。服务器不兼容，或自动安装失败时，计划才允许回退到 `mysqldump`；
 4. 确认两套 Supervisor 可管理，再依次停止 Celery/Web；首次迁移只终止身份精确匹配的旧版 Supervisor，不使用 `pkill -f`；
 5. 在全部应用写入者停止后严格执行既定计划：XtraBackup 备份整个实例并完成 `--prepare`，或只对 `MYSQL_DB` 执行 gzip level 1 的逻辑备份和完整 gzip 校验。备份未验证成功不得更新 schema；
-6. 切换 `.deploy/current-venv`，执行一次非破坏性 schema 同步和停机任务恢复；
+6. 切换 `.deploy/current-venv`，执行一次非破坏性 schema 同步、幂等补齐历史班级的缺失 logo 种子，再执行停机任务恢复；
 7. 切换两个生产镜像标签，最佳努力启动统一日志采集器，再依次启动 Celery/Web，并在两组业务服务均启动后再次确认 Supervisor 配置中的精确进程集合全部稳定进入 `RUNNING`；重新核验真实备份产物后才把回滚点标记为成功。
 
 脚本不复制、覆盖或删除代码文件，因此生产 `.env`、`static/` 的额外资产、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置。除按需通过 APT 管理 clangd、Bubblewrap 的精确 candidate 版本、固定版本 XtraBackup 及其 Percona 软件源外，脚本只写 `.deploy/`、数据库备份、Docker 标签和进程状态。正常拉取只更新 tracked 的 `config.py` 解析逻辑和 `.env.tmpl` 模板，不覆盖 `.env`。部署用 Python 辅助程序统一放在 `deploy/`，不得在 `deploy.sh` 中内嵌 Python 源码或 `python -c`。

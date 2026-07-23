@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 JAVASCRIPT_ASSETS = (
+    "static/app/class-picker.js",
     "static/app/choice-picker.js",
     "static/app/ranking/endpoints.js",
     "static/app/ranking/rules-editor.js",

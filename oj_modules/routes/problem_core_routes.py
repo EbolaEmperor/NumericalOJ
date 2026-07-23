@@ -44,6 +44,7 @@ from oj_modules.dashboard_services import (
     select_visible_class,
     visible_classes_for_user_cached,
 )
+from oj_modules.class_logo_services import attach_class_logos
 from oj_modules.markdown_utils import sanitize_html
 from oj_modules.written_submission_artifacts import (
     WrittenSubmissionArtifactError,
@@ -615,7 +616,7 @@ def build_problem_list_context(
         return context
 
     if user['is_admin'] == 1:
-        classes = visible_classes_for_user_cached(user)
+        classes = attach_class_logos(visible_classes_for_user_cached(user))
         context["classes"] = classes
         # 旧移动端仍使用管理员总题库列表；桌面端使用下面的班级作业上下文。
         context["problems"] = get_all_problems()
@@ -641,7 +642,7 @@ def build_problem_list_context(
         })
         return context
 
-    classes = get_user_classes_cached(user['id'])
+    classes = attach_class_logos(get_user_classes_cached(user['id']))
     context["classes"] = classes
 
     if not classes:

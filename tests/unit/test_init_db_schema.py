@@ -13,6 +13,16 @@ def test_problem_test_code_schema_definition_is_longtext():
     assert init_db_schema._column_needs_type_change("longtext", "longtext") is False
 
 
+def test_class_table_schema_has_persistent_logo_seed():
+    from scripts import init_db_schema
+
+    specs = init_db_schema._load_schema_specs()
+
+    assert specs["class_table"].columns["logo_seed"].lower() == (
+        "char(32) default null"
+    )
+
+
 def test_plagiarism_records_schema_has_lookup_indexes():
     from scripts import init_db_schema
 

@@ -1117,7 +1117,7 @@ def get_user_classes(user_id):
     try:
         with conn.cursor() as cursor:
             sql = """
-              SELECT m.class_en, ct.class_cn, m.is_primary
+              SELECT m.class_en, ct.class_cn, ct.logo_seed, m.is_primary
               FROM user_class_map m
               LEFT JOIN class_table ct ON m.class_en = ct.class_en
               WHERE m.user_id=%s
@@ -1133,11 +1133,20 @@ def get_user_classes(user_id):
             class_en = u.get('class')
             if not class_en:
                 return []
-            cursor.execute("SELECT class_en, class_cn FROM class_table WHERE class_en=%s", (class_en,))
+            cursor.execute(
+                "SELECT class_en, class_cn, logo_seed "
+                "FROM class_table WHERE class_en=%s",
+                (class_en,),
+            )
             c = cursor.fetchone()
             if not c:
                 return [{'class_en': class_en, 'class_cn': class_en, 'is_primary': 1}]
-            return [{'class_en': c['class_en'], 'class_cn': c['class_cn'], 'is_primary': 1}]
+            return [{
+                'class_en': c['class_en'],
+                'class_cn': c['class_cn'],
+                'logo_seed': c.get('logo_seed'),
+                'is_primary': 1,
+            }]
     finally:
         conn.close()
 
@@ -1146,7 +1155,10 @@ def get_all_classes():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT class_en, class_cn FROM class_table ORDER BY class_cn ASC"
+            sql = (
+                "SELECT class_en, class_cn, logo_seed "
+                "FROM class_table ORDER BY class_cn ASC"
+            )
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -1157,7 +1169,11 @@ def get_all_classes_except_admin():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT class_en, class_cn FROM class_table WHERE class_en != 'Cadmin' ORDER BY class_cn ASC"
+            sql = (
+                "SELECT class_en, class_cn, logo_seed "
+                "FROM class_table WHERE class_en != 'Cadmin' "
+                "ORDER BY class_cn ASC"
+            )
             cursor.execute(sql)
             return cursor.fetchall()
     finally:
@@ -1200,7 +1216,10 @@ def get_class_by_en(class_en):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT class_en, class_cn FROM class_table WHERE class_en=%s"
+            sql = (
+                "SELECT class_en, class_cn, logo_seed "
+                "FROM class_table WHERE class_en=%s"
+            )
             cursor.execute(sql, (class_en,))
             return cursor.fetchone()
     finally:
@@ -1211,7 +1230,10 @@ def get_class_by_cn(class_cn):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT class_en, class_cn FROM class_table WHERE class_cn=%s"
+            sql = (
+                "SELECT class_en, class_cn, logo_seed "
+                "FROM class_table WHERE class_cn=%s"
+            )
             cursor.execute(sql, (class_cn,))
             return cursor.fetchone()
     finally:

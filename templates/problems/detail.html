@@ -52,7 +52,8 @@
           </div>
           <div class="problem-title-row">
             <h2 class="mb-0 problem-title-singleline" id="problemTitleHeading">
-              <strong>{{ problem.id }}.</strong> {{ problem.title }}
+              <strong class="problem-number">{{ problem.id }}.</strong>
+              <span class="problem-title-text">{{ problem.title }}</span>
             </h2>
           </div>
           {% if user and user.is_admin == 1 %}

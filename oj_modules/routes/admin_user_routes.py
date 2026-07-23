@@ -9,6 +9,7 @@ from oj_modules.class_membership_services import (
     MembershipNotFoundError,
     set_primary_membership,
 )
+from oj_modules.class_logo_services import generate_class_logo_seed
 from oj_modules.db_services import (
     delete_user_problem_max_score,
     get_all_classes,
@@ -389,8 +390,15 @@ def add_class_ajax():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "INSERT INTO class_table (class_en, class_cn, class_cnt) VALUES (%s, %s, 0)"
-            cursor.execute(sql, (class_en, class_cn))
+            sql = (
+                "INSERT INTO class_table "
+                "(class_en, class_cn, class_cnt, logo_seed) "
+                "VALUES (%s, %s, 0, %s)"
+            )
+            cursor.execute(
+                sql,
+                (class_en, class_cn, generate_class_logo_seed()),
+            )
         conn.commit()
         with conn.cursor() as cursor:
             sql = f"CREATE TABLE {safe_table_name(class_en)}(id INT PRIMARY KEY AUTO_INCREMENT, problem_id INT, ddl DATETIME, complete_cnt INT, problem_title TEXT, ranking_competition_id INT DEFAULT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;"
