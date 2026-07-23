@@ -1,6 +1,6 @@
 {% extends "layouts/site.html" %}
 {% block title %}围住小猫 - {{ super() }}{% endblock %}
-{% block content_container_class %}container-fluid px-2 px-lg-3 py-3{% endblock %}
+{% block content_container_class %}container-fluid p-0 cat-game-page{% endblock %}
 {% block content %}
 <div class="cat-game-shell">
   <div class="cat-game-layout">
@@ -21,7 +21,7 @@
       </div>
       <p id="statusText" class="cat-status-text"><i class="fas fa-info-circle me-2" aria-hidden="true"></i><span id="statusTextValue">点击空格放障碍。</span></p>
       <section class="cat-leaderboard cat-leaderboard-desktop" data-leaderboard-section="desktop">
-        <h2 class="cat-leaderboard-title"><i class="fas fa-trophy me-2" aria-hidden="true"></i>排行榜</h2>
+        <h2 class="cat-leaderboard-title">排行榜</h2>
         <button type="button" class="cat-leaderboard-page-btn" data-leaderboard-nav="up" data-leaderboard-target="desktop" aria-label="上一页" hidden>
           <i class="fas fa-angle-up" aria-hidden="true"></i>
         </button>
@@ -37,7 +37,7 @@
     </section>
 
     <section class="cat-leaderboard cat-leaderboard-mobile" data-leaderboard-section="mobile">
-      <h2 class="cat-leaderboard-title"><i class="fas fa-trophy me-2" aria-hidden="true"></i>排行榜 Top 10</h2>
+      <h2 class="cat-leaderboard-title">排行榜 Top 10</h2>
       <button type="button" class="cat-leaderboard-page-btn" data-leaderboard-nav="up" data-leaderboard-target="mobile" aria-label="上一页" hidden>
         <i class="fas fa-angle-up" aria-hidden="true"></i>
       </button>
@@ -70,26 +70,26 @@
   }
 
   .cat-game-shell {
+    width: 100%;
+    min-height: 100vh;
     color: var(--cat-text);
     font-family: inherit;
     background: var(--cat-page-bg);
-    border: 1px solid var(--cat-border);
-    border-radius: 12px;
-    padding: 0.75rem;
   }
 
   .cat-game-layout {
     display: grid;
-    grid-template-columns: minmax(220px, 280px) 1fr;
-    gap: 1rem;
+    min-height: 100vh;
+    grid-template-areas: "board sidebar";
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+    gap: 0;
     align-items: stretch;
   }
 
   .cat-sidebar {
-    border-radius: 12px;
+    grid-area: sidebar;
     padding: 1rem;
     background: var(--cat-surface);
-    border: 1px solid var(--cat-border);
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -186,9 +186,7 @@
 
   .cat-leaderboard {
     margin-top: 0.15rem;
-    border-radius: 10px;
     background: var(--cat-surface);
-    border: 1px solid var(--cat-border);
     padding: 0.45rem 0.55rem;
     min-height: 0;
     display: flex;
@@ -309,7 +307,7 @@
 
   .cat-leaderboard-score {
     font-size: 0.72rem;
-    color: var(--cat-accent);
+    color: #495057;
     white-space: nowrap;
   }
 
@@ -327,21 +325,19 @@
   }
 
   .cat-board-card {
-    border-radius: 12px;
+    grid-area: board;
     background: var(--cat-board-bg);
-    border: 1px solid var(--cat-border);
-    padding: 0.5rem;
-    min-height: calc(100vh - 210px);
+    min-width: 0;
+    min-height: 100vh;
     display: flex;
   }
 
   .cat-board {
     flex: 1;
     overflow: hidden;
-    padding: 0.35rem;
     display: flex;
     justify-content: center;
-    align-items: flex-start;
+    align-items: center;
   }
 
   .cat-board-grid {
@@ -349,6 +345,7 @@
   }
 
   .cat-leaderboard-mobile {
+    grid-area: leaderboard;
     display: none;
   }
 
@@ -416,9 +413,16 @@
   }
 
   @media (min-width: 992px) {
+    .numoj-content.cat-game-page,
+    .numoj-content.container-fluid.cat-game-page {
+      height: 100vh;
+      min-height: 100vh;
+      overflow: hidden;
+      padding: 0;
+    }
+
     .cat-game-shell {
-      height: calc(100vh - 148px);
-      padding: 0.55rem;
+      height: 100vh;
     }
 
     .cat-game-layout {
@@ -436,20 +440,20 @@
       min-height: 0;
     }
 
-    .cat-board-card {
-      padding: 0.35rem;
-    }
   }
 
   @media (max-width: 991px) {
     .cat-game-layout {
+      grid-template-areas:
+        "sidebar"
+        "board"
+        "leaderboard";
       grid-template-columns: 1fr;
       gap: 0.55rem;
     }
 
     .cat-game-shell {
       padding: 0.45rem;
-      border-radius: 10px;
     }
 
     .cat-sidebar {
@@ -583,11 +587,6 @@
   }
 
   @media (max-width: 767px) {
-    .cat-sidebar,
-    .cat-board-card {
-      border-radius: 10px;
-    }
-
     .cat-board-card {
       min-height: auto;
     }
@@ -1338,7 +1337,7 @@
 
       const fitted = Math.floor(Math.min(wByWidth, wByHeight));
       const minCell = boardSize >= 11 ? 24 : 28;
-      const cellSize = Math.max(minCell, Math.min(fitted, 82));
+      const cellSize = Math.max(minCell, fitted);
 
       const root = document.documentElement;
       root.style.setProperty('--cat-gap', baseGap + 'px');

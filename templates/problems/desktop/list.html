@@ -110,7 +110,7 @@
                   {% elif hw.is_completed %}
                     <div class="numoj-row-state complete" aria-label="已完成">✓</div>
                   {% elif hw.has_submission %}
-                    <div class="numoj-row-state failed" aria-label="有提交但未通过">×</div>
+                    <div class="numoj-row-state failed" role="img" aria-label="有提交但未通过"></div>
                   {% else %}
                     <div class="numoj-row-state neutral" aria-label="未提交"></div>
                   {% endif %}

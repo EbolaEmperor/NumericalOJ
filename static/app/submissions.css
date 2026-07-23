@@ -978,16 +978,6 @@
   text-align: center;
 }
 
-.submission-pagination__summary {
-  color: var(--submission-ink-4);
-  font-size: 11px;
-}
-
-.submission-pagination__summary strong {
-  color: var(--submission-ink-2);
-  font-family: var(--numoj-mono, monospace);
-}
-
 .submission-pagination__links {
   display: flex;
   align-items: center;

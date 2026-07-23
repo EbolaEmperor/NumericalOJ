@@ -45,9 +45,6 @@
 {% macro pagination(endpoint, current_page, total_pages, page_numbers, filters) -%}
   {% if total_pages > 1 %}
   <nav class="submission-pagination" aria-label="提交记录分页">
-    <span class="submission-pagination__summary">
-      第 <strong>{{ current_page }}</strong> / {{ total_pages }} 页
-    </span>
     <div class="submission-pagination__links">
       {% if current_page > 1 %}
         <a

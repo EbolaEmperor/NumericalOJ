@@ -39,6 +39,21 @@
           data-problem-id="{{ submission.problem_id }}"
           hidden
         ></div>
+        <div
+          id="submissionSemanticLoading"
+          class="submission-semantic-loading"
+          role="status"
+          aria-live="polite"
+          hidden
+        >
+          <span
+            class="math-curve-loader"
+            data-math-curve-loader
+            data-size="xs"
+          >
+            <span class="math-curve-loader__label">正在解析代码语法</span>
+          </span>
+        </div>
         <div id="submissionCodeMirrorContainer" class="submission-codemirror-container">
           <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
         </div>

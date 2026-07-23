@@ -11,11 +11,13 @@ import threading
 
 from oj_modules.language_server_services import (
     LANGUAGE_REQUEST_TIMEOUT_SECONDS,
+    LANGUAGE_SERVICE_POOL_SIZE,
     LanguageServiceError,
     LanguageServiceProtocolError,
     LanguageServiceTimeoutError,
     LanguageServiceUnavailableError,
     SemanticLanguageServerService,
+    SemanticLanguageServicePool,
 )
 
 
@@ -129,6 +131,7 @@ class ClangdService(SemanticLanguageServerService):
         *,
         command: str = "clangd",
         request_timeout: float = LANGUAGE_REQUEST_TIMEOUT_SECONDS,
+        workspace_key: str | None = None,
         clock=None,
         cpp_standard_library_paths: tuple[Path, ...] | None = None,
     ) -> None:
@@ -158,6 +161,7 @@ class ClangdService(SemanticLanguageServerService):
             ),
             sandbox_read_paths=standard_library_paths,
             request_timeout=request_timeout,
+            workspace_key=workspace_key,
             **kwargs,
         )
 
@@ -240,17 +244,24 @@ def verify_clangd_runtime() -> None:
 
 
 _services_lock = threading.Lock()
-_services: dict[str, ClangdService] = {}
+_services: dict[str, SemanticLanguageServicePool] = {}
 
 
-def get_clangd_service(language: str) -> ClangdService:
+def get_clangd_service(language: str) -> SemanticLanguageServicePool:
     normalized = "cpp" if language == "cpp" else "c" if language == "c" else ""
     if not normalized:
         raise ValueError("仅 C/C++ 支持 clangd 语义解析")
     with _services_lock:
         service = _services.get(normalized)
         if service is None:
-            service = ClangdService(normalized)
+            service = SemanticLanguageServicePool(
+                service_name="clangd",
+                size=LANGUAGE_SERVICE_POOL_SIZE,
+                factory=lambda slot: ClangdService(
+                    normalized,
+                    workspace_key=f"clangd-{normalized}-{slot}",
+                ),
+            )
             _services[normalized] = service
         return service
 

@@ -28,6 +28,7 @@
           Accept: "application/json",
           "X-Requested-With": "XMLHttpRequest",
         },
+        mathCurveLoader: false,
       }
     );
     if (!legendResponse.ok) {
@@ -64,6 +65,9 @@
               controller.abort();
             }
           );
+          if (typeof settings.onRequestStart === "function") {
+            settings.onRequestStart();
+          }
           try {
             var response = await fetch("/api/editor/semantic-tokens", {
               method: "POST",
@@ -79,6 +83,7 @@
                 source: model.getValue(),
               }),
               signal: controller.signal,
+              mathCurveLoader: false,
             });
             if (!response.ok) {
               throw new Error("语言服务返回 " + response.status);
@@ -110,6 +115,9 @@
             return { data: new Uint32Array(0) };
           } finally {
             cancellation.dispose();
+            if (typeof settings.onRequestEnd === "function") {
+              settings.onRequestEnd();
+            }
           }
         },
         releaseDocumentSemanticTokens: function () {},
