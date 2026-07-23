@@ -20,10 +20,14 @@
           {% set point_class = 'accepted' %}
         {% elif point_status in ['Pending', 'Waiting', 'Running', 'Generating'] %}
           {% set point_class = 'active' %}
-        {% elif point_status in ['Time Limit Exceeded', 'Memory Limit Exceeded'] %}
-          {% set point_class = 'limit' %}
-        {% elif point_status in ['Wrong Answer', 'Unaccepted', 'Compile Error', 'Runtime Error', 'Error', 'Forbidden', 'No Output', 'Nonzero Exit Status'] %}
-          {% set point_class = 'failed' %}
+        {% elif point_status == 'Wrong Answer' %}
+          {% set point_class = 'wrong-answer' %}
+        {% elif point_status == 'Runtime Error' %}
+          {% set point_class = 'runtime-error' %}
+        {% elif point_status == 'Time Limit Exceeded' %}
+          {% set point_class = 'time-limit' %}
+        {% elif point_status in ['Unaccepted', 'Compile Error', 'Memory Limit Exceeded', 'Error', 'Forbidden', 'No Output', 'Nonzero Exit Status'] %}
+          {% set point_class = 'other-failure' %}
         {% else %}
           {% set point_class = 'neutral' %}
         {% endif %}

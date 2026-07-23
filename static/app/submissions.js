@@ -43,23 +43,20 @@
     if (["Pending", "Waiting", "Running", "Generating"].indexOf(value) !== -1) {
       return "is-active";
     }
-    if (["Time Limit Exceeded", "Memory Limit Exceeded"].indexOf(value) !== -1) {
-      return "is-limit";
+    if (value === "Wrong Answer") {
+      return "is-wrong-answer";
     }
-    if (
-      [
-        "Wrong Answer",
-        "Unaccepted",
-        "Compile Error",
-        "Runtime Error",
-        "Error",
-        "Forbidden",
-        "No Output",
-        "Nonzero Exit Status",
-      ].indexOf(value) !== -1
-    ) {
-      return "is-failed";
-    }
+    if (value === "Runtime Error") return "is-runtime-error";
+    if (value === "Time Limit Exceeded") return "is-time-limit";
+    if ([
+      "Unaccepted",
+      "Compile Error",
+      "Memory Limit Exceeded",
+      "Error",
+      "Forbidden",
+      "No Output",
+      "Nonzero Exit Status",
+    ].indexOf(value) !== -1) return "is-other-failure";
     return "is-neutral";
   }
 
@@ -135,15 +132,28 @@
 
     safePoints.forEach(function (point, index) {
       var button = document.createElement("button");
+      var stateClass = pointClass(point.status);
       button.type = "button";
-      button.className = "submission-test-point " + pointClass(point.status);
+      button.className = "submission-test-point " + stateClass;
       button.title =
         "测试点 #" + point.test_index + " · " + String(point.status || "Unknown");
       button.setAttribute(
         "aria-label",
         "测试点 " + point.test_index + "，" + String(point.status || "Unknown")
       );
-      button.textContent = String(point.test_index);
+      var indexLabel = document.createElement("span");
+      indexLabel.className = "submission-test-point__index";
+      indexLabel.textContent = String(point.test_index);
+      button.appendChild(indexLabel);
+      if (stateClass === "is-active") {
+        var loader = document.createElement("span");
+        loader.className = "math-curve-loader";
+        loader.dataset.mathCurveLoader = "";
+        loader.dataset.iconOnly = "true";
+        loader.dataset.size = "xs";
+        loader.setAttribute("aria-hidden", "true");
+        button.appendChild(loader);
+      }
       button.addEventListener("click", function () {
         Array.prototype.forEach.call(
           matrix.querySelectorAll(".submission-test-point.is-selected"),
@@ -156,6 +166,9 @@
       });
       if (index === 0) button.classList.add("is-selected");
       matrix.appendChild(button);
+      if (stateClass === "is-active" && window.MathCurveLoader) {
+        window.MathCurveLoader.hydrate(button);
+      }
     });
     renderPointSummary(safePoints[0]);
   }

@@ -512,12 +512,20 @@
   background: var(--submission-success);
 }
 
-.submission-test-spark__bar.is-failed {
+.submission-test-spark__bar.is-wrong-answer {
   background: var(--submission-danger);
 }
 
-.submission-test-spark__bar.is-limit {
+.submission-test-spark__bar.is-runtime-error {
   background: var(--submission-violet);
+}
+
+.submission-test-spark__bar.is-time-limit {
+  background: #172554;
+}
+
+.submission-test-spark__bar.is-other-failure {
+  background: var(--submission-warning);
 }
 
 .submission-test-spark__bar.is-active {
@@ -853,7 +861,9 @@
 
 .submission-test-point {
   position: relative;
+  display: grid;
   aspect-ratio: 1;
+  place-items: center;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -880,20 +890,44 @@
   color: var(--submission-panel-success);
 }
 
-.submission-test-point.is-failed {
+.submission-test-point.is-wrong-answer {
   background: var(--submission-panel-danger-soft);
   color: var(--submission-panel-danger);
 }
 
-.submission-test-point.is-limit {
+.submission-test-point.is-runtime-error {
   background: var(--submission-panel-violet-soft);
   color: var(--submission-panel-violet);
+}
+
+.submission-test-point.is-time-limit {
+  background: #172554;
+  color: #eff6ff;
+}
+
+.submission-test-point.is-other-failure {
+  background: var(--submission-panel-warning-soft);
+  color: var(--submission-panel-warning);
 }
 
 .submission-test-point.is-active {
   background: var(--submission-panel-blue-soft);
   color: var(--submission-panel-blue);
-  animation: submission-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.submission-test-point.is-active .submission-test-point__index {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  font-size: 7px;
+  opacity: 0.8;
+}
+
+.submission-test-point .math-curve-loader {
+  --math-curve-size: 1rem;
+  --math-curve-color-a: var(--submission-panel-blue);
+  --math-curve-color-b: #60a5fa;
+  gap: 0;
 }
 
 .submission-test-summary {

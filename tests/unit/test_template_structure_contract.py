@@ -257,6 +257,72 @@ def test_unified_submission_list_owns_one_component_and_asset_pair():
     assert "submission.submission_list" not in source
 
 
+def test_submission_detail_uses_60_40_workspace_and_shared_editor_contract():
+    detail = (TEMPLATES / "submissions" / "detail.html").read_text(
+        encoding="utf-8"
+    )
+    detail_css = (
+        ROOT / "static" / "app" / "submissions" / "detail.css"
+    ).read_text(encoding="utf-8")
+    detail_js = (
+        ROOT / "static" / "app" / "submissions" / "detail.js"
+    ).read_text(encoding="utf-8")
+    list_component = (
+        TEMPLATES / "submissions" / "components" / "table.html"
+    ).read_text(encoding="utf-8")
+    list_css = (ROOT / "static" / "app" / "submissions.css").read_text(
+        encoding="utf-8"
+    )
+    list_js = (ROOT / "static" / "app" / "submissions.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "submission-detail-shell" in detail
+    assert "submission-detail-primary" in detail
+    assert "submission-detail-summary-card" in detail
+    assert "submission-detail-results" in detail
+    assert 'class="submission-detail-id">#{{ submission.id }}' in detail
+    assert "SUBMISSION · #" not in detail
+    assert "<dt>语言</dt>" not in detail
+    assert "submission-detail-problem-title" not in detail
+    assert "<dt>题目</dt>" in detail
+    assert "submissionMonacoContainer" in detail
+    assert "{% include 'components/editor/monaco.html' %}" in detail
+    assert "{% include 'components/editor/codemirror.html' %}" in detail
+    assert "filename='app/submissions/detail.css'" in detail
+    assert "filename='app/submissions/detail.js'" in detail
+    assert 'class="submission-detail-disclosure submission-prompt-card" open' in detail
+    assert 'class="submission-detail-disclosure submission-latex-card"' in detail
+    assert "<style" not in detail
+
+    assert "grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);" in detail_css
+    assert "height: 100vh;" in detail_css
+    assert "--submission-time-limit: #172554;" in detail_css
+    assert "border-radius: 0;" in detail_css
+    assert 'grid-template-areas:\n      "summary"\n      "primary"\n      "results";' in detail_css
+    assert "readOnly: true" in detail_js
+    assert "domReadOnly: true" in detail_js
+    assert 'editorTheme = "dark-plus"' in detail_js
+    assert "window.NumOJMonacoReady" in detail_js
+    assert "window.NumOJCodeMirrorReady" in detail_js
+    assert "monaco-ai-issue-underline" in detail_js
+
+    for source in (list_component, list_js):
+        assert "wrong-answer" in source
+        assert "runtime-error" in source
+        assert "time-limit" in source
+        assert "other-failure" in source
+    for source in (list_css, detail_css):
+        assert "is-wrong-answer" in source
+        assert "is-runtime-error" in source
+        assert "is-time-limit" in source
+        assert "is-other-failure" in source
+    assert "{% elif point_status == 'Wrong Answer' %}" in list_component
+    assert 'if (value === "Wrong Answer")' in list_js
+    assert "if (normalized === 'Wrong Answer')" in detail
+    assert "['Wrong Answer', 'Unaccepted']" not in detail
+
+
 def test_rule_topology_algorithm_has_one_parameterized_source():
     algorithm = (ROOT / "static" / "app" / "ranking" / "topology.js").read_text(
         encoding="utf-8"
