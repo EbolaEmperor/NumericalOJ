@@ -1,6 +1,16 @@
 (function () {
   'use strict';
 
+  const helpModal = document.getElementById('arcHelpModal');
+  if (helpModal) {
+    helpModal.addEventListener('show.bs.modal', function () {
+      document.body.classList.add('arc-help-liquid-open');
+    });
+    helpModal.addEventListener('hidden.bs.modal', function () {
+      document.body.classList.remove('arc-help-liquid-open');
+    });
+  }
+
   const catalog = document.querySelector('[data-arc-catalog]');
   if (!catalog) {
     return;

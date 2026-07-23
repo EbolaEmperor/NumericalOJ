@@ -550,6 +550,109 @@
   font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+body.arc-help-liquid-open .modal-backdrop {
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at 18% 12%,
+      rgba(255, 255, 255, 0.7),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 82% 76%,
+      rgba(203, 229, 255, 0.38),
+      transparent 42%
+    ),
+    rgba(229, 231, 229, 0.3);
+  -webkit-backdrop-filter: blur(2.5px) saturate(1.38) contrast(1.06) brightness(1.05);
+  backdrop-filter: blur(2.5px) saturate(1.38) contrast(1.06) brightness(1.05);
+}
+
+body.arc-help-liquid-open .modal-backdrop::before,
+body.arc-help-liquid-open .modal-backdrop::after {
+  position: absolute;
+  content: "";
+  pointer-events: none;
+}
+
+body.arc-help-liquid-open .modal-backdrop::before {
+  inset: -24%;
+  background:
+    radial-gradient(
+      ellipse at 24% 38%,
+      rgba(255, 255, 255, 0.82) 0 8%,
+      rgba(255, 255, 255, 0.14) 17%,
+      transparent 34%
+    ),
+    radial-gradient(
+      ellipse at 72% 58%,
+      rgba(164, 216, 255, 0.34) 0 7%,
+      transparent 31%
+    ),
+    radial-gradient(
+      ellipse at 58% 22%,
+      rgba(255, 226, 207, 0.28) 0 6%,
+      transparent 27%
+    );
+  filter: blur(24px);
+  mix-blend-mode: screen;
+  opacity: 0.9;
+  animation: arc-liquid-glass-flow 7s ease-in-out infinite alternate;
+}
+
+body.arc-help-liquid-open .modal-backdrop::after {
+  inset: 0;
+  background:
+    linear-gradient(
+      116deg,
+      transparent 12%,
+      rgba(255, 255, 255, 0.32) 31%,
+      rgba(255, 255, 255, 0.06) 43%,
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse at 50% 48%,
+      transparent 34%,
+      rgba(255, 255, 255, 0.18) 62%,
+      rgba(185, 221, 255, 0.2) 100%
+    );
+  box-shadow:
+    inset 0 0 110px rgba(255, 255, 255, 0.42),
+    inset 0 0 2px rgba(255, 255, 255, 0.95);
+  mix-blend-mode: soft-light;
+  animation: arc-liquid-glass-sheen 5.5s ease-in-out infinite alternate;
+}
+
+body.arc-help-liquid-open .modal-backdrop.show {
+  opacity: 1;
+}
+
+@keyframes arc-liquid-glass-flow {
+  0% {
+    transform: translate3d(-3%, -2%, 0) rotate(-2deg) scale(1);
+  }
+
+  55% {
+    transform: translate3d(3%, 1%, 0) rotate(1deg) scale(1.05);
+  }
+
+  100% {
+    transform: translate3d(-1%, 4%, 0) rotate(3deg) scale(1.02);
+  }
+}
+
+@keyframes arc-liquid-glass-sheen {
+  from {
+    opacity: 0.62;
+    transform: translate3d(-5%, 0, 0) scaleX(1.08);
+  }
+
+  to {
+    opacity: 0.92;
+    transform: translate3d(5%, 0, 0) scaleX(1.08);
+  }
+}
+
 .arc-help-modal .modal-content {
   overflow: hidden;
   border: 2px solid var(--arc-ink);
@@ -621,6 +724,22 @@
   color: #44423c;
   font-size: 0.92rem;
   line-height: 1.75;
+}
+
+.arc-help-modal .modal-body > .arc-help-benchmark {
+  margin: 22px 0 0;
+  padding: 14px 16px;
+  border: 2px solid var(--arc-ink);
+  border-left: 8px solid var(--arc-red);
+  background: #fff;
+  color: var(--arc-ink);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.7;
+}
+
+.arc-help-benchmark strong {
+  font-weight: 900;
 }
 
 .arc-help-links {
@@ -1315,7 +1434,9 @@
 
   .arc-catalog-page,
   .arc-page-flare,
-  .arc-page-button > span {
+  .arc-page-button > span,
+  body.arc-help-liquid-open .modal-backdrop::before,
+  body.arc-help-liquid-open .modal-backdrop::after {
     animation: none !important;
   }
 
