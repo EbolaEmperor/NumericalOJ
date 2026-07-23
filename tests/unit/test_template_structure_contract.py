@@ -226,6 +226,9 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert '"py", "python", "matlab", "octave"' in semantic_tokens
     assert "/api/editor/semantic-token-legend" in semantic_tokens
     assert "/api/editor/semantic-tokens" in semantic_tokens
+    assert semantic_tokens.count("mathCurveLoader: false") == 2
+    assert "settings.onRequestStart()" in semantic_tokens
+    assert "settings.onRequestEnd()" in semantic_tokens
     assert "filename='app/editor-semantic-tokens.js'" in monaco_component
     assert "monaco.prepareTextMateHighlighting()" in editor
     assert "editorTheme = 'dark-plus'" in editor
@@ -319,6 +322,11 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert "window.NumOJMonacoReady" in detail_js
     assert "window.NumOJCodeMirrorReady" in detail_js
     assert "window.NumOJSemanticTokens.register(monaco" in detail_js
+    assert "submissionSemanticLoading" in detail
+    assert "updateSemanticLoading(1)" in detail_js
+    assert "updateSemanticLoading(-1)" in detail_js
+    assert ".submission-semantic-loading" in detail_css
+    assert "pointer-events: none;" in detail_css
     assert "monaco-ai-issue-underline" in detail_js
     assert "--math-curve-color-a: #ffffff;" in detail_css
     assert "--math-curve-color-b: #ffffff;" in detail_css
@@ -339,6 +347,44 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert 'if (value === "Wrong Answer")' in list_js
     assert "if (normalized === 'Wrong Answer')" in detail
     assert "['Wrong Answer', 'Unaccepted']" not in detail
+
+
+def test_ranking_list_uses_admin_create_fab_without_intro_hero():
+    ranking_list = (TEMPLATES / "ranking" / "list.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "围绕开放赛题提交作品" not in ranking_list
+    assert "ranking-hero" not in ranking_list
+    assert 'class="ranking-create-fab"' in ranking_list
+    assert 'aria-label="创建打榜赛"' in ranking_list
+    assert 'data-bs-target="#newCompetitionModal"' in ranking_list
+    assert "position: fixed;" in ranking_list
+    assert "border-radius: 50%;" in ranking_list
+
+
+def test_circle_cat_uses_full_height_board_with_right_sidebar_without_frames():
+    circle_cat = (TEMPLATES / "games" / "circle_cat.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "container-fluid p-0 cat-game-page" in circle_cat
+    assert 'grid-template-areas: "board sidebar";' in circle_cat
+    assert "grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);" in circle_cat
+    assert ".cat-sidebar {\n    grid-area: sidebar;" in circle_cat
+    assert ".cat-board-card {\n    grid-area: board;" in circle_cat
+    assert "height: calc(100vh - 148px);" not in circle_cat
+    assert "min-height: calc(100vh - 210px);" not in circle_cat
+    assert "const cellSize = Math.max(minCell, fitted);" in circle_cat
+    assert '<i class="fas fa-trophy' not in circle_cat
+    assert ".cat-leaderboard-score {\n    font-size: 0.72rem;\n    color: #495057;" in circle_cat
+
+    sidebar_rules = circle_cat.split(".cat-sidebar {", 1)[1].split("}", 1)[0]
+    board_rules = circle_cat.split(".cat-board-card {", 1)[1].split("}", 1)[0]
+    shell_rules = circle_cat.split(".cat-game-shell {", 1)[1].split("}", 1)[0]
+    for rules in (sidebar_rules, board_rules, shell_rules):
+        assert "border-radius" not in rules
+        assert "border:" not in rules
 
 
 def test_rule_topology_algorithm_has_one_parameterized_source():

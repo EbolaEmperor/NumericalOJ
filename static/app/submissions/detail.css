@@ -105,6 +105,33 @@
   --math-curve-color-b: #ffffff;
 }
 
+.submission-semantic-loading {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 8px;
+  background: rgba(17, 24, 39, 0.88);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  color: #e5e7eb;
+  pointer-events: none;
+}
+
+.submission-semantic-loading .math-curve-loader {
+  --math-curve-color-a: #ffffff;
+  --math-curve-color-b: #cbd5e1;
+}
+
+.submission-semantic-loading .math-curve-loader__label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 .submission-pdf-surface {
   border-color: var(--submission-line);
   background: var(--submission-paper-soft);

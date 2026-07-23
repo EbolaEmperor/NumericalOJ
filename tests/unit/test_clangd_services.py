@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import threading
 
 import pytest
 
@@ -122,6 +124,58 @@ def test_semantic_tokens_reject_concurrent_request_without_queueing():
             service.semantic_tokens("user:2:cpp", "int value;")
     finally:
         service._semantic_request_gate.release()
+
+
+def test_language_service_pool_runs_requests_on_isolated_slots_concurrently():
+    pool_size = language_server_services.LANGUAGE_SERVICE_POOL_SIZE
+    barrier = threading.Barrier(pool_size)
+    entered = []
+    entered_lock = threading.Lock()
+
+    class FakePooledService:
+        def __init__(self, slot):
+            self.slot = slot
+
+        def semantic_tokens(self, document_key, source):
+            with entered_lock:
+                entered.append((self.slot, document_key, source))
+            barrier.wait(timeout=2)
+            return {"data": [0, 0, 1, 0, 0], "result_id": str(self.slot)}
+
+        def close(self):
+            return None
+
+    pool = language_server_services.SemanticLanguageServicePool(
+        service_name="test-language-server",
+        size=pool_size,
+        factory=FakePooledService,
+    )
+    try:
+        requests = tuple(
+            (f"user:{index}:cpp", f"int value_{index};")
+            for index in range(pool_size)
+        )
+        with ThreadPoolExecutor(max_workers=pool_size) as executor:
+            results = list(
+                executor.map(
+                    lambda request: pool.semantic_tokens(*request),
+                    requests,
+                )
+            )
+    finally:
+        pool.close()
+
+    assert len(entered) == pool_size
+    assert {slot for slot, _, _ in entered} == set(range(pool_size))
+    assert {result["result_id"] for result in results} == {
+        str(slot) for slot in range(pool_size)
+    }
+
+
+def test_language_service_limits_cover_large_submissions():
+    assert language_server_services.LANGUAGE_SERVICE_POOL_SIZE == 10
+    assert language_server_services.LANGUAGE_SOURCE_MAX_BYTES == 4 * 1024 * 1024
+    assert language_server_services.LANGUAGE_REQUEST_TIMEOUT_SECONDS == 60.0
 
 
 def test_language_server_environment_does_not_inherit_web_secrets(monkeypatch, tmp_path):

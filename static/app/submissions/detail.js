@@ -4,6 +4,9 @@
   var textarea = document.getElementById("submissionCode");
   var shell = document.getElementById("submissionEditorShell");
   var loading = document.getElementById("submissionEditorLoading");
+  var semanticLoading = document.getElementById(
+    "submissionSemanticLoading"
+  );
   var monacoHost = document.getElementById("submissionMonacoContainer");
   var codeMirrorHost = document.getElementById("submissionCodeMirrorContainer");
   var desktop = window.matchMedia("(min-width: 992px)").matches;
@@ -17,6 +20,17 @@
         ? "matlab"
         : language;
   var problemId = Number(monacoHost && monacoHost.dataset.problemId);
+  var semanticRequestsInFlight = 0;
+
+  function updateSemanticLoading(delta) {
+    semanticRequestsInFlight = Math.max(
+      0,
+      semanticRequestsInFlight + Number(delta || 0)
+    );
+    if (semanticLoading) {
+      semanticLoading.hidden = semanticRequestsInFlight === 0;
+    }
+  }
 
   function revealEditor() {
     if (loading) loading.hidden = true;
@@ -120,6 +134,12 @@
         language: language,
         monacoLanguage: monacoLanguage,
         problemId: problemId,
+        onRequestStart: function () {
+          updateSemanticLoading(1);
+        },
+        onRequestEnd: function () {
+          updateSemanticLoading(-1);
+        },
       });
     } catch (error) {
       console.warn("语言服务初始化失败，已保留 TextMate 着色。", error);

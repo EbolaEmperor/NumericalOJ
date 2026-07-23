@@ -2,22 +2,6 @@
 {% block title %}打榜赛 - {{ super() }}{% endblock %}
 
 {% block content %}
-<div class="ranking-hero mb-4">
-  <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
-    <div class="ranking-hero-text">
-      <h2 class="ranking-hero-title mb-1">
-        <i class="fas fa-trophy me-2"></i>打榜赛
-      </h2>
-      <p class="text-muted mb-0">围绕开放赛题提交作品，实时查看排名，展示你的解法。</p>
-    </div>
-    {% if user and user.is_admin == 1 %}
-    <button type="button" class="btn btn-primary ranking-hero-cta" data-bs-toggle="modal" data-bs-target="#newCompetitionModal">
-      <i class="fas fa-plus me-1"></i> 创建打榜赛
-    </button>
-    {% endif %}
-  </div>
-</div>
-
 {% if not competitions %}
   <div class="ranking-empty">
     <i class="fas fa-trophy ranking-empty-icon mb-3"></i>
@@ -99,6 +83,17 @@
 {% endif %}
 
 {% if user and user.is_admin == 1 %}
+<button
+  type="button"
+  class="ranking-create-fab"
+  data-bs-toggle="modal"
+  data-bs-target="#newCompetitionModal"
+  aria-label="创建打榜赛"
+  title="创建打榜赛"
+>
+  <i class="fas fa-plus" aria-hidden="true"></i>
+</button>
+
 <div class="modal fade" id="newCompetitionModal" tabindex="-1" aria-labelledby="newCompetitionLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
@@ -158,27 +153,40 @@
 {% endif %}
 
 <style>
-  /* Hero */
-  .ranking-hero {
-    padding: 1.5rem 1.75rem;
-    background: linear-gradient(135deg, #fff8e5 0%, #ffffff 60%);
-    border: 1px solid #f3e6b8;
-    border-left: 4px solid #eab308;
-    border-radius: 0.85rem;
+  /* 管理员：右下角创建入口 */
+  .ranking-create-fab {
+    position: fixed;
+    z-index: 1030;
+    right: max(24px, calc(env(safe-area-inset-right) + 16px));
+    bottom: max(24px, calc(env(safe-area-inset-bottom) + 16px));
+    display: inline-grid;
+    width: 58px;
+    height: 58px;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: #212529;
+    box-shadow: 0 12px 28px rgba(33, 37, 41, 0.28);
+    color: #ffffff;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 0.18s ease, box-shadow 0.18s ease,
+                transform 0.18s ease;
   }
-  .ranking-hero-title {
-    font-size: 1.6rem;
-    font-weight: 700;
-    letter-spacing: 0.5px;
+  .ranking-create-fab:hover {
+    background: #eab308;
+    box-shadow: 0 14px 32px rgba(234, 179, 8, 0.36);
     color: #212529;
+    transform: translateY(-2px);
   }
-  .ranking-hero-title .fa-trophy {
-    color: #eab308;
+  .ranking-create-fab:focus-visible {
+    outline: 3px solid rgba(234, 179, 8, 0.38);
+    outline-offset: 4px;
   }
-  .ranking-hero-cta {
-    padding: 0.55rem 1.2rem;
-    border-radius: 999px;
-    box-shadow: 0 4px 12px rgba(13,110,253,0.18);
+  .ranking-create-fab:active {
+    transform: translateY(0) scale(0.96);
   }
 
   /* Empty state */
@@ -331,6 +339,21 @@
     transform: scale(1.12);
     box-shadow: 0 4px 12px rgba(234, 179, 8, 0.4);
     outline: none;
+  }
+
+  @media (max-width: 575.98px) {
+    .ranking-create-fab {
+      right: max(18px, calc(env(safe-area-inset-right) + 12px));
+      bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px));
+      width: 52px;
+      height: 52px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ranking-create-fab {
+      transition: none;
+    }
   }
 </style>
 

@@ -10,8 +10,10 @@ from tree_sitter import Language, Parser, Query, QueryCursor
 import tree_sitter_matlab
 
 from oj_modules.language_server_services import (
+    LANGUAGE_SERVICE_POOL_SIZE,
     LANGUAGE_SOURCE_MAX_BYTES,
     LanguageServiceProtocolError,
+    SemanticLanguageServicePool,
 )
 
 
@@ -157,7 +159,11 @@ class OctaveTreeSitterService:
         return {"data": data, "result_id": f"1:{digest[:12]}"}
 
 
-_service = OctaveTreeSitterService()
+_service = SemanticLanguageServicePool(
+    service_name="Tree-sitter Octave",
+    size=LANGUAGE_SERVICE_POOL_SIZE,
+    factory=lambda _slot: OctaveTreeSitterService(),
+)
 
 
 def verify_octave_language_runtime() -> None:
@@ -170,7 +176,7 @@ def verify_octave_language_runtime() -> None:
         raise RuntimeError("Tree-sitter MATLAB 语义令牌自检失败")
 
 
-def get_octave_language_service(language: str) -> OctaveTreeSitterService:
+def get_octave_language_service(language: str) -> SemanticLanguageServicePool:
     if language not in {"matlab", "octave"}:
         raise ValueError("仅 MATLAB/Octave 支持 Tree-sitter 结构化解析")
     return _service

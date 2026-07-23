@@ -120,3 +120,9 @@ def test_editor_semantic_tokens_return_retryable_busy_response(monkeypatch):
 
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "1"
+
+
+def test_editor_semantic_request_budget_tracks_four_mebibyte_source_limit():
+    assert editor_language_routes._REQUEST_MAX_BYTES == (
+        4 * 1024 * 1024 * 6 + 16 * 1024
+    )

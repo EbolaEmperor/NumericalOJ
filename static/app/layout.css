@@ -921,6 +921,7 @@
   }
 
   .numoj-row-state {
+    position: relative;
     display: grid;
     width: 22px;
     height: 22px;
@@ -948,6 +949,27 @@
     border-color: #fecaca;
     background: var(--numoj-danger-soft);
     color: var(--numoj-danger);
+  }
+
+  .numoj-row-state.failed::before,
+  .numoj-row-state.failed::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 8px;
+    height: 1.5px;
+    border-radius: 999px;
+    background: currentColor;
+    content: "";
+    transform-origin: center;
+  }
+
+  .numoj-row-state.failed::before {
+    transform: translate(-50%, -50%) rotate(45deg);
+  }
+
+  .numoj-row-state.failed::after {
+    transform: translate(-50%, -50%) rotate(-45deg);
   }
 
   .numoj-row-state.warning {

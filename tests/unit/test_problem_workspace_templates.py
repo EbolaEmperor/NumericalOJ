@@ -66,3 +66,22 @@ def test_problem_heading_keeps_kickers_and_problem_number_left_aligned():
     assert "align-items: flex-start;" in layout_css
     assert ".problem-detail-page .problem-title-singleline .problem-number {" in layout_css
     assert "flex: 0 0 auto;" in layout_css
+
+
+def test_failed_homework_cross_is_geometrically_centered_in_status_circle():
+    repo = Path(__file__).resolve().parents[2]
+    desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
+    layout_css = (repo / "static/app/layout.css").read_text()
+
+    failed_state = desktop_list.split(
+        'class="numoj-row-state failed"',
+        1,
+    )[1].split("</div>", 1)[0]
+    assert ">×" not in failed_state
+    assert 'role="img"' in failed_state
+    assert ".numoj-row-state.failed::before" in layout_css
+    assert ".numoj-row-state.failed::after" in layout_css
+    assert "top: 50%;" in layout_css
+    assert "left: 50%;" in layout_css
+    assert "translate(-50%, -50%) rotate(45deg)" in layout_css
+    assert "translate(-50%, -50%) rotate(-45deg)" in layout_css

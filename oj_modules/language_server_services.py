@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import queue
 import shutil
 import subprocess
 import sys
@@ -17,9 +18,10 @@ import time
 from typing import Any
 
 
-LANGUAGE_SOURCE_MAX_BYTES = 256 * 1024
-LANGUAGE_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
-LANGUAGE_REQUEST_TIMEOUT_SECONDS = 5.0
+LANGUAGE_SOURCE_MAX_BYTES = 4 * 1024 * 1024
+LANGUAGE_RESPONSE_MAX_BYTES = 64 * 1024 * 1024
+LANGUAGE_REQUEST_TIMEOUT_SECONDS = 60.0
+LANGUAGE_SERVICE_POOL_SIZE = 10
 LANGUAGE_DOCUMENT_TTL_SECONDS = 10 * 60
 LANGUAGE_MAX_OPEN_DOCUMENTS = 128
 _WORKSPACE_DIRECTORY = tempfile.TemporaryDirectory(
@@ -271,6 +273,7 @@ class SemanticLanguageServerService:
         command_args: tuple[str, ...] = (),
         sandbox_read_paths: tuple[Path, ...] = (),
         request_timeout: float = LANGUAGE_REQUEST_TIMEOUT_SECONDS,
+        workspace_key: str | None = None,
         clock=time.monotonic,
     ) -> None:
         self.service_name = service_name
@@ -280,6 +283,7 @@ class SemanticLanguageServerService:
         self.command_args = command_args
         self.sandbox_read_paths = sandbox_read_paths
         self.request_timeout = request_timeout
+        self.workspace_key = workspace_key or service_name.lower()
         self._clock = clock
         self._session_lock = threading.RLock()
         self._semantic_request_gate = threading.Lock()
@@ -314,7 +318,7 @@ class SemanticLanguageServerService:
         return source
 
     def _workspace(self) -> Path:
-        return (_WORKSPACE_ROOT / self.service_name.lower()).resolve()
+        return (_WORKSPACE_ROOT / self.workspace_key).resolve()
 
     def _process_environment(self, workspace: Path) -> dict[str, str]:
         return {
@@ -669,8 +673,7 @@ class SemanticLanguageServerService:
                         document_key.encode("utf-8")
                     ).hexdigest()
                     uri = (
-                        _WORKSPACE_ROOT
-                        / self.service_name.lower()
+                        self._workspace()
                         / f"{uri_digest}{self.file_suffix}"
                     ).resolve().as_uri()
                     state = _DocumentState(
@@ -742,3 +745,56 @@ class SemanticLanguageServerService:
     def close(self) -> None:
         with self._session_lock:
             self._reset_locked()
+
+
+class SemanticLanguageServicePool:
+    """Distribute semantic-token requests across isolated parser instances."""
+
+    def __init__(
+        self,
+        *,
+        service_name: str,
+        factory,
+        size: int = LANGUAGE_SERVICE_POOL_SIZE,
+    ) -> None:
+        if size < 1:
+            raise ValueError("语言服务池大小必须大于零")
+        self.service_name = service_name
+        self.size = size
+        self._services = tuple(factory(slot) for slot in range(size))
+        self._available: queue.LifoQueue = queue.LifoQueue(maxsize=size)
+        for service in self._services:
+            self._available.put_nowait(service)
+
+    def _acquire(self):
+        try:
+            return self._available.get_nowait()
+        except queue.Empty as exc:
+            raise LanguageServiceBusyError(
+                self.service_name,
+                f"{self.service_name} 的 {self.size} 个并发解析槽均在使用中",
+            ) from exc
+
+    def legend(self) -> dict[str, list[str]]:
+        service = self._acquire()
+        try:
+            return service.legend()
+        finally:
+            self._available.put_nowait(service)
+
+    def semantic_tokens(
+        self,
+        document_key: str,
+        source: str,
+    ) -> dict[str, Any]:
+        service = self._acquire()
+        try:
+            return service.semantic_tokens(document_key, source)
+        finally:
+            self._available.put_nowait(service)
+
+    def close(self) -> None:
+        for service in self._services:
+            close = getattr(service, "close", None)
+            if close is not None:
+                close()
