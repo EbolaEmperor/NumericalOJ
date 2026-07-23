@@ -1,0 +1,335 @@
+(function () {
+  "use strict";
+
+  var textarea = document.getElementById("submissionCode");
+  var shell = document.getElementById("submissionEditorShell");
+  var loading = document.getElementById("submissionEditorLoading");
+  var monacoHost = document.getElementById("submissionMonacoContainer");
+  var codeMirrorHost = document.getElementById("submissionCodeMirrorContainer");
+  var desktop = window.matchMedia("(min-width: 992px)").matches;
+  var language = String(
+    (monacoHost && monacoHost.dataset.language) || "matlab"
+  ).toLowerCase();
+  var monacoLanguage =
+    language === "py"
+      ? "python"
+      : language === "octave"
+        ? "matlab"
+        : language;
+
+  function revealEditor() {
+    if (loading) loading.hidden = true;
+    if (shell) {
+      shell.dataset.editorState = "ready";
+      shell.setAttribute("aria-busy", "false");
+    }
+  }
+
+  function revealFallback() {
+    if (monacoHost) monacoHost.hidden = true;
+    if (codeMirrorHost) codeMirrorHost.style.display = "block";
+    if (textarea) textarea.hidden = false;
+    revealEditor();
+  }
+
+  function registerMatlab(monaco) {
+    if (monaco.languages.getLanguages().some(function (item) {
+      return item.id === "matlab";
+    })) {
+      return;
+    }
+
+    monaco.languages.register({
+      id: "matlab",
+      extensions: [".m"],
+      aliases: ["MATLAB", "matlab"],
+    });
+    monaco.languages.setLanguageConfiguration("matlab", {
+      comments: { lineComment: "%" },
+      brackets: [["(", ")"], ["[", "]"], ["{", "}"]],
+      autoClosingPairs: [
+        { open: "(", close: ")" },
+        { open: "[", close: "]" },
+        { open: "{", close: "}" },
+        { open: "'", close: "'", notIn: ["string", "comment"] },
+        { open: '"', close: '"', notIn: ["string", "comment"] },
+      ],
+      indentationRules: {
+        increaseIndentPattern:
+          /^\s*(?:if|for|while|switch|try|function|classdef|properties|methods|events|enumeration)\b(?!.*\bend\b).*$/i,
+        decreaseIndentPattern:
+          /^\s*(?:end|else|elseif|case|otherwise|catch)\b/i,
+      },
+    });
+    monaco.languages.setMonarchTokensProvider("matlab", {
+      defaultToken: "",
+      tokenPostfix: ".matlab",
+      keywords: [
+        "break", "case", "catch", "classdef", "continue", "else", "elseif",
+        "end", "enumeration", "events", "for", "function", "global", "if",
+        "methods", "otherwise", "parfor", "persistent", "properties",
+        "return", "spmd", "switch", "try", "while",
+      ],
+      constants: ["true", "false", "NaN", "Inf", "pi", "eps"],
+      tokenizer: {
+        root: [
+          [/%\{/, "comment", "@commentBlock"],
+          [/%.*$/, "comment"],
+          [/[a-zA-Z_]\w*/, {
+            cases: {
+              "@keywords": "keyword",
+              "@constants": "constant",
+              "@default": "identifier",
+            },
+          }],
+          [/\d*\.\d+(?:[eE][+-]?\d+)?[ij]?/, "number.float"],
+          [/\d+(?:[eE][+-]?\d+)?[ij]?/, "number"],
+          [/'(?:[^']|'')*'/, "string"],
+          [/"(?:[^"]|"")*"/, "string"],
+          [/[{}()[\]]/, "@brackets"],
+          [/[+\-*/\\^~<>=&|:@.]+/, "operator"],
+          [/[;,]/, "delimiter"],
+        ],
+        commentBlock: [
+          [/%\}/, "comment", "@pop"],
+          [/./, "comment"],
+        ],
+      },
+    });
+  }
+
+  async function createMonacoEditor() {
+    var monaco = window.NumericalOJMonaco;
+    if (!desktop || !textarea || !monacoHost || !monaco || !monaco.editor) {
+      return null;
+    }
+
+    registerMatlab(monaco);
+    var editorTheme = "vs-dark";
+    if (typeof monaco.prepareTextMateHighlighting === "function") {
+      try {
+        await monaco.prepareTextMateHighlighting();
+        editorTheme = "dark-plus";
+      } catch (error) {
+        console.warn("VS Code 语法 grammar 初始化失败，已降级为基础着色。", error);
+      }
+    }
+
+    monacoHost.hidden = false;
+    textarea.hidden = true;
+    var instance = monaco.editor.create(monacoHost, {
+      value: textarea.value,
+      language: monacoLanguage,
+      theme: editorTheme,
+      readOnly: true,
+      domReadOnly: true,
+      "semanticHighlighting.enabled": true,
+      automaticLayout: true,
+      ariaLabel: "提交代码，只读",
+      fontFamily:
+        "SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace",
+      fontSize: 14,
+      lineHeight: 22,
+      lineNumbersMinChars: 3,
+      minimap: { enabled: false },
+      padding: { top: 14, bottom: 14 },
+      roundedSelection: false,
+      scrollBeyondLastLine: false,
+      smoothScrolling: true,
+      tabSize: 4,
+      detectIndentation: false,
+      wordWrap: "on",
+      bracketPairColorization: { enabled: true },
+      guides: { bracketPairs: true, indentation: true },
+      contextmenu: true,
+      renderValidationDecorations: "on",
+      find: { addExtraSpaceOnTop: false },
+    });
+
+    window.requestAnimationFrame(function () {
+      instance.layout();
+      window.requestAnimationFrame(revealEditor);
+    });
+
+    return {
+      kind: "monaco",
+      getValue: function () {
+        return instance.getValue();
+      },
+      setValue: function (value) {
+        instance.setValue(String(value || ""));
+      },
+      refresh: function () {
+        instance.layout();
+      },
+      getWrapperElement: function () {
+        return monacoHost;
+      },
+      markText: function (from, to, options) {
+        var reason = String((options && options.title) || "这里可能有问题");
+        var collection = instance.createDecorationsCollection([{
+          range: new monaco.Range(
+            Number(from.line || 0) + 1,
+            Number(from.ch || 0) + 1,
+            Number(to.line || 0) + 1,
+            Number(to.ch || 0) + 1
+          ),
+          options: {
+            inlineClassName: "monaco-ai-issue-underline",
+            hoverMessage: {
+              value: reason,
+              isTrusted: false,
+              supportHtml: false,
+            },
+          },
+        }]);
+        return {
+          clear: function () {
+            collection.clear();
+          },
+        };
+      },
+    };
+  }
+
+  function createCodeMirrorEditor() {
+    if (
+      desktop ||
+      !textarea ||
+      !codeMirrorHost ||
+      typeof window.CodeMirror === "undefined"
+    ) {
+      return null;
+    }
+
+    var mode =
+      language === "cpp"
+        ? "text/x-c++src"
+        : language === "c"
+          ? "text/x-csrc"
+          : language === "python" || language === "py"
+            ? "python"
+            : "octave";
+    codeMirrorHost.style.display = "block";
+    var instance = window.CodeMirror.fromTextArea(textarea, {
+      mode: mode,
+      theme: "eclipse",
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 4,
+      tabSize: 4,
+      readOnly: true,
+      matchBrackets: true,
+    });
+    instance.setSize(null, "420px");
+    instance.getWrapperElement().style.fontFamily =
+      "SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace";
+    instance.getWrapperElement().style.fontSize = "14px";
+    window.requestAnimationFrame(function () {
+      instance.refresh();
+      revealEditor();
+    });
+    instance.kind = "codemirror";
+    return instance;
+  }
+
+  async function initializeEditor() {
+    if (!textarea) return null;
+    var ready = desktop
+      ? window.NumOJMonacoReady
+      : window.NumOJCodeMirrorReady;
+    if (ready) {
+      try {
+        await ready;
+      } catch (_error) {
+        // 下面统一降级。
+      }
+    }
+
+    try {
+      var editor = await createMonacoEditor();
+      if (!editor) editor = createCodeMirrorEditor();
+      if (editor) {
+        window.submissionCodeEditor = editor;
+        return editor;
+      }
+    } catch (error) {
+      console.error("提交代码编辑器初始化失败，已降级到文本框。", error);
+    }
+
+    revealFallback();
+    var fallback = {
+      kind: "textarea",
+      getValue: function () {
+        return textarea.value;
+      },
+      setValue: function (value) {
+        textarea.value = String(value || "");
+      },
+      refresh: function () {},
+      getWrapperElement: function () {
+        return textarea;
+      },
+      markText: function () {
+        return { clear: function () {} };
+      },
+    };
+    window.submissionCodeEditor = fallback;
+    return fallback;
+  }
+
+  window.submissionCodeEditor = null;
+  window.SubmissionDetailEditorReady = initializeEditor();
+
+  var rejudgeButton = document.getElementById("rejudgeSubmissionBtn");
+  var rejudgeFeedback = document.getElementById("rejudgeSubmissionFeedback");
+  if (rejudgeButton) {
+    var defaultRejudgeHtml = rejudgeButton.innerHTML;
+    rejudgeButton.addEventListener("click", function () {
+      var endpoint = rejudgeButton.dataset.rejudgeUrl;
+      if (!endpoint || !window.confirm("确认重测这条提交吗？")) return;
+
+      rejudgeButton.disabled = true;
+      rejudgeButton.innerHTML = window.MathCurveLoader
+        ? window.MathCurveLoader.markup("正在提交重测…", "xs")
+        : "正在提交重测…";
+      if (rejudgeFeedback) {
+        rejudgeFeedback.className = "submission-action-feedback";
+        rejudgeFeedback.textContent = "";
+      }
+
+      fetch(endpoint, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        mathCurveLoader: false,
+      })
+        .then(function (response) {
+          return response.json().then(function (payload) {
+            if (!response.ok || !payload.success) {
+              throw new Error(payload.message || "重测请求失败");
+            }
+            return payload;
+          });
+        })
+        .then(function () {
+          if (rejudgeFeedback) {
+            rejudgeFeedback.className =
+              "submission-action-feedback is-success";
+            rejudgeFeedback.textContent = "已加入重测队列";
+          }
+          rejudgeButton.innerHTML = defaultRejudgeHtml;
+        })
+        .catch(function (error) {
+          rejudgeButton.disabled = false;
+          rejudgeButton.innerHTML = defaultRejudgeHtml;
+          if (rejudgeFeedback) {
+            rejudgeFeedback.className =
+              "submission-action-feedback is-error";
+            rejudgeFeedback.textContent =
+              "重测失败：" + (error.message || "请稍后重试");
+          }
+        });
+    });
+  }
+})();

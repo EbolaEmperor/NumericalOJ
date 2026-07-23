@@ -1,335 +1,234 @@
 {% extends layout_template if layout_template is defined else "layouts/site.html" %}
 {% block title %}提交详情 - {{ super() }}{% endblock %}
 {% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/submissions.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/submissions/detail.css') }}">
+{% endblock %}
+{% block content_container_class %}container-fluid submission-detail-shell{% endblock %}
 {% block content %}
 {% set lang_label = 
   'MATLAB' if (plang or 'matlab') == 'matlab' 
   else 'C++' if (plang or '') == 'cpp' 
   else 'C' if (plang or '') == 'c' 
   else 'Python' %}
-{% set tl_ms = (problem.time_limit_ms or 2000) %}
+{% set max_score = test_points | length %}
+{% set header_max_score = 5 if submission.problem_type == 2 else max_score %}
+{% set normalized_status = (submission.status or 'Unknown') | lower | replace(' ', '-') %}
 
-<div class="row"
-     data-math-curve-stroke-scale="1.2">
-  <!-- 左侧：提交详情和代码展示 -->
-  <div class="col-md-8 mb-3">
-    {% set header_max_score = test_points | length %}
-    {% if submission.problem_type == 2 %}
-      {% set header_max_score = 5 %}
+<div class="submission-detail-page" data-math-curve-stroke-scale="1.2">
+  <section class="submission-detail-primary" aria-label="{{ '提交代码' if submission.problem_type == 1 else '书面作业 PDF' }}">
+    {% if submission.problem_type == 1 %}
+      <div class="submission-code-surface" id="submissionEditorShell" aria-busy="true">
+        <div class="submission-editor-loading" id="submissionEditorLoading">
+          <span class="math-curve-loader" data-math-curve-loader data-size="lg">
+            <span class="math-curve-loader__label">代码编辑器正在加载</span>
+          </span>
+        </div>
+        <div
+          id="submissionMonacoContainer"
+          class="submission-monaco-container"
+          data-language="{{ plang or 'matlab' }}"
+          hidden
+        ></div>
+        <div id="submissionCodeMirrorContainer" class="submission-codemirror-container">
+          <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
+        </div>
+      </div>
+    {% else %}
+      <div class="submission-pdf-surface" id="pdfViewer">
+        <iframe
+          id="pdfInlineFrame"
+          title="submission-pdf"
+          class="w-100 h-100 border-0 d-none"
+          referrerpolicy="no-referrer"
+        ></iframe>
+        <div id="pdfViewerHint" class="submission-pdf-hint text-muted">
+          <span class="math-curve-loader" data-math-curve-loader data-size="lg">
+            <span class="math-curve-loader__label">正在加载 PDF…</span>
+          </span>
+        </div>
+      </div>
     {% endif %}
-    <div class="d-flex align-items-center justify-content-between">
-      <h2 class="mb-0" data-header-max-score="{{ header_max_score }}">
-        <span id="submissionStatusText" class="{{ submission.status | lower | replace(' ', '-') }}">{{ submission.status }}</span>
-        <span class="ms-3">
-          <i class="fas fa-trophy me-1"></i>
-          {% if header_max_score == 0 %}
-            <span id="submissionScoreValue" class="text-danger">{{ submission.score }}</span> /
-            <span id="submissionScoreMax">?</span>
-          {% else %}
-            {% set header_percentage = (submission.score / header_max_score) * 100 %}
-            {% if submission.score == header_max_score %}
-              <span id="submissionScoreValue" class="text-success">{{ submission.score }}</span>
-            {% elif header_percentage >= 60 %}
-              <span id="submissionScoreValue" class="text-warning">{{ submission.score }}</span>
-            {% else %}
-              <span id="submissionScoreValue" class="text-danger">{{ submission.score }}</span>
-            {% endif %}
-            / <span id="submissionScoreMax">{{ header_max_score }}</span>
-          {% endif %}
-        </span>
-      </h2>
+  </section>
+
+  <aside class="submission-detail-summary-card" aria-label="提交摘要">
+    <div class="submission-detail-topline">
+      <a class="submission-detail-back" href="{{ url_for('problem_core.all_submissions', problem_id=submission.problem_id) }}">
+        <i class="fas fa-arrow-left" aria-hidden="true"></i>
+        SUBMISSIONS
+      </a>
+      <span class="submission-detail-id">#{{ submission.id }}</span>
     </div>
-    <div class="d-flex justify-content-between align-items-center mt-2 mb-1">
-      <p class="text-muted mb-0">
-        <i class="fas fa-clock me-2"></i>
+    <h1 class="visually-hidden">提交 #{{ submission.id }}</h1>
+    <div class="submission-detail-result" data-header-max-score="{{ header_max_score }}">
+      <span id="submissionStatusText" class="submission-verdict submission-verdict--{{ normalized_status }}">
+        <span class="submission-verdict__dot" aria-hidden="true"></span>
+        <span data-submission-status-label>{{ submission.status or 'Unknown' }}</span>
+      </span>
+      <div class="submission-detail-score">
+        <strong
+          id="submissionScoreValue"
+          class="{% if submission.score is not none and header_max_score and submission.score == header_max_score %}is-accepted{% elif submission.score %}is-partial{% else %}is-failed{% endif %}"
+        >{{ submission.score if submission.score is not none else '—' }}</strong>
+        <span>/ <span id="submissionScoreMax">{{ header_max_score if header_max_score else '?' }}</span></span>
+      </div>
+    </div>
+
+    <dl class="submission-detail-meta">
+      <dt>题目</dt>
+      <dd class="submission-detail-problem-meta">
+        <a href="{{ url_for('problem_core.problem_detail', problem_id=submission.problem_id) }}">
+          {{ problem.title or submission.problem_title or '未命名题目' }}
+        </a>
+        <span>P{{ '%04d' | format(submission.problem_id) }}</span>
+      </dd>
+      <dt>提交者</dt>
+      <dd>{{ submission.username }}</dd>
+      <dt>提交时间</dt>
+      <dd>
         {% if submission.created_at and submission.created_at.strftime is defined %}
           {{ submission.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
         {% else %}
-          {{ submission.created_at or '-' }}
+          {{ submission.created_at or '—' }}
         {% endif %}
-      </p>
-      {% if submission.problem_type == 1 %}
-      <label for="langTL" class="form-label mb-0 text-end">
-        <span class="badge bg-secondary">
-          <i class="fas fa-language me-1"></i> {{ lang_label }}
-        </span>
-        <span class="badge bg-secondary">
-          <i class="fas fa-stopwatch me-1"></i> {{ tl_ms }} ms
-        </span>
-      </label>
-      {% endif %}
-    </div>
+      </dd>
+    </dl>
 
-    {% if submission.problem_type == 1 %}
     {% if submission.generated_from_prompt %}
-    <div class="card mb-3">
-      <div class="card-header py-2">
-        <strong><i class="fas fa-terminal me-2"></i>Prompt</strong>
-      </div>
-      <div class="card-body">
-        <pre class="mb-0" style="white-space: pre-wrap;">{{ submission.prompt_text or '' }}</pre>
+      <details class="submission-detail-disclosure submission-prompt-card" open>
+        <summary>
+          <span>ORIGINAL PROMPT</span>
+          <i class="fas fa-chevron-down" aria-hidden="true"></i>
+        </summary>
+        <pre>{{ submission.prompt_text or '' }}</pre>
         {% if submission.prompt_generation_error %}
-          <div class="alert alert-danger mt-3 mb-0">{{ submission.prompt_generation_error }}</div>
+          <div class="submission-inline-error">{{ submission.prompt_generation_error }}</div>
         {% endif %}
-      </div>
-    </div>
-    {% endif %}
-    <div class="card">
-      <div class="card-body p-0">
-        <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
-      </div>
-    </div>
-    <div id="aiInlineStatus" class="alert alert-secondary mt-3 d-none" role="status" aria-live="polite"></div>
-    {% else %}
-    <!-- 书面作业题目：不显示代码和测试点 -->
-    <div class="card">
-      <div class="card-body p-0">
-        <div id="pdfViewer" style="width: 100%; height: 580px; position: relative;">
-          <iframe
-            id="pdfInlineFrame"
-            title="submission-pdf"
-            class="w-100 h-100 border-0 d-none"
-            referrerpolicy="no-referrer"></iframe>
-          <div
-            id="pdfViewerHint"
-            class="d-flex align-items-center justify-content-center text-muted"
-            style="width: 100%; height: 100%;">
-            <span class="math-curve-loader"
-                  data-math-curve-loader
-                  data-size="lg">
-              <span class="math-curve-loader__label">正在加载 PDF…</span>
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-    {% if (problem.written_grading_mode or 1) == 1 %}
-    <div class="card mt-3">
-      <div class="card-header py-2">
-        <strong><i class="fas fa-file-code me-2"></i>LaTeX 转写结果</strong>
-      </div>
-      <div class="card-body">
-        <div id="submissionLatexRendered"
-             class="form-control"
-             style="min-height: 220px; height: auto; overflow-y: auto; white-space: normal;"></div>
-      </div>
-    </div>
-    {% endif %}
+      </details>
     {% endif %}
 
-    <hr/>
-    <a href="{{ url_for('problem_core.problem_detail', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回题目</a>
-    <a href="{{ url_for('problem_core.all_submissions', problem_id=submission.problem_id) }}" class="btn btn-outline-secondary">&larr; 返回提交记录</a>
-  </div>
-
-  <!-- 右侧：测试点详情 + AI 按钮 / 书面作业批改 -->
-  <div class="col-md-4 mb-3">
-    {% if submission.problem_type == 2 %}
-      <div class="mb-3">
-        <div class="d-flex align-items-center justify-content-between mb-2">
-          <label class="form-label mb-0"><i class="fas fa-comment me-2"></i> 批改结果</label>
-          {% if user and user.is_admin == 1 %}
-          <div class="d-flex gap-2">
-            <button type="button" class="btn btn-outline-primary btn-sm" id="openGradeEditorBtn">
-              <i class="fas fa-pen-to-square me-1"></i> 编辑
-            </button>
-            <button type="button" class="btn btn-outline-success btn-sm" id="nextBtn">
-              <i class="fas fa-arrow-right me-1"></i> 下一个
-            </button>
-          </div>
-          {% endif %}
-        </div>
-        <div id="studentCommentRendered"
-             class="form-control"
-             style="min-height: 360px; height: auto; overflow-y: auto; white-space: normal;"></div>
-      </div>
+    {% if user and user.is_admin == 1 %}
+      <button
+        type="button"
+        class="submission-button submission-button--accent submission-detail-rejudge"
+        id="rejudgeSubmissionBtn"
+        data-rejudge-url="{{ url_for('rejudge.rejudge_submission', submission_id=submission.id) }}"
+      >
+        <i class="fas fa-rotate-right" aria-hidden="true"></i>
+        重测此提交
+      </button>
+      <div class="submission-action-feedback" id="rejudgeSubmissionFeedback" role="status" aria-live="polite"></div>
     {% endif %}
+  </aside>
 
+  <aside class="submission-detail-results" aria-label="{{ '测试点详情' if submission.problem_type == 1 else '批改详情' }}">
     {% if submission.problem_type == 1 %}
-    <h4><i class="fas fa-clipboard-check me-2"></i> 测试点结果</h4>
-    
-    <!-- 判题进度提示 -->
-    {% set max_score = test_points | length %}
-    {% if max_score == 0 %}
-    <div id="judgingStatus" class="alert alert-info d-none mb-3">
-      <div class="d-flex align-items-center">
-        <span class="math-curve-loader me-2"
-              data-math-curve-loader
-              data-icon-only="true"
-              data-size="md"
-              aria-label="判题进行中"></span>
-        <div>
-          <strong>判题进行中</strong><br>
-          <small id="judgingText">正在编译和初始化...</small>
-        </div>
-      </div>
-    </div>
-    {% endif %}
-    
-    <div id="testPointGrid" class="test-point-grid mt-2"></div>
-
-    <div class="card mt-3 d-none" id="testPointDetailPanel">
-      <div class="card-header py-2">
-        <strong id="testPointDetailTitle">测试点详情</strong>
-      </div>
-      <div class="card-body">
-        <div id="testPointDetailHint" class="text-muted">点击上方方块查看该测试点详情。</div>
-
-        <div id="testPointDetailMeta" class="small text-muted d-none mb-2"></div>
-
-        <div id="testPointDetailErrorWrap" class="d-none mb-3">
-          <div class="fw-semibold mb-1">错误信息</div>
-          <pre id="testPointDetailErrorText" class="tp-detail-pre mb-0"></pre>
-        </div>
-
-        <div id="testPointDetailOutputWrap" class="d-none mb-3">
-          <div class="fw-semibold mb-1">程序输出</div>
-          <pre id="testPointDetailOutputText" class="tp-detail-pre mb-0"></pre>
-        </div>
-
-        <div id="testPointDetailCommentWrap" class="d-none mb-3">
-          <div class="fw-semibold mb-1" id="testPointDetailCommentLabel">评语</div>
-          <pre id="testPointDetailCommentText" class="tp-detail-pre mb-0"></pre>
-        </div>
-
-        <div id="testPointDetailImageWrap" class="d-none">
-          <div class="fw-semibold mb-2">输出图片</div>
-          <img id="testPointDetailImage"
-               src=""
-               alt=""
-               class="img-fluid border rounded"
-               style="max-width: 100%; max-height: 320px; cursor: pointer;">
-        </div>
-
-        <div id="testPointDetailOmniWrap" class="d-none mt-3">
-          <div class="fw-semibold mb-1">
-            <i class="fas fa-eye me-1"></i> Omni 图片分析
+      <section class="submission-detail-section">
+        <header class="submission-detail-section-heading">
+          <div>
+            <span>TEST POINTS</span>
+            <h2>测试点结果</h2>
           </div>
-          <pre id="testPointDetailOmniText" class="tp-detail-pre mb-0"></pre>
-        </div>
-      </div>
-    </div>
-    {% endif %}
+        </header>
 
-    {% if submission.problem_type == 1 and submission.status == "Unaccepted" %}
-    <hr/>
-    <button type="button" class="btn btn-outline-info w-100 mb-3" id="askAiBtn">
-      <i class="fas fa-robot me-2"></i> 询问 AI 助教
-    </button>
+        <div id="judgingStatus" class="submission-judging-state d-none" role="status">
+          <span class="math-curve-loader" data-math-curve-loader data-size="md">
+            <span class="math-curve-loader__label" id="judgingText">正在编译和初始化...</span>
+          </span>
+        </div>
+
+        <div id="testPointGrid" class="test-point-grid"></div>
+
+        <div class="submission-test-detail d-none" id="testPointDetailPanel">
+          <header>
+            <span>SELECTED</span>
+            <strong id="testPointDetailTitle">测试点详情</strong>
+          </header>
+          <div id="testPointDetailHint" class="submission-test-detail-hint">点击上方方块查看该测试点详情。</div>
+          <div id="testPointDetailMeta" class="submission-test-detail-meta d-none"></div>
+
+          <section id="testPointDetailErrorWrap" class="submission-test-detail-block d-none">
+            <h3>错误信息</h3>
+            <pre id="testPointDetailErrorText" class="tp-detail-pre"></pre>
+          </section>
+          <section id="testPointDetailOutputWrap" class="submission-test-detail-block d-none">
+            <h3>程序输出</h3>
+            <pre id="testPointDetailOutputText" class="tp-detail-pre"></pre>
+          </section>
+          <section id="testPointDetailCommentWrap" class="submission-test-detail-block d-none">
+            <h3 id="testPointDetailCommentLabel">评语</h3>
+            <pre id="testPointDetailCommentText" class="tp-detail-pre"></pre>
+          </section>
+          <section id="testPointDetailImageWrap" class="submission-test-detail-block d-none">
+            <h3>输出图片</h3>
+            <img id="testPointDetailImage" src="" alt="" class="submission-test-output-image">
+          </section>
+          <section id="testPointDetailOmniWrap" class="submission-test-detail-block d-none">
+            <h3>Omni 图片分析</h3>
+            <pre id="testPointDetailOmniText" class="tp-detail-pre"></pre>
+          </section>
+        </div>
+      </section>
+
+      {% if submission.status == "Unaccepted" %}
+        <section class="submission-detail-section submission-ai-section">
+          <header class="submission-detail-section-heading">
+            <div>
+              <span>AI TUTOR</span>
+              <h2>代码诊断</h2>
+            </div>
+          </header>
+          <button type="button" class="submission-button submission-button--ghost" id="askAiBtn">
+            <i class="fas fa-robot" aria-hidden="true"></i>
+            询问 AI 助教
+          </button>
+          <div id="aiInlineStatus" class="submission-ai-status d-none" role="status" aria-live="polite"></div>
+        </section>
+      {% endif %}
+    {% else %}
+      <section class="submission-detail-section">
+        <header class="submission-detail-section-heading">
+          <div>
+            <span>GRADING</span>
+            <h2>批改结果</h2>
+          </div>
+          {% if user and user.is_admin == 1 %}
+            <div class="submission-detail-inline-actions">
+              <button type="button" class="submission-button submission-button--ghost" id="openGradeEditorBtn">
+                <i class="fas fa-pen-to-square" aria-hidden="true"></i>
+                编辑
+              </button>
+              <button type="button" class="submission-button submission-button--ghost" id="nextBtn">
+                下一个
+                <i class="fas fa-arrow-right" aria-hidden="true"></i>
+              </button>
+            </div>
+          {% endif %}
+        </header>
+        <div id="studentCommentRendered" class="submission-written-comment"></div>
+      </section>
+
+      {% if (problem.written_grading_mode or 1) == 1 %}
+        <details class="submission-detail-disclosure submission-latex-card">
+          <summary>
+            <span>LATEX TRANSCRIPTION</span>
+            <i class="fas fa-chevron-down" aria-hidden="true"></i>
+          </summary>
+          <div id="submissionLatexRendered" class="submission-latex-content"></div>
+        </details>
+      {% endif %}
     {% endif %}
-  </div>
+  </aside>
 </div>
 
-<!-- PDF.js（书面作业） -->
-<script src="{{ url_for('static', filename='vendor/pdfjs/pdf.min.js') }}"></script>
-
-{% include 'components/editor/codemirror.html' %}
-
-<style>
-  #pdfViewer { width: 100%; height: 580px; overflow-y: auto; overflow-x: hidden; }
-  .accepted { color: rgb(36, 180, 77); font-weight: bold; }
-  .wrong-answer, .unaccepted { color: rgb(226, 23, 60); font-weight: bold; }
-  .time-limit-exceeded { color: orange; font-weight: bold; }
-  .runtime-error { color: rgb(198, 69, 245); font-weight: bold; }
-  .memory-limit-exceeded, .forbidden { color: darkblue; font-weight: bold; }
-  .no-output { color: purple; font-weight: bold; }
-  .pending, .waiting, .running { color: lightblue; font-weight: bold; }
-
-  .test-point-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-  }
-  .test-point-grid.medium {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-  .test-point-grid.dense {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 8px;
-  }
-  .test-point-card {
-    position: relative;
-    min-height: 104px;
-    border: 2px solid #d9d9d9;
-    border-radius: 10px;
-    background: #fff;
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 16px 8px 10px;
-    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
-  }
-  .test-point-card:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  }
-  .test-point-card.selected {
-    border-color: #0d6efd;
-    box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.2);
-  }
-  .tp-index {
-    position: absolute;
-    left: 8px;
-    top: 6px;
-    font-size: 12px;
-    font-weight: 700;
-    color: #6c757d;
-  }
-  .tp-status-short {
-    font-size: 24px;
-    font-weight: 700;
-    line-height: 1.1;
-    text-align: center;
-  }
-  .tp-time {
-    margin-top: 6px;
-    font-size: 12px;
-    color: #6c757d;
-    text-align: center;
-  }
-  .test-point-grid.dense .test-point-card {
-    min-height: 86px;
-    padding: 14px 6px 8px;
-  }
-  .test-point-grid.dense .tp-index {
-    left: 6px;
-    top: 4px;
-    font-size: 11px;
-  }
-  .test-point-grid.dense .tp-status-short {
-    font-size: 19px;
-  }
-  .test-point-grid.dense .tp-time {
-    margin-top: 4px;
-    font-size: 11px;
-  }
-  .test-point-card.tp-accepted .tp-status-short { color: rgb(36, 180, 77); }
-  .test-point-card.tp-wrong-answer .tp-status-short,
-  .test-point-card.tp-unaccepted .tp-status-short,
-  .test-point-card.tp-nonzero-exit-status .tp-status-short,
-  .test-point-card.tp-compile-error .tp-status-short,
-  .test-point-card.tp-error .tp-status-short { color: rgb(226, 23, 60); }
-  .test-point-card.tp-time-limit-exceeded .tp-status-short { color: orange; }
-  .test-point-card.tp-runtime-error .tp-status-short { color: rgb(198, 69, 245); }
-  .test-point-card.tp-memory-limit-exceeded .tp-status-short,
-  .test-point-card.tp-forbidden .tp-status-short { color: darkblue; }
-  .test-point-card.tp-no-output .tp-status-short { color: purple; }
-  .test-point-card.tp-pending .tp-status-short,
-  .test-point-card.tp-waiting .tp-status-short,
-  .test-point-card.tp-running .tp-status-short { color: #3aa2d7; }
-  .tp-detail-pre {
-    white-space: pre-wrap;
-    word-break: break-word;
-    background: #f8f9fa;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    padding: 10px;
-    max-height: 240px;
-    overflow: auto;
-  }
-</style>
+{% if submission.problem_type == 1 %}
+  {% set codemirror_mobile_only = true %}
+  {% include 'components/editor/codemirror.html' %}
+  {% include 'components/editor/monaco.html' %}
+  <script src="{{ url_for('static', filename='app/submissions/detail.js') }}"></script>
+{% endif %}
 
 <!-- 图片查看模态框 -->
 <div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
@@ -340,7 +239,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body text-center">
-        <img id="modalImage" src="" alt="" class="img-fluid" style="max-width: 100%; max-height: 80vh;">
+        <img id="modalImage" src="" alt="" class="submission-modal-image">
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>关闭</button>
@@ -406,50 +305,10 @@
 
 {% if submission.problem_type == 1 %}
 <script>
-  // 根据后端传入的 plang 设置 CodeMirror 模式
-  var pl = '{{ plang or "matlab" }}';
-  var mode = (pl === 'cpp') ? 'text/x-c++src'
-           : (pl === 'c') ? 'text/x-csrc'
-           : (pl === 'python' || pl === 'py') ? 'python'
-           : 'octave';
-
-  var submissionCodeEditor = CodeMirror.fromTextArea(
-    document.getElementById('submissionCode'),
-    {
-      mode: mode,
-      theme: 'eclipse',
-      lineNumbers: true,
-      lineWrapping: true,
-      indentUnit: 4,
-      tabSize: 4,
-      readOnly: true,
-      matchBrackets: true
-    }
-  );
-  submissionCodeEditor.getWrapperElement().style.fontFamily = "monospace";
-  submissionCodeEditor.getWrapperElement().style.fontSize = "14px";
-
-  function computeEditorHeightPx() {
-    const wrapper = submissionCodeEditor.getWrapperElement();
-    const rect = wrapper.getBoundingClientRect();
-    const isMobile = window.innerWidth <= 768;
-    const minHeight = isMobile ? 220 : 320;
-    const maxHeight = isMobile ? 520 : 900;
-    const viewportBottomReserve = isMobile ? 96 : 128;
-    let available = window.innerHeight - rect.top - viewportBottomReserve;
-    if (!Number.isFinite(available)) {
-      available = minHeight;
-    }
-    available = Math.max(minHeight, Math.min(maxHeight, available));
-    return Math.round(available);
-  }
-
-  function resizeEditor() {
-    submissionCodeEditor.setSize(null, `${computeEditorHeightPx()}px`);
-  }
-  requestAnimationFrame(resizeEditor);
-  window.addEventListener('resize', resizeEditor);
-  window.addEventListener('orientationchange', resizeEditor);
+  var submissionCodeEditor = window.submissionCodeEditor || null;
+  window.SubmissionDetailEditorReady.then(function(editor) {
+    submissionCodeEditor = editor;
+  });
 
   const submissionId = {{ submission.id }};
   const initialTestPoints = {{ (test_points or []) | tojson }};
@@ -481,32 +340,61 @@
     return String(status || '').toLowerCase().replace(/\s+/g, '-');
   }
 
-  function isAcceptedStatus(status) {
-    return String(status || '').trim().toLowerCase() === 'accepted';
+  function isActiveStatus(status) {
+    return ['Pending', 'Waiting', 'Running', 'Generating'].includes(
+      String(status || '').trim()
+    );
+  }
+
+  function testPointStateClass(status) {
+    const normalized = String(status || '').trim();
+    if (normalized === 'Accepted') return 'is-accepted';
+    if (normalized === 'Wrong Answer') {
+      return 'is-wrong-answer';
+    }
+    if (normalized === 'Runtime Error') return 'is-runtime-error';
+    if (normalized === 'Time Limit Exceeded') return 'is-time-limit';
+    if (isActiveStatus(normalized)) return 'is-active';
+    if ([
+        'Unaccepted',
+        'Compile Error',
+      'Memory Limit Exceeded',
+      'Forbidden',
+      'No Output',
+      'Nonzero Exit Status',
+      'Error'
+    ].includes(normalized)) {
+      return 'is-other-failure';
+    }
+    return 'is-neutral';
   }
 
   function updateProgrammingHeader(status, score) {
     if (submissionStatusTextEl && status) {
-      submissionStatusTextEl.className = statusClassName(status);
-      submissionStatusTextEl.textContent = String(status);
+      submissionStatusTextEl.className =
+        `submission-verdict submission-verdict--${statusClassName(status)}`;
+      const label = submissionStatusTextEl.querySelector(
+        '[data-submission-status-label]'
+      );
+      if (label) label.textContent = String(status);
     }
 
     if (!submissionScoreValueEl) return;
+    submissionScoreValueEl.className = '';
     const safeScore = Number(score);
     if (!Number.isFinite(safeScore)) {
-      submissionScoreValueEl.textContent = '-';
-      submissionScoreValueEl.className = 'text-danger';
+      submissionScoreValueEl.textContent = '—';
       return;
     }
 
     submissionScoreValueEl.textContent = String(safeScore);
     const maxScore = Number(submissionScoreMaxEl ? submissionScoreMaxEl.textContent : NaN);
     if (Number.isFinite(maxScore) && maxScore > 0 && safeScore === maxScore) {
-      submissionScoreValueEl.className = 'text-success';
-    } else if (Number.isFinite(maxScore) && maxScore > 0 && (safeScore / maxScore) >= 0.6) {
-      submissionScoreValueEl.className = 'text-warning';
+      submissionScoreValueEl.className = 'is-accepted';
+    } else if (safeScore > 0) {
+      submissionScoreValueEl.className = 'is-partial';
     } else {
-      submissionScoreValueEl.className = 'text-danger';
+      submissionScoreValueEl.className = 'is-failed';
     }
   }
 
@@ -712,7 +600,13 @@
   function findDefaultTestPointIndex(testPoints) {
     if (!Array.isArray(testPoints) || !testPoints.length) return null;
     for (let i = 0; i < testPoints.length; i++) {
-      if (!isAcceptedStatus(testPoints[i] && testPoints[i].status)) {
+      const state = testPointStateClass(testPoints[i] && testPoints[i].status);
+      if ([
+        'is-wrong-answer',
+        'is-runtime-error',
+        'is-time-limit',
+        'is-other-failure'
+      ].includes(state)) {
         return i;
       }
     }
@@ -723,10 +617,6 @@
     if (!testPointGridEl || !Array.isArray(testPoints)) return;
 
     currentTestPoints = testPoints;
-    const isDense = testPoints.length > 20;
-    const isMedium = testPoints.length > 9 && testPoints.length <= 20;
-    testPointGridEl.classList.toggle('medium', isMedium);
-    testPointGridEl.classList.toggle('dense', isDense);
     testPointGridEl.innerHTML = '';
 
     if (!testPoints.length) {
@@ -738,27 +628,36 @@
     testPoints.forEach((tp, idx) => {
       const card = document.createElement('button');
       card.type = 'button';
-      card.className = `test-point-card tp-${statusClassName(tp.status)}`;
+      const stateClass = testPointStateClass(tp.status);
+      card.className = `test-point-card ${stateClass}`;
+      card.title = `测试点 #${idx + 1} · ${tp.status || 'Unknown'}`;
+      card.setAttribute(
+        'aria-label',
+        `测试点 ${idx + 1}，${tp.status || 'Unknown'}`
+      );
 
       const idxEl = document.createElement('span');
       idxEl.className = 'tp-index';
-      idxEl.textContent = `#${idx + 1}`;
+      idxEl.textContent = String(idx + 1).padStart(2, '0');
       card.appendChild(idxEl);
 
-      const statusEl = document.createElement('div');
-      statusEl.className = 'tp-status-short';
-      statusEl.textContent = statusShortName(tp.status || 'Running');
-      card.appendChild(statusEl);
-
-      const timeEl = document.createElement('div');
-      timeEl.className = 'tp-time';
-      timeEl.textContent = formatTime(tp);
-      card.appendChild(timeEl);
+      if (stateClass === 'is-active') {
+        const loader = document.createElement('span');
+        loader.className = 'math-curve-loader';
+        loader.dataset.mathCurveLoader = '';
+        loader.dataset.iconOnly = 'true';
+        loader.dataset.size = 'xs';
+        loader.setAttribute('aria-hidden', 'true');
+        card.appendChild(loader);
+      }
 
       card.addEventListener('click', function () {
         selectTestPoint(idx, true);
       });
       testPointGridEl.appendChild(card);
+      if (stateClass === 'is-active' && window.MathCurveLoader) {
+        window.MathCurveLoader.hydrate(card);
+      }
     });
 
     if (hasUserSelectedTestPoint && selectedTestPointIndex !== null && selectedTestPointIndex < testPoints.length) {
@@ -926,6 +825,9 @@
       return false;
     }
 
+    if (!data.is_judging) {
+      hasUserSelectedTestPoint = false;
+    }
     if (typeof renderTestPoints === 'function') {
       renderTestPoints(data.test_points || []);
     }
@@ -936,9 +838,8 @@
         judgingStatusEl.classList.add('d-none');
       }
       if (judgingTextEl) {
-        judgingTextEl.innerHTML = '<i class="fas fa-check-circle me-1"></i>判题完成！正在刷新...';
+        judgingTextEl.textContent = '判题完成';
       }
-      setTimeout(() => location.replace(location.href), 500);
       return false;
     }
     return true;
@@ -1080,26 +981,28 @@
 
     function updateHeader(status, score) {
       if (statusEl) {
-        statusEl.className = statusClassName(status);
-        statusEl.textContent = String(status || '-');
+        statusEl.className =
+          `submission-verdict submission-verdict--${statusClassName(status)}`;
+        const label = statusEl.querySelector('[data-submission-status-label]');
+        if (label) label.textContent = String(status || 'Unknown');
       }
 
       if (!scoreEl || !scoreMaxEl) return;
       const maxScoreRaw = scoreMaxEl.textContent ? String(scoreMaxEl.textContent).trim() : "5";
       const maxScore = Number(maxScoreRaw);
       const safeScore = Number(score);
+      scoreEl.className = '';
       if (!Number.isFinite(safeScore)) {
-        scoreEl.textContent = '-';
-        scoreEl.className = 'text-danger';
+        scoreEl.textContent = '—';
         return;
       }
       scoreEl.textContent = String(safeScore);
       if (Number.isFinite(maxScore) && maxScore > 0 && safeScore === maxScore) {
-        scoreEl.className = 'text-success';
-      } else if (Number.isFinite(maxScore) && maxScore > 0 && (safeScore / maxScore) >= 0.6) {
-        scoreEl.className = 'text-warning';
+        scoreEl.className = 'is-accepted';
+      } else if (safeScore > 0) {
+        scoreEl.className = 'is-partial';
       } else {
-        scoreEl.className = 'text-danger';
+        scoreEl.className = 'is-failed';
       }
     }
 
@@ -1301,13 +1204,13 @@
   function setAiStatus(message, level) {
     if (!aiInlineStatus) return;
     const levelClass = level === 'danger'
-      ? 'alert-danger'
+      ? 'is-danger'
       : level === 'warning'
-      ? 'alert-warning'
+      ? 'is-warning'
       : level === 'success'
-      ? 'alert-success'
-      : 'alert-secondary';
-    aiInlineStatus.className = `alert ${levelClass} mt-3 mb-0`;
+      ? 'is-success'
+      : '';
+    aiInlineStatus.className = `submission-ai-status ${levelClass}`.trim();
     aiInlineStatus.textContent = message;
     aiInlineStatus.classList.remove('d-none');
   }
@@ -1525,7 +1428,10 @@
   // 点击询问 AI 按钮后的逻辑
   if (askAiBtn) {
     askAiBtn.addEventListener('click', function() {
-      callAI();
+      window.SubmissionDetailEditorReady.then(function(editor) {
+        submissionCodeEditor = editor;
+        callAI();
+      });
     });
   }
 
@@ -1554,54 +1460,11 @@
     }
   }
 
-  // 页面加载后渲染已缓存的 AI 标注。
-  window.addEventListener('load', function() {
+  // 编辑器就绪后渲染已缓存的 AI 标注。
+  window.SubmissionDetailEditorReady.then(function(editor) {
+    submissionCodeEditor = editor;
     renderCachedAiMarksOnLoad();
   });
 </script>
 {% endif %}
-
-<style>
-  /* AI 标注问题代码：红色波浪线，悬停显示 title 原因 */
-  .cm-ai-issue-underline {
-      text-decoration-line: underline;
-      text-decoration-style: wavy;
-      text-decoration-color: #e74c3c;
-      text-decoration-thickness: 1.5px;
-      cursor: help;
-      background-color: rgba(231, 76, 60, 0.1);
-  }
-
-  .ai-issue-tooltip {
-      position: fixed;
-      z-index: 12000;
-      max-width: min(460px, 76vw);
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(25, 25, 25, 0.12);
-      background: linear-gradient(180deg, #fffdf8 0%, #fff8f3 100%);
-      color: #2b2b2b;
-      box-shadow: 0 14px 40px rgba(25, 25, 25, 0.2);
-      font-size: 13px;
-      line-height: 1.5;
-      white-space: pre-wrap;
-      pointer-events: none;
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity 120ms ease-out, visibility 120ms ease-out;
-  }
-
-  .ai-issue-tooltip::before {
-      content: '';
-      position: absolute;
-      top: 10px;
-      left: -6px;
-      width: 10px;
-      height: 10px;
-      transform: rotate(45deg);
-      background: #fffaf5;
-      border-left: 1px solid rgba(25, 25, 25, 0.12);
-      border-bottom: 1px solid rgba(25, 25, 25, 0.12);
-  }
-</style>
 {% endblock %}
