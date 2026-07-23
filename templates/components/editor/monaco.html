@@ -1,4 +1,5 @@
 {# Monaco 仅在桌面编程题按需加载；运行资产固定并由本仓库托管。 #}
+<script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
 <script>
   window.MonacoEnvironment = {
     getWorkerUrl: function() {

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import atexit
-import json
+from functools import lru_cache
 from pathlib import Path
+import shutil
+import subprocess
 import threading
 
 from oj_modules.language_server_services import (
@@ -17,14 +19,105 @@ from oj_modules.language_server_services import (
 )
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_COMPAT_INCLUDE = _PROJECT_ROOT / "clangd" / "include"
-
 # Backward-compatible names keep route/tests readable while errors now share one base.
 ClangdError = LanguageServiceError
 ClangdUnavailableError = LanguageServiceUnavailableError
 ClangdTimeoutError = LanguageServiceTimeoutError
 ClangdProtocolError = LanguageServiceProtocolError
+
+
+def _parse_compiler_include_search(stderr: str) -> tuple[Path, ...]:
+    """Extract real C++ standard-library roots from a compiler -v probe."""
+    inside_search = False
+    paths: list[Path] = []
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if line == "#include <...> search starts here:":
+            inside_search = True
+            continue
+        if inside_search and line == "End of search list.":
+            break
+        if not inside_search:
+            continue
+        candidate = line.split(" (framework directory)", 1)[0]
+        path = Path(candidate)
+        if (
+            path.is_absolute()
+            and path.is_dir()
+            and "/c++/" in path.as_posix()
+            and path not in paths
+        ):
+            paths.append(path.resolve())
+    return tuple(paths)
+
+
+@lru_cache(maxsize=1)
+def _host_cpp_standard_library_paths() -> tuple[Path, ...]:
+    """Locate a host GCC standard library that provides bits/stdc++.h."""
+    candidate_names = [
+        "g++",
+        *(f"g++-{version}" for version in range(30, 9, -1)),
+    ]
+    attempted: set[str] = set()
+    for name in candidate_names:
+        compiler = shutil.which(name)
+        if compiler is None:
+            continue
+        resolved = str(Path(compiler).resolve())
+        if resolved in attempted:
+            continue
+        attempted.add(resolved)
+        try:
+            probe = subprocess.run(
+                [
+                    compiler,
+                    "-E",
+                    "-x",
+                    "c++",
+                    "-std=c++20",
+                    "-v",
+                    "-",
+                ],
+                input="#include <bits/stdc++.h>\n",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode != 0:
+            continue
+        include_paths = _parse_compiler_include_search(probe.stderr)
+        if include_paths:
+            return include_paths
+    raise LanguageServiceUnavailableError(
+        "clangd",
+        "宿主机没有可供 clangd 读取且包含 bits/stdc++.h 的 GCC C++ 标准库",
+    )
+
+
+def _semantic_token_types_by_spelling(
+    source: str,
+    legend: dict[str, list[str]],
+    data: list[int],
+) -> dict[str, set[str]]:
+    """Decode the ASCII runtime probe into spelling -> semantic type names."""
+    lines = source.splitlines()
+    token_types = legend["tokenTypes"]
+    observed: dict[str, set[str]] = {}
+    line = 0
+    start = 0
+    for index in range(0, len(data), 5):
+        delta_line, delta_start, length, token_type, _ = data[index : index + 5]
+        line += delta_line
+        start = delta_start if delta_line else start + delta_start
+        if line >= len(lines) or token_type >= len(token_types):
+            continue
+        spelling = lines[line][start : start + length]
+        observed.setdefault(spelling, set()).add(token_types[token_type])
+    return observed
 
 
 class ClangdService(SemanticLanguageServerService):
@@ -37,12 +130,21 @@ class ClangdService(SemanticLanguageServerService):
         command: str = "clangd",
         request_timeout: float = LANGUAGE_REQUEST_TIMEOUT_SECONDS,
         clock=None,
+        cpp_standard_library_paths: tuple[Path, ...] | None = None,
     ) -> None:
         if language not in {"c", "cpp"}:
             raise ValueError(f"clangd 不支持该语言: {language}")
         kwargs = {}
         if clock is not None:
             kwargs["clock"] = clock
+        if language == "cpp":
+            standard_library_paths = (
+                _host_cpp_standard_library_paths()
+                if cpp_standard_library_paths is None
+                else cpp_standard_library_paths
+            )
+        else:
+            standard_library_paths = ()
         super().__init__(
             service_name="clangd",
             language_id=language,
@@ -54,67 +156,22 @@ class ClangdService(SemanticLanguageServerService):
                 "--header-insertion=never",
                 "--log=error",
             ),
-            sandbox_read_paths=(_COMPAT_INCLUDE,),
+            sandbox_read_paths=standard_library_paths,
             request_timeout=request_timeout,
             **kwargs,
         )
 
     def _initialization_options(self):
-        overlay = self._write_vfs_overlay()
         if self.language == "c":
-            fallback_flags = [
-                "-xc",
-                "-std=c11",
-                "-nostdinc",
-                "-ivfsoverlay",
-                str(overlay),
-            ]
+            fallback_flags = ["-xc", "-std=c11"]
         else:
-            fallback_flags = [
-                "-xc++",
-                "-std=c++20",
-                "-nostdinc",
-                "-nostdinc++",
-                "-ivfsoverlay",
-                str(overlay),
-                "-I/numericaloj/include",
-                "-include",
-                "/numericaloj/include/bits/stdc++.h",
-            ]
+            fallback_flags = ["-xc++", "-std=c++20", "-nostdinc++"]
+            for path in self.sandbox_read_paths:
+                fallback_flags.extend(("-isystem", str(path)))
         return {
             "fallbackFlags": fallback_flags,
             "clangdFileStatus": False,
         }
-
-    def _write_vfs_overlay(self) -> Path:
-        """Map a fixed compatibility header inside the process sandbox."""
-        workspace = self._workspace()
-        workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
-        overlay = workspace / "vfs-overlay.json"
-        payload = {
-            "version": 0,
-            "case-sensitive": "true",
-            "use-external-names": False,
-            # The draft main file only exists in clangd's in-memory filesystem,
-            # so clang's VFS must fall through. Host paths remain inaccessible
-            # because the entire clangd process runs inside the OS sandbox.
-            "fallthrough": True,
-            "roots": [
-                {
-                    "type": "file",
-                    "name": "/numericaloj/include/bits/stdc++.h",
-                    "external-contents": str(
-                        _COMPAT_INCLUDE / "bits/stdc++.h"
-                    ),
-                }
-            ],
-        }
-        overlay.write_text(
-            json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        overlay.chmod(0o600)
-        return overlay
 
 
 def verify_clangd_runtime() -> None:
@@ -122,14 +179,44 @@ def verify_clangd_runtime() -> None:
     service = ClangdService("cpp")
     try:
         legend = service.legend()
+        probe_source = (
+            "#include <bits/stdc++.h>\n"
+            "std::vector<std::string> values;\n"
+            "std::deque<std::tuple<int, int, int>> pending;\n"
+            "int buffer[4];\n"
+            "memset(buffer, 0, sizeof(buffer));\n"
+        )
         tokens = service.semantic_tokens(
             "runtime-self-check",
-            "std::vector<std::string> values;\nvalues.size();\n",
+            probe_source,
         )
         if not legend.get("tokenTypes") or not tokens.get("data"):
             raise RuntimeError("clangd 语义令牌自检失败")
+        observed = _semantic_token_types_by_spelling(
+            probe_source,
+            legend,
+            tokens["data"],
+        )
+        expected = {
+            "vector": {"class"},
+            "string": {"class"},
+            "deque": {"class"},
+            "tuple": {"class"},
+            # clangd exposes C library callables as variable + defaultLibrary
+            # on some host toolchains and as function on others.
+            "memset": {"function", "variable"},
+        }
+        missing = [
+            spelling
+            for spelling, token_types in expected.items()
+            if observed.get(spelling, set()).isdisjoint(token_types)
+        ]
+        if missing:
+            raise RuntimeError(
+                "clangd 标准库语义令牌自检失败: " + ", ".join(missing)
+            )
 
-        probe_source = (
+        host_probe_source = (
             '#if __has_include("/etc/passwd")\n'
             "class HostFileVisible {};\n"
             "#else\n"
@@ -138,24 +225,14 @@ def verify_clangd_runtime() -> None:
         )
         probe_data = service.semantic_tokens(
             "runtime-host-file-probe",
-            probe_source,
+            host_probe_source,
         )["data"]
-        lines = probe_source.splitlines()
-        line = 0
-        start = 0
-        observed_types: list[str] = []
-        token_types = legend["tokenTypes"]
-        for index in range(0, len(probe_data), 5):
-            delta_line, delta_start, length, token_type, _ = probe_data[
-                index : index + 5
-            ]
-            line += delta_line
-            start = delta_start if delta_line else start + delta_start
-            if (
-                lines[line][start : start + length] == "HostFileVisible"
-                and token_type < len(token_types)
-            ):
-                observed_types.append(token_types[token_type])
+        host_observed = _semantic_token_types_by_spelling(
+            host_probe_source,
+            legend,
+            probe_data,
+        )
+        observed_types = host_observed.get("HostFileVisible", set())
         if "class" in observed_types or "variable" not in observed_types:
             raise RuntimeError("clangd 进程沙箱未能隔离宿主文件")
     finally:

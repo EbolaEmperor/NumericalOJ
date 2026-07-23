@@ -16,6 +16,7 @@
       : language === "octave"
         ? "matlab"
         : language;
+  var problemId = Number(monacoHost && monacoHost.dataset.problemId);
 
   function revealEditor() {
     if (loading) loading.hidden = true;
@@ -113,6 +114,15 @@
       } catch (error) {
         console.warn("VS Code 语法 grammar 初始化失败，已降级为基础着色。", error);
       }
+    }
+    try {
+      await window.NumOJSemanticTokens.register(monaco, {
+        language: language,
+        monacoLanguage: monacoLanguage,
+        problemId: problemId,
+      });
+    } catch (error) {
+      console.warn("语言服务初始化失败，已保留 TextMate 着色。", error);
     }
 
     monacoHost.hidden = false;

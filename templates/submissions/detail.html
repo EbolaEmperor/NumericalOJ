@@ -22,7 +22,13 @@
     {% if submission.problem_type == 1 %}
       <div class="submission-code-surface" id="submissionEditorShell" aria-busy="true">
         <div class="submission-editor-loading" id="submissionEditorLoading">
-          <span class="math-curve-loader" data-math-curve-loader data-size="lg">
+          <span
+            class="math-curve-loader"
+            data-math-curve-loader
+            data-size="lg"
+            data-color-a="#ffffff"
+            data-color-b="#ffffff"
+          >
             <span class="math-curve-loader__label">代码编辑器正在加载</span>
           </span>
         </div>
@@ -30,6 +36,7 @@
           id="submissionMonacoContainer"
           class="submission-monaco-container"
           data-language="{{ plang or 'matlab' }}"
+          data-problem-id="{{ submission.problem_id }}"
           hidden
         ></div>
         <div id="submissionCodeMirrorContainer" class="submission-codemirror-container">
@@ -129,7 +136,6 @@
         <header class="submission-detail-section-heading">
           <div>
             <span>TEST POINTS</span>
-            <h2>测试点结果</h2>
           </div>
         </header>
 
@@ -591,7 +597,9 @@
     if (testPointGridEl) {
       const cards = testPointGridEl.querySelectorAll('.test-point-card');
       cards.forEach((card, idx) => {
-        card.classList.toggle('selected', idx === index);
+        const isSelected = idx === index;
+        card.classList.toggle('selected', isSelected);
+        card.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
       });
     }
     renderTestPointDetail(index);
@@ -635,6 +643,7 @@
         'aria-label',
         `测试点 ${idx + 1}，${tp.status || 'Unknown'}`
       );
+      card.setAttribute('aria-pressed', 'false');
 
       const idxEl = document.createElement('span');
       idxEl.className = 'tp-index';
