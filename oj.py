@@ -45,6 +45,7 @@ from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detec
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.routes.health_routes import create_health_blueprint
+from oj_modules.request_auth import install_global_login_guard
 from oj_modules.request_security import install_same_origin_protection
 from oj_modules.redis_clients import (
     create_binary_redis_client,
@@ -136,6 +137,7 @@ install_flask_observability(
     app,
     trusted_proxy_cidrs=getattr(_cfg, 'LOG_TRUSTED_PROXY_CIDRS', ()),
 )
+install_global_login_guard(app, user_loader=current_user)
 install_same_origin_protection(
     app,
     trusted_origins=getattr(_cfg, 'CSRF_TRUSTED_ORIGINS', ()),

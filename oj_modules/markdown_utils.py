@@ -8,15 +8,16 @@
 
 这里不改各处的 Markdown 渲染特性，只在输出上做白名单消毒：
 - 优先用 bleach（白名单标签/属性/协议，能正确保留代码块里的 <、表格、图片）；
-- 未安装 bleach 时退化为基于正则的尽力清洗（移除 script/危险标签/事件属性/危险协议）。
-bleach 已加入 requirements/production.txt；生产安装后即获得严格白名单消毒。
+- bleach 缺失或异常时 fail-closed，把整段输出转义为纯文本，绝不把正则清洗
+  当成可供 ``|safe`` / ``innerHTML`` 使用的安全边界。
+bleach 已加入 requirements/production.txt；生产安装后获得完整 Markdown 展示。
 """
 
-import re
+import html
 
 try:
     import bleach
-except Exception:  # bleach 未安装时退化到正则清洗
+except Exception:  # bleach 未安装时进入纯文本 fail-closed 路径
     bleach = None
 
 
@@ -40,33 +41,9 @@ _ALLOWED_ATTRS = {
 }
 _ALLOWED_PROTOCOLS = ['http', 'https', 'mailto']
 
-# ---- 正则兜底（bleach 不可用时）----
-_DANGEROUS_PROTO_RE = re.compile(r"(?i)(href|src)\s*=\s*(['\"])\s*(?:javascript:|vbscript:|data:)")
-_SCRIPT_BLOCK_RE = re.compile(r"(?is)<\s*script\b.*?<\s*/\s*script\s*>")
-_STYLE_BLOCK_RE = re.compile(r"(?is)<\s*style\b.*?<\s*/\s*style\s*>")
-_DANGER_TAG_RE = re.compile(r"(?is)<\s*/?\s*(?:script|style|iframe|object|embed|link|meta|base|form|input|button)\b[^>]*>")
-_EVENT_ATTR_RE = re.compile(r"(?is)\son\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)")
-
-
-def strip_dangerous_protocols(html_str):
-    """把 href/src 中的 javascript:/vbscript:/data: 协议替换为 #。"""
-    return _DANGEROUS_PROTO_RE.sub(r"\1=\2#", html_str or "")
-
-
-def _scrub_html(html_str):
-    """正则尽力清洗：保留良性 HTML，移除 script/style/危险标签、事件处理属性、危险协议。
-    正则清洗非绝对可靠，仅作 bleach 缺失时的兜底。"""
-    s = str(html_str or "")
-    s = _SCRIPT_BLOCK_RE.sub("", s)
-    s = _STYLE_BLOCK_RE.sub("", s)
-    s = _DANGER_TAG_RE.sub("", s)
-    s = _EVENT_ATTR_RE.sub("", s)
-    s = strip_dangerous_protocols(s)
-    return s
-
 
 def sanitize_html(html_str):
-    """对「将以 |safe 下发」的 HTML 做消毒。bleach 优先，否则正则兜底。"""
+    """对「将以 |safe 下发」的 HTML 做消毒；清洗能力异常时严格转义。"""
     s = str(html_str or "")
     if not s:
         return ""
@@ -80,8 +57,10 @@ def sanitize_html(html_str):
                 strip=True,
             )
         except Exception:
-            pass
-    return _scrub_html(s)
+            # 安全依赖异常不能退化成一套不完备的 HTML 解析器。转义的是已经
+            # 渲染出的整段 HTML，显示效果会变成纯文本，但不会形成可执行 DOM。
+            return html.escape(s, quote=False)
+    return html.escape(s, quote=False)
 
 
 def render_markdown(text, extensions=None):

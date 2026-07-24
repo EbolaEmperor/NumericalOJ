@@ -31,6 +31,7 @@ from oj_modules.observability import (
     emit_audit,
     request_audit_fields,
 )
+from oj_modules.request_auth import safe_local_next
 
 
 auth_bp = Blueprint('auth', __name__)
@@ -164,6 +165,11 @@ def send_verification_code(email, code_type):
 
 @auth_bp.route('/login', methods=['GET', 'POST'])
 def login():
+    next_candidate = request.form.get('next') if request.method == 'POST' else None
+    if next_candidate is None:
+        next_candidate = request.args.get('next')
+    next_url = safe_local_next(next_candidate)
+
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
@@ -173,14 +179,24 @@ def login():
             _audit_auth(
                 'login', 'failure', reason='invalid_username', username=username,
             )
-            return render_template('auth/login.html', error_message=username_msg, success_message=None)
+            return render_template(
+                'auth/login.html',
+                error_message=username_msg,
+                success_message=None,
+                next_url=next_url,
+            )
 
         # 登录尝试限流（按用户名），减缓离线/在线暴力破解。
         if not rate_limit_hit(_rds, f'login:{username}', _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW)[0]:
             _audit_auth(
                 'login', 'denied', reason='rate_limited', username=username,
             )
-            return render_template('auth/login.html', error_message="尝试过于频繁，请稍后再试", success_message=None)
+            return render_template(
+                'auth/login.html',
+                error_message="尝试过于频繁，请稍后再试",
+                success_message=None,
+                next_url=next_url,
+            )
 
         user_record = get_user_by_username(username)
         if user_record:
@@ -199,14 +215,24 @@ def login():
                     user=user_record,
                     password_rehashed=bool(needs_rehash),
                 )
-                return redirect(url_for('problem_core.problem_list'))
+                return redirect(next_url or url_for('problem_core.problem_list'))
         _audit_auth(
             'login', 'failure', reason='invalid_credentials', username=username,
         )
-        return render_template('auth/login.html', error_message="用户名或密码错误", success_message=None)
+        return render_template(
+            'auth/login.html',
+            error_message="用户名或密码错误",
+            success_message=None,
+            next_url=next_url,
+        )
 
     success_message = request.args.get('success')
-    return render_template('auth/login.html', error_message=None, success_message=success_message)
+    return render_template(
+        'auth/login.html',
+        error_message=None,
+        success_message=success_message,
+        next_url=next_url,
+    )
 
 
 @auth_bp.route('/send_code', methods=['POST'])
@@ -265,7 +291,21 @@ def register():
         if get_user_by_username(username) or get_user_by_email(email):
             return render_template('auth/register.html', error_message="用户名或邮箱已被注册", classes=public_classes)
 
-        user_id = create_user(username, hash_password(password), email, user_class)
+        try:
+            user_id = create_user(
+                username,
+                hash_password(password),
+                email,
+                user_class,
+            )
+        except ValueError as exc:
+            # 真实用户名与讨论区所有历史匿名名共用命名空间。预检查用于快速反馈，
+            # create_user 内的事务级检查才是并发下的最终边界。
+            return render_template(
+                'auth/register.html',
+                error_message=str(exc),
+                classes=public_classes,
+            )
         _audit_auth(
             'register',
             'success',

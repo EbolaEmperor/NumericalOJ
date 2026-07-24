@@ -1,8 +1,17 @@
 <script>
 window.MathJax = {
+  loader: {
+    // 只使用当前合并包内的显式 TeX 能力，禁止运行时自动加载扩展。
+    load: []
+  },
   tex: {
     inlineMath: [['$', '$'], ['\\(', '\\)']],
-    displayMath: [['$$', '$$'], ['\\[', '\\]']]
+    displayMath: [['$$', '$$'], ['\\[', '\\]']],
+    // 不启用 autoload / require / html，避免用户公式创建链接、样式或加载能力。
+    packages: ['base', 'ams', 'newcommand', 'noundefined']
+  },
+  options: {
+    enableMenu: false
   }
 };
 </script>

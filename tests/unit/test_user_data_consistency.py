@@ -11,11 +11,16 @@ from oj_modules.routes import admin_user_routes, submission_routes
 
 class _FakeCursor:
     def __init__(self, *, user=None, conflicting_user=None, schema_rows=None,
-                 plagiarism_rows=None, fail_when=None, lastrowid=73):
+                 plagiarism_rows=None, namespace_users=None,
+                 anonymous_identity=None, fail_when=None, lastrowid=73):
         self.user = user
         self.conflicting_user = conflicting_user
         self.schema_rows = list(schema_rows or [])
         self.plagiarism_rows = list(plagiarism_rows or [])
+        self.namespace_users = (
+            list(namespace_users) if namespace_users is not None else None
+        )
+        self.anonymous_identity = anonymous_identity
         self.fail_when = fail_when
         self.lastrowid = lastrowid
         self.calls = []
@@ -34,7 +39,20 @@ class _FakeCursor:
         if self.fail_when and self.fail_when in compact_sql:
             raise RuntimeError('模拟写入失败')
 
-        if compact_sql.startswith('SELECT id, username FROM users WHERE id='):
+        if compact_sql.startswith('SELECT GET_LOCK'):
+            self._fetchone_result = {'identity_namespace_locked': 1}
+        elif compact_sql.startswith('SELECT RELEASE_LOCK'):
+            self._fetchone_result = {'identity_namespace_released': 1}
+        elif compact_sql == 'SELECT id, username FROM users':
+            self._fetchall_result = (
+                self.namespace_users
+                if self.namespace_users is not None
+                else ([self.user] if self.user else [])
+            )
+        elif compact_sql.startswith(
+                'SELECT id FROM forum_anonymous_identities'):
+            self._fetchone_result = self.anonymous_identity
+        elif compact_sql.startswith('SELECT id, username FROM users WHERE id='):
             self._fetchone_result = self.user
         elif compact_sql.startswith('SELECT id FROM users WHERE username='):
             self._fetchone_result = self.conflicting_user
@@ -107,8 +125,14 @@ def test_create_user_uses_one_transaction_and_insert_id(monkeypatch):
     assert conn.commit_count == 1
     assert conn.rollback_count == 0
     assert conn.closed is True
-    assert len(cursor.calls) == 3
-    assert cursor.calls[2][1] == (73, 'C1', 1)
+    writes = [
+        call for call in cursor.calls
+        if call[0].startswith(('INSERT', 'UPDATE'))
+    ]
+    assert len(writes) == 3
+    assert writes[2][1] == (73, 'C1', 1)
+    assert cursor.calls[0][0].startswith('SELECT GET_LOCK')
+    assert cursor.calls[-1][0].startswith('SELECT RELEASE_LOCK')
 
 
 def test_create_user_rolls_back_all_writes_on_failure(monkeypatch):
@@ -127,6 +151,49 @@ def test_create_user_rolls_back_all_writes_on_failure(monkeypatch):
     assert conn.commit_count == 0
     assert conn.rollback_count == 1
     assert conn.closed is True
+
+
+def test_create_user_rejects_name_reserved_by_historical_anonymous_identity(
+        monkeypatch):
+    cursor = _FakeCursor(anonymous_identity={'id': 17})
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(db_services, 'get_db_connection', lambda: conn)
+
+    with pytest.raises(ValueError, match='已被其他身份使用'):
+        db_services.create_user(
+            'Old-Owl',
+            'password-hash',
+            'owl@example.com',
+            {'class_en': 'C1', 'class_cn': '一班'},
+        )
+
+    assert conn.commit_count == 0
+    assert conn.rollback_count == 1
+    assert not any(
+        sql.startswith(('INSERT', 'UPDATE'))
+        for sql, _params in cursor.calls
+    )
+    assert cursor.calls[-1][0].startswith('SELECT RELEASE_LOCK')
+
+
+def test_create_user_compares_existing_real_names_after_nfkc_ascii_fold(
+        monkeypatch):
+    cursor = _FakeCursor(
+        namespace_users=[{'id': 8, 'username': 'Alice'}],
+    )
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(db_services, 'get_db_connection', lambda: conn)
+
+    with pytest.raises(ValueError, match='已被其他身份使用'):
+        db_services.create_user(
+            'ALICE',
+            'password-hash',
+            'alice-2@example.com',
+            {'class_en': 'C1', 'class_cn': '一班'},
+        )
+
+    assert conn.commit_count == 0
+    assert conn.rollback_count == 1
 
 
 def test_rename_user_updates_all_known_identity_columns_atomically(monkeypatch):

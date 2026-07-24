@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import uuid
 from typing import Any, Dict
 
 from . import common
@@ -9,7 +10,18 @@ from . import common
 def _necessary_forum_thread_row(row: Any, *, include_content: bool) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
-    keys = ["id", "title", "username", "created_at", "updated_at", "url"]
+    keys = [
+        "id",
+        "title",
+        "display_name",
+        "is_anonymous",
+        "created_at",
+        "updated_at",
+        "last_activity_at",
+        "reply_count",
+        "edit_version",
+        "url",
+    ]
     if include_content:
         keys.insert(2, "content")
     return {key: row[key] for key in keys if key in row}
@@ -18,7 +30,19 @@ def _necessary_forum_thread_row(row: Any, *, include_content: bool) -> Dict[str,
 def _necessary_forum_reply_row(row: Any) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
-    return {key: row[key] for key in ("id", "content", "username", "created_at", "updated_at") if key in row}
+    return {
+        key: row[key]
+        for key in (
+            "id",
+            "content",
+            "display_name",
+            "is_anonymous",
+            "created_at",
+            "updated_at",
+            "edit_version",
+        )
+        if key in row
+    }
 
 
 def necessary_forum_list_payload(payload: Any) -> Any:
@@ -73,9 +97,36 @@ def forum_new_page(args: argparse.Namespace) -> None:
     print(resp.text.strip())
 
 
+def _posting_token(client) -> str:
+    resp = client.request("GET", "/api/forum/identity")
+    common.ensure_ok(resp, allow_redirect=False)
+    if not common.response_is_json(resp):
+        raise common.CliError("Forum identity endpoint did not return JSON.")
+    payload = resp.json()
+    identity = payload.get("identity") if isinstance(payload, dict) else None
+    token = identity.get("posting_token") if isinstance(identity, dict) else None
+    if not token:
+        raise common.CliError("Forum posting identity is unavailable.")
+    return str(token)
+
+
 def forum_new(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", "/forum/new", data={"title": args.title, "content": common.read_text_value(args.content)})
-    common.print_redirect_response(resp, id_pattern=r"/forum/thread/(\d+)", id_name="thread_id")
+    client = common.client_from_args(args)
+    resp = client.request(
+        "POST",
+        "/api/forum/threads",
+        json={
+            "title": args.title,
+            "content": common.read_text_value(args.content),
+            "client_request_id": str(uuid.uuid4()),
+            "expected_identity_token": _posting_token(client),
+        },
+    )
+    common.ensure_ok(resp, allow_redirect=False)
+    if common.response_is_json(resp):
+        common.output_json(resp.json())
+        return
+    print(resp.text.strip())
 
 
 def _reply_content(args: argparse.Namespace) -> str:
@@ -87,14 +138,26 @@ def _reply_content(args: argparse.Namespace) -> str:
 
 def forum_reply(args: argparse.Namespace) -> None:
     content = _reply_content(args)
-    resp = common.client_from_args(args).request("POST", f"/forum/reply/{args.thread_id}", data={"content": content})
-    common.print_redirect_response(resp)
+    client = common.client_from_args(args)
+    resp = client.request(
+        "POST",
+        f"/api/forum/threads/{args.thread_id}/replies",
+        json={
+            "content": content,
+            "client_request_id": str(uuid.uuid4()),
+            "expected_identity_token": _posting_token(client),
+        },
+    )
+    common.ensure_ok(resp, allow_redirect=False)
+    if common.response_is_json(resp):
+        common.output_json(resp.json())
+        return
+    print(resp.text.strip())
 
 
 def forum_reply_thread(args: argparse.Namespace) -> None:
-    content = _reply_content(args)
-    resp = common.client_from_args(args).request("POST", f"/forum/thread/{args.thread_id}", data={"content": content})
-    common.print_redirect_response(resp)
+    # 兼容旧命令名；服务器不再提供 HTML form 写入降级路径。
+    forum_reply(args)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:

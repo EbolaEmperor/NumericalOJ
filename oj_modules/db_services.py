@@ -32,6 +32,10 @@ _MYSQL_HOST = getattr(_config, 'MYSQL_HOST', '127.0.0.1')
 _MYSQL_PORT = int(getattr(_config, 'MYSQL_PORT', 3306))
 _MYSQL_DB = getattr(_config, 'MYSQL_DB', 'myojdb')
 from oj_modules.ai_utils import _normalize_ai_code_issues
+from oj_modules.forum_identity_services import (
+    assert_identity_name_available,
+    run_identity_namespace_transaction,
+)
 from oj_modules.observability import (
     content_fingerprint,
     current_context,
@@ -153,6 +157,13 @@ class _PooledConnectionProxy:
             return
         self._closed = True
         self._pool.release(self._raw_conn)
+
+    def discard(self):
+        """物理丢弃异常连接，不把连接级状态（例如 advisory lock）带回池中。"""
+        if self._closed:
+            return
+        self._closed = True
+        self._pool._discard(self._raw_conn)
 
     def __enter__(self):
         return self
@@ -1032,25 +1043,20 @@ def create_user(username, password_hash, email, user_class):
     if (user_class or {}).get('class_en') == 'Cadmin':
         raise ValueError('普通用户不能注册到管理员班级')
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = 'INSERT INTO users (username, password_hash, email, class, class_cn) VALUES (%s, %s, %s, %s, %s)'
-            cursor.execute(sql, (username, password_hash, email, user_class['class_en'], user_class['class_cn']))
-            user_id = cursor.lastrowid
+    def operation(cursor):
+        assert_identity_name_available(cursor, username)
+        sql = 'INSERT INTO users (username, password_hash, email, class, class_cn) VALUES (%s, %s, %s, %s, %s)'
+        cursor.execute(sql, (username, password_hash, email, user_class['class_en'], user_class['class_cn']))
+        user_id = cursor.lastrowid
 
-            sql = 'UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s'
-            cursor.execute(sql, (user_class['class_en'],))
+        sql = 'UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s'
+        cursor.execute(sql, (user_class['class_en'],))
 
-            sql = 'INSERT INTO user_class_map (user_id, class_en, is_primary) VALUES (%s, %s, %s)'
-            cursor.execute(sql, (user_id, user_class['class_en'], 1))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-    return int(user_id)
+        sql = 'INSERT INTO user_class_map (user_id, class_en, is_primary) VALUES (%s, %s, %s)'
+        cursor.execute(sql, (user_id, user_class['class_en'], 1))
+        return int(user_id)
+
+    return run_identity_namespace_transaction(operation)
 
 
 def rename_user(user_id, new_username):
@@ -1063,53 +1069,44 @@ def rename_user(user_id, new_username):
     if not new_username:
         raise ValueError('新用户名不能为空')
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                'SELECT id, username FROM users WHERE id=%s FOR UPDATE',
-                (user_id,),
+    def operation(cursor):
+        cursor.execute(
+            'SELECT id, username FROM users WHERE id=%s FOR UPDATE',
+            (user_id,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            raise LookupError('用户不存在')
+
+        old_username = user['username']
+        if old_username == new_username:
+            return old_username
+
+        assert_identity_name_available(
+            cursor,
+            new_username,
+            exclude_user_id=int(user_id),
+        )
+
+        reference_columns = _get_rename_user_columns(cursor)
+        if ('plagiarism_records', 'username') in reference_columns:
+            _replace_plagiarism_matched_usernames(
+                cursor, old_username, new_username,
             )
-            user = cursor.fetchone()
-            if not user:
-                raise LookupError('用户不存在')
-
-            old_username = user['username']
-            if old_username == new_username:
-                conn.commit()
-                return old_username
-
+        for table_name, column_name in reference_columns:
+            # 表名和列名只来自上面的模块级常量，不包含外部输入。
             cursor.execute(
-                'SELECT id FROM users WHERE username=%s AND id<>%s LIMIT 1 FOR UPDATE',
-                (new_username, user_id),
-            )
-            if cursor.fetchone():
-                raise ValueError('用户名已存在')
-
-            reference_columns = _get_rename_user_columns(cursor)
-            if ('plagiarism_records', 'username') in reference_columns:
-                _replace_plagiarism_matched_usernames(
-                    cursor, old_username, new_username,
-                )
-            for table_name, column_name in reference_columns:
-                # 表名和列名只来自上面的模块级常量，不包含外部输入。
-                cursor.execute(
-                    f'UPDATE `{table_name}` SET `{column_name}`=%s WHERE `{column_name}`=%s',
-                    (new_username, old_username),
-                )
-
-            cursor.execute(
-                'UPDATE users SET username=%s WHERE id=%s',
-                (new_username, user_id),
+                f'UPDATE `{table_name}` SET `{column_name}`=%s WHERE `{column_name}`=%s',
+                (new_username, old_username),
             )
 
-        conn.commit()
+        cursor.execute(
+            'UPDATE users SET username=%s WHERE id=%s',
+            (new_username, user_id),
+        )
         return old_username
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+
+    return run_identity_namespace_transaction(operation)
 
 
 def get_user_classes(user_id):

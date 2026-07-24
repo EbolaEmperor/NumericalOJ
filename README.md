@@ -139,10 +139,13 @@ supervisord -c deploy/supervisor/celery.conf
 
 生产 Supervisor 只管理进程，不执行 DDL。Web 通过 `deploy/gunicorn.py` 启动；worker 的 `post_worker_init` 只幂等确保后台自调度链存在，不会清理或重投正在执行的 Celery 任务。当前配置使用单 worker、64 个 `gthread` 线程承载 SSE，不按请求数回收 worker；`python oj.py` 仅作为本地开发入口。
 
-完整停止两个应用边界后，如需人工恢复停机前的未完成任务，必须在 Celery 仍处于停止状态时使用当前部署虚拟环境显式执行：
+完整停止两个应用边界，并已按维护手册创建、验证数据库回滚点后，如需人工恢复停机前的未完成任务，必须在 Celery 仍处于停止状态时使用当前部署虚拟环境显式执行：
 
 ```bash
 .deploy/current-venv/bin/python3 scripts/init_db_schema.py
+.deploy/current-venv/bin/python3 \
+  scripts/migrations/m20260725_forum_anonymous_identity_ownership.py \
+  --apply --confirm-app-writers-stopped
 .deploy/current-venv/bin/python3 \
   scripts/recover_pending_tasks.py --confirm-celery-stopped
 supervisord -c deploy/supervisor/web.conf
@@ -285,7 +288,7 @@ Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 Base
 
 候选环境和镜像就绪后，脚本以 MySQL 服务端查询结果选择备份方案。本机 Oracle MySQL / Percona Server 8.0.34+ 固定使用 XtraBackup `8.0.35-36`，8.4.x 固定使用 `8.4.0-6`；缺少或版本不匹配时会先通过交互式 `sudo` 与 Debian APT 自动安装。服务器版本或发行方不兼容，或自动安装失败时，才改为带进度的 `mysqldump` 计划。APT 变更以及版本、身份、权限和容量预检都发生在停服前；物理计划会在 Celery 排空期间维持已取得的 sudo ticket，真正执行时只接受非交互认证，避免全停服后再次等待密码。
 
-脚本确认两套业务 Supervisor 可管理后，依次停止 Celery/Web，并再次拒绝任何额外漂移的 Gunicorn/Celery 进程，再创建零写入窗口内的数据库回滚点。XtraBackup 备份整个实例且必须完成 prepare；逻辑 fallback 只备份配置的 `MYSQL_DB`，采用 gzip level 1，并在原子发布前完整重读校验 gzip CRC。备份有效后才原子切换虚拟环境与 ARC-AGI-3 本地公开集，执行一次非破坏性的 `scripts/init_db_schema.py` 和停机任务恢复，再切换两个 `latest` 镜像标签。Web 请求和游玩过程只读取本机 ARC-AGI-3 缓存，不访问官方 API。统一日志采集 Supervisor 以最佳努力先行启动，随后依次启动 Celery/Web；最后按 Web 和 Celery 的精确 namespec 集合确认全部进程稳定进入 `RUNNING`，并重新核验真实备份产物后才将回滚点标记为成功。这是启动结果确认和备份完整性校验，不是测试。
+脚本确认两套业务 Supervisor 可管理后，依次停止 Celery/Web，并再次拒绝任何额外漂移的 Gunicorn/Celery 进程，再创建零写入窗口内的数据库回滚点。XtraBackup 备份整个实例且必须完成 prepare；逻辑 fallback 只备份配置的 `MYSQL_DB`，采用 gzip level 1，并在原子发布前完整重读校验 gzip CRC。备份有效后才原子切换虚拟环境与 ARC-AGI-3 本地公开集，执行一次非破坏性的 `scripts/init_db_schema.py`、讨论区匿名身份属主复合约束迁移和停机任务恢复，再切换两个 `latest` 镜像标签。Web 请求和游玩过程只读取本机 ARC-AGI-3 缓存，不访问官方 API。统一日志采集 Supervisor 以最佳努力先行启动，随后依次启动 Celery/Web；最后按 Web 和 Celery 的精确 namespec 集合确认全部进程稳定进入 `RUNNING`，并重新核验真实备份产物后才将回滚点标记为成功。这是启动结果确认和备份完整性校验，不是测试。
 
 主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。物理备份路径由最小特权 helper 以 dirfd 固定 inode 并硬化，留存按持久化单调 generation 排序且显式保护本次 run，不依赖主机墙上时钟。成功启动全部业务进程后，按清单保留最近 2 个成功部署回滚点；失败、待处理和旧格式备份不自动删除。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。
 

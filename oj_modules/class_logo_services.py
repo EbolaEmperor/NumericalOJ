@@ -15,6 +15,7 @@ import re
 import secrets
 
 from oj_modules.db_services import get_db_connection
+from oj_modules.identicon_utils import nibble_identicon_presentation
 
 
 LOGO_SEED_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -45,23 +46,10 @@ def class_logo_presentation(seed, *, fallback="") -> dict:
             digest_size=16,
         ).digest()
 
-    # dgraham/identicon 将哈希依次拆成高、低半字节，以奇偶性决定是否
-    # 填充左半边（含中轴）的格子，再镜像到右半边。
-    paint_values = (
-        nibble % 2 == 0
-        for byte in material
-        for nibble in (byte >> 4, byte & 0x0F)
+    return nibble_identicon_presentation(
+        material,
+        grid_size=IDENTICON_GRID_SIZE,
     )
-    cells = []
-    for column in range(IDENTICON_GRID_SIZE // 2, -1, -1):
-        for row in range(IDENTICON_GRID_SIZE):
-            if not next(paint_values, False):
-                continue
-            cells.append((column, row))
-            mirror_column = IDENTICON_GRID_SIZE - 1 - column
-            if mirror_column != column:
-                cells.append((mirror_column, row))
-    return {"cells": cells}
 
 
 def attach_class_logos(classes) -> list[dict]:

@@ -639,6 +639,9 @@ ln -s "$arc_candidate_target" "$ARC_CURRENT_SET_TEMP"
 mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"
 rm -f -- "$ARC_RESULT_FILE"
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
+"$CANDIDATE_PYTHON" \
+  scripts/migrations/m20260725_forum_anonymous_identity_ownership.py \
+  --apply --confirm-app-writers-stopped
 "$CANDIDATE_PYTHON" scripts/backfill_class_logos.py
 "$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py --confirm-celery-stopped
 

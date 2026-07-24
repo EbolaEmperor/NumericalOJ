@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import uuid
 from argparse import Namespace
 from pathlib import Path
 
@@ -51,6 +52,11 @@ class _FakeClient:
 
     def request(self, method, path, **kwargs):
         self.requests.append((method, path, kwargs))
+        if path == "/api/forum/identity":
+            return _PayloadResponse({
+                "success": True,
+                "identity": {"posting_token": "posting-token"},
+            })
         return _FakeResponse()
 
 
@@ -472,6 +478,28 @@ def test_forum_reply_rejects_blank_content(monkeypatch):
         cli.forum_reply(Namespace(thread_id=7, content="   "))
 
     assert fake_client.requests == []
+
+
+def test_forum_write_commands_use_json_api_and_uuid(monkeypatch, capsys):
+    cli = _load_numoj_user_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+
+    cli.forum_new(Namespace(title="主题", content="正文"))
+    method, path, kwargs = fake_client.requests[-1]
+    assert (method, path) == ("POST", "/api/forum/threads")
+    assert kwargs["json"]["title"] == "主题"
+    assert kwargs["json"]["content"] == "正文"
+    assert kwargs["json"]["expected_identity_token"] == "posting-token"
+    assert uuid.UUID(kwargs["json"]["client_request_id"])
+
+    cli.forum_reply(Namespace(thread_id=7, content="回复"))
+    method, path, kwargs = fake_client.requests[-1]
+    assert (method, path) == ("POST", "/api/forum/threads/7/replies")
+    assert kwargs["json"]["content"] == "回复"
+    assert kwargs["json"]["expected_identity_token"] == "posting-token"
+    assert uuid.UUID(kwargs["json"]["client_request_id"])
+    capsys.readouterr()
 
 
 def test_numoj_user_json_query_commands_do_not_accept_output_option():

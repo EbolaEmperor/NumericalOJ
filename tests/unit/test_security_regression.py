@@ -134,18 +134,57 @@ def test_sanitize_strips_script_and_events_and_protocols():
     assert 'hi' in out
 
     out2 = sanitize_html('<img src=x onerror="alert(1)">')
-    assert 'onerror' not in out2.lower()
+    assert '<img' not in out2.lower() or 'onerror' not in out2.lower()
 
     out3 = sanitize_html('<a href="javascript:alert(1)">x</a>')
-    assert 'javascript:' not in out3.lower()
+    assert '<a' not in out3.lower() or 'javascript:' not in out3.lower()
 
 
 def test_sanitize_keeps_benign_markup():
     from oj_modules.markdown_utils import sanitize_html
     out = sanitize_html('<pre><code>vector&lt;int&gt;</code></pre>')
-    assert '<code' in out.lower()
+    assert '<code' in out.lower() or '&lt;code' in out.lower()
     out2 = sanitize_html('<a href="https://example.com">link</a>')
     assert 'https://example.com' in out2
+
+
+@pytest.mark.parametrize(
+    'payload',
+    (
+        '<a href=javascript:alert(1)>click</a>',
+        '<a href=vbscript:msgbox(1)>click</a>',
+        '<img src=data:text/html,test onerror=alert(1)>',
+        '<svg><a href=javascript:alert(1)>click</a>',
+        '<scr<script>ipt>alert(1)</scr</script>ipt>',
+    ),
+)
+def test_sanitize_fails_closed_when_bleach_is_unavailable(monkeypatch, payload):
+    from oj_modules import markdown_utils
+
+    monkeypatch.setattr(markdown_utils, 'bleach', None)
+    out = markdown_utils.sanitize_html(payload)
+
+    assert '<a' not in out.lower()
+    assert '<img' not in out.lower()
+    assert '<svg' not in out.lower()
+    assert '<script' not in out.lower()
+    assert '&lt;' in out
+
+
+def test_sanitize_fails_closed_when_bleach_raises(monkeypatch):
+    from oj_modules import markdown_utils
+
+    class BrokenBleach:
+        @staticmethod
+        def clean(*_args, **_kwargs):
+            raise RuntimeError('simulated sanitizer failure')
+
+    monkeypatch.setattr(markdown_utils, 'bleach', BrokenBleach())
+    out = markdown_utils.sanitize_html(
+        '<a href=javascript:alert(1)>click</a>'
+    )
+
+    assert out == '&lt;a href=javascript:alert(1)&gt;click&lt;/a&gt;'
 
 
 # ---------------- 用户名白名单 / 管理员页 XSS 回归 ----------------
