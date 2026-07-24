@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -18,7 +19,18 @@ from .common import *  # noqa: F401,F403 - command modules share the CLI helper 
 def _necessary_forum_thread_row(row: Any, *, include_content: bool) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
-    keys = ["id", "title", "username", "created_at", "updated_at", "url"]
+    keys = [
+        "id",
+        "title",
+        "display_name",
+        "is_anonymous",
+        "created_at",
+        "updated_at",
+        "last_activity_at",
+        "reply_count",
+        "edit_version",
+        "url",
+    ]
     if include_content:
         keys.insert(2, "content")
     return {key: row[key] for key in keys if key in row}
@@ -27,7 +39,19 @@ def _necessary_forum_thread_row(row: Any, *, include_content: bool) -> Dict[str,
 def _necessary_forum_reply_row(row: Any) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
-    return {key: row[key] for key in ("id", "content", "username", "created_at", "updated_at") if key in row}
+    return {
+        key: row[key]
+        for key in (
+            "id",
+            "content",
+            "display_name",
+            "is_anonymous",
+            "created_at",
+            "updated_at",
+            "edit_version",
+        )
+        if key in row
+    }
 
 
 def necessary_forum_list_payload(payload: Any) -> Any:
@@ -79,22 +103,51 @@ def forum_new_page(args: argparse.Namespace) -> None:
     common.output_projected_json_response(resp, necessary_forum_new_context_payload)
 
 
+def _posting_token(client) -> str:
+    resp = client.request("GET", "/api/forum/identity")
+    ensure_ok(resp, allow_redirect=False)
+    if not response_is_json(resp):
+        raise common.CliError("Forum identity endpoint did not return JSON.")
+    payload = resp.json()
+    identity = payload.get("identity") if isinstance(payload, dict) else None
+    token = identity.get("posting_token") if isinstance(identity, dict) else None
+    if not token:
+        raise common.CliError("Forum posting identity is unavailable.")
+    return str(token)
+
+
 def forum_new(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", "/forum/new", data={"title": args.title, "content": read_text_value(args.content)})
-    print_redirect_response(resp, id_pattern=r"/forum/thread/(\d+)", id_name="thread_id")
+    resp = client.request(
+        "POST",
+        "/api/forum/threads",
+        json={
+            "title": args.title,
+            "content": read_text_value(args.content),
+            "client_request_id": str(uuid.uuid4()),
+            "expected_identity_token": _posting_token(client),
+        },
+    )
+    common.output_projected_json_response(resp, lambda payload: payload)
 
 
 def forum_reply(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/forum/reply/{args.thread_id}", data={"content": read_text_value(args.content)})
-    print_redirect_response(resp, id_pattern=r"/forum/thread/(\d+)", id_name="thread_id")
+    resp = client.request(
+        "POST",
+        f"/api/forum/threads/{args.thread_id}/replies",
+        json={
+            "content": read_text_value(args.content),
+            "client_request_id": str(uuid.uuid4()),
+            "expected_identity_token": _posting_token(client),
+        },
+    )
+    common.output_projected_json_response(resp, lambda payload: payload)
 
 
 def forum_reply_thread(args: argparse.Namespace) -> None:
-    client = client_from_args(args)
-    resp = client.request("POST", f"/forum/thread/{args.thread_id}", data={"content": read_text_value(args.content)})
-    print_redirect_response(resp, id_pattern=r"/forum/thread/(\d+)", id_name="thread_id")
+    # 兼容旧命令名；服务器不再提供 HTML form 写入降级路径。
+    forum_reply(args)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:

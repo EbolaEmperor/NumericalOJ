@@ -80,6 +80,11 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert 'deploy/backup_database.py mark-success' in script
     assert 'deploy/backup_database.py prune' in script
     assert "scripts/init_db_schema.py" in script
+    assert (
+        "scripts/migrations/"
+        "m20260725_forum_anonymous_identity_ownership.py"
+    ) in script
+    assert "--apply --confirm-app-writers-stopped" in script
     assert "scripts/backfill_class_logos.py" in script
     assert "scripts/recover_pending_tasks.py --confirm-celery-stopped" in script
     arc_prepare = script.index("deploy/prepare_arc_agi_3.py")
@@ -106,9 +111,19 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert script.index("phase='停止现有服务'") < script.index(
         "phase='创建并验证数据库回滚点'"
     ) < script.index("scripts/init_db_schema.py")
-    assert script.index("scripts/init_db_schema.py") < script.index(
-        "scripts/backfill_class_logos.py"
-    ) < script.index("scripts/recover_pending_tasks.py")
+    schema_sync = script.index("scripts/init_db_schema.py")
+    identity_ownership_migration = script.index(
+        "scripts/migrations/"
+        "m20260725_forum_anonymous_identity_ownership.py"
+    )
+    class_logo_backfill = script.index("scripts/backfill_class_logos.py")
+    task_recovery = script.index("scripts/recover_pending_tasks.py")
+    assert (
+        schema_sync
+        < identity_ownership_migration
+        < class_logo_backfill
+        < task_recovery
+    )
 
 
 def test_deploy_detects_and_uses_daemon_docker_build_cache():

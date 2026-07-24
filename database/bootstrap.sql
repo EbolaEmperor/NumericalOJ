@@ -91,6 +91,76 @@ CREATE TABLE `final_exam_scores` (
 ALTER TABLE final_exam_scores ADD INDEX idx_final_exam_student_class (student_id, class_en);
 
 --
+-- Table structure for table `forum_anonymous_identities`
+--
+
+DROP TABLE IF EXISTS `forum_anonymous_identities`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `forum_anonymous_identities` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `display_name` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `normalized_name` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_forum_anonymous_normalized_name` (`normalized_name`),
+  UNIQUE KEY `uq_forum_anonymous_identity_owner` (`user_id`,`id`),
+  KEY `idx_forum_anonymous_user_created` (`user_id`,`created_at`,`id`),
+  CONSTRAINT `fk_forum_anonymous_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `forum_identity_operation_receipts`
+--
+
+DROP TABLE IF EXISTS `forum_identity_operation_receipts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `forum_identity_operation_receipts` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `client_request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `display_name` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `normalized_name` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `requested_enable` tinyint(1) DEFAULT NULL,
+  `anonymous_identity_id` bigint NOT NULL,
+  `result_use_anonymous` tinyint(1) NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_forum_identity_operation_request` (`user_id`,`client_request_id`),
+  KEY `idx_forum_identity_operation_identity` (`anonymous_identity_id`),
+  KEY `idx_forum_identity_operation_owner` (`user_id`,`anonymous_identity_id`),
+  CONSTRAINT `fk_forum_identity_operation_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `fk_forum_identity_operation_identity` FOREIGN KEY (`anonymous_identity_id`) REFERENCES `forum_anonymous_identities` (`id`),
+  CONSTRAINT `fk_forum_identity_operation_owner` FOREIGN KEY (`user_id`,`anonymous_identity_id`) REFERENCES `forum_anonymous_identities` (`user_id`,`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `forum_user_identity_settings`
+--
+
+DROP TABLE IF EXISTS `forum_user_identity_settings`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `forum_user_identity_settings` (
+  `user_id` int NOT NULL,
+  `use_anonymous` tinyint(1) NOT NULL DEFAULT '0',
+  `current_anonymous_identity_id` bigint DEFAULT NULL,
+  `identity_changed_at` datetime DEFAULT NULL,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`),
+  KEY `idx_forum_identity_current` (`current_anonymous_identity_id`),
+  KEY `idx_forum_settings_identity_owner` (`user_id`,`current_anonymous_identity_id`),
+  CONSTRAINT `fk_forum_identity_settings_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `fk_forum_identity_settings_current` FOREIGN KEY (`current_anonymous_identity_id`) REFERENCES `forum_anonymous_identities` (`id`),
+  CONSTRAINT `fk_forum_settings_identity_owner` FOREIGN KEY (`user_id`,`current_anonymous_identity_id`) REFERENCES `forum_anonymous_identities` (`user_id`,`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `forum_replies`
 --
 
@@ -100,14 +170,24 @@ DROP TABLE IF EXISTS `forum_replies`;
 CREATE TABLE `forum_replies` (
   `id` int NOT NULL AUTO_INCREMENT,
   `thread_id` int NOT NULL,
-  `content` text NOT NULL,
+  `content` mediumtext NOT NULL,
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT NULL,
   `user_id` int NOT NULL,
+  `anonymous_identity_id` bigint DEFAULT NULL,
+  `client_request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `edit_version` int NOT NULL DEFAULT '1',
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
   KEY `thread_id` (`thread_id`),
+  KEY `idx_forum_replies_identity` (`anonymous_identity_id`),
+  KEY `idx_forum_replies_identity_owner` (`user_id`,`anonymous_identity_id`),
+  KEY `idx_forum_replies_thread_created` (`thread_id`,`created_at`,`id`),
+  KEY `idx_forum_replies_user_thread` (`user_id`,`thread_id`),
+  UNIQUE KEY `uq_forum_replies_user_request` (`user_id`,`client_request_id`),
   CONSTRAINT `forum_replies_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
-  CONSTRAINT `forum_replies_ibfk_2` FOREIGN KEY (`thread_id`) REFERENCES `forum_threads` (`id`)
+  CONSTRAINT `forum_replies_ibfk_2` FOREIGN KEY (`thread_id`) REFERENCES `forum_threads` (`id`),
+  CONSTRAINT `fk_forum_replies_identity_owner` FOREIGN KEY (`user_id`,`anonymous_identity_id`) REFERENCES `forum_anonymous_identities` (`user_id`,`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB AUTO_INCREMENT=23 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -121,14 +201,116 @@ DROP TABLE IF EXISTS `forum_threads`;
 CREATE TABLE `forum_threads` (
   `id` int NOT NULL AUTO_INCREMENT,
   `title` varchar(255) NOT NULL,
-  `content` text NOT NULL,
+  `content` mediumtext NOT NULL,
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP,
   `user_id` int NOT NULL,
+  `anonymous_identity_id` bigint DEFAULT NULL,
+  `client_request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `edit_version` int NOT NULL DEFAULT '1',
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
-  CONSTRAINT `forum_threads_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
+  KEY `idx_forum_threads_identity` (`anonymous_identity_id`),
+  KEY `idx_forum_threads_identity_owner` (`user_id`,`anonymous_identity_id`),
+  KEY `idx_forum_threads_user_created` (`user_id`,`created_at`,`id`),
+  UNIQUE KEY `uq_forum_threads_user_request` (`user_id`,`client_request_id`),
+  CONSTRAINT `forum_threads_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `fk_forum_threads_identity_owner` FOREIGN KEY (`user_id`,`anonymous_identity_id`) REFERENCES `forum_anonymous_identities` (`user_id`,`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB AUTO_INCREMENT=8 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `forum_thread_revisions`
+--
+
+DROP TABLE IF EXISTS `forum_thread_revisions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `forum_thread_revisions` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `thread_id` int NOT NULL,
+  `editor_user_id` int NOT NULL,
+  `title` varchar(255) NOT NULL,
+  `content` mediumtext NOT NULL,
+  `source_version` int NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_forum_thread_revision_version` (`thread_id`,`source_version`),
+  KEY `idx_forum_thread_revisions_editor` (`editor_user_id`),
+  CONSTRAINT `fk_forum_thread_revisions_thread` FOREIGN KEY (`thread_id`) REFERENCES `forum_threads` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_forum_thread_revisions_editor` FOREIGN KEY (`editor_user_id`) REFERENCES `users` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `forum_reply_revisions`
+--
+
+DROP TABLE IF EXISTS `forum_reply_revisions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `forum_reply_revisions` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `reply_id` int NOT NULL,
+  `editor_user_id` int NOT NULL,
+  `content` mediumtext NOT NULL,
+  `source_version` int NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_forum_reply_revision_version` (`reply_id`,`source_version`),
+  KEY `idx_forum_reply_revisions_editor` (`editor_user_id`),
+  CONSTRAINT `fk_forum_reply_revisions_reply` FOREIGN KEY (`reply_id`) REFERENCES `forum_replies` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_forum_reply_revisions_editor` FOREIGN KEY (`editor_user_id`) REFERENCES `users` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `forum_edit_operation_receipts`
+--
+
+DROP TABLE IF EXISTS `forum_edit_operation_receipts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `forum_edit_operation_receipts` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `operation_kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `client_request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `target_id` bigint NOT NULL,
+  `request_fingerprint` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `result_version` int DEFAULT NULL,
+  `result_updated_at` datetime DEFAULT NULL,
+  `result_changed` tinyint(1) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `completed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_forum_edit_operation_request` (`user_id`,`operation_kind`,`client_request_id`),
+  KEY `idx_forum_edit_operation_target` (`operation_kind`,`target_id`),
+  CONSTRAINT `fk_forum_edit_operation_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `forum_create_operation_receipts`
+--
+
+DROP TABLE IF EXISTS `forum_create_operation_receipts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `forum_create_operation_receipts` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `operation_kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `client_request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `request_fingerprint` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `result_id` bigint DEFAULT NULL,
+  `result_created_at` datetime DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `completed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_forum_create_operation_request` (`user_id`,`operation_kind`,`client_request_id`),
+  CONSTRAINT `fk_forum_create_operation_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --

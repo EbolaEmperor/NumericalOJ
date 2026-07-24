@@ -33,7 +33,11 @@ class _DatabaseCursor:
         self.connection.statements.append((statement, params))
         self._result = None
         self.rowcount = 0
-        if statement.startswith("SELECT id, username, is_admin, class FROM users"):
+        if statement.startswith("SELECT GET_LOCK"):
+            self._result = {"identity_namespace_locked": 1}
+        elif statement.startswith("SELECT RELEASE_LOCK"):
+            self._result = {"identity_namespace_released": 1}
+        elif statement.startswith("SELECT id, username, is_admin, class FROM users"):
             self._result = dict(self.connection.user)
         elif statement.startswith("SELECT id FROM problems"):
             self._result = {"id": params[0]}
@@ -268,8 +272,13 @@ def test_create_user_returns_transaction_insert_id(monkeypatch):
     assert connection.commits == 1
     assert connection.rollbacks == 0
     assert connection.closed is True
-    assert len(connection.statements) == 3
-    assert connection.statements[-1][1] == (73, "C1", 1)
+    writes = [
+        statement
+        for statement in connection.statements
+        if statement[0].startswith(("INSERT", "UPDATE"))
+    ]
+    assert len(writes) == 3
+    assert writes[-1][1] == (73, "C1", 1)
 
 
 def test_overwrite_written_submission_audits_after_commit(monkeypatch):

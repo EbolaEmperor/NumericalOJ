@@ -18,6 +18,9 @@
     {% endif %}
 
     <form method="POST" action="{{ url_for('auth.login') }}">
+      {% if next_url %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+      {% endif %}
       <div class="mb-3">
         <label for="username" class="form-label"><i class="fas fa-user me-1"></i> 学号</label>
         <input type="text" class="form-control" id="username" name="username" required>

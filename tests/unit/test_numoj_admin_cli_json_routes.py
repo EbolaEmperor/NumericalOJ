@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import uuid
 from argparse import Namespace
 from pathlib import Path
 
@@ -33,6 +34,11 @@ class _FakeClient:
 
     def request(self, method, path, **kwargs):
         self.requests.append((method, path, kwargs))
+        if path == "/api/forum/identity":
+            return _PayloadResponse({
+                "success": True,
+                "identity": {"posting_token": "posting-token"},
+            })
         return _FakeResponse()
 
 
@@ -116,6 +122,32 @@ def test_numoj_admin_page_like_commands_use_json_api_without_output(monkeypatch)
         monkeypatch.setitem(func.__globals__, "client_from_args", lambda _args: fake_client)
         func(args)
         assert fake_client.requests[-1][1] == expected_path
+
+
+def test_forum_write_commands_use_json_api_and_uuid(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(
+        cli.forum_new.__globals__,
+        "client_from_args",
+        lambda _args: fake_client,
+    )
+
+    cli.forum_new(Namespace(title="主题", content="正文"))
+    method, path, kwargs = fake_client.requests[-1]
+    assert (method, path) == ("POST", "/api/forum/threads")
+    assert kwargs["json"]["title"] == "主题"
+    assert kwargs["json"]["content"] == "正文"
+    assert kwargs["json"]["expected_identity_token"] == "posting-token"
+    assert uuid.UUID(kwargs["json"]["client_request_id"])
+
+    cli.forum_reply(Namespace(thread_id=7, content="回复"))
+    method, path, kwargs = fake_client.requests[-1]
+    assert (method, path) == ("POST", "/api/forum/threads/7/replies")
+    assert kwargs["json"]["content"] == "回复"
+    assert kwargs["json"]["expected_identity_token"] == "posting-token"
+    assert uuid.UUID(kwargs["json"]["client_request_id"])
+    capsys.readouterr()
 
 
 def test_ranking_detail_submissions_tab_maps_to_server_tab(monkeypatch):
@@ -986,6 +1018,11 @@ class _HygieneClient:
                 **self._noise(),
                 "count": 1,
                 "threads": [{"id": 1, "title": "帖", "content": "列表不需要正文", **self._noise()}],
+            })
+        if path == "/api/forum/identity":
+            return _PayloadResponse({
+                "success": True,
+                "identity": {"posting_token": "posting-token"},
             })
         if path == "/api/forum/threads/1":
             return _PayloadResponse({
