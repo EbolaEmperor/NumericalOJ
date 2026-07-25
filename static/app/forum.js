@@ -75,6 +75,8 @@
     closeIdentityButton: document.getElementById("closeIdentityButton"),
     cancelIdentityButton: document.getElementById("cancelIdentityButton"),
     toast: document.getElementById("forumToast"),
+    toastEyebrow: document.getElementById("forumToastEyebrow"),
+    toastMessage: document.getElementById("forumToastMessage"),
   };
 
   const state = {
@@ -189,12 +191,23 @@
   function showToast(message, kind) {
     if (!elements.toast) return;
     window.clearTimeout(state.toastTimer);
-    elements.toast.textContent = String(message || "");
-    elements.toast.classList.toggle("is-error", kind === "error");
+    const isError = kind === "error";
+    const isShare = kind === "share";
+    if (elements.toastMessage) {
+      elements.toastMessage.textContent = String(message || "");
+    }
+    if (elements.toastEyebrow) {
+      elements.toastEyebrow.textContent = isError
+        ? "FORUM · ERROR"
+        : (isShare ? "SHARE · READY" : "FORUM · NOTICE");
+    }
+    elements.toast.setAttribute("role", isError ? "alert" : "status");
+    elements.toast.classList.toggle("is-error", isError);
+    elements.toast.classList.toggle("is-share", isShare);
     elements.toast.classList.add("is-visible");
     state.toastTimer = window.setTimeout(() => {
       elements.toast.classList.remove("is-visible");
-    }, kind === "error" ? 5200 : 3000);
+    }, isError ? 5200 : (isShare ? 4200 : 3000));
   }
 
   function escapeHtml(value) {
@@ -1878,14 +1891,85 @@
     }
   }
 
+  async function writeClipboardText(text) {
+    const value = String(text || "");
+    let clipboardError = null;
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch (error) {
+        clipboardError = error;
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    const activeElement = document.activeElement;
+    const selection = window.getSelection();
+    const previousRanges = [];
+    if (selection) {
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        previousRanges.push(selection.getRangeAt(index).cloneRange());
+      }
+    }
+
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.setAttribute("aria-hidden", "true");
+    textarea.tabIndex = -1;
+    Object.assign(textarea.style, {
+      position: "fixed",
+      top: "0",
+      left: "-9999px",
+      width: "1px",
+      height: "1px",
+      opacity: "0",
+      pointerEvents: "none",
+      fontSize: "16px",
+    });
+    document.body.appendChild(textarea);
+
+    let copied = false;
+    try {
+      try {
+        textarea.focus({ preventScroll: true });
+      } catch (_focusError) {
+        textarea.focus();
+      }
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      copied = Boolean(document.execCommand && document.execCommand("copy"));
+    } catch (error) {
+      clipboardError = clipboardError || error;
+    } finally {
+      textarea.remove();
+      if (selection) {
+        selection.removeAllRanges();
+        previousRanges.forEach((range) => selection.addRange(range));
+      }
+      if (activeElement && typeof activeElement.focus === "function") {
+        try {
+          activeElement.focus({ preventScroll: true });
+        } catch (_focusError) {
+          activeElement.focus();
+        }
+      }
+    }
+
+    if (!copied) {
+      throw clipboardError || new Error("clipboard-unavailable");
+    }
+  }
+
   async function copyThreadLink() {
     if (!state.selectedId) return;
     const url = new URL(threadUrl(state.selectedId), window.location.origin).href;
     try {
-      await navigator.clipboard.writeText(url);
-      showToast("讨论链接已复制");
+      await writeClipboardText(url);
+      showToast("链接已复制到剪贴板，快去分享吧！", "share");
     } catch (_error) {
-      window.prompt("复制下面的讨论链接：", url);
+      showToast("链接复制失败，请允许浏览器访问剪贴板后重试。", "error");
     }
   }
 

@@ -116,7 +116,7 @@
             <i class="fas fa-pen" aria-hidden="true"></i>
             编辑主题
           </button>
-          <button class="forum-icon-button" id="copyThreadLinkButton" type="button" aria-label="复制讨论链接" title="复制链接" disabled>
+          <button class="forum-icon-button" id="copyThreadLinkButton" type="button" aria-label="分享讨论" title="分享讨论" disabled>
             <i class="fas fa-link" aria-hidden="true"></i>
           </button>
         </div>
@@ -271,7 +271,19 @@
     </form>
   </dialog>
 
-  <div class="forum-toast" id="forumToast" role="status" aria-live="polite"></div>
+  <div
+    class="forum-toast"
+    id="forumToast"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+  >
+    <span class="forum-toast-mark" aria-hidden="true"></span>
+    <span class="forum-toast-copy">
+      <small id="forumToastEyebrow">FORUM · NOTICE</small>
+      <strong id="forumToastMessage"></strong>
+    </span>
+  </div>
 </div>
 {% endblock %}
 

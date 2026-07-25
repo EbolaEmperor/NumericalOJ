@@ -136,6 +136,19 @@ def test_button_color_reset_does_not_override_component_variants():
     assert ".forum-button-dark {\n" in CSS
 
 
+def test_share_button_copies_directly_and_uses_the_forum_notice():
+    assert 'aria-label="分享讨论"' in TEMPLATE
+    assert 'id="forumToastEyebrow"' in TEMPLATE
+    assert 'id="forumToastMessage"' in TEMPLATE
+    assert "async function writeClipboardText(text)" in JAVASCRIPT
+    assert 'navigator.clipboard.writeText(value)' in JAVASCRIPT
+    assert 'document.execCommand("copy")' in JAVASCRIPT
+    assert 'showToast("链接已复制到剪贴板，快去分享吧！", "share")' in JAVASCRIPT
+    assert "window.prompt(" not in JAVASCRIPT
+    assert ".forum-toast.is-share .forum-toast-mark" in CSS
+    assert '.forum-toast.is-share .forum-toast-mark::before' in CSS
+
+
 def test_editor_completion_cannot_mutate_a_newly_opened_edit_context():
     assert "function editorContextMatches(mode, targetId, draftKey)" in JAVASCRIPT
     assert "const submittedMode = state.editorMode;" in JAVASCRIPT
