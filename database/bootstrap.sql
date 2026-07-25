@@ -1012,26 +1012,6 @@ CREATE TABLE `repository_delete_confirmations` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `repository_legacy_migrations`
---
-
-DROP TABLE IF EXISTS `repository_legacy_migrations`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `repository_legacy_migrations` (
-  `user_id` int NOT NULL,
-  `source_file_count` int unsigned NOT NULL,
-  `source_total_size` bigint unsigned NOT NULL,
-  `source_manifest_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  `status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `completed_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`user_id`),
-  CONSTRAINT `fk_repository_legacy_migrations_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
 -- Table structure for table `repository_fs_journal`
 --
 

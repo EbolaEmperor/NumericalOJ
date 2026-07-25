@@ -131,61 +131,7 @@ DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
 6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
 
-### 讨论区匿名身份属主约束迁移
-
-`scripts/migrations/m20260725_forum_anonymous_identity_ownership.py` 是讨论区匿名身份复合属主约束的显式迁移。它先以 anti-join 分别统计主题、回复、用户身份设置和身份刷新回执中的悬空或跨用户引用，再核验相关表均为 InnoDB、参与外键的整数列类型和符号一致，以及现有同名索引/外键定义完全匹配。任一检查异常都会失败关闭；脚本不会关闭 `FOREIGN_KEY_CHECKS`，也不会猜测或自动改写问题数据。
-
-只读审计可以执行：
-
-```bash
-python3 scripts/migrations/m20260725_forum_anonymous_identity_ownership.py --check
-```
-
-实际迁移只能在已验证数据库回滚点、并确认 Web、Celery 及其他应用写入者全部停止后执行：
-
-```bash
-python3 scripts/migrations/m20260725_forum_anonymous_identity_ownership.py \
-  --apply --confirm-app-writers-stopped
-```
-
-迁移持有独立的 MySQL advisory lock，并按“父表复合唯一索引 -> 全部子表复合索引 -> 全部子表复合外键”的顺序幂等补齐。MySQL DDL 会隐式提交；如果中途失败，不得假设事务回滚已撤销先前步骤，应保留现场、排除失败原因后重跑同一命令向前补齐，或按已验证回滚点人工恢复。
-
-### 代码仓库目录树与索引代次迁移
-
-代码仓库改为“真实文件系统正文 + MySQL metadata”时包含两个显式迁移，顺序不可互换：
-
-1. `m20260725_repository_index_generations.py` 必须在 `init_db_schema.py` **之前**运行。它先移除会阻挡 `filename` 扩列、或继续跨代次冲突的旧索引，再补齐 generation 列和新索引；全新安装尚无四张旧索引表时安全 no-op，部分缺表则失败关闭。
-2. 结构同步创建目录树、上传、journal 与提交快照 metadata 表后，再运行 `m20260725_repository_tree_storage.py`。它先把当时 `MAX(submissions.id)` 以 `INSERT IGNORE` 固定为 legacy 快照 high-water，并在 `REPOSITORY_STORAGE_ROOT/migration-backups/m20260725_repository_tree_storage/legacy_rows.json` 以 `0600` 原子保存可执行回滚原文，然后逐用户迁移。中断后只接受现有树是目标 manifest 的正确子集并续写缺项；额外路径、类型冲突或摘要漂移一律停止。
-
-变更评审或停机前可只读检查：
-
-```bash
-python3 scripts/migrations/m20260725_repository_index_generations.py
-python3 scripts/migrations/m20260725_repository_tree_storage.py
-```
-
-生产 apply 仅由 `deploy.sh` 在应用写入者停止且数据库回滚点验证成功后按以下顺序执行；不得人工跳过确认参数：
-
-```bash
-python3 scripts/migrations/m20260725_repository_index_generations.py \
-  --apply --confirm-app-writers-stopped
-python3 scripts/init_db_schema.py
-python3 scripts/migrations/m20260725_repository_tree_storage.py \
-  --apply --confirm-app-writers-stopped
-python3 scripts/repository_storage_admin.py cleanup-expired-uploads \
-  --apply --confirm-expired-staging-delete
-python3 scripts/repository_storage_admin.py doctor
-```
-
-目录树数据迁移需要回退旧代码时，优先恢复部署生成的完整数据库回滚点。若只需撤销 legacy 行删除，且上述 `legacy_rows.json` 的内部摘要校验通过，可在全部写入者停止后先审计再显式恢复原始 ID、正文和时间戳：
-
-```bash
-python3 scripts/migrations/m20260725_repository_tree_storage_rollback.py
-python3 scripts/migrations/m20260725_repository_tree_storage_rollback.py \
-  --apply --confirm-app-writers-stopped
-```
-
-这个精细回滚保留新目录树和 high-water，只把迁移回执标记为 `rolled_back`，旧代码会忽略新结构；它不是 index DDL 的 down migration。DDL 中途失败仍须使用部署前完整数据库回滚点或审阅后向前补齐。
+### 仓库存储运维
 
 仓库存储运维入口默认只读：
 
@@ -222,7 +168,7 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 3. 以 MySQL 服务端查询结果生成唯一备份计划，兼容矩阵只在 `deploy/backup/policy.py` 维护。兼容的本机 Oracle MySQL/Percona Server 使用固定版本 XtraBackup；无兼容映射时使用逻辑备份。XtraBackup 缺失或版本不匹配时，先通过交互式 `sudo` 与 Debian APT 供应固定版本；APT 动作必须先模拟、限制在审核后的包集合内，并拒绝连带改动 MySQL、Docker 等宿主关键服务。供应阶段的 sudo、APT、仓库、dpkg 或二进制校验失败可以把计划确定为逻辑备份。一旦供应成功，物理 plan 的 MySQL 身份、socket/datadir、本地 socket 认证、容量或后续执行条件验证失败都必须直接停止；计划冻结后不得因备份或 prepare 失败临时换策略。MySQL 认证复用严格加载的部署配置，并通过位于私有 plans 目录、权限 `0600` 的短期 option file 交给提权后的客户端；凭据值不得进入 plan、manifest、argv、环境或输出，option file 无论成功失败都必须删除。sudo 交互认证与凭据保活必须在停服前完成，停服后只能使用 `sudo -n`，凭据失效立即停止。
 4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
 5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
-6. 只有回滚点验证成功后，才原子切换 `.deploy/current-venv` 与 `.deploy/arc-agi-3/current`。随后依次执行仓库 index generation 显式 DDL、一次非破坏性结构同步、仓库 legacy 正文目录树迁移/high-water 固定、讨论区匿名身份属主复合约束迁移、`scripts/backfill_class_logos.py` 幂等补齐历史班级的缺失 logo 种子、仓库存储 doctor，再执行显式停机任务恢复，最后切换生产镜像标签。显式迁移必须携带 `--apply --confirm-app-writers-stopped`，并在数据、索引、anti-join 或文件系统审计失败时停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API。logo 回填只更新 `NULL`/空值，已有种子不得重生成；任一步骤失败都立即停止，不自动恢复数据库，也不自动重启业务服务。回滚使用本次部署已验证的数据库回滚点，或者在确认 DDL 已提交后向前修复。
+6. 只有回滚点验证成功后，才原子切换 `.deploy/current-venv` 与 `.deploy/arc-agi-3/current`。随后执行一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API。任一步骤失败都立即停止，不自动恢复数据库，也不自动重启业务服务；回滚使用本次部署已验证的数据库回滚点，或者在确认 DDL 已提交后向前修复。
 7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功并执行留存清理。日志采集异常必须告警，但不能阻断健康的业务服务。
 
 `deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，不进入 Git 仓库。脚本还会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少 clangd 或 Bubblewrap 时通过 APT 管理其精确 candidate 版本、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。

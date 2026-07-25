@@ -45,7 +45,7 @@ CORE_TABLES = [
     'repository_fs_journal', 'repository_chunk_embeddings',
     'repository_function_chunks', 'repository_class_metadata',
     'repository_index_jobs', 'repository_entries',
-    'repository_legacy_migrations', 'repository_states',
+    'repository_states',
     'submissions', 'submission_limits',
     'ac_record', 'max_score', 'user_class_map', 'users', 'class_table',
     'problems', 'agent_task_runs', 'forum_replies', 'forum_threads',
