@@ -62,6 +62,13 @@ def test_repository_metadata_namespace_uses_binary_collation():
         "COLLATE utf8mb4_bin NOT NULL"
         in bootstrap
     )
+    assert "`parent_scope` bigint unsigned NOT NULL" in bootstrap
+    assert "GENERATED ALWAYS AS (ifnull(`parent_id`,0))" not in bootstrap
+    assert (
+        "CONSTRAINT `chk_repository_entries_parent_scope` "
+        "CHECK (`parent_scope` = ifnull(`parent_id`,0))"
+        in bootstrap
+    )
 
 
 def test_upload_session_target_is_not_cascade_bound_to_repository_entry():
@@ -74,6 +81,132 @@ def test_upload_session_target_is_not_cascade_bound_to_repository_entry():
         Path(__file__).resolve().parents[2] / "database" / "bootstrap.sql"
     ).read_text(encoding="utf-8")
     assert "fk_repository_upload_sessions_parent_owner" not in bootstrap
+
+
+def test_persist_entries_writes_parent_scope_for_root_and_child():
+    class Cursor:
+        def __init__(self):
+            self.executed = []
+            self.lastrowid = 0
+
+        def execute(self, sql, params=()):
+            normalized = " ".join(str(sql).split())
+            self.executed.append((normalized, tuple(params)))
+            if normalized.startswith("INSERT INTO repository_entries"):
+                self.lastrowid += 1
+
+    cursor = Cursor()
+    final_entries = [
+        {
+            "_key": "n:directory",
+            "_parent_key": None,
+            "name": "A",
+            "relative_path": "A",
+            "entry_type": "directory",
+            "file_size": 0,
+            "file_version": 0,
+            "content_sha256": None,
+        },
+        {
+            "_key": "n:file",
+            "_parent_key": "n:directory",
+            "name": "B.h",
+            "relative_path": "A/B.h",
+            "entry_type": "file",
+            "file_size": 3,
+            "file_version": 1,
+            "content_sha256": "a" * 64,
+        },
+    ]
+
+    tree_services._persist_entries(
+        cursor,
+        user_id=7,
+        before_rows=[],
+        final_entries=final_entries,
+        operation_id="operation",
+    )
+
+    inserts = [
+        (sql, params)
+        for sql, params in cursor.executed
+        if sql.startswith("INSERT INTO repository_entries")
+    ]
+    assert len(inserts) == 2
+    assert "user_id, parent_id, parent_scope" in inserts[0][0]
+    assert inserts[0][1][1:3] == (None, 0)
+    assert inserts[1][1][1:3] == (1, 1)
+
+
+def test_persist_entries_keeps_parent_scope_in_sync_while_moving_existing_entry():
+    class Cursor:
+        def __init__(self):
+            self.executed = []
+            self.lastrowid = 0
+
+        def execute(self, sql, params=()):
+            normalized = " ".join(str(sql).split())
+            self.executed.append((normalized, tuple(params)))
+            if normalized.startswith("INSERT INTO repository_entries"):
+                self.lastrowid += 1
+
+    cursor = Cursor()
+    before_rows = [{
+        "id": 5,
+        "parent_id": None,
+        "name": "B.h",
+        "relative_path": "B.h",
+        "entry_type": "file",
+        "file_size": 3,
+        "file_version": 1,
+        "content_sha256": "a" * 64,
+    }]
+    final_entries = [
+        {
+            "_key": "n:directory",
+            "_parent_key": None,
+            "name": "A",
+            "relative_path": "A",
+            "entry_type": "directory",
+            "file_size": 0,
+            "file_version": 0,
+            "content_sha256": None,
+        },
+        {
+            "_key": "i:5",
+            "_parent_key": "n:directory",
+            "name": "B.h",
+            "relative_path": "A/B.h",
+            "entry_type": "file",
+            "file_size": 3,
+            "file_version": 1,
+            "content_sha256": "a" * 64,
+        },
+    ]
+
+    tree_services._persist_entries(
+        cursor,
+        user_id=7,
+        before_rows=before_rows,
+        final_entries=final_entries,
+        operation_id="operation",
+    )
+
+    temporary_update = next(
+        (sql, params)
+        for sql, params in cursor.executed
+        if sql.startswith("UPDATE repository_entries")
+        and "parent_id = NULL" in sql
+    )
+    final_update = next(
+        (sql, params)
+        for sql, params in cursor.executed
+        if sql.startswith("UPDATE repository_entries")
+        and "parent_id = %s" in sql
+    )
+    assert "parent_scope = 0" in temporary_update[0]
+    assert "parent_scope = %s" in final_update[0]
+    assert final_update[1][:2] == (1, 1)
 
 
 @pytest.mark.parametrize(

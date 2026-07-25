@@ -932,7 +932,7 @@ CREATE TABLE `repository_entries` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
   `parent_id` bigint unsigned DEFAULT NULL,
-  `parent_scope` bigint unsigned GENERATED ALWAYS AS (ifnull(`parent_id`,0)) STORED,
+  `parent_scope` bigint unsigned NOT NULL,
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `relative_path` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `path_hash` binary(32) NOT NULL,
@@ -949,6 +949,7 @@ CREATE TABLE `repository_entries` (
   KEY `idx_repository_entries_parent` (`user_id`,`parent_id`,`entry_type`,`name`),
   CONSTRAINT `fk_repository_entries_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_repository_entries_parent_owner` FOREIGN KEY (`user_id`,`parent_id`) REFERENCES `repository_entries` (`user_id`,`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_repository_entries_parent_scope` CHECK (`parent_scope` = ifnull(`parent_id`,0)),
   CONSTRAINT `chk_repository_entries_type` CHECK (`entry_type` IN ('file','directory')),
   CONSTRAINT `chk_repository_entries_file_shape` CHECK (
     (`entry_type` = 'directory' AND `file_size` = 0 AND `file_version` = 0 AND `content_sha256` IS NULL)
