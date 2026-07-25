@@ -200,6 +200,59 @@
   text-decoration: underline;
 }
 
+/*
+ * clangd 语义层复用代码编辑器的 Dark+ 配色，只覆盖服务端明确识别的
+ * 标识符；其余词法 token 和请求失败场景继续使用上面的 Pygments 主题。
+ */
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-namespace,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-type,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-class,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-interface,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-enum,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-typeparameter,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-dependenttype,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-concept {
+  color: #4ec9b0;
+}
+
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-enummember,
+.numoj-markdown
+  .codehilite
+  .numoj-semantic-token.numoj-semantic-variable.numoj-semantic-readonly {
+  color: #4fc1ff;
+}
+
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-function,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-method,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-decorator {
+  color: #dcdcaa;
+}
+
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-variable,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-parameter,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-selfparameter,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-clsparameter,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-property {
+  color: #9cdcfe;
+}
+
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-keyword,
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-modifier {
+  color: #569cd6;
+}
+
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-macro {
+  color: #c586c0;
+}
+
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-label {
+  color: #c8c8c8;
+}
+
+.numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-comment {
+  color: #6a9955;
+}
+
 .numoj-markdown .codehilite.language-mermaid,
 .numoj-markdown .codehilite.language-mmd {
   background: transparent;
