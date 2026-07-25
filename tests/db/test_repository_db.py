@@ -5,7 +5,7 @@
 - create_repository_index_job / update_repository_index_job（白名单字段，unknown 忽略）
 - get_repository_index_job（progress = round(done/total*100)，或 status=='success' → 100）
 - get_latest_active_repository_index_job（queued/running 在取消确认前保持 active）
-- list_repository_classes（limit 夹紧 min(max(1,limit),2000)）
+- list_repository_classes（只读已发布 generation，limit 夹紧 min(max(1,limit),2000)）
 - get_user_repository_files_by_names（{filename: content}）
 
 注意：表结构由测试会话启动时的统一数据库初始化脚本保证，测试本身不再补表补列。
@@ -19,10 +19,45 @@ from oj_modules.repository import tree as tree_services
 from tests import helpers as h
 
 
+def _ensure_active_index_generation(user_id):
+    """为直接 SQL 测试建立一个已发布的索引 generation。"""
+    state = tree_services.get_repository_state(int(user_id))
+    active_generation = state.get('active_index_generation')
+    if active_generation is not None:
+        return int(active_generation)
+
+    generation = ris.create_repository_index_job(int(user_id))
+    ris.update_repository_index_job(
+        generation,
+        status='success',
+        base_repository_generation=state['repository_generation'],
+    )
+    conn = db.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE repository_states
+                SET active_index_generation = %s, index_status = 'ready'
+                WHERE user_id = %s
+                """,
+                (generation, int(user_id)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return generation
+
+
 def _insert_class_metadata(user_id, class_id, filename, class_name,
                            qualified_name='', kind='class', source_hash='hh',
-                           json_data=None):
+                           json_data=None, index_generation=None):
     """直接 SQL 写入一行 repository_class_metadata（绕过 LLM 结构化路径）。"""
+    generation = (
+        _ensure_active_index_generation(user_id)
+        if index_generation is None
+        else int(index_generation)
+    )
     payload = json.dumps(json_data or {}, ensure_ascii=False)
     conn = db.get_db_connection()
     try:
@@ -30,12 +65,12 @@ def _insert_class_metadata(user_id, class_id, filename, class_name,
             cur.execute(
                 """
                 INSERT INTO repository_class_metadata
-                    (class_id, user_id, repo_file_id, filename, kind,
+                    (class_id, user_id, index_generation, repo_file_id, filename, kind,
                      class_name, qualified_name, source_hash,
                      bases_json, members_json, json_data)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
-                (class_id, int(user_id), None, filename, kind, class_name,
+                (class_id, int(user_id), generation, None, filename, kind, class_name,
                  qualified_name or class_name, source_hash, '[]', '[]', payload),
             )
         conn.commit()
@@ -230,8 +265,27 @@ def test_list_repository_classes_scoped_to_user():
     assert rows[0]['class_name'] == 'Owned'
 
 
+def test_list_repository_classes_hides_unpublished_generation():
+    u = h.make_user('repocls3c')
+    _insert_class_metadata(u['id'], 'published-1', 'stable.hpp', 'Published')
+    candidate_generation = ris.create_repository_index_job(u['id'])
+    _insert_class_metadata(
+        u['id'],
+        'candidate-1',
+        'candidate.hpp',
+        'Candidate',
+        index_generation=candidate_generation,
+    )
+
+    rows = ris.list_repository_classes(u['id'])
+    assert [(row['filename'], row['class_name']) for row in rows] == [
+        ('stable.hpp', 'Published'),
+    ]
+
+
 def test_list_repository_classes_limit_clamped(monkeypatch):
     u = h.make_user('repocls4')
+    _ensure_active_index_generation(u['id'])
     captured = {}
 
     real_get_conn = db.get_db_connection
