@@ -141,14 +141,14 @@
             id="replyInput"
             name="content"
             rows="2"
-            placeholder="写下你的回复… 支持 Markdown、代码与 LaTeX"
+            placeholder="写下你的回复… 支持 Markdown、代码、LaTeX 与 Mermaid"
             required
           ></textarea>
           <div class="forum-inline-preview" id="replyPreview" hidden></div>
           <p class="forum-field-error" id="replyError" role="alert"></p>
         </div>
         <div class="forum-composer-actions">
-          <span class="forum-format-hint">MARKDOWN / LATEX</span>
+          <span class="forum-format-hint">MD / CODE / TEX / MERMAID</span>
           <button class="forum-button forum-button-quiet" id="previewReplyButton" type="button">预览</button>
           <button class="forum-button forum-button-dark" id="submitReplyButton" type="submit">
             提交回复
@@ -188,7 +188,7 @@
         <div class="forum-editor-tabs" role="tablist" aria-label="编辑与预览">
           <button class="is-active" type="button" data-editor-tab="write" role="tab" aria-selected="true">编写</button>
           <button type="button" data-editor-tab="preview" role="tab" aria-selected="false">安全预览</button>
-          <span>MARKDOWN + LATEX</span>
+          <span>MARKDOWN + CODE + LATEX + MERMAID</span>
         </div>
 
         <div class="forum-field forum-editor-write" id="editorWritePanel">
@@ -201,7 +201,7 @@
           ></textarea>
         </div>
         <div class="forum-editor-preview forum-markdown" id="editorPreviewPanel" hidden>
-          <p class="forum-preview-placeholder">输入内容后，这里会显示经过服务端清洗的预览。</p>
+          <p class="forum-preview-placeholder">输入内容后，这里会显示经过服务端清洗并安全绘制的预览。</p>
         </div>
         <p class="forum-field-error" id="editorError" role="alert"></p>
       </div>
@@ -276,5 +276,7 @@
 
 {% block scripts %}
   {{ super() }}
+  <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='app/forum-markdown.js') }}"></script>
   <script src="{{ url_for('static', filename='app/forum.js') }}"></script>
 {% endblock %}

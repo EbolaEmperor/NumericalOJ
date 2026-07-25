@@ -11,12 +11,25 @@ TEMPLATE = (ROOT / "templates" / "forum" / "index.html").read_text(
 )
 CSS = (ROOT / "static" / "app" / "forum.css").read_text(encoding="utf-8")
 JAVASCRIPT = (ROOT / "static" / "app" / "forum.js").read_text(encoding="utf-8")
+MARKDOWN_JAVASCRIPT = (
+    ROOT / "static" / "app" / "forum-markdown.js"
+).read_text(encoding="utf-8")
 ROUTES = (ROOT / "oj_modules" / "routes" / "forum_routes.py").read_text(
     encoding="utf-8"
 )
 MATHJAX = (
     ROOT / "templates" / "components" / "layout" / "mathjax.html"
 ).read_text(encoding="utf-8")
+BASE_LAYOUT = (ROOT / "templates" / "layouts" / "base.html").read_text(
+    encoding="utf-8"
+)
+PACKAGE = (ROOT / "package.json").read_text(encoding="utf-8")
+FORUM_ASSET_BUILD = (
+    ROOT / "scripts" / "build_forum_rendering.mjs"
+).read_text(encoding="utf-8")
+CI_WORKFLOW = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+    encoding="utf-8"
+)
 
 
 def test_forum_uses_one_master_detail_workbench_and_canonical_thread_route():
@@ -134,3 +147,51 @@ def test_reply_completion_only_updates_the_original_thread_context():
 def test_mathjax_uses_an_explicit_non_html_package_allowlist():
     assert "packages: ['base', 'ams', 'newcommand', 'noundefined']" in MATHJAX
     assert "load: []" in MATHJAX
+
+
+def test_forum_loads_pinned_self_hosted_mermaid_only_on_its_page():
+    mermaid_asset = ROOT / "static" / "vendor" / "mermaid" / "mermaid.min.js"
+    mermaid_license = ROOT / "static" / "vendor" / "mermaid" / "LICENSE"
+
+    assert TEMPLATE.count("vendor/mermaid/mermaid.min.js") == 1
+    assert TEMPLATE.count("app/forum-markdown.js") == 1
+    assert TEMPLATE.index("vendor/mermaid/mermaid.min.js") < TEMPLATE.index(
+        "app/forum-markdown.js"
+    )
+    assert TEMPLATE.index("app/forum-markdown.js") < TEMPLATE.index("app/forum.js")
+    assert "vendor/mermaid" not in BASE_LAYOUT
+    assert '"mermaid": "11.16.0"' in PACKAGE
+    assert "node_modules/mermaid/dist/mermaid.min.js" in FORUM_ASSET_BUILD
+    assert "npm run build:frontend" in CI_WORKFLOW
+    assert "static/vendor/mermaid" in CI_WORKFLOW
+    assert mermaid_asset.stat().st_size > 1_000_000
+    assert mermaid_license.is_file()
+
+
+def test_forum_mermaid_uses_sandbox_limits_and_handles_dynamic_html():
+    for contract in (
+        'securityLevel: "sandbox"',
+        "startOnLoad: false",
+        "maxTextSize: MERMAID_MAX_TEXT_SIZE",
+        "maxEdges: MERMAID_MAX_EDGES",
+        "suppressErrorRendering: true",
+        'const source = String(code.textContent || "");',
+        "await mermaidRenderer.parse(source, { suppressErrors: true });",
+        "await mermaidRenderer.run({ nodes: [diagram] });",
+        "container.dataset.mermaidGeneration !== generation",
+        "if (root.isConnected) await typesetMath(root);",
+    ):
+        assert contract in MARKDOWN_JAVASCRIPT
+
+    assert "enhanceRenderedMarkdown(elements.conversation)" in JAVASCRIPT
+    assert ".then(settleScrollPosition)" in JAVASCRIPT
+    assert "renderSequence !== state.conversationRenderSequence" in JAVASCRIPT
+    assert "await enhanceRenderedMarkdown(target);" in JAVASCRIPT
+    assert "window.NumericalOJForumMarkdown.enhance(root)" in JAVASCRIPT
+    assert 'querySelectorAll("img")' not in MARKDOWN_JAVASCRIPT
+    assert ".forum-markdown img {\n  display: block;" in CSS
+
+    assert ".forum-markdown .codehilite .k" in CSS
+    assert ".forum-markdown .codehilite .s" in CSS
+    assert ".forum-markdown .codehilite .c" in CSS
+    assert ".forum-mermaid-diagram > iframe" in CSS

@@ -100,6 +100,7 @@
     listRequestSequence: 0,
     detailRequestSequence: 0,
     previewRequestSequence: 0,
+    conversationRenderSequence: 0,
     toastTimer: null,
     searchTimer: null,
     identityRefreshTimer: null,
@@ -715,26 +716,8 @@
     }
   }
 
-  function enhanceRenderedLinks(root) {
-    root.querySelectorAll("a[href]").forEach((link) => {
-      try {
-        const url = new URL(link.href, window.location.href);
-        if (url.origin !== window.location.origin) {
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-        }
-      } catch (_error) {
-        link.removeAttribute("href");
-      }
-    });
-    root.querySelectorAll("img").forEach((image) => image.remove());
-  }
-
-  function typesetMath(root) {
-    if (!window.MathJax || typeof window.MathJax.typesetPromise !== "function") return;
-    window.MathJax.typesetPromise([root]).catch(() => {
-      // 公式错误只影响该段展示，不反转正文加载结果。
-    });
+  function enhanceRenderedMarkdown(root) {
+    return window.NumericalOJForumMarkdown.enhance(root);
   }
 
   function buildPost(item, kind) {
@@ -792,7 +775,6 @@
     const body = document.createElement("div");
     body.className = "forum-markdown";
     body.innerHTML = String(item.rendered_content || "");
-    enhanceRenderedLinks(body);
 
     content.append(header, body);
     article.append(avatar, content);
@@ -802,6 +784,7 @@
   function renderConversation(options) {
     const config = Object.assign({ preserveScroll: false, scrollToBottom: false }, options || {});
     if (!state.thread) return;
+    const renderSequence = ++state.conversationRenderSequence;
     const previousHeight = elements.conversation.scrollHeight;
     const previousTop = elements.conversation.scrollTop;
     const fragment = document.createDocumentFragment();
@@ -836,19 +819,27 @@
     }
 
     elements.conversation.replaceChildren(fragment);
-    typesetMath(elements.conversation);
 
-    if (config.preserveScroll) {
-      const addedHeight = elements.conversation.scrollHeight - previousHeight;
-      elements.conversation.scrollTop = previousTop + addedHeight;
-    } else if (config.scrollToBottom) {
-      elements.conversation.scrollTop = elements.conversation.scrollHeight;
-    } else {
-      elements.conversation.scrollTop = 0;
+    function settleScrollPosition() {
+      if (renderSequence !== state.conversationRenderSequence) return;
+      if (config.preserveScroll) {
+        const addedHeight = elements.conversation.scrollHeight - previousHeight;
+        elements.conversation.scrollTop = previousTop + addedHeight;
+      } else if (config.scrollToBottom) {
+        elements.conversation.scrollTop = elements.conversation.scrollHeight;
+      } else {
+        elements.conversation.scrollTop = 0;
+      }
     }
+
+    settleScrollPosition();
+    enhanceRenderedMarkdown(elements.conversation)
+      .then(settleScrollPosition)
+      .catch(settleScrollPosition);
   }
 
   function setDetailLoading(id) {
+    state.conversationRenderSequence += 1;
     elements.detailKicker.textContent = `THREAD · ${threadCode(id)}`;
     elements.detailTitle.textContent = "正在读取讨论…";
     elements.editThreadButton.hidden = true;
@@ -862,6 +853,7 @@
   }
 
   function setDetailError(error) {
+    state.conversationRenderSequence += 1;
     elements.detailTitle.textContent = "这条讨论暂时无法显示";
     elements.conversation.innerHTML = `
       <div class="forum-conversation-error">
@@ -1179,9 +1171,8 @@
       if (requestSequence !== state.previewRequestSequence) return;
       target.innerHTML = String(payload.rendered_content || "");
       target.classList.add("forum-markdown");
-      enhanceRenderedLinks(target);
       target.hidden = false;
-      typesetMath(target);
+      await enhanceRenderedMarkdown(target);
     } catch (error) {
       showToast(error.message, "error");
     } finally {
