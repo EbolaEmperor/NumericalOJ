@@ -151,13 +151,13 @@ def save_repository_file():
                 expected_structure_version=data.get('expected_structure_version'),
             )
         entry = result['entry']
-        return jsonify(
-            success=True,
-            message="文件创建成功" if result.get('created') else "文件更新成功",
-            file_id=entry['id'],
-            filename=entry['relative_path'],
+        return jsonify({
             **result,
-        )
+            'success': True,
+            'message': "文件创建成功" if result.get('created') else "文件更新成功",
+            'file_id': result.get('file_id', entry['id']),
+            'filename': entry['relative_path'],
+        })
     except RepositoryDomainError as e:
         return jsonify(**e.as_payload()), e.status
     except Exception as e:
