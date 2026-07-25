@@ -165,6 +165,18 @@ DESIRED_INDEXES = {
     },
 }
 
+# ``repository_chunk_embeddings.user_id`` 的外键在旧 schema 中可能由下面两个
+# 即将被替换的索引之一承载。MySQL 不允许在没有替代索引的瞬间删除该索引，因此迁移
+# 期间先建立一个仅覆盖 user_id 的临时索引；新 generation-aware 索引就绪后再删除。
+# 这也让迁移能从“旧普通索引已删、旧唯一索引仍在”的中断现场安全重入。
+TEMPORARY_FK_INDEXES = {
+    "repository_chunk_embeddings": (
+        "idx_repository_chunk_embeddings_migration_user_fk",
+        (False, ("user_id",)),
+        "KEY `idx_repository_chunk_embeddings_migration_user_fk` (`user_id`)",
+    ),
+}
+
 
 class IndexSchemaMigrationError(RuntimeError):
     pass
@@ -294,6 +306,51 @@ def _execute_or_plan(cursor, sql, *, apply, actions):
         cursor.execute(sql)
 
 
+def _index_names_to_drop(table, existing):
+    names = set(LEGACY_INDEXES.get(table, set()))
+    for name, (unique, columns, _definition) in DESIRED_INDEXES.get(table, {}).items():
+        if name in existing and existing[name] != (unique, columns):
+            names.add(name)
+    return names
+
+
+def _prepare_temporary_fk_indexes(cursor, *, apply, actions):
+    active = set()
+    for table, (name, expected, definition) in TEMPORARY_FK_INDEXES.items():
+        existing = _indexes(cursor, table)
+        current = existing.get(name)
+        if current is not None and current != expected:
+            raise IndexSchemaMigrationError(
+                f"迁移临时索引定义不匹配：{table}.{name}"
+            )
+        if current is not None:
+            active.add((table, name))
+        names_to_drop = _index_names_to_drop(table, existing)
+        if not any(candidate in existing for candidate in names_to_drop):
+            continue
+        if current is None:
+            _execute_or_plan(
+                cursor,
+                f"ALTER TABLE {_quote(table)} ADD {definition}",
+                apply=apply,
+                actions=actions,
+            )
+        active.add((table, name))
+    return active
+
+
+def _remove_temporary_fk_indexes(cursor, active, *, apply, actions):
+    for table, name in sorted(active):
+        if apply and name not in _indexes(cursor, table):
+            continue
+        _execute_or_plan(
+            cursor,
+            f"ALTER TABLE {_quote(table)} DROP INDEX {_quote(name)}",
+            apply=apply,
+            actions=actions,
+        )
+
+
 def migrate_index_generation_schema(*, apply=False, writers_stopped_confirmed=False):
     if apply and not writers_stopped_confirmed:
         raise IndexSchemaMigrationError("拒绝迁移：未确认全部应用写入者已经停止")
@@ -316,14 +373,14 @@ def migrate_index_generation_schema(*, apply=False, writers_stopped_confirmed=Fa
             _audit_data(cursor)
 
             # 先移除会阻挡 filename 扩列、或会让后续 generation 继续互相冲突的索引。
+            temporary_fk_indexes = _prepare_temporary_fk_indexes(
+                cursor,
+                apply=apply,
+                actions=actions,
+            )
             for table in sorted(TABLES):
                 existing = _indexes(cursor, table)
-                names_to_drop = set(LEGACY_INDEXES.get(table, set()))
-                for name, (unique, columns, _definition) in DESIRED_INDEXES.get(
-                    table, {}
-                ).items():
-                    if name in existing and existing[name] != (unique, columns):
-                        names_to_drop.add(name)
+                names_to_drop = _index_names_to_drop(table, existing)
                 for name in sorted(names_to_drop):
                     if name in existing:
                         _execute_or_plan(
@@ -358,6 +415,12 @@ def migrate_index_generation_schema(*, apply=False, writers_stopped_confirmed=Fa
                         apply=apply,
                         actions=actions,
                     )
+            _remove_temporary_fk_indexes(
+                cursor,
+                temporary_fk_indexes,
+                apply=apply,
+                actions=actions,
+            )
             if apply:
                 # DDL 会隐式提交；这里做最终定义核验，异常时由部署前数据库备份回滚。
                 for table, desired in DESIRED_INDEXES.items():
@@ -372,6 +435,11 @@ def migrate_index_generation_schema(*, apply=False, writers_stopped_confirmed=Fa
                             raise IndexSchemaMigrationError(
                                 f"旧唯一索引仍存在：{table}.{legacy_name}"
                             )
+                for table, (name, _expected, _definition) in TEMPORARY_FK_INDEXES.items():
+                    if name in _indexes(cursor, table):
+                        raise IndexSchemaMigrationError(
+                            f"迁移临时索引仍存在：{table}.{name}"
+                        )
         if apply:
             connection.commit()
         else:
