@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 JAVASCRIPT_ASSETS = (
+    "frontend/markdown/bash-highlighter.js",
     "static/app/arc-agi-3-catalog.js",
     "static/app/arc-agi-3.js",
     "static/app/class-picker.js",
@@ -28,6 +29,53 @@ JAVASCRIPT_ASSETS = (
 def test_frontend_javascript_has_valid_syntax(relative_path):
     subprocess.run(
         [NODE, "--check", str(ROOT / relative_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_bash_highlighter_bundle_preserves_source_and_distinguishes_commands():
+    asset = ROOT / "static" / "vendor" / "shiki-bash" / "highlighter.js"
+    source = (
+        "#!/usr/bin/env bash\n"
+        'curl -fsSL "$URL" | jq -r \'.items[] | .name\'\n'
+    )
+    script = f"""
+const fs = require("fs");
+const vm = require("vm");
+const source = {source!r};
+vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
+(async function() {{
+  const result = await NumOJBashHighlighter.tokenize(source);
+  const tokens = result.tokens.flat();
+  const rebuilt = result.tokens
+    .map(function(line) {{ return line.map(function(token) {{
+      return token.content;
+    }}).join(""); }})
+    .join("\\n");
+  const commandTokens = tokens
+    .filter(function(token) {{
+      return String(token.color).toUpperCase() === "#DCDCAA";
+    }})
+    .map(function(token) {{ return token.content; }});
+  const optionTokens = tokens
+    .filter(function(token) {{
+      return String(token.color).toUpperCase() === "#569CD6";
+    }})
+    .map(function(token) {{ return token.content; }});
+  if (rebuilt !== source) process.exit(1);
+  if (!commandTokens.includes("curl") || !commandTokens.includes("jq")) {{
+    process.exit(2);
+  }}
+  if (!optionTokens.includes("-fsSL") || !optionTokens.includes("-r")) {{
+    process.exit(3);
+  }}
+}})().catch(function() {{ process.exit(4); }});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
         check=True,
         capture_output=True,
         text=True,

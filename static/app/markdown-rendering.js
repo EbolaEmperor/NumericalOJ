@@ -6,10 +6,43 @@
   const MERMAID_MAX_TEXT_SIZE = 50_000;
   const MERMAID_MAX_EDGES = 500;
   const MERMAID_MAX_DIAGRAMS_PER_ROOT = 64;
+  const BASH_TEXTMATE_MAX_BLOCKS_PER_ROOT = 64;
+  const BASH_TEXTMATE_MAX_SOURCE_BYTES = 256 * 1024;
+  const BASH_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT = 1024 * 1024;
   const CPP_SEMANTIC_MAX_BLOCKS_PER_ROOT = 16;
   const CPP_SEMANTIC_MAX_INFLIGHT_PER_PAGE = 2;
   const CPP_SEMANTIC_MAX_SOURCE_BYTES = 512 * 1024;
   const CPP_SEMANTIC_MAX_TOKENS_PER_BLOCK = 12_000;
+  const CODE_COPY_RESET_DELAY_MS = 1_800;
+  const BASH_LANGUAGE_CLASSES = new Set([
+    "language-bash",
+    "language-sh",
+    "language-shell",
+    "language-shellscript",
+    "language-zsh",
+    "language-ksh",
+    "language-openrc",
+  ]);
+  const SHIKI_DARK_PLUS_COLORS = new Set([
+    "000080",
+    "4ec9b0",
+    "4fc1ff",
+    "569cd6",
+    "646695",
+    "6796e6",
+    "6a9955",
+    "808080",
+    "9cdcfe",
+    "b5cea8",
+    "c586c0",
+    "c8c8c8",
+    "ce9178",
+    "d16969",
+    "d4d4d4",
+    "d7ba7d",
+    "dcdcaa",
+    "f44747",
+  ]);
   const CPP_LANGUAGE_CLASSES = new Set([
     "language-cpp",
     "language-c++",
@@ -19,11 +52,14 @@
 
   let mermaidRenderer = null;
   let mermaidRenderSequence = 0;
+  let bashRenderSequence = 0;
+  let bashWarningShown = false;
   let semanticRenderSequence = 0;
   let semanticWarningShown = false;
   let semanticActiveTasks = 0;
   const semanticTaskQueue = [];
   const semanticControllers = new WeakMap();
+  const copyResetTimers = new WeakMap();
 
   function getMermaidRenderer() {
     const candidate = window.mermaid;
@@ -94,6 +130,174 @@
     });
   }
 
+  async function writeClipboardText(text) {
+    const value = String(text ?? "");
+    let clipboardError = null;
+
+    if (
+      navigator.clipboard
+      && typeof navigator.clipboard.writeText === "function"
+    ) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch (error) {
+        clipboardError = error;
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    const activeElement = document.activeElement;
+    const selection = window.getSelection();
+    const previousRanges = [];
+    if (selection) {
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        previousRanges.push(selection.getRangeAt(index).cloneRange());
+      }
+    }
+
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.setAttribute("aria-hidden", "true");
+    textarea.tabIndex = -1;
+    Object.assign(textarea.style, {
+      position: "fixed",
+      top: "0",
+      left: "-9999px",
+      width: "1px",
+      height: "1px",
+      opacity: "0",
+      pointerEvents: "none",
+      fontSize: "16px",
+    });
+    document.body.appendChild(textarea);
+
+    let copied = false;
+    try {
+      try {
+        textarea.focus({ preventScroll: true });
+      } catch (_focusError) {
+        textarea.focus();
+      }
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      copied = Boolean(document.execCommand && document.execCommand("copy"));
+    } catch (error) {
+      clipboardError = clipboardError || error;
+    } finally {
+      textarea.remove();
+      if (selection) {
+        selection.removeAllRanges();
+        previousRanges.forEach((range) => selection.addRange(range));
+      }
+      if (activeElement && typeof activeElement.focus === "function") {
+        try {
+          activeElement.focus({ preventScroll: true });
+        } catch (_focusError) {
+          activeElement.focus();
+        }
+      }
+    }
+
+    if (!copied) {
+      throw clipboardError || new Error("clipboard-unavailable");
+    }
+  }
+
+  function directCopyButton(frame) {
+    return Array.from(frame.children).find((child) => (
+      child.classList && child.classList.contains("numoj-code-copy")
+    )) || null;
+  }
+
+  function setCopyButtonState(button, state) {
+    const existingTimer = copyResetTimers.get(button);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+      copyResetTimers.delete(button);
+    }
+
+    const copied = state === "copied";
+    const failed = state === "error";
+    const label = copied
+      ? "代码已复制"
+      : (failed ? "复制失败，请重试" : "复制代码");
+    const icon = button.querySelector(".numoj-code-copy-icon");
+    const announcement = button.querySelector(".numoj-code-copy-announcement");
+    button.classList.toggle("is-copied", copied);
+    button.classList.toggle("is-error", failed);
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    if (icon) icon.className = `numoj-code-copy-icon fas ${
+      copied ? "fa-check" : "fa-copy"
+    }`;
+    if (announcement) announcement.textContent = state === "idle" ? "" : label;
+
+    if (state !== "idle") {
+      const timer = window.setTimeout(() => {
+        copyResetTimers.delete(button);
+        setCopyButtonState(button, "idle");
+      }, CODE_COPY_RESET_DELAY_MS);
+      copyResetTimers.set(button, timer);
+    }
+  }
+
+  async function copyCodeBlock(button, code) {
+    if (button.dataset.numojCopyBusy === "true") return;
+    button.dataset.numojCopyBusy = "true";
+    button.setAttribute("aria-busy", "true");
+    try {
+      await writeClipboardText(String(code.textContent || ""));
+      setCopyButtonState(button, "copied");
+    } catch (_error) {
+      setCopyButtonState(button, "error");
+    } finally {
+      delete button.dataset.numojCopyBusy;
+      button.removeAttribute("aria-busy");
+    }
+  }
+
+  function ensureCodeCopyButtons(root) {
+    const codeElements = [];
+    if (root.matches && root.matches("pre code")) codeElements.push(root);
+    root.querySelectorAll("pre code").forEach((code) => {
+      codeElements.push(code);
+    });
+
+    codeElements.forEach((code) => {
+      const frame = code.closest(".codehilite") || code.closest("pre");
+      if (!frame) return;
+      frame.classList.add("numoj-code-frame");
+      if (directCopyButton(frame)) return;
+
+      const button = document.createElement("button");
+      const icon = document.createElement("i");
+      const announcement = document.createElement("span");
+      button.type = "button";
+      button.className = "numoj-code-copy";
+      button.setAttribute("aria-label", "复制代码");
+      button.title = "复制代码";
+      icon.className = "numoj-code-copy-icon fas fa-copy";
+      icon.setAttribute("aria-hidden", "true");
+      announcement.className = "numoj-code-copy-announcement";
+      announcement.setAttribute("aria-live", "polite");
+      announcement.setAttribute("aria-atomic", "true");
+      button.append(icon, announcement);
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        copyCodeBlock(button, code);
+      });
+      frame.appendChild(button);
+    });
+  }
+
+  function isBashCodeBlock(block) {
+    return Array.from(block.classList).some((name) => (
+      BASH_LANGUAGE_CLASSES.has(name.toLowerCase())
+    ));
+  }
+
   function isCppCodeBlock(block) {
     return Array.from(block.classList).some((name) => (
       CPP_LANGUAGE_CLASSES.has(name.toLowerCase())
@@ -115,11 +319,152 @@
     return offsets;
   }
 
-  function cppSourceByteLength(source) {
+  function sourceByteLength(source) {
     if (typeof TextEncoder === "function") {
       return new TextEncoder().encode(source).byteLength;
     }
     return new Blob([source]).size;
+  }
+
+  function shikiColorClass(value) {
+    const color = String(value || "").trim().replace(/^#/, "").toLowerCase();
+    return SHIKI_DARK_PLUS_COLORS.has(color)
+      ? `numoj-shiki-color-${color}`
+      : "";
+  }
+
+  function bashTokenFragment(result) {
+    if (!result || !Array.isArray(result.tokens)) return null;
+    const fragment = document.createDocumentFragment();
+    result.tokens.forEach((line, lineIndex) => {
+      if (!Array.isArray(line)) return;
+      line.forEach((token) => {
+        const content = String(token && token.content || "");
+        if (!content) return;
+        const colorClass = shikiColorClass(token.color);
+        const rawFontStyle = Number(token.fontStyle || 0);
+        const fontStyle = Number.isInteger(rawFontStyle) && rawFontStyle > 0
+          ? rawFontStyle
+          : 0;
+        if (!colorClass && fontStyle <= 0) {
+          fragment.appendChild(document.createTextNode(content));
+          return;
+        }
+        const span = document.createElement("span");
+        span.className = "numoj-shiki-token";
+        if (colorClass) span.classList.add(colorClass);
+        if ((fontStyle & 1) !== 0) span.classList.add("is-italic");
+        if ((fontStyle & 2) !== 0) span.classList.add("is-bold");
+        if ((fontStyle & 4) !== 0) span.classList.add("is-underlined");
+        span.textContent = content;
+        fragment.appendChild(span);
+      });
+      if (lineIndex < result.tokens.length - 1) {
+        fragment.appendChild(document.createTextNode("\n"));
+      }
+    });
+    return fragment;
+  }
+
+  async function renderBashTextMateBlock(root, block) {
+    if (block.dataset.numojBashState) return;
+    const client = window.NumOJBashHighlighter;
+    const code = block.querySelector("pre code");
+    if (!client || typeof client.tokenize !== "function" || !code) return;
+
+    const source = String(code.textContent || "");
+    if (!source) {
+      block.dataset.numojBashState = "empty";
+      return;
+    }
+    if (sourceByteLength(source) > BASH_TEXTMATE_MAX_SOURCE_BYTES) {
+      block.dataset.numojBashState = "skipped-size";
+      return;
+    }
+
+    const generation = String(++bashRenderSequence);
+    block.dataset.numojBashState = "rendering";
+    block.dataset.numojBashGeneration = generation;
+    try {
+      const result = await client.tokenize(source);
+      if (
+        !root.isConnected
+        || !root.contains(block)
+        || !block.isConnected
+        || !code.isConnected
+        || block.dataset.numojBashGeneration !== generation
+        || String(code.textContent || "") !== source
+      ) return;
+
+      const fragment = bashTokenFragment(result);
+      if (!fragment || String(fragment.textContent || "") !== source) {
+        throw new Error("bash-token-text-mismatch");
+      }
+      code.replaceChildren(fragment);
+      block.dataset.numojBashState = "rendered";
+      block.classList.add("has-bash-textmate-highlighting");
+    } catch (error) {
+      if (
+        root.isConnected
+        && root.contains(block)
+        && block.dataset.numojBashGeneration === generation
+      ) {
+        block.dataset.numojBashState = "fallback";
+        if (!bashWarningShown) {
+          console.warn(
+            "Bash TextMate 高亮失败，已保留 Pygments 着色。",
+            error,
+          );
+          bashWarningShown = true;
+        }
+      }
+    }
+  }
+
+  async function renderBashTextMateHighlights(root) {
+    const client = window.NumOJBashHighlighter;
+    if (!client || typeof client.tokenize !== "function") return;
+
+    const blocks = Array.from(root.querySelectorAll(".codehilite"))
+      .filter((block) => isBashCodeBlock(block) && !block.dataset.numojBashState);
+    const candidates = blocks.slice(0, BASH_TEXTMATE_MAX_BLOCKS_PER_ROOT);
+    blocks.slice(BASH_TEXTMATE_MAX_BLOCKS_PER_ROOT).forEach((block) => {
+      block.dataset.numojBashState = "skipped";
+    });
+
+    const renderable = [];
+    let totalSourceBytes = 0;
+    candidates.forEach((block) => {
+      const code = block.querySelector("pre code");
+      const sourceBytes = code
+        ? sourceByteLength(String(code.textContent || ""))
+        : 0;
+      if (sourceBytes > BASH_TEXTMATE_MAX_SOURCE_BYTES) {
+        block.dataset.numojBashState = "skipped-size";
+        return;
+      }
+      if (
+        totalSourceBytes + sourceBytes
+        > BASH_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT
+      ) {
+        block.dataset.numojBashState = "skipped-total-size";
+        return;
+      }
+      totalSourceBytes += sourceBytes;
+      renderable.push(block);
+    });
+
+    for (let index = 0; index < renderable.length; index += 1) {
+      const block = renderable[index];
+      if (!root.isConnected) break;
+      if (!root.contains(block)) continue;
+      await renderBashTextMateBlock(root, block);
+      if (index + 1 < renderable.length) {
+        // TextMate token 化在浏览器主线程运行；块间让出一次事件循环，
+        // 避免包含大量 Bash 片段的讨论长时间阻塞交互和绘制。
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+    }
   }
 
   function decodeSemanticRanges(source, legend, data) {
@@ -361,7 +706,7 @@
       block.dataset.numojSemanticState = "empty";
       return;
     }
-    if (cppSourceByteLength(source) > CPP_SEMANTIC_MAX_SOURCE_BYTES) {
+    if (sourceByteLength(source) > CPP_SEMANTIC_MAX_SOURCE_BYTES) {
       block.dataset.numojSemanticState = "skipped-size";
       return;
     }
@@ -476,6 +821,11 @@
 
   function clear(root) {
     if (!root) return;
+    root.querySelectorAll(".numoj-code-copy").forEach((button) => {
+      const timer = copyResetTimers.get(button);
+      if (timer) window.clearTimeout(timer);
+      copyResetTimers.delete(button);
+    });
     const semanticController = semanticControllers.get(root);
     if (semanticController) {
       semanticController.abort();
@@ -529,6 +879,7 @@
     sourceSummary.textContent = "查看 Mermaid 源码";
     sourceDetails.append(sourceSummary, sourcePre);
     container.replaceChildren(status, diagram, sourceDetails);
+    ensureCodeCopyButtons(container);
 
     try {
       const renderer = getMermaidRenderer();
@@ -588,13 +939,19 @@
   async function enhance(root) {
     if (!root || typeof root.querySelectorAll !== "function") return;
     enhanceRenderedLinks(root);
+    ensureCodeCopyButtons(root);
     renderCppSemanticHighlights(root).catch((error) => {
       if (!semanticWarningShown) {
         console.warn("C++ 代码块 clangd 高亮任务失败。", error);
         semanticWarningShown = true;
       }
     });
-    await renderMermaidDiagrams(root);
+    await Promise.all([
+      renderBashTextMateHighlights(root),
+      renderMermaidDiagrams(root),
+    ]);
+    // Mermaid 会重组容器并移动源码节点，因此绘制完成后幂等补回复制按钮。
+    ensureCodeCopyButtons(root);
     if (root.isConnected) await typesetMath(root);
   }
 
@@ -610,6 +967,7 @@
 
   window.NumericalOJMarkdownRenderer = Object.freeze({
     clear,
+    copyText: writeClipboardText,
     enhance,
     enhanceAll,
   });

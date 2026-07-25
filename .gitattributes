@@ -1,3 +1,4 @@
 # esbuild preserves significant tabs/newlines inside bundled template literals.
 static/vendor/monaco/editor.js whitespace=-trailing-space
 static/vendor/mermaid/mermaid.min.js whitespace=-trailing-space
+static/vendor/shiki-bash/highlighter.js whitespace=-trailing-space

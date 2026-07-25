@@ -36,6 +36,12 @@ PACKAGE = (ROOT / "package.json").read_text(encoding="utf-8")
 MERMAID_ASSET_BUILD = (
     ROOT / "scripts" / "build_mermaid.mjs"
 ).read_text(encoding="utf-8")
+BASH_HIGHLIGHTER_ENTRY = (
+    ROOT / "frontend" / "markdown" / "bash-highlighter.js"
+).read_text(encoding="utf-8")
+BASH_HIGHLIGHTER_BUILD = (
+    ROOT / "scripts" / "build_bash_highlighter.mjs"
+).read_text(encoding="utf-8")
 CI_WORKFLOW = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
     encoding="utf-8"
 )
@@ -144,8 +150,10 @@ def test_share_button_copies_directly_and_uses_the_forum_notice():
     assert 'id="forumToastEyebrow"' in TEMPLATE
     assert 'id="forumToastMessage"' in TEMPLATE
     assert "async function writeClipboardText(text)" in JAVASCRIPT
-    assert 'navigator.clipboard.writeText(value)' in JAVASCRIPT
-    assert 'document.execCommand("copy")' in JAVASCRIPT
+    assert "renderer.copyText(text)" in JAVASCRIPT
+    assert 'navigator.clipboard.writeText(value)' in MARKDOWN_JAVASCRIPT
+    assert 'document.execCommand("copy")' in MARKDOWN_JAVASCRIPT
+    assert "copyText: writeClipboardText" in MARKDOWN_JAVASCRIPT
     assert 'showToast("链接已复制到剪贴板，快去分享吧！", "share")' in JAVASCRIPT
     assert "window.prompt(" not in JAVASCRIPT
     assert ".forum-toast.is-share .forum-toast-mark" in CSS
@@ -174,11 +182,18 @@ def test_mathjax_uses_an_explicit_non_html_package_allowlist():
 def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
     mermaid_asset = ROOT / "static" / "vendor" / "mermaid" / "mermaid.min.js"
     mermaid_license = ROOT / "static" / "vendor" / "mermaid" / "LICENSE"
+    bash_highlighter_asset = (
+        ROOT / "static" / "vendor" / "shiki-bash" / "highlighter.js"
+    )
+    bash_highlighter_license = (
+        ROOT / "static" / "vendor" / "shiki-bash" / "LICENSE"
+    )
 
     for page_template in (TEMPLATE, PROBLEM_TEMPLATE):
         assert page_template.count("app/markdown-rendering.css") == 1
         assert page_template.count("app/editor-semantic-tokens.js") == 1
         assert page_template.count("vendor/mermaid/mermaid.min.js") == 1
+        assert page_template.count("vendor/shiki-bash/highlighter.js") == 1
         assert page_template.count("app/markdown-rendering.js") == 1
         assert page_template.index(
             "app/editor-semantic-tokens.js"
@@ -186,19 +201,102 @@ def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
         assert page_template.index(
             "vendor/mermaid/mermaid.min.js"
         ) < page_template.index("app/markdown-rendering.js")
+        assert page_template.index(
+            "vendor/shiki-bash/highlighter.js"
+        ) < page_template.index("app/markdown-rendering.js")
     assert TEMPLATE.index("app/markdown-rendering.js") < TEMPLATE.index("app/forum.js")
     assert 'class="problem-content numoj-markdown my-3"' in PROBLEM_TEMPLATE
     assert "data-numoj-markdown" in PROBLEM_TEMPLATE
     assert "vendor/mermaid" not in BASE_LAYOUT
+    assert "vendor/shiki-bash" not in BASE_LAYOUT
     assert "app/editor-semantic-tokens.js" not in BASE_LAYOUT
     assert "app/markdown-rendering.js" not in BASE_LAYOUT
     assert '"mermaid": "11.16.0"' in PACKAGE
     assert '"build:mermaid": "node scripts/build_mermaid.mjs"' in PACKAGE
+    assert (
+        '"build:bash-highlighter": "node scripts/build_bash_highlighter.mjs"'
+        in PACKAGE
+    )
     assert "node_modules/mermaid/dist/mermaid.min.js" in MERMAID_ASSET_BUILD
+    assert "frontend/markdown/bash-highlighter.js" in BASH_HIGHLIGHTER_BUILD
+    assert "node_modules/shiki/LICENSE" in BASH_HIGHLIGHTER_BUILD
     assert "npm run build:frontend" in CI_WORKFLOW
     assert "static/vendor/mermaid" in CI_WORKFLOW
+    assert "static/vendor/shiki-bash" in CI_WORKFLOW
     assert mermaid_asset.stat().st_size > 1_000_000
     assert mermaid_license.is_file()
+    assert 150_000 < bash_highlighter_asset.stat().st_size < 300_000
+    assert bash_highlighter_license.is_file()
+
+
+def test_shared_markdown_code_blocks_have_accessible_copy_controls():
+    assert 'root.querySelectorAll("pre code")' in MARKDOWN_JAVASCRIPT
+    assert "directCopyButton(frame)" in MARKDOWN_JAVASCRIPT
+    assert MARKDOWN_JAVASCRIPT.count("ensureCodeCopyButtons(root);") == 2
+    assert (
+        "container.replaceChildren(status, diagram, sourceDetails);\n"
+        "    ensureCodeCopyButtons(container);"
+        in MARKDOWN_JAVASCRIPT
+    )
+    assert (
+        'await writeClipboardText(String(code.textContent || ""));'
+        in MARKDOWN_JAVASCRIPT
+    )
+    assert 'icon.className = `numoj-code-copy-icon fas ${' in MARKDOWN_JAVASCRIPT
+    assert '"fa-check" : "fa-copy"' in MARKDOWN_JAVASCRIPT
+    assert 'announcement.setAttribute("aria-live", "polite");' in MARKDOWN_JAVASCRIPT
+    assert "Mermaid 会重组容器并移动源码节点" in MARKDOWN_JAVASCRIPT
+    assert ".numoj-code-frame:hover > .numoj-code-copy" in MARKDOWN_CSS
+    assert ".numoj-code-frame:focus-within > .numoj-code-copy" in MARKDOWN_CSS
+    assert ".numoj-code-copy:focus-visible" in MARKDOWN_CSS
+    assert "@media (hover: none), (pointer: coarse)" in MARKDOWN_CSS
+    assert "@media (prefers-reduced-motion: reduce)" in MARKDOWN_CSS
+
+
+def test_bash_uses_a_fine_grained_shiki_bundle_with_pygments_fallback():
+    for contract in (
+        'from "shiki/core"',
+        'from "shiki/engine/javascript"',
+        'from "@shikijs/langs/bash"',
+        'from "@shikijs/themes/dark-plus"',
+        "let highlighterPromise;",
+        "highlighter.codeToTokens",
+    ):
+        assert contract in BASH_HIGHLIGHTER_ENTRY
+
+    for language_class in (
+        "language-bash",
+        "language-sh",
+        "language-shell",
+        "language-shellscript",
+        "language-zsh",
+        "language-ksh",
+        "language-openrc",
+    ):
+        assert language_class in MARKDOWN_JAVASCRIPT
+        assert language_class in MARKDOWN_CSS
+
+    for contract in (
+        "BASH_TEXTMATE_MAX_BLOCKS_PER_ROOT",
+        "BASH_TEXTMATE_MAX_SOURCE_BYTES",
+        "BASH_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT",
+        "window.NumOJBashHighlighter",
+        "await client.tokenize(source)",
+        "bashTokenFragment(result)",
+        'document.createTextNode(content)',
+        'block.dataset.numojBashState = "fallback";',
+        "已保留 Pygments 着色",
+        "SHIKI_DARK_PLUS_COLORS",
+        'block.dataset.numojBashState = "skipped-total-size";',
+        "await new Promise((resolve) => window.setTimeout(resolve, 0));",
+    ):
+        assert contract in MARKDOWN_JAVASCRIPT
+
+    assert "span.style.color" not in MARKDOWN_JAVASCRIPT
+    assert ".numoj-shiki-color-dcdcaa" in MARKDOWN_CSS
+    assert ".numoj-shiki-color-9cdcfe" in MARKDOWN_CSS
+    assert ".numoj-shiki-color-c586c0" in MARKDOWN_CSS
+    assert ".numoj-shiki-token.is-italic" in MARKDOWN_CSS
 
 
 def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():

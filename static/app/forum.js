@@ -1892,74 +1892,11 @@
   }
 
   async function writeClipboardText(text) {
-    const value = String(text || "");
-    let clipboardError = null;
-
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-      try {
-        await navigator.clipboard.writeText(value);
-        return;
-      } catch (error) {
-        clipboardError = error;
-      }
+    const renderer = window.NumericalOJMarkdownRenderer;
+    if (!renderer || typeof renderer.copyText !== "function") {
+      throw new Error("clipboard-unavailable");
     }
-
-    const textarea = document.createElement("textarea");
-    const activeElement = document.activeElement;
-    const selection = window.getSelection();
-    const previousRanges = [];
-    if (selection) {
-      for (let index = 0; index < selection.rangeCount; index += 1) {
-        previousRanges.push(selection.getRangeAt(index).cloneRange());
-      }
-    }
-
-    textarea.value = value;
-    textarea.setAttribute("readonly", "");
-    textarea.setAttribute("aria-hidden", "true");
-    textarea.tabIndex = -1;
-    Object.assign(textarea.style, {
-      position: "fixed",
-      top: "0",
-      left: "-9999px",
-      width: "1px",
-      height: "1px",
-      opacity: "0",
-      pointerEvents: "none",
-      fontSize: "16px",
-    });
-    document.body.appendChild(textarea);
-
-    let copied = false;
-    try {
-      try {
-        textarea.focus({ preventScroll: true });
-      } catch (_focusError) {
-        textarea.focus();
-      }
-      textarea.select();
-      textarea.setSelectionRange(0, textarea.value.length);
-      copied = Boolean(document.execCommand && document.execCommand("copy"));
-    } catch (error) {
-      clipboardError = clipboardError || error;
-    } finally {
-      textarea.remove();
-      if (selection) {
-        selection.removeAllRanges();
-        previousRanges.forEach((range) => selection.addRange(range));
-      }
-      if (activeElement && typeof activeElement.focus === "function") {
-        try {
-          activeElement.focus({ preventScroll: true });
-        } catch (_focusError) {
-          activeElement.focus();
-        }
-      }
-    }
-
-    if (!copied) {
-      throw clipboardError || new Error("clipboard-unavailable");
-    }
+    await renderer.copyText(text);
   }
 
   async function copyThreadLink() {

@@ -12,6 +12,7 @@
 }
 
 .numoj-markdown .codehilite {
+  position: relative;
   overflow: hidden;
   margin: 0 0 1em;
   border-radius: 9px;
@@ -31,6 +32,100 @@
   background: transparent;
   color: inherit;
   font-family: inherit;
+}
+
+.numoj-markdown .numoj-code-frame {
+  position: relative;
+}
+
+.numoj-markdown .codehilite.numoj-code-frame > pre {
+  padding-right: 52px;
+}
+
+.numoj-markdown pre.numoj-code-frame {
+  padding-right: 52px;
+}
+
+.numoj-markdown .numoj-code-copy {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #3d444d;
+  border-radius: 8px;
+  opacity: 0;
+  background: rgb(22 27 34 / 94%);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 28%);
+  color: #b1bac4;
+  cursor: pointer;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.numoj-markdown .numoj-code-frame:hover > .numoj-code-copy,
+.numoj-markdown .numoj-code-frame:focus-within > .numoj-code-copy,
+.numoj-markdown .numoj-code-copy.is-copied,
+.numoj-markdown .numoj-code-copy.is-error {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.numoj-markdown .numoj-code-copy:hover {
+  border-color: #6e7681;
+  background: #21262d;
+  color: #f0f6fc;
+}
+
+.numoj-markdown .numoj-code-copy:focus-visible {
+  border-color: #f97316;
+  outline: 2px solid #fb923c;
+  outline-offset: 2px;
+}
+
+.numoj-markdown .numoj-code-copy.is-copied {
+  border-color: rgb(63 185 80 / 58%);
+  background: #16351f;
+  color: #7ee787;
+}
+
+.numoj-markdown .numoj-code-copy.is-error {
+  border-color: rgb(248 81 73 / 62%);
+  background: #3b1718;
+  color: #ff7b72;
+}
+
+.numoj-markdown .numoj-code-copy[aria-busy="true"] {
+  cursor: wait;
+}
+
+.numoj-markdown .numoj-code-copy-icon {
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.numoj-markdown .numoj-code-copy-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* Pygments 2.20 class theme：覆盖全部 lexer 共用的 token 层级。 */
@@ -201,6 +296,149 @@
 }
 
 /*
+ * Bash 同步首屏与 Shiki 异常时继续使用 Pygments；这里把 BashLexer 已经
+ * 区分出的 shell token 拉开层次，避免增强器加载前出现一片白色。
+ */
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  :is(.c, .ch, .cm, .c1) {
+  color: #6a9955;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  :is(.k, .kp) {
+  color: #c586c0;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  .nb {
+  color: #dcdcaa;
+  font-weight: 600;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  :is(.nv, .vc, .vg, .vi) {
+  color: #9cdcfe;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  :is(.s, .s1, .s2, .sh) {
+  color: #ce9178;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  .si {
+  color: #c586c0;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  .se {
+  color: #d7ba7d;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-bash,
+    .language-sh,
+    .language-shell,
+    .language-shellscript,
+    .language-zsh,
+    .language-ksh,
+    .language-openrc
+  )
+  :is(.o, .ow) {
+  color: #d4d4d4;
+}
+
+/* Shiki Dark+ 的有限调色板映射为静态类，兼容严格的 style-src CSP。 */
+.numoj-markdown .numoj-shiki-color-000080 { color: #000080; }
+.numoj-markdown .numoj-shiki-color-4ec9b0 { color: #4ec9b0; }
+.numoj-markdown .numoj-shiki-color-4fc1ff { color: #4fc1ff; }
+.numoj-markdown .numoj-shiki-color-569cd6 { color: #569cd6; }
+.numoj-markdown .numoj-shiki-color-646695 { color: #646695; }
+.numoj-markdown .numoj-shiki-color-6796e6 { color: #6796e6; }
+.numoj-markdown .numoj-shiki-color-6a9955 { color: #6a9955; }
+.numoj-markdown .numoj-shiki-color-808080 { color: #808080; }
+.numoj-markdown .numoj-shiki-color-9cdcfe { color: #9cdcfe; }
+.numoj-markdown .numoj-shiki-color-b5cea8 { color: #b5cea8; }
+.numoj-markdown .numoj-shiki-color-c586c0 { color: #c586c0; }
+.numoj-markdown .numoj-shiki-color-c8c8c8 { color: #c8c8c8; }
+.numoj-markdown .numoj-shiki-color-ce9178 { color: #ce9178; }
+.numoj-markdown .numoj-shiki-color-d16969 { color: #d16969; }
+.numoj-markdown .numoj-shiki-color-d4d4d4 { color: #d4d4d4; }
+.numoj-markdown .numoj-shiki-color-d7ba7d { color: #d7ba7d; }
+.numoj-markdown .numoj-shiki-color-dcdcaa { color: #dcdcaa; }
+.numoj-markdown .numoj-shiki-color-f44747 { color: #f44747; }
+
+.numoj-markdown .numoj-shiki-token.is-italic { font-style: italic; }
+.numoj-markdown .numoj-shiki-token.is-bold { font-weight: 700; }
+.numoj-markdown .numoj-shiki-token.is-underlined {
+  text-decoration: underline;
+}
+
+/*
  * clangd 语义层复用代码编辑器的 Dark+ 配色，只覆盖服务端明确识别的
  * 标识符；其余词法 token 和请求失败场景继续使用上面的 Pygments 主题。
  */
@@ -364,7 +602,28 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .numoj-markdown .numoj-code-copy {
+    transition: none;
+  }
+
   .numoj-mermaid-status::before {
     animation: none;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .numoj-markdown .numoj-code-copy {
+    top: 6px;
+    right: 6px;
+    width: 42px;
+    height: 42px;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+
+  .numoj-markdown .codehilite.numoj-code-frame > pre,
+  .numoj-markdown pre.numoj-code-frame {
+    padding-right: 58px;
   }
 }
