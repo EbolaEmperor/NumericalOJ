@@ -22,12 +22,21 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - name: Rebuild checked-in Monaco assets
+      - name: Rebuild checked-in frontend assets
         run: |
           npm ci
-          npm run build:monaco
+          npm run build:frontend
       - name: Verify generated assets are current
-        run: git diff --exit-code -- static/vendor/monaco
+        run: |
+          generated_status="$(
+            git status --porcelain=v1 --untracked-files=all -- \
+              static/vendor/monaco \
+              static/vendor/mermaid
+          )"
+          if [ -n "$generated_status" ]; then
+            printf '%s\n' "$generated_status"
+            exit 1
+          fi
 
   compile:
     name: Python syntax

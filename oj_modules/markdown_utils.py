@@ -63,15 +63,19 @@ def sanitize_html(html_str):
     return html.escape(s, quote=False)
 
 
-def render_markdown(text, extensions=None):
-    """渲染 Markdown 并消毒输出。extensions 不传时用一组常见扩展。"""
+def render_markdown(text, extensions=None, extension_configs=None):
+    """渲染 Markdown 并消毒输出；可透传扩展配置。"""
     import markdown as _markdown
     raw = str(text or "")
     if not raw.strip():
         return ""
     exts = extensions if extensions is not None else ['extra', 'fenced_code', 'tables', 'sane_lists']
     try:
-        rendered = _markdown.markdown(raw, extensions=exts)
+        rendered = _markdown.markdown(
+            raw,
+            extensions=exts,
+            extension_configs=extension_configs or {},
+        )
     except Exception:
         import html as _html
         return _html.escape(raw, quote=False).replace("\n", "<br>")

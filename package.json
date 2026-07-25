@@ -2,11 +2,14 @@
   "name": "numericaloj-frontend-assets",
   "private": true,
   "scripts": {
+    "build:forum-rendering": "node scripts/build_forum_rendering.mjs",
+    "build:frontend": "npm run build:monaco && npm run build:forum-rendering",
     "build:monaco": "node scripts/build_monaco.mjs"
   },
   "devDependencies": {
     "@shikijs/monaco": "4.3.1",
     "esbuild": "0.25.9",
+    "mermaid": "11.16.0",
     "monaco-editor": "0.56.0",
     "shiki": "4.3.1"
   },

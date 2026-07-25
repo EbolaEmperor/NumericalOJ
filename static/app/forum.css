@@ -934,6 +934,282 @@
   font-size: inherit;
 }
 
+/* Pygments 2.20 class theme：覆盖全部 lexer 共用的 token 层级。 */
+.forum-markdown .codehilite {
+  background: #0d1117;
+  color: #e6edf3;
+}
+
+.forum-markdown .codehilite .hll {
+  background-color: #30363d;
+}
+
+.forum-markdown .codehilite .c,
+.forum-markdown .codehilite .ch,
+.forum-markdown .codehilite .cm,
+.forum-markdown .codehilite .c1 {
+  color: #8b949e;
+  font-style: italic;
+}
+
+.forum-markdown .codehilite .cp,
+.forum-markdown .codehilite .cs {
+  color: #8b949e;
+  font-weight: 700;
+  font-style: italic;
+}
+
+.forum-markdown .codehilite .cpf {
+  color: #8b949e;
+  font-style: italic;
+}
+
+.forum-markdown .codehilite .err,
+.forum-markdown .codehilite .gr,
+.forum-markdown .codehilite .gt {
+  color: #ff7b72;
+}
+
+.forum-markdown .codehilite .esc,
+.forum-markdown .codehilite .g,
+.forum-markdown .codehilite .n,
+.forum-markdown .codehilite .p,
+.forum-markdown .codehilite .pm,
+.forum-markdown .codehilite .x {
+  color: #e6edf3;
+}
+
+.forum-markdown .codehilite .k,
+.forum-markdown .codehilite .kd,
+.forum-markdown .codehilite .kn,
+.forum-markdown .codehilite .kr,
+.forum-markdown .codehilite .kt,
+.forum-markdown .codehilite .nn {
+  color: #ff7b72;
+}
+
+.forum-markdown .codehilite .kc,
+.forum-markdown .codehilite .kp,
+.forum-markdown .codehilite .ld,
+.forum-markdown .codehilite .no,
+.forum-markdown .codehilite .nl,
+.forum-markdown .codehilite .nv,
+.forum-markdown .codehilite .py,
+.forum-markdown .codehilite .vc,
+.forum-markdown .codehilite .vg,
+.forum-markdown .codehilite .vi,
+.forum-markdown .codehilite .vm {
+  color: #79c0ff;
+}
+
+.forum-markdown .codehilite .o,
+.forum-markdown .codehilite .ow {
+  color: #ff7b72;
+  font-weight: 700;
+}
+
+.forum-markdown .codehilite .l,
+.forum-markdown .codehilite .m,
+.forum-markdown .codehilite .mb,
+.forum-markdown .codehilite .mf,
+.forum-markdown .codehilite .mh,
+.forum-markdown .codehilite .mi,
+.forum-markdown .codehilite .mo,
+.forum-markdown .codehilite .il,
+.forum-markdown .codehilite .s,
+.forum-markdown .codehilite .sb,
+.forum-markdown .codehilite .sc,
+.forum-markdown .codehilite .sd,
+.forum-markdown .codehilite .s1,
+.forum-markdown .codehilite .s2,
+.forum-markdown .codehilite .sh,
+.forum-markdown .codehilite .si,
+.forum-markdown .codehilite .ss,
+.forum-markdown .codehilite .sx {
+  color: #a5d6ff;
+}
+
+.forum-markdown .codehilite .dl,
+.forum-markdown .codehilite .sa,
+.forum-markdown .codehilite .se,
+.forum-markdown .codehilite .sr {
+  color: #79c0ff;
+}
+
+.forum-markdown .codehilite .na,
+.forum-markdown .codehilite .nb,
+.forum-markdown .codehilite .bp,
+.forum-markdown .codehilite .nx {
+  color: #e6edf3;
+}
+
+.forum-markdown .codehilite .nc,
+.forum-markdown .codehilite .ne {
+  color: #f0883e;
+  font-weight: 700;
+}
+
+.forum-markdown .codehilite .nd,
+.forum-markdown .codehilite .nf,
+.forum-markdown .codehilite .fm {
+  color: #d2a8ff;
+  font-weight: 700;
+}
+
+.forum-markdown .codehilite .ni {
+  color: #ffa657;
+}
+
+.forum-markdown .codehilite .nt {
+  color: #7ee787;
+}
+
+.forum-markdown .codehilite .w {
+  color: #6e7681;
+}
+
+.forum-markdown .codehilite .gd {
+  background-color: #490202;
+  color: #ffa198;
+}
+
+.forum-markdown .codehilite .gi {
+  background-color: #0f5323;
+  color: #56d364;
+}
+
+.forum-markdown .codehilite .ge {
+  font-style: italic;
+}
+
+.forum-markdown .codehilite .ges {
+  font-weight: 700;
+  font-style: italic;
+}
+
+.forum-markdown .codehilite .gh,
+.forum-markdown .codehilite .gu {
+  color: #79c0ff;
+  font-weight: 700;
+}
+
+.forum-markdown .codehilite .go,
+.forum-markdown .codehilite .gp {
+  color: #8b949e;
+}
+
+.forum-markdown .codehilite .gs {
+  font-weight: 700;
+}
+
+.forum-markdown .codehilite .g-Underline {
+  text-decoration: underline;
+}
+
+.forum-markdown .codehilite.language-mermaid,
+.forum-markdown .codehilite.language-mmd {
+  background: transparent;
+  color: inherit;
+}
+
+.forum-mermaid-source {
+  overflow: hidden;
+  margin: 0 0 11px;
+  border: 1px solid #d4d4d8;
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, rgb(255 247 237 / 74%), transparent 38%),
+    #fff;
+}
+
+.forum-mermaid-status {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 13px;
+  color: var(--forum-ink-3);
+  font-family: var(--forum-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.forum-mermaid-status::before {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 2px solid #fed7aa;
+  border-top-color: var(--forum-accent);
+  border-radius: 50%;
+  animation: forum-spin 760ms linear infinite;
+  content: "";
+}
+
+.forum-mermaid-diagram {
+  min-height: 130px;
+  overflow: auto;
+  padding: 16px;
+  background:
+    radial-gradient(circle at 14px 14px, rgb(161 161 170 / 14%) 1px, transparent 1.4px)
+      0 0 / 14px 14px,
+    #fff;
+}
+
+.forum-mermaid-diagram > svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.forum-mermaid-diagram > iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.forum-mermaid-source details {
+  border-top: 1px solid var(--forum-line);
+  background: #fafaf8;
+}
+
+.forum-mermaid-source summary {
+  padding: 8px 12px;
+  color: var(--forum-ink-3);
+  cursor: pointer;
+  font-family: var(--forum-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  list-style-position: inside;
+}
+
+.forum-mermaid-source details pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.forum-mermaid-source.is-error {
+  border-color: #fecaca;
+  background: var(--forum-danger-soft);
+}
+
+.forum-mermaid-source.is-error .forum-mermaid-status {
+  color: var(--forum-danger);
+}
+
+.forum-mermaid-source.is-error .forum-mermaid-status::before {
+  border: 0;
+  animation: none;
+  content: "!";
+  font-size: 13px;
+  line-height: 14px;
+  text-align: center;
+}
+
 .forum-markdown blockquote {
   padding: 8px 12px;
   border-left: 3px solid #fdba74;
@@ -961,7 +1237,12 @@
 }
 
 .forum-markdown img {
-  display: none;
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 11px 0;
+  border: 1px solid var(--forum-line);
+  border-radius: 9px;
 }
 
 .forum-reply-composer {
