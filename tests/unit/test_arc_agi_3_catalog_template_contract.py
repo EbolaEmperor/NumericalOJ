@@ -18,6 +18,7 @@ def test_help_modal_contains_accessible_verified_top_five_snapshot():
     assert '<section class="arc-leaderboard" aria-labelledby="arcLeaderboardTitle">' in TEMPLATE
     assert '<ol class="arc-leaderboard-list">' in TEMPLATE
     assert TEMPLATE.count('class="arc-leaderboard-entry') == 5
+    assert TEMPLATE.count('class="arc-leaderboard-meter" aria-hidden="true"') == 5
 
     rows = re.findall(
         r'<li class="arc-leaderboard-entry[^"]*">(.*?)</li>',
@@ -46,11 +47,14 @@ def test_leaderboard_snapshot_explains_scope_source_and_cutoff():
     ) in TEMPLATE
     assert 'href="https://arcprize.org/leaderboard"' in TEMPLATE
     assert 'href="https://arcprize.org/results/anthropic-claude-opus-5"' in TEMPLATE
-    assert "Claude Opus 5（High）以 30.16% 刷新 ARC-AGI-3 官方纪录" in TEMPLATE
+    assert 'class="arc-help-record"' not in TEMPLATE
     assert "最高分模型是 GPT-5.6 Sol" not in TEMPLATE
 
 
 def test_leaderboard_styles_cover_record_row_and_small_screens():
     assert ".arc-leaderboard-entry--record" in STYLESHEET
+    for ratio in ("100%", "25.8%", "23.2%", "7.1%", "5%"):
+        assert f"--arc-score-ratio: {ratio}" in STYLESHEET
+    assert "width: var(--arc-score-ratio)" in STYLESHEET
     assert ".arc-leaderboard-cutoff" in STYLESHEET
     assert "@media (max-width: 575.98px)" in STYLESHEET

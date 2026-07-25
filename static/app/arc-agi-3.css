@@ -726,45 +726,6 @@ body.arc-help-liquid-open .modal-backdrop.show {
   line-height: 1.75;
 }
 
-.arc-help-modal .modal-body > .arc-help-record {
-  display: grid;
-  margin: 22px 0 0;
-  padding: 16px 18px;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 3px 14px;
-  align-items: center;
-  border: 2px solid var(--arc-ink);
-  border-left: 8px solid var(--arc-red);
-  background: #fff;
-  color: var(--arc-ink);
-  font-size: 0.8rem;
-  line-height: 1.65;
-}
-
-.arc-help-record-label {
-  display: inline-flex;
-  padding: 4px 7px;
-  grid-row: 1 / span 2;
-  align-self: stretch;
-  align-items: center;
-  background: var(--arc-red);
-  color: #fff;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.62rem;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-}
-
-.arc-help-record strong {
-  align-self: end;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.84rem;
-  font-weight: 900;
-}
-
 .arc-leaderboard {
   margin-top: 22px;
   border: 2px solid var(--arc-ink);
@@ -832,12 +793,15 @@ body.arc-help-liquid-open .modal-backdrop.show {
 
 .arc-leaderboard-entry {
   --arc-entry-accent: var(--arc-blue);
+  --arc-score-ratio: 25.8%;
   position: relative;
   display: grid;
   min-height: 74px;
   padding: 12px 18px 12px 0;
   grid-template-columns: 62px minmax(0, 1fr) auto;
+  grid-template-rows: auto 5px;
   gap: 14px;
+  row-gap: 8px;
   align-items: center;
   overflow: hidden;
   border-bottom: 1px solid var(--arc-line);
@@ -846,14 +810,17 @@ body.arc-help-liquid-open .modal-backdrop.show {
 
 .arc-leaderboard-entry:nth-child(3) {
   --arc-entry-accent: var(--arc-red);
+  --arc-score-ratio: 23.2%;
 }
 
 .arc-leaderboard-entry:nth-child(4) {
   --arc-entry-accent: var(--arc-green);
+  --arc-score-ratio: 7.1%;
 }
 
 .arc-leaderboard-entry:nth-child(5) {
   --arc-entry-accent: var(--arc-yellow);
+  --arc-score-ratio: 5%;
 }
 
 .arc-leaderboard-entry:last-child {
@@ -863,6 +830,7 @@ body.arc-help-liquid-open .modal-backdrop.show {
 .arc-leaderboard-rank {
   display: grid;
   height: 100%;
+  grid-row: 1 / span 2;
   place-items: center;
   border-right: 5px solid var(--arc-entry-accent);
   color: #57554e;
@@ -915,8 +883,26 @@ body.arc-help-liquid-open .modal-backdrop.show {
   font-weight: 800;
 }
 
+.arc-leaderboard-meter {
+  position: relative;
+  display: block;
+  height: 5px;
+  grid-column: 2 / -1;
+  grid-row: 2;
+  overflow: hidden;
+  background: #dedbd1;
+}
+
+.arc-leaderboard-meter i {
+  display: block;
+  width: var(--arc-score-ratio);
+  height: 100%;
+  background: var(--arc-entry-accent);
+}
+
 .arc-leaderboard-entry--record {
   --arc-entry-accent: var(--arc-yellow);
+  --arc-score-ratio: 100%;
   min-height: 102px;
   padding-right: 20px;
   border-bottom-color: #444;
@@ -954,6 +940,14 @@ body.arc-help-liquid-open .modal-backdrop.show {
 
 .arc-leaderboard-entry--record .arc-leaderboard-score strong {
   font-size: clamp(1.7rem, 5vw, 2.25rem);
+}
+
+.arc-leaderboard-entry--record .arc-leaderboard-meter {
+  background: #3d3d3d;
+}
+
+.arc-leaderboard-entry--record .arc-leaderboard-meter i {
+  box-shadow: 0 0 12px rgba(255, 220, 0, 0.42);
 }
 
 .arc-leaderboard-cutoff {
@@ -1595,21 +1589,6 @@ body.arc-help-liquid-open .modal-backdrop.show {
 
   .arc-help-modal .modal-body {
     padding: 8px 20px 22px;
-  }
-
-  .arc-help-record-label {
-    align-self: center;
-    writing-mode: horizontal-tb;
-    transform: none;
-  }
-
-  .arc-help-modal .modal-body > .arc-help-record {
-    grid-template-columns: 1fr;
-  }
-
-  .arc-help-record-label {
-    width: fit-content;
-    grid-row: auto;
   }
 
   .arc-leaderboard-header {
