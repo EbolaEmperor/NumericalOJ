@@ -166,6 +166,21 @@ def validate_storage_key(storage_key: str) -> str:
     return key
 
 
+def repository_lock_stat_is_safe(info, *, expected_device=None) -> bool:
+    """锁文件必须是当前用户拥有的私有、空、单链接普通文件。"""
+    return (
+        stat.S_ISREG(info.st_mode)
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and int(info.st_uid) == os.geteuid()
+        and int(info.st_nlink) == 1
+        and int(info.st_size) == 0
+        and (
+            expected_device is None
+            or int(info.st_dev) == int(expected_device)
+        )
+    )
+
+
 def validate_entry_name(name: str) -> str:
     normalized = unicodedata.normalize("NFC", str(name or ""))
     if not normalized or normalized in {".", ".."}:
@@ -471,14 +486,51 @@ def repository_user_lock(storage_key: str, *, exclusive: bool = True):
     """跨进程用户仓库锁；所有树写入与快照捕获必须复用此锁。"""
     ensure_repository_storage_ready()
     key = validate_storage_key(storage_key)
-    lock_path = STORAGE_ROOT / "locks" / f"{key}.lock"
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    lock_directory = STORAGE_ROOT / "locks"
     try:
+        directory_fd = os.open(
+            lock_directory,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise RepositoryStorageError("无法安全打开仓库锁目录") from exc
+    try:
+        directory_info = os.fstat(directory_fd)
+        try:
+            fd = os.open(
+                f"{key}.lock",
+                (
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_CLOEXEC
+                    | os.O_NOFOLLOW
+                    | os.O_NONBLOCK
+                ),
+                0o600,
+                dir_fd=directory_fd,
+            )
+        except OSError as exc:
+            raise RepositoryStorageError("无法安全打开仓库锁文件") from exc
+    finally:
+        os.close(directory_fd)
+
+    locked = False
+    try:
+        info = os.fstat(fd)
+        if not repository_lock_stat_is_safe(
+            info,
+            expected_device=directory_info.st_dev,
+        ):
+            raise RepositoryStorageError(
+                "仓库锁文件必须是当前用户拥有的 0600 空白单链接普通文件"
+            )
         fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        locked = True
         yield
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 

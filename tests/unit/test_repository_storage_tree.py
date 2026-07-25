@@ -49,6 +49,52 @@ def test_repository_path_validation_preserves_case_unicode_dotfiles_and_leading_
     )
 
 
+def test_repository_user_lock_creates_private_safe_lock(isolated_storage):
+    storage_key = "a" * 32
+
+    with storage.repository_user_lock(storage_key):
+        lock_path = isolated_storage / "locks" / f"{storage_key}.lock"
+        assert storage.repository_lock_stat_is_safe(
+            lock_path.lstat(),
+            expected_device=(isolated_storage / "locks").lstat().st_dev,
+        )
+
+
+def test_repository_user_lock_rejects_symlink_without_touching_target(
+    isolated_storage,
+    tmp_path,
+):
+    storage.ensure_repository_storage_ready()
+    storage_key = "b" * 32
+    target = tmp_path / "outside-lock-target"
+    target.write_bytes(b"keep")
+    lock_path = isolated_storage / "locks" / f"{storage_key}.lock"
+    lock_path.symlink_to(target)
+
+    with pytest.raises(storage.RepositoryStorageError):
+        with storage.repository_user_lock(storage_key):
+            pass
+
+    assert lock_path.is_symlink()
+    assert target.read_bytes() == b"keep"
+
+
+def test_repository_user_lock_rejects_hardlinked_lock(isolated_storage, tmp_path):
+    storage.ensure_repository_storage_ready()
+    storage_key = "c" * 32
+    target = tmp_path / "outside-lock-target"
+    target.touch(mode=0o600)
+    os.chmod(target, 0o600)
+    lock_path = isolated_storage / "locks" / f"{storage_key}.lock"
+    os.link(target, lock_path)
+
+    with pytest.raises(storage.RepositoryStorageError):
+        with storage.repository_user_lock(storage_key):
+            pass
+
+    assert target.stat().st_nlink == 2
+
+
 def test_repository_metadata_namespace_uses_binary_collation():
     bootstrap = (
         Path(__file__).resolve().parents[2] / "database" / "bootstrap.sql"

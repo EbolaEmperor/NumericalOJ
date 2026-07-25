@@ -4,6 +4,8 @@
 import hashlib
 import json
 import os
+from pathlib import Path
+import stat
 
 from oj_modules.repository import admin as admin_services
 from oj_modules.repository import storage
@@ -116,6 +118,59 @@ def test_doctor_managed_root_reports_every_non_directory_inode(tmp_path):
     assert {os.path.basename(issue["path"]) for issue in issues} == {
         "plain-file",
         "linked",
+    }
+
+
+def test_doctor_managed_locks_accepts_only_private_empty_storage_key_files(
+    tmp_path,
+):
+    managed = tmp_path / "locks"
+    managed.mkdir()
+    valid_key = "a" * 32
+    valid = managed / f"{valid_key}.lock"
+    valid.touch(mode=0o600)
+    os.chmod(valid, 0o600)
+
+    storage_keys, issues = admin_services._managed_lock_files(managed)
+
+    assert storage_keys == {valid_key}
+    assert issues == []
+    assert stat.S_IMODE(valid.stat().st_mode) == 0o600
+
+
+def test_doctor_managed_locks_rejects_wrong_name_mode_content_and_inode_type(
+    tmp_path,
+):
+    managed = tmp_path / "locks"
+    managed.mkdir()
+    wrong_name = managed / "unexpected.lock"
+    wrong_name.touch(mode=0o600)
+    wrong_mode = managed / f"{'b' * 32}.lock"
+    wrong_mode.touch(mode=0o600)
+    os.chmod(wrong_mode, 0o640)
+    nonempty = managed / f"{'c' * 32}.lock"
+    nonempty.write_text("not empty", encoding="utf-8")
+    os.chmod(nonempty, 0o600)
+    directory = managed / f"{'d' * 32}.lock"
+    directory.mkdir()
+    linked = managed / f"{'e' * 32}.lock"
+    linked.symlink_to(wrong_name)
+    hardlinked = managed / f"{'f' * 32}.lock"
+    os.link(wrong_name, hardlinked)
+
+    storage_keys, issues = admin_services._managed_lock_files(managed)
+
+    assert storage_keys == set()
+    assert {Path(issue["path"]).name for issue in issues} == {
+        wrong_name.name,
+        wrong_mode.name,
+        nonempty.name,
+        directory.name,
+        linked.name,
+        hardlinked.name,
+    }
+    assert {issue["code"] for issue in issues} == {
+        "managed_root_entry_unsafe",
     }
 
 

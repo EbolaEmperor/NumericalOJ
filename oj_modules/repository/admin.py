@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import unicodedata
 import uuid
@@ -367,6 +368,59 @@ def _managed_child_directories(path, *, managed_root):
     return directories, issues
 
 
+_LOCK_FILE_NAME_RE = re.compile(r"^(?P<storage_key>[0-9a-f]{32})[.]lock$")
+
+
+def _managed_lock_files(path):
+    """只接受 storage 模块创建的私有、空、单链接普通锁文件。"""
+    storage_keys = set()
+    issues = []
+    if not _plain_directory(path):
+        return storage_keys, issues
+    expected_device = Path(path).lstat().st_dev
+    for entry in os.scandir(path):
+        entry_path = Path(path) / entry.name
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            issues.append(
+                _issue(
+                    "managed_root_entry_unsafe",
+                    "doctor 扫描时受管锁条目消失",
+                    path=entry_path,
+                    managed_root="locks",
+                )
+            )
+            continue
+        match = _LOCK_FILE_NAME_RE.fullmatch(entry.name)
+        safe = (
+            match is not None
+            and storage.repository_lock_stat_is_safe(
+                info,
+                expected_device=expected_device,
+            )
+        )
+        if safe:
+            storage_keys.add(match.group("storage_key"))
+            continue
+        issues.append(
+            _issue(
+                "managed_root_entry_unsafe",
+                "locks 只允许当前部署用户拥有的 0600 空白单链接普通锁文件",
+                path=entry_path,
+                managed_root="locks",
+                mode=int(info.st_mode),
+                uid=int(info.st_uid),
+                gid=int(info.st_gid),
+                nlink=int(info.st_nlink),
+                size=int(info.st_size),
+                device=int(info.st_dev),
+                expected_device=int(expected_device),
+            )
+        )
+    return storage_keys, issues
+
+
 def audit_submission_snapshot_against_metadata(row, storage_root):
     """核验一条快照绑定；把任何损坏转换为 doctor 的结构化 issue。"""
     try:
@@ -418,11 +472,14 @@ def doctor_repository_storage():
             )
     managed_children = {}
     for child in required_roots:
-        child_directories, child_issues = _managed_child_directories(
-            root / child,
-            managed_root=child,
-        )
-        managed_children[child] = child_directories
+        if child == "locks":
+            child_entries, child_issues = _managed_lock_files(root / child)
+        else:
+            child_entries, child_issues = _managed_child_directories(
+                root / child,
+                managed_root=child,
+            )
+        managed_children[child] = child_entries
         issues.extend(child_issues)
 
     conn = get_db_connection()
@@ -502,7 +559,6 @@ def doctor_repository_storage():
                 path=root / "users" / orphan,
             )
         )
-
     active_uploads = {
         str(row["id"])
         for row in upload_sessions
