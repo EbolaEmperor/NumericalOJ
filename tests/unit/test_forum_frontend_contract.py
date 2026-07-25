@@ -110,6 +110,13 @@ def test_mobile_header_controls_keep_accessible_names_when_copy_is_hidden():
     assert 'aria-label="搜索讨论"' in TEMPLATE
 
 
+def test_button_color_reset_does_not_override_component_variants():
+    assert ".forum-page :where(button) {\n  color: inherit;" in CSS
+    assert ".forum-page button {\n  color: inherit;" not in CSS
+    assert ".forum-button-primary {\n" in CSS
+    assert ".forum-button-dark {\n" in CSS
+
+
 def test_editor_completion_cannot_mutate_a_newly_opened_edit_context():
     assert "function editorContextMatches(mode, targetId, draftKey)" in JAVASCRIPT
     assert "const submittedMode = state.editorMode;" in JAVASCRIPT
