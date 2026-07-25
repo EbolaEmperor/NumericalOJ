@@ -20,6 +20,9 @@ JAVASCRIPT = (ROOT / "static" / "app" / "forum.js").read_text(encoding="utf-8")
 MARKDOWN_JAVASCRIPT = (
     ROOT / "static" / "app" / "markdown-rendering.js"
 ).read_text(encoding="utf-8")
+SEMANTIC_JAVASCRIPT = (
+    ROOT / "static" / "app" / "editor-semantic-tokens.js"
+).read_text(encoding="utf-8")
 ROUTES = (ROOT / "oj_modules" / "routes" / "forum_routes.py").read_text(
     encoding="utf-8"
 )
@@ -174,8 +177,12 @@ def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
 
     for page_template in (TEMPLATE, PROBLEM_TEMPLATE):
         assert page_template.count("app/markdown-rendering.css") == 1
+        assert page_template.count("app/editor-semantic-tokens.js") == 1
         assert page_template.count("vendor/mermaid/mermaid.min.js") == 1
         assert page_template.count("app/markdown-rendering.js") == 1
+        assert page_template.index(
+            "app/editor-semantic-tokens.js"
+        ) < page_template.index("app/markdown-rendering.js")
         assert page_template.index(
             "vendor/mermaid/mermaid.min.js"
         ) < page_template.index("app/markdown-rendering.js")
@@ -183,6 +190,7 @@ def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
     assert 'class="problem-content numoj-markdown my-3"' in PROBLEM_TEMPLATE
     assert "data-numoj-markdown" in PROBLEM_TEMPLATE
     assert "vendor/mermaid" not in BASE_LAYOUT
+    assert "app/editor-semantic-tokens.js" not in BASE_LAYOUT
     assert "app/markdown-rendering.js" not in BASE_LAYOUT
     assert '"mermaid": "11.16.0"' in PACKAGE
     assert '"build:mermaid": "node scripts/build_mermaid.mjs"' in PACKAGE
@@ -205,6 +213,16 @@ def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
         "await renderer.run({ nodes: [diagram] });",
         "container.dataset.numojMermaidGeneration !== generation",
         'block.dataset.numojMermaidState = "queued";',
+        'context: "markdown"',
+        "CPP_SEMANTIC_MAX_INFLIGHT_PER_PAGE = 2",
+        "CPP_SEMANTIC_MAX_SOURCE_BYTES",
+        "CPP_SEMANTIC_MAX_TOKENS_PER_BLOCK",
+        "scheduleSemanticTask(",
+        "semanticController.abort();",
+        "root.contains(block)",
+        'String(code.textContent || "") === source',
+        'block.dataset.numojSemanticState = "queued";',
+        "applySemanticRanges(code, ranges);",
         "if (root.isConnected) await typesetMath(root);",
         "mathJax.typesetClear([root]);",
         'root.matches("[data-numoj-markdown]")',
@@ -225,6 +243,27 @@ def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
     assert ".numoj-markdown .codehilite .k" in MARKDOWN_CSS
     assert ".numoj-markdown .codehilite .s" in MARKDOWN_CSS
     assert ".numoj-markdown .codehilite .c" in MARKDOWN_CSS
+    assert ".numoj-semantic-token.numoj-semantic-class" in MARKDOWN_CSS
+    assert ".numoj-semantic-token.numoj-semantic-method" in MARKDOWN_CSS
+    assert ".numoj-semantic-token.numoj-semantic-variable" in MARKDOWN_CSS
     assert ".numoj-mermaid-diagram > iframe" in MARKDOWN_CSS
     assert "Pygments 2.20 class theme" not in CSS
     assert ".forum-mermaid" not in CSS
+
+
+def test_shared_semantic_client_supports_editor_and_markdown_callers():
+    for contract in (
+        "async function getLegend(language, options)",
+        "async function requestTokens(options)",
+        'context === "markdown" && language === "cpp"',
+        "body.context = context",
+        "body.problem_id = problemId",
+        "signal: settings.signal",
+        "getLegend: getLegend",
+        "requestTokens: requestTokens",
+        "register: register",
+    ):
+        assert contract in SEMANTIC_JAVASCRIPT
+
+    assert "problemId" not in MARKDOWN_JAVASCRIPT
+    assert "#include <bits/stdc++.h>" not in MARKDOWN_JAVASCRIPT

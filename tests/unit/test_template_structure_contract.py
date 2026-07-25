@@ -226,6 +226,8 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert '"py", "python", "matlab", "octave"' in semantic_tokens
     assert "/api/editor/semantic-token-legend" in semantic_tokens
     assert "/api/editor/semantic-tokens" in semantic_tokens
+    assert "getLegend: getLegend" in semantic_tokens
+    assert "requestTokens: requestTokens" in semantic_tokens
     assert semantic_tokens.count("mathCurveLoader: false") == 2
     assert "settings.onRequestStart()" in semantic_tokens
     assert "settings.onRequestEnd()" in semantic_tokens
