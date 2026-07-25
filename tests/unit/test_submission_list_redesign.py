@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from flask import Flask
 
@@ -6,6 +7,9 @@ from oj_modules import db_services
 from oj_modules.api import submission_api
 from oj_modules.routes import rejudge_routes
 from oj_modules.routes import submission_routes
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_regular_user_search_cannot_match_submitter():
@@ -34,6 +38,56 @@ def test_admin_search_can_match_submitter_and_numeric_ids():
     assert "s.id = %s" in sql
     assert "s.problem_id = %s" in sql
     assert params == ("%42%", 42, 42, "%42%")
+
+
+def test_output_limit_filter_is_first_class_and_not_grouped_as_other():
+    sql, params = db_services._build_submission_list_where(
+        status_filter="output_limit",
+    )
+
+    assert db_services.normalize_submission_list_status_filter(
+        "output_limit"
+    ) == "output_limit"
+    assert "s.status = %s" in sql
+    assert params == ("Output Limit Exceeded",)
+
+    other_sql, other_params = db_services._build_submission_list_where(
+        status_filter="other",
+    )
+    assert "s.status NOT IN" in other_sql
+    assert "Output Limit Exceeded" in other_params
+
+
+def test_output_limit_status_has_failure_styles_and_compact_labels():
+    list_js = (ROOT / "static" / "app" / "submissions.js").read_text(
+        encoding="utf-8"
+    )
+    list_css = (ROOT / "static" / "app" / "submissions.css").read_text(
+        encoding="utf-8"
+    )
+    list_page = (
+        ROOT / "templates" / "submissions" / "all.html"
+    ).read_text(encoding="utf-8")
+    list_component = (
+        ROOT / "templates" / "submissions" / "components" / "table.html"
+    ).read_text(encoding="utf-8")
+    submission_detail = (
+        ROOT / "templates" / "submissions" / "detail.html"
+    ).read_text(encoding="utf-8")
+    problem_detail = (
+        ROOT / "templates" / "problems" / "detail.html"
+    ).read_text(encoding="utf-8")
+    layout_css = (ROOT / "static" / "app" / "layout.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"Output Limit Exceeded"' in list_js
+    assert "Output Limit Exceeded" in list_component
+    assert "'Output Limit Exceeded': 'OLE'" in submission_detail
+    assert "'Output Limit Exceeded': 'OL'" in problem_detail
+    assert "('output_limit', 'Output Limit Exceeded')" in list_page
+    assert ".submission-verdict--output-limit-exceeded" in list_css
+    assert ".submission-status.output-limit-exceeded" in layout_css
 
 
 class _SubmissionListCursor:

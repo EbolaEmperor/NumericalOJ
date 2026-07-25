@@ -1,22 +1,40 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import re
+import hashlib
 
-import pymysql
-from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
-from werkzeug.utils import secure_filename
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 from config import AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, AGENT_REPOSITORY_KNN_TOP_K
 
-from oj_modules.db_services import get_db_connection, get_user_by_username
-from oj_modules.repository_index_services import (
-    create_repository_index_job,
+from oj_modules.repository.index import (
+    fail_repository_index_job_dispatch,
+    get_or_create_active_repository_index_job,
     get_repository_index_job,
     get_latest_active_repository_index_job,
     list_repository_classes,
     request_cancel_repository_index_job,
     search_repository_chunks,
     update_repository_index_job,
+)
+from oj_modules.repository.tree import (
+    RepositoryDomainError,
+    UPLOAD_CHUNK_MAX_BYTES,
+    append_repository_upload_chunk,
+    cancel_repository_upload_session,
+    commit_repository_upload_session,
+    create_repository_directory as create_repository_directory_service,
+    create_repository_upload_session,
+    delete_repository_entry,
+    finalize_repository_upload_session,
+    get_repository_state,
+    get_repository_upload_session,
+    list_repository_entries,
+    list_repository_files,
+    move_repository_entry,
+    preview_repository_delete,
+    read_repository_file,
+    save_repository_file as save_repository_file_service,
+    upsert_repository_file_by_path,
 )
 
 
@@ -37,7 +55,7 @@ def init_repository_index_module(repository_build_index_task):
     _repository_build_index_task = repository_build_index_task
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.auth_helpers import current_user
 
 
 @repository_bp.route('/code_repository')
@@ -53,29 +71,30 @@ def get_repository_files():
     user = current_user()
     if not user:
         return jsonify(success=False, message="未登录"), 401
-
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            sql = """
-            SELECT id, filename, file_size, created_at, updated_at
-            FROM user_code_repository
-            WHERE user_id = %s
-            ORDER BY filename
-            """
-            cursor.execute(sql, (user['id'],))
-            files = cursor.fetchall()
-
-            for file in files:
-                file['created_at'] = file['created_at'].strftime('%Y-%m-%d %H:%M:%S')
-                file['updated_at'] = file['updated_at'].strftime('%Y-%m-%d %H:%M:%S')
-                file['file_size_kb'] = round(file['file_size'] / 1024, 2) if file['file_size'] > 0 else 0
-
-            return jsonify(success=True, files=files)
+        files = list_repository_files(user['id'])
+        for item in files:
+            item['filename'] = item['relative_path']
+            item['file_size_kb'] = round(item['file_size'] / 1024, 2)
+        state = get_repository_state(user['id'])
+        return jsonify(success=True, files=files, **state)
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
     except Exception as e:
         return jsonify(success=False, message=f"获取文件列表失败: {str(e)}"), 500
-    finally:
-        conn.close()
+
+
+@repository_bp.route('/api/repository/tree', methods=['GET'])
+def get_repository_tree():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        return jsonify(success=True, **list_repository_entries(user['id']))
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"获取目录树失败: {str(e)}"), 500
 
 
 @repository_bp.route('/api/repository/file/<int:file_id>', methods=['GET'])
@@ -84,32 +103,17 @@ def get_repository_file(file_id):
     if not user:
         return jsonify(success=False, message="未登录"), 401
 
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            sql = """
-            SELECT id, filename, file_content, file_size, updated_at
-            FROM user_code_repository
-            WHERE id = %s AND user_id = %s
-            """
-            cursor.execute(sql, (file_id, user['id']))
-            file_data = cursor.fetchone()
-
-            if not file_data:
-                return jsonify(success=False, message="文件不存在"), 404
-
-            return jsonify(
-                success=True,
-                id=file_data['id'],
-                filename=file_data['filename'],
-                file_size=file_data.get('file_size') or 0,
-                updated_at=file_data.get('updated_at'),
-                content=file_data['file_content'],
-            )
+        file_data = read_repository_file(user['id'], entry_id=file_id)
+        return jsonify(
+            success=True,
+            **file_data,
+            filename=file_data['relative_path'],
+        )
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
     except Exception as e:
         return jsonify(success=False, message=f"获取文件失败: {str(e)}"), 500
-    finally:
-        conn.close()
 
 
 @repository_bp.route('/api/repository/file', methods=['POST'])
@@ -119,162 +123,399 @@ def save_repository_file():
         return jsonify(success=False, message="未登录"), 401
 
     data = request.get_json() or {}
-    filename = data.get('filename', '').strip()
+    filename = str(data.get('name') or data.get('filename') or '')
     content = data.get('content', '')
-    file_id = data.get('file_id')
-
-    if not filename:
-        return jsonify(success=False, message="文件名不能为空"), 400
-
-    if not filename.endswith(('.h', '.hpp', '.c', '.cpp')):
-        return jsonify(success=False, message="只允许上传 .h, .hpp, .c, .cpp 文件"), 400
-
-    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
-        return jsonify(success=False, message="文件名只能包含字母、数字、下划线、连字符和点"), 400
-
-    file_size = len(content.encode('utf-8'))
-    if file_size > 100 * 1024:
-        return jsonify(success=False, message="文件大小不能超过100KB"), 400
-
-    conn = get_db_connection()
+    file_id = data.get('file_id') or data.get('entry_id')
     try:
-        with conn.cursor() as cursor:
-            if file_id:
-                sql = """
-                UPDATE user_code_repository
-                SET filename = %s, file_content = %s, file_size = %s
-                WHERE id = %s AND user_id = %s
-                """
-                cursor.execute(sql, (filename, content, file_size, file_id, user['id']))
-
-                if cursor.rowcount == 0:
-                    return jsonify(success=False, message="文件不存在或无权限"), 404
-
-                saved_id = int(file_id)
-                message = "文件更新成功"
-            else:
-                sql = """
-                INSERT INTO user_code_repository (user_id, filename, file_content, file_size)
-                VALUES (%s, %s, %s, %s)
-                """
-                try:
-                    cursor.execute(sql, (user['id'], filename, content, file_size))
-                    saved_id = cursor.lastrowid
-                    message = "文件创建成功"
-                except pymysql.IntegrityError:
-                    return jsonify(success=False, message="文件名已存在"), 409
-
-            cursor.execute(
-                """
-                SELECT id, filename, file_size, updated_at
-                FROM user_code_repository
-                WHERE id = %s AND user_id = %s
-                """,
-                (saved_id, user['id']),
+        if file_id:
+            result = save_repository_file_service(
+                user['id'],
+                entry_id=file_id,
+                content=content,
+                expected_file_version=data.get('expected_file_version'),
             )
-            saved_file = cursor.fetchone() or {}
-            conn.commit()
-            return jsonify(
-                success=True,
-                message=message,
-                file_id=saved_file.get('id') or saved_id,
-                filename=saved_file.get('filename') or filename,
-                file_size=saved_file.get('file_size') if saved_file else file_size,
-                updated_at=saved_file.get('updated_at'),
+        elif '/' in filename:
+            result = upsert_repository_file_by_path(
+                user['id'],
+                filename,
+                content,
+                expected_structure_version=data.get('expected_structure_version'),
+                overwrite=False,
             )
+        else:
+            result = save_repository_file_service(
+                user['id'],
+                parent_id=data.get('parent_id'),
+                name=filename,
+                content=content,
+                expected_structure_version=data.get('expected_structure_version'),
+            )
+        entry = result['entry']
+        return jsonify(
+            success=True,
+            message="文件创建成功" if result.get('created') else "文件更新成功",
+            file_id=entry['id'],
+            filename=entry['relative_path'],
+            **result,
+        )
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
     except Exception as e:
-        conn.rollback()
         return jsonify(success=False, message=f"保存文件失败: {str(e)}"), 500
-    finally:
-        conn.close()
 
 
+@repository_bp.route('/api/repository/directory', methods=['POST'])
+def create_directory():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        result = create_repository_directory_service(
+            user['id'],
+            parent_id=data.get('parent_id'),
+            name=data.get('name'),
+            expected_structure_version=data.get('expected_structure_version'),
+        )
+        return jsonify(success=True, message="目录创建成功", **result)
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"创建目录失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/entry/<int:entry_id>/move', methods=['POST'])
+def move_entry(entry_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        result = move_repository_entry(
+            user['id'],
+            entry_id,
+            destination_parent_id=data.get('destination_parent_id'),
+            new_name=data.get('new_name'),
+            expected_structure_version=data.get('expected_structure_version'),
+            conflict_policy=data.get('conflict_policy', 'error'),
+        )
+        return jsonify(success=True, message="移动成功", **result)
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"移动失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/entry/<int:entry_id>/delete-preview', methods=['POST'])
+def preview_delete_entry(entry_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        return jsonify(success=True, **preview_repository_delete(user['id'], entry_id))
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"生成删除预览失败: {str(e)}"), 500
+
+
+def _delete_entry_response(user, entry_id):
+    data = request.get_json(silent=True) or {}
+    token = data.get('confirmation_token')
+    if not token:
+        preview = preview_repository_delete(user['id'], entry_id)
+        return jsonify(
+            success=False,
+            code='confirmation_required',
+            message='永久删除前需要确认',
+            **preview,
+        ), 409
+    result = delete_repository_entry(
+        user['id'],
+        entry_id,
+        confirmation_token=token,
+    )
+    return jsonify(success=True, message="永久删除成功", **result)
+
+
+@repository_bp.route('/api/repository/entry/<int:entry_id>', methods=['DELETE'])
+def delete_entry(entry_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        return _delete_entry_response(user, entry_id)
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"删除失败: {str(e)}"), 500
 @repository_bp.route('/api/repository/file/<int:file_id>', methods=['DELETE'])
 def delete_repository_file(file_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message="未登录"), 401
 
-    conn = get_db_connection()
     try:
-        with conn.cursor() as cursor:
-            sql = "DELETE FROM user_code_repository WHERE id = %s AND user_id = %s"
-            cursor.execute(sql, (file_id, user['id']))
-
-            if cursor.rowcount == 0:
-                return jsonify(success=False, message="文件不存在或无权限"), 404
-
-            conn.commit()
-            return jsonify(success=True, message="文件删除成功", file_id=file_id, deleted=True)
+        return _delete_entry_response(user, file_id)
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
     except Exception as e:
-        conn.rollback()
         return jsonify(success=False, message=f"删除文件失败: {str(e)}"), 500
-    finally:
-        conn.close()
+
+
+@repository_bp.route('/api/repository/upload/session', methods=['POST'])
+def create_upload_session():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        result = create_repository_upload_session(
+            user['id'],
+            parent_id=data.get('parent_id'),
+            expected_structure_version=data.get('expected_structure_version'),
+            files=data.get('files'),
+            entries=data.get('entries'),
+        )
+        return jsonify(success=True, **result), 201
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"创建上传会话失败: {str(e)}"), 500
+
+
+@repository_bp.route(
+    '/api/repository/upload/session/<session_id>/file/<token>/chunk',
+    methods=['PUT', 'POST'],
+)
+def upload_session_chunk(session_id, token):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        raw = request.stream.read(UPLOAD_CHUNK_MAX_BYTES + 1)
+        if len(raw) > UPLOAD_CHUNK_MAX_BYTES:
+            return jsonify(
+                success=False,
+                code='chunk_too_large',
+                message=f'单个上传分块不能超过 {UPLOAD_CHUNK_MAX_BYTES} 字节',
+            ), 413
+        result = append_repository_upload_chunk(
+            user['id'],
+            session_id,
+            token,
+            offset=request.headers.get('Upload-Offset', request.args.get('offset')),
+            total_size=request.headers.get('Upload-Length', request.args.get('total')),
+            data=raw,
+            chunk_sha256=request.headers.get('Upload-Chunk-SHA256'),
+        )
+        return jsonify(success=True, **result)
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"上传分块失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/upload/session/<session_id>', methods=['GET'])
+def upload_session_status(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        return jsonify(
+            success=True,
+            **get_repository_upload_session(user['id'], session_id),
+        )
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"获取上传状态失败: {str(e)}"), 500
+
+
+@repository_bp.route(
+    '/api/repository/upload/session/<session_id>/finalize',
+    methods=['POST'],
+)
+def finalize_upload_session(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(
+            success=True,
+            **finalize_repository_upload_session(
+                user['id'],
+                session_id,
+                encodings=data.get('encodings'),
+            ),
+        )
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"生成上传预览失败: {str(e)}"), 500
+
+
+@repository_bp.route(
+    '/api/repository/upload/session/<session_id>/commit',
+    methods=['POST'],
+)
+def commit_upload_session(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(
+            success=True,
+            message='上传已提交',
+            **commit_repository_upload_session(
+                user['id'],
+                session_id,
+                expected_structure_version=data.get('expected_structure_version'),
+                resolutions=data.get('resolutions'),
+                rename_targets=data.get('rename_targets'),
+            ),
+        )
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"提交上传失败: {str(e)}"), 500
+
+
+@repository_bp.route(
+    '/api/repository/upload/session/<session_id>',
+    methods=['DELETE'],
+)
+def cancel_upload_session(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        return jsonify(
+            success=True,
+            **cancel_repository_upload_session(user['id'], session_id),
+        )
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"取消上传失败: {str(e)}"), 500
+
+
+def _multipart_upload_preview(user):
+    uploaded = request.files.getlist('files') or request.files.getlist('file')
+    uploaded = [item for item in uploaded if item and item.filename]
+    if not uploaded:
+        raise RepositoryDomainError("没有选择文件", code="validation_error", status=400)
+    relative_paths = request.form.getlist('relative_paths')
+    if relative_paths and len(relative_paths) != len(uploaded):
+        raise RepositoryDomainError(
+            "relative_paths 与 files 数量不一致",
+            code="validation_error",
+            status=400,
+        )
+    if not relative_paths:
+        relative_paths = [item.filename for item in uploaded]
+    manifests = []
+    for item, relative_path in zip(uploaded, relative_paths):
+        stream = item.stream
+        start = stream.tell()
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = stream.read(UPLOAD_CHUNK_MAX_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        stream.seek(start)
+        manifests.append(
+            {
+                "relative_path": relative_path,
+                "size": size,
+                "sha256": digest.hexdigest(),
+            }
+        )
+    created = create_repository_upload_session(
+        user['id'],
+        parent_id=request.form.get('parent_id') or None,
+        expected_structure_version=request.form.get('expected_structure_version'),
+        files=manifests,
+    )
+    try:
+        for item, descriptor in zip(uploaded, created['files']):
+            offset = 0
+            while True:
+                chunk = item.stream.read(UPLOAD_CHUNK_MAX_BYTES)
+                if not chunk:
+                    break
+                result = append_repository_upload_chunk(
+                    user['id'],
+                    created['session_id'],
+                    descriptor['token'],
+                    offset=offset,
+                    total_size=descriptor['raw_size'],
+                    data=chunk,
+                    chunk_sha256=hashlib.sha256(chunk).hexdigest(),
+                )
+                offset = result['offset']
+        return finalize_repository_upload_session(
+            user['id'],
+            created['session_id'],
+        )
+    except Exception:
+        try:
+            cancel_repository_upload_session(user['id'], created['session_id'])
+        except Exception:
+            pass
+        raise
+
+
+@repository_bp.route('/api/repository/upload/preview', methods=['POST'])
+def upload_repository_preview():
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        return jsonify(success=True, **_multipart_upload_preview(user))
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
+    except Exception as e:
+        return jsonify(success=False, message=f"生成上传预览失败: {str(e)}"), 500
 
 
 @repository_bp.route('/api/repository/upload', methods=['POST'])
 def upload_repository_file():
+    """兼容旧单文件客户端；有冲突时仍停在预览，绝不静默覆盖。"""
     user = current_user()
     if not user:
         return jsonify(success=False, message="未登录"), 401
-
-    if 'file' not in request.files:
-        return jsonify(success=False, message="没有选择文件"), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify(success=False, message="没有选择文件"), 400
-
-    filename = secure_filename(file.filename)
-
-    if not filename.endswith(('.h', '.hpp', '.c', '.cpp')):
-        return jsonify(success=False, message="只允许上传 .h, .hpp, .c, .cpp 文件"), 400
-
     try:
-        content = file.read().decode('utf-8')
-    except UnicodeDecodeError:
-        return jsonify(success=False, message="文件编码错误，请使用UTF-8编码"), 400
-
-    file_size = len(content.encode('utf-8'))
-    if file_size > 100 * 1024:
-        return jsonify(success=False, message="文件大小不能超过100KB"), 400
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-            INSERT INTO user_code_repository (user_id, filename, file_content, file_size)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-            file_content = VALUES(file_content),
-            file_size = VALUES(file_size)
-            """
-            cursor.execute(sql, (user['id'], filename, content, file_size))
-            cursor.execute(
-                """
-                SELECT id, filename, file_size, updated_at
-                FROM user_code_repository
-                WHERE user_id = %s AND filename = %s
-                """,
-                (user['id'], filename),
-            )
-            saved_file = cursor.fetchone() or {}
-
-            conn.commit()
+        preview = _multipart_upload_preview(user)
+        conflicts = [item for item in preview['files'] if item.get('status') == 'conflict']
+        if not preview.get('ready') or conflicts:
             return jsonify(
-                success=True,
-                message="文件上传成功",
-                file_id=saved_file.get('id'),
-                filename=saved_file.get('filename') or filename,
-                file_size=saved_file.get('file_size') if saved_file else file_size,
-                updated_at=saved_file.get('updated_at'),
-            )
+                success=False,
+                code='upload_preview_required',
+                message='上传需要确认编码或冲突处理',
+                **preview,
+            ), 409
+        result = commit_repository_upload_session(
+            user['id'],
+            preview['session_id'],
+            expected_structure_version=preview['structure_version'],
+        )
+        first = (result.get('committed') or [{}])[0]
+        return jsonify(
+            success=True,
+            message='文件上传成功',
+            file_id=first.get('entry_id'),
+            **result,
+        )
+    except RepositoryDomainError as e:
+        return jsonify(**e.as_payload()), e.status
     except Exception as e:
-        conn.rollback()
         return jsonify(success=False, message=f"上传文件失败: {str(e)}"), 500
-    finally:
-        conn.close()
 
 
 @repository_bp.route('/api/repository/index/build', methods=['POST'])
@@ -285,53 +526,51 @@ def build_repository_index():
     if _repository_build_index_task is None:
         return jsonify(success=False, message="结构化整理任务未初始化"), 500
 
+    created_job_id = None
     try:
-        payload = request.get_json(silent=True) or {}
-        force_restart = bool(payload.get('force_restart'))
-        active_job = get_latest_active_repository_index_job(user_id=user['id'])
-
-        if active_job and not force_restart:
+        reservation = get_or_create_active_repository_index_job(user['id'])
+        if not reservation['created']:
+            active_job = get_repository_index_job(
+                job_id=reservation['job_id'], user_id=user['id']
+            ) or reservation['job']
             return jsonify(
-                success=False,
-                need_confirm=True,
-                active_job_id=int(active_job['id']),
-                message='上一个整理任务正在运行，是否终止？',
-            ), 409
-
-        cancelled_job_id = None
-        if active_job and force_restart:
-            cancelled_job_id = int(active_job['id'])
-            cancelled = request_cancel_repository_index_job(
-                job_id=cancelled_job_id,
-                user_id=user['id'],
-                reason='用户确认终止上一个整理任务并重启。',
+                success=True,
+                attached=True,
+                message='已连接到正在运行的结构化整理任务',
+                job_id=int(active_job['id']),
+                job=active_job,
             )
-            task_id = str((cancelled or {}).get('task_id') or '').strip()
-            if task_id:
-                try:
-                    _repository_build_index_task.app.control.revoke(task_id, terminate=True, signal='SIGTERM')
-                except Exception:
-                    # revoke 失败时依赖协作式 cancel 标记在任务内尽快退出
-                    pass
 
-        job_id = create_repository_index_job(user['id'])
+        job_id = int(reservation['job_id'])
+        created_job_id = job_id
+        repository_state = get_repository_state(user['id'])
+        update_repository_index_job(
+            job_id,
+            base_repository_generation=repository_state['repository_generation'],
+        )
         async_result = _repository_build_index_task.delay(user['id'], job_id)
         update_repository_index_job(
             job_id,
             task_id=str(async_result.id),
-            cancel_requested=0,
         )
-        message = '已开始结构化整理'
-        if cancelled_job_id is not None:
-            message = f'已终止任务 #{cancelled_job_id}，并开始新的结构化整理'
         return jsonify(
             success=True,
-            message=message,
+            attached=False,
+            message='已开始结构化整理',
             job_id=job_id,
             task_id=async_result.id,
-            replaced_job_id=cancelled_job_id,
+            base_repository_generation=repository_state['repository_generation'],
         )
     except Exception as e:
+        if created_job_id is not None:
+            try:
+                fail_repository_index_job_dispatch(
+                    created_job_id,
+                    user['id'],
+                    f'启动结构化整理失败：{str(e)}',
+                )
+            except Exception:
+                pass
         return jsonify(success=False, message=f"启动结构化整理失败: {str(e)}"), 500
 
 
@@ -343,77 +582,86 @@ def rebuild_repository_index_for_file():
     if _repository_build_index_task is None:
         return jsonify(success=False, message="结构化整理任务未初始化"), 500
 
+    created_job_id = None
     try:
         payload = request.get_json(silent=True) or {}
         file_id = int(payload.get('file_id') or 0)
-        force_restart = bool(payload.get('force_restart'))
         if file_id <= 0:
             return jsonify(success=False, message='file_id 非法'), 400
 
-        conn = get_db_connection()
         try:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, filename
-                    FROM user_code_repository
-                    WHERE user_id = %s AND id = %s
-                    LIMIT 1
-                    """,
-                    (int(user['id']), int(file_id)),
-                )
-                target_file = cursor.fetchone()
-        finally:
-            conn.close()
+            target_file = read_repository_file(user['id'], entry_id=file_id)
+        except RepositoryDomainError as exc:
+            return jsonify(**exc.as_payload()), exc.status
 
-        if not target_file:
-            return jsonify(success=False, message='文件不存在或无权限'), 404
-
-        active_job = get_latest_active_repository_index_job(user_id=user['id'])
-        if active_job and not force_restart:
+        reservation = get_or_create_active_repository_index_job(user['id'])
+        if not reservation['created']:
+            active_job = get_repository_index_job(
+                job_id=reservation['job_id'], user_id=user['id']
+            ) or reservation['job']
             return jsonify(
-                success=False,
-                need_confirm=True,
-                active_job_id=int(active_job['id']),
-                message='上一个整理任务正在运行，是否终止？',
-            ), 409
-
-        cancelled_job_id = None
-        if active_job and force_restart:
-            cancelled_job_id = int(active_job['id'])
-            cancelled = request_cancel_repository_index_job(
-                job_id=cancelled_job_id,
-                user_id=user['id'],
-                reason='用户确认终止上一个整理任务并重启。',
+                success=True,
+                attached=True,
+                message='已连接到正在运行的结构化整理任务',
+                job_id=int(active_job['id']),
+                job=active_job,
             )
-            task_id = str((cancelled or {}).get('task_id') or '').strip()
-            if task_id:
-                try:
-                    _repository_build_index_task.app.control.revoke(task_id, terminate=True, signal='SIGTERM')
-                except Exception:
-                    pass
 
-        job_id = create_repository_index_job(user['id'])
+        job_id = int(reservation['job_id'])
+        created_job_id = job_id
+        repository_state = get_repository_state(user['id'])
+        update_repository_index_job(
+            job_id,
+            base_repository_generation=repository_state['repository_generation'],
+        )
         async_result = _repository_build_index_task.delay(user['id'], job_id, int(file_id))
         update_repository_index_job(
             job_id,
             task_id=str(async_result.id),
-            cancel_requested=0,
         )
-        message = f"已开始重建文件索引：{target_file['filename']}"
-        if cancelled_job_id is not None:
-            message = f'已终止任务 #{cancelled_job_id}，并开始重建文件索引：{target_file["filename"]}'
         return jsonify(
             success=True,
-            message=message,
+            attached=False,
+            message=f"已开始重建文件索引：{target_file['relative_path']}",
             job_id=job_id,
             task_id=async_result.id,
             file_id=int(file_id),
-            filename=target_file['filename'],
-            replaced_job_id=cancelled_job_id,
+            filename=target_file['relative_path'],
+            base_repository_generation=repository_state['repository_generation'],
         )
     except Exception as e:
+        if created_job_id is not None:
+            try:
+                fail_repository_index_job_dispatch(
+                    created_job_id,
+                    user['id'],
+                    f'启动单文件索引重建失败：{str(e)}',
+                )
+            except Exception:
+                pass
         return jsonify(success=False, message=f"启动单文件索引重建失败: {str(e)}"), 500
+
+
+@repository_bp.route('/api/repository/index/<int:job_id>/cancel', methods=['POST'])
+def cancel_repository_index(job_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message="未登录"), 401
+    try:
+        row = get_repository_index_job(job_id=job_id, user_id=user['id'])
+        if not row:
+            return jsonify(success=False, message='任务不存在'), 404
+        if row.get('status') in ('success', 'failed', 'canceled'):
+            return jsonify(success=True, idempotent=True, job=row)
+        cancelled = request_cancel_repository_index_job(
+            job_id=job_id,
+            user_id=user['id'],
+            reason='用户取消结构化整理任务。',
+        )
+        job = get_repository_index_job(job_id=job_id, user_id=user['id'])
+        return jsonify(success=True, job=job)
+    except Exception as e:
+        return jsonify(success=False, message=f"取消结构化整理失败: {str(e)}"), 500
 
 
 @repository_bp.route('/api/repository/index/status/<int:job_id>', methods=['GET'])

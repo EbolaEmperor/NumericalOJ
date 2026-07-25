@@ -1893,10 +1893,12 @@
   .problem-detail-page .recent-submissions-panel .submission-status.unaccepted,
   .problem-detail-page .recent-submissions-panel .submission-status.wrong-answer,
   .problem-detail-page .recent-submissions-panel .submission-status.runtime-error,
+  .problem-detail-page .recent-submissions-panel .submission-status.output-limit-exceeded,
   .problem-detail-page .recent-submissions-panel .submission-status.error,
   .problem-detail-page .recent-submissions-card .submission-status.unaccepted,
   .problem-detail-page .recent-submissions-card .submission-status.wrong-answer,
   .problem-detail-page .recent-submissions-card .submission-status.runtime-error,
+  .problem-detail-page .recent-submissions-card .submission-status.output-limit-exceeded,
   .problem-detail-page .recent-submissions-card .submission-status.error {
     background: var(--numoj-danger-soft);
     color: var(--numoj-danger);

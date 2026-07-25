@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules import db_services, submission_archive
+from oj_modules import db_services, submission_archive, submission_repository_snapshots
 from oj_modules import written_submission_artifacts as artifacts
 
 
@@ -134,6 +134,11 @@ def _install_submission_database(
     monkeypatch.setattr(db_services, "get_db_connection", lambda: connection)
     monkeypatch.setattr(db_services, "refresh_submission_status_snapshot", lambda _sid: None)
     monkeypatch.setattr(db_services, "bump_daily_submission_count", lambda: None)
+    monkeypatch.setattr(
+        submission_repository_snapshots,
+        "capture_submission_repository_snapshot",
+        lambda _cursor, **_kwargs: {"snapshot_key": "0" * 32},
+    )
     return connection
 
 

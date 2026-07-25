@@ -15,7 +15,13 @@ from oj_modules.db_services import (
     get_submission_by_id,
     save_submission_ai_code_marks_json,
 )
-from oj_modules.repository_services import extract_includes_from_code, get_user_repository_files_by_names
+from oj_modules.repository.includes import (
+    extract_includes_from_code,
+    get_user_repository_files_by_names,
+)
+from oj_modules.submission_repository_snapshots import (
+    resolve_submission_repository_user_id,
+)
 from oj_modules.security_utils import rate_limit_hit
 
 
@@ -101,7 +107,12 @@ def ask_ai_code_marks():
     included_files = extract_includes_from_code(user_code)
     repository_files = {}
     if included_files:
-        repository_files = get_user_repository_files_by_names(user['id'], included_files)
+        submission_owner_id = resolve_submission_repository_user_id(sid)
+        repository_files = get_user_repository_files_by_names(
+            submission_owner_id,
+            included_files,
+            submission_id=sid,
+        )
 
     try:
         result = generate_ai_code_marks_from_submission_context(

@@ -1,1018 +1,335 @@
 {% extends "layouts/site.html" %}
+{% from "components/layout/icons.html" import icon %}
 
-{% block title %}代码仓库管理 - Numerical OJ{% endblock %}
+{% block title %}代码仓库 - Numerical OJ{% endblock %}
+
+{% block content_container_class %}container-fluid p-0 repository-page-shell{% endblock %}
+
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='styles/repository/workbench.css') }}">
+{% endblock %}
 
 {% block content %}
-<div class="container-fluid p-0" style="height: calc(100vh - 56px);">
-    <div class="row h-100 g-0">
-        <!-- 左侧文件列表 -->
-        <div class="col-md-3 bg-light border-end" style="min-height: 100%;">
-            <div class="p-3">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h5 class="mb-0">我的代码仓库</h5>
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-primary btn-sm" onclick="createNewFile()">
-                            <i class="fas fa-plus"></i> 新建
-                        </button>
-                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="uploadFile()">
-                            <i class="fas fa-upload"></i> 上传
-                        </button>
-                    </div>
-                </div>
-                <div class="d-grid gap-2 mb-3">
-                    <button id="structuredIndexBuildBtn" type="button" class="btn btn-warning btn-sm" onclick="startStructuredIndexBuild()">
-                        <i class="fas fa-sitemap"></i> 结构化整理
-                    </button>
-                    <button type="button" class="btn btn-outline-success btn-sm" onclick="openSemanticSearch()">
-                        <i class="fas fa-search"></i> 语义检索
-                    </button>
-                    <div id="indexJobStatus" class="small text-muted"></div>
-                </div>
-                
-                <!-- 文件列表 -->
-                <div id="fileList" class="list-group">
-                    <div class="text-center text-muted p-3">
-                        <span class="math-curve-loader" data-math-curve-loader data-size="md">
-                            <span class="math-curve-loader__label">正在加载文件…</span>
-                        </span>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- 右侧编辑器 -->
-        <div class="col-md-9 d-flex flex-column" style="min-height: 100%;">
-            <!-- 文件标签栏 -->
-            <div class="bg-light border-bottom p-2" id="fileTabBar" style="min-height: 50px;">
-                <div id="welcomeTab" class="text-center text-muted p-3">
-                    <i class="fas fa-code fa-3x mb-3"></i>
-                    <h5>欢迎使用代码仓库</h5>
-                    <p>选择左侧的文件开始编辑，或创建新文件</p>
-                </div>
-                <div id="fileTab" class="d-none">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div class="d-flex align-items-center">
-                            <span id="currentFileName" class="fw-bold"></span>
-                            <span id="fileModified" class="text-danger ms-2 d-none">*</span>
-                        </div>
-                        <div class="btn-group">
-                            <button id="rebuildCurrentFileIndexBtn" type="button" class="btn btn-outline-warning btn-sm" onclick="rebuildCurrentFileIndex()" disabled>
-                                <i class="fas fa-redo"></i> 重建索引
-                            </button>
-                            <button type="button" class="btn btn-success btn-sm" onclick="saveFile()">
-                                <i class="fas fa-save"></i> 保存
-                            </button>
-                            <button type="button" class="btn btn-danger btn-sm" onclick="deleteFile()">
-                                <i class="fas fa-trash"></i> 删除
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="closeFile()">
-                                <i class="fas fa-times"></i> 关闭
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- 代码编辑器 -->
-            <div class="flex-grow-1" style="position: relative;">
-                <textarea id="codeEditor" name="repository_source" class="form-control border-0"
-                          style="width: 100%; height: 100%; resize: none; font-family: 'Courier New', monospace; font-size: 14px;"
-                          placeholder="在这里编写代码..." aria-label="代码仓库编辑器"
-                          autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-                          data-1p-ignore data-lpignore="true" data-bwignore></textarea>
-                <div id="codeMirrorContainer" style="height: 100%;"></div>
-            </div>
-        </div>
+<section
+  class="repository-workbench"
+  id="repositoryWorkbench"
+  data-tree-url="/api/repository/tree"
+  data-files-url="{{ url_for('repository.get_repository_files') }}"
+  data-file-url="/api/repository/file"
+  data-directory-url="/api/repository/directory"
+  data-entry-url="/api/repository/entry"
+  data-upload-session-url="/api/repository/upload/session"
+  data-index-build-url="{{ url_for('repository.build_repository_index') }}"
+  data-index-cancel-url="/api/repository/index/{job_id}/cancel"
+  data-index-active-url="{{ url_for('repository.get_active_repository_index_status') }}"
+  data-index-status-url="/api/repository/index/status"
+  data-index-search-url="{{ url_for('repository.search_repository_index') }}"
+  aria-label="个人代码仓库"
+>
+  <svg class="repository-symbols" aria-hidden="true">
+    <symbol id="repo-icon-folder" viewBox="0 0 24 24"><path d="M3 7.5V6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="repo-icon-folder-plus" viewBox="0 0 24 24"><path d="M3 7.5V6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 10v6m-3-3h6"/></symbol>
+    <symbol id="repo-icon-file-plus" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 12v6m-3-3h6"/></symbol>
+    <symbol id="repo-icon-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></symbol>
+    <symbol id="repo-icon-upload" viewBox="0 0 24 24"><path d="M12 16V4m-5 5 5-5 5 5M5 20h14"/></symbol>
+    <symbol id="repo-icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="repo-icon-tree" viewBox="0 0 24 24"><path d="M6 4v12m0-7h6m-6 7h6M12 6h8v6h-8zM12 14h8v6h-8z"/></symbol>
+    <symbol id="repo-icon-save" viewBox="0 0 24 24"><path d="M5 3h12l2 2v16H5zM8 3v6h8V3m-1 14H9"/></symbol>
+    <symbol id="repo-icon-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m-8 0 1 14h8l1-14M10 11v6m4-6v6"/></symbol>
+    <symbol id="repo-icon-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="repo-icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="repo-icon-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="repo-icon-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+    <symbol id="repo-icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="repo-icon-alert" viewBox="0 0 24 24"><path d="M12 3 2.7 20h18.6Z"/><path d="M12 9v4m0 3h.01"/></symbol>
+    <symbol id="repo-icon-edit" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></symbol>
+    <symbol id="repo-icon-move" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20m-4-4 4 4-4 4M8 6l4-4 4 4M6 8l-4 4 4 4m2 2 4 4 4-4"/></symbol>
+  </svg>
+
+  <header class="repository-header">
+    <button class="repository-mobile-files" id="repositoryMobileFiles" type="button" aria-controls="repositoryFilesPane" aria-expanded="false">
+      <svg class="repository-icon"><use href="#repo-icon-panel"></use></svg>
+      <span>文件</span>
+    </button>
+    <div class="repository-heading">
+      <p>CODE REPOSITORY · PERSONAL</p>
+      <div>
+        <h1>代码仓库</h1>
+        <span id="repositoryMeta">正在读取仓库…</span>
+      </div>
     </div>
-</div>
-
-<!-- 语义检索模态框 -->
-<div class="modal fade" id="semanticSearchModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">代码仓库语义检索</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="row g-2 align-items-end">
-                    <div class="col-md-8">
-                        <label for="semanticQuery" class="form-label">查询语句</label>
-                        <input type="text" class="form-control" id="semanticQuery" placeholder="例如：计算前缀和的函数">
-                    </div>
-                    <div class="col-md-2">
-                        <label for="semanticTopK" class="form-label">Top-K</label>
-                        <select class="form-select" id="semanticTopK">
-                            <option value="3">3</option>
-                            <option value="5" selected>5</option>
-                            <option value="10">10</option>
-                        </select>
-                    </div>
-                    <div class="col-md-2 d-grid">
-                        <button type="button" class="btn btn-success" onclick="searchRepositorySemantic()">
-                            检索
-                        </button>
-                    </div>
-                </div>
-                <div class="mt-3 text-muted small" id="semanticSearchMeta"></div>
-                <div class="mt-3" id="semanticSearchResults">
-                    <div class="text-muted">请输入查询语句后点击检索。</div>
-                </div>
-            </div>
-        </div>
+    <div class="repository-header-actions">
+      <button class="repository-button repository-button-dark" id="repositoryIndexButton" type="button">
+        <svg class="repository-icon"><use href="#repo-icon-tree"></use></svg>
+        <span>结构化整理</span>
+      </button>
     </div>
-</div>
+  </header>
 
-<!-- 新建文件模态框 -->
-<div class="modal fade" id="newFileModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">新建文件</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <form id="newFileForm">
-                    <div class="mb-3">
-                        <label for="newFileName" class="form-label">文件名</label>
-                        <input type="text" class="form-control" id="newFileName" placeholder="例如: myheader.h" required>
-                        <div class="form-text">支持的文件类型: .h, .hpp, .c, .cpp</div>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-primary" onclick="confirmCreateFile()">创建</button>
-            </div>
-        </div>
+  <div class="repository-index-progress" id="repositoryIndexProgress" role="status" aria-live="polite" aria-hidden="true">
+    <div class="repository-index-copy">
+      <span class="repository-index-dot" aria-hidden="true"></span>
+      <strong id="repositoryIndexTitle">准备文件</strong>
+      <small id="repositoryIndexSubtitle">正在建立处理队列</small>
     </div>
-</div>
-
-<!-- 文件上传模态框 -->
-<div class="modal fade" id="uploadModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">上传文件</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <form id="uploadForm" enctype="multipart/form-data">
-                    <div class="mb-3">
-                        <label for="uploadFile" class="form-label">选择文件</label>
-                        <input type="file" class="form-control" id="uploadFile" accept=".h,.hpp,.c,.cpp" required>
-                        <div class="form-text">支持的文件类型: .h, .hpp, .c, .cpp (最大100KB)</div>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-primary" onclick="confirmUploadFile()">上传</button>
-            </div>
-        </div>
+    <div class="repository-progress-track" aria-hidden="true">
+      <span id="repositoryProgressBar"></span>
     </div>
-</div>
+    <span class="repository-index-detail" id="repositoryIndexDetail">0% · INDEXING</span>
+    <button class="repository-index-cancel" id="repositoryIndexCancel" type="button" hidden>取消整理</button>
+  </div>
 
-<style>
-/* 文件列表样式 */
-.file-item {
-    cursor: pointer;
-    transition: background-color 0.2s;
-}
+  <div class="repository-workspace">
+    <div class="repository-drawer-backdrop" id="repositoryDrawerBackdrop" hidden></div>
+    <aside class="repository-files-pane" id="repositoryFilesPane" aria-label="仓库文件">
+      <div class="repository-pane-head">
+        <span class="repository-pane-copy">
+          <span class="repository-pane-label">FILES</span>
+          <span class="repository-pane-count" id="repositoryFileCount">0 ITEMS</span>
+        </span>
+        <span class="repository-file-tools">
+          <button class="repository-file-tool" id="repositoryNewFile" type="button" aria-label="新建文件" data-tooltip="新建文件">
+            <svg class="repository-icon"><use href="#repo-icon-file-plus"></use></svg>
+          </button>
+          <button class="repository-file-tool" id="repositoryNewDirectory" type="button" aria-label="新建目录" data-tooltip="新建目录">
+            <svg class="repository-icon"><use href="#repo-icon-folder-plus"></use></svg>
+          </button>
+          <button class="repository-file-tool" id="repositoryUpload" type="button" aria-label="上传文件或文件夹" data-tooltip="上传文件或文件夹">
+            <svg class="repository-icon"><use href="#repo-icon-upload"></use></svg>
+          </button>
+        </span>
+      </div>
 
-.file-item:hover {
-    background-color: #e9ecef !important;
-}
+      <label class="repository-file-search">
+        <svg class="repository-icon"><use href="#repo-icon-search"></use></svg>
+        <input id="repositoryFileFilter" type="search" placeholder="筛选文件与目录" autocomplete="off">
+      </label>
 
-.file-item.active {
-    background-color: #007bff !important;
-    color: white !important;
-}
+      <div class="repository-tree" id="repositoryTree" role="tree" aria-label="代码仓库目录树">
+        <div class="repository-tree-loading">
+          <span class="math-curve-loader" data-math-curve-loader data-size="sm">
+            <span class="math-curve-loader__label">正在加载仓库…</span>
+          </span>
+        </div>
+      </div>
 
-/* 编辑器样式 */
-#codeEditor {
-    outline: none;
-    border: none !important;
-    background-color: #f8f9fa;
-}
+      <footer class="repository-files-foot">
+        <span>PRIVATE WORKSPACE</span>
+        <span id="repositoryQuota">MAX 2 MIB / FILE · 32 MIB TOTAL</span>
+      </footer>
 
-#codeEditor:focus {
-    box-shadow: none;
-    background-color: white;
-}
+      <div class="repository-file-drop-overlay" id="repositoryFileDropOverlay" aria-hidden="true">
+        <span><svg class="repository-icon"><use href="#repo-icon-upload"></use></svg></span>
+        <strong>松开以添加到此目录</strong>
+        <small id="repositoryDropTarget">ROOT · MULTI-FILE / FOLDER</small>
+      </div>
+    </aside>
 
-/* CodeMirror 样式 */
-#codeMirrorContainer .CodeMirror {
-    height: 100%;
-    border: none;
-    font-family: 'Courier New', Monaco, 'Lucida Console', monospace;
-    font-size: 14px;
-}
+    <main class="repository-editor-pane" aria-label="代码编辑器">
+      <header class="repository-editor-bar">
+        <div class="repository-file-tab">
+          <span class="repository-tab-ext" id="repositoryTabExt">—</span>
+          <strong id="repositoryTabName">尚未打开文件</strong>
+          <span class="repository-modified" id="repositoryModified" hidden>● MODIFIED</span>
+        </div>
+        <div class="repository-editor-actions">
+          <button class="repository-icon-button" id="repositorySave" type="button" title="保存（Ctrl/Cmd + S）" aria-label="保存文件" disabled>
+            <svg class="repository-icon"><use href="#repo-icon-save"></use></svg>
+          </button>
+          <button class="repository-icon-button" id="repositoryManageCurrent" type="button" title="移动或重命名" aria-label="移动或重命名当前文件" disabled>
+            <svg class="repository-icon"><use href="#repo-icon-move"></use></svg>
+          </button>
+          <button class="repository-icon-button repository-icon-danger" id="repositoryDeleteCurrent" type="button" title="删除文件" aria-label="删除当前文件" disabled>
+            <svg class="repository-icon"><use href="#repo-icon-trash"></use></svg>
+          </button>
+        </div>
+      </header>
 
-#codeMirrorContainer .CodeMirror-scroll {
-    overflow: auto;
-}
+      <div class="repository-editor-shell">
+        <div class="repository-breadcrumbs" id="repositoryBreadcrumbs">
+          <span>repository</span><span>›</span><b>选择一个文件开始编辑</b>
+        </div>
+        <div class="repository-empty-editor" id="repositoryEmptyEditor">
+          <span class="repository-empty-mark"><svg class="repository-icon"><use href="#repo-icon-file-plus"></use></svg></span>
+          <strong>从左侧打开文件</strong>
+          <p>也可以新建文件，或将一组文件与文件夹直接拖入文件区。</p>
+        </div>
+        <textarea
+          id="repositoryCodeEditor"
+          name="repository_source"
+          aria-label="代码仓库编辑器"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          data-1p-ignore
+          data-lpignore="true"
+          data-bwignore
+        ></textarea>
+      </div>
+      <footer class="repository-editor-status">
+        <span><b id="repositoryLanguage">NO FILE</b><span>UTF-8</span><span>LF</span></span>
+        <span><span id="repositoryCursor">Ln —, Col —</span><b id="repositorySaveState">IDLE</b></span>
+      </footer>
+    </main>
 
-/* 滚动条样式 */
-::-webkit-scrollbar {
-    width: 8px;
-}
+    <aside class="repository-inspector" aria-label="代码结构与语义检索">
+      <div class="repository-inspector-tabs" role="tablist">
+        <button class="active" id="repositoryOutlineTab" type="button" role="tab" aria-selected="true" data-repository-inspector="outline">OUTLINE</button>
+        <button id="repositorySemanticTab" type="button" role="tab" aria-selected="false" data-repository-inspector="semantic">SEMANTIC</button>
+      </div>
+      <section class="repository-inspector-panel active" id="repositoryOutlinePanel" data-repository-panel="outline">
+        <p class="repository-inspector-note">从当前文件提取结构。选择符号可定位到对应代码行。</p>
+        <div class="repository-outline-list" id="repositoryOutlineList">
+          <div class="repository-inspector-empty">打开文件后显示结构。</div>
+        </div>
+      </section>
+      <section class="repository-inspector-panel" id="repositorySemanticPanel" data-repository-panel="semantic">
+        <form class="repository-semantic-search" id="repositorySemanticForm">
+          <label>
+            <svg class="repository-icon"><use href="#repo-icon-search"></use></svg>
+            <input id="repositorySemanticQuery" type="search" placeholder="描述你要找的代码" autocomplete="off">
+          </label>
+          <button type="submit">检索</button>
+        </form>
+        <p class="repository-inspector-note" id="repositorySemanticMeta">先完成结构化整理，再用自然语言检索函数。</p>
+        <div class="repository-semantic-list" id="repositorySemanticList"></div>
+      </section>
+    </aside>
+  </div>
 
-::-webkit-scrollbar-track {
-    background: #f1f1f1;
-}
+  <div class="repository-toast" id="repositoryToast" role="status" aria-live="polite">
+    <span id="repositoryToastMark"><svg class="repository-icon"><use href="#repo-icon-check"></use></svg></span>
+    <div><strong id="repositoryToastTitle">操作完成</strong><p id="repositoryToastCopy"></p></div>
+  </div>
 
-::-webkit-scrollbar-thumb {
-    background: #c1c1c1;
-    border-radius: 4px;
-}
+  <div class="repository-context-menu" id="repositoryContextMenu" role="menu" hidden>
+    <button type="button" data-repository-action="rename"><svg class="repository-icon"><use href="#repo-icon-edit"></use></svg>重命名</button>
+    <button type="button" data-repository-action="move"><svg class="repository-icon"><use href="#repo-icon-move"></use></svg>移动到…</button>
+    <button class="danger" type="button" data-repository-action="delete"><svg class="repository-icon"><use href="#repo-icon-trash"></use></svg>删除</button>
+  </div>
 
-::-webkit-scrollbar-thumb:hover {
-    background: #a8a8a8;
-}
+  <dialog class="repository-dialog repository-upload-dialog" id="repositoryUploadDialog">
+    <form id="repositoryUploadForm">
+      <header>
+        <div><p>MULTI-FILE / FOLDER UPLOAD</p><h2>上传文件与目录</h2></div>
+        <button class="repository-icon-button" type="button" data-close-upload aria-label="关闭上传窗口">
+          <svg class="repository-icon"><use href="#repo-icon-close"></use></svg>
+        </button>
+      </header>
+      <div class="repository-dialog-body">
+        <p class="repository-dialog-destination">上传位置 <strong id="repositoryUploadDestination">repository /</strong></p>
+        <label class="repository-upload-dropzone" id="repositoryUploadDropzone" for="repositoryUploadFiles">
+          <span class="repository-upload-mark"><svg class="repository-icon"><use href="#repo-icon-upload"></use></svg></span>
+          <strong>拖拽多个文件或文件夹到这里</strong>
+          <span>文件夹会保留层级并自动创建为子目录</span>
+          <small>TEXT AUTO-DETECT　/　2 MIB NORMALIZED EACH　/　32 MIB REPOSITORY</small>
+        </label>
+        <input id="repositoryUploadFiles" type="file" multiple hidden>
+        <input id="repositoryUploadFolder" type="file" multiple webkitdirectory directory hidden>
+        <div class="repository-upload-choices">
+          <button class="repository-button" id="repositoryChooseFiles" type="button">选择多个文件</button>
+          <button class="repository-button" id="repositoryChooseFolder" type="button">选择文件夹</button>
+        </div>
+        <p class="repository-upload-picker-note">拖拽文件夹可识别其中的空目录；浏览器的“选择文件夹”通常不会暴露空目录。</p>
+        <section class="repository-upload-queue" id="repositoryUploadQueue" aria-live="polite" hidden>
+          <div class="repository-upload-queue-head">
+            <strong id="repositoryUploadQueueTitle">已选择 0 个文件</strong>
+            <button id="repositoryClearUploads" type="button">清空列表</button>
+          </div>
+          <div class="repository-upload-file-list" id="repositoryUploadFileList"></div>
+        </section>
+      </div>
+      <footer class="repository-upload-footer">
+        <span id="repositoryUploadSummary">尚未选择文件</span>
+        <span>
+          <button class="repository-button" type="button" data-close-upload>取消</button>
+          <button class="repository-button repository-button-primary" id="repositoryUploadConfirm" type="submit" disabled>检查文件</button>
+        </span>
+      </footer>
+    </form>
+  </dialog>
 
-.semantic-hit-card {
-    border: 1px solid #e9ecef;
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 10px;
-    background: #fff;
-}
+  <dialog class="repository-dialog repository-move-dialog" id="repositoryMoveDialog">
+    <form id="repositoryMoveForm">
+      <header>
+        <div><p>ORGANIZE ENTRY</p><h2 id="repositoryMoveTitle">移动或重命名</h2></div>
+        <button class="repository-icon-button" type="button" data-close-move aria-label="关闭">
+          <svg class="repository-icon"><use href="#repo-icon-close"></use></svg>
+        </button>
+      </header>
+      <div class="repository-dialog-body">
+        <label class="repository-field">
+          <span>名称</span>
+          <input id="repositoryMoveName" required maxlength="255" autocomplete="off">
+        </label>
+        <label class="repository-field">
+          <span>目标目录</span>
+          <select id="repositoryMoveDestination"></select>
+          <small>也可以在文件树中直接把文件或目录拖到目标文件夹。</small>
+        </label>
+        <label class="repository-move-merge" id="repositoryMoveMergeWrap" hidden>
+          <input id="repositoryMoveMerge" type="checkbox">
+          <span>
+            <strong>同名目录时递归合并</strong>
+            <small>只合并目录；任意深层文件重名或类型冲突都会取消整个操作。</small>
+          </span>
+        </label>
+      </div>
+      <footer>
+        <button class="repository-button" type="button" data-close-move>取消</button>
+        <button class="repository-button repository-button-primary" id="repositoryMoveConfirm" type="submit">应用更改</button>
+      </footer>
+    </form>
+  </dialog>
 
-.semantic-hit-code {
-    margin-top: 8px;
-    max-height: 220px;
-    overflow: auto;
-    background: #f8f9fa;
-    border: 1px solid #e9ecef;
-    border-radius: 6px;
-    padding: 8px;
-    font-size: 12px;
-    white-space: pre-wrap;
-}
-</style>
+  <dialog class="repository-dialog repository-delete-dialog" id="repositoryDeleteDialog">
+    <header>
+      <div><p>DESTRUCTIVE ACTION</p><h2 id="repositoryDeleteTitle">删除文件</h2></div>
+      <button class="repository-icon-button" type="button" data-close-delete aria-label="关闭">
+        <svg class="repository-icon"><use href="#repo-icon-close"></use></svg>
+      </button>
+    </header>
+    <div class="repository-dialog-body">
+      <p id="repositoryDeleteCopy"></p>
+    </div>
+    <footer>
+      <button class="repository-button" type="button" data-close-delete>取消</button>
+      <button class="repository-button repository-button-danger" id="repositoryDeleteConfirm" type="button">删除</button>
+    </footer>
+  </dialog>
 
+  <dialog class="repository-dialog repository-save-conflict-dialog" id="repositorySaveConflictDialog">
+    <header>
+      <div><p>VERSION CONFLICT</p><h2>文件已在其他位置更新</h2></div>
+    </header>
+    <div class="repository-dialog-body">
+      <p id="repositorySaveConflictCopy">服务端版本已变化。为避免覆盖他人内容，当前本地修改不会自动写入。</p>
+      <div class="repository-conflict-backup-actions">
+        <button class="repository-button" id="repositoryConflictCopy" type="button">复制本地内容并关闭</button>
+        <button class="repository-button" id="repositoryConflictDownload" type="button">下载本地副本并关闭</button>
+      </div>
+      <label class="repository-delete-confirmation">
+        <input id="repositoryConflictReloadCheck" type="checkbox">
+        <span id="repositoryConflictReloadLabel">我确认丢弃当前本地修改，并重新载入服务端版本</span>
+      </label>
+    </div>
+    <footer>
+      <button class="repository-button repository-button-danger" id="repositoryConflictReload" type="button" disabled>丢弃本地修改并重新载入</button>
+    </footer>
+  </dialog>
+</section>
+
+{# 编辑器输入节点的密码管理器防护由外部脚本继续执行：
+   codeMirrorEditor.getInputField()
+   editorInput.setAttribute('autocomplete', 'off')
+   editorInput.setAttribute('data-bwignore', '')
+#}
 {% include 'components/editor/codemirror.html' %}
+{% endblock %}
 
-<script>
-let currentFileId = null;
-let currentFileName = '';
-let isModified = false;
-let originalContent = '';
-let codeMirrorEditor = null;
-let currentIndexJobId = null;
-let indexStatusTimer = null;
-let isStartingIndexBuild = false;
-let isStartingFileRebuild = false;
-
-const repositoryIndexStageLabelMap = {
-    prepare: '准备阶段',
-    file_prepare: '文件预处理',
-    clang_ast: 'clang AST 解析',
-    syntax_parse: '语法树解析',
-    class_structuring: '类声明结构化',
-    function_structuring: '函数结构化',
-    embedding: '向量化',
-    persist: '写入索引',
-    file_done: '文件完成',
-    completed: '全部完成',
-    canceled: '任务取消',
-    failed: '任务失败',
-};
-
-function parseRepositoryIndexProgressMessage(rawMessage) {
-    const text = String(rawMessage || '').trim();
-    if (!text) {
-        return { stage: '', detail: '' };
-    }
-    const match = text.match(/^\[stage:([a-z_]+)\]\s*(.*)$/i);
-    if (!match) {
-        return { stage: '', detail: text };
-    }
-    const stage = String(match[1] || '').toLowerCase();
-    const detail = String(match[2] || '').trim();
-    return { stage, detail };
-}
-
-// 页面加载完成后初始化
-document.addEventListener('DOMContentLoaded', function() {
-    loadFileList();
-    initializeCodeMirror();
-    resumeIndexJobStatus();
-    
-    // 监听键盘快捷键
-    document.addEventListener('keydown', function(e) {
-        if (e.ctrlKey && e.key === 's') {
-            e.preventDefault();
-            if (currentFileId !== null) {
-                saveFile();
-            }
-        }
-    });
-});
-
-// 初始化CodeMirror编辑器
-function initializeCodeMirror() {
-    const textarea = document.getElementById('codeEditor');
-    
-    codeMirrorEditor = CodeMirror.fromTextArea(textarea, {
-        mode: 'text/x-csrc', // 默认C语言模式
-        theme: 'eclipse',
-        lineNumbers: true,
-        lineWrapping: true,
-        indentUnit: 4,
-        tabSize: 4,
-        matchBrackets: true,
-        autoCloseBrackets: true,
-        autofocus: false,
-        extraKeys: { "Tab": "indentMore", "Shift-Tab": "indentLess" }
-    });
-
-    // CodeMirror 会创建自己的 textarea；原始节点上的自动填充属性不会继承。
-    // 明确标记这个实际接收输入的节点，避免密码管理器把代码误判成凭据。
-    const editorInput = codeMirrorEditor.getInputField();
-    editorInput.setAttribute('name', 'repository_editor_input');
-    editorInput.setAttribute('aria-label', '代码仓库编辑器输入区');
-    editorInput.setAttribute('autocomplete', 'off');
-    editorInput.setAttribute('autocapitalize', 'off');
-    editorInput.setAttribute('autocorrect', 'off');
-    editorInput.setAttribute('spellcheck', 'false');
-    editorInput.setAttribute('data-1p-ignore', '');
-    editorInput.setAttribute('data-lpignore', 'true');
-    editorInput.setAttribute('data-bwignore', '');
-    
-    codeMirrorEditor.getWrapperElement().style.fontFamily = "monospace";
-    codeMirrorEditor.getWrapperElement().style.fontSize = "14px";
-    
-    // 监听编辑器内容变化
-    codeMirrorEditor.on('change', function() {
-        if (currentFileId !== null) {
-            const currentContent = codeMirrorEditor.getValue();
-            isModified = (currentContent !== originalContent);
-            updateModifiedStatus();
-        }
-    });
-    
-    // 设置编辑器高度
-    codeMirrorEditor.setSize(null, '100%');
-    
-    // 隐藏原始textarea
-    textarea.style.display = 'none';
-}
-
-// 根据文件名获取CodeMirror模式
-function getCodeMirrorMode(filename) {
-    const ext = filename.split('.').pop().toLowerCase();
-    switch (ext) {
-        case 'c':
-            return 'text/x-csrc';
-        case 'h':
-        case 'hpp':
-        case 'cpp':
-            return 'text/x-c++src';
-        case 'py':
-            return 'python';
-        default:
-            return 'text/x-csrc'; // 默认C语言
-    }
-}
-
-// 加载文件列表
-function loadFileList() {
-    fetch('/api/repository/files')
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                renderFileList(data.files);
-            } else {
-                showAlert('error', data.message);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showAlert('error', '加载文件列表失败');
-        });
-}
-
-// 渲染文件列表
-function renderFileList(files) {
-    const fileList = document.getElementById('fileList');
-    
-    if (files.length === 0) {
-        fileList.innerHTML = `
-            <div class="text-center text-muted p-3">
-                <i class="fas fa-folder-open fa-2x mb-2"></i>
-                <p>暂无文件</p>
-                <small>点击"新建"或"上传"按钮添加文件</small>
-            </div>
-        `;
-        return;
-    }
-    
-    let html = '';
-    files.forEach(file => {
-        const icon = getFileIcon(file.filename);
-        html += `
-            <div class="list-group-item file-item" data-file-id="${file.id}" onclick="openFile(${file.id}, '${file.filename}')">
-                <div class="d-flex align-items-center">
-                    <i class="${icon} me-2"></i>
-                    <div class="flex-grow-1">
-                        <div class="fw-bold">${file.filename}</div>
-                        <small class="text-muted">${file.file_size_kb} KB • ${file.updated_at}</small>
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-    
-    fileList.innerHTML = html;
-}
-
-// 获取文件图标
-function getFileIcon(filename) {
-    const ext = filename.split('.').pop().toLowerCase();
-    switch (ext) {
-        case 'h':
-        case 'hpp':
-            return 'fas fa-file-code text-primary';
-        case 'c':
-        case 'cpp':
-            return 'fas fa-file-code text-success';
-        default:
-            return 'fas fa-file text-secondary';
-    }
-}
-
-// 打开文件
-function openFile(fileId, filename) {
-    if (isModified) {
-        if (!confirm('当前文件有未保存的更改，是否放弃更改？')) {
-            return;
-        }
-    }
-    
-    fetch(`/api/repository/file/${fileId}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                currentFileId = fileId;
-                currentFileName = data.filename;
-                originalContent = data.content;
-                isModified = false;
-                
-                // 设置CodeMirror编辑器内容和语法高亮模式
-                if (codeMirrorEditor) {
-                    const mode = getCodeMirrorMode(data.filename);
-                    codeMirrorEditor.setOption('mode', mode);
-                    codeMirrorEditor.setValue(data.content);
-                    codeMirrorEditor.clearHistory(); // 清除编辑历史
-                }
-                
-                document.getElementById('currentFileName').textContent = data.filename;
-                
-                // 切换界面
-                document.getElementById('welcomeTab').classList.add('d-none');
-                document.getElementById('fileTab').classList.remove('d-none');
-                
-                // 更新文件列表选中状态
-                document.querySelectorAll('.file-item').forEach(item => {
-                    item.classList.remove('active');
-                });
-                document.querySelector(`[data-file-id="${fileId}"]`).classList.add('active');
-                
-                updateModifiedStatus();
-                updateCurrentFileRebuildButtonState();
-            } else {
-                showAlert('error', data.message);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showAlert('error', '打开文件失败');
-        });
-}
-
-// 关闭文件
-function closeFile() {
-    if (isModified) {
-        if (!confirm('当前文件有未保存的更改，是否放弃更改？')) {
-            return;
-        }
-    }
-    
-    currentFileId = null;
-    currentFileName = '';
-    isModified = false;
-    originalContent = '';
-    
-    // 清空CodeMirror编辑器
-    if (codeMirrorEditor) {
-        codeMirrorEditor.setValue('');
-        codeMirrorEditor.setOption('mode', 'text/x-csrc');
-    }
-    
-    document.getElementById('welcomeTab').classList.remove('d-none');
-    document.getElementById('fileTab').classList.add('d-none');
-    
-    // 清除文件列表选中状态
-    document.querySelectorAll('.file-item').forEach(item => {
-        item.classList.remove('active');
-    });
-    updateCurrentFileRebuildButtonState();
-}
-
-// 保存文件
-function saveFile() {
-    if (currentFileId === null) return;
-    
-    // 从CodeMirror编辑器获取内容
-    const content = codeMirrorEditor ? codeMirrorEditor.getValue() : document.getElementById('codeEditor').value;
-    
-    fetch('/api/repository/file', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            file_id: currentFileId,
-            filename: currentFileName,
-            content: content
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            originalContent = content;
-            isModified = false;
-            updateModifiedStatus();
-            showAlert('success', data.message);
-            loadFileList(); // 刷新文件列表
-        } else {
-            showAlert('error', data.message);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('error', '保存文件失败');
-    });
-}
-
-// 删除文件
-function deleteFile() {
-    if (currentFileId === null) return;
-    
-    if (!confirm(`确定要删除文件 "${currentFileName}" 吗？此操作不可恢复。`)) {
-        return;
-    }
-    
-    fetch(`/api/repository/file/${currentFileId}`, {
-        method: 'DELETE'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            showAlert('success', data.message);
-            closeFile();
-            loadFileList();
-        } else {
-            showAlert('error', data.message);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('error', '删除文件失败');
-    });
-}
-
-// 创建新文件
-function createNewFile() {
-    document.getElementById('newFileName').value = '';
-    new bootstrap.Modal(document.getElementById('newFileModal')).show();
-}
-
-// 确认创建文件
-function confirmCreateFile() {
-    const filename = document.getElementById('newFileName').value.trim();
-    
-    if (!filename) {
-        showAlert('error', '请输入文件名');
-        return;
-    }
-    
-    // 验证文件扩展名
-    if (!/\.(h|hpp|c|cpp)$/i.test(filename)) {
-        showAlert('error', '只允许创建 .h, .hpp, .c, .cpp 文件');
-        return;
-    }
-    
-    fetch('/api/repository/file', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            filename: filename,
-            content: ''
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            showAlert('success', data.message);
-            bootstrap.Modal.getInstance(document.getElementById('newFileModal')).hide();
-            loadFileList();
-        } else {
-            showAlert('error', data.message);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('error', '创建文件失败');
-    });
-}
-
-// 上传文件
-function uploadFile() {
-    document.getElementById('uploadFile').value = '';
-    new bootstrap.Modal(document.getElementById('uploadModal')).show();
-}
-
-// 确认上传文件
-function confirmUploadFile() {
-    const fileInput = document.getElementById('uploadFile');
-    const file = fileInput.files[0];
-    
-    if (!file) {
-        showAlert('error', '请选择文件');
-        return;
-    }
-    
-    const formData = new FormData();
-    formData.append('file', file);
-    
-    fetch('/api/repository/upload', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            showAlert('success', data.message);
-            bootstrap.Modal.getInstance(document.getElementById('uploadModal')).hide();
-            loadFileList();
-        } else {
-            showAlert('error', data.message);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('error', '上传文件失败');
-    });
-}
-
-function startStructuredIndexBuild() {
-    if (isStartingIndexBuild) {
-        return;
-    }
-    isStartingIndexBuild = true;
-    const btn = document.getElementById('structuredIndexBuildBtn');
-    if (btn) {
-        btn.disabled = true;
-    }
-
-    const startBuild = (forceRestart) => fetch('/api/repository/index/build', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            force_restart: !!forceRestart
-        })
-    })
-    .then(response => response.json());
-
-    startBuild(false)
-    .then(data => {
-        if (data && data.need_confirm) {
-            const confirmed = window.confirm('上一个整理任务正在运行，是否终止？');
-            if (!confirmed) {
-                return null;
-            }
-            return startBuild(true);
-        }
-        return data || null;
-    })
-    .then(data => {
-        if (!data) {
-            return;
-        }
-        if (!data.success) {
-            showAlert('error', data.message || '启动结构化整理失败');
-            return;
-        }
-        currentIndexJobId = data.job_id;
-        try {
-            localStorage.setItem('repositoryIndexJobId', String(currentIndexJobId));
-        } catch (e) {}
-        showAlert('success', data.message || '结构化整理任务已启动');
-        pollIndexJobStatus(currentIndexJobId);
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('error', '启动结构化整理失败');
-    })
-    .finally(() => {
-        isStartingIndexBuild = false;
-        if (btn) {
-            btn.disabled = false;
-        }
-    });
-}
-
-function updateCurrentFileRebuildButtonState() {
-    const btn = document.getElementById('rebuildCurrentFileIndexBtn');
-    if (!btn) {
-        return;
-    }
-    btn.disabled = !(Number.isFinite(Number(currentFileId)) && Number(currentFileId) > 0) || isStartingFileRebuild;
-}
-
-function rebuildCurrentFileIndex() {
-    const fileId = Number(currentFileId || 0);
-    if (!Number.isFinite(fileId) || fileId <= 0) {
-        showAlert('error', '请先打开一个文件');
-        return;
-    }
-    if (isStartingFileRebuild) {
-        return;
-    }
-    isStartingFileRebuild = true;
-    updateCurrentFileRebuildButtonState();
-
-    const startRebuild = (forceRestart) => fetch('/api/repository/index/rebuild_file', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            file_id: fileId,
-            force_restart: !!forceRestart
-        })
-    })
-    .then(response => response.json());
-
-    startRebuild(false)
-    .then(data => {
-        if (data && data.need_confirm) {
-            const confirmed = window.confirm('上一个整理任务正在运行，是否终止？');
-            if (!confirmed) {
-                return null;
-            }
-            return startRebuild(true);
-        }
-        return data || null;
-    })
-    .then(data => {
-        if (!data) {
-            return;
-        }
-        if (!data.success) {
-            showAlert('error', data.message || '启动单文件索引重建失败');
-            return;
-        }
-        currentIndexJobId = data.job_id;
-        try {
-            localStorage.setItem('repositoryIndexJobId', String(currentIndexJobId));
-        } catch (e) {}
-        showAlert('success', data.message || '单文件索引重建任务已启动');
-        pollIndexJobStatus(currentIndexJobId);
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('error', '启动单文件索引重建失败');
-    })
-    .finally(() => {
-        isStartingFileRebuild = false;
-        updateCurrentFileRebuildButtonState();
-    });
-}
-
-function pollIndexJobStatus(jobId) {
-    if (!jobId) return;
-    if (indexStatusTimer) {
-        clearInterval(indexStatusTimer);
-        indexStatusTimer = null;
-    }
-
-    const statusEl = document.getElementById('indexJobStatus');
-    const updateOnce = () => {
-        fetch(`/api/repository/index/status/${jobId}`)
-            .then(response => response.json())
-            .then(data => {
-                if (!data.success) {
-                    statusEl.textContent = '任务状态查询失败';
-                    return;
-                }
-                const job = data.job || {};
-                const progress = Number(job.progress || 0);
-                const parsedProgress = parseRepositoryIndexProgressMessage(job.progress_message);
-                const stageLabel = repositoryIndexStageLabelMap[parsedProgress.stage] || '';
-                const detail = parsedProgress.detail;
-                const stageText = stageLabel ? `【${stageLabel}】` : '';
-                const statusText =
-                    `整理任务 #${jobId}：${job.status || 'unknown'} (${progress}%)，文件 ${job.processed_files || 0}/${job.total_files || 0}` +
-                    `${stageText ? `，${stageText}` : ''}` +
-                    `${detail ? `，${detail}` : ''}`;
-
-                if (job.status === 'pending' || job.status === 'running') {
-                    MathCurveLoader.update(statusEl, statusText, {size: 'sm'});
-                } else {
-                    statusEl.textContent = statusText;
-                }
-
-                if (job.status === 'success') {
-                    clearInterval(indexStatusTimer);
-                    indexStatusTimer = null;
-                    try {
-                        localStorage.removeItem('repositoryIndexJobId');
-                    } catch (e) {}
-                    showAlert('success', `结构化整理完成：${job.total_chunks || 0} 个函数 chunk，${job.total_classes || 0} 个类`);
-                } else if (job.status === 'failed') {
-                    clearInterval(indexStatusTimer);
-                    indexStatusTimer = null;
-                    try {
-                        localStorage.removeItem('repositoryIndexJobId');
-                    } catch (e) {}
-                    showAlert('error', job.error_message || '结构化整理失败');
-                } else if (job.status === 'canceled') {
-                    clearInterval(indexStatusTimer);
-                    indexStatusTimer = null;
-                    try {
-                        localStorage.removeItem('repositoryIndexJobId');
-                    } catch (e) {}
-                    showAlert('warning', job.error_message || '结构化整理已取消');
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                statusEl.textContent = '任务状态查询失败';
-            });
-    };
-
-    updateOnce();
-    indexStatusTimer = setInterval(updateOnce, 1500);
-}
-
-function resumeIndexJobStatus() {
-    let localJobId = null;
-    try {
-        localJobId = localStorage.getItem('repositoryIndexJobId');
-    } catch (e) {}
-
-    if (localJobId) {
-        const parsed = Number(localJobId);
-        if (Number.isFinite(parsed) && parsed > 0) {
-            currentIndexJobId = parsed;
-            pollIndexJobStatus(parsed);
-            return;
-        }
-    }
-
-    fetch('/api/repository/index/status/active')
-        .then(response => response.json())
-        .then(data => {
-            if (!data.success || !data.has_active || !data.job) {
-                return;
-            }
-            const activeId = Number(data.job.id || 0);
-            if (!Number.isFinite(activeId) || activeId <= 0) {
-                return;
-            }
-            currentIndexJobId = activeId;
-            try {
-                localStorage.setItem('repositoryIndexJobId', String(activeId));
-            } catch (e) {}
-            pollIndexJobStatus(activeId);
-        })
-        .catch(error => {
-            console.error('Error:', error);
-        });
-}
-
-function openSemanticSearch() {
-    document.getElementById('semanticQuery').value = '';
-    document.getElementById('semanticSearchMeta').textContent = '';
-    document.getElementById('semanticSearchResults').innerHTML = '<div class="text-muted">请输入查询语句后点击检索。</div>';
-    new bootstrap.Modal(document.getElementById('semanticSearchModal')).show();
-}
-
-function escapeHtml(raw) {
-    return String(raw || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
-function searchRepositorySemantic() {
-    const query = document.getElementById('semanticQuery').value.trim();
-    const topK = Number(document.getElementById('semanticTopK').value || 5);
-    const resultEl = document.getElementById('semanticSearchResults');
-    const metaEl = document.getElementById('semanticSearchMeta');
-
-    if (!query) {
-        showAlert('error', '请输入查询语句');
-        return;
-    }
-
-    resultEl.innerHTML = '<div class="text-muted">' + MathCurveLoader.markup('检索中…', 'md') + '</div>';
-    metaEl.textContent = '';
-
-    fetch('/api/repository/index/search', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            query: query,
-            top_k: topK,
-            score_threshold: 0.05
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (!data.success) {
-            resultEl.innerHTML = `<div class="text-danger">${escapeHtml(data.message || '检索失败')}</div>`;
-            return;
-        }
-
-        const hits = data.hits || [];
-        metaEl.textContent = `检索模型：${data.embedding_model || 'unknown'}，命中 ${hits.length} 条`;
-        if (hits.length === 0) {
-            resultEl.innerHTML = '<div class="text-muted">未命中结果。请先执行“结构化整理”，或更换检索语句。</div>';
-            return;
-        }
-
-        let html = '';
-        hits.forEach((hit, idx) => {
-            const scoreText = Number(hit.score || 0).toFixed(4);
-            html += `
-                <div class="semantic-hit-card">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div class="fw-bold">${idx + 1}. ${escapeHtml(hit.qualified_name || '')}</div>
-                        <span class="badge text-bg-primary">score=${scoreText}</span>
-                    </div>
-                    <div class="small text-muted mt-1">
-                        ${escapeHtml(hit.filename || '')} · 行 ${escapeHtml(hit.start_line || '-')}-${escapeHtml(hit.end_line || '-')}
-                        ${hit.access ? ` · ${escapeHtml(hit.access)}` : ''}
-                    </div>
-                    <div class="small mt-2"><strong>签名：</strong>${escapeHtml(hit.signature || '')}</div>
-                    <div class="small mt-1"><strong>说明：</strong>${escapeHtml(hit.summary || '')}</div>
-                    <pre class="semantic-hit-code">${escapeHtml(hit.code || '')}</pre>
-                </div>
-            `;
-        });
-        resultEl.innerHTML = html;
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        resultEl.innerHTML = '<div class="text-danger">检索失败，请稍后重试</div>';
-    });
-}
-
-// 更新修改状态显示
-function updateModifiedStatus() {
-    const modifiedIndicator = document.getElementById('fileModified');
-    if (isModified) {
-        modifiedIndicator.classList.remove('d-none');
-    } else {
-        modifiedIndicator.classList.add('d-none');
-    }
-}
-
-// 显示提示信息
-function showAlert(type, message) {
-    const alertClass = type === 'success' ? 'alert-success' : 'alert-danger';
-    const alertHtml = `
-        <div class="alert ${alertClass} alert-dismissible fade show position-fixed" 
-             style="top: 70px; right: 20px; z-index: 1050; min-width: 300px;">
-            ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    `;
-    
-    const alertContainer = document.createElement('div');
-    alertContainer.innerHTML = alertHtml;
-    document.body.appendChild(alertContainer);
-    
-    // 3秒后自动移除
-    setTimeout(() => {
-        const alert = alertContainer.querySelector('.alert');
-        if (alert) {
-            bootstrap.Alert.getOrCreateInstance(alert).close();
-        }
-    }, 3000);
-}
-</script>
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='app/repository/workbench.js') }}"></script>
 {% endblock %}

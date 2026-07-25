@@ -26,7 +26,7 @@
           {% set point_class = 'runtime-error' %}
         {% elif point_status == 'Time Limit Exceeded' %}
           {% set point_class = 'time-limit' %}
-        {% elif point_status in ['Unaccepted', 'Compile Error', 'Memory Limit Exceeded', 'Error', 'Forbidden', 'No Output', 'Nonzero Exit Status'] %}
+        {% elif point_status in ['Unaccepted', 'Compile Error', 'Memory Limit Exceeded', 'Output Limit Exceeded', 'Error', 'Forbidden', 'No Output', 'Nonzero Exit Status'] %}
           {% set point_class = 'other-failure' %}
         {% else %}
           {% set point_class = 'neutral' %}

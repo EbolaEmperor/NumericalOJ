@@ -11,14 +11,15 @@ from config import (
     AI_TUTOR_MODEL,
 )
 from oj_modules.ai_utils import analyze_submission_output_image_against_problem
-from oj_modules.db_services import (
-    get_db_connection,
-)
 from oj_modules.modelscope_web_search_mcp import (
     web_fetch_content_via_modelscope_mcp,
     web_search_via_modelscope_mcp,
 )
-from oj_modules.repository_index_services import encode_texts_with_qwen_embedding, search_repository_chunks
+from oj_modules.repository.index import encode_texts_with_qwen_embedding, search_repository_chunks
+from oj_modules.repository.workspace import (
+    REPOSITORY_SANDBOX_DIRECTORY,
+    materialize_repository_tree,
+)
 from oj_modules.tasks.agent_shared import *
 
 
@@ -569,31 +570,16 @@ def _workspace_main_filename(lang):
 
 
 def _load_repository_files_for_workspace(user_id):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT filename, file_content
-                FROM user_code_repository
-                WHERE user_id = %s
-                ORDER BY filename
-                """,
-                (user_id,),
-            )
-            rows = cursor.fetchall() or []
-    finally:
-        conn.close()
-    files = []
-    for row in rows:
-        filename = os.path.basename(str(row.get("filename") or "").strip())
-        if not filename:
-            continue
-        files.append({
-            "filename": filename,
-            "content": str(row.get("file_content") or ""),
-        })
-    return files
+    from oj_modules.repository.tree import get_repository_tree_snapshot
+
+    snapshot = get_repository_tree_snapshot(int(user_id), include_content=True)
+    return [
+        {
+            **item,
+            "entry_type": item.get("kind"),
+        }
+        for item in snapshot.get("entries") or []
+    ]
 
 
 def _initialize_solver_workspace(user_id, problem_id, task_id, lang, initial_code=""):
@@ -601,17 +587,11 @@ def _initialize_solver_workspace(user_id, problem_id, task_id, lang, initial_cod
     os.makedirs(root, exist_ok=True)
 
     repo_files = _load_repository_files_for_workspace(user_id=user_id)
-    synced_files = []
-    for item in repo_files:
-        filename = os.path.basename(str(item.get("filename") or "").strip())
-        if not filename:
-            continue
-        abs_path = os.path.join(root, filename)
-        parent = os.path.dirname(abs_path)
-        os.makedirs(parent, exist_ok=True)
-        with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(str(item.get("content") or ""))
-        synced_files.append(filename)
+    repository_paths = materialize_repository_tree(root, repo_files)
+    synced_files = [
+        f"{REPOSITORY_SANDBOX_DIRECTORY}/{relative_path}"
+        for relative_path in repository_paths
+    ]
 
     main_filename = _workspace_main_filename(lang)
     main_abs = os.path.join(root, main_filename)
@@ -627,6 +607,7 @@ def _initialize_solver_workspace(user_id, problem_id, task_id, lang, initial_cod
     return {
         "workspace_dir": root,
         "main_code_path": main_filename,
+        "repository_root_path": REPOSITORY_SANDBOX_DIRECTORY,
         "synced_files": sorted(set(synced_files)),
     }
 
@@ -635,7 +616,8 @@ def _resolve_workspace_path(workspace_dir, relative_path="", allow_workspace_roo
     if not workspace_dir:
         raise RuntimeError("workspace 未初始化。")
     root = os.path.abspath(str(workspace_dir))
-    rel = str(relative_path or "").replace("\\", "/").strip()
+    # 工作区中允许仓库原样保留以空格开头的合法文件名，不能在消费者侧 strip。
+    rel = str(relative_path or "").replace("\\", "/")
     if not rel:
         if allow_workspace_root:
             return root
@@ -802,52 +784,98 @@ def _tool_sync_workspace_headers_to_repository(user_id, workspace_dir):
     if not workspace_dir or not os.path.isdir(workspace_dir):
         raise RuntimeError("workspace 目录不存在。")
 
-    candidates = []
+    from oj_modules.repository.storage import validate_relative_path
+    from oj_modules.repository.tree import (
+        get_repository_state,
+        upsert_repository_file_by_path,
+    )
+
+    workspace_root = os.path.abspath(workspace_dir)
+    repository_root = os.path.join(workspace_root, REPOSITORY_SANDBOX_DIRECTORY)
+    header_extensions = (".h", ".hpp", ".hh", ".hxx", ".inc", ".ipp", ".tpp")
+    candidates_by_path = {}
     skipped = []
-    for name in sorted(os.listdir(workspace_dir)):
-        abs_path = os.path.join(workspace_dir, name)
-        if not os.path.isfile(abs_path):
-            continue
-        lower = str(name).lower()
-        if not (lower.endswith(".h") or lower.endswith(".hpp")):
-            continue
-        filename = os.path.basename(name)
-        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", filename):
-            skipped.append({"filename": filename, "reason": "文件名包含非法字符"})
-            continue
-        candidates.append((filename, abs_path))
+    for current_root, dirnames, filenames in os.walk(workspace_root, followlinks=False):
+        dirnames[:] = [
+            name for name in sorted(dirnames)
+            if not os.path.islink(os.path.join(current_root, name))
+        ]
+        for name in sorted(filenames):
+            abs_path = os.path.join(current_root, name)
+            if os.path.islink(abs_path) or not os.path.isfile(abs_path):
+                skipped.append({
+                    "filename": os.path.relpath(abs_path, workspace_root),
+                    "reason": "符号链接或非普通文件",
+                })
+                continue
+            if not str(name).lower().endswith(header_extensions):
+                continue
+            inside_repository = (
+                os.path.commonpath((repository_root, abs_path)) == repository_root
+            )
+            if inside_repository:
+                raw_relative = os.path.relpath(abs_path, repository_root)
+            else:
+                raw_relative = os.path.relpath(abs_path, workspace_root)
+            raw_relative = raw_relative.replace(os.sep, "/")
+            try:
+                relative_path = validate_relative_path(raw_relative)
+                with open(abs_path, "r", encoding="utf-8", errors="strict") as f:
+                    content = f.read()
+            except (OSError, UnicodeError, ValueError) as exc:
+                skipped.append({
+                    "filename": raw_relative,
+                    "reason": str(exc),
+                })
+                continue
+            existing = candidates_by_path.get(relative_path)
+            candidate = {
+                "relative_path": relative_path,
+                "content": content,
+                "inside_repository": inside_repository,
+                "workspace_path": os.path.relpath(abs_path, workspace_root),
+            }
+            if existing is None:
+                candidates_by_path[relative_path] = candidate
+                continue
+            # workspace/foo.h 与 workspace/repository/foo.h 会映射到同一仓库路径。
+            # authoritative 子树中的版本优先，避免遍历顺序让旧/测试文件悄悄覆盖它。
+            if inside_repository and not existing["inside_repository"]:
+                skipped.append({
+                    "filename": existing["workspace_path"],
+                    "reason": f"与 repository/{relative_path} 映射冲突，使用仓库子树版本",
+                })
+                candidates_by_path[relative_path] = candidate
+            else:
+                skipped.append({
+                    "filename": candidate["workspace_path"],
+                    "reason": f"与 {relative_path} 映射冲突，已跳过重复来源",
+                })
 
     synced = []
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            for filename, abs_path in candidates:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                size = len(content.encode("utf-8"))
-                cursor.execute(
-                    """
-                    INSERT INTO user_code_repository (user_id, filename, file_content, file_size)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        file_content = VALUES(file_content),
-                        file_size = VALUES(file_size),
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (user_id, filename, content, size),
-                )
-                synced.append({"filename": filename, "file_size": size})
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    state = get_repository_state(int(user_id))
+    structure_version = int(state["structure_version"])
+    for relative_path in sorted(candidates_by_path):
+        candidate = candidates_by_path[relative_path]
+        content = candidate["content"]
+        result = upsert_repository_file_by_path(
+            int(user_id),
+            relative_path,
+            content,
+            expected_structure_version=structure_version,
+            overwrite=True,
+        )
+        structure_version = int(result.get("structure_version") or structure_version)
+        synced.append({
+            "filename": relative_path,
+            "file_size": len(content.encode("utf-8")),
+        })
 
     return {
         "synced_count": len(synced),
         "synced_files": synced,
         "skipped_files": skipped,
+        "structure_version": structure_version,
     }
 
 
@@ -1060,7 +1088,8 @@ def _build_initial_prompt(problem, workspace_dir, main_code_path, core_hints=Non
         "",
         f"你的工作目录是：{workspace_dir}",
         f"默认主代码文件是：{main_code_path}",
-        "工作目录里已经有一些我写好的文件可供你通过 include \"文件名\" 直接使用。",
+        "代码仓库文件位于工作目录的 repository/ 子目录，并保留原有目录结构。",
+        "编译 C/C++ 时请添加 `-I repository`；仓库中的 .c/.cpp 不会被系统自动加入编译。",
         "你的工作流程如下：",
         "0. 先调用 get_context，确认题目上下文、工作目录与主代码文件。",
         "1. 调用 list_files 列出工作目录中的文件，理解现有代码，优先复用已有文件。",

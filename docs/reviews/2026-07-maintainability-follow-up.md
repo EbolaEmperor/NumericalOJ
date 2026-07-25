@@ -82,7 +82,7 @@
 
 1. 为 `oj.py` 增加兼容式 `create_app()` / `create_celery()` 和小型服务容器，保留 `oj.app` / `oj.celery` 公共出口。
 2. 把 homework/rejudge 的任务注册移出 route；API 不再反向导入 route 私有函数。
-3. 按 `prepare → execute → normalize → persist` 拆普通评测注册体；优先拆 `ranking_routes.py`、两类 ranking judge task、`repository_index_services.py` 和 `db_services.py` 的高频子域。
+3. 按 `prepare → execute → normalize → persist` 拆普通评测注册体；优先拆 `ranking_routes.py`、两类 ranking judge task、`oj_modules/repository/index.py` 和 `db_services.py` 的高频子域。
 4. 给 Submission、JudgeResult、AgentState 等跨层协议增加数据类或 `TypedDict` 与唯一状态定义，不做全仓强制 OO 化。
 
 ### P2：前端与安全闭环

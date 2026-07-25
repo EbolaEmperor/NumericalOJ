@@ -8,6 +8,7 @@ redis==8.0.0
 pymysql==1.2.0
 werkzeug==3.1.8
 requests==2.34.2
+charset-normalizer==3.4.1
 numpy==2.5.0
 pillow==12.2.0
 arcengine==0.9.3

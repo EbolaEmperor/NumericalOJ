@@ -62,3 +62,11 @@ def test_jpeg_keeps_jpeg_mime(tmp_path):
     # JPEG 属于视觉安全格式，保持原 MIME 且原样透传
     assert head == "data:image/jpeg;base64"
     assert raw == p.read_bytes()
+
+
+def test_image_data_url_never_follows_proc_self_symlink(tmp_path):
+    p = tmp_path / "output.png"
+    p.symlink_to("/proc/self/environ")
+
+    with pytest.raises(OSError):
+        ai_utils._build_image_data_url(str(p))

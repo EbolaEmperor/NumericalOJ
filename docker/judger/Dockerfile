@@ -70,6 +70,10 @@ RUN fc-cache -fsv \
 
 RUN mkdir -p /opt/library
 
-RUN useradd -m -s /bin/false runner
+ARG JUDGER_RUNNER_UID=65532
+ARG JUDGER_RUNNER_GID=65532
+RUN groupadd --gid "${JUDGER_RUNNER_GID}" runner \
+    && useradd --uid "${JUDGER_RUNNER_UID}" --gid "${JUDGER_RUNNER_GID}" \
+        -m -s /bin/false runner
 
 WORKDIR /sandbox

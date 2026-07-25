@@ -602,6 +602,7 @@ def _build_image_data_url(image_path):
     mime_type, _ = mimetypes.guess_type(image_path)
     if not mime_type:
         mime_type = 'image/png'
+    image_bytes = judger_core.read_safe_regular_artifact(image_path)
 
     # 非视觉模型友好的格式（典型如 BMP）转成 PNG 再发；任何失败都回退到原始字节，
     # 绝不让转码本身打断批改流程。
@@ -609,7 +610,7 @@ def _build_image_data_url(image_path):
         try:
             import io
             from PIL import Image
-            with Image.open(image_path) as im:
+            with Image.open(io.BytesIO(image_bytes)) as im:
                 converted = im.convert('RGBA') if im.mode in ('P', 'LA') else im.convert('RGB')
                 buf = io.BytesIO()
                 converted.save(buf, format='PNG')
@@ -618,8 +619,7 @@ def _build_image_data_url(image_path):
         except Exception as e:
             print(f"[Image Analysis] {mime_type} 转 PNG 失败，回退原始字节: {e}")
 
-    with open(image_path, 'rb') as f:
-        encoded = base64.b64encode(f.read()).decode('utf-8')
+    encoded = base64.b64encode(image_bytes).decode('utf-8')
     return f"data:{mime_type};base64,{encoded}"
 
 
@@ -1286,8 +1286,14 @@ def _find_submission_output_image_path(submission_id, test_index, test_points=No
     ordered_filenames = []
     seen_names = set()
     for name in preferred_filenames:
-        cleaned = str(name or "").strip()
-        if not cleaned or cleaned in seen_names:
+        raw_name = str(name or "").strip().replace("\\", "/")
+        cleaned = os.path.basename(raw_name)
+        if (
+            not cleaned
+            or cleaned in {".", ".."}
+            or cleaned != raw_name
+            or cleaned in seen_names
+        ):
             continue
         seen_names.add(cleaned)
         ordered_filenames.append(cleaned)
@@ -1315,7 +1321,7 @@ def _find_submission_output_image_path(submission_id, test_index, test_points=No
         if path in seen:
             continue
         seen.add(path)
-        if os.path.isfile(path):
+        if judger_core.is_safe_regular_artifact(path):
             return path
     return None
 

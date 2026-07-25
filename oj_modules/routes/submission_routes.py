@@ -519,11 +519,20 @@ def get_submission_output_image(submission_id, test_index):
 
     for img_path in possible_paths:
         expanded_path = os.path.expanduser(img_path)
-        if os.path.exists(expanded_path):
-            # 用真实文件名（含正确扩展名，如 .bmp）作为下载名，并让 Flask 按扩展名
-            # 推断 Content-Type，保证 bmp 等非 png 格式也能正确显示/下载。
-            download_name = f"submission_{submission_id}_test_{test_index}" \
-                + os.path.splitext(expanded_path)[1]
-            return send_file(expanded_path, download_name=download_name)
+        try:
+            image_file = judger_core.open_safe_regular_artifact(expanded_path)
+        except Exception:
+            continue
+        # 用真实文件名（含正确扩展名，如 .bmp）作为下载名，并让 Flask 按扩展名
+        # 推断 Content-Type。传入已用 O_NOFOLLOW 固定的 fd，避免检查后替换竞态。
+        download_name = f"submission_{submission_id}_test_{test_index}" \
+            + os.path.splitext(expanded_path)[1]
+        try:
+            response = send_file(image_file, download_name=download_name)
+        except Exception:
+            image_file.close()
+            continue
+        response.call_on_close(image_file.close)
+        return response
 
     return jsonify({'error': 'Output image not found'}), 404
