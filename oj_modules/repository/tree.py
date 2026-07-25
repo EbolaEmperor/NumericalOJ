@@ -755,7 +755,8 @@ def _persist_entries(cursor, user_id, before_rows, final_entries, operation_id):
         cursor.execute(
             """
             UPDATE repository_entries
-            SET parent_id = NULL, name = %s, relative_path = %s, path_hash = %s
+            SET parent_id = NULL, parent_scope = 0,
+                name = %s, relative_path = %s, path_hash = %s
             WHERE user_id = %s AND id = %s
             """,
             (
@@ -775,13 +776,14 @@ def _persist_entries(cursor, user_id, before_rows, final_entries, operation_id):
         cursor.execute(
             """
             INSERT INTO repository_entries (
-                user_id, parent_id, name, relative_path, path_hash, entry_type,
-                file_size, file_version, content_sha256
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                user_id, parent_id, parent_scope, name, relative_path, path_hash,
+                entry_type, file_size, file_version, content_sha256
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 int(user_id),
                 parent_id,
+                int(parent_id or 0),
                 item["name"],
                 item["relative_path"],
                 _path_hash(item["relative_path"]),
@@ -801,13 +803,14 @@ def _persist_entries(cursor, user_id, before_rows, final_entries, operation_id):
         cursor.execute(
             """
             UPDATE repository_entries
-            SET parent_id = %s, name = %s, relative_path = %s, path_hash = %s,
-                entry_type = %s, file_size = %s, file_version = %s,
-                content_sha256 = %s
+            SET parent_id = %s, parent_scope = %s, name = %s,
+                relative_path = %s, path_hash = %s, entry_type = %s,
+                file_size = %s, file_version = %s, content_sha256 = %s
             WHERE user_id = %s AND id = %s
             """,
             (
                 parent_id,
+                int(parent_id or 0),
                 item["name"],
                 item["relative_path"],
                 _path_hash(item["relative_path"]),
