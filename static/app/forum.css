@@ -50,7 +50,7 @@
   cursor: not-allowed;
 }
 
-.forum-page button {
+.forum-page :where(button) {
   color: inherit;
 }
 
