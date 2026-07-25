@@ -2,6 +2,10 @@
 {% from 'components/problem_macros.html' import language_label %}
 {% block title %}{{ problem.title }} - {{ super() }}{% endblock %}
 {% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block head %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
+{% endblock %}
 {% block content_container_class %}container problem-detail-content-shell mt-4{% endblock %}
 
 {% block content %}
@@ -111,7 +115,11 @@
       </div>
     </div>
 
-    <div class="problem-content my-3">
+    <div
+      class="problem-content numoj-markdown my-3"
+      id="problemContent"
+      data-numoj-markdown
+    >
       {{ rendered_content|safe }}
     </div>
   </div>
@@ -1035,4 +1043,10 @@
 </script>
 {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
 {% endblock %}

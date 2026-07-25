@@ -9,7 +9,6 @@ import time
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-import markdown
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
@@ -48,7 +47,7 @@ from oj_modules.dashboard_services import (
     visible_classes_for_user_cached,
 )
 from oj_modules.class_logo_services import attach_class_logos
-from oj_modules.markdown_utils import sanitize_html
+from oj_modules.markdown_utils import render_rich_markdown
 from oj_modules.written_submission_artifacts import (
     WrittenSubmissionArtifactError,
     publish_manual_written_submission,
@@ -796,10 +795,7 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
             user, selected_class_en, problem_id
         )
 
-    rendered_content = sanitize_html(markdown.markdown(
-        problem['content'],
-        extensions=['extra', 'fenced_code', 'tables'],
-    ))
+    rendered_content = render_rich_markdown(problem['content'])
 
     # 题目详情页只展示最近 3 条提交，直接用 LIMIT 取，避免把该用户该题的全部提交拉进内存。
     last_submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id, limit=3)

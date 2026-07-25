@@ -2,8 +2,8 @@
   "name": "numericaloj-frontend-assets",
   "private": true,
   "scripts": {
-    "build:forum-rendering": "node scripts/build_forum_rendering.mjs",
-    "build:frontend": "npm run build:monaco && npm run build:forum-rendering",
+    "build:frontend": "npm run build:monaco && npm run build:mermaid",
+    "build:mermaid": "node scripts/build_mermaid.mjs",
     "build:monaco": "node scripts/build_monaco.mjs"
   },
   "devDependencies": {

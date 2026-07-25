@@ -218,6 +218,37 @@ def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
     load_homeworks.assert_not_called()
 
 
+def test_problem_detail_context_uses_shared_rich_markdown_renderer(monkeypatch):
+    problem = {
+        "id": 7,
+        "content": "```python\nprint('shared')\n```",
+        "initial_code": "",
+        "submission_limit": 10,
+    }
+    renderer = MagicMock(
+        return_value=(
+            '<div class="codehilite language-python">'
+            "<pre><code><span class=\"nb\">print</span></code></pre></div>"
+        )
+    )
+    monkeypatch.setattr(problem_core_routes, "get_problem", lambda _id: problem)
+    monkeypatch.setattr(problem_core_routes, "render_rich_markdown", renderer)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "get_submission_summaries_by_user_and_problem",
+        lambda *_args, **_kwargs: [],
+    )
+
+    context, error = problem_core_routes.build_problem_detail_context(
+        {"id": 1, "username": "admin", "is_admin": 1},
+        7,
+    )
+
+    assert error is None
+    assert 'class="codehilite language-python"' in context["rendered_content"]
+    renderer.assert_called_once_with(problem["content"])
+
+
 def test_student_problem_detail_prefers_selected_class_deadline(monkeypatch):
     problem = {
         "id": 7,

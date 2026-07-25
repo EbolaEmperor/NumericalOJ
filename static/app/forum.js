@@ -717,7 +717,11 @@
   }
 
   function enhanceRenderedMarkdown(root) {
-    return window.NumericalOJForumMarkdown.enhance(root);
+    return window.NumericalOJMarkdownRenderer.enhance(root);
+  }
+
+  function clearRenderedMarkdown(root) {
+    window.NumericalOJMarkdownRenderer.clear(root);
   }
 
   function buildPost(item, kind) {
@@ -773,7 +777,7 @@
     }
 
     const body = document.createElement("div");
-    body.className = "forum-markdown";
+    body.className = "forum-markdown numoj-markdown";
     body.innerHTML = String(item.rendered_content || "");
 
     content.append(header, body);
@@ -818,6 +822,7 @@
       state.replies.forEach((reply) => fragment.appendChild(buildPost(reply, "reply")));
     }
 
+    clearRenderedMarkdown(elements.conversation);
     elements.conversation.replaceChildren(fragment);
 
     function settleScrollPosition() {
@@ -845,6 +850,7 @@
     elements.editThreadButton.hidden = true;
     elements.copyThreadLinkButton.disabled = true;
     elements.replyForm.hidden = true;
+    clearRenderedMarkdown(elements.conversation);
     elements.conversation.innerHTML = `
       <div class="forum-list-skeleton" aria-hidden="true">
         <span></span><span></span><span></span><span></span>
@@ -855,6 +861,7 @@
   function setDetailError(error) {
     state.conversationRenderSequence += 1;
     elements.detailTitle.textContent = "这条讨论暂时无法显示";
+    clearRenderedMarkdown(elements.conversation);
     elements.conversation.innerHTML = `
       <div class="forum-conversation-error">
         <span class="forum-empty-mark"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i></span>
@@ -1020,6 +1027,7 @@
     // 因此每次恢复当前讨论时先清理旧讨论留下的 loading 外观。
     setLoading(elements.submitReplyButton, false);
     elements.replyPreview.hidden = true;
+    clearRenderedMarkdown(elements.replyPreview);
     elements.replyPreview.innerHTML = "";
     elements.replyError.textContent = "";
     const draft = readDraft(replyDraftKey());
@@ -1097,6 +1105,7 @@
         setReplyPostingIdentity(postingName(), postingAvatar());
         elements.replyInput.value = "";
         elements.replyPreview.hidden = true;
+        clearRenderedMarkdown(elements.replyPreview);
         elements.replyPreview.innerHTML = "";
       }
 
@@ -1158,6 +1167,7 @@
     const requestSequence = ++state.previewRequestSequence;
     const text = String(content || "").trim();
     if (!text) {
+      clearRenderedMarkdown(target);
       target.innerHTML = '<p class="forum-preview-placeholder">先输入一些内容再预览。</p>';
       target.hidden = false;
       return;
@@ -1169,8 +1179,9 @@
         body: { content: text },
       });
       if (requestSequence !== state.previewRequestSequence) return;
+      clearRenderedMarkdown(target);
       target.innerHTML = String(payload.rendered_content || "");
-      target.classList.add("forum-markdown");
+      target.classList.add("forum-markdown", "numoj-markdown");
       target.hidden = false;
       await enhanceRenderedMarkdown(target);
     } catch (error) {
@@ -1290,6 +1301,7 @@
     state.editorMode = mode;
     state.editorTarget = target || null;
     elements.editorError.textContent = "";
+    clearRenderedMarkdown(elements.editorPreviewPanel);
     elements.editorPreviewPanel.innerHTML = "";
     elements.rebaseEditorDraftButton.hidden = true;
     setEditorTab("write");

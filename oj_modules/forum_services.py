@@ -10,15 +10,12 @@ ID 或两者之间的映射。
 
 from __future__ import annotations
 
-import html
 import math
 import re
-import secrets
 from dataclasses import dataclass
 from typing import Any
 
 import pymysql
-from pygments.formatters import HtmlFormatter
 
 from oj_modules.db_services import get_db_connection
 from oj_modules.forum_identity_services import avatar_presentation, resolve_posting_identity
@@ -27,7 +24,7 @@ from oj_modules.idempotency_utils import (
     normalize_client_request_id as _normalize_client_request_id,
     request_fingerprint,
 )
-from oj_modules.markdown_utils import render_markdown, sanitize_html
+from oj_modules.markdown_utils import render_rich_markdown
 
 
 DEFAULT_PAGE_SIZE = 30
@@ -37,47 +34,7 @@ MAX_REPLY_PAGE_SIZE = 100
 MAX_TITLE_LENGTH = 255
 MAX_CONTENT_LENGTH = 100_000
 
-_MARKDOWN_EXTENSIONS = [
-    "extra",
-    "fenced_code",
-    "codehilite",
-    "tables",
-    "sane_lists",
-]
-_LANGUAGE_CLASS_RE = re.compile(r"^language-[A-Za-z0-9_+#.-]+$")
-_FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})")
 _WHITESPACE_RE = re.compile(r"\s+")
-_MATH_RE = re.compile(
-    r"(?s)"
-    r"(\$\$.*?\$\$"
-    r"|\\\[.*?\\\]"
-    r"|\\\(.*?\\\)"
-    r"|(?<!\$)\$(?!\$)(?:\\.|[^$\n])+?(?<!\\)\$(?!\$))"
-)
-
-
-class _ForumCodeHtmlFormatter(HtmlFormatter):
-    """保留 fenced code 的语言类，供样式、Mermaid 与自动化测试识别。"""
-
-    def __init__(self, **options):
-        language_class = str(options.get("lang_str") or "").strip()
-        if _LANGUAGE_CLASS_RE.fullmatch(language_class):
-            css_class = str(options.get("cssclass") or "codehilite").strip()
-            options["cssclass"] = f"{css_class} {language_class.lower()}"
-        super().__init__(**options)
-
-
-_MARKDOWN_EXTENSION_CONFIGS = {
-    "codehilite": {
-        "css_class": "codehilite",
-        "guess_lang": False,
-        "linenums": False,
-        "noclasses": False,
-        "pygments_formatter": _ForumCodeHtmlFormatter,
-        "pygments_style": "github-dark",
-        "use_pygments": True,
-    },
-}
 
 
 class ForumError(Exception):
@@ -178,64 +135,8 @@ def validate_edit_version(value: Any) -> int:
     return version
 
 
-def _replace_math_outside_fences(raw: str, replacer) -> str:
-    """只保护正文公式，避免把 Bash/PHP 等代码里的 ``$`` 当成 LaTeX。"""
-
-    output: list[str] = []
-    prose: list[str] = []
-    closing_fence = None
-
-    def flush_prose() -> None:
-        if prose:
-            output.append(_MATH_RE.sub(replacer, "".join(prose)))
-            prose.clear()
-
-    for line in raw.splitlines(keepends=True):
-        line_without_ending = line.rstrip("\r\n")
-        if closing_fence is None:
-            opening = _FENCE_OPEN_RE.match(line_without_ending)
-            if opening is None:
-                prose.append(line)
-                continue
-            flush_prose()
-            fence = opening.group("fence")
-            closing_fence = re.compile(
-                rf"^[ ]{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$"
-            )
-            output.append(line)
-            continue
-
-        output.append(line)
-        if closing_fence.fullmatch(line_without_ending):
-            closing_fence = None
-
-    flush_prose()
-    return "".join(output)
-
-
 def render_forum_markdown(content: Any) -> str:
-    # LaTeX 的 ``\(...\)`` / ``\[...\]`` 会被 Markdown 当作普通反斜杠转义而吃掉
-    # 分隔符；渲染前先以不可预测占位符保护，恢复时对公式正文做 HTML 转义。
-    raw = str(content or "")
-    token_prefix = f"NUMOJFORUMMATH{secrets.token_hex(8)}"
-    protected: dict[str, str] = {}
-
-    def protect_math(match):
-        token = f"{token_prefix}{len(protected)}TOKEN"
-        protected[token] = html.escape(match.group(0), quote=False)
-        return token
-
-    markdown_source = _replace_math_outside_fences(raw, protect_math)
-    rendered = render_markdown(
-        markdown_source,
-        extensions=_MARKDOWN_EXTENSIONS,
-        extension_configs=_MARKDOWN_EXTENSION_CONFIGS,
-    )
-    for token, formula in protected.items():
-        rendered = rendered.replace(token, formula)
-    # 占位符必须在最终一次 HTML 清洗之前恢复；否则公式若出现在链接属性中，
-    # 恢复出的引号可能绕过第一次清洗并重新形成事件属性。
-    return sanitize_html(rendered)
+    return render_rich_markdown(content)
 
 
 def _public_excerpt(content: Any, length: int = 150) -> str:

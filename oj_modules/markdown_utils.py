@@ -14,6 +14,10 @@ bleach 已加入 requirements/production.txt；生产安装后获得完整 Markd
 """
 
 import html
+import re
+import secrets
+
+from pygments.formatters import HtmlFormatter
 
 try:
     import bleach
@@ -40,6 +44,47 @@ _ALLOWED_ATTRS = {
     'ol': ['start'],
 }
 _ALLOWED_PROTOCOLS = ['http', 'https', 'mailto']
+
+_RICH_MARKDOWN_EXTENSIONS = [
+    "extra",
+    "fenced_code",
+    "codehilite",
+    "tables",
+    "sane_lists",
+]
+_LANGUAGE_CLASS_RE = re.compile(r"^language-[A-Za-z0-9_+#.-]+$")
+_FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})")
+_MATH_RE = re.compile(
+    r"(?s)"
+    r"(\$\$.*?\$\$"
+    r"|\\\[.*?\\\]"
+    r"|\\\(.*?\\\)"
+    r"|(?<!\$)\$(?!\$)(?:\\.|[^$\n])+?(?<!\\)\$(?!\$))"
+)
+
+
+class _LanguageClassHtmlFormatter(HtmlFormatter):
+    """保留 fenced code 的安全语言类，供共享样式和 Mermaid 识别。"""
+
+    def __init__(self, **options):
+        language_class = str(options.get("lang_str") or "").strip()
+        if _LANGUAGE_CLASS_RE.fullmatch(language_class):
+            css_class = str(options.get("cssclass") or "codehilite").strip()
+            options["cssclass"] = f"{css_class} {language_class.lower()}"
+        super().__init__(**options)
+
+
+_RICH_MARKDOWN_EXTENSION_CONFIGS = {
+    "codehilite": {
+        "css_class": "codehilite",
+        "guess_lang": False,
+        "linenums": False,
+        "noclasses": False,
+        "pygments_formatter": _LanguageClassHtmlFormatter,
+        "pygments_style": "github-dark",
+        "use_pygments": True,
+    },
+}
 
 
 def sanitize_html(html_str):
@@ -79,4 +124,66 @@ def render_markdown(text, extensions=None, extension_configs=None):
     except Exception:
         import html as _html
         return _html.escape(raw, quote=False).replace("\n", "<br>")
+    return sanitize_html(rendered)
+
+
+def _replace_math_outside_fences(raw, replacer):
+    """只保护正文公式，避免把 Bash/PHP 等代码里的 ``$`` 当成 LaTeX。"""
+    output = []
+    prose = []
+    closing_fence = None
+
+    def flush_prose():
+        if prose:
+            output.append(_MATH_RE.sub(replacer, "".join(prose)))
+            prose.clear()
+
+    for line in raw.splitlines(keepends=True):
+        line_without_ending = line.rstrip("\r\n")
+        if closing_fence is None:
+            opening = _FENCE_OPEN_RE.match(line_without_ending)
+            if opening is None:
+                prose.append(line)
+                continue
+            flush_prose()
+            fence = opening.group("fence")
+            closing_fence = re.compile(
+                rf"^[ ]{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$"
+            )
+            output.append(line)
+            continue
+
+        output.append(line)
+        if closing_fence.fullmatch(line_without_ending):
+            closing_fence = None
+
+    flush_prose()
+    return "".join(output)
+
+
+def render_rich_markdown(text):
+    """渲染支持代码高亮、Mermaid 源码标记与 LaTeX 的安全 Markdown。"""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+
+    token_prefix = f"NUMOJMARKDOWNMATH{secrets.token_hex(8)}"
+    protected = {}
+
+    def protect_math(match):
+        token = f"{token_prefix}{len(protected)}TOKEN"
+        protected[token] = html.escape(match.group(0), quote=False)
+        return token
+
+    markdown_source = _replace_math_outside_fences(raw, protect_math)
+    rendered = render_markdown(
+        markdown_source,
+        extensions=_RICH_MARKDOWN_EXTENSIONS,
+        extension_configs=_RICH_MARKDOWN_EXTENSION_CONFIGS,
+    )
+    for token, formula in protected.items():
+        rendered = rendered.replace(token, formula)
+
+    # 占位符必须在最终一次 HTML 清洗之前恢复；否则公式若出现在链接属性中，
+    # 恢复出的引号可能绕过第一次清洗并重新形成事件属性。
     return sanitize_html(rendered)
