@@ -103,7 +103,7 @@
   aria-labelledby="arcHelpModalTitle"
   aria-hidden="true"
 >
-  <div class="modal-dialog modal-dialog-centered">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
       <div class="arc-help-colorbar" aria-hidden="true">
         <i></i><i></i><i></i><i></i>
@@ -117,18 +117,106 @@
       <div class="modal-body">
         <h2 id="arcHelpModalTitle">ARC-AGI-3 是什么？</h2>
         <p>
-          ARC-AGI-3 是一个交互式推理基准。玩家需要在陌生环境中尝试操作，
-          根据画面反馈推断目标与规则，并把已经发现的规律应用到后续关卡。
+          ARC-AGI-3 是一个交互式推理基准。它不会提供规则、操作说明或显式目标；
+          玩家需要在陌生环境中探索、试错，根据画面反馈建立假设，并把发现的规律迁移到后续关卡。
         </p>
         <p>
           当前页面收录完整的 25 个公开演示环境；游戏源码和运行引擎均托管在本地，
           游玩过程不依赖官方 API。
         </p>
-        <p class="arc-help-benchmark">
-          <strong>截至 2026 年 7 月 24 日</strong>，ARC-AGI-3 私有评测体系的半私有集中，
-          最高分模型是 GPT-5.6 Sol（Max），得分为 7.8%；相比之下，人类基线为 100%。
+        <p class="arc-help-record">
+          <span class="arc-help-record-label">NEW RECORD</span>
+          <strong>Claude Opus 5（High）以 30.16% 刷新 ARC-AGI-3 官方纪录。</strong>
+          它在公开演示集中还攻克了 5 个此前没有模型完成过的环境，
+          但仍与 100% 的人类参考水平相距很远。
         </p>
+
+        <section class="arc-leaderboard" aria-labelledby="arcLeaderboardTitle">
+          <header class="arc-leaderboard-header">
+            <p class="arc-kicker">VERIFIED · SEMI-PRIVATE</p>
+            <div class="arc-leaderboard-heading">
+              <h3 id="arcLeaderboardTitle">官方成绩 TOP 5</h3>
+              <span class="arc-leaderboard-status">
+                <i aria-hidden="true"></i>
+                OFFICIAL SNAPSHOT
+              </span>
+            </div>
+            <p>不同推理档位作为独立榜单项，按官方成绩排序。</p>
+          </header>
+
+          <ol class="arc-leaderboard-list">
+            <li class="arc-leaderboard-entry arc-leaderboard-entry--record">
+              <span class="arc-leaderboard-rank" aria-label="第 1 名">01</span>
+              <span class="arc-leaderboard-model">
+                <span>ANTHROPIC</span>
+                <strong>Claude Opus 5</strong>
+                <small>High · 新纪录</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>30.16</strong><small>%</small>
+              </span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 2 名">02</span>
+              <span class="arc-leaderboard-model">
+                <span>OPENAI</span>
+                <strong>GPT-5.6 Sol</strong>
+                <small>Max</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>7.78</strong><small>%</small>
+              </span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 3 名">03</span>
+              <span class="arc-leaderboard-model">
+                <span>OPENAI</span>
+                <strong>GPT-5.6 Sol</strong>
+                <small>Extra High</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>6.99</strong><small>%</small>
+              </span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 4 名">04</span>
+              <span class="arc-leaderboard-model">
+                <span>OPENAI</span>
+                <strong>GPT-5.6 Sol</strong>
+                <small>High</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>2.15</strong><small>%</small>
+              </span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 5 名">05</span>
+              <span class="arc-leaderboard-model">
+                <span>ANTHROPIC</span>
+                <strong>Claude Opus 4.8</strong>
+                <small>High</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>1.52</strong><small>%</small>
+              </span>
+            </li>
+          </ol>
+        </section>
+        <p class="arc-leaderboard-cutoff">
+          数据快照截至
+          <time datetime="2026-07-24T17:57:13Z">2026 年 7 月 24 日 17:57 UTC</time>
+          · ARC Prize Verified 半私有评测 · 不同推理档位独立计项
+        </p>
+
         <div class="arc-help-links">
+          <a href="https://arcprize.org/leaderboard" target="_blank" rel="noopener noreferrer">
+            <span>官方 Verified 榜单</span>
+            <i class="fas fa-ranking-star" aria-hidden="true"></i>
+          </a>
+          <a href="https://arcprize.org/results/anthropic-claude-opus-5" target="_blank" rel="noopener noreferrer">
+            <span>Opus 5 评测结果</span>
+            <i class="fas fa-chart-line" aria-hidden="true"></i>
+          </a>
           <a href="https://arcprize.org/arc-agi/3" target="_blank" rel="noopener noreferrer">
             <span>ARC-AGI-3 官网</span>
             <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
