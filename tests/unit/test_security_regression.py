@@ -265,11 +265,10 @@ def test_register_never_offers_or_accepts_cadmin_class():
 def test_safe_user_header_filename():
     from oj_modules import judger_core
     assert judger_core.safe_user_header_filename('mylib.h') == 'mylib.h'
-    assert judger_core.safe_user_header_filename('helper.hpp') == 'helper.hpp'
-    # 路径分量被剥离，仅留基名（且扩展名合法）
-    assert judger_core.safe_user_header_filename('/abs/path.h') == 'path.h'
-    # 目录穿越 / 非头文件 / 含空格 / 空 → 拒绝
+    assert judger_core.safe_user_header_filename('include/helper.hpp') == 'include/helper.hpp'
+    assert judger_core.safe_user_header_filename('notes/read me.inc') == 'notes/read me.inc'
+    # 绝对路径和目录穿越必须拒绝，不能再 basename 扁平化。
+    assert judger_core.safe_user_header_filename('/abs/path.h') is None
     assert judger_core.safe_user_header_filename('../../etc/passwd') is None
-    assert judger_core.safe_user_header_filename('notes.txt') is None
-    assert judger_core.safe_user_header_filename('bad name.h') is None
+    assert judger_core.safe_user_header_filename('notes.txt') == 'notes.txt'
     assert judger_core.safe_user_header_filename('') is None

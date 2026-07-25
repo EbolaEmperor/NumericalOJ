@@ -26,12 +26,17 @@ from oj_modules.db_services import (
     safe_table_name,
     set_submission_status_snapshot,
     get_user_classes,
-    get_user_by_username,
+    get_user_by_id,
     upsert_user_problem_max_score_if_higher,
     update_submission_evaluation,
     update_submission_status,
 )
 from oj_modules.redis_clients import create_optional_redis_client
+from oj_modules.submission_repository_snapshots import (
+    RepositorySnapshotError,
+    load_submission_repository_entries,
+    resolve_submission_repository_user_id,
+)
 
 
 EVALUATE_TASK_NAME = "oj.evaluate_submission"
@@ -99,7 +104,7 @@ def _resolve_saved_output_image_path(sid, filename):
         if path in seen:
             continue
         seen.add(path)
-        if os.path.isfile(path):
+        if core.is_safe_regular_artifact(path):
             return path
     return None
 
@@ -157,8 +162,42 @@ def _finalize_programming_terminal_submission(
     return test_point_statuses
 
 
+def _mark_repository_snapshot_terminal_error(submission):
+    """把不可恢复的仓库快照错误固化为终态，禁止 watchdog 无限重投。"""
+    message = (
+        "提交绑定的代码仓库快照缺失、损坏或无法安全读取，评测已停止。"
+        "请联系管理员检查仓库存储。"
+    )
+    test_points = _build_terminal_test_point_statuses(
+        [],
+        "Error",
+        stderr=message,
+    )
+    update_submission_evaluation(
+        int(submission["id"]),
+        test_points,
+        0,
+        "Error",
+    )
+    # DB helper 会刷新一次缓存；这里再以本次已知终态显式覆盖，避免前一条
+    # Running SSE 快照在 Redis 短暂抖动或刷新读取延迟时继续留在前端。
+    set_submission_status_snapshot(
+        submission_id=int(submission["id"]),
+        username=submission.get("username"),
+        problem_id=submission.get("problem_id"),
+        problem_type=submission.get("problem_type"),
+        status="Error",
+        score=0,
+        test_points=test_points,
+    )
+    return test_points
+
+
 def _finalize_programming_submission(submission, problem_id, test_point_statuses, score, final_status):
-    user = get_user_by_username(submission['username'])
+    user_id = resolve_submission_repository_user_id(int(submission["id"]))
+    user = get_user_by_id(user_id)
+    if not user:
+        raise RuntimeError("提交绑定的用户不存在，无法结算评测结果")
     if final_status == "Accepted":
         if insert_user_problem_ac_record_if_absent(user['id'], problem_id):
             conn = get_db_connection()
@@ -371,26 +410,19 @@ def register_evaluate_submission_task(celery_app):
             lang = (problem.get('lang') or 'matlab').strip().lower()
             test_code = problem.get('test_code') or ''
 
-            user = get_user_by_username(submission['username'])
-            user_files = {}
+            user_files = []
 
-            if user and lang in ['c', 'cpp']:
-                conn = get_db_connection()
-                try:
-                    with conn.cursor() as cursor:
-                        sql = """
-                        SELECT filename, file_content
-                        FROM user_code_repository
-                        WHERE user_id = %s
-                        """
-                        cursor.execute(sql, (user['id'],))
-                        files = cursor.fetchall()
-                        for file_data in files:
-                            user_files[file_data['filename']] = file_data['file_content']
-                except Exception as e:
-                    print(f"Warning: Failed to load user repository files: {e}")
-                finally:
-                    conn.close()
+            if lang in ['c', 'cpp']:
+                # 新提交必须读取创建时绑定的不可变仓库树；快照损坏或缺失时评测
+                # fail-closed。仅迁移边界明确标记的历史提交由 helper 记录警告并
+                # 兼容读取实时仓库。
+                repository_user_id = resolve_submission_repository_user_id(
+                    int(submission_id)
+                )
+                user_files = load_submission_repository_entries(
+                    submission_id=int(submission_id),
+                    user_id=repository_user_id,
+                )
 
             conn = get_db_connection()
             try:
@@ -935,6 +967,11 @@ def register_evaluate_submission_task(celery_app):
                 score=score,
                 final_status=final_status,
             )
+        except RepositorySnapshotError:
+            # 快照缺失/摘要不一致/清单损坏均是该提交的永久完整性错误；重跑同一
+            # 不可变快照不会自愈。若写 Error 终态时遇到 MySQL 瞬时错误，则让
+            # Celery 的 autoretry_for 正常接管。
+            _mark_repository_snapshot_terminal_error(submission)
         except SoftTimeLimitExceeded:
             # 软超时（先于硬 time_limit 触发）：标记 Error 并让 finally 正常释放锁，
             # 避免被硬超时 SIGKILL 导致锁泄露、提交长期卡在 Running。

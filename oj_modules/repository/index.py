@@ -4,8 +4,11 @@
 import hashlib
 import json
 import os
+import shutil
 import uuid
-from datetime import datetime
+import fcntl
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 import numpy as np
 import requests
@@ -65,6 +68,15 @@ _DEFAULT_EMBEDDING_TIMEOUT_SECONDS = int(REPOSITORY_EMBEDDING_TIMEOUT)
 _DEFAULT_EMBEDDING_BATCH_SIZE = max(1, int(REPOSITORY_EMBEDDING_BATCH_SIZE))
 _VECTOR_DB_BACKEND = str(REPOSITORY_VECTOR_BACKEND or '').strip().lower()
 _FAISS_INDEX_ROOT = os.path.abspath(str(REPOSITORY_FAISS_INDEX_ROOT or os.path.join('tmp', 'repository_vector_index')))
+_PARSER_SCHEMA_VERSION = 'treesitter-cpp-structured-v3'
+_EMBEDDING_SCHEMA_VERSION = 'repository-semantic-v1'
+REPOSITORY_INDEX_TASK_SOFT_TIME_LIMIT_SECONDS = 1500
+REPOSITORY_INDEX_TASK_HARD_TIME_LIMIT_SECONDS = 1800
+REPOSITORY_INDEX_TASK_STALE_GRACE_SECONDS = 300
+REPOSITORY_INDEX_TASK_STALE_AFTER_SECONDS = (
+    REPOSITORY_INDEX_TASK_HARD_TIME_LIMIT_SECONDS
+    + REPOSITORY_INDEX_TASK_STALE_GRACE_SECONDS
+)
 try:
     _DEFAULT_SEARCH_TOP_K = max(1, int(AGENT_REPOSITORY_KNN_TOP_K))
 except Exception:
@@ -84,6 +96,43 @@ class RepositoryIndexJobCancelled(Exception):
 
 def ensure_repository_index_tables():
     return None
+
+
+def _expire_stale_repository_index_jobs(cursor, user_id):
+    """原子终结超过明确租约的 queued/running 任务。
+
+    queued 的最大等待租约与 running 一致；迟到的 broker 消息随后会因终态而无法
+    `_try_mark...`。running 的阈值严格大于 Celery hard limit，并额外留 5 分钟，
+    因而不会抢先终止仍可能正常存活的 worker。
+    """
+
+    cutoff = datetime.now() - timedelta(
+        seconds=REPOSITORY_INDEX_TASK_STALE_AFTER_SECONDS
+    )
+    message = (
+        '结构化整理任务超过执行租约，已自动终结；'
+        '上一版可用索引保持不变，请重新整理。'
+    )
+    cursor.execute(
+        """
+        UPDATE repository_index_jobs
+        SET status = 'failed',
+            error_message = %s,
+            progress_message = %s,
+            finished_at = %s
+        WHERE user_id = %s
+          AND status IN ('queued', 'running')
+          AND updated_at < %s
+        """,
+        (
+            message,
+            _format_repository_progress_message('failed', message),
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            int(user_id),
+            cutoff.strftime('%Y-%m-%d %H:%M:%S'),
+        ),
+    )
+    return int(cursor.rowcount)
 
 
 def _safe_int(value, default=0):
@@ -161,11 +210,74 @@ def create_repository_index_job(user_id):
         conn.close()
 
 
+def get_or_create_active_repository_index_job(user_id):
+    """按用户串行地取得或创建唯一 queued/running 整理任务。"""
+    user_id = int(user_id)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # users 主键行作为稳定的每用户事务锁，堵住 route 层
+            # “先查再建”产生两个 queued job 的竞态。
+            cursor.execute(
+                "SELECT id FROM users WHERE id = %s FOR UPDATE",
+                (user_id,),
+            )
+            if not cursor.fetchone():
+                raise RuntimeError("用户不存在，无法创建结构化整理任务")
+            _expire_stale_repository_index_jobs(cursor, user_id)
+            cursor.execute(
+                """
+                SELECT id, user_id, base_repository_generation, status, task_id,
+                       cancel_requested, created_at, updated_at
+                FROM repository_index_jobs
+                WHERE user_id = %s
+                  AND status IN ('queued', 'running')
+                ORDER BY id DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                conn.commit()
+                return {'created': False, 'job': row, 'job_id': int(row['id'])}
+            cursor.execute(
+                """
+                INSERT INTO repository_index_jobs (
+                    user_id, status, total_files, processed_files,
+                    total_chunks, total_classes, progress_message
+                )
+                VALUES (%s, 'queued', 0, 0, 0, 0, %s)
+                """,
+                (user_id, '等待调度执行'),
+            )
+            job_id = int(cursor.lastrowid)
+        conn.commit()
+        return {
+            'created': True,
+            'job_id': job_id,
+            'job': {
+                'id': job_id,
+                'user_id': user_id,
+                'status': 'queued',
+                'task_id': None,
+                'cancel_requested': 0,
+            },
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def update_repository_index_job(job_id, **fields):
     if not fields:
         return
     allowed = {
         'status',
+        'base_repository_generation',
         'total_files',
         'processed_files',
         'total_chunks',
@@ -196,13 +308,55 @@ def update_repository_index_job(job_id, **fields):
         conn.close()
 
 
-def get_repository_index_job(job_id, user_id):
+def fail_repository_index_job_dispatch(job_id, user_id, error_message):
+    """把尚未被 worker 领取的 dispatch 失败任务终结，避免永久 queued。
+
+    只允许 ``queued -> failed``。若 Celery 已经领取并改为 ``running``，这里不
+    反向覆盖运行态；调用方可根据返回值判断是否实际终结。
+    """
+
+    message = _safe_str(error_message) or '结构化整理任务调度失败'
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, user_id, status, total_files, processed_files, total_chunks, total_classes,
+                UPDATE repository_index_jobs
+                SET status = 'failed',
+                    error_message = %s,
+                    progress_message = %s,
+                    finished_at = %s
+                WHERE id = %s
+                  AND user_id = %s
+                  AND status = 'queued'
+                """,
+                (
+                    message,
+                    _format_repository_progress_message('failed', message),
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    int(job_id),
+                    int(user_id),
+                ),
+            )
+            changed = int(cursor.rowcount)
+        conn.commit()
+        return changed == 1
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_repository_index_job(job_id, user_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            _expire_stale_repository_index_jobs(cursor, user_id)
+            cursor.execute(
+                """
+                SELECT id, user_id, base_repository_generation, status,
+                       total_files, processed_files, total_chunks, total_classes,
                        error_message, progress_message, task_id, cancel_requested, created_at, updated_at, finished_at
                 FROM repository_index_jobs
                 WHERE id = %s AND user_id = %s
@@ -211,6 +365,10 @@ def get_repository_index_job(job_id, user_id):
                 (int(job_id), int(user_id)),
             )
             row = cursor.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -229,17 +387,22 @@ def get_latest_active_repository_index_job(user_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            _expire_stale_repository_index_jobs(cursor, user_id)
             cursor.execute(
                 """
                 SELECT id
                 FROM repository_index_jobs
-                WHERE user_id = %s AND status IN ('queued', 'running') AND cancel_requested = 0
+                WHERE user_id = %s AND status IN ('queued', 'running')
                 ORDER BY id DESC
                 LIMIT 1
                 """,
                 (int(user_id),),
             )
             row = cursor.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -284,14 +447,33 @@ def _try_mark_repository_index_job_running(job_id):
             cursor.execute(
                 """
                 UPDATE repository_index_jobs
-                SET status = 'running', error_message = NULL, finished_at = NULL
+                SET status = 'running', error_message = NULL, finished_at = NULL,
+                    updated_at = NOW()
                 WHERE id = %s AND cancel_requested = 0 AND status IN ('queued', 'running')
                 """,
                 (int(job_id),),
             )
-            changed = int(cursor.rowcount)
+            # PyMySQL 默认返回 changed rows，而不是 matched rows。Celery redelivery
+            # 领取一个本来就是 running 的 job 时，即使 WHERE 命中，affected rows
+            # 也可能为 0；必须在同一事务、仍持有行锁时回读状态，不能据 rowcount
+            # 把合法重投误判为取消。
+            cursor.execute(
+                """
+                SELECT status, cancel_requested
+                FROM repository_index_jobs
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (int(job_id),),
+            )
+            row = cursor.fetchone()
+            claimed = bool(
+                row
+                and str(row.get('status') or '').strip().lower() == 'running'
+                and _safe_int(row.get('cancel_requested'), 0) == 0
+            )
         conn.commit()
-        return changed > 0
+        return claimed
     finally:
         conn.close()
 
@@ -306,6 +488,14 @@ def _is_repository_index_job_cancel_requested(job_id):
 
 
 def request_cancel_repository_index_job(job_id, user_id=None, reason='用户取消任务'):
+    """线性化取消请求，并让 running job 保持活跃直到 worker 确认退出。
+
+    发布路径和这里都以 ``FOR UPDATE`` 锁定同一 job 行：发布先提交时取消会读到
+    ``success`` 并保持成功；取消先提交时发布会看到 ``cancel_requested=1`` 并拒绝
+    激活候选 generation。尚未被 worker 领取的 queued job 可以直接进入终态。
+    """
+
+    message = str(reason or '用户取消任务')
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -316,6 +506,7 @@ def request_cancel_repository_index_job(job_id, user_id=None, reason='用户取�
                     FROM repository_index_jobs
                     WHERE id = %s
                     LIMIT 1
+                    FOR UPDATE
                     """,
                     (int(job_id),),
                 )
@@ -326,6 +517,7 @@ def request_cancel_repository_index_job(job_id, user_id=None, reason='用户取�
                     FROM repository_index_jobs
                     WHERE id = %s AND user_id = %s
                     LIMIT 1
+                    FOR UPDATE
                     """,
                     (int(job_id), int(user_id)),
                 )
@@ -335,60 +527,78 @@ def request_cancel_repository_index_job(job_id, user_id=None, reason='用户取�
                 return None
 
             status = str(row.get('status') or '').strip().lower()
-            if status not in ('success', 'failed', 'canceled'):
+            if status == 'running':
                 cursor.execute(
                     """
                     UPDATE repository_index_jobs
-                    SET cancel_requested = 1, status = 'canceled', finished_at = %s, error_message = %s, progress_message = %s
-                    WHERE id = %s
+                    SET cancel_requested = 1,
+                        error_message = NULL,
+                        progress_message = %s
+                    WHERE id = %s AND status = 'running'
                     """,
                     (
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        str(reason or '用户取消任务'),
-                        str(reason or '用户取消任务'),
+                        _format_repository_progress_message(
+                            'canceling',
+                            f'{message} 正在等待 worker 安全停止。',
+                        ),
+                        int(job_id),
+                    ),
+                )
+                row['cancel_requested'] = 1
+                row['error_message'] = None
+                row['progress_message'] = _format_repository_progress_message(
+                    'canceling',
+                    f'{message} 正在等待 worker 安全停止。',
+                )
+            elif status == 'queued':
+                finished_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute(
+                    """
+                    UPDATE repository_index_jobs
+                    SET cancel_requested = 1,
+                        status = 'canceled',
+                        finished_at = %s,
+                        error_message = %s,
+                        progress_message = %s
+                    WHERE id = %s AND status = 'queued'
+                    """,
+                    (
+                        finished_at,
+                        message,
+                        _format_repository_progress_message('canceled', message),
                         int(job_id),
                     ),
                 )
                 row['status'] = 'canceled'
                 row['cancel_requested'] = 1
-                row['progress_message'] = str(reason or '用户取消任务')
+                row['finished_at'] = finished_at
+                row['error_message'] = message
+                row['progress_message'] = _format_repository_progress_message(
+                    'canceled',
+                    message,
+                )
         conn.commit()
         return row
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def _load_user_repository_files(user_id, file_id=None):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            if file_id is None:
-                cursor.execute(
-                    """
-                    SELECT id, filename, file_content
-                    FROM user_code_repository
-                    WHERE user_id = %s
-                    ORDER BY filename ASC
-                    """,
-                    (int(user_id),),
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT id, filename, file_content
-                    FROM user_code_repository
-                    WHERE user_id = %s AND id = %s
-                    LIMIT 1
-                    """,
-                    (int(user_id), int(file_id)),
-                )
-            rows = cursor.fetchall() or []
-    finally:
-        conn.close()
+def _load_repository_index_snapshot(user_id):
+    """在同一仓库读锁下取得可索引文件和对应 repository_generation。"""
+    from oj_modules.repository.tree import get_repository_tree_snapshot
 
+    tree_state = get_repository_tree_snapshot(int(user_id), include_content=True)
+    rows = [
+        item
+        for item in tree_state.get('entries') or []
+        if item.get('kind') == 'file'
+    ]
     result = []
     for row in rows:
-        filename = _safe_str(row.get('filename'))
+        filename = str(row.get('relative_path') or row.get('filename') or '')
         if not filename:
             continue
         if not filename.lower().endswith(_ALLOWED_REPO_EXTENSIONS):
@@ -396,9 +606,20 @@ def _load_user_repository_files(user_id, file_id=None):
         result.append({
             'id': int(row.get('id')),
             'filename': filename,
-            'content': str(row.get('file_content') or ''),
+            'relative_path': filename,
+            'content': str(row.get('content') or ''),
+            'source_hash': _safe_str(row.get('sha256') or row.get('content_sha256')),
+            'file_version': _safe_int(row.get('file_version'), 0),
         })
-    return result
+    return int(tree_state.get('repository_generation') or 0), result
+
+
+def _load_user_repository_files(user_id, file_id=None):
+    _generation, files = _load_repository_index_snapshot(user_id)
+    if file_id is None:
+        return files
+    target = _safe_int(file_id, 0)
+    return [item for item in files if _safe_int(item.get('id'), 0) == target]
 
 
 def _get_cpp_tree_sitter_parser():
@@ -1298,7 +1519,7 @@ def _build_member_variable_decl_for_prompt(member):
     return ''
 
 
-def _call_qwen_structured_function_entity(filename, function_item):
+def _call_qwen_structured_function_entity(function_item):
     leading_comment = _safe_str((function_item or {}).get('_leading_comment'))
     comment_block = leading_comment if leading_comment else '(无)'
     prompt = (
@@ -1316,7 +1537,6 @@ def _call_qwen_structured_function_entity(filename, function_item):
         "  \"params\": [{\"name\": \"\", \"description\": \"\"}],\n"
         "  \"returns\": {\"description\": \"\"}\n"
         "}\n\n"
-        f"[文件名]\n{filename}\n\n"
         f"[函数前人工注释]\n{comment_block}\n\n"
         f"[函数代码]\n{function_item.get('code')}\n"
     )
@@ -1328,11 +1548,13 @@ def _call_qwen_structured_function_entity(filename, function_item):
     )
     data = _extract_first_json_object_relaxed(text)
     if not isinstance(data, dict):
-        raise RuntimeError(f"函数结构化补充失败：{filename}#{function_item.get('qualified_name')}")
+        raise RuntimeError(
+            f"函数结构化补充失败：{function_item.get('qualified_name')}"
+        )
     return data
 
 
-def _call_qwen_structured_class_entity(filename, class_item):
+def _call_qwen_structured_class_entity(class_item):
     payload = {
         'class_name': class_item.get('class_name'),
         'qualified_name': class_item.get('qualified_name'),
@@ -1351,7 +1573,6 @@ def _call_qwen_structured_class_entity(filename, class_item):
         "JSON 中 member_methods 元素格式：\n"
         "{\"name\":\"\",\"qualified_name\":\"\",\"signature\":\"\",\"return_type\":\"\",\"access\":\"public|private|protected\","
         "\"is_static\":false,\"is_virtual\":false,\"is_const\":false,\"is_pure_virtual\":false,\"start_line\":0,\"end_line\":0}\n\n"
-        f"[文件名]\n{filename}\n\n"
         f"[类声明输入]\n{json.dumps(payload, ensure_ascii=False)}\n"
     )
     text = _call_qwen_text(
@@ -1362,7 +1583,9 @@ def _call_qwen_structured_class_entity(filename, class_item):
     )
     data = _extract_first_json_object_relaxed(text)
     if not isinstance(data, dict):
-        raise RuntimeError(f"类结构化补充失败：{filename}#{class_item.get('qualified_name')}")
+        raise RuntimeError(
+            f"类结构化补充失败：{class_item.get('qualified_name')}"
+        )
     return data
 
 
@@ -1453,8 +1676,14 @@ def _notify_structuring_progress(progress_callback, stage, detail):
         pass
 
 
-def _build_structured_with_treesitter_and_qwen(file_item, progress_callback=None, function_callback=None):
-    filename = _safe_str((file_item or {}).get('filename'))
+def _build_structured_with_treesitter_and_qwen(
+    file_item,
+    progress_callback=None,
+    function_callback=None,
+    *,
+    strict_structuring=False,
+):
+    filename = str((file_item or {}).get('filename') or '')
     content = str((file_item or {}).get('content') or '')
     repo_file_id = _safe_int((file_item or {}).get('id'), 0)
     source_hash = _sha256_text(content)
@@ -1483,12 +1712,14 @@ def _build_structured_with_treesitter_and_qwen(file_item, progress_callback=None
         for noisy_key in ('_prompt_member_variable_decls', '_prompt_member_method_decls', '_clang_decl_id'):
             class_payload.pop(noisy_key, None)
         try:
-            llm_cls = _call_qwen_structured_class_entity(filename=filename, class_item=cls)
+            llm_cls = _call_qwen_structured_class_entity(class_item=cls)
             if isinstance(llm_cls, dict):
                 for field in ('kind', 'bases', 'member_variables', 'member_methods'):
                     if llm_cls.get(field) is not None:
                         class_payload[field] = llm_cls.get(field)
         except Exception as exc:
+            if strict_structuring:
+                raise RuntimeError(f'类声明结构化失败：{cls_name}；{str(exc)}') from exc
             _notify_structuring_progress(
                 progress_callback,
                 'class_structuring',
@@ -1514,9 +1745,11 @@ def _build_structured_with_treesitter_and_qwen(file_item, progress_callback=None
         )
         merged = dict(func)
         try:
-            llm_func = _call_qwen_structured_function_entity(filename=filename, function_item=func)
+            llm_func = _call_qwen_structured_function_entity(function_item=func)
             merged = _merge_function_with_llm_enrichment(func, llm_func)
         except Exception as exc:
+            if strict_structuring:
+                raise RuntimeError(f'函数结构化失败：{qname}；{str(exc)}') from exc
             _notify_structuring_progress(
                 progress_callback,
                 'function_structuring',
@@ -1855,8 +2088,10 @@ def _faiss_user_dir(user_id):
     return os.path.join(_FAISS_INDEX_ROOT, str(int(user_id)))
 
 
-def _faiss_paths(user_id):
+def _faiss_paths(user_id, index_generation=None):
     root = _faiss_user_dir(user_id)
+    if index_generation is not None:
+        root = os.path.join(root, 'generations', str(int(index_generation)))
     return {
         'root': root,
         'index': os.path.join(root, 'index.faiss'),
@@ -1864,18 +2099,67 @@ def _faiss_paths(user_id):
     }
 
 
-def _write_faiss_index(user_id, chunk_ids, embeddings, embedding_model):
+def _fsync_faiss_generation_directories(user_id, index_generation=None):
+    """持久化 generation 文件及新建目录的目录项，DB 指针发布前失败关闭。"""
+    paths = _faiss_paths(user_id, index_generation=index_generation)
+    candidates = [
+        paths['root'],
+        os.path.dirname(paths['root']),
+        _faiss_user_dir(user_id),
+        _FAISS_INDEX_ROOT,
+        os.path.dirname(_FAISS_INDEX_ROOT),
+    ]
+    seen = set()
+    for directory in candidates:
+        normalized = os.path.abspath(directory)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        fd = os.open(
+            normalized,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _write_faiss_index(
+    user_id,
+    chunk_ids,
+    embeddings,
+    embedding_model,
+    *,
+    index_generation=None,
+):
     _ensure_faiss_available()
-    paths = _faiss_paths(user_id)
+    paths = _faiss_paths(user_id, index_generation=index_generation)
     os.makedirs(paths['root'], exist_ok=True)
 
     if not chunk_ids:
-        for p in (paths['index'], paths['meta']):
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
+        meta = {
+            'embedding_model': str(embedding_model or ''),
+            'vector_db_backend': 'faiss',
+            'dimension': 0,
+            'chunk_ids': [],
+            'index_generation': (
+                int(index_generation) if index_generation is not None else None
+            ),
+            'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        meta_tmp = paths['meta'] + '.tmp'
+        with open(meta_tmp, 'w', encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(meta_tmp, paths['meta'])
+        if os.path.exists(paths['index']):
+            os.remove(paths['index'])
+        _fsync_faiss_generation_directories(
+            user_id,
+            index_generation=index_generation,
+        )
         return
 
     vectors = _normalize_l2(np.asarray(embeddings, dtype=np.float32))
@@ -1893,6 +2177,9 @@ def _write_faiss_index(user_id, chunk_ids, embeddings, embedding_model):
         'vector_db_backend': 'faiss',
         'dimension': dim,
         'chunk_ids': list(chunk_ids),
+        'index_generation': (
+            int(index_generation) if index_generation is not None else None
+        ),
         'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
 
@@ -1901,20 +2188,34 @@ def _write_faiss_index(user_id, chunk_ids, embeddings, embedding_model):
     index_tmp = paths['index'] + '.tmp'
     meta_tmp = paths['meta'] + '.tmp'
     faiss.write_index(index, index_tmp)
+    with open(index_tmp, 'rb') as f:
+        os.fsync(f.fileno())
     with open(meta_tmp, 'w', encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(index_tmp, paths['index'])
     os.replace(meta_tmp, paths['meta'])
+    _fsync_faiss_generation_directories(
+        user_id,
+        index_generation=index_generation,
+    )
 
 
-def _load_faiss_index(user_id):
+def _load_faiss_index(user_id, index_generation=None):
     _ensure_faiss_available()
-    paths = _faiss_paths(user_id)
-    if (not os.path.isfile(paths['index'])) or (not os.path.isfile(paths['meta'])):
+    paths = _faiss_paths(user_id, index_generation=index_generation)
+    if not os.path.isfile(paths['meta']):
         return None, None
-    index = faiss.read_index(paths['index'])
     with open(paths['meta'], 'r', encoding='utf-8') as f:
         meta = json.load(f)
+    if index_generation is not None and _safe_int(meta.get('index_generation'), -1) != int(index_generation):
+        return None, None
+    if not (meta.get('chunk_ids') or []):
+        return None, meta
+    if not os.path.isfile(paths['index']):
+        return None, None
+    index = faiss.read_index(paths['index'])
     # 一致性校验：索引向量数与 meta 中 chunk_ids 数不一致，说明读到了写入过程中的瞬时错配
     # （或半成品），视为“尚未就绪”，让调用方回退（DB 检索/空结果），下次读取即自愈。
     try:
@@ -1925,261 +2226,49 @@ def _load_faiss_index(user_id):
     return index, meta
 
 
-def _reset_repository_index_storage(user_id):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("DELETE FROM repository_chunk_embeddings WHERE user_id = %s", (int(user_id),))
-            cursor.execute("DELETE FROM repository_function_chunks WHERE user_id = %s", (int(user_id),))
-            cursor.execute("DELETE FROM repository_class_metadata WHERE user_id = %s", (int(user_id),))
-        conn.commit()
-    finally:
-        conn.close()
+def _stage_faiss_generation(
+    user_id,
+    index_generation,
+    chunk_ids,
+    embeddings,
+    embedding_model,
+):
+    """完整写好一个不可变 FAISS generation，尚不改变读者可见指针。"""
+    generation = int(index_generation)
+    final_paths = _faiss_paths(user_id, index_generation=generation)
+    if os.path.exists(final_paths['root']):
+        raise RuntimeError(f'FAISS generation 已存在：{generation}')
+    # generation 尚未成为 DB active 指针，写入期间对读者不可见；writer 自身仍以
+    # index.tmp/meta.tmp + meta 最后落位保证该 generation 内部完整。
     _write_faiss_index(
-        user_id=user_id,
-        chunk_ids=[],
-        embeddings=np.zeros((0, 0), dtype=np.float32),
-        embedding_model='',
+        user_id,
+        chunk_ids,
+        embeddings,
+        embedding_model,
+        index_generation=generation,
     )
+    return final_paths
 
 
-def _count_repository_index_items(user_id):
+def _get_active_repository_index_generation(user_id):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT
-                    (SELECT COUNT(*) FROM repository_function_chunks WHERE user_id = %s) AS function_count,
-                    (SELECT COUNT(*) FROM repository_class_metadata WHERE user_id = %s) AS class_count
-                """,
-                (int(user_id), int(user_id)),
-            )
-            row = cursor.fetchone() or {}
-            return (
-                max(0, _safe_int(row.get('function_count'), 0)),
-                max(0, _safe_int(row.get('class_count'), 0)),
-            )
-    finally:
-        conn.close()
-
-
-def _delete_repository_index_for_file(user_id, repo_file_id=None, filename=''):
-    use_repo_file_id = _safe_int(repo_file_id, 0)
-    use_filename = _safe_str(filename)
-    if use_repo_file_id <= 0 and not use_filename:
-        return
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            if use_repo_file_id > 0 and use_filename:
-                where_clause = "user_id = %s AND (repo_file_id = %s OR filename = %s)"
-                where_params = (int(user_id), int(use_repo_file_id), use_filename)
-            elif use_repo_file_id > 0:
-                where_clause = "user_id = %s AND repo_file_id = %s"
-                where_params = (int(user_id), int(use_repo_file_id))
-            else:
-                where_clause = "user_id = %s AND filename = %s"
-                where_params = (int(user_id), use_filename)
-
-            cursor.execute(
-                f"SELECT chunk_id FROM repository_function_chunks WHERE {where_clause}",
-                where_params,
-            )
-            rows = cursor.fetchall() or []
-            chunk_ids = [str((row or {}).get('chunk_id') or '').strip() for row in rows]
-            chunk_ids = [cid for cid in chunk_ids if cid]
-            if chunk_ids:
-                placeholders = ','.join(['%s'] * len(chunk_ids))
-                cursor.execute(
-                    f"DELETE FROM repository_chunk_embeddings WHERE user_id = %s AND chunk_id IN ({placeholders})",
-                    tuple([int(user_id)] + chunk_ids),
-                )
-            cursor.execute(
-                f"DELETE FROM repository_function_chunks WHERE {where_clause}",
-                where_params,
-            )
-            cursor.execute(
-                f"DELETE FROM repository_class_metadata WHERE {where_clause}",
-                where_params,
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _rebuild_faiss_index_from_db(user_id):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT c.chunk_id, e.embedding_model, e.vector_json
-                FROM repository_function_chunks c
-                INNER JOIN repository_chunk_embeddings e
-                  ON e.user_id = c.user_id AND e.chunk_id = c.chunk_id
-                WHERE c.user_id = %s
-                ORDER BY c.id ASC
+                SELECT active_index_generation, index_status
+                FROM repository_states
+                WHERE user_id = %s
                 """,
                 (int(user_id),),
             )
-            rows = cursor.fetchall() or []
+            row = cursor.fetchone() or {}
     finally:
         conn.close()
-
-    if not rows:
-        _write_faiss_index(
-            user_id=user_id,
-            chunk_ids=[],
-            embeddings=np.zeros((0, 0), dtype=np.float32),
-            embedding_model='',
-        )
-        return ''
-
-    chunk_ids = []
-    vectors = []
-    embedding_model = ''
-    expected_dim = None
-    skipped_dim_mismatch = 0
-    for row in rows:
-        chunk_id = _safe_str((row or {}).get('chunk_id'))
-        vector_json = (row or {}).get('vector_json')
-        if not chunk_id:
-            continue
-        try:
-            vector = json.loads(vector_json) if vector_json else None
-        except Exception:
-            continue
-        if not isinstance(vector, list) or not vector:
-            continue
-        # 维度一致性：embedding 模型/维度变更后，DB 里可能混有不同维度的旧向量；
-        # 若直接 np.asarray 会因 ragged 数组报错。这里以首个向量维度为准，跳过维度不一致者，
-        # 用一致子集重建（下次完整重索引会按当前模型重算全部向量）。
-        if expected_dim is None:
-            expected_dim = len(vector)
-        elif len(vector) != expected_dim:
-            skipped_dim_mismatch += 1
-            continue
-        chunk_ids.append(chunk_id)
-        vectors.append(vector)
-        if not embedding_model:
-            embedding_model = _safe_str((row or {}).get('embedding_model'))
-
-    if skipped_dim_mismatch:
-        print(f"[repository_index] 从 DB 重建索引：跳过 {skipped_dim_mismatch} 个维度不一致的向量"
-              f"（可能因 embedding 模型变更，建议触发一次完整重索引）。")
-
-    if not chunk_ids:
-        _write_faiss_index(
-            user_id=user_id,
-            chunk_ids=[],
-            embeddings=np.zeros((0, 0), dtype=np.float32),
-            embedding_model='',
-        )
-        return ''
-
-    _write_faiss_index(
-        user_id=user_id,
-        chunk_ids=chunk_ids,
-        embeddings=np.asarray(vectors, dtype=np.float32),
-        embedding_model=embedding_model,
-    )
-    return embedding_model
-
-
-
-def _insert_repository_class_metadata_item(user_id, cls):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO repository_class_metadata (
-                    class_id, user_id, repo_file_id, filename, kind, class_name, qualified_name,
-                    source_hash, bases_json, members_json, json_data
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    cls['class_id'],
-                    int(user_id),
-                    cls.get('repo_file_id'),
-                    cls['filename'],
-                    cls['kind'],
-                    cls['class_name'],
-                    cls['qualified_name'],
-                    cls['source_hash'],
-                    json.dumps(cls.get('bases') or [], ensure_ascii=False),
-                    json.dumps(
-                        {
-                            'member_variables': cls.get('member_variables') or [],
-                            'member_methods': cls.get('member_methods') or [],
-                        },
-                        ensure_ascii=False,
-                    ),
-                    json.dumps(cls, ensure_ascii=False),
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _insert_repository_function_embedding_item(user_id, func, vector, embedding_model):
-    arr = np.asarray(vector, dtype=np.float32).reshape(-1)
-    if arr.size <= 0:
-        raise RuntimeError(f"向量写入失败：函数 {str(func.get('qualified_name') or '')} 的向量为空。")
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO repository_function_chunks (
-                    chunk_id, user_id, repo_file_id, filename, language, kind, qualified_name,
-                    class_name, access_modifier, signature, summary, return_type, start_line,
-                    end_line, source_hash, code, params_json, returns_json, json_data
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    func['chunk_id'],
-                    int(user_id),
-                    func.get('repo_file_id'),
-                    func['filename'],
-                    func.get('language') or 'cpp',
-                    func.get('kind') or 'function',
-                    func['qualified_name'],
-                    func.get('class_name'),
-                    func.get('access'),
-                    func.get('signature') or '',
-                    func.get('summary') or '',
-                    (func.get('returns') or {}).get('type') if isinstance(func.get('returns'), dict) else '',
-                    int(func.get('location', {}).get('start_line', 0)),
-                    int(func.get('location', {}).get('end_line', 0)),
-                    func.get('source_hash') or '',
-                    func.get('code') or '',
-                    json.dumps(func.get('params') or [], ensure_ascii=False),
-                    json.dumps(func.get('returns') or {}, ensure_ascii=False),
-                    json.dumps(func, ensure_ascii=False),
-                ),
-            )
-            cursor.execute(
-                """
-                INSERT INTO repository_chunk_embeddings (
-                    chunk_id, user_id, embedding_model, vector_dim, vector_json
-                ) VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    func['chunk_id'],
-                    int(user_id),
-                    embedding_model,
-                    int(arr.shape[0]),
-                    json.dumps(arr.tolist(), ensure_ascii=False),
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    if str(row.get('index_status') or '') not in {'ready', 'stale'}:
+        return None
+    generation = _safe_int(row.get('active_index_generation'), 0)
+    return generation if generation > 0 else None
 
 
 def _build_cumulative_embeddings(functions, embedding_map):
@@ -2215,12 +2304,493 @@ def _format_repository_progress_message(stage, detail=''):
     return f"[stage:{stage_key}]"
 
 
-def run_repository_index_job(user_id, job_id, file_id=None):
+def _parser_cache_key(source_hash):
+    payload = '\0'.join([
+        _safe_str(source_hash),
+        _PARSER_SCHEMA_VERSION,
+        _STRUCTURED_ENTITY_MODEL,
+    ])
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _embedding_input_hash(text, embedding_model):
+    payload = '\0'.join([
+        _EMBEDDING_SCHEMA_VERSION,
+        _PARSER_SCHEMA_VERSION,
+        _STRUCTURED_ENTITY_MODEL,
+        _DEFAULT_PROVIDER,
+        _safe_str(embedding_model),
+        str(_DEFAULT_EMBEDDING_DIM),
+        str(text or ''),
+    ])
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _clone_cached_structured_file(cache_item, file_item):
+    """复用与路径无关的结构化结果，并重写本 generation 的路径/entry id。"""
+    filename = str(file_item.get('filename') or '')
+    repo_file_id = _safe_int(file_item.get('id'), 0)
+    source_hash = _safe_str(file_item.get('source_hash'))
+    classes = []
+    for template in cache_item.get('classes') or []:
+        item = dict(template)
+        item['class_id'] = uuid.uuid4().hex
+        item['repo_file_id'] = repo_file_id
+        item['filename'] = filename
+        item['source_hash'] = source_hash
+        item.pop('_index_cache', None)
+        classes.append(item)
+    functions = []
+    for template in cache_item.get('functions') or []:
+        item = dict(template)
+        item['chunk_id'] = uuid.uuid4().hex
+        item['repo_file_id'] = repo_file_id
+        item['filename'] = filename
+        item['source_hash'] = source_hash
+        item['language'] = _detect_language_from_filename(filename)
+        item.pop('_index_cache', None)
+        functions.append(item)
+    return {'classes': classes, 'functions': functions, 'source_hash': source_hash}
+
+
+def _load_active_repository_index_cache(user_id):
+    """读取当前 active generation 的结构与向量缓存，不改变任何可见状态。"""
+    active_generation = _get_active_repository_index_generation(user_id)
+    if active_generation is None:
+        return {}, {}
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT c.chunk_id, c.repo_file_id, c.source_hash, c.embedding_input_hash,
+                       c.parser_version, c.structured_model, c.json_data,
+                       e.embedding_model, e.vector_json
+                FROM repository_function_chunks c
+                LEFT JOIN repository_chunk_embeddings e
+                  ON e.user_id = c.user_id
+                 AND e.index_generation = c.index_generation
+                 AND e.chunk_id = c.chunk_id
+                WHERE c.user_id = %s AND c.index_generation = %s
+                """,
+                (int(user_id), int(active_generation)),
+            )
+            function_rows = cursor.fetchall() or []
+            cursor.execute(
+                """
+                SELECT repo_file_id, source_hash, json_data
+                FROM repository_class_metadata
+                WHERE user_id = %s AND index_generation = %s
+                """,
+                (int(user_id), int(active_generation)),
+            )
+            class_rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+
+    grouped_file_cache = {}
+    vector_cache = {}
+    for row in function_rows:
+        try:
+            payload = json.loads(row.get('json_data') or '{}')
+        except Exception:
+            continue
+        marker = payload.get('_index_cache') if isinstance(payload, dict) else None
+        source_hash = _safe_str(row.get('source_hash'))
+        expected_file_key = _parser_cache_key(source_hash)
+        if (
+            not isinstance(marker, dict)
+            or marker.get('file_cache_key') != expected_file_key
+            or _safe_str(row.get('parser_version')) != _PARSER_SCHEMA_VERSION
+            or _safe_str(row.get('structured_model')) != _STRUCTURED_ENTITY_MODEL
+        ):
+            continue
+        bucket = grouped_file_cache.setdefault(
+            (expected_file_key, _safe_int(row.get('repo_file_id'), 0)),
+            {'classes': [], 'functions': []},
+        )
+        bucket['functions'].append(payload)
+
+        embedding_hash = _safe_str(row.get('embedding_input_hash'))
+        embedding_model = _safe_str(row.get('embedding_model'))
+        vector_json = row.get('vector_json')
+        if embedding_hash and embedding_model and vector_json:
+            try:
+                vector = np.asarray(json.loads(vector_json), dtype=np.float32)
+            except Exception:
+                continue
+            if vector.ndim == 1 and vector.size > 0:
+                vector_cache[(embedding_hash, embedding_model)] = vector
+
+    for row in class_rows:
+        try:
+            payload = json.loads(row.get('json_data') or '{}')
+        except Exception:
+            continue
+        marker = payload.get('_index_cache') if isinstance(payload, dict) else None
+        source_hash = _safe_str(row.get('source_hash'))
+        expected_file_key = _parser_cache_key(source_hash)
+        if (
+            not isinstance(marker, dict)
+            or marker.get('file_cache_key') != expected_file_key
+            or marker.get('parser_version') != _PARSER_SCHEMA_VERSION
+            or marker.get('structured_model') != _STRUCTURED_ENTITY_MODEL
+        ):
+            continue
+        bucket = grouped_file_cache.setdefault(
+            (expected_file_key, _safe_int(row.get('repo_file_id'), 0)),
+            {'classes': [], 'functions': []},
+        )
+        bucket['classes'].append(payload)
+    file_cache = {}
+    for (file_key, _repo_file_id), bucket in grouped_file_cache.items():
+        file_cache.setdefault(file_key, bucket)
+    return file_cache, vector_cache
+
+
+def _attach_index_cache_metadata(classes, functions, embedding_hashes):
+    for cls in classes:
+        cls['_index_cache'] = {
+            'file_cache_key': _parser_cache_key(cls.get('source_hash')),
+            'parser_version': _PARSER_SCHEMA_VERSION,
+            'structured_model': _STRUCTURED_ENTITY_MODEL,
+        }
+    for func in functions:
+        chunk_id = _safe_str(func.get('chunk_id'))
+        func['_index_cache'] = {
+            'file_cache_key': _parser_cache_key(func.get('source_hash')),
+            'parser_version': _PARSER_SCHEMA_VERSION,
+            'structured_model': _STRUCTURED_ENTITY_MODEL,
+            'embedding_schema_version': _EMBEDDING_SCHEMA_VERSION,
+            'embedding_input_hash': _safe_str(embedding_hashes.get(chunk_id)),
+        }
+
+
+def _insert_index_generation_rows(
+    cursor,
+    *,
+    user_id,
+    index_generation,
+    classes,
+    functions,
+    embedding_map,
+    embedding_hashes,
+    embedding_model,
+):
+    for cls in classes:
+        cursor.execute(
+            """
+            INSERT INTO repository_class_metadata (
+                class_id, user_id, index_generation, repo_file_id, filename,
+                kind, class_name, qualified_name, source_hash,
+                bases_json, members_json, json_data
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                cls['class_id'],
+                int(user_id),
+                int(index_generation),
+                cls.get('repo_file_id'),
+                cls['filename'],
+                cls['kind'],
+                cls['class_name'],
+                cls['qualified_name'],
+                cls['source_hash'],
+                json.dumps(cls.get('bases') or [], ensure_ascii=False),
+                json.dumps(
+                    {
+                        'member_variables': cls.get('member_variables') or [],
+                        'member_methods': cls.get('member_methods') or [],
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(cls, ensure_ascii=False),
+            ),
+        )
+
+    for func in functions:
+        chunk_id = _safe_str(func.get('chunk_id'))
+        vector = np.asarray(embedding_map.get(chunk_id), dtype=np.float32).reshape(-1)
+        if vector.size <= 0:
+            raise RuntimeError(f'向量写入失败：{chunk_id} 没有候选向量')
+        cursor.execute(
+            """
+            INSERT INTO repository_function_chunks (
+                chunk_id, user_id, index_generation, repo_file_id, filename,
+                language, kind, qualified_name, class_name, access_modifier,
+                signature, summary, return_type, start_line, end_line,
+                source_hash, embedding_input_hash, parser_version,
+                structured_model, code, params_json, returns_json, json_data
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                chunk_id,
+                int(user_id),
+                int(index_generation),
+                func.get('repo_file_id'),
+                func['filename'],
+                func.get('language') or 'cpp',
+                func.get('kind') or 'function',
+                func['qualified_name'],
+                func.get('class_name'),
+                func.get('access'),
+                func.get('signature') or '',
+                func.get('summary') or '',
+                (func.get('returns') or {}).get('type')
+                if isinstance(func.get('returns'), dict) else '',
+                int(func.get('location', {}).get('start_line', 0)),
+                int(func.get('location', {}).get('end_line', 0)),
+                func.get('source_hash') or '',
+                _safe_str(embedding_hashes.get(chunk_id)),
+                _PARSER_SCHEMA_VERSION,
+                _STRUCTURED_ENTITY_MODEL,
+                func.get('code') or '',
+                json.dumps(func.get('params') or [], ensure_ascii=False),
+                json.dumps(func.get('returns') or {}, ensure_ascii=False),
+                json.dumps(func, ensure_ascii=False),
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO repository_chunk_embeddings (
+                chunk_id, user_id, index_generation, embedding_model,
+                vector_dim, vector_json
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                chunk_id,
+                int(user_id),
+                int(index_generation),
+                embedding_model,
+                int(vector.shape[0]),
+                json.dumps(vector.tolist(), ensure_ascii=False),
+            ),
+        )
+
+
+def _publish_repository_index_generation(
+    *,
+    user_id,
+    job_id,
+    base_repository_generation,
+    classes,
+    functions,
+    embedding_map,
+    embedding_hashes,
+    embedding_model,
+):
+    """在一个事务中发布 DB generation，并以 state 指针作为提交点。"""
+    from oj_modules.repository.tree import repository_user_lock
+
+    with repository_user_lock(int(user_id), exclusive=False):
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT repository_generation
+                    FROM repository_states
+                    WHERE user_id = %s
+                    FOR UPDATE
+                    """,
+                    (int(user_id),),
+                )
+                state = cursor.fetchone() or {}
+                current_generation = _safe_int(state.get('repository_generation'), 0)
+                if current_generation != int(base_repository_generation):
+                    raise RuntimeError(
+                        '仓库内容在整理期间发生变化，候选索引未发布；请重新整理。'
+                    )
+                cursor.execute(
+                    """
+                    SELECT status, cancel_requested, base_repository_generation
+                    FROM repository_index_jobs
+                    WHERE id = %s AND user_id = %s
+                    FOR UPDATE
+                    """,
+                    (int(job_id), int(user_id)),
+                )
+                job = cursor.fetchone() or {}
+                if _safe_bool(job.get('cancel_requested'), False):
+                    raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
+                if _safe_str(job.get('status')).lower() != 'running':
+                    raise RuntimeError(
+                        '结构化整理任务的运行租约已经终结，迟到 worker 不得发布候选索引。'
+                    )
+                if _safe_int(job.get('base_repository_generation'), -1) != int(
+                    base_repository_generation
+                ):
+                    raise RuntimeError(
+                        '结构化整理任务固定的仓库 generation 不一致，候选索引未发布。'
+                    )
+
+                _insert_index_generation_rows(
+                    cursor,
+                    user_id=user_id,
+                    index_generation=job_id,
+                    classes=classes,
+                    functions=functions,
+                    embedding_map=embedding_map,
+                    embedding_hashes=embedding_hashes,
+                    embedding_model=embedding_model,
+                )
+                cursor.execute(
+                    """
+                    UPDATE repository_states
+                    SET active_index_generation = %s, index_status = 'ready'
+                    WHERE user_id = %s AND repository_generation = %s
+                    """,
+                    (
+                        int(job_id),
+                        int(user_id),
+                        int(base_repository_generation),
+                    ),
+                )
+                if int(cursor.rowcount) != 1:
+                    raise RuntimeError('仓库 generation 已变化，候选索引未发布')
+                cursor.execute(
+                    """
+                    UPDATE repository_index_jobs
+                    SET status = 'success',
+                        processed_files = total_files,
+                        total_chunks = %s,
+                        total_classes = %s,
+                        error_message = NULL,
+                        progress_message = %s,
+                        finished_at = %s
+                    WHERE id = %s AND user_id = %s
+                      AND status = 'running' AND cancel_requested = 0
+                    """,
+                    (
+                        len(functions),
+                        len(classes),
+                        _format_repository_progress_message(
+                            'completed',
+                            '结构化整理与向量化已完成。',
+                        ),
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        int(job_id),
+                        int(user_id),
+                    ),
+                )
+                if int(cursor.rowcount) != 1:
+                    raise RuntimeError(
+                        '结构化整理任务在发布期间已终结，候选索引未发布。'
+                    )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def _cleanup_unpublished_faiss_generation(user_id, index_generation):
+    generation = int(index_generation)
+    try:
+        active_generation = _get_active_repository_index_generation(user_id)
+    except Exception:
+        # DB 状态未知时不能证明候选未激活；宁可保留垃圾等待下次重试清理。
+        return
+    if _safe_int(active_generation, 0) == generation:
+        return
+    paths = _faiss_paths(user_id, index_generation=generation)
+    if os.path.isdir(paths['root']):
+        shutil.rmtree(paths['root'], ignore_errors=True)
+
+
+@contextmanager
+def _repository_index_build_lock(user_id, job_id):
+    """按用户串行化索引构建，包括取消中的旧 worker 与后续 job。
+
+    锁文件放在用户 FAISS 根下、generation 目录之外，因此清理半成品 generation
+    不会移除锁本身。``job_id`` 仅保留为调用边界的一部分；同一用户的不同 job
+    使用同一把锁，第二个执行者会在首个执行者结束后重新检查 active 指针。
+    """
+
+    user_root = _faiss_paths(int(user_id))['root']
+    lock_root = os.path.join(user_root, '.build-locks')
+    os.makedirs(lock_root, mode=0o700, exist_ok=True)
+    lock_path = os.path.join(lock_root, 'user.lock')
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _discard_unpublished_repository_index_generation(user_id, index_generation):
+    """精确回收未激活代次的 DB/FAISS 候选，供崩溃后的同 job 重试。"""
+
+    user_id = int(user_id)
+    generation = int(index_generation)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT active_index_generation
+                FROM repository_states
+                WHERE user_id = %s
+                FOR UPDATE
+                """,
+                (user_id,),
+            )
+            state = cursor.fetchone() or {}
+            if _safe_int(state.get('active_index_generation'), 0) == generation:
+                conn.commit()
+                return False
+            cursor.execute(
+                """
+                DELETE FROM repository_chunk_embeddings
+                WHERE user_id = %s AND index_generation = %s
+                """,
+                (user_id, generation),
+            )
+            cursor.execute(
+                """
+                DELETE FROM repository_function_chunks
+                WHERE user_id = %s AND index_generation = %s
+                """,
+                (user_id, generation),
+            )
+            cursor.execute(
+                """
+                DELETE FROM repository_class_metadata
+                WHERE user_id = %s AND index_generation = %s
+                """,
+                (user_id, generation),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    paths = _faiss_paths(user_id, index_generation=generation)
+    if os.path.isdir(paths['root']):
+        shutil.rmtree(paths['root'], ignore_errors=True)
+    return True
+
+
+def _run_repository_index_job_once(user_id, job_id, file_id=None):
+    """构建并原子发布一个完整索引 generation。
+
+    解析、LLM 结构化、向量化和 FAISS 写入全部在 active 指针之外完成；任一阶段
+    失败或取消都不会删除、覆盖或部分更新当前可用 generation。单文件重建也以完整
+    generation 发布，只是其余未变化文件会命中内容哈希缓存。
+    """
+
     user_id = int(user_id)
     job_id = int(job_id)
     target_file_id = _safe_int(file_id, 0) if file_id is not None else 0
-    single_file_mode = target_file_id > 0
-
     if not _try_mark_repository_index_job_running(job_id):
         return {
             'success': False,
@@ -2232,295 +2802,204 @@ def run_repository_index_job(user_id, job_id, file_id=None):
     try:
         if _is_repository_index_job_cancel_requested(job_id):
             raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-        files = _load_user_repository_files(user_id, file_id=target_file_id if single_file_mode else None)
-        if single_file_mode and not files:
-            raise RuntimeError(f'文件不存在或无权限，无法重建索引（file_id={target_file_id}）。')
-        total_files = len(files)
+
+        base_generation, files = _load_repository_index_snapshot(user_id)
+        if target_file_id > 0 and not any(
+            _safe_int(item.get('id'), 0) == target_file_id for item in files
+        ):
+            raise RuntimeError(
+                f'文件不存在、不可索引或无权限（file_id={target_file_id}）。'
+            )
         update_repository_index_job(
             job_id,
-            total_files=total_files,
+            base_repository_generation=base_generation,
+            total_files=len(files),
             processed_files=0,
             total_chunks=0,
             total_classes=0,
-            progress_message=_format_repository_progress_message('prepare', '已进入执行阶段，准备读取代码仓库文件。'),
+            progress_message=_format_repository_progress_message(
+                'prepare',
+                '已固定仓库代次，正在构建不可见的候选索引。',
+            ),
         )
 
+        file_cache, vector_cache = _load_active_repository_index_cache(user_id)
         all_functions = []
         all_classes = []
-        embedding_map = {}
-        embedding_model = _embedding_model_name()
-        parse_errors = []
-        base_chunks = 0
-        base_classes = 0
-        if single_file_mode:
-            target_file = files[0]
-            update_repository_index_job(
-                job_id,
-                progress_message=_format_repository_progress_message(
-                    'prepare',
-                    f"正在清理文件旧索引：{_safe_str(target_file.get('filename'))}",
-                ),
-            )
-            _delete_repository_index_for_file(
-                user_id=user_id,
-                repo_file_id=target_file.get('id'),
-                filename=target_file.get('filename'),
-            )
-            embedding_model_from_db = _rebuild_faiss_index_from_db(user_id)
-            if _safe_str(embedding_model_from_db):
-                embedding_model = _safe_str(embedding_model_from_db)
-            base_chunks, base_classes = _count_repository_index_items(user_id)
-            update_repository_index_job(
-                job_id,
-                progress_message=_format_repository_progress_message(
-                    'prepare',
-                    '目标文件旧索引已清理，开始重建该文件结构化与向量化。',
-                ),
-                total_chunks=base_chunks,
-                total_classes=base_classes,
-            )
-        else:
-            update_repository_index_job(
-                job_id,
-                progress_message=_format_repository_progress_message('prepare', '正在清理旧索引数据。'),
-            )
-            _reset_repository_index_storage(user_id)
-            update_repository_index_job(
-                job_id,
-                progress_message=_format_repository_progress_message('prepare', '旧索引已清理，开始结构化与向量化。'),
-            )
-
-        def _current_total_chunks():
-            return int(base_chunks + len(all_functions))
-
-        def _current_total_classes():
-            return int(base_classes + len(all_classes))
+        reused_structured_files = 0
 
         for idx, file_item in enumerate(files, start=1):
             if _is_repository_index_job_cancel_requested(job_id):
                 raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
             filename = str(file_item.get('filename') or '')
+            content_hash = _sha256_text(file_item.get('content'))
+            metadata_hash = _safe_str(file_item.get('source_hash'))
+            if metadata_hash and metadata_hash != content_hash:
+                raise RuntimeError(f'仓库文件摘要不一致：{filename}')
+            file_item = dict(file_item)
+            file_item['source_hash'] = content_hash
+
             def _report_file_progress(stage, detail):
                 update_repository_index_job(
                     job_id,
-                    progress_message=_format_repository_progress_message(stage, f"{filename} - {detail}"),
                     processed_files=idx - 1,
-                    total_chunks=_current_total_chunks(),
-                    total_classes=_current_total_classes(),
+                    total_chunks=len(all_functions),
+                    total_classes=len(all_classes),
+                    progress_message=_format_repository_progress_message(
+                        stage,
+                        f'{filename} - {detail}',
+                    ),
                 )
 
-            _report_file_progress('file_prepare', '开始处理文件')
-            try:
-                def _on_function_ready(normalized_func, file_classes_snapshot):
-                    nonlocal embedding_model
-                    if _is_repository_index_job_cancel_requested(job_id):
-                        raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-
-                    class_map = {}
-                    for cls in list(all_classes) + list(file_classes_snapshot or []):
-                        qn = _safe_str(cls.get('qualified_name'))
-                        cn = _safe_str(cls.get('class_name'))
-                        if qn:
-                            class_map[qn] = cls
-                        if cn and cn not in class_map:
-                            class_map[cn] = cls
-
-                    classes_total_preview = _current_total_classes() + len(file_classes_snapshot or [])
-                    update_repository_index_job(
-                        job_id,
-                        progress_message=_format_repository_progress_message(
-                            'embedding',
-                            f"{filename} - {_build_vectorizing_target_message(normalized_func)}",
-                        ),
-                        processed_files=idx - 1,
-                        total_chunks=_current_total_chunks(),
-                        total_classes=classes_total_preview,
-                    )
-                    text = _build_embedding_input(normalized_func, class_map)
-                    vectors_one, model_used = encode_texts([text], embedding_model_override=embedding_model)
-                    if vectors_one.shape[0] != 1:
-                        raise RuntimeError('向量化失败：单函数向量化返回数量异常。')
-                    vector = np.asarray(vectors_one[0], dtype=np.float32)
-                    if str(model_used or '').strip():
-                        embedding_model = str(model_used).strip()
-
-                    update_repository_index_job(
-                        job_id,
-                        progress_message=_format_repository_progress_message(
-                            'persist',
-                            (
-                                f"{filename} - 已向量化并写入函数："
-                                f"{_safe_str(normalized_func.get('qualified_name')) or '(anonymous)'}"
-                            ),
-                        ),
-                        processed_files=idx - 1,
-                        total_chunks=_current_total_chunks(),
-                        total_classes=classes_total_preview,
-                    )
-                    _insert_repository_function_embedding_item(
-                        user_id=user_id,
-                        func=normalized_func,
-                        vector=vector,
-                        embedding_model=embedding_model,
-                    )
-                    all_functions.append(normalized_func)
-                    embedding_map[str(normalized_func.get('chunk_id') or '')] = vector
-
+            cache_key = _parser_cache_key(content_hash)
+            cached = file_cache.get(cache_key)
+            if cached:
+                normalized = _clone_cached_structured_file(cached, file_item)
+                reused_structured_files += 1
+                _report_file_progress(
+                    'file_prepare',
+                    '内容与解析器版本未变化，复用结构化结果。',
+                )
+            else:
+                _report_file_progress('file_prepare', '开始严格结构化处理。')
                 normalized = _build_structured_with_treesitter_and_qwen(
                     file_item=file_item,
                     progress_callback=_report_file_progress,
-                    function_callback=_on_function_ready,
+                    strict_structuring=True,
                 )
-                file_functions = normalized.get('functions') or []
-                file_classes = normalized.get('classes') or []
 
-                if (not file_functions) and file_classes:
-                    class_name = _safe_str(file_classes[0].get('qualified_name') or file_classes[0].get('class_name'))
-                    detail = f'当前文件仅包含类定义：{class_name}，无需生成函数向量。'
-                    update_repository_index_job(
-                        job_id,
-                        progress_message=_format_repository_progress_message('embedding', f"{filename} - {detail}"),
-                        processed_files=idx - 1,
-                        total_chunks=_current_total_chunks(),
-                        total_classes=_current_total_classes(),
-                    )
-
-                for class_idx, cls in enumerate(file_classes, start=1):
-                    cls_name = _safe_str(cls.get('qualified_name') or cls.get('class_name')) or '(anonymous)'
-                    update_repository_index_job(
-                        job_id,
-                        progress_message=_format_repository_progress_message(
-                            'persist',
-                            f"{filename} - 写入类元数据 {class_idx}/{len(file_classes)}：{cls_name}",
-                        ),
-                        processed_files=idx - 1,
-                        total_chunks=_current_total_chunks(),
-                        total_classes=_current_total_classes(),
-                    )
-                    _insert_repository_class_metadata_item(user_id=user_id, cls=cls)
-                    all_classes.append(cls)
-
-                if _is_repository_index_job_cancel_requested(job_id):
-                    raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-                update_repository_index_job(
-                    job_id,
-                    progress_message=_format_repository_progress_message('persist', f"{filename} - 正在刷新向量索引（FAISS）"),
-                    processed_files=idx - 1,
-                    total_chunks=_current_total_chunks(),
-                    total_classes=_current_total_classes(),
-                )
-                if single_file_mode:
-                    model_from_db = _rebuild_faiss_index_from_db(user_id)
-                    if _safe_str(model_from_db):
-                        embedding_model = _safe_str(model_from_db)
-                else:
-                    vectors = _build_cumulative_embeddings(all_functions, embedding_map)
-                    _write_faiss_index(
-                        user_id=user_id,
-                        chunk_ids=[f['chunk_id'] for f in all_functions],
-                        embeddings=vectors,
-                        embedding_model=embedding_model,
-                    )
-            except Exception as exc:
-                parse_errors.append(f"{filename}: {str(exc)}")
-                if _is_repository_index_job_cancel_requested(job_id):
-                    raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-                try:
-                    update_repository_index_job(
-                        job_id,
-                        progress_message=_format_repository_progress_message(
-                            'persist',
-                            f"{filename} - 文件处理失败，正在刷新已完成向量索引",
-                        ),
-                        processed_files=idx - 1,
-                        total_chunks=_current_total_chunks(),
-                        total_classes=_current_total_classes(),
-                    )
-                    if single_file_mode:
-                        model_from_db = _rebuild_faiss_index_from_db(user_id)
-                        if _safe_str(model_from_db):
-                            embedding_model = _safe_str(model_from_db)
-                    else:
-                        vectors = _build_cumulative_embeddings(all_functions, embedding_map)
-                        _write_faiss_index(
-                            user_id=user_id,
-                            chunk_ids=[f['chunk_id'] for f in all_functions],
-                            embeddings=vectors,
-                            embedding_model=embedding_model,
-                        )
-                except Exception as sync_exc:
-                    parse_errors.append(f"{filename}: 刷新 FAISS 失败：{str(sync_exc)}")
-
+            file_functions = list(normalized.get('functions') or [])
+            file_classes = list(normalized.get('classes') or [])
+            all_functions.extend(file_functions)
+            all_classes.extend(file_classes)
             update_repository_index_job(
                 job_id,
                 processed_files=idx,
-                total_chunks=_current_total_chunks(),
-                total_classes=_current_total_classes(),
+                total_chunks=len(all_functions),
+                total_classes=len(all_classes),
                 progress_message=_format_repository_progress_message(
                     'file_done',
-                    (
-                        f'已完成文件 {idx}/{total_files}：{filename}；'
-                        f'累计函数 {_current_total_chunks()}，类 {_current_total_classes()}'
-                    ),
+                    f'已完成文件 {idx}/{len(files)}：{filename}',
                 ),
             )
 
         if _is_repository_index_job_cancel_requested(job_id):
             raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
-        warn_msg = ''
-        if parse_errors:
-            warn_msg = '；'.join(parse_errors[:5])
-            if len(parse_errors) > 5:
-                warn_msg += f"；另有 {len(parse_errors) - 5} 个文件失败"
 
-        if parse_errors:
+        class_map = {}
+        for cls in all_classes:
+            qualified = _safe_str(cls.get('qualified_name'))
+            simple = _safe_str(cls.get('class_name'))
+            if qualified:
+                class_map[qualified] = cls
+            if simple and simple not in class_map:
+                class_map[simple] = cls
+
+        embedding_model = _embedding_model_name()
+        embedding_map = {}
+        embedding_hashes = {}
+        missing_functions = []
+        missing_texts = []
+        reused_vectors = 0
+        for func in all_functions:
+            text = _build_embedding_input(func, class_map)
+            input_hash = _embedding_input_hash(text, embedding_model)
+            chunk_id = _safe_str(func.get('chunk_id'))
+            embedding_hashes[chunk_id] = input_hash
+            cached_vector = vector_cache.get((input_hash, embedding_model))
+            if cached_vector is not None:
+                embedding_map[chunk_id] = np.asarray(cached_vector, dtype=np.float32)
+                reused_vectors += 1
+            else:
+                missing_functions.append(func)
+                missing_texts.append(text)
+
+        for start in range(0, len(missing_functions), _DEFAULT_EMBEDDING_BATCH_SIZE):
+            if _is_repository_index_job_cancel_requested(job_id):
+                raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
+            batch_functions = missing_functions[start:start + _DEFAULT_EMBEDDING_BATCH_SIZE]
+            batch_texts = missing_texts[start:start + _DEFAULT_EMBEDDING_BATCH_SIZE]
             update_repository_index_job(
                 job_id,
-                status='failed',
-                processed_files=len(files),
-                total_files=len(files),
-                total_chunks=_current_total_chunks(),
-                total_classes=_current_total_classes(),
-                finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                error_message=warn_msg,
                 progress_message=_format_repository_progress_message(
-                    'failed',
-                    f'结构化整理存在失败文件 {len(parse_errors)}/{len(files)}，请查看错误信息。',
+                    'embedding',
+                    (
+                        f'正在向量化函数 {start + 1}-'
+                        f'{start + len(batch_functions)}/{len(missing_functions)}；'
+                        f'已复用 {reused_vectors} 个向量。'
+                    ),
                 ),
             )
-            return {
-                'success': False,
-                'job_id': job_id,
-                'error': f'结构化整理存在失败文件 {len(parse_errors)}/{len(files)}',
-                'warnings': parse_errors,
-                'partial': True,
-                'files': len(files),
-                'chunks': _current_total_chunks(),
-                'classes': _current_total_classes(),
-                'embedding_model': embedding_model,
-            }
+            vectors, model_used = encode_texts(
+                batch_texts,
+                embedding_model_override=embedding_model,
+            )
+            if _safe_str(model_used) != embedding_model:
+                raise RuntimeError(
+                    '向量服务返回的模型与候选缓存键不一致，候选索引未发布。'
+                )
+            if vectors.shape[0] != len(batch_functions):
+                raise RuntimeError('向量化返回数量与函数数量不一致。')
+            for func, vector in zip(batch_functions, vectors):
+                embedding_map[_safe_str(func.get('chunk_id'))] = np.asarray(
+                    vector,
+                    dtype=np.float32,
+                )
+
+        _attach_index_cache_metadata(
+            all_classes,
+            all_functions,
+            embedding_hashes,
+        )
+        candidate_vectors = _build_cumulative_embeddings(
+            all_functions,
+            embedding_map,
+        )
+        if _is_repository_index_job_cancel_requested(job_id):
+            raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
 
         update_repository_index_job(
             job_id,
-            status='success',
-            processed_files=len(files),
-            total_files=len(files),
-            total_chunks=_current_total_chunks(),
-            total_classes=_current_total_classes(),
-            finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            error_message=warn_msg or None,
-            progress_message=_format_repository_progress_message('completed', '结构化整理与向量化已完成。'),
+            progress_message=_format_repository_progress_message(
+                'persist',
+                '候选结构与向量已完成，正在写入不可见 FAISS generation。',
+            ),
+        )
+        _stage_faiss_generation(
+            user_id,
+            job_id,
+            [item['chunk_id'] for item in all_functions],
+            candidate_vectors,
+            embedding_model,
+        )
+
+        if _is_repository_index_job_cancel_requested(job_id):
+            raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
+        _publish_repository_index_generation(
+            user_id=user_id,
+            job_id=job_id,
+            base_repository_generation=base_generation,
+            classes=all_classes,
+            functions=all_functions,
+            embedding_map=embedding_map,
+            embedding_hashes=embedding_hashes,
+            embedding_model=embedding_model,
         )
         return {
             'success': True,
             'job_id': job_id,
+            'repository_generation': base_generation,
+            'index_generation': job_id,
             'files': len(files),
-            'chunks': _current_total_chunks(),
-            'classes': _current_total_classes(),
+            'chunks': len(all_functions),
+            'classes': len(all_classes),
             'embedding_model': embedding_model,
-            'warnings': parse_errors,
+            'reused_structured_files': reused_structured_files,
+            'reused_vectors': reused_vectors,
         }
     except RepositoryIndexJobCancelled as exc:
+        # 即使 _stage_faiss_generation 在中途抛错，也可能已创建半成品目录。
+        _cleanup_unpublished_faiss_generation(user_id, job_id)
         update_repository_index_job(
             job_id,
             status='canceled',
@@ -2536,37 +3015,67 @@ def run_repository_index_job(user_id, job_id, file_id=None):
             'error': str(exc),
         }
     except Exception as exc:
+        _cleanup_unpublished_faiss_generation(user_id, job_id)
         if _is_repository_index_job_cancel_requested(job_id):
-            update_repository_index_job(
-                job_id,
-                status='canceled',
-                cancel_requested=1,
-                error_message='结构化整理任务已被取消。',
-                finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                progress_message=_format_repository_progress_message('canceled', '结构化整理任务已被取消。'),
-            )
-            return {
-                'success': False,
-                'job_id': job_id,
-                'cancelled': True,
-                'error': '结构化整理任务已被取消。',
-            }
+            status = 'canceled'
+            message = '结构化整理任务已被取消。'
+        else:
+            status = 'failed'
+            message = str(exc)
         update_repository_index_job(
             job_id,
-            status='failed',
-            error_message=str(exc),
+            status=status,
+            cancel_requested=1 if status == 'canceled' else 0,
+            error_message=message,
             finished_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            progress_message=_format_repository_progress_message('failed', f'任务失败：{str(exc)}'),
+            progress_message=_format_repository_progress_message(status, message),
         )
         return {
             'success': False,
             'job_id': job_id,
-            'error': str(exc),
+            'cancelled': status == 'canceled',
+            'error': message,
         }
+
+
+def run_repository_index_job(user_id, job_id, file_id=None):
+    """串行、可重试地构建并发布一个索引 generation。"""
+
+    user_id = int(user_id)
+    job_id = int(job_id)
+    with _repository_index_build_lock(user_id, job_id):
+        active_generation = _get_active_repository_index_generation(user_id)
+        if _safe_int(active_generation, 0) == job_id:
+            job = get_repository_index_job(job_id=job_id, user_id=user_id) or {}
+            return {
+                'success': True,
+                'job_id': job_id,
+                'repository_generation': _safe_int(
+                    job.get('base_repository_generation'),
+                    0,
+                ),
+                'index_generation': job_id,
+                'files': _safe_int(job.get('total_files'), 0),
+                'chunks': _safe_int(job.get('total_chunks'), 0),
+                'classes': _safe_int(job.get('total_classes'), 0),
+                'idempotent': True,
+            }
+
+        # worker 可能在写完隐藏 FAISS 后、发布前崩溃。仅删除本 job 且未被
+        # active 指针引用的候选；上一代可用索引和其他 job 均不受影响。
+        _discard_unpublished_repository_index_generation(user_id, job_id)
+        return _run_repository_index_job_once(
+            user_id=user_id,
+            job_id=job_id,
+            file_id=file_id,
+        )
 
 
 def list_repository_classes(user_id, limit=300):
     use_limit = max(1, min(2000, _safe_int(limit, 300)))
+    active_generation = _get_active_repository_index_generation(user_id)
+    if active_generation is None:
+        return []
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -2574,11 +3083,11 @@ def list_repository_classes(user_id, limit=300):
                 """
                 SELECT class_id, filename, kind, class_name, qualified_name, source_hash, json_data, updated_at
                 FROM repository_class_metadata
-                WHERE user_id = %s
+                WHERE user_id = %s AND index_generation = %s
                 ORDER BY filename ASC, class_name ASC
                 LIMIT %s
                 """,
-                (int(user_id), use_limit),
+                (int(user_id), int(active_generation), use_limit),
             )
             rows = cursor.fetchall() or []
     finally:
@@ -2607,11 +3116,18 @@ def list_repository_classes(user_id, limit=300):
     return result
 
 
-def _load_chunk_details_by_ids(user_id, chunk_ids):
+def _load_chunk_details_by_ids(user_id, chunk_ids, index_generation=None):
     if not chunk_ids:
         return {}
     use_ids = [str(cid or '').strip() for cid in chunk_ids if str(cid or '').strip()]
     if not use_ids:
+        return {}
+    generation = (
+        _safe_int(index_generation, 0)
+        if index_generation is not None
+        else _safe_int(_get_active_repository_index_generation(user_id), 0)
+    )
+    if generation <= 0:
         return {}
 
     placeholders = ','.join(['%s'] * len(use_ids))
@@ -2625,10 +3141,14 @@ def _load_chunk_details_by_ids(user_id, chunk_ids):
                        c.start_line, c.end_line, c.code
                 FROM repository_function_chunks c
                 LEFT JOIN repository_chunk_embeddings e
-                  ON e.user_id = c.user_id AND e.chunk_id = c.chunk_id
-                WHERE c.user_id = %s AND c.chunk_id IN ({placeholders})
+                  ON e.user_id = c.user_id
+                 AND e.index_generation = c.index_generation
+                 AND e.chunk_id = c.chunk_id
+                WHERE c.user_id = %s
+                  AND c.index_generation = %s
+                  AND c.chunk_id IN ({placeholders})
                 """,
-                tuple([int(user_id)] + use_ids),
+                tuple([int(user_id), int(generation)] + use_ids),
             )
             rows = cursor.fetchall() or []
     finally:
@@ -2665,8 +3185,19 @@ def search_repository_chunks(
     except Exception:
         use_threshold = float(_DEFAULT_SEARCH_SCORE_THRESHOLD)
 
-    index, meta = _load_faiss_index(user_id)
-    if index is None or not isinstance(meta, dict):
+    active_generation = _get_active_repository_index_generation(user_id)
+    if active_generation is None:
+        return {
+            'query': text,
+            'hits': [],
+            'embedding_model': _embedding_model_name(),
+            'vector_db_backend': _VECTOR_DB_BACKEND,
+        }
+    index, meta = _load_faiss_index(
+        user_id,
+        index_generation=active_generation,
+    )
+    if not isinstance(meta, dict):
         return {
             'query': text,
             'hits': [],
@@ -2676,6 +3207,13 @@ def search_repository_chunks(
 
     chunk_ids = meta.get('chunk_ids') or []
     if not chunk_ids:
+        return {
+            'query': text,
+            'hits': [],
+            'embedding_model': str(meta.get('embedding_model') or _embedding_model_name()),
+            'vector_db_backend': _VECTOR_DB_BACKEND,
+        }
+    if index is None:
         return {
             'query': text,
             'hits': [],
@@ -2738,7 +3276,11 @@ def search_repository_chunks(
             'vector_db_backend': _VECTOR_DB_BACKEND,
         }
 
-    detail_map = _load_chunk_details_by_ids(user_id=user_id, chunk_ids=[x[0] for x in candidates])
+    detail_map = _load_chunk_details_by_ids(
+        user_id=user_id,
+        chunk_ids=[x[0] for x in candidates],
+        index_generation=active_generation,
+    )
     hits = []
     for cid, score in candidates:
         row = detail_map.get(cid)

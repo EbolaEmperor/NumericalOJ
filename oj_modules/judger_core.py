@@ -15,9 +15,17 @@ import os
 import platform
 import re
 import shutil
+import stat
 import time
+import uuid
 
-from oj_modules.docker_sandbox import run_in_container, ContainerSession
+from oj_modules.docker_sandbox import run_case_in_container, run_in_container
+from oj_modules.repository.workspace import (
+    REPOSITORY_CONTAINER_ROOT,
+    InvalidRepositoryPath,
+    materialize_repository_tree,
+    normalize_repository_relative_path,
+)
 
 
 # ========== OJ 根目录 / 头文件库路径 ==========
@@ -46,20 +54,8 @@ JUDGER_RUN_ROOT = (
 # ========== 通用工具 ==========
 SAFE_SID_PATTERN = re.compile(r'^[A-Za-z0-9_\-\.]+$')
 IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
-SOURCE_ARTIFACT_FILENAMES = {
-    "a.m",
-    "main.c",
-    "main.cpp",
-    "main.py",
-    "submitted.c",
-    "submitted.cpp",
-    "submitted.m",
-    "submitted.py",
-    "checker.c",
-    "checker.cpp",
-    "checker.m",
-    "checker.py",
-}
+OUTPUT_ARTIFACT_MAX_BYTES = 32 * 1024 * 1024
+OUTPUT_TEXT_MAX_BYTES = 1024 * 1024
 
 
 # ========== C/C++ 编译命令 ==========
@@ -128,8 +124,7 @@ def _octave_plot_warmup_enabled():
     return True if parsed is None else parsed
 
 
-def _warmup_octave_plot(session):
-    """预热 Octave + gnuplot + fontconfig，不计入任何测试点时间。"""
+def _warmup_octave_plot_in_container(run_dir):
     if not _octave_plot_warmup_enabled():
         return
     warmup_code = (
@@ -140,8 +135,9 @@ def _warmup_octave_plot(session):
         'close all;'
     )
     try:
-        session.exec(
+        run_in_container(
             _timeout_cmd(8, "octave", "--quiet", "--eval", warmup_code),
+            run_dir=run_dir,
             timeout_sec=12,
         )
     except Exception:
@@ -171,8 +167,7 @@ def _write_source_debug_artifacts(run_dir, data, language):
             continue
         text = content if isinstance(content, str) else str(content)
         try:
-            with open(os.path.join(run_dir, filename), "w", encoding="utf-8") as f:
-                f.write(text)
+            _write_text_file_exclusive(run_dir, filename, text)
         except Exception:
             pass
 
@@ -225,15 +220,20 @@ def _numeric_backend():
     return "mkl"
 
 
-def build_compile_cmd(language, compile_timeout_sec=30):
+def build_compile_cmd(
+    language,
+    compile_timeout_sec=30,
+    *,
+    source_path=None,
+):
     """构造 C/C++ 容器内编译命令。"""
     if language == "cpp":
         cmd = _timeout_cmd(compile_timeout_sec, "g++", "-O2", "-pipe", "-s", "-std=c++20")
-        src = "main.cpp"
+        src = source_path or "main.cpp"
     else:
         cmd = _timeout_cmd(compile_timeout_sec, "gcc", "-O2", "-pipe", "-s", "-std=c11")
-        src = "main.c"
-    cmd.extend(["-I", "/opt/library"])
+        src = source_path or "main.c"
+    cmd.extend(["-I", REPOSITORY_CONTAINER_ROOT, "-I", "/opt/library"])
     backend = _numeric_backend()
     if backend == "mkl":
         cmd.extend(_mkl_compile_flags())
@@ -245,14 +245,17 @@ def build_compile_cmd(language, compile_timeout_sec=30):
     return cmd
 
 
-def ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-
-
 def sanitize_sid(sid: str) -> str:
-    if not sid or not SAFE_SID_PATTERN.match(sid):
-        return f"run_{int(time.time()*1000)}"
-    return sid
+    value = str(sid or "")
+    if (
+        not value
+        or value in {".", "..", "submission_archive"}
+        or value.startswith(".")
+        or len(value.encode("utf-8")) > 255
+        or not SAFE_SID_PATTERN.fullmatch(value)
+    ):
+        return f"run_{int(time.time()*1000)}_{uuid.uuid4().hex}"
+    return value
 
 
 def run_dir_for(sid: str) -> str:
@@ -260,21 +263,207 @@ def run_dir_for(sid: str) -> str:
     return os.path.join(JUDGER_RUN_ROOT, sanitize_sid(sid))
 
 
-def _prepare_run_dir(sid: str) -> str:
-    """把 sid 落到 JUDGER_RUN_ROOT 下的绝对运行目录并确保存在。
+def _open_plain_directory(path: str) -> int:
+    """打开真实目录且拒绝最终路径分量为符号链接。"""
+    return os.open(
+        path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
 
-    run_dir 由本进程（宿主用户，如 uid 1004）创建，但容器内以非特权用户
-    runner（uid 1000）运行，需要在该目录里创建 output.txt / a.out 等结果文件。
-    宿主与容器 uid 不一致时，0755 目录会导致容器写入 Permission denied，
-    故放宽为 0777（run_dir 为每次评测的一次性临时目录，判题后即清理）。
-    """
-    run_dir = run_dir_for(sid)
-    ensure_dir(run_dir)
+
+def _open_safe_regular_artifact_fd(
+    path: str,
+    *,
+    max_bytes: int = OUTPUT_ARTIFACT_MAX_BYTES,
+) -> int:
+    """打开宿主侧产物且固定父目录/最终 inode，不接受 symlink、FIFO 或超大文件。"""
+    absolute_path = os.path.abspath(os.fspath(path))
+    parent_fd = _open_plain_directory(os.path.dirname(absolute_path))
     try:
-        os.chmod(run_dir, 0o777)
-    except OSError:
-        pass
-    return run_dir
+        fd = os.open(
+            _validate_leaf_name(os.path.basename(absolute_path)),
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    finally:
+        os.close(parent_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("判题产物不是普通文件")
+        if int(info.st_uid) != int(os.geteuid()) or int(info.st_nlink) != 1:
+            raise OSError("判题产物不是宿主创建的独立 inode")
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            raise OSError("判题产物仍可被非宿主用户修改")
+        if int(info.st_size) < 0 or int(info.st_size) > int(max_bytes):
+            raise OSError("判题产物大小超限")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def is_safe_regular_artifact(path: str) -> bool:
+    try:
+        fd = _open_safe_regular_artifact_fd(path)
+    except Exception:
+        return False
+    os.close(fd)
+    return True
+
+
+def read_safe_regular_artifact(
+    path: str,
+    *,
+    max_bytes: int = OUTPUT_ARTIFACT_MAX_BYTES,
+) -> bytes:
+    fd = _open_safe_regular_artifact_fd(path, max_bytes=max_bytes)
+    try:
+        chunks = []
+        remaining = int(max_bytes) + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > int(max_bytes):
+            raise OSError("判题产物读取时增长并超过大小上限")
+        return data
+    finally:
+        os.close(fd)
+
+
+def open_safe_regular_artifact(
+    path: str,
+    *,
+    max_bytes: int = OUTPUT_ARTIFACT_MAX_BYTES,
+):
+    """返回由调用方关闭的二进制文件对象，供 Flask ``send_file`` 安全流式发送。"""
+    fd = _open_safe_regular_artifact_fd(path, max_bytes=max_bytes)
+    return os.fdopen(fd, "rb")
+
+
+def _open_run_root() -> int:
+    os.makedirs(JUDGER_RUN_ROOT, mode=0o700, exist_ok=True)
+    try:
+        info = os.lstat(JUDGER_RUN_ROOT)
+    except OSError as exc:
+        raise RuntimeError("判题运行根不可用") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError("判题运行根必须是真实目录")
+    try:
+        return _open_plain_directory(JUDGER_RUN_ROOT)
+    except OSError as exc:
+        raise RuntimeError("无法安全打开判题运行根") from exc
+
+
+def _validate_leaf_name(name: str) -> str:
+    value = str(name or "")
+    if (
+        not value
+        or value in {".", ".."}
+        or "\x00" in value
+        or len(value.encode("utf-8")) > 255
+        or os.path.basename(value) != value
+    ):
+        raise ValueError("判题工作文件名必须是安全的单级名称")
+    return value
+
+
+def _remove_entry_at(parent_fd: int, name: str) -> None:
+    """在已打开的可信父目录中删除一个条目，绝不跟随符号链接。"""
+    safe_name = _validate_leaf_name(name)
+    try:
+        info = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise RuntimeError("当前 Python 不支持抗符号链接攻击的目录清理")
+        shutil.rmtree(safe_name, dir_fd=parent_fd)
+        return
+    os.unlink(safe_name, dir_fd=parent_fd)
+
+
+def _create_directory_at(parent_fd: int, name: str, *, mode: int) -> int:
+    safe_name = _validate_leaf_name(name)
+    os.mkdir(safe_name, mode=0o700, dir_fd=parent_fd)
+    directory_fd = os.open(
+        safe_name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    try:
+        os.fchmod(directory_fd, int(mode))
+    except Exception:
+        os.close(directory_fd)
+        _remove_entry_at(parent_fd, safe_name)
+        raise
+    return directory_fd
+
+
+def _prepare_run_dir(sid: str) -> str:
+    """为每个 attempt 创建宿主私有的公开产物目录。"""
+    safe_sid = sanitize_sid(sid)
+    root_fd = _open_run_root()
+    try:
+        # 旧实现曾把此目录 rw 挂给用户容器；即便升级后也必须先安全清掉旧 inode。
+        _remove_entry_at(root_fd, safe_sid)
+        run_fd = _create_directory_at(root_fd, safe_sid, mode=0o700)
+        os.close(run_fd)
+    finally:
+        os.close(root_fd)
+    return os.path.join(JUDGER_RUN_ROOT, safe_sid)
+
+
+def _prepare_execution_workspace(artifact_dir: str) -> str:
+    """创建只含源码/仓库/可执行文件的只读容器基目录。
+
+    公开图片写入其父级 ``artifact_dir``，永远不会被后续 case 挂载。
+    """
+    run_fd = _open_plain_directory(artifact_dir)
+    try:
+        _remove_entry_at(run_fd, "workspace")
+        workspace_fd = _create_directory_at(
+            run_fd,
+            "workspace",
+            mode=0o755,
+        )
+        os.close(workspace_fd)
+    finally:
+        os.close(run_fd)
+    return os.path.join(artifact_dir, "workspace")
+
+
+def _write_text_file_exclusive(directory: str, filename: str, content) -> None:
+    """通过 dirfd 独占创建 UTF-8 文本，拒绝跟随容器遗留链接。"""
+    safe_name = _validate_leaf_name(filename)
+    data = (
+        content if isinstance(content, str) else str(content or "")
+    ).encode("utf-8")
+    directory_fd = _open_plain_directory(directory)
+    try:
+        fd = os.open(
+            safe_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=directory_fd,
+        )
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory_fd)
 
 
 def sanitize_output_image_filename(filename: str) -> str:
@@ -289,10 +478,224 @@ def sanitize_output_image_filename(filename: str) -> str:
 def _wait_for_output_file(path: str, attempts: int = 20, delay_seconds: float = 0.05) -> bool:
     """Wait briefly for Docker bind-mount writes to become visible on the host."""
     for _ in range(max(1, attempts)):
-        if os.path.isfile(path):
+        try:
+            info = os.lstat(path)
+        except OSError:
+            info = None
+        if info is not None and stat.S_ISREG(info.st_mode):
             return True
         time.sleep(delay_seconds)
-    return os.path.isfile(path)
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _copy_regular_artifact_atomic(
+    source_dir: str,
+    target_dir: str,
+    source_name: str,
+    target_name: str,
+    *,
+    target_mode: int = 0o644,
+    max_bytes: int = OUTPUT_ARTIFACT_MAX_BYTES,
+) -> None:
+    """把容器产物复制为宿主新 inode；源/目标都不允许跟随链接。"""
+    safe_source = _validate_leaf_name(source_name)
+    safe_target = _validate_leaf_name(target_name)
+    source_directory_fd = _open_plain_directory(source_dir)
+    target_directory_fd = _open_plain_directory(target_dir)
+    temporary_name = f".artifact-{uuid.uuid4().hex}.tmp"
+    temporary_created = False
+    try:
+        source_fd = os.open(
+            safe_source,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=source_directory_fd,
+        )
+        try:
+            source_info = os.fstat(source_fd)
+            if not stat.S_ISREG(source_info.st_mode):
+                raise OSError("容器产物不是普通文件")
+            if int(source_info.st_size) < 0 or int(source_info.st_size) > int(max_bytes):
+                raise OSError("容器产物大小超限")
+            target_fd = os.open(
+                temporary_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=target_directory_fd,
+            )
+            temporary_created = True
+            try:
+                total_written = 0
+                while True:
+                    chunk = os.read(source_fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    total_written += len(chunk)
+                    if total_written > int(max_bytes):
+                        raise OSError("容器产物读取时增长并超过大小上限")
+                    view = memoryview(chunk)
+                    while view:
+                        written = os.write(target_fd, view)
+                        view = view[written:]
+                os.fchmod(target_fd, int(target_mode))
+                os.fsync(target_fd)
+            finally:
+                os.close(target_fd)
+        finally:
+            os.close(source_fd)
+
+        os.replace(
+            temporary_name,
+            safe_target,
+            src_dir_fd=target_directory_fd,
+            dst_dir_fd=target_directory_fd,
+        )
+        os.fsync(target_directory_fd)
+        temporary_created = False
+        if (
+            os.path.abspath(source_dir) != os.path.abspath(target_dir)
+            or safe_source != safe_target
+        ):
+            try:
+                os.unlink(safe_source, dir_fd=source_directory_fd)
+            except OSError:
+                pass
+    finally:
+        if temporary_created:
+            try:
+                os.unlink(temporary_name, dir_fd=target_directory_fd)
+            except OSError:
+                pass
+        os.close(target_directory_fd)
+        os.close(source_directory_fd)
+
+
+def _adopt_compiled_executable(run_dir: str) -> None:
+    """把 linker 产物换成宿主拥有的只读可执行 inode，阻断跨 case 篡改。"""
+    _copy_regular_artifact_atomic(
+        run_dir,
+        run_dir,
+        "a.out",
+        "a.out",
+        target_mode=0o555,
+        max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
+    )
+
+
+def _publish_exported_artifact(
+    target_dir: str,
+    target_name: str,
+    content: bytes,
+    *,
+    target_mode: int = 0o644,
+    max_bytes: int = OUTPUT_ARTIFACT_MAX_BYTES,
+) -> None:
+    """把已由容器白名单导出的 bytes 发布为宿主拥有的独立 inode。"""
+    safe_target = _validate_leaf_name(target_name)
+    data = bytes(content)
+    if len(data) > int(max_bytes):
+        raise OSError("白名单产物大小超过宿主发布上限")
+    target_fd = _open_plain_directory(target_dir)
+    temporary_name = f".export-{uuid.uuid4().hex}.tmp"
+    temporary_created = False
+    try:
+        fd = os.open(
+            temporary_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=target_fd,
+        )
+        temporary_created = True
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fchmod(fd, int(target_mode))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(
+            temporary_name,
+            safe_target,
+            src_dir_fd=target_fd,
+            dst_dir_fd=target_fd,
+        )
+        os.fsync(target_fd)
+        temporary_created = False
+    finally:
+        if temporary_created:
+            try:
+                os.unlink(temporary_name, dir_fd=target_fd)
+            except OSError:
+                pass
+        os.close(target_fd)
+
+
+def _exported_output_text(result) -> str:
+    content = getattr(result, "artifacts", {}).get("output.txt")
+    if content is None:
+        return result.stdout or ""
+    return bytes(content).decode("utf-8", errors="replace")
+
+
+def _result_exceeded_output_limit(result) -> bool:
+    output_status = getattr(result, "artifact_statuses", {}).get(
+        "output.txt"
+    )
+    return bool(
+        getattr(result, "stdout_truncated", False)
+        or output_status == "rejected"
+    )
+
+
+def _publish_exported_image(
+    result,
+    target_dir: str,
+    requested_filename: str,
+    stored_stem: str,
+):
+    requested_name = sanitize_output_image_filename(requested_filename)
+    extension = os.path.splitext(requested_name)[1].lower()
+    if extension not in IMAGE_FILE_EXTENSIONS:
+        return None
+    content = getattr(result, "artifacts", {}).get(requested_name)
+    if content is None:
+        return None
+    target_name = f"{stored_stem}{extension}"
+    try:
+        _publish_exported_artifact(
+            target_dir,
+            target_name,
+            content,
+            max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
+        )
+    except Exception:
+        return None
+    return target_name
+
+
+def _publish_exported_executable(result, run_dir: str) -> None:
+    content = getattr(result, "artifacts", {}).get("a.out")
+    if content is None:
+        raise OSError("编译器未导出 a.out")
+    _publish_exported_artifact(
+        run_dir,
+        "a.out",
+        content,
+        target_mode=0o555,
+        max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
+    )
 
 
 def capture_output_image_file(sid: str, requested_filename: str, stored_stem: str):
@@ -309,18 +712,13 @@ def capture_output_image_file(sid: str, requested_filename: str, stored_stem: st
         return None
 
     target_filename = f"{stored_stem}{ext}"
-    target_path = os.path.join(sid, target_filename)
-    if os.path.abspath(source_path) == os.path.abspath(target_path):
-        return target_filename
-
     try:
-        os.replace(source_path, target_path)
-        return target_filename
-    except Exception:
-        pass
-
-    try:
-        shutil.copyfile(source_path, target_path)
+        _copy_regular_artifact_atomic(
+            sid,
+            sid,
+            requested_name,
+            target_filename,
+        )
         return target_filename
     except Exception:
         return None
@@ -340,15 +738,13 @@ def capture_output_image_file_to_dir(source_dir: str, target_dir: str, requested
         return None
 
     target_filename = f"{stored_stem}{ext}"
-    target_path = os.path.join(target_dir, target_filename)
     try:
-        os.replace(source_path, target_path)
-        return target_filename
-    except Exception:
-        pass
-
-    try:
-        shutil.copyfile(source_path, target_path)
+        _copy_regular_artifact_atomic(
+            source_dir,
+            target_dir,
+            requested_name,
+            target_filename,
+        )
         return target_filename
     except Exception:
         return None
@@ -376,11 +772,36 @@ def check_forbidden(code_content: str, forbidden_str: str):
 
 
 def read_output_with_fallback(output_filename: str, captured_stdout: str):
+    output_path = os.path.abspath(output_filename)
+    parent = os.path.dirname(output_path)
+    name = _validate_leaf_name(os.path.basename(output_path))
+    parent_fd = None
     try:
-        with open(output_filename, "r", encoding="utf-8", errors="replace") as file:
-            outp = file.read()
+        parent_fd = _open_plain_directory(parent)
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
         try:
-            os.remove(output_filename)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("output is not a regular file")
+            chunks = []
+            remaining = OUTPUT_TEXT_MAX_BYTES
+            while remaining > 0:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            outp = b"".join(chunks).decode("utf-8", errors="replace")
+            if int(info.st_size) > OUTPUT_TEXT_MAX_BYTES:
+                outp += "\n...[输出文件超过 1 MiB，已截断]"
+        finally:
+            os.close(fd)
+        try:
+            os.unlink(name, dir_fd=parent_fd)
         except OSError:
             pass
         return outp
@@ -388,58 +809,90 @@ def read_output_with_fallback(output_filename: str, captured_stdout: str):
         return captured_stdout
     except Exception:
         return captured_stdout
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
 
 
 def safe_user_header_filename(filename):
-    """校验用户头文件名：仅允许字母/数字/下划线/连字符/点，扩展名限定为头/源文件。"""
-    name = os.path.basename(str(filename or "").replace("\\", "/").strip())
-    if not name or name in (".", ".."):
+    """兼容旧调用名：校验仓库文件的 POSIX 相对路径，不再扁平化。"""
+    try:
+        return normalize_repository_relative_path(filename)
+    except InvalidRepositoryPath:
         return None
-    if not re.match(r'^[A-Za-z0-9_\-.]+$', name):
-        return None
-    if os.path.splitext(name)[1].lower() not in (".h", ".hpp", ".c", ".cpp", ".hh", ".hxx"):
-        return None
-    return name
 
 
 def _write_user_files(run_dir, user_files):
-    """把用户头文件写入运行目录。"""
-    if not user_files:
-        return
-    for filename, content in user_files.items():
-        safe_name = safe_user_header_filename(filename)
-        if not safe_name:
-            continue
-        with open(os.path.join(run_dir, safe_name), "w", encoding="utf-8") as f:
-            f.write(content if isinstance(content, str) else str(content or ""))
+    """把提交绑定的仓库快照安全写入 ``run_dir/repository``。"""
+    materialize_repository_tree(run_dir, user_files or {})
 
 
-def cleanup_run_artifacts(sid, keep_images=True, keep_sources=True):
-    """评测结束后清理运行目录里的临时产物，默认保留输出图片和源码。"""
-    run_dir = run_dir_for(sid)
-    if not os.path.isdir(run_dir):
+def cleanup_run_artifacts(sid, keep_images=True, keep_sources=False):
+    """清理一次 attempt；只允许保留真实普通图片，永不保留容器源码 inode。"""
+    del keep_sources  # 兼容旧调用签名；安全契约禁止保留源码。
+    safe_sid = sanitize_sid(sid)
+    try:
+        root_fd = _open_run_root()
+    except Exception:
         return
     try:
-        for name in os.listdir(run_dir):
-            path = os.path.join(run_dir, name)
-            if not os.path.isfile(path):
-                continue
-            ext = os.path.splitext(name)[1].lower()
-            if keep_images and ext in IMAGE_FILE_EXTENSIONS:
-                continue
-            if keep_sources and name in SOURCE_ARTIFACT_FILENAMES:
-                continue
-            try:
-                os.remove(path)
-            except Exception:
-                pass
         try:
-            if not os.listdir(run_dir):
-                os.rmdir(run_dir)
-        except Exception:
+            root_entry = os.stat(
+                safe_sid,
+                dir_fd=root_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(root_entry.st_mode) or not stat.S_ISDIR(root_entry.st_mode):
+            try:
+                os.unlink(safe_sid, dir_fd=root_fd)
+            except OSError:
+                pass
+            return
+
+        try:
+            run_fd = os.open(
+                safe_sid,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+        except OSError:
+            return
+        try:
+            names = [entry.name for entry in os.scandir(run_fd)]
+            for name in names:
+                try:
+                    info = os.stat(
+                        name,
+                        dir_fd=run_fd,
+                        follow_symlinks=False,
+                    )
+                except OSError:
+                    continue
+                ext = os.path.splitext(name)[1].lower()
+                if (
+                    keep_images
+                    and ext in IMAGE_FILE_EXTENSIONS
+                    and stat.S_ISREG(info.st_mode)
+                    and int(info.st_uid) == int(os.geteuid())
+                    and int(info.st_nlink) == 1
+                    and not (stat.S_IMODE(info.st_mode) & 0o022)
+                    and int(info.st_size) <= OUTPUT_ARTIFACT_MAX_BYTES
+                ):
+                    continue
+                try:
+                    _remove_entry_at(run_fd, name)
+                except Exception:
+                    pass
+        finally:
+            os.close(run_fd)
+        try:
+            os.rmdir(safe_sid, dir_fd=root_fd)
+        except OSError:
             pass
-    except Exception:
-        pass
+    finally:
+        os.close(root_fd)
 
 
 def cleanup_run_artifacts_for_submission(submission_id, keep_images=True):
@@ -456,7 +909,7 @@ def cleanup_run_artifacts_for_submission(submission_id, keep_images=True):
                 cleanup_run_artifacts(
                     name,
                     keep_images=keep_images,
-                    keep_sources=(name != quick_compile_name),
+                    keep_sources=False,
                 )
     except Exception:
         pass
@@ -464,25 +917,38 @@ def cleanup_run_artifacts_for_submission(submission_id, keep_images=True):
 
 def reap_stale_run_dirs(ttl_seconds):
     """删除 JUDGER_RUN_ROOT 下早于 ttl 的整个运行子目录。"""
-    if not ttl_seconds or ttl_seconds <= 0 or not os.path.isdir(JUDGER_RUN_ROOT):
+    if not ttl_seconds or ttl_seconds <= 0:
         return 0
     now = time.time()
     removed = 0
     try:
-        for name in os.listdir(JUDGER_RUN_ROOT):
-            if name == "submission_archive":
-                continue
-            path = os.path.join(JUDGER_RUN_ROOT, name)
-            if not os.path.isdir(path):
+        root_fd = _open_run_root()
+    except Exception:
+        return 0
+    try:
+        for entry in os.scandir(root_fd):
+            name = entry.name
+            if name == "submission_archive" or name.startswith("."):
                 continue
             try:
-                if now - os.path.getmtime(path) > ttl_seconds:
-                    shutil.rmtree(path, ignore_errors=True)
-                    removed += 1
+                info = os.stat(
+                    name,
+                    dir_fd=root_fd,
+                    follow_symlinks=False,
+                )
+            except OSError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                continue
+            if now - float(info.st_mtime) <= ttl_seconds:
+                continue
+            try:
+                _remove_entry_at(root_fd, name)
             except Exception:
-                pass
-    except Exception:
-        pass
+                continue
+            removed += 1
+    finally:
+        os.close(root_fd)
     return removed
 
 
@@ -511,10 +977,18 @@ def _measured_exec_time_ns(result, tle_ns):
     return 0
 
 
+def _result_was_oom_killed(result):
+    return bool(
+        getattr(result, "oom_killed", False)
+        or getattr(result, "returncode", None) == 137
+    )
+
+
 # ========== 单次运行（Octave / Python / C / C++）==========
 def run_octave(data):
     """Octave/MATLAB 单次运行。"""
-    run_dir = _prepare_run_dir(data.get("sid", ""))
+    artifact_dir = _prepare_run_dir(data.get("sid", ""))
+    run_dir = _prepare_execution_workspace(artifact_dir)
     user_input = data.get("input", "")
     code_content = data.get("code", "")
     tle = data.get("timeLimit")  # ns
@@ -531,26 +1005,32 @@ def run_octave(data):
             "memory": 0,
         }
 
-    with open(os.path.join(run_dir, "a.m"), "w", encoding="utf-8") as f:
-        f.write(code_content)
+    _write_text_file_exclusive(run_dir, "a.m", code_content)
     _write_source_debug_artifacts(run_dir, data, "octave")
-    with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
-        f.write(user_input)
 
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.1)
-    container_cmd = _timeout_cmd(timeLim_sec, "octave", "a.m")
+    container_cmd = _timeout_cmd(
+        timeLim_sec,
+        "octave",
+        "/sandbox/a.m",
+    )
+    safe_image_name = sanitize_output_image_filename(
+        output_image_filename
+    )
 
-    result = run_in_container(
+    result = run_case_in_container(
         container_cmd,
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
-        measure_time=True,
+        output_name="output.txt",
+        output_max_bytes=OUTPUT_TEXT_MAX_BYTES,
+        image_name=safe_image_name,
+        image_max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
     )
     exec_time = _measured_exec_time_ns(result, tle)
 
-    output_filename = os.path.join(run_dir, "output.txt")
-    outp = read_output_with_fallback(output_filename, result.stdout)
+    outp = _exported_output_text(result)
 
     status = "Accepted"
     exval = 0
@@ -561,15 +1041,23 @@ def run_octave(data):
     if exec_time > (tle or 0):
         status = "Time Limit Exceeded"
         exval = 9
-    elif result.returncode == 137:
+    elif _result_was_oom_killed(result):
         status = "Memory Limit Exceeded"
         exval = 10
     elif result.returncode != 0:
         status = "Nonzero Exit Status"
         exval = result.returncode
+    elif _result_exceeded_output_limit(result):
+        status = "Output Limit Exceeded"
+        exval = 12
 
     files_dict = {"stdout": outp, "stderr": stderr}
-    stored_image_filename = capture_output_image_file(run_dir, output_image_filename, "output")
+    stored_image_filename = _publish_exported_image(
+        result,
+        artifact_dir,
+        safe_image_name,
+        "output",
+    )
     if stored_image_filename:
         files_dict[stored_image_filename] = True
 
@@ -584,7 +1072,8 @@ def run_octave(data):
 
 def run_py(data):
     """Python 单次运行。"""
-    run_dir = _prepare_run_dir(data.get("sid", ""))
+    artifact_dir = _prepare_run_dir(data.get("sid", ""))
+    run_dir = _prepare_execution_workspace(artifact_dir)
     user_input = data.get("input", "")
     code_content = data.get("code", "")
     tle = data.get("timeLimit")  # ns
@@ -601,26 +1090,34 @@ def run_py(data):
             "memory": 0,
         }
 
-    with open(os.path.join(run_dir, "main.py"), "w", encoding="utf-8") as f:
-        f.write(code_content)
+    _write_text_file_exclusive(run_dir, "main.py", code_content)
     _write_source_debug_artifacts(run_dir, data, "python")
-    with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
-        f.write(user_input)
 
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
-    container_cmd = _timeout_cmd(timeLim_sec, "python3", "-I", "-u", "main.py")
+    container_cmd = _timeout_cmd(
+        timeLim_sec,
+        "python3",
+        "-I",
+        "-u",
+        "/sandbox/main.py",
+    )
+    safe_image_name = sanitize_output_image_filename(
+        output_image_filename
+    )
 
-    result = run_in_container(
+    result = run_case_in_container(
         container_cmd,
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
-        measure_time=True,
+        output_name="output.txt",
+        output_max_bytes=OUTPUT_TEXT_MAX_BYTES,
+        image_name=safe_image_name,
+        image_max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
     )
     exec_time = _measured_exec_time_ns(result, tle)
 
-    output_filename = os.path.join(run_dir, "output.txt")
-    outp = read_output_with_fallback(output_filename, result.stdout or "")
+    outp = _exported_output_text(result)
 
     status = "Accepted"
     exval = 0
@@ -631,15 +1128,23 @@ def run_py(data):
     if exec_time > (tle or 0):
         status = "Time Limit Exceeded"
         exval = 9
-    elif result.returncode == 137:
+    elif _result_was_oom_killed(result):
         status = "Memory Limit Exceeded"
         exval = 10
     elif result.returncode != 0:
         status = "Runtime Error"
         exval = result.returncode
+    elif _result_exceeded_output_limit(result):
+        status = "Output Limit Exceeded"
+        exval = 12
 
     files_dict = {"stdout": outp, "stderr": stderr}
-    stored_image_filename = capture_output_image_file(run_dir, output_image_filename, "output")
+    stored_image_filename = _publish_exported_image(
+        result,
+        artifact_dir,
+        safe_image_name,
+        "output",
+    )
     if stored_image_filename:
         files_dict[stored_image_filename] = True
 
@@ -654,7 +1159,8 @@ def run_py(data):
 
 def _run_compiled_single(data, language):
     """C/C++ 单次运行。"""
-    run_dir = _prepare_run_dir(data.get("sid", ""))
+    artifact_dir = _prepare_run_dir(data.get("sid", ""))
+    run_dir = _prepare_execution_workspace(artifact_dir)
     user_input = data.get("input", "")
     code_content = data.get("code", "")
     tle = data.get("timeLimit")  # ns
@@ -678,21 +1184,23 @@ def _run_compiled_single(data, language):
     else:
         src_name = "main.c"
         compile_err_cap = 300
-    compile_cmd = build_compile_cmd(language)
+    compile_cmd = build_compile_cmd(
+        language,
+        source_path=f"/sandbox/{src_name}",
+    )
 
-    with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
-        f.write(code_content)
-    with open(os.path.join(run_dir, "input.txt"), "w", encoding="utf-8") as f:
-        f.write(user_input)
+    _write_text_file_exclusive(run_dir, src_name, code_content)
 
     _write_user_files(run_dir, user_files)
     _write_source_debug_artifacts(run_dir, data, language)
 
     # Compile
-    compile_res = run_in_container(
+    compile_res = run_case_in_container(
         compile_cmd,
         run_dir=run_dir,
         timeout_sec=45,
+        executable_name="a.out",
+        executable_max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
     )
     if compile_res.returncode != 0:
         stderr = compile_res.stderr or ""
@@ -705,22 +1213,40 @@ def _run_compiled_single(data, language):
             "time": 0,
             "memory": 0,
         }
+    try:
+        _publish_exported_executable(compile_res, run_dir)
+    except Exception as exc:
+        return {
+            "status": "Compile Error",
+            "exitStatus": -1,
+            "files": {
+                "stdout": compile_res.stdout or "",
+                "stderr": f"编译产物导出失败：{exc}",
+            },
+            "time": 0,
+            "memory": 0,
+        }
 
     # Run
     timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
-    run_cmd = _timeout_cmd(timeLim_sec, "./a.out")
+    run_cmd = _timeout_cmd(timeLim_sec, "/sandbox/a.out")
+    safe_image_name = sanitize_output_image_filename(
+        output_image_filename
+    )
 
-    run_res = run_in_container(
+    run_res = run_case_in_container(
         run_cmd,
         run_dir=run_dir,
         input_text=user_input,
         timeout_sec=_guard_timeout(timeLim_sec),
-        measure_time=True,
+        output_name="output.txt",
+        output_max_bytes=OUTPUT_TEXT_MAX_BYTES,
+        image_name=safe_image_name,
+        image_max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
     )
     exec_time = _measured_exec_time_ns(run_res, tle)
 
-    output_filename = os.path.join(run_dir, "output.txt")
-    outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+    outp = _exported_output_text(run_res)
 
     status = "Accepted"
     exval = 0
@@ -731,15 +1257,23 @@ def _run_compiled_single(data, language):
     if exec_time > (tle or 0):
         status = "Time Limit Exceeded"
         exval = 9
-    elif run_res.returncode == 137:
+    elif _result_was_oom_killed(run_res):
         status = "Memory Limit Exceeded"
         exval = 10
     elif run_res.returncode != 0:
         status = "Runtime Error"
         exval = run_res.returncode
+    elif _result_exceeded_output_limit(run_res):
+        status = "Output Limit Exceeded"
+        exval = 12
 
     files_dict = {"stdout": outp, "stderr": stderr}
-    stored_image_filename = capture_output_image_file(run_dir, output_image_filename, "output")
+    stored_image_filename = _publish_exported_image(
+        run_res,
+        artifact_dir,
+        safe_image_name,
+        "output",
+    )
     if stored_image_filename:
         files_dict[stored_image_filename] = True
 
@@ -762,7 +1296,7 @@ def run_cpp(data):
 
 # ========== 批量评测：编译一次，运行多个测试点 ==========
 def _batch_evaluate_stream(data, language):
-    """编译一次、逐个跑测试点的生成器（使用 ContainerSession）。"""
+    """编译一次、逐测试点启动独立短生命周期容器的生成器。"""
     code_content = data.get("code", "")
     test_cases = data.get("test_cases", [])
     tle = data.get("timeLimit")  # ns
@@ -771,13 +1305,13 @@ def _batch_evaluate_stream(data, language):
     output_image_filename = data.get("outputImageFilename", "output.png")
 
     try:
+        artifact_dir = _prepare_run_dir(data.get("sid", ""))
+        run_dir = _prepare_execution_workspace(artifact_dir)
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
         if forbid_msg:
             yield {"event": "compile", "status": "forbidden", "stderr": forbid_msg}
             yield {"event": "done", "ok": False}
             return
-
-        run_dir = _prepare_run_dir(data.get("sid", ""))
 
         if language == "cpp":
             src_name = "main.cpp"
@@ -785,91 +1319,106 @@ def _batch_evaluate_stream(data, language):
         else:
             src_name = "main.c"
             compile_err_cap = 300
-        compile_cmd = build_compile_cmd(language)
+        compile_cmd = build_compile_cmd(
+            language,
+            source_path=f"/sandbox/{src_name}",
+        )
 
-        with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
-            f.write(code_content)
+        _write_text_file_exclusive(run_dir, src_name, code_content)
 
         _write_user_files(run_dir, user_files)
         _write_source_debug_artifacts(run_dir, data, language)
 
-        with ContainerSession(run_dir=run_dir) as session:
-            # Compile
-            compile_res = session.exec(compile_cmd, timeout_sec=45)
-            if compile_res.returncode != 0:
-                stderr = compile_res.stderr or ""
-                if len(stderr) > compile_err_cap:
-                    stderr = stderr[:compile_err_cap] + "..."
-                yield {"event": "compile", "status": "error", "stderr": stderr}
-                yield {"event": "done", "ok": False}
-                return
+        # 编译只执行一次；linker 产物随后换成宿主拥有的只读 inode，后续任一
+        # 测试点都不能篡改下一测试点将执行的程序。
+        compile_res = run_case_in_container(
+            compile_cmd,
+            run_dir=run_dir,
+            timeout_sec=45,
+            executable_name="a.out",
+            executable_max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
+        )
+        if compile_res.returncode != 0:
+            stderr = compile_res.stderr or ""
+            if len(stderr) > compile_err_cap:
+                stderr = stderr[:compile_err_cap] + "..."
+            yield {"event": "compile", "status": "error", "stderr": stderr}
+            yield {"event": "done", "ok": False}
+            return
+        try:
+            _publish_exported_executable(compile_res, run_dir)
+        except Exception as exc:
+            yield {
+                "event": "compile",
+                "status": "error",
+                "stderr": f"编译产物导出失败：{exc}",
+            }
+            yield {"event": "done", "ok": False}
+            return
 
-            yield {"event": "compile", "status": "success", "stderr": ""}
+        yield {"event": "compile", "status": "success", "stderr": ""}
 
-            # Run each test case
-            for i, test_case in enumerate(test_cases):
-                user_input = test_case.get("input", "")
-                case_dir = os.path.join(run_dir, f"case_{i}")
-                if os.path.isdir(case_dir):
-                    shutil.rmtree(case_dir, ignore_errors=True)
-                ensure_dir(case_dir)
-                try:
-                    os.chmod(case_dir, 0o777)
-                except OSError:
-                    pass
+        # 每个测试点使用独立短生命周期容器。docker run 的启动耗时不在容器内
+        # elapsed marker 中；PID 1 退出后 Docker 会销毁该 case 的全部后台进程。
+        for i, test_case in enumerate(test_cases):
+            user_input = test_case.get("input", "")
+            timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
+            run_cmd = _timeout_cmd(timeLim_sec, "/sandbox/a.out")
+            safe_image_name = sanitize_output_image_filename(
+                output_image_filename
+            )
 
-                with open(os.path.join(case_dir, "input.txt"), "w", encoding="utf-8") as f:
-                    f.write(user_input)
-                timeLim_sec = _timeout_sec_from_ns(tle, factor=1.2)
-                run_cmd = _timeout_cmd(timeLim_sec, "../a.out")
+            run_res = run_case_in_container(
+                run_cmd,
+                run_dir=run_dir,
+                input_text=user_input,
+                timeout_sec=_guard_timeout(timeLim_sec),
+                output_name="output.txt",
+                output_max_bytes=OUTPUT_TEXT_MAX_BYTES,
+                image_name=safe_image_name,
+                image_max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
+            )
+            exec_time = _measured_exec_time_ns(run_res, tle)
 
-                run_res = session.exec(
-                    run_cmd,
-                    input_text=user_input,
-                    timeout_sec=_guard_timeout(timeLim_sec),
-                    workdir=f"/sandbox/case_{i}",
-                    measure_time=True,
-                )
-                exec_time = _measured_exec_time_ns(run_res, tle)
+            outp = _exported_output_text(run_res)
 
-                output_filename = os.path.join(case_dir, "output.txt")
-                outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+            status = "Accepted"
+            exval = 0
+            stderr = run_res.stderr or ""
+            if len(stderr) > 300:
+                stderr = stderr[:300] + "..."
 
-                status = "Accepted"
-                exval = 0
-                stderr = run_res.stderr or ""
-                if len(stderr) > 300:
-                    stderr = stderr[:300] + "..."
+            if exec_time > (tle or 0):
+                status = "Time Limit Exceeded"
+                exval = 9
+            elif _result_was_oom_killed(run_res):
+                status = "Memory Limit Exceeded"
+                exval = 10
+            elif run_res.returncode != 0:
+                status = "Runtime Error"
+                exval = run_res.returncode
+            elif _result_exceeded_output_limit(run_res):
+                status = "Output Limit Exceeded"
+                exval = 12
 
-                if exec_time > (tle or 0):
-                    status = "Time Limit Exceeded"
-                    exval = 9
-                elif run_res.returncode == 137:
-                    status = "Memory Limit Exceeded"
-                    exval = 10
-                elif run_res.returncode != 0:
-                    status = "Runtime Error"
-                    exval = run_res.returncode
+            files_dict = {"stdout": outp, "stderr": stderr}
+            stored_image_filename = _publish_exported_image(
+                run_res,
+                artifact_dir,
+                safe_image_name,
+                f"output_{i}",
+            )
+            if stored_image_filename:
+                files_dict[stored_image_filename] = True
 
-                files_dict = {"stdout": outp, "stderr": stderr}
-                stored_image_filename = capture_output_image_file_to_dir(
-                    case_dir, run_dir, output_image_filename, f"output_{i}",
-                )
-                if stored_image_filename:
-                    files_dict[stored_image_filename] = True
-                try:
-                    shutil.rmtree(case_dir, ignore_errors=True)
-                except Exception:
-                    pass
-
-                yield {"event": "test_result", "result": {
-                    "test_case_index": i,
-                    "status": status,
-                    "exitStatus": exval,
-                    "files": files_dict,
-                    "time": exec_time,
-                    "memory": 0,
-                }}
+            yield {"event": "test_result", "result": {
+                "test_case_index": i,
+                "status": status,
+                "exitStatus": exval,
+                "files": files_dict,
+                "time": exec_time,
+                "memory": 0,
+            }}
 
         yield {"event": "done", "ok": True}
     except Exception as e:
@@ -877,15 +1426,13 @@ def _batch_evaluate_stream(data, language):
         yield {"event": "done", "ok": False}
 
 
-# ========== 批量评测：解释型语言（Octave / Python），单容器多测试点 ==========
+# ========== 批量评测：解释型语言（Octave / Python），每点独立容器 ==========
 def _batch_evaluate_script_stream(data, language):
     """解释型语言（Octave/Python）批量评测生成器。
 
-    每份提交只起 **一个常驻容器**（ContainerSession），逐测试点 `docker exec`
-    运行脚本，避免每个测试点都 `docker run` 带来的容器启动开销与 docker 守护
-    进程争抢（这是 Octave 题在容器化后必然 TLE 的根因）。计时只包住单次
-    `session.exec`（容器内脚本启动+运行），**不含** 容器一次性启动开销，
-    与旧的进程内模型时间语义保持一致。
+    每个测试点各自使用短生命周期容器，防止前一测试点留下 setsid/background
+    进程观察或篡改后一测试点。计时仍由容器内 wrapper 生成，不含 docker run
+    启动耗时。
     """
     code_content = data.get("code", "")
     test_cases = data.get("test_cases", [])
@@ -894,100 +1441,104 @@ def _batch_evaluate_script_stream(data, language):
     output_image_filename = data.get("outputImageFilename", "output.png")
 
     try:
+        artifact_dir = _prepare_run_dir(data.get("sid", ""))
+        run_dir = _prepare_execution_workspace(artifact_dir)
         forbid_msg = check_forbidden(code_content, forbidden_funcs)
         if forbid_msg:
             yield {"event": "compile", "status": "forbidden", "stderr": forbid_msg}
             yield {"event": "done", "ok": False}
             return
 
-        run_dir = _prepare_run_dir(data.get("sid", ""))
-
         if language in ("matlab", "octave", "hello"):
             src_name = "a.m"
             factor = 1.1
             run_status_nonzero = "Nonzero Exit Status"
-            make_cmd = lambda t: _timeout_cmd(t, "octave", "../a.m")
+            make_cmd = lambda t: _timeout_cmd(
+                t,
+                "octave",
+                "/sandbox/a.m",
+            )
         else:  # python
             src_name = "main.py"
             factor = 1.2
             run_status_nonzero = "Runtime Error"
-            make_cmd = lambda t: _timeout_cmd(t, "python3", "-I", "-u", "../main.py")
+            make_cmd = lambda t: _timeout_cmd(
+                t,
+                "python3",
+                "-I",
+                "-u",
+                "/sandbox/main.py",
+            )
 
-        with open(os.path.join(run_dir, src_name), "w", encoding="utf-8") as f:
-            f.write(code_content)
+        _write_text_file_exclusive(run_dir, src_name, code_content)
         _write_source_debug_artifacts(run_dir, data, language)
 
         # 解释型语言无编译步骤，直接报告编译成功以复用上层 stream 处理逻辑。
         yield {"event": "compile", "status": "success", "stderr": ""}
 
-        with ContainerSession(run_dir=run_dir) as session:
-            if language in ("matlab", "octave", "hello"):
-                _warmup_octave_plot(session)
+        if language in ("matlab", "octave", "hello"):
+            _warmup_octave_plot_in_container(run_dir)
 
-            for i, test_case in enumerate(test_cases):
-                user_input = test_case.get("input", "")
-                case_dir = os.path.join(run_dir, f"case_{i}")
-                if os.path.isdir(case_dir):
-                    shutil.rmtree(case_dir, ignore_errors=True)
-                ensure_dir(case_dir)
-                try:
-                    os.chmod(case_dir, 0o777)
-                except OSError:
-                    pass
+        for i, test_case in enumerate(test_cases):
+            user_input = test_case.get("input", "")
 
-                with open(os.path.join(case_dir, "input.txt"), "w", encoding="utf-8") as f:
-                    f.write(user_input)
+            timeLim_sec = _timeout_sec_from_ns(tle, factor=factor)
+            run_cmd = make_cmd(timeLim_sec)
+            safe_image_name = sanitize_output_image_filename(
+                output_image_filename
+            )
 
-                timeLim_sec = _timeout_sec_from_ns(tle, factor=factor)
-                run_cmd = make_cmd(timeLim_sec)
+            run_res = run_case_in_container(
+                run_cmd,
+                run_dir=run_dir,
+                input_text=user_input,
+                timeout_sec=_guard_timeout(timeLim_sec),
+                output_name="output.txt",
+                output_max_bytes=OUTPUT_TEXT_MAX_BYTES,
+                image_name=safe_image_name,
+                image_max_bytes=OUTPUT_ARTIFACT_MAX_BYTES,
+            )
+            exec_time = _measured_exec_time_ns(run_res, tle)
 
-                run_res = session.exec(
-                    run_cmd,
-                    input_text=user_input,
-                    timeout_sec=_guard_timeout(timeLim_sec),
-                    workdir=f"/sandbox/case_{i}",
-                    measure_time=True,
-                )
-                exec_time = _measured_exec_time_ns(run_res, tle)
+            outp = _exported_output_text(run_res)
 
-                output_filename = os.path.join(case_dir, "output.txt")
-                outp = read_output_with_fallback(output_filename, run_res.stdout or "")
+            status = "Accepted"
+            exval = 0
+            stderr = run_res.stderr or ""
+            if len(stderr) > 300:
+                stderr = stderr[:300] + "..."
 
-                status = "Accepted"
-                exval = 0
-                stderr = run_res.stderr or ""
-                if len(stderr) > 300:
-                    stderr = stderr[:300] + "..."
+            if exec_time > (tle or 0):
+                status = "Time Limit Exceeded"
+                exval = 9
+            elif _result_was_oom_killed(run_res):
+                status = "Memory Limit Exceeded"
+                exval = 10
+            elif run_res.returncode != 0:
+                status = run_status_nonzero
+                exval = run_res.returncode
+            elif _result_exceeded_output_limit(run_res):
+                status = "Output Limit Exceeded"
+                exval = 12
 
-                if exec_time > (tle or 0):
-                    status = "Time Limit Exceeded"
-                    exval = 9
-                elif run_res.returncode == 137:
-                    status = "Memory Limit Exceeded"
-                    exval = 10
-                elif run_res.returncode != 0:
-                    status = run_status_nonzero
-                    exval = run_res.returncode
+            files_dict = {"stdout": outp, "stderr": stderr}
+            stored_image_filename = _publish_exported_image(
+                run_res,
+                artifact_dir,
+                safe_image_name,
+                f"output_{i}",
+            )
+            if stored_image_filename:
+                files_dict[stored_image_filename] = True
 
-                files_dict = {"stdout": outp, "stderr": stderr}
-                stored_image_filename = capture_output_image_file_to_dir(
-                    case_dir, run_dir, output_image_filename, f"output_{i}",
-                )
-                if stored_image_filename:
-                    files_dict[stored_image_filename] = True
-                try:
-                    shutil.rmtree(case_dir, ignore_errors=True)
-                except Exception:
-                    pass
-
-                yield {"event": "test_result", "result": {
-                    "test_case_index": i,
-                    "status": status,
-                    "exitStatus": exval,
-                    "files": files_dict,
-                    "time": exec_time,
-                    "memory": 0,
-                }}
+            yield {"event": "test_result", "result": {
+                "test_case_index": i,
+                "status": status,
+                "exitStatus": exval,
+                "files": files_dict,
+                "time": exec_time,
+                "memory": 0,
+            }}
 
         yield {"event": "done", "ok": True}
     except Exception as e:
@@ -1013,8 +1564,8 @@ def run_single(language, data):
 def batch_evaluate_stream(language, data):
     """流式批量评测分派（生成器）。
 
-    c/cpp：编译一次 + 逐测试点运行（_batch_evaluate_stream）。
-    matlab/octave、python：常驻容器逐测试点 exec（_batch_evaluate_script_stream）。
+    c/cpp：编译一次，再为每个测试点启动独立容器。
+    matlab/octave、python：每个测试点启动独立容器。
     """
     lang = str(language or "").strip().lower()
     if lang in ("cpp", "c++"):

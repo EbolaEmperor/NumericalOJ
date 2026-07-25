@@ -1517,7 +1517,14 @@ def update_problem(
 
 
 def _lock_submission_user_with_cursor(cursor, *, username, user_id=None):
-    """锁定提交用户并返回当前规范身份，防止改名与提交交错产生孤儿记录。"""
+    """共享锁定提交用户并返回当前规范身份，防止改名与提交交错产生孤儿记录。
+
+    这里不能取得排他锁：编程提交随后会进入仓库快照的文件系统共享锁，而仓库写者
+    按相反方向先取得文件系统排他锁、再通过外键取得 ``users`` 父行共享锁。若这里
+    使用 ``FOR UPDATE``，两个锁域会形成 InnoDB 无法检测的环。``FOR SHARE`` 仍会
+    阻止用户行被改名或删除，并与仓库写入所需的外键共享锁兼容；提交配额继续由
+    ``submission_limits`` 自己的排他行锁串行化。
+    """
     if user_id is not None:
         try:
             normalized_user_id = int(user_id)
@@ -1525,7 +1532,7 @@ def _lock_submission_user_with_cursor(cursor, *, username, user_id=None):
             raise ValueError('user_id must be an integer') from exc
         cursor.execute(
             """SELECT id, username, is_admin, class
-               FROM users WHERE id=%s FOR UPDATE""",
+               FROM users WHERE id=%s FOR SHARE""",
             (normalized_user_id,),
         )
     else:
@@ -1534,7 +1541,7 @@ def _lock_submission_user_with_cursor(cursor, *, username, user_id=None):
             raise ValueError('username must not be empty')
         cursor.execute(
             """SELECT id, username, is_admin, class
-               FROM users WHERE username=%s FOR UPDATE""",
+               FROM users WHERE username=%s FOR SHARE""",
             (normalized_username,),
         )
 
@@ -1630,6 +1637,23 @@ def create_submission(
             subid = cursor.lastrowid
             if not subid:
                 raise RuntimeError("create_submission: failed to get valid submission id")
+
+            # 编程提交必须在返回、入队前绑定不可变仓库快照。捕获与 submissions
+            # INSERT 共用事务；快照失败会让整个提交回滚，禁止悄悄改用之后可能变化的
+            # 实时仓库。书面题不使用代码仓库，不创建无意义快照。
+            try:
+                is_programming_submission = int(problem_type) == 1
+            except (TypeError, ValueError):
+                is_programming_submission = False
+            if is_programming_submission:
+                from oj_modules.submission_repository_snapshots import (
+                    capture_submission_repository_snapshot,
+                )
+                capture_submission_repository_snapshot(
+                    cursor,
+                    submission_id=int(subid),
+                    user_id=int(user["id"]),
+                )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1884,6 +1908,10 @@ _SUBMISSION_LIST_STATUS_FILTERS = {
     "wrong_answer": ("s.status = %s", ("Wrong Answer",)),
     "unaccepted": ("s.status = %s", ("Unaccepted",)),
     "compile_error": ("s.status = %s", ("Compile Error",)),
+    "output_limit": (
+        "s.status = %s",
+        ("Output Limit Exceeded",),
+    ),
     "in_progress": (
         "s.status IN (%s, %s, %s, %s)",
         ("Pending", "Waiting", "Running", "Generating"),
@@ -1893,7 +1921,7 @@ _SUBMISSION_LIST_STATUS_FILTERS = {
         (
             s.status IS NULL
             OR s.status NOT IN (
-                %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
         )
         """,
@@ -1902,6 +1930,7 @@ _SUBMISSION_LIST_STATUS_FILTERS = {
             "Wrong Answer",
             "Unaccepted",
             "Compile Error",
+            "Output Limit Exceeded",
             "Pending",
             "Waiting",
             "Running",

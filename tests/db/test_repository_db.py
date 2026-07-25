@@ -4,7 +4,7 @@
 覆盖（参考 §1c）：
 - create_repository_index_job / update_repository_index_job（白名单字段，unknown 忽略）
 - get_repository_index_job（progress = round(done/total*100)，或 status=='success' → 100）
-- get_latest_active_repository_index_job（仅 queued/running 且 cancel_requested=0）
+- get_latest_active_repository_index_job（queued/running 在取消确认前保持 active）
 - list_repository_classes（limit 夹紧 min(max(1,limit),2000)）
 - get_user_repository_files_by_names（{filename: content}）
 
@@ -13,8 +13,9 @@
 import json
 
 from oj_modules import db_services as db
-from oj_modules import repository_index_services as ris
-from oj_modules import repository_services as rsvc
+from oj_modules.repository import includes as rsvc
+from oj_modules.repository import index as ris
+from oj_modules.repository import tree as tree_services
 from tests import helpers as h
 
 
@@ -43,17 +44,13 @@ def _insert_class_metadata(user_id, class_id, filename, class_name,
 
 
 def _insert_repo_file(user_id, filename, content):
-    conn = db.get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO user_code_repository (user_id, filename, file_content, file_size) "
-                "VALUES (%s,%s,%s,%s)",
-                (int(user_id), filename, content, len(content)),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    state = tree_services.get_repository_state(int(user_id))
+    tree_services.upsert_repository_file_by_path(
+        int(user_id),
+        filename,
+        content,
+        expected_structure_version=state["structure_version"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +155,7 @@ def test_latest_active_returns_newest_active_job():
     assert active['id'] == new_id
 
 
-def test_latest_active_excludes_finished_and_cancelled():
+def test_latest_active_excludes_finished_but_keeps_running_cancel_request():
     u = h.make_user('repoactive2')
     job_id = ris.create_repository_index_job(u['id'])
 
@@ -166,16 +163,17 @@ def test_latest_active_excludes_finished_and_cancelled():
     ris.update_repository_index_job(job_id, status='success')
     assert ris.get_latest_active_repository_index_job(u['id']) is None
 
-    # 另起一个 queued 但被取消请求 → 也不算 active
-    cancelled = ris.create_repository_index_job(u['id'])
-    ris.update_repository_index_job(cancelled, cancel_requested=1)
-    assert ris.get_latest_active_repository_index_job(u['id']) is None
-
-    # running 且未取消 → active
+    # running 的取消请求在 worker 确认终态前仍算 active，避免并发启动第二个 job。
     running = ris.create_repository_index_job(u['id'])
     ris.update_repository_index_job(running, status='running')
+    ris.request_cancel_repository_index_job(running, user_id=u['id'])
     active = ris.get_latest_active_repository_index_job(u['id'])
     assert active is not None and active['id'] == running
+    assert active['status'] == 'running'
+    assert active['cancel_requested'] == 1
+
+    ris.update_repository_index_job(running, status='canceled')
+    assert ris.get_latest_active_repository_index_job(u['id']) is None
 
 
 def test_latest_active_none_for_user_without_jobs():

@@ -3,6 +3,7 @@
 
 from flask import Blueprint
 
+from config import REPOSITORY_MAX_FILE_BYTES
 from oj_modules.api.helpers import json_error, json_success, public_user
 from oj_modules.auth_helpers import current_user
 from oj_modules.routes.repository_routes import (
@@ -23,8 +24,10 @@ def repository_context():
         user=public_user(user),
         page="code_repository",
         files_api="/api/repository/files",
+        tree_api="/api/repository/tree",
         file_api="/api/repository/file/<file_id>",
         upload_api="/api/repository/upload",
+        upload_session_api="/api/repository/upload/session",
         index_apis={
             "build": "/api/repository/index/build",
             "rebuild_file": "/api/repository/index/rebuild_file",
@@ -36,6 +39,7 @@ def repository_context():
             "search_top_k": _DEFAULT_REPOSITORY_SEARCH_TOP_K,
             "search_score_threshold": _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD,
         },
-        allowed_extensions=[".h", ".hpp", ".c", ".cpp"],
-        max_file_size_bytes=100 * 1024,
+        allowed_extensions=None,
+        indexable_extensions=[".h", ".hpp", ".c", ".cpp"],
+        max_file_size_bytes=REPOSITORY_MAX_FILE_BYTES,
     )

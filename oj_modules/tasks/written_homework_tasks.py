@@ -4,6 +4,7 @@
 import os
 import re
 import shutil
+import uuid
 
 import pymysql
 
@@ -54,6 +55,62 @@ _TEX_HAS_CJK_SETUP_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 _TEX_MISSING_CHAR_PATTERN = re.compile(r"Missing character: There is no .*?\(U\+([0-9A-Fa-f]{4,6})\)")
+_WRITTEN_PDF_MAX_BYTES = 64 * 1024 * 1024
+_TEX_COMPILE_SCRIPT = r'''
+set -u
+source_path="$1"
+base_name="$2"
+stage_timeout="$3"
+export TEXINPUTS="/sandbox//:"
+export BIBINPUTS="/sandbox//:"
+export BSTINPUTS="/sandbox//:"
+
+run_stage() {
+    label="$1"
+    shift
+    log_path="/case/.numoj-${label}.log"
+    "$@" >"$log_path" 2>&1
+    rc=$?
+    printf "\n[%s]\n" "$label"
+    cat "$log_path"
+    return "$rc"
+}
+
+run_stage "xelatex #1" \
+    timeout -k 1s "${stage_timeout}s" \
+    xelatex -interaction=nonstopmode -halt-on-error -file-line-error \
+    -output-directory=/case "$source_path"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    exit "$rc"
+fi
+
+run_stage "bibtex" \
+    timeout -k 1s "${stage_timeout}s" bibtex "$base_name"
+bib_rc=$?
+if [ "$bib_rc" -ne 0 ]; then
+    if ! grep -Eqi \
+        'no \\citation commands|no \\bibdata command' \
+        /case/.numoj-bibtex.log; then
+        exit "$bib_rc"
+    fi
+fi
+
+run_stage "xelatex #2" \
+    timeout -k 1s "${stage_timeout}s" \
+    xelatex -interaction=nonstopmode -halt-on-error -file-line-error \
+    -output-directory=/case "$source_path"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    exit "$rc"
+fi
+
+run_stage "xelatex #3" \
+    timeout -k 1s "${stage_timeout}s" \
+    xelatex -interaction=nonstopmode -halt-on-error -file-line-error \
+    -output-directory=/case "$source_path"
+exit $?
+'''
 
 
 def _fake_written_homework_grade_from_env():
@@ -107,42 +164,59 @@ def _write_text_file_safe(path, content):
         pass
 
 
-def _run_cmd(cmd, cwd, timeout_seconds):
-    """在 Docker 容器中执行 TeX 编译命令。cwd 挂载为容器 /sandbox。"""
-    from oj_modules.docker_sandbox import run_in_container
-    try:
-        timeout_sec = max(10, int(timeout_seconds)) + 10
-        result = run_in_container(
-            cmd,
-            run_dir=cwd,
-            timeout_sec=timeout_sec,
-        )
-    except Exception as e:
-        return False, f"命令执行失败（{' '.join(cmd)}）：{e}"
-
-    if result.returncode == 124:
-        return False, f"命令超时：{' '.join(cmd)}"
-
-    stdout = str(result.stdout or "").strip()
-    stderr = str(result.stderr or "").strip()
-    log = "\n".join(part for part in [stdout, stderr] if part).strip()
-    if result.returncode != 0:
-        if not log:
-            log = f"命令失败（returncode={result.returncode}）：{' '.join(cmd)}"
-        return False, log
-    return True, log
-
-
-def _is_nonfatal_bibtex_failure(log_text):
-    raw = str(log_text or "")
-    if not raw:
-        return False
-    lowered = raw.lower()
-    return (
-        ("no \\citation commands" in lowered and "no \\bibdata command" in lowered)
-        or "i found no \\citation commands" in lowered
-        or "i found no \\bibdata command" in lowered
+def _publish_compiled_pdf(output_dir, filename, content):
+    safe_name = os.path.basename(str(filename or ""))
+    if (
+        not safe_name
+        or safe_name != filename
+        or os.path.splitext(safe_name)[1].lower() != ".pdf"
+    ):
+        raise ValueError("PDF 产物名称无效")
+    data = bytes(content)
+    if len(data) > _WRITTEN_PDF_MAX_BYTES:
+        raise ValueError("PDF 产物超过大小上限")
+    directory_fd = os.open(
+        output_dir,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
     )
+    temporary_name = f".written-pdf-{uuid.uuid4().hex}.tmp"
+    created = False
+    try:
+        fd = os.open(
+            temporary_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        created = True
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fchmod(fd, 0o644)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(
+            temporary_name,
+            safe_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        os.fsync(directory_fd)
+        created = False
+    finally:
+        if created:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except OSError:
+                pass
+        os.close(directory_fd)
 
 
 def _compile_tex_with_xelatex(tex_path, output_dir, timeout_seconds=120):
@@ -159,41 +233,59 @@ def _compile_tex_with_xelatex(tex_path, output_dir, timeout_seconds=120):
     if not base_name:
         return False, None, "无效的 TeX 主文件名。"
 
-    logs = []
-    xelatex_cmd = [
-        "xelatex",
-        "-interaction=nonstopmode",
-        "-halt-on-error",
-        "-file-line-error",
-        source_name,
+    if os.path.dirname(tex_abs) != work_dir_abs:
+        return False, None, "TeX 主文件必须位于编译目录根。"
+
+    from oj_modules.docker_sandbox import run_case_in_container
+
+    stage_timeout = max(10, int(timeout_seconds))
+    total_timeout = stage_timeout * 4 + 20
+    pdf_name = f"{base_name}.pdf"
+    command = [
+        "/bin/sh",
+        "-c",
+        _TEX_COMPILE_SCRIPT,
+        "numoj-written-tex",
+        f"/sandbox/{source_name}",
+        base_name,
+        str(stage_timeout),
     ]
+    try:
+        result = run_case_in_container(
+            command,
+            run_dir=work_dir_abs,
+            timeout_sec=total_timeout,
+            document_name=pdf_name,
+            document_max_bytes=_WRITTEN_PDF_MAX_BYTES,
+        )
+    except Exception as exc:
+        return False, None, f"TeX 容器执行失败：{exc}"
 
-    ok1, log1 = _run_cmd(xelatex_cmd, cwd=work_dir_abs, timeout_seconds=timeout_seconds)
-    logs.append(f"[xelatex #1]\n{log1}")
-    if not ok1:
-        return False, None, "\n\n".join(logs)
-
-    bibtex_cmd = ["bibtex", base_name]
-    bib_ok, bib_log = _run_cmd(bibtex_cmd, cwd=work_dir_abs, timeout_seconds=timeout_seconds)
-    logs.append(f"[bibtex]\n{bib_log}")
-    if not bib_ok and not _is_nonfatal_bibtex_failure(bib_log):
-        return False, None, "\n\n".join(logs)
-
-    ok2, log2 = _run_cmd(xelatex_cmd, cwd=work_dir_abs, timeout_seconds=timeout_seconds)
-    logs.append(f"[xelatex #2]\n{log2}")
-    if not ok2:
-        return False, None, "\n\n".join(logs)
-
-    ok3, log3 = _run_cmd(xelatex_cmd, cwd=work_dir_abs, timeout_seconds=timeout_seconds)
-    logs.append(f"[xelatex #3]\n{log3}")
-    if not ok3:
-        return False, None, "\n\n".join(logs)
-
-    pdf_path = os.path.join(work_dir_abs, f"{base_name}.pdf")
-    if not os.path.isfile(pdf_path):
-        logs.append("未找到生成的 PDF 文件。")
-        return False, None, "\n\n".join(logs)
-    return True, pdf_path, "\n\n".join(logs).strip()
+    logs = "\n".join(
+        part
+        for part in (
+            str(result.stdout or "").strip(),
+            str(result.stderr or "").strip(),
+        )
+        if part
+    ).strip()
+    if result.returncode == 124:
+        return False, None, logs or "TeX 编译超时。"
+    if result.returncode != 0:
+        return (
+            False,
+            None,
+            logs or f"TeX 编译失败（returncode={result.returncode}）。",
+        )
+    pdf_content = getattr(result, "artifacts", {}).get(pdf_name)
+    if pdf_content is None:
+        return False, None, (logs + "\n未找到生成的 PDF 文件。").strip()
+    try:
+        _publish_compiled_pdf(work_dir_abs, pdf_name, pdf_content)
+    except Exception as exc:
+        return False, None, (logs + f"\nPDF 发布失败：{exc}").strip()
+    pdf_path = os.path.join(work_dir_abs, pdf_name)
+    return True, pdf_path, logs
 
 
 def _build_tex_compile_fail_comment(log_text):

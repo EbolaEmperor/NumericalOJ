@@ -898,24 +898,184 @@ CREATE TABLE `verification_codes` (
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
 --
--- Table structure for table `user_code_repository`
+-- Table structure for table `repository_states`
 --
 
-DROP TABLE IF EXISTS `user_code_repository`;
+DROP TABLE IF EXISTS `repository_states`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `user_code_repository` (
-  `id` int NOT NULL AUTO_INCREMENT,
+CREATE TABLE `repository_states` (
   `user_id` int NOT NULL,
-  `filename` varchar(255) NOT NULL,
-  `file_content` longtext NOT NULL,
-  `file_size` int DEFAULT '0',
-  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `storage_key` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `structure_version` bigint unsigned NOT NULL DEFAULT '1',
+  `repository_generation` bigint unsigned NOT NULL DEFAULT '1',
+  `active_index_generation` bigint unsigned DEFAULT NULL,
+  `index_status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'stale',
+  `entry_count` int unsigned NOT NULL DEFAULT '0',
+  `total_size` bigint unsigned NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`),
+  UNIQUE KEY `uq_repository_states_storage_key` (`storage_key`),
+  CONSTRAINT `fk_repository_states_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `repository_entries`
+--
+
+DROP TABLE IF EXISTS `repository_entries`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `repository_entries` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `parent_id` bigint unsigned DEFAULT NULL,
+  `parent_scope` bigint unsigned GENERATED ALWAYS AS (ifnull(`parent_id`,0)) STORED,
+  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `relative_path` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `path_hash` binary(32) NOT NULL,
+  `entry_type` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `file_size` bigint unsigned NOT NULL DEFAULT '0',
+  `file_version` bigint unsigned NOT NULL DEFAULT '0',
+  `content_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `unique_user_filename` (`user_id`, `filename`),
-  KEY `idx_user_id` (`user_id`),
-  CONSTRAINT `user_code_repository_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  UNIQUE KEY `uq_repository_entries_owner_id` (`user_id`,`id`),
+  UNIQUE KEY `uq_repository_entries_sibling_name` (`user_id`,`parent_scope`,`name`),
+  UNIQUE KEY `uq_repository_entries_path_hash` (`user_id`,`path_hash`),
+  KEY `idx_repository_entries_parent` (`user_id`,`parent_id`,`entry_type`,`name`),
+  CONSTRAINT `fk_repository_entries_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_repository_entries_parent_owner` FOREIGN KEY (`user_id`,`parent_id`) REFERENCES `repository_entries` (`user_id`,`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_repository_entries_type` CHECK (`entry_type` IN ('file','directory')),
+  CONSTRAINT `chk_repository_entries_file_shape` CHECK (
+    (`entry_type` = 'directory' AND `file_size` = 0 AND `file_version` = 0 AND `content_sha256` IS NULL)
+    OR
+    (`entry_type` = 'file' AND `file_version` >= 1 AND `content_sha256` IS NOT NULL)
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `repository_upload_sessions`
+--
+
+DROP TABLE IF EXISTS `repository_upload_sessions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `repository_upload_sessions` (
+  `id` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `user_id` int NOT NULL,
+  `parent_id` bigint unsigned DEFAULT NULL,
+  `base_structure_version` bigint unsigned NOT NULL,
+  `status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'preview',
+  `manifest_json` longtext NOT NULL,
+  `entry_count` int unsigned NOT NULL DEFAULT '0',
+  `total_size` bigint unsigned NOT NULL DEFAULT '0',
+  `expires_at` datetime NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_repository_upload_sessions_user_status` (`user_id`,`status`,`expires_at`),
+  CONSTRAINT `fk_repository_upload_sessions_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `repository_delete_confirmations`
+--
+
+DROP TABLE IF EXISTS `repository_delete_confirmations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `repository_delete_confirmations` (
+  `id` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `user_id` int NOT NULL,
+  `entry_id` bigint unsigned NOT NULL,
+  `structure_version` bigint unsigned NOT NULL,
+  `manifest_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `file_count` int unsigned NOT NULL DEFAULT '0',
+  `directory_count` int unsigned NOT NULL DEFAULT '0',
+  `total_size` bigint unsigned NOT NULL DEFAULT '0',
+  `status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
+  `result_json` longtext,
+  `expires_at` datetime NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `committed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_repository_delete_confirmations_user` (`user_id`,`status`,`expires_at`),
+  CONSTRAINT `fk_repository_delete_confirmations_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `repository_legacy_migrations`
+--
+
+DROP TABLE IF EXISTS `repository_legacy_migrations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `repository_legacy_migrations` (
+  `user_id` int NOT NULL,
+  `source_file_count` int unsigned NOT NULL,
+  `source_total_size` bigint unsigned NOT NULL,
+  `source_manifest_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `completed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_repository_legacy_migrations_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `repository_fs_journal`
+--
+
+DROP TABLE IF EXISTS `repository_fs_journal`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `repository_fs_journal` (
+  `operation_id` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `user_id` int NOT NULL,
+  `operation_type` varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'prepared',
+  `structure_version_before` bigint unsigned NOT NULL,
+  `structure_version_after` bigint unsigned DEFAULT NULL,
+  `payload_json` longtext NOT NULL,
+  `error_message` text,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`operation_id`),
+  KEY `idx_repository_fs_journal_user_status` (`user_id`,`status`,`created_at`),
+  CONSTRAINT `fk_repository_fs_journal_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `submission_repository_snapshots`
+--
+
+DROP TABLE IF EXISTS `submission_repository_snapshots`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `submission_repository_snapshots` (
+  `submission_id` int NOT NULL,
+  `user_id` int NOT NULL,
+  `snapshot_key` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `relative_root` varchar(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `repository_generation` bigint unsigned NOT NULL,
+  `manifest_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `entry_count` int unsigned NOT NULL DEFAULT '0',
+  `total_size` bigint unsigned NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`submission_id`),
+  UNIQUE KEY `uq_submission_repository_snapshots_key` (`snapshot_key`),
+  KEY `idx_submission_repository_snapshots_user` (`user_id`,`created_at`),
+  CONSTRAINT `fk_submission_repository_snapshots_submission` FOREIGN KEY (`submission_id`) REFERENCES `submissions` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_submission_repository_snapshots_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -929,6 +1089,7 @@ DROP TABLE IF EXISTS `repository_index_jobs`;
 CREATE TABLE `repository_index_jobs` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
+  `base_repository_generation` bigint unsigned NOT NULL DEFAULT '0',
   `status` varchar(16) NOT NULL DEFAULT 'queued',
   `total_files` int NOT NULL DEFAULT '0',
   `processed_files` int NOT NULL DEFAULT '0',
@@ -960,8 +1121,9 @@ CREATE TABLE `repository_function_chunks` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `chunk_id` varchar(64) NOT NULL,
   `user_id` int NOT NULL,
-  `repo_file_id` int DEFAULT NULL,
-  `filename` varchar(255) NOT NULL,
+  `index_generation` bigint unsigned NOT NULL DEFAULT '0',
+  `repo_file_id` bigint unsigned DEFAULT NULL,
+  `filename` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL,
   `language` varchar(32) NOT NULL DEFAULT 'cpp',
   `kind` varchar(32) NOT NULL DEFAULT 'function',
   `qualified_name` varchar(255) NOT NULL,
@@ -973,6 +1135,9 @@ CREATE TABLE `repository_function_chunks` (
   `start_line` int NOT NULL DEFAULT '1',
   `end_line` int NOT NULL DEFAULT '1',
   `source_hash` varchar(64) NOT NULL,
+  `embedding_input_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  `parser_version` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  `structured_model` varchar(191) NOT NULL DEFAULT '',
   `code` longtext NOT NULL,
   `params_json` longtext,
   `returns_json` longtext,
@@ -980,8 +1145,8 @@ CREATE TABLE `repository_function_chunks` (
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_repository_function_chunks_chunk_id` (`chunk_id`),
-  KEY `idx_repository_function_chunks_user_file` (`user_id`,`filename`),
+  UNIQUE KEY `uk_repository_function_chunks_generation_chunk` (`user_id`,`index_generation`,`chunk_id`),
+  KEY `idx_repository_function_chunks_user_file` (`user_id`,`repo_file_id`),
   KEY `idx_repository_function_chunks_user_qname` (`user_id`,`qualified_name`),
   CONSTRAINT `fk_repository_function_chunks_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -998,8 +1163,9 @@ CREATE TABLE `repository_class_metadata` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `class_id` varchar(64) NOT NULL,
   `user_id` int NOT NULL,
-  `repo_file_id` int DEFAULT NULL,
-  `filename` varchar(255) NOT NULL,
+  `index_generation` bigint unsigned NOT NULL DEFAULT '0',
+  `repo_file_id` bigint unsigned DEFAULT NULL,
+  `filename` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL,
   `kind` varchar(16) NOT NULL DEFAULT 'class',
   `class_name` varchar(255) NOT NULL,
   `qualified_name` varchar(255) NOT NULL,
@@ -1010,7 +1176,8 @@ CREATE TABLE `repository_class_metadata` (
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_repository_class_metadata_class_id` (`class_id`),
+  UNIQUE KEY `uk_repository_class_metadata_generation_class` (`user_id`,`index_generation`,`class_id`),
+  KEY `idx_repository_class_metadata_user_file` (`user_id`,`repo_file_id`),
   KEY `idx_repository_class_metadata_user_class` (`user_id`,`class_name`),
   KEY `idx_repository_class_metadata_user_qname` (`user_id`,`qualified_name`),
   CONSTRAINT `fk_repository_class_metadata_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
@@ -1028,13 +1195,14 @@ CREATE TABLE `repository_chunk_embeddings` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `chunk_id` varchar(64) NOT NULL,
   `user_id` int NOT NULL,
+  `index_generation` bigint unsigned NOT NULL DEFAULT '0',
   `embedding_model` varchar(128) NOT NULL,
   `vector_dim` int NOT NULL,
   `vector_json` longtext NOT NULL,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_repository_chunk_embeddings_user_chunk` (`user_id`,`chunk_id`),
-  KEY `idx_repository_chunk_embeddings_user_chunk` (`user_id`,`chunk_id`),
+  UNIQUE KEY `uk_repository_chunk_embeddings_generation_chunk` (`user_id`,`index_generation`,`chunk_id`),
+  KEY `idx_repository_chunk_embeddings_user_chunk` (`user_id`,`index_generation`,`chunk_id`),
   CONSTRAINT `fk_repository_chunk_embeddings_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

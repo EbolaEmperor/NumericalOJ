@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from flask import Flask
 
-from oj_modules import db_services
+from oj_modules import db_services, submission_repository_snapshots
 from oj_modules.routes import problem_core_routes
 
 
@@ -158,6 +158,11 @@ def _install_fake_submission_db(monkeypatch, store, *, problem_type=1):
     monkeypatch.setattr(db_services, "get_db_connection", connection_factory)
     monkeypatch.setattr(db_services, "refresh_submission_status_snapshot", lambda _sid: None)
     monkeypatch.setattr(db_services, "bump_daily_submission_count", lambda: None)
+    monkeypatch.setattr(
+        submission_repository_snapshots,
+        "capture_submission_repository_snapshot",
+        lambda _cursor, **_kwargs: {"snapshot_key": "0" * 32},
+    )
     return connections
 
 
@@ -274,6 +279,26 @@ def test_submission_with_stable_user_id_uses_current_username(monkeypatch):
     assert submission_id == 1
     assert store.inserted_usernames == ["student-new"]
     assert store.quota_usernames == ["student-new"]
+
+
+def test_submission_identity_uses_shared_user_lock_to_avoid_repository_lock_cycle(
+    monkeypatch,
+):
+    store = _QuotaStore()
+    _install_fake_submission_db(monkeypatch, store)
+
+    _create_counted_submission()
+
+    user_reads = [
+        sql
+        for sql in store.sql
+        if sql.startswith(
+            "SELECT id, username, is_admin, class FROM users WHERE "
+        )
+    ]
+    assert user_reads
+    assert all(sql.endswith("FOR SHARE") for sql in user_reads)
+    assert not any(sql.endswith("FOR UPDATE") for sql in user_reads)
 
 
 def test_submission_without_user_id_rejects_stale_username(monkeypatch):

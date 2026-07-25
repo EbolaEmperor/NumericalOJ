@@ -49,7 +49,7 @@
     - oj_modules/ai_utils.py
     - oj_modules/tasks/agent_solve_task.py
     - oj_modules/tasks/agent_generate_testdata_task.py
-    - oj_modules/repository_index_services.py
+    - oj_modules/repository/index.py
     - oj_modules/routes/repository_routes.py
     - oj_modules/ai_detection/
 - name: 打榜赛

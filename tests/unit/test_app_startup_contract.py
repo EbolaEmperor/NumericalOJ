@@ -113,6 +113,38 @@ def test_destructive_recovery_is_separate_from_safe_scheduler_bootstrap():
     assert 'requeue_pending_on_startup' in recovery_calls
 
 
+def test_pending_watchdog_also_reclaims_expired_repository_upload_staging():
+    source = (
+        ROOT / "oj_modules" / "startup_requeue.py"
+    ).read_text(encoding="utf-8")
+
+    register_start = source.index("def register_pending_requeue_watchdog_task")
+    seed_start = source.index("def seed_pending_requeue_watchdog", register_start)
+    watchdog = source[register_start:seed_start]
+
+    assert "_cleanup_repository_upload_staging()" in watchdog
+    assert "'repository_upload_cleanup': repository_upload_cleanup" in watchdog
+
+
+def test_repository_domain_modules_live_in_the_repository_package():
+    modules_root = ROOT / "oj_modules"
+    package_root = modules_root / "repository"
+
+    assert not list(modules_root.glob("repository_*.py"))
+    assert {
+        path.name
+        for path in package_root.glob("*.py")
+    } >= {
+        "__init__.py",
+        "admin.py",
+        "includes.py",
+        "index.py",
+        "storage.py",
+        "tree.py",
+        "workspace.py",
+    }
+
+
 def test_gunicorn_config_preserves_single_worker_and_sse_capacity():
     settings = runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
 

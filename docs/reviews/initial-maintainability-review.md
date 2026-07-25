@@ -84,7 +84,7 @@ e2e 虽然有环境检查，但它位于 e2e fixture 内，[tests/e2e/conftest.p
 
 - `ranking_routes.py`：3363 行、46 个端点；
 - `ranking_reverse_judge_tasks.py`：3174 行；
-- `repository_index_services.py`：2770 行；
+- `oj_modules/repository/index.py`：2770 行；
 - `db_services.py`：2254 行；
 - `ranking_db.py`：2181 行；
 - `homework_routes.py`：2144 行。

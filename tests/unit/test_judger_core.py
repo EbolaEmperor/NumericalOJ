@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from oj_modules import judger_core
+from oj_modules import docker_sandbox, judger_core
 
 
 # ============== check_forbidden ==============
@@ -113,6 +113,135 @@ def test_run_dir_for_keeps_safe_chars(monkeypatch):
     assert os.path.basename(d) == "abc_-1.2"
 
 
+def test_reserved_archive_sid_is_never_used_as_attempt_directory(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "runs"
+    archive = root / "submission_archive"
+    archive.mkdir(parents=True)
+    marker = archive / "keep"
+    marker.write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(root))
+
+    prepared = judger_core._prepare_run_dir("submission_archive")
+
+    assert os.path.basename(prepared).startswith("run_")
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_reaper_refuses_symlinked_run_root(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    stale = outside / "eoj-batch-1"
+    stale.mkdir(parents=True)
+    marker = stale / "keep"
+    marker.write_text("keep", encoding="utf-8")
+    run_root = tmp_path / "runs"
+    run_root.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(run_root))
+
+    removed = judger_core.reap_stale_run_dirs(0.000001)
+
+    assert removed == 0
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_prepare_run_dir_replaces_stale_symlinks_without_following(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    os.makedirs(judger_core.JUDGER_RUN_ROOT)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "config.py"
+    protected.write_text("SECRET = True\n", encoding="utf-8")
+
+    stale = tmp_path / "runs" / "eoj-batch-9"
+    stale.mkdir()
+    (stale / "main.cpp").symlink_to(protected)
+
+    prepared = judger_core._prepare_run_dir("eoj-batch-9")
+    judger_core._write_text_file_exclusive(
+        prepared,
+        "main.cpp",
+        "int main() { return 0; }\n",
+    )
+
+    assert protected.read_text(encoding="utf-8") == "SECRET = True\n"
+    assert not os.path.islink(prepared)
+    assert not os.path.islink(os.path.join(prepared, "main.cpp"))
+    assert oct(os.stat(prepared).st_mode & 0o7777) == "0o700"
+    assert oct(os.stat(os.path.join(prepared, "main.cpp")).st_mode & 0o777) == "0o644"
+
+
+def test_prepare_run_dir_unlinks_stale_root_symlink_only(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "keep"
+    marker.write_text("keep", encoding="utf-8")
+    (root / "eoj-batch-10").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(root))
+
+    prepared = judger_core._prepare_run_dir("eoj-batch-10")
+
+    assert os.path.isdir(prepared)
+    assert not os.path.islink(prepared)
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_prepare_workspace_replaces_symlink_without_touching_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    run_dir = judger_core._prepare_run_dir("eoj-batch-11")
+    outside = tmp_path / "outside-case"
+    outside.mkdir()
+    marker = outside / "keep"
+    marker.write_text("keep", encoding="utf-8")
+    os.symlink(
+        outside,
+        os.path.join(run_dir, "workspace"),
+        target_is_directory=True,
+    )
+
+    workspace = judger_core._prepare_execution_workspace(run_dir)
+    judger_core._write_text_file_exclusive(
+        workspace,
+        "main.py",
+        "print(42)\n",
+    )
+
+    assert not os.path.islink(workspace)
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert (
+        tmp_path / "runs" / "eoj-batch-11" / "workspace" / "main.py"
+    ).read_text(
+        encoding="utf-8"
+    ) == "print(42)\n"
+    assert os.stat(workspace).st_mode & 0o777 == 0o755
+
+
+def test_exclusive_text_write_refuses_existing_symlink(tmp_path, monkeypatch):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    run_dir = judger_core._prepare_run_dir("eoj-batch-12")
+    protected = tmp_path / "protected"
+    protected.write_text("unchanged", encoding="utf-8")
+    os.symlink(protected, os.path.join(run_dir, "main.cpp"))
+
+    with pytest.raises(FileExistsError):
+        judger_core._write_text_file_exclusive(
+            run_dir,
+            "main.cpp",
+            "overwrite",
+        )
+
+    assert protected.read_text(encoding="utf-8") == "unchanged"
+
+
 # ============== capture_output_image_file ==============
 def test_capture_output_image_valid_ext_png(tmp_path):
     run_dir = str(tmp_path)
@@ -165,6 +294,59 @@ def test_capture_output_image_extension_set_matches_source():
     }
 
 
+def test_capture_output_image_rejects_proc_self_symlink(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / "output.png").symlink_to("/proc/self/environ")
+    monkeypatch.setattr(
+        judger_core,
+        "_wait_for_output_file",
+        lambda *_args, **_kwargs: True,
+    )
+
+    stored = judger_core.capture_output_image_file(
+        str(tmp_path),
+        "output.png",
+        "output",
+    )
+
+    assert stored is None
+    assert os.path.islink(tmp_path / "output.png")
+
+
+def test_capture_output_image_replaces_container_inode_with_safe_regular_file(
+    tmp_path,
+):
+    source = tmp_path / "output.png"
+    source.write_bytes(b"\x89PNG safe")
+
+    stored = judger_core.capture_output_image_file(
+        str(tmp_path),
+        "output.png",
+        "output",
+    )
+
+    assert stored == "output.png"
+    assert judger_core.is_safe_regular_artifact(source)
+    assert judger_core.read_safe_regular_artifact(source) == b"\x89PNG safe"
+    info = source.stat()
+    assert info.st_nlink == 1
+    assert not (info.st_mode & 0o022)
+
+
+def test_read_output_file_does_not_follow_container_symlink(tmp_path):
+    (tmp_path / "output.txt").symlink_to("/proc/self/environ")
+
+    assert (
+        judger_core.read_output_with_fallback(
+            str(tmp_path / "output.txt"),
+            "captured",
+        )
+        == "captured"
+    )
+
+
 # ============== timeout helpers ==============
 def test_timeout_sec_from_ns_basic():
     result = judger_core._timeout_sec_from_ns(1_000_000_000, factor=1.0)
@@ -194,6 +376,231 @@ def test_measured_exec_time_uses_container_elapsed():
 def test_measured_exec_time_marks_guard_timeout_as_tle():
     result = type("R", (), {"returncode": 124, "elapsed_ns": None})()
     assert judger_core._measured_exec_time_ns(result, 10) == 11
+
+
+def test_compiled_batch_compiles_once_and_runs_each_case_in_fresh_container(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), dict(kwargs)))
+        if "g++" in cmd:
+            return docker_sandbox._RunResult(
+                0,
+                "",
+                "",
+                artifacts={"a.out": b"fake executable"},
+            )
+        return docker_sandbox._RunResult(
+            0,
+            f"case-{len(calls) - 2}",
+            "",
+            123,
+        )
+
+    monkeypatch.setattr(judger_core, "run_case_in_container", fake_run)
+
+    events = list(
+        judger_core._batch_evaluate_stream(
+            {
+                "sid": "eoj-batch-30",
+                "code": "int main() { return 0; }",
+                "timeLimit": 1_000_000_000,
+                "test_cases": [{"input": "one"}, {"input": "two"}],
+                "user_files": [],
+            },
+            "cpp",
+        )
+    )
+
+    assert len(calls) == 3
+    assert "/sandbox/main.cpp" in calls[0][0]
+    assert calls[0][1]["executable_name"] == "a.out"
+    assert all("/sandbox/a.out" in call[0] for call in calls[1:])
+    assert all(call[1]["output_name"] == "output.txt" for call in calls[1:])
+    results = [event["result"] for event in events if event["event"] == "test_result"]
+    assert [result["files"]["stdout"] for result in results] == [
+        "case-0",
+        "case-1",
+    ]
+    executable = (
+        tmp_path / "runs" / "eoj-batch-30" / "workspace" / "a.out"
+    )
+    assert executable.stat().st_uid == os.geteuid()
+    assert oct(executable.stat().st_mode & 0o777) == "0o555"
+
+
+def test_script_batch_uses_one_short_lived_container_per_case(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), dict(kwargs)))
+        return docker_sandbox._RunResult(0, "ok", "", 456)
+
+    monkeypatch.setattr(judger_core, "run_case_in_container", fake_run)
+
+    events = list(
+        judger_core._batch_evaluate_script_stream(
+            {
+                "sid": "eoj-batch-31",
+                "code": "print(input())",
+                "timeLimit": 1_000_000_000,
+                "test_cases": [{"input": "one"}, {"input": "two"}],
+            },
+            "python",
+        )
+    )
+
+    assert len(calls) == 2
+    assert all("/sandbox/main.py" in call[0] for call in calls)
+    assert all(call[1]["output_name"] == "output.txt" for call in calls)
+    results = [event["result"] for event in events if event["event"] == "test_result"]
+    assert [result["time"] for result in results] == [456, 456]
+
+
+def test_batch_never_creates_host_writable_case_directories(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), dict(kwargs)))
+        if "g++" in cmd:
+            return docker_sandbox._RunResult(
+                0,
+                "",
+                "",
+                artifacts={"a.out": b"fake executable"},
+            )
+        return docker_sandbox._RunResult(0, "ok", "", 123)
+
+    monkeypatch.setattr(judger_core, "run_case_in_container", fake_run)
+
+    events = list(
+        judger_core._batch_evaluate_stream(
+            {
+                "sid": "eoj-batch-cleanup-failure",
+                "code": "int main() { return 0; }",
+                "timeLimit": 1_000_000_000,
+                "test_cases": [{"input": "one"}, {"input": "two"}],
+                "user_files": [],
+            },
+            "cpp",
+        )
+    )
+
+    assert len(calls) == 3
+    assert [event["event"] for event in events] == [
+        "compile",
+        "test_result",
+        "test_result",
+        "done",
+    ]
+    assert events[-1] == {"event": "done", "ok": True}
+    run_dir = tmp_path / "runs" / "eoj-batch-cleanup-failure"
+    assert not (run_dir / "case_0").exists()
+    assert not (run_dir / "case_1").exists()
+    assert not (run_dir / "input.txt").exists()
+
+
+def test_batch_public_images_are_never_mounted_into_later_case(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    calls = []
+
+    def fake_run(_cmd, **kwargs):
+        calls.append(dict(kwargs))
+        workspace = tmp_path / "runs" / "eoj-batch-image-isolation" / "workspace"
+        if len(calls) == 2:
+            assert (workspace.parent / "output_0.png").is_file()
+            assert not (workspace / "output_0.png").exists()
+        return docker_sandbox._RunResult(
+            0,
+            "ok",
+            "",
+            1,
+            artifacts={"output.png": b"\x89PNG secret"},
+            artifact_statuses={
+                "output.txt": "absent",
+                "output.png": "exported",
+            },
+        )
+
+    monkeypatch.setattr(judger_core, "run_case_in_container", fake_run)
+
+    events = list(
+        judger_core._batch_evaluate_script_stream(
+            {
+                "sid": "eoj-batch-image-isolation",
+                "code": "print('ok')",
+                "timeLimit": 1_000_000_000,
+                "outputImageFilename": "output.png",
+                "test_cases": [{"input": "one"}, {"input": "two"}],
+            },
+            "python",
+        )
+    )
+
+    assert len(calls) == 2
+    assert all(
+        call["run_dir"].endswith("/workspace")
+        for call in calls
+    )
+    assert events[-1] == {"event": "done", "ok": True}
+    artifact_dir = tmp_path / "runs" / "eoj-batch-image-isolation"
+    assert (artifact_dir / "output_0.png").read_bytes() == b"\x89PNG secret"
+    assert (artifact_dir / "output_1.png").read_bytes() == b"\x89PNG secret"
+
+
+@pytest.mark.parametrize(
+    ("stdout_truncated", "output_status"),
+    [
+        (True, "absent"),
+        (False, "rejected"),
+    ],
+)
+def test_truncated_or_rejected_output_is_explicit_ole(
+    tmp_path,
+    monkeypatch,
+    stdout_truncated,
+    output_status,
+):
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setattr(
+        judger_core,
+        "run_case_in_container",
+        lambda *_args, **_kwargs: docker_sandbox._RunResult(
+            0,
+            "correct answer",
+            "",
+            1,
+            stdout_truncated=stdout_truncated,
+            artifact_statuses={"output.txt": output_status},
+        ),
+    )
+
+    result = judger_core.run_py(
+        {
+            "sid": f"output-limit-{output_status}",
+            "code": "print('correct answer')",
+            "input": "",
+            "timeLimit": 1_000_000_000,
+        }
+    )
+
+    assert result["status"] == "Output Limit Exceeded"
+    assert result["exitStatus"] == 12
 
 
 # ============== C/C++ compile command numeric backend ==============

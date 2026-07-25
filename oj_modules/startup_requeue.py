@@ -100,6 +100,26 @@ def _recover_written_publications(*, min_age_seconds):
     return result
 
 
+def _cleanup_repository_upload_staging():
+    """周期性回收 24 小时未活动的上传会话；失败不阻断其他 watchdog 工作。"""
+    try:
+        from oj_modules.repository.tree import (
+            cleanup_expired_repository_upload_sessions,
+        )
+
+        result = cleanup_expired_repository_upload_sessions(apply=True)
+    except Exception as exc:
+        print(f"[PendingRequeue] 代码仓库过期上传暂存清理失败：{exc}")
+        return {"cleaned": [], "skipped": [], "failed": 1}
+    if result.get("cleaned") or result.get("skipped"):
+        print(
+            "[PendingRequeue] 代码仓库过期上传暂存清理结果："
+            f"清理 {len(result.get('cleaned') or [])}，"
+            f"跳过 {len(result.get('skipped') or [])}"
+        )
+    return result
+
+
 def _submission_age_seconds(row, now=None):
     timestamp = (row or {}).get('judge_heartbeat_at') or (row or {}).get('created_at')
     if not timestamp:
@@ -836,7 +856,9 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
         ranking_requeued = 0
         agent_requeued = 0
         written_publications = {}
+        repository_upload_cleanup = {}
         try:
+            repository_upload_cleanup = _cleanup_repository_upload_staging()
             written_publications = _recover_written_publications(
                 min_age_seconds=DEFAULT_RECOVERY_GRACE_SECONDS,
             )
@@ -864,6 +886,7 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
             'ranking_requeued': ranking_requeued,
             'agent_judge_requeued': agent_requeued,
             'written_publications': written_publications,
+            'repository_upload_cleanup': repository_upload_cleanup,
         }
 
     return pending_requeue_watchdog

@@ -52,6 +52,7 @@
       "Unaccepted",
       "Compile Error",
       "Memory Limit Exceeded",
+      "Output Limit Exceeded",
       "Error",
       "Forbidden",
       "No Output",

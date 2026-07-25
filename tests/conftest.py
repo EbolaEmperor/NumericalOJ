@@ -40,20 +40,24 @@ REDIS_DB = int(getattr(config, 'REDIS_DB', 0))
 
 # 需要 truncate 的核心业务表（动态班级表 ^C\w+ 另行 DROP）
 CORE_TABLES = [
-    'submission_test_points', 'submissions', 'submission_limits',
+    'submission_test_points', 'submission_repository_snapshots',
+    'repository_delete_confirmations', 'repository_upload_sessions',
+    'repository_fs_journal', 'repository_chunk_embeddings',
+    'repository_function_chunks', 'repository_class_metadata',
+    'repository_index_jobs', 'repository_entries',
+    'repository_legacy_migrations', 'repository_states',
+    'submissions', 'submission_limits',
     'ac_record', 'max_score', 'user_class_map', 'users', 'class_table',
     'problems', 'agent_task_runs', 'forum_replies', 'forum_threads',
     'verification_codes', 'ai_detection_results', 'ai_detection_tasks',
-    'user_code_repository', 'repository_chunk_embeddings',
-    'repository_function_chunks', 'repository_class_metadata',
-    'repository_index_jobs', 'daily_submission_stats', 'site_settings',
+    'daily_submission_stats', 'site_settings',
     'final_exam_scores',
 ]
 
 ADMIN_USERNAME = 'admin'
 ADMIN_PASSWORD = 'admin123'
 SEED_CLASSES = [('Cadmin', '管理员'), ('Cclass1', '测试班级')]
-TEST_FILESYSTEM_ROOTS = ('ranking_uploads',)
+TEST_FILESYSTEM_ROOTS = ('ranking_uploads', 'repository_storage')
 
 
 def sha256_hex(text):
@@ -285,7 +289,7 @@ def mock_ai(monkeypatch, request):
         monkeypatch.setattr(ai, '_call_qwen_text_with_images', lambda *a, **k: '{}', raising=False)
         monkeypatch.setattr(ai, '_call_qwen_omni_with_image', lambda *a, **k: '{}', raising=False)
     try:
-        import oj_modules.repository_index_services as ris
+        from oj_modules.repository import index as ris
         import numpy as np
 
         def _fake_encode(texts, model_name=None):

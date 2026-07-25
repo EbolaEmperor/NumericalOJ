@@ -26,7 +26,10 @@ from oj_modules.db_services import (
     set_setting,
 )
 from oj_modules.ranking_db import get_competition, list_competitions
-from oj_modules.repository_services import extract_includes_from_code, get_user_repository_files_by_names
+from oj_modules.repository.includes import (
+    extract_includes_from_code,
+    get_user_repository_files_by_names,
+)
 
 
 homework_bp = Blueprint('homework', __name__)
@@ -248,12 +251,19 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                             f'正在收集 {username} 的代码仓库 ({idx + 1}/{len(students)})',
                         )
 
-                        repo_files = get_student_repository_files(user_id)
+                        repo_files = get_student_repository_entries(user_id)
 
                         if repo_files:
                             safe_uname = re.sub(r'[\\/*?:"<>|]', '_', username)
                             for repo_file in repo_files:
                                 file_name = f"代码仓库/{safe_uname}/{repo_file['filename']}"
+                                if repo_file.get('entry_type') == 'directory':
+                                    info = zipfile.ZipInfo(file_name.rstrip('/') + '/')
+                                    info.flag_bits |= 0x800
+                                    info.create_system = 3
+                                    info.external_attr = (0o40755 & 0xFFFF) << 16
+                                    zip_file.writestr(info, b'')
+                                    continue
                                 try:
                                     info = zipfile.ZipInfo(file_name)
                                     info.flag_bits |= 0x800
@@ -1334,7 +1344,11 @@ def _build_problem_plagiarism_item(row, include_includes=False):
         if include_includes:
             included_files = extract_includes_from_code(raw_code)
             if included_files and row.get('user_id'):
-                repository_files = get_user_repository_files_by_names(row.get('user_id'), included_files)
+                repository_files = get_user_repository_files_by_names(
+                    row.get('user_id'),
+                    included_files,
+                    submission_id=row.get('submission_id'),
+                )
                 if repository_files:
                     compare_code += "\n\n// ===== 以下是引用的代码仓库文件 =====\n"
                     for filename, content in repository_files.items():
@@ -1911,24 +1925,26 @@ def detect_plagiarism(codes_data, threshold=0.9, task_id=None):
     return results
 
 
+def get_student_repository_entries(user_id):
+    from oj_modules.repository.tree import get_repository_tree_snapshot
+
+    snapshot = get_repository_tree_snapshot(int(user_id), include_content=True)
+    return [
+        {
+            "filename": item.get("relative_path") or item.get("filename"),
+            "entry_type": item.get("kind") or item.get("entry_type"),
+            "content": item.get("content") or "",
+        }
+        for item in snapshot.get("entries") or []
+    ]
+
+
 def get_student_repository_files(user_id):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-            SELECT filename, file_content
-            FROM user_code_repository
-            WHERE user_id = %s
-            ORDER BY filename
-            """
-            cursor.execute(sql, (user_id,))
-            files = cursor.fetchall()
-            return [{'filename': f['filename'], 'content': f['file_content'] or ''} for f in files]
-    except Exception as e:
-        print(f"获取代码仓库文件失败: {e}")
-        return []
-    finally:
-        conn.close()
+    return [
+        item
+        for item in get_student_repository_entries(user_id)
+        if item.get("entry_type") == "file"
+    ]
 
 
 def detect_repository_plagiarism(students_data, threshold=0.9, task_id=None):
