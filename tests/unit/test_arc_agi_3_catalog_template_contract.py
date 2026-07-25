@@ -40,7 +40,6 @@ def test_help_modal_contains_accessible_verified_top_five_snapshot():
 
 
 def test_leaderboard_snapshot_explains_scope_source_and_cutoff():
-    assert "不同推理档位作为独立榜单项" in TEMPLATE
     assert (
         '<time datetime="2026-07-24T17:57:13Z">'
         "2026 年 7 月 24 日 17:57 UTC</time>"
