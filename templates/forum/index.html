@@ -291,6 +291,7 @@
   {{ super() }}
   <script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
   <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/shiki-bash/highlighter.js') }}"></script>
   <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
   <script src="{{ url_for('static', filename='app/forum.js') }}"></script>
 {% endblock %}
