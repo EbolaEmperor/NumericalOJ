@@ -81,12 +81,18 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert 'deploy/backup_database.py prune' in script
     assert "scripts/init_db_schema.py" in script
     assert (
-        "scripts/migrations/"
-        "m20260725_forum_anonymous_identity_ownership.py"
-    ) in script
-    assert "--apply --confirm-app-writers-stopped" in script
-    assert "scripts/backfill_class_logos.py" in script
+        "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
+        in script
+    )
+    assert "scripts/repository_storage_admin.py doctor" in script
     assert "scripts/recover_pending_tasks.py --confirm-celery-stopped" in script
+    for one_time_entry in (
+        "m20260725_repository_index_generations.py",
+        "m20260725_repository_tree_storage.py",
+        "m20260725_forum_anonymous_identity_ownership.py",
+        "scripts/backfill_class_logos.py",
+    ):
+        assert one_time_entry not in script
     arc_prepare = script.index("deploy/prepare_arc_agi_3.py")
     arc_switch = script.index(
         'mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"'
@@ -112,16 +118,17 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         "phase='创建并验证数据库回滚点'"
     ) < script.index("scripts/init_db_schema.py")
     schema_sync = script.index("scripts/init_db_schema.py")
-    identity_ownership_migration = script.index(
-        "scripts/migrations/"
-        "m20260725_forum_anonymous_identity_ownership.py"
+    expired_upload_cleanup = script.index(
+        "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
     )
-    class_logo_backfill = script.index("scripts/backfill_class_logos.py")
+    repository_doctor = script.index(
+        "scripts/repository_storage_admin.py doctor"
+    )
     task_recovery = script.index("scripts/recover_pending_tasks.py")
     assert (
         schema_sync
-        < identity_ownership_migration
-        < class_logo_backfill
+        < expired_upload_cleanup
+        < repository_doctor
         < task_recovery
     )
 
