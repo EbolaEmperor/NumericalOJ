@@ -15,10 +15,8 @@ import json
 import os
 import re
 import selectors
-import shutil
 import stat
 import subprocess
-import tempfile
 import time
 import uuid
 
@@ -780,75 +778,71 @@ def _parse_case_protocol(
     }
 
 
-def _read_copied_artifact(path, *, max_bytes):
-    absolute_path = os.path.abspath(path)
-    parent_fd = os.open(
-        os.path.dirname(absolute_path),
-        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+def _read_case_artifact(container_name, name, *, max_bytes):
+    safe_name = _safe_artifact_name(name)
+    limit = int(max_bytes)
+    if limit < 0:
+        raise ValueError("容器产物上限不能为负数")
+    # Docker 不支持用 `docker cp` 读取 tmpfs。容器仍存活时以 root 只读流式
+    # 导出可信 runner 写入的 0600 文件，并在宿主侧持续 drain、严格限制保留字节数。
+    proc = subprocess.Popen(
+        [
+            "docker",
+            "exec",
+            "--user",
+            "0:0",
+            container_name,
+            "cat",
+            "--",
+            f"/export/{safe_name}",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     try:
-        fd = os.open(
-            _safe_artifact_name(os.path.basename(absolute_path)),
-            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
-            dir_fd=parent_fd,
+        data, stderr, truncated, stderr_truncated = _communicate_bounded(
+            proc,
+            timeout_sec=30,
+            stdout_limit=limit + 1,
+            stderr_limit=64 * 1024,
         )
-    finally:
-        os.close(parent_fd)
-    try:
-        info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or int(info.st_nlink) != 1
-            or int(info.st_size) < 0
-            or int(info.st_size) > int(max_bytes)
-        ):
-            raise RuntimeError("Docker 导出的产物不是安全的有界普通文件")
-        chunks = []
-        remaining = int(max_bytes) + 1
-        while remaining > 0:
-            chunk = os.read(fd, min(1024 * 1024, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        data = b"".join(chunks)
-        if len(data) > int(max_bytes):
-            raise RuntimeError("Docker 导出的产物读取时超过上限")
-        return data
-    finally:
-        os.close(fd)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        raise RuntimeError(f"从判题容器导出 {safe_name} 超时") from exc
+    if (
+        proc.returncode != 0
+        or truncated
+        or stderr_truncated
+        or len(data) > limit
+    ):
+        detail = _decode_output(stderr)[:300]
+        message = f"无法从判题容器导出 {safe_name}"
+        if detail:
+            message += f"：{detail}"
+        raise RuntimeError(message)
+    return data
 
 
 def _copy_case_artifacts(container_name, artifact_limits):
     if not artifact_limits:
         return {}
-    temporary_dir = tempfile.mkdtemp(prefix="numoj-case-export-")
-    try:
-        exported = {}
-        for name, max_bytes in artifact_limits.items():
-            safe_name = _safe_artifact_name(name)
-            destination = os.path.join(temporary_dir, safe_name)
-            result = subprocess.run(
-                [
-                    "docker",
-                    "cp",
-                    f"{container_name}:/export/{safe_name}",
-                    destination,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"无法从判题容器导出 {safe_name}")
-            exported[safe_name] = _read_copied_artifact(
-                destination,
-                max_bytes=max_bytes,
-            )
-        return exported
-    finally:
-        shutil.rmtree(temporary_dir, ignore_errors=True)
+    exported = {}
+    for name, max_bytes in artifact_limits.items():
+        safe_name = _safe_artifact_name(name)
+        exported[safe_name] = _read_case_artifact(
+            container_name,
+            safe_name,
+            max_bytes=max_bytes,
+        )
+    return exported
 
 
 def run_case_in_container(

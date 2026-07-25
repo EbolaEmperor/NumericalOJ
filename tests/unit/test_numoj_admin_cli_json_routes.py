@@ -7,6 +7,8 @@ import uuid
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 
 def _load_numoj_admin_cli_module():
     root = Path(__file__).resolve().parents[2]
@@ -148,6 +150,136 @@ def test_forum_write_commands_use_json_api_and_uuid(monkeypatch, capsys):
     assert kwargs["json"]["expected_identity_token"] == "posting-token"
     assert uuid.UUID(kwargs["json"]["client_request_id"])
     capsys.readouterr()
+
+
+def test_repository_save_create_sends_current_structure_version(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    client = _SequenceClient([
+        _PayloadResponse({"success": True, "structure_version": 12, "files": []}),
+        _PayloadResponse({"success": True, "file_id": 9}),
+    ])
+    monkeypatch.setattr(cli.repository, "client_from_args", lambda _args: client)
+
+    cli.repository_save_file(Namespace(
+        filename="src/main.cpp",
+        content="int main() { return 0; }\n",
+        content_file=None,
+        file_id=None,
+    ))
+
+    assert client.requests == [
+        ("GET", "/api/repository/files", {}),
+        (
+            "POST",
+            "/api/repository/file",
+            {
+                "json": {
+                    "filename": "src/main.cpp",
+                    "content": "int main() { return 0; }\n",
+                    "expected_structure_version": 12,
+                }
+            },
+        ),
+    ]
+    capsys.readouterr()
+
+
+def test_repository_save_update_sends_current_file_version(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    client = _SequenceClient([
+        _PayloadResponse({"success": True, "id": 9, "file_version": 7, "content": "old"}),
+        _PayloadResponse({"success": True, "file_id": 9}),
+    ])
+    monkeypatch.setattr(cli.repository, "client_from_args", lambda _args: client)
+
+    cli.repository_save_file(Namespace(
+        filename="src/main.cpp",
+        content="new\n",
+        content_file=None,
+        file_id=9,
+    ))
+
+    assert client.requests == [
+        ("GET", "/api/repository/file/9", {}),
+        (
+            "POST",
+            "/api/repository/file",
+            {
+                "json": {
+                    "filename": "src/main.cpp",
+                    "content": "new\n",
+                    "file_id": 9,
+                    "expected_file_version": 7,
+                }
+            },
+        ),
+    ]
+    capsys.readouterr()
+
+
+def test_repository_upload_sends_current_structure_version_as_form_data(monkeypatch, capsys, tmp_path):
+    cli = _load_numoj_admin_cli_module()
+    client = _SequenceClient([
+        _PayloadResponse({"success": True, "structure_version": 21, "files": []}),
+        _PayloadResponse({"success": True, "file_id": 3}),
+    ])
+    monkeypatch.setattr(cli.repository, "client_from_args", lambda _args: client)
+    source = tmp_path / "solver.py"
+    source.write_text("print('ok')\n", encoding="utf-8")
+
+    cli.repository_upload(Namespace(file=str(source)))
+
+    assert [(method, path) for method, path, _kwargs in client.requests] == [
+        ("GET", "/api/repository/files"),
+        ("POST", "/api/repository/upload"),
+    ]
+    upload_kwargs = client.requests[1][2]
+    assert upload_kwargs["data"] == {"expected_structure_version": "21"}
+    assert upload_kwargs["files"]["file"][0] == "solver.py"
+    assert upload_kwargs["files"]["file"][1].closed
+    capsys.readouterr()
+
+
+def test_repository_delete_confirms_once_with_server_token(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    client = _SequenceClient([
+        _PayloadResponse({
+            "success": False,
+            "code": "confirmation_required",
+            "confirmation_token": "delete-token",
+        }, status_code=409),
+        _PayloadResponse({"success": True, "deleted": True}),
+    ])
+    monkeypatch.setattr(cli.repository, "client_from_args", lambda _args: client)
+
+    cli.repository_delete_file(Namespace(file_id=9))
+
+    assert client.requests == [
+        ("DELETE", "/api/repository/file/9", {}),
+        (
+            "DELETE",
+            "/api/repository/file/9",
+            {"json": {"confirmation_token": "delete-token"}},
+        ),
+    ]
+    capsys.readouterr()
+
+
+def test_repository_delete_does_not_swallow_unrelated_conflict(monkeypatch):
+    cli = _load_numoj_admin_cli_module()
+    client = _SequenceClient([
+        _PayloadResponse({
+            "success": False,
+            "code": "structure_conflict",
+            "message": "repository changed",
+        }, status_code=409),
+    ])
+    monkeypatch.setattr(cli.repository, "client_from_args", lambda _args: client)
+
+    with pytest.raises(cli.repository.CliError):
+        cli.repository_delete_file(Namespace(file_id=9))
+
+    assert client.requests == [("DELETE", "/api/repository/file/9", {})]
 
 
 def test_ranking_detail_submissions_tab_maps_to_server_tab(monkeypatch):
@@ -1038,10 +1170,11 @@ class _HygieneClient:
         if path == "/api/repository/files":
             return _PayloadResponse({
                 **self._noise(),
+                "structure_version": 12,
                 "files": [{"id": 1, "filename": "a.m", "file_size": 6, **self._noise()}],
             })
         if path == "/api/repository/file/1":
-            return _PayloadResponse({**self._noise(), "filename": "a.m", "content": "disp(1)"})
+            return _PayloadResponse({**self._noise(), "file_version": 7, "filename": "a.m", "content": "disp(1)"})
         if path == "/api/repository/index/status/active":
             return _PayloadResponse({**self._noise(), "has_active": True, "job": self._job()})
         if path.startswith("/api/repository/index/status/"):
