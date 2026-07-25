@@ -270,6 +270,139 @@ def test_host_bounded_communicate_delivers_all_input():
     assert stderr_truncated is False
 
 
+def test_case_artifact_is_streamed_from_tmpfs_with_bounded_docker_exec(
+    monkeypatch,
+):
+    commands = []
+    binary_payload = b"\x00ELF\xffartifact"
+
+    class FakeProc:
+        returncode = 0
+
+    def fake_popen(command, **kwargs):
+        commands.append((list(command), kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(docker_sandbox.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        docker_sandbox,
+        "_communicate_bounded",
+        lambda proc, **kwargs: (
+            binary_payload,
+            b"",
+            False,
+            False,
+        ),
+    )
+
+    exported = docker_sandbox._copy_case_artifacts(
+        "numoj-case-safe",
+        {"a.out": len(binary_payload)},
+    )
+
+    assert exported == {"a.out": binary_payload}
+    command, kwargs = commands[0]
+    assert command == [
+        "docker",
+        "exec",
+        "--user",
+        "0:0",
+        "numoj-case-safe",
+        "cat",
+        "--",
+        "/export/a.out",
+    ]
+    assert "cp" not in command
+    assert kwargs == {
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+
+
+@pytest.mark.parametrize(
+    ("returncode", "payload", "truncated", "stderr_truncated"),
+    [
+        (1, b"", False, False),
+        (0, b"12345", False, False),
+        (0, b"1234", True, False),
+        (0, b"1234", False, True),
+    ],
+)
+def test_case_artifact_stream_fails_closed_on_exec_or_size_errors(
+    monkeypatch,
+    returncode,
+    payload,
+    truncated,
+    stderr_truncated,
+):
+    class FakeProc:
+        pass
+
+    proc = FakeProc()
+    proc.returncode = returncode
+    monkeypatch.setattr(
+        docker_sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: proc,
+    )
+    monkeypatch.setattr(
+        docker_sandbox,
+        "_communicate_bounded",
+        lambda *_args, **_kwargs: (
+            payload,
+            b"docker exec failed" if returncode else b"",
+            truncated,
+            stderr_truncated,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="无法从判题容器导出 a.out"):
+        docker_sandbox._read_case_artifact(
+            "numoj-case-safe",
+            "a.out",
+            max_bytes=4,
+        )
+
+
+def test_case_artifact_stream_reaps_timed_out_docker_exec(monkeypatch):
+    class FakeProc:
+        returncode = None
+        killed = False
+        waited = False
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            self.waited = True
+            self.returncode = -9
+
+    proc = FakeProc()
+    monkeypatch.setattr(
+        docker_sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: proc,
+    )
+    monkeypatch.setattr(
+        docker_sandbox,
+        "_communicate_bounded",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired("docker exec", 30)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="导出 a.out 超时"):
+        docker_sandbox._read_case_artifact(
+            "numoj-case-safe",
+            "a.out",
+            max_bytes=4,
+        )
+
+    assert proc.killed is True
+    assert proc.waited is True
+
+
 def test_case_protocol_rejects_unlisted_artifact():
     with pytest.raises(RuntimeError, match="白名单外"):
         docker_sandbox._parse_case_protocol(

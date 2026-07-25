@@ -15,6 +15,18 @@ from . import common
 from .common import *  # noqa: F401,F403 - command modules share the CLI helper surface.
 
 
+def _repository_version(client: Any, path: str, field: str) -> int:
+    resp = client.request("GET", path)
+    ensure_ok(resp, allow_redirect=False)
+    if not response_is_json(resp):
+        raise CliError(f"Repository API response is missing JSON field {field}.")
+    payload = resp.json()
+    value = payload.get(field) if isinstance(payload, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CliError(f"Repository API response is missing integer field {field}.")
+    return value
+
+
 def _necessary_repository_job(job: Any) -> Any:
     if not isinstance(job, dict):
         return job
@@ -191,21 +203,50 @@ def repository_save_file(args: argparse.Namespace) -> None:
     payload: Dict[str, Any] = {"filename": args.filename, "content": content}
     if args.file_id is not None:
         payload["file_id"] = args.file_id
+        payload["expected_file_version"] = _repository_version(
+            client,
+            f"/api/repository/file/{args.file_id}",
+            "file_version",
+        )
+    else:
+        payload["expected_structure_version"] = _repository_version(
+            client,
+            "/api/repository/files",
+            "structure_version",
+        )
     resp = client.request("POST", "/api/repository/file", json=payload)
     common.output_projected_json_response(resp, necessary_repository_write_payload, allow_redirect=True)
 
 
 def repository_delete_file(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("DELETE", f"/api/repository/file/{args.file_id}")
+    path = f"/api/repository/file/{args.file_id}"
+    resp = client.request("DELETE", path)
+    if resp.status_code == 409 and response_is_json(resp):
+        payload = resp.json()
+        if isinstance(payload, dict) and payload.get("code") == "confirmation_required":
+            token = payload.get("confirmation_token")
+            if not isinstance(token, str) or not token:
+                ensure_ok(resp, allow_redirect=False)
+            resp = client.request("DELETE", path, json={"confirmation_token": token})
     common.output_projected_json_response(resp, necessary_repository_delete_payload, allow_redirect=True)
 
 
 def repository_upload(args: argparse.Namespace) -> None:
     client = client_from_args(args)
+    structure_version = _repository_version(
+        client,
+        "/api/repository/files",
+        "structure_version",
+    )
     files = {"file": require_file(args.file)}
     try:
-        resp = client.request("POST", "/api/repository/upload", files=files)
+        resp = client.request(
+            "POST",
+            "/api/repository/upload",
+            files=files,
+            data={"expected_structure_version": str(structure_version)},
+        )
     finally:
         close_files(files)
     common.output_projected_json_response(resp, necessary_repository_write_payload, allow_redirect=True)
