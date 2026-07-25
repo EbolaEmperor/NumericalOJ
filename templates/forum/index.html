@@ -8,6 +8,7 @@
 
 {% block head %}
   {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app/forum.css') }}">
 {% endblock %}
 
@@ -200,7 +201,7 @@
             placeholder="补充你的思路、代码，或者已经尝试过的方法…"
           ></textarea>
         </div>
-        <div class="forum-editor-preview forum-markdown" id="editorPreviewPanel" hidden>
+        <div class="forum-editor-preview forum-markdown numoj-markdown" id="editorPreviewPanel" hidden>
           <p class="forum-preview-placeholder">输入内容后，这里会显示经过服务端清洗并安全绘制的预览。</p>
         </div>
         <p class="forum-field-error" id="editorError" role="alert"></p>
@@ -277,6 +278,6 @@
 {% block scripts %}
   {{ super() }}
   <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
-  <script src="{{ url_for('static', filename='app/forum-markdown.js') }}"></script>
+  <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
   <script src="{{ url_for('static', filename='app/forum.js') }}"></script>
 {% endblock %}

@@ -9,10 +9,16 @@ ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = (ROOT / "templates" / "forum" / "index.html").read_text(
     encoding="utf-8"
 )
+PROBLEM_TEMPLATE = (ROOT / "templates" / "problems" / "detail.html").read_text(
+    encoding="utf-8"
+)
 CSS = (ROOT / "static" / "app" / "forum.css").read_text(encoding="utf-8")
+MARKDOWN_CSS = (
+    ROOT / "static" / "app" / "markdown-rendering.css"
+).read_text(encoding="utf-8")
 JAVASCRIPT = (ROOT / "static" / "app" / "forum.js").read_text(encoding="utf-8")
 MARKDOWN_JAVASCRIPT = (
-    ROOT / "static" / "app" / "forum-markdown.js"
+    ROOT / "static" / "app" / "markdown-rendering.js"
 ).read_text(encoding="utf-8")
 ROUTES = (ROOT / "oj_modules" / "routes" / "forum_routes.py").read_text(
     encoding="utf-8"
@@ -24,8 +30,8 @@ BASE_LAYOUT = (ROOT / "templates" / "layouts" / "base.html").read_text(
     encoding="utf-8"
 )
 PACKAGE = (ROOT / "package.json").read_text(encoding="utf-8")
-FORUM_ASSET_BUILD = (
-    ROOT / "scripts" / "build_forum_rendering.mjs"
+MERMAID_ASSET_BUILD = (
+    ROOT / "scripts" / "build_mermaid.mjs"
 ).read_text(encoding="utf-8")
 CI_WORKFLOW = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
     encoding="utf-8"
@@ -149,26 +155,32 @@ def test_mathjax_uses_an_explicit_non_html_package_allowlist():
     assert "load: []" in MATHJAX
 
 
-def test_forum_loads_pinned_self_hosted_mermaid_only_on_its_page():
+def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
     mermaid_asset = ROOT / "static" / "vendor" / "mermaid" / "mermaid.min.js"
     mermaid_license = ROOT / "static" / "vendor" / "mermaid" / "LICENSE"
 
-    assert TEMPLATE.count("vendor/mermaid/mermaid.min.js") == 1
-    assert TEMPLATE.count("app/forum-markdown.js") == 1
-    assert TEMPLATE.index("vendor/mermaid/mermaid.min.js") < TEMPLATE.index(
-        "app/forum-markdown.js"
-    )
-    assert TEMPLATE.index("app/forum-markdown.js") < TEMPLATE.index("app/forum.js")
+    for page_template in (TEMPLATE, PROBLEM_TEMPLATE):
+        assert page_template.count("app/markdown-rendering.css") == 1
+        assert page_template.count("vendor/mermaid/mermaid.min.js") == 1
+        assert page_template.count("app/markdown-rendering.js") == 1
+        assert page_template.index(
+            "vendor/mermaid/mermaid.min.js"
+        ) < page_template.index("app/markdown-rendering.js")
+    assert TEMPLATE.index("app/markdown-rendering.js") < TEMPLATE.index("app/forum.js")
+    assert 'class="problem-content numoj-markdown my-3"' in PROBLEM_TEMPLATE
+    assert "data-numoj-markdown" in PROBLEM_TEMPLATE
     assert "vendor/mermaid" not in BASE_LAYOUT
+    assert "app/markdown-rendering.js" not in BASE_LAYOUT
     assert '"mermaid": "11.16.0"' in PACKAGE
-    assert "node_modules/mermaid/dist/mermaid.min.js" in FORUM_ASSET_BUILD
+    assert '"build:mermaid": "node scripts/build_mermaid.mjs"' in PACKAGE
+    assert "node_modules/mermaid/dist/mermaid.min.js" in MERMAID_ASSET_BUILD
     assert "npm run build:frontend" in CI_WORKFLOW
     assert "static/vendor/mermaid" in CI_WORKFLOW
     assert mermaid_asset.stat().st_size > 1_000_000
     assert mermaid_license.is_file()
 
 
-def test_forum_mermaid_uses_sandbox_limits_and_handles_dynamic_html():
+def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
     for contract in (
         'securityLevel: "sandbox"',
         "startOnLoad: false",
@@ -176,10 +188,15 @@ def test_forum_mermaid_uses_sandbox_limits_and_handles_dynamic_html():
         "maxEdges: MERMAID_MAX_EDGES",
         "suppressErrorRendering: true",
         'const source = String(code.textContent || "");',
-        "await mermaidRenderer.parse(source, { suppressErrors: true });",
-        "await mermaidRenderer.run({ nodes: [diagram] });",
-        "container.dataset.mermaidGeneration !== generation",
+        "await renderer.parse(source, { suppressErrors: true });",
+        "await renderer.run({ nodes: [diagram] });",
+        "container.dataset.numojMermaidGeneration !== generation",
+        'block.dataset.numojMermaidState = "queued";',
         "if (root.isConnected) await typesetMath(root);",
+        "mathJax.typesetClear([root]);",
+        'root.matches("[data-numoj-markdown]")',
+        'root.querySelectorAll("[data-numoj-markdown]")',
+        "window.NumericalOJMarkdownRenderer = Object.freeze({",
     ):
         assert contract in MARKDOWN_JAVASCRIPT
 
@@ -187,11 +204,14 @@ def test_forum_mermaid_uses_sandbox_limits_and_handles_dynamic_html():
     assert ".then(settleScrollPosition)" in JAVASCRIPT
     assert "renderSequence !== state.conversationRenderSequence" in JAVASCRIPT
     assert "await enhanceRenderedMarkdown(target);" in JAVASCRIPT
-    assert "window.NumericalOJForumMarkdown.enhance(root)" in JAVASCRIPT
+    assert "window.NumericalOJMarkdownRenderer.enhance(root)" in JAVASCRIPT
+    assert "window.NumericalOJMarkdownRenderer.clear(root)" in JAVASCRIPT
     assert 'querySelectorAll("img")' not in MARKDOWN_JAVASCRIPT
     assert ".forum-markdown img {\n  display: block;" in CSS
 
-    assert ".forum-markdown .codehilite .k" in CSS
-    assert ".forum-markdown .codehilite .s" in CSS
-    assert ".forum-markdown .codehilite .c" in CSS
-    assert ".forum-mermaid-diagram > iframe" in CSS
+    assert ".numoj-markdown .codehilite .k" in MARKDOWN_CSS
+    assert ".numoj-markdown .codehilite .s" in MARKDOWN_CSS
+    assert ".numoj-markdown .codehilite .c" in MARKDOWN_CSS
+    assert ".numoj-mermaid-diagram > iframe" in MARKDOWN_CSS
+    assert "Pygments 2.20 class theme" not in CSS
+    assert ".forum-mermaid" not in CSS

@@ -14,7 +14,7 @@ JAVASCRIPT_ASSETS = (
     "static/app/arc-agi-3.js",
     "static/app/class-picker.js",
     "static/app/choice-picker.js",
-    "static/app/forum-markdown.js",
+    "static/app/markdown-rendering.js",
     "static/app/forum.js",
     "static/app/ranking/endpoints.js",
     "static/app/ranking/rules-editor.js",

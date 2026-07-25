@@ -1,0 +1,317 @@
+.numoj-markdown {
+  --numoj-markdown-mono:
+    "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  --numoj-markdown-ink: #18181b;
+  --numoj-markdown-muted: #71717a;
+  --numoj-markdown-line: #d4d4d8;
+  --numoj-markdown-soft: #fafaf8;
+  --numoj-markdown-accent: #ea580c;
+  --numoj-markdown-accent-soft: #fff7ed;
+  --numoj-markdown-danger: #b91c1c;
+  --numoj-markdown-danger-soft: #fff7f7;
+}
+
+.numoj-markdown .codehilite {
+  overflow: hidden;
+  margin: 0 0 1em;
+  border-radius: 9px;
+  background: #0d1117;
+  color: #e6edf3;
+}
+
+.numoj-markdown .codehilite pre {
+  margin: 0;
+  border-color: #30363d;
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: var(--numoj-markdown-mono);
+}
+
+.numoj-markdown .codehilite pre code {
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+}
+
+/* Pygments 2.20 class theme：覆盖全部 lexer 共用的 token 层级。 */
+.numoj-markdown .codehilite .hll {
+  background-color: #30363d;
+}
+
+.numoj-markdown .codehilite .c,
+.numoj-markdown .codehilite .ch,
+.numoj-markdown .codehilite .cm,
+.numoj-markdown .codehilite .c1 {
+  color: #8b949e;
+  font-style: italic;
+}
+
+.numoj-markdown .codehilite .cp,
+.numoj-markdown .codehilite .cs {
+  color: #8b949e;
+  font-weight: 700;
+  font-style: italic;
+}
+
+.numoj-markdown .codehilite .cpf {
+  color: #8b949e;
+  font-style: italic;
+}
+
+.numoj-markdown .codehilite .err,
+.numoj-markdown .codehilite .gr,
+.numoj-markdown .codehilite .gt {
+  color: #ff7b72;
+}
+
+.numoj-markdown .codehilite .esc,
+.numoj-markdown .codehilite .g,
+.numoj-markdown .codehilite .n,
+.numoj-markdown .codehilite .p,
+.numoj-markdown .codehilite .pm,
+.numoj-markdown .codehilite .x {
+  color: #e6edf3;
+}
+
+.numoj-markdown .codehilite .k,
+.numoj-markdown .codehilite .kd,
+.numoj-markdown .codehilite .kn,
+.numoj-markdown .codehilite .kr,
+.numoj-markdown .codehilite .kt,
+.numoj-markdown .codehilite .nn {
+  color: #ff7b72;
+}
+
+.numoj-markdown .codehilite .kc,
+.numoj-markdown .codehilite .kp,
+.numoj-markdown .codehilite .ld,
+.numoj-markdown .codehilite .no,
+.numoj-markdown .codehilite .nl,
+.numoj-markdown .codehilite .nv,
+.numoj-markdown .codehilite .py,
+.numoj-markdown .codehilite .vc,
+.numoj-markdown .codehilite .vg,
+.numoj-markdown .codehilite .vi,
+.numoj-markdown .codehilite .vm {
+  color: #79c0ff;
+}
+
+.numoj-markdown .codehilite .o,
+.numoj-markdown .codehilite .ow {
+  color: #ff7b72;
+  font-weight: 700;
+}
+
+.numoj-markdown .codehilite .l,
+.numoj-markdown .codehilite .m,
+.numoj-markdown .codehilite .mb,
+.numoj-markdown .codehilite .mf,
+.numoj-markdown .codehilite .mh,
+.numoj-markdown .codehilite .mi,
+.numoj-markdown .codehilite .mo,
+.numoj-markdown .codehilite .il,
+.numoj-markdown .codehilite .s,
+.numoj-markdown .codehilite .sb,
+.numoj-markdown .codehilite .sc,
+.numoj-markdown .codehilite .sd,
+.numoj-markdown .codehilite .s1,
+.numoj-markdown .codehilite .s2,
+.numoj-markdown .codehilite .sh,
+.numoj-markdown .codehilite .si,
+.numoj-markdown .codehilite .ss,
+.numoj-markdown .codehilite .sx {
+  color: #a5d6ff;
+}
+
+.numoj-markdown .codehilite .dl,
+.numoj-markdown .codehilite .sa,
+.numoj-markdown .codehilite .se,
+.numoj-markdown .codehilite .sr {
+  color: #79c0ff;
+}
+
+.numoj-markdown .codehilite .na,
+.numoj-markdown .codehilite .nb,
+.numoj-markdown .codehilite .bp,
+.numoj-markdown .codehilite .nx {
+  color: #e6edf3;
+}
+
+.numoj-markdown .codehilite .nc,
+.numoj-markdown .codehilite .ne {
+  color: #f0883e;
+  font-weight: 700;
+}
+
+.numoj-markdown .codehilite .nd,
+.numoj-markdown .codehilite .nf,
+.numoj-markdown .codehilite .fm {
+  color: #d2a8ff;
+  font-weight: 700;
+}
+
+.numoj-markdown .codehilite .ni {
+  color: #ffa657;
+}
+
+.numoj-markdown .codehilite .nt {
+  color: #7ee787;
+}
+
+.numoj-markdown .codehilite .w {
+  color: #6e7681;
+}
+
+.numoj-markdown .codehilite .gd {
+  background-color: #490202;
+  color: #ffa198;
+}
+
+.numoj-markdown .codehilite .gi {
+  background-color: #0f5323;
+  color: #56d364;
+}
+
+.numoj-markdown .codehilite .ge {
+  font-style: italic;
+}
+
+.numoj-markdown .codehilite .ges {
+  font-weight: 700;
+  font-style: italic;
+}
+
+.numoj-markdown .codehilite .gh,
+.numoj-markdown .codehilite .gu {
+  color: #79c0ff;
+  font-weight: 700;
+}
+
+.numoj-markdown .codehilite .go,
+.numoj-markdown .codehilite .gp {
+  color: #8b949e;
+}
+
+.numoj-markdown .codehilite .gs {
+  font-weight: 700;
+}
+
+.numoj-markdown .codehilite .g-Underline {
+  text-decoration: underline;
+}
+
+.numoj-markdown .codehilite.language-mermaid,
+.numoj-markdown .codehilite.language-mmd {
+  background: transparent;
+  color: inherit;
+}
+
+.numoj-mermaid-source {
+  overflow: hidden;
+  margin: 0 0 1em;
+  border: 1px solid var(--numoj-markdown-line);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, var(--numoj-markdown-accent-soft), transparent 38%),
+    #fff;
+}
+
+.numoj-mermaid-status {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 13px;
+  color: var(--numoj-markdown-muted);
+  font-family: var(--numoj-markdown-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.numoj-mermaid-status::before {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 2px solid #fed7aa;
+  border-top-color: var(--numoj-markdown-accent);
+  border-radius: 50%;
+  animation: numoj-markdown-spin 760ms linear infinite;
+  content: "";
+}
+
+.numoj-mermaid-diagram {
+  min-height: 130px;
+  overflow: auto;
+  padding: 16px;
+  background:
+    radial-gradient(circle at 14px 14px, rgb(161 161 170 / 14%) 1px, transparent 1.4px)
+      0 0 / 14px 14px,
+    #fff;
+}
+
+.numoj-mermaid-diagram > svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.numoj-mermaid-diagram > iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.numoj-mermaid-source details {
+  border-top: 1px solid var(--numoj-markdown-line);
+  background: var(--numoj-markdown-soft);
+}
+
+.numoj-mermaid-source summary {
+  padding: 8px 12px;
+  color: var(--numoj-markdown-muted);
+  cursor: pointer;
+  font-family: var(--numoj-markdown-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  list-style-position: inside;
+}
+
+.numoj-mermaid-source details pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.numoj-mermaid-source.is-error {
+  border-color: #fecaca;
+  background: var(--numoj-markdown-danger-soft);
+}
+
+.numoj-mermaid-source.is-error .numoj-mermaid-status {
+  color: var(--numoj-markdown-danger);
+}
+
+.numoj-mermaid-source.is-error .numoj-mermaid-status::before {
+  border: 0;
+  animation: none;
+  content: "!";
+  font-size: 13px;
+  line-height: 14px;
+  text-align: center;
+}
+
+@keyframes numoj-markdown-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .numoj-mermaid-status::before {
+    animation: none;
+  }
+}
