@@ -179,10 +179,10 @@
   <div class="row mb-3">
     <div class="col-md-6">
       <label class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
-      <div class="card">
+      <div class="card numoj-form-code-editor-card">
         <div class="card-body p-0">
           <textarea id="initialCode" name="initial_code" style="display:none;">{{ problem.initial_code }}</textarea>
-          <div id="initialCodeEditorBox"></div>
+          <div id="initialCodeEditorBox" class="numoj-form-code-editor"></div>
         </div>
       </div>
       <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
@@ -190,10 +190,10 @@
 
     <div class="col-md-6">
       <label class="form-label"><i class="fas fa-code me-2"></i> 交互库代码 (可选)</label>
-      <div class="card">
+      <div class="card numoj-form-code-editor-card">
         <div class="card-body p-0">
           <textarea id="testCode" name="test_code" style="display:none;">{{ problem.test_code }}</textarea>
-          <div id="testCodeEditorBox"></div>
+          <div id="testCodeEditorBox" class="numoj-form-code-editor"></div>
         </div>
       </div>
       <small class="text-muted">这段代码用作交互库/模板。学生代码将粘贴到 <code>%%user_code_here</code>。</small>
@@ -221,7 +221,12 @@
   <a href="{{ url_for('problem_core.problem_detail', problem_id=problem.id) }}" class="btn btn-outline-secondary"><i class="fas fa-times"></i> 放弃修改</a>
 </form>
 
+{% if problem.type == 1 %}
+{% set codemirror_mobile_only = true %}
 {% include 'components/editor/codemirror.html' %}
+{% include 'components/editor/monaco.html' %}
+<script src="{{ url_for('static', filename='app/problem-form-editors.js') }}"></script>
+{% endif %}
 
 <script>
   function _toggleProgrammingImageFields(mode) {
@@ -364,59 +369,6 @@
     }
   });
 
-  {% if problem.type == 1 %}
-  function getModeByLang(lang) {
-    if (lang === 'cpp') return 'text/x-c++src';
-    if (lang === 'c') return 'text/x-csrc';
-    if (lang === 'python' || lang === 'py') return 'python';
-    return 'octave';
-  }
-  const langSelect = document.getElementById('langSelect');
-  const initialMode = getModeByLang(langSelect.value);
-
-  // 用 .value 而不是 .textContent 读取 textarea 初始值
-  var initialCodeEditor = CodeMirror(document.getElementById('initialCodeEditorBox'), {
-    value: document.getElementById('initialCode').value || '',
-    mode: initialMode,
-    theme: 'eclipse',
-    lineNumbers: true,
-    lineWrapping: true,
-    indentUnit: 4,
-    tabSize: 4,
-    matchBrackets: true,
-    autofocus: true,
-    extraKeys: {"Tab": "indentMore","Shift-Tab": "indentLess"}
-  });
-  initialCodeEditor.getWrapperElement().style.fontFamily = "monospace";
-  initialCodeEditor.getWrapperElement().style.fontSize = "14px";
-
-  var testCodeEditor = CodeMirror(document.getElementById('testCodeEditorBox'), {
-    value: document.getElementById('testCode').value || '',
-    mode: initialMode,
-    theme: 'eclipse',
-    lineNumbers: true,
-    lineWrapping: true,
-    indentUnit: 4,
-    tabSize: 4,
-    matchBrackets: true,
-    autofocus: false,
-    extraKeys: {"Tab": "indentMore","Shift-Tab": "indentLess"}
-  });
-  testCodeEditor.getWrapperElement().style.fontFamily = "monospace";
-  testCodeEditor.getWrapperElement().style.fontSize = "14px";
-
-  langSelect.addEventListener('change', function() {
-    const mode = getModeByLang(this.value);
-    initialCodeEditor.setOption('mode', mode);
-    testCodeEditor.setOption('mode', mode);
-  });
-
-  // 只绑定到编辑表单，避免绑错到其他 form（如导航条）
-  document.getElementById('editProblemForm').addEventListener('submit', function() {
-    document.getElementById('initialCode').value = initialCodeEditor.getValue();
-    document.getElementById('testCode').value = testCodeEditor.getValue();
-  });
-  {% endif %}
 </script>
 
 {% endblock %}

@@ -41,7 +41,11 @@
     upload: document.getElementById('repositoryUpload'),
     dropTarget: document.getElementById('repositoryDropTarget'),
     editorTextarea: document.getElementById('repositoryCodeEditor'),
+    editorStage: document.getElementById('repositoryEditorStage'),
+    monacoHost: document.getElementById('repositoryMonacoContainer'),
+    codeMirrorHost: document.getElementById('repositoryCodeMirrorContainer'),
     emptyEditor: document.getElementById('repositoryEmptyEditor'),
+    editorLoading: document.getElementById('repositoryEditorLoading'),
     tabExt: document.getElementById('repositoryTabExt'),
     tabName: document.getElementById('repositoryTabName'),
     modified: document.getElementById('repositoryModified'),
@@ -118,7 +122,8 @@
     expanded: new Set(),
     focusedDirectoryId: null,
     current: null,
-    codeMirrorEditor: null,
+    codeEditor: null,
+    editorInitializing: true,
     suppressEditorChanges: false,
     savePromise: null,
     openSequence: 0,
@@ -681,12 +686,230 @@
     }
   }
 
-  function initializeEditor() {
-    if (!window.CodeMirror) {
-      showToast('编辑器加载失败', 'CodeMirror 资源不可用，请刷新页面重试。', 'error');
-      return;
+  function fallbackLanguageForFilename(filename) {
+    var extension = String(filename || '').split('.').pop().toLocaleLowerCase();
+    var modes = {
+      c: {
+        language: 'c',
+        monacoLanguage: 'c',
+        codeMirrorMode: 'text/x-csrc',
+        label: 'C Source',
+      },
+      h: {
+        language: 'cpp',
+        monacoLanguage: 'cpp',
+        codeMirrorMode: 'text/x-c++src',
+        label: 'C++ Header',
+      },
+      cc: {
+        language: 'cpp',
+        monacoLanguage: 'cpp',
+        codeMirrorMode: 'text/x-c++src',
+        label: 'C++ Source',
+      },
+      cpp: {
+        language: 'cpp',
+        monacoLanguage: 'cpp',
+        codeMirrorMode: 'text/x-c++src',
+        label: 'C++ Source',
+      },
+      cxx: {
+        language: 'cpp',
+        monacoLanguage: 'cpp',
+        codeMirrorMode: 'text/x-c++src',
+        label: 'C++ Source',
+      },
+      hpp: {
+        language: 'cpp',
+        monacoLanguage: 'cpp',
+        codeMirrorMode: 'text/x-c++src',
+        label: 'C++ Header',
+      },
+      hxx: {
+        language: 'cpp',
+        monacoLanguage: 'cpp',
+        codeMirrorMode: 'text/x-c++src',
+        label: 'C++ Header',
+      },
+      py: {
+        language: 'python',
+        monacoLanguage: 'python',
+        codeMirrorMode: 'python',
+        label: 'Python',
+      },
+      m: {
+        language: 'matlab',
+        monacoLanguage: 'matlab',
+        codeMirrorMode: 'octave',
+        label: 'MATLAB / Octave',
+      },
+    };
+    return modes[extension] || {
+      language: null,
+      monacoLanguage: 'plaintext',
+      codeMirrorMode: null,
+      label: 'Plain Text',
+    };
+  }
+
+  function languageForFilename(filename) {
+    var runtime = window.NumOJCodeEditorRuntime;
+    return runtime
+      ? runtime.forFilename(filename)
+      : fallbackLanguageForFilename(filename);
+  }
+
+  async function createMonacoEditor() {
+    var monaco = window.NumericalOJMonaco;
+    var runtime = window.NumOJCodeEditorRuntime;
+    if (!monaco || !monaco.editor || !runtime || !elements.monacoHost) {
+      return null;
     }
-    state.codeMirrorEditor = window.CodeMirror.fromTextArea(elements.editorTextarea, {
+
+    var theme = await runtime.prepareMonaco(monaco);
+    elements.monacoHost.hidden = false;
+    var initialModel = monaco.editor.createModel(
+      '',
+      'plaintext',
+      monaco.Uri.parse('inmemory://repository/workspace')
+    );
+    var instance = monaco.editor.create(
+      elements.monacoHost,
+      runtime.monacoOptions({
+        model: initialModel,
+        theme: theme,
+        ariaLabel: '代码仓库编辑器输入区',
+        wordWrap: 'off',
+      })
+    );
+    var semanticProviders = Object.create(null);
+    var locatedDecorations = new Map();
+
+    instance.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+      function () { void saveCurrentFile(); }
+    );
+    runtime.protectEditorInput(
+      instance.getDomNode() &&
+        instance.getDomNode().querySelector('textarea.inputarea'),
+      'repository_editor_input',
+      '代码仓库编辑器输入区'
+    );
+
+    function ensureSemanticProvider(spec) {
+      if (
+        !spec.language ||
+        semanticProviders[spec.language] ||
+        !window.NumOJSemanticTokens
+      ) {
+        return;
+      }
+      semanticProviders[spec.language] = true;
+      window.NumOJSemanticTokens.register(monaco, {
+        context: 'repository',
+        documentId: function (model) {
+          var pieces = String(model && model.uri && model.uri.path || '')
+            .split('/')
+            .filter(Boolean);
+          return pieces.pop() || 'workspace';
+        },
+        language: spec.language,
+        monacoLanguage: spec.monacoLanguage,
+      }).then(function (disposable) {
+        semanticProviders[spec.language] = disposable || true;
+      }).catch(function (error) {
+        delete semanticProviders[spec.language];
+        console.warn('仓库语言服务初始化失败，已保留 TextMate 着色。', error);
+      });
+    }
+
+    return {
+      kind: 'monaco',
+      getValue: function () { return instance.getValue(); },
+      setValue: function (value) { instance.setValue(String(value || '')); },
+      clearHistory: function () {},
+      getWrapperElement: function () { return elements.monacoHost; },
+      getInputField: function () {
+        return instance.getDomNode() &&
+          instance.getDomNode().querySelector('textarea.inputarea');
+      },
+      setSize: function () { instance.layout(); },
+      refresh: function () { instance.layout(); },
+      focus: function () { instance.focus(); },
+      on: function (eventName, handler) {
+        if (eventName === 'change') {
+          return instance.onDidChangeModelContent(handler);
+        }
+        if (eventName === 'cursorActivity') {
+          return instance.onDidChangeCursorPosition(handler);
+        }
+        return { dispose: function () {} };
+      },
+      setLanguage: function (spec, documentId) {
+        ensureSemanticProvider(spec);
+        var model = instance.getModel();
+        var safeDocumentId = String(documentId || 'workspace');
+        var targetUri = monaco.Uri.parse(
+          'inmemory://repository/' + safeDocumentId
+        );
+        if (model && model.uri.toString() !== targetUri.toString()) {
+          var previousModel = model;
+          model = monaco.editor.createModel(
+            '',
+            spec.monacoLanguage,
+            targetUri
+          );
+          instance.setModel(model);
+          previousModel.dispose();
+          return;
+        }
+        if (model) monaco.editor.setModelLanguage(model, spec.monacoLanguage);
+      },
+      getCursor: function () {
+        var position = instance.getPosition() || { lineNumber: 1, column: 1 };
+        return { line: position.lineNumber - 1, ch: position.column - 1 };
+      },
+      lineCount: function () {
+        var model = instance.getModel();
+        return model ? model.getLineCount() : 1;
+      },
+      setCursor: function (position) {
+        instance.setPosition({
+          lineNumber: Number(position.line || 0) + 1,
+          column: Number(position.ch || 0) + 1,
+        });
+      },
+      scrollIntoView: function (position) {
+        instance.revealLineInCenterIfOutsideViewport(
+          Number(position.line || 0) + 1
+        );
+      },
+      addLineClass: function (line, _where, className) {
+        var existing = locatedDecorations.get(line);
+        if (existing) existing.clear();
+        var collection = instance.createDecorationsCollection([{
+          range: new monaco.Range(line + 1, 1, line + 1, 1),
+          options: {
+            isWholeLine: true,
+            className: className,
+          },
+        }]);
+        locatedDecorations.set(line, collection);
+      },
+      removeLineClass: function (line) {
+        var collection = locatedDecorations.get(line);
+        if (collection) collection.clear();
+        locatedDecorations.delete(line);
+      },
+    };
+  }
+
+  function createCodeMirrorEditor() {
+    var runtime = window.NumOJCodeEditorRuntime;
+    if (!window.CodeMirror || !elements.codeMirrorHost) return null;
+    elements.codeMirrorHost.hidden = false;
+    var instance = window.CodeMirror(elements.codeMirrorHost, {
+      value: '',
       mode: null,
       theme: 'eclipse',
       lineNumbers: true,
@@ -707,44 +930,147 @@
         'Cmd-S': function () { void saveCurrentFile(); },
       },
     });
-    var codeMirrorEditor = state.codeMirrorEditor;
-    var editorInput = codeMirrorEditor.getInputField();
-    editorInput.setAttribute('name', 'repository_editor_input');
-    editorInput.setAttribute('aria-label', '代码仓库编辑器输入区');
-    editorInput.setAttribute('autocomplete', 'off');
-    editorInput.setAttribute('autocapitalize', 'off');
-    editorInput.setAttribute('autocorrect', 'off');
-    editorInput.setAttribute('spellcheck', 'false');
-    editorInput.setAttribute('data-1p-ignore', '');
-    editorInput.setAttribute('data-lpignore', 'true');
-    editorInput.setAttribute('data-bwignore', '');
-    codeMirrorEditor.setSize(null, '100%');
-    codeMirrorEditor.getWrapperElement().hidden = true;
-    codeMirrorEditor.on('change', function () {
+    if (runtime) {
+      runtime.protectEditorInput(
+        instance.getInputField(),
+        'repository_editor_input',
+        '代码仓库编辑器输入区'
+      );
+    }
+    instance.setSize(null, '100%');
+    return {
+      kind: 'codemirror',
+      getValue: function () { return instance.getValue(); },
+      setValue: function (value) { instance.setValue(String(value || '')); },
+      clearHistory: function () { instance.clearHistory(); },
+      getWrapperElement: function () { return elements.codeMirrorHost; },
+      getInputField: function () { return instance.getInputField(); },
+      setSize: function () { instance.setSize(null, '100%'); },
+      refresh: function () { instance.refresh(); },
+      focus: function () { instance.focus(); },
+      on: function (eventName, handler) { instance.on(eventName, handler); },
+      setLanguage: function (spec) {
+        instance.setOption('mode', spec.codeMirrorMode);
+      },
+      getCursor: function () { return instance.getCursor(); },
+      lineCount: function () { return instance.lineCount(); },
+      setCursor: function (position) { instance.setCursor(position); },
+      scrollIntoView: function (position, margin) {
+        instance.scrollIntoView(position, margin);
+      },
+      addLineClass: function (line, where, className) {
+        instance.addLineClass(line, where, className);
+      },
+      removeLineClass: function (line, where, className) {
+        instance.removeLineClass(line, where, className);
+      },
+    };
+  }
+
+  function createTextareaEditor() {
+    var textarea = elements.editorTextarea;
+    var runtime = window.NumOJCodeEditorRuntime;
+    textarea.style.display = 'block';
+    if (runtime) {
+      runtime.protectEditorInput(
+        textarea,
+        'repository_editor_input',
+        '代码仓库编辑器输入区'
+      );
+    }
+    textarea.addEventListener('keydown', function (event) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void saveCurrentFile();
+      }
+    });
+    return {
+      kind: 'textarea',
+      getValue: function () { return textarea.value; },
+      setValue: function (value) { textarea.value = String(value || ''); },
+      clearHistory: function () {},
+      getWrapperElement: function () { return textarea; },
+      getInputField: function () { return textarea; },
+      setSize: function () {},
+      refresh: function () {},
+      focus: function () { textarea.focus(); },
+      on: function (eventName, handler) {
+        if (eventName === 'change') textarea.addEventListener('input', handler);
+        if (eventName === 'cursorActivity') {
+          ['input', 'keyup', 'click'].forEach(function (name) {
+            textarea.addEventListener(name, handler);
+          });
+        }
+      },
+      setLanguage: function () {},
+      getCursor: function () {
+        var before = textarea.value.slice(0, textarea.selectionStart || 0);
+        var lines = before.split('\n');
+        return {
+          line: lines.length - 1,
+          ch: lines[lines.length - 1].length,
+        };
+      },
+      lineCount: function () { return textarea.value.split('\n').length; },
+      setCursor: function (position) {
+        var lines = textarea.value.split('\n');
+        var line = Math.max(0, Math.min(Number(position.line) || 0, lines.length - 1));
+        var offset = 0;
+        for (var index = 0; index < line; index += 1) {
+          offset += lines[index].length + 1;
+        }
+        offset += Math.min(Number(position.ch) || 0, lines[line].length);
+        textarea.setSelectionRange(offset, offset);
+      },
+      scrollIntoView: function () {},
+      addLineClass: function () {},
+      removeLineClass: function () {},
+    };
+  }
+
+  async function initializeEditor() {
+    var desktop = window.matchMedia('(min-width: 992px)').matches;
+    var editor = null;
+    if (desktop && window.NumOJMonacoReady) {
+      try {
+        await window.NumOJMonacoReady;
+        editor = await createMonacoEditor();
+      } catch (error) {
+        console.warn('仓库 Monaco 编辑器初始化失败，准备降级。', error);
+      }
+    } else if (!desktop && window.NumOJCodeMirrorReady) {
+      try {
+        await window.NumOJCodeMirrorReady;
+        editor = createCodeMirrorEditor();
+      } catch (error) {
+        console.warn('仓库移动端编辑器初始化失败，准备降级。', error);
+      }
+    }
+    if (!editor) {
+      editor = createTextareaEditor();
+      showToast(
+        '编辑器已降级',
+        '高级编辑器资源不可用，仍可使用基础文本编辑器。',
+        'error'
+      );
+    }
+
+    state.codeEditor = editor;
+    state.editorInitializing = false;
+    editor.getWrapperElement().hidden = true;
+    editor.on('change', function () {
       if (state.suppressEditorChanges || !state.current) return;
       state.current.editRevision += 1;
-      state.current.content = codeMirrorEditor.getValue();
+      state.current.content = editor.getValue();
       state.current.dirty = state.current.content !== state.current.savedContent;
       updateEditorChrome();
       renderOutline();
     });
-    codeMirrorEditor.on('cursorActivity', updateCursorStatus);
-  }
-
-  function languageForFilename(filename) {
-    var extension = String(filename || '').split('.').pop().toLocaleLowerCase();
-    var modes = {
-      c: ['text/x-csrc', 'C Source'],
-      h: ['text/x-csrc', 'C Header'],
-      cc: ['text/x-c++src', 'C++ Source'],
-      cpp: ['text/x-c++src', 'C++ Source'],
-      cxx: ['text/x-c++src', 'C++ Source'],
-      hpp: ['text/x-c++src', 'C++ Header'],
-      hxx: ['text/x-c++src', 'C++ Header'],
-      py: ['python', 'Python'],
-      m: ['text/x-octave', 'MATLAB / Octave'],
-    };
-    return modes[extension] || [null, 'Plain Text'];
+    editor.on('cursorActivity', updateCursorStatus);
+    if (state.current) {
+      setEditorContent(state.current.content, state.current.name);
+    }
+    updateEditorChrome();
   }
 
   function extensionLabel(filename) {
@@ -775,13 +1101,17 @@
     var current = state.current;
     var hasFile = !!current;
     elements.emptyEditor.hidden = hasFile;
+    elements.editorLoading.hidden =
+      !hasFile || !state.editorInitializing;
     elements.tabExt.textContent = hasFile ? extensionLabel(current.name) : '—';
     elements.tabName.textContent = hasFile ? current.path : '尚未打开文件';
     elements.modified.hidden = !hasFile || !current.dirty;
     elements.save.disabled = !hasFile || !!state.savePromise;
     elements.manageCurrent.disabled = !hasFile || !!state.savePromise;
     elements.deleteCurrent.disabled = !hasFile || !!state.savePromise;
-    elements.language.textContent = hasFile ? languageForFilename(current.name)[1].toUpperCase() : 'NO FILE';
+    elements.language.textContent = hasFile
+      ? languageForFilename(current.name).label.toUpperCase()
+      : 'NO FILE';
     elements.saveState.textContent = !hasFile
       ? 'IDLE'
       : state.savePromise
@@ -794,35 +1124,38 @@
   }
 
   function updateCursorStatus() {
-    if (!state.current || !state.codeMirrorEditor) {
+    if (!state.current || !state.codeEditor) {
       elements.cursor.textContent = 'Ln —, Col —';
       return;
     }
-    var cursor = state.codeMirrorEditor.getCursor();
+    var cursor = state.codeEditor.getCursor();
     elements.cursor.textContent = 'Ln ' + (cursor.line + 1) + ', Col ' + (cursor.ch + 1);
   }
 
   function setEditorContent(content, filename) {
-    if (!state.codeMirrorEditor) return;
+    if (!state.codeEditor) return;
     state.suppressEditorChanges = true;
-    state.codeMirrorEditor.setOption('mode', languageForFilename(filename)[0]);
-    state.codeMirrorEditor.setValue(content || '');
-    state.codeMirrorEditor.clearHistory();
-    state.codeMirrorEditor.getWrapperElement().hidden = false;
+    state.codeEditor.setLanguage(
+      languageForFilename(filename),
+      state.current ? 'entry-' + state.current.id : 'workspace'
+    );
+    state.codeEditor.setValue(content || '');
+    state.codeEditor.clearHistory();
+    state.codeEditor.getWrapperElement().hidden = false;
     state.suppressEditorChanges = false;
     window.requestAnimationFrame(function () {
-      state.codeMirrorEditor.refresh();
-      state.codeMirrorEditor.setCursor({ line: 0, ch: 0 });
+      state.codeEditor.refresh();
+      state.codeEditor.setCursor({ line: 0, ch: 0 });
     });
   }
 
   function clearEditor() {
     state.current = null;
-    if (state.codeMirrorEditor) {
+    if (state.codeEditor) {
       state.suppressEditorChanges = true;
-      state.codeMirrorEditor.setValue('');
-      state.codeMirrorEditor.clearHistory();
-      state.codeMirrorEditor.getWrapperElement().hidden = true;
+      state.codeEditor.setValue('');
+      state.codeEditor.clearHistory();
+      state.codeEditor.getWrapperElement().hidden = true;
       state.suppressEditorChanges = false;
     }
     updateEditorChrome();
@@ -971,8 +1304,8 @@
       name: state.current.name,
       path: state.current.path,
       parentId: state.current.parentId,
-      content: state.codeMirrorEditor
-        ? state.codeMirrorEditor.getValue()
+      content: state.codeEditor
+        ? state.codeEditor.getValue()
         : state.current.content,
       version: state.current.version,
       editRevision: state.current.editRevision,
@@ -1015,8 +1348,8 @@
           previousStructureVersion != null &&
           Number(payload.structure_version) !== Number(previousStructureVersion)
         );
-      var latestContent = state.codeMirrorEditor
-        ? state.codeMirrorEditor.getValue()
+      var latestContent = state.codeEditor
+        ? state.codeEditor.getValue()
         : state.current.content;
       state.current.savedContent = snapshot.content;
       state.current.content = latestContent;
@@ -1047,8 +1380,11 @@
       }
       updateRepositorySummary();
       renderTree();
-      if (state.codeMirrorEditor) {
-        state.codeMirrorEditor.setOption('mode', languageForFilename(savedName)[0]);
+      if (state.codeEditor) {
+        state.codeEditor.setLanguage(
+          languageForFilename(savedName),
+          state.current ? 'entry-' + state.current.id : 'workspace'
+        );
       }
       var refreshed = requiresTreeRefresh
         ? loadTree().catch(function () { return null; })
@@ -1073,8 +1409,8 @@
             name: state.current.name,
             path: state.current.path,
             parentId: state.current.parentId,
-            content: state.codeMirrorEditor
-              ? state.codeMirrorEditor.getValue()
+            content: state.codeEditor
+              ? state.codeEditor.getValue()
               : state.current.content,
             editRevision: state.current.editRevision,
           });
@@ -1211,8 +1547,8 @@
         '<div class="repository-inspector-empty">打开文件后显示结构。</div>';
       return;
     }
-    var content = state.codeMirrorEditor
-      ? state.codeMirrorEditor.getValue()
+    var content = state.codeEditor
+      ? state.codeEditor.getValue()
       : state.current.content;
     var symbols = outlineSymbols(content, state.current.name);
     elements.outlineList.innerHTML = symbols.length
@@ -1229,18 +1565,22 @@
   }
 
   function revealLine(lineNumber) {
-    if (!state.codeMirrorEditor || !state.current) return;
+    if (!state.codeEditor || !state.current) return;
     var line = Math.max(0, Math.min(
-      state.codeMirrorEditor.lineCount() - 1,
+      state.codeEditor.lineCount() - 1,
       Number(lineNumber || 1) - 1
     ));
-    state.codeMirrorEditor.focus();
-    state.codeMirrorEditor.setCursor({ line: line, ch: 0 });
-    state.codeMirrorEditor.scrollIntoView({ line: line, ch: 0 }, 90);
-    state.codeMirrorEditor.addLineClass(line, 'background', 'repository-located-line');
+    state.codeEditor.focus();
+    state.codeEditor.setCursor({ line: line, ch: 0 });
+    state.codeEditor.scrollIntoView({ line: line, ch: 0 }, 90);
+    state.codeEditor.addLineClass(line, 'background', 'repository-located-line');
     window.setTimeout(function () {
-      if (state.codeMirrorEditor) {
-        state.codeMirrorEditor.removeLineClass(line, 'background', 'repository-located-line');
+      if (state.codeEditor) {
+        state.codeEditor.removeLineClass(
+          line,
+          'background',
+          'repository-located-line'
+        );
       }
     }, 1200);
   }
@@ -3284,7 +3624,6 @@
     if (globalNavigationToggle) {
       globalNavigationToggle.classList.add('repository-page-nav-toggle');
     }
-    initializeEditor();
     bindTreeEvents();
     bindUploadEvents();
     bindGeneralEvents();
@@ -3295,6 +3634,16 @@
       // 页面内已经呈现错误状态。
     });
     resumeIndexJob();
+    initializeEditor().catch(function (error) {
+      state.editorInitializing = false;
+      updateEditorChrome();
+      console.error('代码编辑器初始化失败。', error);
+      showToast(
+        '编辑器初始化失败',
+        error && error.message ? error.message : '请刷新页面重试。',
+        'error'
+      );
+    });
   }
 
   initialize();

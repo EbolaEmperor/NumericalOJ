@@ -155,18 +155,36 @@
           <strong>从左侧打开文件</strong>
           <p>也可以新建文件，或将一组文件与文件夹直接拖入文件区。</p>
         </div>
-        <textarea
-          id="repositoryCodeEditor"
-          name="repository_source"
-          aria-label="代码仓库编辑器"
-          autocomplete="off"
-          autocapitalize="off"
-          autocorrect="off"
-          spellcheck="false"
-          data-1p-ignore
-          data-lpignore="true"
-          data-bwignore
-        ></textarea>
+        <div class="repository-editor-loading" id="repositoryEditorLoading" hidden>
+          <span class="math-curve-loader" data-math-curve-loader data-size="lg">
+            <span class="math-curve-loader__label">代码编辑器正在加载</span>
+          </span>
+        </div>
+        <div class="repository-editor-stage" id="repositoryEditorStage">
+          <div
+            class="repository-monaco-container"
+            id="repositoryMonacoContainer"
+            aria-label="代码仓库编辑器"
+            hidden
+          ></div>
+          <div
+            class="repository-codemirror-container"
+            id="repositoryCodeMirrorContainer"
+            hidden
+          ></div>
+          <textarea
+            id="repositoryCodeEditor"
+            name="repository_source"
+            aria-label="代码仓库编辑器"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            data-1p-ignore
+            data-lpignore="true"
+            data-bwignore
+          ></textarea>
+        </div>
       </div>
       <footer class="repository-editor-status">
         <span><b id="repositoryLanguage">NO FILE</b><span>UTF-8</span><span>LF</span></span>
@@ -321,12 +339,9 @@
   </dialog>
 </section>
 
-{# 编辑器输入节点的密码管理器防护由外部脚本继续执行：
-   codeMirrorEditor.getInputField()
-   editorInput.setAttribute('autocomplete', 'off')
-   editorInput.setAttribute('data-bwignore', '')
-#}
+{% set codemirror_mobile_only = true %}
 {% include 'components/editor/codemirror.html' %}
+{% include 'components/editor/monaco.html' %}
 {% endblock %}
 
 {% block scripts %}

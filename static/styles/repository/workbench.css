@@ -911,6 +911,25 @@
   display: none;
 }
 
+.repository-editor-loading {
+  position: absolute;
+  z-index: 7;
+  inset: 34px 0 0;
+  display: grid;
+  place-items: center;
+  background: #1e1e1e;
+  color: #858585;
+}
+
+.repository-editor-loading[hidden] {
+  display: none;
+}
+
+.repository-editor-loading .math-curve-loader {
+  --math-curve-color-a: #ffffff;
+  --math-curve-color-b: #ffffff;
+}
+
 .repository-empty-mark {
   display: grid;
   width: 48px;
@@ -941,8 +960,43 @@
   line-height: 1.6;
 }
 
+.repository-editor-stage,
+.repository-monaco-container,
+.repository-codemirror-container {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.repository-editor-stage {
+  position: relative;
+}
+
+.repository-monaco-container,
+.repository-codemirror-container {
+  position: absolute;
+  inset: 0;
+}
+
+.repository-monaco-container[hidden],
+.repository-codemirror-container[hidden] {
+  display: none;
+}
+
 #repositoryCodeEditor {
   display: none;
+  width: 100%;
+  height: 100%;
+  padding: 14px 18px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font: 14px/22px var(--repo-mono);
 }
 
 .repository-editor-shell .CodeMirror {
@@ -990,9 +1044,21 @@
   background: rgba(234, 88, 12, .16);
 }
 
+.repository-editor-shell .monaco-editor .repository-located-line {
+  border-left: 2px solid var(--repo-orange);
+  background: rgba(234, 88, 12, .16);
+}
+
 .repository-editor-shell .cm-s-eclipse span.cm-keyword,
 .repository-editor-shell .cm-s-eclipse span.cm-operator {
   color: #f0a16b;
+}
+
+.repository-editor-shell .cm-s-eclipse span.cm-variable,
+.repository-editor-shell .cm-s-eclipse span.cm-property,
+.repository-editor-shell .cm-s-eclipse span.cm-punctuation,
+.repository-editor-shell .cm-s-eclipse span.cm-bracket {
+  color: var(--repo-code-ink);
 }
 
 .repository-editor-shell .cm-s-eclipse span.cm-def,
@@ -1016,6 +1082,11 @@
 
 .repository-editor-shell .cm-s-eclipse span.cm-meta {
   color: #c690cb;
+}
+
+.repository-editor-shell .CodeMirror-matchingbracket {
+  color: #fff !important;
+  background: rgba(234, 88, 12, .28);
 }
 
 .repository-editor-status {

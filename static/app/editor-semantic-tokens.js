@@ -4,6 +4,10 @@
   if (window.NumOJSemanticTokens) return;
 
   var SUPPORTED_LANGUAGES = ["c", "cpp", "py", "python", "matlab", "octave"];
+  var EDITOR_CONTEXTS = {
+    repository: true,
+    "problem-form": true,
+  };
   var RETRYABLE_BUSY_CODES = {
     legend_pending: true,
     result_pending: true,
@@ -145,6 +149,7 @@
     var language = normalizedLanguage(settings.language);
     var problemId = Number(settings.problemId);
     var context = String(settings.context || "");
+    var documentId = String(settings.documentId || "");
     var source = settings.source;
     if (
       SUPPORTED_LANGUAGES.indexOf(language) === -1 ||
@@ -158,6 +163,9 @@
     };
     if (context === "markdown" && language === "cpp") {
       body.context = context;
+    } else if (EDITOR_CONTEXTS[context] && documentId) {
+      body.context = context;
+      body.document_id = documentId;
     } else if (Number.isInteger(problemId) && problemId > 0 && !context) {
       body.problem_id = problemId;
     } else {
@@ -199,13 +207,20 @@
     var language = normalizedLanguage(settings.language);
     var monacoLanguage = String(settings.monacoLanguage || language).toLowerCase();
     var problemId = Number(settings.problemId);
+    var context = String(settings.context || "");
+    var genericEditor = !!EDITOR_CONTEXTS[context];
+    var hasGenericDocumentId =
+      typeof settings.documentId === "function" ||
+      !!String(settings.documentId || "");
 
     if (
       !monaco ||
       !monaco.languages ||
       SUPPORTED_LANGUAGES.indexOf(language) === -1 ||
-      !Number.isInteger(problemId) ||
-      problemId <= 0
+      !(
+        (Number.isInteger(problemId) && problemId > 0 && !context) ||
+        (genericEditor && hasGenericDocumentId)
+      )
     ) {
       return null;
     }
@@ -234,8 +249,14 @@
             settings.onRequestStart();
           }
           try {
+            var configuredDocumentId =
+              typeof settings.documentId === "function"
+                ? settings.documentId(model)
+                : settings.documentId;
             var payload = await requestTokens({
               problemId: problemId,
+              context: context,
+              documentId: configuredDocumentId,
               language: language,
               source: model.getValue(),
               signal: controller.signal,

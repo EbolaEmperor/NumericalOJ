@@ -11,9 +11,20 @@
   const codeMirrorHost = document.getElementById('codeMirrorContainer');
   const form = textarea.closest('form');
   const language = (editorHost?.dataset.language || 'matlab').toLowerCase();
-  const monacoLanguage = language === 'py' ? 'python'
-    : language === 'octave' ? 'matlab'
-    : language;
+  const runtime = window.NumOJCodeEditorRuntime;
+  const languageSpec = runtime
+    ? runtime.forLanguage(language)
+    : {
+        language,
+        monacoLanguage: language === 'py' ? 'python'
+          : language === 'octave' ? 'matlab'
+          : language,
+        codeMirrorMode: language === 'cpp' ? 'text/x-c++src'
+          : language === 'c' ? 'text/x-csrc'
+          : (language === 'python' || language === 'py') ? 'python'
+          : 'octave'
+      };
+  const monacoLanguage = languageSpec.monacoLanguage;
   const desktop = window.matchMedia('(min-width: 992px)').matches;
   let editorAdapter = null;
 
@@ -36,91 +47,29 @@
     textarea.classList.add('numoj-code-textarea-fallback');
   }
 
-  function registerMatlab(monaco) {
-    if (monaco.languages.getLanguages().some(item => item.id === 'matlab')) return;
-
-    monaco.languages.register({ id: 'matlab', extensions: ['.m'], aliases: ['MATLAB', 'matlab'] });
-    monaco.languages.setLanguageConfiguration('matlab', {
-      comments: { lineComment: '%' },
-      brackets: [['(', ')'], ['[', ']'], ['{', '}']],
-      autoClosingPairs: [
-        { open: '(', close: ')' },
-        { open: '[', close: ']' },
-        { open: '{', close: '}' },
-        { open: "'", close: "'", notIn: ['string', 'comment'] },
-        { open: '"', close: '"', notIn: ['string', 'comment'] }
-      ],
-      surroundingPairs: [
-        { open: '(', close: ')' },
-        { open: '[', close: ']' },
-        { open: '{', close: '}' },
-        { open: "'", close: "'" },
-        { open: '"', close: '"' }
-      ],
-      indentationRules: {
-        increaseIndentPattern: /^\s*(?:if|for|while|switch|try|function|classdef|properties|methods|events|enumeration)\b(?!.*\bend\b).*$/i,
-        decreaseIndentPattern: /^\s*(?:end|else|elseif|case|otherwise|catch)\b/i
-      }
-    });
-    monaco.languages.setMonarchTokensProvider('matlab', {
-      defaultToken: '',
-      tokenPostfix: '.matlab',
-      ignoreCase: false,
-      keywords: [
-        'break', 'case', 'catch', 'classdef', 'continue', 'else', 'elseif', 'end',
-        'enumeration', 'events', 'for', 'function', 'global', 'if', 'methods',
-        'otherwise', 'parfor', 'persistent', 'properties', 'return', 'spmd',
-        'switch', 'try', 'while'
-      ],
-      constants: ['true', 'false', 'NaN', 'Inf', 'pi', 'eps'],
-      operators: ['+', '-', '*', '/', '\\', '^', '~', '<', '>', '=', '&', '|', ':', '@'],
-      tokenizer: {
-        root: [
-          [/%\{/, 'comment', '@commentBlock'],
-          [/%.*$/, 'comment'],
-          [/[a-zA-Z_]\w*/, { cases: { '@keywords': 'keyword', '@constants': 'constant', '@default': 'identifier' } }],
-          [/\d*\.\d+(?:[eE][+-]?\d+)?[ij]?/, 'number.float'],
-          [/\d+(?:[eE][+-]?\d+)?[ij]?/, 'number'],
-          [/\.\.\..*$/, 'keyword'],
-          [/'(?:[^']|'')*'/, 'string'],
-          [/"(?:[^"]|"")*"/, 'string'],
-          [/[{}()\[\]]/, '@brackets'],
-          [/[+\-*\/\\^~<>=&|:@.]+/, 'operator'],
-          [/[;,]/, 'delimiter']
-        ],
-        commentBlock: [
-          [/%\}/, 'comment', '@pop'],
-          [/./, 'comment']
-        ]
-      }
-    });
-  }
-
   async function createMonacoAdapter() {
     const monaco = window.NumericalOJMonaco;
     if (!desktop || !editorHost || !monaco?.editor || !monaco?.languages) return null;
 
-    registerMatlab(monaco);
-    let editorTheme = 'vs-dark';
-    if (typeof monaco.prepareTextMateHighlighting === 'function') {
-      try {
-        await monaco.prepareTextMateHighlighting();
-        editorTheme = 'dark-plus';
-      } catch (error) {
-        console.warn('VS Code 语法 grammar 初始化失败，已降级为 Monaco 基础着色。', error);
-      }
-    }
-    try {
-      await window.NumOJSemanticTokens.register(monaco, {
+    const editorTheme = runtime
+      ? await runtime.prepareMonaco(monaco)
+      : 'vs-dark';
+    window.NumOJSemanticTokens.register(monaco, {
         language,
         monacoLanguage,
         problemId: document.getElementById('problemMeta')?.dataset.problemId
-      });
-    } catch (error) {
+      }).catch(function (error) {
       console.warn('语言服务初始化失败，已保留 TextMate 着色。', error);
-    }
+      });
     editorHost.hidden = false;
-    const instance = monaco.editor.create(editorHost, {
+    const instance = monaco.editor.create(editorHost, runtime
+      ? runtime.monacoOptions({
+          value: textarea.value,
+          language: monacoLanguage,
+          theme: editorTheme,
+          ariaLabel: '代码编辑器'
+        })
+      : {
       value: textarea.value,
       language: monacoLanguage,
       theme: editorTheme,
@@ -159,12 +108,8 @@
 
   function createCodeMirrorAdapter() {
     if (desktop || typeof window.CodeMirror === 'undefined' || !codeMirrorHost) return null;
-    const mode = language === 'cpp' ? 'text/x-c++src'
-      : language === 'c' ? 'text/x-csrc'
-      : (language === 'python' || language === 'py') ? 'python'
-      : 'octave';
     const instance = window.CodeMirror.fromTextArea(textarea, {
-      mode,
+      mode: languageSpec.codeMirrorMode,
       theme: 'eclipse',
       lineNumbers: true,
       lineWrapping: true,

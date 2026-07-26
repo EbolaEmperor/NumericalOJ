@@ -13,12 +13,26 @@
   var language = String(
     (monacoHost && monacoHost.dataset.language) || "matlab"
   ).toLowerCase();
-  var monacoLanguage =
-    language === "py"
-      ? "python"
-      : language === "octave"
-        ? "matlab"
-        : language;
+  var runtime = window.NumOJCodeEditorRuntime;
+  var languageSpec = runtime
+    ? runtime.forLanguage(language)
+    : {
+        monacoLanguage:
+          language === "py"
+            ? "python"
+            : language === "octave"
+              ? "matlab"
+              : language,
+        codeMirrorMode:
+          language === "cpp"
+            ? "text/x-c++src"
+            : language === "c"
+              ? "text/x-csrc"
+              : language === "python" || language === "py"
+                ? "python"
+                : "octave",
+      };
+  var monacoLanguage = languageSpec.monacoLanguage;
   var problemId = Number(monacoHost && monacoHost.dataset.problemId);
   var semanticRequestsInFlight = 0;
 
@@ -47,90 +61,16 @@
     revealEditor();
   }
 
-  function registerMatlab(monaco) {
-    if (monaco.languages.getLanguages().some(function (item) {
-      return item.id === "matlab";
-    })) {
-      return;
-    }
-
-    monaco.languages.register({
-      id: "matlab",
-      extensions: [".m"],
-      aliases: ["MATLAB", "matlab"],
-    });
-    monaco.languages.setLanguageConfiguration("matlab", {
-      comments: { lineComment: "%" },
-      brackets: [["(", ")"], ["[", "]"], ["{", "}"]],
-      autoClosingPairs: [
-        { open: "(", close: ")" },
-        { open: "[", close: "]" },
-        { open: "{", close: "}" },
-        { open: "'", close: "'", notIn: ["string", "comment"] },
-        { open: '"', close: '"', notIn: ["string", "comment"] },
-      ],
-      indentationRules: {
-        increaseIndentPattern:
-          /^\s*(?:if|for|while|switch|try|function|classdef|properties|methods|events|enumeration)\b(?!.*\bend\b).*$/i,
-        decreaseIndentPattern:
-          /^\s*(?:end|else|elseif|case|otherwise|catch)\b/i,
-      },
-    });
-    monaco.languages.setMonarchTokensProvider("matlab", {
-      defaultToken: "",
-      tokenPostfix: ".matlab",
-      keywords: [
-        "break", "case", "catch", "classdef", "continue", "else", "elseif",
-        "end", "enumeration", "events", "for", "function", "global", "if",
-        "methods", "otherwise", "parfor", "persistent", "properties",
-        "return", "spmd", "switch", "try", "while",
-      ],
-      constants: ["true", "false", "NaN", "Inf", "pi", "eps"],
-      tokenizer: {
-        root: [
-          [/%\{/, "comment", "@commentBlock"],
-          [/%.*$/, "comment"],
-          [/[a-zA-Z_]\w*/, {
-            cases: {
-              "@keywords": "keyword",
-              "@constants": "constant",
-              "@default": "identifier",
-            },
-          }],
-          [/\d*\.\d+(?:[eE][+-]?\d+)?[ij]?/, "number.float"],
-          [/\d+(?:[eE][+-]?\d+)?[ij]?/, "number"],
-          [/'(?:[^']|'')*'/, "string"],
-          [/"(?:[^"]|"")*"/, "string"],
-          [/[{}()[\]]/, "@brackets"],
-          [/[+\-*/\\^~<>=&|:@.]+/, "operator"],
-          [/[;,]/, "delimiter"],
-        ],
-        commentBlock: [
-          [/%\}/, "comment", "@pop"],
-          [/./, "comment"],
-        ],
-      },
-    });
-  }
-
   async function createMonacoEditor() {
     var monaco = window.NumericalOJMonaco;
     if (!desktop || !textarea || !monacoHost || !monaco || !monaco.editor) {
       return null;
     }
 
-    registerMatlab(monaco);
-    var editorTheme = "vs-dark";
-    if (typeof monaco.prepareTextMateHighlighting === "function") {
-      try {
-        await monaco.prepareTextMateHighlighting();
-        editorTheme = "dark-plus";
-      } catch (error) {
-        console.warn("VS Code 语法 grammar 初始化失败，已降级为基础着色。", error);
-      }
-    }
-    try {
-      await window.NumOJSemanticTokens.register(monaco, {
+    var editorTheme = runtime
+      ? await runtime.prepareMonaco(monaco)
+      : "vs-dark";
+    window.NumOJSemanticTokens.register(monaco, {
         language: language,
         monacoLanguage: monacoLanguage,
         problemId: problemId,
@@ -140,14 +80,23 @@
         onRequestEnd: function () {
           updateSemanticLoading(-1);
         },
-      });
-    } catch (error) {
+      }).catch(function (error) {
       console.warn("语言服务初始化失败，已保留 TextMate 着色。", error);
-    }
+      });
 
     monacoHost.hidden = false;
     textarea.hidden = true;
-    var instance = monaco.editor.create(monacoHost, {
+    var instance = monaco.editor.create(monacoHost, runtime
+      ? runtime.monacoOptions({
+          value: textarea.value,
+          language: monacoLanguage,
+          theme: editorTheme,
+          readOnly: true,
+          domReadOnly: true,
+          ariaLabel: "提交代码，只读",
+          renderValidationDecorations: "on"
+        })
+      : {
       value: textarea.value,
       language: monacoLanguage,
       theme: editorTheme,
@@ -232,17 +181,9 @@
       return null;
     }
 
-    var mode =
-      language === "cpp"
-        ? "text/x-c++src"
-        : language === "c"
-          ? "text/x-csrc"
-          : language === "python" || language === "py"
-            ? "python"
-            : "octave";
     codeMirrorHost.style.display = "block";
     var instance = window.CodeMirror.fromTextArea(textarea, {
-      mode: mode,
+      mode: languageSpec.codeMirrorMode,
       theme: "eclipse",
       lineNumbers: true,
       lineWrapping: true,

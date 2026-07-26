@@ -15,12 +15,17 @@ JAVASCRIPT_ASSETS = (
     "static/app/arc-agi-3.js",
     "static/app/class-picker.js",
     "static/app/choice-picker.js",
+    "static/app/code-editor-runtime.js",
     "static/app/editor-semantic-tokens.js",
     "static/app/markdown-rendering.js",
+    "static/app/problem-editor.js",
+    "static/app/problem-form-editors.js",
+    "static/app/repository/workbench.js",
     "static/app/forum.js",
     "static/app/ranking/endpoints.js",
     "static/app/ranking/rules-editor.js",
     "static/app/ranking/topology.js",
+    "static/app/submissions/detail.js",
 )
 
 
@@ -164,10 +169,16 @@ require({str(asset)!r});
     language: "cpp",
     source: "int main() {{}}"
   }});
+  await NumOJSemanticTokens.requestTokens({{
+    context: "repository",
+    documentId: "entry-42",
+    language: "cpp",
+    source: "int repository_value;"
+  }});
   const requests = calls
     .filter(function(call) {{ return call.options.method === "POST"; }})
     .map(function(call) {{ return JSON.parse(call.options.body); }});
-  if (requests.length !== 2) process.exit(1);
+  if (requests.length !== 3) process.exit(1);
   if (requests[0].context !== "markdown") process.exit(2);
   if (Object.prototype.hasOwnProperty.call(requests[0], "problem_id")) {{
     process.exit(3);
@@ -176,7 +187,122 @@ require({str(asset)!r});
   if (Object.prototype.hasOwnProperty.call(requests[1], "context")) {{
     process.exit(5);
   }}
-}})().catch(function() {{ process.exit(6); }});
+  if (
+    requests[2].context !== "repository" ||
+    requests[2].document_id !== "entry-42" ||
+    Object.prototype.hasOwnProperty.call(requests[2], "problem_id")
+  ) {{
+    process.exit(6);
+  }}
+}})().catch(function() {{ process.exit(7); }});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_shared_code_editor_runtime_has_one_language_and_theme_mapping():
+    asset = ROOT / "static" / "app" / "code-editor-runtime.js"
+    script = f"""
+global.window = global;
+require({str(asset)!r});
+const header = NumOJCodeEditorRuntime.forFilename("include/value.h");
+const cSource = NumOJCodeEditorRuntime.forFilename("main.c");
+const python = NumOJCodeEditorRuntime.forLanguage("py");
+const plain = NumOJCodeEditorRuntime.forFilename("README");
+const options = NumOJCodeEditorRuntime.monacoOptions({{wordWrap: "off"}});
+if (
+  header.language !== "cpp" ||
+  header.monacoLanguage !== "cpp" ||
+  cSource.language !== "c" ||
+  python.monacoLanguage !== "python" ||
+  plain.monacoLanguage !== "plaintext"
+) {{
+  process.exit(1);
+}}
+if (
+  options.theme !== "dark-plus" ||
+  options["semanticHighlighting.enabled"] !== true ||
+  options.wordWrap !== "off"
+) {{
+  process.exit(2);
+}}
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_semantic_provider_derives_a_generic_editor_document_id_from_model():
+    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    script = f"""
+global.window = global;
+let provider = null;
+let tokenBody = null;
+global.fetch = async function(url, options) {{
+  if (String(url).includes("semantic-token-legend")) {{
+    return {{
+      ok: true,
+      json: async function() {{
+        return {{
+          success: true,
+          legend: {{tokenTypes: ["variable"], tokenModifiers: []}}
+        }};
+      }}
+    }};
+  }}
+  tokenBody = JSON.parse(options.body);
+  return {{
+    ok: true,
+    json: async function() {{
+      return {{success: true, data: [0, 0, 3, 0, 0], result_id: "1"}};
+    }}
+  }};
+}};
+require({str(asset)!r});
+(async function() {{
+  const monaco = {{
+    languages: {{
+      registerDocumentSemanticTokensProvider: function(_language, value) {{
+        provider = value;
+        return {{dispose: function() {{}}}};
+      }}
+    }}
+  }};
+  await NumOJSemanticTokens.register(monaco, {{
+    context: "repository",
+    documentId: function() {{ return "entry-7"; }},
+    language: "cpp",
+    monacoLanguage: "cpp"
+  }});
+  if (!provider) process.exit(1);
+  await provider.provideDocumentSemanticTokens(
+    {{getValue: function() {{ return "int value;"; }}}},
+    null,
+    {{
+      onCancellationRequested: function() {{
+        return {{dispose: function() {{}}}};
+      }}
+    }}
+  );
+  if (
+    !tokenBody ||
+    tokenBody.context !== "repository" ||
+    tokenBody.document_id !== "entry-7" ||
+    tokenBody.language !== "cpp" ||
+    tokenBody.source !== "int value;"
+  ) {{
+    process.exit(2);
+  }}
+}})().catch(function() {{ process.exit(3); }});
 """
     subprocess.run(
         [NODE, "-e", script],
