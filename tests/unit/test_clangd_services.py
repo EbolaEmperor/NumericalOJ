@@ -48,6 +48,10 @@ def test_semantic_tokens_open_change_and_reuse_document():
     assert first["result_id"].startswith("1:")
     assert second["result_id"] == first["result_id"]
     assert third["result_id"].startswith("2:")
+    assert all(
+        cycle.source is None
+        for cycle in service._inactive_document_cycles.values()
+    )
     methods = [method for method, _ in service.notifications]
     assert methods == ["textDocument/didOpen", "textDocument/didChange"]
     assert [method for method, _ in service.requests] == [
