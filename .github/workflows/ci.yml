@@ -33,7 +33,7 @@ jobs:
             git status --porcelain=v1 --untracked-files=all -- \
               static/vendor/monaco \
               static/vendor/mermaid \
-              static/vendor/shiki-bash
+              static/vendor/shiki-markdown
           )"
           if [ -n "$generated_status" ]; then
             printf '%s\n' "$generated_status"

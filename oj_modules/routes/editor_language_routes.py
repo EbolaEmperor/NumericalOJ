@@ -43,9 +43,22 @@ _MARKDOWN_SEMANTIC_CONTEXT = "markdown"
 _GENERIC_EDITOR_DOCUMENT_ID_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z"
 )
-_MARKDOWN_CPP_PREAMBLE = "#include <bits/stdc++.h>\n"
+_MARKDOWN_LANGUAGE_ALIASES = {
+    "c": "c",
+    "cpp": "cpp",
+    "py": "python",
+    "python": "python",
+    "matlab": "matlab",
+    "octave": "matlab",
+}
+_MARKDOWN_LANGUAGE_PREAMBLES = {
+    "c": "",
+    "cpp": "#include <bits/stdc++.h>\n",
+    "python": "",
+    "matlab": "",
+}
 _MARKDOWN_CACHE_KEY_VERSION = (
-    b"markdown-cpp-bits-v3-tokens-12000-inactive-regions\0"
+    b"markdown-editor-dark-plus-v4-tokens-12000-inactive-regions\0"
 )
 _MARKDOWN_SOURCE_MAX_BYTES = 512 * 1024
 _MARKDOWN_MAX_TOKENS = 12_000
@@ -169,9 +182,11 @@ def _without_inactive_prefix_lines(
     return shifted
 
 
-def _markdown_cache_key(source: str) -> str:
+def _markdown_cache_key(language: str, source: str) -> str:
     digest = hashlib.sha256()
     digest.update(_MARKDOWN_CACHE_KEY_VERSION)
+    digest.update(language.encode("ascii"))
+    digest.update(b"\0")
     digest.update(source.encode("utf-8"))
     return digest.hexdigest()
 
@@ -180,7 +195,7 @@ def _markdown_result_pending_response():
     response = jsonify(
         success=False,
         code="result_pending",
-        message="相同 C++ 代码正在解析，请稍后重试",
+        message="相同文章代码块正在解析，请稍后重试",
     )
     response.headers["Retry-After"] = "1"
     return response, 429
@@ -269,18 +284,20 @@ def semantic_tokens():
     repository_request = semantic_context == "repository"
     generic_editor_request = semantic_context == "problem-form"
     if markdown_request:
+        markdown_language = _MARKDOWN_LANGUAGE_ALIASES.get(language)
         if (
             problem_id is not None
             or document_id is not None
             or repository_entry_id is not None
-            or language != "cpp"
+            or markdown_language is None
         ):
             return jsonify(success=False, message="Markdown 语义请求无效"), 400
+        language = markdown_language
         if len(source.encode("utf-8")) > _MARKDOWN_SOURCE_MAX_BYTES:
             return jsonify(
                 success=False,
                 code="source_too_large",
-                message="Markdown C++ 代码块超过结构化高亮大小限制",
+                message="文章代码块超过结构化高亮大小限制",
             ), 413
     elif repository_request:
         if problem_id is not None or document_id is not None:
@@ -330,7 +347,7 @@ def semantic_tokens():
         ), 429
     markdown_cache_key = None
     if markdown_request:
-        markdown_cache_key = _markdown_cache_key(source)
+        markdown_cache_key = _markdown_cache_key(language, source)
         cache_claim = _markdown_semantic_cache.claim(markdown_cache_key)
         if cache_claim.state == "hit":
             assert cache_claim.result is not None
@@ -338,7 +355,9 @@ def semantic_tokens():
         if cache_claim.state == "pending":
             return _markdown_result_pending_response()
         document_key = f"{user_id}:markdown:{language}"
-        analysis_source = _MARKDOWN_CPP_PREAMBLE + source
+        markdown_preamble = _MARKDOWN_LANGUAGE_PREAMBLES[language]
+        markdown_prefix_lines = markdown_preamble.count("\n")
+        analysis_source = markdown_preamble + source
     elif generic_editor_request:
         document_key = (
             f"{user_id}:editor:{semantic_context}:{document_id}:{language}"
@@ -394,11 +413,11 @@ def semantic_tokens():
             result = dict(result)
             result["data"] = _without_semantic_prefix_lines(
                 result["data"],
-                1,
+                markdown_prefix_lines,
             )[: _MARKDOWN_MAX_TOKENS * 5]
             result["inactive_regions"] = _without_inactive_prefix_lines(
                 result.get("inactive_regions", []),
-                1,
+                markdown_prefix_lines,
             )
             assert markdown_cache_key is not None
             result["result_id"] = f"markdown:{markdown_cache_key[:12]}"

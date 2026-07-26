@@ -1048,10 +1048,11 @@
 
 {% block scripts %}
   {{ super() }}
+  {# 标准编程题由上方 Monaco 组件加载语义客户端；其余分支在这里补齐一次。 #}
   {% if problem.type != 1 or (problem.programming_grading_mode or 1)|int == 3 %}
   <script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
   {% endif %}
   <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
-  <script src="{{ url_for('static', filename='vendor/shiki-bash/highlighter.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
   <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
 {% endblock %}

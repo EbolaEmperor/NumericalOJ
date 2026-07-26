@@ -4,6 +4,14 @@
   if (window.NumOJSemanticTokens) return;
 
   var SUPPORTED_LANGUAGES = ["c", "cpp", "py", "python", "matlab", "octave"];
+  var MARKDOWN_LANGUAGE_ALIASES = {
+    c: "c",
+    cpp: "cpp",
+    py: "python",
+    python: "python",
+    matlab: "matlab",
+    octave: "matlab",
+  };
   var EDITOR_CONTEXTS = {
     repository: true,
     "problem-form": true,
@@ -163,7 +171,9 @@
       language: language,
       source: source,
     };
-    if (context === "markdown" && language === "cpp") {
+    var markdownLanguage = MARKDOWN_LANGUAGE_ALIASES[language];
+    if (context === "markdown" && markdownLanguage) {
+      body.language = markdownLanguage;
       body.context = context;
     } else if (
       context === "repository" &&

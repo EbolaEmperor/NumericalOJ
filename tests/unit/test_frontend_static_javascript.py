@@ -11,7 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 JAVASCRIPT_ASSETS = (
-    "frontend/markdown/bash-highlighter.js",
+    "frontend/markdown/code-highlighter.js",
     "static/app/arc-agi-3-catalog.js",
     "static/app/arc-agi-3.js",
     "static/app/class-picker.js",
@@ -42,43 +42,52 @@ def test_frontend_javascript_has_valid_syntax(relative_path):
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
-def test_bash_highlighter_bundle_preserves_source_and_distinguishes_commands():
-    asset = ROOT / "static" / "vendor" / "shiki-bash" / "highlighter.js"
-    source = (
-        "#!/usr/bin/env bash\n"
-        'curl -fsSL "$URL" | jq -r \'.items[] | .name\'\n'
-    )
+def test_markdown_highlighter_bundle_matches_editor_dark_plus_languages():
+    asset = ROOT / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
     script = f"""
 const fs = require("fs");
 const vm = require("vm");
-const source = {source!r};
 vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
 (async function() {{
-  const result = await NumOJBashHighlighter.tokenize(source);
-  const tokens = result.tokens.flat();
-  const rebuilt = result.tokens
-    .map(function(line) {{ return line.map(function(token) {{
-      return token.content;
-    }}).join(""); }})
-    .join("\\n");
-  const commandTokens = tokens
-    .filter(function(token) {{
-      return String(token.color).toUpperCase() === "#DCDCAA";
-    }})
-    .map(function(token) {{ return token.content; }});
-  const optionTokens = tokens
-    .filter(function(token) {{
-      return String(token.color).toUpperCase() === "#569CD6";
-    }})
-    .map(function(token) {{ return token.content; }});
-  if (rebuilt !== source) process.exit(1);
-  if (!commandTokens.includes("curl") || !commandTokens.includes("jq")) {{
-    process.exit(2);
+  const samples = [
+    ["bash", 'curl -fsSL "$URL"', ["#DCDCAA", "#569CD6", "#9CDCFE"]],
+    ["c", "struct Widget {{ int value; }};", ["#569CD6"]],
+    ["cpp", "std::vector<int> values;", ["#4EC9B0"]],
+    [
+      "python",
+      "def solve(value: int) -> int:\\n    return value + 1",
+      ["#569CD6", "#DCDCAA", "#9CDCFE", "#4EC9B0", "#B5CEA8"],
+    ],
+    [
+      "matlab",
+      "function y = solve(x)\\n  y = zeros(size(x));\\nend",
+      ["#569CD6", "#DCDCAA", "#9CDCFE", "#C586C0"],
+    ],
+    ["octave", "function y = solve(x)\\n  y = x;\\nend", ["#569CD6"]],
+  ];
+  for (const sample of samples) {{
+    const language = sample[0];
+    const source = sample[1];
+    const expectedColors = sample[2];
+    const result = await NumOJMarkdownCodeHighlighter.tokenize(
+      source,
+      language,
+    );
+    const tokens = result.tokens.flat();
+    const rebuilt = result.tokens
+      .map(function(line) {{ return line.map(function(token) {{
+        return token.content;
+      }}).join(""); }})
+      .join("\\n");
+    if (rebuilt !== source) process.exit(1);
+    const colors = new Set(tokens.map(function(token) {{
+      return String(token.color).toUpperCase();
+    }}));
+    for (const color of expectedColors) {{
+      if (!colors.has(color)) process.exit(2);
+    }}
   }}
-  if (!optionTokens.includes("-fsSL") || !optionTokens.includes("-r")) {{
-    process.exit(3);
-  }}
-}})().catch(function() {{ process.exit(4); }});
+}})().catch(function() {{ process.exit(3); }});
 """
     subprocess.run(
         [NODE, "-e", script],
@@ -166,6 +175,21 @@ require({str(asset)!r});
     source: "std::vector<int> values;"
   }});
   await NumOJSemanticTokens.requestTokens({{
+    context: "markdown",
+    language: "c",
+    source: "int value;"
+  }});
+  await NumOJSemanticTokens.requestTokens({{
+    context: "markdown",
+    language: "python",
+    source: "value: int = 1"
+  }});
+  await NumOJSemanticTokens.requestTokens({{
+    context: "markdown",
+    language: "octave",
+    source: "value = 1;"
+  }});
+  await NumOJSemanticTokens.requestTokens({{
     problemId: 42,
     language: "cpp",
     source: "int main() {{}}"
@@ -179,23 +203,42 @@ require({str(asset)!r});
   const requests = calls
     .filter(function(call) {{ return call.options.method === "POST"; }})
     .map(function(call) {{ return JSON.parse(call.options.body); }});
-  if (requests.length !== 3) process.exit(1);
+  if (requests.length !== 6) process.exit(1);
   if (requests[0].context !== "markdown") process.exit(2);
   if (Object.prototype.hasOwnProperty.call(requests[0], "problem_id")) {{
     process.exit(3);
   }}
-  if (requests[1].problem_id !== 42) process.exit(4);
-  if (Object.prototype.hasOwnProperty.call(requests[1], "context")) {{
-    process.exit(5);
-  }}
   if (
-    requests[2].context !== "repository" ||
-    requests[2].repository_entry_id !== 42 ||
-    Object.prototype.hasOwnProperty.call(requests[2], "problem_id")
+    requests[1].context !== "markdown" ||
+    requests[1].language !== "c" ||
+    requests[2].context !== "markdown" ||
+    requests[2].language !== "python" ||
+    requests[3].context !== "markdown" ||
+    requests[3].language !== "matlab"
   ) {{
+    process.exit(4);
+  }}
+  if (requests[4].problem_id !== 42) process.exit(5);
+  if (Object.prototype.hasOwnProperty.call(requests[4], "context")) {{
     process.exit(6);
   }}
-}})().catch(function() {{ process.exit(7); }});
+  if (
+    requests[5].context !== "repository" ||
+    requests[5].repository_entry_id !== 42 ||
+    Object.prototype.hasOwnProperty.call(requests[5], "problem_id")
+  ) {{
+    process.exit(7);
+  }}
+  if (Object.prototype.hasOwnProperty.call(requests[1], "problem_id")) {{
+    process.exit(8);
+  }}
+  if (Object.prototype.hasOwnProperty.call(requests[2], "problem_id")) {{
+    process.exit(9);
+  }}
+  if (Object.prototype.hasOwnProperty.call(requests[3], "problem_id")) {{
+    process.exit(10);
+  }}
+}})().catch(function() {{ process.exit(11); }});
 """
     subprocess.run(
         [NODE, "-e", script],

@@ -378,7 +378,7 @@ def test_markdown_cpp_tokens_use_isolated_context_and_hidden_bits_preamble(
     ]
 
 
-def test_markdown_semantic_context_only_accepts_cpp_without_problem_id(
+def test_markdown_semantic_context_rejects_unsupported_or_bound_requests(
     monkeypatch,
 ):
     service = _FakeService()
@@ -389,7 +389,7 @@ def test_markdown_semantic_context_only_accepts_cpp_without_problem_id(
     for payload in (
         {
             "context": "markdown",
-            "language": "python",
+            "language": "javascript",
             "source": "value = 1",
         },
         {
@@ -407,6 +407,50 @@ def test_markdown_semantic_context_only_accepts_cpp_without_problem_id(
         response = client.post("/api/editor/semantic-tokens", json=payload)
         assert response.status_code == 400
     assert service.calls == []
+
+
+def test_markdown_semantic_context_uses_each_editor_language_service(
+    monkeypatch,
+):
+    service = _FakeService()
+    client = _app(monkeypatch, service).test_client()
+    with client.session_transaction() as user_session:
+        user_session["username"] = "alice"
+
+    cases = (
+        ("c", "int c_value;", "c"),
+        ("py", "py_value: int = 1", "python"),
+        ("python", "python_value: int = 1", "python"),
+        ("matlab", "matlab_value = 1;", "matlab"),
+        ("octave", "octave_value = 1;", "matlab"),
+    )
+    for language, source, _canonical in cases:
+        response = client.post(
+            "/api/editor/semantic-tokens",
+            json={
+                "context": "markdown",
+                "language": language,
+                "source": source,
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json()["data"] == [0, 0, 6, 1, 1]
+
+    assert service.calls == [
+        (f"7:markdown:{canonical}", source)
+        for _language, source, canonical in cases
+    ]
+
+
+def test_markdown_cache_keys_are_isolated_by_canonical_language():
+    source = "value = 1;"
+
+    keys = {
+        editor_language_routes._markdown_cache_key(language, source)
+        for language in ("c", "cpp", "python", "matlab")
+    }
+
+    assert len(keys) == 4
 
 
 def test_markdown_cpp_result_cache_is_shared_across_authenticated_users(
@@ -440,7 +484,10 @@ def test_markdown_cpp_result_cache_is_shared_across_authenticated_users(
     ]
     expected_result_id = (
         "markdown:"
-        + editor_language_routes._markdown_cache_key(payload["source"])[:12]
+        + editor_language_routes._markdown_cache_key(
+            payload["language"],
+            payload["source"],
+        )[:12]
     )
     assert first.get_json()["result_id"] == expected_result_id
     assert second.get_json()["result_id"] == expected_result_id
@@ -459,7 +506,7 @@ def test_markdown_cpp_duplicate_inflight_returns_retryable_code(monkeypatch):
     with client.session_transaction() as user_session:
         user_session["username"] = "alice"
     source = "std::vector<int> values;"
-    cache_key = editor_language_routes._markdown_cache_key(source)
+    cache_key = editor_language_routes._markdown_cache_key("cpp", source)
     assert (
         editor_language_routes._markdown_semantic_cache.claim(cache_key).state
         == "owner"
