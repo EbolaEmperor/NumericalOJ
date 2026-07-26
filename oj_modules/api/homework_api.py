@@ -7,7 +7,7 @@ from flask import Blueprint, request
 from oj_modules.api.helpers import json_error, json_success, public_user
 from oj_modules.auth_helpers import current_user, is_admin
 from oj_modules.db_services import (
-    get_all_classes_except_admin,
+    get_all_classes,
     get_all_problems,
     get_class_by_en,
     get_db_connection,
@@ -35,7 +35,7 @@ def homework_list():
         return json_error("无权限", 403)
 
     selected_class = (request.args.get("sclass") or request.args.get("class_en") or "").strip()
-    classes = get_all_classes_except_admin()
+    classes = get_all_classes()
     valid_classes = [cls["class_en"] for cls in classes]
     if selected_class and selected_class not in valid_classes:
         return json_error("无效的班级选择", 400, selected_class=selected_class)

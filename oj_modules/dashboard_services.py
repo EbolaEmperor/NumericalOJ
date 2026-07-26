@@ -13,7 +13,7 @@ from datetime import date, datetime, time as datetime_time, timedelta
 from zoneinfo import ZoneInfo
 
 from oj_modules.db_services import (
-    get_all_classes_except_admin,
+    get_all_classes,
     get_db_connection,
     get_user_classes,
     safe_table_name,
@@ -98,12 +98,11 @@ def _cached(key, loader, *, now_monotonic=None):
 
 
 def visible_classes_for_user(user):
-    """返回用户可见班级；管理员可见全部非管理员班级。"""
+    """返回用户可见班级；管理员可见全部班级。"""
     if not user:
         return []
     if int(user.get("is_admin") or 0) == 1:
-        classes = get_all_classes_except_admin() or []
-        return [dict(item, is_primary=0) for item in classes]
+        return get_all_classes() or []
     return get_user_classes(user["id"]) or []
 
 
@@ -120,26 +119,25 @@ def visible_classes_for_user_cached(user):
 
 
 def select_visible_class(classes, requested_class_en=None):
-    """在可见班级中解析 URL 选择，失败时回退到主班级或第一项。"""
+    """在可见班级中解析 URL 选择，否则按班级代码稳定选择第一项。
+
+    这里的选择仅是当前请求的查看上下文，不写入用户资料或会话。
+    """
     if not classes:
         return None
     if requested_class_en:
         for item in classes:
             if item.get("class_en") == requested_class_en:
                 return item
-    for item in classes:
-        if int(item.get("is_primary") or 0) == 1:
-            return item
-    return classes[0]
+    return min(classes, key=lambda item: str(item.get("class_en") or ""))
 
 
 def _membership_predicate(alias):
     return (
         f"EXISTS (SELECT 1 FROM users u "
         f"WHERE u.username = {alias}.username AND u.is_admin = 0 "
-        f"AND (u.class = %s OR EXISTS ("
-        f"SELECT 1 FROM user_class_map ucm "
-        f"WHERE ucm.user_id = u.id AND ucm.class_en = %s)))"
+        f"AND EXISTS (SELECT 1 FROM user_class_map ucm "
+        f"WHERE ucm.user_id = u.id AND ucm.class_en = %s))"
     )
 
 
@@ -217,10 +215,8 @@ def get_class_activity(class_en, *, today=None, days=ACTIVITY_DAYS):
                         start_at,
                         end_at,
                         class_en,
-                        class_en,
                         start_at,
                         end_at,
-                        class_en,
                         class_en,
                     ),
                 )
@@ -266,7 +262,7 @@ def _get_submission_metrics(
     params = list(ids) + list(_NON_TERMINAL_STATUSES)
     if class_en:
         membership_sql = f" AND {_membership_predicate(alias)}"
-        params.extend([class_en, class_en])
+        params.append(class_en)
     source_sql = f"AND {alias}.source = 'self'" if self_only else ""
     cache_key = (
         "submission-metrics",

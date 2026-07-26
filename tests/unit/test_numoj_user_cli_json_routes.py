@@ -85,6 +85,41 @@ class _StreamResponse(_FakeResponse):
             yield line if decode_unicode else line.encode("utf-8")
 
 
+def test_me_classes_projects_equal_membership_contract(monkeypatch, capsys):
+    cli = _load_numoj_user_cli_module()
+    fake_client = _FakeClient()
+    payload = {
+        "success": True,
+        "memberships": [
+            {"class_en": "C1", "class_cn": "一班"},
+            {"class_en": "C2", "class_cn": "二班"},
+        ],
+        "all_classes": [
+            {"class_en": "C1", "class_cn": "一班"},
+            {"class_en": "C2", "class_cn": "二班"},
+            {"class_en": "C3", "class_cn": "三班"},
+        ],
+        "internal": "hidden",
+    }
+    monkeypatch.setattr(
+        fake_client,
+        "request",
+        lambda *args, **kwargs: _PayloadResponse(payload),
+    )
+    monkeypatch.setattr(
+        cli.common,
+        "client_from_args",
+        lambda _args, **_kwargs: fake_client,
+    )
+
+    cli.me_classes(Namespace())
+
+    assert cli.json.loads(capsys.readouterr().out) == {
+        "memberships": payload["memberships"],
+        "all_classes": payload["all_classes"],
+    }
+
+
 def test_numoj_user_page_like_commands_use_json_api_without_output(monkeypatch):
     cli = _load_numoj_user_cli_module()
     fake_client = _FakeClient()
@@ -288,8 +323,6 @@ def _submission_list_payload():
         "success": True,
         "total_pages": 1,
         "user": {
-            "class": "Cclass1",
-            "class_cn": "测试班级",
             "email": "student1@example.com",
             "id": 2,
             "is_admin": 0,
@@ -352,8 +385,6 @@ def test_submission_problem_outputs_necessary_user_facing_fields(monkeypatch, ca
         "success": True,
         "total_pages": 1,
         "user": {
-            "class": "Cclass1",
-            "class_cn": "测试班级",
             "email": "student1@example.com",
             "id": 2,
             "is_admin": 0,

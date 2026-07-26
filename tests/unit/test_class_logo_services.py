@@ -75,7 +75,6 @@ def test_missing_seed_has_stable_read_only_fallback_and_is_not_exposed():
         "class_en": "C2026",
         "class_cn": "超长班级名称",
         "logo_seed": None,
-        "is_primary": 1,
     }]
 
     first = class_logo_services.attach_class_logos(rows)

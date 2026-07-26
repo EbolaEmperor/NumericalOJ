@@ -23,6 +23,22 @@ def test_class_table_schema_has_persistent_logo_seed():
     )
 
 
+def test_class_membership_schema_has_no_primary_or_user_snapshot_columns():
+    from scripts import init_db_schema
+
+    specs = init_db_schema._load_schema_specs()
+
+    assert "class" not in specs["users"].columns
+    assert "class_cn" not in specs["users"].columns
+    assert "is_primary" not in specs["user_class_map"].columns
+    assert "idx_primary" not in specs["user_class_map"].indexes
+
+    bootstrap = init_db_schema.DATABASE_BOOTSTRAP_SQL.read_text(
+        encoding="utf-8",
+    )
+    assert "'Cadmin'" not in bootstrap
+
+
 def test_plagiarism_records_schema_has_lookup_indexes():
     from scripts import init_db_schema
 

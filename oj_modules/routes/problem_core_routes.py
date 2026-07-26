@@ -699,7 +699,6 @@ def build_problem_list_context(
         homeworks_by_class.append({
             "class_en": c['class_en'],
             "class_cn": c['class_cn'],
-            "is_primary": c['is_primary'],
             "hw_list": items,
             "grades": grades,
         })

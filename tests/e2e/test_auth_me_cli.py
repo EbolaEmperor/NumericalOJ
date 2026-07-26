@@ -98,7 +98,6 @@ def test_me_class_and_grade_commands(cli, unique_suffix):
     assert any(c["class_en"] == class_en for c in classes["all_classes"])
 
     assert cli.user_json("me", "join-class", class_en)["success"] is True
-    assert cli.user_json("me", "set-primary-class", class_en)["success"] is True
     assert cli.user_json("me", "leave-class", "Cclass1")["success"] is True
     cli.user_json("me", "submissions", "--limit", "5")
     cli.user_json("me", "grades")

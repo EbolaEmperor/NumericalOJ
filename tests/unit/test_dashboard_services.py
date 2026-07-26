@@ -53,13 +53,13 @@ class _Connection:
         self.closed = True
 
 
-def test_select_visible_class_honors_authorized_request_then_primary_fallback():
+def test_select_visible_class_honors_request_then_stable_class_code_fallback():
     classes = [
-        {"class_en": "C1", "is_primary": 0},
-        {"class_en": "C2", "is_primary": 1},
+        {"class_en": "C2"},
+        {"class_en": "C1"},
     ]
 
-    assert dashboard_services.select_visible_class(classes, "C1") == classes[0]
+    assert dashboard_services.select_visible_class(classes, "C2") == classes[0]
     assert dashboard_services.select_visible_class(classes, "not-visible") == classes[1]
     assert dashboard_services.select_visible_class([], "C1") is None
 
@@ -67,18 +67,18 @@ def test_select_visible_class_honors_authorized_request_then_primary_fallback():
 def test_visible_classes_for_user_uses_role_specific_source(monkeypatch):
     monkeypatch.setattr(
         dashboard_services,
-        "get_all_classes_except_admin",
-        lambda: [{"class_en": "C2", "is_primary": 1}],
+        "get_all_classes",
+        lambda: [{"class_en": "C2"}],
     )
-    get_user_classes = MagicMock(return_value=[{"class_en": "C1", "is_primary": 1}])
+    get_user_classes = MagicMock(return_value=[{"class_en": "C1"}])
     monkeypatch.setattr(dashboard_services, "get_user_classes", get_user_classes)
 
     assert dashboard_services.visible_classes_for_user(None) == []
     assert dashboard_services.visible_classes_for_user({"id": 9, "is_admin": 0}) == [
-        {"class_en": "C1", "is_primary": 1}
+        {"class_en": "C1"}
     ]
     assert dashboard_services.visible_classes_for_user({"id": 1, "is_admin": 1}) == [
-        {"class_en": "C2", "is_primary": 0}
+        {"class_en": "C2"}
     ]
     get_user_classes.assert_called_once_with(9)
 
@@ -164,7 +164,8 @@ def test_problem_metrics_apply_terminal_and_current_class_filters(monkeypatch):
     assert "u.is_admin = 0" in captured["query"]
     assert "user_class_map" in captured["query"]
     assert captured["params"][:2] == (7, 9)
-    assert captured["params"][-2:] == ("C2026", "C2026")
+    assert captured["params"][-1:] == ("C2026",)
+    assert "u.class" not in captured["query"]
     for status in dashboard_services._NON_TERMINAL_STATUSES:
         assert status in captured["params"]
 
@@ -244,8 +245,9 @@ def test_get_class_activity_unifies_normal_and_ranking_submissions_and_caches(mo
     assert "UNION ALL" in aggregate_sql
     assert "FROM ranking_submissions rs" in aggregate_sql
     assert "rs.source = 'self'" in aggregate_sql
-    assert params[2:4] == ("C1", "C1")
-    assert params[6:8] == ("C1", "C1")
+    assert params[2] == "C1"
+    assert params[5] == "C1"
+    assert len(params) == 6
     by_day = {item["day"]: item for item in result}
     assert by_day[date(2026, 7, 21)]["count"] == 3
     assert by_day[date(2026, 7, 22)]["count"] == 2
@@ -266,7 +268,7 @@ def test_get_layout_navigation_context_returns_real_admin_counts(monkeypatch):
     monkeypatch.setattr(
         dashboard_services,
         "visible_classes_for_user",
-        lambda _user: [{"class_en": "C1", "is_primary": 1}],
+        lambda _user: [{"class_en": "C1"}],
     )
 
     result = dashboard_services.get_layout_navigation_context(

@@ -98,7 +98,7 @@
       >{{ (user.username or 'U')[:2]|upper }}</span>
       <span class="numoj-user-copy">
         <strong>{{ user.username }}</strong>
-        <small>{{ '教师' if user.is_admin == 1 else '学生' }}{% if user.class_cn %} · {{ user.class_cn }}{% endif %}</small>
+        <small>{{ '教师' if user.is_admin == 1 else '学生' }}</small>
       </span>
     </div>
     <button class="numoj-sidebar-toggle" type="button" data-numoj-sidebar-toggle aria-label="收起侧边栏" title="收起侧边栏">

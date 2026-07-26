@@ -513,8 +513,6 @@ CREATE TABLE `users` (
   `password_hash` varchar(255) NOT NULL,
   `is_admin` tinyint(1) NOT NULL DEFAULT '0',
   `email` text,
-  `class` text,
-  `class_cn` text,
   PRIMARY KEY (`id`),
   UNIQUE KEY `username` (`username`)
 ) ENGINE=InnoDB AUTO_INCREMENT=186 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -530,11 +528,9 @@ DROP TABLE IF EXISTS `user_class_map`;
 CREATE TABLE `user_class_map` (
   `user_id` int NOT NULL,
   `class_en` varchar(255) NOT NULL,
-  `is_primary` tinyint(1) NOT NULL DEFAULT '0',
   PRIMARY KEY (`user_id`,`class_en`),
   KEY `idx_user_id` (`user_id`),
   KEY `idx_class_en` (`class_en`),
-  KEY `idx_primary` (`is_primary`),
   CONSTRAINT `user_class_map_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `user_class_map_ibfk_2` FOREIGN KEY (`class_en`) REFERENCES `class_table` (`class_en`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -547,7 +543,6 @@ CREATE TABLE `user_class_map` (
 LOCK TABLES `class_table` WRITE;
 /*!40000 ALTER TABLE `class_table` DISABLE KEYS */;
 INSERT INTO `class_table` (`class_en`, `class_cn`, `class_cnt`, `logo_seed`) VALUES
-('Cadmin','管理员',1,NULL),
 ('Cdemo2024','演示班级2024',0,NULL),
 ('Ctest','测试班级',0,NULL);
 /*!40000 ALTER TABLE `class_table` ENABLE KEYS */;
@@ -593,18 +588,9 @@ CREATE TABLE `Ctest` (
 
 LOCK TABLES `users` WRITE;
 /*!40000 ALTER TABLE `users` DISABLE KEYS */;
-INSERT INTO `users` VALUES (4,'admin','240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9',1,'admin@example.com','Cadmin','管理员');
+INSERT INTO `users` (`id`, `username`, `password_hash`, `is_admin`, `email`) VALUES
+(4,'admin','240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9',1,'admin@example.com');
 /*!40000 ALTER TABLE `users` ENABLE KEYS */;
-UNLOCK TABLES;
-
---
--- Dumping data for table `user_class_map`
---
-
-LOCK TABLES `user_class_map` WRITE;
-/*!40000 ALTER TABLE `user_class_map` DISABLE KEYS */;
-INSERT INTO `user_class_map` VALUES (4,'Cadmin',1);
-/*!40000 ALTER TABLE `user_class_map` ENABLE KEYS */;
 UNLOCK TABLES;
 
 --

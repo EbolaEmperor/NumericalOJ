@@ -580,21 +580,6 @@
   border-bottom: 0;
 }
 
-.numoj-membership-row.is-primary {
-  background: linear-gradient(90deg, var(--account-brand-soft), #fff 18%);
-}
-
-.numoj-membership-row.is-primary::before {
-  position: absolute;
-  top: 10px;
-  bottom: 10px;
-  left: 0;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--account-brand);
-  content: "";
-}
-
 .numoj-membership-logo {
   display: grid;
   width: 31px;
@@ -646,18 +631,6 @@
   white-space: nowrap;
 }
 
-.numoj-membership-primary {
-  flex: 0 0 auto;
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: var(--account-brand-soft);
-  color: var(--account-brand-ink);
-  font-family: var(--account-mono);
-  font-size: 8px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
 .numoj-membership-actions {
   display: flex;
   flex: 0 0 auto;
@@ -674,10 +647,6 @@
   background: transparent;
   color: var(--account-ink-3);
   font-size: 9.5px;
-}
-
-.numoj-membership-action.is-primary-action {
-  color: var(--account-brand-ink);
 }
 
 .numoj-membership-action.is-danger:hover:not(:disabled),
@@ -1831,17 +1800,6 @@
 
   .numoj-class-picker-current {
     flex: 1 1 auto;
-  }
-
-  .numoj-class-primary-label {
-    flex: 0 0 auto;
-    padding: 3px 6px;
-    border-radius: 5px;
-    background: var(--numoj-brand-soft);
-    color: var(--numoj-brand-ink);
-    font-family: var(--numoj-mono);
-    font-size: 0.57rem;
-    font-weight: 650;
   }
 
   .numoj-class-picker-chevron {

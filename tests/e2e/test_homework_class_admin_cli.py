@@ -32,7 +32,6 @@ def test_admin_user_class_management_and_homework_lifecycle(cli, unique_suffix):
     assert any(u["username"] == username for u in cli.admin_json("user", "list", "--username", username)["users"])
 
     assert cli.admin_json("user", "add-to-class", str(user_id), class_en)["success"] is True
-    assert cli.admin_json("user", "set-primary-class", str(user_id), class_en)["success"] is True
     assert cli.admin_json("homework", "class-adjust", "false")["success"] is True
     blocked_join = cli.user("me", "join-class", "Cclass1", check=False)
     assert blocked_join.returncode != 0
@@ -77,6 +76,31 @@ def test_admin_user_class_management_and_homework_lifecycle(cli, unique_suffix):
         homework_id,
     )["success"] is True
     assert cli.admin_json("problem", "delete", str(problem_id))["success"] is True
+
+
+@pytest.mark.e2e
+def test_admin_can_grant_admin_privileges_idempotently(cli, unique_suffix):
+    username = f"cli_grant_admin_{unique_suffix}"
+    create_regular_user(username=username, password="pw123456")
+    assert cli.init_admin()["success"] is True
+
+    user_id = get_user_id(username)
+    first = cli.admin_json("user", "grant-admin", str(user_id))
+    second = cli.admin_json("user", "grant-admin", str(user_id))
+
+    assert first["success"] is True
+    assert first["granted"] is True
+    assert first["is_admin"] is True
+    assert second["success"] is True
+    assert second["granted"] is False
+    target = next(
+        user
+        for user in cli.admin_json(
+            "user", "list", "--username", username,
+        )["users"]
+        if user["username"] == username
+    )
+    assert target["is_admin"] == 1
 
 
 @pytest.mark.e2e

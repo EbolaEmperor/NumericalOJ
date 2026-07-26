@@ -38,8 +38,10 @@ def users():
         user_where_params.append(f"%{search_username}%")
 
     if search_class:
-        user_where_clauses.append("(u.class = %s OR u.id IN (SELECT user_id FROM user_class_map WHERE class_en = %s))")
-        user_where_params.extend([search_class, search_class])
+        user_where_clauses.append(
+            "u.id IN (SELECT user_id FROM user_class_map WHERE class_en = %s)"
+        )
+        user_where_params.append(search_class)
 
     user_where_sql = ""
     if user_where_clauses:
@@ -64,7 +66,7 @@ def users():
                 page = total_pages
 
             data_sql = f"""
-                SELECT u.id, u.username, u.email, u.class, u.class_cn, u.is_admin
+                SELECT u.id, u.username, u.email, u.is_admin
                 FROM users u
                 {user_where_sql}
                 ORDER BY u.id ASC
@@ -79,11 +81,11 @@ def users():
             placeholders = ",".join(["%s"] * len(uid_list))
             with conn.cursor() as cursor:
                 map_sql = f"""
-                    SELECT m.user_id, m.class_en, ct.class_cn, m.is_primary
+                    SELECT m.user_id, m.class_en, ct.class_cn
                     FROM user_class_map m
                     JOIN class_table ct ON ct.class_en = m.class_en
                     WHERE m.user_id IN ({placeholders})
-                    ORDER BY m.is_primary DESC, m.class_en ASC
+                    ORDER BY m.user_id ASC, m.class_en ASC
                 """
                 cursor.execute(map_sql, uid_list)
                 mapping_rows = cursor.fetchall() or []
@@ -97,7 +99,6 @@ def users():
         class_map.setdefault(row["user_id"], []).append({
             "class_en": row["class_en"],
             "class_cn": row["class_cn"],
-            "is_primary": row.get("is_primary", 0),
         })
 
     out = []
@@ -107,8 +108,6 @@ def users():
             "id": row["id"],
             "username": row["username"],
             "email": row.get("email") or "",
-            "class": row.get("class"),
-            "class_cn": row.get("class_cn"),
             "is_admin": row.get("is_admin"),
             "classes": classes,
             "classes_display": " / ".join(

@@ -13,7 +13,7 @@ from config import MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME
 from oj_modules.class_logo_services import attach_class_logos
 from oj_modules.db_services import (
     create_user,
-    get_all_classes_except_admin,
+    get_all_classes,
     get_class_by_en,
     get_current_user,
     get_db_connection,
@@ -256,16 +256,13 @@ def send_verification():
 
 @auth_bp.route('/register', methods=['GET', 'POST'])
 def register():
-    public_classes = attach_class_logos(get_all_classes_except_admin())
+    public_classes = attach_class_logos(get_all_classes())
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip()
         password = (request.form.get('password') or '').strip()
         email = (request.form.get('email') or '').strip()
         code = (request.form.get('verification_code') or '').strip()
         user_class = get_class_by_en(request.form.get('class'))
-
-        if user_class and user_class.get('class_en') == 'Cadmin':
-            user_class = None
 
         if not all([username, password, email, code, user_class]):
             return render_template('auth/register.html', error_message="所有字段不能为空", classes=public_classes)

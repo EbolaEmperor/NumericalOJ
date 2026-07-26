@@ -5,6 +5,7 @@ from jinja2 import Environment, FileSystemLoader
 
 def test_desktop_problem_templates_preserve_class_context_and_separate_library_deadline():
     repo = Path(__file__).resolve().parents[2]
+    problem_list = (repo / "templates/problems/list.html").read_text()
     desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
     detail = (repo / "templates/problems/detail.html").read_text()
     navigation = (repo / "templates/components/layout/navigation.html").read_text()
@@ -30,6 +31,10 @@ def test_desktop_problem_templates_preserve_class_context_and_separate_library_d
     assert "<rect" in class_logo
     assert "fas " not in class_logo
     assert "palette-" not in class_logo
+    for source in (problem_list, desktop_list):
+        assert "主班级" not in source
+        assert "is_primary" not in source
+        assert "numoj-class-primary-label" not in source
     library_rows = desktop_list.split("{% for p in problems %}", 1)[1].split(
         "{% else %}", 1
     )[0]

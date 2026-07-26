@@ -11,7 +11,7 @@ def necessary_classes_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
     necessary: Dict[str, Any] = {}
-    for key in ("primary_en", "memberships", "all_classes"):
+    for key in ("memberships", "all_classes"):
         if key in payload:
             necessary[key] = payload[key]
     return necessary
@@ -33,11 +33,6 @@ def me_join_class(args: argparse.Namespace) -> None:
 
 def me_leave_class(args: argparse.Namespace) -> None:
     resp = common.client_from_args(args).request("POST", "/me/leave_class", data={"class_en": args.class_en})
-    common.print_or_save_response(resp)
-
-
-def me_set_primary_class(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", "/me/set_primary_class", data={"class_en": args.class_en})
     common.print_or_save_response(resp)
 
 
@@ -86,9 +81,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = common.add_cli_parser(me_sub, "leave-class", "Leave a class as the current account.")
     pa.add_argument("class_en", help="English class identifier to leave, e.g. C2026A.")
     pa.set_defaults(func=me_leave_class)
-    pa = common.add_cli_parser(me_sub, "set-primary-class", "Set the current account's primary class.")
-    pa.add_argument("class_en", help="English class identifier to make primary, e.g. C2026A.")
-    pa.set_defaults(func=me_set_primary_class)
     pa = common.add_cli_parser(me_sub, "submissions", "List submissions for the current account.")
     pa.add_argument("--page", type=int, default=1, help="Result page number to fetch.")
     pa.add_argument("--limit", type=int, help="Maximum number of submissions to return.")

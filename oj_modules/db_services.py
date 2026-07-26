@@ -1040,20 +1040,23 @@ def _replace_plagiarism_matched_usernames(cursor, old_username, new_username):
 
 
 def create_user(username, password_hash, email, user_class):
-    if (user_class or {}).get('class_en') == 'Cadmin':
-        raise ValueError('普通用户不能注册到管理员班级')
-
     def operation(cursor):
         assert_identity_name_available(cursor, username)
-        sql = 'INSERT INTO users (username, password_hash, email, class, class_cn) VALUES (%s, %s, %s, %s, %s)'
-        cursor.execute(sql, (username, password_hash, email, user_class['class_en'], user_class['class_cn']))
+        sql = (
+            'INSERT INTO users (username, password_hash, email) '
+            'VALUES (%s, %s, %s)'
+        )
+        cursor.execute(sql, (username, password_hash, email))
         user_id = cursor.lastrowid
 
         sql = 'UPDATE class_table SET class_cnt=class_cnt+1 WHERE class_en=%s'
         cursor.execute(sql, (user_class['class_en'],))
 
-        sql = 'INSERT INTO user_class_map (user_id, class_en, is_primary) VALUES (%s, %s, %s)'
-        cursor.execute(sql, (user_id, user_class['class_en'], 1))
+        sql = (
+            'INSERT INTO user_class_map (user_id, class_en) '
+            'VALUES (%s, %s)'
+        )
+        cursor.execute(sql, (user_id, user_class['class_en']))
         return int(user_id)
 
     return run_identity_namespace_transaction(operation)
@@ -1114,36 +1117,14 @@ def get_user_classes(user_id):
     try:
         with conn.cursor() as cursor:
             sql = """
-              SELECT m.class_en, ct.class_cn, ct.logo_seed, m.is_primary
+              SELECT m.class_en, ct.class_cn, ct.logo_seed
               FROM user_class_map m
-              LEFT JOIN class_table ct ON m.class_en = ct.class_en
+              JOIN class_table ct ON m.class_en = ct.class_en
               WHERE m.user_id=%s
-              ORDER BY m.is_primary DESC, m.class_en ASC
+              ORDER BY m.class_en ASC
             """
             cursor.execute(sql, (user_id,))
-            rows = cursor.fetchall()
-            if rows and len(rows) > 0:
-                return rows
-
-            cursor.execute("SELECT class FROM users WHERE id=%s", (user_id,))
-            u = cursor.fetchone()
-            class_en = u.get('class')
-            if not class_en:
-                return []
-            cursor.execute(
-                "SELECT class_en, class_cn, logo_seed "
-                "FROM class_table WHERE class_en=%s",
-                (class_en,),
-            )
-            c = cursor.fetchone()
-            if not c:
-                return [{'class_en': class_en, 'class_cn': class_en, 'is_primary': 1}]
-            return [{
-                'class_en': c['class_en'],
-                'class_cn': c['class_cn'],
-                'logo_seed': c.get('logo_seed'),
-                'is_primary': 1,
-            }]
+            return cursor.fetchall() or []
     finally:
         conn.close()
 
@@ -1162,27 +1143,12 @@ def get_all_classes():
         conn.close()
 
 
-def get_all_classes_except_admin():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = (
-                "SELECT class_en, class_cn, logo_seed "
-                "FROM class_table WHERE class_en != 'Cadmin' "
-                "ORDER BY class_cn ASC"
-            )
-            cursor.execute(sql)
-            return cursor.fetchall()
-    finally:
-        conn.close()
-
-
 def get_users_in_classes(class_en_list):
     """返回选定班级（``class_en`` 列表）中的全部非管理员用户，按用户去重。
 
-    一名学生即便同时属于多个被选班级，也只返回一行。每行：
-    ``{'user_id', 'username', 'class_cn'}``（``class_cn`` 取该用户在 users 表上的主班级名，
-    仅用于界面展示）。``class_en_list`` 为空或全部非法时返回 ``[]``。
+    一名学生即便同时属于多个被选班级，也只返回一行；``classes`` 保留全部
+    匹配班级，``classes_display`` 按 ``class_en`` 稳定拼接。
+    ``class_en_list`` 为空或全部非法时返回 ``[]``。
     """
     cleaned = [str(c).strip() for c in (class_en_list or []) if str(c).strip()]
     if not cleaned:
@@ -1192,17 +1158,41 @@ def get_users_in_classes(class_en_list):
     try:
         with conn.cursor() as cursor:
             sql = (
-                "SELECT DISTINCT u.id AS user_id, u.username AS username, "
-                "       u.class_cn AS class_cn "
+                "SELECT u.id AS user_id, u.username AS username, "
+                "       ucm.class_en AS class_en, ct.class_cn AS class_cn "
                 "FROM users u "
                 "JOIN user_class_map ucm ON ucm.user_id = u.id "
+                "JOIN class_table ct ON ct.class_en = ucm.class_en "
                 f"WHERE ucm.class_en IN ({placeholders}) AND u.is_admin = 0 "
-                "ORDER BY u.username ASC"
+                "ORDER BY u.username ASC, ucm.class_en ASC"
             )
             cursor.execute(sql, tuple(cleaned))
-            return cursor.fetchall() or []
+            rows = cursor.fetchall() or []
     finally:
         conn.close()
+
+    users = {}
+    for row in rows:
+        user_id = int(row["user_id"])
+        item = users.setdefault(
+            user_id,
+            {
+                "user_id": user_id,
+                "username": row["username"],
+                "classes": [],
+            },
+        )
+        item["classes"].append({
+            "class_en": row["class_en"],
+            "class_cn": row.get("class_cn") or row["class_en"],
+        })
+
+    result = []
+    for item in users.values():
+        display = " / ".join(cls["class_cn"] for cls in item["classes"])
+        item["classes_display"] = display
+        result.append(item)
+    return result
 
 
 def ensure_class_homework_columns(class_en):
@@ -1531,7 +1521,7 @@ def _lock_submission_user_with_cursor(cursor, *, username, user_id=None):
         except (TypeError, ValueError) as exc:
             raise ValueError('user_id must be an integer') from exc
         cursor.execute(
-            """SELECT id, username, is_admin, class
+            """SELECT id, username, is_admin
                FROM users WHERE id=%s FOR SHARE""",
             (normalized_user_id,),
         )
@@ -1540,7 +1530,7 @@ def _lock_submission_user_with_cursor(cursor, *, username, user_id=None):
         if not normalized_username:
             raise ValueError('username must not be empty')
         cursor.execute(
-            """SELECT id, username, is_admin, class
+            """SELECT id, username, is_admin
                FROM users WHERE username=%s FOR SHARE""",
             (normalized_username,),
         )
@@ -1595,15 +1585,11 @@ def create_submission(
                 total_submissions = cursor.fetchone()['COUNT(*)']
                 if total_submissions == 0:
                     if user["is_admin"] != 1:
-                        # 班级以 user_class_map 为权威来源（users.class 单列可能为空/过期——恢复后的
-                        # 学生班级关系保存在 user_class_map 里；旧代码直接读 user["class"]=None，
-                        # 会让 safe_table_name(None) 抛错、整份提交 500，而管理员走不到这分支故不受影响）。
-                        # 对学生所在、且包含本题的班级表各自 complete_cnt+1（不含本题的班级表 0 行命中）。
+                        # user_class_map 是班级关系的唯一事实源。对学生所在、且包含本题
+                        # 的班级表各自 complete_cnt+1（不含本题的班级表 0 行命中）。
                         cursor.execute(
                             "SELECT class_en FROM user_class_map WHERE user_id=%s", (user["id"],))
                         class_list = [r["class_en"] for r in (cursor.fetchall() or []) if r.get("class_en")]
-                        if not class_list and (user.get("class") or "").strip():
-                            class_list = [user["class"].strip()]   # 退回旧的单班字段
                         for cen in class_list:
                             try:
                                 tbl = safe_table_name(cen)
@@ -2868,6 +2854,7 @@ def get_filtered_submissions_for_detection(
             if need_class:
                 conditions.append("_ucm.class_en = %s")
                 params.append(class_en)
+                conditions.append("_u.is_admin = 0")
             if username:
                 conditions.append("s.username = %s")
                 params.append(username)

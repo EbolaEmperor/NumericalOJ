@@ -37,7 +37,7 @@ class _DatabaseCursor:
             self._result = {"identity_namespace_locked": 1}
         elif statement.startswith("SELECT RELEASE_LOCK"):
             self._result = {"identity_namespace_released": 1}
-        elif statement.startswith("SELECT id, username, is_admin, class FROM users"):
+        elif statement.startswith("SELECT id, username, is_admin FROM users"):
             self._result = dict(self.connection.user)
         elif statement.startswith("SELECT id FROM problems"):
             self._result = {"id": params[0]}
@@ -76,7 +76,6 @@ class _DatabaseConnection:
             "id": 3,
             "username": "student-current",
             "is_admin": 1,
-            "class": None,
         }
         self.submission = submission or _written_submission()
         self.statements = []
@@ -283,7 +282,7 @@ def test_create_user_returns_transaction_insert_id(monkeypatch):
         if statement[0].startswith(("INSERT", "UPDATE"))
     ]
     assert len(writes) == 3
-    assert writes[-1][1] == (73, "C1", 1)
+    assert writes[-1][1] == (73, "C1")
 
 
 def test_overwrite_written_submission_audits_after_commit(monkeypatch):

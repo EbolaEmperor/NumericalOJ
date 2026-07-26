@@ -46,12 +46,10 @@ def user_list(args: argparse.Namespace) -> None:
     common.output_projected_json_response(resp, necessary_user_list_payload, allow_redirect=True)
 
 
-def user_set_primary_class(args: argparse.Namespace) -> None:
+def user_grant_admin(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
-        "POST",
-        "/admin/edit_user_ajax",
-        data={"user_id": args.user_id, "class": args.class_en},
+        "POST", "/admin/grant_user_admin_ajax", data={"user_id": args.user_id},
     )
     print_or_save_response(resp)
 
@@ -118,10 +116,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--class-en", required=True, help="English class code without the leading C, matching the web form behavior.")
     pa.add_argument("--class-cn", required=True, help="Chinese display name for the class.")
     pa.set_defaults(func=user_add_class_type)
-    pa = add_cli_parser(us, "set-primary-class", "Set a user's primary class.")
-    pa.add_argument("user_id", type=int, help="User ID to update.")
-    pa.add_argument("class_en", help="English class identifier to set as primary.")
-    pa.set_defaults(func=user_set_primary_class)
+    pa = add_cli_parser(us, "grant-admin", "Grant administrator privileges to a user.")
+    pa.add_argument("user_id", type=int, help="User ID to promote.")
+    pa.set_defaults(func=user_grant_admin)
     pa = add_cli_parser(us, "rename", "Rename a user account.")
     pa.add_argument("user_id", type=int, help="User ID to rename.")
     pa.add_argument("username", help="New username.")

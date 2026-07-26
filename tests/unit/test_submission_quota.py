@@ -52,23 +52,21 @@ class _FakeCursor:
         self.rowcount = 0
         self._result = None
 
-        if normalized.startswith("SELECT id, username, is_admin, class FROM users WHERE id="):
+        if normalized.startswith("SELECT id, username, is_admin FROM users WHERE id="):
             self._begin_locked_transaction()
             if self.connection.store.user_exists and int(params[0]) == self.connection.store.user_id:
                 self._result = {
                     "id": self.connection.store.user_id,
                     "username": self.connection.store.username,
                     "is_admin": 1,
-                    "class": None,
                 }
-        elif normalized.startswith("SELECT id, username, is_admin, class FROM users WHERE username="):
+        elif normalized.startswith("SELECT id, username, is_admin FROM users WHERE username="):
             self._begin_locked_transaction()
             if self.connection.store.user_exists and params[0] == self.connection.store.username:
                 self._result = {
                     "id": self.connection.store.user_id,
                     "username": self.connection.store.username,
                     "is_admin": 1,
-                    "class": None,
                 }
         elif normalized.startswith("INSERT INTO submission_limits"):
             self._begin_locked_transaction()
@@ -293,7 +291,7 @@ def test_submission_identity_uses_shared_user_lock_to_avoid_repository_lock_cycl
         sql
         for sql in store.sql
         if sql.startswith(
-            "SELECT id, username, is_admin, class FROM users WHERE "
+            "SELECT id, username, is_admin FROM users WHERE "
         )
     ]
     assert user_reads

@@ -2,44 +2,48 @@
 """DB 层测试：users / 班级 / site_settings（参考计划 Task 19 + 契约 §1a）。
 
 被测函数（oj_modules/db_services.py）：
-- create_user：插 users + class_table.class_cnt+1 + user_class_map(is_primary=1)
+- create_user：插 users + class_table.class_cnt+1 + user_class_map
 - get_user_by_username / get_user_by_id / get_user_by_email
-- get_user_classes：is_primary DESC, class_en ASC 排序 + 回退到 users.class
-- get_all_classes / get_all_classes_except_admin / get_class_by_en / get_class_by_cn
+- get_user_classes：只读 user_class_map，按 class_en ASC 稳定排序
+- get_all_classes / get_class_by_en / get_class_by_cn
 - get_setting / set_setting：site_settings 往返
 - is_class_adjust_enabled：默认 True；set '0' → False
 
 DB 由 conftest 的 autouse db_reset 在每个测试前 truncate+reseed
-（种子：admin 用户、Cadmin/Cclass1 班级、site_settings class_adjust_enabled='1'）。
+（种子：admin 用户、Cclass1 班级、site_settings class_adjust_enabled='1'）。
 """
 from oj_modules import db_services as db
 from tests import helpers as h
 
 
 # ---------------------------------------------------------------------------
-# create_user：链接班级 + 主班级标记 + class_cnt 自增
+# create_user：链接班级 + class_cnt 自增
 # ---------------------------------------------------------------------------
-def test_create_user_inserts_user_with_class_columns():
+def test_create_user_keeps_class_membership_out_of_users_row():
     h.make_class('Cx', '班X')
     db.create_user('alice', h.sha256_hex('pw'), 'alice@e.com',
                    {'class_en': 'Cx', 'class_cn': '班X'})
     u = db.get_user_by_username('alice')
     assert u is not None
     assert u['username'] == 'alice'
-    assert u['class'] == 'Cx'
-    assert u['class_cn'] == '班X'
+    assert 'class' not in u
+    assert 'class_cn' not in u
     assert u['email'] == 'alice@e.com'
     # 密码按调用方传入的 hash 原样存储（无二次加密）
     assert u['password_hash'] == h.sha256_hex('pw')
 
 
-def test_create_user_sets_primary_membership():
+def test_create_user_adds_equal_membership():
     h.make_class('Cx', '班X')
     db.create_user('bob', h.sha256_hex('pw'), 'bob@e.com',
                    {'class_en': 'Cx', 'class_cn': '班X'})
     u = db.get_user_by_username('bob')
     cls = db.get_user_classes(u['id'])
-    assert any(c['class_en'] == 'Cx' and c['is_primary'] == 1 for c in cls)
+    assert cls == [{
+        'class_en': 'Cx',
+        'class_cn': '班X',
+        'logo_seed': None,
+    }]
 
 
 def test_create_user_increments_class_cnt():
@@ -87,87 +91,83 @@ def test_get_user_lookup_missing_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# get_user_classes：排序 + 回退
+# get_user_classes：映射表唯一事实源 + 稳定排序
 # ---------------------------------------------------------------------------
-def test_get_user_classes_orders_primary_first():
-    # 用户在两个班级，主班级 Cclass1 应排第一（is_primary DESC）
-    u = h.make_user('multi', class_en='Cclass1', class_cn='测试班级')
-    h.make_class('Cextra', '附加班级')
+def test_get_user_classes_orders_by_class_en():
+    u = h.make_user('multi', class_en='Cz', class_cn='末班')
+    h.make_class('Ca', '首班')
     conn = db.get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO user_class_map (user_id, class_en, is_primary) "
-                "VALUES (%s, %s, 0)", (u['id'], 'Cextra'))
+                "INSERT INTO user_class_map (user_id, class_en) "
+                "VALUES (%s, %s)", (u['id'], 'Ca'))
         conn.commit()
     finally:
         conn.close()
 
     cls = db.get_user_classes(u['id'])
     assert len(cls) == 2
-    # 主班级（is_primary=1）必须排在最前
-    assert cls[0]['is_primary'] == 1
-    assert cls[0]['class_en'] == 'Cclass1'
-    # join 出来的中文名正确
-    assert cls[0]['class_cn'] == '测试班级'
+    assert [item['class_en'] for item in cls] == ['Ca', 'Cz']
+    assert [item['class_cn'] for item in cls] == ['首班', '末班']
+    assert all('is_primary' not in item for item in cls)
 
 
-def test_get_user_classes_fallback_to_users_class():
-    # 直接建一个 user 行但不写 user_class_map → 触发回退到 users.class
-    h.make_class('Cfb', '回退班')
+def test_get_user_classes_admin_without_membership_returns_empty():
     conn = db.get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO users (username, password_hash, email, class, class_cn) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                ('orphan', h.sha256_hex('pw'), 'orphan@e.com', 'Cfb', '回退班'))
+                "INSERT INTO users "
+                "(username, password_hash, is_admin, email) "
+                "VALUES (%s, %s, 1, %s)",
+                ('teacher', h.sha256_hex('pw'), 'teacher@e.com'),
+            )
         conn.commit()
     finally:
         conn.close()
 
-    u = db.get_user_by_username('orphan')
-    cls = db.get_user_classes(u['id'])
-    assert len(cls) == 1
-    assert cls[0]['class_en'] == 'Cfb'
-    assert cls[0]['class_cn'] == '回退班'
-    assert cls[0]['is_primary'] == 1
+    u = db.get_user_by_username('teacher')
+    assert db.get_user_classes(u['id']) == []
 
 
-def test_get_user_classes_fallback_unmatched_class_en():
-    # users.class 指向 class_table 不存在的班级 → 用 class_en 充当 class_cn
+def test_get_users_in_classes_aggregates_all_matching_classes():
+    u = h.make_user('aggregate', class_en='Cb', class_cn='乙班')
+    h.make_class('Ca', '甲班')
     conn = db.get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO users (username, password_hash, email, class, class_cn) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                ('ghost', h.sha256_hex('pw'), 'ghost@e.com', 'Cmissing', '幽灵班'))
+                "INSERT INTO user_class_map (user_id, class_en) "
+                "VALUES (%s, %s)",
+                (u['id'], 'Ca'),
+            )
         conn.commit()
     finally:
         conn.close()
 
-    u = db.get_user_by_username('ghost')
-    cls = db.get_user_classes(u['id'])
-    assert cls == [{'class_en': 'Cmissing', 'class_cn': 'Cmissing', 'is_primary': 1}]
+    users = db.get_users_in_classes(['Cb', 'Ca'])
+
+    assert users == [{
+        'user_id': u['id'],
+        'username': 'aggregate',
+        'classes': [
+            {'class_en': 'Ca', 'class_cn': '甲班'},
+            {'class_en': 'Cb', 'class_cn': '乙班'},
+        ],
+        'classes_display': '甲班 / 乙班',
+    }]
+    assert 'class_cn' not in users[0]
 
 
 # ---------------------------------------------------------------------------
-# get_all_classes / _except_admin / get_class_by_en / _by_cn
+# get_all_classes / get_class_by_en / get_class_by_cn
 # ---------------------------------------------------------------------------
 def test_get_all_classes_includes_seeded():
     rows = db.get_all_classes()
     ens = {r['class_en'] for r in rows}
-    # 种子班级齐全
-    assert 'Cadmin' in ens
     assert 'Cclass1' in ens
-
-
-def test_get_all_classes_except_admin_excludes_cadmin():
-    rows = db.get_all_classes_except_admin()
-    ens = {r['class_en'] for r in rows}
     assert 'Cadmin' not in ens
-    assert 'Cclass1' in ens
 
 
 def test_get_class_by_en_and_cn():

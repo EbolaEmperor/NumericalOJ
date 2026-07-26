@@ -57,7 +57,7 @@ def publish_environment(monkeypatch, tmp_path):
         "archive_target": archive_target,
         "problem": {"id": 7, "title": "人工作业", "type": 2},
         "user": {"id": 3, "username": "student", "email": "student@example.com"},
-        "classes": [{"class_en": "C1", "class_cn": "一班", "is_primary": True}],
+        "classes": [{"class_en": "C1", "class_cn": "一班"}],
     }
 
 
@@ -274,8 +274,8 @@ class _DbCursor:
         self.connection.calls.append((normalized, params))
         self.rowcount = 0
         self.result = None
-        if normalized.startswith("SELECT id, username, is_admin, class FROM users"):
-            self.result = {"id": 3, "username": "student", "is_admin": 0, "class": "C1"}
+        if normalized.startswith("SELECT id, username, is_admin FROM users"):
+            self.result = {"id": 3, "username": "student", "is_admin": 0}
         elif normalized.startswith("SELECT id, username, problem_id, test_points"):
             self.result = dict(self.connection.submission)
         elif normalized.startswith("INSERT INTO submission_limits"):

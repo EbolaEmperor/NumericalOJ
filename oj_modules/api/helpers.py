@@ -11,8 +11,6 @@ _USER_PUBLIC_FIELDS = (
     "id",
     "username",
     "email",
-    "class",
-    "class_cn",
     "is_admin",
 )
 

@@ -36,9 +36,6 @@
             >
               {{ class_logo(current_class) }}
               <span class="numoj-class-picker-current">{{ current_class.class_cn }}</span>
-              {% if current_class.is_primary %}
-              <span class="numoj-class-primary-label">主班级</span>
-              {% endif %}
               <i class="fas fa-chevron-down numoj-class-picker-chevron" aria-hidden="true"></i>
             </button>
             <div
@@ -58,7 +55,6 @@
                title="{{ cls.class_cn }}">
               {{ class_logo(cls) }}
               <span class="numoj-class-picker-option-name">{{ cls.class_cn }}</span>
-              {% if cls.is_primary %}<span class="numoj-class-primary-label">主班级</span>{% endif %}
               {% if cls.class_en == selected_class_en %}
               <i class="fas fa-check numoj-class-picker-check" aria-hidden="true"></i>
               {% endif %}

@@ -20,7 +20,7 @@ def test_archive_programming_submission_keeps_code_and_meta(tmp_path, monkeypatc
     }
     problem = {"id": 7, "title": "题目", "content": "原始题面", "type": 1, "lang": "python"}
     user = {"email": "alice@example.com"}
-    classes = [{"class_en": "c1", "class_cn": "一班", "is_primary": 1}]
+    classes = [{"class_en": "c1", "class_cn": "一班"}]
 
     archive_dir = submission_archive.archive_submission_record(submission, problem, user, classes)
 
@@ -36,6 +36,7 @@ def test_archive_programming_submission_keeps_code_and_meta(tmp_path, monkeypatc
     assert meta["email"] == "alice@example.com"
     assert meta["submitted_at"] == "2026-07-01 12:00:00"
     assert meta["classes"][0]["class_en"] == "c1"
+    assert "is_primary" not in meta["classes"][0]
 
 
 def test_archive_promptly_submission_keeps_prompt(tmp_path, monkeypatch):

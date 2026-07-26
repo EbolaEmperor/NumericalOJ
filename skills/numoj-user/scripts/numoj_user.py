@@ -30,7 +30,6 @@ auth_change_password = auth.auth_change_password
 me_classes = me.me_classes
 me_join_class = me.me_join_class
 me_leave_class = me.me_leave_class
-me_set_primary_class = me.me_set_primary_class
 necessary_classes_payload = me.necessary_classes_payload
 me_submissions = me.me_submissions
 me_grades = me.me_grades

@@ -29,6 +29,9 @@ PASSWORD_MODAL = (
 CLASS_MANAGER_MODAL = (
     ROOT / "templates" / "components" / "layout" / "class_manager_modal.html"
 ).read_text(encoding="utf-8")
+ADMIN_USERS = (ROOT / "templates" / "admin" / "users.html").read_text(
+    encoding="utf-8"
+)
 REGISTER = (ROOT / "templates" / "auth" / "register.html").read_text(
     encoding="utf-8"
 )
@@ -112,7 +115,6 @@ def test_layout_passes_server_values_to_javascript_through_data_attributes():
         "data-classes-url",
         "data-join-class-url",
         "data-leave-class-url",
-        "data-set-primary-class-url",
         "data-class-adjust-url",
     )
     for attribute in attributes:
@@ -183,10 +185,58 @@ def test_class_membership_and_registration_share_the_custom_logo_picker():
     assert "createLogo" in CLASS_SELECT_JS
     assert "joinPicker.setItems" in LAYOUT_JS
 
-    assert "attach_class_logos(get_all_classes_except_admin())" in AUTH_ROUTES
+    assert "attach_class_logos(get_all_classes())" in AUTH_ROUTES
     assert "memberships=attach_class_logos(user_classes)" in CLASS_MANAGEMENT_ROUTES
     assert "all_classes=attach_class_logos(all_classes)" in CLASS_MANAGEMENT_ROUTES
     assert "logo_seed" not in CLASS_MANAGER_MODAL
+
+
+def test_class_memberships_have_no_primary_class_frontend_concept():
+    for source in (
+        CLASS_MANAGER_MODAL,
+        LAYOUT_JS,
+        NAVIGATION,
+        ADMIN_USERS,
+    ):
+        assert "主班级" not in source
+
+    assert "data-set-primary-class-url" not in CLASS_MANAGER_MODAL
+    for removed_state in (
+        "setPrimary",
+        "setPrimaryClassUrl",
+        "primary_en",
+        "is_primary",
+    ):
+        assert removed_state not in LAYOUT_JS
+    for removed_selector in (
+        ".numoj-membership-row.is-primary",
+        ".numoj-membership-primary",
+        ".numoj-membership-action.is-primary-action",
+        ".numoj-class-primary-label",
+    ):
+        assert removed_selector not in LAYOUT_CSS
+
+    assert "user.class_cn" not in NAVIGATION
+    assert "!isAdmin && model.memberships.length <= 1" in LAYOUT_JS
+    assert "u.classes" in ADMIN_USERS
+    assert "u.extra_classes" not in ADMIN_USERS
+    assert "u.class_cn" not in ADMIN_USERS
+    assert "editClassModal" not in ADMIN_USERS
+    assert "showEditClassModal" not in ADMIN_USERS
+    assert "renderClassBadge" in ADMIN_USERS
+    assert "removeUserClass" in ADMIN_USERS
+
+
+def test_admin_role_grant_is_separate_from_class_membership():
+    assert "u.is_admin" in ADMIN_USERS
+    assert "授予管理员" in ADMIN_USERS
+    assert "grantUserAdmin" in ADMIN_USERS
+    assert "admin_user.grant_user_admin_ajax" in ADMIN_USERS
+    assert "form.append('user_id', userId)" in ADMIN_USERS
+    assert "roleBadge.textContent = '教师'" in ADMIN_USERS
+    assert "button.remove()" in ADMIN_USERS
+    assert "撤销管理员" not in ADMIN_USERS
+    assert "降权" not in ADMIN_USERS
 
 
 def test_account_modals_keep_the_approved_ui_v2_contract():
@@ -206,7 +256,6 @@ def test_account_modals_keep_the_approved_ui_v2_contract():
     assert "变更后需要短暂同步" not in CLASS_MANAGER_MODAL
     assert "喝一口茶" not in CLASS_MANAGER_MODAL
     assert "管理当前所属班级" not in CLASS_MANAGER_MODAL
-    assert "主班级决定默认展示的作业与成绩上下文" not in CLASS_MANAGER_MODAL
 
     for element_id in (
         "passwordCodeInput",

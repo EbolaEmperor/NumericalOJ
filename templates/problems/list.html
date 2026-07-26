@@ -80,7 +80,6 @@
             <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
               <h5 class="mb-0">
                 <i class="fas fa-users me-2"></i>{{ block.class_cn }}
-                {% if block.is_primary %}<span class="badge bg-primary ms-2">主班级</span>{% endif %}
               </h5>
               {% if block.grades and block.grades.regular_score is not none and block.grades.final_score is not none %}
               <button class="btn btn-sm btn-outline-primary" onclick="showGrades('{{ block.class_cn }}', {{ block.grades.regular_score }}, {{ block.grades.final_score }})">

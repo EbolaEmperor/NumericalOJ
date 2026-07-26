@@ -185,11 +185,10 @@
       classes: modalEl.dataset.classesUrl,
       join: modalEl.dataset.joinClassUrl,
       leave: modalEl.dataset.leaveClassUrl,
-      setPrimary: modalEl.dataset.setPrimaryClassUrl,
       classAdjust: modalEl.dataset.classAdjustUrl,
     };
     let classAdjustEnabled = modalEl.dataset.classAdjustEnabled === '1';
-    const model = { memberships: [], primary_en: '', all_classes: [] };
+    const model = { memberships: [], all_classes: [] };
     const classSelect = window.NumojClassSelect;
     const joinPicker = classSelect?.create(joinPickerElement);
     if (!joinSelect || !joinPicker || !classSelect) return;
@@ -223,28 +222,6 @@
       return isAdmin || classAdjustEnabled;
     }
 
-    function setPrimary(classEn) {
-      if (!canAdjustClasses()) {
-        showAccountToast('当前不允许调整班级，请联系老师');
-        renderMyClasses();
-        return;
-      }
-      postForm(endpoints.setPrimary, { class_en: classEn })
-        .then((data) => {
-          if (!data.success) throw new Error(data.message || '设置失败');
-          model.primary_en = classEn;
-          model.memberships.forEach((membership) => {
-            membership.is_primary = membership.class_en === classEn;
-          });
-          renderMyClasses();
-          showAccountToast('主班级已切换为「' + className(classEn) + '」');
-        })
-        .catch((error) => {
-          showAccountToast(error.message || '设置主班级失败');
-          renderMyClasses();
-        });
-    }
-
     function leaveClass(classEn) {
       postForm(endpoints.leave, { class_en: classEn })
         .then((data) => {
@@ -252,10 +229,6 @@
           model.memberships = model.memberships.filter(
             (membership) => membership.class_en !== classEn
           );
-          if (data.primary_en) model.primary_en = data.primary_en;
-          model.memberships.forEach((membership) => {
-            membership.is_primary = membership.class_en === model.primary_en;
-          });
           renderMyClasses();
           renderJoinSelect();
           updateJoinLeaveAvailability();
@@ -281,8 +254,7 @@
 
       model.memberships.forEach((membership) => {
         const row = document.createElement('div');
-        row.className =
-          'numoj-membership-row' + (membership.is_primary ? ' is-primary' : '');
+        row.className = 'numoj-membership-row';
         row.dataset.classEn = membership.class_en;
 
         const copy = document.createElement('span');
@@ -293,13 +265,6 @@
         name.textContent = membership.class_cn || membership.class_en;
         nameLine.appendChild(name);
 
-        if (Boolean(membership.is_primary)) {
-          const badge = document.createElement('span');
-          badge.className = 'numoj-membership-primary';
-          badge.textContent = '主班级';
-          nameLine.appendChild(badge);
-        }
-
         const code = document.createElement('span');
         code.className = 'numoj-membership-code';
         code.textContent = membership.class_en;
@@ -308,30 +273,13 @@
 
         const actions = document.createElement('div');
         actions.className = 'numoj-membership-actions';
-        if (!membership.is_primary) {
-          const primaryButton = document.createElement('button');
-          primaryButton.type = 'button';
-          primaryButton.className =
-            'numoj-membership-action is-primary-action';
-          primaryButton.textContent = '设为主班级';
-          primaryButton.disabled = !canAdjustClasses();
-          primaryButton.setAttribute(
-            'aria-label',
-            `将「${membership.class_cn || membership.class_en}」设为主班级`
-          );
-          primaryButton.addEventListener('click', () => {
-            primaryButton.disabled = true;
-            setPrimary(membership.class_en);
-          });
-          actions.appendChild(primaryButton);
-        }
 
         const leaveButton = document.createElement('button');
         leaveButton.type = 'button';
         leaveButton.className = 'numoj-membership-action is-danger';
         leaveButton.textContent = '退出';
         leaveButton.disabled =
-          model.memberships.length <= 1 || !canAdjustClasses();
+          !canAdjustClasses() || (!isAdmin && model.memberships.length <= 1);
         leaveButton.setAttribute(
           'aria-label',
           `退出「${membership.class_cn || membership.class_en}」`
@@ -388,11 +336,7 @@
       )
         .then((data) => {
           model.memberships = data.memberships || [];
-          model.primary_en = data.primary_en || '';
           model.all_classes = data.all_classes || [];
-          model.memberships.forEach((membership) => {
-            membership.is_primary = membership.class_en === model.primary_en;
-          });
           renderMyClasses();
           renderJoinSelect();
           updateJoinLeaveAvailability();
@@ -428,7 +372,6 @@
             logo: (model.all_classes.find(
               (candidate) => candidate.class_en === classEn
             ) || {}).logo,
-            is_primary: false,
           });
           renderMyClasses();
           renderJoinSelect();

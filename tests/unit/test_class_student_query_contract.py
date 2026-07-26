@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+
+import re
+from pathlib import Path
+
+from oj_modules import db_services
+
+
+ROOT = Path(__file__).resolve().parents[2]
+HOMEWORK_ROUTES = (
+    ROOT / 'oj_modules' / 'routes' / 'homework_routes.py'
+).read_text(encoding='utf-8')
+
+
+class _Cursor:
+    def __init__(self):
+        self.executions = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executions.append((' '.join(str(sql).split()), params))
+
+    def fetchall(self):
+        return []
+
+
+class _Connection:
+    def __init__(self, cursor):
+        self.cursor_object = cursor
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_object
+
+    def close(self):
+        self.closed = True
+
+
+def test_homework_student_queries_exclude_administrator_memberships():
+    membership_queries = re.findall(
+        r'FROM\s+user_class_map\s+m\s+'
+        r'JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*m\.user_id',
+        HOMEWORK_ROUTES,
+        flags=re.IGNORECASE,
+    )
+    student_queries = re.findall(
+        r'FROM\s+user_class_map\s+m\s+'
+        r'JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*m\.user_id\s+'
+        r'WHERE\s+m\.class_en\s*=\s*%s\s+'
+        r'AND\s+u\.is_admin\s*=\s*0',
+        HOMEWORK_ROUTES,
+        flags=re.IGNORECASE,
+    )
+
+    # 代码导出学生表、最佳提交 CTE、成绩导出学生表、查重 CTE。
+    assert len(membership_queries) == 4
+    assert len(student_queries) == len(membership_queries)
+
+
+def test_class_scoped_detection_excludes_administrators(monkeypatch):
+    cursor = _Cursor()
+    conn = _Connection(cursor)
+    monkeypatch.setattr(db_services, 'get_db_connection', lambda: conn)
+
+    rows = db_services.get_filtered_submissions_for_detection(
+        class_en='C1',
+        deduplicate=False,
+    )
+
+    assert rows == []
+    assert conn.closed is True
+    sql, params = cursor.executions[-1]
+    assert 'JOIN users _u ON _u.username = s.username' in sql
+    assert 'JOIN user_class_map _ucm ON _ucm.user_id = _u.id' in sql
+    assert '_ucm.class_en = %s' in sql
+    assert '_u.is_admin = 0' in sql
+    assert params == ['matlab', 'C1']
+
+
+def test_multi_class_student_lookup_excludes_administrators(monkeypatch):
+    cursor = _Cursor()
+    conn = _Connection(cursor)
+    monkeypatch.setattr(db_services, 'get_db_connection', lambda: conn)
+
+    rows = db_services.get_users_in_classes(['C2', 'C1'])
+
+    assert rows == []
+    assert conn.closed is True
+    sql, params = cursor.executions[-1]
+    assert 'JOIN user_class_map ucm ON ucm.user_id = u.id' in sql
+    assert 'u.is_admin = 0' in sql
+    assert params == ('C2', 'C1')
