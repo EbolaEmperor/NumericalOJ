@@ -683,15 +683,9 @@ assert_sudo_keepalive '数据库备份'
   --manifest "$backup_manifest"
 database_backup="$backup_manifest"
 
-phase='迁移等价多班级数据库结构'
+phase='切换运行环境并更新数据库结构'
 assert_service_stopped 'Celery' celery
 assert_service_stopped 'Web' web
-"$CANDIDATE_PYTHON" -B scripts/migrate_remove_primary_class.py \
-  --apply \
-  --confirm-app-writers-stopped \
-  --confirm-backup-verified
-
-phase='切换运行环境并更新数据库结构'
 rm -f -- "$CURRENT_VENV_TEMP"
 ln -s "venvs/$candidate_slot" "$CURRENT_VENV_TEMP"
 mv -Tf -- "$CURRENT_VENV_TEMP" "$CURRENT_VENV"
