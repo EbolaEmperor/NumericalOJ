@@ -18,41 +18,807 @@
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
 }
 
-/* 班级管理弹窗。 */
-.class-join-select {
-  max-width: 320px;
+/* 账户与班级弹窗：UI-v2 的低噪声工具面板。 */
+.numoj-account-modal {
+  --account-paper: var(--numoj-panel, #fff);
+  --account-ink: var(--numoj-ink, #18181b);
+  --account-ink-2: var(--numoj-ink-2, #3f3f46);
+  --account-ink-3: var(--numoj-ink-3, #71717a);
+  --account-ink-4: var(--numoj-ink-4, #a1a1aa);
+  --account-line: var(--numoj-line, #e4e4e7);
+  --account-line-soft: var(--numoj-line-soft, #f4f4f5);
+  --account-brand: var(--numoj-brand, #ea580c);
+  --account-brand-hover: var(--numoj-brand-hover, #c2410c);
+  --account-brand-ink: var(--numoj-brand-ink, #9a3412);
+  --account-brand-soft: var(--numoj-brand-soft, #fff7ed);
+  --account-success: var(--numoj-success, #15803d);
+  --account-success-soft: var(--numoj-success-soft, #f0fdf4);
+  --account-danger: var(--numoj-danger, #dc2626);
+  --account-danger-soft: var(--numoj-danger-soft, #fef2f2);
+  --account-mono: var(--numoj-mono, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+  color: var(--account-ink);
 }
 
-.class-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 0.75rem;
+.numoj-account-modal .modal-dialog {
+  --bs-modal-width: 540px;
 }
 
-.class-left {
+.numoj-class-modal .modal-dialog {
+  --bs-modal-width: 760px;
+}
+
+.numoj-account-modal .modal-content {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--account-line);
+  border-radius: 13px;
+  background: var(--account-paper);
+  box-shadow: 0 24px 64px rgba(24, 24, 27, 0.18);
+}
+
+.numoj-password-modal .modal-content > form {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.numoj-password-modal .modal-body {
+  overflow-y: auto;
+}
+
+.numoj-account-modal-accent {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--account-brand) 0 84px, var(--account-ink) 84px 116px, transparent 116px);
+}
+
+.numoj-account-modal .modal-header {
+  min-height: 88px;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 20px 22px 18px 26px;
+  border-bottom: 1px solid var(--account-line);
+  background: #fff;
+}
+
+.numoj-account-modal-title {
   min-width: 0;
 }
 
-.class-actions {
-  display: flex;
-  gap: 0.5rem;
+.numoj-account-kicker {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--account-ink-4);
+  font-family: var(--account-mono);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
 }
 
-.class-name {
+.numoj-account-modal .modal-title {
+  margin: 0;
+  color: var(--account-ink);
+  font-size: 20px;
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
+}
+
+.numoj-account-modal-title p {
+  max-width: 490px;
+  margin: 7px 0 0;
+  color: var(--account-ink-3);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.numoj-account-close {
+  display: inline-grid;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 31px;
+  place-items: center;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--account-ink-3);
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1;
+}
+
+.numoj-account-close:hover {
+  border-color: var(--account-line);
+  background: var(--account-line-soft);
+  color: var(--account-ink);
+}
+
+.numoj-account-modal-body {
+  display: grid;
+  gap: 22px;
+  padding: 22px 26px 24px;
+}
+
+.numoj-account-section {
+  min-width: 0;
+}
+
+.numoj-account-section-heading {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.numoj-account-section-heading h3 {
+  margin: 0;
+  color: var(--account-ink);
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.numoj-account-section-heading > span {
+  color: var(--account-ink-4);
+  font-family: var(--account-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.numoj-account-identity {
+  display: grid;
+  min-height: 61px;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border: 1px solid var(--account-line);
+  border-radius: 9px;
+  background: #fdfdfc;
+}
+
+.numoj-account-identity-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--account-ink);
+  color: #fff;
+  font-family: var(--account-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.numoj-account-identity-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.numoj-account-identity-copy strong,
+.numoj-account-identity-copy small {
   overflow: hidden;
-  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.radio-wrap {
+.numoj-account-identity-copy strong {
+  color: var(--account-ink);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.numoj-account-identity-copy small {
+  color: var(--account-ink-4);
+  font-size: 9px;
+}
+
+.numoj-account-state {
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: var(--account-success-soft);
+  color: var(--account-success);
+  font-family: var(--account-mono);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.numoj-account-form-stack {
+  display: grid;
+  gap: 17px;
+}
+
+.numoj-account-field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.numoj-account-field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.numoj-account-field-heading label {
+  color: var(--account-ink-2);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.numoj-account-field-heading span {
+  color: var(--account-ink-4);
+  font-family: var(--account-mono);
+  font-size: 8px;
+}
+
+.numoj-account-input {
+  display: flex;
+  min-height: 39px;
+  overflow: hidden;
+  border: 1px solid var(--account-line);
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.numoj-account-input:focus-within {
+  border-color: var(--account-brand);
+  box-shadow: 0 0 0 4px var(--account-brand-soft);
+}
+
+.numoj-account-input input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--account-ink);
+  font-size: 11px;
+}
+
+.numoj-account-input input::placeholder {
+  color: var(--account-ink-4);
+}
+
+.numoj-account-input input[aria-invalid="true"] {
+  color: var(--account-danger);
+}
+
+.numoj-account-input-action button {
+  flex: 0 0 auto;
+  min-width: 104px;
+  padding: 0 12px;
+  border: 0;
+  border-left: 1px solid var(--account-line);
+  background: var(--account-line-soft);
+  color: var(--account-ink-2);
+  font-size: 9.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.numoj-account-input-action button:hover:not(:disabled) {
+  background: var(--account-ink);
+  color: #fff;
+}
+
+.numoj-account-input-action button:disabled {
+  color: var(--account-ink-4);
+  cursor: wait;
+}
+
+.numoj-account-field-message,
+.numoj-account-form-status {
+  margin: 0;
+  color: var(--account-ink-4);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.numoj-account-field-message.is-success,
+.numoj-account-form-status.is-success {
+  color: var(--account-success);
+}
+
+.numoj-account-field-message.is-error,
+.numoj-account-form-status.is-error {
+  color: var(--account-danger);
+}
+
+.numoj-account-form-status {
+  padding: 8px 10px;
+  border: 1px solid var(--account-line);
+  border-radius: 7px;
+  background: var(--account-line-soft);
+}
+
+.numoj-account-form-status.is-success {
+  border-color: #bbf7d0;
+  background: var(--account-success-soft);
+}
+
+.numoj-account-form-status.is-error {
+  border-color: #fecaca;
+  background: var(--account-danger-soft);
+}
+
+.numoj-password-meter {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.numoj-password-meter span {
+  height: 3px;
+  border-radius: 4px;
+  background: var(--account-line-soft);
+  transition: background-color 160ms ease;
+}
+
+.numoj-password-meter[data-level="1"] span.is-on {
+  background: var(--account-brand);
+}
+
+.numoj-password-meter[data-level="2"] span.is-on {
+  background: #eab308;
+}
+
+.numoj-password-meter[data-level="3"] span.is-on {
+  background: #16a34a;
+}
+
+.numoj-password-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 13px;
+}
+
+.numoj-password-rules span {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 5px;
+  color: var(--account-ink-4);
+  font-size: 8.5px;
+}
+
+.numoj-password-rules span::before {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--account-line);
+  content: "";
+}
+
+.numoj-password-rules span.is-passed {
+  color: var(--account-success);
+}
+
+.numoj-password-rules span.is-passed::before {
+  background: var(--account-success);
+}
+
+.numoj-account-modal .modal-footer {
+  min-height: 62px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 12px 20px 12px 26px;
+  border-top: 1px solid var(--account-line);
+  background: #fff;
+}
+
+.numoj-account-footer-note {
+  color: var(--account-ink-4);
+  font-family: var(--account-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.numoj-account-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+}
+
+.numoj-account-button,
+.numoj-membership-action {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 11px;
+  border: 1px solid var(--account-line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--account-ink-2);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.numoj-account-button:hover:not(:disabled),
+.numoj-membership-action:hover:not(:disabled) {
+  border-color: #d4d4d8;
+  color: var(--account-ink);
+  transform: translateY(-1px);
+}
+
+.numoj-account-button:disabled,
+.numoj-membership-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  transform: none;
+}
+
+.numoj-account-button-dark {
+  border-color: var(--account-ink);
+  background: var(--account-ink);
+  color: #fff;
+}
+
+.numoj-account-button-dark:hover:not(:disabled) {
+  border-color: #303036;
+  background: #303036;
+  color: #fff;
+}
+
+.numoj-account-button-brand {
+  border-color: var(--account-brand);
+  background: var(--account-brand);
+  color: #fff;
+}
+
+.numoj-account-button-brand:hover:not(:disabled) {
+  border-color: var(--account-brand-hover);
+  background: var(--account-brand-hover);
+  color: #fff;
+}
+
+.numoj-class-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 9px;
+  margin-left: auto;
+}
+
+.numoj-class-permission {
+  display: inline-flex;
+  min-height: 31px;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--account-line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--account-ink-3);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.numoj-class-permission input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.numoj-class-switch-track {
+  position: relative;
+  width: 29px;
+  height: 17px;
+  flex: 0 0 29px;
+  border-radius: 999px;
+  background: #d4d4d8;
+  transition: background-color 140ms ease;
+}
+
+.numoj-class-switch-track > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.22);
+  transition: transform 140ms ease;
+}
+
+.numoj-class-permission input:checked + .numoj-class-switch-track {
+  background: var(--account-brand);
+}
+
+.numoj-class-permission input:checked + .numoj-class-switch-track > span {
+  transform: translateX(12px);
+}
+
+.numoj-class-permission input:focus-visible + .numoj-class-switch-track {
+  outline: 3px solid rgba(234, 88, 12, 0.22);
+  outline-offset: 2px;
+}
+
+.numoj-membership-list {
+  overflow: hidden;
+  border: 1px solid var(--account-line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.numoj-membership-row {
+  position: relative;
+  display: grid;
+  min-height: 65px;
+  grid-template-columns: 31px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--account-line-soft);
+  transition: background-color 120ms ease;
+}
+
+.numoj-membership-row:last-child {
+  border-bottom: 0;
+}
+
+.numoj-membership-row.is-primary {
+  background: linear-gradient(90deg, var(--account-brand-soft), #fff 18%);
+}
+
+.numoj-membership-row.is-primary::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--account-brand);
+  content: "";
+}
+
+.numoj-membership-logo {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  place-items: center;
+  border: 1px solid var(--account-line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--account-ink);
+}
+
+.numoj-membership-logo svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
+.numoj-membership-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.numoj-membership-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.numoj-membership-name strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--account-ink);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.numoj-membership-code {
+  overflow: hidden;
+  color: var(--account-ink-4);
+  font-family: var(--account-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.numoj-membership-primary {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--account-brand-soft);
+  color: var(--account-brand-ink);
+  font-family: var(--account-mono);
+  font-size: 8px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.numoj-membership-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.numoj-membership-action {
+  min-height: 30px;
+  padding: 5px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--account-ink-3);
+  font-size: 9.5px;
+}
+
+.numoj-membership-action.is-primary-action {
+  color: var(--account-brand-ink);
+}
+
+.numoj-membership-action.is-danger:hover:not(:disabled),
+.numoj-membership-action.is-confirming {
+  border-color: #fecaca;
+  background: var(--account-danger-soft);
+  color: var(--account-danger);
+}
+
+.numoj-membership-state {
+  padding: 16px;
+  color: var(--account-ink-3);
+  font-size: 10px;
+  text-align: center;
+}
+
+.numoj-membership-state.is-error {
+  color: var(--account-danger);
+}
+
+.numoj-class-join-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.numoj-account-select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 32px 8px 11px;
+  border: 1px solid var(--account-line);
+  border-radius: 8px;
+  background-color: #fff;
+  color: var(--account-ink-2);
+  font-size: 11px;
+}
+
+.numoj-account-select:focus {
+  border-color: var(--account-brand);
+  outline: 0;
+  box-shadow: 0 0 0 4px var(--account-brand-soft);
+}
+
+.numoj-account-toast {
+  position: fixed;
+  z-index: 1100;
+  top: 18px;
+  left: 50%;
+  display: flex;
+  min-height: 40px;
+  max-width: min(420px, calc(100vw - 32px));
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border: 1px solid var(--account-line, #e4e4e7);
+  border-radius: 9px;
+  background: rgba(24, 24, 27, 0.96);
+  box-shadow: 0 12px 28px rgba(24, 24, 27, 0.2);
+  color: #fff;
+  font-size: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -10px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.numoj-account-toast::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: #fb923c;
+  content: "";
+}
+
+.numoj-account-toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media (max-width: 575.98px) {
+  .numoj-account-modal .modal-dialog {
+    min-height: calc(100% - 0.5rem);
+    align-items: flex-end;
+    margin: 0.5rem 0.5rem 0;
+  }
+
+  .numoj-account-modal .modal-content {
+    max-height: calc(100vh - 0.5rem);
+    max-height: calc(100dvh - 0.5rem);
+    border-radius: 15px 15px 8px 8px;
+  }
+
+  .numoj-account-modal .modal-header {
+    min-height: 76px;
+    padding: 16px 15px 14px 19px;
+  }
+
+  .numoj-account-modal-title p {
+    display: none;
+  }
+
+  .numoj-account-modal-body {
+    gap: 17px;
+    padding: 17px 15px 20px;
+  }
+
+  .numoj-account-modal .modal-footer {
+    padding: 10px 14px;
+  }
+
+  .numoj-account-footer-note {
+    display: none;
+  }
+
+  .numoj-class-permission {
+    padding: 5px 6px;
+  }
+
+  .numoj-class-permission > span:last-child {
+    display: none;
+  }
+
+  .numoj-membership-row {
+    grid-template-columns: 29px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .numoj-membership-actions {
+    grid-column: auto;
+    justify-content: flex-end;
+    gap: 2px;
+  }
+
+  .numoj-membership-action {
+    padding-right: 6px;
+    padding-left: 6px;
+    font-size: 9px;
+  }
 }
 
 /* 桌面 V2：严格限制在现有 lg 断点以上，移动端继续使用原布局。 */
@@ -351,16 +1117,30 @@
   }
 
   .numoj-avatar {
-    display: inline-grid;
+    --avatar-cell: var(--numoj-ink);
+    display: grid;
     width: 32px;
     height: 32px;
     flex: 0 0 32px;
-    place-items: center;
-    border-radius: 50%;
-    background: var(--numoj-brand);
-    color: #fff;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    overflow: hidden;
+    padding: 2px;
+    border: 1px solid #d4d4d8;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 70%);
+    color: var(--avatar-cell);
     font-size: 10.5px;
     font-weight: 650;
+  }
+
+  .numoj-avatar > span {
+    background: transparent;
+  }
+
+  .numoj-avatar > span.is-filled {
+    background: var(--avatar-cell);
   }
 
   .numoj-user-copy strong {

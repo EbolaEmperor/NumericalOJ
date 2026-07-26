@@ -10,6 +10,9 @@ BASE_LAYOUT = (ROOT / "templates" / "layouts" / "base.html").read_text(
 SITE_LAYOUT = (ROOT / "templates" / "layouts" / "site.html").read_text(
     encoding="utf-8"
 )
+NAVIGATION = (
+    ROOT / "templates" / "components" / "layout" / "navigation.html"
+).read_text(encoding="utf-8")
 EMBEDDED_LAYOUT = (ROOT / "templates" / "layouts" / "embedded.html").read_text(
     encoding="utf-8"
 )
@@ -20,8 +23,17 @@ LAYOUT_COMPONENTS = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted((ROOT / "templates" / "components" / "layout").glob("*.html"))
 )
+PASSWORD_MODAL = (
+    ROOT / "templates" / "components" / "layout" / "password_modal.html"
+).read_text(encoding="utf-8")
+CLASS_MANAGER_MODAL = (
+    ROOT / "templates" / "components" / "layout" / "class_manager_modal.html"
+).read_text(encoding="utf-8")
 LAYOUT_CSS = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
 LAYOUT_JS = (ROOT / "static" / "app" / "layout.js").read_text(encoding="utf-8")
+IDENTICON_JS = (
+    ROOT / "static" / "app" / "identicon.js"
+).read_text(encoding="utf-8")
 
 
 def test_layout_loads_shared_static_assets_instead_of_inline_app_code():
@@ -37,7 +49,9 @@ def test_layout_loads_shared_static_assets_instead_of_inline_app_code():
         assert BASE_LAYOUT.count(asset) == 1
 
     assert "filename='app/layout.css'" in SITE_LAYOUT
+    assert "filename='app/identicon.js'" in SITE_LAYOUT
     assert "filename='app/layout.js'" in SITE_LAYOUT
+    assert SITE_LAYOUT.index("app/identicon.js") < SITE_LAYOUT.index("app/layout.js")
     for layout in (BASE_LAYOUT, SITE_LAYOUT, EMBEDDED_LAYOUT):
         assert "<style" not in layout
         assert "style=" not in layout
@@ -97,8 +111,9 @@ def test_layout_styles_and_behaviors_live_in_their_responsible_assets():
     for selector in (
         ".layout-navbar",
         ".layout-offcanvas-nav.layout-nav-compact",
-        ".class-row",
-        ".class-join-select",
+        ".numoj-account-modal",
+        ".numoj-membership-row",
+        ".numoj-account-select",
     ):
         assert selector in LAYOUT_CSS
 
@@ -106,8 +121,75 @@ def test_layout_styles_and_behaviors_live_in_their_responsible_assets():
         "initAdaptiveNavigation()",
         "initClassManager()",
         "initPasswordForm()",
+        "initUserAvatar()",
     ):
         assert initializer in LAYOUT_JS
+
+
+def test_sidebar_avatar_reuses_the_forum_username_identicon_renderer():
+    assert "data-numoj-user-avatar" in NAVIGATION
+    assert 'data-avatar-seed="{{ user.username }}"' in NAVIGATION
+    assert "identicon.cellsForSeed(seed)" in LAYOUT_JS
+    assert "identicon.paint(" in LAYOUT_JS
+    assert "new TextEncoder()" in IDENTICON_JS
+    assert "Math.imul(hash, 0x01000193)" in IDENTICON_JS
+    assert "grid-template-columns: repeat(8, 1fr);" in LAYOUT_CSS
+    assert ".numoj-avatar > span.is-filled" in LAYOUT_CSS
+
+
+def test_account_modals_keep_the_approved_ui_v2_contract():
+    for source in (PASSWORD_MODAL, CLASS_MANAGER_MODAL):
+        assert "<style" not in source
+        assert "<script" not in source
+        assert "style=" not in source
+        assert "onclick=" not in source
+
+    for removed_copy in (
+        "邮箱验证码",
+        "设置新密码",
+        "两次密码需要完全一致",
+        "安全提示",
+    ):
+        assert removed_copy not in PASSWORD_MODAL
+    assert "变更后需要短暂同步" not in CLASS_MANAGER_MODAL
+    assert "喝一口茶" not in CLASS_MANAGER_MODAL
+
+    for element_id in (
+        "passwordCodeInput",
+        "passwordStrengthMeter",
+        "passwordMatchMessage",
+        "passwordSubmitBtn",
+    ):
+        assert f'id="{element_id}"' in PASSWORD_MODAL
+    for element_id in (
+        "classMembershipCount",
+        "myClassesBox",
+        "joinClassSelect",
+        "joinClassBtn",
+    ):
+        assert f'id="{element_id}"' in CLASS_MANAGER_MODAL
+
+    assert '.numoj-password-meter[data-level="2"] span.is-on' in LAYOUT_CSS
+    assert "background: #eab308;" in LAYOUT_CSS
+    assert '.numoj-password-meter[data-level="3"] span.is-on' in LAYOUT_CSS
+    assert "background: #16a34a;" in LAYOUT_CSS
+    assert "strengthMeter.dataset.level = String(score);" in LAYOUT_JS
+    assert "'X-Requested-With': 'XMLHttpRequest'" in LAYOUT_JS
+    assert "alert(" not in LAYOUT_JS
+    assert "confirm(" not in LAYOUT_JS
+
+    mobile_rules = LAYOUT_CSS.split("@media (max-width: 575.98px)", 1)[1]
+    membership_row = mobile_rules.split(".numoj-membership-row {", 1)[1].split(
+        "}",
+        1,
+    )[0]
+    assert "grid-template-columns: 29px minmax(0, 1fr) auto;" in membership_row
+    membership_actions = mobile_rules.split(
+        ".numoj-membership-actions {",
+        1,
+    )[1].split("}", 1)[0]
+    assert "justify-content: flex-end;" in membership_actions
+    assert "grid-column: auto;" in membership_actions
 
 
 def test_desktop_sidebar_width_and_collapsed_items_share_one_center_axis():

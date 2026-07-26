@@ -36,6 +36,18 @@ def test_desktop_problem_templates_preserve_class_context_and_separate_library_d
     assert "p.ddl" not in library_rows
 
 
+def test_problem_resources_link_to_the_repository_instead_of_the_retired_zju_site():
+    repo = Path(__file__).resolve().parents[2]
+    problem_list = (repo / "templates/problems/list.html").read_text()
+    desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
+    repository_url = "https://github.com/EbolaEmperor/NumericalOJ"
+
+    for source in (problem_list, desktop_list):
+        assert "zju_math.pages.zjusct.io" not in source
+        assert "数学之韵" not in source
+        assert repository_url in source
+
+
 def test_submission_metric_renders_empty_and_cpp_values_without_undefined_errors():
     repo = Path(__file__).resolve().parents[2]
     environment = Environment(loader=FileSystemLoader(repo / "templates"), autoescape=True)
