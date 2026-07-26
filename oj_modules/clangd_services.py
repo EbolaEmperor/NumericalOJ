@@ -44,6 +44,19 @@ ClangdProtocolError = LanguageServiceProtocolError
 _AUTO_EDITOR_TOOLCHAIN = object()
 REPOSITORY_LANGUAGE_SERVICE_POOL_SIZE = 4
 REPOSITORY_SEMANTIC_MAX_TOKENS = 500_000
+_MKL_SEMANTIC_PROBE = (
+    "#include <mkl.h>\n"
+    "MKLVersion official_mkl_version{};\n"
+    "MKL_INT official_mkl_size = 0;\n"
+    "auto *official_mkl_get_version = &MKL_Get_Version;\n",
+    {
+        "MKLVersion": {"class"},
+        # oneMKL deliberately exposes MKL_INT as a public configuration macro,
+        # not a typedef.  Resolving it as a macro proves mkl_types.h was parsed.
+        "MKL_INT": {"macro"},
+        "MKL_Get_Version": {"function"},
+    },
+)
 
 
 def _parse_compiler_include_search(stderr: str) -> tuple[Path, ...]:
@@ -550,9 +563,7 @@ def verify_clangd_runtime(*, require_official_toolchain: bool = False) -> None:
                 ),
                 (
                     "mkl",
-                    "#include <mkl.h>\n"
-                    "MKL_INT official_mkl_size = 0;\n",
-                    {"MKL_INT": {"type"}},
+                    *_MKL_SEMANTIC_PROBE,
                 ),
             )
             official_missing: list[str] = []

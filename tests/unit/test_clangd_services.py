@@ -171,6 +171,19 @@ def test_compiler_include_probe_keeps_only_real_cpp_roots(tmp_path):
     )
 
 
+def test_mkl_runtime_probe_matches_public_header_declaration_kinds():
+    source, expected_tokens = clangd_services._MKL_SEMANTIC_PROBE
+
+    assert "#include <mkl.h>" in source
+    assert "MKLVersion" in source
+    assert "MKL_Get_Version" in source
+    assert expected_tokens == {
+        "MKLVersion": {"class"},
+        "MKL_INT": {"macro"},
+        "MKL_Get_Version": {"function"},
+    }
+
+
 def test_semantic_tokens_reject_concurrent_request_without_queueing():
     service = FakeClangdService()
     service._semantic_request_gate.acquire()
