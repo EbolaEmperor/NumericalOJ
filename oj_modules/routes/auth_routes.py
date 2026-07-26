@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
 from config import MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME
+from oj_modules.class_logo_services import attach_class_logos
 from oj_modules.db_services import (
     create_user,
     get_all_classes_except_admin,
@@ -255,7 +256,7 @@ def send_verification():
 
 @auth_bp.route('/register', methods=['GET', 'POST'])
 def register():
-    public_classes = get_all_classes_except_admin()
+    public_classes = attach_class_logos(get_all_classes_except_admin())
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip()
         password = (request.form.get('password') or '').strip()

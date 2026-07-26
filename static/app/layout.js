@@ -176,6 +176,7 @@
     const myBox = document.getElementById('myClassesBox');
     const membershipCount = document.getElementById('classMembershipCount');
     const joinSelect = document.getElementById('joinClassSelect');
+    const joinPickerElement = document.getElementById('joinClassPicker');
     const joinButton = document.getElementById('joinClassBtn');
     const switchEl = document.getElementById('classAdjustSwitch');
     const switchLabel = document.getElementById('classAdjustLabel');
@@ -189,6 +190,9 @@
     };
     let classAdjustEnabled = modalEl.dataset.classAdjustEnabled === '1';
     const model = { memberships: [], primary_en: '', all_classes: [] };
+    const classSelect = window.NumojClassSelect;
+    const joinPicker = classSelect?.create(joinPickerElement);
+    if (!joinSelect || !joinPicker || !classSelect) return;
 
     function className(classEn) {
       const item = model.all_classes.find((candidate) => candidate.class_en === classEn);
@@ -207,50 +211,12 @@
 
     function renderJoinSelect() {
       const owned = new Set(model.memberships.map((membership) => membership.class_en));
-      joinSelect.innerHTML = '<option value="">请选择班级</option>';
-      model.all_classes.forEach((item) => {
-        const option = document.createElement('option');
-        option.value = item.class_en;
-        option.textContent = item.class_cn || item.class_en;
-        option.disabled = owned.has(item.class_en);
-        joinSelect.appendChild(option);
-      });
-    }
-
-    function createClassLogo(item) {
-      const seed = String(item.logo_seed || item.class_en || 'numericaloj-class');
-      let hash = 2166136261;
-      for (let index = 0; index < seed.length; index += 1) {
-        hash ^= seed.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-      }
-
-      const mark = document.createElement('span');
-      mark.className = 'numoj-membership-logo';
-      mark.setAttribute('aria-hidden', 'true');
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.setAttribute('viewBox', '0 0 7 7');
-      svg.setAttribute('focusable', 'false');
-      svg.setAttribute('shape-rendering', 'crispEdges');
-
-      for (let row = 1; row <= 5; row += 1) {
-        for (let column = 1; column <= 3; column += 1) {
-          hash ^= hash << 13;
-          hash ^= hash >>> 17;
-          hash ^= hash << 5;
-          if ((hash >>> 0) % 3 === 0) continue;
-          [column, 6 - column].forEach((x) => {
-            const cell = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            cell.setAttribute('x', String(x));
-            cell.setAttribute('y', String(row));
-            cell.setAttribute('width', '1');
-            cell.setAttribute('height', '1');
-            svg.appendChild(cell);
-          });
-        }
-      }
-      mark.appendChild(svg);
-      return mark;
+      joinPicker.setItems(model.all_classes.map((item) => ({
+        ...item,
+        disabled: owned.has(item.class_en),
+        disabled_label: '已加入',
+      })));
+      joinPicker.setReady();
     }
 
     function canAdjustClasses() {
@@ -389,7 +355,9 @@
         });
         actions.appendChild(leaveButton);
 
-        row.appendChild(createClassLogo(membership));
+        row.appendChild(
+          classSelect.createLogo(membership, 'numoj-membership-logo')
+        );
         row.appendChild(copy);
         row.appendChild(actions);
         myBox.appendChild(row);
@@ -411,7 +379,8 @@
       }
       myBox.appendChild(loading);
       membershipCount.textContent = '正在加载';
-      joinSelect.innerHTML = '<option value="">正在加载…</option>';
+      joinButton.disabled = true;
+      joinPicker.setLoading();
       requestJson(
         endpoints.classes,
         { headers: { Accept: 'application/json' }, mathCurveLoader: true },
@@ -435,7 +404,7 @@
           message.textContent = error.message || '班级加载失败';
           myBox.appendChild(message);
           membershipCount.textContent = 'LOAD FAILED';
-          joinSelect.innerHTML = '<option value="">加载失败</option>';
+          joinPicker.setLoading('加载失败');
         });
     }
 
@@ -456,9 +425,9 @@
           model.memberships.push({
             class_en: classEn,
             class_cn: data.class_cn || className(classEn),
-            logo_seed: (model.all_classes.find(
+            logo: (model.all_classes.find(
               (candidate) => candidate.class_en === classEn
-            ) || {}).logo_seed,
+            ) || {}).logo,
             is_primary: false,
           });
           renderMyClasses();
