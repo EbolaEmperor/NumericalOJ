@@ -294,11 +294,11 @@ Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 Base
 
 候选环境和镜像就绪后，脚本以 MySQL 服务端查询结果选择备份方案。本机 Oracle MySQL / Percona Server 8.0.34+ 固定使用 XtraBackup `8.0.35-36`，8.4.x 固定使用 `8.4.0-6`；缺少或版本不匹配时会先通过交互式 `sudo` 与 Debian APT 自动安装。服务器版本或发行方不兼容，或自动安装失败时，才改为带进度的 `mysqldump` 计划。APT 变更以及版本、身份、权限和容量预检都发生在停服前；物理计划会在 Celery 排空期间维持已取得的 sudo ticket，真正执行时只接受非交互认证，避免全停服后再次等待密码。
 
-脚本确认两套业务 Supervisor 可管理后，依次停止 Celery/Web，并再次拒绝任何额外漂移的 Gunicorn/Celery 进程，再创建零写入窗口内的数据库回滚点。XtraBackup 备份整个实例且必须完成 prepare；逻辑 fallback 只备份配置的 `MYSQL_DB`，采用 gzip level 1，并在原子发布前完整重读校验 gzip CRC。备份有效后才原子切换虚拟环境、编辑器官方头文件工具链与 ARC-AGI-3 本地公开集，执行一次非破坏性的 `scripts/init_db_schema.py`，清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复和切换两个 `latest` 镜像标签。Web 请求和游玩过程只读取本机 ARC-AGI-3 缓存，不访问官方 API。统一日志采集 Supervisor 以最佳努力先行启动，随后依次启动 Celery/Web；最后按 Web 和 Celery 的精确 namespec 集合确认全部进程稳定进入 `RUNNING`，并重新核验真实备份产物后才将回滚点标记为成功。这是启动结果确认和备份完整性校验，不是测试。
+脚本确认两套业务 Supervisor 可管理后，依次停止 Celery/Web，并再次拒绝任何额外漂移的 Gunicorn/Celery 进程，再创建零写入窗口内的数据库回滚点。XtraBackup 备份整个实例且必须完成 prepare；逻辑 fallback 只备份配置的 `MYSQL_DB`，采用 gzip level 1，并在原子发布前完整重读校验 gzip CRC。备份有效后，脚本再次确认写入者全部停止，以双确认参数幂等执行等价多班级显式迁移；迁移成功后才原子切换虚拟环境、编辑器官方头文件工具链与 ARC-AGI-3 本地公开集，执行一次非破坏性的 `scripts/init_db_schema.py`，清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复和切换两个 `latest` 镜像标签。Web 请求和游玩过程只读取本机 ARC-AGI-3 缓存，不访问官方 API。统一日志采集 Supervisor 以最佳努力先行启动，随后依次启动 Celery/Web；最后按 Web 和 Celery 的精确 namespec 集合确认全部进程稳定进入 `RUNNING`，并重新核验真实备份产物后才将回滚点标记为成功。这是启动结果确认和备份完整性校验，不是测试。
 
 主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。物理备份路径由最小特权 helper 以 dirfd 固定 inode 并硬化，留存按持久化单调 generation 排序且显式保护本次 run，不依赖主机墙上时钟。成功启动全部业务进程后，按清单保留最近 2 个成功部署回滚点；失败、待处理和旧格式备份不自动删除。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。
 
-脚本不会修改 `.env`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、删除表、清空表或自动回灌备份；仅在需要时通过 APT 管理 clangd、Bubblewrap 的精确 candidate 版本和固定版本的 XtraBackup。部署辅助 Python 全部位于 `deploy/`，`deploy.sh` 本身不内嵌 Python。schema 或启动失败会记录准确阶段、保持业务停服并保留现场，必须先判断 DDL 是否已经提交，再由人工决定向前修复或恢复。
+脚本不会修改 `.env`、业务数据文件、系统 Python 或全局 site-packages，也不会导入 `database/bootstrap.sql`、清空业务表或自动回灌备份；等价多班级显式迁移只在旧结构标记存在时删除精确限定的旧字段、索引及空的遗留 `Cadmin` 伪班级表，非空表会失败关闭。其余系统包变更仅限按需通过 APT 管理 clangd、Bubblewrap 的精确 candidate 版本和固定版本的 XtraBackup。部署辅助 Python 全部位于 `deploy/`，`deploy.sh` 本身不内嵌 Python。schema 或启动失败会记录准确阶段、保持业务停服并保留现场，必须先判断 DDL 是否已经提交，再由人工决定向前修复或恢复。
 
 ## 目录边界
 
@@ -313,7 +313,7 @@ Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 Base
 - `deploy/`、`deploy.sh`：生产进程配置、数据库备份和原地一键部署；
 - `database/bootstrap.sql`：新安装结构与开发种子基线；
 - `requirements/`：生产、测试和可选依赖分层；
-- `scripts/mysql_admin.py`、`scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`：运维数据库连接、结构同步与显式停机恢复工具；
+- `scripts/mysql_admin.py`、`scripts/init_db_schema.py`、`scripts/migrate_remove_primary_class.py`、`scripts/recover_pending_tasks.py`：运维数据库连接、结构同步、显式数据迁移与停机恢复工具；
 - `tests/unit`、`tests/db`、`tests/e2e`：按基础设施依赖分层的测试。
 
 维护规则、变更清单、测试矩阵和发布/回滚原则见 [`docs/maintenance.md`](docs/maintenance.md)。生产部署约束见 [`CLAUDE.md`](CLAUDE.md)。

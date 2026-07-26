@@ -217,8 +217,9 @@ def test_admin_score_template_does_not_innerhtml_user_fields():
     root = Path(__file__).resolve().parents[2]
     text = (root / 'templates' / 'problems' / 'detail.html').read_text(encoding='utf-8')
     assert '${score.username}' not in text
-    assert '${score.class_cn}' not in text
+    assert '${score.classes_display}' not in text
     assert 'appendScoreCell(row, score.username' in text
+    assert 'appendScoreCell(row, score.classes_display' in text
 
 
 def test_admin_user_template_uses_json_args_for_username():
@@ -229,36 +230,33 @@ def test_admin_user_template_uses_json_args_for_username():
     assert '{{ u.username|tojson }}' in text
 
 
-def test_class_self_service_cannot_promote_via_cadmin_membership():
+def test_class_membership_routes_never_change_admin_privileges():
     root = Path(__file__).resolve().parents[2]
     text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
-    assert "class_en == 'Cadmin' and not is_admin(user)" in text
-    assert '不能自助切换到管理员班级' in text
-    assert "cls['class_en'] == 'Cadmin' and not is_admin(user)" in text
+    assert 'UPDATE users SET is_admin' not in text
+    assert 'grant_user_admin_ajax' not in text
 
 
-def test_admin_primary_class_change_preserves_existing_admin_flag():
+def test_admin_privilege_grant_is_explicit_and_one_way():
     root = Path(__file__).resolve().parents[2]
-    class_text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
-    admin_text = (root / 'oj_modules' / 'routes' / 'admin_user_routes.py').read_text(encoding='utf-8')
-    expected = "1 if is_admin(user) else (1 if"
-    assert expected in class_text
-    assert expected in admin_text
+    text = (root / 'oj_modules' / 'routes' / 'admin_user_routes.py').read_text(encoding='utf-8')
+    assert "def grant_user_admin_ajax" in text
+    assert "UPDATE users SET is_admin=1" in text
+    assert "SET is_admin=0" not in text
 
 
-def test_admin_extra_class_endpoint_rejects_cadmin():
+def test_class_routes_do_not_contain_a_pseudo_admin_class():
     root = Path(__file__).resolve().parents[2]
     text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
-    assert "class_en == 'Cadmin'" in text
-    assert '管理员班级不能作为附加班级添加' in text
+    assert 'Cadmin' not in text
 
 
-def test_register_never_offers_or_accepts_cadmin_class():
+def test_register_offers_every_real_class_from_the_data_layer():
     root = Path(__file__).resolve().parents[2]
     text = (root / 'oj_modules' / 'routes' / 'auth_routes.py').read_text(encoding='utf-8')
-    assert 'get_all_classes_except_admin()' in text
-    assert 'get_all_classes()' not in text
-    assert "user_class.get('class_en') == 'Cadmin'" in text
+    assert 'attach_class_logos(get_all_classes())' in text
+    assert 'get_all_classes_except_admin' not in text
+    assert 'Cadmin' not in text
 
 
 # ---------------- 用户头文件名白名单 ----------------

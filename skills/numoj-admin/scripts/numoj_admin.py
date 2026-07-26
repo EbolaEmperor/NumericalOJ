@@ -48,7 +48,6 @@ site_home = site.site_home
 me_classes = me.me_classes
 me_join_class = me.me_join_class
 me_leave_class = me.me_leave_class
-me_set_primary_class = me.me_set_primary_class
 me_grades = me.me_grades
 
 submission_list = submission.submission_list
@@ -102,7 +101,7 @@ class_adjust = homework.class_adjust
 
 user_add_class_type = user.user_add_class_type
 user_list = user.user_list
-user_set_primary_class = user.user_set_primary_class
+user_grant_admin = user.user_grant_admin
 user_rename = user.user_rename
 user_add_to_class = user.user_add_to_class
 user_remove_from_class = user.user_remove_from_class

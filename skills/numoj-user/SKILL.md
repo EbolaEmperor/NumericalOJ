@@ -47,7 +47,7 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 ## Command Areas
 
 - `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
-- `me`: view own classes, join/leave/set primary class, view own submissions, and summarize visible grades from submission history.
+- `me`: view own classes, join or leave classes, view own submissions, and summarize visible grades from submission history.
 - `problem`: list homework/problem rows, view problem details, fetch submit contexts, and submit programming code, Promptly prompts, or written-homework PDF/ZIP files.
 - `submission`: list personal submissions, list submissions for one problem, inspect details/status/stream, fetch last submitted code, and download output images.
 - `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.

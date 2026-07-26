@@ -50,11 +50,11 @@ Do not use commands that launch external model/API work, large judging workloads
 
 - `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
 - `site`: inspect public site routes and login/problem-list redirects.
-- `me`: view current account classes, join/leave/set primary class, view current account submissions, and summarize visible grades.
+- `me`: view current account classes, join or leave classes, view current account submissions, and summarize visible grades.
 - `submission`: list visible submissions, list submissions for one problem, inspect details/status/streams, fetch last submitted code, download output images, and download written-submission files.
 - `problem`: list/view/create/edit/delete problems, fetch create/edit/submit contexts, submit programming/Promptly/written homework as the administrator, upload test data, inspect scores, rejudge submissions, check rejudge status, and manage problem-solving or test-data-generation agent tasks.
 - `homework`: list class homework, assign/update/delete homework, export scores/codes/progress, download export artifacts, upload exam scores, inspect plagiarism records, and toggle class-adjustment settings.
-- `user`: list users, create class types, rename users, add/remove class memberships, set primary classes, list grades, and update or clear manual grade overrides.
+- `user`: list users, create class types, rename users, add/remove class memberships, grant administrator privileges, list grades, and update or clear manual grade overrides.
 - `grading`: inspect pending written-homework grading items and submit manual grading decisions.
 - `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.
 - `repository`: inspect and manage the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
@@ -139,13 +139,16 @@ python3 scripts/numoj_admin.py homework add --class-en C2026A --problem-id <prob
 python3 scripts/numoj_admin.py homework export-scores --class-en C2026A -o scores.csv
 ```
 
-Manage a user's class and grades:
+Manage a user's classes, privileges, and grades:
 
 ```bash
 python3 scripts/numoj_admin.py user add-to-class <user_id> C2026A
-python3 scripts/numoj_admin.py user set-primary-class <user_id> C2026A
+python3 scripts/numoj_admin.py user grant-admin <user_id>
 python3 scripts/numoj_admin.py user grades <user_id>
 ```
+
+`user grant-admin` is a one-way privilege grant. It is idempotent for users who
+are already administrators and does not change any class memberships.
 
 Create and configure a ranking competition:
 

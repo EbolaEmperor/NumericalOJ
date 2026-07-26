@@ -12,7 +12,7 @@ from oj_modules.db_services import (
     get_ai_detection_dashboard_summary,
     get_ai_detection_results_for_problem,
     get_ai_detection_results_for_user,
-    get_all_classes_except_admin,
+    get_all_classes,
     get_all_problems,
     get_problem,
 )
@@ -48,7 +48,7 @@ def dashboard():
     if error is not None:
         return error
     summary = get_ai_detection_dashboard_summary()
-    classes = get_all_classes_except_admin()
+    classes = get_all_classes()
     problems = [
         p for p in get_all_problems()
         if (p.get("lang") or "matlab").strip().lower() == "matlab"

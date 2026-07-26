@@ -56,7 +56,7 @@ CORE_TABLES = [
 
 ADMIN_USERNAME = 'admin'
 ADMIN_PASSWORD = 'admin123'
-SEED_CLASSES = [('Cadmin', '管理员'), ('Cclass1', '测试班级')]
+SEED_CLASSES = [('Cclass1', '测试班级')]
 TEST_FILESYSTEM_ROOTS = ('ranking_uploads', 'repository_storage')
 
 
@@ -204,15 +204,15 @@ def _reset_db():
                     "ranking_competition_id INT DEFAULT NULL) "
                     "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
             cur.execute(
-                "INSERT INTO users (username, password_hash, is_admin, email, "
-                "class, class_cn) VALUES (%s,%s,1,%s,%s,%s)",
-                (ADMIN_USERNAME, sha256_hex(ADMIN_PASSWORD),
-                 'admin@example.com', 'Cadmin', '管理员'))
-            admin_id = cur.lastrowid
-            cur.execute(
-                "INSERT INTO user_class_map (user_id, class_en, is_primary) "
-                "VALUES (%s,'Cadmin',1)", (admin_id,))
-            cur.execute("UPDATE class_table SET class_cnt=1 WHERE class_en='Cadmin'")
+                "INSERT INTO users "
+                "(username, password_hash, is_admin, email) "
+                "VALUES (%s,%s,1,%s)",
+                (
+                    ADMIN_USERNAME,
+                    sha256_hex(ADMIN_PASSWORD),
+                    'admin@example.com',
+                ),
+            )
             cur.execute(
                 "INSERT INTO site_settings (k, v) VALUES "
                 "('class_adjust_enabled','1') "

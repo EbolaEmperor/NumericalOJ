@@ -357,14 +357,18 @@ def register_ranking_batch_tasks(celery_app, agent_judge_task=None, reverse_judg
         truncated = len(users) > PROBE_MAX_USERS
         users = users[:PROBE_MAX_USERS]
 
-        candidates = []  # (username, class_cn, url)
+        candidates = []  # (username, classes_display, url)
         skipped = 0
         for u in users:
             uname = (u.get('username') or '').strip()
             if not uname or not USERNAME_RE.match(uname):
                 skipped += 1
                 continue
-            candidates.append((uname, u.get('class_cn') or '', build_repo_url(template, uname)))
+            candidates.append((
+                uname,
+                u.get('classes_display') or '',
+                build_repo_url(template, uname),
+            ))
 
         total = len(candidates)
         payload = {
@@ -380,17 +384,23 @@ def register_ranking_batch_tasks(celery_app, agent_judge_task=None, reverse_judg
         found = []
         checked = 0
         with ThreadPoolExecutor(max_workers=min(PROBE_CONCURRENCY, total)) as ex:
-            fut_map = {ex.submit(repo_exists, url): (uname, cn, url)
-                       for (uname, cn, url) in candidates}
+            fut_map = {
+                ex.submit(repo_exists, url): (uname, classes_display, url)
+                for (uname, classes_display, url) in candidates
+            }
             for fut in as_completed(fut_map):
-                uname, cn, url = fut_map[fut]
+                uname, classes_display, url = fut_map[fut]
                 checked += 1
                 try:
                     exists, _msg = fut.result()
                 except Exception:
                     exists = False
                 if exists:
-                    found.append({'username': uname, 'class_cn': cn, 'url': url})
+                    found.append({
+                        'username': uname,
+                        'classes_display': classes_display,
+                        'url': url,
+                    })
                 # 限制 Redis 写频率：每 3 个或最后一个刷新一次进度
                 if checked % 3 == 0 or checked == total:
                     payload['checked'] = checked

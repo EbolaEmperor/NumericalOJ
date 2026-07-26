@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""班级成员关系的事务用例。
+"""班级成员关系的事务边界。
 
-``users`` 的主班级快照、``user_class_map`` 的成员关系与
-``class_table.class_cnt`` 必须在同一个事务内变化。路由只负责权限、输入与响应，
-不应分别提交这些表的写入。
+``user_class_map`` 是用户班级关系的唯一事实源；每一条关系地位等价。
+关系写入与 ``class_table.class_cnt`` 必须在同一个事务内变化。路由只负责
+权限、输入与响应，不应分别提交这些表的写入。
 """
 
 from contextlib import contextmanager
@@ -14,11 +14,15 @@ from oj_modules.db_services import get_db_connection
 
 
 class MembershipNotFoundError(LookupError):
-    """目标用户或成员关系不存在。"""
+    """目标用户、班级或成员关系不存在。"""
 
 
-class PrimaryMembershipError(ValueError):
-    """试图直接移除主班级成员关系。"""
+class LastMembershipError(ValueError):
+    """自助退出会让普通用户失去最后一个班级。"""
+
+
+class MembershipConsistencyError(RuntimeError):
+    """成员关系与班级人数计数不一致。"""
 
 
 @contextmanager
@@ -36,13 +40,40 @@ def _transaction():
 
 
 def _lock_user(cursor, user_id):
-    cursor.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (user_id,))
-    return bool(cursor.fetchone())
+    cursor.execute(
+        "SELECT id, is_admin FROM users WHERE id=%s FOR UPDATE",
+        (user_id,),
+    )
+    return cursor.fetchone()
 
 
 def _lock_required_user(cursor, user_id):
-    if not _lock_user(cursor, user_id):
+    user = _lock_user(cursor, user_id)
+    if not user:
         raise MembershipNotFoundError("用户不存在")
+    return user
+
+
+def _raise_class_count_failure(
+        cursor,
+        class_en,
+        *,
+        missing_is_consistency=False,
+):
+    cursor.execute(
+        "SELECT class_cnt FROM class_table WHERE class_en=%s FOR UPDATE",
+        (class_en,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        if missing_is_consistency:
+            raise MembershipConsistencyError(
+                f"班级 {class_en} 的成员关系缺少对应班级"
+            )
+        raise MembershipNotFoundError("班级不存在")
+    raise MembershipConsistencyError(
+        f"班级 {class_en} 的人数计数与成员关系不一致"
+    )
 
 
 def _decrement_class_count(cursor, class_en):
@@ -53,7 +84,11 @@ def _decrement_class_count(cursor, class_en):
         (class_en,),
     )
     if cursor.rowcount != 1:
-        raise MembershipNotFoundError("班级不存在或班级人数计数异常")
+        _raise_class_count_failure(
+            cursor,
+            class_en,
+            missing_is_consistency=True,
+        )
 
 
 def _increment_class_count(cursor, class_en):
@@ -62,13 +97,13 @@ def _increment_class_count(cursor, class_en):
         (class_en,),
     )
     if cursor.rowcount != 1:
-        raise MembershipNotFoundError("班级不存在")
+        _raise_class_count_failure(cursor, class_en)
 
 
 def add_class_membership(user_id, class_en):
-    """添加附加班级，返回是否实际新增。
+    """添加班级关系，返回是否实际新增。
 
-    重复添加是幂等操作，且不会改写已有关系的 ``is_primary``。
+    重复添加是幂等操作，不会重复增加 ``class_cnt``。
     """
     with _transaction() as cursor:
         _lock_required_user(cursor, user_id)
@@ -85,8 +120,8 @@ def add_class_membership(user_id, class_en):
         if added:
             cursor.execute(
                 """
-                INSERT INTO user_class_map (user_id, class_en, is_primary)
-                VALUES (%s, %s, 0)
+                INSERT INTO user_class_map (user_id, class_en)
+                VALUES (%s, %s)
                 """,
                 (user_id, class_en),
             )
@@ -94,48 +129,22 @@ def add_class_membership(user_id, class_en):
         return added
 
 
-def remove_secondary_membership(user_id, class_en):
-    """移除附加班级，返回是否实际删除；主班级必须走主班级变更流程。"""
-    with _transaction() as cursor:
-        removed = False
-        if _lock_user(cursor, user_id):
-            cursor.execute(
-                """
-                SELECT is_primary
-                FROM user_class_map
-                WHERE user_id=%s AND class_en=%s
-                FOR UPDATE
-                """,
-                (user_id, class_en),
-            )
-            membership = cursor.fetchone()
-            if membership and membership['is_primary'] == 1:
-                raise PrimaryMembershipError("不能移除主班级")
-
-            if membership:
-                cursor.execute(
-                    "DELETE FROM user_class_map WHERE user_id=%s AND class_en=%s",
-                    (user_id, class_en),
-                )
-                removed = cursor.rowcount == 1
-                if removed:
-                    _decrement_class_count(cursor, class_en)
-        return removed
-
-
-def leave_class_membership(
+def _remove_class_membership(
         user_id,
         class_en,
         *,
-        replacement_class_en=None,
-        replacement_class_cn=None,
+        missing_ok,
 ):
-    """退出班级；退出主班级时同时切换主班级快照与映射。"""
     with _transaction() as cursor:
-        _lock_required_user(cursor, user_id)
+        user = _lock_user(cursor, user_id)
+        if not user:
+            if missing_ok:
+                return False
+            raise MembershipNotFoundError("用户不存在")
+
         cursor.execute(
             """
-            SELECT is_primary
+            SELECT 1
             FROM user_class_map
             WHERE user_id=%s AND class_en=%s
             FOR UPDATE
@@ -144,41 +153,23 @@ def leave_class_membership(
         )
         membership = cursor.fetchone()
         if not membership:
+            if missing_ok:
+                return False
             raise MembershipNotFoundError("班级成员关系不存在")
 
-        if membership['is_primary'] == 1:
-            if not replacement_class_en or replacement_class_cn is None:
-                raise PrimaryMembershipError("退出主班级前必须指定新的主班级")
-            if replacement_class_en == class_en:
-                raise PrimaryMembershipError("新的主班级不能是正在退出的班级")
+        # 角色与成员关系在同一事务、同一 users 行锁下判定，避免权限变更
+        # 与最后一条成员关系删除之间出现 TOCTOU 窗口。
+        if int(user.get("is_admin") or 0) != 1:
+            # 所有成员写操作都先锁同一 users 行，因此这次计数与随后的 DELETE
+            # 在服务边界内不会和该用户的 join/leave 并发交错。
             cursor.execute(
-                """
-                SELECT class_en
-                FROM user_class_map
-                WHERE user_id=%s AND class_en=%s
-                FOR UPDATE
-                """,
-                (user_id, replacement_class_en),
-            )
-            if not cursor.fetchone():
-                raise MembershipNotFoundError("新的主班级成员关系不存在")
-
-            cursor.execute(
-                "UPDATE users SET class=%s, class_cn=%s WHERE id=%s",
-                (replacement_class_en, replacement_class_cn, user_id),
-            )
-            cursor.execute(
-                "UPDATE user_class_map SET is_primary=0 WHERE user_id=%s",
+                "SELECT COUNT(*) AS membership_count "
+                "FROM user_class_map WHERE user_id=%s",
                 (user_id,),
             )
-            cursor.execute(
-                """
-                UPDATE user_class_map
-                SET is_primary=1
-                WHERE user_id=%s AND class_en=%s
-                """,
-                (user_id, replacement_class_en),
-            )
+            count_row = cursor.fetchone() or {}
+            if int(count_row.get("membership_count") or 0) <= 1:
+                raise LastMembershipError("至少需要保留一个班级")
 
         cursor.execute(
             "DELETE FROM user_class_map WHERE user_id=%s AND class_en=%s",
@@ -187,65 +178,30 @@ def leave_class_membership(
         if cursor.rowcount != 1:
             raise MembershipNotFoundError("班级成员关系不存在")
         _decrement_class_count(cursor, class_en)
+        return True
 
 
-def set_primary_membership(
+def remove_class_membership(user_id, class_en):
+    """移除班级关系，返回是否实际删除。
+
+    普通用户必须保留至少一条关系，管理员允许没有具体班级；角色判断与删除
+    在同一事务内完成。缺失用户或关系作为幂等无变化返回 ``False``。
+    """
+    return _remove_class_membership(
         user_id,
         class_en,
-        class_cn,
-        is_admin,
-        *,
-        create_if_missing=False,
-):
-    """把成员关系设为主班级，并同步 ``users`` 快照。
+        missing_ok=True,
+    )
 
-    普通用户只能把已有的附加班级设为主班级；管理员编辑用户时可以通过
-    ``create_if_missing`` 原子地补建目标关系。主班级切换不会删除原班级关系，
-    因而只有实际补建关系时才增加 ``class_cnt``，不能按主班级快照的变化增减
-    人数。
 
-    返回目标成员关系是否由本次事务创建。
+def leave_class_membership(user_id, class_en):
+    """用户退出班级。
+
+    普通用户拒绝退出最后一个班级；管理员允许没有具体班级归属。角色判断
+    与删除在同一事务内完成。
     """
-    with _transaction() as cursor:
-        _lock_required_user(cursor, user_id)
-        cursor.execute(
-            """
-            SELECT class_en
-            FROM user_class_map
-            WHERE user_id=%s AND class_en=%s
-            FOR UPDATE
-            """,
-            (user_id, class_en),
-        )
-        membership_added = not cursor.fetchone()
-        if membership_added:
-            if not create_if_missing:
-                raise MembershipNotFoundError("目标班级成员关系不存在")
-            cursor.execute(
-                """
-                INSERT INTO user_class_map (user_id, class_en, is_primary)
-                VALUES (%s, %s, 0)
-                """,
-                (user_id, class_en),
-            )
-            _increment_class_count(cursor, class_en)
-
-        cursor.execute(
-            "UPDATE users SET class=%s, class_cn=%s, is_admin=%s WHERE id=%s",
-            (class_en, class_cn, is_admin, user_id),
-        )
-        cursor.execute(
-            "UPDATE user_class_map SET is_primary=0 WHERE user_id=%s",
-            (user_id,),
-        )
-        cursor.execute(
-            """
-            UPDATE user_class_map
-            SET is_primary=1
-            WHERE user_id=%s AND class_en=%s
-            """,
-            (user_id, class_en),
-        )
-        if cursor.rowcount != 1:
-            raise MembershipNotFoundError("目标班级成员关系不存在")
-        return membership_added
+    return _remove_class_membership(
+        user_id,
+        class_en,
+        missing_ok=False,
+    )

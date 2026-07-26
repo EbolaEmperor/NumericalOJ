@@ -35,12 +35,6 @@ def me_leave_class(args: argparse.Namespace) -> None:
     print_or_save_response(resp)
 
 
-def me_set_primary_class(args: argparse.Namespace) -> None:
-    client = client_from_args(args)
-    resp = client.request("POST", "/me/set_primary_class", data={"class_en": args.class_en})
-    print_or_save_response(resp)
-
-
 def me_grades(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     cfg = load_config(args.config)
@@ -75,9 +69,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = add_cli_parser(mes, "leave-class", "Leave a class as the current account.")
     pa.add_argument("class_en", help="English class identifier to leave, e.g. C2026A.")
     pa.set_defaults(func=me_leave_class)
-    pa = add_cli_parser(mes, "set-primary-class", "Set the current account's primary class.")
-    pa.add_argument("class_en", help="English class identifier to make primary, e.g. C2026A.")
-    pa.set_defaults(func=me_set_primary_class)
     pa = add_cli_parser(mes, "grades", "Show grades for the current account or another user visible to the administrator.")
     pa.add_argument("--user-id", type=int, help="Admin-visible user ID. If omitted, the initialized username is used.")
     pa.add_argument("--username", help="Admin-visible username. Defaults to the initialized username.")

@@ -324,7 +324,7 @@ def test_register_success_audits_identity_without_credentials_or_email(app, audi
     verification = {"code": code, "expires_at": datetime.now() + timedelta(minutes=5)}
     connection, _cursor = _connection_with_record(verification)
     with (
-        patch.object(auth_routes, "get_all_classes_except_admin", return_value=[user_class]),
+        patch.object(auth_routes, "get_all_classes", return_value=[user_class]),
         patch.object(auth_routes, "get_class_by_en", return_value=user_class),
         patch.object(auth_routes, "_verify_attempt_allowed", return_value=True),
         patch.object(auth_routes, "get_db_connection", return_value=connection),

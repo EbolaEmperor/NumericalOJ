@@ -55,6 +55,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         "phase='确认现有服务可管理'",
         "phase='停止现有服务'",
         "phase='创建并验证数据库回滚点'",
+        "phase='迁移等价多班级数据库结构'",
         "phase='切换运行环境并更新数据库结构'",
         "phase='切换判题镜像'",
         "phase='启动统一日志采集'",
@@ -81,6 +82,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert "deploy/backup_database.py backup" in script
     assert 'deploy/backup_database.py mark-success' in script
     assert 'deploy/backup_database.py prune' in script
+    assert "scripts/migrate_remove_primary_class.py" in script
     assert "scripts/init_db_schema.py" in script
     assert (
         "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
@@ -287,6 +289,51 @@ def test_deploy_only_advertises_a_verified_backup_after_backup_succeeds():
     assert command < assignment
     assert "数据库备份失败清单（不可作为回滚点）" in script
     assert "已验证的部署前数据库备份清单" in script
+
+
+def test_deploy_contracts_primary_class_only_after_stopped_verified_backup():
+    script = _read("deploy.sh")
+
+    stopped = script.index("phase='停止现有服务'")
+    backup = script.index("phase='创建并验证数据库回滚点'", stopped)
+    backup_command = script.index(
+        "deploy/backup_database.py backup",
+        backup,
+    )
+    backup_verified = script.index(
+        'database_backup="$backup_manifest"',
+        backup_command,
+    )
+    migration_phase = script.index(
+        "phase='迁移等价多班级数据库结构'",
+        backup_verified,
+    )
+    migration_command = script.index(
+        "scripts/migrate_remove_primary_class.py",
+        migration_phase,
+    )
+    runtime_switch = script.index(
+        "phase='切换运行环境并更新数据库结构'",
+        migration_command,
+    )
+    schema_sync = script.index("scripts/init_db_schema.py", migration_command)
+
+    assert (
+        stopped
+        < backup
+        < backup_command
+        < backup_verified
+        < migration_phase
+        < migration_command
+        < runtime_switch
+        < schema_sync
+    )
+    migration_section = script[migration_phase:schema_sync]
+    assert "assert_service_stopped 'Celery' celery" in migration_section
+    assert "assert_service_stopped 'Web' web" in migration_section
+    assert "--apply" in migration_section
+    assert "--confirm-app-writers-stopped" in migration_section
+    assert "--confirm-backup-verified" in migration_section
 
 
 def test_deploy_initializes_and_best_effort_restarts_log_collector():

@@ -130,7 +130,14 @@ def test_create_user_uses_one_transaction_and_insert_id(monkeypatch):
         if call[0].startswith(('INSERT', 'UPDATE'))
     ]
     assert len(writes) == 3
-    assert writes[2][1] == (73, 'C1', 1)
+    assert writes[0][0] == (
+        'INSERT INTO users (username, password_hash, email) '
+        'VALUES (%s, %s, %s)'
+    )
+    assert writes[2][0] == (
+        'INSERT INTO user_class_map (user_id, class_en) VALUES (%s, %s)'
+    )
+    assert writes[2][1] == (73, 'C1')
     assert cursor.calls[0][0].startswith('SELECT GET_LOCK')
     assert cursor.calls[-1][0].startswith('SELECT RELEASE_LOCK')
 

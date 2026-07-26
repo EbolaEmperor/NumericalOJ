@@ -6,18 +6,18 @@ import shutil
 import tempfile
 
 import openpyxl
-from flask import Blueprint, flash, jsonify, request
+from flask import Blueprint, current_app, flash, jsonify, request
 
 from oj_modules.class_membership_services import (
-    PrimaryMembershipError,
+    LastMembershipError,
+    MembershipNotFoundError,
     add_class_membership,
     leave_class_membership,
-    remove_secondary_membership,
-    set_primary_membership,
+    remove_class_membership,
 )
 from oj_modules.class_logo_services import attach_class_logos
 from oj_modules.db_services import (
-    get_all_classes_except_admin,
+    get_all_classes,
     get_class_by_en,
     get_db_connection,
     get_user_classes,
@@ -134,23 +134,35 @@ def add_user_to_class():
     class_en = (request.form.get('class_en') or '').strip()
     if not (user_id and class_en):
         return jsonify(success=False, message='参数错误'), 400
-    if class_en == 'Cadmin':
-        return jsonify(success=False, message='管理员班级不能作为附加班级添加，请通过修改主班级显式授予管理员权限'), 400
 
     cls = get_class_by_en(class_en)
     if not cls:
         return jsonify(success=False, message='班级不存在'), 400
 
     user = get_user_by_id(user_id)
-    if user and (user.get('class') == class_en):
-        return jsonify(success=True, added=False, reason='already_primary', message='该用户的主班级已经是此班，无需添加')
+    if not user:
+        return jsonify(success=False, message='用户不存在'), 404
 
-    added = add_class_membership(user_id, class_en)
+    try:
+        added = add_class_membership(user_id, class_en)
+    except MembershipNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
+    except Exception:
+        current_app.logger.exception(
+            '管理员添加班级成员关系失败',
+            extra={'user_id': user_id, 'class_en': class_en},
+        )
+        return jsonify(success=False, message='添加班级失败，请稍后再试'), 500
 
     if added:
-        _invalidate_problem_list_cache_for_user(user_id=user_id, username=(user or {}).get('username'))
+        _invalidate_problem_list_cache_for_user(user_id=user_id, username=user.get('username'))
 
-    return jsonify(success=True, added=added, message=('已添加' if added else '班级已存在或无需添加'))
+    return jsonify(
+        success=True,
+        added=added,
+        reason=None if added else 'already_member',
+        message='已添加' if added else '该用户已经是此班级成员',
+    )
 
 
 @class_management_bp.route('/admin/remove_user_from_class', methods=['POST'])
@@ -165,14 +177,32 @@ def remove_user_from_class():
         return jsonify(success=False, message='参数错误'), 400
 
     target_user = get_user_by_id(user_id)
+    if not target_user:
+        return jsonify(success=False, message='用户不存在'), 404
 
     try:
-        remove_secondary_membership(user_id, class_en)
-    except PrimaryMembershipError:
-        return jsonify(success=False, message='不能移除主班级，请使用修改主班级功能'), 400
+        removed = remove_class_membership(user_id, class_en)
+    except LastMembershipError:
+        return jsonify(success=False, message='至少需要保留一个班级'), 400
+    except MembershipNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
+    except Exception:
+        current_app.logger.exception(
+            '管理员移除班级成员关系失败',
+            extra={'user_id': user_id, 'class_en': class_en},
+        )
+        return jsonify(success=False, message='移除班级失败，请稍后再试'), 500
 
-    _invalidate_problem_list_cache_for_user(user_id=user_id, username=(target_user or {}).get('username'))
-    return jsonify(success=True)
+    if removed:
+        _invalidate_problem_list_cache_for_user(
+            user_id=user_id,
+            username=target_user.get('username'),
+        )
+    return jsonify(
+        success=True,
+        removed=removed,
+        message='已移除' if removed else '该用户不属于此班级',
+    )
 
 
 @class_management_bp.route('/me/classes', methods=['GET'])
@@ -182,27 +212,11 @@ def get_my_classes():
         return jsonify(success=False, message="请先登录"), 401
 
     user_classes = get_user_classes(user['id'])
-
-    primary_en = None
-    for cls in user_classes:
-        if cls.get('is_primary'):
-            primary_en = cls['class_en']
-            break
-
-    if not user_classes and user.get('class'):
-        primary_en = user['class']
-        user_classes = [{
-            'class_en': user['class'],
-            'class_cn': user.get('class_cn') or user['class'],
-            'is_primary': 1,
-        }]
-
-    all_classes = get_all_classes_except_admin()
+    all_classes = get_all_classes()
 
     return jsonify(
         success=True,
         memberships=attach_class_logos(user_classes),
-        primary_en=primary_en,
         all_classes=attach_class_logos(all_classes),
     )
 
@@ -212,7 +226,9 @@ def join_class():
     user = current_user()
     if not user:
         return jsonify(success=False, message="请先登录"), 401
-    if not is_class_adjust_enabled():
+    # 站点开关只控制学生自助调整；管理员始终可以维护自己的等价班级关系，
+    # 与弹窗中的权限提示保持一致。
+    if not is_admin(user) and not is_class_adjust_enabled():
         return jsonify(success=False, message="当前不允许调整班级，请联系老师"), 403
 
     class_en = request.form.get('class_en', '').strip()
@@ -223,23 +239,18 @@ def join_class():
     if not target_class:
         return jsonify(success=False, message="班级不存在"), 400
 
-    if class_en == 'Cadmin':
-        return jsonify(success=False, message="不能加入管理员班级"), 400
-
-    user_classes = get_user_classes(user['id'])
-    for cls in user_classes:
-        if cls['class_en'] == class_en:
-            return jsonify(success=False, message="您已经是该班级成员"), 400
-
-    if user.get('class') == class_en:
-        return jsonify(success=False, message="您已经是该班级成员"), 400
-
     try:
         added = add_class_membership(user['id'], class_en)
         if not added:
             return jsonify(success=False, message="您已经是该班级成员"), 400
-    except Exception as e:
-        return jsonify(success=False, message=f"加入班级失败: {str(e)}"), 500
+    except MembershipNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
+    except Exception:
+        current_app.logger.exception(
+            '用户加入班级失败',
+            extra={'user_id': user['id'], 'class_en': class_en},
+        )
+        return jsonify(success=False, message="加入班级失败，请稍后再试"), 500
 
     _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
     return jsonify(success=True, message="成功加入班级", class_en=class_en, class_cn=target_class['class_cn'])
@@ -250,104 +261,25 @@ def leave_class():
     user = current_user()
     if not user:
         return jsonify(success=False, message="请先登录"), 401
-    if not is_class_adjust_enabled():
+    if not is_admin(user) and not is_class_adjust_enabled():
         return jsonify(success=False, message="当前不允许调整班级，请联系老师"), 403
 
     class_en = request.form.get('class_en', '').strip()
     if not class_en:
         return jsonify(success=False, message="缺少班级参数"), 400
 
-    user_classes = get_user_classes(user['id'])
-
-    is_member = False
-    is_primary = False
-    for cls in user_classes:
-        if cls['class_en'] == class_en:
-            is_member = True
-            is_primary = cls.get('is_primary', 0) == 1
-            break
-
-    if not is_member:
-        return jsonify(success=False, message="您不是该班级成员"), 400
-
-    if len(user_classes) <= 1:
+    try:
+        leave_class_membership(user['id'], class_en)
+    except LastMembershipError:
         return jsonify(success=False, message="至少需要保留一个班级"), 400
-
-    new_primary_en = None
-    try:
-        new_primary_class = None
-        if is_primary:
-            for cls in user_classes:
-                if cls['class_en'] != class_en:
-                    if cls['class_en'] == 'Cadmin' and not is_admin(user):
-                        continue
-                    new_primary_en = cls['class_en']
-                    break
-
-            if new_primary_en:
-                new_primary_class = get_class_by_en(new_primary_en)
-            else:
-                return jsonify(success=False, message="至少需要保留一个普通班级"), 400
-
-        leave_class_membership(
-            user['id'],
-            class_en,
-            replacement_class_en=new_primary_en,
-            replacement_class_cn=(new_primary_class or {}).get('class_cn'),
-        )
-    except Exception as e:
-        return jsonify(success=False, message=f"退出班级失败: {str(e)}"), 500
-
-    _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
-    return jsonify(success=True, message="成功退出班级", primary_en=new_primary_en)
-
-
-@class_management_bp.route('/me/set_primary_class', methods=['POST'])
-def set_primary_class():
-    user = current_user()
-    if not user:
-        return jsonify(success=False, message="请先登录"), 401
-    if not is_class_adjust_enabled():
-        return jsonify(success=False, message="当前不允许调整班级，请联系老师"), 403
-
-    class_en = request.form.get('class_en', '').strip()
-    if not class_en:
-        return jsonify(success=False, message="缺少班级参数"), 400
-
-    target_class = get_class_by_en(class_en)
-    if not target_class:
-        return jsonify(success=False, message="班级不存在"), 400
-
-    if class_en == 'Cadmin' and not is_admin(user):
-        return jsonify(success=False, message="不能自助切换到管理员班级"), 403
-
-    user_classes = get_user_classes(user['id'])
-    is_member = False
-    for cls in user_classes:
-        if cls['class_en'] == class_en:
-            is_member = True
-            break
-
-    if not is_member and user.get('class') == class_en:
-        is_member = True
-
-    if not is_member:
+    except MembershipNotFoundError:
         return jsonify(success=False, message="您不是该班级成员"), 400
-
-    if user.get('class') == class_en:
-        return jsonify(success=True, message="已经是主班级", primary_en=class_en, class_en=class_en)
-
-    new_is_admin = 1 if is_admin(user) else (1 if class_en == 'Cadmin' else 0)
-
-    try:
-        set_primary_membership(
-            user['id'],
-            class_en,
-            target_class['class_cn'],
-            new_is_admin,
+    except Exception:
+        current_app.logger.exception(
+            '用户退出班级失败',
+            extra={'user_id': user['id'], 'class_en': class_en},
         )
-    except Exception as e:
-        return jsonify(success=False, message=f"设置主班级失败: {str(e)}"), 500
+        return jsonify(success=False, message="退出班级失败，请稍后再试"), 500
 
     _invalidate_problem_list_cache_for_user(user_id=user['id'], username=user['username'])
-    return jsonify(success=True, message="主班级设置成功", primary_en=class_en, class_en=class_en)
+    return jsonify(success=True, message="成功退出班级")

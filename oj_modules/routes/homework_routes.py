@@ -15,7 +15,7 @@ from flask import Blueprint, flash, jsonify, make_response, redirect, render_tem
 
 from oj_modules.db_services import (
     CLASS_ADJUST_FLAG_KEY,
-    get_all_classes_except_admin,
+    get_all_classes,
     get_all_problems,
     get_class_by_en,
     get_db_connection,
@@ -135,14 +135,12 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                             FROM user_class_map m
                             JOIN users u ON u.id = m.user_id
                             WHERE m.class_en = %s
+                              AND u.is_admin = 0
                             ORDER BY u.id ASC
                             """,
                             (selected_class,),
                         )
                         students = cursor.fetchall()
-                        if not students:
-                            cursor.execute("SELECT id, username FROM users WHERE class = %s ORDER BY id ASC", (selected_class,))
-                            students = cursor.fetchall()
                 finally:
                     conn.close()
                 if not students:
@@ -193,14 +191,7 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                                         FROM user_class_map m
                                         JOIN users u ON u.id = m.user_id
                                         WHERE m.class_en = %s
-                                        UNION
-                                        SELECT u2.id, u2.username
-                                        FROM users u2
-                                        WHERE u2.class = %s
-                                          AND NOT EXISTS (
-                                              SELECT 1 FROM user_class_map m2
-                                              WHERE m2.user_id = u2.id AND m2.class_en = %s
-                                          )
+                                          AND u.is_admin = 0
                                     ),
                                     ranked_submissions AS (
                                         SELECT s.id, s.username, s.code, s.score, s.created_at,
@@ -217,7 +208,7 @@ def init_homework_module(celery_app, redis_client, redis_binary_client):
                                     WHERE rn = 1
                                     ORDER BY username ASC
                                 """
-                                cursor.execute(sql, (selected_class, selected_class, selected_class, pid))
+                                cursor.execute(sql, (selected_class, pid))
                                 best_rows = cursor.fetchall()
                         finally:
                             conn.close()
@@ -364,7 +355,7 @@ def admin_homework():
         return "<h3>无权限</h3>"
 
     selected_class = request.args.get('sclass')
-    classes = get_all_classes_except_admin()
+    classes = get_all_classes()
 
     valid_classes = [cls['class_en'] for cls in classes]
     if selected_class and selected_class not in valid_classes:
@@ -659,15 +650,12 @@ def export_scores():
                 FROM user_class_map m
                 JOIN users u ON u.id = m.user_id
                 WHERE m.class_en = %s
+                  AND u.is_admin = 0
                 ORDER BY u.id ASC
                 """,
                 (selected_class,),
             )
             students = cursor.fetchall()
-
-            if not students:
-                cursor.execute("SELECT id, username FROM users WHERE class = %s ORDER BY id ASC", (selected_class,))
-                students = cursor.fetchall()
     finally:
         conn.close()
 
@@ -1299,10 +1287,7 @@ def _class_users_cte_sql():
         FROM user_class_map m
         JOIN users u ON u.id = m.user_id
         WHERE m.class_en = %s
-        UNION
-        SELECT u2.id AS user_id, u2.username
-        FROM users u2
-        WHERE u2.class = %s
+          AND u.is_admin = 0
     """
 
 
@@ -1414,7 +1399,7 @@ def _collect_best_first_submissions_for_plagiarism(class_en, problem_targets, in
                 WHERE rn = 1
                 ORDER BY problem_id ASC, username ASC
                 """,
-                tuple([class_en, class_en] + list(problem_ids)),
+                tuple([class_en] + list(problem_ids)),
             )
             rows = cursor.fetchall()
     finally:
@@ -1486,7 +1471,7 @@ def _collect_best_first_ranking_submissions_for_plagiarism(class_en, ranking_tar
                 WHERE rn = 1
                 ORDER BY competition_id ASC, username ASC
                 """,
-                tuple([class_en, class_en] + list(competition_ids)),
+                tuple([class_en] + list(competition_ids)),
             )
             rows = cursor.fetchall()
     finally:

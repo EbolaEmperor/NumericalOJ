@@ -24,7 +24,7 @@ from werkzeug.utils import secure_filename
 
 import config as _cfg
 from oj_modules.db_services import (
-    get_all_classes_except_admin, get_user_by_username, get_users_in_classes,
+    get_all_classes, get_user_by_username, get_users_in_classes,
 )
 from oj_modules.markdown_utils import sanitize_html
 from oj_modules.redis_clients import create_optional_redis_client
@@ -988,7 +988,7 @@ def ranking_detail(competition_id):
 
     batch_classes = []
     if tab == 'batch_eval':
-        batch_classes = get_all_classes_except_admin()
+        batch_classes = get_all_classes()
 
     # Agent 评测打榜赛的提交方式（zip 上传 / git 拉取）
     submission_method = (comp.get('submission_method') or 'zip').strip().lower()

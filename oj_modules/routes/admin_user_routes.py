@@ -5,10 +5,6 @@ import re
 
 from flask import Blueprint, current_app, flash, jsonify, render_template, request, session
 
-from oj_modules.class_membership_services import (
-    MembershipNotFoundError,
-    set_primary_membership,
-)
 from oj_modules.class_logo_services import generate_class_logo_seed
 from oj_modules.db_services import (
     delete_user_problem_max_score,
@@ -65,8 +61,10 @@ def user_management():
         user_where_params.append(f"%{search_username}%")
 
     if search_class:
-        user_where_clauses.append("(u.class = %s OR u.id IN (SELECT user_id FROM user_class_map WHERE class_en = %s))")
-        user_where_params.extend([search_class, search_class])
+        user_where_clauses.append(
+            "u.id IN (SELECT user_id FROM user_class_map WHERE class_en = %s)"
+        )
+        user_where_params.append(search_class)
 
     user_where_sql = ""
     if user_where_clauses:
@@ -89,7 +87,7 @@ def user_management():
             total_pages = (total + per_page - 1) // per_page
 
             data_sql = f"""
-                SELECT u.id, u.username, u.email, u.class, u.class_cn
+                SELECT u.id, u.username, u.email, u.is_admin
                 FROM users u
                 {user_where_sql}
                 ORDER BY u.id ASC
@@ -105,28 +103,28 @@ def user_management():
 
             with conn.cursor() as cursor:
                 map_sql = f"""
-                    SELECT m.user_id, m.class_en, ct.class_cn, m.is_primary
+                    SELECT m.user_id, m.class_en, ct.class_cn
                     FROM user_class_map m
                     JOIN class_table ct ON ct.class_en = m.class_en
                     WHERE m.user_id IN ({placeholders})
+                    ORDER BY m.user_id ASC, m.class_en ASC
                 """
                 cursor.execute(map_sql, uid_list)
                 mapping_rows = cursor.fetchall()
 
-            extra_map = {uid: [] for uid in uid_list}
+            class_map = {uid: [] for uid in uid_list}
             for row in mapping_rows:
-                extra_map[row['user_id']].append({
+                class_map[row['user_id']].append({
                     "class_en": row['class_en'],
                     "class_cn": row['class_cn'],
-                    "is_primary": row.get('is_primary', 0),
                 })
 
             for u in users:
-                u_extra = []
-                for cls in extra_map.get(u['id'], []):
-                    if cls['class_en'] != u['class']:
-                        u_extra.append(cls)
-                u['extra_classes'] = u_extra
+                u['classes'] = class_map.get(u['id'], [])
+                u['classes_display'] = ' / '.join(
+                    cls.get('class_cn') or cls['class_en']
+                    for cls in u['classes']
+                )
         else:
             users = []
     finally:
@@ -145,51 +143,57 @@ def user_management():
     )
 
 
-@admin_user_bp.route('/admin/edit_user_ajax', methods=['POST'])
-def edit_user_ajax():
+@admin_user_bp.route('/admin/grant_user_admin_ajax', methods=['POST'])
+def grant_user_admin_ajax():
     admin = current_user()
     if not is_admin(admin):
         return jsonify({'success': False, 'message': '无权限'}), 403
 
     user_id = request.form.get('user_id', type=int)
-    new_class_en = (request.form.get('class') or '').strip()
-    if not user_id or not new_class_en:
-        return jsonify({'success': False, 'message': '缺少必要参数'}), 400
+    if not user_id:
+        return jsonify({'success': False, 'message': '缺少用户ID'}), 400
 
-    user = get_user_by_id(user_id)
-    if not user:
-        return jsonify({'success': False, 'message': '用户不存在'}), 404
-
-    new_class = get_class_by_en(new_class_en)
-    if not new_class:
-        return jsonify({'success': False, 'message': '目标班级不存在'}), 400
-
-    old_class_en = user.get('class') or None
-    give_admin = 1 if is_admin(user) else (1 if new_class['class_en'] == 'Cadmin' else 0)
-
-    if old_class_en == new_class['class_en'] and user.get('class_cn') == new_class['class_cn'] and user.get('is_admin') == give_admin:
-        return jsonify({'success': True, 'message': '主班级未变化', 'user_id': user_id, 'new_class': new_class})
-
+    target_user = None
+    granted = False
+    conn = get_db_connection()
     try:
-        set_primary_membership(
-            user_id,
-            new_class['class_en'],
-            new_class['class_cn'],
-            give_admin,
-            create_if_missing=True,
-        )
-    except MembershipNotFoundError as exc:
-        return jsonify({'success': False, 'message': str(exc)}), 400
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'SELECT id, username, is_admin FROM users WHERE id=%s FOR UPDATE',
+                (user_id,),
+            )
+            target_user = cursor.fetchone()
+            if not target_user:
+                return jsonify({'success': False, 'message': '用户不存在'}), 404
+            if int(target_user.get('is_admin') or 0) != 1:
+                cursor.execute(
+                    'UPDATE users SET is_admin=1 WHERE id=%s',
+                    (user_id,),
+                )
+                granted = cursor.rowcount == 1
+        conn.commit()
     except Exception:
         current_app.logger.exception(
-            '管理员修改用户主班级事务失败',
-            extra={'user_id': user_id, 'class_en': new_class['class_en']},
+            '授予管理员权限失败',
+            extra={'user_id': user_id},
         )
-        return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500
+        conn.rollback()
+        return jsonify({'success': False, 'message': '数据库操作失败，请稍后再试'}), 500
+    finally:
+        conn.close()
 
-    _invalidate_problem_list_cache_for_user(user_id=user_id, username=user.get('username'))
-    flash(f"已将 userID={user_id} 的主班级修改为 {new_class['class_cn']}", 'success')
-    return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_class': new_class})
+    if granted:
+        _invalidate_problem_list_cache_for_user(
+            user_id=user_id,
+            username=target_user.get('username'),
+        )
+    return jsonify({
+        'success': True,
+        'message': '管理员权限已授予' if granted else '该用户已经是管理员',
+        'user_id': user_id,
+        'is_admin': True,
+        'granted': granted,
+    })
 
 
 @admin_user_bp.route('/admin/edit_username_ajax', methods=['POST'])
@@ -331,31 +335,64 @@ def get_problem_scores(problem_id):
     try:
         with conn.cursor() as cursor:
             sql = """
-                SELECT u.id, u.username, u.class_cn, ms.score
+                SELECT u.id, u.username, ms.score
                 FROM users u
                 JOIN max_score ms ON u.id = ms.userid
                 WHERE u.is_admin = 0 AND ms.problem_id = %s AND ms.score IS NOT NULL
-                ORDER BY u.class_cn, u.username
+                ORDER BY u.username
             """
             cursor.execute(sql, (problem_id,))
             results = cursor.fetchall()
 
-            scores = []
-            for row in results:
-                scores.append({
-                    'user_id': row['id'],
-                    'username': row['username'],
-                    'class_cn': row['class_cn'] or '未分配班级',
-                    'score': row['score'],
-                })
+        class_map = {row['id']: [] for row in results}
+        if results:
+            user_ids = [row['id'] for row in results]
+            placeholders = ','.join(['%s'] * len(user_ids))
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT m.user_id, m.class_en, ct.class_cn
+                    FROM user_class_map m
+                    JOIN class_table ct ON ct.class_en = m.class_en
+                    WHERE m.user_id IN ({placeholders})
+                    ORDER BY m.user_id ASC, m.class_en ASC
+                    """,
+                    user_ids,
+                )
+                for membership in cursor.fetchall() or []:
+                    class_map[membership['user_id']].append({
+                        'class_en': membership['class_en'],
+                        'class_cn': membership['class_cn'],
+                    })
 
-            return jsonify({
-                'success': True,
-                'problem_id': problem_id,
-                'problem_title': problem['title'],
-                'max_score': problem['max_score'] or 0,
-                'scores': scores,
+        scores = []
+        for row in results:
+            classes = class_map.get(row['id'], [])
+            classes_display = ' / '.join(
+                cls.get('class_cn') or cls['class_en']
+                for cls in classes
+            ) or '未分配班级'
+            scores.append({
+                'user_id': row['id'],
+                'username': row['username'],
+                'classes': classes,
+                'classes_display': classes_display,
+                'score': row['score'],
             })
+        scores.sort(
+            key=lambda item: (
+                item['classes_display'],
+                item['username'],
+            )
+        )
+
+        return jsonify({
+            'success': True,
+            'problem_id': problem_id,
+            'problem_title': problem['title'],
+            'max_score': problem['max_score'] or 0,
+            'scores': scores,
+        })
 
     except Exception as e:
         return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500

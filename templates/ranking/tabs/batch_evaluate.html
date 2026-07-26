@@ -309,7 +309,7 @@
             return '<div class="bm-card' + (sel ? ' is-sel' : '') + '" data-u="' + escapeHtml(r.username) + '" style="animation-delay:' + (Math.min(i, 16) * 16) + 'ms">' +
               '<div class="bm-card-check"></div>' +
               '<div class="bm-card-user">' + escapeHtml(r.username) + '</div>' +
-              '<div class="bm-card-cls">' + escapeHtml(r.class_cn || '') + '</div>' +
+              '<div class="bm-card-cls">' + escapeHtml(r.classes_display || '') + '</div>' +
               '<div class="bm-card-url">' + escapeHtml(r.url) + '</div>' +
               '</div>';
           }).join('');

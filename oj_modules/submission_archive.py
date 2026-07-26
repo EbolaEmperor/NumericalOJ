@@ -79,7 +79,6 @@ def _normalize_classes(classes):
         normalized.append({
             "class_en": _safe_text(item.get("class_en")),
             "class_cn": _safe_text(item.get("class_cn")),
-            "is_primary": bool(item.get("is_primary")),
         })
     return normalized
 

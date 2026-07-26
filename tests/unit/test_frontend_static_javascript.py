@@ -24,6 +24,7 @@ JAVASCRIPT_ASSETS = (
     "static/app/problem-form-editors.js",
     "static/app/repository/workbench.js",
     "static/app/forum.js",
+    "static/app/layout.js",
     "static/app/ranking/endpoints.js",
     "static/app/ranking/rules-editor.js",
     "static/app/ranking/topology.js",

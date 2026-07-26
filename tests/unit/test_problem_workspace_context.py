@@ -14,11 +14,11 @@ def _stub_base_context(monkeypatch):
     )
 
 
-def test_admin_problem_list_rejects_unseen_class_and_uses_primary(monkeypatch):
+def test_admin_problem_list_rejects_unseen_class_and_uses_stable_first_class(monkeypatch):
     _stub_base_context(monkeypatch)
     classes = [
-        {"class_en": "C1", "class_cn": "一班", "is_primary": 1},
-        {"class_en": "C2", "class_cn": "二班", "is_primary": 0},
+        {"class_en": "C1", "class_cn": "一班"},
+        {"class_en": "C2", "class_cn": "二班"},
     ]
     monkeypatch.setattr(problem_core_routes, "visible_classes_for_user_cached", lambda _user: classes)
     monkeypatch.setattr(problem_core_routes, "get_all_problems", lambda: [{"id": 9}])
@@ -65,8 +65,8 @@ def test_admin_problem_list_without_classes_has_explicit_empty_workspace(monkeyp
 def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch):
     _stub_base_context(monkeypatch)
     classes = [
-        {"class_en": "C1", "class_cn": "一班", "is_primary": 1},
-        {"class_en": "C2", "class_cn": "二班", "is_primary": 0},
+        {"class_en": "C1", "class_cn": "一班"},
+        {"class_en": "C2", "class_cn": "二班"},
     ]
     monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: classes)
     monkeypatch.setattr(
@@ -100,7 +100,7 @@ def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch)
 
 def test_student_api_context_skips_dashboard_aggregation(monkeypatch):
     _stub_base_context(monkeypatch)
-    classes = [{"class_en": "C1", "class_cn": "一班", "is_primary": 1}]
+    classes = [{"class_en": "C1", "class_cn": "一班"}]
     monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: classes)
     monkeypatch.setattr(
         problem_core_routes,
@@ -125,7 +125,7 @@ def test_student_api_context_skips_dashboard_aggregation(monkeypatch):
 
 def test_problem_list_context_can_defer_class_activity(monkeypatch):
     _stub_base_context(monkeypatch)
-    classes = [{"class_en": "C1", "class_cn": "一班", "is_primary": 1}]
+    classes = [{"class_en": "C1", "class_cn": "一班"}]
     monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: classes)
     monkeypatch.setattr(
         problem_core_routes,
@@ -183,7 +183,7 @@ def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
     monkeypatch.setattr(
         problem_core_routes,
         "visible_classes_for_user_cached",
-        lambda _user: [{"class_en": "C1", "is_primary": 1}],
+        lambda _user: [{"class_en": "C1"}],
     )
     load_homeworks = MagicMock(
         return_value={
@@ -266,7 +266,7 @@ def test_student_problem_detail_prefers_selected_class_deadline(monkeypatch):
     monkeypatch.setattr(
         problem_core_routes,
         "visible_classes_for_user_cached",
-        lambda _user: [{"class_en": "C2", "is_primary": 0}],
+        lambda _user: [{"class_en": "C2"}],
     )
     monkeypatch.setattr(
         problem_core_routes,
@@ -326,7 +326,7 @@ def test_class_activity_endpoint_returns_authorized_class_data(monkeypatch):
         problem_core_routes,
         "visible_classes_for_user_cached",
         lambda _user: [
-            {"class_en": "C1", "class_cn": "一班", "is_primary": 1},
+            {"class_en": "C1", "class_cn": "一班"},
         ],
     )
     load_activity = MagicMock(return_value=[
@@ -369,7 +369,7 @@ def test_class_activity_endpoint_rejects_unseen_class(monkeypatch):
         problem_core_routes,
         "visible_classes_for_user_cached",
         lambda _user: [
-            {"class_en": "C1", "class_cn": "一班", "is_primary": 1},
+            {"class_en": "C1", "class_cn": "一班"},
         ],
     )
     load_activity = MagicMock()

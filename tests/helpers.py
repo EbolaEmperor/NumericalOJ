@@ -41,7 +41,7 @@ def make_class(class_en=None, class_cn=None):
 
 def make_user(username=None, password='pw123456', email=None,
               class_en='Cclass1', class_cn='测试班级', is_admin=False):
-    """创建普通用户（密码 sha256）。class 必须存在；默认用种子 Cclass1。返回 user dict。"""
+    """创建带一条初始班级关系的用户；默认加入种子班级 Cclass1。"""
     username = username or _uniq('user')
     email = email or f"{username}@example.com"
     make_class(class_en, class_cn)
