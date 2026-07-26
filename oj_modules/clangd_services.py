@@ -69,7 +69,9 @@ class _InactiveDocumentCycle:
 
     version: int
     epoch: int
-    source: str
+    # Kept only until the adjacent notification/response completes.  Retaining
+    # every open document would duplicate up to 4 MiB per LSP document.
+    source: str | None
     regions: tuple[tuple[int, int, int, int], ...] | None = None
 
 
@@ -406,6 +408,7 @@ class ClangdService(SemanticLanguageServerService):
             cycle = self._inactive_document_cycles.get(uri)
             if (
                 cycle is None
+                or cycle.source is None
                 or (
                     notification_version is not None
                     and notification_version != cycle.version
@@ -432,6 +435,7 @@ class ClangdService(SemanticLanguageServerService):
             ):
                 return
             current.regions = regions
+            current.source = None
             self._inactive_regions_provider = True
             self._inactive_regions_condition.notify_all()
 
@@ -465,10 +469,17 @@ class ClangdService(SemanticLanguageServerService):
                 or current.version != state.version
                 or current.regions is None
             ):
+                if (
+                    current is not None
+                    and current.epoch == expected_epoch
+                    and current.version == state.version
+                ):
+                    current.source = None
                 return {
                     "inactive_regions": [],
                     "inactive_regions_supported": False,
                 }
+            current.source = None
             return {
                 "inactive_regions": _inactive_regions_payload(
                     current.regions
