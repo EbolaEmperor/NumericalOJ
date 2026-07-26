@@ -7,6 +7,7 @@ import threading
 import pytest
 
 from oj_modules import clangd_services, language_server_services
+from oj_modules.editor_toolchain import EditorToolchain
 
 
 class FakeClangdService(clangd_services.ClangdService):
@@ -89,6 +90,60 @@ def test_clangd_uses_host_cpp_standard_library_inside_sandbox(tmp_path):
         str(target_include),
     ]
     assert service.sandbox_read_paths == (generic_include, target_include)
+
+
+@pytest.mark.parametrize(
+    ("language", "initial_flags"),
+    (
+        ("c", ["-xc", "-std=c11"]),
+        ("cpp", ["-xc++", "-std=c++20", "-nostdinc++"]),
+    ),
+)
+def test_clangd_uses_managed_judge_headers_inside_sandbox(
+    tmp_path,
+    language,
+    initial_flags,
+):
+    root = tmp_path / "editor-toolchain"
+    cpp_include = root / "usr/include/c++/12"
+    eigen_include = root / "usr/include/eigen3"
+    mkl_include = root / "opt/mkl/include"
+    for path in (cpp_include, eigen_include, mkl_include):
+        path.mkdir(parents=True)
+    toolchain = EditorToolchain(
+        root=root,
+        c_include_paths=(mkl_include,),
+        cpp_include_paths=(cpp_include, eigen_include, mkl_include),
+        required_headers=(),
+        source_image_reference="numericaloj-judger:deploy-test",
+        source_image_id="sha256:test",
+    )
+
+    service = clangd_services.ClangdService(
+        language,
+        editor_toolchain=toolchain,
+    )
+
+    assert service.sandbox_read_paths == (root,)
+    assert service.editor_toolchain is toolchain
+    expected_include_paths = (
+        (mkl_include,)
+        if language == "c"
+        else (cpp_include, eigen_include, mkl_include)
+    )
+    managed_initial_flags = [
+        *initial_flags[:2],
+        "-nostdinc",
+        *initial_flags[2:],
+    ]
+    assert service._initialization_options()["fallbackFlags"] == [
+        *managed_initial_flags,
+        *[
+            item
+            for path in expected_include_paths
+            for item in ("-isystem", str(path))
+        ],
+    ]
 
 
 def test_compiler_include_probe_keeps_only_real_cpp_roots(tmp_path):
@@ -269,6 +324,42 @@ def test_json_rpc_frame_reader():
         "id": 1,
         "result": {},
     }
+
+
+def test_json_rpc_frame_reader_collects_fragmented_body():
+    payload = (
+        b'{"jsonrpc":"2.0","id":7,"result":{"data":['
+        + b",".join(str(index).encode("ascii") for index in range(20_000))
+        + b"]}}"
+    )
+
+    class FragmentedStream(BytesIO):
+        def read(self, size=-1):
+            return super().read(min(size, 7) if size >= 0 else 7)
+
+    stream = FragmentedStream(
+        f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii") + payload
+    )
+
+    message = clangd_services.ClangdService._read_message(stream)
+
+    assert message["id"] == 7
+    assert message["result"]["data"][-1] == 19_999
+
+
+def test_json_rpc_frame_reader_rejects_truly_truncated_fragmented_body():
+    payload = b'{"jsonrpc":"2.0","id":8,"result":{"data":[0,1,2]}}'
+
+    class FragmentedStream(BytesIO):
+        def read(self, size=-1):
+            return super().read(min(size, 3) if size >= 0 else 3)
+
+    stream = FragmentedStream(
+        f"Content-Length: {len(payload) + 4}\r\n\r\n".encode("ascii") + payload
+    )
+
+    with pytest.raises(clangd_services.ClangdProtocolError, match="响应体被截断"):
+        clangd_services.ClangdService._read_message(stream)
 
 
 def test_json_rpc_frame_reader_rejects_oversized_body(monkeypatch):

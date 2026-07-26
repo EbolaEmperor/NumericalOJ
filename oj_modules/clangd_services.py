@@ -5,19 +5,33 @@ from __future__ import annotations
 import atexit
 from functools import lru_cache
 from pathlib import Path
+import queue
 import shutil
+import stat
 import subprocess
 import threading
 
+from oj_modules.editor_toolchain import (
+    EditorToolchain,
+    EditorToolchainError,
+    load_editor_toolchain,
+)
 from oj_modules.language_server_services import (
     LANGUAGE_REQUEST_TIMEOUT_SECONDS,
+    LANGUAGE_SOURCE_MAX_BYTES,
     LANGUAGE_SERVICE_POOL_SIZE,
+    LanguageServiceBusyError,
     LanguageServiceError,
     LanguageServiceProtocolError,
     LanguageServiceTimeoutError,
     LanguageServiceUnavailableError,
     SemanticLanguageServerService,
     SemanticLanguageServicePool,
+)
+from oj_modules.repository.language import (
+    RepositorySemanticFile,
+    RepositorySemanticSnapshot,
+    RepositorySemanticTarget,
 )
 
 
@@ -26,6 +40,10 @@ ClangdError = LanguageServiceError
 ClangdUnavailableError = LanguageServiceUnavailableError
 ClangdTimeoutError = LanguageServiceTimeoutError
 ClangdProtocolError = LanguageServiceProtocolError
+
+_AUTO_EDITOR_TOOLCHAIN = object()
+REPOSITORY_LANGUAGE_SERVICE_POOL_SIZE = 4
+REPOSITORY_SEMANTIC_MAX_TOKENS = 500_000
 
 
 def _parse_compiler_include_search(stderr: str) -> tuple[Path, ...]:
@@ -134,20 +152,52 @@ class ClangdService(SemanticLanguageServerService):
         workspace_key: str | None = None,
         clock=None,
         cpp_standard_library_paths: tuple[Path, ...] | None = None,
+        editor_toolchain: EditorToolchain | None | object = _AUTO_EDITOR_TOOLCHAIN,
     ) -> None:
         if language not in {"c", "cpp"}:
             raise ValueError(f"clangd 不支持该语言: {language}")
         kwargs = {}
         if clock is not None:
             kwargs["clock"] = clock
-        if language == "cpp":
+
+        if editor_toolchain is _AUTO_EDITOR_TOOLCHAIN:
+            # An explicit standard-library fixture keeps unit tests and callers
+            # deterministic; normal services always prefer the judge export.
+            if cpp_standard_library_paths is not None:
+                selected_toolchain = None
+            else:
+                try:
+                    selected_toolchain = load_editor_toolchain()
+                except EditorToolchainError as exc:
+                    raise LanguageServiceUnavailableError(
+                        "clangd",
+                        f"判题器官方头文件工具链不可用：{exc}",
+                    ) from exc
+        elif editor_toolchain is None or isinstance(
+            editor_toolchain, EditorToolchain
+        ):
+            selected_toolchain = editor_toolchain
+        else:
+            raise TypeError("editor_toolchain 类型无效")
+
+        if selected_toolchain is not None:
+            compiler_include_paths = selected_toolchain.include_paths_for(
+                language
+            )
+            sandbox_read_paths = (selected_toolchain.root,)
+        elif language == "cpp":
             standard_library_paths = (
                 _host_cpp_standard_library_paths()
                 if cpp_standard_library_paths is None
                 else cpp_standard_library_paths
             )
+            compiler_include_paths = standard_library_paths
+            sandbox_read_paths = standard_library_paths
         else:
-            standard_library_paths = ()
+            compiler_include_paths = ()
+            sandbox_read_paths = ()
+        self.editor_toolchain = selected_toolchain
+        self.compiler_include_paths = compiler_include_paths
         super().__init__(
             service_name="clangd",
             language_id=language,
@@ -159,7 +209,7 @@ class ClangdService(SemanticLanguageServerService):
                 "--header-insertion=never",
                 "--log=error",
             ),
-            sandbox_read_paths=standard_library_paths,
+            sandbox_read_paths=sandbox_read_paths,
             request_timeout=request_timeout,
             workspace_key=workspace_key,
             **kwargs,
@@ -170,18 +220,270 @@ class ClangdService(SemanticLanguageServerService):
             fallback_flags = ["-xc", "-std=c11"]
         else:
             fallback_flags = ["-xc++", "-std=c++20", "-nostdinc++"]
-            for path in self.sandbox_read_paths:
-                fallback_flags.extend(("-isystem", str(path)))
+        if self.editor_toolchain is not None:
+            # Prevent host /usr headers from turning deployment verification
+            # into a false positive.  Every system root below came from the
+            # candidate judge compiler's own search list.
+            fallback_flags.insert(2, "-nostdinc")
+        for path in self.compiler_include_paths:
+            fallback_flags.extend(("-isystem", str(path)))
         return {
             "fallbackFlags": fallback_flags,
             "clangdFileStatus": False,
         }
 
 
-def verify_clangd_runtime() -> None:
-    """Exercise STL semantics and prove host files stay outside clangd."""
+class RepositoryClangdService(ClangdService):
+    """Parse one repository generation at a time in a private copied mirror."""
+
+    def __init__(self, language: str, **kwargs) -> None:
+        super().__init__(language, **kwargs)
+        self._active_repository: tuple[int, str, int] | None = None
+        self.command_args = (
+            *self.command_args,
+            "--enable-config=false",
+            f"--compile-commands-dir={self._workspace() / 'controlled-build'}",
+        )
+
+    def _repository_root(self) -> Path:
+        return self._workspace() / "repository"
+
+    def _initialization_options(self):
+        options = super()._initialization_options()
+        options["fallbackFlags"] = [
+            *options["fallbackFlags"],
+            "-I",
+            str(self._repository_root()),
+        ]
+        return options
+
+    def _scrub_workspace_locked(self) -> None:
+        workspace_root = language_server_services_workspace_root()
+        workspace_key = Path(self.workspace_key)
+        if (
+            workspace_key.name != self.workspace_key
+            or self.workspace_key in {"", ".", ".."}
+        ):
+            raise LanguageServiceProtocolError(
+                self.service_name,
+                "仓库语言服务工作区路径非法",
+            )
+        workspace = workspace_root / self.workspace_key
+        if workspace.is_symlink():
+            raise LanguageServiceProtocolError(
+                self.service_name,
+                "仓库语言服务工作区不能是符号链接",
+            )
+        if workspace.exists():
+            if not stat.S_ISDIR(workspace.lstat().st_mode):
+                raise LanguageServiceProtocolError(
+                    self.service_name,
+                    "仓库语言服务工作区类型非法",
+                )
+            shutil.rmtree(workspace)
+
+    def _materialize_snapshot_locked(
+        self,
+        snapshot: RepositorySemanticSnapshot,
+    ) -> None:
+        workspace = self._workspace()
+        workspace.mkdir(mode=0o700, parents=True, exist_ok=False)
+        controlled_build = workspace / "controlled-build"
+        controlled_build.mkdir(mode=0o700)
+        candidate = workspace / "repository-next"
+        candidate.mkdir(mode=0o700)
+        try:
+            for relative_path in sorted(
+                snapshot.directories,
+                key=lambda value: (value.count("/"), value),
+            ):
+                destination = candidate.joinpath(*relative_path.split("/"))
+                destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+            written = 0
+            for item in snapshot.files:
+                destination = candidate.joinpath(
+                    *item.relative_path.split("/")
+                )
+                destination.parent.mkdir(
+                    mode=0o700,
+                    parents=True,
+                    exist_ok=True,
+                )
+                with destination.open("xb") as stream:
+                    stream.write(item.content)
+                destination.chmod(0o600)
+                written += len(item.content)
+            if written != snapshot.total_size:
+                raise LanguageServiceProtocolError(
+                    self.service_name,
+                    "仓库语言服务快照大小不一致",
+                )
+            candidate.rename(self._repository_root())
+        except BaseException:
+            if candidate.exists():
+                shutil.rmtree(candidate)
+            raise
+
+    def _activate_repository_locked(
+        self,
+        target: RepositorySemanticTarget,
+        snapshot_loader,
+    ) -> None:
+        repository_key = (
+            target.owner_id,
+            target.storage_key,
+            target.generation,
+        )
+        if self._active_repository == repository_key:
+            return
+        self._reset_locked()
+        self._active_repository = None
+        self._scrub_workspace_locked()
+        snapshot = snapshot_loader()
+        if snapshot.target != target:
+            raise LanguageServiceProtocolError(
+                self.service_name,
+                "仓库语言服务快照身份不一致",
+            )
+        try:
+            self._materialize_snapshot_locked(snapshot)
+        except BaseException:
+            self._scrub_workspace_locked()
+            raise
+        self._active_repository = repository_key
+
+    def semantic_tokens(
+        self,
+        target: RepositorySemanticTarget,
+        source: str,
+        snapshot_loader,
+    ) -> dict:
+        if target.language != self.language:
+            raise ValueError("仓库文件语言与 clangd 服务不匹配")
+        if len(source.encode("utf-8")) > LANGUAGE_SOURCE_MAX_BYTES:
+            raise ValueError("代码超过实时解析大小限制")
+        if not self._semantic_request_gate.acquire(blocking=False):
+            raise LanguageServiceBusyError(
+                self.service_name,
+                f"{self.service_name} 正在处理其他实时解析请求",
+            )
+        try:
+            with self._session_lock:
+                self._activate_repository_locked(target, snapshot_loader)
+                document_path = self._repository_root().joinpath(
+                    *target.relative_path.split("/")
+                )
+                try:
+                    info = document_path.lstat()
+                except FileNotFoundError as exc:
+                    raise LanguageServiceProtocolError(
+                        self.service_name,
+                        "仓库语言服务目标文件不在快照中",
+                    ) from exc
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                    raise LanguageServiceProtocolError(
+                        self.service_name,
+                        "仓库语言服务目标文件类型非法",
+                    )
+                result = self._semantic_tokens_serial(
+                    f"{target.owner_id}:{target.entry_id}:{self.language}",
+                    source,
+                    document_path=document_path,
+                )
+                if (
+                    len(result["data"])
+                    > REPOSITORY_SEMANTIC_MAX_TOKENS * 5
+                ):
+                    self._reset_locked()
+                    raise LanguageServiceProtocolError(
+                        self.service_name,
+                        "仓库 semantic token 数量超过安全上限",
+                    )
+                result["result_id"] = (
+                    f"repository:{target.generation}:{result['result_id']}"
+                )
+                return result
+        finally:
+            self._semantic_request_gate.release()
+
+    def close(self) -> None:
+        with self._session_lock:
+            self._reset_locked()
+            self._active_repository = None
+            self._scrub_workspace_locked()
+
+
+def language_server_services_workspace_root() -> Path:
+    """Late import keeps the private global workspace behind one testable seam."""
+
+    from oj_modules import language_server_services
+
+    return language_server_services._WORKSPACE_ROOT.resolve()
+
+
+class RepositoryClangdServicePool:
+    """Distribute tenant-isolated repository mirrors across clangd slots."""
+
+    def __init__(
+        self,
+        language: str,
+        *,
+        size=REPOSITORY_LANGUAGE_SERVICE_POOL_SIZE,
+    ) -> None:
+        self.language = language
+        self.size = size
+        self._services = tuple(
+            RepositoryClangdService(
+                language,
+                workspace_key=f"repository-clangd-{language}-{slot}",
+            )
+            for slot in range(size)
+        )
+        self._available: queue.LifoQueue = queue.LifoQueue(maxsize=size)
+        for service in self._services:
+            self._available.put_nowait(service)
+        self._owners_lock = threading.Lock()
+        self._active_owners: set[int] = set()
+
+    def semantic_tokens(self, target, source, snapshot_loader):
+        with self._owners_lock:
+            if target.owner_id in self._active_owners:
+                raise LanguageServiceBusyError(
+                    "clangd",
+                    "同一用户已有一个仓库实时解析请求正在处理",
+                )
+            self._active_owners.add(target.owner_id)
+        try:
+            try:
+                service = self._available.get_nowait()
+            except queue.Empty as exc:
+                raise LanguageServiceBusyError(
+                    "clangd",
+                    f"clangd 的 {self.size} 个仓库解析槽均在使用中",
+                ) from exc
+            try:
+                return service.semantic_tokens(
+                    target,
+                    source,
+                    snapshot_loader,
+                )
+            finally:
+                self._available.put_nowait(service)
+        finally:
+            with self._owners_lock:
+                self._active_owners.discard(target.owner_id)
+
+    def close(self) -> None:
+        for service in self._services:
+            service.close()
+
+
+def verify_clangd_runtime(*, require_official_toolchain: bool = False) -> None:
+    """Exercise official headers and prove host files stay outside clangd."""
     service = ClangdService("cpp")
     try:
+        if require_official_toolchain and service.editor_toolchain is None:
+            raise RuntimeError("clangd 未加载候选判题镜像的官方头文件工具链")
         legend = service.legend()
         probe_source = (
             "#include <bits/stdc++.h>\n"
@@ -220,6 +522,157 @@ def verify_clangd_runtime() -> None:
                 "clangd 标准库语义令牌自检失败: " + ", ".join(missing)
             )
 
+        if service.editor_toolchain is not None:
+            official_probes = (
+                (
+                    "eigen",
+                    "#include <Eigen/Eigen>\n"
+                    "#include <Eigen/SparseLU>\n"
+                    "Eigen::SparseMatrix<double> official_matrix;\n"
+                    "Eigen::SparseLU<Eigen::SparseMatrix<double>> "
+                    "official_solver;\n",
+                    {
+                        "SparseMatrix": {"class"},
+                        "SparseLU": {"class"},
+                    },
+                ),
+                (
+                    "cblas",
+                    "#include <cblas.h>\n"
+                    "auto *official_cblas = &cblas_dgemm;\n",
+                    {"cblas_dgemm": {"function"}},
+                ),
+                (
+                    "lapacke",
+                    "#include <lapacke.h>\n"
+                    "auto *official_lapacke = &LAPACKE_dgesv;\n",
+                    {"LAPACKE_dgesv": {"function"}},
+                ),
+                (
+                    "mkl",
+                    "#include <mkl.h>\n"
+                    "MKL_INT official_mkl_size = 0;\n",
+                    {"MKL_INT": {"type"}},
+                ),
+            )
+            official_missing: list[str] = []
+            for probe_name, probe_source, expected_tokens in official_probes:
+                probe_data = service.semantic_tokens(
+                    f"runtime-official-library-{probe_name}",
+                    probe_source,
+                )["data"]
+                probe_observed = _semantic_token_types_by_spelling(
+                    probe_source,
+                    legend,
+                    probe_data,
+                )
+                official_missing.extend(
+                    spelling
+                    for spelling, token_types in expected_tokens.items()
+                    if probe_observed.get(spelling, set()).isdisjoint(
+                        token_types
+                    )
+                )
+            if official_missing:
+                raise RuntimeError(
+                    "clangd 判题器官方库语义令牌自检失败: "
+                    + ", ".join(official_missing)
+                )
+
+            repository_source = (
+                '#include "A/OfficialDependency.h"\n'
+                "RelativeDependency repository_value;\n"
+            )
+            repository_header = (
+                "#pragma once\n"
+                "#include <Eigen/Eigen>\n"
+                "#include <Eigen/SparseLU>\n"
+                "#ifdef NUMOJ_UNTRUSTED_CONFIG\n"
+                "int RelativeDependency;\n"
+                "#else\n"
+                "class RelativeDependency {\n"
+                "  Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;\n"
+                "};\n"
+                "#endif\n"
+            )
+            repository_target = RepositorySemanticTarget(
+                owner_id=1,
+                storage_key="0" * 32,
+                generation=1,
+                entry_id=1,
+                relative_path="NA/main.cpp",
+                language="cpp",
+            )
+            repository_snapshot = RepositorySemanticSnapshot(
+                target=repository_target,
+                directories=("A", "NA"),
+                files=(
+                    RepositorySemanticFile(
+                        ".clangd",
+                        (
+                            b"CompileFlags:\n"
+                            b"  Add: [-DNUMOJ_UNTRUSTED_CONFIG]\n"
+                        ),
+                    ),
+                    RepositorySemanticFile(
+                        "compile_commands.json",
+                        (
+                            b'[{"directory":".","file":"NA/main.cpp",'
+                            b'"command":"clang++ '
+                            b'-DNUMOJ_UNTRUSTED_CONFIG '
+                            b'-xc NA/main.cpp"}]'
+                        ),
+                    ),
+                    RepositorySemanticFile(
+                        "A/OfficialDependency.h",
+                        repository_header.encode("utf-8"),
+                    ),
+                    RepositorySemanticFile(
+                        "NA/main.cpp",
+                        repository_source.encode("utf-8"),
+                    ),
+                ),
+                total_size=(
+                    len(repository_header.encode("utf-8"))
+                    + len(repository_source.encode("utf-8"))
+                    + len(
+                        b"CompileFlags:\n"
+                        b"  Add: [-DNUMOJ_UNTRUSTED_CONFIG]\n"
+                    )
+                    + len(
+                        b'[{"directory":".","file":"NA/main.cpp",'
+                        b'"command":"clang++ '
+                        b'-DNUMOJ_UNTRUSTED_CONFIG '
+                        b'-xc NA/main.cpp"}]'
+                    )
+                ),
+            )
+            repository_service = RepositoryClangdService(
+                "cpp",
+                workspace_key="repository-clangd-runtime-self-check",
+                editor_toolchain=service.editor_toolchain,
+            )
+            try:
+                repository_data = repository_service.semantic_tokens(
+                    repository_target,
+                    repository_source,
+                    lambda: repository_snapshot,
+                )["data"]
+                repository_observed = _semantic_token_types_by_spelling(
+                    repository_source,
+                    legend,
+                    repository_data,
+                )
+                if "class" not in repository_observed.get(
+                    "RelativeDependency",
+                    set(),
+                ):
+                    raise RuntimeError(
+                        "clangd 仓库目录、官方库或配置隔离自检失败"
+                    )
+            finally:
+                repository_service.close()
+
         host_probe_source = (
             '#if __has_include("/etc/passwd")\n'
             "class HostFileVisible {};\n"
@@ -245,6 +698,7 @@ def verify_clangd_runtime() -> None:
 
 _services_lock = threading.Lock()
 _services: dict[str, SemanticLanguageServicePool] = {}
+_repository_services: dict[str, RepositoryClangdServicePool] = {}
 
 
 def get_clangd_service(language: str) -> SemanticLanguageServicePool:
@@ -266,10 +720,28 @@ def get_clangd_service(language: str) -> SemanticLanguageServicePool:
         return service
 
 
+def get_repository_clangd_service(
+    language: str,
+) -> RepositoryClangdServicePool:
+    normalized = "cpp" if language == "cpp" else "c" if language == "c" else ""
+    if not normalized:
+        raise ValueError("仅 C/C++ 支持仓库 clangd 语义解析")
+    with _services_lock:
+        service = _repository_services.get(normalized)
+        if service is None:
+            service = RepositoryClangdServicePool(normalized)
+            _repository_services[normalized] = service
+        return service
+
+
 def close_clangd_services() -> None:
     with _services_lock:
-        services = list(_services.values())
+        services = [
+            *_services.values(),
+            *_repository_services.values(),
+        ]
         _services.clear()
+        _repository_services.clear()
     for service in services:
         service.close()
 

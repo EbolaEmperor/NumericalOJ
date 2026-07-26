@@ -22,7 +22,7 @@ from oj_modules.python_language_services import (  # noqa: E402
 
 def main() -> int:
     try:
-        verify_clangd_runtime()
+        verify_clangd_runtime(require_official_toolchain=True)
         basedpyright_version = verify_python_language_runtime()
         verify_octave_language_runtime()
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:

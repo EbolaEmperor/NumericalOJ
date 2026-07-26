@@ -10,6 +10,7 @@
   };
   var RETRYABLE_BUSY_CODES = {
     legend_pending: true,
+    repository_changed: true,
     result_pending: true,
     service_busy: true,
   };
@@ -150,6 +151,7 @@
     var problemId = Number(settings.problemId);
     var context = String(settings.context || "");
     var documentId = String(settings.documentId || "");
+    var repositoryEntryId = Number(settings.repositoryEntryId);
     var source = settings.source;
     if (
       SUPPORTED_LANGUAGES.indexOf(language) === -1 ||
@@ -163,8 +165,15 @@
     };
     if (context === "markdown" && language === "cpp") {
       body.context = context;
-    } else if (EDITOR_CONTEXTS[context] && documentId) {
-      body.context = context;
+    } else if (
+      context === "repository" &&
+      Number.isInteger(repositoryEntryId) &&
+      repositoryEntryId > 0
+    ) {
+      body.context = "repository";
+      body.repository_entry_id = repositoryEntryId;
+    } else if (context === "problem-form" && documentId) {
+      body.context = "problem-form";
       body.document_id = documentId;
     } else if (Number.isInteger(problemId) && problemId > 0 && !context) {
       body.problem_id = problemId;
@@ -187,7 +196,7 @@
         mathCurveLoader: false,
       },
       {
-        retryBusy: context === "markdown",
+        retryBusy: true,
         signal: settings.signal,
       },
     );
@@ -212,6 +221,15 @@
     var hasGenericDocumentId =
       typeof settings.documentId === "function" ||
       !!String(settings.documentId || "");
+    var hasRepositoryEntryId =
+      typeof settings.repositoryEntryId === "function" ||
+      (
+        Number.isInteger(Number(settings.repositoryEntryId)) &&
+        Number(settings.repositoryEntryId) > 0
+      );
+    var hasContextIdentity = context === "repository"
+      ? hasRepositoryEntryId
+      : hasGenericDocumentId;
 
     if (
       !monaco ||
@@ -219,7 +237,7 @@
       SUPPORTED_LANGUAGES.indexOf(language) === -1 ||
       !(
         (Number.isInteger(problemId) && problemId > 0 && !context) ||
-        (genericEditor && hasGenericDocumentId)
+        (genericEditor && hasContextIdentity)
       )
     ) {
       return null;
@@ -253,10 +271,15 @@
               typeof settings.documentId === "function"
                 ? settings.documentId(model)
                 : settings.documentId;
+            var configuredRepositoryEntryId =
+              typeof settings.repositoryEntryId === "function"
+                ? settings.repositoryEntryId(model)
+                : settings.repositoryEntryId;
             var payload = await requestTokens({
               problemId: problemId,
               context: context,
               documentId: configuredDocumentId,
+              repositoryEntryId: configuredRepositoryEntryId,
               language: language,
               source: model.getValue(),
               signal: controller.signal,

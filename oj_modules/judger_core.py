@@ -67,6 +67,7 @@ OUTPUT_TEXT_MAX_BYTES = 1024 * 1024
 # -Wl,--no-as-needed 确保即使目标文件未直接引用也保留这些库；-ldl/-lpthread/-lm 兜底。
 MKL_INCLUDE_DIR = "/opt/mkl/include"
 MKL_LIB_DIR = "/opt/mkl/lib"
+EIGEN_INCLUDE_DIR = "/usr/include/eigen3"
 MKL_COMPILE_FLAGS = ["-I", MKL_INCLUDE_DIR]
 MKL_LINK_FLAGS = [
     "-L", MKL_LIB_DIR,
@@ -234,6 +235,11 @@ def build_compile_cmd(
         cmd = _timeout_cmd(compile_timeout_sec, "gcc", "-O2", "-pipe", "-s", "-std=c11")
         src = source_path or "main.c"
     cmd.extend(["-I", REPOSITORY_CONTAINER_ROOT, "-I", "/opt/library"])
+    if language == "cpp":
+        # libeigen3-dev installs headers below /usr/include/eigen3.  Make the
+        # documented ``#include <Eigen/...>`` form part of the real judge
+        # contract, matching the managed clangd toolchain.
+        cmd.extend(["-I", EIGEN_INCLUDE_DIR])
     backend = _numeric_backend()
     if backend == "mkl":
         cmd.extend(_mkl_compile_flags())

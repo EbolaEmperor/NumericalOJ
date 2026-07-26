@@ -4,6 +4,8 @@ from flask import Flask
 
 from oj_modules import auth_helpers
 from oj_modules.language_server_services import LanguageServiceBusyError
+from oj_modules.repository import tree as repository_tree
+from oj_modules.repository.language import RepositorySemanticTarget
 from oj_modules.routes import editor_language_routes
 
 
@@ -39,6 +41,45 @@ def _app(monkeypatch, service):
         editor_language_routes,
         "get_editor_language_service",
         lambda language: service,
+    )
+    monkeypatch.setattr(
+        editor_language_routes,
+        "get_repository_semantic_target",
+        lambda owner_id, entry_id, language: RepositorySemanticTarget(
+            owner_id=owner_id,
+            storage_key="a" * 32,
+            generation=5,
+            entry_id=entry_id,
+            relative_path=f"entry-{entry_id}.{'c' if language == 'c' else 'cpp'}",
+            language=language,
+        ),
+    )
+    monkeypatch.setattr(
+        editor_language_routes,
+        "ensure_repository_semantic_target_current",
+        lambda target: None,
+    )
+
+    class FakeRepositoryService:
+        def semantic_tokens(self, target, source, snapshot_loader):
+            service.calls.append(
+                (
+                    (
+                        f"{target.owner_id}:editor:repository:"
+                        f"{target.entry_id}:{target.language}"
+                    ),
+                    source,
+                )
+            )
+            return {
+                "data": [0, 0, 6, 1, 1],
+                "result_id": f"repository:{target.generation}:1:abc",
+            }
+
+    monkeypatch.setattr(
+        editor_language_routes,
+        "get_repository_clangd_service",
+        lambda language: FakeRepositoryService(),
     )
     monkeypatch.setattr(editor_language_routes, "_rds", None)
     monkeypatch.setattr(
@@ -99,7 +140,9 @@ def test_editor_semantic_tokens_validate_payload_before_calling_clangd(monkeypat
     assert service.calls == []
 
 
-def test_generic_editor_contexts_use_stable_isolated_document_keys(monkeypatch):
+def test_editor_contexts_use_owned_repository_ids_and_isolated_document_keys(
+    monkeypatch,
+):
     service = _FakeService()
     app = _app(monkeypatch, service)
     alice = app.test_client()
@@ -114,7 +157,7 @@ def test_generic_editor_contexts_use_stable_isolated_document_keys(monkeypatch):
             alice,
             {
                 "context": "repository",
-                "document_id": "entry-42",
+                "repository_entry_id": 42,
                 "language": "cpp",
                 "source": "int repository_value;",
             },
@@ -132,7 +175,7 @@ def test_generic_editor_contexts_use_stable_isolated_document_keys(monkeypatch):
             bob,
             {
                 "context": "repository",
-                "document_id": "entry-42",
+                "repository_entry_id": 42,
                 "language": "cpp",
                 "source": "int another_value;",
             },
@@ -145,7 +188,7 @@ def test_generic_editor_contexts_use_stable_isolated_document_keys(monkeypatch):
 
     assert service.calls == [
         (
-            "7:editor:repository:entry-42:cpp",
+            "7:editor:repository:42:cpp",
             "int repository_value;",
         ),
         (
@@ -153,7 +196,7 @@ def test_generic_editor_contexts_use_stable_isolated_document_keys(monkeypatch):
             "form_value = 1",
         ),
         (
-            "8:editor:repository:entry-42:cpp",
+            "8:editor:repository:42:cpp",
             "int another_value;",
         ),
     ]
@@ -173,25 +216,25 @@ def test_generic_editor_contexts_reject_unsafe_document_identity(monkeypatch):
         },
         {
             "context": "repository",
-            "document_id": "",
+            "repository_entry_id": "",
             "language": "cpp",
             "source": "int value;",
         },
         {
             "context": "repository",
-            "document_id": "../another-key",
+            "repository_entry_id": 0,
             "language": "cpp",
             "source": "int value;",
         },
         {
             "context": "repository",
-            "document_id": "folder/file.cpp",
+            "repository_entry_id": True,
             "language": "cpp",
             "source": "int value;",
         },
         {
             "context": "repository",
-            "document_id": "代码",
+            "document_id": "entry-42",
             "language": "cpp",
             "source": "int value;",
         },
@@ -209,20 +252,20 @@ def test_generic_editor_contexts_reject_unsafe_document_identity(monkeypatch):
         },
         {
             "context": "repository",
-            "document_id": "entry-42",
+            "repository_entry_id": 42,
             "problem_id": 31,
             "language": "cpp",
             "source": "int value;",
         },
         {
-            "document_id": "entry-42",
+            "repository_entry_id": 42,
             "problem_id": 31,
             "language": "cpp",
             "source": "int value;",
         },
         {
             "context": "markdown",
-            "document_id": "entry-42",
+            "repository_entry_id": 42,
             "language": "cpp",
             "source": "int value;",
         },
@@ -232,6 +275,40 @@ def test_generic_editor_contexts_reject_unsafe_document_identity(monkeypatch):
         response = client.post("/api/editor/semantic-tokens", json=payload)
         assert response.status_code == 400
 
+    assert service.calls == []
+
+
+def test_repository_semantic_tokens_reject_missing_owned_entry(
+    monkeypatch,
+):
+    service = _FakeService()
+    client = _app(monkeypatch, service).test_client()
+    with client.session_transaction() as user_session:
+        user_session["username"] = "alice"
+    monkeypatch.setattr(
+        editor_language_routes,
+        "get_repository_semantic_target",
+        lambda *_args: (_ for _ in ()).throw(
+            repository_tree.RepositoryDomainError(
+                "仓库文件不存在",
+                code="not_found",
+                status=404,
+            )
+        ),
+    )
+
+    response = client.post(
+        "/api/editor/semantic-tokens",
+        json={
+            "context": "repository",
+            "repository_entry_id": 42,
+            "language": "cpp",
+            "source": "int value;",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["code"] == "not_found"
     assert service.calls == []
 
 

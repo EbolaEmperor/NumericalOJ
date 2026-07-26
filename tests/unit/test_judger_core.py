@@ -614,6 +614,7 @@ def test_build_compile_cmd_defaults_to_mkl(monkeypatch):
 
     assert "-m64" in cmd
     assert "-I" in cmd
+    assert judger_core.EIGEN_INCLUDE_DIR in cmd
     assert judger_core.MKL_INCLUDE_DIR in cmd
     assert "-lmkl_core" in cmd
     assert "-lopenblas" not in cmd
@@ -653,6 +654,7 @@ def test_build_compile_cmd_uses_openblas_for_lite_image(monkeypatch):
 
     cmd = judger_core.build_compile_cmd("c")
 
+    assert judger_core.EIGEN_INCLUDE_DIR not in cmd
     assert judger_core.MKL_INCLUDE_DIR not in cmd
     assert "-lmkl_core" not in cmd
     assert "-lopenblas" in cmd

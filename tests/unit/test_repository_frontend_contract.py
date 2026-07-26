@@ -110,12 +110,12 @@ def test_repository_uses_the_shared_monaco_dark_plus_semantic_stack():
     assert "await runtime.prepareMonaco(monaco)" in source
     assert "runtime.monacoOptions({" in source
     assert "context: 'repository'" in source
-    assert "documentId: function (model)" in source
+    assert "repositoryEntryId: function (model)" in source
     assert "'inmemory://repository/' + safeDocumentId" in source
     assert "previousModel.dispose()" in source
     assert "state.current ? 'entry-' + state.current.id" in source
     assert "semanticHighlighting.enabled" in runtime
-    assert 'theme = "dark-plus"' in runtime
+    assert 'monaco.editor.setTheme("dark-plus")' in runtime
     assert 'h: "cpp"' in runtime
 
 
