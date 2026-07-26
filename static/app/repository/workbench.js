@@ -142,6 +142,7 @@
       phase: 'idle',
       progressBytes: 0,
       totalBytes: 0,
+      errorMessage: '',
     },
     indexJobId: null,
     indexTimer: null,
@@ -1654,6 +1655,7 @@
     state.upload.progressBytes = 0;
     state.upload.totalBytes = 0;
     state.upload.previewing = false;
+    state.upload.errorMessage = '';
     state.upload.items.forEach(function (item) {
       item.serverStatus = item.error ? 'invalid' : 'pending';
       item.serverMessage = '';
@@ -1708,11 +1710,13 @@
     var sequence = ++state.upload.previewSequence;
     if (!settings.append) state.upload.items = [];
     resetUploadPreview({ cancel: true });
-    elements.uploadSummary.textContent = '正在读取上传清单…';
-    elements.uploadConfirm.disabled = true;
-    return Promise.all(
-      expandUploadDirectories(descriptors).map(inspectUploadDescriptor)
-    ).then(function (inspected) {
+    state.upload.phase = 'reading';
+    renderUploadQueue();
+    return Promise.resolve().then(function () {
+      return Promise.all(
+        expandUploadDirectories(descriptors).map(inspectUploadDescriptor)
+      );
+    }).then(function (inspected) {
       if (sequence !== state.upload.previewSequence) return false;
       var merged = new Map();
       state.upload.items.forEach(function (item) { merged.set(item.key, item); });
@@ -1728,6 +1732,24 @@
       ) {
         return previewUploads();
       }
+      return false;
+    }).catch(function (error) {
+      if (sequence !== state.upload.previewSequence) return false;
+      state.upload.phase = 'error';
+      state.upload.previewing = false;
+      state.upload.errorMessage =
+        '读取上传清单失败：' + (error.message || '未知错误');
+      try {
+        renderUploadQueue();
+      } catch (_renderError) {
+        elements.uploadSummary.textContent = state.upload.errorMessage;
+        elements.uploadConfirm.disabled = true;
+      }
+      showToast(
+        '无法读取上传清单',
+        error.message || '请清空列表后重新选择文件。',
+        'error'
+      );
       return false;
     });
   }
@@ -1837,15 +1859,21 @@
   }
 
   function digestSha256(blob) {
-    if (!window.crypto || !window.crypto.subtle) {
-      return Promise.reject(new Error('当前浏览器不支持上传所需的 SHA-256 校验'));
-    }
     return blob.arrayBuffer().then(function (buffer) {
-      return window.crypto.subtle.digest('SHA-256', buffer);
-    }).then(function (digest) {
-      return Array.from(new Uint8Array(digest)).map(function (value) {
-        return value.toString(16).padStart(2, '0');
-      }).join('');
+      if (window.crypto && window.crypto.subtle) {
+        return window.crypto.subtle.digest('SHA-256', buffer).then(function (digest) {
+          return Array.from(new Uint8Array(digest)).map(function (value) {
+            return value.toString(16).padStart(2, '0');
+          }).join('');
+        });
+      }
+      if (
+        window.NumOJRepositorySha256 &&
+        typeof window.NumOJRepositorySha256.digestHex === 'function'
+      ) {
+        return window.NumOJRepositorySha256.digestHex(buffer);
+      }
+      throw new Error('当前浏览器不支持上传所需的 SHA-256 校验');
     });
   }
 
@@ -2040,6 +2068,7 @@
     }
     var sequence = ++state.upload.previewSequence;
     state.upload.previewing = true;
+    state.upload.errorMessage = '';
     elements.uploadConfirm.disabled = true;
     var operation = state.upload.sessionId
       ? resumeUploadSession(sequence)
@@ -2059,9 +2088,9 @@
         });
       }
       state.upload.phase = 'error';
+      state.upload.errorMessage = error.message || '上传检查失败';
       markUploadOperationError(error);
       showToast('上传检查失败', error.message, 'error');
-      elements.uploadSummary.textContent = error.message;
       return false;
     }).finally(function () {
       if (sequence === state.upload.previewSequence) {
@@ -2238,7 +2267,7 @@
           (invalid ? ' is-invalid' : '') +
           (conflict ? ' is-conflict' : '') + '">' +
           '<span class="repository-upload-file-icon">' +
-            escapeHtml(item.kind === 'directory' ? 'DIR' : fileTypeLabel(item.relativePath)) +
+            escapeHtml(item.kind === 'directory' ? 'DIR' : extensionLabel(item.relativePath)) +
           '</span>' +
           '<span class="repository-upload-file-copy">' +
             '<strong title="' + escapeHtml(item.relativePath) + '">' +
@@ -2283,7 +2312,9 @@
       var excludedDirectory = uploadExcludedDirectoryFor(item);
       return excludedDirectory && excludedDirectory.key === item.key;
     }).length;
-    if (state.upload.phase === 'preparing') {
+    if (state.upload.phase === 'reading') {
+      elements.uploadSummary.textContent = '正在读取上传清单…';
+    } else if (state.upload.phase === 'preparing') {
       elements.uploadSummary.textContent = '正在计算 SHA-256 校验值…';
     } else if (state.upload.phase === 'uploading') {
       elements.uploadSummary.textContent =
@@ -2301,6 +2332,8 @@
           ? ' · ' + excludedDirectoryCount + ' 个冲突目录将连同后代排除'
           : '') +
         (conflictCount ? ' · ' + conflictCount + ' 个同名冲突' : '');
+    } else if (state.upload.phase === 'error' && state.upload.errorMessage) {
+      elements.uploadSummary.textContent = state.upload.errorMessage;
     } else {
       elements.uploadSummary.textContent = items.length
         ? validFileCount + ' 个文件待检查' +
@@ -2311,6 +2344,7 @@
     elements.uploadConfirm.disabled = !uploadCanCommit();
     var labels = {
       idle: '检查文件',
+      reading: '正在读取清单…',
       preparing: '正在计算校验值…',
       uploading: '正在分块上传…',
       finalizing: '正在检查…',
@@ -2357,6 +2391,7 @@
       var encodingSequence = state.upload.previewSequence;
       void finalizeUploads(encodings, encodingSequence).catch(function (error) {
         state.upload.phase = 'error';
+        state.upload.errorMessage = error.message || '编码确认失败';
         markUploadOperationError(error);
         showToast('编码确认失败', error.message, 'error');
         renderUploadQueue();

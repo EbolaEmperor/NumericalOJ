@@ -331,5 +331,6 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='app/repository/sha256.js') }}"></script>
 <script src="{{ url_for('static', filename='app/repository/workbench.js') }}"></script>
 {% endblock %}
