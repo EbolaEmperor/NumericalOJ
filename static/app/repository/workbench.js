@@ -1705,6 +1705,18 @@
     }));
   }
 
+  function isIgnoredDirectoryMetadataDescriptor(descriptor) {
+    if (!descriptor || descriptor.kind === 'directory') return false;
+    var file = descriptor.file || null;
+    var rawPath = normalizeNfc(
+      descriptor.relativePath ||
+        (file && (file.webkitRelativePath || file.name)) ||
+        ''
+    );
+    var parts = rawPath.split('/');
+    return parts.length > 1 && parts[parts.length - 1] === '.DS_Store';
+  }
+
   function addUploadDescriptors(descriptors, options) {
     var settings = options || {};
     var sequence = ++state.upload.previewSequence;
@@ -1714,7 +1726,11 @@
     renderUploadQueue();
     return Promise.resolve().then(function () {
       return Promise.all(
-        expandUploadDirectories(descriptors).map(inspectUploadDescriptor)
+        expandUploadDirectories(descriptors)
+          .filter(function (descriptor) {
+            return !isIgnoredDirectoryMetadataDescriptor(descriptor);
+          })
+          .map(inspectUploadDescriptor)
       );
     }).then(function (inspected) {
       if (sequence !== state.upload.previewSequence) return false;

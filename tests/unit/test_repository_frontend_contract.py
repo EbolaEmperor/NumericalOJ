@@ -30,6 +30,29 @@ def test_folder_drop_keeps_empty_directories_in_the_upload_manifest():
     assert "[descriptorFromDirectory(path)].concat(nested.flat())" in walker
 
 
+def test_directory_upload_silently_ignores_ds_store_metadata_files():
+    source = WORKBENCH_JS.read_text(encoding="utf-8")
+
+    helper_start = source.index(
+        "function isIgnoredDirectoryMetadataDescriptor"
+    )
+    add_start = source.index("function addUploadDescriptors", helper_start)
+    helper = source[helper_start:add_start]
+    server_map_start = source.index("function uploadServerEntryMap", add_start)
+    add_descriptors = source[add_start:server_map_start]
+
+    assert "descriptor.kind === 'directory'" in helper
+    assert "file.webkitRelativePath || file.name" in helper
+    assert "var parts = rawPath.split('/')" in helper
+    assert "parts.length > 1" in helper
+    assert "parts[parts.length - 1] === '.DS_Store'" in helper
+    assert "expandUploadDirectories(descriptors)" in add_descriptors
+    assert "!isIgnoredDirectoryMetadataDescriptor(descriptor)" in add_descriptors
+    assert add_descriptors.index(
+        "!isIgnoredDirectoryMetadataDescriptor(descriptor)"
+    ) < add_descriptors.index(".map(inspectUploadDescriptor)")
+
+
 def test_in_flight_save_never_marks_newer_editor_content_as_saved():
     source = WORKBENCH_JS.read_text(encoding="utf-8")
 
