@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import queue
@@ -10,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import threading
+from typing import Any
 
 from oj_modules.editor_toolchain import (
     EditorToolchain,
@@ -44,6 +46,8 @@ ClangdProtocolError = LanguageServiceProtocolError
 _AUTO_EDITOR_TOOLCHAIN = object()
 REPOSITORY_LANGUAGE_SERVICE_POOL_SIZE = 4
 REPOSITORY_SEMANTIC_MAX_TOKENS = 500_000
+CLANGD_INACTIVE_REGIONS_MAX_RANGES = 4_096
+CLANGD_INACTIVE_REGIONS_GRACE_SECONDS = 0.05
 _MKL_SEMANTIC_PROBE = (
     "#include <mkl.h>\n"
     "MKLVersion official_mkl_version{};\n"
@@ -57,6 +61,109 @@ _MKL_SEMANTIC_PROBE = (
         "MKL_Get_Version": {"function"},
     },
 )
+
+
+@dataclass
+class _InactiveDocumentCycle:
+    """One URI/version epoch eligible for clangd inactive-region updates."""
+
+    version: int
+    epoch: int
+    source: str
+    regions: tuple[tuple[int, int, int, int], ...] | None = None
+
+
+def _selected_utf16_line_lengths(
+    source: str,
+    requested_lines: set[int],
+) -> dict[int, int]:
+    """Measure only referenced LSP lines without a source-sized offset table."""
+    measured: dict[int, int] = {}
+    line = 0
+    width = 0
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if character in {"\r", "\n"}:
+            if line in requested_lines:
+                measured[line] = width
+            if (
+                character == "\r"
+                and index + 1 < len(source)
+                and source[index + 1] == "\n"
+            ):
+                index += 1
+            line += 1
+            width = 0
+        else:
+            width += 2 if ord(character) > 0xFFFF else 1
+        index += 1
+    if line in requested_lines:
+        measured[line] = width
+    return measured
+
+
+def _validated_inactive_regions(
+    raw_regions: Any,
+    source: str,
+) -> tuple[tuple[int, int, int, int], ...] | None:
+    """Validate clangd's extension atomically before exposing any range."""
+    if (
+        not isinstance(raw_regions, list)
+        or len(raw_regions) > CLANGD_INACTIVE_REGIONS_MAX_RANGES
+    ):
+        return None
+
+    def position(raw: Any) -> tuple[int, int] | None:
+        if not isinstance(raw, dict):
+            return None
+        line = raw.get("line")
+        character = raw.get("character")
+        if (
+            not isinstance(line, int)
+            or isinstance(line, bool)
+            or not isinstance(character, int)
+            or isinstance(character, bool)
+            or line < 0
+            or character < 0
+        ):
+            return None
+        return line, character
+
+    validated: list[tuple[int, int, int, int]] = []
+    requested_lines: set[int] = set()
+    for raw_range in raw_regions:
+        if not isinstance(raw_range, dict):
+            return None
+        start = position(raw_range.get("start"))
+        end = position(raw_range.get("end"))
+        if start is None or end is None or start > end:
+            return None
+        requested_lines.update((start[0], end[0]))
+        validated.append((*start, *end))
+    line_lengths = _selected_utf16_line_lengths(source, requested_lines)
+    if any(
+        start_line not in line_lengths
+        or end_line not in line_lengths
+        or start_character > line_lengths[start_line]
+        or end_character > line_lengths[end_line]
+        for start_line, start_character, end_line, end_character in validated
+    ):
+        return None
+    return tuple(validated)
+
+
+def _inactive_regions_payload(
+    regions: tuple[tuple[int, int, int, int], ...],
+) -> list[dict[str, dict[str, int]]]:
+    """Build fresh JSON objects so callers cannot mutate the cached ranges."""
+    return [
+        {
+            "start": {"line": start_line, "character": start_character},
+            "end": {"line": end_line, "character": end_character},
+        }
+        for start_line, start_character, end_line, end_character in regions
+    ]
 
 
 def _parse_compiler_include_search(stderr: str) -> tuple[Path, ...]:
@@ -169,6 +276,10 @@ class ClangdService(SemanticLanguageServerService):
     ) -> None:
         if language not in {"c", "cpp"}:
             raise ValueError(f"clangd 不支持该语言: {language}")
+        self._inactive_regions_condition = threading.Condition()
+        self._inactive_document_cycles: dict[str, _InactiveDocumentCycle] = {}
+        self._inactive_regions_epoch = 0
+        self._inactive_regions_provider = False
         kwargs = {}
         if clock is not None:
             kwargs["clock"] = clock
@@ -227,6 +338,145 @@ class ClangdService(SemanticLanguageServerService):
             workspace_key=workspace_key,
             **kwargs,
         )
+
+    def _text_document_capabilities(self):
+        capabilities = super()._text_document_capabilities()
+        capabilities["inactiveRegionsCapabilities"] = {
+            "inactiveRegions": True,
+        }
+        return capabilities
+
+    def _server_capabilities_received(self, capabilities):
+        provider = capabilities.get("inactiveRegionsProvider")
+        with self._inactive_regions_condition:
+            self._inactive_regions_provider = (
+                provider is True or isinstance(provider, dict)
+            )
+            self._inactive_regions_condition.notify_all()
+
+    def _document_cycle_started(self, state, source):
+        with self._inactive_regions_condition:
+            self._inactive_regions_epoch += 1
+            self._inactive_document_cycles[state.uri] = _InactiveDocumentCycle(
+                version=state.version,
+                epoch=self._inactive_regions_epoch,
+                source=source,
+            )
+            self._inactive_regions_condition.notify_all()
+
+    def _document_closed(self, state):
+        with self._inactive_regions_condition:
+            self._inactive_document_cycles.pop(state.uri, None)
+            self._inactive_regions_condition.notify_all()
+
+    def _reset_protocol_state(self):
+        with self._inactive_regions_condition:
+            self._inactive_regions_epoch += 1
+            self._inactive_document_cycles.clear()
+            self._inactive_regions_provider = False
+            self._inactive_regions_condition.notify_all()
+
+    def _handle_server_notification(self, message):
+        if message.get("method") != "textDocument/inactiveRegions":
+            return
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        document = params.get("textDocument")
+        notification_version = None
+        if "textDocument" in params:
+            if not isinstance(document, dict):
+                return
+            uri = document.get("uri")
+            if "version" in document:
+                notification_version = document.get("version")
+                if (
+                    not isinstance(notification_version, int)
+                    or isinstance(notification_version, bool)
+                    or notification_version < 0
+                ):
+                    return
+        else:
+            # Older extension documentation described a top-level URI. Keep
+            # accepting that wire shape, but bind it only to the current epoch.
+            uri = params.get("uri")
+        if not isinstance(uri, str) or not uri:
+            return
+        with self._inactive_regions_condition:
+            cycle = self._inactive_document_cycles.get(uri)
+            if (
+                cycle is None
+                or (
+                    notification_version is not None
+                    and notification_version != cycle.version
+                )
+            ):
+                return
+            expected_epoch = cycle.epoch
+            source = cycle.source
+        regions = _validated_inactive_regions(
+            params.get("regions"),
+            source,
+        )
+        if regions is None:
+            return
+        with self._inactive_regions_condition:
+            current = self._inactive_document_cycles.get(uri)
+            if (
+                current is None
+                or current.epoch != expected_epoch
+                or (
+                    notification_version is not None
+                    and notification_version != current.version
+                )
+            ):
+                return
+            current.regions = regions
+            self._inactive_regions_provider = True
+            self._inactive_regions_condition.notify_all()
+
+    def _document_response_metadata(self, state):
+        with self._inactive_regions_condition:
+            cycle = self._inactive_document_cycles.get(state.uri)
+            if cycle is None or cycle.version != state.version:
+                return {
+                    "inactive_regions": [],
+                    "inactive_regions_supported": False,
+                }
+            expected_epoch = cycle.epoch
+            if cycle.regions is None and self._inactive_regions_provider:
+                self._inactive_regions_condition.wait_for(
+                    lambda: (
+                        (
+                            current := self._inactive_document_cycles.get(
+                                state.uri
+                            )
+                        )
+                        is None
+                        or current.epoch != expected_epoch
+                        or current.regions is not None
+                    ),
+                    timeout=CLANGD_INACTIVE_REGIONS_GRACE_SECONDS,
+                )
+            current = self._inactive_document_cycles.get(state.uri)
+            if (
+                current is None
+                or current.epoch != expected_epoch
+                or current.version != state.version
+                or current.regions is None
+            ):
+                return {
+                    "inactive_regions": [],
+                    "inactive_regions_supported": False,
+                }
+            return {
+                "inactive_regions": _inactive_regions_payload(
+                    current.regions
+                ),
+                # A valid empty notification is still positive capability
+                # evidence, distinct from an older clangd that stays silent.
+                "inactive_regions_supported": True,
+            }
 
     def _initialization_options(self):
         if self.language == "c":
@@ -534,6 +784,37 @@ def verify_clangd_runtime(*, require_official_toolchain: bool = False) -> None:
             raise RuntimeError(
                 "clangd 标准库语义令牌自检失败: " + ", ".join(missing)
             )
+
+        inactive_probe = (
+            "#if 0\n"
+            "int disabled_runtime_probe = 1;\n"
+            "#endif\n"
+            "int active_runtime_probe = 1;\n"
+        )
+        inactive_result = service.semantic_tokens(
+            "runtime-inactive-region-probe",
+            inactive_probe,
+        )
+        inactive_regions = inactive_result.get("inactive_regions", [])
+        disabled_line_end = len("int disabled_runtime_probe = 1;")
+        inactive_line_covered = any(
+            (
+                region["start"]["line"],
+                region["start"]["character"],
+            )
+            <= (1, 0)
+            and (
+                region["end"]["line"],
+                region["end"]["character"],
+            )
+            >= (1, disabled_line_end)
+            for region in inactive_regions
+        )
+        if (
+            not inactive_result.get("inactive_regions_supported")
+            or not inactive_line_covered
+        ):
+            raise RuntimeError("clangd 无效条件编译区域通知自检失败")
 
         if service.editor_toolchain is not None:
             official_probes = (

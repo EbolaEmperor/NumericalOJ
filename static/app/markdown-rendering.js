@@ -13,6 +13,7 @@
   const CPP_SEMANTIC_MAX_INFLIGHT_PER_PAGE = 2;
   const CPP_SEMANTIC_MAX_SOURCE_BYTES = 512 * 1024;
   const CPP_SEMANTIC_MAX_TOKENS_PER_BLOCK = 12_000;
+  const CPP_INACTIVE_MAX_REGIONS_PER_BLOCK = 4_096;
   const CODE_COPY_RESET_DELAY_MS = 1_800;
   const BASH_LANGUAGE_CLASSES = new Set([
     "language-bash",
@@ -549,6 +550,63 @@
     });
   }
 
+  function sourceOffsetForPosition(source, offsets, position) {
+    const line = Number(position && position.line);
+    const character = Number(position && position.character);
+    if (
+      !Number.isInteger(line)
+      || !Number.isInteger(character)
+      || line < 0
+      || character < 0
+      || line >= offsets.length
+    ) return null;
+
+    const lineStart = offsets[line];
+    let lineEnd = source.length;
+    if (line + 1 < offsets.length) {
+      const newlineOffset = offsets[line + 1] - 1;
+      lineEnd = (
+        newlineOffset > lineStart
+        && source.charCodeAt(newlineOffset - 1) === 13
+      ) ? newlineOffset - 1 : newlineOffset;
+    }
+    if (character > lineEnd - lineStart) return null;
+    return lineStart + character;
+  }
+
+  function decodeInactiveRanges(source, regions) {
+    if (!Array.isArray(regions)) return [];
+    const offsets = lineStartOffsets(source);
+    const ranges = [];
+    regions.slice(0, CPP_INACTIVE_MAX_REGIONS_PER_BLOCK).forEach((region) => {
+      const start = sourceOffsetForPosition(
+        source,
+        offsets,
+        region && region.start,
+      );
+      const end = sourceOffsetForPosition(
+        source,
+        offsets,
+        region && region.end,
+      );
+      if (start === null || end === null || start >= end) return;
+      ranges.push({ start, end });
+    });
+    ranges.sort((left, right) => (
+      left.start - right.start || left.end - right.end
+    ));
+
+    return ranges.reduce((merged, range) => {
+      const previous = merged[merged.length - 1];
+      if (!previous || range.start > previous.end) {
+        merged.push({ start: range.start, end: range.end });
+      } else {
+        previous.end = Math.max(previous.end, range.end);
+      }
+      return merged;
+    }, []);
+  }
+
   function textNodeEntries(code) {
     const entries = [];
     const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
@@ -618,6 +676,51 @@
           if (modifierName) span.classList.add(`numoj-semantic-${modifierName}`);
         });
         span.dataset.semanticType = segment.range.type;
+        selected.replaceWith(span);
+        span.appendChild(selected);
+        applied += 1;
+      });
+    });
+    return applied;
+  }
+
+  function applyInactiveRanges(code, ranges) {
+    const entries = textNodeEntries(code);
+    let rangeIndex = 0;
+    let applied = 0;
+
+    entries.forEach((entry) => {
+      while (
+        rangeIndex < ranges.length
+        && ranges[rangeIndex].end <= entry.start
+      ) {
+        rangeIndex += 1;
+      }
+      const segments = [];
+      let scanIndex = rangeIndex;
+      while (
+        scanIndex < ranges.length
+        && ranges[scanIndex].start < entry.end
+      ) {
+        const range = ranges[scanIndex];
+        const start = Math.max(range.start, entry.start) - entry.start;
+        const end = Math.min(range.end, entry.end) - entry.start;
+        if (start < end) segments.push({ start, end });
+        scanIndex += 1;
+      }
+
+      segments.sort((left, right) => right.start - left.start);
+      segments.forEach((segment) => {
+        const length = segment.end - segment.start;
+        if (
+          segment.start < 0
+          || length <= 0
+          || segment.end > entry.node.length
+        ) return;
+        const selected = entry.node.splitText(segment.start);
+        selected.splitText(length);
+        const span = document.createElement("span");
+        span.className = "numoj-clangd-inactive-code";
         selected.replaceWith(span);
         span.appendChild(selected);
         applied += 1;
@@ -728,7 +831,14 @@
       )) return;
 
       const ranges = decodeSemanticRanges(source, legend, payload.data);
+      const inactiveRanges = decodeInactiveRanges(
+        source,
+        payload.inactive_regions,
+      );
       applySemanticRanges(code, ranges);
+      if (applyInactiveRanges(code, inactiveRanges) > 0) {
+        block.classList.add("has-inactive-regions");
+      }
       block.dataset.numojSemanticState = "rendered";
       block.classList.add("has-semantic-highlighting");
     } catch (error) {

@@ -299,6 +299,22 @@ def test_bash_uses_a_fine_grained_shiki_bundle_with_pygments_fallback():
     assert ".numoj-shiki-token.is-italic" in MARKDOWN_CSS
 
 
+def test_markdown_cpp_inactive_regions_keep_token_colors_and_only_dim():
+    assert "function decodeInactiveRanges(source, regions)" in MARKDOWN_JAVASCRIPT
+    assert "function applyInactiveRanges(code, ranges)" in MARKDOWN_JAVASCRIPT
+    assert "payload.inactive_regions" in MARKDOWN_JAVASCRIPT
+    assert 'span.className = "numoj-clangd-inactive-code";' in (
+        MARKDOWN_JAVASCRIPT
+    )
+
+    declaration = MARKDOWN_CSS.split(
+        ".numoj-markdown .codehilite .numoj-clangd-inactive-code {",
+        1,
+    )[1].split("}", 1)[0]
+    assert "opacity: 0.55;" in declaration
+    assert "color:" not in declaration
+
+
 def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
     for contract in (
         'securityLevel: "sandbox"',

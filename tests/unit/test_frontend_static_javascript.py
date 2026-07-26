@@ -1,5 +1,6 @@
 """无需浏览器状态的前端静态 JavaScript 契约。"""
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -441,6 +442,378 @@ require({str(asset)!r});
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_cpp_semantic_provider_tracks_inactive_regions_as_model_decorations():
+    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    script = f"""
+global.window = global;
+console.warn = function() {{}};
+let provider = null;
+let registrationDisposed = false;
+let nextDecorationId = 0;
+let validateRangeCalls = 0;
+let modelDisposeHandler = null;
+let modelDisposeListenerDisposals = 0;
+let modelDisposed = false;
+let liveModelListenerDisposals = 0;
+const responses = [];
+const decorationCalls = [];
+class Range {{
+  constructor(startLineNumber, startColumn, endLineNumber, endColumn) {{
+    this.startLineNumber = startLineNumber;
+    this.startColumn = startColumn;
+    this.endLineNumber = endLineNumber;
+    this.endColumn = endColumn;
+  }}
+}}
+function success(regions, includeRegions) {{
+  const payload = {{success: true, data: [0, 0, 3, 0, 0], result_id: "server"}};
+  if (includeRegions !== false) payload.inactive_regions = regions;
+  return {{
+    ok: true,
+    json: async function() {{ return payload; }}
+  }};
+}}
+function failure() {{
+  return {{
+    ok: false,
+    status: 400,
+    headers: {{get: function() {{ return null; }}}},
+    json: async function() {{
+      return {{success: false, code: "invalid_request", message: "bad"}};
+    }}
+  }};
+}}
+function cancellation() {{
+  let handler = null;
+  return {{
+    token: {{
+      onCancellationRequested: function(value) {{
+        handler = value;
+        return {{dispose: function() {{}}}};
+      }}
+    }},
+    cancel: function() {{ if (handler) handler(); }}
+  }};
+}}
+global.fetch = async function(url, options) {{
+  if (String(url).includes("semantic-token-legend")) {{
+    return {{
+      ok: true,
+      json: async function() {{
+        return {{
+          success: true,
+          legend: {{tokenTypes: ["variable"], tokenModifiers: []}}
+        }};
+      }}
+    }};
+  }}
+  if (!responses.length) throw new Error("missing response");
+  return responses.shift()(options || {{}});
+}};
+global.monaco = {{
+  Range: Range,
+  languages: {{
+    registerDocumentSemanticTokensProvider: function(_language, value) {{
+      provider = value;
+      return {{
+        dispose: function() {{ registrationDisposed = true; }}
+      }};
+    }}
+  }}
+}};
+const model = {{
+  getValue: function() {{ return "#if 0\\nint disabled;\\n#endif"; }},
+  isDisposed: function() {{ return modelDisposed; }},
+  onWillDispose: function(handler) {{
+    let listenerActive = true;
+    modelDisposeHandler = handler;
+    return {{
+      dispose: function() {{
+        if (!listenerActive) return;
+        listenerActive = false;
+        modelDisposeListenerDisposals += 1;
+        modelDisposeHandler = null;
+      }}
+    }};
+  }},
+  validateRange: function(range) {{
+    validateRangeCalls += 1;
+    const maxColumns = [6, 14, 7];
+    const startLine = Math.max(1, Math.min(3, range.startLineNumber));
+    const endLine = Math.max(1, Math.min(3, range.endLineNumber));
+    return new Range(
+      startLine,
+      Math.max(1, Math.min(maxColumns[startLine - 1], range.startColumn)),
+      endLine,
+      Math.max(1, Math.min(maxColumns[endLine - 1], range.endColumn))
+    );
+  }},
+  deltaDecorations: function(oldIds, decorations) {{
+    decorationCalls.push({{
+      oldIds: oldIds.slice(),
+      decorations: decorations.slice()
+    }});
+    return decorations.map(function() {{
+      nextDecorationId += 1;
+      return "decoration-" + String(nextDecorationId);
+    }});
+  }}
+}};
+require({str(asset)!r});
+(async function() {{
+  const registration = await NumOJSemanticTokens.register(monaco, {{
+    problemId: 42,
+    language: "cpp",
+    monacoLanguage: "cpp"
+  }});
+  if (!provider || !registration) process.exit(1);
+
+  responses.push(function() {{
+    return success([
+      {{
+        start: {{line: 1, character: 0}},
+        end: {{line: 1, character: 11}}
+      }},
+      {{
+        start: {{line: 1, character: 8}},
+        end: {{line: 1, character: 100}}
+      }},
+      {{
+        start: {{line: 0, character: 0}},
+        end: {{line: 0, character: 0}}
+      }},
+      {{
+        start: {{line: 99, character: 99}},
+        end: {{line: 100, character: 0}}
+      }}
+    ]);
+  }});
+  const first = await provider.provideDocumentSemanticTokens(
+    model,
+    null,
+    cancellation().token
+  );
+  if (decorationCalls.length !== 1) process.exit(2);
+  const decoration = decorationCalls[0].decorations[0];
+  if (
+    !decoration ||
+    decorationCalls[0].decorations.length !== 1 ||
+    validateRangeCalls !== 4 ||
+    decoration.range.startLineNumber !== 2 ||
+    decoration.range.startColumn !== 1 ||
+    decoration.range.endLineNumber !== 2 ||
+    decoration.range.endColumn !== 14 ||
+    decoration.options.isWholeLine !== true ||
+    decoration.options.inlineClassName !== "numoj-clangd-inactive-code" ||
+    Object.prototype.hasOwnProperty.call(decoration.options, "foreground")
+  ) {{
+    process.exit(3);
+  }}
+
+  responses.push(function() {{ return success(undefined, false); }});
+  await provider.provideDocumentSemanticTokens(
+    model,
+    first.resultId,
+    cancellation().token
+  );
+  if (
+    decorationCalls.length !== 2 ||
+    decorationCalls[1].oldIds[0] !== "decoration-1" ||
+    decorationCalls[1].decorations.length !== 0
+  ) {{
+    process.exit(4);
+  }}
+  provider.releaseDocumentSemanticTokens(first.resultId);
+  if (decorationCalls.length !== 2) process.exit(5);
+
+  responses.push(function() {{ return success([]); }});
+  await provider.provideDocumentSemanticTokens(
+    model,
+    null,
+    cancellation().token
+  );
+  if (
+    decorationCalls.length !== 3 ||
+    decorationCalls[2].decorations.length !== 0
+  ) {{
+    process.exit(6);
+  }}
+
+  responses.push(function() {{
+    return success([{{
+      start: {{line: 1, character: 0}},
+      end: {{line: 1, character: 3}}
+    }}]);
+  }});
+  await provider.provideDocumentSemanticTokens(
+    model,
+    null,
+    cancellation().token
+  );
+  responses.push(function() {{ return failure(); }});
+  await provider.provideDocumentSemanticTokens(
+    model,
+    null,
+    cancellation().token
+  );
+  if (
+    decorationCalls.length !== 5 ||
+    decorationCalls[4].decorations.length !== 0
+  ) {{
+    process.exit(7);
+  }}
+
+  let resolveOld = null;
+  responses.push(function() {{
+    return new Promise(function(resolve) {{ resolveOld = resolve; }});
+  }});
+  const oldCancellation = cancellation();
+  const oldRequest = provider.provideDocumentSemanticTokens(
+    model,
+    null,
+    oldCancellation.token
+  );
+  oldCancellation.cancel();
+  responses.push(function() {{
+    return success([{{
+      start: {{line: 1, character: 4}},
+      end: {{line: 1, character: 12}}
+    }}]);
+  }});
+  const fresh = await provider.provideDocumentSemanticTokens(
+    model,
+    null,
+    cancellation().token
+  );
+  const callsAfterFreshResult = decorationCalls.length;
+  resolveOld(success([{{
+    start: {{line: 0, character: 0}},
+    end: {{line: 0, character: 5}}
+  }}]));
+  await oldRequest;
+  if (decorationCalls.length !== callsAfterFreshResult) process.exit(8);
+
+  provider.releaseDocumentSemanticTokens(fresh.resultId);
+  if (
+    decorationCalls.length !== callsAfterFreshResult + 1 ||
+    decorationCalls.at(-1).decorations.length !== 0
+  ) {{
+    process.exit(9);
+  }}
+
+  responses.push(function() {{
+    return success([{{
+      start: {{line: 1, character: 0}},
+      end: {{line: 1, character: 3}}
+    }}]);
+  }});
+  await provider.provideDocumentSemanticTokens(
+    model,
+    null,
+    cancellation().token
+  );
+  const callsBeforeDispose = decorationCalls.length;
+  const disposeHandler = modelDisposeHandler;
+  if (!disposeHandler) process.exit(10);
+  disposeHandler();
+  modelDisposed = true;
+  if (
+    modelDisposeListenerDisposals !== 1 ||
+    decorationCalls.length !== callsBeforeDispose + 1 ||
+    decorationCalls.at(-1).decorations.length !== 0
+  ) {{
+    process.exit(10);
+  }}
+  const callsAfterModelDispose = decorationCalls.length;
+
+  const liveModel = {{
+    getValue: model.getValue,
+    isDisposed: function() {{ return false; }},
+    onWillDispose: function() {{
+      let listenerActive = true;
+      return {{
+        dispose: function() {{
+          if (!listenerActive) return;
+          listenerActive = false;
+          liveModelListenerDisposals += 1;
+        }}
+      }};
+    }},
+    validateRange: model.validateRange,
+    deltaDecorations: model.deltaDecorations
+  }};
+  responses.push(function() {{
+    return success([{{
+      start: {{line: 1, character: 0}},
+      end: {{line: 1, character: 3}}
+    }}]);
+  }});
+  await provider.provideDocumentSemanticTokens(
+    liveModel,
+    null,
+    cancellation().token
+  );
+  if (decorationCalls.length !== callsAfterModelDispose + 1) process.exit(11);
+  const callsBeforeProviderDispose = decorationCalls.length;
+  registration.dispose();
+  if (
+    !registrationDisposed ||
+    decorationCalls.length !== callsBeforeProviderDispose + 1 ||
+    modelDisposeListenerDisposals !== 1 ||
+    liveModelListenerDisposals !== 1
+  ) {{
+    process.exit(12);
+  }}
+
+  const callsAfterCppDispose = decorationCalls.length;
+  const pythonModel = {{
+    getValue: function() {{ return "print('active')"; }},
+    deltaDecorations: model.deltaDecorations
+  }};
+  const pythonRegistration = await NumOJSemanticTokens.register(monaco, {{
+    problemId: 42,
+    language: "python",
+    monacoLanguage: "python"
+  }});
+  responses.push(function() {{
+    return success([{{
+      start: {{line: 1, character: 0}},
+      end: {{line: 1, character: 3}}
+    }}]);
+  }});
+  await provider.provideDocumentSemanticTokens(
+    pythonModel,
+    null,
+    cancellation().token
+  );
+  pythonRegistration.dispose();
+  if (decorationCalls.length !== callsAfterCppDispose) process.exit(13);
+}})().catch(function(error) {{
+  console.error(error);
+  process.exit(14);
+}});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_inactive_code_style_dims_without_replacing_syntax_colors():
+    stylesheet = (ROOT / "static" / "styles" / "code-editor.css").read_text()
+    match = re.search(
+        r"\.monaco-editor \.numoj-clangd-inactive-code\s*\{([^}]*)\}",
+        stylesheet,
+    )
+    assert match is not None
+    declaration = match.group(1)
+    assert "opacity: 0.55;" in declaration
+    assert "color:" not in declaration
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")

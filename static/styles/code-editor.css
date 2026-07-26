@@ -37,6 +37,10 @@
     monospace;
 }
 
+.monaco-editor .numoj-clangd-inactive-code {
+  opacity: 0.55;
+}
+
 .numoj-form-code-textarea-fallback {
   display: block !important;
   width: 100%;

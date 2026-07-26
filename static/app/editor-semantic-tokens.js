@@ -246,7 +246,206 @@
     var legend = await getLegend(language);
 
     var warned = false;
-    return monaco.languages.registerDocumentSemanticTokensProvider(
+    var disposed = false;
+    var requestSerial = 0;
+    var resultSerial = 0;
+    var modelStates = new WeakMap();
+    var trackedModels = new Set();
+    var resultModels = new Map();
+    var activeControllers = new Set();
+    var supportsInactiveRegions = language === "c" || language === "cpp";
+
+    function stateForModel(model) {
+      var state = modelStates.get(model);
+      if (!state) {
+        state = {
+          decorationIds: [],
+          disposeListener: null,
+          requestVersion: 0,
+          resultId: "",
+        };
+        modelStates.set(model, state);
+        trackedModels.add(model);
+        if (model && typeof model.onWillDispose === "function") {
+          state.disposeListener = model.onWillDispose(function () {
+            state.requestVersion += 1;
+            clearInactiveRegions(model, state);
+            if (state.resultId) resultModels.delete(state.resultId);
+            state.resultId = "";
+            trackedModels.delete(model);
+            modelStates.delete(model);
+            var listener = state.disposeListener;
+            state.disposeListener = null;
+            if (listener && typeof listener.dispose === "function") {
+              listener.dispose();
+            }
+          });
+        }
+      }
+      return state;
+    }
+
+    function clearInactiveRegions(model, state) {
+      var current = state || modelStates.get(model);
+      if (!current) return;
+      var modelDisposed = (
+        model &&
+        typeof model.isDisposed === "function" &&
+        model.isDisposed()
+      );
+      if (
+        current.decorationIds.length &&
+        model &&
+        typeof model.deltaDecorations === "function" &&
+        !modelDisposed
+      ) {
+        try {
+          current.decorationIds = model.deltaDecorations(
+            current.decorationIds,
+            []
+          );
+        } catch (_error) {
+          current.decorationIds = [];
+        }
+      } else {
+        current.decorationIds = [];
+      }
+    }
+
+    function inactiveRegionRanges(model, regions) {
+      var ranges = regions.reduce(function (values, region) {
+        var start = region && region.start;
+        var end = region && region.end;
+        if (
+          !start ||
+          !end ||
+          !Number.isInteger(start.line) ||
+          !Number.isInteger(start.character) ||
+          !Number.isInteger(end.line) ||
+          !Number.isInteger(end.character) ||
+          start.line < 0 ||
+          start.character < 0 ||
+          end.line < start.line ||
+          end.character < 0 ||
+          (
+            end.line === start.line &&
+            end.character < start.character
+          )
+        ) {
+          return values;
+        }
+        var range = new monaco.Range(
+          start.line + 1,
+          start.character + 1,
+          end.line + 1,
+          end.character + 1
+        );
+        if (typeof model.validateRange === "function") {
+          try {
+            range = model.validateRange(range);
+          } catch (_error) {
+            return values;
+          }
+        }
+        if (
+          range.endLineNumber < range.startLineNumber ||
+          (
+            range.endLineNumber === range.startLineNumber &&
+            range.endColumn <= range.startColumn
+          )
+        ) {
+          return values;
+        }
+        values.push(range);
+        return values;
+      }, []);
+      ranges.sort(function (left, right) {
+        return (
+          left.startLineNumber - right.startLineNumber ||
+          left.startColumn - right.startColumn ||
+          left.endLineNumber - right.endLineNumber ||
+          left.endColumn - right.endColumn
+        );
+      });
+      return ranges.reduce(function (merged, range) {
+        var previous = merged[merged.length - 1];
+        var overlaps = previous && (
+          range.startLineNumber < previous.endLineNumber ||
+          (
+            range.startLineNumber === previous.endLineNumber &&
+            range.startColumn <= previous.endColumn
+          )
+        );
+        if (!overlaps) {
+          merged.push(range);
+          return merged;
+        }
+        var rangeEndsLater = (
+          range.endLineNumber > previous.endLineNumber ||
+          (
+            range.endLineNumber === previous.endLineNumber &&
+            range.endColumn > previous.endColumn
+          )
+        );
+        if (rangeEndsLater) {
+          merged[merged.length - 1] = new monaco.Range(
+            previous.startLineNumber,
+            previous.startColumn,
+            range.endLineNumber,
+            range.endColumn
+          );
+        }
+        return merged;
+      }, []);
+    }
+
+    function inactiveRegionDecorations(model, regions) {
+      return inactiveRegionRanges(model, regions).map(function (range) {
+        return {
+          range: range,
+          options: {
+            description: "numoj-clangd-inactive-code",
+            isWholeLine: true,
+            inlineClassName: "numoj-clangd-inactive-code",
+            inlineClassNameAffectsLetterSpacing: false,
+          },
+        };
+      });
+    }
+
+    function applyInactiveRegions(model, state, regions) {
+      if (
+        !supportsInactiveRegions ||
+        !model ||
+        typeof model.deltaDecorations !== "function" ||
+        (
+          typeof model.isDisposed === "function" &&
+          model.isDisposed()
+        )
+      ) {
+        return;
+      }
+      try {
+        state.decorationIds = model.deltaDecorations(
+          state.decorationIds,
+          inactiveRegionDecorations(model, regions)
+        );
+      } catch (_error) {
+        state.decorationIds = [];
+      }
+    }
+
+    function rememberResult(model, state, backendResultId) {
+      resultSerial += 1;
+      var resultId =
+        String(backendResultId || "") + ":numoj-" + String(resultSerial);
+      if (state.resultId) resultModels.delete(state.resultId);
+      state.resultId = resultId;
+      resultModels.set(resultId, { model: model, state: state });
+      return resultId;
+    }
+
+    var registration = monaco.languages.registerDocumentSemanticTokensProvider(
       monacoLanguage,
       {
         getLegend: function () {
@@ -257,7 +456,12 @@
           _lastResultId,
           cancellationToken
         ) {
+          var state = stateForModel(model);
+          requestSerial += 1;
+          var requestVersion = requestSerial;
+          state.requestVersion = requestVersion;
           var controller = new AbortController();
+          activeControllers.add(controller);
           var cancellation = cancellationToken.onCancellationRequested(
             function () {
               controller.abort();
@@ -285,12 +489,36 @@
               signal: controller.signal,
             });
 
+            if (
+              disposed ||
+              controller.signal.aborted ||
+              state.requestVersion !== requestVersion
+            ) {
+              return null;
+            }
+            if (supportsInactiveRegions) {
+              applyInactiveRegions(
+                model,
+                state,
+                Array.isArray(payload.inactive_regions)
+                  ? payload.inactive_regions
+                  : []
+              );
+            }
+
             warned = false;
             return {
               data: new Uint32Array(payload.data),
-              resultId: String(payload.result_id || ""),
+              resultId: rememberResult(model, state, payload.result_id),
             };
           } catch (error) {
+            if (
+              !disposed &&
+              state.requestVersion === requestVersion &&
+              supportsInactiveRegions
+            ) {
+              clearInactiveRegions(model, state);
+            }
             if (error && error.name === "AbortError") {
               return null;
             }
@@ -300,15 +528,51 @@
             }
             return { data: new Uint32Array(0) };
           } finally {
+            activeControllers.delete(controller);
             cancellation.dispose();
             if (typeof settings.onRequestEnd === "function") {
               settings.onRequestEnd();
             }
           }
         },
-        releaseDocumentSemanticTokens: function () {},
+        releaseDocumentSemanticTokens: function (resultId) {
+          var record = resultModels.get(resultId);
+          resultModels.delete(resultId);
+          if (!record || record.state.resultId !== resultId) return;
+          clearInactiveRegions(record.model, record.state);
+          record.state.resultId = "";
+        },
       }
     );
+
+    return {
+      dispose: function () {
+        if (disposed) return;
+        disposed = true;
+        activeControllers.forEach(function (controller) {
+          controller.abort();
+        });
+        activeControllers.clear();
+        trackedModels.forEach(function (model) {
+          var state = modelStates.get(model);
+          if (state) {
+            state.requestVersion += 1;
+            clearInactiveRegions(model, state);
+            if (state.resultId) resultModels.delete(state.resultId);
+            state.resultId = "";
+            var listener = state.disposeListener;
+            state.disposeListener = null;
+            if (listener && typeof listener.dispose === "function") {
+              listener.dispose();
+            }
+            modelStates.delete(model);
+          }
+        });
+        trackedModels.clear();
+        resultModels.clear();
+        registration.dispose();
+      },
+    };
   }
 
   window.NumOJSemanticTokens = Object.freeze({

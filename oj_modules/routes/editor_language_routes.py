@@ -44,7 +44,9 @@ _GENERIC_EDITOR_DOCUMENT_ID_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z"
 )
 _MARKDOWN_CPP_PREAMBLE = "#include <bits/stdc++.h>\n"
-_MARKDOWN_CACHE_KEY_VERSION = b"markdown-cpp-bits-v2-tokens-12000\0"
+_MARKDOWN_CACHE_KEY_VERSION = (
+    b"markdown-cpp-bits-v3-tokens-12000-inactive-regions\0"
+)
 _MARKDOWN_SOURCE_MAX_BYTES = 512 * 1024
 _MARKDOWN_MAX_TOKENS = 12_000
 _markdown_semantic_cache = SemanticTokenResultCache()
@@ -129,6 +131,42 @@ def _without_semantic_prefix_lines(data: list[int], prefix_lines: int) -> list[i
         previous_line = line
         previous_start = start
     return encoded
+
+
+def _without_inactive_prefix_lines(
+    regions: list[dict],
+    prefix_lines: int,
+) -> list[dict]:
+    """删除虚拟前导行，并把 clangd inactive range 平移回展示源码。"""
+    shifted: list[dict] = []
+    for region in regions:
+        start = region["start"]
+        end = region["end"]
+        start_line = start["line"]
+        start_character = start["character"]
+        end_line = end["line"]
+        end_character = end["character"]
+
+        shifted_start = {
+            "line": max(start_line - prefix_lines, 0),
+            "character": (
+                start_character if start_line >= prefix_lines else 0
+            ),
+        }
+        shifted_end = {
+            "line": max(end_line - prefix_lines, 0),
+            "character": end_character if end_line >= prefix_lines else 0,
+        }
+        if (
+            shifted_end["line"],
+            shifted_end["character"],
+        ) <= (
+            shifted_start["line"],
+            shifted_start["character"],
+        ):
+            continue
+        shifted.append({"start": shifted_start, "end": shifted_end})
+    return shifted
 
 
 def _markdown_cache_key(source: str) -> str:
@@ -358,6 +396,10 @@ def semantic_tokens():
                 result["data"],
                 1,
             )[: _MARKDOWN_MAX_TOKENS * 5]
+            result["inactive_regions"] = _without_inactive_prefix_lines(
+                result.get("inactive_regions", []),
+                1,
+            )
             assert markdown_cache_key is not None
             result["result_id"] = f"markdown:{markdown_cache_key[:12]}"
     except repository_tree.RepositoryDomainError as exc:

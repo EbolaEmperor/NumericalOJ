@@ -324,6 +324,20 @@ def test_markdown_cpp_tokens_use_isolated_context_and_hidden_bits_preamble(
                     1, 0, 3, 1, 0,
                     1, 4, 4, 0, 1,
                 ],
+                "inactive_regions": [
+                    {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 1, "character": 0},
+                    },
+                    {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 2, "character": 0},
+                    },
+                    {
+                        "start": {"line": 2, "character": 4},
+                        "end": {"line": 2, "character": 8},
+                    },
+                ],
                 "result_id": "1:markdown",
             }
 
@@ -345,6 +359,16 @@ def test_markdown_cpp_tokens_use_isolated_context_and_hidden_bits_preamble(
     assert response.get_json()["data"] == [
         0, 0, 3, 1, 0,
         1, 4, 4, 0, 1,
+    ]
+    assert response.get_json()["inactive_regions"] == [
+        {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 1, "character": 0},
+        },
+        {
+            "start": {"line": 1, "character": 4},
+            "end": {"line": 1, "character": 8},
+        },
     ]
     assert service.calls == [
         (
