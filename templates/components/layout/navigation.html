@@ -89,7 +89,13 @@
 
   <footer class="numoj-sidebar-footer">
     <div class="numoj-user-summary">
-      <span class="numoj-avatar">{{ (user.username or 'U')[:2]|upper }}</span>
+      <span
+        class="numoj-avatar"
+        data-numoj-user-avatar
+        data-avatar-seed="{{ user.username }}"
+        data-avatar-label="{{ user.username }}"
+        aria-hidden="true"
+      >{{ (user.username or 'U')[:2]|upper }}</span>
       <span class="numoj-user-copy">
         <strong>{{ user.username }}</strong>
         <small>{{ '教师' if user.is_admin == 1 else '学生' }}{% if user.class_cn %} · {{ user.class_cn }}{% endif %}</small>

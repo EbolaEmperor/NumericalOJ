@@ -1,6 +1,7 @@
 {% if user and (user.is_admin == 1 or class_adjust_enabled) %}
-<!-- 班级管理 Modal -->
-<div class="modal fade" id="classManagerModal" tabindex="-1" aria-labelledby="classManagerLabel" aria-hidden="true"
+<!-- 班级管理模态框 -->
+<div class="modal fade numoj-account-modal numoj-class-modal" id="classManagerModal" tabindex="-1"
+  aria-labelledby="classManagerLabel" aria-hidden="true"
   data-is-admin="{% if user and user.is_admin == 1 %}1{% else %}0{% endif %}"
   data-class-adjust-enabled="{% if class_adjust_enabled %}1{% else %}0{% endif %}"
   data-classes-url="{{ url_for('class_management.get_my_classes') }}"
@@ -8,54 +9,68 @@
   data-leave-class-url="{{ url_for('class_management.leave_class') }}"
   data-set-primary-class-url="{{ url_for('class_management.set_primary_class') }}"
   data-class-adjust-url="{{ url_for('homework.admin_class_adjust') }}">
-  <div class="modal-dialog modal-lg">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
+      <span class="numoj-account-modal-accent" aria-hidden="true"></span>
 
       <div class="modal-header">
-        <h5 class="modal-title" id="classManagerLabel">
-          <i class="fas fa-users-cog me-2"></i> 调整班级
-        </h5>
-        {% if user.is_admin == 1 %}
-        <div class="d-flex align-items-center ms-3 gap-2">
-          <div class="form-check form-switch m-0">
-            <input class="form-check-input" type="checkbox" id="classAdjustSwitch" {% if class_adjust_enabled %}checked{% endif %}>
-          </div>
-          <span id="classAdjustLabel">{% if class_adjust_enabled %}允许{% else %}禁止{% endif %}</span>
-        </div>
-        {% endif %}
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-      </div>
-
-      <div class="modal-body">
-        <h6 class="mb-2">我的班级</h6>
-        <div id="myClassesBox" class="list-group mb-3">
-          <div class="list-group-item text-muted">
-            <span class="math-curve-loader" data-math-curve-loader data-size="sm">
-              <span class="math-curve-loader__label">正在加载班级…</span>
-            </span>
-          </div>
+        <div class="numoj-account-modal-title">
+          <span class="numoj-account-kicker">MEMBERSHIP · CLASSES</span>
+          <h2 class="modal-title" id="classManagerLabel">调整班级</h2>
+          <p>管理当前所属班级；主班级决定默认展示的作业与成绩上下文。</p>
         </div>
 
-        <hr>
-
-        <h6 class="mb-2">加入新班级</h6>
-        <div class="d-flex gap-2 align-items-center">
-          <select id="joinClassSelect" class="form-select class-join-select">
-            <option value="">请选择班级</option>
-          </select>
-          <button class="btn btn-outline-success" id="joinClassBtn">
-            <i class="fas fa-user-plus me-1"></i> 加入
+        <div class="numoj-class-header-actions">
+          {% if user.is_admin == 1 %}
+          <label class="numoj-class-permission" for="classAdjustSwitch">
+            <input type="checkbox" id="classAdjustSwitch" {% if class_adjust_enabled %}checked{% endif %}>
+            <span class="numoj-class-switch-track" aria-hidden="true"><span></span></span>
+            <span id="classAdjustLabel">学生自助：{% if class_adjust_enabled %}允许{% else %}禁止{% endif %}</span>
+          </label>
+          {% endif %}
+          <button type="button" class="numoj-account-close" data-bs-dismiss="modal" aria-label="关闭调整班级弹窗">
+            <span aria-hidden="true">×</span>
           </button>
         </div>
-        <div class="form-text mt-2">调整班级后，请等待 10 秒喝一口茶，再刷新页面。</div>
+      </div>
+
+      <div class="modal-body numoj-account-modal-body">
+        <section class="numoj-account-section" aria-labelledby="myClassesTitle">
+          <div class="numoj-account-section-heading">
+            <h3 id="myClassesTitle">我的班级</h3>
+            <span id="classMembershipCount">正在加载</span>
+          </div>
+          <div class="numoj-membership-list" id="myClassesBox" aria-live="polite">
+            <div class="numoj-membership-state">
+              <span class="math-curve-loader" data-math-curve-loader data-size="sm">
+                <span class="math-curve-loader__label">正在加载班级…</span>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <section class="numoj-account-section" aria-labelledby="joinClassTitle">
+          <div class="numoj-account-section-heading">
+            <h3 id="joinClassTitle">加入新班级</h3>
+            <span>AVAILABLE</span>
+          </div>
+          <div class="numoj-class-join-row">
+            <select id="joinClassSelect" class="numoj-account-select" aria-label="选择要加入的班级">
+              <option value="">请选择班级</option>
+            </select>
+            <button class="numoj-account-button numoj-account-button-brand" id="joinClassBtn"
+              type="button" disabled>加入班级</button>
+          </div>
+        </section>
       </div>
 
       <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
-          <i class="fas fa-times me-1"></i> 关闭
-        </button>
+        <span class="numoj-account-footer-note">CHANGES · SAVED IMMEDIATELY</span>
+        <div class="numoj-account-footer-actions">
+          <button type="button" class="numoj-account-button numoj-account-button-dark"
+            data-bs-dismiss="modal">完成</button>
+        </div>
       </div>
-
     </div>
   </div>
 </div>

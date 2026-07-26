@@ -4,6 +4,11 @@
   const app = document.getElementById("forumApp");
   if (!app) return;
 
+  const identicon = window.NumojIdenticon;
+  if (!identicon) throw new Error("Identicon renderer is unavailable");
+  const avatarCellsForName = identicon.cellsForSeed;
+  const paintAvatar = identicon.paint;
+
   const API_ROOT = "/api/forum";
   const THREAD_PAGE_SIZE = 30;
   const REPLY_PAGE_SIZE = 50;
@@ -217,67 +222,6 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
-  }
-
-  function normalizeAvatarCells(avatar) {
-    const raw = Array.isArray(avatar)
-      ? avatar
-      : (avatar && Array.isArray(avatar.cells) ? avatar.cells : []);
-    const cells = new Set();
-    raw.forEach((item) => {
-      let index = null;
-      if (Number.isInteger(item)) {
-        index = item;
-      } else if (
-        Array.isArray(item)
-        && item.length >= 2
-        && Number.isInteger(item[0])
-        && Number.isInteger(item[1])
-      ) {
-        index = item[1] * 8 + item[0];
-      }
-      if (index != null && index >= 0 && index < 64) cells.add(index);
-    });
-    return cells;
-  }
-
-  function paintAvatar(element, avatar, label) {
-    if (!element) return;
-    const cells = normalizeAvatarCells(avatar);
-    const fragment = document.createDocumentFragment();
-    for (let index = 0; index < 64; index += 1) {
-      const cell = document.createElement("span");
-      if (cells.has(index)) cell.className = "is-filled";
-      fragment.appendChild(cell);
-    }
-    element.replaceChildren(fragment);
-    if (label) {
-      element.setAttribute("title", label);
-      element.setAttribute("aria-label", `${label} 的头像`);
-    }
-  }
-
-  function avatarCellsForName(name) {
-    const bytes = new TextEncoder().encode(String(name || "numericaloj"));
-    let hash = 0x811c9dc5;
-    bytes.forEach((byte) => {
-      hash ^= byte;
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    });
-    let randomState = hash || 0x9e3779b9;
-    const cells = [];
-    for (let row = 0; row < 8; row += 1) {
-      for (let column = 0; column < 4; column += 1) {
-        randomState ^= randomState << 13;
-        randomState ^= randomState >>> 17;
-        randomState ^= randomState << 5;
-        randomState >>>= 0;
-        if ((randomState & 1) === 1) {
-          cells.push(row * 8 + column, row * 8 + (7 - column));
-        }
-      }
-    }
-    return { cells: cells.length ? cells.sort((a, b) => a - b) : [27, 28, 35, 36] };
   }
 
   function normalizeIdentity(payload) {

@@ -17,6 +17,9 @@ MARKDOWN_CSS = (
     ROOT / "static" / "app" / "markdown-rendering.css"
 ).read_text(encoding="utf-8")
 JAVASCRIPT = (ROOT / "static" / "app" / "forum.js").read_text(encoding="utf-8")
+IDENTICON_JAVASCRIPT = (
+    ROOT / "static" / "app" / "identicon.js"
+).read_text(encoding="utf-8")
 MARKDOWN_JAVASCRIPT = (
     ROOT / "static" / "app" / "markdown-rendering.js"
 ).read_text(encoding="utf-8")
@@ -119,7 +122,9 @@ def test_anonymous_identity_and_avatar_controls_match_the_domain_rules():
     assert 'id="identityDialog"' in TEMPLATE
     assert "weightedAliasLength" in JAVASCRIPT
     assert "normalize(\"NFKC\")" in JAVASCRIPT
-    assert "new TextEncoder()" in JAVASCRIPT
+    assert "window.NumojIdenticon" in JAVASCRIPT
+    assert "new TextEncoder()" in IDENTICON_JAVASCRIPT
+    assert "Math.imul(hash, 0x01000193)" in IDENTICON_JAVASCRIPT
     assert "grid-template-columns: repeat(8, 1fr)" in CSS
     assert "previous_anonymous_name" in JAVASCRIPT
     assert "attemptedName === previousName" in JAVASCRIPT

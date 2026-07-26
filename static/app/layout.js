@@ -1,6 +1,56 @@
 (function () {
   'use strict';
 
+  let accountToastTimer;
+
+  function initUserAvatar() {
+    const avatar = document.querySelector('[data-numoj-user-avatar]');
+    const identicon = window.NumojIdenticon;
+    if (!avatar || !identicon) return;
+
+    const seed = avatar.dataset.avatarSeed || 'numericaloj';
+    const label = avatar.dataset.avatarLabel || seed;
+    identicon.paint(avatar, identicon.cellsForSeed(seed), label);
+  }
+
+  function showAccountToast(message) {
+    const toast = document.getElementById('accountModalToast');
+    if (!toast) return;
+
+    window.clearTimeout(accountToastTimer);
+    toast.textContent = message;
+    toast.hidden = false;
+    window.requestAnimationFrame(() => toast.classList.add('is-visible'));
+    accountToastTimer = window.setTimeout(() => {
+      toast.classList.remove('is-visible');
+      window.setTimeout(() => {
+        if (!toast.classList.contains('is-visible')) toast.hidden = true;
+      }, 180);
+    }, 2300);
+  }
+
+  function setAccountMessage(element, message, state = '') {
+    if (!element) return;
+    element.textContent = message;
+    element.hidden = !message;
+    element.classList.toggle('is-success', state === 'success');
+    element.classList.toggle('is-error', state === 'error');
+  }
+
+  async function requestJson(url, options, fallbackMessage) {
+    const response = await fetch(url, options);
+    let data;
+    try {
+      data = await response.json();
+    } catch (_error) {
+      throw new Error(fallbackMessage);
+    }
+    if (!response.ok || !data.success) {
+      throw new Error(data.message || fallbackMessage);
+    }
+    return data;
+  }
+
   function initDesktopSidebar() {
     const shell = document.querySelector('[data-numoj-shell]');
     const sidebar = document.querySelector('[data-numoj-sidebar]');
@@ -124,6 +174,7 @@
     if (!modalEl) return;
 
     const myBox = document.getElementById('myClassesBox');
+    const membershipCount = document.getElementById('classMembershipCount');
     const joinSelect = document.getElementById('joinClassSelect');
     const joinButton = document.getElementById('joinClassBtn');
     const switchEl = document.getElementById('classAdjustSwitch');
@@ -139,10 +190,6 @@
     let classAdjustEnabled = modalEl.dataset.classAdjustEnabled === '1';
     const model = { memberships: [], primary_en: '', all_classes: [] };
 
-    function toast(message) {
-      console.log(message);
-    }
-
     function className(classEn) {
       const item = model.all_classes.find((candidate) => candidate.class_en === classEn);
       return (item && (item.class_cn || item.class_en)) || classEn;
@@ -151,7 +198,11 @@
     function postForm(url, values) {
       const form = new FormData();
       Object.entries(values).forEach(([key, value]) => form.append(key, value));
-      return fetch(url, { method: 'POST', body: form }).then((response) => response.json());
+      return requestJson(
+        url,
+        { method: 'POST', headers: { Accept: 'application/json' }, body: form },
+        '操作失败，请稍后重试'
+      );
     }
 
     function renderJoinSelect() {
@@ -166,9 +217,49 @@
       });
     }
 
+    function createClassLogo(item) {
+      const seed = String(item.logo_seed || item.class_en || 'numericaloj-class');
+      let hash = 2166136261;
+      for (let index = 0; index < seed.length; index += 1) {
+        hash ^= seed.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+
+      const mark = document.createElement('span');
+      mark.className = 'numoj-membership-logo';
+      mark.setAttribute('aria-hidden', 'true');
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 7 7');
+      svg.setAttribute('focusable', 'false');
+      svg.setAttribute('shape-rendering', 'crispEdges');
+
+      for (let row = 1; row <= 5; row += 1) {
+        for (let column = 1; column <= 3; column += 1) {
+          hash ^= hash << 13;
+          hash ^= hash >>> 17;
+          hash ^= hash << 5;
+          if ((hash >>> 0) % 3 === 0) continue;
+          [column, 6 - column].forEach((x) => {
+            const cell = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            cell.setAttribute('x', String(x));
+            cell.setAttribute('y', String(row));
+            cell.setAttribute('width', '1');
+            cell.setAttribute('height', '1');
+            svg.appendChild(cell);
+          });
+        }
+      }
+      mark.appendChild(svg);
+      return mark;
+    }
+
+    function canAdjustClasses() {
+      return isAdmin || classAdjustEnabled;
+    }
+
     function setPrimary(classEn) {
-      if (!classAdjustEnabled && !isAdmin) {
-        alert('当前不允许调整班级，请联系老师');
+      if (!canAdjustClasses()) {
+        showAccountToast('当前不允许调整班级，请联系老师');
         renderMyClasses();
         return;
       }
@@ -180,10 +271,10 @@
             membership.is_primary = membership.class_en === classEn;
           });
           renderMyClasses();
-          toast('主班级已切换为：' + className(classEn));
+          showAccountToast('主班级已切换为「' + className(classEn) + '」');
         })
         .catch((error) => {
-          alert(error);
+          showAccountToast(error.message || '设置主班级失败');
           renderMyClasses();
         });
     }
@@ -201,87 +292,138 @@
           });
           renderMyClasses();
           renderJoinSelect();
-          toast('已退出：' + className(classEn));
+          updateJoinLeaveAvailability();
+          showAccountToast('已退出「' + className(classEn) + '」');
         })
-        .catch((error) => alert(error));
+        .catch((error) => {
+          showAccountToast(error.message || '退出班级失败');
+          renderMyClasses();
+        });
     }
 
     function renderMyClasses() {
       myBox.innerHTML = '';
+      membershipCount.textContent =
+        `${model.memberships.length} MEMBERSHIP${model.memberships.length === 1 ? '' : 'S'}`;
       if (!model.memberships.length) {
-        myBox.innerHTML = '<div class="list-group-item text-muted">暂无班级</div>';
+        const empty = document.createElement('div');
+        empty.className = 'numoj-membership-state';
+        empty.textContent = '暂无班级';
+        myBox.appendChild(empty);
         return;
       }
 
       model.memberships.forEach((membership) => {
         const row = document.createElement('div');
-        row.className = 'list-group-item class-row';
+        row.className =
+          'numoj-membership-row' + (membership.is_primary ? ' is-primary' : '');
+        row.dataset.classEn = membership.class_en;
 
-        const left = document.createElement('div');
-        left.className = 'class-left';
-
-        const radioWrap = document.createElement('label');
-        radioWrap.className = 'radio-wrap';
-        const radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'primaryClass';
-        radio.value = membership.class_en;
-        radio.checked = Boolean(membership.is_primary);
-        radio.addEventListener('change', () => setPrimary(membership.class_en));
-        radioWrap.appendChild(radio);
-        radioWrap.appendChild(document.createTextNode('主'));
-        left.appendChild(radioWrap);
-
-        const name = document.createElement('span');
-        name.className = 'class-name';
+        const copy = document.createElement('span');
+        copy.className = 'numoj-membership-copy';
+        const nameLine = document.createElement('span');
+        nameLine.className = 'numoj-membership-name';
+        const name = document.createElement('strong');
         name.textContent = membership.class_cn || membership.class_en;
-        left.appendChild(name);
+        nameLine.appendChild(name);
 
-        if (membership.is_primary) {
+        if (Boolean(membership.is_primary)) {
           const badge = document.createElement('span');
-          badge.className = 'badge bg-primary';
+          badge.className = 'numoj-membership-primary';
           badge.textContent = '主班级';
-          left.appendChild(badge);
+          nameLine.appendChild(badge);
         }
 
+        const code = document.createElement('span');
+        code.className = 'numoj-membership-code';
+        code.textContent = membership.class_en;
+        copy.appendChild(nameLine);
+        copy.appendChild(code);
+
         const actions = document.createElement('div');
-        actions.className = 'class-actions';
+        actions.className = 'numoj-membership-actions';
+        if (!membership.is_primary) {
+          const primaryButton = document.createElement('button');
+          primaryButton.type = 'button';
+          primaryButton.className =
+            'numoj-membership-action is-primary-action';
+          primaryButton.textContent = '设为主班级';
+          primaryButton.disabled = !canAdjustClasses();
+          primaryButton.setAttribute(
+            'aria-label',
+            `将「${membership.class_cn || membership.class_en}」设为主班级`
+          );
+          primaryButton.addEventListener('click', () => {
+            primaryButton.disabled = true;
+            setPrimary(membership.class_en);
+          });
+          actions.appendChild(primaryButton);
+        }
+
         const leaveButton = document.createElement('button');
-        leaveButton.className = 'btn btn-sm btn-outline-danger';
-        leaveButton.innerHTML = '<i class="fas fa-sign-out-alt me-1"></i> 退出';
-        leaveButton.disabled = model.memberships.length <= 1;
+        leaveButton.type = 'button';
+        leaveButton.className = 'numoj-membership-action is-danger';
+        leaveButton.textContent = '退出';
+        leaveButton.disabled =
+          model.memberships.length <= 1 || !canAdjustClasses();
+        leaveButton.setAttribute(
+          'aria-label',
+          `退出「${membership.class_cn || membership.class_en}」`
+        );
+        let confirmTimer;
         leaveButton.addEventListener('click', () => {
           if (leaveButton.disabled) return;
-          const displayName = membership.class_cn || membership.class_en;
-          if (confirm(`确认退出「${displayName}」吗？`)) {
-            leaveClass(membership.class_en);
+          if (!leaveButton.classList.contains('is-confirming')) {
+            leaveButton.classList.add('is-confirming');
+            leaveButton.textContent = '再次点击确认';
+            window.clearTimeout(confirmTimer);
+            confirmTimer = window.setTimeout(() => {
+              leaveButton.classList.remove('is-confirming');
+              leaveButton.textContent = '退出';
+            }, 3000);
+            return;
           }
+          window.clearTimeout(confirmTimer);
+          leaveButton.disabled = true;
+          leaveClass(membership.class_en);
         });
         actions.appendChild(leaveButton);
 
-        row.appendChild(left);
+        row.appendChild(createClassLogo(membership));
+        row.appendChild(copy);
         row.appendChild(actions);
         myBox.appendChild(row);
       });
     }
 
     function updateJoinLeaveAvailability() {
-      joinButton.disabled = !isAdmin && !classAdjustEnabled;
+      joinButton.disabled = !joinSelect.value || !canAdjustClasses();
     }
 
     function loadClasses() {
-      myBox.innerHTML =
-        '<div class="list-group-item text-muted">' +
-        MathCurveLoader.markup('正在加载班级…', 'sm') +
-        '</div>';
+      myBox.innerHTML = '';
+      const loading = document.createElement('div');
+      loading.className = 'numoj-membership-state';
+      if (window.MathCurveLoader) {
+        loading.innerHTML = window.MathCurveLoader.markup('正在加载班级…', 'sm');
+      } else {
+        loading.textContent = '正在加载班级…';
+      }
+      myBox.appendChild(loading);
+      membershipCount.textContent = '正在加载';
       joinSelect.innerHTML = '<option value="">正在加载…</option>';
-      fetch(endpoints.classes, { mathCurveLoader: true })
-        .then((response) => response.json())
+      requestJson(
+        endpoints.classes,
+        { headers: { Accept: 'application/json' }, mathCurveLoader: true },
+        '班级加载失败'
+      )
         .then((data) => {
-          if (!data.success) throw new Error(data.message || '加载失败');
           model.memberships = data.memberships || [];
           model.primary_en = data.primary_en || '';
           model.all_classes = data.all_classes || [];
+          model.memberships.forEach((membership) => {
+            membership.is_primary = membership.class_en === model.primary_en;
+          });
           renderMyClasses();
           renderJoinSelect();
           updateJoinLeaveAvailability();
@@ -289,9 +431,10 @@
         .catch((error) => {
           myBox.innerHTML = '';
           const message = document.createElement('div');
-          message.className = 'list-group-item text-danger';
-          message.textContent = `加载失败：${error}`;
+          message.className = 'numoj-membership-state is-error';
+          message.textContent = error.message || '班级加载失败';
           myBox.appendChild(message);
+          membershipCount.textContent = 'LOAD FAILED';
           joinSelect.innerHTML = '<option value="">加载失败</option>';
         });
     }
@@ -300,12 +443,10 @@
 
     joinButton.addEventListener('click', () => {
       const classEn = joinSelect.value;
-      if (!classEn) {
-        alert('请选择班级');
-        return;
-      }
-      if (!classAdjustEnabled && !isAdmin) {
-        alert('当前不允许调整班级，请联系老师');
+      if (!classEn || !canAdjustClasses()) {
+        showAccountToast(
+          classEn ? '当前不允许调整班级，请联系老师' : '请选择班级'
+        );
         return;
       }
       joinButton.disabled = true;
@@ -315,32 +456,50 @@
           model.memberships.push({
             class_en: classEn,
             class_cn: data.class_cn || className(classEn),
+            logo_seed: (model.all_classes.find(
+              (candidate) => candidate.class_en === classEn
+            ) || {}).logo_seed,
             is_primary: false,
           });
           renderMyClasses();
           renderJoinSelect();
-          toast('已加入：' + (data.class_cn || className(classEn)));
+          showAccountToast('已加入「' + (data.class_cn || className(classEn)) + '」');
         })
-        .catch((error) => alert(error))
+        .catch((error) => {
+          showAccountToast(error.message || '加入班级失败');
+        })
         .finally(() => {
-          joinButton.disabled = false;
+          updateJoinLeaveAvailability();
         });
     });
 
+    joinSelect.addEventListener('change', updateJoinLeaveAvailability);
+
     if (isAdmin && switchEl) {
       switchEl.addEventListener('change', () => {
+        switchEl.disabled = true;
         postForm(endpoints.classAdjust, { enabled: switchEl.checked ? '1' : '0' })
           .then((data) => {
-            if (!data.success) throw new Error(data.message || '保存失败');
             classAdjustEnabled = Boolean(data.enabled);
             switchEl.checked = classAdjustEnabled;
-            if (switchLabel) switchLabel.textContent = classAdjustEnabled ? '允许' : '禁止';
+            if (switchLabel) {
+              switchLabel.textContent =
+                '学生自助：' + (classAdjustEnabled ? '允许' : '禁止');
+            }
+            renderMyClasses();
             updateJoinLeaveAvailability();
-            toast('已保存：' + (classAdjustEnabled ? '允许' : '禁止'));
+            showAccountToast(
+              classAdjustEnabled
+                ? '已允许学生自助调整班级'
+                : '已禁止学生自助调整班级'
+            );
           })
           .catch((error) => {
-            alert(error);
+            showAccountToast(error.message || '班级权限保存失败');
             switchEl.checked = classAdjustEnabled;
+          })
+          .finally(() => {
+            switchEl.disabled = false;
           });
       });
     }
@@ -350,56 +509,175 @@
     const form = document.getElementById('passwordForm');
     if (!form) return;
 
+    const modalEl = document.getElementById('changePasswordModal');
     const sendCodeButton = document.getElementById('sendPasswordCodeBtn');
-    sendCodeButton.addEventListener('click', () => {
-      sendCodeButton.disabled = true;
-      fetch(form.dataset.passwordCodeUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ email: form.dataset.userEmail }).toString(),
-      })
-        .then((response) => response.json())
-        .then((data) => {
-          if (!data.success) {
-            alert(data.message);
-            sendCodeButton.disabled = false;
-            return;
-          }
-          let seconds = 60;
-          const timer = window.setInterval(() => {
-            sendCodeButton.textContent = `${seconds}秒后重发`;
-            seconds -= 1;
-            if (seconds < 0) {
-              window.clearInterval(timer);
-              sendCodeButton.disabled = false;
-              sendCodeButton.textContent = '发送验证码';
-            }
-          }, 1000);
-        })
-        .catch(() => {
-          sendCodeButton.disabled = false;
-        });
+    const codeInput = document.getElementById('passwordCodeInput');
+    const codeMessage = document.getElementById('passwordCodeMessage');
+    const newPassword = document.getElementById('newPasswordInput');
+    const confirmPassword = document.getElementById('confirmPasswordInput');
+    const matchMessage = document.getElementById('passwordMatchMessage');
+    const strengthLabel = document.getElementById('passwordStrengthLabel');
+    const strengthMeter = document.getElementById('passwordStrengthMeter');
+    const strengthBars = [...strengthMeter.querySelectorAll('span')];
+    const ruleLength = document.getElementById('passwordRuleLength');
+    const ruleMix = document.getElementById('passwordRuleMix');
+    const formStatus = document.getElementById('passwordFormStatus');
+    const submitButton = document.getElementById('passwordSubmitBtn');
+    let codeTimer;
+    let isSubmitting = false;
+
+    function validatePassword() {
+      const password = newPassword.value;
+      const confirmation = confirmPassword.value;
+      const longEnough = password.length >= 6;
+      const mixed = /[A-Za-z]/.test(password) && /\d/.test(password);
+      const matches = confirmation.length > 0 && confirmation === password;
+      const hasCode = codeInput.value.length === 6;
+
+      ruleLength.classList.toggle('is-passed', longEnough);
+      ruleMix.classList.toggle('is-passed', mixed);
+      confirmPassword.setAttribute(
+        'aria-invalid',
+        String(confirmation.length > 0 && !matches)
+      );
+
+      if (!confirmation) {
+        setAccountMessage(matchMessage, '');
+      } else if (matches) {
+        setAccountMessage(matchMessage, '两次输入一致，可以提交。', 'success');
+      } else {
+        setAccountMessage(matchMessage, '两次输入不一致，请重新检查。', 'error');
+      }
+
+      const score = Math.min(
+        3,
+        Number(longEnough) + Number(mixed) + Number(password.length >= 10)
+      );
+      strengthMeter.dataset.level = String(score);
+      strengthMeter.setAttribute('aria-valuenow', String(score));
+      strengthBars.forEach((bar, index) => {
+        bar.classList.toggle('is-on', index < score);
+      });
+      strengthLabel.textContent = !password
+        ? '尚未输入'
+        : ['较短', '可用', '良好', '更稳妥'][score];
+      submitButton.disabled = isSubmitting || !(hasCode && longEnough && matches);
+    }
+
+    codeInput.addEventListener('input', () => {
+      codeInput.value = codeInput.value.replace(/\D/g, '').slice(0, 6);
+      setAccountMessage(formStatus, '');
+      validatePassword();
+    });
+    [newPassword, confirmPassword].forEach((input) => {
+      input.addEventListener('input', () => {
+        setAccountMessage(formStatus, '');
+        validatePassword();
+      });
     });
 
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      fetch(form.action, { method: 'POST', body: new FormData(form) })
-        .then((response) => {
-          if (response.redirected) {
-            window.location.href = response.url;
-            return null;
+    sendCodeButton.addEventListener('click', async () => {
+      sendCodeButton.disabled = true;
+      sendCodeButton.textContent = '正在发送…';
+      setAccountMessage(codeMessage, '正在发送验证码…');
+      try {
+        await requestJson(
+          form.dataset.passwordCodeUrl,
+          {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({ email: form.dataset.userEmail }).toString(),
+          },
+          '验证码发送失败'
+        );
+        let seconds = 60;
+        setAccountMessage(
+          codeMessage,
+          '验证码已发送，请在 5 分钟内完成验证。',
+          'success'
+        );
+        showAccountToast('验证码已发送');
+        window.clearInterval(codeTimer);
+        const updateCountdown = () => {
+          sendCodeButton.textContent = `${seconds}秒后重发`;
+          seconds -= 1;
+          if (seconds < 0) {
+            window.clearInterval(codeTimer);
+            sendCodeButton.disabled = false;
+            sendCodeButton.textContent = '发送验证码';
           }
-          return response.text();
-        })
-        .then((text) => {
-          if (text === null) return;
-          const documentFragment = new DOMParser().parseFromString(text, 'text/html');
-          const error = documentFragment.querySelector('.alert-danger');
-          if (error) alert(error.textContent);
-        });
+        };
+        updateCountdown();
+        codeTimer = window.setInterval(updateCountdown, 1000);
+      } catch (error) {
+        setAccountMessage(
+          codeMessage,
+          error.message || '验证码发送失败',
+          'error'
+        );
+        sendCodeButton.disabled = false;
+        sendCodeButton.textContent = '发送验证码';
+      }
     });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      validatePassword();
+      if (submitButton.disabled) return;
+
+      isSubmitting = true;
+      submitButton.disabled = true;
+      submitButton.textContent = '正在保存…';
+      setAccountMessage(formStatus, '');
+      try {
+        const data = await requestJson(
+          form.action,
+          {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: new FormData(form),
+          },
+          '密码修改失败'
+        );
+        setAccountMessage(
+          formStatus,
+          data.message || '密码修改成功',
+          'success'
+        );
+        submitButton.textContent = '已修改';
+        showAccountToast(data.message || '密码修改成功');
+        window.setTimeout(() => {
+          const modal = window.bootstrap?.Modal.getInstance(modalEl);
+          modal?.hide();
+          form.reset();
+          isSubmitting = false;
+          submitButton.textContent = '确认修改';
+          setAccountMessage(formStatus, '');
+          setAccountMessage(matchMessage, '');
+          validatePassword();
+        }, 700);
+      } catch (error) {
+        isSubmitting = false;
+        submitButton.textContent = '确认修改';
+        setAccountMessage(
+          formStatus,
+          error.message || '密码修改失败',
+          'error'
+        );
+        validatePassword();
+      }
+    });
+
+    validatePassword();
   }
 
+  initUserAvatar();
   initDesktopSidebar();
   initDesktopNavigationData();
   initAdaptiveNavigation();
