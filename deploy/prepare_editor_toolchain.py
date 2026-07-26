@@ -115,11 +115,11 @@ def _export_headers(image: str, staging_root: Path) -> None:
         "--user",
         f"{os.getuid()}:{os.getgid()}",
         "--mount",
-        f"type=bind,src={mount_source},dst=/export,rw",
+        f"type=bind,src={mount_source},dst=/export",
         "--mount",
         (
             f"type=bind,src={exporter_source},"
-            "dst=/opt/numericaloj-export-editor-headers.py,ro"
+            "dst=/opt/numericaloj-export-editor-headers.py,readonly"
         ),
         "--entrypoint=/usr/bin/python3",
         image,
