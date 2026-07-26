@@ -131,42 +131,6 @@ DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
 6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
 
-### 移除“主班级”模型的显式迁移
-
-`scripts/migrate_remove_primary_class.py` 只用于把旧库收缩为等价多班级模型。它默认
-执行只读 dry-run，检查旧 `users.class` 快照、成员映射、非管理员零班级账号
-以及遗留的 `Cadmin` 伪班级，并展示补映射与 `class_cnt` 重算 SQL。若
-`Cadmin` 物理作业表仍有任何数据，迁移会失败关闭，不会自动删除。只有检测到
-`users.class` / `users.class_cn` / `user_class_map.is_primary` /
-`idx_primary` 这些旧结构标记时，`Cadmin` 才会被识别为遗留伪班级并进入清理；
-结构已收缩后重新创建的同名普通班级不会被迁移脚本读取、删除或清空。apply 完成后
-还会再次验证成员关系与重算后的 `class_cnt`。
-
-```bash
-# 应用仍可运行时只能做只读预检；本命令不会写数据或执行 DDL
-python3 scripts/migrate_remove_primary_class.py
-
-# 官方 deploy.sh 会在停写和备份验证后自动执行；仅独立运维时才手工 apply
-python3 scripts/migrate_remove_primary_class.py \
-  --apply \
-  --confirm-app-writers-stopped \
-  --confirm-backup-verified
-```
-
-apply 会先补齐合法的旧班级关系、清理空的 `Cadmin` 伪班级并按映射重算
-`class_cnt`，随后删除 `user_class_map.is_primary`、`idx_primary`、
-`users.class` 和 `users.class_cn`。操作幂等，但 DDL 会隐式提交，不能依赖事务
-回滚重建已删除的字段或旧主班级选择；回滚必须依赖执行前已验证的数据库回滚点。
-执行顺序保证补映射、旧 `Cadmin` 清理和人数重算都发生在删除旧结构标记之前；
-中途失败时服务保持停止，先核对哪些 DDL 已提交，再以同一脚本幂等向前重跑或使用
-部署前回滚点人工恢复。代码修改和测试本身不会执行生产迁移；未来经明确授权运行
-`bash deploy.sh` 时，官方部署流程会在停写且备份验证完成后自动调用该脚本。
-
-本次变更包含 Python 数据访问、数据库结构和部署流程，**不能使用仅拉取模板并依赖
-`TEMPLATES_AUTO_RELOAD` 的快速路径**。即使同批提交还包含模板或静态资源修改，也必须
-按完整 `git pull --ff-only` + `bash deploy.sh` 流程发布，不能在旧数据库或旧 worker
-仍运行时只更新页面文件。
-
 ### 仓库存储运维
 
 仓库存储运维入口默认只读：
