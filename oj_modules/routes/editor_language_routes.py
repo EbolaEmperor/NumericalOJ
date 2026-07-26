@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 
 from flask import Blueprint, jsonify, request
@@ -30,6 +31,15 @@ _REQUEST_MAX_BYTES = LANGUAGE_SOURCE_MAX_BYTES * 6 + 16 * 1024
 _TOKENS_MAX_PER_WINDOW = 240
 _TOKENS_WINDOW_SECONDS = 60
 _MARKDOWN_SEMANTIC_CONTEXT = "markdown"
+_GENERIC_EDITOR_SEMANTIC_CONTEXTS = frozenset(
+    {
+        "problem-form",
+        "repository",
+    }
+)
+_GENERIC_EDITOR_DOCUMENT_ID_RE = re.compile(
+    r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z"
+)
 _MARKDOWN_CPP_PREAMBLE = "#include <bits/stdc++.h>\n"
 _MARKDOWN_CACHE_KEY_VERSION = b"markdown-cpp-bits-v2-tokens-12000\0"
 _MARKDOWN_SOURCE_MAX_BYTES = 512 * 1024
@@ -210,11 +220,20 @@ def semantic_tokens():
     language = str(payload.get("language") or "").lower()
     problem_id = payload.get("problem_id")
     semantic_context = payload.get("context")
+    document_id = payload.get("document_id")
     if not isinstance(source, str):
         return jsonify(success=False, message="source 必须是字符串"), 400
     markdown_request = semantic_context == _MARKDOWN_SEMANTIC_CONTEXT
+    generic_editor_request = (
+        isinstance(semantic_context, str)
+        and semantic_context in _GENERIC_EDITOR_SEMANTIC_CONTEXTS
+    )
     if markdown_request:
-        if problem_id is not None or language != "cpp":
+        if (
+            problem_id is not None
+            or document_id is not None
+            or language != "cpp"
+        ):
             return jsonify(success=False, message="Markdown 语义请求无效"), 400
         if len(source.encode("utf-8")) > _MARKDOWN_SOURCE_MAX_BYTES:
             return jsonify(
@@ -222,9 +241,19 @@ def semantic_tokens():
                 code="source_too_large",
                 message="Markdown C++ 代码块超过结构化高亮大小限制",
             ), 413
+    elif generic_editor_request:
+        if problem_id is not None:
+            return jsonify(success=False, message="编辑器语义请求无效"), 400
+        if (
+            not isinstance(document_id, str)
+            or _GENERIC_EDITOR_DOCUMENT_ID_RE.fullmatch(document_id) is None
+        ):
+            return jsonify(success=False, message="document_id 无效"), 400
     else:
         if semantic_context is not None:
             return jsonify(success=False, message="语义请求 context 无效"), 400
+        if document_id is not None:
+            return jsonify(success=False, message="document_id 无效"), 400
         if (
             not isinstance(problem_id, int)
             or isinstance(problem_id, bool)
@@ -257,6 +286,11 @@ def semantic_tokens():
             return _markdown_result_pending_response()
         document_key = f"{user_id}:markdown:{language}"
         analysis_source = _MARKDOWN_CPP_PREAMBLE + source
+    elif generic_editor_request:
+        document_key = (
+            f"{user_id}:editor:{semantic_context}:{document_id}:{language}"
+        )
+        analysis_source = source
     else:
         document_key = f"{user_id}:{problem_id}:{language}"
         analysis_source = source

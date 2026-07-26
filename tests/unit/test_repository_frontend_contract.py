@@ -56,9 +56,9 @@ def test_directory_upload_silently_ignores_ds_store_metadata_files():
 def test_in_flight_save_never_marks_newer_editor_content_as_saved():
     source = WORKBENCH_JS.read_text(encoding="utf-8")
 
-    change_start = source.index("codeMirrorEditor.on('change'")
-    language_start = source.index("function languageForFilename", change_start)
-    change_handler = source[change_start:language_start]
+    change_start = source.index("editor.on('change'")
+    extension_start = source.index("function extensionLabel", change_start)
+    change_handler = source[change_start:extension_start]
     save_start = source.index("function saveCurrentFile")
     transition_start = source.index("function persistBeforeTransition", save_start)
     save = source[save_start:transition_start]
@@ -91,8 +91,51 @@ def test_save_conflict_backup_uses_the_latest_local_buffer():
     save = source[save_start:transition_start]
 
     assert "var latestSnapshot = snapshot" in save
-    assert "codeMirrorEditor.getValue()" in save
+    assert "state.codeEditor.getValue()" in save
     assert "openSaveConflictDialog(latestSnapshot, error)" in save
+
+
+def test_repository_uses_the_shared_monaco_dark_plus_semantic_stack():
+    source = WORKBENCH_JS.read_text(encoding="utf-8")
+    template = (
+        ROOT / "templates" / "repository" / "index.html"
+    ).read_text(encoding="utf-8")
+    runtime = (
+        ROOT / "static" / "app" / "code-editor-runtime.js"
+    ).read_text(encoding="utf-8")
+
+    assert "{% include 'components/editor/monaco.html' %}" in template
+    assert "{% set codemirror_mobile_only = true %}" in template
+    assert 'id="repositoryMonacoContainer"' in template
+    assert "await runtime.prepareMonaco(monaco)" in source
+    assert "runtime.monacoOptions({" in source
+    assert "context: 'repository'" in source
+    assert "documentId: function (model)" in source
+    assert "'inmemory://repository/' + safeDocumentId" in source
+    assert "previousModel.dispose()" in source
+    assert "state.current ? 'entry-' + state.current.id" in source
+    assert "semanticHighlighting.enabled" in runtime
+    assert 'theme = "dark-plus"' in runtime
+    assert 'h: "cpp"' in runtime
+
+
+def test_repository_boot_does_not_wait_for_editor_assets_before_file_actions():
+    source = WORKBENCH_JS.read_text(encoding="utf-8")
+
+    initialize_start = source.index("function initialize()")
+    initialize = source[initialize_start:]
+
+    assert initialize.index("bindTreeEvents()") < initialize.index(
+        "initializeEditor().catch"
+    )
+    assert initialize.index("bindUploadEvents()") < initialize.index(
+        "initializeEditor().catch"
+    )
+    assert initialize.index("loadTree().catch") < initialize.index(
+        "initializeEditor().catch"
+    )
+    assert "editorInitializing: true" in source
+    assert "repositoryEditorLoading" in source
 
 
 def test_blocking_upload_directory_uses_cascading_exclude_instead_of_error():

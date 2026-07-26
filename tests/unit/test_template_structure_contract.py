@@ -135,11 +135,70 @@ def test_shared_layout_and_editor_fragments_have_one_canonical_source():
         assert source.count(editor_include) == 1
 
 
+def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
+    monaco_include = "{% include 'components/editor/monaco.html' %}"
+    for name in (
+        "problems/create.html",
+        "problems/edit.html",
+        "problems/detail.html",
+        "submissions/detail.html",
+        "repository/index.html",
+    ):
+        source = (TEMPLATES / name).read_text(encoding="utf-8")
+        assert source.count(monaco_include) == 1
+
+    create = (TEMPLATES / "problems" / "create.html").read_text(
+        encoding="utf-8"
+    )
+    edit = (TEMPLATES / "problems" / "edit.html").read_text(encoding="utf-8")
+    form_editor = (
+        ROOT / "static" / "app" / "problem-form-editors.js"
+    ).read_text(encoding="utf-8")
+    editor_runtime = (
+        ROOT / "static" / "app" / "code-editor-runtime.js"
+    ).read_text(encoding="utf-8")
+    problem_editor = (
+        ROOT / "static" / "app" / "problem-editor.js"
+    ).read_text(encoding="utf-8")
+    submission_editor = (
+        ROOT / "static" / "app" / "submissions" / "detail.js"
+    ).read_text(encoding="utf-8")
+    monaco_component = (
+        TEMPLATES / "components" / "editor" / "monaco.html"
+    ).read_text(encoding="utf-8")
+    codemirror_component = (
+        TEMPLATES / "components" / "editor" / "codemirror.html"
+    ).read_text(encoding="utf-8")
+
+    for source in (create, edit):
+        assert "filename='app/problem-form-editors.js'" in source
+        assert "numoj-form-code-editor" in source
+        assert "CodeMirror(" not in source
+    assert 'context: "problem-form"' in form_editor
+    assert '"initial-code"' in form_editor
+    assert '"test-code"' in form_editor
+    assert "runtime.monacoOptions({" in form_editor
+    assert "function registerMatlab(monaco)" in editor_runtime
+    assert "function registerMatlab(monaco)" not in problem_editor
+    assert "function registerMatlab(monaco)" not in submission_editor
+    assert "}, 8000);" in monaco_component
+    assert "}, 8000);" in codemirror_component
+    assert "withTimeout(monaco.prepareTextMateHighlighting(), 5000)" in (
+        editor_runtime
+    )
+
+
 def test_non_credential_text_fields_opt_out_of_password_managers():
     users = (TEMPLATES / "admin" / "users.html").read_text(encoding="utf-8")
     repository = (TEMPLATES / "repository" / "index.html").read_text(
         encoding="utf-8"
     )
+    workbench = (
+        ROOT / "static" / "app" / "repository" / "workbench.js"
+    ).read_text(encoding="utf-8")
+    editor_runtime = (
+        ROOT / "static" / "app" / "code-editor-runtime.js"
+    ).read_text(encoding="utf-8")
 
     assert 'name="user_search"' in users
     assert 'name="username"' not in users
@@ -147,9 +206,9 @@ def test_non_credential_text_fields_opt_out_of_password_managers():
         assert marker in users
         assert marker in repository
 
-    assert "codeMirrorEditor.getInputField()" in repository
-    assert "editorInput.setAttribute('autocomplete', 'off')" in repository
-    assert "editorInput.setAttribute('data-bwignore', '')" in repository
+    assert "runtime.protectEditorInput(" in workbench
+    assert 'input.setAttribute("autocomplete", "off")' in editor_runtime
+    assert 'input.setAttribute("data-bwignore", "")' in editor_runtime
 
 
 def test_problem_dashboard_defers_class_activity_until_after_first_render():
@@ -189,6 +248,9 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     monaco_entry = (ROOT / "frontend" / "monaco" / "editor.js").read_text(
         encoding="utf-8"
     )
+    editor_runtime = (
+        ROOT / "static" / "app" / "code-editor-runtime.js"
+    ).read_text(encoding="utf-8")
 
     assert "problem-detail-content-shell" in detail
     assert "problem-code-submit-form" in detail
@@ -232,8 +294,10 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert "settings.onRequestStart()" in semantic_tokens
     assert "settings.onRequestEnd()" in semantic_tokens
     assert "filename='app/editor-semantic-tokens.js'" in monaco_component
-    assert "monaco.prepareTextMateHighlighting()" in editor
-    assert "editorTheme = 'dark-plus'" in editor
+    assert "filename='app/code-editor-runtime.js'" in monaco_component
+    assert "runtime.prepareMonaco(monaco)" in editor
+    assert "monaco.prepareTextMateHighlighting()" in editor_runtime
+    assert 'theme = "dark-plus"' in editor_runtime
     assert "theme: editorTheme" in editor
     assert "'semanticHighlighting.enabled': true" in editor
     assert 'from "@shikijs/monaco"' in monaco_entry
@@ -279,6 +343,9 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     detail_js = (
         ROOT / "static" / "app" / "submissions" / "detail.js"
     ).read_text(encoding="utf-8")
+    editor_runtime = (
+        ROOT / "static" / "app" / "code-editor-runtime.js"
+    ).read_text(encoding="utf-8")
     list_component = (
         TEMPLATES / "submissions" / "components" / "table.html"
     ).read_text(encoding="utf-8")
@@ -320,7 +387,8 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert "card.setAttribute('aria-pressed', isSelected ? 'true' : 'false')" in detail
     assert "readOnly: true" in detail_js
     assert "domReadOnly: true" in detail_js
-    assert 'editorTheme = "dark-plus"' in detail_js
+    assert "runtime.prepareMonaco(monaco)" in detail_js
+    assert 'theme = "dark-plus"' in editor_runtime
     assert "window.NumOJMonacoReady" in detail_js
     assert "window.NumOJCodeMirrorReady" in detail_js
     assert "window.NumOJSemanticTokens.register(monaco" in detail_js

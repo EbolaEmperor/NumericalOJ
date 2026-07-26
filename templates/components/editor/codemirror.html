@@ -16,6 +16,16 @@
       resolve(null);
       return;
     }
+    var settled = false;
+    var timeout = window.setTimeout(function() {
+      finish(null);
+    }, 8000);
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve(value);
+    }
 
     function loadStyle(path) {
       return new Promise(function(done) {
@@ -51,8 +61,8 @@
       });
 
     Promise.all([styles, scripts])
-      .then(function() { resolve(window.CodeMirror || null); })
-      .catch(function() { resolve(null); });
+      .then(function() { finish(window.CodeMirror || null); })
+      .catch(function() { finish(null); });
   });
 </script>
 {% else %}

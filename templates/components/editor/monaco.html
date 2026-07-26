@@ -1,5 +1,7 @@
-{# Monaco 仅在桌面编程题按需加载；运行资产固定并由本仓库托管。 #}
+{# Monaco 仅在桌面代码编辑区按需加载；运行资产固定并由本仓库托管。 #}
+<link rel="stylesheet" href="{{ url_for('static', filename='styles/code-editor.css') }}">
 <script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
+<script src="{{ url_for('static', filename='app/code-editor-runtime.js') }}"></script>
 <script>
   window.MonacoEnvironment = {
     getWorkerUrl: function() {
@@ -10,6 +12,16 @@
     if (!window.matchMedia('(min-width: 992px)').matches) {
       resolve(null);
       return;
+    }
+    var settled = false;
+    var timeout = window.setTimeout(function() {
+      finish(null);
+    }, 8000);
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve(value);
     }
     var stylesheetReady = new Promise(function(done) {
       var stylesheet = document.createElement('link');
@@ -24,10 +36,10 @@
     script.async = true;
     script.onload = function() {
       stylesheetReady.then(function() {
-        resolve(window.NumericalOJMonaco || null);
+        finish(window.NumericalOJMonaco || null);
       });
     };
-    script.onerror = function() { resolve(null); };
+    script.onerror = function() { finish(null); };
     document.head.appendChild(script);
   });
 </script>

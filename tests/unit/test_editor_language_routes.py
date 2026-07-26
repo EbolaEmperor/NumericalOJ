@@ -99,6 +99,142 @@ def test_editor_semantic_tokens_validate_payload_before_calling_clangd(monkeypat
     assert service.calls == []
 
 
+def test_generic_editor_contexts_use_stable_isolated_document_keys(monkeypatch):
+    service = _FakeService()
+    app = _app(monkeypatch, service)
+    alice = app.test_client()
+    bob = app.test_client()
+    with alice.session_transaction() as user_session:
+        user_session["username"] = "alice"
+    with bob.session_transaction() as user_session:
+        user_session["username"] = "bob"
+
+    requests = (
+        (
+            alice,
+            {
+                "context": "repository",
+                "document_id": "entry-42",
+                "language": "cpp",
+                "source": "int repository_value;",
+            },
+        ),
+        (
+            alice,
+            {
+                "context": "problem-form",
+                "document_id": "initial-code",
+                "language": "python",
+                "source": "form_value = 1",
+            },
+        ),
+        (
+            bob,
+            {
+                "context": "repository",
+                "document_id": "entry-42",
+                "language": "cpp",
+                "source": "int another_value;",
+            },
+        ),
+    )
+
+    for client, payload in requests:
+        response = client.post("/api/editor/semantic-tokens", json=payload)
+        assert response.status_code == 200
+
+    assert service.calls == [
+        (
+            "7:editor:repository:entry-42:cpp",
+            "int repository_value;",
+        ),
+        (
+            "7:editor:problem-form:initial-code:python",
+            "form_value = 1",
+        ),
+        (
+            "8:editor:repository:entry-42:cpp",
+            "int another_value;",
+        ),
+    ]
+
+
+def test_generic_editor_contexts_reject_unsafe_document_identity(monkeypatch):
+    service = _FakeService()
+    client = _app(monkeypatch, service).test_client()
+    with client.session_transaction() as user_session:
+        user_session["username"] = "alice"
+
+    invalid_payloads = (
+        {
+            "context": "repository",
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "repository",
+            "document_id": "",
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "repository",
+            "document_id": "../another-key",
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "repository",
+            "document_id": "folder/file.cpp",
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "repository",
+            "document_id": "代码",
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "problem-form",
+            "document_id": "x" * 65,
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "problem-form",
+            "document_id": 17,
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "repository",
+            "document_id": "entry-42",
+            "problem_id": 31,
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "document_id": "entry-42",
+            "problem_id": 31,
+            "language": "cpp",
+            "source": "int value;",
+        },
+        {
+            "context": "markdown",
+            "document_id": "entry-42",
+            "language": "cpp",
+            "source": "int value;",
+        },
+    )
+
+    for payload in invalid_payloads:
+        response = client.post("/api/editor/semantic-tokens", json=payload)
+        assert response.status_code == 400
+
+    assert service.calls == []
+
+
 def test_markdown_cpp_tokens_use_isolated_context_and_hidden_bits_preamble(
     monkeypatch,
 ):
