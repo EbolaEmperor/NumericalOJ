@@ -15,6 +15,7 @@ from oj_modules.class_membership_services import (
     remove_secondary_membership,
     set_primary_membership,
 )
+from oj_modules.class_logo_services import attach_class_logos
 from oj_modules.db_services import (
     get_all_classes_except_admin,
     get_class_by_en,
@@ -198,7 +199,12 @@ def get_my_classes():
 
     all_classes = get_all_classes_except_admin()
 
-    return jsonify(success=True, memberships=user_classes, primary_en=primary_en, all_classes=all_classes)
+    return jsonify(
+        success=True,
+        memberships=attach_class_logos(user_classes),
+        primary_en=primary_en,
+        all_classes=attach_class_logos(all_classes),
+    )
 
 
 @class_management_bp.route('/me/join_class', methods=['POST'])

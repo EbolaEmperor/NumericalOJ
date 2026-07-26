@@ -29,10 +29,25 @@ PASSWORD_MODAL = (
 CLASS_MANAGER_MODAL = (
     ROOT / "templates" / "components" / "layout" / "class_manager_modal.html"
 ).read_text(encoding="utf-8")
+REGISTER = (ROOT / "templates" / "auth" / "register.html").read_text(
+    encoding="utf-8"
+)
+CLASS_LOGO = (
+    ROOT / "templates" / "components" / "layout" / "class_logo.html"
+).read_text(encoding="utf-8")
 LAYOUT_CSS = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
 LAYOUT_JS = (ROOT / "static" / "app" / "layout.js").read_text(encoding="utf-8")
 IDENTICON_JS = (
     ROOT / "static" / "app" / "identicon.js"
+).read_text(encoding="utf-8")
+CLASS_SELECT_JS = (
+    ROOT / "static" / "app" / "class-select.js"
+).read_text(encoding="utf-8")
+AUTH_ROUTES = (
+    ROOT / "oj_modules" / "routes" / "auth_routes.py"
+).read_text(encoding="utf-8")
+CLASS_MANAGEMENT_ROUTES = (
+    ROOT / "oj_modules" / "routes" / "class_management_routes.py"
 ).read_text(encoding="utf-8")
 
 
@@ -50,7 +65,9 @@ def test_layout_loads_shared_static_assets_instead_of_inline_app_code():
 
     assert "filename='app/layout.css'" in SITE_LAYOUT
     assert "filename='app/identicon.js'" in SITE_LAYOUT
+    assert "filename='app/class-select.js'" in SITE_LAYOUT
     assert "filename='app/layout.js'" in SITE_LAYOUT
+    assert SITE_LAYOUT.index("app/class-select.js") < SITE_LAYOUT.index("app/layout.js")
     assert SITE_LAYOUT.index("app/identicon.js") < SITE_LAYOUT.index("app/layout.js")
     for layout in (BASE_LAYOUT, SITE_LAYOUT, EMBEDDED_LAYOUT):
         assert "<style" not in layout
@@ -113,7 +130,7 @@ def test_layout_styles_and_behaviors_live_in_their_responsible_assets():
         ".layout-offcanvas-nav.layout-nav-compact",
         ".numoj-account-modal",
         ".numoj-membership-row",
-        ".numoj-account-select",
+        ".numoj-class-select",
     ):
         assert selector in LAYOUT_CSS
 
@@ -137,6 +154,41 @@ def test_sidebar_avatar_reuses_the_forum_username_identicon_renderer():
     assert ".numoj-avatar > span.is-filled" in LAYOUT_CSS
 
 
+def test_class_membership_and_registration_share_the_custom_logo_picker():
+    for source in (CLASS_MANAGER_MODAL, REGISTER):
+        assert "data-numoj-class-select" in source
+        assert 'role="listbox"' in source
+        assert "numoj-class-select-trigger" in source
+        assert "numoj-class-select-logo" in source
+
+    assert "<select" not in CLASS_MANAGER_MODAL
+    assert '<select name="class"' not in REGISTER
+    assert 'type="hidden" id="joinClassSelect"' in CLASS_MANAGER_MODAL
+    assert 'type="hidden"' in REGISTER
+    assert 'name="class"' in REGISTER
+    assert "data-class-select-required" in REGISTER
+    assert "components/layout/class_logo.html" in REGISTER
+    assert "cls.logo.cells" in CLASS_LOGO
+
+    assert "const MAX_VISIBLE_OPTIONS = 8;" in CLASS_SELECT_JS
+    assert "--numoj-class-option-height: 46px;" in LAYOUT_CSS
+    assert "--numoj-class-menu-capacity" in LAYOUT_CSS
+    assert "overflow-y: auto;" in LAYOUT_CSS
+    assert ".numoj-class-select-option.is-selected" in LAYOUT_CSS
+    assert "ArrowDown" in CLASS_SELECT_JS
+    assert "ArrowUp" in CLASS_SELECT_JS
+    assert "Home" in CLASS_SELECT_JS
+    assert "End" in CLASS_SELECT_JS
+    assert "Escape" in CLASS_SELECT_JS
+    assert "createLogo" in CLASS_SELECT_JS
+    assert "joinPicker.setItems" in LAYOUT_JS
+
+    assert "attach_class_logos(get_all_classes_except_admin())" in AUTH_ROUTES
+    assert "memberships=attach_class_logos(user_classes)" in CLASS_MANAGEMENT_ROUTES
+    assert "all_classes=attach_class_logos(all_classes)" in CLASS_MANAGEMENT_ROUTES
+    assert "logo_seed" not in CLASS_MANAGER_MODAL
+
+
 def test_account_modals_keep_the_approved_ui_v2_contract():
     for source in (PASSWORD_MODAL, CLASS_MANAGER_MODAL):
         assert "<style" not in source
@@ -153,6 +205,8 @@ def test_account_modals_keep_the_approved_ui_v2_contract():
         assert removed_copy not in PASSWORD_MODAL
     assert "变更后需要短暂同步" not in CLASS_MANAGER_MODAL
     assert "喝一口茶" not in CLASS_MANAGER_MODAL
+    assert "管理当前所属班级" not in CLASS_MANAGER_MODAL
+    assert "主班级决定默认展示的作业与成绩上下文" not in CLASS_MANAGER_MODAL
 
     for element_id in (
         "passwordCodeInput",

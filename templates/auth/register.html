@@ -1,4 +1,5 @@
 {% extends "layouts/site.html" %}
+{% from 'components/layout/class_logo.html' import class_logo %}
 {% block content %}
 <div class="d-flex justify-content-center align-items-center" style="min-height: 80vh;">
   <div class="card p-4" style="max-width: 100%; width: 100%; max-width: 400px;">
@@ -31,13 +32,74 @@
         <input type="password" class="form-control" id="password" name="password" required>
       </div>
       <div class="mb-3">
-        <label class="form-label"><i class="fas fa-users"></i> 班级 </label>
-        <select name="class" id="editClassSelect" class="form-control" required>
-          <option value="">请选择</option>
+        <label class="form-label" for="registerClassSelectTrigger"><i class="fas fa-users"></i> 班级 </label>
+        <div
+          class="numoj-class-select numoj-register-class-select"
+          data-numoj-class-select
+          data-class-select-auto
+          data-class-select-required
+          data-class-select-placeholder="请选择班级"
+          data-class-select-placeholder-code="REQUIRED"
+        >
+          <input
+            type="hidden"
+            id="registerClassSelect"
+            name="class"
+            value="{{ request.form.get('class', '') }}"
+            data-class-select-input
+          >
+          <button
+            class="numoj-class-select-trigger"
+            id="registerClassSelectTrigger"
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            aria-controls="registerClassOptions"
+            aria-describedby="registerClassError"
+            data-class-select-trigger
+          >
+            <span
+              class="numoj-class-select-logo is-placeholder"
+              data-class-select-current-logo
+              aria-hidden="true"
+            ></span>
+            <span class="numoj-class-select-current">
+              <strong data-class-select-current-label>请选择班级</strong>
+              <small data-class-select-current-code>REQUIRED</small>
+            </span>
+            <i class="fas fa-chevron-down numoj-class-select-chevron" aria-hidden="true"></i>
+          </button>
+          <div
+            class="numoj-class-select-menu"
+            id="registerClassOptions"
+            role="listbox"
+            aria-label="可注册的班级"
+            data-class-select-menu
+            hidden
+          >
           {% for c in classes %}
-            <option value="{{ c.class_en }}">{{ c.class_cn }}</option>
+            <button
+              class="numoj-class-select-option"
+              type="button"
+              role="option"
+              aria-selected="false"
+              data-class-select-option
+              data-class-select-value="{{ c.class_en }}"
+              data-class-select-label="{{ c.class_cn }}"
+              data-class-select-code="{{ c.class_en }}"
+            >
+              {{ class_logo(c, 'numoj-class-select-logo') }}
+              <span class="numoj-class-select-option-copy">
+                <strong>{{ c.class_cn }}</strong>
+                <small>{{ c.class_en }}</small>
+              </span>
+              <span class="numoj-class-select-option-state" aria-hidden="true">✓</span>
+            </button>
           {% endfor %}
-        </select>
+          </div>
+          <p class="numoj-class-select-error" id="registerClassError"
+            data-class-select-error role="alert" hidden></p>
+        </div>
       </div>
       
       <button type="submit" class="btn btn-outline-success w-100">

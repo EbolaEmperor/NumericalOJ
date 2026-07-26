@@ -17,7 +17,6 @@
         <div class="numoj-account-modal-title">
           <span class="numoj-account-kicker">MEMBERSHIP · CLASSES</span>
           <h2 class="modal-title" id="classManagerLabel">调整班级</h2>
-          <p>管理当前所属班级；主班级决定默认展示的作业与成绩上下文。</p>
         </div>
 
         <div class="numoj-class-header-actions">
@@ -55,9 +54,42 @@
             <span>AVAILABLE</span>
           </div>
           <div class="numoj-class-join-row">
-            <select id="joinClassSelect" class="numoj-account-select" aria-label="选择要加入的班级">
-              <option value="">请选择班级</option>
-            </select>
+            <div
+              class="numoj-class-select"
+              id="joinClassPicker"
+              data-numoj-class-select
+              data-class-select-placeholder="请选择班级"
+              data-class-select-placeholder-code="AVAILABLE"
+            >
+              <input type="hidden" id="joinClassSelect" data-class-select-input value="">
+              <button
+                class="numoj-class-select-trigger"
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="joinClassOptions"
+                data-class-select-trigger
+              >
+                <span
+                  class="numoj-class-select-logo is-placeholder"
+                  data-class-select-current-logo
+                  aria-hidden="true"
+                ></span>
+                <span class="numoj-class-select-current">
+                  <strong data-class-select-current-label>请选择班级</strong>
+                  <small data-class-select-current-code>AVAILABLE</small>
+                </span>
+                <i class="fas fa-chevron-down numoj-class-select-chevron" aria-hidden="true"></i>
+              </button>
+              <div
+                class="numoj-class-select-menu"
+                id="joinClassOptions"
+                role="listbox"
+                aria-label="可加入的班级"
+                data-class-select-menu
+                hidden
+              ></div>
+            </div>
             <button class="numoj-account-button numoj-account-button-brand" id="joinClassBtn"
               type="button" disabled>加入班级</button>
           </div>

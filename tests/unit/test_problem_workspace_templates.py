@@ -8,6 +8,9 @@ def test_desktop_problem_templates_preserve_class_context_and_separate_library_d
     desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
     detail = (repo / "templates/problems/detail.html").read_text()
     navigation = (repo / "templates/components/layout/navigation.html").read_text()
+    class_logo = (
+        repo / "templates/components/layout/class_logo.html"
+    ).read_text()
 
     assert "problem_core.problem_library" in navigation
     assert "source='library'" in desktop_list
@@ -22,14 +25,11 @@ def test_desktop_problem_templates_preserve_class_context_and_separate_library_d
         1,
     )[1].split("</button>", 1)[0]
     assert "fa-sync-alt" in project_refresh
-    logo_macro = desktop_list.split("{% macro class_logo", 1)[1].split(
-        "{%- endmacro %}",
-        1,
-    )[0]
-    assert "<svg" in logo_macro
-    assert "<rect" in logo_macro
-    assert "fas " not in logo_macro
-    assert "palette-" not in logo_macro
+    assert "{% from 'components/layout/class_logo.html' import class_logo %}" in desktop_list
+    assert "<svg" in class_logo
+    assert "<rect" in class_logo
+    assert "fas " not in class_logo
+    assert "palette-" not in class_logo
     library_rows = desktop_list.split("{% for p in problems %}", 1)[1].split(
         "{% else %}", 1
     )[0]

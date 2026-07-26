@@ -1,14 +1,6 @@
 {% from 'components/problem_macros.html' import language_label %}
+{% from 'components/layout/class_logo.html' import class_logo %}
 {% from 'problems/desktop/macros.html' import submission_metric %}
-{% macro class_logo(cls) -%}
-<span class="numoj-class-logo" aria-hidden="true">
-  <svg viewBox="0 0 7 7" focusable="false" shape-rendering="crispEdges">
-    {% for column, row in cls.logo.cells %}
-    <rect x="{{ column + 1 }}" y="{{ row + 1 }}" width="1" height="1"></rect>
-    {% endfor %}
-  </svg>
-</span>
-{%- endmacro %}
 <section class="numoj-problem-dashboard d-none d-lg-block" aria-labelledby="problem-dashboard-title">
   {% set is_library = view_mode == 'admin_library' %}
   <header class="numoj-page-header">
