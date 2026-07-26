@@ -56,6 +56,14 @@ class LanguageServiceProtocolError(LanguageServiceError):
 
 def find_language_service_executable(command: str, service_name: str) -> str:
     """Resolve a language runtime exactly as the production bridge does."""
+    command_path = Path(command)
+    if command_path.name != command:
+        if command_path.is_file() and os.access(command_path, os.X_OK):
+            return str(command_path)
+        raise LanguageServiceUnavailableError(
+            service_name,
+            f"服务器尚未安装 {service_name}",
+        )
     venv_candidate = Path(sys.executable).with_name(command)
     if venv_candidate.is_file() and os.access(venv_candidate, os.X_OK):
         return str(venv_candidate)

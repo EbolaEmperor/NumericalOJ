@@ -13,17 +13,26 @@ def _result(command, *, stdout="", stderr="", returncode=0):
     return subprocess.CompletedProcess(command, returncode, stdout, stderr)
 
 
-def test_parse_simulation_allows_only_new_clangd_dependencies():
+def test_parse_simulation_allows_only_new_versioned_clangd_dependencies():
     output = "\n".join(
         (
-            "Inst libclang-common-14-dev (1:14.0.6-12 Debian:12 [all])",
-            "Inst clangd (1:14.0-55.7~deb12u1 Debian:12 [amd64])",
-            "Conf clangd (1:14.0-55.7~deb12u1 Debian:12 [amd64])",
+            "Inst libllvm19 (1:19.1.7-3~deb12u1 Debian:12 [amd64])",
+            "Inst libclang-cpp19 (1:19.1.7-3~deb12u1 Debian:12 [amd64])",
+            "Inst libclang-common-19-dev (1:19.1.7-3~deb12u1 Debian:12 [amd64])",
+            "Inst clangd-19 (1:19.1.7-3~deb12u1 Debian:12 [amd64])",
+            "Conf clangd-19 (1:19.1.7-3~deb12u1 Debian:12 [amd64])",
         )
     )
     assert system_packages._parse_simulation(
-        output, "1:14.0-55.7~deb12u1"
-    ) == {"libclang-common-14-dev", "clangd"}
+        output,
+        "1:19.1.7-3~deb12u1",
+        package="clangd-19",
+    ) == {
+        "libllvm19",
+        "libclang-cpp19",
+        "libclang-common-19-dev",
+        "clangd-19",
+    }
 
 
 @pytest.mark.parametrize(
@@ -38,15 +47,39 @@ def test_parse_simulation_allows_only_new_clangd_dependencies():
 def test_parse_simulation_rejects_unsafe_actions(line, message):
     with pytest.raises(system_packages.SystemPackageError, match=message):
         system_packages._parse_simulation(
-            f"{line}\nInst clangd (1:14 Debian:12 [amd64])", "1:14"
+            f"{line}\nInst clangd-19 (1:19 Debian:12 [amd64])",
+            "1:19",
+            package="clangd-19",
         )
 
 
-def test_ensure_clangd_installs_exact_apt_candidate(monkeypatch, tmp_path):
+def test_clangd_requires_major_17_or_newer(monkeypatch):
+    monkeypatch.setattr(
+        system_packages.shutil,
+        "which",
+        lambda command: f"/usr/bin/{command}",
+    )
+
+    def run(command, **kwargs):
+        version = 14 if command[0].endswith("clangd") else 19
+        return _result(command, stdout=f"Debian clangd version {version}.1.0\n")
+
+    assert system_packages._clangd_works("clangd", run=run) is False
+    assert system_packages._clangd_works("clangd-19", run=run) is True
+
+
+def test_ensure_clangd_installs_exact_versioned_apt_candidate(
+    monkeypatch,
+    tmp_path,
+):
     os_release = tmp_path / "os-release"
     os_release.write_text('ID="debian"\nVERSION_CODENAME="bookworm"\n')
     works = iter((False, True))
-    monkeypatch.setattr(system_packages, "_clangd_works", lambda **kwargs: next(works))
+    monkeypatch.setattr(
+        system_packages,
+        "_clangd_works",
+        lambda **kwargs: next(works),
+    )
     commands = []
     state = {"installed": False}
 
@@ -54,18 +87,21 @@ def test_ensure_clangd_installs_exact_apt_candidate(monkeypatch, tmp_path):
         interactive = bool(kwargs.get("interactive"))
         commands.append((command, interactive))
         if command[:2] == [system_packages.APT_CACHE, "policy"]:
-            return _result(command, stdout="  Candidate: 1:14.0-55.7~deb12u1\n")
+            assert command[2] == "clangd-19"
+            return _result(command, stdout="  Candidate: 1:19.1.7-3~deb12u1\n")
         if "--simulate" in command:
             return _result(
                 command,
                 stdout=(
-                    "Inst libclang-common-14-dev (1:14.0.6-12 Debian:12 [all])\n"
-                    "Inst clangd (1:14.0-55.7~deb12u1 Debian:12 [amd64])\n"
+                    "Inst libllvm19 (1:19.1.7-3~deb12u1 Debian:12 [amd64])\n"
+                    "Inst libclang-cpp19 (1:19.1.7-3~deb12u1 Debian:12 [amd64])\n"
+                    "Inst libclang-common-19-dev (1:19.1.7-3~deb12u1 Debian:12 [amd64])\n"
+                    "Inst clangd-19 (1:19.1.7-3~deb12u1 Debian:12 [amd64])\n"
                 ),
             )
         if command[:2] == [system_packages.DPKG_QUERY, "-W"]:
             output = (
-                "clangd\t1:14.0-55.7~deb12u1\tii \n"
+                "clangd-19\t1:19.1.7-3~deb12u1\tii \n"
                 if state["installed"]
                 else ""
             )
@@ -81,7 +117,10 @@ def test_ensure_clangd_installs_exact_apt_candidate(monkeypatch, tmp_path):
     ) is True
     flattened = [" ".join(command) for command, _ in commands]
     assert any("apt-get --simulate" in command for command in flattened)
-    assert any("clangd=1:14.0-55.7~deb12u1" in command for command in flattened)
+    assert any(
+        "clangd-19=1:19.1.7-3~deb12u1" in command
+        for command in flattened
+    )
     assert any(interactive for _, interactive in commands)
 
 
@@ -147,7 +186,7 @@ def test_ensure_editor_runtime_installs_clangd_and_bubblewrap_once(
         commands.append(command)
         if command[:2] == [system_packages.APT_CACHE, "policy"]:
             package = command[2]
-            version = "1:14.0" if package == "clangd" else "0.8.0"
+            version = "1:19.1.7" if package == "clangd-19" else "0.8.0"
             return _result(command, stdout=f"  Candidate: {version}\n")
         if "--simulate" in command:
             target = command[-1]
@@ -171,10 +210,10 @@ def test_ensure_editor_runtime_installs_clangd_and_bubblewrap_once(
         run=run,
         os_release=os_release,
         command_exists=lambda path: True,
-    ) == ("clangd", "bubblewrap")
+    ) == ("clangd-19", "bubblewrap")
     assert sum(
         command[:2] == [system_packages.APT_GET, "update"]
         or command[-1:] == ["update"]
         for command in commands
     ) == 1
-    assert installed == {"clangd": "1:14.0", "bubblewrap": "0.8.0"}
+    assert installed == {"clangd-19": "1:19.1.7", "bubblewrap": "0.8.0"}

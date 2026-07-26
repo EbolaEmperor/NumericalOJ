@@ -70,6 +70,91 @@ def test_clangd_advertises_inactive_regions_client_capability():
     ] == {"inactiveRegions": True}
 
 
+def test_default_clangd_prefers_newest_supported_versioned_executable(
+    monkeypatch,
+):
+    paths = {
+        "clangd-20": "/usr/bin/clangd-20",
+        "clangd-19": "/usr/bin/clangd-19",
+        "clangd": "/usr/bin/clangd",
+    }
+    versions = {
+        "/usr/bin/clangd-20": 16,
+        "/usr/bin/clangd-19": 19,
+        "/usr/bin/clangd": 21,
+    }
+    monkeypatch.setattr(
+        clangd_services.shutil,
+        "which",
+        paths.get,
+    )
+
+    def run(command, **kwargs):
+        major = versions[command[0]]
+        return type(
+            "Probe",
+            (),
+            {
+                "returncode": 0,
+                "stdout": f"Debian clangd version {major}.1.0\n",
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(clangd_services.subprocess, "run", run)
+    clangd_services._default_clangd_command.cache_clear()
+    try:
+        assert (
+            clangd_services._default_clangd_command()
+            == "/usr/bin/clangd-19"
+        )
+    finally:
+        clangd_services._default_clangd_command.cache_clear()
+
+
+def test_default_clangd_rejects_old_unversioned_executable(monkeypatch):
+    monkeypatch.setattr(
+        clangd_services.shutil,
+        "which",
+        lambda command: "/usr/bin/clangd" if command == "clangd" else None,
+    )
+    monkeypatch.setattr(
+        clangd_services.subprocess,
+        "run",
+        lambda command, **kwargs: type(
+            "Probe",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "Debian clangd version 14.0.6\n",
+                "stderr": "",
+            },
+        )(),
+    )
+    clangd_services._default_clangd_command.cache_clear()
+    try:
+        with pytest.raises(
+            clangd_services.ClangdUnavailableError,
+            match="clangd 17",
+        ):
+            clangd_services._default_clangd_command()
+    finally:
+        clangd_services._default_clangd_command.cache_clear()
+
+
+def test_selected_absolute_clangd_path_is_accepted(tmp_path):
+    executable = tmp_path / "clangd-19"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    service = clangd_services.ClangdService(
+        "cpp",
+        command=str(executable),
+        cpp_standard_library_paths=(),
+    )
+
+    assert service._find_executable() == str(executable)
+
+
 def test_semantic_tokens_include_current_official_inactive_regions_notification():
     service = FakeClangdService()
     original_request = service._request_locked

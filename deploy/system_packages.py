@@ -25,20 +25,48 @@ DPKG_QUERY = apt_services.DPKG_QUERY
 SUDO = apt_services.SUDO
 ENV = apt_services.ENV
 
+CLANGD_MINIMUM_MAJOR = 17
+CLANGD_APT_PACKAGE = "clangd-19"
+CLANGD_EXECUTABLE_CANDIDATES = (
+    "clangd-20",
+    "clangd-19",
+    "clangd-18",
+    "clangd-17",
+    "clangd",
+)
+
+
+def _clangd_major(version_output: str) -> int | None:
+    match = re.search(
+        r"\bclangd\s+version\s+([0-9]+)(?:[.\s]|$)",
+        version_output,
+        re.IGNORECASE,
+    )
+    return None if match is None else int(match.group(1))
+
 
 def _clangd_works(
     command: str | None = None,
     *,
     run: Runner = run_command,
 ) -> bool:
-    executable = command or shutil.which("clangd")
-    if not executable:
-        return False
-    try:
-        result = run([executable, "--version"], check=False)
-    except OSError:
-        return False
-    return result.returncode == 0
+    candidates = (command,) if command is not None else CLANGD_EXECUTABLE_CANDIDATES
+    for candidate in candidates:
+        executable = shutil.which(candidate)
+        if not executable:
+            continue
+        try:
+            result = run([executable, "--version"], check=False)
+        except OSError:
+            continue
+        major = _clangd_major(f"{result.stdout}\n{result.stderr}")
+        if (
+            result.returncode == 0
+            and major is not None
+            and major >= CLANGD_MINIMUM_MAJOR
+        ):
+            return True
+    return False
 
 
 def _bubblewrap_works(
@@ -101,15 +129,22 @@ def _parse_simulation(
 
 
 def _ensure_packages(
-    packages: tuple[tuple[str, Callable[..., bool]], ...],
+    packages: tuple[
+        tuple[
+            str,
+            Callable[..., bool],
+            Callable[..., bool],
+        ],
+        ...,
+    ],
     *,
     run: Runner = run_command,
     os_release: Path = Path("/etc/os-release"),
     command_exists: Callable[[str], bool] = _command_exists,
 ) -> tuple[str, ...]:
     missing = [
-        (package, works)
-        for package, works in packages
+        (package, verify_after_install)
+        for package, works, verify_after_install in packages
         if not works(run=run)
     ]
     if not missing:
@@ -155,7 +190,16 @@ def ensure_clangd(
     """Backward-compatible single-package provisioning entrypoint."""
     return bool(
         _ensure_packages(
-            (("clangd", _clangd_works),),
+            (
+                (
+                    CLANGD_APT_PACKAGE,
+                    _clangd_works,
+                    lambda **kwargs: _clangd_works(
+                        command=CLANGD_APT_PACKAGE,
+                        **kwargs,
+                    ),
+                ),
+            ),
             run=run,
             os_release=os_release,
             command_exists=command_exists,
@@ -171,7 +215,17 @@ def ensure_editor_runtime(
 ) -> tuple[str, ...]:
     """Ensure clangd and its fail-closed process sandbox are installed."""
     return _ensure_packages(
-        (("clangd", _clangd_works), ("bubblewrap", _bubblewrap_works)),
+        (
+            (
+                CLANGD_APT_PACKAGE,
+                _clangd_works,
+                lambda **kwargs: _clangd_works(
+                    command=CLANGD_APT_PACKAGE,
+                    **kwargs,
+                ),
+            ),
+            ("bubblewrap", _bubblewrap_works, _bubblewrap_works),
+        ),
         run=run,
         os_release=os_release,
         command_exists=command_exists,
@@ -191,7 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "ensure-clangd":
-            installed = ("clangd",) if ensure_clangd() else ()
+            installed = (CLANGD_APT_PACKAGE,) if ensure_clangd() else ()
         else:
             installed = ensure_editor_runtime()
     except SystemPackageError as exc:

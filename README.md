@@ -270,8 +270,11 @@ bash deploy.sh
 Web 端的 C/C++ Monaco 编辑器通过常驻 `clangd` 进程取得实时语义令牌。clangd 与
 BasedPyright 都在禁网、仅暴露运行时和临时工作区的进程沙箱中解析不可信源码；生产
 Linux 使用 Bubblewrap，macOS 本地开发使用系统 Sandbox。部署脚本会在停服前核验
-`clangd --version` 与 `bwrap --version`；缺失时才通过交互式 `sudo` 和 Debian APT
-安装仓库当前 candidate 的精确版本。安装前必须完成 APT 模拟，拒绝卸载、改动既有
+clangd 的实际主版本至少为 17，并核验 `bwrap --version`；缺失时才通过交互式
+`sudo` 和 Debian APT 安装版本化 `clangd-19` 当前 candidate 的精确版本，不替换
+系统已有的旧版 `clangd`。应用依次选择可用的 `clangd-20`、`clangd-19`、
+`clangd-18`、`clangd-17`，最后才回退到版本合格的无后缀 `clangd`。安装前必须完成
+APT 模拟，拒绝卸载、改动既有
 依赖或触碰 MySQL、Docker、Python 等宿主关键包，安装后同时核验 dpkg 版本与可执行
 文件。普通判题候选镜像构建完成后，部署脚本还会读取镜像内 gcc/g++ 的真实 include
 search，把 `/usr/include`、GCC internal include、`/opt/mkl/include` 与

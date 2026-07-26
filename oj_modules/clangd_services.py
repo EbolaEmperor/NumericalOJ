@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import queue
+import re
 import shutil
 import stat
 import subprocess
@@ -48,6 +49,14 @@ REPOSITORY_LANGUAGE_SERVICE_POOL_SIZE = 4
 REPOSITORY_SEMANTIC_MAX_TOKENS = 500_000
 CLANGD_INACTIVE_REGIONS_MAX_RANGES = 4_096
 CLANGD_INACTIVE_REGIONS_GRACE_SECONDS = 0.05
+CLANGD_MINIMUM_MAJOR = 17
+CLANGD_EXECUTABLE_CANDIDATES = (
+    "clangd-20",
+    "clangd-19",
+    "clangd-18",
+    "clangd-17",
+    "clangd",
+)
 _MKL_SEMANTIC_PROBE = (
     "#include <mkl.h>\n"
     "MKLVersion official_mkl_version{};\n"
@@ -61,6 +70,46 @@ _MKL_SEMANTIC_PROBE = (
         "MKL_Get_Version": {"function"},
     },
 )
+
+
+def _clangd_major(version_output: str) -> int | None:
+    match = re.search(
+        r"\bclangd\s+version\s+([0-9]+)(?:[.\s]|$)",
+        version_output,
+        re.IGNORECASE,
+    )
+    return None if match is None else int(match.group(1))
+
+
+@lru_cache(maxsize=1)
+def _default_clangd_command() -> str:
+    """Select the newest supported executable without trusting its filename."""
+    for candidate in CLANGD_EXECUTABLE_CANDIDATES:
+        executable = shutil.which(candidate)
+        if executable is None:
+            continue
+        try:
+            probe = subprocess.run(
+                [executable, "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        major = _clangd_major(f"{probe.stdout}\n{probe.stderr}")
+        if (
+            probe.returncode == 0
+            and major is not None
+            and major >= CLANGD_MINIMUM_MAJOR
+        ):
+            return executable
+    raise LanguageServiceUnavailableError(
+        "clangd",
+        f"未找到 clangd {CLANGD_MINIMUM_MAJOR} 或更新版本",
+    )
 
 
 @dataclass
@@ -269,7 +318,7 @@ class ClangdService(SemanticLanguageServerService):
         self,
         language: str,
         *,
-        command: str = "clangd",
+        command: str | None = None,
         request_timeout: float = LANGUAGE_REQUEST_TIMEOUT_SECONDS,
         workspace_key: str | None = None,
         clock=None,
@@ -282,6 +331,7 @@ class ClangdService(SemanticLanguageServerService):
         self._inactive_document_cycles: dict[str, _InactiveDocumentCycle] = {}
         self._inactive_regions_epoch = 0
         self._inactive_regions_provider = False
+        self._automatic_command = command is None
         kwargs = {}
         if clock is not None:
             kwargs["clock"] = clock
@@ -328,7 +378,9 @@ class ClangdService(SemanticLanguageServerService):
             service_name="clangd",
             language_id=language,
             file_suffix=".c" if language == "c" else ".cpp",
-            command=command,
+            # Resolve lazily in _start_locked so test doubles and import-time
+            # service pools do not depend on the host executable inventory.
+            command=command or "clangd",
             command_args=(
                 "--background-index=false",
                 "--clang-tidy=false",
@@ -340,6 +392,11 @@ class ClangdService(SemanticLanguageServerService):
             workspace_key=workspace_key,
             **kwargs,
         )
+
+    def _start_locked(self) -> None:
+        if self._automatic_command:
+            self.command = _default_clangd_command()
+        super()._start_locked()
 
     def _text_document_capabilities(self):
         capabilities = super()._text_document_capabilities()
