@@ -254,6 +254,22 @@ def test_export_container_is_locked_down_and_always_removed(
     assert "--entrypoint=/usr/bin/python3" in run_command
     assert "/opt/numericaloj-export-editor-headers.py" in run_command
     assert run_command[-2:] == ["--output", "/export"]
+    mounts = [
+        run_command[index + 1]
+        for index, argument in enumerate(run_command)
+        if argument == "--mount"
+    ]
+    assert any(
+        mount.startswith("type=bind,")
+        and "dst=/export" in mount
+        and not mount.endswith(",rw")
+        for mount in mounts
+    )
+    assert any(
+        "dst=/opt/numericaloj-export-editor-headers.py" in mount
+        and mount.endswith(",readonly")
+        for mount in mounts
+    )
     assert commands[-1][:4] == ["docker", "container", "rm", "--force"]
 
 
