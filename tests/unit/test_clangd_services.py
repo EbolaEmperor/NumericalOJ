@@ -43,6 +43,8 @@ def test_semantic_tokens_open_change_and_reuse_document():
     third = service.semantic_tokens("user:2:cpp", "vector<long> value;")
 
     assert first["data"] == [0, 0, 6, 1, 1]
+    assert first["inactive_regions"] == []
+    assert first["inactive_regions_supported"] is False
     assert first["result_id"].startswith("1:")
     assert second["result_id"] == first["result_id"]
     assert third["result_id"].startswith("2:")
@@ -54,6 +56,251 @@ def test_semantic_tokens_open_change_and_reuse_document():
         "textDocument/semanticTokens/full",
     ]
     assert "vector<long>" in service.notifications[-1][1]["contentChanges"][0]["text"]
+
+
+def test_clangd_advertises_inactive_regions_client_capability():
+    service = FakeClangdService()
+
+    assert service._text_document_capabilities()[
+        "inactiveRegionsCapabilities"
+    ] == {"inactiveRegions": True}
+
+
+def test_semantic_tokens_include_current_official_inactive_regions_notification():
+    service = FakeClangdService()
+    original_request = service._request_locked
+
+    def request_with_inactive_regions(method, params):
+        if method == "textDocument/semanticTokens/full":
+            uri = params["textDocument"]["uri"]
+            service._handle_server_notification(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/inactiveRegions",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                        },
+                        "regions": [
+                            {
+                                "start": {"line": 1, "character": 0},
+                                # 😀 occupies two UTF-16 code units.
+                                "end": {"line": 1, "character": 8},
+                            }
+                        ],
+                    },
+                }
+            )
+        return original_request(method, params)
+
+    service._request_locked = request_with_inactive_regions
+
+    result = service.semantic_tokens(
+        "user:2:cpp",
+        "#if 0\n😀value;\n#endif\n",
+    )
+
+    assert result["inactive_regions_supported"] is True
+    assert result["inactive_regions"] == [
+        {
+            "start": {"line": 1, "character": 0},
+            "end": {"line": 1, "character": 8},
+        }
+    ]
+
+
+def test_inactive_regions_compatibility_shape_and_valid_empty_notification():
+    service = FakeClangdService()
+    original_request = service._request_locked
+
+    def request_with_legacy_notification(method, params):
+        if method == "textDocument/semanticTokens/full":
+            service._handle_server_notification(
+                {
+                    "method": "textDocument/inactiveRegions",
+                    "params": {
+                        "uri": params["textDocument"]["uri"],
+                        "regions": [],
+                    },
+                }
+            )
+        return original_request(method, params)
+
+    service._request_locked = request_with_legacy_notification
+
+    result = service.semantic_tokens("user:2:cpp", "int value;\n")
+
+    assert result["inactive_regions"] == []
+    assert result["inactive_regions_supported"] is True
+
+
+def test_semantic_response_waits_for_adjacent_inactive_regions_notification():
+    service = FakeClangdService()
+    service._server_capabilities_received({"inactiveRegionsProvider": True})
+    original_request = service._request_locked
+    timers = []
+
+    def request_before_notification(method, params):
+        if method == "textDocument/semanticTokens/full":
+            uri = params["textDocument"]["uri"]
+            state = next(iter(service._documents.values()))
+            timer = threading.Timer(
+                0.01,
+                service._handle_server_notification,
+                args=(
+                    {
+                        "method": "textDocument/inactiveRegions",
+                        "params": {
+                            "textDocument": {
+                                "uri": uri,
+                                "version": state.version,
+                            },
+                            "regions": [
+                                {
+                                    "start": {"line": 0, "character": 0},
+                                    "end": {"line": 0, "character": 3},
+                                }
+                            ],
+                        },
+                    },
+                ),
+            )
+            timers.append(timer)
+            timer.start()
+        return original_request(method, params)
+
+    service._request_locked = request_before_notification
+    try:
+        result = service.semantic_tokens("user:2:cpp", "int value;\n")
+    finally:
+        for timer in timers:
+            timer.join()
+
+    assert result["inactive_regions_supported"] is True
+    assert result["inactive_regions"] == [
+        {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 3},
+        }
+    ]
+
+
+def test_inactive_regions_reject_stale_version_and_malformed_ranges_atomically():
+    service = FakeClangdService()
+    original_request = service._request_locked
+
+    def request_with_invalid_notifications(method, params):
+        if method == "textDocument/semanticTokens/full":
+            uri = params["textDocument"]["uri"]
+            state = next(iter(service._documents.values()))
+            for version, regions in (
+                (
+                    state.version - 1,
+                    [
+                        {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 3},
+                        }
+                    ],
+                ),
+                (
+                    state.version,
+                    [
+                        {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 3},
+                        },
+                        {
+                            "start": {"line": 99, "character": 0},
+                            "end": {"line": 99, "character": 1},
+                        },
+                    ],
+                ),
+            ):
+                service._handle_server_notification(
+                    {
+                        "method": "textDocument/inactiveRegions",
+                        "params": {
+                            "textDocument": {
+                                "uri": uri,
+                                "version": version,
+                            },
+                            "regions": regions,
+                        },
+                    }
+                )
+        return original_request(method, params)
+
+    service._request_locked = request_with_invalid_notifications
+
+    result = service.semantic_tokens("user:2:cpp", "int value;\n")
+
+    assert result["inactive_regions"] == []
+    assert result["inactive_regions_supported"] is False
+
+
+def test_inactive_regions_reject_range_count_above_browser_safety_limit(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        clangd_services,
+        "CLANGD_INACTIVE_REGIONS_MAX_RANGES",
+        1,
+    )
+    raw_range = {
+        "start": {"line": 0, "character": 0},
+        "end": {"line": 0, "character": 1},
+    }
+
+    assert (
+        clangd_services._validated_inactive_regions(
+            [raw_range, raw_range],
+            "0123456789",
+        )
+        is None
+    )
+
+
+def test_did_change_and_reset_clear_inactive_region_cycles():
+    service = FakeClangdService()
+    original_request = service._request_locked
+    notify = True
+
+    def maybe_notify(method, params):
+        if method == "textDocument/semanticTokens/full" and notify:
+            uri = params["textDocument"]["uri"]
+            state = next(iter(service._documents.values()))
+            service._handle_server_notification(
+                {
+                    "method": "textDocument/inactiveRegions",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": state.version,
+                        },
+                        "regions": [
+                            {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 3},
+                            }
+                        ],
+                    },
+                }
+            )
+        return original_request(method, params)
+
+    service._request_locked = maybe_notify
+    first = service.semantic_tokens("user:2:cpp", "int value;\n")
+    notify = False
+    changed = service.semantic_tokens("user:2:cpp", "long value;\n")
+    service._reset_locked()
+    reopened = service.semantic_tokens("user:2:cpp", "long value;\n")
+
+    assert first["inactive_regions_supported"] is True
+    assert changed["inactive_regions"] == []
+    assert changed["inactive_regions_supported"] is False
+    assert reopened["inactive_regions"] == []
+    assert reopened["inactive_regions_supported"] is False
 
 
 def test_semantic_tokens_reject_oversized_or_malformed_data(monkeypatch):
@@ -182,6 +429,76 @@ def test_mkl_runtime_probe_matches_public_header_declaration_kinds():
         "MKL_INT": {"macro"},
         "MKL_Get_Version": {"function"},
     }
+
+
+@pytest.mark.parametrize("inactive_supported", (True, False))
+def test_runtime_verification_requires_inactive_region_notifications(
+    monkeypatch,
+    inactive_supported,
+):
+    class RuntimeService:
+        editor_toolchain = None
+
+        def legend(self):
+            return {
+                "tokenTypes": ["variable", "class", "function"],
+                "tokenModifiers": [],
+            }
+
+        def semantic_tokens(self, document_key, source):
+            result = {
+                "data": [0, 0, 1, 0, 0],
+                "result_id": document_key,
+            }
+            if document_key == "runtime-inactive-region-probe":
+                result.update(
+                    {
+                        "inactive_regions_supported": inactive_supported,
+                        "inactive_regions": (
+                            [
+                                {
+                                    "start": {"line": 1, "character": 0},
+                                    "end": {"line": 1, "character": 31},
+                                }
+                            ]
+                            if inactive_supported
+                            else []
+                        ),
+                    }
+                )
+            return result
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        clangd_services,
+        "ClangdService",
+        lambda _language: RuntimeService(),
+    )
+
+    def observed_tokens(source, _legend, _data):
+        if "HostFileVisible" in source:
+            return {"HostFileVisible": {"variable"}}
+        return {
+            "vector": {"class"},
+            "string": {"class"},
+            "deque": {"class"},
+            "tuple": {"class"},
+            "memset": {"function"},
+        }
+
+    monkeypatch.setattr(
+        clangd_services,
+        "_semantic_token_types_by_spelling",
+        observed_tokens,
+    )
+
+    if inactive_supported:
+        clangd_services.verify_clangd_runtime()
+    else:
+        with pytest.raises(RuntimeError, match="条件编译区域"):
+            clangd_services.verify_clangd_runtime()
 
 
 def test_semantic_tokens_reject_concurrent_request_without_queueing():

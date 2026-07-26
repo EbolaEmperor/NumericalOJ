@@ -314,6 +314,50 @@ class SemanticLanguageServerService:
     def _initialization_options(self) -> dict[str, Any]:
         return {}
 
+    def _text_document_capabilities(self) -> dict[str, Any]:
+        """Return client capabilities shared by this service's documents."""
+        return {
+            "semanticTokens": {
+                "dynamicRegistration": False,
+                "requests": {"full": True},
+                "tokenTypes": [],
+                "tokenModifiers": [],
+                "formats": ["relative"],
+            }
+        }
+
+    def _handle_server_notification(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        """Consume an optional server notification without blocking the reader."""
+
+    def _server_capabilities_received(
+        self,
+        capabilities: dict[str, Any],
+    ) -> None:
+        """Record optional capabilities from a successful initialize response."""
+
+    def _document_cycle_started(
+        self,
+        state: _DocumentState,
+        source: str,
+    ) -> None:
+        """Clear or prepare extension state for one didOpen/didChange cycle."""
+
+    def _document_closed(self, state: _DocumentState) -> None:
+        """Discard optional protocol state for a closed document."""
+
+    def _document_response_metadata(
+        self,
+        state: _DocumentState,
+    ) -> dict[str, Any]:
+        """Return extension metadata associated with the current version."""
+        return {}
+
+    def _reset_protocol_state(self) -> None:
+        """Clear optional protocol-extension state after a process reset."""
+
     def _prepare_source(self, source: str) -> str:
         return source
 
@@ -387,22 +431,15 @@ class SemanticLanguageServerService:
                 "rootUri": workspace.as_uri(),
                 "capabilities": {
                     "workspace": {"configuration": False},
-                    "textDocument": {
-                        "semanticTokens": {
-                            "dynamicRegistration": False,
-                            "requests": {"full": True},
-                            "tokenTypes": [],
-                            "tokenModifiers": [],
-                            "formats": ["relative"],
-                        }
-                    },
+                    "textDocument": self._text_document_capabilities(),
                 },
                 "initializationOptions": self._initialization_options(),
                 "workspaceFolders": None,
             },
         )
         try:
-            provider = initialize["capabilities"]["semanticTokensProvider"]
+            server_capabilities = initialize["capabilities"]
+            provider = server_capabilities["semanticTokensProvider"]
             legend = provider["legend"]
             token_types = list(legend["tokenTypes"])
             token_modifiers = list(legend["tokenModifiers"])
@@ -420,6 +457,7 @@ class SemanticLanguageServerService:
             "tokenTypes": token_types,
             "tokenModifiers": token_modifiers,
         }
+        self._server_capabilities_received(server_capabilities)
         self._notify_locked("initialized", {})
 
     def _write_message(
@@ -567,6 +605,10 @@ class SemanticLanguageServerService:
                         pending.result = message.get("result")
                     pending.event.set()
                     continue
+                if "id" not in message and "method" in message:
+                    if process is self._process:
+                        self._handle_server_notification(message)
+                    continue
                 if "id" in message and "method" in message:
                     self._write_message(
                         {
@@ -593,6 +635,7 @@ class SemanticLanguageServerService:
         self._reader_thread = None
         self._legend = None
         self._documents.clear()
+        self._reset_protocol_state()
         if process is None:
             return
         if process.stdin is not None:
@@ -635,6 +678,7 @@ class SemanticLanguageServerService:
         for key in dict.fromkeys(expired):
             state = self._documents.pop(key, None)
             if state is not None:
+                self._document_closed(state)
                 self._notify_locked(
                     "textDocument/didClose",
                     {"textDocument": {"uri": state.uri}},
@@ -704,6 +748,7 @@ class SemanticLanguageServerService:
                         last_used=now,
                     )
                     self._documents[document_key] = state
+                    self._document_cycle_started(state, source)
                     self._notify_locked(
                         "textDocument/didOpen",
                         {
@@ -720,6 +765,7 @@ class SemanticLanguageServerService:
                     if state.source_digest != digest:
                         state.version += 1
                         state.source_digest = digest
+                        self._document_cycle_started(state, source)
                         self._notify_locked(
                             "textDocument/didChange",
                             {
@@ -755,10 +801,12 @@ class SemanticLanguageServerService:
                         self.service_name,
                         f"{self.service_name} semantic token 数据无效",
                     )
-                return {
+                result = {
                     "data": data,
                     "result_id": f"{state.version}:{digest[:12]}",
                 }
+                result.update(self._document_response_metadata(state))
+                return result
             except LanguageServiceError:
                 self._reset_locked()
                 raise

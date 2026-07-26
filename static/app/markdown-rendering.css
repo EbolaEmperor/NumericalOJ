@@ -491,6 +491,10 @@
   color: #6a9955;
 }
 
+.numoj-markdown .codehilite .numoj-clangd-inactive-code {
+  opacity: 0.55;
+}
+
 .numoj-markdown .codehilite.language-mermaid,
 .numoj-markdown .codehilite.language-mmd {
   background: transparent;
