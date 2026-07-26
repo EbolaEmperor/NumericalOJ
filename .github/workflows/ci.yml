@@ -25,6 +25,7 @@ jobs:
       - name: Rebuild checked-in frontend assets
         run: |
           npm ci
+          npm run test:frontend
           npm run build:frontend
       - name: Verify generated assets are current
         run: |

@@ -141,6 +141,55 @@ def test_upload_path_validation_includes_the_selected_destination_directory():
     assert "目标目录下的最终路径无效" in inspect
 
 
+def test_upload_queue_uses_the_defined_extension_label_helper():
+    source = WORKBENCH_JS.read_text(encoding="utf-8")
+
+    render_start = source.index("function renderUploadQueue")
+    open_dialog_start = source.index("function openUploadDialog", render_start)
+    render = source[render_start:open_dialog_start]
+
+    assert "extensionLabel(item.relativePath)" in render
+    assert "fileTypeLabel(" not in source
+
+
+def test_upload_manifest_failure_reaches_a_visible_terminal_state():
+    source = WORKBENCH_JS.read_text(encoding="utf-8")
+
+    add_start = source.index("function addUploadDescriptors")
+    server_map_start = source.index("function uploadServerEntryMap", add_start)
+    add_descriptors = source[add_start:server_map_start]
+
+    assert "return Promise.resolve().then(function ()" in add_descriptors
+    assert "读取上传清单失败：" in add_descriptors
+    assert "state.upload.phase = 'error'" in add_descriptors
+    assert "state.upload.errorMessage =" in add_descriptors
+    assert "try {" in add_descriptors
+    assert "renderUploadQueue()" in add_descriptors
+
+    render_start = source.index("function renderUploadQueue")
+    open_dialog_start = source.index("function openUploadDialog", render_start)
+    render = source[render_start:open_dialog_start]
+    assert "state.upload.phase === 'reading'" in render
+    assert "state.upload.phase === 'error' && state.upload.errorMessage" in render
+
+
+def test_repository_upload_has_an_http_sha256_fallback():
+    source = WORKBENCH_JS.read_text(encoding="utf-8")
+    template = (
+        ROOT / "templates" / "repository" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    digest_start = source.index("function digestSha256")
+    prepare_start = source.index("function prepareUploadHashes", digest_start)
+    digest = source[digest_start:prepare_start]
+
+    assert "window.crypto && window.crypto.subtle" in digest
+    assert "window.NumOJRepositorySha256.digestHex(buffer)" in digest
+    assert template.index("app/repository/sha256.js") < template.index(
+        "app/repository/workbench.js"
+    )
+
+
 def test_invalid_upload_path_can_be_corrected_or_excluded_without_blocking_batch():
     source = WORKBENCH_JS.read_text(encoding="utf-8")
 

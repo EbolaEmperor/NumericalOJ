@@ -5,7 +5,8 @@
     "build:frontend": "npm run build:monaco && npm run build:bash-highlighter && npm run build:mermaid",
     "build:bash-highlighter": "node scripts/build_bash_highlighter.mjs",
     "build:mermaid": "node scripts/build_mermaid.mjs",
-    "build:monaco": "node scripts/build_monaco.mjs"
+    "build:monaco": "node scripts/build_monaco.mjs",
+    "test:frontend": "node --test tests/frontend/*.test.cjs"
   },
   "devDependencies": {
     "@shikijs/monaco": "4.3.1",
