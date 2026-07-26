@@ -9,10 +9,13 @@
   const BASH_TEXTMATE_MAX_BLOCKS_PER_ROOT = 64;
   const BASH_TEXTMATE_MAX_SOURCE_BYTES = 256 * 1024;
   const BASH_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT = 1024 * 1024;
-  const CPP_SEMANTIC_MAX_BLOCKS_PER_ROOT = 16;
-  const CPP_SEMANTIC_MAX_INFLIGHT_PER_PAGE = 2;
-  const CPP_SEMANTIC_MAX_SOURCE_BYTES = 512 * 1024;
-  const CPP_SEMANTIC_MAX_TOKENS_PER_BLOCK = 12_000;
+  const STRUCTURED_TEXTMATE_MAX_BLOCKS_PER_ROOT = 64;
+  const STRUCTURED_TEXTMATE_MAX_SOURCE_BYTES = 512 * 1024;
+  const STRUCTURED_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT = 2 * 1024 * 1024;
+  const STRUCTURED_SEMANTIC_MAX_BLOCKS_PER_ROOT = 16;
+  const STRUCTURED_SEMANTIC_MAX_INFLIGHT_PER_PAGE = 2;
+  const STRUCTURED_SEMANTIC_MAX_SOURCE_BYTES = 512 * 1024;
+  const STRUCTURED_SEMANTIC_MAX_TOKENS_PER_BLOCK = 12_000;
   const CPP_INACTIVE_MAX_REGIONS_PER_BLOCK = 4_096;
   const CODE_COPY_RESET_DELAY_MS = 1_800;
   const BASH_LANGUAGE_CLASSES = new Set([
@@ -44,22 +47,32 @@
     "dcdcaa",
     "f44747",
   ]);
-  const CPP_LANGUAGE_CLASSES = new Set([
-    "language-cpp",
-    "language-c++",
-    "language-cc",
-    "language-cxx",
+  const STRUCTURED_LANGUAGE_BY_CLASS = new Map([
+    ["language-c", "c"],
+    ["language-cpp", "cpp"],
+    ["language-c++", "cpp"],
+    ["language-cc", "cpp"],
+    ["language-cxx", "cpp"],
+    ["language-py", "python"],
+    ["language-py3", "python"],
+    ["language-python", "python"],
+    ["language-python3", "python"],
+    ["language-m", "matlab"],
+    ["language-matlab", "matlab"],
+    ["language-octave", "matlab"],
   ]);
 
   let mermaidRenderer = null;
   let mermaidRenderSequence = 0;
-  let bashRenderSequence = 0;
-  let bashWarningShown = false;
+  let textMateRenderSequence = 0;
+  let textMateWarningShown = false;
   let semanticRenderSequence = 0;
   let semanticWarningShown = false;
   let semanticActiveTasks = 0;
   const semanticTaskQueue = [];
   const semanticControllers = new WeakMap();
+  const enhancementGenerations = new WeakMap();
+  const structuredTextMateTasks = new WeakMap();
   const copyResetTimers = new WeakMap();
 
   function getMermaidRenderer() {
@@ -299,10 +312,12 @@
     ));
   }
 
-  function isCppCodeBlock(block) {
-    return Array.from(block.classList).some((name) => (
-      CPP_LANGUAGE_CLASSES.has(name.toLowerCase())
-    ));
+  function structuredLanguageForBlock(block) {
+    for (const name of block.classList) {
+      const language = STRUCTURED_LANGUAGE_BY_CLASS.get(name.toLowerCase());
+      if (language) return language;
+    }
+    return "";
   }
 
   function semanticCssName(value) {
@@ -327,6 +342,22 @@
     return new Blob([source]).size;
   }
 
+  function enhancementGenerationFor(root) {
+    return enhancementGenerations.get(root) || 0;
+  }
+
+  function enhancementIsCurrent(root, generation) {
+    return enhancementGenerationFor(root) === generation;
+  }
+
+  function invalidateEnhancement(root) {
+    enhancementGenerations.set(
+      root,
+      enhancementGenerationFor(root) + 1,
+    );
+    structuredTextMateTasks.delete(root);
+  }
+
   function shikiColorClass(value) {
     const color = String(value || "").trim().replace(/^#/, "").toLowerCase();
     return SHIKI_DARK_PLUS_COLORS.has(color)
@@ -334,7 +365,7 @@
       : "";
   }
 
-  function bashTokenFragment(result) {
+  function shikiTokenFragment(result) {
     if (!result || !Array.isArray(result.tokens)) return null;
     const fragment = document.createDocumentFragment();
     result.tokens.forEach((line, lineIndex) => {
@@ -369,7 +400,7 @@
 
   async function renderBashTextMateBlock(root, block) {
     if (block.dataset.numojBashState) return;
-    const client = window.NumOJBashHighlighter;
+    const client = window.NumOJMarkdownCodeHighlighter;
     const code = block.querySelector("pre code");
     if (!client || typeof client.tokenize !== "function" || !code) return;
 
@@ -383,11 +414,11 @@
       return;
     }
 
-    const generation = String(++bashRenderSequence);
+    const generation = String(++textMateRenderSequence);
     block.dataset.numojBashState = "rendering";
     block.dataset.numojBashGeneration = generation;
     try {
-      const result = await client.tokenize(source);
+      const result = await client.tokenize(source, "bash");
       if (
         !root.isConnected
         || !root.contains(block)
@@ -397,7 +428,7 @@
         || String(code.textContent || "") !== source
       ) return;
 
-      const fragment = bashTokenFragment(result);
+      const fragment = shikiTokenFragment(result);
       if (!fragment || String(fragment.textContent || "") !== source) {
         throw new Error("bash-token-text-mismatch");
       }
@@ -411,19 +442,19 @@
         && block.dataset.numojBashGeneration === generation
       ) {
         block.dataset.numojBashState = "fallback";
-        if (!bashWarningShown) {
+        if (!textMateWarningShown) {
           console.warn(
             "Bash TextMate 高亮失败，已保留 Pygments 着色。",
             error,
           );
-          bashWarningShown = true;
+          textMateWarningShown = true;
         }
       }
     }
   }
 
   async function renderBashTextMateHighlights(root) {
-    const client = window.NumOJBashHighlighter;
+    const client = window.NumOJMarkdownCodeHighlighter;
     if (!client || typeof client.tokenize !== "function") return;
 
     const blocks = Array.from(root.querySelectorAll(".codehilite"))
@@ -468,6 +499,129 @@
     }
   }
 
+  async function renderStructuredTextMateBlock(root, block, language) {
+    if (block.dataset.numojStructuredTextmateState) return;
+    const client = window.NumOJMarkdownCodeHighlighter;
+    const code = block.querySelector("pre code");
+    if (!client || typeof client.tokenize !== "function" || !code) return;
+
+    const source = String(code.textContent || "");
+    if (!source) {
+      block.dataset.numojStructuredTextmateState = "empty";
+      return;
+    }
+    if (sourceByteLength(source) > STRUCTURED_TEXTMATE_MAX_SOURCE_BYTES) {
+      block.dataset.numojStructuredTextmateState = "skipped-size";
+      return;
+    }
+
+    const generation = String(++textMateRenderSequence);
+    block.dataset.numojStructuredTextmateState = "rendering";
+    block.dataset.numojStructuredTextmateGeneration = generation;
+    try {
+      const result = await client.tokenize(source, language);
+      if (
+        !root.isConnected
+        || !root.contains(block)
+        || !block.isConnected
+        || !code.isConnected
+        || block.dataset.numojStructuredTextmateGeneration !== generation
+        || String(code.textContent || "") !== source
+      ) return;
+
+      const fragment = shikiTokenFragment(result);
+      if (!fragment || String(fragment.textContent || "") !== source) {
+        throw new Error("structured-token-text-mismatch");
+      }
+      code.replaceChildren(fragment);
+      block.dataset.numojStructuredTextmateState = "rendered";
+      block.classList.add("has-structured-textmate-highlighting");
+    } catch (error) {
+      if (
+        root.isConnected
+        && root.contains(block)
+        && block.dataset.numojStructuredTextmateGeneration === generation
+      ) {
+        block.dataset.numojStructuredTextmateState = "fallback";
+        if (!textMateWarningShown) {
+          console.warn(
+            "文章代码块 Dark+ 词法高亮失败，已保留 Pygments 着色。",
+            error,
+          );
+          textMateWarningShown = true;
+        }
+      }
+    }
+  }
+
+  async function renderStructuredTextMateHighlights(root) {
+    const client = window.NumOJMarkdownCodeHighlighter;
+    if (!client || typeof client.tokenize !== "function") return;
+
+    const blocks = Array.from(root.querySelectorAll(".codehilite"))
+      .filter((block) => (
+        structuredLanguageForBlock(block)
+        && !block.dataset.numojStructuredTextmateState
+      ));
+    const candidates = blocks.slice(
+      0,
+      STRUCTURED_TEXTMATE_MAX_BLOCKS_PER_ROOT,
+    );
+    blocks.slice(STRUCTURED_TEXTMATE_MAX_BLOCKS_PER_ROOT).forEach((block) => {
+      block.dataset.numojStructuredTextmateState = "skipped";
+    });
+
+    const renderable = [];
+    let totalSourceBytes = 0;
+    candidates.forEach((block) => {
+      const code = block.querySelector("pre code");
+      const sourceBytes = code
+        ? sourceByteLength(String(code.textContent || ""))
+        : 0;
+      if (sourceBytes > STRUCTURED_TEXTMATE_MAX_SOURCE_BYTES) {
+        block.dataset.numojStructuredTextmateState = "skipped-size";
+        return;
+      }
+      if (
+        totalSourceBytes + sourceBytes
+        > STRUCTURED_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT
+      ) {
+        block.dataset.numojStructuredTextmateState = "skipped-total-size";
+        return;
+      }
+      totalSourceBytes += sourceBytes;
+      renderable.push(block);
+    });
+
+    for (let index = 0; index < renderable.length; index += 1) {
+      const block = renderable[index];
+      if (!root.isConnected) break;
+      if (!root.contains(block)) continue;
+      await renderStructuredTextMateBlock(
+        root,
+        block,
+        structuredLanguageForBlock(block),
+      );
+      if (index + 1 < renderable.length) {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+    }
+  }
+
+  function sharedStructuredTextMateTask(root) {
+    const existing = structuredTextMateTasks.get(root);
+    if (existing) return existing;
+    const task = renderStructuredTextMateHighlights(root);
+    structuredTextMateTasks.set(root, task);
+    const forget = () => {
+      if (structuredTextMateTasks.get(root) === task) {
+        structuredTextMateTasks.delete(root);
+      }
+    };
+    task.then(forget, forget);
+    return task;
+  }
+
   function decodeSemanticRanges(source, legend, data) {
     const tokenTypes = Array.isArray(legend && legend.tokenTypes)
       ? legend.tokenTypes
@@ -482,7 +636,8 @@
 
     for (
       let index = 0;
-      index < data.length && ranges.length < CPP_SEMANTIC_MAX_TOKENS_PER_BLOCK;
+      index < data.length
+      && ranges.length < STRUCTURED_SEMANTIC_MAX_TOKENS_PER_BLOCK;
       index += 5
     ) {
       const deltaLine = Number(data[index]);
@@ -731,7 +886,7 @@
 
   function drainSemanticTaskQueue() {
     while (
-      semanticActiveTasks < CPP_SEMANTIC_MAX_INFLIGHT_PER_PAGE
+      semanticActiveTasks < STRUCTURED_SEMANTIC_MAX_INFLIGHT_PER_PAGE
       && semanticTaskQueue.length
     ) {
       const entry = semanticTaskQueue.shift();
@@ -792,7 +947,13 @@
     );
   }
 
-  async function renderCppSemanticBlock(root, block, controller, legend) {
+  async function renderStructuredSemanticBlock(
+    root,
+    block,
+    controller,
+    language,
+    legend,
+  ) {
     const existingState = block.dataset.numojSemanticState;
     if (existingState && existingState !== "queued") return;
     const client = window.NumOJSemanticTokens;
@@ -809,7 +970,7 @@
       block.dataset.numojSemanticState = "empty";
       return;
     }
-    if (sourceByteLength(source) > CPP_SEMANTIC_MAX_SOURCE_BYTES) {
+    if (sourceByteLength(source) > STRUCTURED_SEMANTIC_MAX_SOURCE_BYTES) {
       block.dataset.numojSemanticState = "skipped-size";
       return;
     }
@@ -822,7 +983,7 @@
     try {
       const payload = await client.requestTokens({
         context: "markdown",
-        language: "cpp",
+        language,
         source,
         signal: controller.signal,
       });
@@ -847,7 +1008,10 @@
       )) return;
       block.dataset.numojSemanticState = "fallback";
       if (!semanticWarningShown) {
-        console.warn("C++ 代码块 clangd 高亮失败，已保留 Pygments 着色。", error);
+        console.warn(
+          "文章代码块语义高亮失败，已保留词法着色。",
+          error,
+        );
         semanticWarningShown = true;
       }
     } finally {
@@ -857,7 +1021,7 @@
     }
   }
 
-  async function renderCppSemanticHighlights(root) {
+  async function renderStructuredSemanticHighlights(root) {
     const client = window.NumOJSemanticTokens;
     if (
       !client
@@ -867,13 +1031,16 @@
 
     const blocks = Array.from(root.querySelectorAll(".codehilite"))
       .filter((block) => (
-        isCppCodeBlock(block) && !block.dataset.numojSemanticState
+        structuredLanguageForBlock(block) && !block.dataset.numojSemanticState
       ));
-    const renderable = blocks.slice(0, CPP_SEMANTIC_MAX_BLOCKS_PER_ROOT);
+    const renderable = blocks.slice(
+      0,
+      STRUCTURED_SEMANTIC_MAX_BLOCKS_PER_ROOT,
+    );
     renderable.forEach((block) => {
       block.dataset.numojSemanticState = "queued";
     });
-    blocks.slice(CPP_SEMANTIC_MAX_BLOCKS_PER_ROOT).forEach((block) => {
+    blocks.slice(STRUCTURED_SEMANTIC_MAX_BLOCKS_PER_ROOT).forEach((block) => {
       block.dataset.numojSemanticState = "skipped";
     });
     if (!renderable.length) return;
@@ -883,45 +1050,67 @@
       controller = new AbortController();
       semanticControllers.set(root, controller);
     }
-    let legend;
-    try {
-      legend = await client.getLegend("cpp", {
-        signal: controller.signal,
-      });
-    } catch (error) {
-      if (!controller.signal.aborted && root.isConnected) {
-        renderable.forEach((block) => {
-          if (root.contains(block)) {
-            block.dataset.numojSemanticState = "fallback";
-          }
+    const blocksByLanguage = new Map();
+    renderable.forEach((block) => {
+      const language = structuredLanguageForBlock(block);
+      const languageBlocks = blocksByLanguage.get(language) || [];
+      languageBlocks.push(block);
+      blocksByLanguage.set(language, languageBlocks);
+    });
+
+    await Promise.all(Array.from(blocksByLanguage, async (
+      [language, languageBlocks],
+    ) => {
+      let legend;
+      try {
+        legend = await client.getLegend(language, {
+          signal: controller.signal,
         });
-        if (!semanticWarningShown) {
-          console.warn(
-            "C++ 代码块 clangd legend 获取失败，已保留 Pygments 着色。",
-            error,
-          );
-          semanticWarningShown = true;
+      } catch (error) {
+        if (!controller.signal.aborted && root.isConnected) {
+          languageBlocks.forEach((block) => {
+            if (root.contains(block)) {
+              block.dataset.numojSemanticState = "fallback";
+            }
+          });
+          if (!semanticWarningShown) {
+            console.warn(
+              "文章代码块语义图例获取失败，已保留词法着色。",
+              error,
+            );
+            semanticWarningShown = true;
+          }
         }
+        return;
       }
-      return;
-    }
-    if (controller.signal.aborted || !root.isConnected) return;
-    await Promise.all(renderable.map((block) => (
-      scheduleSemanticTask(
-        () => renderCppSemanticBlock(root, block, controller, legend),
-        controller.signal,
-      )
-    )));
+      if (controller.signal.aborted || !root.isConnected) return;
+      await Promise.all(languageBlocks.map((block) => (
+        scheduleSemanticTask(
+          () => renderStructuredSemanticBlock(
+            root,
+            block,
+            controller,
+            language,
+            legend,
+          ),
+          controller.signal,
+        )
+      )));
+    }));
   }
 
-  async function typesetMath(root) {
+  async function typesetMath(root, enhancementGeneration) {
     const mathJax = window.MathJax;
     if (!mathJax) return;
     try {
       if (mathJax.startup && mathJax.startup.promise) {
         await mathJax.startup.promise;
       }
-      if (typeof mathJax.typesetPromise === "function" && root.isConnected) {
+      if (
+        typeof mathJax.typesetPromise === "function"
+        && root.isConnected
+        && enhancementIsCurrent(root, enhancementGeneration)
+      ) {
         await mathJax.typesetPromise([root]);
       }
     } catch (_error) {
@@ -931,6 +1120,7 @@
 
   function clear(root) {
     if (!root) return;
+    invalidateEnhancement(root);
     root.querySelectorAll(".numoj-code-copy").forEach((button) => {
       const timer = copyResetTimers.get(button);
       if (timer) window.clearTimeout(timer);
@@ -1048,21 +1238,32 @@
 
   async function enhance(root) {
     if (!root || typeof root.querySelectorAll !== "function") return;
+    const enhancementGeneration = enhancementGenerationFor(root);
     enhanceRenderedLinks(root);
     ensureCodeCopyButtons(root);
-    renderCppSemanticHighlights(root).catch((error) => {
+    const bashHighlighting = renderBashTextMateHighlights(root);
+    const structuredHighlighting = sharedStructuredTextMateTask(root);
+    const mermaidRendering = renderMermaidDiagrams(root);
+    await structuredHighlighting;
+    if (!enhancementIsCurrent(root, enhancementGeneration)) {
+      await Promise.all([bashHighlighting, mermaidRendering]);
+      return;
+    }
+    // 语义 token 必须叠加在 Shiki TextMate DOM 之后，避免较慢的词法任务
+    // 覆盖已经插入的语言服务 token。
+    renderStructuredSemanticHighlights(root).catch((error) => {
       if (!semanticWarningShown) {
-        console.warn("C++ 代码块 clangd 高亮任务失败。", error);
+        console.warn("文章代码块语义高亮任务失败。", error);
         semanticWarningShown = true;
       }
     });
-    await Promise.all([
-      renderBashTextMateHighlights(root),
-      renderMermaidDiagrams(root),
-    ]);
+    await Promise.all([bashHighlighting, mermaidRendering]);
+    if (!enhancementIsCurrent(root, enhancementGeneration)) return;
     // Mermaid 会重组容器并移动源码节点，因此绘制完成后幂等补回复制按钮。
     ensureCodeCopyButtons(root);
-    if (root.isConnected) await typesetMath(root);
+    if (root.isConnected) {
+      await typesetMath(root, enhancementGeneration);
+    }
   }
 
   async function enhanceAll(scope) {

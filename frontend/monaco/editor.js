@@ -23,6 +23,7 @@ const darkPlusSemanticRules = [
   { token: "interface", foreground: "4EC9B0" },
   { token: "enum", foreground: "4EC9B0" },
   { token: "typeParameter", foreground: "4EC9B0" },
+  { token: "dependentType", foreground: "4EC9B0" },
   { token: "concept", foreground: "4EC9B0" },
   { token: "enumMember", foreground: "4FC1FF" },
   { token: "function", foreground: "DCDCAA" },

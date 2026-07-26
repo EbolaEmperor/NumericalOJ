@@ -34,6 +34,50 @@
   font-family: inherit;
 }
 
+/*
+ * 仅编辑器支持的四组文章语言切到与 Monaco Dark+ 完全相同的画布；
+ * 其他语言继续沿用既有 GitHub Dark Pygments 主题。
+ */
+.numoj-markdown
+  .codehilite:is(
+    .language-c,
+    .language-cpp,
+    [class~="language-c++"],
+    .language-cc,
+    .language-cxx,
+    .language-py,
+    .language-py3,
+    .language-python,
+    .language-python3,
+    .language-m,
+    .language-matlab,
+    .language-octave
+  ) {
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+.numoj-markdown
+  .codehilite:is(
+    .language-c,
+    .language-cpp,
+    [class~="language-c++"],
+    .language-cc,
+    .language-cxx,
+    .language-py,
+    .language-py3,
+    .language-python,
+    .language-python3,
+    .language-m,
+    .language-matlab,
+    .language-octave
+  )
+  pre {
+  border-color: #3e3e42;
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
 .numoj-markdown .numoj-code-frame {
   position: relative;
 }
@@ -439,8 +483,9 @@
 }
 
 /*
- * clangd 语义层复用代码编辑器的 Dark+ 配色，只覆盖服务端明确识别的
- * 标识符；其余词法 token 和请求失败场景继续使用上面的 Pygments 主题。
+ * C/C++、Python、MATLAB/Octave 的语言服务语义层复用编辑器的 Dark+
+ * 配色，只覆盖服务端明确识别的标识符；其余词法 token 来自同一套 Shiki
+ * grammar，解析失败时才保留服务端 Pygments 结果。
  */
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-namespace,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-type,

@@ -32,15 +32,18 @@ MATHJAX = (
 BASE_LAYOUT = (ROOT / "templates" / "layouts" / "base.html").read_text(
     encoding="utf-8"
 )
+MONACO_COMPONENT = (
+    ROOT / "templates" / "components" / "editor" / "monaco.html"
+).read_text(encoding="utf-8")
 PACKAGE = (ROOT / "package.json").read_text(encoding="utf-8")
 MERMAID_ASSET_BUILD = (
     ROOT / "scripts" / "build_mermaid.mjs"
 ).read_text(encoding="utf-8")
-BASH_HIGHLIGHTER_ENTRY = (
-    ROOT / "frontend" / "markdown" / "bash-highlighter.js"
+CODE_HIGHLIGHTER_ENTRY = (
+    ROOT / "frontend" / "markdown" / "code-highlighter.js"
 ).read_text(encoding="utf-8")
-BASH_HIGHLIGHTER_BUILD = (
-    ROOT / "scripts" / "build_bash_highlighter.mjs"
+CODE_HIGHLIGHTER_BUILD = (
+    ROOT / "scripts" / "build_markdown_code_highlighter.mjs"
 ).read_text(encoding="utf-8")
 CI_WORKFLOW = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
     encoding="utf-8"
@@ -182,18 +185,18 @@ def test_mathjax_uses_an_explicit_non_html_package_allowlist():
 def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
     mermaid_asset = ROOT / "static" / "vendor" / "mermaid" / "mermaid.min.js"
     mermaid_license = ROOT / "static" / "vendor" / "mermaid" / "LICENSE"
-    bash_highlighter_asset = (
-        ROOT / "static" / "vendor" / "shiki-bash" / "highlighter.js"
+    code_highlighter_asset = (
+        ROOT / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
     )
-    bash_highlighter_license = (
-        ROOT / "static" / "vendor" / "shiki-bash" / "LICENSE"
+    code_highlighter_license = (
+        ROOT / "static" / "vendor" / "shiki-markdown" / "LICENSE"
     )
 
     for page_template in (TEMPLATE, PROBLEM_TEMPLATE):
         assert page_template.count("app/markdown-rendering.css") == 1
         assert page_template.count("app/editor-semantic-tokens.js") == 1
         assert page_template.count("vendor/mermaid/mermaid.min.js") == 1
-        assert page_template.count("vendor/shiki-bash/highlighter.js") == 1
+        assert page_template.count("vendor/shiki-markdown/highlighter.js") == 1
         assert page_template.count("app/markdown-rendering.js") == 1
         assert page_template.index(
             "app/editor-semantic-tokens.js"
@@ -202,31 +205,39 @@ def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
             "vendor/mermaid/mermaid.min.js"
         ) < page_template.index("app/markdown-rendering.js")
         assert page_template.index(
-            "vendor/shiki-bash/highlighter.js"
+            "vendor/shiki-markdown/highlighter.js"
         ) < page_template.index("app/markdown-rendering.js")
     assert TEMPLATE.index("app/markdown-rendering.js") < TEMPLATE.index("app/forum.js")
     assert 'class="problem-content numoj-markdown my-3"' in PROBLEM_TEMPLATE
     assert "data-numoj-markdown" in PROBLEM_TEMPLATE
+    assert "app/editor-semantic-tokens.js" in MONACO_COMPONENT
+    assert "标准编程题由上方 Monaco 组件加载语义客户端" in PROBLEM_TEMPLATE
+    assert (
+        "{% if problem.type != 1 "
+        "or (problem.programming_grading_mode or 1)|int == 3 %}"
+        in PROBLEM_TEMPLATE
+    )
     assert "vendor/mermaid" not in BASE_LAYOUT
-    assert "vendor/shiki-bash" not in BASE_LAYOUT
+    assert "vendor/shiki-markdown" not in BASE_LAYOUT
     assert "app/editor-semantic-tokens.js" not in BASE_LAYOUT
     assert "app/markdown-rendering.js" not in BASE_LAYOUT
     assert '"mermaid": "11.16.0"' in PACKAGE
     assert '"build:mermaid": "node scripts/build_mermaid.mjs"' in PACKAGE
     assert (
-        '"build:bash-highlighter": "node scripts/build_bash_highlighter.mjs"'
+        '"build:markdown-highlighter": '
+        '"node scripts/build_markdown_code_highlighter.mjs"'
         in PACKAGE
     )
     assert "node_modules/mermaid/dist/mermaid.min.js" in MERMAID_ASSET_BUILD
-    assert "frontend/markdown/bash-highlighter.js" in BASH_HIGHLIGHTER_BUILD
-    assert "node_modules/shiki/LICENSE" in BASH_HIGHLIGHTER_BUILD
+    assert "frontend/markdown/code-highlighter.js" in CODE_HIGHLIGHTER_BUILD
+    assert "node_modules/shiki/LICENSE" in CODE_HIGHLIGHTER_BUILD
     assert "npm run build:frontend" in CI_WORKFLOW
     assert "static/vendor/mermaid" in CI_WORKFLOW
-    assert "static/vendor/shiki-bash" in CI_WORKFLOW
+    assert "static/vendor/shiki-markdown" in CI_WORKFLOW
     assert mermaid_asset.stat().st_size > 1_000_000
     assert mermaid_license.is_file()
-    assert 150_000 < bash_highlighter_asset.stat().st_size < 300_000
-    assert bash_highlighter_license.is_file()
+    assert 900_000 < code_highlighter_asset.stat().st_size < 1_200_000
+    assert code_highlighter_license.is_file()
 
 
 def test_shared_markdown_code_blocks_have_accessible_copy_controls():
@@ -253,16 +264,21 @@ def test_shared_markdown_code_blocks_have_accessible_copy_controls():
     assert "@media (prefers-reduced-motion: reduce)" in MARKDOWN_CSS
 
 
-def test_bash_uses_a_fine_grained_shiki_bundle_with_pygments_fallback():
+def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
     for contract in (
         'from "shiki/core"',
         'from "shiki/engine/javascript"',
         'from "@shikijs/langs/bash"',
+        'from "@shikijs/langs/c"',
+        'from "@shikijs/langs/cpp"',
+        'from "@shikijs/langs/python"',
+        'from "@shikijs/langs/matlab"',
         'from "@shikijs/themes/dark-plus"',
         "let highlighterPromise;",
         "highlighter.codeToTokens",
+        "LANGUAGE_ALIASES",
     ):
-        assert contract in BASH_HIGHLIGHTER_ENTRY
+        assert contract in CODE_HIGHLIGHTER_ENTRY
 
     for language_class in (
         "language-bash",
@@ -272,6 +288,18 @@ def test_bash_uses_a_fine_grained_shiki_bundle_with_pygments_fallback():
         "language-zsh",
         "language-ksh",
         "language-openrc",
+        "language-c",
+        "language-cpp",
+        "language-c++",
+        "language-cc",
+        "language-cxx",
+        "language-py",
+        "language-py3",
+        "language-python",
+        "language-python3",
+        "language-m",
+        "language-matlab",
+        "language-octave",
     ):
         assert language_class in MARKDOWN_JAVASCRIPT
         assert language_class in MARKDOWN_CSS
@@ -280,18 +308,33 @@ def test_bash_uses_a_fine_grained_shiki_bundle_with_pygments_fallback():
         "BASH_TEXTMATE_MAX_BLOCKS_PER_ROOT",
         "BASH_TEXTMATE_MAX_SOURCE_BYTES",
         "BASH_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT",
-        "window.NumOJBashHighlighter",
-        "await client.tokenize(source)",
-        "bashTokenFragment(result)",
+        "STRUCTURED_TEXTMATE_MAX_BLOCKS_PER_ROOT",
+        "STRUCTURED_TEXTMATE_MAX_SOURCE_BYTES",
+        "STRUCTURED_TEXTMATE_MAX_TOTAL_SOURCE_BYTES_PER_ROOT",
+        "window.NumOJMarkdownCodeHighlighter",
+        'await client.tokenize(source, "bash")',
+        "await client.tokenize(source, language)",
+        "shikiTokenFragment(result)",
         'document.createTextNode(content)',
         'block.dataset.numojBashState = "fallback";',
+        'block.dataset.numojStructuredTextmateState = "fallback";',
         "已保留 Pygments 着色",
         "SHIKI_DARK_PLUS_COLORS",
         'block.dataset.numojBashState = "skipped-total-size";',
+        'block.dataset.numojStructuredTextmateState = "skipped-total-size";',
         "await new Promise((resolve) => window.setTimeout(resolve, 0));",
     ):
         assert contract in MARKDOWN_JAVASCRIPT
 
+    target_canvas = MARKDOWN_CSS.split(
+        "仅编辑器支持的四组文章语言",
+        1,
+    )[1].split(".numoj-markdown .numoj-code-frame", 1)[0]
+    assert "background: #1e1e1e;" in target_canvas
+    assert "color: #d4d4d4;" in target_canvas
+    assert "language-json" not in target_canvas
+    assert "language-js" not in target_canvas
+    assert "background: #0d1117;" in MARKDOWN_CSS
     assert "span.style.color" not in MARKDOWN_JAVASCRIPT
     assert ".numoj-shiki-color-dcdcaa" in MARKDOWN_CSS
     assert ".numoj-shiki-color-9cdcfe" in MARKDOWN_CSS
@@ -328,16 +371,23 @@ def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
         "container.dataset.numojMermaidGeneration !== generation",
         'block.dataset.numojMermaidState = "queued";',
         'context: "markdown"',
-        "CPP_SEMANTIC_MAX_INFLIGHT_PER_PAGE = 2",
-        "CPP_SEMANTIC_MAX_SOURCE_BYTES",
-        "CPP_SEMANTIC_MAX_TOKENS_PER_BLOCK",
+        "STRUCTURED_SEMANTIC_MAX_INFLIGHT_PER_PAGE = 2",
+        "STRUCTURED_SEMANTIC_MAX_SOURCE_BYTES",
+        "STRUCTURED_SEMANTIC_MAX_TOKENS_PER_BLOCK",
         "scheduleSemanticTask(",
         "semanticController.abort();",
+        "const enhancementGenerations = new WeakMap();",
+        "const structuredTextMateTasks = new WeakMap();",
+        "invalidateEnhancement(root);",
+        "sharedStructuredTextMateTask(root)",
+        "enhancementIsCurrent(root, enhancementGeneration)",
         "root.contains(block)",
         'String(code.textContent || "") === source',
         'block.dataset.numojSemanticState = "queued";',
         "applySemanticRanges(code, ranges);",
-        "if (root.isConnected) await typesetMath(root);",
+        "await structuredHighlighting;",
+        "renderStructuredSemanticHighlights(root)",
+        "await typesetMath(root, enhancementGeneration);",
         "mathJax.typesetClear([root]);",
         'root.matches("[data-numoj-markdown]")',
         'root.querySelectorAll("[data-numoj-markdown]")',
@@ -345,6 +395,11 @@ def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
     ):
         assert contract in MARKDOWN_JAVASCRIPT
 
+    assert MARKDOWN_JAVASCRIPT.index(
+        "    await structuredHighlighting;"
+    ) < MARKDOWN_JAVASCRIPT.index(
+        "    renderStructuredSemanticHighlights(root).catch"
+    )
     assert "enhanceRenderedMarkdown(elements.conversation)" in JAVASCRIPT
     assert ".then(settleScrollPosition)" in JAVASCRIPT
     assert "renderSequence !== state.conversationRenderSequence" in JAVASCRIPT
@@ -369,7 +424,9 @@ def test_shared_semantic_client_supports_editor_and_markdown_callers():
     for contract in (
         "async function getLegend(language, options)",
         "async function requestTokens(options)",
-        'context === "markdown" && language === "cpp"',
+        "MARKDOWN_LANGUAGE_ALIASES",
+        'context === "markdown" && markdownLanguage',
+        "body.language = markdownLanguage",
         "body.context = context",
         "body.problem_id = problemId",
         "signal: settings.signal",
