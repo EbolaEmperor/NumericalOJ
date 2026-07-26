@@ -10,7 +10,10 @@ from flask import Blueprint, jsonify, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from oj_modules.auth_helpers import current_user, login_required
-from oj_modules.clangd_services import get_clangd_service
+from oj_modules.clangd_services import (
+    get_clangd_service,
+    get_repository_clangd_service,
+)
 from oj_modules.language_server_services import (
     LANGUAGE_SOURCE_MAX_BYTES,
     LanguageServiceBusyError,
@@ -21,6 +24,12 @@ from oj_modules.language_server_services import (
 )
 from oj_modules.octave_language_services import get_octave_language_service
 from oj_modules.python_language_services import get_python_language_service
+from oj_modules.repository import tree as repository_tree
+from oj_modules.repository.language import (
+    capture_repository_semantic_snapshot,
+    ensure_repository_semantic_target_current,
+    get_repository_semantic_target,
+)
 from oj_modules.security_utils import rate_limit_hit
 from oj_modules.semantic_token_cache import SemanticTokenResultCache
 
@@ -31,12 +40,6 @@ _REQUEST_MAX_BYTES = LANGUAGE_SOURCE_MAX_BYTES * 6 + 16 * 1024
 _TOKENS_MAX_PER_WINDOW = 240
 _TOKENS_WINDOW_SECONDS = 60
 _MARKDOWN_SEMANTIC_CONTEXT = "markdown"
-_GENERIC_EDITOR_SEMANTIC_CONTEXTS = frozenset(
-    {
-        "problem-form",
-        "repository",
-    }
-)
 _GENERIC_EDITOR_DOCUMENT_ID_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z"
 )
@@ -221,17 +224,17 @@ def semantic_tokens():
     problem_id = payload.get("problem_id")
     semantic_context = payload.get("context")
     document_id = payload.get("document_id")
+    repository_entry_id = payload.get("repository_entry_id")
     if not isinstance(source, str):
         return jsonify(success=False, message="source 必须是字符串"), 400
     markdown_request = semantic_context == _MARKDOWN_SEMANTIC_CONTEXT
-    generic_editor_request = (
-        isinstance(semantic_context, str)
-        and semantic_context in _GENERIC_EDITOR_SEMANTIC_CONTEXTS
-    )
+    repository_request = semantic_context == "repository"
+    generic_editor_request = semantic_context == "problem-form"
     if markdown_request:
         if (
             problem_id is not None
             or document_id is not None
+            or repository_entry_id is not None
             or language != "cpp"
         ):
             return jsonify(success=False, message="Markdown 语义请求无效"), 400
@@ -241,8 +244,20 @@ def semantic_tokens():
                 code="source_too_large",
                 message="Markdown C++ 代码块超过结构化高亮大小限制",
             ), 413
+    elif repository_request:
+        if problem_id is not None or document_id is not None:
+            return jsonify(success=False, message="仓库语义请求无效"), 400
+        if (
+            not isinstance(repository_entry_id, int)
+            or isinstance(repository_entry_id, bool)
+            or repository_entry_id <= 0
+        ):
+            return jsonify(
+                success=False,
+                message="repository_entry_id 无效",
+            ), 400
     elif generic_editor_request:
-        if problem_id is not None:
+        if problem_id is not None or repository_entry_id is not None:
             return jsonify(success=False, message="编辑器语义请求无效"), 400
         if (
             not isinstance(document_id, str)
@@ -252,7 +267,7 @@ def semantic_tokens():
     else:
         if semantic_context is not None:
             return jsonify(success=False, message="语义请求 context 无效"), 400
-        if document_id is not None:
+        if document_id is not None or repository_entry_id is not None:
             return jsonify(success=False, message="document_id 无效"), 400
         if (
             not isinstance(problem_id, int)
@@ -291,13 +306,52 @@ def semantic_tokens():
             f"{user_id}:editor:{semantic_context}:{document_id}:{language}"
         )
         analysis_source = source
+    elif repository_request:
+        document_key = None
+        analysis_source = source
     else:
         document_key = f"{user_id}:{problem_id}:{language}"
         analysis_source = source
     try:
-        result = get_editor_language_service(language).semantic_tokens(
-            document_key, analysis_source
-        )
+        if repository_request:
+            numeric_user_id = user.get("id")
+            if (
+                not isinstance(numeric_user_id, int)
+                or isinstance(numeric_user_id, bool)
+                or numeric_user_id <= 0
+            ):
+                raise repository_tree.RepositoryDomainError(
+                    "登录身份缺少仓库所有者编号",
+                    code="invalid_owner",
+                    status=403,
+                )
+            target = get_repository_semantic_target(
+                numeric_user_id,
+                repository_entry_id,
+                language,
+            )
+            if language in {"c", "cpp"}:
+                result = get_repository_clangd_service(
+                    language
+                ).semantic_tokens(
+                    target,
+                    analysis_source,
+                    lambda: capture_repository_semantic_snapshot(target),
+                )
+            else:
+                result = get_editor_language_service(language).semantic_tokens(
+                    (
+                        f"{numeric_user_id}:editor:repository:"
+                        f"{target.entry_id}:{language}"
+                    ),
+                    analysis_source,
+                )
+            ensure_repository_semantic_target_current(target)
+        else:
+            assert document_key is not None
+            result = get_editor_language_service(language).semantic_tokens(
+                document_key, analysis_source
+            )
         if markdown_request:
             result = dict(result)
             result["data"] = _without_semantic_prefix_lines(
@@ -306,6 +360,10 @@ def semantic_tokens():
             )[: _MARKDOWN_MAX_TOKENS * 5]
             assert markdown_cache_key is not None
             result["result_id"] = f"markdown:{markdown_cache_key[:12]}"
+    except repository_tree.RepositoryDomainError as exc:
+        if markdown_cache_key is not None:
+            _markdown_semantic_cache.cancel(markdown_cache_key)
+        return jsonify(exc.as_payload()), exc.status
     except (LanguageServiceError, ValueError) as exc:
         if markdown_cache_key is not None:
             _markdown_semantic_cache.cancel(markdown_cache_key)

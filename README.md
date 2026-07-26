@@ -273,19 +273,25 @@ Linux 使用 Bubblewrap，macOS 本地开发使用系统 Sandbox。部署脚本�
 `clangd --version` 与 `bwrap --version`；缺失时才通过交互式 `sudo` 和 Debian APT
 安装仓库当前 candidate 的精确版本。安装前必须完成 APT 模拟，拒绝卸载、改动既有
 依赖或触碰 MySQL、Docker、Python 等宿主关键包，安装后同时核验 dpkg 版本与可执行
-文件。任一步失败都会在现有服务仍运行时终止部署。
+文件。普通判题候选镜像构建完成后，部署脚本还会读取镜像内 gcc/g++ 的真实 include
+search，把 `/usr/include`、GCC internal include、`/opt/mkl/include` 与
+`/opt/library` 等头文件解引用导出到
+`.deploy/editor-toolchains/` 的非活动槽，拒绝符号链接、特殊文件、路径逃逸和异常
+体积，再让 clangd 对 STL、Eigen、CBLAS、LAPACKE 与 MKL 做真实语义自检。这样编辑器
+认可的官方库集合始终以判题镜像为准，不依赖 Web 宿主偶然安装的开发包。任一步失败
+都会在现有服务仍运行时终止部署。
 
 Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 BasedPyright 提供真实语义
 令牌；MATLAB/Octave 编辑器使用固定版本的 Tree-sitter MATLAB 解析函数、参数、赋值、
 属性和方法等结构，但不执行用户代码，也不把这种结构化高亮描述为动态类型推断。
-两项运行时都随生产 venv 安装，并在构建镜像和停服前完成可执行文件或解析器自检；
+两项运行时都随生产 venv 安装，并在停服前完成可执行文件或解析器自检；
 任一服务不可用时，桌面编辑器保留本地 Shiki 词法高亮作为降级路径。
 
 每次部署先创建安全日志目录，再清理由本脚本标记、因异常中断遗留的候选镜像标签，并在项目内 `.deploy/` 的非活动虚拟环境槽安装固定生产依赖。ARC-AGI-3 官方游戏不保存在 Git 仓库；部署会先逐文件校验 `.deploy/arc-agi-3/` 的现有完整缓存并直接复用，首次安装才通过官方 API 下载全部公开游戏，在终端显示进度条，完成环境初始化与预览生成后按内容指纹缓存。处理普通判题和 Agent-as-Judge 候选镜像时，脚本先计算 Dockerfile 与实际 `COPY` 输入的精确指纹；稳定镜像的指纹相同时直接复用，不调用构建。确需更新镜像时，脚本显式使用 `default` BuildKit builder（可通过 `NUMOJ_DOCKER_BUILDER` 覆盖）及其 Docker daemon 全局步骤缓存；生产默认缓存位于 Docker data root，而不是项目目录。脚本还会检测本地 `latest` 稳定镜像和各镜像的关键重型步骤缓存线索，并在候选镜像中写入 inline cache 元数据；任一前提缺失时会在停服前失败关闭。
 
 候选环境和镜像就绪后，脚本以 MySQL 服务端查询结果选择备份方案。本机 Oracle MySQL / Percona Server 8.0.34+ 固定使用 XtraBackup `8.0.35-36`，8.4.x 固定使用 `8.4.0-6`；缺少或版本不匹配时会先通过交互式 `sudo` 与 Debian APT 自动安装。服务器版本或发行方不兼容，或自动安装失败时，才改为带进度的 `mysqldump` 计划。APT 变更以及版本、身份、权限和容量预检都发生在停服前；物理计划会在 Celery 排空期间维持已取得的 sudo ticket，真正执行时只接受非交互认证，避免全停服后再次等待密码。
 
-脚本确认两套业务 Supervisor 可管理后，依次停止 Celery/Web，并再次拒绝任何额外漂移的 Gunicorn/Celery 进程，再创建零写入窗口内的数据库回滚点。XtraBackup 备份整个实例且必须完成 prepare；逻辑 fallback 只备份配置的 `MYSQL_DB`，采用 gzip level 1，并在原子发布前完整重读校验 gzip CRC。备份有效后才原子切换虚拟环境与 ARC-AGI-3 本地公开集，执行一次非破坏性的 `scripts/init_db_schema.py`，清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复和切换两个 `latest` 镜像标签。Web 请求和游玩过程只读取本机 ARC-AGI-3 缓存，不访问官方 API。统一日志采集 Supervisor 以最佳努力先行启动，随后依次启动 Celery/Web；最后按 Web 和 Celery 的精确 namespec 集合确认全部进程稳定进入 `RUNNING`，并重新核验真实备份产物后才将回滚点标记为成功。这是启动结果确认和备份完整性校验，不是测试。
+脚本确认两套业务 Supervisor 可管理后，依次停止 Celery/Web，并再次拒绝任何额外漂移的 Gunicorn/Celery 进程，再创建零写入窗口内的数据库回滚点。XtraBackup 备份整个实例且必须完成 prepare；逻辑 fallback 只备份配置的 `MYSQL_DB`，采用 gzip level 1，并在原子发布前完整重读校验 gzip CRC。备份有效后才原子切换虚拟环境、编辑器官方头文件工具链与 ARC-AGI-3 本地公开集，执行一次非破坏性的 `scripts/init_db_schema.py`，清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复和切换两个 `latest` 镜像标签。Web 请求和游玩过程只读取本机 ARC-AGI-3 缓存，不访问官方 API。统一日志采集 Supervisor 以最佳努力先行启动，随后依次启动 Celery/Web；最后按 Web 和 Celery 的精确 namespec 集合确认全部进程稳定进入 `RUNNING`，并重新核验真实备份产物后才将回滚点标记为成功。这是启动结果确认和备份完整性校验，不是测试。
 
 主机级锁会拒绝来自不同 checkout 的并发部署；两个虚拟环境槽循环复用，数据库备份保存在 `.deploy/backups/`。物理备份路径由最小特权 helper 以 dirfd 固定 inode 并硬化，留存按持久化单调 generation 排序且显式保护本次 run，不依赖主机墙上时钟。成功启动全部业务进程后，按清单保留最近 2 个成功部署回滚点；失败、待处理和旧格式备份不自动删除。首次从根目录 `web.conf` / `celery.conf` 迁移时，脚本只会终止 UID、工作目录、入口和配置参数都精确匹配的旧 Supervisor，不会用模糊进程名发信号。
 

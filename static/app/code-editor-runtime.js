@@ -48,6 +48,8 @@
     py: "python",
     m: "matlab",
   };
+  var TEXTMATE_INITIAL_WAIT_MS = 250;
+  var textMateStates = new WeakMap();
 
   function copySpec(spec, label) {
     return {
@@ -160,43 +162,116 @@
     });
   }
 
-  function withTimeout(promise, timeoutMs) {
-    return new Promise(function (resolve, reject) {
+  function resolveWithin(promise, timeoutMs) {
+    return new Promise(function (resolve) {
       var settled = false;
       var timeout = window.setTimeout(function () {
         if (settled) return;
         settled = true;
-        reject(new Error("语法 grammar 初始化超时"));
+        resolve({ settled: false });
       }, timeoutMs);
       Promise.resolve(promise).then(function (value) {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeout);
-        resolve(value);
-      }, function (error) {
+        resolve({ settled: true, value: value });
+      }, function () {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeout);
-        reject(error);
+        resolve({ settled: true, value: false });
       });
+    });
+  }
+
+  function warnTextMateFailure(state, message, error) {
+    if (state.warned) return;
+    state.warned = true;
+    console.warn(message, error);
+  }
+
+  function getTextMateState(monaco) {
+    var existing = textMateStates.get(monaco);
+    if (existing) return existing;
+
+    var state = {
+      status: "pending",
+      warned: false,
+      themeApplyScheduled: false,
+      themeApplied: false,
+      promise: null,
+    };
+    textMateStates.set(monaco, state);
+
+    var preparation;
+    try {
+      preparation = monaco.prepareTextMateHighlighting();
+    } catch (error) {
+      preparation = Promise.reject(error);
+    }
+    state.promise = Promise.resolve(preparation).then(function () {
+      state.status = "ready";
+      return true;
+    }, function (error) {
+      state.status = "failed";
+      warnTextMateFailure(
+        state,
+        "VS Code 语法 grammar 初始化失败，已降级为 Monaco 基础着色。",
+        error
+      );
+      return false;
+    });
+    return state;
+  }
+
+  function applyTextMateThemeWhenReady(monaco, state) {
+    state.promise.then(function (ready) {
+      if (
+        !ready ||
+        state.themeApplyScheduled ||
+        state.themeApplied ||
+        !monaco.editor ||
+        typeof monaco.editor.setTheme !== "function"
+      ) {
+        return;
+      }
+      state.themeApplyScheduled = true;
+      window.setTimeout(function () {
+        if (state.themeApplied) return;
+        try {
+          monaco.editor.setTheme("dark-plus");
+          state.themeApplied = true;
+        } catch (error) {
+          warnTextMateFailure(
+            state,
+            "VS Code 语法主题切换失败，已保留 Monaco 基础着色。",
+            error
+          );
+        }
+      }, 0);
     });
   }
 
   async function prepareMonaco(monaco) {
     registerMatlab(monaco);
-    var theme = "vs-dark";
-    if (typeof monaco.prepareTextMateHighlighting === "function") {
-      try {
-        await withTimeout(monaco.prepareTextMateHighlighting(), 5000);
-        theme = "dark-plus";
-      } catch (error) {
-        console.warn(
-          "VS Code 语法 grammar 初始化失败，已降级为 Monaco 基础着色。",
-          error
-        );
-      }
+    if (typeof monaco.prepareTextMateHighlighting !== "function") {
+      return "vs-dark";
     }
-    return theme;
+
+    var state = getTextMateState(monaco);
+    if (state.status === "ready") return "dark-plus";
+    if (state.status === "failed") return "vs-dark";
+
+    var initialResult = await resolveWithin(
+      state.promise,
+      TEXTMATE_INITIAL_WAIT_MS
+    );
+    if (initialResult.settled && initialResult.value) {
+      return "dark-plus";
+    }
+
+    applyTextMateThemeWhenReady(monaco, state);
+    return "vs-dark";
   }
 
   function monacoOptions(overrides) {

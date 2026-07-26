@@ -506,8 +506,16 @@ class SemanticLanguageServerService:
             raise LanguageServiceProtocolError(
                 "语言服务", "语言服务响应体大小无效"
             )
-        body = stream.read(length)
-        if len(body) != length:
+        body_chunks: list[bytes] = []
+        remaining = length
+        while remaining:
+            chunk = stream.read(remaining)
+            if not chunk:
+                break
+            body_chunks.append(chunk)
+            remaining -= len(chunk)
+        body = b"".join(body_chunks)
+        if remaining:
             raise LanguageServiceProtocolError(
                 "语言服务", "语言服务响应体被截断"
             )
@@ -656,6 +664,8 @@ class SemanticLanguageServerService:
         self,
         document_key: str,
         source: str,
+        *,
+        document_path: Path | None = None,
     ) -> dict[str, Any]:
         source = self._prepare_source(source)
         encoded = source.encode("utf-8")
@@ -669,13 +679,24 @@ class SemanticLanguageServerService:
                 self._evict_documents_locked(now)
                 state = self._documents.get(document_key)
                 if state is None:
-                    uri_digest = hashlib.sha256(
-                        document_key.encode("utf-8")
-                    ).hexdigest()
-                    uri = (
-                        self._workspace()
-                        / f"{uri_digest}{self.file_suffix}"
-                    ).resolve().as_uri()
+                    if document_path is None:
+                        uri_digest = hashlib.sha256(
+                            document_key.encode("utf-8")
+                        ).hexdigest()
+                        resolved_document_path = (
+                            self._workspace()
+                            / f"{uri_digest}{self.file_suffix}"
+                        ).resolve()
+                    else:
+                        resolved_document_path = document_path.resolve()
+                        if not resolved_document_path.is_relative_to(
+                            self._workspace()
+                        ):
+                            raise LanguageServiceProtocolError(
+                                self.service_name,
+                                "语言服务文档路径越过隔离工作区",
+                            )
+                    uri = resolved_document_path.as_uri()
                     state = _DocumentState(
                         uri=uri,
                         version=1,

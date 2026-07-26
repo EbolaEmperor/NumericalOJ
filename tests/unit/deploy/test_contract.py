@@ -49,6 +49,8 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         "phase='准备 Python 运行环境'",
         "phase='准备 ARC-AGI-3 公开游戏'",
         "phase='构建判题镜像'",
+        "phase='准备判题器官方头文件工具链'",
+        "phase='核验编辑器语言服务'",
         "phase='准备数据库备份计划'",
         "phase='确认现有服务可管理'",
         "phase='停止现有服务'",
@@ -101,6 +103,21 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert script.index("phase='创建并验证数据库回滚点'") < arc_switch
     assert "--expected-count 25" in script
     assert 'ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"' in script
+    assert (
+        'EDITOR_TOOLCHAIN_ROOT="$STATE_DIR/editor-toolchains"' in script
+    )
+    assert (
+        'CURRENT_EDITOR_TOOLCHAIN="$STATE_DIR/current-editor-toolchain"'
+        in script
+    )
+    assert (
+        'ln -s "editor-toolchains/$candidate_slot" '
+        '"$CURRENT_EDITOR_TOOLCHAIN_TEMP"' in script
+    )
+    assert (
+        'mv -Tf -- "$CURRENT_EDITOR_TOOLCHAIN_TEMP" '
+        '"$CURRENT_EDITOR_TOOLCHAIN"' in script
+    )
     assert 'docker tag "$JUDGER_CANDIDATE" "$JUDGER_STABLE"' in script
     assert (
         'docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"' in script

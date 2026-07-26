@@ -171,7 +171,7 @@ require({str(asset)!r});
   }});
   await NumOJSemanticTokens.requestTokens({{
     context: "repository",
-    documentId: "entry-42",
+    repositoryEntryId: 42,
     language: "cpp",
     source: "int repository_value;"
   }});
@@ -189,7 +189,7 @@ require({str(asset)!r});
   }}
   if (
     requests[2].context !== "repository" ||
-    requests[2].document_id !== "entry-42" ||
+    requests[2].repository_entry_id !== 42 ||
     Object.prototype.hasOwnProperty.call(requests[2], "problem_id")
   ) {{
     process.exit(6);
@@ -241,7 +241,138 @@ if (
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
-def test_semantic_provider_derives_a_generic_editor_document_id_from_model():
+def test_code_editor_runtime_upgrades_delayed_textmate_theme_once_ready():
+    asset = ROOT / "static" / "app" / "code-editor-runtime.js"
+    script = f"""
+global.window = global;
+let resolvePreparation = null;
+let preparationCalls = 0;
+const appliedThemes = [];
+const monaco = {{
+  editor: {{
+    setTheme: function(theme) {{ appliedThemes.push(theme); }}
+  }},
+  languages: {{
+    getLanguages: function() {{ return [{{id: "matlab"}}]; }}
+  }},
+  prepareTextMateHighlighting: function() {{
+    preparationCalls += 1;
+    return new Promise(function(resolve) {{ resolvePreparation = resolve; }});
+  }}
+}};
+require({str(asset)!r});
+(async function() {{
+  const themes = await Promise.all([
+    NumOJCodeEditorRuntime.prepareMonaco(monaco),
+    NumOJCodeEditorRuntime.prepareMonaco(monaco)
+  ]);
+  if (themes[0] !== "vs-dark" || themes[1] !== "vs-dark") process.exit(1);
+  if (preparationCalls !== 1 || appliedThemes.length !== 0) process.exit(2);
+
+  resolvePreparation();
+  await new Promise(function(resolve) {{ setTimeout(resolve, 10); }});
+  if (
+    appliedThemes.length !== 1 ||
+    appliedThemes[0] !== "dark-plus"
+  ) process.exit(3);
+
+  const readyTheme = await NumOJCodeEditorRuntime.prepareMonaco(monaco);
+  if (readyTheme !== "dark-plus" || preparationCalls !== 1) process.exit(4);
+}})().catch(function() {{ process.exit(5); }});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_semantic_requests_retry_service_busy_but_not_rate_limits():
+    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    script = f"""
+global.window = global;
+Math.random = function() {{ return 0; }};
+let mode = "busy";
+let calls = 0;
+global.fetch = async function() {{
+  calls += 1;
+  if ((mode === "busy" || mode === "repository-changed") && calls === 1) {{
+    return {{
+      ok: false,
+      status: 503,
+      headers: {{get: function() {{ return null; }}}},
+      json: async function() {{
+        return {{
+          code: mode === "busy" ? "service_busy" : "repository_changed",
+          message: "稍后重试"
+        }};
+      }}
+    }};
+  }}
+  if (mode === "rate-limited") {{
+    return {{
+      ok: false,
+      status: 429,
+      headers: {{get: function() {{ return null; }}}},
+      json: async function() {{
+        return {{code: "rate_limited", message: "请求过于频繁"}};
+      }}
+    }};
+  }}
+  return {{
+    ok: true,
+    json: async function() {{
+      return {{success: true, data: [0, 0, 3, 0, 0], result_id: "1"}};
+    }}
+  }};
+}};
+require({str(asset)!r});
+(async function() {{
+  await NumOJSemanticTokens.requestTokens({{
+    context: "repository",
+    repositoryEntryId: 42,
+    language: "cpp",
+    source: "int value;"
+  }});
+  if (calls !== 2) process.exit(1);
+
+  mode = "repository-changed";
+  calls = 0;
+  await NumOJSemanticTokens.requestTokens({{
+    context: "repository",
+    repositoryEntryId: 42,
+    language: "cpp",
+    source: "int value;"
+  }});
+  if (calls !== 2) process.exit(2);
+
+  mode = "rate-limited";
+  calls = 0;
+  let error = null;
+  try {{
+    await NumOJSemanticTokens.requestTokens({{
+      problemId: 42,
+      language: "cpp",
+      source: "int main() {{}}"
+    }});
+  }} catch (caught) {{
+    error = caught;
+  }}
+  if (!error || error.code !== "rate_limited" || calls !== 1) process.exit(3);
+}})().catch(function() {{ process.exit(4); }});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_semantic_provider_derives_repository_entry_id_from_model():
     asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
     script = f"""
 global.window = global;
@@ -279,7 +410,7 @@ require({str(asset)!r});
   }};
   await NumOJSemanticTokens.register(monaco, {{
     context: "repository",
-    documentId: function() {{ return "entry-7"; }},
+    repositoryEntryId: function() {{ return 7; }},
     language: "cpp",
     monacoLanguage: "cpp"
   }});
@@ -296,7 +427,7 @@ require({str(asset)!r});
   if (
     !tokenBody ||
     tokenBody.context !== "repository" ||
-    tokenBody.document_id !== "entry-7" ||
+    tokenBody.repository_entry_id !== 7 ||
     tokenBody.language !== "cpp" ||
     tokenBody.source !== "int value;"
   ) {{

@@ -6,6 +6,8 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="$ROOT_DIR/.deploy"
 VENV_ROOT="$STATE_DIR/venvs"
 CURRENT_VENV="$STATE_DIR/current-venv"
+EDITOR_TOOLCHAIN_ROOT="$STATE_DIR/editor-toolchains"
+CURRENT_EDITOR_TOOLCHAIN="$STATE_DIR/current-editor-toolchain"
 BACKUP_DIR="$STATE_DIR/backups"
 ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"
 ARC_CURRENT_SET="$ARC_DATA_ROOT/current"
@@ -38,6 +40,7 @@ restart_started=0
 sudo_keepalive_pid=''
 SUDO_KEEPALIVE_STOP="$STATE_DIR/.sudo-keepalive-$RUN_ID.stop"
 CURRENT_VENV_TEMP="$STATE_DIR/.current-venv-$RUN_ID"
+CURRENT_EDITOR_TOOLCHAIN_TEMP="$STATE_DIR/.current-editor-toolchain-$RUN_ID"
 ARC_CURRENT_SET_TEMP="$ARC_DATA_ROOT/.current-$RUN_ID"
 ARC_RESULT_FILE="$ARC_DATA_ROOT/.candidate-$RUN_ID"
 
@@ -129,6 +132,7 @@ cleanup() {
   set +e
   stop_sudo_keepalive || true
   rm -f -- "$CURRENT_VENV_TEMP"
+  rm -f -- "$CURRENT_EDITOR_TOOLCHAIN_TEMP"
   rm -f -- "$ARC_CURRENT_SET_TEMP" "$ARC_RESULT_FILE"
   if [[ "$exit_code" -ne 0 && -f "$backup_manifest" \
       && -x "${CANDIDATE_PYTHON:-}" ]]; then
@@ -161,7 +165,7 @@ trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 
 cd "$ROOT_DIR"
-install -d -m 0700 "$STATE_DIR" "$VENV_ROOT"
+install -d -m 0700 "$STATE_DIR" "$VENV_ROOT" "$EDITOR_TOOLCHAIN_ROOT"
 
 for command_name in docker flock pgrep; do
   command -v "$command_name" >/dev/null || {
@@ -364,16 +368,59 @@ if [[ -e "$CURRENT_VENV" && ! -L "$CURRENT_VENV" ]]; then
   exit 1
 fi
 case "$current_venv_target" in
-  '') candidate_slot='slot-a' ;;
-  venvs/slot-a|./venvs/slot-a|"$VENV_ROOT/slot-a") candidate_slot='slot-b' ;;
-  venvs/slot-b|./venvs/slot-b|"$VENV_ROOT/slot-b") candidate_slot='slot-a' ;;
+  '')
+    active_slot=''
+    candidate_slot='slot-a'
+    ;;
+  venvs/slot-a|./venvs/slot-a|"$VENV_ROOT/slot-a")
+    active_slot='slot-a'
+    candidate_slot='slot-b'
+    ;;
+  venvs/slot-b|./venvs/slot-b|"$VENV_ROOT/slot-b")
+    active_slot='slot-b'
+    candidate_slot='slot-a'
+    ;;
   *)
     printf 'current-venv 指向未知环境，拒绝删除任何 venv：%s\n' \
       "$current_venv_target" >&2
     exit 1
     ;;
 esac
+current_editor_toolchain_target="$(
+  readlink "$CURRENT_EDITOR_TOOLCHAIN" 2>/dev/null || true
+)"
+if [[ -e "$CURRENT_EDITOR_TOOLCHAIN" \
+    && ! -L "$CURRENT_EDITOR_TOOLCHAIN" ]]; then
+  printf '%s 必须是部署脚本管理的符号链接。\n' \
+    "$CURRENT_EDITOR_TOOLCHAIN" >&2
+  exit 1
+fi
+case "$current_editor_toolchain_target" in
+  '')
+    ;;
+  editor-toolchains/slot-a|./editor-toolchains/slot-a|\
+"$EDITOR_TOOLCHAIN_ROOT/slot-a")
+    editor_toolchain_active_slot='slot-a'
+    ;;
+  editor-toolchains/slot-b|./editor-toolchains/slot-b|\
+"$EDITOR_TOOLCHAIN_ROOT/slot-b")
+    editor_toolchain_active_slot='slot-b'
+    ;;
+  *)
+    printf 'current-editor-toolchain 指向未知槽位，拒绝覆盖：%s\n' \
+      "$current_editor_toolchain_target" >&2
+    exit 1
+    ;;
+esac
+if [[ -n "${editor_toolchain_active_slot:-}" \
+    && "$editor_toolchain_active_slot" != "$active_slot" ]]; then
+  printf '%s\n' \
+    'current-editor-toolchain 与 current-venv 槽位不一致，拒绝覆盖仍可能在用的头文件。' \
+    >&2
+  exit 1
+fi
 CANDIDATE_VENV="$VENV_ROOT/$candidate_slot"
+CANDIDATE_EDITOR_TOOLCHAIN="$EDITOR_TOOLCHAIN_ROOT/$candidate_slot"
 CANDIDATE_PYTHON="$CANDIDATE_VENV/bin/python3"
 CANDIDATE_SUPERVISORD="$CANDIDATE_VENV/bin/supervisord"
 CANDIDATE_SUPERVISORCTL="$CANDIDATE_VENV/bin/supervisorctl"
@@ -384,10 +431,6 @@ rm -rf -- "$CANDIDATE_VENV"
 "$CANDIDATE_PYTHON" -m pip install \
   --disable-pip-version-check \
   --requirement requirements/production.txt
-
-phase='核验编辑器语言服务'
-PYTHONDONTWRITEBYTECODE=1 "$CANDIDATE_PYTHON" -B \
-  deploy/verify_editor_runtime.py
 
 phase='准备 ARC-AGI-3 公开游戏'
 "$CANDIDATE_PYTHON" -B deploy/prepare_arc_agi_3.py \
@@ -411,6 +454,16 @@ build_candidate_image \
   'node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5' \
   'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
   'playwright install chromium'
+
+phase='准备判题器官方头文件工具链'
+"$CANDIDATE_PYTHON" -B deploy/prepare_editor_toolchain.py \
+  --image "$JUDGER_CANDIDATE" \
+  --output "$CANDIDATE_EDITOR_TOOLCHAIN"
+
+phase='核验编辑器语言服务'
+NUMOJ_EDITOR_TOOLCHAIN_ROOT="$CANDIDATE_EDITOR_TOOLCHAIN" \
+  PYTHONDONTWRITEBYTECODE=1 "$CANDIDATE_PYTHON" -B \
+  deploy/verify_editor_runtime.py
 
 supervisor_pid() {
   local config="$1"
@@ -634,6 +687,9 @@ phase='切换运行环境并更新数据库结构'
 rm -f -- "$CURRENT_VENV_TEMP"
 ln -s "venvs/$candidate_slot" "$CURRENT_VENV_TEMP"
 mv -Tf -- "$CURRENT_VENV_TEMP" "$CURRENT_VENV"
+rm -f -- "$CURRENT_EDITOR_TOOLCHAIN_TEMP"
+ln -s "editor-toolchains/$candidate_slot" "$CURRENT_EDITOR_TOOLCHAIN_TEMP"
+mv -Tf -- "$CURRENT_EDITOR_TOOLCHAIN_TEMP" "$CURRENT_EDITOR_TOOLCHAIN"
 rm -f -- "$ARC_CURRENT_SET_TEMP"
 ln -s "$arc_candidate_target" "$ARC_CURRENT_SET_TEMP"
 mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"

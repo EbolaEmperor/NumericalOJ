@@ -183,9 +183,8 @@ def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
     assert "function registerMatlab(monaco)" not in submission_editor
     assert "}, 8000);" in monaco_component
     assert "}, 8000);" in codemirror_component
-    assert "withTimeout(monaco.prepareTextMateHighlighting(), 5000)" in (
-        editor_runtime
-    )
+    assert "TEXTMATE_INITIAL_WAIT_MS = 250" in editor_runtime
+    assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
 
 
 def test_non_credential_text_fields_opt_out_of_password_managers():
@@ -297,7 +296,8 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert "filename='app/code-editor-runtime.js'" in monaco_component
     assert "runtime.prepareMonaco(monaco)" in editor
     assert "monaco.prepareTextMateHighlighting()" in editor_runtime
-    assert 'theme = "dark-plus"' in editor_runtime
+    assert 'return "dark-plus"' in editor_runtime
+    assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
     assert "theme: editorTheme" in editor
     assert "'semanticHighlighting.enabled': true" in editor
     assert 'from "@shikijs/monaco"' in monaco_entry
@@ -388,7 +388,8 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert "readOnly: true" in detail_js
     assert "domReadOnly: true" in detail_js
     assert "runtime.prepareMonaco(monaco)" in detail_js
-    assert 'theme = "dark-plus"' in editor_runtime
+    assert 'return "dark-plus"' in editor_runtime
+    assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
     assert "window.NumOJMonacoReady" in detail_js
     assert "window.NumOJCodeMirrorReady" in detail_js
     assert "window.NumOJSemanticTokens.register(monaco" in detail_js

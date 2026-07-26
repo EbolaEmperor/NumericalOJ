@@ -94,12 +94,18 @@ def test_deploy_calls_clangd_provisioner_before_candidate_images():
     assert provision < images
 
 
-def test_deploy_verifies_editor_runtime_after_install_and_before_images():
+def test_deploy_verifies_editor_runtime_against_candidate_judge_headers():
     script = (Path(__file__).resolve().parents[3] / "deploy.sh").read_text()
     install = script.index("--requirement requirements/production.txt")
-    verify = script.index("deploy/verify_editor_runtime.py")
     images = script.index("phase='构建判题镜像'")
-    assert install < verify < images
+    prepare = script.index("deploy/prepare_editor_toolchain.py")
+    verify = script.index("deploy/verify_editor_runtime.py")
+    assert install < images < prepare < verify
+    assert '--image "$JUDGER_CANDIDATE"' in script
+    assert (
+        'NUMOJ_EDITOR_TOOLCHAIN_ROOT="$CANDIDATE_EDITOR_TOOLCHAIN"'
+        in script
+    )
 
 
 def test_system_package_cli_loads_from_script_path():

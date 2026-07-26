@@ -807,11 +807,12 @@
       semanticProviders[spec.language] = true;
       window.NumOJSemanticTokens.register(monaco, {
         context: 'repository',
-        documentId: function (model) {
+        repositoryEntryId: function (model) {
           var pieces = String(model && model.uri && model.uri.path || '')
             .split('/')
             .filter(Boolean);
-          return pieces.pop() || 'workspace';
+          var match = /^entry-(\d+)$/.exec(pieces.pop() || '');
+          return match ? Number(match[1]) : 0;
         },
         language: spec.language,
         monacoLanguage: spec.monacoLanguage,
