@@ -35,6 +35,15 @@ ADMIN_USERS = (ROOT / "templates" / "admin" / "users.html").read_text(
 REGISTER = (ROOT / "templates" / "auth" / "register.html").read_text(
     encoding="utf-8"
 )
+AUTH_BASE = (ROOT / "templates" / "auth" / "base.html").read_text(
+    encoding="utf-8"
+)
+AUTH_TEMPLATES = "\n".join(
+    (ROOT / "templates" / "auth" / name).read_text(encoding="utf-8")
+    for name in ("login.html", "register.html", "forgot_password.html")
+)
+AUTH_CSS = (ROOT / "static" / "app" / "auth.css").read_text(encoding="utf-8")
+AUTH_JS = (ROOT / "static" / "app" / "auth.js").read_text(encoding="utf-8")
 CLASS_LOGO = (
     ROOT / "templates" / "components" / "layout" / "class_logo.html"
 ).read_text(encoding="utf-8")
@@ -189,6 +198,34 @@ def test_class_membership_and_registration_share_the_custom_logo_picker():
     assert "memberships=attach_class_logos(user_classes)" in CLASS_MANAGEMENT_ROUTES
     assert "all_classes=attach_class_logos(all_classes)" in CLASS_MANAGEMENT_ROUTES
     assert "logo_seed" not in CLASS_MANAGER_MODAL
+
+
+def test_auth_pages_share_the_ui_v2_card_and_homepage_logo_contract():
+    assert '{% extends "layouts/site.html" %}' in AUTH_BASE
+    assert "filename='app/auth.css'" in AUTH_BASE
+    assert "filename='app/auth.js'" in AUTH_BASE
+    assert "numoj-auth-shell" in AUTH_BASE
+    assert "M4 20Q8 4 12 12T20 4" in AUTH_BASE
+    assert "ACCOUNT ACCESS" not in AUTH_BASE
+    assert "AI-NATIVE JUDGE" not in AUTH_BASE
+
+    for template_name in ("login.html", "register.html", "forgot_password.html"):
+        source = (ROOT / "templates" / "auth" / template_name).read_text(
+            encoding="utf-8"
+        )
+        assert '{% extends "auth/base.html" %}' in source
+        assert "<style" not in source
+        assert "<script" not in source
+        assert "style=" not in source
+        assert "onclick=" not in source
+
+    assert "data-auth-password-toggle" in AUTH_TEMPLATES
+    assert "numoj-auth-eye-slash" in AUTH_TEMPLATES
+    assert "button.textContent" not in AUTH_JS
+    assert "data-send-code-url" in REGISTER
+    assert "fetch(sendCodeButton.dataset.sendCodeUrl" in AUTH_JS
+    assert ".numoj-auth-card" in AUTH_CSS
+    assert ".numoj-auth-password-toggle" in AUTH_CSS
 
 
 def test_class_memberships_have_no_primary_class_frontend_concept():

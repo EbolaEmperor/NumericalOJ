@@ -1,0 +1,441 @@
+/* 登录、注册与找回密码：沿用 UI-v2 的低噪声单卡片视觉。 */
+.numoj-auth-shell {
+  --auth-page: #f7f6f2;
+  --auth-paper: #fff;
+  --auth-ink: #18181b;
+  --auth-ink-2: #3f3f46;
+  --auth-muted: #71717a;
+  --auth-faint: #a1a1aa;
+  --auth-line: #e4e4e7;
+  --auth-soft: #f4f4f5;
+  --auth-orange: #ea580c;
+  --auth-orange-dark: #c2410c;
+  --auth-orange-soft: #fff7ed;
+  --auth-success: #15803d;
+  --auth-success-soft: #f0fdf4;
+  --auth-danger: #dc2626;
+  --auth-danger-soft: #fef2f2;
+  --auth-font: "Avenir Next", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  min-height: 100vh;
+  background: var(--auth-page);
+  color: var(--auth-ink);
+  font-family: var(--auth-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+.numoj-auth-shell button,
+.numoj-auth-shell input {
+  font: inherit;
+}
+
+.numoj-auth-shell button {
+  cursor: pointer;
+}
+
+.numoj-auth-shell button:focus-visible,
+.numoj-auth-shell input:focus-visible,
+.numoj-auth-shell a:focus-visible {
+  outline: 3px solid rgba(234, 88, 12, 0.18);
+  outline-offset: 2px;
+}
+
+.numoj-auth-shell .numoj-site-main {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+}
+
+.numoj-auth-shell .numoj-auth-page {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 38px 18px;
+}
+
+.numoj-auth-card {
+  position: relative;
+  width: min(414px, 100%);
+  margin: 0 auto;
+  border: 1px solid var(--auth-line);
+  border-radius: 12px;
+  background: var(--auth-paper);
+  box-shadow: 0 18px 48px rgba(24, 24, 27, 0.09);
+}
+
+.numoj-auth-accent {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  left: -1px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 12px 12px 0 0;
+  background:
+    linear-gradient(
+      90deg,
+      var(--auth-orange) 0 68px,
+      var(--auth-ink) 68px 92px,
+      transparent 92px
+    );
+  pointer-events: none;
+}
+
+.numoj-auth-brand {
+  padding: 22px 24px 17px;
+}
+
+.numoj-auth-brand a {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--auth-ink);
+  text-decoration: none;
+}
+
+.numoj-auth-brand a:hover {
+  color: var(--auth-ink);
+}
+
+.numoj-auth-brand-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--auth-ink), #3f3f46);
+  color: #fb923c;
+}
+
+.numoj-auth-brand strong {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.numoj-auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 0 14px;
+  border-top: 1px solid var(--auth-line);
+  border-bottom: 1px solid var(--auth-line);
+}
+
+.numoj-auth-tab {
+  position: relative;
+  display: grid;
+  min-height: 46px;
+  place-items: center;
+  padding: 0 4px;
+  color: var(--auth-faint);
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.numoj-auth-tab::after {
+  position: absolute;
+  right: 13px;
+  bottom: -1px;
+  left: 13px;
+  height: 2px;
+  background: transparent;
+  content: "";
+}
+
+.numoj-auth-tab:hover {
+  color: var(--auth-ink-2);
+}
+
+.numoj-auth-tab.is-active {
+  color: var(--auth-ink);
+}
+
+.numoj-auth-tab.is-active::after {
+  background: var(--auth-orange);
+}
+
+.numoj-auth-panel {
+  padding: 25px 24px 27px;
+}
+
+.numoj-auth-heading {
+  margin-bottom: 18px;
+}
+
+.numoj-auth-heading h1 {
+  margin: 0;
+  color: var(--auth-ink);
+  font-size: 22px;
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  line-height: 1.2;
+}
+
+.numoj-auth-alert {
+  margin: 0 0 15px;
+  padding: 9px 10px;
+  border: 1px solid var(--auth-line);
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.numoj-auth-alert.is-success {
+  border-color: #bbf7d0;
+  background: var(--auth-success-soft);
+  color: var(--auth-success);
+}
+
+.numoj-auth-alert.is-error {
+  border-color: #fecaca;
+  background: var(--auth-danger-soft);
+  color: var(--auth-danger);
+}
+
+.numoj-auth-form {
+  display: grid;
+  gap: 15px;
+}
+
+.numoj-auth-field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.numoj-auth-field > label {
+  color: var(--auth-ink-2);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.numoj-auth-control {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.numoj-auth-control input {
+  width: 100%;
+  height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--auth-line);
+  border-radius: 7px;
+  outline: none;
+  background: #fff;
+  color: var(--auth-ink);
+  font-size: 12px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.numoj-auth-control input::placeholder {
+  color: #b8b8bd;
+}
+
+.numoj-auth-control input:hover {
+  border-color: #ccccd1;
+}
+
+.numoj-auth-control input:focus {
+  border-color: var(--auth-muted);
+  box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.05);
+}
+
+.numoj-auth-control input[autocomplete="current-password"],
+.numoj-auth-control input[autocomplete="new-password"] {
+  padding-right: 48px;
+}
+
+.numoj-auth-password-toggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  width: 35px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--auth-muted);
+}
+
+.numoj-auth-password-toggle:hover {
+  background: var(--auth-soft);
+  color: var(--auth-ink);
+}
+
+.numoj-auth-password-toggle svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.numoj-auth-eye-slash {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.numoj-auth-password-toggle[aria-pressed="true"] .numoj-auth-eye-slash {
+  opacity: 1;
+}
+
+.numoj-auth-code-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.numoj-auth-code-button {
+  min-width: 104px;
+  padding: 0 10px;
+  border: 1px solid var(--auth-line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--auth-ink-2);
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.numoj-auth-code-button:hover:not(:disabled) {
+  border-color: #c7c7cc;
+  background: var(--auth-soft);
+}
+
+.numoj-auth-code-button:disabled {
+  color: var(--auth-faint);
+  cursor: wait;
+}
+
+.numoj-auth-field-status {
+  margin: 0;
+  color: var(--auth-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.numoj-auth-field-status.is-success {
+  color: var(--auth-success);
+}
+
+.numoj-auth-field-status.is-error {
+  color: var(--auth-danger);
+}
+
+.numoj-auth-primary {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  border: 1px solid var(--auth-ink);
+  border-radius: 7px;
+  background: var(--auth-ink);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.numoj-auth-primary:hover {
+  background: #2d2d32;
+}
+
+.numoj-auth-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  margin-top: 15px;
+  color: var(--auth-muted);
+  font-size: 10px;
+}
+
+.numoj-auth-secondary.is-centered {
+  justify-content: center;
+}
+
+.numoj-auth-secondary a {
+  color: var(--auth-ink-2);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.numoj-auth-secondary a:hover {
+  color: var(--auth-orange-dark);
+}
+
+.numoj-auth-notice {
+  margin: 0 0 15px;
+  padding: 9px 10px;
+  border-left: 2px solid var(--auth-orange);
+  background: var(--auth-orange-soft);
+  color: #9a3412;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.numoj-auth-card .numoj-register-class-select {
+  --numoj-class-select-line: var(--auth-line);
+  --numoj-class-select-soft: var(--auth-soft);
+  --numoj-class-select-brand: var(--auth-orange);
+  --numoj-class-select-brand-ink: var(--auth-orange-dark);
+  --numoj-class-select-brand-soft: var(--auth-orange-soft);
+}
+
+.numoj-auth-card .numoj-register-class-select .numoj-class-select-trigger {
+  min-height: 42px;
+  padding: 4px 9px 4px 5px;
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+.numoj-auth-card .numoj-register-class-select .numoj-class-select-trigger:hover,
+.numoj-auth-card .numoj-register-class-select .numoj-class-select-trigger:focus-visible,
+.numoj-auth-card .numoj-register-class-select.open .numoj-class-select-trigger {
+  border-color: var(--auth-muted);
+  box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.05);
+}
+
+@media (max-width: 440px) {
+  .numoj-auth-shell .numoj-site-main {
+    align-items: start;
+  }
+
+  .numoj-auth-shell .numoj-auth-page {
+    padding: 18px 12px;
+  }
+
+  .numoj-auth-card {
+    border-radius: 10px;
+  }
+
+  .numoj-auth-brand {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .numoj-auth-panel {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .numoj-auth-control input {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .numoj-auth-shell *,
+  .numoj-auth-shell *::before,
+  .numoj-auth-shell *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

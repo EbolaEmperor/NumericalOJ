@@ -14,6 +14,7 @@ JAVASCRIPT_ASSETS = (
     "frontend/markdown/code-highlighter.js",
     "static/app/arc-agi-3-catalog.js",
     "static/app/arc-agi-3.js",
+    "static/app/auth.js",
     "static/app/class-select.js",
     "static/app/class-picker.js",
     "static/app/choice-picker.js",

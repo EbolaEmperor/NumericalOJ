@@ -1,51 +1,43 @@
-{% extends "layouts/site.html" %}
-{% block title %}登录 - {{ super() }}{% endblock %}
-{% block content %}
-<div class="d-flex justify-content-center align-items-center" style="min-height: 80vh;">
-  <div class="card p-4" style="max-width: 100%; width: 100%; max-width: 400px;">
-    <h2 class="mb-3 text-center">登录</h2>
+{% extends "auth/base.html" %}
 
-    {% if success_message %}
-      <div class="alert alert-success" role="alert">
-        {{ success_message }}
-      </div>
-    {% endif %}
+{% block title %}登录 - Numerical OJ{% endblock %}
+{% block auth_heading %}登录{% endblock %}
 
-    {% if error_message %}
-      <div class="alert alert-danger" role="alert">
-        {{ error_message }}
-      </div>
-    {% endif %}
+{% block auth_content %}
+<form class="numoj-auth-form" method="POST" action="{{ url_for('auth.login') }}">
+  {% if next_url %}
+    <input type="hidden" name="next" value="{{ next_url }}">
+  {% endif %}
 
-    <form method="POST" action="{{ url_for('auth.login') }}">
-      {% if next_url %}
-        <input type="hidden" name="next" value="{{ next_url }}">
-      {% endif %}
-      <div class="mb-3">
-        <label for="username" class="form-label"><i class="fas fa-user me-1"></i> 学号</label>
-        <input type="text" class="form-control" id="username" name="username" required>
-      </div>
-      <div class="mb-3">
-        <label for="password" class="form-label"><i class="fas fa-key me-2"></i> 密码</label>
-        <input type="password" class="form-control" id="password" name="password" required>
-      </div>
-      <button type="submit" class="btn btn-outline-primary w-100">
-        <i class="fas fa-sign-in-alt"></i> 登录
-      </button>
-    </form>
-
-    <div class="row mt-3">
-      <div class="col">
-        <a href="{{ url_for('auth.register') }}" class="btn btn-outline-success w-100">
-          <i class="fas fa-user-plus"></i> 注册
-        </a>
-      </div>
-      <div class="col">
-        <a href="{{ url_for('auth.forgot_password') }}" class="btn btn-outline-secondary w-100">
-          <i class="fas fa-lock"></i> 忘记密码
-        </a>
-      </div>
-    </div>
+  <div class="numoj-auth-field">
+    <label for="username">学号</label>
+    <span class="numoj-auth-control">
+      <input id="username" name="username" type="text" autocomplete="username"
+        value="{{ request.form.get('username', '') }}" placeholder="请输入学号" required autofocus>
+    </span>
   </div>
+
+  <div class="numoj-auth-field">
+    <label for="password">密码</label>
+    <span class="numoj-auth-control">
+      <input id="password" name="password" type="password" autocomplete="current-password"
+        placeholder="请输入密码" required>
+      <button class="numoj-auth-password-toggle" type="button"
+        data-auth-password-toggle="password" aria-label="显示密码" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/>
+          <circle cx="12" cy="12" r="2.6"/>
+          <path class="numoj-auth-eye-slash" d="M4 4l16 16"/>
+        </svg>
+      </button>
+    </span>
+  </div>
+
+  <button class="numoj-auth-primary" type="submit">登录</button>
+</form>
+
+<div class="numoj-auth-secondary">
+  <a href="{{ url_for('auth.register') }}">注册新账户</a>
+  <a href="{{ url_for('auth.forgot_password') }}">忘记密码？</a>
 </div>
 {% endblock %}

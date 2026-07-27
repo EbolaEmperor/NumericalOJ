@@ -6,12 +6,16 @@
 
 {% block body %}
 {% set layout_user = user|default(none) %}
-<div class="numoj-site-shell{% if layout_user %} numoj-site-shell-authenticated{% else %} numoj-site-shell-guest{% endif %}" data-numoj-shell>
+<div class="numoj-site-shell{% if layout_user %} numoj-site-shell-authenticated{% else %} numoj-site-shell-guest{% endif %}{% block site_shell_class %}{% endblock %}" data-numoj-shell>
+  {% block navigation %}
   {% include 'components/layout/navigation.html' %}
+  {% endblock %}
   <main class="numoj-site-main">
     {% include 'components/layout/password_modal.html' %}
     {% include 'components/layout/class_manager_modal.html' %}
+    {% block flash_messages %}
     {% include 'components/layout/flash_messages.html' %}
+    {% endblock %}
 
     <div class="numoj-content {% block content_container_class %}container mt-4{% endblock %}">
       {% block content %}{% endblock %}
