@@ -182,9 +182,9 @@ bash deploy.sh
 1. 持有主机级锁并校验生产配置；clangd 实际主版本必须至少为 17，缺失合格版本时先模拟并通过 Debian APT 旁路安装版本化 `clangd-19` 的精确 candidate，不得替换或升级既有旧版 `clangd`；`bwrap --version` 不可用时也先模拟再安装精确 candidate。所有 APT 模拟都拒绝卸载、改动既有依赖或触碰宿主关键包；应用依次选择 `clangd-20`、`clangd-19`、`clangd-18`、`clangd-17`，最后才回退到版本合格的无后缀 `clangd`；再清理异常中断遗留的受管候选镜像标签，在 `.deploy/venvs/` 的非活动槽安装固定生产依赖；
 2. 每次都为普通判题与 Agent-as-Judge 准备候选镜像；构建输入指纹未变化时复用稳定镜像并创建候选标签，变化时才重新构建；读取普通判题候选镜像内 gcc/g++ 的真实 include search，把 `/usr/include`、GCC internal include、`/opt/mkl/include` 与 `/opt/library` 等头文件安全导出到 `.deploy/editor-toolchains/` 的非活动槽，以该镜像作为用户可引用官方 C/C++ 库的唯一事实源；clangd 对 C/C++ 都禁用宿主默认 include search，只显式读取受管槽位，再核验其能解析 STL、Eigen、CBLAS、LAPACKE、MKL，同时核验 BasedPyright 与 Tree-sitter MATLAB；
 3. 停服前以服务端 `SELECT VERSION()` 等查询为准生成唯一备份计划。兼容的本机 MySQL 8.0/8.4 使用仓库固定版本的 XtraBackup；缺失或版本不匹配时，通过交互式 `sudo` 和 Debian APT 自动安装。服务器不兼容，或自动安装失败时，计划才允许回退到 `mysqldump`；
-4. 确认两套 Supervisor 可管理，再依次停止 Celery/Web；首次迁移只终止身份精确匹配的旧版 Supervisor，不使用 `pkill -f`；
+4. 确认两套 Supervisor 可管理，再依次停止 Celery/Web；首次从旧版配置切换时只终止身份精确匹配的旧版 Supervisor，不使用 `pkill -f`；
 5. 在全部应用写入者停止后严格执行既定计划：XtraBackup 备份整个实例并完成 `--prepare`，或只对 `MYSQL_DB` 执行 gzip level 1 的逻辑备份和完整 gzip 校验。备份未验证成功不得更新 schema；
-6. 回滚点验证成功后再次确认 Web/Celery 全部停止，先以双确认参数执行等价多班级显式迁移；成功后才原子切换 `.deploy/current-venv` 与 `.deploy/current-editor-toolchain`，执行一次非破坏性 schema 同步、过期上传暂存清理和仓库存储 doctor，再执行停机任务恢复；
+6. 回滚点验证成功后再次确认 Web/Celery 全部停止，再原子切换 `.deploy/current-venv` 与 `.deploy/current-editor-toolchain`，执行一次非破坏性 schema 同步、过期上传暂存清理和仓库存储 doctor，再执行停机任务恢复；
 7. 切换两个生产镜像标签，最佳努力启动统一日志采集器，再依次启动 Celery/Web，并在两组业务服务均启动后再次确认 Supervisor 配置中的精确进程集合全部稳定进入 `RUNNING`；重新核验真实备份产物后才把回滚点标记为成功。
 
 脚本不复制、覆盖或删除代码文件，因此生产 `.env`、`static/` 的额外资产、上传和运行目录的保留责任属于执行 `git pull` 的 checkout 配置。除按需通过 APT 旁路安装版本化 `clangd-19`、管理 Bubblewrap 的精确 candidate 版本、固定版本 XtraBackup 及其 Percona 软件源外，脚本只写 `.deploy/`（包括候选 venv 与从判题镜像导出的受管编辑器头文件）、数据库备份、Docker 标签和进程状态。正常拉取只更新 tracked 的 `config.py` 解析逻辑和 `.env.tmpl` 模板，不覆盖 `.env`。部署用 Python 辅助程序统一放在 `deploy/`，不得在 `deploy.sh` 中内嵌 Python 源码或 `python -c`。
@@ -213,7 +213,7 @@ Prompt、答案、任务参数/返回值和评测 stdout/stderr 原文。
 ### 前端快速路径
 
 仅修改模板时，在生产 checkout 完成 `git pull` 后无需运行部署脚本或重启。生产 `FLASK_DEBUG` 应保持关闭；模板实时生效依赖 `TEMPLATES_AUTO_RELOAD=True`，不是 debug reloader。
-只有经 diff 证明不含 Python、数据库结构、迁移或部署流程变更时才属于“仅修改模板”；移除主班级模型的这批变更必须执行完整 `bash deploy.sh`，不得按模板快速路径发布。
+只有经 diff 证明不含 Python、数据库结构、迁移或部署流程变更时才属于“仅修改模板”。
 
 页面统一从 `templates/layouts/base.html` 派生的 site/embedded 布局继承。MathJax 是显式 opt-in 资源；新增公式页面覆盖 `mathjax` block，普通页面不得把它重新放回全局布局。排名规则拓扑统一调用 `static/app/ranking/topology.js`；统一提交页的表格与详情面板由 `templates/submissions/components/table.html` 维护，不要在页面模板中复制私有版本。
 
