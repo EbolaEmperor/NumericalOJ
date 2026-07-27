@@ -131,54 +131,6 @@ DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
 6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
 
-### 移除“主班级”模型的显式迁移
-
-`scripts/migrate_remove_primary_class.py` 只用于把旧库收缩为等价多班级模型。它默认
-执行只读 dry-run，检查旧 `users.class` 快照、成员映射、会因迁移失去全部班级的
-非管理员账号
-以及遗留的 `Cadmin` 伪班级，并展示补映射与 `class_cnt` 重算 SQL。若
-`Cadmin` 物理作业表仍有任何数据，迁移会失败关闭，不会自动删除。只有检测到
-`users.class` / `users.class_cn` / `user_class_map.is_primary` /
-`idx_primary` 这些旧结构标记时，`Cadmin` 才会被识别为遗留伪班级并进入清理；
-结构已收缩后重新创建的同名普通班级不会被迁移脚本读取、删除或清空。apply 完成后
-还会再次验证成员关系与重算后的 `class_cnt`。
-
-本次一次性迁移还包含一条生产数据修复白名单：只在孤儿关系全集精确等于
-`id=634 / user_id=369 / CNumAnl_25_26_AutWin / is_primary=0`、用户仍有两个
-有效班级且同名动态作业表为空时，删除该成员关系；它不会删除动态表。任一字段、
-孤儿数量、有效班级数量或作业表内容发生变化都会失败关闭。删除操作要求精确影响
-一行，并在 `class_cnt` 重算和收缩 DDL 前完成。
-
-迁移只阻止非管理员账号因本次清理已有 `Cadmin` 或旧主班级来源而从“有班级”
-变成“零班级”；对迁移前就同时没有旧班级快照和成员关系的历史账号保持原状，
-不擅自分配班级、提升权限或删除账号。注册与成员关系服务仍负责阻止新的普通账号
-进入零班级状态。
-
-```bash
-# 应用仍可运行时只能做只读预检；本命令不会写数据或执行 DDL
-python3 scripts/migrate_remove_primary_class.py
-
-# 官方 deploy.sh 会在停写和备份验证后自动执行；仅独立运维时才手工 apply
-python3 scripts/migrate_remove_primary_class.py \
-  --apply \
-  --confirm-app-writers-stopped \
-  --confirm-backup-verified
-```
-
-apply 会先补齐合法的旧班级关系、清理空的 `Cadmin` 伪班级并按映射重算
-`class_cnt`，随后删除 `user_class_map.is_primary`、`idx_primary`、
-`users.class` 和 `users.class_cn`。操作幂等，但 DDL 会隐式提交，不能依赖事务
-回滚重建已删除的字段或旧主班级选择；回滚必须依赖执行前已验证的数据库回滚点。
-执行顺序保证补映射、旧 `Cadmin` 清理和人数重算都发生在删除旧结构标记之前；
-中途失败时服务保持停止，先核对哪些 DDL 已提交，再以同一脚本幂等向前重跑或使用
-部署前回滚点人工恢复。代码修改和测试本身不会执行生产迁移；未来经明确授权运行
-`bash deploy.sh` 时，官方部署流程会在停写且备份验证完成后自动调用该脚本。
-
-本次变更包含 Python 数据访问、数据库结构和部署流程，**不能使用仅拉取模板并依赖
-`TEMPLATES_AUTO_RELOAD` 的快速路径**。即使同批提交还包含模板或静态资源修改，也必须
-按完整 `git pull --ff-only` + `bash deploy.sh` 流程发布，不能在旧数据库或旧 worker
-仍运行时只更新页面文件。
-
 ### 仓库存储运维
 
 仓库存储运维入口默认只读：
@@ -216,7 +168,7 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 3. 以 MySQL 服务端查询结果生成唯一备份计划，兼容矩阵只在 `deploy/backup/policy.py` 维护。兼容的本机 Oracle MySQL/Percona Server 使用固定版本 XtraBackup；无兼容映射时使用逻辑备份。XtraBackup 缺失或版本不匹配时，先通过交互式 `sudo` 与 Debian APT 供应固定版本；APT 动作必须先模拟、限制在审核后的包集合内，并拒绝连带改动 MySQL、Docker 等宿主关键服务。供应阶段的 sudo、APT、仓库、dpkg 或二进制校验失败可以把计划确定为逻辑备份。一旦供应成功，物理 plan 的 MySQL 身份、socket/datadir、本地 socket 认证、容量或后续执行条件验证失败都必须直接停止；计划冻结后不得因备份或 prepare 失败临时换策略。MySQL 认证复用严格加载的部署配置，并通过位于私有 plans 目录、权限 `0600` 的短期 option file 交给提权后的客户端；凭据值不得进入 plan、manifest、argv、环境或输出，option file 无论成功失败都必须删除。sudo 交互认证与凭据保活必须在停服前完成，停服后只能使用 `sudo -n`，凭据失效立即停止。
 4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
 5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
-6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，并以两个确认参数执行等价多班级显式迁移。迁移必须先于 `scripts/init_db_schema.py`；旧结构标记不存在时它是只读验证且不会清理后来合法创建的同名 `Cadmin` 普通班级。迁移成功后再原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API。迁移 DDL 会隐式提交；任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务。先判断旧结构标记和哪些 DDL 已提交，再幂等向前重跑，或使用本次已验证的数据库回滚点人工恢复。
+6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，然后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；先判断结构同步或其他写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
 7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功并执行留存清理。日志采集异常必须告警，但不能阻断健康的业务服务。
 
 `deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。脚本还会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
