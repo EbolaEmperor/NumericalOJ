@@ -208,6 +208,8 @@ def test_auth_pages_share_the_ui_v2_card_and_homepage_logo_contract():
     assert "M4 20Q8 4 12 12T20 4" in AUTH_BASE
     assert "ACCOUNT ACCESS" not in AUTH_BASE
     assert "AI-NATIVE JUDGE" not in AUTH_BASE
+    assert "numoj-auth-heading" not in AUTH_BASE
+    assert "auth_heading" not in AUTH_TEMPLATES
 
     for template_name in ("login.html", "register.html", "forgot_password.html"):
         source = (ROOT / "templates" / "auth" / template_name).read_text(
@@ -226,6 +228,7 @@ def test_auth_pages_share_the_ui_v2_card_and_homepage_logo_contract():
     assert "fetch(sendCodeButton.dataset.sendCodeUrl" in AUTH_JS
     assert ".numoj-auth-card" in AUTH_CSS
     assert ".numoj-auth-password-toggle" in AUTH_CSS
+    assert "margin-top: 9px;" in AUTH_CSS
 
 
 def test_class_memberships_have_no_primary_class_frontend_concept():

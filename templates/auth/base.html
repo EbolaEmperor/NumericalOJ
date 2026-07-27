@@ -12,7 +12,7 @@
 
 {% block content %}
 {% set auth_endpoint = request.endpoint or '' %}
-<section class="numoj-auth-card" aria-labelledby="numojAuthTitle">
+<section class="numoj-auth-card" aria-label="Numerical OJ 账户">
   <span class="numoj-auth-accent" aria-hidden="true"></span>
 
   <header class="numoj-auth-brand">
@@ -39,10 +39,6 @@
   </nav>
 
   <div class="numoj-auth-panel">
-    <header class="numoj-auth-heading">
-      <h1 id="numojAuthTitle">{% block auth_heading %}{% endblock %}</h1>
-    </header>
-
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% for category, message in messages %}
         <div class="numoj-auth-alert{% if category == 'success' %} is-success{% else %} is-error{% endif %}" role="alert">
