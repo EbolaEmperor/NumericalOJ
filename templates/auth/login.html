@@ -1,7 +1,6 @@
 {% extends "auth/base.html" %}
 
 {% block title %}登录 - Numerical OJ{% endblock %}
-{% block auth_heading %}登录{% endblock %}
 
 {% block auth_content %}
 <form class="numoj-auth-form" method="POST" action="{{ url_for('auth.login') }}">
