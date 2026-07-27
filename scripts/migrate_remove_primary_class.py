@@ -240,6 +240,7 @@ def _fail_on_zero_membership_students(
         remove_legacy_admin_class: bool,
 ) -> None:
     legacy_fallback = ""
+    legacy_membership_source = ""
     membership_exception = ""
     params = []
     if remove_legacy_admin_class:
@@ -255,6 +256,12 @@ def _fail_on_zero_membership_students(
           )
         """
         params.append(LEGACY_ADMIN_CLASS)
+        legacy_membership_source = """
+          OR (
+              u.`class` IS NOT NULL
+              AND TRIM(u.`class`) <> ''
+          )
+        """
 
     rows = _rows(
         cursor,
@@ -269,6 +276,14 @@ def _fail_on_zero_membership_students(
                 {membership_exception}
           )
           {legacy_fallback}
+          AND (
+              EXISTS (
+                  SELECT 1
+                  FROM user_class_map source_membership
+                  WHERE source_membership.user_id = u.id
+              )
+              {legacy_membership_source}
+          )
         ORDER BY u.id
         """,
         tuple(params),
