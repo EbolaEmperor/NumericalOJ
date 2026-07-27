@@ -313,7 +313,7 @@ Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 Base
 - `deploy/`、`deploy.sh`：生产进程配置、数据库备份和原地一键部署；
 - `database/bootstrap.sql`：新安装结构与开发种子基线；
 - `requirements/`：生产、测试和可选依赖分层；
-- `scripts/mysql_admin.py`、`scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`：运维数据库连接、结构同步与停机恢复工具；
+- `scripts/mysql_admin.py`、`scripts/init_db_schema.py`、`scripts/migrate_remove_primary_class.py`、`scripts/recover_pending_tasks.py`：运维数据库连接、结构同步、显式数据迁移与停机恢复工具；
 - `tests/unit`、`tests/db`、`tests/e2e`：按基础设施依赖分层的测试。
 
 维护规则、变更清单、测试矩阵和发布/回滚原则见 [`docs/maintenance.md`](docs/maintenance.md)。生产部署约束见 [`CLAUDE.md`](CLAUDE.md)。
