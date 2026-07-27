@@ -463,6 +463,24 @@ def test_plan_blocks_student_with_no_real_membership():
         migration.build_plan(cursor)
 
 
+def test_zero_membership_guard_only_targets_users_with_a_legacy_source():
+    cursor = _FakeCursor()
+
+    migration.build_plan(cursor)
+
+    zero_membership_query = next(
+        sql for sql, _params in cursor.calls
+        if 'FROM users u WHERE u.is_admin = 0' in sql
+    )
+    assert (
+        'FROM user_class_map source_membership '
+        'WHERE source_membership.user_id = u.id'
+        in zero_membership_query
+    )
+    assert "u.`class` IS NOT NULL" in zero_membership_query
+    assert "TRIM(u.`class`) <> ''" in zero_membership_query
+
+
 def test_plan_allows_admin_with_zero_memberships():
     cursor = _FakeCursor(zero_students=[])
 
