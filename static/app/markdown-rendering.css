@@ -11,6 +11,50 @@
   --numoj-markdown-danger-soft: #fff7f7;
 }
 
+/*
+ * 常规题与打榜赛题面共用同一组代码样式。
+ * 页面模板只提供语义 class，不再各自覆盖块级代码的画布与间距。
+ */
+.numoj-problem-code-rendering pre {
+  overflow-x: auto;
+  padding: 0.75rem 1rem;
+  border: 1px solid #e1e4e8;
+  border-radius: 6px;
+  background: #f6f8fa;
+}
+
+.numoj-problem-code-rendering code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: #f3f4f6;
+  font-size: 0.92em;
+}
+
+.numoj-problem-code-rendering pre code {
+  padding: 0;
+  background: transparent;
+}
+
+@media (min-width: 992px) {
+  .numoj-problem-code-rendering code {
+    background: var(--numoj-line-soft);
+    color: var(--numoj-brand-ink);
+    font-family: var(--numoj-mono);
+  }
+
+  .numoj-problem-code-rendering pre {
+    border: 0;
+    border-radius: 9px;
+    background: #18181b;
+    color: #f4f4f5;
+  }
+
+  .numoj-problem-code-rendering pre code {
+    background: transparent;
+    color: inherit;
+  }
+}
+
 .numoj-markdown .codehilite {
   position: relative;
   overflow: hidden;

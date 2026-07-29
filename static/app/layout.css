@@ -2645,24 +2645,6 @@
     content: "";
   }
 
-  .problem-detail-page .problem-content code {
-    background: var(--numoj-line-soft);
-    color: var(--numoj-brand-ink);
-    font-family: var(--numoj-mono);
-  }
-
-  .problem-detail-page .problem-content pre {
-    border: 0;
-    border-radius: 9px;
-    background: #18181b;
-    color: #f4f4f5;
-  }
-
-  .problem-detail-page .problem-content pre code {
-    background: transparent;
-    color: inherit;
-  }
-
   .problem-detail-page .problem-content table {
     border-color: var(--numoj-line);
     border-radius: 8px;

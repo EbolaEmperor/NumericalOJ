@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "templates" / "ranking"
 STATIC = ROOT / "static" / "app" / "ranking"
+ROUTES = ROOT / "oj_modules" / "routes"
 
 
 def _read(path):
@@ -17,6 +18,8 @@ def test_ranking_list_preserves_original_card_structure_and_visual_rules():
 
     assert "RANKING · LIST" not in template
     assert "list-v2.css" not in template
+    assert '<h1 class="ranking-list-title" id="rankingListTitle">打榜赛</h1>' in template
+    assert "font-size: 1.35rem" in template
     assert 'class="row g-3 ranking-grid"' in template
     assert 'class="col-12 col-md-6 col-lg-4"' in template
     assert "fa-user-friends" in template
@@ -86,6 +89,66 @@ def test_ranking_detail_function_rail_matches_global_sidebar_type_scale():
     assert "font-size: 13px" in stylesheet
     assert "font: 10.5px/1 var(--ranking-v2-mono)" in stylesheet
     assert "font-size: 11.5px" in stylesheet
+
+
+def test_ranking_description_keeps_accepted_width_and_centers_it():
+    stylesheet = _read(STATIC / "content-v2.css")
+
+    assert "width: min(100%, 920px)" in stylesheet
+    assert "margin: 0 auto" in stylesheet
+
+
+def test_ranking_description_reuses_problem_detail_markdown_renderer():
+    route = _read(ROUTES / "ranking_routes.py")
+    template = _read(TEMPLATES / "detail.html")
+    description = _read(TEMPLATES / "tabs" / "description.html")
+    problem_template = _read(ROOT / "templates" / "problems" / "detail.html")
+    shared_stylesheet = _read(ROOT / "static" / "app" / "markdown-rendering.css")
+    layout_stylesheet = _read(ROOT / "static" / "app" / "layout.css")
+    stylesheet = _read(STATIC / "detail-v2.css")
+
+    assert "from oj_modules.markdown_utils import render_rich_markdown" in route
+    assert "return render_rich_markdown(text)" in route
+    assert "\nimport markdown\n" not in route
+    assert "sanitize_html(markdown.markdown(" not in route
+
+    shared_assets = (
+        "app/editor-semantic-tokens.js",
+        "vendor/mermaid/mermaid.min.js",
+        "vendor/shiki-markdown/highlighter.js",
+        "app/markdown-rendering.js",
+    )
+    for asset in shared_assets:
+        assert template.count(asset) == 1
+    assert [template.index(asset) for asset in shared_assets] == sorted(
+        template.index(asset) for asset in shared_assets
+    )
+
+    assert ".ranking-description pre {" not in template
+    assert ".ranking-v2-description .numoj-markdown code {" not in stylesheet
+    assert ".ranking-v2-description .numoj-markdown :not(pre) > code {" not in stylesheet
+    assert (
+        "numoj-markdown numoj-problem-code-rendering ranking-description"
+        in description
+    )
+    assert (
+        "problem-content numoj-markdown numoj-problem-code-rendering my-3"
+        in problem_template
+    )
+    assert ".numoj-problem-code-rendering pre {" in shared_stylesheet
+    assert ".numoj-problem-code-rendering code {" in shared_stylesheet
+    assert ".numoj-problem-code-rendering pre code {" in shared_stylesheet
+    assert "> pre" not in shared_stylesheet[
+        :shared_stylesheet.index(".numoj-markdown .codehilite {")
+    ]
+    assert ":not(pre)" not in shared_stylesheet
+    assert shared_stylesheet.index(
+        ".numoj-problem-code-rendering pre {"
+    ) < shared_stylesheet.index(".numoj-markdown .codehilite {")
+    assert ".problem-content pre {" not in problem_template
+    assert ".problem-content code {" not in problem_template
+    assert ".problem-detail-page .problem-content pre {" not in layout_stylesheet
+    assert ".problem-detail-page .problem-content code {" not in layout_stylesheet
 
 
 def test_ranking_batch_layout_keeps_options_aligned_and_results_compact():

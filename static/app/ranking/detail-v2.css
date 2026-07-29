@@ -317,13 +317,6 @@
   content: "";
 }
 
-.ranking-v2-description .numoj-markdown code {
-  padding: 2px 5px;
-  background: var(--ranking-v2-line-soft);
-  color: var(--ranking-v2-orange-ink);
-  font-family: var(--ranking-v2-mono);
-}
-
 .ranking-v2-description .numoj-markdown blockquote {
   margin: 18px 0;
   padding: 2px 0 2px 15px;

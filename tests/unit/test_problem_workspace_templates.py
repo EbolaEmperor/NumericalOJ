@@ -89,7 +89,10 @@ def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
     repo = Path(__file__).resolve().parents[2]
     detail = (repo / "templates/problems/detail.html").read_text()
 
-    assert 'class="problem-content numoj-markdown my-3"' in detail
+    assert (
+        'class="problem-content numoj-markdown '
+        'numoj-problem-code-rendering my-3"'
+    ) in detail
     assert "data-numoj-markdown" in detail
     assert detail.count("app/markdown-rendering.css") == 1
     assert detail.count("vendor/mermaid/mermaid.min.js") == 1
