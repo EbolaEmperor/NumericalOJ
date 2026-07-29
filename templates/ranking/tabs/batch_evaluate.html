@@ -661,15 +661,14 @@
           var usernames = Object.keys(state.selected);
           if (!usernames.length) return;
           if (!endpointReady()) {
-            createMsg.innerHTML = '<div class="bm-flash">请选择 AI 节点</div>';
+            createMsg.textContent = '请选择 AI 节点';
             return;
           }
           var template = (tmplEl.value || '').trim();
           if (!window.confirm('确认对 ' + usernames.length + ' 个仓库批量创建提交并评测？')) return;
           createBtn.disabled = true;
-          createMsg.innerHTML = '<div class="bm-flash">' +
-            (window.MathCurveLoader ? MathCurveLoader.markup('创建中…', 'sm') : '创建中…') +
-            '</div>';
+          if (window.MathCurveLoader) MathCurveLoader.update(createMsg, '创建中…', {size: 'sm'});
+          else createMsg.textContent = '创建中…';
           var payload = {template: template, usernames: usernames};
           if (endpointEl) payload.agent_endpoint_id = (endpointEl.value || '').trim();
           var controller = new AbortController();
@@ -689,22 +688,24 @@
           }).then(function (data) {
             if (!isActive() || createController !== controller) return;
             if (!data.success) {
-              createMsg.innerHTML = '<div class="bm-flash">' +
-                escapeHtml(data.message || '创建失败') + '</div>';
+              createMsg.textContent = data.message || '创建失败';
               createBtn.disabled = false;
               return;
             }
             var invalid = data.invalid && data.invalid.length
               ? '，跳过 ' + data.invalid.length
               : '';
-            createMsg.innerHTML = '<div class="bm-flash">已开始批量处理 ' +
-              data.queued + ' 个仓库' + invalid + ' · <a href="' +
-              escapeHtml(allSubsUrl) + '">所有提交</a></div>';
+            createMsg.textContent = '已开始批量处理 ' +
+              data.queued + ' 个仓库' + invalid + ' · ';
+            var allSubmissionsLink = document.createElement('a');
+            allSubmissionsLink.href = allSubsUrl;
+            allSubmissionsLink.textContent = '所有提交';
+            createMsg.appendChild(allSubmissionsLink);
             state.selected = {};
             renderPage();
           }).catch(function (error) {
             if (!isActive() || (error && error.name === 'AbortError')) return;
-            createMsg.innerHTML = '<div class="bm-flash">网络错误</div>';
+            createMsg.textContent = '网络错误';
             createBtn.disabled = false;
           }).finally(function () {
             if (createController === controller) createController = null;

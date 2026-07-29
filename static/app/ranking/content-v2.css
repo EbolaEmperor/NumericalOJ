@@ -61,18 +61,6 @@
   line-height: 1.6;
 }
 
-.ranking-v2-detail .ranking-v2-notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  border-left: 3px solid var(--rkv2-orange);
-  background: var(--rkv2-orange-soft);
-  color: var(--rkv2-orange-ink);
-  font-size: 11px;
-}
-
 /* Description */
 .ranking-v2-detail .ranking-v2-description {
   padding-top: 24px;
@@ -103,9 +91,13 @@
   padding-left: 0;
 }
 
-.ranking-v2-detail .ranking-v2-leaderboard > .ranking-v2-notice {
-  margin-right: clamp(16px, 2.2vw, 30px);
-  margin-left: clamp(16px, 2.2vw, 30px);
+.ranking-v2-detail .ranking-leaderboard-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 clamp(16px, 2.2vw, 30px) 14px;
+  color: var(--rkv2-ink-4);
+  font-size: 10px;
 }
 
 .ranking-v2-detail .ranking-v2-leaderboard-scroll {
@@ -258,6 +250,11 @@
   min-width: 0;
   align-items: center;
   gap: 10px;
+}
+
+.ranking-v2-detail .matches-action-error {
+  color: var(--rkv2-red);
+  font-size: 10px;
 }
 
 .ranking-v2-detail .matches-filter {
@@ -483,6 +480,11 @@
 
 .ranking-v2-detail .match-delete-btn:hover {
   color: var(--rkv2-red);
+}
+
+.ranking-v2-detail .match-detail-error {
+  color: var(--rkv2-red);
+  font-size: 11px;
 }
 
 .ranking-v2-detail .matches-pagination {
@@ -967,13 +969,8 @@
   color: var(--rkv2-ink-4);
 }
 
-.ranking-v2-detail .ranking-v2-submit > .alert {
-  margin-bottom: 18px !important;
-  padding: 10px 12px;
-  border: 0;
-  border-left: 3px solid var(--rkv2-orange);
-  border-radius: 0;
-  background: var(--rkv2-orange-soft);
+.ranking-v2-detail .ranking-submit-block-reason {
+  margin: 0 0 18px;
   color: var(--rkv2-orange-ink);
   font-size: 11px;
 }
@@ -1946,17 +1943,11 @@
 
 .ranking-v2-detail .bm-createmsg:not(:empty) {
   margin-bottom: 10px;
-}
-
-.ranking-v2-detail .bm-flash {
-  padding: 9px 11px;
-  border-left: 3px solid var(--rkv2-orange);
-  background: var(--rkv2-orange-soft);
   color: var(--rkv2-orange-ink);
   font-size: 10px;
 }
 
-.ranking-v2-detail .bm-flash a {
+.ranking-v2-detail .bm-createmsg a {
   color: inherit;
   font-weight: 650;
 }

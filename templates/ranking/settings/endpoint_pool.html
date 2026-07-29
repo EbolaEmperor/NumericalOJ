@@ -1,5 +1,6 @@
       <!-- Agent 评测模型端点池（多个 url+key，各带并发上限） -->
       <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
+           data-ranking-dirty-managed data-ranking-dirty="false"
            {% if edit_mode not in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
         <div class="card-header"><i class="fas fa-robot me-2"></i> {% if edit_mode == 'reverse_judge' %}AI 作答端点{% else %}AI 评测模型端点{% endif %}</div>
         <div class="card-body aje">
@@ -115,6 +116,7 @@
         </div>
       </div>
       <div class="card mb-3 reverse-judge-only" id="qualityGateConfigCard"
+           data-ranking-dirty-managed data-ranking-dirty="false"
            {% if edit_mode != 'reverse_judge' %}style="display:none;"{% endif %}>
         <div class="card-header"><i class="fas fa-shield-halved me-2"></i> 质量门禁</div>
         <div class="card-body aje">

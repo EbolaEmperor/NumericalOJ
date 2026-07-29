@@ -22,9 +22,9 @@
       {% endif %}
 
       {% if submit_block_reason %}
-        <div class="alert alert-warning mb-4">
+        <p class="ranking-submit-block-reason">
           <i class="fas fa-exclamation-triangle me-2"></i>{{ submit_block_reason }}
-        </div>
+        </p>
       {% else %}
       {% if (is_agent_judge and submission_method == 'git') or is_reverse_judge %}
         {# ===== Git 提交方式（扁平 / 无阴影 / 克制配色） ===== #}
@@ -332,13 +332,8 @@
                 submitSpin.hidden=true;
                 if(!d.success){ submitLabel.textContent='确认提交'; submitBtn.disabled=false;
                   confirmHint.className='gitsub-confirm-hint no'; confirmHint.textContent=d.message||'提交失败'; return; }
-                submitLabel.textContent='已提交'; checkBtn.disabled=true;
-                confirmHint.className='gitsub-confirm-hint ok';
-                confirmHint.textContent=(d.message||'已提交，正在评测')+'，即将刷新…';
-                setTimeout(function(){
-                  window.dispatchEvent(new CustomEvent('ranking:allow-unload'));
-                  window.location.href=window.location.pathname+'?tab=submit';
-                },1600);
+                window.dispatchEvent(new CustomEvent('ranking:allow-unload'));
+                window.location.href=window.location.pathname+'?tab=submit';
               })
               .catch(function(){ submitSpin.hidden=true; submitLabel.textContent='确认提交'; submitBtn.disabled=false;
                 confirmHint.className='gitsub-confirm-hint no'; confirmHint.textContent='网络错误，请重试'; });

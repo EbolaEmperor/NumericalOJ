@@ -87,7 +87,7 @@
       <div class="ap-reason mb-3">{{ appeal.reason }}</div>
 
       {% if appeal.status != 'pending' %}
-      <div class="alert alert-secondary small py-2 mb-3">
+      <div class="ap-current-status small text-muted mb-3">
         当前状态：<b>{{ {'rejected':'已驳回','resolved':'已处理'}.get(appeal.status, appeal.status) }}</b>
         {% if appeal.admin_username %}（处理人：{{ appeal.admin_username }}）{% endif %}
       </div>
@@ -103,6 +103,7 @@
         <button type="button" class="btn btn-success flex-fill" id="apResolve"
                 data-decision="resolved"><i class="fas fa-check me-1"></i>处理</button>
       </div>
+      <div class="ap-commit-error small text-danger mb-2" id="apCommitError" role="alert" hidden></div>
       <div class="small text-muted mb-3">「驳回」「处理」都会把左侧暂存的规则改动写入数据库。</div>
 
       <form method="POST" class="d-grid"
@@ -198,6 +199,7 @@ window.__APPEAL_RULES__ = {{ rules|tojson }};
   .ap-rule-pop-label { font-size:.76rem; color:var(--muted); margin-bottom:.35rem; }
   .ap-rule-status:hover { filter:brightness(0.96); }
   .ap-rule.dirty { border-color:#f0c36d; box-shadow:0 0 0 2px rgba(234,179,8,0.15); }
+  .ap-commit-error[hidden] { display:none; }
   @media (max-width: 860px) {
     .ap-grid { flex-direction:column; }
     .ap-right { flex-basis:auto; width:100%; position:static; max-height:none; }
@@ -481,9 +483,16 @@ window.__APPEAL_RULES__ = {{ rules|tojson }};
   });
 
   var busy = false;
+  function setCommitError(message) {
+    var error = document.getElementById('apCommitError');
+    if (!error) return;
+    error.textContent = message || '';
+    error.hidden = !message;
+  }
   function commit(decision) {
     if (busy) return;
     busy = true;
+    setCommitError('');
     var reject = document.getElementById('apReject');
     var resolve = document.getElementById('apResolve');
     if (reject) reject.disabled = true;
@@ -502,9 +511,19 @@ window.__APPEAL_RULES__ = {{ rules|tojson }};
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) { window.location.href = d.redirect; }
-        else { alert((d && d.message) || '处理失败'); busy = false; if (reject) reject.disabled = false; if (resolve) resolve.disabled = false; }
+        else {
+          setCommitError((d && d.message) || '处理失败');
+          busy = false;
+          if (reject) reject.disabled = false;
+          if (resolve) resolve.disabled = false;
+        }
       })
-      .catch(function () { alert('网络错误，请重试'); busy = false; if (reject) reject.disabled = false; if (resolve) resolve.disabled = false; });
+      .catch(function () {
+        setCommitError('网络错误，请重试');
+        busy = false;
+        if (reject) reject.disabled = false;
+        if (resolve) resolve.disabled = false;
+      });
   }
 
   var rj = document.getElementById('apReject');

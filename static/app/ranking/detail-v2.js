@@ -25,6 +25,7 @@
   var requestSerial = 0;
   var pollPromise = null;
   var pollTimer = 0;
+  var hardReloadPending = false;
   var unloadAllowed = false;
   var previousRailFocus = null;
   var railOpenToken = 0;
@@ -145,10 +146,27 @@
   }
 
   function isDirtyControl(control) {
-    return Boolean(control.closest(
-      '[data-ranking-panel][data-ranking-tab="submit"], ' +
-      '[data-ranking-panel][data-ranking-tab="edit"]'
-    ));
+    var panel = control.closest('[data-ranking-panel]');
+    if (!panel) return false;
+    var tab = panel.getAttribute('data-ranking-tab') || '';
+    if (tab !== 'submit' && tab !== 'edit') return false;
+
+    // 弹窗字段只是编辑 JS 模型的临时副本；显式 managed 区域则由组件自己的
+    // 服务端快照判断 dirty。两者都不能再参与通用控件 baseline，否则仅打开
+    // 弹窗或 AJAX 保存成功后也会误报“尚未保存”。
+    if (control.closest('.modal, [data-ranking-dirty-managed]')) return false;
+    if (['button', 'submit', 'reset', 'image'].indexOf(control.type) >= 0) return false;
+
+    if (tab === 'submit') {
+      // 提交页的模式/节点选择可随时重选；只有实际表单输入（例如已选择文件）
+      // 离开时才有必要保护。隐藏的 UI 状态不应打扰用户。
+      return control.type !== 'hidden' && Boolean(control.form && panel.contains(control.form));
+    }
+
+    // 编辑页只跟踪“基本信息”表单和已选择的上传文件。其它普通 POST
+    // 按钮没有可丢失的输入，规则/端点等异步编辑器由 managed dirty 负责。
+    return control.type === 'file' ||
+      Boolean(control.form && control.form.id === 'rankingEditForm');
   }
 
   function captureControl(control) {
@@ -272,14 +290,9 @@
     detail.url = next.toString();
   }
 
-  function settleQueryRequest(detail) {
-    if (!detail || !detail.panel || detail.generation == null) return;
-    var panel = detail.panel;
-    var generation = String(detail.generation);
-    if (panel.getAttribute('data-ranking-query-pending') !== generation) return;
-    panel.removeAttribute('data-ranking-query-pending');
-    panel.removeAttribute('data-ranking-query-target');
-
+  function resumePendingPanelRefresh(panel) {
+    if (!panel || panel.hasAttribute('data-ranking-query-pending') ||
+        panel.hasAttribute('data-ranking-refresh-blocked')) return;
     var tab = panel.getAttribute('data-ranking-tab') || '';
     var entry = cache.get(tab);
     if (
@@ -294,6 +307,17 @@
       entry.pendingRefresh = false;
       window.setTimeout(function () { refreshReadTab(tab); }, 0);
     }
+  }
+
+  function settleQueryRequest(detail) {
+    if (!detail || !detail.panel || detail.generation == null) return;
+    var panel = detail.panel;
+    var generation = String(detail.generation);
+    if (panel.getAttribute('data-ranking-query-pending') !== generation) return;
+    panel.removeAttribute('data-ranking-query-pending');
+    panel.removeAttribute('data-ranking-query-target');
+
+    resumePendingPanelRefresh(panel);
   }
 
   function invalidatePanelQuery(panel) {
@@ -421,6 +445,9 @@
     entry.scrollTop = 0;
     entry.stale = false;
     entry.needsHistory = false;
+    entry.refreshToken = (entry.refreshToken || 0) + 1;
+    entry.refreshing = false;
+    entry.pendingRefresh = false;
     cache.set(tab, entry);
     return entry;
   }
@@ -432,8 +459,13 @@
     displayedUrl = canonicalUrl(entry.url);
     hydrate(entry.node);
     contentScroll.scrollTop = entry.scrollTop || 0;
-    if (entry.needsNotice) showRefreshNotice(tab);
-    if (entry.stale && (tab === 'leaderboard' || tab === 'matches')) {
+    if (entry.stale && tab === 'submit') {
+      refreshWholeTab(tab);
+    } else if (
+      entry.stale &&
+      (tab === 'leaderboard' || tab === 'matches' ||
+       tab === 'all_submissions' || tab === 'appeals')
+    ) {
       refreshReadTab(tab);
     } else if (entry.needsHistory && tab === 'submit') {
       refreshSubmitHistory();
@@ -551,10 +583,39 @@
     });
   }
 
+  function attemptPendingHardReload() {
+    if (!hardReloadPending || isDirty()) return false;
+    hardReloadPending = false;
+    window.location.reload();
+    return true;
+  }
+
+  function requestHardReload() {
+    hardReloadPending = true;
+    attemptPendingHardReload();
+  }
+
   function updateNavigation(navigation) {
     if (!navigation) return;
+    if (hardReloadPending) {
+      attemptPendingHardReload();
+      return;
+    }
     var nextMode = String(navigation.scoring_mode || '').toLowerCase();
     var currentMode = String(shell.getAttribute('data-ranking-scoring-mode') || '').toLowerCase();
+    var counts = navigation.counts || {};
+    var previousAttachmentCount = Number.parseInt(
+      shell.getAttribute('data-ranking-attachment-count') || '0', 10
+    ) || 0;
+    var nextAttachmentCount = Number.parseInt(counts.attachments || '0', 10) || 0;
+    if (
+      (currentMode && nextMode && nextMode !== currentMode) ||
+      nextAttachmentCount !== previousAttachmentCount
+    ) {
+      requestHardReload();
+      return;
+    }
+
     if (nextMode) {
       var modeLabels = {
         absolute: 'ABSOLUTE',
@@ -564,9 +625,6 @@
       };
       var modeNode = shell.querySelector('[data-ranking-mode]');
       if (modeNode) modeNode.textContent = modeLabels[nextMode] || nextMode.toUpperCase();
-      if (currentMode && nextMode !== currentMode) {
-        showConfigurationNotice('比赛评分模式已更新，刷新页面后可使用完整功能。');
-      }
       shell.setAttribute('data-ranking-scoring-mode', nextMode);
     }
 
@@ -575,15 +633,6 @@
       var allowed = permissions[node.getAttribute('data-ranking-permission')] !== false;
       if (node.hidden === allowed) node.hidden = !allowed;
     });
-    var counts = navigation.counts || {};
-    var previousAttachmentCount = Number.parseInt(
-      shell.getAttribute('data-ranking-attachment-count') || '0', 10
-    ) || 0;
-    var nextAttachmentCount = Number.parseInt(counts.attachments || '0', 10) || 0;
-    if (nextAttachmentCount !== previousAttachmentCount) {
-      shell.setAttribute('data-ranking-attachment-count', String(nextAttachmentCount));
-      showConfigurationNotice('比赛附件已更新，刷新页面后可查看最新文件列表。');
-    }
     ['submit', 'leaderboard', 'matches', 'all_submissions', 'appeals', 'attachments'].forEach(function (name) {
       setCount(name, counts[name]);
     });
@@ -598,48 +647,13 @@
     }
   }
 
-  function showToast(message) {
-    var previous = shell.querySelector('.ranking-update-toast');
-    if (previous) previous.remove();
-    var toast = document.createElement('div');
-    toast.className = 'ranking-update-toast';
-    toast.setAttribute('role', 'status');
-    toast.textContent = message;
-    panelStage.prepend(toast);
-    window.setTimeout(function () { toast.remove(); }, 1850);
-  }
-
   function clearNavigationFailure() {
     var notice = shell.querySelector('[data-ranking-navigation-error]');
     if (notice) notice.remove();
   }
 
-  function showConfigurationNotice(message) {
-    var existing = shell.querySelector('[data-ranking-configuration-notice]');
-    if (existing) {
-      existing.querySelector('span').textContent = message;
-      return;
-    }
-    var notice = document.createElement('div');
-    notice.className = 'ranking-navigation-alert is-configuration';
-    notice.setAttribute('data-ranking-configuration-notice', '');
-    notice.setAttribute('role', 'status');
-    var label = document.createElement('span');
-    label.textContent = message;
-    var action = document.createElement('button');
-    action.type = 'button';
-    action.textContent = '刷新页面';
-    action.addEventListener('click', function () {
-      window.location.reload();
-    });
-    notice.append(label, action);
-    panelStage.prepend(notice);
-  }
-
   function showNavigationFailure(status) {
     if (status !== 401 && status !== 403 && status !== 404) return;
-    var configurationNotice = shell.querySelector('[data-ranking-configuration-notice]');
-    if (configurationNotice) configurationNotice.remove();
     var existing = shell.querySelector('[data-ranking-navigation-error]');
     var message = status === 401 ?
       '登录状态已失效，请重新登录后继续。' :
@@ -684,7 +698,7 @@
   function normalizedContentClone(node) {
     var clone = node.cloneNode(true);
     clone.querySelectorAll(
-      '.ranking-rank-delta, .ranking-leader-exit, .ranking-update-notice'
+      '.ranking-rank-delta, .ranking-leader-exit'
     ).forEach(function (transient) {
       transient.remove();
     });
@@ -737,10 +751,7 @@
     paintIdenticons(oldBoard);
     var currentRows = rowMap(oldBoard);
 
-    if (!animate) {
-      if (changed > 0) showToast(changed > 8 ? '排名已更新' : '排行榜已更新');
-      return true;
-    }
+    if (!animate) return true;
 
     exiting.forEach(function (clone) {
       oldBoard.appendChild(clone);
@@ -785,7 +796,115 @@
     return true;
   }
 
+  async function refreshWholeTab(tab) {
+    var entry = cache.get(tab);
+    if (!entry) return;
+    if (
+      entry.node &&
+      (entry.node.hasAttribute('data-ranking-query-pending') ||
+       entry.node.hasAttribute('data-ranking-refresh-blocked'))
+    ) {
+      entry.stale = true;
+      entry.pendingRefresh = true;
+      return;
+    }
+    if (entry.refreshing) {
+      entry.pendingRefresh = true;
+      return;
+    }
+    entry.refreshing = true;
+    entry.pendingRefresh = false;
+    var refreshGeneration = revisionGeneration;
+    var refreshNode = entry.node;
+    var refreshQueryGeneration = refreshNode ?
+      refreshNode.getAttribute('data-ranking-query-generation') : null;
+    var refreshToken = (entry.refreshToken || 0) + 1;
+    entry.refreshToken = refreshToken;
+    var refreshUrl = displayedTab === tab ?
+      canonicalUrl(window.location.href) : canonicalUrl(entry.url);
+    try {
+      var data = await requestFragment(refreshUrl, null);
+      if (
+        cache.get(tab) !== entry ||
+        entry.node !== refreshNode ||
+        entry.refreshToken !== refreshToken ||
+        !refreshNode ||
+        displayedTab !== tab ||
+        refreshNode !== directPanel() ||
+        !refreshNode.isConnected
+      ) {
+        return;
+      }
+      if (!fragmentMatchesGeneration(data, refreshGeneration)) {
+        entry.stale = true;
+        entry.pendingRefresh = true;
+        return;
+      }
+      if (
+        refreshNode.getAttribute('data-ranking-query-generation') !== refreshQueryGeneration ||
+        refreshNode.hasAttribute('data-ranking-query-pending') ||
+        refreshNode.hasAttribute('data-ranking-refresh-blocked') ||
+        !panelOwnsLocation(refreshNode, refreshUrl)
+      ) {
+        entry.stale = true;
+        entry.pendingRefresh = true;
+        return;
+      }
+      var fresh = parsePanel(data.html);
+      if ((fresh.getAttribute('data-ranking-tab') || tab) !== tab) {
+        entry.pendingRefresh = false;
+        window.location.reload();
+        return;
+      }
+      var savedScrollTop = contentScroll.scrollTop;
+      fresh.setAttribute('data-ranking-panel-url', refreshUrl.toString());
+      fresh.setAttribute('data-ranking-query-generation', refreshQueryGeneration || '0');
+      refreshNode.replaceWith(fresh);
+      entry.node = fresh;
+      entry.url = refreshUrl;
+      entry.scrollTop = savedScrollTop;
+      entry.stale = false;
+      await activateScripts(fresh);
+      if (
+        cache.get(tab) === entry &&
+        entry.node === fresh &&
+        entry.refreshToken === refreshToken &&
+        displayedTab === tab &&
+        directPanel() === fresh
+      ) {
+        hydrate(fresh);
+        contentScroll.scrollTop = savedScrollTop;
+        applyFragmentState(data, tab, refreshGeneration);
+      }
+    } catch (error) {
+      console.warn('ranking whole-panel refresh failed:', error);
+      if (entry.refreshToken === refreshToken && entry.node === refreshNode) {
+        entry.stale = true;
+      }
+    } finally {
+      if (entry.refreshToken !== refreshToken) return;
+      entry.refreshing = false;
+      var retry = entry.pendingRefresh && entry.stale &&
+        displayedTab === tab && directPanel() === entry.node;
+      var queryPending = entry.node &&
+        (entry.node.hasAttribute('data-ranking-query-pending') ||
+         entry.node.hasAttribute('data-ranking-refresh-blocked'));
+      if (retry && queryPending) {
+        entry.pendingRefresh = true;
+      } else {
+        entry.pendingRefresh = false;
+      }
+      if (retry && !queryPending) {
+        window.setTimeout(function () { refreshWholeTab(tab); }, 0);
+      }
+    }
+  }
+
   async function refreshReadTab(tab) {
+    if (tab === 'all_submissions' || tab === 'appeals') {
+      await refreshWholeTab(tab);
+      return;
+    }
     var entry = cache.get(tab);
     if (!entry) return;
     if (entry.node && entry.node.hasAttribute('data-ranking-query-pending')) {
@@ -884,8 +1003,9 @@
       var oldHistory = entry.node.querySelector('[data-ranking-submission-history]');
       var newHistory = fresh.querySelector('[data-ranking-submission-history]');
       if (!oldHistory || !newHistory) {
-        entry.needsNotice = true;
-        if (displayedTab === 'submit') showRefreshNotice('submit');
+        entry.needsHistory = false;
+        entry.stale = true;
+        await refreshWholeTab('submit');
         return;
       }
       if (!renderContentEqual(oldHistory, newHistory)) {
@@ -906,35 +1026,13 @@
     }
   }
 
-  function showRefreshNotice(tab) {
-    var entry = cache.get(tab);
-    if (!entry || !entry.node) return;
-    var tabRoot = entry.node.querySelector('[data-ranking-tab-panel="' + tab + '"]') || entry.node;
-    var slot = tabRoot.querySelector('[data-ranking-update-slot="' + tab + '"]');
-    if (tabRoot.querySelector('.ranking-update-notice')) return;
-    var notice = document.createElement('div');
-    notice.className = 'ranking-update-notice';
-    notice.setAttribute('role', 'status');
-    notice.innerHTML = '<span>检测到新数据，当前筛选和页面尚未被打断。</span>' +
-      '<button type="button"><i class="fas fa-sync-alt" aria-hidden="true"></i>更新数据</button>';
-    notice.querySelector('button').addEventListener('click', function () {
-      entry.needsNotice = false;
-      var refreshUrl = displayedTab === tab ?
-        canonicalUrl(window.location.href) : canonicalUrl(entry.url);
-      navigate(refreshUrl, {history: 'replace', force: true});
-    });
-    if (slot) {
-      slot.hidden = false;
-      slot.replaceChildren(notice);
-    } else {
-      tabRoot.prepend(notice);
-    }
-  }
-
   function markTabStale(tab) {
     var entry = cache.get(tab);
     if (!entry) return;
-    if (tab === 'leaderboard' || tab === 'matches') {
+    if (
+      tab === 'leaderboard' || tab === 'matches' ||
+      tab === 'all_submissions' || tab === 'appeals'
+    ) {
       entry.stale = true;
       if (entry.refreshing) entry.pendingRefresh = true;
       else if (displayedTab === tab) refreshReadTab(tab);
@@ -945,10 +1043,6 @@
       if (entry.refreshingHistory) entry.pendingHistoryRefresh = true;
       else if (displayedTab === 'submit') refreshSubmitHistory();
       return;
-    }
-    if (tab === 'all_submissions' || tab === 'appeals') {
-      entry.needsNotice = true;
-      if (displayedTab === tab) showRefreshNotice(tab);
     }
   }
 
@@ -1000,6 +1094,25 @@
     return pollPromise;
   }
 
+  function panelIsDirty(root) {
+    if (!root) return false;
+    if (
+      root.matches('[data-ranking-dirty-managed][data-ranking-dirty="true"]') ||
+      root.querySelector('[data-ranking-dirty-managed][data-ranking-dirty="true"]')
+    ) {
+      return true;
+    }
+
+    var controls = root.querySelectorAll('input, select, textarea');
+    for (var index = 0; index < controls.length; index += 1) {
+      var control = controls[index];
+      if (control.disabled || !isDirtyControl(control)) continue;
+      if (!controlBaselines.has(control)) captureControl(control);
+      if (controlBaselines.get(control) !== controlState(control)) return true;
+    }
+    return false;
+  }
+
   function isDirty() {
     var roots = new Set();
     var current = directPanel();
@@ -1007,16 +1120,7 @@
     cache.forEach(function (entry) {
       if (entry.node) roots.add(entry.node);
     });
-    var dirty = false;
-    roots.forEach(function (root) {
-      if (dirty) return;
-      root.querySelectorAll('input, select, textarea').forEach(function (control) {
-        if (dirty || !isDirtyControl(control)) return;
-        if (!controlBaselines.has(control)) captureControl(control);
-        if (controlBaselines.get(control) !== controlState(control)) dirty = true;
-      });
-    });
-    return dirty;
+    return Array.from(roots).some(panelIsDirty);
   }
 
   function focusableRailItems() {
@@ -1268,9 +1372,20 @@
   window.addEventListener('ranking:query-settle', function (event) {
     settleQueryRequest(event.detail);
   });
+  window.addEventListener('ranking:refresh-resume', function (event) {
+    resumePendingPanelRefresh(event.detail && event.detail.panel);
+  });
   window.addEventListener('ranking:allow-unload', function () {
     unloadAllowed = true;
   });
+  function schedulePendingHardReload() {
+    if (!hardReloadPending) return;
+    window.setTimeout(attemptPendingHardReload, 0);
+  }
+  document.addEventListener('input', schedulePendingHardReload);
+  document.addEventListener('change', schedulePendingHardReload);
+  document.addEventListener('reset', schedulePendingHardReload);
+  window.addEventListener('ranking:dirty-state-change', schedulePendingHardReload);
 
   window.addEventListener('beforeunload', function (event) {
     if (unloadAllowed || !isDirty()) return;

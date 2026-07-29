@@ -2,7 +2,17 @@
 {% block title %}打榜赛 - {{ super() }}{% endblock %}
 
 {% block content %}
-<h1 class="ranking-list-title" id="rankingListTitle">打榜赛</h1>
+{% set list_counts = namespace(active=0) %}
+{% for comp in competitions %}
+  {% if comp.is_active == 1 %}{% set list_counts.active = list_counts.active + 1 %}{% endif %}
+{% endfor %}
+<header class="ranking-list-heading" aria-labelledby="rankingListTitle">
+  <p>RANKING · LIST</p>
+  <div>
+    <h1 id="rankingListTitle">打榜赛</h1>
+    <span>{{ competitions|length }} COMPETITIONS · {{ list_counts.active }} ACTIVE</span>
+  </div>
+</header>
 
 {% if not competitions %}
   <div class="ranking-empty">
@@ -70,13 +80,13 @@
           </div>
         </a>
         {% if user and user.is_admin == 1 %}
-        <button type="button" class="ranking-card-copy"
-                title="复制为非公开副本"
-                data-bs-toggle="modal" data-bs-target="#copyCompetitionModal"
-                data-copy-url="{{ url_for('ranking.ranking_copy', competition_id=comp.id) }}"
-                data-comp-title="{{ comp.title }}">
-          <i class="far fa-copy"></i>
-        </button>
+        <form method="POST" action="{{ url_for('ranking.ranking_copy', competition_id=comp.id) }}">
+          <button type="submit" class="ranking-card-copy"
+                  title="复制为非公开副本"
+                  aria-label="复制 {{ comp.title }} 为非公开副本">
+            <i class="far fa-copy" aria-hidden="true"></i>
+          </button>
+        </form>
         {% endif %}
         </div>
       </div>
@@ -132,35 +142,40 @@
 </div>
 {% endif %}
 
-{% if user and user.is_admin == 1 %}
-<div class="modal fade" id="copyCompetitionModal" tabindex="-1" aria-labelledby="copyCompetitionLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content">
-      <form method="POST" id="copyCompetitionForm" action="">
-        <div class="modal-header">
-          <h5 class="modal-title" id="copyCompetitionLabel"><i class="far fa-copy me-2"></i> 复制打榜赛</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-        </div>
-        <div class="modal-body">
-          <p class="mb-2">确认复制比赛 <strong id="copyCompetitionTitle"></strong> 吗？</p>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="btn btn-primary"><i class="far fa-copy me-1"></i> 复制为非公开副本</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-{% endif %}
-
 <style>
-  .ranking-list-title {
-    margin: 0 0 1rem;
-    color: var(--numoj-ink);
-    font-size: 1.35rem;
-    font-weight: 650;
-    line-height: 1.3;
+  .ranking-list-heading {
+    min-width: 0;
+    margin: 0 0 23px;
+    padding: 12px 16px 12px 20px;
+    border-bottom: 1px solid var(--numoj-line, #e4e4e7);
+    background: rgba(255, 255, 255, 0.97);
+  }
+  .ranking-list-heading > p {
+    margin: 0 0 3px;
+    color: var(--numoj-ink-4, #a1a1aa);
+    font: 700 9.5px/1.2 var(--numoj-mono, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+    letter-spacing: 0.15em;
+  }
+  .ranking-list-heading > div {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .ranking-list-heading h1 {
+    margin: 0;
+    color: var(--numoj-ink, #18181b);
+    font-size: 23px;
+    font-weight: 740;
+    letter-spacing: -0.04em;
+    line-height: 1.1;
+  }
+  .ranking-list-heading span {
+    overflow: hidden;
+    color: var(--numoj-ink-4, #a1a1aa);
+    font: 10px/1.3 var(--numoj-mono, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* 管理员：右下角创建入口 */
@@ -351,6 +366,19 @@
     outline: none;
   }
 
+  @media (max-width: 760px) {
+    .ranking-list-heading {
+      padding: 9px 10px;
+    }
+    .ranking-list-heading > p,
+    .ranking-list-heading span {
+      display: none;
+    }
+    .ranking-list-heading h1 {
+      font-size: 18px;
+    }
+  }
+
   @media (max-width: 575.98px) {
     .ranking-create-fab {
       right: max(18px, calc(env(safe-area-inset-right) + 12px));
@@ -367,20 +395,4 @@
   }
 </style>
 
-{% if user and user.is_admin == 1 %}
-<script>
-  (function () {
-    var modal = document.getElementById('copyCompetitionModal');
-    if (!modal) return;
-    modal.addEventListener('show.bs.modal', function (event) {
-      var btn = event.relatedTarget;
-      if (!btn) return;
-      var form = document.getElementById('copyCompetitionForm');
-      var titleEl = document.getElementById('copyCompetitionTitle');
-      if (form) form.setAttribute('action', btn.getAttribute('data-copy-url') || '');
-      if (titleEl) titleEl.textContent = btn.getAttribute('data-comp-title') || '';
-    });
-  })();
-</script>
-{% endif %}
 {% endblock %}
