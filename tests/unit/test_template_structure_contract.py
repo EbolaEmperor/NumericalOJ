@@ -93,6 +93,9 @@ def test_ranking_detail_uses_one_modal_source_per_judge_mode():
 
 def test_ranking_detail_dispatches_each_tab_to_a_bounded_partial():
     detail = (TEMPLATES / "ranking" / "detail.html").read_text(encoding="utf-8")
+    panel = (
+        TEMPLATES / "ranking" / "components" / "detail_panel.html"
+    ).read_text(encoding="utf-8")
     expected = {
         "description",
         "submit",
@@ -103,8 +106,12 @@ def test_ranking_detail_dispatches_each_tab_to_a_bounded_partial():
         "batch_evaluate",
         "settings",
     }
+    panel_include = "{% include 'ranking/components/detail_panel.html' %}"
+    assert detail.count(panel_include) == 1
     for name in expected:
-        assert detail.count(f"{{% include 'ranking/tabs/{name}.html' %}}") == 1
+        include = f"{{% include 'ranking/tabs/{name}.html' %}}"
+        assert detail.count(include) == 0
+        assert panel.count(include) == 1
 
     assert "<script>" not in detail
     assert detail.count("filename='app/choice-picker.js'") == 1
@@ -424,14 +431,18 @@ def test_ranking_list_uses_admin_create_fab_without_intro_hero():
     ranking_list = (TEMPLATES / "ranking" / "list.html").read_text(
         encoding="utf-8"
     )
+    ranking_list_css = (
+        ROOT / "static" / "app" / "ranking" / "list-v2.css"
+    ).read_text(encoding="utf-8")
 
     assert "围绕开放赛题提交作品" not in ranking_list
     assert "ranking-hero" not in ranking_list
     assert 'class="ranking-create-fab"' in ranking_list
     assert 'aria-label="创建打榜赛"' in ranking_list
     assert 'data-bs-target="#newCompetitionModal"' in ranking_list
-    assert "position: fixed;" in ranking_list
-    assert "border-radius: 50%;" in ranking_list
+    assert ".ranking-create-fab" in ranking_list_css
+    assert "position: fixed;" in ranking_list_css
+    assert "border-radius: 50%;" in ranking_list_css
 
 
 def test_circle_cat_uses_full_height_board_with_right_sidebar_without_frames():

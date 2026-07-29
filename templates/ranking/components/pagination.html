@@ -2,13 +2,14 @@
    可选 tab（默认 all_submissions；申诉处理标签传 'appeals'） #}
 {% set _ptab = tab if tab is defined else 'all_submissions' %}
 {% if total_pages > 1 %}
-<nav aria-label="分页">
+<nav class="ranking-v2-pagination" aria-label="分页">
   <ul class="pagination justify-content-center mb-0">
     {% if current_page > 1 %}
       <li class="page-item">
         <a class="page-link" data-page="{{ current_page - 1 }}"
+           aria-label="上一页"
            href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab=_ptab, page=current_page - 1, q=(submission_search_q or None)) }}">
-          &laquo; 上一页
+          <i class="fas fa-arrow-left" aria-hidden="true"></i><span>上一页</span>
         </a>
       </li>
     {% endif %}
@@ -21,8 +22,9 @@
     {% if current_page < total_pages %}
       <li class="page-item">
         <a class="page-link" data-page="{{ current_page + 1 }}"
+           aria-label="下一页"
            href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab=_ptab, page=current_page + 1, q=(submission_search_q or None)) }}">
-          下一页 &raquo;
+          <span>下一页</span><i class="fas fa-arrow-right" aria-hidden="true"></i>
         </a>
       </li>
     {% endif %}

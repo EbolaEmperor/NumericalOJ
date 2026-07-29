@@ -1,28 +1,34 @@
     {# ========== 对战数据（ELO 模式公开） ========== #}
     {% if tab == 'matches' %}
+      <section class="ranking-v2-tab ranking-v2-matches"
+               data-ranking-tab-panel="matches">
       <div class="matches-card" id="matchesCard"
            data-matches-url="{{ url_for('ranking.ranking_matches_json', competition_id=competition.id) }}"
            data-current-page="{{ current_page }}"
            data-mine="{{ 1 if matches_mine else 0 }}">
         <header class="matches-head">
-          <div class="matches-head-title">
-            <div class="matches-eyebrow">Duels · 对战数据</div>
-            <div class="matches-title">
-              <span class="matches-title-number" id="matchesTotalNumber">{{ matches_total }}</span>
-              <span class="matches-title-label">场对决</span>
-              {% if matches_mine %}<span class="matches-scope-tag">You only</span>{% endif %}
-            </div>
-            <div class="matches-meta">
+          <nav class="matches-filter" aria-label="过滤">
+            <a class="matches-filter-pill {% if not matches_mine %}is-active{% endif %}"
+               data-match-scope="all"
+               href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}">
+              全部
+            </a>
+            <a class="matches-filter-pill {% if matches_mine %}is-active{% endif %}"
+               data-match-scope="mine"
+               href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', mine=1) }}">
+              与我相关
+            </a>
+          </nav>
+          <div class="matches-head-actions">
+            <span class="matches-meta">
               {% if competition.elo_running == 1 %}
                 <span class="matches-meta-dot is-live"></span>
-                匹配引擎运行中 · 每 {{ competition.elo_match_interval_seconds or 60 }} 秒一轮
+                每 {{ competition.elo_match_interval_seconds or 60 }} 秒一轮
               {% else %}
                 <span class="matches-meta-dot is-paused"></span>
                 匹配引擎已暂停
               {% endif %}
-            </div>
-          </div>
-          <div class="matches-head-actions">
+            </span>
             {% if is_admin and matches %}
               <form method="POST" class="matches-rebuild-form"
                     action="{{ url_for('ranking.ranking_elo_rebuild_history', competition_id=competition.id) }}"
@@ -34,21 +40,13 @@
                 </button>
               </form>
             {% endif %}
-            <nav class="matches-filter" aria-label="过滤">
-              <a class="matches-filter-pill {% if not matches_mine %}is-active{% endif %}"
-                 href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}">
-                全部
-              </a>
-              <a class="matches-filter-pill {% if matches_mine %}is-active{% endif %}"
-                 href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', mine=1) }}">
-                <i class="fas fa-user-circle me-1"></i>与我相关
-              </a>
-            </nav>
           </div>
         </header>
 
-        <div id="matchesDynamic">
-          {% include 'ranking/components/matches.html' %}
+        <div class="matches-scroll">
+          <div id="matchesDynamic">
+            {% include 'ranking/components/matches.html' %}
+          </div>
         </div>
       </div>
 
@@ -81,8 +79,9 @@
       <script>
         (function () {
           var card = document.getElementById('matchesCard');
+          if (!card || card.getAttribute('data-ranking-initialized') === 'true') return;
+          card.setAttribute('data-ranking-initialized', 'true');
           var dynEl = document.getElementById('matchesDynamic');
-          var totalEl = document.getElementById('matchesTotalNumber');
           var modalEl = document.getElementById('matchDetailModal');
           var modal = modalEl ? new bootstrap.Modal(modalEl) : null;
           var loadingEl = document.getElementById('matchDetailLoading');
@@ -90,6 +89,61 @@
           var contentEl = document.getElementById('matchDetailContent');
           var metaEl = document.getElementById('matchDetailMeta');
           var verdictEl = document.getElementById('matchDetailVerdict');
+          var ownerPanel = card.closest('[data-ranking-panel]');
+          var matchesRequestToken = 0;
+          var queryController = null;
+
+          function beginQuery(page, mine) {
+            var target = new URL(window.location.href);
+            target.search = '';
+            target.searchParams.set('tab', 'matches');
+            target.searchParams.set('page', String(page));
+            if (mine) target.searchParams.set('mine', '1');
+            var detail = {
+              panel: ownerPanel,
+              url: target.toString(),
+              accepted: false
+            };
+            window.dispatchEvent(new CustomEvent('ranking:query-start', {detail: detail}));
+            return detail.accepted ? detail : null;
+          }
+
+          function commitQuery(query, page) {
+            var resultUrl = new URL(query.url);
+            resultUrl.searchParams.set('page', String(page));
+            var detail = {
+              panel: query.panel,
+              startedUrl: query.url,
+              url: resultUrl.toString(),
+              generation: query.generation,
+              accepted: false
+            };
+            window.dispatchEvent(new CustomEvent('ranking:query-commit', {detail: detail}));
+            return detail.accepted;
+          }
+
+          function settleQuery(query) {
+            window.dispatchEvent(new CustomEvent('ranking:query-settle', {
+              detail: {
+                panel: query.panel,
+                url: query.url,
+                generation: query.generation
+              }
+            }));
+          }
+
+          function paintIdenticons(root) {
+            var identicon = window.NumojIdenticon;
+            if (!identicon || !root) return;
+            root.querySelectorAll('[data-avatar-seed]').forEach(function (avatar) {
+              var seed = avatar.getAttribute('data-avatar-seed') || 'numericaloj';
+              identicon.paint(
+                avatar,
+                identicon.cellsForSeed(seed),
+                avatar.getAttribute('data-avatar-label') || seed
+              );
+            });
+          }
 
           function showState(state) {
             if (loadingEl) loadingEl.classList.toggle('d-none', state !== 'loading');
@@ -140,20 +194,43 @@
           }
 
           // 删除后只刷新「当前页」的对战列表，保持管理员所在的 page，不跳回第 1 页
-          function refreshMatches(page) {
+          function refreshMatches(page, mine) {
             if (!card || !dynEl) return;
             var base = card.getAttribute('data-matches-url');
-            var mine = card.getAttribute('data-mine') === '1';
+            if (typeof mine !== 'boolean') mine = card.getAttribute('data-mine') === '1';
+            var query = beginQuery(page, mine);
+            if (!query) return;
+            if (queryController) queryController.abort();
+            var controller = new AbortController();
+            queryController = controller;
+            var timeout = window.setTimeout(function () { controller.abort(); }, 15000);
+            var token = ++matchesRequestToken;
             var url = base + '?page=' + encodeURIComponent(page) + (mine ? '&mine=1' : '');
-            fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            fetch(url, {
+              headers: { 'X-Requested-With': 'XMLHttpRequest' },
+              signal: controller.signal
+            })
               .then(function (r) { return r.json(); })
               .then(function (data) {
-                if (!data || data.error) return;
+                if (token !== matchesRequestToken || !data || data.error) return;
+                if (!commitQuery(query, data.page || 1)) return;
                 dynEl.innerHTML = data.html;
-                if (totalEl && typeof data.total !== 'undefined') totalEl.textContent = data.total;
+                paintIdenticons(dynEl);
                 card.setAttribute('data-current-page', data.page);
+                card.setAttribute('data-mine', mine ? '1' : '0');
+                card.querySelectorAll('[data-match-scope]').forEach(function (link) {
+                  link.classList.toggle(
+                    'is-active',
+                    link.getAttribute('data-match-scope') === (mine ? 'mine' : 'all')
+                  );
+                });
               })
-              .catch(function () {});
+              .catch(function () {})
+              .finally(function () {
+                window.clearTimeout(timeout);
+                if (queryController === controller) queryController = null;
+                settleQuery(query);
+              });
           }
 
           function deleteMatch(btn) {
@@ -175,13 +252,30 @@
           }
 
           // 事件委托：AJAX 局部刷新后，新行无需重新绑定监听
-          document.addEventListener('click', function (ev) {
+          card.addEventListener('click', function (ev) {
             if (!ev.target || !ev.target.closest) return;
             var detailBtn = ev.target.closest('.match-detail-btn');
             if (detailBtn && (!dynEl || dynEl.contains(detailBtn))) { openDetail(detailBtn.getAttribute('data-match-id')); return; }
             var delBtn = ev.target.closest('.match-delete-btn');
             if (delBtn && (!dynEl || dynEl.contains(delBtn))) { deleteMatch(delBtn); return; }
+            var scopeLink = ev.target.closest('[data-match-scope]');
+            if (scopeLink && card.contains(scopeLink)) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              refreshMatches(1, scopeLink.getAttribute('data-match-scope') === 'mine');
+              return;
+            }
+            var pageLink = ev.target.closest('.matches-pagination .page-link[data-page]');
+            if (pageLink && dynEl.contains(pageLink)) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              if (pageLink.closest('.page-item.disabled')) return;
+              var page = parseInt(pageLink.getAttribute('data-page'), 10);
+              if (!isNaN(page) && page >= 1) refreshMatches(page);
+            }
           });
+          paintIdenticons(dynEl);
         })();
       </script>
+      </section>
     {% endif %}

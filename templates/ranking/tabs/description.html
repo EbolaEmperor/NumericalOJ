@@ -1,15 +1,18 @@
     {# ========== 比赛描述 ========== #}
     {% if tab == 'description' %}
-      <div class="card">
-        <div class="card-header">
-          <i class="fas fa-file-alt me-2"></i> 比赛描述
-        </div>
-        <div class="card-body">
-          {% if rendered_description %}
-            <div class="ranking-description">{{ rendered_description|safe }}</div>
-          {% else %}
-            <p class="text-muted mb-0">暂无比赛描述。</p>
-          {% endif %}
-        </div>
-      </div>
+      <section class="ranking-v2-tab ranking-v2-description"
+               data-ranking-tab-panel="description">
+        {% if rendered_description %}
+          <div class="numoj-markdown ranking-description"
+               data-numoj-markdown>
+            {{ rendered_description|safe }}
+          </div>
+        {% else %}
+          <div class="ranking-v2-empty ranking-v2-empty--document">
+            <i class="fas fa-file-lines" aria-hidden="true"></i>
+            <strong>暂无比赛描述</strong>
+            <span>赛事管理员尚未发布说明文档。</span>
+          </div>
+        {% endif %}
+      </section>
     {% endif %}
