@@ -11,6 +11,7 @@
 
 import os
 import json
+import hashlib
 import logging
 import shutil
 import uuid
@@ -138,6 +139,422 @@ def get_competition(competition_id):
             return cursor.fetchone()
     finally:
         conn.close()
+
+
+_RANKING_NAVIGATION_REVISION_FIELDS = (
+    'competition_fingerprint',
+    'submission_count',
+    'leaderboard_count',
+    'submission_fingerprint_sum',
+    'submission_fingerprint_xor',
+    'match_count',
+    'valid_match_count',
+    'match_fingerprint_sum',
+    'match_fingerprint_xor',
+    'appeal_count',
+    'pending_appeal_count',
+    'appeal_fingerprint_sum',
+    'appeal_fingerprint_xor',
+    'attachment_count',
+    'attachment_fingerprint_sum',
+    'attachment_fingerprint_xor',
+    'rule_count',
+    'rule_fingerprint_sum',
+    'rule_fingerprint_xor',
+    'endpoint_count',
+    'endpoint_fingerprint_sum',
+    'endpoint_fingerprint_xor',
+)
+
+
+def _ranking_navigation_revision(row, *, include_quota=False):
+    """把单次导航聚合查询的结果变成稳定、不泄漏配置内容的版本指纹。"""
+    parts = []
+    for field in _RANKING_NAVIGATION_REVISION_FIELDS:
+        value = (row or {}).get(field)
+        if isinstance(value, datetime):
+            value = value.isoformat(timespec='microseconds')
+        elif isinstance(value, bytes):
+            value = value.decode('utf-8', errors='replace')
+        else:
+            value = str(value if value is not None else '')
+        parts.append(f'{field}={value}')
+    if include_quota:
+        for field in ('quota_window_start', 'quota_used'):
+            value = (row or {}).get(field)
+            if isinstance(value, datetime):
+                value = value.isoformat(timespec='microseconds')
+            else:
+                value = str(value if value is not None else '')
+            parts.append(f'{field}={value}')
+    return hashlib.sha256('\n'.join(parts).encode('utf-8')).hexdigest()
+
+
+def get_ranking_navigation_state(competition_id, username=None):
+    """一次只读查询返回详情页 Function Rail 所需计数及稳定 revision。
+
+    ``ranking_submissions`` 没有 ``updated_at``，因此 revision 不能只依赖最新 id 或
+    创建时间。查询同时聚合每条提交的 status / score / ELO 状态指纹；对战、申诉、
+    附件、评分规则和端点配置也各自参与指纹。CRC32 的 SUM 与 BIT_XOR 配合行数及
+    主键，避免列表顺序影响结果，并把实际碰撞概率降到足够低。
+    """
+    include_quota = bool(username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH target AS (
+                    SELECT
+                        c.*,
+                        CASE
+                            WHEN c.submit_limit_per_window IS NULL
+                              OR c.submit_limit_per_window <= 0
+                            THEN NULL
+                            ELSE TIMESTAMPADD(
+                                SECOND,
+                                FLOOR(
+                                    GREATEST(
+                                        TIMESTAMPDIFF(
+                                            SECOND,
+                                            COALESCE(c.limit_window_start, c.created_at),
+                                            NOW()
+                                        ),
+                                        0
+                                    ) / %s
+                                ) * %s,
+                                COALESCE(c.limit_window_start, c.created_at)
+                            )
+                        END AS quota_window_start,
+                        SHA2(
+                            CONCAT_WS(
+                                CHAR(31),
+                                CAST(c.id AS CHAR),
+                                COALESCE(c.title, ''),
+                                COALESCE(c.summary, ''),
+                                COALESCE(c.description, ''),
+                                COALESCE(c.answer_format, ''),
+                                COALESCE(c.scoring_mode, ''),
+                                COALESCE(CAST(c.elo_initial_rating AS CHAR), ''),
+                                COALESCE(CAST(c.elo_k_factor AS CHAR), ''),
+                                COALESCE(CAST(c.elo_max_matches AS CHAR), ''),
+                                COALESCE(CAST(c.elo_match_interval_seconds AS CHAR), ''),
+                                COALESCE(CAST(c.elo_initial_burst AS CHAR), ''),
+                                COALESCE(CAST(c.elo_max_pairs_per_round AS CHAR), ''),
+                                COALESCE(CAST(c.elo_running AS CHAR), ''),
+                                COALESCE(CAST(c.scoring_script_timeout_seconds AS CHAR), ''),
+                                COALESCE(c.agent_judge_base_url, ''),
+                                COALESCE(c.agent_judge_api_key, ''),
+                                COALESCE(c.agent_judge_model, ''),
+                                COALESCE(CAST(c.agent_judge_timeout_seconds AS CHAR), ''),
+                                COALESCE(CAST(c.reverse_judge_finalize_timeout_seconds AS CHAR), ''),
+                                COALESCE(CAST(c.reverse_quality_gate_enabled AS CHAR), ''),
+                                COALESCE(c.reverse_quality_gate_prompt, ''),
+                                COALESCE(c.agent_judge_orchestration_mode, ''),
+                                COALESCE(CAST(c.submit_limit_per_window AS CHAR), ''),
+                                COALESCE(DATE_FORMAT(c.limit_window_start, '%%Y-%%m-%%d %%H:%%i:%%s.%%f'), ''),
+                                COALESCE(c.submission_method, ''),
+                                COALESCE(c.git_format, ''),
+                                COALESCE(c.reference_answer_path, ''),
+                                COALESCE(c.reference_answer_name, ''),
+                                COALESCE(c.scoring_script_path, ''),
+                                COALESCE(c.scoring_script_name, ''),
+                                COALESCE(CAST(c.max_score AS CHAR), ''),
+                                COALESCE(CAST(c.is_active AS CHAR), ''),
+                                COALESCE(c.created_by, ''),
+                                COALESCE(DATE_FORMAT(c.updated_at, '%%Y-%%m-%%d %%H:%%i:%%s.%%f'), '')
+                            ),
+                            256
+                        ) AS competition_fingerprint
+                    FROM ranking_competitions c
+                    WHERE c.id = %s
+                ),
+                submission_rows AS (
+                    SELECT
+                        s.id,
+                        s.username,
+                        s.score,
+                        s.source,
+                        s.created_at,
+                        t.quota_window_start,
+                        CAST(CRC32(CONCAT_WS(
+                            CHAR(31),
+                            CAST(s.id AS CHAR),
+                            COALESCE(s.username, ''),
+                            COALESCE(s.status, ''),
+                            COALESCE(CAST(s.score AS CHAR), '<null>'),
+                            COALESCE(CAST(s.elo_rating AS CHAR), '<null>'),
+                            COALESCE(CAST(s.elo_match_count AS CHAR), ''),
+                            COALESCE(CAST(s.elo_in_pool AS CHAR), ''),
+                            COALESCE(s.judge_attempt_id, ''),
+                            COALESCE(s.agent_endpoint_harness, ''),
+                            COALESCE(s.agent_endpoint_model, '')
+                        )) AS UNSIGNED) AS fingerprint
+                    FROM target t
+                    JOIN ranking_submissions s ON s.competition_id = t.id
+                ),
+                submission_state AS (
+                    SELECT
+                        COUNT(s.id) AS submission_count,
+                        COUNT(DISTINCT CASE WHEN s.score IS NOT NULL THEN s.username END)
+                            AS leaderboard_count,
+                        COALESCE(SUM(s.fingerprint), 0) AS submission_fingerprint_sum,
+                        COALESCE(BIT_XOR(s.fingerprint), 0) AS submission_fingerprint_xor,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN %s IS NOT NULL
+                                  AND s.username = %s
+                                  AND s.source = 'self'
+                                  AND s.created_at >= s.quota_window_start
+                                THEN 1
+                                ELSE 0
+                            END
+                        ), 0) AS quota_used
+                    FROM submission_rows s
+                ),
+                match_rows AS (
+                    SELECT
+                        m.id,
+                        m.winner,
+                        CAST(CRC32(CONCAT_WS(
+                            CHAR(31),
+                            CAST(m.id AS CHAR),
+                            COALESCE(CAST(m.submission_a_id AS CHAR), ''),
+                            COALESCE(CAST(m.submission_b_id AS CHAR), ''),
+                            COALESCE(CAST(m.winner AS CHAR), ''),
+                            COALESCE(CAST(m.rating_a_before AS CHAR), ''),
+                            COALESCE(CAST(m.rating_a_after AS CHAR), ''),
+                            COALESCE(CAST(m.rating_b_before AS CHAR), ''),
+                            COALESCE(CAST(m.rating_b_after AS CHAR), '')
+                        )) AS UNSIGNED) AS fingerprint
+                    FROM target t
+                    JOIN ranking_elo_matches m ON m.competition_id = t.id
+                ),
+                match_state AS (
+                    SELECT
+                        COUNT(m.id) AS match_count,
+                        COALESCE(SUM(
+                            CASE WHEN m.winner IN (0, 1, 2) THEN 1 ELSE 0 END
+                        ), 0) AS valid_match_count,
+                        COALESCE(SUM(m.fingerprint), 0) AS match_fingerprint_sum,
+                        COALESCE(BIT_XOR(m.fingerprint), 0) AS match_fingerprint_xor
+                    FROM match_rows m
+                ),
+                appeal_rows AS (
+                    SELECT
+                        a.id,
+                        a.status,
+                        CAST(CRC32(CONCAT_WS(
+                            CHAR(31),
+                            CAST(a.id AS CHAR),
+                            COALESCE(CAST(a.submission_id AS CHAR), ''),
+                            COALESCE(a.username, ''),
+                            COALESCE(a.status, ''),
+                            COALESCE(a.admin_response, ''),
+                            COALESCE(a.admin_username, ''),
+                            COALESCE(DATE_FORMAT(a.updated_at, '%%Y-%%m-%%d %%H:%%i:%%s.%%f'), '')
+                        )) AS UNSIGNED) AS fingerprint
+                    FROM target t
+                    JOIN ranking_appeals a ON a.competition_id = t.id
+                ),
+                appeal_state AS (
+                    SELECT
+                        COUNT(a.id) AS appeal_count,
+                        COALESCE(SUM(CASE WHEN a.status = 'pending' THEN 1 ELSE 0 END), 0)
+                            AS pending_appeal_count,
+                        COALESCE(SUM(a.fingerprint), 0) AS appeal_fingerprint_sum,
+                        COALESCE(BIT_XOR(a.fingerprint), 0) AS appeal_fingerprint_xor
+                    FROM appeal_rows a
+                ),
+                attachment_state AS (
+                    SELECT
+                        COUNT(f.id) AS attachment_count,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN f.id IS NULL THEN 0
+                                ELSE CAST(CRC32(CONCAT_WS(
+                                    CHAR(31),
+                                    CAST(f.id AS CHAR),
+                                    COALESCE(f.filename, ''),
+                                    COALESCE(f.stored_path, ''),
+                                    COALESCE(CAST(f.file_size AS CHAR), ''),
+                                    COALESCE(DATE_FORMAT(f.uploaded_at, '%%Y-%%m-%%d %%H:%%i:%%s.%%f'), '')
+                                )) AS UNSIGNED)
+                            END
+                        ), 0) AS attachment_fingerprint_sum,
+                        COALESCE(BIT_XOR(
+                            CASE
+                                WHEN f.id IS NULL THEN 0
+                                ELSE CAST(CRC32(CONCAT_WS(
+                                    CHAR(31),
+                                    CAST(f.id AS CHAR),
+                                    COALESCE(f.filename, ''),
+                                    COALESCE(f.stored_path, ''),
+                                    COALESCE(CAST(f.file_size AS CHAR), ''),
+                                    COALESCE(DATE_FORMAT(f.uploaded_at, '%%Y-%%m-%%d %%H:%%i:%%s.%%f'), '')
+                                )) AS UNSIGNED)
+                            END
+                        ), 0) AS attachment_fingerprint_xor
+                    FROM target t
+                    LEFT JOIN ranking_competition_files f ON f.competition_id = t.id
+                ),
+                rule_state AS (
+                    SELECT
+                        COUNT(r.id) AS rule_count,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN r.id IS NULL THEN 0
+                                ELSE CAST(CRC32(CONCAT_WS(
+                                    CHAR(31),
+                                    CAST(r.id AS CHAR),
+                                    COALESCE(CAST(r.rule_id AS CHAR), ''),
+                                    COALESCE(r.rule_name, ''),
+                                    COALESCE(r.rule_text, ''),
+                                    COALESCE(CAST(r.value AS CHAR), ''),
+                                    COALESCE(r.dependencies, ''),
+                                    COALESCE(CAST(r.ordering AS CHAR), '')
+                                )) AS UNSIGNED)
+                            END
+                        ), 0) AS rule_fingerprint_sum,
+                        COALESCE(BIT_XOR(
+                            CASE
+                                WHEN r.id IS NULL THEN 0
+                                ELSE CAST(CRC32(CONCAT_WS(
+                                    CHAR(31),
+                                    CAST(r.id AS CHAR),
+                                    COALESCE(CAST(r.rule_id AS CHAR), ''),
+                                    COALESCE(r.rule_name, ''),
+                                    COALESCE(r.rule_text, ''),
+                                    COALESCE(CAST(r.value AS CHAR), ''),
+                                    COALESCE(r.dependencies, ''),
+                                    COALESCE(CAST(r.ordering AS CHAR), '')
+                                )) AS UNSIGNED)
+                            END
+                        ), 0) AS rule_fingerprint_xor
+                    FROM target t
+                    LEFT JOIN ranking_judge_rules r ON r.competition_id = t.id
+                ),
+                endpoint_state AS (
+                    SELECT
+                        COUNT(e.id) AS endpoint_count,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN e.id IS NULL THEN 0
+                                ELSE CAST(CRC32(CONCAT_WS(
+                                    CHAR(31),
+                                    CAST(e.id AS CHAR),
+                                    COALESCE(e.pool_kind, ''),
+                                    COALESCE(e.harness, ''),
+                                    COALESCE(e.base_url, ''),
+                                    COALESCE(e.api_key, ''),
+                                    COALESCE(e.model, ''),
+                                    COALESCE(CAST(e.concurrency_limit AS CHAR), ''),
+                                    COALESCE(CAST(e.enabled AS CHAR), ''),
+                                    COALESCE(e.status, ''),
+                                    COALESCE(CAST(e.ordering AS CHAR), '')
+                                )) AS UNSIGNED)
+                            END
+                        ), 0) AS endpoint_fingerprint_sum,
+                        COALESCE(BIT_XOR(
+                            CASE
+                                WHEN e.id IS NULL THEN 0
+                                ELSE CAST(CRC32(CONCAT_WS(
+                                    CHAR(31),
+                                    CAST(e.id AS CHAR),
+                                    COALESCE(e.pool_kind, ''),
+                                    COALESCE(e.harness, ''),
+                                    COALESCE(e.base_url, ''),
+                                    COALESCE(e.api_key, ''),
+                                    COALESCE(e.model, ''),
+                                    COALESCE(CAST(e.concurrency_limit AS CHAR), ''),
+                                    COALESCE(CAST(e.enabled AS CHAR), ''),
+                                    COALESCE(e.status, ''),
+                                    COALESCE(CAST(e.ordering AS CHAR), '')
+                                )) AS UNSIGNED)
+                            END
+                        ), 0) AS endpoint_fingerprint_xor
+                    FROM target t
+                    LEFT JOIN ranking_agent_judge_endpoints e ON e.competition_id = t.id
+                )
+                SELECT
+                    t.id AS competition_id,
+                    t.scoring_mode,
+                    t.is_active,
+                    t.submit_limit_per_window,
+                    t.quota_window_start,
+                    t.competition_fingerprint,
+                    s.submission_count,
+                    s.leaderboard_count,
+                    s.submission_fingerprint_sum,
+                    s.submission_fingerprint_xor,
+                    s.quota_used,
+                    m.match_count,
+                    m.valid_match_count,
+                    m.match_fingerprint_sum,
+                    m.match_fingerprint_xor,
+                    a.appeal_count,
+                    a.pending_appeal_count,
+                    a.appeal_fingerprint_sum,
+                    a.appeal_fingerprint_xor,
+                    f.attachment_count,
+                    f.attachment_fingerprint_sum,
+                    f.attachment_fingerprint_xor,
+                    r.rule_count,
+                    r.rule_fingerprint_sum,
+                    r.rule_fingerprint_xor,
+                    e.endpoint_count,
+                    e.endpoint_fingerprint_sum,
+                    e.endpoint_fingerprint_xor
+                FROM target t
+                CROSS JOIN submission_state s
+                CROSS JOIN match_state m
+                CROSS JOIN appeal_state a
+                CROSS JOIN attachment_state f
+                CROSS JOIN rule_state r
+                CROSS JOIN endpoint_state e
+                """,
+                (
+                    RANK_LIMIT_WINDOW_SECONDS,
+                    RANK_LIMIT_WINDOW_SECONDS,
+                    int(competition_id),
+                    username,
+                    username,
+                ),
+            )
+            row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    limit_raw = row.get('submit_limit_per_window')
+    try:
+        quota_limit = int(limit_raw or 0)
+    except (TypeError, ValueError):
+        quota_limit = 0
+    quota = None
+    if include_quota and quota_limit > 0:
+        quota_used = int(row.get('quota_used') or 0)
+        quota = {
+            'limit': quota_limit,
+            'remaining': max(0, quota_limit - quota_used),
+        }
+
+    return {
+        'competition_id': int(row.get('competition_id') or competition_id),
+        'scoring_mode': str(row.get('scoring_mode') or 'absolute').strip().lower(),
+        'is_active': int(row.get('is_active') or 0),
+        'revision': _ranking_navigation_revision(row, include_quota=include_quota),
+        'quota': quota,
+        'counts': {
+            'leaderboard': int(row.get('leaderboard_count') or 0),
+            'matches': int(row.get('valid_match_count') or 0),
+            'all_submissions': int(row.get('submission_count') or 0),
+            'appeals': int(row.get('pending_appeal_count') or 0),
+            'attachments': int(row.get('attachment_count') or 0),
+        },
+    }
 
 
 def create_competition(title, description, max_score, created_by, summary=None):
@@ -2484,6 +2901,7 @@ def delete_elo_match_and_revert(match_id, competition_id):
                        rating_a_before, rating_a_after, rating_b_before, rating_b_after
                 FROM ranking_elo_matches
                 WHERE id = %s AND competition_id = %s
+                FOR UPDATE
                 """,
                 (int(match_id), int(competition_id)),
             )
@@ -2505,8 +2923,8 @@ def delete_elo_match_and_revert(match_id, competition_id):
                 cursor.execute(
                     """
                     UPDATE ranking_submissions
-                    SET elo_rating = elo_rating - %s,
-                        score = elo_rating - %s,
+                    SET score = elo_rating - %s,
+                        elo_rating = elo_rating - %s,
                         elo_match_count = GREATEST(elo_match_count - 1, 0)
                     WHERE id = %s
                     """,
@@ -2515,8 +2933,8 @@ def delete_elo_match_and_revert(match_id, competition_id):
                 cursor.execute(
                     """
                     UPDATE ranking_submissions
-                    SET elo_rating = elo_rating - %s,
-                        score = elo_rating - %s,
+                    SET score = elo_rating - %s,
+                        elo_rating = elo_rating - %s,
                         elo_match_count = GREATEST(elo_match_count - 1, 0)
                     WHERE id = %s
                     """,

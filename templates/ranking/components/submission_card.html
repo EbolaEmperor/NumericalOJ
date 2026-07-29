@@ -7,28 +7,47 @@
   {% set scls = 's-ok' if st in ['Accepted', 'Active'] else ('s-info' if st in ['Judging', 'Pending', 'Queued'] else ('s-err' if st == 'Error' else 's-muted')) %}
   {% set slabel = {'Accepted': '通过', 'Active': '对战中', 'Retired': '已退役', 'Judging': '评测中', 'Queued': '等待评测', 'Pending': '待评测', 'Error': '异常'}.get(st, st) %}
   {% set pct = 0 %}
-  {% if s.score is not none and max_score %}
+  {% if is_elo and s.elo_rating is not none %}
+    {% set pct = ((s.elo_rating - 800) * 100.0 / 1600.0)|round(1) %}
+    {% if pct > 100 %}{% set pct = 100 %}{% elif pct < 0 %}{% set pct = 0 %}{% endif %}
+  {% elif s.score is not none and max_score %}
     {% set pct = (s.score * 100 / max_score)|round(1) %}
     {% if pct > 100 %}{% set pct = 100 %}{% elif pct < 0 %}{% set pct = 0 %}{% endif %}
   {% endif %}
-  <div class="aj-sub {{ scls }}" data-username="{{ (s.username or '')|lower }}">
+  <article class="aj-sub {{ scls }}"
+           data-username="{{ (s.username or '')|lower }}"
+           data-submission-id="{{ s.id }}">
     <div class="aj-sub-r1">
       <div class="aj-sub-idu">
         {% if show_user %}
-        <span class="aj-sub-user"><span class="aj-sub-ava">{{ (s.username or '?')[0]|upper }}</span><span class="aj-sub-uname">{{ s.username }}</span></span>
+        <span class="aj-sub-user">
+          <span class="numoj-avatar aj-sub-ava"
+                data-avatar-seed="{{ s.username or 'numericaloj' }}"
+                data-avatar-label="{{ s.username or '未知用户' }}"></span>
+          <span class="aj-sub-uname">{{ s.username }}</span>
+        </span>
         {% endif %}
         <span class="aj-sub-id">#{{ s.id }}</span>
         <span class="aj-st {{ scls }}"><span class="d"></span>{{ slabel }}</span>
       </div>
-      <div class="aj-sub-score">
-        {% if is_elo %}
-          {% if s.elo_rating is not none %}<b>{{ '%.0f'|format(s.elo_rating) }}</b><span> · {{ s.elo_match_count or 0 }} 战</span>{% else %}<span>—</span>{% endif %}
-        {% else %}
-          {% if s.score is not none %}<b>{{ '%.2f'|format(s.score) }}</b><span> / {{ max_score }}</span>{% else %}<span>—</span>{% endif %}
-        {% endif %}
+      <div class="aj-sub-scoreline">
+        <span class="aj-bar"
+              role="progressbar"
+              aria-label="提交 #{{ s.id }} 得分"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="{{ pct }}">
+          <i style="--submission-score: {{ pct }}%"></i>
+        </span>
+        <span class="aj-sub-score">
+          {% if is_elo %}
+            {% if s.elo_rating is not none %}<b>{{ '%.0f'|format(s.elo_rating) }}</b><span> · {{ s.elo_match_count or 0 }} 战</span>{% else %}<span>—</span>{% endif %}
+          {% else %}
+            {% if s.score is not none %}<b>{{ '%.2f'|format(s.score) }}</b><span> / {{ max_score }}</span>{% else %}<span>—</span>{% endif %}
+          {% endif %}
+        </span>
       </div>
     </div>
-    {% if not is_elo and s.score is not none %}<div class="aj-bar"><i style="width: {{ pct }}%"></i></div>{% endif %}
     <div class="aj-sub-r2">
       <div class="aj-sub-meta">
         <span class="aj-time">{{ s.created_at }}</span>
@@ -64,5 +83,5 @@
         {% endif %}
       </div>
     </div>
-  </div>
+  </article>
 {% endmacro %}

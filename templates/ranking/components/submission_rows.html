@@ -8,5 +8,8 @@
     {{ render_sub_card(s, competition, is_elo, _is_aj, max_score, true, true, _is_rj) }}
   {% endfor %}
 {% else %}
-  <div class="aj-subs-empty"><i class="fas fa-search me-1 opacity-50"></i>没有匹配的提交</div>
+  <div class="aj-subs-empty">
+    <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+    <span>没有匹配的提交</span>
+  </div>
 {% endif %}

@@ -1,86 +1,72 @@
     {# ========== 排行榜 ========== #}
     {% if tab == 'leaderboard' %}
       {% set max_score = competition.max_score or 100 %}
-      {% if is_elo and competition.elo_running != 1 %}
-        <div class="alert alert-info d-flex align-items-center" role="alert">
-          <i class="fas fa-hourglass-half me-2"></i>
-          <span>动态评分尚未启动，请耐心等待……喵～</span>
-        </div>
-      {% endif %}
-      <div class="card leaderboard-card">
-        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-          <div class="d-flex align-items-center">
-            <i class="fas fa-list-ol me-2 text-warning"></i>
-            <strong>排行榜{% if is_elo %} · ELO{% endif %}</strong>
+      <section class="ranking-v2-tab ranking-v2-leaderboard"
+               data-ranking-tab-panel="leaderboard"
+               data-ranking-leaderboard>
+        {% if is_elo and competition.elo_running != 1 %}
+          <div class="ranking-v2-notice" role="status">
+            <i class="fas fa-hourglass-half" aria-hidden="true"></i>
+            <span>动态评分尚未启动，排行榜会在匹配引擎启动后更新。</span>
           </div>
-          <div class="text-muted small">
-            共 <strong>{{ leaderboard|length }}</strong> 位选手 · 取每位用户的{% if is_elo %}最高 ELO 分{% else %}最高分{% endif %} · 同分并列
-          </div>
-        </div>
-
+        {% endif %}
         {% if not leaderboard %}
-          <div class="leaderboard-empty">
-            <i class="fas fa-trophy leaderboard-empty-icon"></i>
-            <div class="mt-3 fw-semibold">暂无有效成绩</div>
-            <div class="text-muted small mt-1">等待首位选手的首次提交，排行榜将在评测后自动更新。</div>
+          <div class="ranking-v2-empty ranking-v2-empty--leaderboard">
+            <i class="fas fa-ranking-star" aria-hidden="true"></i>
+            <strong>暂无有效成绩</strong>
+            <span>等待首位选手完成评测，排名将在这里出现。</span>
           </div>
         {% else %}
-          <div class="leaderboard-list">
+          <div class="ranking-v2-leaderboard-scroll">
+            <div class="leaderboard-list">
             {% for row in leaderboard %}
-              {% set rank_cls = 'rank-1' if row.rank == 1 else ('rank-2' if row.rank == 2 else ('rank-3' if row.rank == 3 else 'rank-other')) %}
               {% set is_me = user and user.username == row.username %}
               {% if is_elo %}
-                {# ELO 进度条按 (rating - 800) / (2400 - 800) 大致映射 #}
                 {% set pct = ((row.best_score or 800) - 800) * 100.0 / 1600.0 %}
               {% else %}
                 {% set pct = (row.best_score or 0) * 100.0 / max_score %}
               {% endif %}
               {% if pct < 0 %}{% set pct = 0 %}{% endif %}
               {% if pct > 100 %}{% set pct = 100 %}{% endif %}
-              <div class="leaderboard-row {{ rank_cls }}{% if is_me %} is-me{% endif %}">
-                <div class="lb-rank">
-                  {% if row.rank == 1 %}
-                    <span class="lb-medal lb-medal-gold"><i class="fas fa-medal"></i></span>
-                  {% elif row.rank == 2 %}
-                    <span class="lb-medal lb-medal-silver"><i class="fas fa-medal"></i></span>
-                  {% elif row.rank == 3 %}
-                    <span class="lb-medal lb-medal-bronze"><i class="fas fa-medal"></i></span>
-                  {% else %}
-                    <span class="lb-rank-num">{{ row.rank }}</span>
-                  {% endif %}
-                </div>
-                <div class="lb-user">
-                  <div class="lb-username">
-                    {{ row.username }}
+              <div class="leaderboard-row{% if is_me %} is-current-user{% endif %}"
+                   data-ranking-row
+                   data-ranking-key="{{ row.username }}"
+                   data-ranking-user="{{ row.username }}"
+                   data-ranking-rank="{{ row.rank }}"
+                   data-ranking-score="{{ row.best_score or 0 }}"
+                   {% if is_me %}data-ranking-current-user="true"{% endif %}>
+                <span class="lb-rank{% if row.rank <= 3 %} is-top{% endif %}">
+                  {{ '%02d'|format(row.rank) }}
+                </span>
+                <span class="lb-user">
+                  <strong class="lb-username">
+                    <span>{{ row.username }}</span>
+                    {% if is_me %}<em class="lb-me-badge">YOU</em>{% endif %}
+                  </strong>
+                  <span class="lb-subs">
+                    {{ row.submission_count }} SUBMISSIONS
                     {% if row.best_base_model %}
-                      <span class="lb-base-model" title="基座模型">{{ row.best_base_model }}</span>
+                      · <span title="基座模型">{{ row.best_base_model }}</span>
                     {% endif %}
-                    {% if is_me %}<span class="lb-me-badge">我</span>{% endif %}
-                  </div>
-                  <div class="lb-subs">
-                    <i class="fas fa-paper-plane me-1"></i>{{ row.submission_count }} 次提交
                     {% if is_reverse_judge and row.best_agent_endpoint_label %}
-                      <span class="lb-endpoint" title="AI 节点"><i class="fas fa-robot"></i>{{ row.best_agent_endpoint_label }}</span>
+                      · <span title="AI 节点">{{ row.best_agent_endpoint_label }}</span>
                     {% endif %}
-                  </div>
-                </div>
-                <div class="lb-score">
-                  <div class="lb-score-text">
-                    {% if is_elo %}
-                      <strong>{{ '%.0f'|format(row.best_score) }}</strong>
-                      <span class="text-muted"> ELO</span>
-                    {% else %}
-                      <strong>{{ '%.2f'|format(row.best_score) }}</strong>
-                      <span class="text-muted"> / {{ max_score }}</span>
-                    {% endif %}
-                  </div>
-                  <div class="lb-score-bar">
-                    <div class="lb-score-fill" style="width: {{ '%.1f'|format(pct) }}%"></div>
-                  </div>
-                </div>
+                  </span>
+                </span>
+                <span class="lb-score-bar" aria-hidden="true">
+                  <i style="--ranking-score-pct: {{ '%.1f'|format(pct) }}%"></i>
+                </span>
+                <span class="lb-score">
+                  {% if is_elo %}
+                    {{ '%.0f'|format(row.best_score) }} <small>ELO</small>
+                  {% else %}
+                    {{ '%.2f'|format(row.best_score) }} <small>/ {{ max_score }}</small>
+                  {% endif %}
+                </span>
               </div>
             {% endfor %}
+            </div>
           </div>
         {% endif %}
-      </div>
+      </section>
     {% endif %}

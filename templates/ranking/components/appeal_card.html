@@ -5,10 +5,16 @@
   {% set acls = 's-info' if ast == 'pending' else ('s-err' if ast == 'rejected' else 's-ok') %}
   {% set alabel = {'pending': '待处理', 'rejected': '已驳回', 'resolved': '已处理'}.get(ast, ast) %}
   {% set max_score = competition.max_score or 100 %}
-  <div class="aj-sub {{ acls }}" data-username="{{ (a.username or '')|lower }}">
+  <article class="aj-sub aj-appeal {{ acls }}"
+           data-username="{{ (a.username or '')|lower }}">
     <div class="aj-sub-r1">
       <div class="aj-sub-idu">
-        <span class="aj-sub-user"><span class="aj-sub-ava">{{ (a.username or '?')[0]|upper }}</span><span class="aj-sub-uname">{{ a.username }}</span></span>
+        <span class="aj-sub-user">
+          <span class="numoj-avatar aj-sub-ava"
+                data-avatar-seed="{{ a.username or 'numericaloj' }}"
+                data-avatar-label="{{ a.username or '未知用户' }}"></span>
+          <span class="aj-sub-uname">{{ a.username }}</span>
+        </span>
         <span class="aj-sub-id">提交 #{{ a.submission_id }}</span>
         <span class="aj-st {{ acls }}"><span class="d"></span>{{ alabel }}</span>
       </div>
@@ -28,5 +34,5 @@
         </a>
       </div>
     </div>
-  </div>
+  </article>
 {% endmacro %}

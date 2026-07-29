@@ -1,21 +1,21 @@
 {# ELO 对战数据：列表 + 分页。被 ranking/detail.html include，也被 ranking_matches_json 单独渲染用于 AJAX 局部刷新。
    需要的上下文：matches, matches_mine, competition, user, is_admin, current_page, total_pages, page_numbers #}
 {% if not matches %}
-  <div class="matches-empty">
-    <div class="matches-empty-icon"><i class="fas fa-chess-board"></i></div>
-    <div class="matches-empty-title">
+  <div class="ranking-v2-empty matches-empty">
+    <i class="fas fa-chess-board" aria-hidden="true"></i>
+    <strong>
       {% if matches_mine %}你还没有踏上擂台{% else %}擂台尚无对决{% endif %}
-    </div>
-    <div class="matches-empty-hint">
+    </strong>
+    <span>
       {% if competition.elo_running != 1 %}
         动态评分尚未启动，匹配引擎不会调度对战。
       {% else %}
         等待匹配引擎调度首场对战，每 {{ competition.elo_match_interval_seconds or 60 }} 秒一轮。
       {% endif %}
-    </div>
+    </span>
   </div>
 {% else %}
-  <div class="matches-list">
+  <div class="matches-list" data-ranking-match-list>
     {% for m in matches %}
       {% set delta_a = (m.rating_a_after or 0) - (m.rating_a_before or 0) %}
       {% set delta_b = (m.rating_b_after or 0) - (m.rating_b_before or 0) %}
@@ -23,16 +23,25 @@
       {% set ts = (m.created_at or '')|string %}
       {% set is_me_a = user and m.username_a and m.username_a == user.username %}
       {% set is_me_b = user and m.username_b and m.username_b == user.username %}
-      <article class="match-row{% if winner == -1 %} is-failed{% elif winner == 0 %} is-draw{% endif %}{% if is_me_a or is_me_b %} is-mine{% endif %}">
+      {% set name_a = m.username_a or ('sub#' ~ m.submission_a_id) %}
+      {% set name_b = m.username_b or ('sub#' ~ m.submission_b_id) %}
+      <article class="match-row{% if winner == -1 %} is-failed{% elif winner == 0 %} is-draw{% endif %}{% if is_me_a or is_me_b %} is-mine{% endif %}"
+               data-ranking-match-row
+               {% if is_me_a or is_me_b %}data-mine{% endif %}>
         <time class="match-time">
           <span class="match-time-date">{{ ts[5:10] if ts|length >= 10 else ts }}</span>
           <span class="match-time-clock">{{ ts[11:16] if ts|length >= 16 else '' }}</span>
         </time>
 
         <div class="match-side match-side-a {% if winner == 1 %}match-winner{% elif winner == 2 %}match-loser{% endif %}">
-          <span class="match-username">
-            {% if is_me_a %}<span class="match-me-tag" aria-hidden="true">YOU</span>{% endif %}
-            {{ m.username_a or ('sub#' ~ m.submission_a_id) }}
+          <span class="match-person">
+            <span class="numoj-avatar match-avatar"
+                  data-avatar-seed="{{ name_a }}"
+                  data-avatar-label="{{ name_a }}"></span>
+            <span class="match-username">
+              {{ name_a }}
+              {% if is_me_a %}<em class="match-me-tag">YOU</em>{% endif %}
+            </span>
           </span>
           <span class="match-stats">
             <span class="match-rating">{{ '%.0f'|format(m.rating_a_before or 0) }}</span>
@@ -62,9 +71,14 @@
             <span class="match-delta {% if delta_b > 0 %}is-up{% elif delta_b < 0 %}is-down{% endif %}">{{ '%+.0f'|format(delta_b) }}</span>
             <span class="match-rating">{{ '%.0f'|format(m.rating_b_before or 0) }}</span>
           </span>
-          <span class="match-username">
-            {{ m.username_b or ('sub#' ~ m.submission_b_id) }}
-            {% if is_me_b %}<span class="match-me-tag" aria-hidden="true">YOU</span>{% endif %}
+          <span class="match-person">
+            <span class="match-username">
+              {{ name_b }}
+              {% if is_me_b %}<em class="match-me-tag">YOU</em>{% endif %}
+            </span>
+            <span class="numoj-avatar match-avatar"
+                  data-avatar-seed="{{ name_b }}"
+                  data-avatar-label="{{ name_b }}"></span>
           </span>
         </div>
 
@@ -100,15 +114,20 @@
   <nav aria-label="分页">
     <ul class="pagination mb-0">
       <li class="page-item {% if current_page <= 1 %}disabled{% endif %}">
-        <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page-1, mine=(1 if matches_mine else None)) }}" aria-label="上一页">‹</a>
+        <a class="page-link" data-page="{{ current_page - 1 }}"
+           href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page-1, mine=(1 if matches_mine else None)) }}"
+           aria-label="上一页"><i class="fas fa-arrow-left" aria-hidden="true"></i></a>
       </li>
       {% for p in page_numbers %}
         <li class="page-item {% if p == current_page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=p, mine=(1 if matches_mine else None)) }}">{{ p }}</a>
+          <a class="page-link" data-page="{{ p }}"
+             href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=p, mine=(1 if matches_mine else None)) }}">{{ p }}</a>
         </li>
       {% endfor %}
       <li class="page-item {% if current_page >= total_pages %}disabled{% endif %}">
-        <a class="page-link" href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page+1, mine=(1 if matches_mine else None)) }}" aria-label="下一页">›</a>
+        <a class="page-link" data-page="{{ current_page + 1 }}"
+           href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches', page=current_page+1, mine=(1 if matches_mine else None)) }}"
+           aria-label="下一页"><i class="fas fa-arrow-right" aria-hidden="true"></i></a>
       </li>
     </ul>
   </nav>

@@ -4,33 +4,81 @@
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/settings.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
 <script src="{{ url_for('static', filename='app/choice-picker.js') }}"></script>
 <script src="{{ url_for('static', filename='app/ranking/topology.js') }}"></script>
 {% endblock %}
 
+{% block content_container_class %}container-fluid p-0 ranking-detail-shell{% endblock %}
+
 {% block content %}
-<div class="d-flex justify-content-between align-items-center flex-wrap mb-3">
-  <div>
-    <a href="{{ url_for('ranking.ranking_list') }}" class="text-decoration-none me-2">
-      <i class="fas fa-arrow-left me-1"></i> 打榜赛列表
-    </a>
-    <h3 class="d-inline-block mb-0 ms-2">
-      <i class="fas fa-trophy text-warning me-2"></i>{{ competition.title }}
-      {% if competition.is_active != 1 %}
-        <span class="badge bg-secondary ms-1">已下线</span>
-      {% endif %}
-    </h3>
-  </div>
-  <div class="text-muted small">
-    {% if (competition.scoring_mode or 'absolute')|lower == 'elo' %}
-      ELO 对战 · 创建于 {{ competition.created_at }}
-    {% elif (competition.scoring_mode or 'absolute')|lower == 'reverse_judge' %}
-      反向评测 · 创建于 {{ competition.created_at }}
-    {% else %}
-      满分 {{ competition.max_score or 100 }} · 创建于 {{ competition.created_at }}
-    {% endif %}
-  </div>
-</div>
+{% set scoring_mode = (competition.scoring_mode or 'absolute')|lower %}
+{% set is_elo = scoring_mode == 'elo' %}
+{% set is_agent_judge = scoring_mode == 'agent_judge' %}
+{% set is_reverse_judge = scoring_mode == 'reverse_judge' %}
+{% set is_ai_judge = is_agent_judge or is_reverse_judge %}
+{% set ranking_navigation = navigation|default({}, true) %}
+{% set nav_counts = ranking_navigation.get('counts', {}) %}
+{% if is_elo %}
+  {% set mode_label = 'ELO' %}
+{% elif is_agent_judge %}
+  {% set mode_label = 'AGENT JUDGE' %}
+{% elif is_reverse_judge %}
+  {% set mode_label = 'REVERSE JUDGE' %}
+{% else %}
+  {% set mode_label = 'ABSOLUTE' %}
+{% endif %}
+
+<section class="ranking-detail-v2 ranking-v2-detail"
+         data-ranking-detail
+         data-ranking-initial-tab="{{ tab }}"
+         data-ranking-revision="{{ revision|default('', true) }}"
+         data-ranking-scoring-mode="{{ scoring_mode }}"
+         data-ranking-attachment-count="{{ files|length if files else 0 }}"
+         data-ranking-detail-url="{{ url_for('ranking.ranking_detail', competition_id=competition.id) }}"
+         data-ranking-navigation-url="{{ url_for('ranking.ranking_navigation_state', competition_id=competition.id) }}">
+  <header class="ranking-competition-header">
+    <div class="ranking-competition-heading">
+      <div class="ranking-competition-eyebrow">
+        <a href="{{ url_for('ranking.ranking_list') }}" class="ranking-back-link">
+          <i class="fas fa-arrow-left" aria-hidden="true"></i>
+          <span>打榜赛列表</span>
+        </a>
+        <span aria-hidden="true">/</span>
+        <span>COMPETITION · {{ 'LIVE' if competition.is_active == 1 else 'OFFLINE' }}</span>
+      </div>
+      <div class="ranking-competition-title-line">
+        <span class="ranking-competition-id">#{{ '%03d'|format(competition.id) }}</span>
+        <h1>{{ competition.title }}</h1>
+      </div>
+    </div>
+
+    <div class="ranking-header-facts" aria-label="比赛信息">
+      <div class="ranking-header-fact">
+        <span>MODE</span>
+        <strong data-ranking-mode>{{ mode_label }}</strong>
+      </div>
+      <div class="ranking-header-fact">
+        <span>CREATED</span>
+        <strong>{{ competition.created_at }}</strong>
+      </div>
+      <span class="ranking-status-chip{% if competition.is_active != 1 %} is-offline{% endif %}"
+            data-ranking-status>
+        <i aria-hidden="true"></i>
+        <span>{{ 'LIVE' if competition.is_active == 1 else 'OFFLINE' }}</span>
+      </span>
+    </div>
+
+    <button type="button"
+            class="ranking-mobile-rail-open"
+            data-ranking-rail-open
+            aria-controls="rankingFunctionRail"
+            aria-label="打开比赛功能"
+            aria-expanded="false">
+      <i class="fas fa-sliders-h" aria-hidden="true"></i>
+      <span>比赛功能</span>
+    </button>
+  </header>
 
 <style>
   .rk-choice { position:relative; width:100%; }
@@ -76,63 +124,103 @@
   .rk-choice-sm .rk-choice-trigger-main span { font-size:.82rem; }
 </style>
 
-<div class="row">
-  <!-- 左侧边栏 -->
-  <div class="col-md-3 col-lg-2 mb-3">
-    <div class="sticky-top" style="top: 1rem;">
-      <div class="list-group">
+  <div class="ranking-workspace">
+    <aside class="ranking-function-rail"
+           id="rankingFunctionRail"
+           data-ranking-rail
+           aria-label="比赛功能"
+           aria-hidden="false">
+      <button type="button" class="ranking-rail-close" data-ranking-rail-close aria-label="关闭比赛功能">
+        <i class="fas fa-times" aria-hidden="true"></i>
+      </button>
+
+      <nav class="ranking-rail-nav" aria-label="比赛页面">
+        <p class="ranking-rail-group-label">COMPETITION</p>
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='description') }}"
-           class="list-group-item list-group-item-action {% if tab == 'description' %}active{% endif %}">
-          <i class="fas fa-file-alt me-2"></i> 比赛描述
+           class="ranking-rail-button{% if tab == 'description' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="description"
+           {% if tab == 'description' %}aria-current="page"{% endif %}>
+          <i class="fas fa-file-alt" aria-hidden="true"></i>
+          <span>比赛描述</span>
         </a>
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='submit') }}"
-           class="list-group-item list-group-item-action {% if tab == 'submit' %}active{% endif %}">
-          <i class="fas fa-paper-plane me-2"></i> 提交作品
+           class="ranking-rail-button{% if tab == 'submit' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="submit"
+           {% if tab == 'submit' %}aria-current="page"{% endif %}>
+          <i class="fas fa-paper-plane" aria-hidden="true"></i>
+          <span>提交作品</span>
+          {% set submit_count = nav_counts.get('submit') %}
+          <span class="ranking-rail-count" data-ranking-count="submit"
+                {% if submit_count is none %}hidden{% endif %}>{% if submit_count is not none %}{{ submit_count.remaining }}/{{ submit_count.limit }}{% endif %}</span>
         </a>
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='leaderboard') }}"
-           class="list-group-item list-group-item-action {% if tab == 'leaderboard' %}active{% endif %}">
-          <i class="fas fa-list-ol me-2"></i> 排行榜
+           class="ranking-rail-button{% if tab == 'leaderboard' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="leaderboard"
+           {% if tab == 'leaderboard' %}aria-current="page"{% endif %}>
+          <i class="fas fa-list-ol" aria-hidden="true"></i>
+          <span>排行榜</span>
+          <span class="ranking-rail-count" data-ranking-count="leaderboard">{{ nav_counts.get('leaderboard', '') }}</span>
         </a>
-        {% if (competition.scoring_mode or 'absolute')|lower == 'elo' %}
+        {% if is_elo %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='matches') }}"
-           class="list-group-item list-group-item-action {% if tab == 'matches' %}active{% endif %}">
-          <i class="fas fa-chess me-2"></i> 对战数据
+           class="ranking-rail-button{% if tab == 'matches' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="matches" data-ranking-permission="matches"
+           {% if tab == 'matches' %}aria-current="page"{% endif %}>
+          <i class="fas fa-chess" aria-hidden="true"></i>
+          <span>对战数据</span>
+          <span class="ranking-rail-count" data-ranking-count="matches">{{ nav_counts.get('matches', '') }}</span>
         </a>
         {% endif %}
+
         {% if is_admin %}
+        <p class="ranking-rail-group-label is-admin">ADMIN OPERATIONS</p>
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='all_submissions') }}"
-           class="list-group-item list-group-item-action {% if tab == 'all_submissions' %}active{% endif %}">
-          <i class="fas fa-clipboard-list me-2"></i> 所有提交
+           class="ranking-rail-button is-admin{% if tab == 'all_submissions' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="all_submissions" data-ranking-permission="all_submissions"
+           {% if tab == 'all_submissions' %}aria-current="page"{% endif %}>
+          <i class="fas fa-clipboard-list" aria-hidden="true"></i>
+          <span>所有提交</span>
+          <span class="ranking-rail-count" data-ranking-count="all_submissions">{{ nav_counts.get('all_submissions', '') }}</span>
         </a>
-        {% if (competition.scoring_mode or 'absolute')|lower == 'agent_judge' %}
+        {% if is_agent_judge %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='appeals') }}"
-           class="list-group-item list-group-item-action {% if tab == 'appeals' %}active{% endif %}">
-          <i class="fas fa-gavel me-2"></i> 申诉处理
+           class="ranking-rail-button is-admin{% if tab == 'appeals' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="appeals" data-ranking-permission="appeals"
+           {% if tab == 'appeals' %}aria-current="page"{% endif %}>
+          <i class="fas fa-gavel" aria-hidden="true"></i>
+          <span>申诉处理</span>
+          <span class="ranking-rail-count" data-ranking-count="appeals">{{ nav_counts.get('appeals', '') }}</span>
         </a>
         {% endif %}
-        {% if (competition.scoring_mode or 'absolute')|lower in ['agent_judge', 'reverse_judge'] %}
+        {% if is_ai_judge %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='batch_eval') }}"
-           class="list-group-item list-group-item-action {% if tab == 'batch_eval' %}active{% endif %}">
-          <i class="fas fa-layer-group me-2"></i> 批量评测
+           class="ranking-rail-button is-admin{% if tab == 'batch_eval' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="batch_eval" data-ranking-permission="batch_eval"
+           {% if tab == 'batch_eval' %}aria-current="page"{% endif %}>
+          <i class="fas fa-layer-group" aria-hidden="true"></i>
+          <span>批量评测</span>
         </a>
         {% endif %}
         <a href="{{ url_for('ranking.ranking_detail', competition_id=competition.id, tab='edit') }}"
-           class="list-group-item list-group-item-action {% if tab == 'edit' %}active{% endif %}">
-          <i class="fas fa-pencil-alt me-2"></i> 编辑比赛
+           class="ranking-rail-button is-admin{% if tab == 'edit' %} active{% endif %}"
+           data-ranking-tab-link data-ranking-tab="edit" data-ranking-permission="edit"
+           {% if tab == 'edit' %}aria-current="page"{% endif %}>
+          <i class="fas fa-pencil-alt" aria-hidden="true"></i>
+          <span>编辑比赛</span>
         </a>
         {% endif %}
-      </div>
+      </nav>
 
-      <!-- 相关文件 (侧边栏) -->
-      <div class="sidebar-files mt-3">
-        <div class="sidebar-files-header">
-          <i class="fas fa-paperclip me-2"></i>相关文件
-          <span class="sidebar-files-count ms-auto">{{ files|length if files else 0 }}</span>
-        </div>
+      <section class="ranking-rail-attachments"
+               data-ranking-attachments
+               aria-labelledby="rankingAttachmentsTitle">
+        <p class="ranking-attachment-label" id="rankingAttachmentsTitle">
+          ATTACHMENTS · <span data-ranking-count="attachments">{{ files|length if files else 0 }}</span>
+        </p>
         {% if not files %}
-          <div class="sidebar-files-empty">暂无附件</div>
+          <div class="ranking-attachments-empty">暂无附件</div>
         {% else %}
-          <div class="sidebar-files-list">
+          <div class="ranking-file-list" data-ranking-attachment-list>
             {% for f in files %}
               {% set bytes = f.file_size or 0 %}
               {% if bytes >= 1048576 %}
@@ -145,39 +233,43 @@
                 {% set size_short = bytes|string ~ 'B' %}
                 {% set size_long = bytes|string ~ ' B' %}
               {% endif %}
-              <div class="sidebar-file-row" title="{{ f.filename }} · {{ size_long }}">
-                <span class="sidebar-file-name">{{ f.filename }}</span>
-                <span class="sidebar-file-size">{{ size_short }}</span>
+              <div class="ranking-file-row" data-ranking-attachment-row title="{{ f.filename }} · {{ size_long }}">
+                <a href="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
+                   class="ranking-file-download"
+                   title="下载 {{ f.filename }}">
+                  <i class="fas fa-paperclip" aria-hidden="true"></i>
+                  <b>{{ f.filename }}</b>
+                  <span>{{ size_short }}</span>
+                </a>
                 {% if f.media_kind %}
-                <button type="button" class="sidebar-file-dl rk-media-btn"
+                <button type="button" class="ranking-file-action rk-media-btn"
                         title="{{ '播放' if f.media_kind == 'video' else '查看' }} {{ f.filename }}"
                         aria-label="{{ '播放' if f.media_kind == 'video' else '查看' }} {{ f.filename }}"
                         data-media-url="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}?inline=1"
                         data-media-dl="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
                         data-media-kind="{{ f.media_kind }}"
                         data-media-name="{{ f.filename }}">
-                  <i class="fas {{ 'fa-play' if f.media_kind == 'video' else 'fa-eye' }}"></i>
+                  <i class="fas {{ 'fa-play' if f.media_kind == 'video' else 'fa-eye' }}" aria-hidden="true"></i>
                 </button>
                 {% endif %}
-                <a href="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
-                   class="sidebar-file-dl" title="下载 {{ f.filename }}" aria-label="下载 {{ f.filename }}">
-                  <i class="fas fa-download"></i>
-                </a>
               </div>
             {% endfor %}
           </div>
+          <button type="button"
+                  class="ranking-attachments-toggle"
+                  data-ranking-attachments-toggle
+                  data-total="{{ files|length }}"
+                  aria-expanded="false"
+                  hidden>查看全部 {{ files|length }} 个</button>
         {% endif %}
-      </div>
-    </div>
-  </div>
+      </section>
+    </aside>
 
-  <!-- 右侧内容 -->
-  <div class="col-md-9 col-lg-10">
-    {% set is_elo = ((competition.scoring_mode or 'absolute')|lower == 'elo') %}
-    {% set is_agent_judge = ((competition.scoring_mode or 'absolute')|lower == 'agent_judge') %}
-    {% set is_reverse_judge = ((competition.scoring_mode or 'absolute')|lower == 'reverse_judge') %}
-    {% set is_ai_judge = is_agent_judge or is_reverse_judge %}
-    {% from 'ranking/components/submission_card.html' import render_sub_card %}
+    <div class="ranking-rail-backdrop" data-ranking-rail-backdrop hidden></div>
+
+    <div class="ranking-content-scroll" data-ranking-content-scroll>
+      <div class="ranking-fragment-progress" data-ranking-fragment-progress aria-hidden="true"></div>
+      <main class="ranking-panel-stage" data-ranking-panel-stage aria-live="polite">
 
     <style>
       /* 提交卡片：扁平化（纯色 + 描边，无阴影/渐变），左缘按状态着色 */
@@ -283,22 +375,20 @@
       @media (max-width:640px){ .aj-result-node{width:164px;} .aj-result-topo-main{max-width:100%;} }
     </style>
 
-    {% include 'ranking/tabs/description.html' %}
-    {% include 'ranking/tabs/submit.html' %}
-    {% include 'ranking/tabs/leaderboard.html' %}
-    {% include 'ranking/tabs/matches.html' %}
-    {% include 'ranking/tabs/submissions.html' %}
-    {% include 'ranking/tabs/appeals.html' %}
-    {% include 'ranking/tabs/batch_evaluate.html' %}
-    {% include 'ranking/tabs/settings.html' %}
-    {# 评测详情弹窗是页面级单例，所有 tab 共用同一实现。 #}
-    {% if is_agent_judge %}
-      {% include 'ranking/modals/judge_detail.html' %}
-    {% elif is_reverse_judge %}
-      {% include 'ranking/modals/reverse_judge_detail.html' %}
-    {% endif %}
+        <div class="ranking-panel-host" data-ranking-panel-host>
+          {% include 'ranking/components/detail_panel.html' %}
+        </div>
+      </main>
+    </div>
   </div>
-</div>
+
+  {# 评测详情弹窗是页面级单例，所有 fragment 共用同一实现。 #}
+  {% if is_agent_judge %}
+    {% include 'ranking/modals/judge_detail.html' %}
+  {% elif is_reverse_judge %}
+    {% include 'ranking/modals/reverse_judge_detail.html' %}
+  {% endif %}
+</section>
 
 <style>
   .ranking-description {
@@ -1804,5 +1894,14 @@
   }
 </style>
 
+{# V2 覆盖层必须在旧 tab 样式之后加载；编辑比赛内部仍沿用原版样式。 #}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/detail-v2.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/content-v2.css') }}">
 {% include 'ranking/modals/media_preview.html' %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
+<script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
+<script src="{{ url_for('static', filename='app/ranking/detail-v2.js') }}"></script>
 {% endblock %}

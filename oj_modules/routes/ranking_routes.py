@@ -12,6 +12,8 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -52,6 +54,7 @@ from oj_modules.ranking_db import (
     get_competition_file,
     get_competition_match,
     get_leaderboard,
+    get_ranking_navigation_state,
     get_ranking_submission,
     get_submission_quota,
     get_submission_stats,
@@ -129,6 +132,13 @@ ELO_MATCHES_LIST_CACHE_KEY = "ranking:elo:matches_list:{comp}:{scope}:{page}:{pe
 ELO_MATCHES_LIST_CACHE_TTL = 30           # 列表频繁追加新对战，TTL 短一些；可接受最多 30s 旧数据
 ELO_MATCH_DETAIL_CACHE_KEY = "ranking:elo:match_detail:{match_id}"
 ELO_MATCH_DETAIL_CACHE_TTL = 3600         # 单场记录写入后不变（immutable），缓 1 小时
+# 所有可见客户端共享同一份全局导航快照，避免每个 10s 轮询都重复执行多表聚合。
+# 生产 Web 是单进程 gthread；按比赛分锁既能合并并发 miss，也不会阻塞其它比赛。
+RANKING_NAVIGATION_STATE_CACHE_TTL = 5.0
+RANKING_NAVIGATION_STATE_CACHE_MAX = 256
+_ranking_navigation_state_cache = {}
+_ranking_navigation_state_cache_guard = threading.Lock()
+_ranking_navigation_state_locks = tuple(threading.Lock() for _ in range(32))
 ANSWER_MAX_BYTES = 64 * 1024 * 1024        # 64MB
 CODE_ZIP_MAX_BYTES = 128 * 1024 * 1024     # 128MB
 ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024   # 256MB
@@ -368,6 +378,10 @@ def _ranking_submit_block_reason(comp, competition_id, user=None):
 
 
 def _wants_json_response():
+    if str(request.args.get('fragment') or '').strip() == '1':
+        return True
+    if request.path.rstrip('/').endswith('/navigation-state'):
+        return True
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
         return True
     accept = (request.headers.get('Accept') or '').lower()
@@ -432,6 +446,97 @@ def _page_window(current_page, total_pages, radius=5):
 
 def _redis_client():
     return create_optional_redis_client(verify_connection=False)
+
+
+def _ranking_navigation_state_lock(competition_id):
+    key = int(competition_id)
+    return _ranking_navigation_state_locks[key % len(_ranking_navigation_state_locks)]
+
+
+def _get_ranking_navigation_state_cached(competition_id):
+    """短暂复用不含用户配额的全局快照；返回副本，禁止请求间互相修改。"""
+    key = int(competition_id)
+    lock = _ranking_navigation_state_lock(key)
+    with lock:
+        now = time.monotonic()
+        with _ranking_navigation_state_cache_guard:
+            cached = _ranking_navigation_state_cache.get(key)
+        if cached is not None and cached[0] > now:
+            return copy.deepcopy(cached[1])
+
+        state = get_ranking_navigation_state(key, None)
+        if state is None:
+            with _ranking_navigation_state_cache_guard:
+                _ranking_navigation_state_cache.pop(key, None)
+            return None
+        snapshot = copy.deepcopy(state)
+        with _ranking_navigation_state_cache_guard:
+            expired = [
+                cache_key
+                for cache_key, (expires_at, _) in _ranking_navigation_state_cache.items()
+                if expires_at <= now
+            ]
+            for cache_key in expired:
+                _ranking_navigation_state_cache.pop(cache_key, None)
+            while (
+                len(_ranking_navigation_state_cache)
+                >= RANKING_NAVIGATION_STATE_CACHE_MAX
+                and key not in _ranking_navigation_state_cache
+            ):
+                oldest_key = min(
+                    _ranking_navigation_state_cache,
+                    key=lambda cache_key: _ranking_navigation_state_cache[cache_key][0],
+                )
+                _ranking_navigation_state_cache.pop(oldest_key, None)
+            _ranking_navigation_state_cache[key] = (
+                time.monotonic() + RANKING_NAVIGATION_STATE_CACHE_TTL,
+                snapshot,
+            )
+        return copy.deepcopy(snapshot)
+
+
+def _get_ranking_navigation_state_for_request(comp, user, is_admin, state=None):
+    """组合共享全局快照与当前学生的轻量配额计数。"""
+    competition_id = int((comp or {}).get('id') or 0)
+    if state is None:
+        state = _get_ranking_navigation_state_cached(competition_id)
+    else:
+        state = copy.deepcopy(state)
+    if state is None:
+        return None
+
+    # 详情上下文使用刚读取的 competition；权限和 rail 模式必须与它保持一致，
+    # 全局计数/revision 最多允许落后短 TTL。
+    state['scoring_mode'] = _competition_scoring_mode(comp)
+    state['is_active'] = int((comp or {}).get('is_active') or 0)
+    if is_admin:
+        state['quota'] = None
+        return state
+
+    # 测试/调用方可能已经提供了当前用户配额；生产共享快照不会包含它。
+    if state.get('quota') is not None:
+        return state
+    quota = get_submission_quota(
+        competition_id,
+        (user or {}).get('username'),
+        comp=comp,
+    )
+    if quota is None:
+        state['quota'] = None
+        return state
+
+    state['quota'] = {
+        'limit': int(quota.get('limit') or 0),
+        'remaining': int(quota.get('remaining') or 0),
+    }
+    # 配额变化也必须触发学生端 rail badge/提交历史刷新，但不污染共享快照。
+    state['revision'] = '{}:quota:{}:{}:{}'.format(
+        state.get('revision') or '',
+        int(quota.get('limit') or 0),
+        int(quota.get('used') or 0),
+        quota.get('window_start') or '',
+    )
+    return state
 
 
 def _ranking_task_ref_for_mode(scoring_mode):
@@ -909,37 +1014,50 @@ def ranking_copy(competition_id):
 
 # ---------- 详情页（带侧边栏标签） ----------
 
-@ranking_bp.route('/<int:competition_id>/', methods=['GET'])
-def ranking_detail(competition_id):
-    user, resp = _require_user()
-    if resp is not None:
-        return resp
-    comp = get_competition(competition_id)
-    if not comp:
-        flash('比赛不存在或已被删除', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-    is_admin = user.get('is_admin') == 1
-    if not is_admin and comp.get('is_active') != 1:
-        flash('该比赛未开放', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-
-    tab = (request.args.get('tab') or 'description').strip().lower()
+def _normalize_ranking_detail_tab(comp, is_admin, raw_tab):
+    tab = str(raw_tab or 'description').strip().lower()
     if tab not in ALLOWED_TABS:
-        tab = 'description'
+        return 'description'
+    scoring_mode = _competition_scoring_mode(comp)
     if tab in ('all_submissions', 'appeals', 'edit', 'batch_eval') and not is_admin:
-        tab = 'description'
-    # 「申诉处理」仅 Agent 评测模式 + 管理员
-    if tab == 'appeals' and _competition_scoring_mode(comp) != 'agent_judge':
-        tab = 'description'
+        return 'description'
+    if tab == 'matches' and scoring_mode != 'elo':
+        return 'description'
+    if tab == 'appeals' and scoring_mode != 'agent_judge':
+        return 'description'
+    if tab == 'batch_eval' and scoring_mode not in ('agent_judge', 'reverse_judge'):
+        return 'description'
+    return tab
+
+
+def _ranking_query_page(args):
+    try:
+        value = args.get('page', 1, type=int)
+    except TypeError:
+        try:
+            value = int(args.get('page', 1))
+        except (TypeError, ValueError):
+            value = 1
+    return max(1, int(value or 1))
+
+
+def _build_ranking_detail_context(competition_id, user, comp, args):
+    """构建完整详情页与 HTML Fragment 共用的单一模板上下文。"""
+    is_admin = user.get('is_admin') == 1
+    tab = _normalize_ranking_detail_tab(comp, is_admin, args.get('tab'))
+    scoring_mode = _competition_scoring_mode(comp)
+    is_agent_judge = scoring_mode == 'agent_judge'
+    is_reverse_judge = scoring_mode == 'reverse_judge'
+    is_ai_judge = is_agent_judge or is_reverse_judge
 
     files = list_competition_files(competition_id)
-    for _f in files:   # 标注可直接预览的图片/视频，模板据此显示「播放/查看」按钮
-        _f['media_kind'] = _attachment_media_kind(_f.get('filename'))
-    # markdown 解析仅在「比赛说明」标签下做；其它标签传空串避免每次切换都要解析一遍。
+    for item in files:
+        # 标注可直接预览的图片/视频，模板据此显示「播放/查看」按钮。
+        item['media_kind'] = _attachment_media_kind(item.get('filename'))
+
     rendered_description = (
         _render_description(comp.get('description') or '') if tab == 'description' else ''
     )
-
     user_submissions = []
     all_submissions = []
     all_appeals = []
@@ -954,26 +1072,27 @@ def ranking_detail(competition_id):
     matches_total = 0
     matches_mine = False
 
-    scoring_mode = _competition_scoring_mode(comp)
-    is_agent_judge = scoring_mode == 'agent_judge'
-    is_reverse_judge = scoring_mode == 'reverse_judge'
-    is_ai_judge = is_agent_judge or is_reverse_judge
     judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
-    # Agent 评测端点池（编辑器用；api_key 不回传明文，仅给 has_key 标记）+ 就绪标志
     aj_endpoints = []
     quality_gate_endpoints = []
     agent_judge_ready = False
-    quality_gate_ready = _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
+    quality_gate_ready = (
+        _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
+    )
     if is_ai_judge:
         try:
-            _raw_eps = list_agent_judge_endpoints(competition_id)
+            raw_endpoints = list_agent_judge_endpoints(competition_id)
         except Exception:
-            _raw_eps = []
-        aj_endpoints = _masked_agent_endpoints(_raw_eps)
-        agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
+            raw_endpoints = []
+        aj_endpoints = _masked_agent_endpoints(raw_endpoints)
+        agent_judge_ready = (
+            _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
+        )
         if is_reverse_judge:
-            agent_judge_ready = _agent_judge_endpoint_ready(competition_id, comp) and quality_gate_ready
+            agent_judge_ready = (
+                _agent_judge_endpoint_ready(competition_id, comp) and quality_gate_ready
+            )
             if is_admin:
                 try:
                     quality_gate_endpoints = _masked_agent_endpoints(
@@ -982,15 +1101,8 @@ def ranking_detail(competition_id):
                 except Exception:
                     quality_gate_endpoints = []
 
-    # 「批量评测」对 Agent 评测 / 反向评测开放，共用 Git 标准命名与端点池
-    if tab == 'batch_eval' and not is_ai_judge:
-        tab = 'description'
+    batch_classes = get_all_classes() if tab == 'batch_eval' else []
 
-    batch_classes = []
-    if tab == 'batch_eval':
-        batch_classes = get_all_classes()
-
-    # Agent 评测打榜赛的提交方式（zip 上传 / git 拉取）
     submission_method = (comp.get('submission_method') or 'zip').strip().lower()
     if submission_method not in ('zip', 'git'):
         submission_method = 'zip'
@@ -1000,91 +1112,234 @@ def ranking_detail(competition_id):
     git_repo_url = None
     if tab == 'submit':
         user_submissions = list_user_submissions(competition_id, user.get('username'))
-        submit_block_reason = _ranking_submit_block_reason(comp, competition_id, user=user)
+        submit_block_reason = _ranking_submit_block_reason(
+            comp, competition_id, user=user,
+        )
         if not is_admin:
-            submit_quota = get_submission_quota(competition_id, user.get('username'), comp=comp)
-            if not submit_block_reason and submit_quota is not None and submit_quota['remaining'] <= 0:
+            submit_quota = get_submission_quota(
+                competition_id, user.get('username'), comp=comp,
+            )
+            if (
+                not submit_block_reason
+                and submit_quota is not None
+                and submit_quota['remaining'] <= 0
+            ):
                 submit_block_reason = _submission_quota_message(submit_quota)
-        # git 提交方式：把标准命名里的 <username> 换成本人学号，算出本人仓库地址
         if is_ai_judge and (submission_method == 'git' or is_reverse_judge):
-            uname = (user.get('username') or '').strip()
-            tmpl = (comp.get('git_format') or '').strip()
-            if tmpl and BATCH_USERNAME_RE.match(uname):
-                git_repo_url = build_repo_url(tmpl, uname)
+            username = (user.get('username') or '').strip()
+            template = (comp.get('git_format') or '').strip()
+            if template and BATCH_USERNAME_RE.match(username):
+                git_repo_url = build_repo_url(template, username)
     elif tab == 'leaderboard':
         leaderboard = get_leaderboard(competition_id)
     elif tab == 'matches':
-        requested_page = max(1, request.args.get('page', 1, type=int))
-        matches_mine = str(request.args.get('mine') or '').strip() in ('1', 'true', 'on', 'yes')
-        username_filter = user.get('username') if matches_mine else None
-        matches, current_page, matches_total = fetch_competition_matches_cached(
-            competition_id, requested_page, MATCHES_PER_PAGE, username=username_filter,
+        requested_page = _ranking_query_page(args)
+        matches_mine = str(args.get('mine') or '').strip().lower() in (
+            '1', 'true', 'on', 'yes',
         )
-        total_pages = max(1, (matches_total + MATCHES_PER_PAGE - 1) // MATCHES_PER_PAGE)
+        username_filter = user.get('username') if matches_mine else None
+        # 对战列表会由 Celery 跨进程持续追加，不能把旧列表与最新 revision
+        # 组合后缓存为“已同步”。分页查询直接读 DB；单场 immutable 详情仍缓存。
+        matches, current_page, matches_total = list_competition_matches(
+            competition_id,
+            page=requested_page,
+            per_page=MATCHES_PER_PAGE,
+            username=username_filter,
+        )
+        total_pages = max(
+            1, (matches_total + MATCHES_PER_PAGE - 1) // MATCHES_PER_PAGE,
+        )
         page_numbers = _page_window(current_page, total_pages)
     elif tab == 'all_submissions':
-        submission_search_q = (request.args.get('q') or '').strip()[:50]
-        requested_page = max(1, request.args.get('page', 1, type=int))
+        submission_search_q = (args.get('q') or '').strip()[:50]
+        requested_page = _ranking_query_page(args)
         all_submissions, current_page, total_filtered = list_all_submissions(
             competition_id,
             page=requested_page,
             per_page=SUBMISSIONS_PER_PAGE,
             username_q=submission_search_q or None,
         )
-        total_pages = max(1, (total_filtered + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
+        total_pages = max(
+            1, (total_filtered + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE,
+        )
         page_numbers = _page_window(current_page, total_pages)
         submission_stats = get_submission_stats(competition_id)
     elif tab == 'appeals':
-        submission_search_q = (request.args.get('q') or '').strip()[:50]
-        requested_page = max(1, request.args.get('page', 1, type=int))
+        submission_search_q = (args.get('q') or '').strip()[:50]
+        requested_page = _ranking_query_page(args)
         all_appeals, current_page, total_filtered = list_appeals(
             competition_id,
             page=requested_page,
             per_page=SUBMISSIONS_PER_PAGE,
-            status_q=(request.args.get('status') or '').strip().lower() or None,
+            status_q=(args.get('status') or '').strip().lower() or None,
             username_q=submission_search_q or None,
         )
-        total_pages = max(1, (total_filtered + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
+        total_pages = max(
+            1, (total_filtered + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE,
+        )
         page_numbers = _page_window(current_page, total_pages)
         appeal_stats = get_appeal_stats(competition_id)
 
-    return render_template(
-        'ranking/detail.html',
-        user=user,
-        is_admin=is_admin,
-        competition=comp,
-        files=files,
-        tab=tab,
-        rendered_description=rendered_description,
-        user_submissions=user_submissions,
-        submit_quota=submit_quota,
-        all_submissions=all_submissions,
-        all_appeals=all_appeals,
-        appeal_stats=appeal_stats,
-        leaderboard=leaderboard,
-        submission_stats=submission_stats,
-        current_page=current_page,
-        total_pages=total_pages,
-        page_numbers=page_numbers,
-        submission_search_q=submission_search_q,
-        submissions_per_page=SUBMISSIONS_PER_PAGE,
-        matches=matches,
-        matches_total=matches_total,
-        matches_mine=matches_mine,
-        matches_per_page=MATCHES_PER_PAGE,
-        judge_rules=judge_rules,
-        agent_judge_api_key_set=agent_judge_api_key_set,
-        aj_endpoints=aj_endpoints,
-        quality_gate_endpoints=quality_gate_endpoints,
-        agent_judge_ready=agent_judge_ready,
-        quality_gate_ready=quality_gate_ready,
-        is_reverse_judge=is_reverse_judge,
-        is_ai_judge=is_ai_judge,
-        batch_classes=batch_classes,
-        batch_default_template=BATCH_DEFAULT_TEMPLATE,
-        submission_method=submission_method,
-        git_repo_url=git_repo_url,
-        submit_block_reason=submit_block_reason,
+    return {
+        'user': user,
+        'is_admin': is_admin,
+        'competition': comp,
+        'files': files,
+        'tab': tab,
+        'rendered_description': rendered_description,
+        'user_submissions': user_submissions,
+        'submit_quota': submit_quota,
+        'all_submissions': all_submissions,
+        'all_appeals': all_appeals,
+        'appeal_stats': appeal_stats,
+        'leaderboard': leaderboard,
+        'submission_stats': submission_stats,
+        'current_page': current_page,
+        'total_pages': total_pages,
+        'page_numbers': page_numbers,
+        'submission_search_q': submission_search_q,
+        'submissions_per_page': SUBMISSIONS_PER_PAGE,
+        'matches': matches,
+        'matches_total': matches_total,
+        'matches_mine': matches_mine,
+        'matches_per_page': MATCHES_PER_PAGE,
+        'judge_rules': judge_rules,
+        'agent_judge_api_key_set': agent_judge_api_key_set,
+        'aj_endpoints': aj_endpoints,
+        'quality_gate_endpoints': quality_gate_endpoints,
+        'agent_judge_ready': agent_judge_ready,
+        'quality_gate_ready': quality_gate_ready,
+        'is_reverse_judge': is_reverse_judge,
+        'is_ai_judge': is_ai_judge,
+        'batch_classes': batch_classes,
+        'batch_default_template': BATCH_DEFAULT_TEMPLATE,
+        'submission_method': submission_method,
+        'git_repo_url': git_repo_url,
+        'submit_block_reason': submit_block_reason,
+    }
+
+
+def _ranking_navigation_payload(state, is_admin):
+    scoring_mode = _normalize_scoring_mode((state or {}).get('scoring_mode'))
+    is_ai_judge = scoring_mode in ('agent_judge', 'reverse_judge')
+    counts = (state or {}).get('counts') or {}
+    return {
+        'competition_id': int((state or {}).get('competition_id') or 0),
+        'scoring_mode': scoring_mode,
+        'is_admin': bool(is_admin),
+        'is_active': int((state or {}).get('is_active') or 0) == 1,
+        'permissions': {
+            'description': True,
+            'submit': True,
+            'leaderboard': True,
+            'matches': scoring_mode == 'elo',
+            'all_submissions': bool(is_admin),
+            'appeals': bool(is_admin and scoring_mode == 'agent_judge'),
+            'batch_eval': bool(is_admin and is_ai_judge),
+            'edit': bool(is_admin),
+        },
+        'counts': {
+            'submit': None if is_admin else (state or {}).get('quota'),
+            'leaderboard': int(counts.get('leaderboard') or 0),
+            'matches': int(counts.get('matches') or 0),
+            'all_submissions': (
+                int(counts.get('all_submissions') or 0) if is_admin else None
+            ),
+            'appeals': int(counts.get('appeals') or 0) if is_admin else None,
+            'attachments': int(counts.get('attachments') or 0),
+        },
+    }
+
+
+@ranking_bp.route('/<int:competition_id>/', methods=['GET'])
+def ranking_detail(competition_id):
+    user, resp = _require_user()
+    if resp is not None:
+        return resp
+    fragment_requested = str(request.args.get('fragment') or '').strip() == '1'
+    # revision 快照必须早于 competition 与 tab 内容读取：并发写入时允许
+    # “新内容 + 旧 revision”（下轮仍会检测），禁止“旧内容 + 新 revision”。
+    global_state = _get_ranking_navigation_state_cached(competition_id)
+    if not global_state:
+        if fragment_requested:
+            return jsonify(success=False, message='比赛不存在或已被删除'), 404
+        flash('比赛不存在或已被删除', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+    comp = get_competition(competition_id)
+    if not comp:
+        if fragment_requested:
+            return jsonify(success=False, message='比赛不存在或已被删除'), 404
+        flash('比赛不存在或已被删除', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+    is_admin = user.get('is_admin') == 1
+    if not is_admin and comp.get('is_active') != 1:
+        if fragment_requested:
+            return jsonify(success=False, message='该比赛未开放'), 403
+        flash('该比赛未开放', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+
+    state = _get_ranking_navigation_state_for_request(
+        comp,
+        user,
+        is_admin,
+        state=global_state,
+    )
+    if not state:
+        if fragment_requested:
+            return jsonify(success=False, message='比赛不存在或已被删除'), 404
+        flash('比赛不存在或已被删除', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+    if not is_admin and state.get('is_active') != 1:
+        if fragment_requested:
+            return jsonify(success=False, message='该比赛未开放'), 403
+        flash('该比赛未开放', 'warning')
+        return redirect(url_for('ranking.ranking_list'))
+
+    # 先固定响应携带的 revision，再读取 tab 内容。这样并发写入最多得到
+    # “较新 HTML + 较旧 revision”，下一轮轮询仍会再次检测；不能反过来把
+    # 较旧 HTML 标成最新 revision 而永久漏掉刷新。
+    context = _build_ranking_detail_context(
+        competition_id, user, comp, request.args,
+    )
+    navigation = _ranking_navigation_payload(state, is_admin)
+    context['navigation'] = navigation
+    context['revision'] = state['revision']
+
+    if fragment_requested:
+        return jsonify(
+            success=True,
+            tab=context['tab'],
+            html=render_template('ranking/components/detail_panel.html', **context),
+            revision=state['revision'],
+            navigation=navigation,
+        )
+    return render_template('ranking/detail.html', **context)
+
+
+@ranking_bp.route('/<int:competition_id>/navigation-state', methods=['GET'])
+def ranking_navigation_state(competition_id):
+    user, resp = _require_user()
+    if resp is not None:
+        return resp
+    is_admin = user.get('is_admin') == 1
+    comp = get_competition(competition_id)
+    if not comp:
+        return jsonify(success=False, message='比赛不存在或已被删除'), 404
+    if not is_admin and comp.get('is_active') != 1:
+        return jsonify(success=False, message='该比赛未开放'), 403
+    state = _get_ranking_navigation_state_for_request(
+        comp,
+        user,
+        is_admin,
+    )
+    if not state:
+        return jsonify(success=False, message='比赛不存在或已被删除'), 404
+    if not is_admin and state.get('is_active') != 1:
+        return jsonify(success=False, message='该比赛未开放'), 403
+    return jsonify(
+        success=True,
+        revision=state['revision'],
+        navigation=_ranking_navigation_payload(state, is_admin),
     )
 
 
@@ -1151,7 +1406,7 @@ def ranking_match_details(competition_id, match_id):
 @ranking_bp.route('/<int:competition_id>/match/<int:match_id>/delete', methods=['POST'])
 def ranking_delete_match(competition_id, match_id):
     """管理员删除某场 ELO 对战；该对战导致的双方分数变动从当前 rating 里"反加回去"，
-    elo_match_count 也各减 1。winner == 0（评测失败）的对战只删行，不动分数。"""
+    elo_match_count 也各减 1。winner == -1（评测失败）的对战只删行，不动分数。"""
     wants_json = (
         request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         or 'application/json' in (request.headers.get('Accept') or '')
@@ -1177,7 +1432,9 @@ def ranking_delete_match(competition_id, match_id):
 
     _invalidate_competition_match_caches(competition_id, match_id=match_id)
 
-    if int(result.get('winner') or 0) in (1, 2):
+    raw_winner = result.get('winner')
+    winner = int(raw_winner) if raw_winner is not None else -1
+    if winner in (0, 1, 2):
         msg = (
             '已删除对战 #{} ：A 分数 {:+.2f}，B 分数 {:+.2f}，'
             '已从当前 ELO 中撤销该变化，并把双方对战次数各减 1。'.format(
@@ -1192,7 +1449,7 @@ def ranking_delete_match(competition_id, match_id):
     if wants_json:
         return jsonify({
             'success': True,
-            'winner': int(result.get('winner') or 0),
+            'winner': winner,
             'delta_a': float(result.get('delta_a') or 0),
             'delta_b': float(result.get('delta_b') or 0),
             'message': msg,
@@ -1461,8 +1718,11 @@ def ranking_matches_json(competition_id):
     requested_page = max(1, request.args.get('page', 1, type=int))
     matches_mine = str(request.args.get('mine') or '').strip() in ('1', 'true', 'on', 'yes')
     username_filter = user.get('username') if matches_mine else None
-    matches, current_page, matches_total = fetch_competition_matches_cached(
-        competition_id, requested_page, MATCHES_PER_PAGE, username=username_filter,
+    matches, current_page, matches_total = list_competition_matches(
+        competition_id,
+        page=requested_page,
+        per_page=MATCHES_PER_PAGE,
+        username=username_filter,
     )
     total_pages = max(1, (matches_total + MATCHES_PER_PAGE - 1) // MATCHES_PER_PAGE)
     page_numbers = _page_window(current_page, total_pages)

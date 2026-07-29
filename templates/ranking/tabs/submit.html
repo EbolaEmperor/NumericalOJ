@@ -8,8 +8,11 @@
       {% set is_agent_judge = (scoring_mode == 'agent_judge') %}
       {% set is_reverse_judge = (scoring_mode == 'reverse_judge') %}
 
+      <section class="ranking-v2-tab ranking-v2-submit"
+               id="rankingSubmitTab"
+               data-ranking-tab-panel="submit">
       {% if submit_quota %}
-      <div class="rank-quota mb-4">
+      <div class="rank-quota">
         <span>本轮可提交 <strong>{{ submit_quota.remaining }}</strong> / {{ submit_quota.limit }} 次</span>
         <span class="rank-quota-sep">·</span>
         <span>每 48 小时刷新</span>
@@ -25,60 +28,6 @@
       {% else %}
       {% if (is_agent_judge and submission_method == 'git') or is_reverse_judge %}
         {# ===== Git 提交方式（扁平 / 无阴影 / 克制配色） ===== #}
-        <style>
-          .gitsub{--gs-ink:#15171c;--gs-muted:#6b7280;--gs-faint:#9aa1ab;--gs-line:#e7e9ec;
-                  --gs-surf:#fbfbfc;--gs-ok:#1d7a55;--gs-no:#b04438;
-                  --gs-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-                  border:1px solid var(--gs-line);border-radius:12px;padding:22px 22px 24px;
-                  margin-bottom:1.5rem;background:#fff;}
-          .gitsub-head{display:flex;align-items:baseline;gap:10px;margin-bottom:16px;}
-          .gitsub-head h3{font-size:1.02rem;font-weight:650;color:var(--gs-ink);margin:0;letter-spacing:.01em;}
-          .gitsub-head span{font-size:.78rem;color:var(--gs-faint);}
-          .gitsub-repo{display:flex;align-items:center;gap:12px;border:1px solid var(--gs-line);
-                       border-radius:9px;background:var(--gs-surf);padding:11px 13px;}
-          .gitsub-repo .k{font-size:.66rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
-                          color:var(--gs-faint);white-space:nowrap;}
-          .gitsub-repo .u{flex:1;font-family:var(--gs-mono);font-size:.86rem;color:var(--gs-ink);
-                          word-break:break-all;line-height:1.4;}
-          .gitsub-copy{border:none;background:transparent;color:var(--gs-faint);cursor:pointer;
-                       padding:4px 6px;border-radius:6px;transition:color .15s,background .15s;font-size:.85rem;}
-          .gitsub-copy:hover{color:var(--gs-ink);background:#eef0f2;}
-          .gitsub-copy.ok{color:var(--gs-ok);}
-          .gitsub-actions{margin-top:16px;}
-          .gitsub-btn{display:inline-flex;align-items:center;gap:8px;font-size:.9rem;font-weight:560;
-                      border-radius:9px;padding:9px 20px;cursor:pointer;transition:all .15s;border:1px solid transparent;}
-          .gitsub-btn:disabled{cursor:default;opacity:.55;}
-          .gitsub-btn-ghost{background:#fff;border-color:var(--gs-ink);color:var(--gs-ink);}
-          .gitsub-btn-ghost:not(:disabled):hover{background:var(--gs-ink);color:#fff;}
-          .gitsub-btn-solid{background:var(--gs-ink);color:#fff;}
-          .gitsub-btn-solid:not(:disabled):hover{background:#000;}
-          .gitsub-result{margin-top:18px;border-top:1px solid var(--gs-line);padding-top:18px;
-                         animation:gitsubin .28s ease both;}
-          @keyframes gitsubin{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
-          .gitsub-status{display:flex;align-items:center;gap:8px;font-size:.9rem;font-weight:600;margin-bottom:14px;}
-          .gitsub-status .dot{width:8px;height:8px;border-radius:50%;flex:none;}
-          .gitsub-status.ok{color:var(--gs-ok);} .gitsub-status.ok .dot{background:var(--gs-ok);}
-          .gitsub-status.no{color:var(--gs-no);} .gitsub-status.no .dot{background:var(--gs-no);}
-          .gitsub-commit{display:grid;grid-template-columns:auto 1fr;gap:7px 16px;align-items:baseline;}
-          .gitsub-commit .ck{font-size:.66rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
-                             color:var(--gs-faint);white-space:nowrap;}
-          .gitsub-commit .cv{font-size:.88rem;color:var(--gs-ink);line-height:1.5;word-break:break-word;}
-          .gitsub-commit .cv.mono{font-family:var(--gs-mono);font-size:.82rem;}
-          .gitsub-commit .subj{font-weight:600;}
-          .gitsub-commit .body{white-space:pre-wrap;color:var(--gs-muted);font-size:.82rem;line-height:1.6;
-                               border-left:2px solid var(--gs-line);padding-left:12px;margin-top:2px;}
-          .gitsub-confirm{margin-top:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
-          .gitsub-confirm-hint{font-size:.84rem;color:var(--gs-muted);}
-          .gitsub-confirm-hint.ok{color:var(--gs-ok);} .gitsub-confirm-hint.no{color:var(--gs-no);}
-          .gitsub-note{margin-top:16px;font-size:.86rem;color:var(--gs-muted);}
-          .rj-submit-controls{display:flex;align-items:center;gap:.9rem;flex-wrap:wrap;margin-bottom:.85rem;position:relative;z-index:3;}
-          .rj-submit-switch{display:flex;align-items:center;gap:.7rem;margin:0;}
-          .rj-submit-switch label{font-size:.82rem;color:var(--gs-muted);margin:0;}
-          .rj-submit-switch .rk-choice{width:190px;}
-          .rj-submit-switch.rj-node-switch .rk-choice{width:min(390px, calc(100vw - 2rem));}
-          .rj-submit-switch.rj-node-switch{align-items:center;flex-wrap:wrap;}
-          .rj-node-meta{display:block;color:#8a929b;font-size:.72rem;font-weight:500;margin-top:.12rem;}
-        </style>
         {% if is_reverse_judge %}
         {% macro rj_endpoint_label(ep) -%}
           {%- set _h = ep.harness or 'claude_code' -%}
@@ -201,7 +150,7 @@
               action="{{ url_for('ranking.ranking_submit', competition_id=competition.id) }}"
               id="rankingSubmitForm"
               class="submit-form mb-4"
-              style="display:none;">
+              hidden>
           <div class="row g-3">
             <div class="col-md-12">
               <label class="file-drop" data-kind="code">
@@ -234,10 +183,12 @@
           var git = document.getElementById('reverseGitPanel');
           var zip = document.getElementById('rankingSubmitForm');
           if (!sel || !git || !zip) return;
+          if (sel.getAttribute('data-ranking-initialized') === 'true') return;
+          sel.setAttribute('data-ranking-initialized', 'true');
           function apply() {
             var isZip = sel.value === 'zip';
-            git.style.display = isZip ? 'none' : '';
-            zip.style.display = isZip ? '' : 'none';
+            git.hidden = isZip;
+            zip.hidden = !isZip;
           }
           sel.addEventListener('change', apply);
           apply();
@@ -246,8 +197,11 @@
         {% endif %}
         <script>
         (function () {
-          var root = document.querySelector('.gitsub');
+          var tabRoot = document.getElementById('rankingSubmitTab');
+          var root = tabRoot && tabRoot.querySelector('.gitsub');
           if (!root) return;
+          if (root.getAttribute('data-ranking-initialized') === 'true') return;
+          root.setAttribute('data-ranking-initialized', 'true');
           var checkUrl = root.getAttribute('data-check-url');
           var submitUrl = root.getAttribute('data-submit-url');
           var remainAttr = root.getAttribute('data-remaining');
@@ -380,7 +334,10 @@
                 submitLabel.textContent='已提交'; checkBtn.disabled=true;
                 confirmHint.className='gitsub-confirm-hint ok';
                 confirmHint.textContent=(d.message||'已提交，正在评测')+'，即将刷新…';
-                setTimeout(function(){ window.location.href=window.location.pathname+'?tab=submit'; },1600);
+                setTimeout(function(){
+                  window.dispatchEvent(new CustomEvent('ranking:allow-unload'));
+                  window.location.href=window.location.pathname+'?tab=submit';
+                },1600);
               })
               .catch(function(){ submitSpin.hidden=true; submitLabel.textContent='确认提交'; submitBtn.disabled=false;
                 confirmHint.className='gitsub-confirm-hint no'; confirmHint.textContent='网络错误，请重试'; });
@@ -454,55 +411,60 @@
       {% set my_total = user_submissions|length %}
       {% set _hns = namespace(best=-1.0, has=false) %}
       {% for s in user_submissions %}
-        {% if s.score is not none %}
+        {% set history_score = s.elo_rating if is_elo else s.score %}
+        {% if history_score is not none %}
           {% set _hns.has = true %}
-          {% if s.score > _hns.best %}{% set _hns.best = s.score %}{% endif %}
+          {% if history_score > _hns.best %}{% set _hns.best = history_score %}{% endif %}
         {% endif %}
       {% endfor %}
 
-      <div class="my-history-header mt-4 mb-2">
-        <div><i class="fas fa-history me-2 text-muted"></i><strong>我的历史提交</strong></div>
-        {% if user_submissions %}
-        <div class="history-stats">
-          <span class="history-stat">
-            <span class="history-stat-val">{{ my_total }}</span><span class="history-stat-label">次</span>
-          </span>
-          <span class="history-stat">
-            <span class="history-stat-val">{% if _hns.has %}{% if is_elo %}{{ '%.0f'|format(_hns.best) }}{% else %}{{ '%.2f'|format(_hns.best) }}{% endif %}{% else %}—{% endif %}</span><span class="history-stat-label">{% if is_elo %}最高 ELO{% else %}最高分{% endif %}</span>
-          </span>
+      <div data-ranking-submission-history>
+        <div class="my-history-header">
+          <strong>我的历史提交</strong>
+          {% if user_submissions %}
+          <div class="history-stats">
+            <span class="history-stat">
+              <span class="history-stat-val">{{ my_total }}</span><span class="history-stat-label">次</span>
+            </span>
+            <span class="history-stat">
+              <span class="history-stat-val">{% if _hns.has %}{% if is_elo %}{{ '%.0f'|format(_hns.best) }}{% else %}{{ '%.2f'|format(_hns.best) }}{% endif %}{% else %}—{% endif %}</span><span class="history-stat-label">{% if is_elo %}最高 ELO{% else %}最高分{% endif %}</span>
+            </span>
+          </div>
+          {% endif %}
         </div>
+
+        {% if not user_submissions %}
+          <div class="ranking-v2-empty submissions-empty">
+            <i class="fas fa-inbox" aria-hidden="true"></i>
+            <strong>暂无提交</strong>
+            <span>提交作品后，这里会显示每次评测结果。</span>
+          </div>
+        {% else %}
+          <div class="aj-subs">
+            {% for s in user_submissions %}
+              {{ render_sub_card(s, competition, is_elo, is_agent_judge, max_score, false, false, is_reverse_judge) }}
+            {% endfor %}
+          </div>
         {% endif %}
       </div>
 
-      {% if not user_submissions %}
-        <div class="card submissions-card">
-          <div class="submissions-empty">
-            <i class="fas fa-inbox submissions-empty-icon"></i>
-            <div class="mt-3 fw-semibold">暂无提交</div>
-            <div class="text-muted small mt-1">提交作品后，这里会显示每次评测结果。</div>
-          </div>
-        </div>
-      {% else %}
-        <div class="aj-subs">
-          {% for s in user_submissions %}
-            {{ render_sub_card(s, competition, is_elo, is_agent_judge, max_score, false, false, is_reverse_judge) }}
-          {% endfor %}
-        </div>
-      {% endif %}
-
       <script>
       (function () {
+        var root = document.getElementById('rankingSubmitTab');
+        if (!root || root.getAttribute('data-ranking-file-init') === 'true') return;
+        root.setAttribute('data-ranking-file-init', 'true');
+        if (window.ChoicePicker) window.ChoicePicker.init(root);
         function fmt(bytes) {
           if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
           if (bytes >= 1024) return Math.floor(bytes / 1024) + ' KB';
           return bytes + ' B';
         }
-        var drops = document.querySelectorAll('.file-drop');
+        var drops = root.querySelectorAll('.file-drop');
         function updateSubmit() {
           var btn = document.getElementById('rankingSubmitBtn');
           var hint = document.getElementById('rankingSubmitHint');
           if (!btn) return;
-          var inputs = document.querySelectorAll('.file-drop input[type=file]');
+          var inputs = root.querySelectorAll('.file-drop input[type=file]');
           var filesOk = Array.prototype.every.call(inputs, function (i) {
             return i.files && i.files.length > 0;
           });
@@ -580,4 +542,5 @@
         updateSubmit();
       })();
       </script>
+      </section>
     {% endif %}
