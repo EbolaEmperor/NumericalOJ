@@ -17,7 +17,6 @@ import time
 import uuid
 from datetime import datetime
 
-import markdown
 from flask import (
     Blueprint, Response, abort, current_app, flash, jsonify, redirect,
     render_template, request, send_file, session, stream_with_context, url_for,
@@ -28,7 +27,7 @@ import config as _cfg
 from oj_modules.db_services import (
     get_all_classes, get_user_by_username, get_users_in_classes,
 )
-from oj_modules.markdown_utils import sanitize_html
+from oj_modules.markdown_utils import render_rich_markdown
 from oj_modules.redis_clients import create_optional_redis_client
 from oj_modules.security_utils import rate_limit_hit
 from oj_modules.ranking_db import (
@@ -938,12 +937,7 @@ def _create_uploaded_ranking_submission(
 
 
 def _render_description(text):
-    if not text:
-        return ''
-    return sanitize_html(markdown.markdown(
-        text,
-        extensions=['extra', 'fenced_code', 'tables'],
-    ))
+    return render_rich_markdown(text)
 
 
 # ---------- 列表页 ----------

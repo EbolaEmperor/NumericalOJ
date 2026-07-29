@@ -2,6 +2,8 @@
 {% block title %}打榜赛 - {{ super() }}{% endblock %}
 
 {% block content %}
+<h1 class="ranking-list-title" id="rankingListTitle">打榜赛</h1>
+
 {% if not competitions %}
   <div class="ranking-empty">
     <i class="fas fa-trophy ranking-empty-icon mb-3"></i>
@@ -153,6 +155,14 @@
 {% endif %}
 
 <style>
+  .ranking-list-title {
+    margin: 0 0 1rem;
+    color: var(--numoj-ink);
+    font-size: 1.35rem;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+
   /* 管理员：右下角创建入口 */
   .ranking-create-fab {
     position: fixed;

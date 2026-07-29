@@ -213,7 +213,10 @@ def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
             "vendor/shiki-markdown/highlighter.js"
         ) < page_template.index("app/markdown-rendering.js")
     assert TEMPLATE.index("app/markdown-rendering.js") < TEMPLATE.index("app/forum.js")
-    assert 'class="problem-content numoj-markdown my-3"' in PROBLEM_TEMPLATE
+    assert (
+        'class="problem-content numoj-markdown '
+        'numoj-problem-code-rendering my-3"'
+    ) in PROBLEM_TEMPLATE
     assert "data-numoj-markdown" in PROBLEM_TEMPLATE
     assert "app/editor-semantic-tokens.js" in MONACO_COMPONENT
     assert "标准编程题由上方 Monaco 组件加载语义客户端" in PROBLEM_TEMPLATE
