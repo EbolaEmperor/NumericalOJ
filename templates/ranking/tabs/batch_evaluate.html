@@ -228,8 +228,45 @@
         var createUrl = wrap.getAttribute('data-create-url');
         var allSubsUrl = wrap.getAttribute('data-all-subs-url');
         var PER_PAGE = 20;
-        var state = { found: [], selected: {}, page: 1, polling: false };
+        var state = { found: [], selected: {}, page: 1, polling: false, disposed: false };
         var $ = function (id) { return wrap.querySelector('#' + id); };
+        var pollTimer = 0;
+        var progressTimer = 0;
+        var probeController = null;
+        var pollController = null;
+        var createController = null;
+        var lifecycleObserver = null;
+
+        function isActive() {
+          return !state.disposed && wrap.isConnected;
+        }
+        function abortRequest(controller) {
+          if (controller) controller.abort();
+        }
+        function dispose() {
+          if (state.disposed) return;
+          state.disposed = true;
+          state.polling = false;
+          window.clearTimeout(pollTimer);
+          window.clearTimeout(progressTimer);
+          pollTimer = 0;
+          progressTimer = 0;
+          abortRequest(probeController);
+          abortRequest(pollController);
+          abortRequest(createController);
+          probeController = null;
+          pollController = null;
+          createController = null;
+          if (lifecycleObserver) lifecycleObserver.disconnect();
+        }
+
+        var panelHost = wrap.closest('[data-ranking-panel-host]');
+        if (window.MutationObserver && panelHost) {
+          lifecycleObserver = new MutationObserver(function () {
+            if (!wrap.isConnected) dispose();
+          });
+          lifecycleObserver.observe(panelHost, {childList: true});
+        }
 
         var goBtn = $('bmGo');
         var tmplEl = $('bmTemplate');
@@ -288,7 +325,9 @@
           ddRoot.classList.add('open');
           if (ddPanel) ddPanel.hidden = false;
           if (ddTrigger) ddTrigger.setAttribute('aria-expanded', 'true');
-          if (ddSearch) window.setTimeout(function () { ddSearch.focus(); }, 0);
+          if (ddSearch) window.setTimeout(function () {
+            if (isActive()) ddSearch.focus();
+          }, 0);
         }
         function ddClose() {
           if (!ddRoot) return;
@@ -494,11 +533,20 @@
           }
         }
         function poll(jobId) {
+          if (!isActive()) {
+            dispose();
+            return;
+          }
+          var controller = new AbortController();
+          pollController = controller;
           fetch(statusUrl + '?job=' + encodeURIComponent(jobId), {
-            credentials: 'same-origin'
+            credentials: 'same-origin',
+            signal: controller.signal,
+            mathCurveLoader: false
           }).then(function (response) {
             return response.json();
           }).then(function (data) {
+            if (!isActive() || pollController !== controller) return;
             if (!data.success) {
               setStatus(data.message || '查询失败');
               goBtn.disabled = false;
@@ -518,7 +566,10 @@
               );
               results.hidden = false;
               wrap.classList.add('has-results');
-              window.setTimeout(function () { progress.hidden = true; }, 600);
+              progressTimer = window.setTimeout(function () {
+                progressTimer = 0;
+                if (isActive()) progress.hidden = true;
+              }, 600);
               goBtn.disabled = false;
               state.polling = false;
             } else {
@@ -532,17 +583,24 @@
                 (data.checked || 0) + (data.total ? ' / ' + data.total : ''),
                 true
               );
-              window.setTimeout(function () { poll(jobId); }, 1200);
+              pollTimer = window.setTimeout(function () {
+                pollTimer = 0;
+                if (isActive()) poll(jobId);
+                else dispose();
+              }, 1200);
             }
-          }).catch(function () {
+          }).catch(function (error) {
+            if (!isActive() || (error && error.name === 'AbortError')) return;
             setStatus('网络错误');
             goBtn.disabled = false;
             state.polling = false;
+          }).finally(function () {
+            if (pollController === controller) pollController = null;
           });
         }
 
         goBtn.addEventListener('click', function () {
-          if (state.polling) return;
+          if (!isActive() || state.polling) return;
           var classes = selectedClasses();
           var template = (tmplEl.value || '').trim();
           if (!classes.length) {
@@ -565,6 +623,8 @@
           goBtn.disabled = true;
           state.polling = true;
           setStatus('提交中', true);
+          var controller = new AbortController();
+          probeController = controller;
           fetch(probeUrl, {
             method: 'POST',
             credentials: 'same-origin',
@@ -572,10 +632,13 @@
               'Content-Type': 'application/json',
               'X-Requested-With': 'XMLHttpRequest'
             },
-            body: JSON.stringify({classes: classes, template: template})
+            body: JSON.stringify({classes: classes, template: template}),
+            signal: controller.signal,
+            mathCurveLoader: false
           }).then(function (response) {
             return response.json();
           }).then(function (data) {
+            if (!isActive() || probeController !== controller) return;
             if (!data.success) {
               setStatus(data.message || '查询失败');
               goBtn.disabled = false;
@@ -583,14 +646,18 @@
               return;
             }
             poll(data.job_id);
-          }).catch(function () {
+          }).catch(function (error) {
+            if (!isActive() || (error && error.name === 'AbortError')) return;
             setStatus('网络错误');
             goBtn.disabled = false;
             state.polling = false;
+          }).finally(function () {
+            if (probeController === controller) probeController = null;
           });
         });
 
         createBtn.addEventListener('click', function () {
+          if (!isActive()) return;
           var usernames = Object.keys(state.selected);
           if (!usernames.length) return;
           if (!endpointReady()) {
@@ -605,6 +672,8 @@
             '</div>';
           var payload = {template: template, usernames: usernames};
           if (endpointEl) payload.agent_endpoint_id = (endpointEl.value || '').trim();
+          var controller = new AbortController();
+          createController = controller;
           fetch(createUrl, {
             method: 'POST',
             credentials: 'same-origin',
@@ -612,10 +681,13 @@
               'Content-Type': 'application/json',
               'X-Requested-With': 'XMLHttpRequest'
             },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+            mathCurveLoader: false
           }).then(function (response) {
             return response.json();
           }).then(function (data) {
+            if (!isActive() || createController !== controller) return;
             if (!data.success) {
               createMsg.innerHTML = '<div class="bm-flash">' +
                 escapeHtml(data.message || '创建失败') + '</div>';
@@ -630,9 +702,12 @@
               escapeHtml(allSubsUrl) + '">所有提交</a></div>';
             state.selected = {};
             renderPage();
-          }).catch(function () {
+          }).catch(function (error) {
+            if (!isActive() || (error && error.name === 'AbortError')) return;
             createMsg.innerHTML = '<div class="bm-flash">网络错误</div>';
             createBtn.disabled = false;
+          }).finally(function () {
+            if (createController === controller) createController = null;
           });
         });
       })();

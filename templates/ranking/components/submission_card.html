@@ -1,6 +1,6 @@
 {# 提交卡片宏：被「我的历史提交」与「所有提交」复用。扁平化设计（无阴影/渐变）。
    参数：s=提交记录, competition, is_elo, is_agent_judge, max_score,
-        show_user=是否显示用户名(管理员视图), show_delete=是否显示删除(管理员视图),
+        show_user=是否显示用户身份, show_delete=是否显示删除(管理员视图),
         is_reverse_judge=是否反向评测 #}
 {% macro render_sub_card(s, competition, is_elo, is_agent_judge, max_score, show_user, show_delete, is_reverse_judge=false) %}
   {% set st = s.status %}
@@ -51,8 +51,18 @@
     <div class="aj-sub-r2">
       <div class="aj-sub-meta">
         <span class="aj-time">{{ s.created_at }}</span>
-        {% if is_reverse_judge and s.agent_endpoint_label %}<span class="aj-chip" title="AI 节点">{{ s.agent_endpoint_label }}</span>{% endif %}
-        {% if s.base_model %}<span class="aj-chip" title="基座模型">{{ s.base_model }}</span>{% endif %}
+        {% if is_reverse_judge and s.agent_endpoint_label %}
+        <span class="aj-card-meta" title="AI 节点：{{ s.agent_endpoint_label }}">
+          <i class="fas fa-robot" aria-hidden="true"></i>
+          <span>{{ s.agent_endpoint_label }}</span>
+        </span>
+        {% endif %}
+        {% if s.base_model %}
+        <span class="aj-card-meta" title="基座模型：{{ s.base_model }}">
+          <i class="fas fa-microchip" aria-hidden="true"></i>
+          <span>{{ s.base_model }}</span>
+        </span>
+        {% endif %}
         {% if s.answer_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}" download title="下载 {{ s.answer_filename }}"><i class="fas fa-file-code"></i>答案</a>{% endif %}
         {% if s.code_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" download title="下载 {{ s.code_filename }}"><i class="fas fa-file-archive"></i>代码</a>{% endif %}
       </div>

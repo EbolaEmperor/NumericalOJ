@@ -509,7 +509,7 @@
   padding: 7px 10px;
   border: 1px solid var(--rkv2-line);
   border-left: 3px solid var(--rkv2-ink-4);
-  border-radius: 0;
+  border-radius: 5px;
   background: #fff;
   box-shadow: none;
   animation: rkv2-card-in 180ms ease both;
@@ -569,11 +569,29 @@
 }
 
 .ranking-v2-detail .aj-sub-ava {
+  --avatar-cell: var(--rkv2-ink);
+  display: grid;
   width: 28px;
   height: 28px;
-  flex-basis: 28px;
+  flex: 0 0 28px;
+  overflow: hidden;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  place-items: stretch;
+  padding: 2px;
+  border: 1px solid var(--rkv2-line);
   border-radius: 7px;
   background: #fff;
+}
+
+.ranking-v2-detail .aj-sub-ava > span {
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+}
+
+.ranking-v2-detail .aj-sub-ava > span.is-filled {
+  background: var(--avatar-cell);
 }
 
 .ranking-v2-detail .aj-sub-uname {
@@ -690,6 +708,27 @@
   border-radius: 4px;
   background: #fff;
   color: var(--rkv2-ink-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-v2-detail .aj-card-meta {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 220px;
+  align-items: center;
+  gap: 4px;
+  color: var(--rkv2-ink-3);
+}
+
+.ranking-v2-detail .aj-card-meta > i {
+  flex: 0 0 auto;
+  color: var(--rkv2-ink-4);
+  font-size: 8px;
+}
+
+.ranking-v2-detail .aj-card-meta > span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1482,9 +1521,10 @@
 }
 
 .ranking-v2-detail .bm-opt {
+  position: relative;
   display: grid;
   min-height: 46px;
-  grid-template-columns: 0 30px minmax(0, 1fr) 22px;
+  grid-template-columns: 30px minmax(0, 1fr) 22px;
   align-items: center;
   gap: 8px;
   margin: 0;
@@ -1726,7 +1766,7 @@
 }
 
 .ranking-v2-detail .bm-results {
-  margin-top: 24px;
+  margin-top: 18px;
 }
 
 .ranking-v2-detail .bm-results-bar {
@@ -1779,10 +1819,10 @@
   position: relative;
   display: grid;
   min-width: 0;
-  min-height: 116px;
-  align-content: space-between;
-  gap: 12px;
-  padding: 12px;
+  min-height: 88px;
+  align-content: start;
+  gap: 7px;
+  padding: 10px;
   border: 1px solid var(--rkv2-line);
   border-radius: 7px;
   outline: 0;

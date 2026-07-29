@@ -431,18 +431,15 @@ def test_ranking_list_uses_admin_create_fab_without_intro_hero():
     ranking_list = (TEMPLATES / "ranking" / "list.html").read_text(
         encoding="utf-8"
     )
-    ranking_list_css = (
-        ROOT / "static" / "app" / "ranking" / "list-v2.css"
-    ).read_text(encoding="utf-8")
 
     assert "围绕开放赛题提交作品" not in ranking_list
     assert "ranking-hero" not in ranking_list
     assert 'class="ranking-create-fab"' in ranking_list
     assert 'aria-label="创建打榜赛"' in ranking_list
     assert 'data-bs-target="#newCompetitionModal"' in ranking_list
-    assert ".ranking-create-fab" in ranking_list_css
-    assert "position: fixed;" in ranking_list_css
-    assert "border-radius: 50%;" in ranking_list_css
+    assert ".ranking-create-fab" in ranking_list
+    assert "position: fixed;" in ranking_list
+    assert "border-radius: 50%;" in ranking_list
 
 
 def test_circle_cat_uses_full_height_board_with_right_sidebar_without_frames():

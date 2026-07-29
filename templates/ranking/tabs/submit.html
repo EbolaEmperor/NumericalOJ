@@ -130,7 +130,8 @@
             <div class="gitsub-note">管理员尚未配置 Git 仓库标准命名，暂时无法提交。</div>
           {% else %}
             <div class="gitsub-actions">
-              <button type="button" class="gitsub-btn gitsub-btn-ghost" id="gitsubCheckBtn">
+              <button type="button" class="gitsub-btn gitsub-btn-ghost" id="gitsubCheckBtn"
+                      data-loader-label="正在检查仓库…">
                 <span class="math-curve-loader" data-math-curve-loader data-icon-only="true" data-size="xs" id="gitsubCheckSpin" hidden aria-label="检查中"></span>
                 <span id="gitsubCheckLabel">检查仓库</span>
               </button>
@@ -442,7 +443,7 @@
         {% else %}
           <div class="aj-subs">
             {% for s in user_submissions %}
-              {{ render_sub_card(s, competition, is_elo, is_agent_judge, max_score, false, false, is_reverse_judge) }}
+              {{ render_sub_card(s, competition, is_elo, is_agent_judge, max_score, true, false, is_reverse_judge) }}
             {% endfor %}
           </div>
         {% endif %}

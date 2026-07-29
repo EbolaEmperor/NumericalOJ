@@ -12,21 +12,19 @@ def _read(path):
     return path.read_text(encoding="utf-8")
 
 
-def test_ranking_list_uses_v2_heading_and_responsive_grid():
+def test_ranking_list_preserves_original_card_structure_and_visual_rules():
     template = _read(TEMPLATES / "list.html")
-    stylesheet = _read(STATIC / "list-v2.css")
 
-    assert "RANKING · LIST" in template
-    assert 'id="rankingListTitle"' in template
-    assert "COMPETITIONS" in template
-    assert "list-v2.css" in template
-    assert 'class="ranking-grid"' in template
-    assert "row g-3 ranking-grid" not in template
-
-    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in stylesheet
-    assert "@media (max-width: 1050px)" in stylesheet
-    assert "@media (max-width: 760px)" in stylesheet
-    assert "@media (prefers-reduced-motion: reduce)" in stylesheet
+    assert "RANKING · LIST" not in template
+    assert "list-v2.css" not in template
+    assert 'class="row g-3 ranking-grid"' in template
+    assert 'class="col-12 col-md-6 col-lg-4"' in template
+    assert "fa-user-friends" in template
+    assert "fa-paper-plane" in template
+    assert "fa-chess-knight" in template
+    assert "border-radius: 0.85rem" in template
+    assert "border-color: #f5c518" in template
+    assert "border-radius: 50%" in template
 
 
 def test_ranking_list_keeps_admin_create_and_copy_actions():
@@ -75,8 +73,31 @@ def test_ranking_detail_uses_v2_shell_and_real_navigation_state():
     assert "ranking:query-commit" in script
     assert "data-ranking-query-generation" in script
     assert "panelOwnsLocation(refreshNode, refreshUrl)" in script
-    assert "data-selected-count" in script
     assert "setRailBackgroundInert" in script
+    assert '[data-ranking-panel][data-ranking-tab="batch_eval"]' not in script
+    assert "cache.delete('batch_eval')" in script
+    assert "当前页面有尚未保存的修改，确认离开吗？" in script
+
+
+def test_ranking_detail_function_rail_matches_global_sidebar_type_scale():
+    stylesheet = _read(STATIC / "detail-v2.css")
+
+    assert "font: 500 9.5px/1.5 var(--ranking-v2-mono)" in stylesheet
+    assert "font-size: 13px" in stylesheet
+    assert "font: 10.5px/1 var(--ranking-v2-mono)" in stylesheet
+    assert "font-size: 11.5px" in stylesheet
+
+
+def test_ranking_batch_layout_keeps_options_aligned_and_results_compact():
+    stylesheet = _read(STATIC / "content-v2.css")
+    template = _read(TEMPLATES / "tabs" / "batch_evaluate.html")
+
+    assert "grid-template-columns: 30px minmax(0, 1fr) 22px" in stylesheet
+    assert "min-height: 88px" in stylesheet
+    assert "align-content: start" in stylesheet
+    assert "wrap.isConnected" in template
+    assert "new AbortController()" in template
+    assert template.count("mathCurveLoader: false") == 3
 
 
 def test_ranking_v2_tabs_keep_fragment_refresh_boundaries():
