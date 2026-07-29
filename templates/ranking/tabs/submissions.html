@@ -54,10 +54,6 @@
         </div>
       </div>
 
-      <div class="ranking-v2-update-slot"
-           data-ranking-update-slot="all_submissions"
-           hidden></div>
-
       <div class="modal fade rk-bulk-modal" id="rankingBulkRejudgeModal" tabindex="-1" aria-labelledby="rankingBulkRejudgeLabel" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
           <div class="modal-content"
@@ -282,6 +278,7 @@
           if (!modal) return;
           if (modal.getAttribute('data-ranking-initialized') === 'true') return;
           modal.setAttribute('data-ranking-initialized', 'true');
+          var ownerPanel = modal.closest('[data-ranking-panel]');
           var content = modal.querySelector('.modal-content');
           var filterUrl = content.getAttribute('data-filter-url');
           var startUrl = content.getAttribute('data-start-url');
@@ -300,7 +297,36 @@
           var progressBar = document.getElementById('rkBulkProgressBar');
           var progressText = document.getElementById('rkBulkProgressText');
           var timer = null;
-          var state = { rows: [], selected: new Set(), maxSelected: 500, tooMany: false, running: false, jobId: null };
+          var state = {
+            rows: [],
+            selected: new Set(),
+            maxSelected: 500,
+            tooMany: false,
+            running: false,
+            busy: false,
+            jobId: null
+          };
+
+          function syncRefreshBlock() {
+            if (!ownerPanel) return;
+            var blocked = state.running || state.busy || modal.classList.contains('show');
+            var wasBlocked = ownerPanel.hasAttribute('data-ranking-refresh-blocked');
+            if (blocked) {
+              ownerPanel.setAttribute('data-ranking-refresh-blocked', '');
+              return;
+            }
+            ownerPanel.removeAttribute('data-ranking-refresh-blocked');
+            if (wasBlocked) {
+              window.dispatchEvent(new CustomEvent('ranking:refresh-resume', {
+                detail: { panel: ownerPanel }
+              }));
+            }
+          }
+
+          modal.addEventListener('show.bs.modal', function () {
+            if (ownerPanel) ownerPanel.setAttribute('data-ranking-refresh-blocked', '');
+          });
+          modal.addEventListener('hidden.bs.modal', syncRefreshBlock);
 
           var statusLabel = {
             Accepted: '通过', Active: '对战中', Retired: '已退役',
@@ -400,6 +426,7 @@
                   if (typeof window.__rankingReloadSubmissions === 'function') {
                     window.__rankingReloadSubmissions();
                   }
+                  syncRefreshBlock();
                 }
               })
               .catch(function () {});
@@ -424,11 +451,14 @@
           filterBtn.addEventListener('click', function () {
             var payload = filterPayload();
             if (payload.start && payload.end && payload.start > payload.end) {
-              window.alert('起始时间不能晚于结束时间');
+              summary.textContent = '起始时间不能晚于结束时间';
+              startInput.focus();
               return;
             }
             filterBtn.disabled = true;
             startBtn.disabled = true;
+            state.busy = true;
+            syncRefreshBlock();
             MathCurveLoader.update(summary, '筛选中…', {size: 'sm'});
             fetch(filterUrl, {
               method: 'POST',
@@ -460,14 +490,18 @@
               .catch(function () {
                 filterBtn.disabled = false;
                 summary.textContent = '筛选请求失败';
+              })
+              .finally(function () {
+                state.busy = false;
+                syncRefreshBlock();
               });
           });
           startBtn.addEventListener('click', function () {
             var ids = Array.from(state.selected);
             if (!ids.length || ids.length > state.maxSelected) return;
-            var ok = window.confirm('将在原提交记录上重测 ' + ids.length + ' 条提交，入队间隔为 2 秒。确认开始吗？');
-            if (!ok) return;
             state.running = true;
+            state.busy = true;
+            syncRefreshBlock();
             filterBtn.disabled = true;
             startBtn.disabled = true;
             master.disabled = true;
@@ -499,6 +533,10 @@
                 filterBtn.disabled = false;
                 progressText.textContent = '启动请求失败';
                 updateSummary();
+              })
+              .finally(function () {
+                state.busy = false;
+                syncRefreshBlock();
               });
           });
         })();

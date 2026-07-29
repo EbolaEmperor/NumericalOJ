@@ -20,6 +20,7 @@
             </a>
           </nav>
           <div class="matches-head-actions">
+            <span class="matches-action-error" id="matchesActionError" role="alert" hidden></span>
             <span class="matches-meta">
               {% if competition.elo_running == 1 %}
                 <span class="matches-meta-dot is-live"></span>
@@ -62,7 +63,7 @@
               <div id="matchDetailLoading" class="text-center text-muted py-4">
                 <span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">加载中…</span></span>
               </div>
-              <div id="matchDetailError" class="alert alert-danger d-none"></div>
+              <div id="matchDetailError" class="match-detail-error d-none" role="alert"></div>
               <div id="matchDetailContent" class="d-none">
                 <div class="text-muted small mb-2" id="matchDetailMeta"></div>
                 <h6 class="mb-2">评测脚本给出的胜负理由</h6>
@@ -89,6 +90,7 @@
           var contentEl = document.getElementById('matchDetailContent');
           var metaEl = document.getElementById('matchDetailMeta');
           var verdictEl = document.getElementById('matchDetailVerdict');
+          var actionErrorEl = document.getElementById('matchesActionError');
           var ownerPanel = card.closest('[data-ranking-panel]');
           var matchesRequestToken = 0;
           var queryController = null;
@@ -238,17 +240,32 @@
             var msg = btn.getAttribute('data-confirm') || ('确认删除对战 #' + btn.getAttribute('data-match-id') + '？');
             if (!window.confirm(msg)) return;
             var url = btn.getAttribute('data-delete-url');
+            if (actionErrorEl) {
+              actionErrorEl.hidden = true;
+              actionErrorEl.textContent = '';
+            }
             btn.disabled = true;
             fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
               .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
               .then(function (res) {
                 if (!res.ok || !res.j || !res.j.success) {
-                  window.alert((res.j && res.j.message) || '删除失败'); btn.disabled = false; return;
+                  if (actionErrorEl) {
+                    actionErrorEl.textContent = (res.j && res.j.message) || '删除失败';
+                    actionErrorEl.hidden = false;
+                  }
+                  btn.disabled = false;
+                  return;
                 }
                 var page = parseInt(card && card.getAttribute('data-current-page'), 10) || 1;
                 refreshMatches(page);
               })
-              .catch(function (e) { window.alert('网络错误：' + (e && e.message || e)); btn.disabled = false; });
+              .catch(function (e) {
+                if (actionErrorEl) {
+                  actionErrorEl.textContent = '网络错误：' + (e && e.message || e);
+                  actionErrorEl.hidden = false;
+                }
+                btn.disabled = false;
+              });
           }
 
           // 事件委托：AJAX 局部刷新后，新行无需重新绑定监听

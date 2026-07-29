@@ -79,6 +79,17 @@ def test_forum_has_only_the_confirmed_filters_and_no_role_labels():
         assert removed_label not in JAVASCRIPT
 
 
+def test_forum_scope_filters_use_compact_rounded_rectangles():
+    chip_rules = CSS[
+        CSS.index(".forum-chip {") : CSS.index(".forum-chip:hover {")
+    ]
+
+    assert "padding: 5px 8px;" in chip_rules
+    assert "border-radius: 5px;" in chip_rules
+    assert "font-size: 9.5px;" in chip_rules
+    assert "border-radius: 999px;" not in chip_rules
+
+
 def test_browser_writes_use_json_apis_without_html_form_fallback():
     assert "request.form" not in ROUTES
     assert 'methods=["POST"]' not in ROUTES

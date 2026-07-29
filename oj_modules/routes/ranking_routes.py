@@ -982,7 +982,6 @@ def ranking_create():
         max_score=max_score_int,
         created_by=user.get('username'),
     )
-    flash('已创建打榜赛', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=new_id, tab='edit'))
 
 
@@ -997,12 +996,10 @@ def ranking_copy(competition_id):
         flash('比赛不存在', 'danger')
         return redirect(url_for('ranking.ranking_list'))
     try:
-        new_id = copy_competition(competition_id, created_by=user.get('username'))
+        copy_competition(competition_id, created_by=user.get('username'))
     except Exception as e:
         flash(f'复制失败：{e}', 'danger')
         return redirect(url_for('ranking.ranking_list'))
-    flash(f'已复制为非公开副本《{comp.get("title")}（副本）》（#{new_id}），当前为下线状态，'
-          f'可进入编辑后再上线。', 'success')
     return redirect(url_for('ranking.ranking_list'))
 
 
@@ -1448,7 +1445,6 @@ def ranking_delete_match(competition_id, match_id):
             'delta_b': float(result.get('delta_b') or 0),
             'message': msg,
         })
-    flash(msg, 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
 
 
@@ -1479,17 +1475,6 @@ def ranking_elo_rebuild_history(competition_id):
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
 
     _invalidate_competition_match_caches(competition_id)
-
-    flash(
-        '已按时间顺序重放 {n} 场对战，{u} 份提交的 ELO 分数与对战次数已同步到重放终态。'
-        '（初始分 {init:.0f}，K = {k:.0f}）'.format(
-            n=int(result.get('matches_replayed') or 0),
-            u=int(result.get('submissions_updated') or 0),
-            init=float(result.get('initial_rating') or 1500),
-            k=float(result.get('k_factor') or 32),
-        ),
-        'success',
-    )
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
 
 
@@ -1820,7 +1805,6 @@ def ranking_submit(competition_id):
                 set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但反向评测任务入队失败：{e}', 'warning')
-        flash('提交成功，反向评测进行中，可在"我的历史提交"查看四步详情。', 'success')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     base_model_raw = (request.form.get('base_model') or '').strip()
@@ -1873,7 +1857,6 @@ def ranking_submit(competition_id):
                 set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
-        flash('提交成功，Agent 评测进行中，可在"我的历史提交"点击"查看详情"查看实时进展。', 'success')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
     answer_file = request.files.get('answer_file')
@@ -1932,7 +1915,6 @@ def ranking_submit(competition_id):
                 )
             except Exception as e:
                 flash(f'已加入 ELO 池，但即时补战入队失败：{e}', 'warning')
-        flash('提交成功，已加入 ELO 对战池，将与池中其他用户的提交两两 PK。', 'success')
     else:
         if _evaluate_ranking_task is None:
             flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
@@ -1954,7 +1936,6 @@ def ranking_submit(competition_id):
                 except Exception:
                     pass
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
-        flash('提交成功，正在评测中', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
 
@@ -2384,8 +2365,6 @@ def ranking_edit(competition_id):
             '请注意切换前后的提交记录可能因评分语义不同导致排行榜混合显示。',
             'warning',
         )
-    if not format_changed and not mode_changed:
-        flash('已保存比赛信息', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -2401,7 +2380,6 @@ def ranking_reset_submit_limit(competition_id):
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
     reset_competition_limit_window(competition_id)
-    flash('已刷新提交次数', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -2494,7 +2472,6 @@ def ranking_save_agent_config(competition_id):
             if orchestration_raw is not None else None
         ),
     )
-    flash('已保存 Agent 评测设置', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3045,7 +3022,6 @@ def ranking_rejudge_agent(competition_id, submission_id):
             if _wants_json_response():
                 return jsonify(success=False, message=f'重测入队失败：{e}'), 500
             flash(f'重测入队失败：{e}', 'warning')
-    flash('已触发重新评测', 'success')
     if _wants_json_response():
         return jsonify(
             success=True,
@@ -3241,7 +3217,6 @@ def ranking_elo_start(competition_id):
         flash('尚未上传评测脚本，无法启动动态评分', 'danger')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
     set_elo_running(competition_id, True)
-    flash('动态评分已启动，匹配引擎将在下一次 tick 拉起对战。', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3251,7 +3226,6 @@ def ranking_elo_stop(competition_id):
     if resp is not None:
         return resp
     set_elo_running(competition_id, False)
-    flash('动态评分已停止，分数保留；正在排队的对战会被丢弃。', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3260,13 +3234,7 @@ def ranking_elo_reset(competition_id):
     comp, resp = _require_elo_competition(competition_id)
     if resp is not None:
         return resp
-    matches_deleted, submissions_reset = reset_elo_state(competition_id)
-    flash(
-        f'动态评分已重置：清空 {matches_deleted} 场对战历史，'
-        f'{submissions_reset} 份在池提交分数恢复到初始分。'
-        ' 当前为停止状态，需手动启动。',
-        'success',
-    )
+    reset_elo_state(competition_id)
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3277,6 +3245,8 @@ def ranking_delete(competition_id):
         return resp
     comp = get_competition(competition_id)
     if not comp:
+        if _wants_json_response():
+            return jsonify(success=False, message='比赛不存在'), 404
         flash('比赛不存在', 'warning')
         return redirect(url_for('ranking.ranking_list'))
 
@@ -3284,7 +3254,6 @@ def ranking_delete(competition_id):
     # 清理磁盘文件
     comp_dir = competition_dir(competition_id)
     shutil.rmtree(comp_dir, ignore_errors=True)
-    flash('已删除比赛', 'success')
     if _wants_json_response():
         return jsonify(success=True, message='已删除比赛', competition_id=competition_id)
     return redirect(url_for('ranking.ranking_list'))
@@ -3337,7 +3306,6 @@ def ranking_upload_attachment(competition_id):
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
     create_competition_file(competition_id, original_name, target_path, size)
-    flash('已上传附件', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3359,7 +3327,6 @@ def ranking_delete_attachment(competition_id, file_id):
         except Exception:
             pass
     delete_competition_file(file_id)
-    flash('已删除附件', 'success')
     if _wants_json_response():
         return jsonify(success=True, message='已删除附件', competition_id=competition_id, file_id=file_id)
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
@@ -3469,7 +3436,6 @@ def ranking_upload_reference(competition_id):
         except Exception:
             pass
     update_competition_reference_answer(competition_id, target_path, f.filename)
-    flash('已更新标准答案', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3522,7 +3488,6 @@ def ranking_upload_scoring_script(competition_id):
         except Exception:
             pass
     update_competition_scoring_script(competition_id, target_path, f.filename)
-    flash('已更新评测脚本', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3544,8 +3509,6 @@ def ranking_clear_scoring_script(competition_id):
     update_competition_scoring_script(competition_id, None, None)
     if _competition_scoring_mode(comp) in ('absolute', 'elo'):
         flash('已清除评测脚本；当前评分模式需重新上传', 'warning')
-    else:
-        flash('已清除评测脚本', 'success')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
@@ -3670,9 +3633,6 @@ def ranking_delete_submission(competition_id, submission_id):
         shutil.rmtree(target_dir, ignore_errors=True)
     # 删除数据库行
     delete_ranking_submission(submission_id)
-    flash(f'已删除提交 #{submission_id}（用户 {username}）；该用户最高分与排行榜已随之更新。', 'success')
-    for warning in cleanup_warnings[:3]:
-        flash(warning, 'warning')
     if _wants_json_response():
         return jsonify(
             success=True,
@@ -3682,4 +3642,6 @@ def ranking_delete_submission(competition_id, submission_id):
             username=username,
             warnings=cleanup_warnings,
         )
+    for warning in cleanup_warnings[:3]:
+        flash(warning, 'warning')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))

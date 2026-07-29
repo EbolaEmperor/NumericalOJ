@@ -1,6 +1,7 @@
 (function () {
   var editor = document.getElementById('rulesEditor');
   if (!editor) return;
+  var dirtyRoot = document.getElementById('agentJudgeRulesCard');
   var topoView = document.getElementById('rulesTopoView');
   var topoCanvas = document.getElementById('rulesTopoCanvas');
   var addNodeBtn = document.getElementById('addTopoNodeBtn');
@@ -18,13 +19,34 @@
   var nodeW = 168, nodeH = 100, marginX = 24, marginY = 20, xGap = 88, yGap = 80;
   var modalEl = document.getElementById('ajRuleModal');
   var ruleModal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
-  var deleteModalEl = document.getElementById('ajDeleteRulesModal');
-  var deleteRulesModal = (deleteModalEl && window.bootstrap) ? new bootstrap.Modal(deleteModalEl) : null;
-  var pendingDeleteConfirmIndexes = [];
   var rules = (window.__JUDGE_RULES__ || []).map(function (r) {
     return {rule_id: r.rule_id, rule_name: r.rule_name || '', rule_text: r.rule_text, value: r.value,
             dependencies: (r.dependencies || []).slice()};
   });
+  var savedRulesSignature = null;
+  function rulesSignature() {
+    return JSON.stringify(rules.map(function (rule) {
+      return {
+        rule_id: parseInt(rule.rule_id, 10) || 0,
+        rule_name: String(rule.rule_name || ''),
+        rule_text: String(rule.rule_text || ''),
+        value: Number.isFinite(parseFloat(rule.value)) ? parseFloat(rule.value) : 0,
+        dependencies: (rule.dependencies || []).map(function (dependency) {
+          return parseInt(dependency, 10) || 0;
+        })
+      };
+    }));
+  }
+  function syncRulesDirty() {
+    if (!dirtyRoot || savedRulesSignature === null) return;
+    var dirty = rulesSignature() !== savedRulesSignature;
+    var next = dirty ? 'true' : 'false';
+    if (dirtyRoot.getAttribute('data-ranking-dirty') === next) return;
+    dirtyRoot.setAttribute('data-ranking-dirty', next);
+    window.dispatchEvent(new CustomEvent('ranking:dirty-state-change', {
+      detail: {source: 'judge-rules', root: dirtyRoot, dirty: dirty}
+    }));
+  }
   function reindex() {
     var oldToNew = {};
     rules.forEach(function (r, i) { oldToNew[parseInt(r.rule_id, 10)] = i + 1; });
@@ -105,6 +127,7 @@
     var t = totalValue();
     document.getElementById('rulesTotalValue').textContent = (Math.round(t * 100) / 100);
     document.getElementById('rulesCountLabel').textContent = '共 ' + rules.length + ' 条规则';
+    syncRulesDirty();
   }
   function grow(t) { if (!t) return; t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
   function buildAdj(skip) {
@@ -414,10 +437,17 @@
       b.onclick = function () { deleteRuleAt(parseInt(b.dataset.del, 10)); };
     });
     editor.querySelectorAll('[data-name]').forEach(function (n) {
-      n.oninput = function () { rules[parseInt(n.dataset.name, 10)].rule_name = n.value; };
+      n.oninput = function () {
+        rules[parseInt(n.dataset.name, 10)].rule_name = n.value;
+        syncRulesDirty();
+      };
     });
     editor.querySelectorAll('[data-text]').forEach(function (t) {
-      t.oninput = function () { rules[parseInt(t.dataset.text, 10)].rule_text = t.value; grow(t); };
+      t.oninput = function () {
+        rules[parseInt(t.dataset.text, 10)].rule_text = t.value;
+        grow(t);
+        syncRulesDirty();
+      };
     });
     editor.querySelectorAll('[data-val]').forEach(function (v) {
       v.oninput = function () {
@@ -448,6 +478,7 @@
           arr.sort(function (a, b) { return a - b; });
           p.classList.add('on');
         }
+        syncRulesDirty();
       };
     });
   }
@@ -502,8 +533,7 @@
     var r = rules[idx];
     if (!r) return;
     if (!ruleModal) {
-      var nextText = window.prompt('规则原文', r.rule_text || '');
-      if (nextText !== null) { r.rule_text = nextText; renderCurrent(); }
+      setHint('规则编辑器暂不可用，请刷新页面后重试。', 'text-danger');
       return;
     }
     document.getElementById('ajRuleModalIndex').value = idx;
@@ -513,21 +543,6 @@
     document.getElementById('ajRuleModalLabel').textContent = '编辑规则 ' + r.rule_id;
     ruleModal.show();
   }
-  function openDeleteRulesModal(indexes) {
-    pendingDeleteConfirmIndexes = (indexes || []).slice();
-    var ids = pendingDeleteConfirmIndexes.map(function (idx) { return rules[idx].rule_id; });
-    var summary = document.getElementById('ajDeleteRulesSummary');
-    if (summary) summary.textContent = '将删除规则 ' + ids.join('、');
-    if (deleteRulesModal) deleteRulesModal.show();
-    else deleteRulesAt(pendingDeleteConfirmIndexes);
-  }
-  var deleteRulesConfirmBtn = document.getElementById('ajDeleteRulesConfirm');
-  if (deleteRulesConfirmBtn) deleteRulesConfirmBtn.onclick = function () {
-    var indexes = pendingDeleteConfirmIndexes.slice();
-    pendingDeleteConfirmIndexes = [];
-    if (deleteRulesModal) deleteRulesModal.hide();
-    deleteRulesAt(indexes);
-  };
   document.getElementById('ajRuleModalSave').onclick = function () {
     var idx = parseInt(document.getElementById('ajRuleModalIndex').value, 10);
     var r = rules[idx];
@@ -575,7 +590,7 @@
     if (!deleteNodeMode) return;
     var indexes = selectedDeleteIndexes();
     if (!indexes.length) return;
-    openDeleteRulesModal(indexes);
+    deleteRulesAt(indexes);
   };
   if (addEdgeBtn) addEdgeBtn.onclick = function () {
     if (rules.length < 2) return;
@@ -604,6 +619,7 @@
   };
   document.getElementById('saveRulesBtn').onclick = function () {
     reindex();
+    var submittedSignature = rulesSignature();
     setHint('保存中…', 'text-muted');
     fetch(window.__SAVE_RULES_URL__, {
       method: 'POST', credentials: 'same-origin',
@@ -612,6 +628,10 @@
     }).then(function (r) { return r.json().then(function (b) { return {ok: r.ok, b: b}; }); })
       .then(function (res) {
         if (res.ok && res.b.success) {
+          // 以本次实际提交的快照为准；请求期间若继续编辑，当前签名仍不同，
+          // 因而不会被较早的成功响应错误地清成“已保存”。
+          savedRulesSignature = submittedSignature;
+          syncRulesDirty();
           setHint('✓ 已保存 ' + res.b.count + ' 条规则，满分 ' + res.b.max_score + ' 分', 'text-success');
         } else {
           setHint('保存失败：' + (res.b.message || '未知错误'), 'text-danger');
@@ -619,4 +639,6 @@
       }).catch(function (e) { setHint('网络错误：' + e, 'text-danger'); });
   };
   renderCurrent();
+  savedRulesSignature = rulesSignature();
+  syncRulesDirty();
 })();

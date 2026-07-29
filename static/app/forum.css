@@ -431,13 +431,13 @@
 
 .forum-chip {
   flex: 0 0 auto;
-  padding: 6px 9px;
+  padding: 5px 8px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: 5px;
   background: transparent;
   color: var(--forum-ink-3);
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: 9.5px;
 }
 
 .forum-chip:hover {

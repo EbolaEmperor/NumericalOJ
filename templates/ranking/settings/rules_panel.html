@@ -1,5 +1,6 @@
       <!-- 评分规则 -->
       <div class="card mb-3 agent-rules-only" id="agentJudgeRulesCard"
+           data-ranking-dirty-managed data-ranking-dirty="false"
            {% if edit_mode != 'agent_judge' %}style="display:none;"{% endif %}>
         <div class="card-header"><i class="fas fa-list-check me-2"></i> 评分规则</div>
         <div class="card-body aj-rules">
@@ -103,29 +104,6 @@
             <div class="modal-footer">
               <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
               <button type="button" class="btn btn-success" id="ajRuleModalSave">保存修改</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="modal fade" id="ajDeleteRulesModal" tabindex="-1" aria-labelledby="ajDeleteRulesModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-          <div class="modal-content">
-            <div class="modal-header">
-              <h5 class="modal-title" id="ajDeleteRulesModalLabel">确认删除规则</h5>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-            </div>
-            <div class="modal-body">
-              <div class="d-flex align-items-start gap-3">
-                <div class="aj-delete-warn-icon"><i class="fas fa-trash-can"></i></div>
-                <div>
-                  <div class="fw-semibold mb-1" id="ajDeleteRulesSummary"></div>
-                  <div class="text-muted small">删除后将重新计算所有规则编号和依赖编号。</div>
-                </div>
-              </div>
-            </div>
-            <div class="modal-footer">
-              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-              <button type="button" class="btn btn-danger" id="ajDeleteRulesConfirm">确认删除</button>
             </div>
           </div>
         </div>

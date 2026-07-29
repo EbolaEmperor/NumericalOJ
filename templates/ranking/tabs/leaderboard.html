@@ -5,10 +5,10 @@
                data-ranking-tab-panel="leaderboard"
                data-ranking-leaderboard>
         {% if is_elo and competition.elo_running != 1 %}
-          <div class="ranking-v2-notice" role="status">
+          <p class="ranking-leaderboard-state">
             <i class="fas fa-hourglass-half" aria-hidden="true"></i>
             <span>动态评分尚未启动，排行榜会在匹配引擎启动后更新。</span>
-          </div>
+          </p>
         {% endif %}
         {% if not leaderboard %}
           <div class="ranking-v2-empty ranking-v2-empty--leaderboard">

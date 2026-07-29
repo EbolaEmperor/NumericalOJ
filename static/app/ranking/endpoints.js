@@ -141,6 +141,32 @@
         status:normalizeStatus(e), enabled:isEnabled(e)};
     });
   }
+  function endpointDirtyState(manager){
+    return manager.eps.map(function(e){
+      return {
+        harness:e.harness || 'claude_code',
+        base_url:(e.base_url || '').trim(),
+        api_key:(e.api_key || '').trim(),
+        has_key:!!e.has_key,
+        model:(e.model || '').trim(),
+        concurrency_limit:parseInt(e.concurrency_limit, 10) || 1,
+        status:normalizeStatus(e)
+      };
+    });
+  }
+  function managerSignature(manager){
+    return JSON.stringify(manager.dirtyState(manager));
+  }
+  function syncManagerDirty(manager){
+    if (!manager || manager.suspendDirty || manager.savedSignature == null) return;
+    var dirty = managerSignature(manager) !== manager.savedSignature;
+    var next = dirty ? 'true' : 'false';
+    if (manager.root.getAttribute('data-ranking-dirty') === next) return;
+    manager.root.setAttribute('data-ranking-dirty', next);
+    window.dispatchEvent(new CustomEvent('ranking:dirty-state-change', {
+      detail:{source:manager.source, root:manager.root, dirty:dirty}
+    }));
+  }
   function totalConc(manager){
     return manager.eps.reduce(function(sum, endpoint){
       return sum + (isEnabled(endpoint) ? (parseInt(endpoint.concurrency_limit, 10) || 0) : 0);
@@ -154,6 +180,7 @@
     if (!manager.eps.length){
       manager.editor.innerHTML = '<div class="aje-empty">暂无端点</div>';
       updateHead(manager);
+      syncManagerDirty(manager);
       return;
     }
     var h = '';
@@ -179,6 +206,7 @@
     });
     manager.editor.innerHTML = h;
     updateHead(manager);
+    syncManagerDirty(manager);
   }
   function applyHarnessMode(){
     var h = editHarness.value || 'claude_code';
@@ -221,6 +249,7 @@
       setHint(manager, 'error', error && error.message ? error.message : '配置不完整');
       return;
     }
+    var submittedSignature = managerSignature(manager);
     setHint(manager, 'pending', '保存中…');
     manager.saveBtn.disabled = true;
     fetch(manager.saveUrl, {
@@ -230,9 +259,21 @@
     }).then(function(response){ return response.json(); }).then(function(data){
       manager.saveBtn.disabled = false;
       if (!data.success){ setHint(manager, 'error', data.message || '保存失败'); return; }
+      if (managerSignature(manager) !== submittedSignature) {
+        // 请求发出后又有编辑时，只承认本次提交的旧快照，不用响应覆盖新输入，
+        // 也不把后续修改错误地标为已保存。
+        manager.savedSignature = submittedSignature;
+        syncManagerDirty(manager);
+        setHint(manager, 'ok', '已保存；还有新的修改未保存');
+        return;
+      }
+      manager.suspendDirty = true;
       manager.eps = fromServer(manager.readEndpoints(data));
       renderManager(manager);
       if (typeof manager.afterSave === 'function') manager.afterSave(data);
+      manager.savedSignature = managerSignature(manager);
+      manager.suspendDirty = false;
+      syncManagerDirty(manager);
       setHint(manager, 'ok', '已保存');
     }).catch(function(){
       manager.saveBtn.disabled = false;
@@ -242,6 +283,7 @@
   function createPoolManager(config){
     var manager = {
       editor:document.getElementById(config.editorId),
+      root:document.getElementById(config.rootId),
       addBtn:document.getElementById(config.addId),
       saveBtn:document.getElementById(config.saveId),
       hint:document.getElementById(config.hintId),
@@ -252,10 +294,15 @@
       saveUrl:config.saveUrl,
       eps:fromServer(config.endpoints),
       buildPayload:config.buildPayload,
+      dirtyState:config.dirtyState,
+      source:config.source,
       readEndpoints:config.readEndpoints,
-      afterSave:config.afterSave
+      afterSave:config.afterSave,
+      savedSignature:null,
+      suspendDirty:false
     };
-    if (!manager.editor || !manager.addBtn || !manager.saveBtn || !manager.hint) return null;
+    if (!manager.root || !manager.editor || !manager.addBtn || !manager.saveBtn ||
+        !manager.hint || typeof manager.dirtyState !== 'function') return null;
     manager.editor.addEventListener('click', function(ev){
       var btn = ev.target.closest('[data-edit]');
       if (!btn) return;
@@ -263,7 +310,11 @@
     });
     manager.addBtn.addEventListener('click', function(){ openEditor(manager, null); });
     manager.saveBtn.addEventListener('click', function(){ saveManager(manager); });
+    manager.root.addEventListener('input', function(){ syncManagerDirty(manager); });
+    manager.root.addEventListener('change', function(){ syncManagerDirty(manager); });
     renderManager(manager);
+    manager.savedSignature = managerSignature(manager);
+    syncManagerDirty(manager);
     return manager;
   }
   if (modalEl) {
@@ -292,7 +343,6 @@
   });
   editDelete.addEventListener('click', function(){
     if (!activeManager || editIndex === null) return;
-    if (!window.confirm('移除这个端点？')) return;
     activeManager.eps.splice(editIndex, 1);
     renderManager(activeManager);
     if (modal) modal.hide();
@@ -308,14 +358,33 @@
   });
   orchPickerCtrl = createChoicePicker({
     inputId:'ajeOrchestrationMode', pickerId:'ajeOrchestrationPicker', triggerId:'ajeOrchestrationTrigger',
-    menuId:'ajeOrchestrationMenu', labelId:'ajeOrchestrationLabel', iconId:'ajeOrchestrationIcon'
+    menuId:'ajeOrchestrationMenu', labelId:'ajeOrchestrationLabel', iconId:'ajeOrchestrationIcon',
+    onChange:function(){ if (primaryManager) syncManagerDirty(primaryManager); }
   });
   var primaryManager = createPoolManager({
+    rootId:'agentJudgeConfigCard', source:'primary-endpoints',
     editorId:'ajeEditor', addId:'ajeAddBtn', saveId:'ajeSaveBtn', hintId:'ajeHint',
     countId:'ajeCountLabel', totalId:'ajeTotalValue', endpointName:'端点',
     poolKind:'primary',
     endpoints:window.__AJ_ENDPOINTS__, saveUrl:window.__SAVE_AJ_ENDPOINTS_URL__,
     readEndpoints:function(data){ return data.endpoints || []; },
+    dirtyState:function(manager){
+      var orchEl = document.getElementById('ajeOrchestrationMode');
+      var orchMode = orchPickerCtrl ? orchPickerCtrl.value() : (orchEl ? (orchEl.value || 'single') : 'single');
+      var finalizeInput = document.getElementById('reverseFinalizeTimeout');
+      var modeInput = document.getElementById('scoringModeSelect');
+      var answerTimeout = document.getElementById('ajeTimeout');
+      var state = {
+        timeout_seconds:clampNumber(answerTimeout ? answerTimeout.value : 1800, 60, 7200, 1800),
+        endpoints:endpointDirtyState(manager)
+      };
+      if (finalizeInput && modeInput && modeInput.value === 'reverse_judge') {
+        state.reverse_judge_finalize_timeout_seconds =
+          clampNumber(finalizeInput.value, 30, 7200, 180);
+      }
+      if (orchEl || orchPickerCtrl) state.orchestration_mode = orchMode;
+      return state;
+    },
     buildPayload:function(manager){
     var orchEl = document.getElementById('ajeOrchestrationMode');
     var orchMode = orchPickerCtrl ? orchPickerCtrl.value() : (orchEl ? (orchEl.value || 'single') : 'single');
@@ -344,11 +413,19 @@
   var qualityEnabled = document.getElementById('qgeEnabled');
   var qualityPrompt = document.getElementById('qgePrompt');
   var qualityManager = createPoolManager({
+    rootId:'qualityGateConfigCard', source:'quality-gate',
     editorId:'qgeEditor', addId:'qgeAddBtn', saveId:'qgeSaveBtn', hintId:'qgeHint',
     countId:'qgeCountLabel', totalId:'qgeTotalValue', endpointName:'质量门禁端点',
     poolKind:'quality_gate',
     endpoints:window.__QUALITY_GATE_ENDPOINTS__, saveUrl:window.__SAVE_QUALITY_GATE_URL__,
     readEndpoints:function(data){ return data.quality_gate_endpoints || data.endpoints || []; },
+    dirtyState:function(manager){
+      return {
+        enabled:!!(qualityEnabled && qualityEnabled.checked),
+        prompt:qualityPrompt ? qualityPrompt.value.trim() : '',
+        endpoints:endpointDirtyState(manager)
+      };
+    },
     buildPayload:function(manager){
       var enabled = !!(qualityEnabled && qualityEnabled.checked);
       var prompt = qualityPrompt ? qualityPrompt.value.trim() : '';

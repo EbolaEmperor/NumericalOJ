@@ -1,5 +1,6 @@
 """打榜赛 UI-v2 的静态结构契约。"""
 
+import ast
 from pathlib import Path
 
 
@@ -16,10 +17,13 @@ def _read(path):
 def test_ranking_list_preserves_original_card_structure_and_visual_rules():
     template = _read(TEMPLATES / "list.html")
 
-    assert "RANKING · LIST" not in template
     assert "list-v2.css" not in template
-    assert '<h1 class="ranking-list-title" id="rankingListTitle">打榜赛</h1>' in template
-    assert "font-size: 1.35rem" in template
+    assert "<p>RANKING · LIST</p>" in template
+    assert '<h1 id="rankingListTitle">打榜赛</h1>' in template
+    assert "{{ competitions|length }} COMPETITIONS · {{ list_counts.active }} ACTIVE" in template
+    assert "font: 700 9.5px/1.2" in template
+    assert "font-size: 23px" in template
+    assert "font: 10px/1.3" in template
     assert 'class="row g-3 ranking-grid"' in template
     assert 'class="col-12 col-md-6 col-lg-4"' in template
     assert "fa-user-friends" in template
@@ -34,9 +38,10 @@ def test_ranking_list_keeps_admin_create_and_copy_actions():
     template = _read(TEMPLATES / "list.html")
 
     assert "newCompetitionModal" in template
-    assert "copyCompetitionModal" in template
+    assert "copyCompetitionModal" not in template
     assert "ranking.ranking_create" in template
     assert "ranking.ranking_copy" in template
+    assert 'type="submit" class="ranking-card-copy"' in template
 
 
 def test_ranking_detail_uses_v2_shell_and_real_navigation_state():
@@ -80,6 +85,38 @@ def test_ranking_detail_uses_v2_shell_and_real_navigation_state():
     assert '[data-ranking-panel][data-ranking-tab="batch_eval"]' not in script
     assert "cache.delete('batch_eval')" in script
     assert "当前页面有尚未保存的修改，确认离开吗？" in script
+
+
+def test_ranking_dirty_guard_only_tracks_persisted_scopes():
+    detail_script = _read(STATIC / "detail-v2.js")
+    rules_script = _read(STATIC / "rules-editor.js")
+    endpoints_script = _read(STATIC / "endpoints.js")
+    rules_panel = _read(TEMPLATES / "settings" / "rules_panel.html")
+    endpoint_pool = _read(TEMPLATES / "settings" / "endpoint_pool.html")
+
+    assert "control.closest('.modal, [data-ranking-dirty-managed]')" in detail_script
+    assert "control.type !== 'hidden'" in detail_script
+    assert "control.form.id === 'rankingEditForm'" in detail_script
+    assert '[data-ranking-dirty-managed][data-ranking-dirty="true"]' in detail_script
+    assert "window.addEventListener('ranking:dirty-state-change'" in detail_script
+
+    assert 'data-ranking-dirty-managed data-ranking-dirty="false"' in rules_panel
+    assert endpoint_pool.count(
+        'data-ranking-dirty-managed data-ranking-dirty="false"'
+    ) == 2
+
+    assert "var submittedSignature = rulesSignature();" in rules_script
+    assert "savedRulesSignature = submittedSignature;" in rules_script
+    assert "rulesSignature() !== savedRulesSignature" in rules_script
+    assert "source: 'judge-rules'" in rules_script
+
+    assert "endpointDirtyState(manager)" in endpoints_script
+    assert "var submittedSignature = managerSignature(manager);" in endpoints_script
+    assert "managerSignature(manager) !== submittedSignature" in endpoints_script
+    assert "manager.savedSignature = managerSignature(manager);" in endpoints_script
+    assert "managerSignature(manager) !== manager.savedSignature" in endpoints_script
+    assert "source:'primary-endpoints'" in endpoints_script
+    assert "source:'quality-gate'" in endpoints_script
 
 
 def test_ranking_detail_function_rail_matches_global_sidebar_type_scale():
@@ -164,6 +201,8 @@ def test_ranking_batch_layout_keeps_options_aligned_and_results_compact():
 
 
 def test_ranking_v2_tabs_keep_fragment_refresh_boundaries():
+    script = _read(STATIC / "detail-v2.js")
+    stylesheet = _read(STATIC / "detail-v2.css")
     leaderboard = _read(TEMPLATES / "tabs" / "leaderboard.html")
     submit = _read(TEMPLATES / "tabs" / "submit.html")
     submissions = _read(TEMPLATES / "tabs" / "submissions.html")
@@ -186,8 +225,22 @@ def test_ranking_v2_tabs_keep_fragment_refresh_boundaries():
     assert submit.index("data-ranking-submission-history") < submit.index(
         "my-history-header"
     )
-    assert 'data-ranking-update-slot="all_submissions"' in submissions
-    assert 'data-ranking-update-slot="appeals"' in appeals
+    assert "检测到新数据，当前筛选和页面尚未被打断。" not in script
+    assert "showRefreshNotice" not in script
+    assert "showConfigurationNotice" not in script
+    assert "ranking-update-notice" not in script
+    assert "ranking-update-notice" not in stylesheet
+    assert "data-ranking-configuration-notice" not in script
+    assert "data-ranking-update-slot" not in submissions
+    assert "data-ranking-update-slot" not in appeals
+    assert "tab === 'all_submissions' || tab === 'appeals'" in script
+    assert "await refreshWholeTab(tab)" in script
+    assert "requestHardReload()" in script
+    assert "if (!hardReloadPending || isDirty()) return false" in script
+    assert "data-ranking-refresh-blocked" in script
+    assert "data-ranking-refresh-blocked" in submissions
+    assert "ranking:refresh-resume" in script
+    assert "ranking:refresh-resume" in submissions
     assert "ranking/tabs/settings.html" in panel
     assert 'data-selected-count="0"' in batch
     for source in (submissions, appeals, matches):
@@ -196,3 +249,66 @@ def test_ranking_v2_tabs_keep_fragment_refresh_boundaries():
         assert "ranking:query-settle" in source
         assert "new AbortController()" in source
         assert "}, 15000)" in source
+
+
+def test_ranking_ui_avoids_nonessential_interruptions():
+    detail = _read(TEMPLATES / "detail.html")
+    list_template = _read(TEMPLATES / "list.html")
+    submit = _read(TEMPLATES / "tabs" / "submit.html")
+    submissions = _read(TEMPLATES / "tabs" / "submissions.html")
+    matches = _read(TEMPLATES / "tabs" / "matches.html")
+    batch = _read(TEMPLATES / "tabs" / "batch_evaluate.html")
+    appeal_review = _read(TEMPLATES / "appeal_review.html")
+    detail_script = _read(STATIC / "detail-v2.js")
+    detail_stylesheet = _read(STATIC / "detail-v2.css")
+    content_stylesheet = _read(STATIC / "content-v2.css")
+    endpoints_script = _read(STATIC / "endpoints.js")
+    rules_script = _read(STATIC / "rules-editor.js")
+    routes = _read(ROUTES / "ranking_routes.py")
+
+    combined_frontend = "\n".join(
+        (
+            detail,
+            list_template,
+            submit,
+            submissions,
+            matches,
+            batch,
+            appeal_review,
+            detail_script,
+            endpoints_script,
+            rules_script,
+        )
+    )
+    assert "window.alert" not in combined_frontend
+    assert "window.prompt" not in combined_frontend
+    assert "showToast" not in detail_script
+    assert "ranking-update-toast" not in detail_stylesheet
+    assert "bm-flash" not in batch
+    assert "bm-flash" not in content_stylesheet
+    assert "copyCompetitionModal" not in list_template
+    assert 'data-ranking-panel-stage aria-live="polite"' not in detail
+    assert "即将刷新" not in submit
+    assert "},1600)" not in submit
+
+    # 本地草稿删除和批量重测 workflow 不再叠加第二层确认。
+    assert "window.confirm" not in endpoints_script
+    assert "window.confirm" not in submissions
+    assert "ajDeleteRulesModal" not in rules_script
+    assert "ajDeleteRulesModal" not in _read(
+        TEMPLATES / "settings" / "rules_panel.html"
+    )
+
+    # 例行成功由刷新后的真实页面状态自证，不再排入全局 flash box。
+    route_tree = ast.parse(routes)
+    success_flashes = [
+        node
+        for node in ast.walk(route_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "flash"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "success"
+    ]
+    assert not success_flashes
