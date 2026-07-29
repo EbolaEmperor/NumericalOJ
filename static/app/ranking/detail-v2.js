@@ -147,8 +147,7 @@
   function isDirtyControl(control) {
     return Boolean(control.closest(
       '[data-ranking-panel][data-ranking-tab="submit"], ' +
-      '[data-ranking-panel][data-ranking-tab="edit"], ' +
-      '[data-ranking-panel][data-ranking-tab="batch_eval"]'
+      '[data-ranking-panel][data-ranking-tab="edit"]'
     ));
   }
 
@@ -321,6 +320,11 @@
     var panel = directPanel();
     if (!panel || !displayedTab) return;
     invalidatePanelQuery(panel);
+    if (displayedTab === 'batch_eval' && targetTab !== 'batch_eval') {
+      cache.delete('batch_eval');
+      panel.remove();
+      return;
+    }
     var locationUrl = canonicalUrl(window.location.href);
     if (tabFromUrl(locationUrl) === displayedTab) displayedUrl = locationUrl;
     var entry = cache.get(displayedTab) || {};
@@ -1006,13 +1010,6 @@
     var dirty = false;
     roots.forEach(function (root) {
       if (dirty) return;
-      var batchCount = root.querySelector('[data-ranking-tab-panel="batch_eval"] #bmSelCount');
-      if (batchCount && (
-        Number.parseInt(batchCount.getAttribute('data-selected-count') || '0', 10) || 0
-      ) > 0) {
-        dirty = true;
-        return;
-      }
       root.querySelectorAll('input, select, textarea').forEach(function (control) {
         if (dirty || !isDirtyControl(control)) return;
         if (!controlBaselines.has(control)) captureControl(control);
@@ -1218,11 +1215,19 @@
     if (event.defaultPrevented || event.button !== 0 ||
         event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     var link = event.target.closest('a[href]');
-    if (!link || !panelHost.contains(link) || link.hasAttribute('download')) return;
+    if (!link || link.hasAttribute('download')) return;
     if (link.target && link.target !== '_self') return;
     var url;
     try { url = canonicalUrl(link.href); } catch (_error) { return; }
-    if (!sameDetailPath(url)) return;
+    if (!sameDetailPath(url)) {
+      if (url.origin !== window.location.origin || !isDirty()) return;
+      event.preventDefault();
+      if (!window.confirm('当前页面有尚未保存的修改，确认离开吗？')) return;
+      unloadAllowed = true;
+      window.location.assign(url.toString());
+      return;
+    }
+    if (!panelHost.contains(link)) return;
     event.preventDefault();
     navigate(url, {history: 'push'});
   });
