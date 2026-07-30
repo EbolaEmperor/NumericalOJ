@@ -203,9 +203,15 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
     server_thread.start()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    # macOS/Colima 的 virtiofs bind mount 不允许容器内 chown；测试目录本身是
-    # 一次性路径，预先放开写权限即可，同时 Linux CI 仍走相同契约。
+    # bind mount 两端的 UID 在 Linux CI 与 macOS/Colima 上都可能不同；
+    # 一次性测试目录及状态文件由宿主预先放开，避免任一端事后 chmod/chown。
     workspace.chmod(0o777)
+    state_path = workspace / ".aj_session_state.json"
+    state_journal_path = workspace / ".aj_session_state.jsonl"
+    state_path.touch()
+    state_journal_path.touch()
+    state_path.chmod(0o666)
+    state_journal_path.chmod(0o666)
     trace_dir = tmp_path / "trace"
     container_name = f"numoj-pi-e2e-{uuid.uuid4().hex[:12]}"
     base_url = (
@@ -233,7 +239,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         )
         assert first.returncode == 0, first.stderr
         state = json.loads(
-            (workspace / ".aj_session_state.json").read_text(encoding="utf-8"),
+            state_path.read_text(encoding="utf-8"),
         )
         session_id = state["session_id"]
         assert state["harness"] == "pi"
@@ -248,10 +254,6 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         assert first_stdout_events[0]["type"] == "session"
         assert first_stdout_events[0]["version"] == 3
         assert first_stdout_events[0]["id"] == session_id
-        # virtiofs 会把容器内 node 新建的 bind-mount 文件映射为宿主用户，
-        # 再次从同一 UID 打开时可能被拒绝；仅对一次性测试状态文件放开续写。
-        (workspace / ".aj_session_state.json").chmod(0o666)
-        (workspace / ".aj_session_state.jsonl").chmod(0o666)
 
         second = _docker_exec_pi(
             container_name,
@@ -262,7 +264,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         )
         assert second.returncode == 0, second.stderr
         resumed_state = json.loads(
-            (workspace / ".aj_session_state.json").read_text(encoding="utf-8"),
+            state_path.read_text(encoding="utf-8"),
         )
         assert resumed_state["session_id"] == session_id
         assert resumed_state["resume_session_id"] == session_id
