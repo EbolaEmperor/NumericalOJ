@@ -122,6 +122,7 @@ def _public_answer_endpoints(endpoints):
         "claude_code": "Claude Code",
         "codex": "Codex",
         "opencode": "OpenCode",
+        "pi": "Pi",
     }
     for endpoint in endpoints or []:
         if endpoint.get("pool_kind") != "primary" or endpoint.get("status") != "enabled":

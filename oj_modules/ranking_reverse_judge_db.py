@@ -40,6 +40,8 @@ _TRACE_JSONL_PARSE_MAX_BYTES = 2 * 1024 * 1024
 _TRACE_MAX_MESSAGES = 240
 _TRACE_THINKING_MAX_CHARS = 1200
 _TRACE_TOOL_MAX_CHARS = 1200
+_TRACE_TOOL_RESULT_MAX_CHARS = 1200
+_PI_NON_TEXT_OMITTED = '（已省略图片或非文本内容）'
 _TRACE_TEXT_EXTS = {
     '.json', '.jsonl', '.md', '.txt', '.log', '.toml', '.yaml', '.yml',
     '.xml', '.html', '.htm', '.csv',
@@ -390,6 +392,66 @@ def _latest_codex_jsonl(trace_dir):
     return candidates[0][1]
 
 
+def _is_pi_session_jsonl(path):
+    """只把带 v3 session header 的 JSONL 识别为 Pi 原生会话。"""
+    try:
+        with open(path, 'rb') as f:
+            first_line = f.readline(256 * 1024)
+        header = json.loads(first_line.decode('utf-8', 'replace'))
+    except Exception:
+        return False
+    if not isinstance(header, dict) or header.get('type') != 'session':
+        return False
+    try:
+        return int(header.get('version')) == 3
+    except (TypeError, ValueError):
+        return False
+
+
+def _latest_pi_jsonl(trace_dir):
+    trace_dir = str(trace_dir or '').strip()
+    if not trace_dir or not os.path.isdir(trace_dir):
+        return None
+    base = os.path.realpath(trace_dir)
+
+    # reverse worker 会把容器内 ~/.pi/agent/sessions 原样镜像到 trace_dir，
+    # 并生成一个稳定的合并 journal。根目录文件仅用于兼容早期实现和 fixture。
+    preferred_paths = (
+        os.path.join(
+            base, '.pi', 'agent', 'sessions', 'reverse_solve_combined.jsonl',
+        ),
+        os.path.join(base, 'pi_reverse_solve.jsonl'),
+    )
+    for preferred in preferred_paths:
+        path = os.path.realpath(preferred)
+        if (path == base or path.startswith(base + os.sep)) and os.path.isfile(path):
+            return path
+
+    sessions_root = os.path.join(base, '.pi', 'agent', 'sessions')
+    if not os.path.isdir(sessions_root):
+        return None
+    candidates = []
+    for walk_root, dirs, names in os.walk(sessions_root):
+        dirs[:] = [d for d in dirs if d not in {'node_modules', '__pycache__'}]
+        for name in names:
+            if not name.endswith('.jsonl'):
+                continue
+            path = os.path.realpath(os.path.join(walk_root, name))
+            if path != base and not path.startswith(base + os.sep):
+                continue
+            if not _is_pi_session_jsonl(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            candidates.append((mtime, path))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def _read_limited_text(path, limit):
     try:
         size = os.path.getsize(path)
@@ -455,6 +517,11 @@ def _collect_trace_files(trace_dir):
                 'size': size,
                 'content': text,
             }]
+    pi_jsonl = _latest_pi_jsonl(trace_dir)
+    if pi_jsonl:
+        # Pi session 允许工具结果携带图片等非文本 payload。原始 JSONL
+        # 保留在磁盘用于审计，但不得经 snapshot / SSE 的 raw trace 投影泄露。
+        return []
     codex_jsonl = _latest_codex_jsonl(trace_dir)
     if codex_jsonl:
         text, size, _read_bytes = _read_limited_text(codex_jsonl, _TRACE_MAX_TOTAL_BYTES)
@@ -853,6 +920,130 @@ def _codex_event_messages(event, line_no):
     return messages
 
 
+def _pi_tool_call_message(item, line_no):
+    name = str(item.get('name') or '').strip()
+    payload = item.get('arguments') if isinstance(item.get('arguments'), dict) else {}
+    parsed = _known_claude_tool_message(name, payload)
+    if parsed:
+        parsed['line'] = line_no
+        return parsed
+    return _tool_message(
+        f'调用 {name or "工具"}',
+        _dump_trace_json(payload),
+        name or '工具',
+        line_no=line_no,
+        fmt='json',
+    )
+
+
+def _truncate_pi_tool_result(text, limit=_TRACE_TOOL_RESULT_MAX_CHARS):
+    text = str(text or '').strip()
+    limit = max(1, int(limit))
+    if len(text) <= limit:
+        return text
+    # 上限包含截断符，保证单条 toolResult 投影严格不超过 1200 字符。
+    return text[:limit - 1] + '…'
+
+
+def _pi_tool_result_text(content):
+    parts = []
+    omitted_non_text = False
+    if isinstance(content, str):
+        if content.strip():
+            parts.append(content.strip())
+    elif isinstance(content, list):
+        for block in content:
+            if (isinstance(block, dict)
+                    and str(block.get('type') or '').strip().lower() == 'text'
+                    and isinstance(block.get('text'), str)):
+                text = block['text'].strip()
+                if text:
+                    parts.append(text)
+            else:
+                # image.data、details 及任意未知结构都不得进入 snapshot / SSE。
+                omitted_non_text = True
+    elif content is not None:
+        omitted_non_text = True
+    text = '\n\n'.join(parts)
+    if not omitted_non_text:
+        return _truncate_pi_tool_result(text)
+    if not text:
+        return _PI_NON_TEXT_OMITTED
+    separator = '\n\n'
+    text_limit = (
+        _TRACE_TOOL_RESULT_MAX_CHARS
+        - len(separator)
+        - len(_PI_NON_TEXT_OMITTED)
+    )
+    return (
+        _truncate_pi_tool_result(text, text_limit)
+        + separator
+        + _PI_NON_TEXT_OMITTED
+    )
+
+
+def _pi_tool_result_message(message, line_no):
+    text = _pi_tool_result_text(message.get('content'))
+    if not text:
+        return None
+    tool_name = str(message.get('toolName') or '').strip()
+    is_error = message.get('isError') is True
+    return {
+        'kind': 'tool_result',
+        'title': '工具执行失败' if is_error else '工具结果',
+        'text': text,
+        'meta': tool_name,
+        'format': 'text',
+        'is_error': is_error,
+        'line': line_no,
+    }
+
+
+def _pi_event_messages(event, line_no):
+    """把 Pi session v3 的完成态 message entry 投影为共享轨迹消息。"""
+    # JSON mode 的 message_start/message_update/message_end 与 token delta 不是
+    # 原生 session entry；只接收 session-manager 持久化的 type="message"。
+    if event.get('type') != 'message':
+        return []
+    message = event.get('message')
+    if not isinstance(message, dict):
+        return []
+    role = str(message.get('role') or '').strip().lower().replace('_', '')
+    if role == 'toolresult':
+        result = _pi_tool_result_message(message, line_no)
+        return [result] if result else []
+    if role != 'assistant':
+        return []
+
+    content = message.get('content')
+    if not isinstance(content, list):
+        return []
+    meta = message.get('model') or message.get('provider') or event.get('timestamp') or ''
+    messages = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get('type') or '').strip().lower().replace('_', '').replace('-', '')
+        if item_type == 'text' and isinstance(item.get('text'), str):
+            text = item['text'].strip()
+            if text:
+                messages.append(_trace_message(
+                    'assistant', 'AI 回复', text, meta, line_no,
+                ))
+        elif item_type == 'thinking' and isinstance(item.get('thinking'), str):
+            thinking = _thinking_text({
+                'type': 'thinking',
+                'thinking': item.get('thinking'),
+            })
+            if thinking:
+                messages.append(_trace_message(
+                    'thinking', '思考片段', thinking, meta, line_no,
+                ))
+        elif item_type == 'toolcall':
+            messages.append(_pi_tool_call_message(item, line_no))
+    return messages
+
+
 def _collect_claude_trace_messages(path):
     if not path:
         return []
@@ -954,10 +1145,49 @@ def _collect_codex_trace_messages(path):
     return messages[-_TRACE_MAX_MESSAGES:]
 
 
+def _collect_pi_trace_messages(path):
+    messages = []
+    rows = _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
+    for line_no, (source_offset, raw) in enumerate(rows, start=1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(event, dict):
+            continue
+        parsed = _pi_event_messages(event, line_no)
+        event_offset = event.get('_trace_offset')
+        if (not isinstance(event_offset, int)
+                or isinstance(event_offset, bool) or event_offset < 0):
+            event_offset = source_offset
+        event_source = str(event.get('_trace_source') or '').strip()
+        if (not event_source.startswith('pi')
+                or len(event_source) > 80
+                or any(not (ch.isalnum() or ch in '-_') for ch in event_source)):
+            event_source = 'pi'
+        event_phase = str(event.get('_trace_phase') or '').strip()[:80]
+        for event_index, item in enumerate(parsed):
+            item['offset'] = event_offset
+            item['event_index'] = event_index
+            item['source'] = event_source
+            if event_phase:
+                item['phase'] = event_phase
+        messages.extend(parsed)
+        if len(messages) >= _TRACE_MAX_MESSAGES:
+            messages = messages[-_TRACE_MAX_MESSAGES:]
+    return messages[-_TRACE_MAX_MESSAGES:]
+
+
 def _collect_trace_messages(trace_dir):
     claude_path = _latest_claude_jsonl(trace_dir)
     if claude_path:
         return _collect_claude_trace_messages(claude_path)
+    pi_path = _latest_pi_jsonl(trace_dir)
+    if pi_path:
+        return _collect_pi_trace_messages(pi_path)
     codex_path = _latest_codex_jsonl(trace_dir)
     if codex_path:
         return _collect_codex_trace_messages(codex_path)
