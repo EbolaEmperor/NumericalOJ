@@ -38,10 +38,18 @@ def test_quality_gate_opencode_keeps_and_displays_configured_api_url():
         in TEMPLATE
     )
     assert (
-        "var openAiCompatible = h === 'codex' || "
+        "var openAiCompatible = h === 'codex' || h === 'pi' ||"
+        in TEMPLATE
+    )
+    assert (
         "(h === 'opencode' && !fixedOpenCode);"
         in TEMPLATE
     )
+
+
+def test_shared_endpoint_modal_exposes_pi_as_openai_compatible_harness():
+    assert 'data-choice-value="pi"' in TEMPLATE
+    assert "if (h === 'pi') return 'Pi';" in TEMPLATE
 
 
 def test_reverse_detail_hides_quality_gate_when_snapshot_marks_it_skipped():

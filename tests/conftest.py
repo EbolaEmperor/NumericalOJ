@@ -225,7 +225,11 @@ def _is_infra_free_test(request):
     """tests/unit/ 下均为纯逻辑单测，不连 MySQL/Redis。GitHub Actions 的 unit 门禁也不
     提供这些基础设施，故这些用例必须能在无 DB 环境下运行——不能被 autouse 的 DB 重置拖垮。"""
     path = str(getattr(request.node, "fspath", "")).replace("\\", "/")
-    return "/tests/unit/" in path or path.endswith("/tests/e2e/test_cli_help.py")
+    return (
+        "/tests/unit/" in path
+        or path.endswith("/tests/e2e/test_cli_help.py")
+        or path.endswith("/tests/e2e/test_pi_agent_judge_image.py")
+    )
 
 
 @pytest.fixture(scope='session')

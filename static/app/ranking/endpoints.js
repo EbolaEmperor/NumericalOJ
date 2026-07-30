@@ -97,11 +97,13 @@
   function harnessLabel(h){
     if (h === 'codex') return 'Codex';
     if (h === 'opencode') return 'opencode';
+    if (h === 'pi') return 'Pi';
     return 'Claude Code';
   }
   function harnessIcon(h){
     if (h === 'codex') return 'fa-code';
     if (h === 'opencode') return 'fa-terminal';
+    if (h === 'pi') return 'fa-code-branch';
     return 'fa-robot';
   }
   function createChoicePicker(config){
@@ -211,7 +213,8 @@
   function applyHarnessMode(){
     var h = editHarness.value || 'claude_code';
     var fixedOpenCode = usesFixedOpenCodeEndpoint(activeManager, h);
-    var openAiCompatible = h === 'codex' || (h === 'opencode' && !fixedOpenCode);
+    var openAiCompatible = h === 'codex' || h === 'pi' ||
+      (h === 'opencode' && !fixedOpenCode);
     editBaseUrlWrap.style.display = fixedOpenCode ? 'none' : '';
     editBaseUrlLabel.textContent = openAiCompatible ? 'Base URL（OpenAI 兼容）' : 'Base URL（Anthropic 兼容）';
     editBaseUrl.placeholder = openAiCompatible ? 'https://.../v1' : 'https://.../anthropic';

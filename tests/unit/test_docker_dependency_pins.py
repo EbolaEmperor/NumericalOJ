@@ -15,6 +15,7 @@ def test_agent_judge_harness_dependencies_are_explicitly_versioned():
         '@anthropic-ai/claude-code': 'CLAUDE_CODE_VERSION',
         '@openai/codex': 'CODEX_CLI_VERSION',
         'opencode-ai': 'OPENCODE_VERSION',
+        '@earendil-works/pi-coding-agent': 'PI_CODING_AGENT_VERSION',
         '@ai-sdk/openai-compatible': 'AI_SDK_OPENAI_COMPATIBLE_VERSION',
         '@ai-sdk/anthropic': 'AI_SDK_ANTHROPIC_VERSION',
     }
@@ -24,29 +25,37 @@ def test_agent_judge_harness_dependencies_are_explicitly_versioned():
         assert f'{package}@${{{build_arg}}}' in dockerfile
 
 
-def test_lite_agent_judge_uses_the_same_claude_code_pin():
+def test_lite_agent_judge_uses_the_same_claude_and_pi_pins():
     full = _dockerfile('docker/agent_judge/Dockerfile')
     lite = _dockerfile('docker/agent_judge-lite/Dockerfile')
-    version_pattern = re.compile(r'^ARG CLAUDE_CODE_VERSION=(\S+)$', re.MULTILINE)
+    for build_arg, package in (
+        ('CLAUDE_CODE_VERSION', '@anthropic-ai/claude-code'),
+        ('PI_CODING_AGENT_VERSION', '@earendil-works/pi-coding-agent'),
+    ):
+        version_pattern = re.compile(
+            rf'^ARG {build_arg}=(\S+)$',
+            re.MULTILINE,
+        )
+        assert version_pattern.search(full).group(1) == version_pattern.search(lite).group(1)
+        assert f'{package}@${{{build_arg}}}' in lite
 
-    assert version_pattern.search(full).group(1) == version_pattern.search(lite).group(1)
-    assert '@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}' in lite
+    assert 'ARG PI_CODING_AGENT_VERSION=0.82.1' in full
+    assert 'npm install -g --ignore-scripts' in full
+    assert 'npm install -g --ignore-scripts' in lite
 
 
-def test_production_docker_bases_are_pinned_to_cached_digests():
+def test_production_docker_bases_follow_the_selected_runtime_policy():
     judger = _dockerfile('docker/judger/Dockerfile')
     agent = _dockerfile('docker/agent_judge/Dockerfile')
+    lite_agent = _dockerfile('docker/agent_judge-lite/Dockerfile')
 
     assert (
         'FROM debian:bookworm-slim@sha256:'
         '60eac759739651111db372c07be67863818726f754804b8707c90979bda511df'
         in judger
     )
-    assert (
-        'FROM node:20-bookworm@sha256:'
-        '8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5'
-        in agent
-    )
+    assert 'FROM node:24-bookworm\n' in agent
+    assert 'FROM node:24-bookworm-slim\n' in lite_agent
 
 
 def test_agent_harness_args_do_not_invalidate_heavy_toolchain_cache():
@@ -62,7 +71,7 @@ def test_agent_harness_args_do_not_invalidate_heavy_toolchain_cache():
     assert heavy_tail < first_harness_arg < harness_install
 
 
-def test_agent_ai_sdk_pins_support_the_cached_node_20_base():
+def test_agent_ai_sdk_pins_support_the_node_24_base():
     dockerfile = _dockerfile('docker/agent_judge/Dockerfile')
 
     assert 'ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=2.0.51' in dockerfile

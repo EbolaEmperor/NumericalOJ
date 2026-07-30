@@ -8,11 +8,13 @@ import hmac
 import http.server
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -80,6 +82,7 @@ from oj_modules.tasks.ranking_agent_judge_tasks import (
 from oj_modules.ranking_agent_judge_db import (
     HARNESS_CODEX,
     HARNESS_OPENCODE,
+    HARNESS_PI,
     list_agent_judge_endpoints,
     list_quality_gate_endpoints,
 )
@@ -87,6 +90,62 @@ from oj_modules.ranking_agent_judge_db import (
 
 RANKING_REVERSE_JUDGE_TASK_NAME = 'oj.ranking_reverse_judge'
 _CLAUDE_EFFORT_LEVELS = frozenset(('low', 'medium', 'high', 'xhigh', 'max'))
+_PI_SESSION_ID_RE = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+    r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+)
+_PI_CONTAINER_SESSION_ROOT = '/home/node/.pi/agent/sessions'
+_PI_COMBINED_TRACE_NAME = 'reverse_solve_combined.jsonl'
+_HARNESS_CAPTURE_READ_MAX_BYTES = 2 * 1024 * 1024
+_HARNESS_CAPTURE_HEAD_BYTES = 64 * 1024
+_HARNESS_CAPTURE_TRUNCATION_MARKER = b'\n...[harness output truncated]...\n'
+_PI_STREAM_SESSION_FILE_SCRIPT = r'''
+import os
+import stat
+import sys
+
+base = sys.argv[1]
+relative_path = sys.argv[2]
+parts = relative_path.split('/')
+if (
+    not parts
+    or not relative_path.endswith('.jsonl')
+    or any(part in ('', '.', '..') for part in parts)
+):
+    raise SystemExit(2)
+
+directory_fd = os.open(
+    base,
+    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+)
+file_fd = None
+try:
+    for part in parts[:-1]:
+        next_fd = os.open(
+            part,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+        os.close(directory_fd)
+        directory_fd = next_fd
+    file_fd = os.open(
+        parts[-1],
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        dir_fd=directory_fd,
+    )
+    if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+        raise SystemExit(2)
+    while True:
+        chunk = os.read(file_fd, 64 * 1024)
+        if not chunk:
+            break
+        sys.stdout.buffer.write(chunk)
+    sys.stdout.buffer.flush()
+finally:
+    if file_fd is not None:
+        os.close(file_fd)
+    os.close(directory_fd)
+'''
 
 
 def _normalize_claude_effort(value, fallback=''):
@@ -1581,6 +1640,221 @@ def _sync_codex_stdout_trace(template_dir, trace_dir):
         return False
 
 
+def _pi_trace_session_root(trace_dir):
+    return os.path.join(trace_dir, '.pi', 'agent', 'sessions')
+
+
+def _list_pi_session_files(container_name):
+    """流式列出 Pi 普通 JSONL，避免 Agent 用海量路径放大宿主内存。"""
+    list_cmd = (
+        "python3 - <<'PY'\n"
+        "import json, os, stat\n"
+        f"base={_PI_CONTAINER_SESSION_ROOT!r}\n"
+        "try:\n"
+        "    for root, dirs, names in os.walk(base, followlinks=False):\n"
+        "        dirs[:]=[name for name in dirs "
+        "if not os.path.islink(os.path.join(root, name))]\n"
+        "        for name in names:\n"
+        "            if not name.endswith('.jsonl'):\n"
+        "                continue\n"
+        "            path=os.path.join(root, name)\n"
+        "            try:\n"
+        "                info=os.lstat(path)\n"
+        "            except OSError:\n"
+        "                continue\n"
+        "            if not stat.S_ISREG(info.st_mode):\n"
+        "                continue\n"
+        "            print(json.dumps({\n"
+        "                'relative_path': os.path.relpath(path, base),\n"
+        "                'mtime_ns': info.st_mtime_ns,\n"
+        "            }, ensure_ascii=False), flush=True)\n"
+        "except Exception:\n"
+        "    pass\n"
+        "PY"
+    )
+    # stdout 先落匿名临时文件：既保留 8 秒硬超时，也不让 subprocess 在
+    # TimeoutExpired.output 或 CompletedProcess.stdout 中积累无界清单。
+    with tempfile.TemporaryFile(mode='w+b') as listing:
+        try:
+            located = subprocess.run(
+                [
+                    'docker', 'exec', '--user', 'node', container_name,
+                    'bash', '-lc', list_cmd,
+                ],
+                stdout=listing,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            )
+            if located.returncode != 0:
+                return
+            listing.seek(0)
+            for raw_line in listing:
+                # Linux 单一路径远低于 64 KiB；异常超长元数据直接忽略。
+                if len(raw_line) > 64 * 1024:
+                    continue
+                try:
+                    item = json.loads(raw_line.decode('utf-8', 'replace'))
+                except Exception:
+                    continue
+                if isinstance(item, dict):
+                    yield item
+        except Exception:
+            return
+
+
+def _safe_pi_session_relative_path(value):
+    relative_path = str(value or '').strip().replace('\\', '/')
+    parts = relative_path.split('/')
+    if (
+        not relative_path
+        or relative_path.startswith('/')
+        or not relative_path.endswith('.jsonl')
+        or any(part in {'', '.', '..'} for part in parts)
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in relative_path)
+    ):
+        return ''
+    return relative_path
+
+
+def _copy_pi_session_file(
+        container_name, relative_path, destination, mtime_ns=None):
+    tmp_path = destination + '.tmp'
+    try:
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        # 直接把 docker stdout 写入磁盘；原始 JSONL 不截断、不改写，同时
+        # 避免 capture_output 和 TimeoutExpired 把 Agent 可控内容留在内存。
+        # 容器内按目录 fd 逐级 O_NOFOLLOW 打开，消除 Agent 并发替换 session
+        # 路径后借符号链接读取容器凭证或其它文件的 TOCTOU 窗口。
+        with open(tmp_path, 'wb') as stream:
+            copied = subprocess.run(
+                [
+                    'docker', 'exec', '--user', 'node', container_name,
+                    'python3', '-c', _PI_STREAM_SESSION_FILE_SCRIPT,
+                    _PI_CONTAINER_SESSION_ROOT, relative_path,
+                ],
+                stdout=stream,
+                stderr=subprocess.DEVNULL,
+                timeout=12,
+            )
+        if copied.returncode != 0:
+            os.remove(tmp_path)
+            return False
+        os.replace(tmp_path, destination)
+        try:
+            normalized_mtime = int(mtime_ns)
+            if normalized_mtime >= 0:
+                os.utime(
+                    destination,
+                    ns=(normalized_mtime, normalized_mtime),
+                )
+        except (TypeError, ValueError, OSError):
+            pass
+        return True
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+def _iter_pi_session_paths(session_root):
+    """逐项遍历本地镜像树，不构造全量文件列表。"""
+    pending_dirs = [session_root]
+    while pending_dirs:
+        current = pending_dirs.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending_dirs.append(entry.path)
+                    elif (
+                        entry.name.endswith('.jsonl')
+                        and entry.name != _PI_COMBINED_TRACE_NAME
+                        and entry.is_file(follow_symlinks=False)
+                    ):
+                        yield entry.path
+                except OSError:
+                    continue
+
+
+def _combine_pi_session_jsonl(trace_dir):
+    """流式合并 Pi 原生 session，同时保留原始目录树不变。"""
+    session_root = _pi_trace_session_root(trace_dir)
+    if not os.path.isdir(session_root):
+        return False
+    combined_path = os.path.join(session_root, _PI_COMBINED_TRACE_NAME)
+    tmp_path = combined_path + '.tmp'
+    wrote_any = False
+    last_byte = b''
+    try:
+        with open(tmp_path, 'wb') as combined:
+            for path in _iter_pi_session_paths(session_root):
+                try:
+                    if os.path.getsize(path) <= 0:
+                        continue
+                    if wrote_any and last_byte != b'\n':
+                        combined.write(b'\n')
+                    with open(path, 'rb') as source:
+                        while True:
+                            chunk = source.read(64 * 1024)
+                            if not chunk:
+                                break
+                            combined.write(chunk)
+                            last_byte = chunk[-1:]
+                    wrote_any = True
+                except OSError:
+                    continue
+            if wrote_any and last_byte != b'\n':
+                combined.write(b'\n')
+        if not wrote_any:
+            os.remove(tmp_path)
+            return False
+        os.replace(tmp_path, combined_path)
+        return True
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+def _sync_pi_agent_sessions(container_name, trace_dir):
+    """逐文件原子镜像 Pi session，并生成供快照解析的稳定合并 JSONL。"""
+    session_root = _pi_trace_session_root(trace_dir)
+    copied_any = False
+    for item in _list_pi_session_files(container_name):
+        if not isinstance(item, dict):
+            continue
+        relative_path = _safe_pi_session_relative_path(
+            item.get('relative_path'),
+        )
+        if not relative_path:
+            continue
+        destination = os.path.realpath(os.path.join(
+            session_root, *relative_path.split('/'),
+        ))
+        normalized_root = os.path.realpath(session_root)
+        if not destination.startswith(normalized_root + os.sep):
+            continue
+        if _copy_pi_session_file(
+            container_name,
+            relative_path,
+            destination,
+            item.get('mtime_ns'),
+        ):
+            copied_any = True
+    if not copied_any:
+        return False
+    _combine_pi_session_jsonl(trace_dir)
+    return True
+
+
 def _dump_harness_trace(container_name, trace_dir, template_dir, harness):
     os.makedirs(trace_dir, exist_ok=True)
     harness = str(harness or HARNESS_CLAUDE_CODE).strip().lower()
@@ -1593,6 +1867,10 @@ def _dump_harness_trace(container_name, trace_dir, template_dir, harness):
                    ('/root/.local/share/opencode', '.opencode'),
                    ('/tmp/aj_opencode_home/.local/share/opencode', '.opencode')]
         dest_name = '.opencode'
+    elif harness == HARNESS_PI:
+        _sync_pi_agent_sessions(container_name, trace_dir)
+        sources = []
+        dest_name = ''
     else:
         _sync_claude_project_jsonl(container_name, trace_dir)
         sources = []
@@ -1621,10 +1899,24 @@ def _prepare_agent_workspace_for_node(container_name):
     )
 
 
-def _read_text_file(path):
+def _read_text_file(path, limit=_HARNESS_CAPTURE_READ_MAX_BYTES):
     try:
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            return f.read()
+        limit = max(1024, int(limit))
+        size = os.path.getsize(path)
+        with open(path, 'rb') as f:
+            if size <= limit:
+                payload = f.read(limit)
+            else:
+                marker = _HARNESS_CAPTURE_TRUNCATION_MARKER
+                head_size = min(
+                    _HARNESS_CAPTURE_HEAD_BYTES,
+                    max(1, limit - len(marker) - 1),
+                )
+                tail_size = max(1, limit - head_size - len(marker))
+                head = f.read(head_size)
+                f.seek(-tail_size, os.SEEK_END)
+                payload = head + marker + f.read(tail_size)
+        return payload.decode('utf-8', 'replace')
     except Exception:
         return ''
 
@@ -1721,11 +2013,84 @@ def _latest_claude_session_id_from_container(container_name):
     return (located.stdout or '').strip().splitlines()[0].strip() if (located.stdout or '').strip() else ''
 
 
-def _resolve_resume_session_id(container_name, ws, harness):
+def _normalize_pi_session_id(value):
+    session_id = str(value or '').strip()
+    return session_id if _PI_SESSION_ID_RE.fullmatch(session_id) else ''
+
+
+def _pi_session_id_from_stdout(stdout):
+    """只从 Pi JSON 模式的 session header 提取 UUID；不把 stdout 当作轨迹。"""
+    for raw_line in str(stdout or '').splitlines():
+        try:
+            event = json.loads(raw_line)
+        except Exception:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if str(event.get('type') or '').strip().lower() != 'session':
+            continue
+        session_id = _normalize_pi_session_id(event.get('id'))
+        if session_id:
+            return session_id
+    return ''
+
+
+def _latest_pi_session_id_from_container(container_name):
+    find_cmd = (
+        "find /home/node/.pi/agent/sessions -type f -name '*.jsonl' "
+        "-printf '%T@ %f\\n' 2>/dev/null | sort -nr | head -n 1"
+    )
+    try:
+        located = subprocess.run(
+            ['docker', 'exec', '--user', 'node', container_name, 'bash', '-lc', find_cmd],
+            capture_output=True, text=True, timeout=8,
+        )
+    except Exception:
+        return ''
+    if located.returncode != 0:
+        return ''
+    latest = (located.stdout or '').strip().splitlines()
+    if not latest:
+        return ''
+    match = re.search(
+        r'([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})',
+        latest[0],
+    )
+    return _normalize_pi_session_id(match.group(1) if match else '')
+
+
+def _pi_session_exists_in_container(container_name, session_id):
+    session_id = _normalize_pi_session_id(session_id)
+    if not session_id:
+        return False
+    try:
+        checked = subprocess.run(
+            [
+                'docker', 'exec', '--user', 'node', container_name,
+                'find', _PI_CONTAINER_SESSION_ROOT, '-type', 'f',
+                '-name', f'*{session_id}*.jsonl', '-print', '-quit',
+            ],
+            capture_output=True, text=True, timeout=8,
+        )
+    except Exception:
+        return False
+    return checked.returncode == 0 and bool((checked.stdout or '').strip())
+
+
+def _resolve_resume_session_id(container_name, ws, harness, stdout=''):
     session_id = _read_session_id_from_workspace(ws)
+    normalized_harness = str(harness or '').strip().lower()
+    if normalized_harness == HARNESS_PI:
+        session_id = _normalize_pi_session_id(session_id)
+        if session_id:
+            return session_id
+        session_id = _pi_session_id_from_stdout(stdout)
+        if session_id:
+            return session_id
+        return _latest_pi_session_id_from_container(container_name)
     if session_id:
         return session_id
-    if str(harness or '').strip().lower() == HARNESS_CLAUDE_CODE:
+    if normalized_harness == HARNESS_CLAUDE_CODE:
         return _latest_claude_session_id_from_container(container_name)
     return ''
 
@@ -1897,6 +2262,8 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                 _sync_claude_project_jsonl(container_name, trace_dir)
             elif harness == HARNESS_CODEX:
                 _sync_codex_stdout_trace(template_dir, trace_dir)
+            elif harness == HARNESS_PI:
+                _sync_pi_agent_sessions(container_name, trace_dir)
             if not trace_registered:
                 update_reverse_judge_step_for_attempt(
                     submission_id, attempt_id, STEP_AGENT,
@@ -1913,13 +2280,29 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         )
         sync_trace()
         if getattr(proc, 'aj_timed_out', False):
-            session_id = _resolve_resume_session_id(container_name, template_dir, harness)
+            session_id = _resolve_resume_session_id(
+                container_name, template_dir, harness, stdout=proc.stdout,
+            )
             if not session_id:
                 return {
                     'ok': False,
                     'stdout': proc.stdout or '',
                     'stderr': proc.stderr or '',
                     'error': f'Agent 作答超时（>{int(timeout_s)}s），且未找到可恢复会话',
+                    'trace_dir': trace_dir,
+                }
+            if (
+                harness == HARNESS_PI
+                and not _pi_session_exists_in_container(container_name, session_id)
+            ):
+                return {
+                    'ok': False,
+                    'stdout': proc.stdout or '',
+                    'stderr': proc.stderr or '',
+                    'error': (
+                        f'Agent 作答超时（>{int(timeout_s)}s），'
+                        '但 Pi 原生会话不存在或无法恢复'
+                    ),
                     'trace_dir': trace_dir,
                 }
             finalize_proc = _exec_reverse_harness_phase(
@@ -1934,7 +2317,19 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
             sync_trace()
             ok = finalize_proc.returncode == 0 and not getattr(finalize_proc, 'aj_timed_out', False)
             error = ''
-            if not ok:
+            if ok and harness == HARNESS_PI:
+                resumed_session_id = _normalize_pi_session_id(
+                    _read_session_id_from_workspace(template_dir),
+                )
+                if (
+                    resumed_session_id != session_id
+                    or not _pi_session_exists_in_container(
+                        container_name, session_id,
+                    )
+                ):
+                    ok = False
+                    error = 'Pi 原生会话恢复校验失败'
+            if not ok and not error:
                 if getattr(finalize_proc, 'aj_timed_out', False):
                     error = (
                         f'Agent 作答超时（>{int(timeout_s)}s），恢复收尾也超时'
