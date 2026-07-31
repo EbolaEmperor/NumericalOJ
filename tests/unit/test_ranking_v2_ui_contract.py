@@ -1,6 +1,7 @@
 """打榜赛 UI-v2 的静态结构契约。"""
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -85,6 +86,34 @@ def test_ranking_detail_uses_v2_shell_and_real_navigation_state():
     assert '[data-ranking-panel][data-ranking-tab="batch_eval"]' not in script
     assert "cache.delete('batch_eval')" in script
     assert "当前页面有尚未保存的修改，确认离开吗？" in script
+
+
+def test_ranking_content_scroll_does_not_trap_panel_modals_under_backdrop():
+    stylesheet = _read(STATIC / "detail-v2.css")
+    rules_panel = _read(TEMPLATES / "settings" / "rules_panel.html")
+    endpoint_pool = _read(TEMPLATES / "settings" / "endpoint_pool.html")
+
+    content_scroll_rules = re.findall(
+        r"\.ranking-content-scroll\s*\{(?P<body>[^}]*)\}", stylesheet
+    )
+    assert content_scroll_rules
+    content_scroll_rules = "\n".join(content_scroll_rules)
+
+    # 这些弹窗位于滚动容器内，而 Bootstrap 的 backdrop 直接挂到 body。
+    # 容器不能创建 stacking context 或 fixed containing block，否则 backdrop
+    # 会盖住弹窗并拦截整个页面的交互。
+    assert 'id="ajRuleModal"' in rules_panel
+    assert 'id="ajeEditModal"' in endpoint_pool
+    for forbidden_property in (
+        "z-index:",
+        "transform:",
+        "filter:",
+        "perspective:",
+        "contain:",
+        "isolation:",
+        "will-change:",
+    ):
+        assert forbidden_property not in content_scroll_rules
 
 
 def test_ranking_dirty_guard_only_tracks_persisted_scopes():
