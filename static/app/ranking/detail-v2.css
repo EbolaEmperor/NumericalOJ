@@ -357,6 +357,43 @@
 .ranking-detail-v2 .ranking-v2-leaderboard .lb-user {
   display: grid;
   min-width: 0;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.ranking-detail-v2 .ranking-v2-leaderboard .lb-avatar {
+  --avatar-cell: var(--ranking-v2-ink);
+  display: grid;
+  width: 28px;
+  height: 28px;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 28px;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  place-items: stretch;
+  overflow: hidden;
+  padding: 2px;
+  border: 1px solid var(--ranking-v2-line);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.ranking-detail-v2 .ranking-v2-leaderboard .lb-avatar > span {
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+}
+
+.ranking-detail-v2 .ranking-v2-leaderboard .lb-avatar > span.is-filled {
+  background: var(--avatar-cell);
+}
+
+.ranking-detail-v2 .ranking-v2-leaderboard .lb-user-copy {
+  display: grid;
+  min-width: 0;
   gap: 4px;
 }
 
@@ -392,6 +429,20 @@
   overflow: hidden;
   color: var(--ranking-v2-ink-4);
   font: 9px/1.25 var(--ranking-v2-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-detail-v2 .ranking-v2-leaderboard .lb-harness {
+  display: inline-flex;
+  max-width: 220px;
+  align-items: center;
+  gap: 4px;
+  vertical-align: -0.15em;
+}
+
+.ranking-detail-v2 .ranking-v2-leaderboard .lb-harness > span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

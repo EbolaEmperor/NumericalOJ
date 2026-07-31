@@ -1,3 +1,4 @@
+    {% from 'ranking/components/harness_logo.html' import harness_logo %}
     {# ========== 排行榜 ========== #}
     {% if tab == 'leaderboard' %}
       {% set max_score = competition.max_score or 100 %}
@@ -39,18 +40,27 @@
                   {{ '%02d'|format(row.rank) }}
                 </span>
                 <span class="lb-user">
-                  <strong class="lb-username">
-                    <span>{{ row.username }}</span>
-                    {% if is_me %}<em class="lb-me-badge">YOU</em>{% endif %}
-                  </strong>
-                  <span class="lb-subs">
-                    {{ row.submission_count }} SUBMISSIONS
-                    {% if row.best_base_model %}
-                      · <span title="基座模型">{{ row.best_base_model }}</span>
-                    {% endif %}
-                    {% if is_reverse_judge and row.best_agent_endpoint_label %}
-                      · <span title="AI 节点">{{ row.best_agent_endpoint_label }}</span>
-                    {% endif %}
+                  <span class="numoj-avatar lb-avatar"
+                        role="img"
+                        data-avatar-seed="{{ row.username or 'numericaloj' }}"
+                        data-avatar-label="{{ row.username or '未知用户' }}"></span>
+                  <span class="lb-user-copy">
+                    <strong class="lb-username">
+                      <span>{{ row.username }}</span>
+                      {% if is_me %}<em class="lb-me-badge">YOU</em>{% endif %}
+                    </strong>
+                    <span class="lb-subs">
+                      {{ row.submission_count }} SUBMISSIONS
+                      {% if row.best_base_model %}
+                        · <span title="基座模型">{{ row.best_base_model }}</span>
+                      {% endif %}
+                      {% if row.best_agent_endpoint_label %}
+                        · <span class="lb-harness" title="AI 节点：{{ row.best_agent_endpoint_label }}">
+                          {{ harness_logo(row.best_agent_endpoint_harness) }}
+                          <span>{{ row.best_agent_endpoint_label }}</span>
+                        </span>
+                      {% endif %}
+                    </span>
                   </span>
                 </span>
                 <span class="lb-score-bar" aria-hidden="true">

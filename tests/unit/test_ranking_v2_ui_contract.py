@@ -157,6 +157,43 @@ def test_ranking_detail_function_rail_matches_global_sidebar_type_scale():
     assert "font-size: 11.5px" in stylesheet
 
 
+def test_harness_logos_follow_selected_endpoints_across_ranking_surfaces():
+    detail = _read(TEMPLATES / "detail.html")
+    submit = _read(TEMPLATES / "tabs" / "submit.html")
+    batch = _read(TEMPLATES / "tabs" / "batch_evaluate.html")
+    card = _read(TEMPLATES / "components" / "submission_card.html")
+    leaderboard = _read(TEMPLATES / "tabs" / "leaderboard.html")
+    choice_picker = _read(ROOT / "static" / "app" / "choice-picker.js")
+
+    assert "app/ranking/harness-logos.css" in detail
+    assert 'data-choice-icon="{{ harness_logo_class(ep.harness) }}"' in submit
+    assert 'data-choice-icon="{{ harness_logo_class(ep.harness) }}"' in batch
+    assert "harness_logo(s.agent_endpoint_harness)" in card
+    assert "harness_logo(row.best_agent_endpoint_harness)" in leaderboard
+    assert "icon.className = 'fas ' +" in choice_picker
+    assert "selected.getAttribute('data-choice-icon')" in choice_picker
+
+    bound_harness_regions = "\n".join((submit, batch, card, leaderboard))
+    assert "pi-brand-icon" not in bound_harness_regions
+
+
+def test_leaderboard_shows_identicon_avatar_and_best_harness_identity():
+    template = _read(TEMPLATES / "tabs" / "leaderboard.html")
+    stylesheet = _read(STATIC / "detail-v2.css")
+    script = _read(STATIC / "detail-v2.js")
+
+    assert 'class="numoj-avatar lb-avatar"' in template
+    assert 'role="img"' in template
+    assert 'data-avatar-seed="{{ row.username or \'numericaloj\' }}"' in template
+    assert 'class="lb-harness"' in template
+    assert "row.best_agent_endpoint_label" in template
+    assert ".ranking-v2-leaderboard .lb-avatar" in stylesheet
+    assert "grid-template-columns: repeat(8, 1fr);" in stylesheet
+    assert ".ranking-v2-leaderboard .lb-harness" in stylesheet
+    assert "paintIdenticons(root);" in script
+    assert "paintIdenticons(oldBoard);" in script
+
+
 def test_ranking_description_keeps_accepted_width_and_centers_it():
     stylesheet = _read(STATIC / "content-v2.css")
 

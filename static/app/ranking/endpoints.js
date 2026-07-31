@@ -101,10 +101,8 @@
     return 'Claude Code';
   }
   function harnessIcon(h){
-    if (h === 'codex') return 'fa-code';
-    if (h === 'opencode') return 'fa-terminal';
-    if (h === 'pi') return 'fa-code-branch';
-    return 'fa-robot';
+    var key = (h === 'codex' || h === 'opencode' || h === 'pi') ? h : 'claude-code';
+    return 'harness-logo harness-logo--' + key;
   }
   function createChoicePicker(config){
     return window.ChoicePicker.create({
@@ -191,7 +189,7 @@
       var st = normalizeStatus(e);
       h += '<div class="aje-card' + statusClass(st) + '" data-i="' + i + '">' +
         '<div class="aje-card-top">' +
-          '<div class="aje-harness"><i class="fas ' + harnessIcon(harness) + '"></i><span>' + esc(harnessLabel(harness)) + '</span></div>' +
+          '<div class="aje-harness"><i class="' + harnessIcon(harness) + '" aria-hidden="true"></i><span>' + esc(harnessLabel(harness)) + '</span></div>' +
           '<span class="aje-state">' + statusLabel(st) + '</span>' +
         '</div>' +
         '<div class="aje-card-main">' +
