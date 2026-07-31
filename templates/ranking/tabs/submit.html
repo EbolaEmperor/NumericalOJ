@@ -1,3 +1,4 @@
+    {% from 'ranking/components/harness_logo.html' import harness_logo, harness_logo_class %}
     {# ========== 提交作品 ========== #}
     {% if tab == 'submit' %}
       {% set max_score = competition.max_score or 100 %}
@@ -34,10 +35,13 @@
           {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else ('Pi' if _h == 'pi' else _h))) -%}
           {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
         {%- endmacro %}
-        {% set rj_ep = namespace(default='', count=0) %}
+        {% set rj_ep = namespace(default='', default_harness='claude_code', count=0) %}
         {% for ep in aj_endpoints %}
           {% if (ep.status or '') == 'enabled' %}
-            {% if not rj_ep.default %}{% set rj_ep.default = ep.id|string %}{% endif %}
+            {% if not rj_ep.default %}
+              {% set rj_ep.default = ep.id|string %}
+              {% set rj_ep.default_harness = ep.harness or 'claude_code' %}
+            {% endif %}
             {% set rj_ep.count = rj_ep.count + 1 %}
           {% endif %}
         {% endfor %}
@@ -76,7 +80,11 @@
               <button type="button" class="rk-choice-trigger" id="reverseAgentEndpointTrigger"
                       aria-haspopup="listbox" aria-expanded="false">
                 <span class="rk-choice-trigger-main">
-                  <i class="fas fa-robot" data-rk-choice-icon></i>
+                  {% if rj_ep.default %}
+                    <i class="{{ harness_logo_class(rj_ep.default_harness) }}" data-rk-choice-icon aria-hidden="true"></i>
+                  {% else %}
+                    <i class="fas fa-robot" data-rk-choice-icon aria-hidden="true"></i>
+                  {% endif %}
                   <span data-rk-choice-label>
                     {% if rj_ep.default %}
                       {% for ep in aj_endpoints %}{% if ep.id|string == rj_ep.default %}{{ rj_endpoint_label(ep) }}{% endif %}{% endfor %}
@@ -93,9 +101,9 @@
                           aria-selected="{% if ep.id|string == rj_ep.default %}true{% else %}false{% endif %}"
                           data-choice-value="{{ ep.id }}"
                           data-choice-label="{{ rj_endpoint_label(ep) }}"
-                          data-choice-icon="fa-robot">
+                          data-choice-icon="{{ harness_logo_class(ep.harness) }}">
                     <span class="rk-choice-option-main">
-                      <i class="fas fa-robot"></i>
+                      {{ harness_logo(ep.harness) }}
                       <span>
                         <span class="rk-choice-option-name">{{ rj_endpoint_label(ep) }}</span>
                       </span>

@@ -1,3 +1,4 @@
+    {% from 'ranking/components/harness_logo.html' import harness_logo, harness_logo_class %}
     {# ========== 批量评测（管理员 · Agent 评测 / 反向评测） ========== #}
     {% if tab == 'batch_eval' and is_admin and is_ai_judge %}
       {% macro bm_class_logo(c, class_name='bm-class-logo') -%}
@@ -27,10 +28,11 @@
           {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else ('Pi' if _h == 'pi' else _h))) -%}
           {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
         {%- endmacro %}
-        {% set bm_ep = namespace(default='') %}
+        {% set bm_ep = namespace(default='', default_harness='claude_code') %}
         {% for ep in aj_endpoints %}
           {% if (ep.status or '') == 'enabled' and not bm_ep.default %}
             {% set bm_ep.default = ep.id|string %}
+            {% set bm_ep.default_harness = ep.harness or 'claude_code' %}
           {% endif %}
         {% endfor %}
       {% endif %}
@@ -114,7 +116,11 @@
                     <button type="button" class="rk-choice-trigger bm-picker-trigger"
                             aria-haspopup="listbox" aria-expanded="false">
                       <span class="bm-picker-icon">
-                        <i class="fas fa-robot" data-rk-choice-icon></i>
+                        {% if bm_ep.default %}
+                          <i class="{{ harness_logo_class(bm_ep.default_harness) }}" data-rk-choice-icon aria-hidden="true"></i>
+                        {% else %}
+                          <i class="fas fa-robot" data-rk-choice-icon aria-hidden="true"></i>
+                        {% endif %}
                       </span>
                       <span class="bm-picker-current">
                         <strong data-rk-choice-label>
@@ -137,9 +143,9 @@
                                 aria-selected="{% if ep.id|string == bm_ep.default %}true{% else %}false{% endif %}"
                                 data-choice-value="{{ ep.id }}"
                                 data-choice-label="{{ bm_endpoint_label(ep) }}"
-                                data-choice-icon="fa-robot">
+                                data-choice-icon="{{ harness_logo_class(ep.harness) }}">
                           <span class="rk-choice-option-main">
-                            <i class="fas fa-robot"></i>
+                            {{ harness_logo(ep.harness) }}
                             <span class="rk-choice-option-name">{{ bm_endpoint_label(ep) }}</span>
                           </span>
                           <i class="fas fa-check rk-choice-option-check"></i>

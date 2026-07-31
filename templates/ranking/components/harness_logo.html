@@ -1,0 +1,13 @@
+{% macro harness_logo_key(harness) -%}
+  {%- set normalized = (harness or '')|lower|replace('_', '-') -%}
+  {{- normalized if normalized in ('codex', 'opencode', 'pi') else 'claude-code' -}}
+{%- endmacro %}
+
+{% macro harness_logo_class(harness) -%}
+  {{- 'harness-logo harness-logo--' ~ harness_logo_key(harness) -}}
+{%- endmacro %}
+
+{% macro harness_logo(harness, extra_class='') -%}
+  <i class="{{ harness_logo_class(harness) }}{% if extra_class %} {{ extra_class }}{% endif %}"
+     aria-hidden="true"></i>
+{%- endmacro %}

@@ -18,6 +18,16 @@ MODAL_TEMPLATE = (
     / "modals"
     / "reverse_judge_detail.html"
 ).read_text(encoding="utf-8")
+SETTINGS_STYLESHEET = (
+    ROOT / "static" / "app" / "ranking" / "settings.css"
+).read_text(encoding="utf-8")
+HARNESS_STYLESHEET = (
+    ROOT / "static" / "app" / "ranking" / "harness-logos.css"
+).read_text(encoding="utf-8")
+HARNESS_MACROS = (
+    ROOT / "templates" / "ranking" / "components" / "harness_logo.html"
+).read_text(encoding="utf-8")
+HARNESS_LOGOS = ROOT / "static" / "app" / "ranking" / "harness-logos"
 
 
 def test_shared_endpoint_modal_distinguishes_primary_and_quality_gate_pools():
@@ -50,6 +60,40 @@ def test_quality_gate_opencode_keeps_and_displays_configured_api_url():
 def test_shared_endpoint_modal_exposes_pi_as_openai_compatible_harness():
     assert 'data-choice-value="pi"' in TEMPLATE
     assert "if (h === 'pi') return 'Pi';" in TEMPLATE
+
+
+def test_harness_picker_and_cards_share_the_bound_brand_logo_contract():
+    assert "harness-logo--' + key" in TEMPLATE
+    assert "harness_logo_class('claude_code')" in TEMPLATE
+    for harness in ("claude_code", "codex", "opencode", "pi"):
+        assert f"harness_logo('{harness}')" in TEMPLATE
+
+    assert "normalized in ('codex', 'opencode', 'pi')" in HARNESS_MACROS
+    assert "else 'claude-code'" in HARNESS_MACROS
+    assert "pi-brand-icon" not in TEMPLATE
+    assert "pi-brand-icon" not in SETTINGS_STYLESHEET
+
+
+def test_harness_logos_are_local_monochrome_assets():
+    for name in ("claude-code", "codex", "opencode", "pi"):
+        logo = HARNESS_LOGOS / f"{name}.svg"
+        assert logo.is_file()
+        assert f'url("harness-logos/{name}.svg")' in HARNESS_STYLESHEET
+
+    claude = (HARNESS_LOGOS / "claude-code.svg").read_text(encoding="utf-8")
+    codex = (HARNESS_LOGOS / "codex.svg").read_text(encoding="utf-8")
+    opencode = (HARNESS_LOGOS / "opencode.svg").read_text(encoding="utf-8")
+    pi = (HARNESS_LOGOS / "pi.svg").read_text(encoding="utf-8")
+
+    assert 'fill="#000"' in claude
+    assert "#D97757" not in claude
+    assert '<svg fill="#000"' in codex
+    assert "currentColor" not in codex
+    assert "fill='#CFCECD'" in opencode
+    assert "fill='#211E1E'" in opencode
+    assert '<rect width="800"' not in pi
+    assert pi.count('fill="#000"') == 2
+    assert 'viewBox="140 140 520 520"' in pi
 
 
 def test_reverse_detail_hides_quality_gate_when_snapshot_marks_it_skipped():

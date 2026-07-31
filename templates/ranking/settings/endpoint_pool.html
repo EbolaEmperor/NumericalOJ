@@ -1,3 +1,4 @@
+      {% from 'ranking/components/harness_logo.html' import harness_logo, harness_logo_class %}
       <!-- Agent 评测模型端点池（多个 url+key，各带并发上限） -->
       <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
            data-ranking-dirty-managed data-ranking-dirty="false"
@@ -171,7 +172,7 @@
                     <button type="button" class="aje-harness-trigger" id="ajeHarnessTrigger"
                             aria-haspopup="listbox" aria-expanded="false">
                       <span class="aje-harness-trigger-main">
-                        <i class="fas fa-robot" id="ajeHarnessIcon"></i>
+                        <i class="{{ harness_logo_class('claude_code') }}" id="ajeHarnessIcon" aria-hidden="true"></i>
                         <span id="ajeHarnessLabel">Claude Code</span>
                       </span>
                       <i class="fas fa-chevron-down aje-harness-caret"></i>
@@ -179,9 +180,9 @@
                     <div class="aje-harness-menu" id="ajeHarnessMenu" role="listbox" aria-label="Agent Harness">
                       <button type="button" class="aje-harness-option active" role="option"
                               aria-selected="true" data-choice-value="claude_code"
-                              data-choice-label="Claude Code" data-choice-icon="fa-robot">
+                              data-choice-label="Claude Code" data-choice-icon="{{ harness_logo_class('claude_code') }}">
                         <span class="aje-harness-option-main">
-                          <i class="fas fa-robot"></i>
+                          {{ harness_logo('claude_code') }}
                           <span>
                             <span class="aje-harness-option-name">Claude Code</span>
                           </span>
@@ -190,9 +191,9 @@
                       </button>
                       <button type="button" class="aje-harness-option" role="option"
                               aria-selected="false" data-choice-value="codex"
-                              data-choice-label="Codex" data-choice-icon="fa-code">
+                              data-choice-label="Codex" data-choice-icon="{{ harness_logo_class('codex') }}">
                         <span class="aje-harness-option-main">
-                          <i class="fas fa-code"></i>
+                          {{ harness_logo('codex') }}
                           <span>
                             <span class="aje-harness-option-name">Codex</span>
                           </span>
@@ -201,9 +202,9 @@
                       </button>
                       <button type="button" class="aje-harness-option" role="option"
                               aria-selected="false" data-choice-value="opencode"
-                              data-choice-label="opencode" data-choice-icon="fa-terminal">
+                              data-choice-label="opencode" data-choice-icon="{{ harness_logo_class('opencode') }}">
                         <span class="aje-harness-option-main">
-                          <i class="fas fa-terminal"></i>
+                          {{ harness_logo('opencode') }}
                           <span>
                             <span class="aje-harness-option-name">opencode</span>
                           </span>
@@ -212,9 +213,9 @@
                       </button>
                       <button type="button" class="aje-harness-option" role="option"
                               aria-selected="false" data-choice-value="pi"
-                              data-choice-label="Pi" data-choice-icon="fa-code-branch">
+                              data-choice-label="Pi" data-choice-icon="{{ harness_logo_class('pi') }}">
                         <span class="aje-harness-option-main">
-                          <i class="fas fa-code-branch"></i>
+                          {{ harness_logo('pi') }}
                           <span>
                             <span class="aje-harness-option-name">Pi</span>
                           </span>

@@ -1,3 +1,4 @@
+{% from 'ranking/components/harness_logo.html' import harness_logo %}
 {# 提交卡片宏：被「我的历史提交」与「所有提交」复用。扁平化设计（无阴影/渐变）。
    参数：s=提交记录, competition, is_elo, is_agent_judge, max_score,
         show_user=是否显示用户身份, show_delete=是否显示删除(管理员视图),
@@ -51,9 +52,9 @@
     <div class="aj-sub-r2">
       <div class="aj-sub-meta">
         <span class="aj-time">{{ s.created_at }}</span>
-        {% if is_reverse_judge and s.agent_endpoint_label %}
+        {% if s.agent_endpoint_label %}
         <span class="aj-card-meta" title="AI 节点：{{ s.agent_endpoint_label }}">
-          <i class="fas fa-robot" aria-hidden="true"></i>
+          {{ harness_logo(s.agent_endpoint_harness) }}
           <span>{{ s.agent_endpoint_label }}</span>
         </span>
         {% endif %}

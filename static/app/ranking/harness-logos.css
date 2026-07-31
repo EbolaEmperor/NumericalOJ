@@ -1,0 +1,45 @@
+.harness-logo {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  min-width: 1em;
+  flex: 0 0 1em;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  font-style: normal;
+  line-height: 1;
+  vertical-align: -0.14em;
+}
+
+.harness-logo::before {
+  content: none !important;
+}
+
+.harness-logo--claude-code {
+  background-image: url("harness-logos/claude-code.svg");
+}
+
+.harness-logo--codex {
+  background-image: url("harness-logos/codex.svg");
+}
+
+.harness-logo--opencode {
+  background-image: url("harness-logos/opencode.svg");
+}
+
+.harness-logo--pi {
+  background-image: url("harness-logos/pi.svg");
+}
+
+.rk-choice .harness-logo,
+.aje-harness .harness-logo,
+.aje-harness-option .harness-logo,
+.aje-harness-trigger .harness-logo {
+  font-size: 16px;
+}
+
+.ranking-v2-detail .aj-card-meta > .harness-logo,
+.lb-harness .harness-logo {
+  font-size: 12px;
+}
