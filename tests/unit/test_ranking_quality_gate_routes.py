@@ -230,14 +230,29 @@ def test_public_answer_endpoints_are_enabled_primary_pool_whitelist():
             "model": "private-gate-model",
             "status": "enabled",
         },
+        {
+            "id": 14,
+            "pool_kind": "primary",
+            "harness": "pi",
+            "model": "pi-answer-model",
+            "status": "enabled",
+        },
     ]
 
-    assert _public_answer_endpoints(endpoints) == [{
-        "id": 11,
-        "harness": "codex",
-        "model": "answer-model",
-        "label": "Codex (answer-model)",
-    }]
+    assert _public_answer_endpoints(endpoints) == [
+        {
+            "id": 11,
+            "harness": "codex",
+            "model": "answer-model",
+            "label": "Codex (answer-model)",
+        },
+        {
+            "id": 14,
+            "harness": "pi",
+            "model": "pi-answer-model",
+            "label": "Pi (pi-answer-model)",
+        },
+    ]
 
 
 def test_public_competition_detail_exposes_safe_reverse_answer_endpoints(monkeypatch):

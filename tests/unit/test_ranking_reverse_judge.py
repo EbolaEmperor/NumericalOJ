@@ -543,6 +543,233 @@ def test_collect_codex_trace_messages_extracts_reply_reasoning_and_tool(tmp_path
     ]
 
 
+def test_collect_pi_session_trace_renders_completed_semantic_events_only(tmp_path):
+    trace = tmp_path / "trace"
+    sessions = trace / ".pi" / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    image_payload = "base64-image-must-not-enter-snapshot"
+    opaque_payload = "opaque-non-text-must-not-enter-snapshot"
+    events = [
+        {
+            "type": "session",
+            "version": 3,
+            "id": "session-1",
+            "timestamp": "2026-07-31T08:00:00.000Z",
+            "cwd": "/workspace",
+        },
+        {
+            # Pi JSON mode 的流式事件不是原生 session entry，必须忽略。
+            "type": "message_update",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "不应渲染的 token delta"}],
+            },
+        },
+        {
+            "type": "message",
+            "id": "assistant-1",
+            "parentId": None,
+            "timestamp": "2026-07-31T08:00:01.000Z",
+            "message": {
+                "role": "assistant",
+                "model": "qwen3-coder",
+                "content": [
+                    {"type": "text", "text": "先检查 **输入**。"},
+                    {"type": "thinking", "thinking": "需要覆盖空输入。"},
+                    {
+                        "type": "toolCall",
+                        "id": "call-1",
+                        "name": "bash",
+                        "arguments": {"command": "python3 solve.py"},
+                    },
+                ],
+                "stopReason": "toolUse",
+            },
+        },
+        {
+            "type": "message",
+            "id": "tool-result-1",
+            "parentId": "assistant-1",
+            "timestamp": "2026-07-31T08:00:02.000Z",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+                "content": [
+                    {"type": "text", "text": "case 1: passed"},
+                    {"type": "image", "data": image_payload, "mimeType": "image/png"},
+                    {"type": "custom", "payload": opaque_payload},
+                ],
+                "isError": False,
+            },
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "不应重复渲染"}],
+            },
+        },
+    ]
+    path = sessions / "reverse_solve_combined.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = rjdb._collect_trace_messages(str(trace))
+    raw_files = rjdb._collect_trace_files(str(trace))
+
+    projected_messages = _without_trace_identity(messages)
+    rendered_html = [
+        message.pop("html")
+        for message in projected_messages
+        if message["kind"] in {"assistant", "thinking"}
+    ]
+    assert projected_messages == [
+        {
+            "kind": "assistant",
+            "title": "AI 回复",
+            "text": "先检查 **输入**。",
+            "meta": "qwen3-coder",
+            "line": 3,
+        },
+        {
+            "kind": "thinking",
+            "title": "思考片段",
+            "text": "需要覆盖空输入。",
+            "meta": "qwen3-coder",
+            "line": 3,
+        },
+        {
+            "kind": "tool",
+            "title": "运行命令",
+            "text": "命令：\npython3 solve.py",
+            "meta": "Bash",
+            "format": "text",
+            "line": 3,
+        },
+        {
+            "kind": "tool_result",
+            "title": "工具结果",
+            "text": "case 1: passed\n\n（已省略图片或非文本内容）",
+            "meta": "bash",
+            "format": "text",
+            "is_error": False,
+            "line": 4,
+        },
+    ]
+    assert len(rendered_html) == 2
+    assert all("<script" not in html.lower() for html in rendered_html)
+    assert [(message["source"], message["event_index"]) for message in messages] == [
+        ("pi", 0), ("pi", 1), ("pi", 2), ("pi", 0),
+    ]
+    assert len({message["offset"] for message in messages[:3]}) == 1
+    assert messages[3]["offset"] > messages[2]["offset"]
+    projected = json.dumps(messages, ensure_ascii=False)
+    assert image_payload not in projected
+    assert opaque_payload not in projected
+    assert "token delta" not in projected
+    assert "不应重复渲染" not in projected
+
+    # Pi 原始 JSONL 保持原样落盘，但不得进入 snapshot / SSE 的 raw trace 投影。
+    assert raw_files == []
+    raw_text = path.read_text(encoding="utf-8")
+    assert image_payload in raw_text
+    assert opaque_payload in raw_text
+
+
+def test_collect_pi_trace_discovers_native_nested_session_and_bounds_tool_results(
+        tmp_path):
+    trace = tmp_path / "trace"
+    session_dir = trace / ".pi" / "agent" / "sessions" / "--workspace--"
+    session_dir.mkdir(parents=True)
+    long_text = "x" * 2000
+    events = [
+        {
+            "type": "session",
+            "version": 3,
+            "id": "session-native",
+            "timestamp": "2026-07-31T08:00:00.000Z",
+            "cwd": "/workspace",
+        },
+        {
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                # 缺少 toolName/toolCallId 仍应安全降级，不得丢掉可见文本。
+                "content": [
+                    {"type": "text", "text": long_text},
+                    {"type": "image", "data": "do-not-project"},
+                ],
+                "isError": True,
+            },
+        },
+        {
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "toolCall"}],
+            },
+        },
+    ]
+    path = session_dir / "2026-07-31T08-00-00_session-native.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    # 同目录的普通 JSONL 不能抢占原生 session。
+    (session_dir / "newer-no-session-header.jsonl").write_text(
+        json.dumps({"type": "message", "message": {"role": "assistant"}}),
+        encoding="utf-8",
+    )
+
+    messages = rjdb._collect_trace_messages(str(trace))
+
+    assert len(messages) == 2
+    result = messages[0]
+    assert result["kind"] == "tool_result"
+    assert result["title"] == "工具执行失败"
+    assert result["is_error"] is True
+    assert len(result["text"]) <= 1200
+    assert result["text"].endswith("（已省略图片或非文本内容）")
+    assert "do-not-project" not in json.dumps(messages, ensure_ascii=False)
+    assert messages[1]["kind"] == "tool"
+    assert messages[1]["title"] == "调用 工具"
+    assert all(message["source"] == "pi" for message in messages)
+
+
+def test_collect_pi_trace_keeps_existing_tail_and_message_count_limits(tmp_path):
+    trace = tmp_path / "trace"
+    sessions = trace / ".pi" / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    events = [{
+        "type": "session",
+        "version": 3,
+        "id": "bounded-session",
+        "cwd": "/workspace",
+    }]
+    events.extend({
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": f"message-{index}"}],
+        },
+    } for index in range(260))
+    path = sessions / "reverse_solve_combined.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = rjdb._collect_pi_trace_messages(str(path))
+
+    assert len(messages) == rjdb._TRACE_MAX_MESSAGES == 240
+    assert messages[0]["text"] == "message-20"
+    assert messages[-1]["text"] == "message-259"
+    assert rjdb._TRACE_JSONL_PARSE_MAX_BYTES == 2 * 1024 * 1024
+
+
 # 质量门禁新增逻辑：保持本文件既有 pytest + monkeypatch 风格，所有外部 I/O 都在
 # 被测模块导入位置打桩。
 import hashlib

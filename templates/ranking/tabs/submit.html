@@ -31,7 +31,7 @@
         {% if is_reverse_judge %}
         {% macro rj_endpoint_label(ep) -%}
           {%- set _h = ep.harness or 'claude_code' -%}
-          {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else _h)) -%}
+          {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else ('Pi' if _h == 'pi' else _h))) -%}
           {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
         {%- endmacro %}
         {% set rj_ep = namespace(default='', count=0) %}

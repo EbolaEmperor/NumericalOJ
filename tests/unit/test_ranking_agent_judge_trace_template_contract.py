@@ -94,6 +94,25 @@ def test_shared_renderer_reconciles_by_stable_source_offset_identity():
     assert "querySelectorAll('[id], [name]')" in TRACE_RENDERER
 
 
+def test_shared_renderer_supports_escaped_pi_tool_results():
+    assert "if (message.kind === 'tool_result') return 'tool_result';" in TRACE_RENDERER
+    assert "if (kind === 'tool_result') return 'fa-square-check';" in TRACE_RENDERER
+    assert "kind === 'tool_result' ? '工具结果'" in TRACE_RENDERER
+    assert ".rj-msg.tool-result" in TRACE_RENDERER
+    assert ".rj-tool-result-summary" in TRACE_RENDERER
+    assert ".rj-tool-result-text" in TRACE_RENDERER
+    assert "message.is_error ? ' error' : ''" in TRACE_RENDERER
+    # tool_result 只走纯文本转义；Markdown HTML 入口仍仅限服务端已清洗的回复/思考。
+    assert (
+        "'<div class=\"rj-msg-body rj-tool-result-text\">' + "
+        "esc(message.text || '') + '</div>'"
+    ) in TRACE_RENDERER
+    rich_html_guard = (
+        "if ((kind === 'assistant' || kind === 'thinking') && message.html)"
+    )
+    assert rich_html_guard in TRACE_RENDERER
+
+
 def test_shared_renderer_repairs_backfill_and_keeps_sliding_window_history():
     node = shutil.which("node")
     if not node:

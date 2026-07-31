@@ -1070,6 +1070,8 @@ def _agent_endpoint_harness_label(harness):
         return 'Codex'
     if value == 'opencode':
         return 'OpenCode'
+    if value == 'pi':
+        return 'Pi'
     return str(harness or '').strip()
 
 

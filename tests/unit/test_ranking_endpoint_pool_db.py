@@ -296,6 +296,32 @@ def test_primary_opencode_pool_keeps_legacy_default_url_and_model():
     assert normalized[0]["model"] == endpoint_db.DEFAULT_OPENCODE_GO_MODEL
 
 
+@pytest.mark.parametrize("value", ["pi", "pi-agent", "pi_agent", " PI-Agent "])
+def test_pi_harness_aliases_normalize_to_canonical_value(value):
+    assert endpoint_db.normalize_agent_harness(value) == endpoint_db.HARNESS_PI
+
+
+def test_pi_endpoint_requires_explicit_model():
+    with pytest.raises(ValueError, match='Pi 端点模型不能为空'):
+        endpoint_db._normalize_endpoint_items(
+            endpoint_db.ENDPOINT_POOL_PRIMARY,
+            [{
+                'harness': 'pi',
+                'base_url': 'https://pi.example/v1',
+                'api_key': 'secret',
+            }],
+            [],
+        )
+
+
+@pytest.mark.parametrize("value", [None, "", "unknown-agent"])
+def test_unknown_or_empty_harness_keeps_claude_code_fallback(value):
+    assert (
+        endpoint_db.normalize_agent_harness(value)
+        == endpoint_db.HARNESS_CLAUDE_CODE
+    )
+
+
 def test_endpoint_api_key_rejects_header_control_characters():
     with pytest.raises(ValueError, match="控制字符"):
         endpoint_db._normalize_endpoint_items(

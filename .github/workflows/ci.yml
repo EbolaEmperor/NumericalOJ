@@ -121,6 +121,7 @@ jobs:
       REDIS_PORT: '6379'
       REDIS_DB: '15'
       JUDGER_DOCKER_IMAGE: numericaloj-judger-lite:latest
+      NUMOJ_PI_AGENT_JUDGE_IMAGE: numericaloj-agent-judge-lite:latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -166,6 +167,15 @@ jobs:
           tags: numericaloj-judger-lite:latest
           cache-from: type=gha,scope=judger-lite
           cache-to: type=gha,mode=max,scope=judger-lite
+      - name: Build the Agent Judge lite image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker
+          file: docker/agent_judge-lite/Dockerfile
+          load: true
+          tags: numericaloj-agent-judge-lite:latest
+          cache-from: type=gha,scope=agent-judge-lite
+          cache-to: type=gha,mode=max,scope=agent-judge-lite
       - name: Run CLI and Docker end-to-end tests
         run: bash tests/ci/run-ci.sh tests/e2e
       - name: Upload integration test reports

@@ -213,3 +213,233 @@ def test_opencode_audit_mode_denies_all_except_evidence_read_tools(monkeypatch):
         "OPENCODE_DISABLE_LSP_DOWNLOAD",
         "OPENCODE_DISABLE_MODELS_FETCH",
     ))
+
+
+def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    session_dir = config_dir / "sessions"
+    calls = []
+    recorded = []
+    resume_id = "44444444-4444-4444-4444-444444444444"
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://answer-model-proxy:18080/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
+    monkeypatch.setenv("OPENAI_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("AJ_RESUME_SESSION_ID", resume_id)
+    monkeypatch.setenv("AJ_PHASE", "reverse_solve")
+
+    def run(args, env=None, input_text=None, stdout_session_only=False):
+        calls.append((
+            list(args), dict(env or {}), input_text, stdout_session_only,
+        ))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"type":"session","version":3,'
+                '"id":"44444444-4444-4444-4444-444444444444"}\n'
+                '{"type":"agent_end","messages":[]}\n'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(
+        module,
+        "_record_session",
+        lambda *args: recorded.append(args) or resume_id,
+    )
+
+    assert module._run_pi("solve prompt") == 0
+
+    args, env, input_text, stdout_session_only = calls[0]
+    assert args[:3] == ["pi", "--mode", "json"]
+    assert args[args.index("--provider") + 1] == "agent-judge"
+    assert args[args.index("--model") + 1] == "deepseek-v4-flash"
+    assert args[args.index("--session") + 1] == resume_id
+    assert args[-1] == "solve prompt"
+    assert input_text is None
+    assert stdout_session_only is True
+    for flag in (
+        "--no-approve",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+    ):
+        assert flag in args
+    assert "--thinking" not in args
+    assert "--tools" not in args
+    assert env["PI_API_KEY"] == "temporary-token"
+    assert env["PI_CODING_AGENT_DIR"] == str(config_dir)
+    assert env["PI_CODING_AGENT_SESSION_DIR"] == str(session_dir)
+    assert env["PI_OFFLINE"] == "1"
+    assert env["PI_TELEMETRY"] == "0"
+    assert env["PI_SKIP_VERSION_CHECK"] == "1"
+    config = json.loads((config_dir / "models.json").read_text(encoding="utf-8"))
+    provider = config["providers"]["agent-judge"]
+    assert provider == {
+        "baseUrl": "http://answer-model-proxy:18080/v1",
+        "api": "openai-completions",
+        "apiKey": "$PI_API_KEY",
+        "authHeader": True,
+        "compat": {
+            "supportsStore": False,
+            "maxTokensField": "max_tokens",
+        },
+        "models": [{
+            "id": "deepseek-v4-flash",
+            "name": "deepseek-v4-flash",
+        }],
+    }
+    assert "reasoning" not in json.dumps(config)
+    assert recorded[0][0] == "pi"
+    assert recorded[0][2] == resume_id
+
+
+@pytest.mark.parametrize("missing_name", [
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+])
+def test_pi_requires_complete_openai_endpoint(monkeypatch, missing_name):
+    module = _load_run_harness()
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    monkeypatch.setenv("OPENAI_MODEL", "model")
+    monkeypatch.delenv(missing_name)
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *_args, **_kwargs: pytest.fail("配置不完整时不得启动 Pi"),
+    )
+
+    assert module._run_pi("solve") == 2
+
+
+def test_pi_session_header_id_is_recorded_with_existing_minimal_schema(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    state_path = tmp_path / "session.json"
+    session_id = "55555555-5555-5555-5555-555555555555"
+    monkeypatch.setenv("AJ_SESSION_STATE", str(state_path))
+    monkeypatch.setenv("AJ_PHASE", "reverse_solve")
+    proc = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            f'{{"type":"session","version":3,"id":"{session_id}"}}\n'
+            '{"type":"agent_end","messages":[{"role":"assistant","content":"done"}]}\n'
+        ),
+        stderr="",
+    )
+
+    assert module._record_session("pi", proc) == session_id
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {
+        "harness": "pi",
+        "phase": "reverse_solve",
+        "session_id": session_id,
+        "resume_session_id": "",
+        "returncode": 0,
+    }
+
+
+def test_run_preserves_pi_session_id_when_header_falls_out_of_tail_capture(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    session_id = "66666666-6666-6666-6666-666666666666"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            f"print('{{\"type\":\"session\",\"version\":3,\"id\":\"{session_id}\"}}');"
+            "print('x' * 4096)"
+        ),
+    ]
+    env = dict(
+        os.environ,
+        AJ_WORKSPACE=str(tmp_path),
+        AJ_CAPTURE_MAX_CHARS="1024",
+    )
+
+    proc = module._run(command, env=env)
+
+    assert session_id not in proc.stdout
+    assert proc.aj_session_id == session_id
+
+
+def test_run_can_forward_only_pi_session_header_while_consuming_json_stream(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    session_id = "77777777-7777-7777-7777-777777777777"
+    writes = []
+
+    class Recorder:
+        def write(self, value):
+            writes.append(value)
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(module.sys, "stdout", Recorder())
+    command = [
+        sys.executable,
+        "-c",
+        (
+            f"print('{{\"type\":\"session\",\"version\":3,\"id\":\"{session_id}\"}}');"
+            "print('{\"type\":\"message_update\",\"delta\":\"model-controlled\"}');"
+            "print('{\"type\":\"agent_end\"}')"
+        ),
+    ]
+    env = dict(os.environ, AJ_WORKSPACE=str(tmp_path))
+
+    proc = module._run(command, env=env, stdout_session_only=True)
+
+    relayed = "".join(writes)
+    assert proc.returncode == 0
+    assert proc.aj_session_id == session_id
+    assert relayed == (
+        f'{{"type":"session","version":3,"id":"{session_id}"}}\n'
+    )
+    assert "message_update" not in relayed
+    assert "agent_end" not in relayed
+
+
+@pytest.mark.parametrize("alias", ["pi", "pi-agent", "pi_agent"])
+def test_main_dispatches_pi_aliases(monkeypatch, alias):
+    module = _load_run_harness()
+    calls = []
+    monkeypatch.setenv("AJ_HARNESS", alias)
+    monkeypatch.setenv("AJ_PROMPT", "solve")
+    monkeypatch.setattr(
+        module,
+        "_run_pi",
+        lambda prompt: calls.append(prompt) or 0,
+    )
+
+    assert module.main() == 0
+    assert calls == ["solve"]
+
+
+@pytest.mark.parametrize("value", ["", "unknown-harness"])
+def test_main_keeps_legacy_claude_fallback_for_empty_or_unknown_harness(
+        monkeypatch, value):
+    module = _load_run_harness()
+    calls = []
+    monkeypatch.setenv("AJ_HARNESS", value)
+    monkeypatch.setenv("AJ_PROMPT", "solve")
+    monkeypatch.setattr(
+        module,
+        "_run_claude_code",
+        lambda prompt: calls.append(prompt) or 0,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_pi",
+        lambda _prompt: pytest.fail("未知 harness 不能误入 Pi 分支"),
+    )
+
+    assert module.main() == 0
+    assert calls == ["solve"]
