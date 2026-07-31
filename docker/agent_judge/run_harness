@@ -12,6 +12,9 @@ import threading
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_GO_MODEL = "mimo-v2.5-pro"
+PI_PROVIDER_NAME = "agent-judge"
+PI_CONFIG_DIR = "/home/node/.pi/agent"
+PI_SESSION_DIR = "/home/node/.pi/agent/sessions"
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
@@ -20,6 +23,21 @@ SESSION_KEYS = {
     "thread_id", "threadId",
 }
 CLAUDE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def _pi_session_header_line(text):
+    for raw_line in str(text or "").splitlines(keepends=True):
+        try:
+            event = json.loads(raw_line.strip())
+        except Exception:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "session":
+            continue
+        session_id = str(event.get("id") or "").strip()
+        if not UUID_RE.fullmatch(session_id):
+            continue
+        return raw_line if raw_line.endswith(("\n", "\r")) else raw_line + "\n"
+    return ""
 
 
 def _prompt_from_env():
@@ -34,7 +52,7 @@ def _prompt_from_env():
     return os.environ.get("AJ_PROMPT") or ""
 
 
-def _run(args, env=None, input_text=None):
+def _run(args, env=None, input_text=None, stdout_session_only=False):
     run_env = env or os.environ.copy()
     if shutil.which(args[0], path=run_env.get("PATH")) is None:
         print(f"{args[0]} CLI is not installed in this Agent-as-Judge image", file=sys.stderr)
@@ -52,6 +70,8 @@ def _run(args, env=None, input_text=None):
     stdout_chunks = deque()
     stderr_chunks = deque()
     captured_sizes = {"stdout": 0, "stderr": 0}
+    discovered_session = {"id": ""}
+    forwarded_session = {"done": False}
 
     def _remember(chunks, key, chunk):
         chunks.append(chunk)
@@ -67,8 +87,21 @@ def _run(args, env=None, input_text=None):
     def _relay(source, target, chunks, key):
         try:
             for chunk in iter(lambda: source.readline(65536), ""):
+                session_header = ""
+                if key == "stdout":
+                    session_header = _pi_session_header_line(chunk)
+                    if not discovered_session["id"]:
+                        discovered_session["id"] = (
+                            _extract_session_id(session_header or chunk) or ""
+                        )
                 _remember(chunks, key, chunk)
-                target.write(chunk)
+                if key == "stdout" and stdout_session_only:
+                    if not session_header or forwarded_session["done"]:
+                        continue
+                    forwarded_session["done"] = True
+                    target.write(session_header)
+                else:
+                    target.write(chunk)
                 target.flush()
         finally:
             source.close()
@@ -95,13 +128,21 @@ def _run(args, env=None, input_text=None):
     returncode = proc.wait()
     stdout_thread.join()
     stderr_thread.join()
-    return subprocess.CompletedProcess(
+    completed = subprocess.CompletedProcess(
         args, returncode, "".join(stdout_chunks), "".join(stderr_chunks),
     )
+    completed.aj_session_id = discovered_session["id"]
+    return completed
 
 
 def _walk_json_session_id(obj):
     if isinstance(obj, dict):
+        if (
+            str(obj.get("type") or "").strip().lower() == "session"
+            and isinstance(obj.get("id"), str)
+            and UUID_RE.search(obj["id"])
+        ):
+            return UUID_RE.search(obj["id"]).group(0)
         for key, value in obj.items():
             if key in SESSION_KEYS and isinstance(value, str) and UUID_RE.search(value):
                 return UUID_RE.search(value).group(0)
@@ -144,7 +185,11 @@ def _extract_session_id(text):
 
 def _record_session(harness, proc, resume_session_id=None):
     text = (getattr(proc, "stdout", "") or "") + "\n" + (getattr(proc, "stderr", "") or "")
-    session_id = _extract_session_id(text) or (resume_session_id or "")
+    session_id = (
+        getattr(proc, "aj_session_id", "")
+        or _extract_session_id(text)
+        or (resume_session_id or "")
+    )
     if not session_id:
         return ""
     state_path = os.environ.get("AJ_SESSION_STATE") or "/workspace/.aj_session_state.json"
@@ -312,6 +357,80 @@ def _run_opencode(prompt):
     return proc.returncode
 
 
+def _write_pi_models_config(config_dir, base_url, model):
+    os.makedirs(config_dir, exist_ok=True)
+    config = {
+        "providers": {
+            PI_PROVIDER_NAME: {
+                "baseUrl": base_url,
+                "api": "openai-completions",
+                "apiKey": "$PI_API_KEY",
+                "authHeader": True,
+                "compat": {
+                    "supportsStore": False,
+                    "maxTokensField": "max_tokens",
+                },
+                "models": [
+                    {
+                        "id": model,
+                        "name": model,
+                    },
+                ],
+            },
+        },
+    }
+    with open(os.path.join(config_dir, "models.json"), "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False)
+
+
+def _run_pi(prompt):
+    base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
+    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    model = (os.environ.get("OPENAI_MODEL") or "").strip()
+    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
+    if not base_url or not api_key or not model:
+        print(
+            "pi harness requires OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL",
+            file=sys.stderr,
+        )
+        return 2
+
+    _write_pi_models_config(PI_CONFIG_DIR, base_url, model)
+    os.makedirs(PI_SESSION_DIR, exist_ok=True)
+    env = os.environ.copy()
+    env.update({
+        "PI_API_KEY": api_key,
+        "PI_CODING_AGENT_DIR": PI_CONFIG_DIR,
+        "PI_CODING_AGENT_SESSION_DIR": PI_SESSION_DIR,
+        "PI_OFFLINE": "1",
+        "PI_TELEMETRY": "0",
+        "PI_SKIP_VERSION_CHECK": "1",
+    })
+    args = [
+        "pi",
+        "--mode", "json",
+        "--provider", PI_PROVIDER_NAME,
+        "--model", model,
+        "--no-approve",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+    ]
+    if resume_session_id:
+        args.extend(["--session", resume_session_id])
+    args.append(prompt)
+    phase = str(os.environ.get("AJ_PHASE") or "").strip().lower()
+    proc = _run(
+        args,
+        env,
+        stdout_session_only=phase in {"reverse_solve", "reverse_finalize"},
+    )
+    _record_session("pi", proc, resume_session_id)
+    return proc.returncode
+
+
 def _run_claude_code(prompt):
     model = (os.environ.get("ANTHROPIC_MODEL") or "").strip()
     resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
@@ -359,10 +478,14 @@ def _run_claude_code(prompt):
 def main():
     prompt = _prompt_from_env()
     harness = (os.environ.get("AJ_HARNESS") or "claude_code").strip().lower().replace("-", "_")
+    if harness == "pi_agent":
+        harness = "pi"
     if harness == "codex":
         return _run_codex(prompt)
     if harness == "opencode":
         return _run_opencode(prompt)
+    if harness == "pi":
+        return _run_pi(prompt)
     return _run_claude_code(prompt)
 
 

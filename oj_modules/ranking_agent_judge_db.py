@@ -20,7 +20,13 @@ _aj_tables_ready = False
 HARNESS_CLAUDE_CODE = 'claude_code'
 HARNESS_CODEX = 'codex'
 HARNESS_OPENCODE = 'opencode'
-ALLOWED_AGENT_HARNESSES = (HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE)
+HARNESS_PI = 'pi'
+ALLOWED_AGENT_HARNESSES = (
+    HARNESS_CLAUDE_CODE,
+    HARNESS_CODEX,
+    HARNESS_OPENCODE,
+    HARNESS_PI,
+)
 DEFAULT_OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
 DEFAULT_OPENCODE_GO_MODEL = 'mimo-v2.5-pro'
 ENDPOINT_STATUS_ENABLED = 'enabled'
@@ -43,6 +49,8 @@ _AGENT_TRACE_SUBDIR = 'agent_judge_trace'
 
 def normalize_agent_harness(value):
     harness = str(value or '').strip().lower().replace('-', '_')
+    if harness == 'pi_agent':
+        harness = HARNESS_PI
     return harness if harness in ALLOWED_AGENT_HARNESSES else HARNESS_CLAUDE_CODE
 
 
@@ -256,6 +264,8 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
         if (pool_kind == ENDPOINT_POOL_PRIMARY
                 and harness == HARNESS_OPENCODE and not model):
             model = DEFAULT_OPENCODE_GO_MODEL
+        if harness == HARNESS_PI and not model:
+            raise ValueError('Pi 端点模型不能为空')
         if pool_kind == ENDPOINT_POOL_QUALITY_GATE and not model:
             raise ValueError('质量门禁端点模型不能为空')
         if model and len(model) > 128:
