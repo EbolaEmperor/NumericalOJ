@@ -3,18 +3,34 @@
 """Dispatch Agent-as-Judge runs to the selected CLI harness."""
 import json
 from collections import deque
+import http.server
 import os
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_GO_MODEL = "mimo-v2.5-pro"
 PI_PROVIDER_NAME = "agent-judge"
 PI_CONFIG_DIR = "/home/node/.pi/agent"
 PI_SESSION_DIR = "/home/node/.pi/agent/sessions"
+DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
+DEFAULT_MAX_OUTPUT_TOKENS = 384_000
+DEFAULT_THINKING_COMPATIBILITY = True
+MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
+# Codex 0.144.5 会把未知模型的 context override 静默夹到 272K。该固定版本
+# 内置的 gpt-5.4 元数据允许 1M；只借用其本地容量元数据，发往端点的模型名
+# 仍由 localhost relay 改回管理员配置值。
+CODEX_CONTEXT_METADATA_MODEL = "gpt-5.4"
+CODEX_MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
+CLAUDE_MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
+CLAUDE_AUTO_COMPACT_MIN_TOKENS = 100_000
+PI_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
@@ -210,10 +226,33 @@ def _record_session(harness, proc, resume_session_id=None):
     return session_id
 
 
-def _write_codex_config(home, base_url, model):
+def _write_codex_config(
+        home, base_url, model, context_window_tokens=None,
+        max_output_tokens=None, thinking_compatibility=None):
     os.makedirs(home, exist_ok=True)
+    if context_window_tokens is None:
+        context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
+    if max_output_tokens is None:
+        max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
+    if thinking_compatibility is None:
+        thinking_compatibility = DEFAULT_THINKING_COMPATIBILITY
+    # Codex 没有可用的 model_max_output_tokens 配置项。这里的 compact 阈值
+    # 为模型输出预留空间；真正的请求输出上限由下方 localhost relay 注入。
+    auto_compact_token_limit = max(
+        1, int(context_window_tokens) - int(max_output_tokens),
+    )
     lines = [
         'model_provider = "aj_openai"',
+        f"model_context_window = {int(context_window_tokens)}",
+        f"model_auto_compact_token_limit = {auto_compact_token_limit}",
+        (
+            "model_supports_reasoning_summaries = "
+            + ("true" if thinking_compatibility else "false")
+        ),
+        (
+            'model_reasoning_summary = "auto"'
+            if thinking_compatibility else 'model_reasoning_summary = "none"'
+        ),
         "",
         "[model_providers.aj_openai]",
         'name = "Agent Judge OpenAI Compatible"',
@@ -221,9 +260,195 @@ def _write_codex_config(home, base_url, model):
         'env_key = "AJ_OPENAI_API_KEY"',
     ]
     if model:
-        lines.insert(0, "model = " + json.dumps(model))
+        lines.insert(0, "model = " + json.dumps(CODEX_CONTEXT_METADATA_MODEL))
     with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _rewrite_codex_request_body(
+        path, raw_body, max_output_tokens, thinking_compatibility,
+        upstream_model=None):
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return raw_body
+    if not isinstance(payload, dict):
+        return raw_body
+    normalized_path = str(path or "").split("?", 1)[0].rstrip("/")
+    if normalized_path.endswith("/responses"):
+        payload["max_output_tokens"] = int(max_output_tokens)
+        if upstream_model:
+            payload["model"] = str(upstream_model)
+        if not thinking_compatibility:
+            payload.pop("reasoning", None)
+            if isinstance(payload.get("input"), list):
+                payload["input"] = [
+                    item for item in payload["input"]
+                    if not (
+                        isinstance(item, dict)
+                        and str(item.get("type") or "").lower() == "reasoning"
+                    )
+                ]
+    elif normalized_path.endswith("/chat/completions"):
+        payload["max_tokens"] = int(max_output_tokens)
+        if upstream_model:
+            payload["model"] = str(upstream_model)
+        if not thinking_compatibility:
+            payload.pop("reasoning_effort", None)
+            for message in payload.get("messages") or []:
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    message.pop("reasoning_content", None)
+                    message.pop("reasoning", None)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _rewrite_claude_request_body(path, raw_body, max_output_tokens):
+    """只改写 Claude Code 主流式 messages 请求，不抬高内部小请求额度。"""
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return raw_body
+    if not isinstance(payload, dict):
+        return raw_body
+    normalized_path = str(path or "").split("?", 1)[0].rstrip("/")
+    if normalized_path.endswith("/messages") and payload.get("stream") is True:
+        payload["max_tokens"] = int(max_output_tokens)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+class _CodexEndpointRelay:
+    """为 Codex 补齐上游未暴露的输出上限与 thinking 兼容开关。"""
+
+    _MAX_REQUEST_BYTES = 64 * 1024 * 1024
+
+    class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+        """端点凭证只允许发送给管理员配置的原始 origin。"""
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    def __init__(
+            self, base_url, max_output_tokens, thinking_compatibility,
+            upstream_model=None):
+        self.base_url = str(base_url or "").rstrip("/")
+        self.max_output_tokens = int(max_output_tokens)
+        self.thinking_compatibility = bool(thinking_compatibility)
+        self.upstream_model = str(upstream_model or "").strip()
+        self.server = None
+        self.thread = None
+
+    def _rewrite_request_body(self, path, body):
+        return _rewrite_codex_request_body(
+            path, body, self.max_output_tokens,
+            self.thinking_compatibility, self.upstream_model,
+        )
+
+    def start(self):
+        relay = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def log_message(self, _format, *_args):
+                return
+
+            def do_GET(self):
+                self._forward()
+
+            def do_POST(self):
+                self._forward()
+
+            def _forward(self):
+                try:
+                    content_length = int(self.headers.get("Content-Length") or 0)
+                except (TypeError, ValueError):
+                    content_length = 0
+                if content_length < 0 or content_length > relay._MAX_REQUEST_BYTES:
+                    self.send_error(413)
+                    return
+                body = self.rfile.read(content_length) if content_length else b""
+                if body:
+                    body = relay._rewrite_request_body(self.path, body)
+                headers = {
+                    key: value
+                    for key, value in self.headers.items()
+                    if key.lower() not in {
+                        "connection", "content-length", "host", "transfer-encoding",
+                    }
+                }
+                request = urllib.request.Request(
+                    relay.base_url + (self.path if self.path.startswith("/") else "/" + self.path),
+                    data=body if self.command != "GET" else None,
+                    headers=headers,
+                    method=self.command,
+                )
+                try:
+                    opener = urllib.request.build_opener(relay._RejectRedirects())
+                    response = opener.open(request, timeout=300)
+                except urllib.error.HTTPError as exc:
+                    if 300 <= int(exc.code) < 400:
+                        exc.close()
+                        error = json.dumps({
+                            "error": "upstream redirects are refused",
+                        }).encode("utf-8")
+                        self.send_response(502)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(error)))
+                        self.end_headers()
+                        self.wfile.write(error)
+                        return
+                    response = exc
+                except Exception as exc:
+                    error = json.dumps({"error": str(exc)}).encode("utf-8")
+                    self.send_response(502)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(error)))
+                    self.end_headers()
+                    self.wfile.write(error)
+                    return
+                with response:
+                    self.send_response(int(response.status))
+                    for key, value in response.headers.items():
+                        if key.lower() not in {
+                            "connection", "content-length", "transfer-encoding",
+                        }:
+                            self.send_header(key, value)
+                    self.end_headers()
+                    while True:
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        return f"http://127.0.0.1:{self.server.server_port}"
+
+    def stop(self):
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+
+
+class _ClaudeEndpointRelay(_CodexEndpointRelay):
+    """让 Claude Code 的主流式请求精确使用管理员声明的输出上限。"""
+
+    def __init__(self, base_url, max_output_tokens):
+        super().__init__(
+            base_url,
+            max_output_tokens=max_output_tokens,
+            thinking_compatibility=True,
+        )
+
+    def _rewrite_request_body(self, path, body):
+        return _rewrite_claude_request_body(
+            path, body, self.max_output_tokens,
+        )
 
 
 def _audit_read_only_enabled():
@@ -240,46 +465,85 @@ def _run_codex(prompt):
     if not base_url or not api_key:
         print("codex harness requires OPENAI_BASE_URL and OPENAI_API_KEY", file=sys.stderr)
         return 2
+    try:
+        context_window_tokens, max_output_tokens, thinking_compatibility = (
+            _endpoint_model_capabilities()
+        )
+    except ValueError as exc:
+        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
+        return 2
+    if context_window_tokens > CODEX_MAX_CONTEXT_WINDOW_TOKENS:
+        print(
+            "invalid endpoint model capabilities: Codex 0.144.5 supports at most "
+            f"{CODEX_MAX_CONTEXT_WINDOW_TOKENS} context tokens",
+            file=sys.stderr,
+        )
+        return 2
     home = "/workspace/.codex"
-    _write_codex_config(home, base_url, model)
-    env = os.environ.copy()
-    env["CODEX_HOME"] = home
-    env["AJ_OPENAI_API_KEY"] = api_key
-    audit_read_only = _audit_read_only_enabled()
-    if resume_session_id and not audit_read_only:
-        args = [
-            "codex", "exec", "resume",
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            resume_session_id,
-            "-",
-        ]
-    elif audit_read_only:
-        args = [
-            "codex", "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--sandbox", "read-only",
-            "--cd", "/workspace",
-            "-",
-        ]
-        resume_session_id = ""
-    else:
-        args = [
-            "codex", "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--cd", "/workspace",
-            "-",
-        ]
-    proc = _run(args, env, input_text=prompt)
-    _record_session("codex", proc, resume_session_id)
-    return proc.returncode
+    relay = _CodexEndpointRelay(
+        base_url, max_output_tokens, thinking_compatibility,
+        upstream_model=model,
+    )
+    try:
+        relay_base_url = relay.start()
+        _write_codex_config(
+            home, relay_base_url, model,
+            context_window_tokens=context_window_tokens,
+            max_output_tokens=max_output_tokens,
+            thinking_compatibility=thinking_compatibility,
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = home
+        env["AJ_OPENAI_API_KEY"] = api_key
+        audit_read_only = _audit_read_only_enabled()
+        if resume_session_id and not audit_read_only:
+            args = [
+                "codex", "exec", "resume",
+                "--json",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                resume_session_id,
+                "-",
+            ]
+        elif audit_read_only:
+            args = [
+                "codex", "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--sandbox", "read-only",
+                "--cd", "/workspace",
+                "-",
+            ]
+            resume_session_id = ""
+        else:
+            args = [
+                "codex", "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--cd", "/workspace",
+                "-",
+            ]
+        proc = _run(args, env, input_text=prompt)
+        _record_session("codex", proc, resume_session_id)
+        return proc.returncode
+    finally:
+        relay.stop()
 
 
-def _opencode_config_content(base_url, api_key_env, model_id, audit_read_only=False):
+def _opencode_config_content(
+        base_url, api_key_env, model_id, audit_read_only=False,
+        context_window_tokens=None, max_output_tokens=None,
+        thinking_compatibility=None, thinking_format=None):
+    if context_window_tokens is None:
+        context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
+    if max_output_tokens is None:
+        max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
+    if thinking_compatibility is None:
+        thinking_compatibility = DEFAULT_THINKING_COMPATIBILITY
+    thinking_format = str(thinking_format or "generic").strip().lower()
+    if thinking_format not in {"generic", "deepseek"}:
+        raise ValueError("unsupported OpenCode thinking format")
     cfg = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
@@ -293,6 +557,18 @@ def _opencode_config_content(base_url, api_key_env, model_id, audit_read_only=Fa
                 "models": {
                     model_id: {
                         "name": "OpenCode Go %s" % model_id,
+                        "reasoning": bool(thinking_compatibility),
+                        "limit": {
+                            "context": int(context_window_tokens),
+                            "output": int(max_output_tokens),
+                        },
+                        "interleaved": (
+                            {"field": "reasoning_content"}
+                            if (
+                                thinking_compatibility
+                                and thinking_format == "deepseek"
+                            ) else False
+                        ),
                     },
                 },
             },
@@ -319,14 +595,29 @@ def _run_opencode(prompt):
     model = (os.environ.get("OPENCODE_MODEL") or "").strip() or OPENCODE_GO_MODEL
     model_id = model.split("/", 1)[1] if model.startswith("opencode-go/") else model
     model_id = model_id.split("/", 1)[1] if model_id.startswith("aj-go/") else model_id
+    try:
+        context_window_tokens, max_output_tokens, thinking_compatibility = (
+            _endpoint_model_capabilities()
+        )
+    except ValueError as exc:
+        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
+        return 2
     audit_read_only = _audit_read_only_enabled()
     home = "/tmp/aj_opencode_home"
     env = os.environ.copy()
     env["HOME"] = home
     env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(
-        base_url, "OPENCODE_API_KEY", model_id, audit_read_only=audit_read_only,
+        base_url, "OPENCODE_API_KEY", model_id,
+        audit_read_only=audit_read_only,
+        context_window_tokens=context_window_tokens,
+        max_output_tokens=max_output_tokens,
+        thinking_compatibility=thinking_compatibility,
+        thinking_format=os.environ.get("AJ_THINKING_FORMAT"),
     )
     env["OPENCODE_API_KEY"] = api_key
+    # OpenCode 默认把单次输出再截到 32K；端点池中的管理员配置才是这里的
+    # 唯一上限，因此同步覆盖该运行时保护值。
+    env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] = str(max_output_tokens)
     if audit_read_only:
         env.update({
             "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
@@ -357,8 +648,94 @@ def _run_opencode(prompt):
     return proc.returncode
 
 
-def _write_pi_models_config(config_dir, base_url, model):
+def _positive_int_env(name, default):
+    raw = str(os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a positive integer")
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _bool_env(name, default):
+    raw = str(os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
+def _endpoint_model_capabilities():
+    context_window_tokens = _positive_int_env(
+        "AJ_CONTEXT_WINDOW_TOKENS", DEFAULT_CONTEXT_WINDOW_TOKENS,
+    )
+    max_output_tokens = _positive_int_env(
+        "AJ_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+    if context_window_tokens > MAX_CONTEXT_WINDOW_TOKENS:
+        raise ValueError(
+            "AJ_CONTEXT_WINDOW_TOKENS cannot exceed "
+            f"{MAX_CONTEXT_WINDOW_TOKENS}"
+        )
+    if max_output_tokens > context_window_tokens:
+        raise ValueError(
+            "AJ_MAX_OUTPUT_TOKENS cannot exceed AJ_CONTEXT_WINDOW_TOKENS"
+        )
+    return (
+        context_window_tokens,
+        max_output_tokens,
+        _bool_env("AJ_THINKING_COMPATIBILITY", DEFAULT_THINKING_COMPATIBILITY),
+    )
+
+
+def _write_pi_models_config(
+        config_dir, base_url, model, context_window_tokens=None,
+        max_output_tokens=None, thinking_compatibility=None,
+        thinking_format=None):
     os.makedirs(config_dir, exist_ok=True)
+    if context_window_tokens is None:
+        context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
+    if max_output_tokens is None:
+        max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
+    if thinking_compatibility is None:
+        thinking_compatibility = DEFAULT_THINKING_COMPATIBILITY
+    thinking_format = str(thinking_format or "generic").strip().lower()
+    if thinking_format not in {"generic", "deepseek"}:
+        raise ValueError("unsupported Pi thinking format")
+    model_config = {
+        "id": model,
+        "name": model,
+        "contextWindow": int(context_window_tokens),
+        "maxTokens": int(max_output_tokens),
+    }
+    if thinking_compatibility:
+        # 自定义端点可能经一次性代理隐藏真实 provider。thinking 开关只控制
+        # 是否启用推理；wire profile 由宿主根据原始端点 URL 推导，绝不按模型名猜测。
+        model_config.update({
+            "reasoning": True,
+            "input": ["text"],
+        })
+        if thinking_format == "deepseek":
+            model_config["thinkingLevelMap"] = {
+                "minimal": None,
+                "low": None,
+                "medium": None,
+                "high": "high",
+                "max": "max",
+            }
+            model_config["compat"] = {
+                "supportsStore": False,
+                "supportsDeveloperRole": False,
+                "requiresReasoningContentOnAssistantMessages": True,
+                "thinkingFormat": "deepseek",
+            }
     config = {
         "providers": {
             PI_PROVIDER_NAME: {
@@ -370,12 +747,7 @@ def _write_pi_models_config(config_dir, base_url, model):
                     "supportsStore": False,
                     "maxTokensField": "max_tokens",
                 },
-                "models": [
-                    {
-                        "id": model,
-                        "name": model,
-                    },
-                ],
+                "models": [model_config],
             },
         },
     }
@@ -395,7 +767,44 @@ def _run_pi(prompt):
         )
         return 2
 
-    _write_pi_models_config(PI_CONFIG_DIR, base_url, model)
+    try:
+        context_window_tokens, max_output_tokens, thinking_compatibility = (
+            _endpoint_model_capabilities()
+        )
+    except ValueError as exc:
+        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
+        return 2
+    thinking_format = str(
+        os.environ.get("AJ_PI_THINKING_FORMAT")
+        or os.environ.get("AJ_THINKING_FORMAT")
+        or ""
+    ).strip().lower()
+    if not thinking_format:
+        scheme = ""
+        try:
+            parsed_base_url = urllib.parse.urlsplit(base_url)
+            scheme = str(parsed_base_url.scheme or "").lower()
+            hostname = str(parsed_base_url.hostname or "").lower().rstrip(".")
+        except ValueError:
+            hostname = ""
+        thinking_format = (
+            "deepseek"
+            if (
+                scheme == "https"
+                and (
+                    hostname == "deepseek.com"
+                    or hostname.endswith(".deepseek.com")
+                )
+            )
+            else "generic"
+        )
+    _write_pi_models_config(
+        PI_CONFIG_DIR, base_url, model,
+        context_window_tokens=context_window_tokens,
+        max_output_tokens=max_output_tokens,
+        thinking_compatibility=thinking_compatibility,
+        thinking_format=thinking_format,
+    )
     os.makedirs(PI_SESSION_DIR, exist_ok=True)
     env = os.environ.copy()
     env.update({
@@ -406,6 +815,7 @@ def _run_pi(prompt):
         "PI_TELEMETRY": "0",
         "PI_SKIP_VERSION_CHECK": "1",
     })
+    phase = str(os.environ.get("AJ_PHASE") or "").strip().lower()
     args = [
         "pi",
         "--mode", "json",
@@ -418,13 +828,25 @@ def _run_pi(prompt):
         "--no-themes",
         "--no-context-files",
     ]
+    if _audit_read_only_enabled():
+        # Pi 自身不提供沙箱；质量门禁容器另有只读根文件系统、只读 evidence
+        # 挂载与无 capabilities 约束，这里再把内建工具缩到纯读取集合。
+        args.extend(["--tools", "read,grep,find,ls"])
+        resume_session_id = ""
+    if thinking_compatibility:
+        effort = str(os.environ.get("AJ_EFFORT") or "").strip().lower()
+        # length/timeout 后的恢复轮只负责把已有工作形成交付物；显式关闭 thinking，
+        # 防止第二轮再次把全部输出额度消耗在 reasoning 而没有写文件。
+        if phase == "reverse_finalize":
+            args.extend(["--thinking", "off"])
+        elif effort in PI_THINKING_LEVELS:
+            args.extend(["--thinking", effort])
     if resume_session_id:
         args.extend(["--session", resume_session_id])
     args.append(prompt)
-    phase = str(os.environ.get("AJ_PHASE") or "").strip().lower()
     proc = _run(
         args,
-        env,
+        env=env,
         stdout_session_only=phase in {"reverse_solve", "reverse_finalize"},
     )
     _record_session("pi", proc, resume_session_id)
@@ -435,6 +857,40 @@ def _run_claude_code(prompt):
     model = (os.environ.get("ANTHROPIC_MODEL") or "").strip()
     resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     audit_read_only = _audit_read_only_enabled()
+    try:
+        context_window_tokens, max_output_tokens, thinking_compatibility = (
+            _endpoint_model_capabilities()
+        )
+    except ValueError as exc:
+        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
+        return 2
+    if context_window_tokens > CLAUDE_MAX_CONTEXT_WINDOW_TOKENS:
+        print(
+            "invalid endpoint model capabilities: this Claude Code adapter "
+            f"supports at most {CLAUDE_MAX_CONTEXT_WINDOW_TOKENS} context tokens",
+            file=sys.stderr,
+        )
+        return 2
+    env = os.environ.copy()
+    env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_window_tokens)
+    env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_output_tokens)
+    # Claude Code 自身会把 custom model 的请求静默压到 128K，并在 streaming
+    # 降级时再压到 64K。主流式请求由本地 relay 精确改写；不允许静默降级。
+    env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
+    if context_window_tokens >= CLAUDE_AUTO_COMPACT_MIN_TOKENS:
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(context_window_tokens)
+        env.pop("DISABLE_COMPACT", None)
+    else:
+        # 官方 auto-compact 窗口下限为 100K；更小的管理员声明通过
+        # MAX_CONTEXT + 关闭 compact 精确生效，不能静默回到模型目录值。
+        env["DISABLE_COMPACT"] = "1"
+        env.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)
+    if thinking_compatibility:
+        env.pop("CLAUDE_CODE_DISABLE_THINKING", None)
+        env.pop("DISABLE_INTERLEAVED_THINKING", None)
+    else:
+        env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
+        env["DISABLE_INTERLEAVED_THINKING"] = "1"
     if audit_read_only:
         args = [
             "claude",
@@ -461,18 +917,39 @@ def _run_claude_code(prompt):
         args.extend(["--resume", resume_session_id])
         if (os.environ.get("AJ_FORK_SESSION") or "1").strip().lower() not in {"0", "false", "no", "off"}:
             args.append("--fork-session")
-    if model:
-        args.extend(["--model", model])
+    cli_model = model
+    if (
+        cli_model
+        and context_window_tokens == CLAUDE_MAX_CONTEXT_WINDOW_TOKENS
+        and not cli_model.endswith("[1m]")
+    ):
+        # Claude Code 官方 1M 标记适用于任意模型名，发往上游前会自动剥离。
+        cli_model += "[1m]"
+    if cli_model:
+        args.extend(["--model", cli_model])
     # AJ_EFFORT 控制努力级别（low/medium/high/xhigh/max）。Anthropic claude CLI
     # 用此标志联动 thinking token 预算；不设则用 CLI 默认。我们主要在 reverse
     # 阶段把它调到 high/max，避免 AI 在 thinking 中途被 abort 而不输出代码。
     effort = (os.environ.get("AJ_EFFORT") or "").strip().lower()
-    if effort in CLAUDE_EFFORT_LEVELS:
+    if thinking_compatibility and effort in CLAUDE_EFFORT_LEVELS:
         args.extend(["--effort", effort])
     args.append(prompt)
-    proc = _run(args)
-    _record_session("claude_code", proc, resume_session_id)
-    return proc.returncode
+    relay = None
+    base_url = str(env.get("ANTHROPIC_BASE_URL") or "").strip()
+    if base_url:
+        relay = _ClaudeEndpointRelay(base_url, max_output_tokens)
+        try:
+            env["ANTHROPIC_BASE_URL"] = relay.start()
+        except Exception as exc:
+            print(f"failed to start Claude endpoint relay: {exc}", file=sys.stderr)
+            return 2
+    try:
+        proc = _run(args, env=env)
+        _record_session("claude_code", proc, resume_session_id)
+        return proc.returncode
+    finally:
+        if relay is not None:
+            relay.stop()
 
 
 def main():

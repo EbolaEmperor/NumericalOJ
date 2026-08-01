@@ -166,12 +166,28 @@ python3 scripts/numoj_admin.py ranking edit <competition_id> \
   --submission-method zip \
   --agent-timeout 600
 python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
-  --agent-base-url https://api.deepseek.com/anthropic \
+  --harness pi \
+  --agent-base-url https://api.deepseek.com/v1 \
   --api-key-env DEEPSEEK_API_KEY \
   --env-file .env \
   --model deepseek-v4-flash \
+  --context-window-tokens 1000000 \
+  --max-output-tokens 384000 \
+  --thinking-compatibility \
   --timeout-seconds 600
 ```
+
+Endpoint model metadata defaults to a 1,000,000-token context window, 384,000
+maximum output tokens, and thinking compatibility enabled. The single-endpoint
+commands accept `--context-window-tokens`, `--max-output-tokens`, and
+`--thinking-compatibility` / `--no-thinking-compatibility`. For endpoint-pool
+JSON passed to `save-endpoints` or `save-quality-gate-endpoints`, use the fields
+`context_window_tokens`, `max_output_tokens`, and `thinking_compatibility` on
+each endpoint object. New endpoints receive the server defaults when these
+fields are omitted; updates that carry an existing endpoint `id` retain that
+endpoint's current values when the fields are omitted.
+Context and maximum-output values must be positive integers no greater than
+1,000,000, and maximum output cannot exceed the context window.
 
 Configure the reverse-judge quality gate. Its endpoint pool is independent from the AI-answering pool and is scheduled automatically; participants never select a quality endpoint. The prompt and endpoint JSON support `@file`, and endpoint secrets may use `api_key_env` plus `--env-file` just like the Agent-as-Judge pool:
 

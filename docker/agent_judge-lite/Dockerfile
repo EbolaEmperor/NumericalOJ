@@ -4,7 +4,6 @@
 FROM node:24-bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.197
-ARG PI_CODING_AGENT_VERSION=0.82.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 # 关闭 claude CLI 的非必要外联（遥测/自动更新/错误上报）——受限容器内若开启会卡住
@@ -52,7 +51,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
         --registry=https://registry.npmmirror.com
 RUN npm install -g --ignore-scripts \
-        @earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION} \
+        @earendil-works/pi-coding-agent \
         --registry=https://registry.npmmirror.com
 
 # report / run_harness 与原版镜像复用同一份脚本。

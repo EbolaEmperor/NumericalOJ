@@ -15,6 +15,11 @@ from . import common
 from .common import *  # noqa: F401,F403 - command modules share the CLI helper surface.
 
 
+DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS = 1_000_000
+DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS = 384_000
+DEFAULT_ENDPOINT_THINKING_COMPATIBILITY = True
+
+
 def _necessary_competition(
     row: Any,
     *,
@@ -626,6 +631,21 @@ def ranking_save_endpoint(args: argparse.Namespace) -> None:
         "base_url": args.base_url_value,
         "api_key": _endpoint_api_key_from_args(args),
         "model": args.model,
+        "context_window_tokens": getattr(
+            args,
+            "context_window_tokens",
+            DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
+        ),
+        "max_output_tokens": getattr(
+            args,
+            "max_output_tokens",
+            DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
+        ),
+        "thinking_compatibility": getattr(
+            args,
+            "thinking_compatibility",
+            DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+        ),
         "concurrency_limit": args.concurrency_limit,
         "status": args.status,
     }
@@ -696,6 +716,21 @@ def ranking_save_quality_gate_endpoint(args: argparse.Namespace) -> None:
         "base_url": args.base_url_value,
         "api_key": _endpoint_api_key_from_args(args),
         "model": args.model,
+        "context_window_tokens": getattr(
+            args,
+            "context_window_tokens",
+            DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
+        ),
+        "max_output_tokens": getattr(
+            args,
+            "max_output_tokens",
+            DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
+        ),
+        "thinking_compatibility": getattr(
+            args,
+            "thinking_compatibility",
+            DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+        ),
         "concurrency_limit": args.concurrency_limit,
         "status": args.status,
     }])[0]
@@ -980,6 +1015,30 @@ def ranking_git_submit(args: argparse.Namespace) -> None:
     print_or_save_response(resp, allow_redirect=False)
 
 
+def _add_endpoint_model_config_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--context-window-tokens",
+        type=int,
+        default=DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
+        help="Model context-window size in tokens.",
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
+        help="Maximum model output size in tokens.",
+    )
+    parser.add_argument(
+        "--thinking-compatibility",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+        help=(
+            "Enable model thinking/reasoning compatibility metadata; use "
+            "--no-thinking-compatibility to disable it."
+        ),
+    )
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
 
     sub = subparsers
@@ -1080,7 +1139,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
     pa.add_argument(
         "endpoints",
-        help="JSON array of endpoint objects; each may include api_key or api_key_env, status=enabled|paused|disabled, or legacy enabled=true/false.",
+        help=(
+            "JSON array of endpoint objects; each may include api_key or api_key_env, "
+            "context_window_tokens, max_output_tokens, thinking_compatibility, "
+            "status=enabled|paused|disabled, or legacy enabled=true/false. Missing model "
+            "metadata defaults to 1000000, 384000, and true on the server."
+        ),
     )
     pa.add_argument("--env-file", help="Optional .env file used by endpoint api_key_env fields.")
     pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
@@ -1089,13 +1153,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.set_defaults(func=ranking_endpoints)
     pa = add_cli_parser(rs, "save-endpoint", "Replace the AI-judge endpoint pool with one endpoint.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
-    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode"], default="claude_code", help="Agent harness used by the endpoint.")
+    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode", "pi"], default="claude_code", help="Agent harness used by the endpoint.")
     pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the AI-judge model API.")
     key_group = pa.add_mutually_exclusive_group(required=True)
     key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")
     key_group.add_argument("--api-key-env", help="Environment variable name holding the API key.")
     pa.add_argument("--env-file", help="Optional .env file used with --api-key-env.")
     pa.add_argument("--model", required=True, help="Model identifier used by the endpoint.")
+    _add_endpoint_model_config_args(pa)
     pa.add_argument("--concurrency-limit", type=int, default=1, help="Maximum concurrent jobs for this endpoint.")
     pa.add_argument("--status", choices=["enabled", "paused", "disabled"], default="enabled", help="Endpoint status.")
     pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
@@ -1129,7 +1194,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("competition_id", type=int, help="Reverse-judge competition ID to configure.")
     pa.add_argument(
         "endpoints",
-        help="JSON array of quality endpoint objects, or @file; api_key_env and status=enabled|paused|disabled are supported.",
+        help=(
+            "JSON array of quality endpoint objects, or @file; api_key_env, "
+            "context_window_tokens, max_output_tokens, thinking_compatibility, and "
+            "status=enabled|paused|disabled are supported. Missing model metadata defaults "
+            "to 1000000, 384000, and true on the server."
+        ),
     )
     pa.add_argument("--env-file", help="Optional .env file used by endpoint api_key_env fields.")
     pa.set_defaults(func=ranking_save_quality_gate_endpoints)
@@ -1139,13 +1209,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "Replace the reverse-judge quality-gate pool with one endpoint.",
     )
     pa.add_argument("competition_id", type=int, help="Reverse-judge competition ID to configure.")
-    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode"], default="claude_code", help="Agent harness used by the quality endpoint.")
+    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode", "pi"], default="claude_code", help="Agent harness used by the quality endpoint.")
     pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the quality-review model API.")
     key_group = pa.add_mutually_exclusive_group(required=True)
     key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")
     key_group.add_argument("--api-key-env", help="Environment variable name holding the API key.")
     pa.add_argument("--env-file", help="Optional .env file used with --api-key-env.")
     pa.add_argument("--model", required=True, help="Model identifier used by the quality endpoint.")
+    _add_endpoint_model_config_args(pa)
     pa.add_argument("--concurrency-limit", type=int, default=1, help="Maximum concurrent quality reviews for this endpoint.")
     pa.add_argument("--status", choices=["enabled", "paused", "disabled"], default="enabled", help="Quality endpoint status.")
     pa.set_defaults(func=ranking_save_quality_gate_endpoint)

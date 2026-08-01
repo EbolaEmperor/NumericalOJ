@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from urllib.parse import urlsplit
 
 try:
     from celery.exceptions import MaxRetriesExceededError, Retry
@@ -40,10 +41,11 @@ from oj_modules.ranking_agent_judge_db import (
     DEFAULT_OPENCODE_GO_BASE_URL, DEFAULT_OPENCODE_GO_MODEL,
     ENDPOINT_POOL_QUALITY_GATE,
     ENDPOINT_STATUS_PAUSED,
-    HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE,
+    HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE, HARNESS_PI,
     agent_judge_trace_dir, agent_judge_trace_id,
     build_judge_snapshot, clear_judge_results_for_attempt,
     list_agent_judge_endpoints, list_competition_rules, list_judge_results,
+    normalize_endpoint_model_capabilities,
     list_paused_agent_judge_endpoints, pause_agent_judge_endpoint,
     resume_paused_agent_judge_endpoint, upsert_judge_result_for_attempt,
 )
@@ -389,11 +391,20 @@ def _resolve_endpoints(competition_id, competition=None):
         eps = list_agent_judge_endpoints(competition_id, enabled_only=True)
     except Exception:
         eps = []
-    return [{'id': e['id'], 'harness': e.get('harness') or HARNESS_CLAUDE_CODE,
-             'base_url': e['base_url'], 'api_key': e['api_key'],
-             'model': e.get('model') or '',
-             'concurrency_limit': max(1, int(e.get('concurrency_limit') or 1))}
-            for e in eps]
+    resolved = []
+    for endpoint in eps:
+        resolved.append({
+            'id': endpoint['id'],
+            'harness': endpoint.get('harness') or HARNESS_CLAUDE_CODE,
+            'base_url': endpoint['base_url'],
+            'api_key': endpoint['api_key'],
+            'model': endpoint.get('model') or '',
+            **normalize_endpoint_model_capabilities(endpoint),
+            'concurrency_limit': max(
+                1, int(endpoint.get('concurrency_limit') or 1),
+            ),
+        })
+    return resolved
 
 
 def _slot_key(endpoint_id, i):
@@ -875,7 +886,32 @@ def _resolve_harness_config(competition, endpoint=None):
     return harness, base_url, api_key, model
 
 
-def _agent_env_args(harness, base_url, api_key, model, result_name, include_prompt=False):
+def _thinking_wire_profile(base_url):
+    """从规范端点 origin 推导无凭证的 reasoning wire profile。"""
+    scheme = ''
+    try:
+        parsed_source = urlsplit(str(base_url or '').strip())
+        scheme = str(parsed_source.scheme or '').lower()
+        hostname = str(parsed_source.hostname or '').lower().rstrip('.')
+    except ValueError:
+        hostname = ''
+    if (
+        scheme == 'https'
+        and (hostname == 'deepseek.com' or hostname.endswith('.deepseek.com'))
+    ):
+        return 'deepseek'
+    return 'generic'
+
+
+def _agent_env_args(
+        harness, base_url, api_key, model, result_name, include_prompt=False,
+        endpoint=None):
+    capabilities = normalize_endpoint_model_capabilities(endpoint)
+    source_base_url = str((endpoint or {}).get('base_url') or base_url or '').strip()
+    # Wire profile 只能从端点事实推导，绝不按模型名猜。官方 DeepSeek 域名
+    # 需要 reasoning_content session replay；未知/opaque gateway 采用 generic
+    # OpenAI reasoning 协议，避免给其它 provider 强塞 DeepSeek 字段。
+    thinking_format = _thinking_wire_profile(source_base_url)
     args = [
         '-e', 'IS_SANDBOX=1',
         # 关闭 claude 的非必要外联（遥测/自动更新/错误上报），否则在受限容器内会卡住
@@ -884,6 +920,16 @@ def _agent_env_args(harness, base_url, api_key, model, result_name, include_prom
         '-e', 'DISABLE_AUTOUPDATER=1',
         '-e', 'DISABLE_ERROR_REPORTING=1',
         '-e', f'AJ_HARNESS={harness}',
+        '-e', (
+            'AJ_CONTEXT_WINDOW_TOKENS='
+            f"{capabilities['context_window_tokens']}"
+        ),
+        '-e', f"AJ_MAX_OUTPUT_TOKENS={capabilities['max_output_tokens']}",
+        '-e', (
+            'AJ_THINKING_COMPATIBILITY='
+            f"{1 if capabilities['thinking_compatibility'] else 0}"
+        ),
+        '-e', f'AJ_THINKING_FORMAT={thinking_format}',
         '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
         '-e', 'AJ_SESSION_STATE=/workspace/.aj_session_state.json',
         '-e', f'ANTHROPIC_BASE_URL={base_url}',
@@ -897,13 +943,16 @@ def _agent_env_args(harness, base_url, api_key, model, result_name, include_prom
         '-e', f'OPENCODE_API_KEY={api_key}',
         '-e', f'OPENCODE_MODEL={model}',
     ]
+    if harness == HARNESS_PI:
+        args.extend(['-e', f'AJ_PI_THINKING_FORMAT={thinking_format}'])
     if include_prompt:
         args.extend(['-e', 'AJ_PROMPT'])
     return args
 
 
-def _docker_container_args(container_name, ws, harness, base_url, api_key, model,
-                           result_name, include_prompt=False):
+def _docker_container_args(
+        container_name, ws, harness, base_url, api_key, model, result_name,
+        include_prompt=False, endpoint=None):
     return [
         'docker', 'run', '-d', '--name', container_name,
         # 注意：不可用 --cap-drop ALL —— 那会移除 CAP_DAC_OVERRIDE，导致容器内 root
@@ -913,7 +962,10 @@ def _docker_container_args(container_name, ws, harness, base_url, api_key, model
         '--pids-limit', JUDGE_PIDS_LIMIT,
         '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
         '-v', f'{ws}:/workspace', '-w', '/workspace',
-    ] + _agent_env_args(harness, base_url, api_key, model, result_name, include_prompt=include_prompt) + [
+    ] + _agent_env_args(
+        harness, base_url, api_key, model, result_name,
+        include_prompt=include_prompt, endpoint=endpoint,
+    ) + [
         JUDGE_IMAGE,
     ]
 
@@ -1808,7 +1860,8 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     except Exception:
         pass
     docker_args = _docker_container_args(
-        container_name, ws, harness, base_url, api_key, model, result_name, include_prompt=True,
+        container_name, ws, harness, base_url, api_key, model, result_name,
+        include_prompt=True, endpoint=endpoint,
     ) + [
         'bash', '-lc',
         # 启动 claude 前先 apt-get update：镜像各 apt 层都清空了 /var/lib/apt/lists，判题时
@@ -1909,7 +1962,8 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
     except Exception:
         pass
     docker_args = _docker_container_args(
-        container_name, ws, harness, base_url, api_key, model, result_name, include_prompt=False,
+        container_name, ws, harness, base_url, api_key, model, result_name,
+        include_prompt=False, endpoint=endpoint,
     ) + [
         'bash', '-lc', 'tail -f /dev/null',
     ]

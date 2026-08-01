@@ -85,6 +85,7 @@ from oj_modules.ranking_agent_judge_db import (
     HARNESS_PI,
     list_agent_judge_endpoints,
     list_quality_gate_endpoints,
+    normalize_endpoint_model_capabilities,
 )
 
 
@@ -96,56 +97,19 @@ _PI_SESSION_ID_RE = re.compile(
 )
 _PI_CONTAINER_SESSION_ROOT = '/home/node/.pi/agent/sessions'
 _PI_COMBINED_TRACE_NAME = 'reverse_solve_combined.jsonl'
+# Pi 会把整个 assistant message 序列化为一行 JSONL。这里的固定上限是 worker
+# 解析不受信轨迹时的模型无关内存安全边界；超限事件不会被当作成功终止态，而是
+# 由下方完成态校验 fail-closed。端点声明的输出额度不用于放大 worker 内存预算。
+_PI_STOP_EVENT_MAX_BYTES = 16 * 1024 * 1024
+_PI_SESSION_TAIL_MAX_BYTES = _PI_STOP_EVENT_MAX_BYTES + 1024 * 1024
+_PI_SESSION_HEADER_MAX_BYTES = 64 * 1024
+_PI_SESSION_SCAN_ENTRY_LIMIT = 256
+_PI_TERMINAL_STOP_REASONS = frozenset((
+    'stop', 'length', 'tooluse', 'error', 'aborted',
+))
 _HARNESS_CAPTURE_READ_MAX_BYTES = 2 * 1024 * 1024
 _HARNESS_CAPTURE_HEAD_BYTES = 64 * 1024
 _HARNESS_CAPTURE_TRUNCATION_MARKER = b'\n...[harness output truncated]...\n'
-_PI_STREAM_SESSION_FILE_SCRIPT = r'''
-import os
-import stat
-import sys
-
-base = sys.argv[1]
-relative_path = sys.argv[2]
-parts = relative_path.split('/')
-if (
-    not parts
-    or not relative_path.endswith('.jsonl')
-    or any(part in ('', '.', '..') for part in parts)
-):
-    raise SystemExit(2)
-
-directory_fd = os.open(
-    base,
-    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-)
-file_fd = None
-try:
-    for part in parts[:-1]:
-        next_fd = os.open(
-            part,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-            dir_fd=directory_fd,
-        )
-        os.close(directory_fd)
-        directory_fd = next_fd
-    file_fd = os.open(
-        parts[-1],
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
-        dir_fd=directory_fd,
-    )
-    if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-        raise SystemExit(2)
-    while True:
-        chunk = os.read(file_fd, 64 * 1024)
-        if not chunk:
-            break
-        sys.stdout.buffer.write(chunk)
-    sys.stdout.buffer.flush()
-finally:
-    if file_fd is not None:
-        os.close(file_fd)
-    os.close(directory_fd)
-'''
 
 
 def _normalize_claude_effort(value, fallback=''):
@@ -927,6 +891,7 @@ def _endpoint_payload(ep):
         'model': ep.get('model') or '',
         'concurrency_limit': max(1, int(ep.get('concurrency_limit') or 1)),
     }
+    payload.update(normalize_endpoint_model_capabilities(ep))
     if ep.get('pool_kind'):
         payload['pool_kind'] = ep['pool_kind']
     return payload
@@ -1644,8 +1609,8 @@ def _pi_trace_session_root(trace_dir):
     return os.path.join(trace_dir, '.pi', 'agent', 'sessions')
 
 
-def _list_pi_session_files(container_name):
-    """流式列出 Pi 普通 JSONL，避免 Agent 用海量路径放大宿主内存。"""
+def _list_pi_session_files(container_name, runtime_user='node'):
+    """列出 Pi 生成的普通 session JSONL。"""
     list_cmd = (
         "python3 - <<'PY'\n"
         "import json, os, stat\n"
@@ -1678,7 +1643,7 @@ def _list_pi_session_files(container_name):
         try:
             located = subprocess.run(
                 [
-                    'docker', 'exec', '--user', 'node', container_name,
+                    'docker', 'exec', '--user', runtime_user, container_name,
                     'bash', '-lc', list_cmd,
                 ],
                 stdout=listing,
@@ -1717,20 +1682,21 @@ def _safe_pi_session_relative_path(value):
 
 
 def _copy_pi_session_file(
-        container_name, relative_path, destination, mtime_ns=None):
+        container_name, relative_path, destination, mtime_ns=None,
+        runtime_user='node'):
     tmp_path = destination + '.tmp'
     try:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
-        # 直接把 docker stdout 写入磁盘；原始 JSONL 不截断、不改写，同时
-        # 避免 capture_output 和 TimeoutExpired 把 Agent 可控内容留在内存。
-        # 容器内按目录 fd 逐级 O_NOFOLLOW 打开，消除 Agent 并发替换 session
-        # 路径后借符号链接读取容器凭证或其它文件的 TOCTOU 窗口。
+        remote_path = (
+            _PI_CONTAINER_SESSION_ROOT.rstrip('/')
+            + '/'
+            + relative_path
+        )
         with open(tmp_path, 'wb') as stream:
             copied = subprocess.run(
                 [
-                    'docker', 'exec', '--user', 'node', container_name,
-                    'python3', '-c', _PI_STREAM_SESSION_FILE_SCRIPT,
-                    _PI_CONTAINER_SESSION_ROOT, relative_path,
+                    'docker', 'exec', '--user', runtime_user, container_name,
+                    'cat', '--', remote_path,
                 ],
                 stdout=stream,
                 stderr=subprocess.DEVNULL,
@@ -1795,8 +1761,6 @@ def _combine_pi_session_jsonl(trace_dir):
         with open(tmp_path, 'wb') as combined:
             for path in _iter_pi_session_paths(session_root):
                 try:
-                    if os.path.getsize(path) <= 0:
-                        continue
                     if wrote_any and last_byte != b'\n':
                         combined.write(b'\n')
                     with open(path, 'rb') as source:
@@ -1824,11 +1788,13 @@ def _combine_pi_session_jsonl(trace_dir):
         return False
 
 
-def _sync_pi_agent_sessions(container_name, trace_dir):
-    """逐文件原子镜像 Pi session，并生成供快照解析的稳定合并 JSONL。"""
+def _sync_pi_agent_sessions(
+        container_name, trace_dir, runtime_user='node'):
+    """复制 Pi session，并生成供快照解析的稳定合并 JSONL。"""
     session_root = _pi_trace_session_root(trace_dir)
     copied_any = False
-    for item in _list_pi_session_files(container_name):
+    for item in _list_pi_session_files(
+            container_name, runtime_user=runtime_user):
         if not isinstance(item, dict):
             continue
         relative_path = _safe_pi_session_relative_path(
@@ -1847,6 +1813,7 @@ def _sync_pi_agent_sessions(container_name, trace_dir):
             relative_path,
             destination,
             item.get('mtime_ns'),
+            runtime_user=runtime_user,
         ):
             copied_any = True
     if not copied_any:
@@ -1855,7 +1822,9 @@ def _sync_pi_agent_sessions(container_name, trace_dir):
     return True
 
 
-def _dump_harness_trace(container_name, trace_dir, template_dir, harness):
+def _dump_harness_trace(
+        container_name, trace_dir, template_dir, harness,
+        runtime_user='node'):
     os.makedirs(trace_dir, exist_ok=True)
     harness = str(harness or HARNESS_CLAUDE_CODE).strip().lower()
     if harness == HARNESS_CODEX:
@@ -1868,7 +1837,9 @@ def _dump_harness_trace(container_name, trace_dir, template_dir, harness):
                    ('/tmp/aj_opencode_home/.local/share/opencode', '.opencode')]
         dest_name = '.opencode'
     elif harness == HARNESS_PI:
-        _sync_pi_agent_sessions(container_name, trace_dir)
+        _sync_pi_agent_sessions(
+            container_name, trace_dir, runtime_user=runtime_user,
+        )
         sources = []
         dest_name = ''
     else:
@@ -1888,15 +1859,69 @@ def _dump_harness_trace(container_name, trace_dir, template_dir, harness):
 
 
 def _prepare_agent_workspace_for_node(container_name):
-    return subprocess.run(
+    """准备 Agent HOME，并返回执行 harness 时使用的 Docker 用户。
+
+    Linux CI 常以 root 创建宿主工作区，此时沿用 node 用户并接管挂载目录。
+    macOS/Colima 等 VirtioFS 挂载不允许容器内 chown；这类工作区保持宿主
+    所有权，让 harness 以挂载点实际的数字 UID、容器 node 的无特权 GID 运行。
+    写挂载目录只依赖 owner UID，不把宿主组号映射为容器内可能同号的特权组。
+    """
+    owner = subprocess.run(
+        ['docker', 'exec', container_name, 'stat', '-c', '%u:%g', '/workspace'],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    match = re.fullmatch(r'([0-9]+):([0-9]+)', (owner.stdout or '').strip())
+    if not match:
+        raise RuntimeError('无法识别 Agent 工作区的 UID:GID')
+    runtime_uid = int(match.group(1))
+    workspace_gid = int(match.group(2))
+    if runtime_uid > 2_147_483_647 or workspace_gid > 2_147_483_647:
+        raise RuntimeError('Agent 工作区的 UID:GID 超出支持范围')
+
+    if runtime_uid == 0:
+        subprocess.run(
+            [
+                'docker', 'exec', container_name, 'bash', '-lc',
+                'mkdir -p /home/node && chown node:node /home/node /workspace && '
+                'find /workspace -mindepth 1 -maxdepth 1 ! -name problem '
+                '-exec chown -R node:node {} +',
+            ],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
+        return 'node'
+
+    node_group = subprocess.run(
+        ['docker', 'exec', container_name, 'id', '-g', 'node'],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    node_gid_raw = (node_group.stdout or '').strip()
+    if not re.fullmatch(r'[0-9]+', node_gid_raw):
+        raise RuntimeError('无法识别 Agent node 用户的 GID')
+    runtime_gid = int(node_gid_raw)
+    if runtime_gid <= 0 or runtime_gid > 2_147_483_647:
+        raise RuntimeError('Agent node 用户的 GID 超出支持范围')
+
+    setup_script = (
+        'set -euo pipefail\n'
+        'runtime_uid="$1"\n'
+        'runtime_gid="$2"\n'
+        'mkdir -p /home/node\n'
+        'chown -R "${runtime_uid}:${runtime_gid}" /home/node\n'
+        'if ! awk -F: -v uid="${runtime_uid}" '\
+        "'$3 == uid { found=1 } END { exit(found ? 0 : 1) }' "
+        '/etc/passwd; then\n'
+        "  printf 'agent-runtime-%s:x:%s:%s:Agent Runtime:/home/node:/bin/bash\\n' "
+        '"${runtime_uid}" "${runtime_uid}" "${runtime_gid}" >> /etc/passwd\n'
+        'fi'
+    )
+    subprocess.run(
         [
-            'docker', 'exec', container_name, 'bash', '-lc',
-            'mkdir -p /home/node && chown node:node /home/node /workspace && '
-            'find /workspace -mindepth 1 -maxdepth 1 ! -name problem '
-            '-exec chown -R node:node {} +',
+            'docker', 'exec', container_name, 'bash', '-lc', setup_script,
+            'agent-runtime-setup', str(runtime_uid), str(runtime_gid),
         ],
         check=True, capture_output=True, text=True, timeout=60,
     )
+    return f'{runtime_uid}:{runtime_gid}'
 
 
 def _read_text_file(path, limit=_HARNESS_CAPTURE_READ_MAX_BYTES):
@@ -1986,6 +2011,157 @@ def _detect_claude_stop_reason(trace_dir):
     return ''
 
 
+def _bounded_pi_session_candidates(session_root, expected_session_id):
+    """在受限目录/条目数内查找文件名含目标 UUID 的原生 session。"""
+    expected_session_id = _normalize_pi_session_id(expected_session_id)
+    if not expected_session_id:
+        return []
+    pending = [(session_root, 0)]
+    candidates = []
+    scanned = 0
+    while pending and scanned < _PI_SESSION_SCAN_ENTRY_LIMIT:
+        current, depth = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                scanned += 1
+                if scanned > _PI_SESSION_SCAN_ENTRY_LIMIT:
+                    break
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth < 2:
+                            pending.append((entry.path, depth + 1))
+                        continue
+                    if (
+                        not entry.name.endswith('.jsonl')
+                        or entry.name == _PI_COMBINED_TRACE_NAME
+                        or expected_session_id not in entry.name.lower()
+                        or not entry.is_file(follow_symlinks=False)
+                    ):
+                        continue
+                    candidates.append((entry.stat(follow_symlinks=False).st_mtime_ns, entry.path))
+                except OSError:
+                    continue
+    return [path for _mtime, path in sorted(candidates, reverse=True)]
+
+
+def _normalize_pi_stop_reason(value):
+    if value is None or value == '':
+        return 'missing'
+    if not isinstance(value, str) or len(value) > 32:
+        return 'unknown'
+    reason = value.strip().lower()
+    if not reason:
+        return 'missing'
+    if reason in _PI_TERMINAL_STOP_REASONS:
+        return reason
+    return 'unknown'
+
+
+def _latest_pi_terminal_state(trace_dir, expected_session_id):
+    """返回指定 Pi 原生 session 最新 assistant 的脱敏终止状态。
+
+    Pi 的 JSON 模式在 ``stopReason=length/error/aborted`` 时仍可能退出 0；反向
+    评测不能只看进程退出码。这里只接受 header UUID 与当前运行会话一致的原生
+    session，并仅扫描有界尾部，避免其它/伪造会话误导完成态或放大 worker 内存。
+    """
+    expected_session_id = _normalize_pi_session_id(expected_session_id)
+    if not expected_session_id:
+        return None
+    session_root = _pi_trace_session_root(str(trace_dir or ''))
+    if not os.path.isdir(session_root):
+        return None
+
+    for path in _bounded_pi_session_candidates(session_root, expected_session_id):
+        try:
+            with open(path, 'rb') as stream:
+                header_line = stream.readline(_PI_SESSION_HEADER_MAX_BYTES + 1)
+                if len(header_line) > _PI_SESSION_HEADER_MAX_BYTES:
+                    continue
+                try:
+                    header = json.loads(header_line.decode('utf-8', 'replace'))
+                except Exception:
+                    continue
+                if (
+                    not isinstance(header, dict)
+                    or header.get('type') != 'session'
+                    or _normalize_pi_session_id(header.get('id')) != expected_session_id
+                ):
+                    continue
+
+                file_size = os.fstat(stream.fileno()).st_size
+                tail_start = max(0, file_size - _PI_SESSION_TAIL_MAX_BYTES)
+                stream.seek(tail_start)
+                payload = stream.read(_PI_SESSION_TAIL_MAX_BYTES)
+                if tail_start:
+                    first_newline = payload.find(b'\n')
+                    if first_newline < 0:
+                        continue
+                    payload = payload[first_newline + 1:]
+
+                end = len(payload)
+                while end > 0:
+                    newline = payload.rfind(b'\n', 0, end)
+                    raw_line = payload[newline + 1:end]
+                    end = newline
+                    if not raw_line:
+                        continue
+                    if len(raw_line) > _PI_STOP_EVENT_MAX_BYTES:
+                        continue
+                    try:
+                        event = json.loads(raw_line.decode('utf-8', 'replace'))
+                    except Exception:
+                        continue
+                    if not isinstance(event, dict) or event.get('type') != 'message':
+                        continue
+                    message = event.get('message')
+                    if not isinstance(message, dict):
+                        continue
+                    if str(message.get('role') or '').strip().lower() != 'assistant':
+                        continue
+                    event_id = event.get('id')
+                    return {
+                        'session_id': expected_session_id,
+                        'stop_reason': _normalize_pi_stop_reason(
+                            message.get('stopReason'),
+                        ),
+                        'event_id': (
+                            str(event_id)[:128]
+                            if isinstance(event_id, (str, int)) else ''
+                        ),
+                        'event_digest': hashlib.sha256(raw_line).hexdigest(),
+                    }
+        except OSError:
+            continue
+    return None
+
+
+def _pi_terminal_advanced(previous, current):
+    if not isinstance(current, dict):
+        return False
+    if not isinstance(previous, dict):
+        return True
+    current_digest = str(current.get('event_digest') or '')
+    previous_digest = str(previous.get('event_digest') or '')
+    return bool(current_digest and current_digest != previous_digest)
+
+
+def _pi_terminal_error(state, *, prefix='Pi 未正常完成'):
+    state = state if isinstance(state, dict) else {}
+    raw_stop_reason = state.get('stop_reason')
+    stop_reason = (
+        raw_stop_reason
+        if raw_stop_reason in ('missing', 'unknown')
+        else _normalize_pi_stop_reason(raw_stop_reason)
+    )
+    # provider errorMessage 留在已受控投影的原生轨迹中；步骤错误只暴露终止类别，
+    # 避免上游或代理把 URL、临时凭证等诊断细节带进公开评测状态。
+    return f'{prefix}（stopReason={stop_reason}）'
+
+
 def _latest_claude_session_id_from_container(container_name):
     find_cmd = (
         "python3 - <<'PY'\n"
@@ -2035,14 +2211,18 @@ def _pi_session_id_from_stdout(stdout):
     return ''
 
 
-def _latest_pi_session_id_from_container(container_name):
+def _latest_pi_session_id_from_container(
+        container_name, runtime_user='node'):
     find_cmd = (
         "find /home/node/.pi/agent/sessions -type f -name '*.jsonl' "
         "-printf '%T@ %f\\n' 2>/dev/null | sort -nr | head -n 1"
     )
     try:
         located = subprocess.run(
-            ['docker', 'exec', '--user', 'node', container_name, 'bash', '-lc', find_cmd],
+            [
+                'docker', 'exec', '--user', runtime_user, container_name,
+                'bash', '-lc', find_cmd,
+            ],
             capture_output=True, text=True, timeout=8,
         )
     except Exception:
@@ -2059,14 +2239,15 @@ def _latest_pi_session_id_from_container(container_name):
     return _normalize_pi_session_id(match.group(1) if match else '')
 
 
-def _pi_session_exists_in_container(container_name, session_id):
+def _pi_session_exists_in_container(
+        container_name, session_id, runtime_user='node'):
     session_id = _normalize_pi_session_id(session_id)
     if not session_id:
         return False
     try:
         checked = subprocess.run(
             [
-                'docker', 'exec', '--user', 'node', container_name,
+                'docker', 'exec', '--user', runtime_user, container_name,
                 'find', _PI_CONTAINER_SESSION_ROOT, '-type', 'f',
                 '-name', f'*{session_id}*.jsonl', '-print', '-quit',
             ],
@@ -2077,7 +2258,8 @@ def _pi_session_exists_in_container(container_name, session_id):
     return checked.returncode == 0 and bool((checked.stdout or '').strip())
 
 
-def _resolve_resume_session_id(container_name, ws, harness, stdout=''):
+def _resolve_resume_session_id(
+        container_name, ws, harness, stdout='', runtime_user='node'):
     session_id = _read_session_id_from_workspace(ws)
     normalized_harness = str(harness or '').strip().lower()
     if normalized_harness == HARNESS_PI:
@@ -2087,7 +2269,9 @@ def _resolve_resume_session_id(container_name, ws, harness, stdout=''):
         session_id = _pi_session_id_from_stdout(stdout)
         if session_id:
             return session_id
-        return _latest_pi_session_id_from_container(container_name)
+        return _latest_pi_session_id_from_container(
+            container_name, runtime_user=runtime_user,
+        )
     if session_id:
         return session_id
     if normalized_harness == HARNESS_CLAUDE_CODE:
@@ -2103,10 +2287,11 @@ def _merge_proc_output(*values):
 def _exec_reverse_harness_phase(
     container_name, ws, phase, prompt, timeout_s, on_tick=None,
     resume_session_id='', fork_session=True, capture_dir=None, effort='',
+    runtime_user='node',
 ):
     timeout_s = max(1, int(timeout_s))
     args = [
-        'docker', 'exec', '-i', '--user', 'node',
+        'docker', 'exec', '-i', '--user', runtime_user,
         '-e', 'HOME=/home/node',
         '-e', 'DEBIAN_FRONTEND=noninteractive',
         '-e', f'AJ_PHASE={phase}',
@@ -2126,9 +2311,8 @@ def _exec_reverse_harness_phase(
         'timeout -k 10s "${AJ_HARNESS_TIMEOUT_SECONDS}s" run_harness',
     ])
     # 宿主侧的 stdout/stderr 捕获文件落到 capture_dir（默认 ws）。
-    # 当 ws 是被容器内 chown node:node 接管的挂载点（agent_answer 阶段）
-    # 时，宿主 ebola 进程无法在其中创建文件；改写到宿主私有的 trace_dir
-    # 即可避开权限问题，详见 _run_agent 的调用处。
+    # root-owned 的 Linux CI 工作区仍可能被 node 接管；agent_answer 因此把
+    # 捕获文件改写到宿主私有的 trace_dir，避免宿主进程失去写权限。
     capture_dir = capture_dir or ws
     os.makedirs(capture_dir, exist_ok=True)
     stdout_path = os.path.join(capture_dir, f'.aj_{phase}.stdout.tmp')
@@ -2248,12 +2432,15 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         '-w', '/workspace',
     ] + _agent_env_args(
         harness, endpoint_proxy.container_base_url, endpoint_proxy.token,
-        model, 'reverse_unused.jsonl', include_prompt=False,
+        model, 'reverse_unused.jsonl', include_prompt=False, endpoint=endpoint,
     ) + [JUDGE_IMAGE, 'bash', '-lc', 'tail -f /dev/null']
+    runtime_user = 'node'
     try:
         subprocess.run(docker_args, check=True, capture_output=True, text=True, timeout=120)
         _exec_container_apt_setup(container_name, timeout_s=120)
-        _prepare_agent_workspace_for_node(container_name)
+        runtime_user = (
+            _prepare_agent_workspace_for_node(container_name) or 'node'
+        )
         trace_registered = False
 
         def sync_trace():
@@ -2263,7 +2450,9 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
             elif harness == HARNESS_CODEX:
                 _sync_codex_stdout_trace(template_dir, trace_dir)
             elif harness == HARNESS_PI:
-                _sync_pi_agent_sessions(container_name, trace_dir)
+                _sync_pi_agent_sessions(
+                    container_name, trace_dir, runtime_user=runtime_user,
+                )
             if not trace_registered:
                 update_reverse_judge_step_for_attempt(
                     submission_id, attempt_id, STEP_AGENT,
@@ -2277,32 +2466,73 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
             container_name, template_dir, 'reverse_solve',
             _reverse_prompt(), max(1, int(timeout_s)), on_tick=sync_trace,
             capture_dir=trace_dir, effort=REVERSE_DEFAULT_EFFORT,
+            runtime_user=runtime_user,
         )
         sync_trace()
-        if getattr(proc, 'aj_timed_out', False):
-            session_id = _resolve_resume_session_id(
+        pi_session_id = (
+            _resolve_resume_session_id(
                 container_name, template_dir, harness, stdout=proc.stdout,
+                runtime_user=runtime_user,
+            )
+            if harness == HARNESS_PI else ''
+        )
+        pi_terminal_state = (
+            _latest_pi_terminal_state(trace_dir, pi_session_id)
+            if harness == HARNESS_PI else None
+        )
+        pi_stop_reason = str(
+            (pi_terminal_state or {}).get('stop_reason') or ''
+        ).strip().lower()
+        pi_hit_output_limit = (
+            harness == HARNESS_PI
+            and proc.returncode == 0
+            and not getattr(proc, 'aj_timed_out', False)
+            and pi_stop_reason == 'length'
+        )
+        if getattr(proc, 'aj_timed_out', False) or pi_hit_output_limit:
+            session_id = (
+                pi_session_id
+                or _resolve_resume_session_id(
+                    container_name, template_dir, harness, stdout=proc.stdout,
+                    runtime_user=runtime_user,
+                )
             )
             if not session_id:
+                if pi_hit_output_limit:
+                    error = (
+                        'Pi 达到单轮输出上限（stopReason=length），'
+                        '且未找到可恢复会话'
+                    )
+                else:
+                    error = f'Agent 作答超时（>{int(timeout_s)}s），且未找到可恢复会话'
                 return {
                     'ok': False,
                     'stdout': proc.stdout or '',
                     'stderr': proc.stderr or '',
-                    'error': f'Agent 作答超时（>{int(timeout_s)}s），且未找到可恢复会话',
+                    'error': error,
                     'trace_dir': trace_dir,
                 }
             if (
                 harness == HARNESS_PI
-                and not _pi_session_exists_in_container(container_name, session_id)
+                and not _pi_session_exists_in_container(
+                    container_name, session_id, runtime_user=runtime_user,
+                )
             ):
+                if pi_hit_output_limit:
+                    error = (
+                        'Pi 达到单轮输出上限（stopReason=length），'
+                        '但原生会话不存在或无法恢复'
+                    )
+                else:
+                    error = (
+                        f'Agent 作答超时（>{int(timeout_s)}s），'
+                        '但 Pi 原生会话不存在或无法恢复'
+                    )
                 return {
                     'ok': False,
                     'stdout': proc.stdout or '',
                     'stderr': proc.stderr or '',
-                    'error': (
-                        f'Agent 作答超时（>{int(timeout_s)}s），'
-                        '但 Pi 原生会话不存在或无法恢复'
-                    ),
+                    'error': error,
                     'trace_dir': trace_dir,
                 }
             finalize_proc = _exec_reverse_harness_phase(
@@ -2313,6 +2543,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                 resume_session_id=session_id,
                 fork_session=False,
                 capture_dir=trace_dir,
+                runtime_user=runtime_user,
             )
             sync_trace()
             ok = finalize_proc.returncode == 0 and not getattr(finalize_proc, 'aj_timed_out', False)
@@ -2325,23 +2556,61 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                     resumed_session_id != session_id
                     or not _pi_session_exists_in_container(
                         container_name, session_id,
+                        runtime_user=runtime_user,
                     )
                 ):
                     ok = False
                     error = 'Pi 原生会话恢复校验失败'
+                else:
+                    final_pi_state = _latest_pi_terminal_state(
+                        trace_dir, session_id,
+                    )
+                    if str(
+                        (final_pi_state or {}).get('stop_reason') or ''
+                    ).strip().lower() != 'stop':
+                        ok = False
+                        error = _pi_terminal_error(
+                            final_pi_state,
+                            prefix='Pi 恢复收尾未正常结束',
+                        )
+                    elif not _pi_terminal_advanced(
+                        pi_terminal_state, final_pi_state,
+                    ):
+                        ok = False
+                        error = 'Pi 恢复收尾没有产生新的原生会话事件'
             if not ok and not error:
                 if getattr(finalize_proc, 'aj_timed_out', False):
-                    error = (
-                        f'Agent 作答超时（>{int(timeout_s)}s），恢复收尾也超时'
-                        f'（>{int(finalize_timeout_s)}s）'
-                    )
+                    if pi_hit_output_limit:
+                        error = (
+                            'Pi 达到单轮输出上限（stopReason=length），'
+                            f'恢复收尾也超时（>{int(finalize_timeout_s)}s）'
+                        )
+                    else:
+                        error = (
+                            f'Agent 作答超时（>{int(timeout_s)}s），恢复收尾也超时'
+                            f'（>{int(finalize_timeout_s)}s）'
+                        )
                 else:
-                    error = f'Agent 作答超时后恢复收尾失败，退出码 {finalize_proc.returncode}'
+                    if pi_hit_output_limit:
+                        error = (
+                            'Pi 达到单轮输出上限（stopReason=length）后'
+                            f'恢复收尾失败，退出码 {finalize_proc.returncode}'
+                        )
+                    else:
+                        error = f'Agent 作答超时后恢复收尾失败，退出码 {finalize_proc.returncode}'
             return {
                 'ok': ok,
                 'stdout': _merge_proc_output(proc.stdout, finalize_proc.stdout),
                 'stderr': _merge_proc_output(proc.stderr, finalize_proc.stderr),
                 'error': error,
+                'trace_dir': trace_dir,
+            }
+        if harness == HARNESS_PI and proc.returncode == 0 and pi_stop_reason != 'stop':
+            return {
+                'ok': False,
+                'stdout': proc.stdout or '',
+                'stderr': proc.stderr or '',
+                'error': _pi_terminal_error(pi_terminal_state),
                 'trace_dir': trace_dir,
             }
         # Claude Code 在默认 effort 下可能在 thinking 中途被 stop_reason=abort
@@ -2357,6 +2626,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         ):
             session_id = _resolve_resume_session_id(
                 container_name, template_dir, harness,
+                runtime_user=runtime_user,
             )
             if session_id:
                 retry_proc = _exec_reverse_harness_phase(
@@ -2366,6 +2636,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                     capture_dir=trace_dir,
                     resume_session_id=session_id, fork_session=False,
                     effort=REVERSE_RETRY_EFFORT,
+                    runtime_user=runtime_user,
                 )
                 sync_trace()
                 # 重试若仍 abort 或退出码非 0，认输；否则用重试结果。
@@ -2423,7 +2694,10 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
             endpoint_proxy.close()
         finally:
             try:
-                _dump_harness_trace(container_name, trace_dir, template_dir, harness)
+                _dump_harness_trace(
+                    container_name, trace_dir, template_dir, harness,
+                    runtime_user=runtime_user,
+                )
             finally:
                 try:
                     subprocess.run(
@@ -2547,11 +2821,11 @@ def _quality_gate_agent_prompt(criteria):
     )
 
 
-def _quality_gate_agent_env_args(harness, base_url, token, model):
+def _quality_gate_agent_env_args(harness, base_url, token, model, endpoint=None):
     """复用 harness 端点环境，但不把可写结果通道暴露给 Agent/子进程。"""
     inherited = _agent_env_args(
         harness, base_url, token, model, 'quality_gate_unused.json',
-        include_prompt=False,
+        include_prompt=False, endpoint=endpoint,
     )
     filtered = []
     for index in range(0, len(inherited), 2):
@@ -2565,7 +2839,7 @@ def _quality_gate_agent_env_args(harness, base_url, token, model):
 
 
 def _quality_gate_container_args(
-        container_name, audit_root, proxy, harness, model):
+        container_name, audit_root, proxy, harness, model, endpoint=None):
     source_mount = (
         f'type=bind,source={audit_root},target=/evidence,readonly'
     )
@@ -2586,7 +2860,7 @@ def _quality_gate_container_args(
         '--mount', source_mount,
         '-w', '/workspace',
     ] + _quality_gate_agent_env_args(
-        harness, proxy.container_base_url, proxy.token, model,
+        harness, proxy.container_base_url, proxy.token, model, endpoint=endpoint,
     ) + [
         JUDGE_IMAGE, 'bash', '-lc', 'tail -f /dev/null',
     ]
@@ -2672,7 +2946,7 @@ def _quality_gate_text(value):
 
 
 def _quality_gate_harness_result_text(stdout, harness):
-    """从三种 CLI harness 的结构化 stdout 中取最后一条 Agent 回复。"""
+    """从各 CLI harness 的结构化 stdout 中取最后一条 Agent 回复。"""
     raw = str(stdout or '').strip()
     if not raw:
         raise ValueError('质量门禁 Agent 未返回审核结论')
@@ -2713,6 +2987,25 @@ def _quality_gate_harness_result_text(stdout, harness):
                 text_value = _quality_gate_text(item)
             elif event_type == 'text' or part_type == 'text':
                 text_value = _quality_gate_text(part or event)
+            elif harness == HARNESS_PI and event_type in {'message_end', 'turn_end'}:
+                message = event.get('message')
+                if (
+                    isinstance(message, dict)
+                    and str(message.get('role') or '').strip().lower() == 'assistant'
+                ):
+                    text_value = _quality_gate_text(message.get('content'))
+                else:
+                    text_value = ''
+            elif harness == HARNESS_PI and event_type == 'agent_end':
+                text_value = ''
+                for message in event.get('messages') or []:
+                    if (
+                        isinstance(message, dict)
+                        and str(message.get('role') or '').strip().lower() == 'assistant'
+                    ):
+                        candidate = _quality_gate_text(message.get('content'))
+                        if str(candidate or '').strip():
+                            text_value = candidate
             else:
                 text_value = ''
             if str(text_value or '').strip():
@@ -2943,7 +3236,7 @@ def _run_quality_gate_agent(
             proxy.token, proxy.container_base_url,
         ])
         docker_args = _quality_gate_container_args(
-            container_name, audit_root, proxy, harness, model,
+            container_name, audit_root, proxy, harness, model, endpoint=endpoint,
         )
         subprocess.run(
             docker_args, check=True, capture_output=True, text=True, timeout=120,

@@ -210,6 +210,9 @@ def test_resolve_selected_endpoint_returns_only_selected_enabled_endpoint(monkey
         "api_key": "sk-mimo",
         "model": "mimo-v2.5-pro",
         "concurrency_limit": 2,
+        "context_window_tokens": 1_000_000,
+        "max_output_tokens": 384_000,
+        "thinking_compatibility": True,
     }
 
 
@@ -1052,6 +1055,9 @@ def test_quality_endpoint_payloads_uses_independent_enabled_pool_and_exclusions(
         "api_key": "secret-1",
         "model": "model-1",
         "concurrency_limit": 1,
+        "context_window_tokens": 1_000_000,
+        "max_output_tokens": 384_000,
+        "thinking_compatibility": True,
     }]
 
     monkeypatch.setattr(
@@ -1255,6 +1261,11 @@ def test_quality_gate_container_uses_agent_judge_image_and_strict_isolation():
     args = rj._quality_gate_container_args(
         "gate-container", "/srv/audit", proxy,
         rj.HARNESS_CODEX, "deepseek-v4-flash",
+        endpoint={
+            "context_window_tokens": 131_072,
+            "max_output_tokens": 16_384,
+            "thinking_compatibility": False,
+        },
     )
     rendered = json.dumps(args, ensure_ascii=False)
 
@@ -1268,6 +1279,9 @@ def test_quality_gate_container_uses_agent_judge_image_and_strict_isolation():
     assert ["--cap-drop", "ALL"] == args[args.index("--cap-drop"):args.index("--cap-drop") + 2]
     assert "type=bind,source=/srv/audit,target=/evidence,readonly" in args
     assert "AJ_AUDIT_READ_ONLY=1" in args
+    assert "AJ_CONTEXT_WINDOW_TOKENS=131072" in args
+    assert "AJ_MAX_OUTPUT_TOKENS=16384" in args
+    assert "AJ_THINKING_COMPATIBILITY=0" in args
     assert "AJ_RESULT_FILE=" not in rendered
     assert "attempt-only-proxy-token" in rendered
     assert "REAL_ENDPOINT_API_KEY" not in rendered
@@ -1294,6 +1308,22 @@ def test_quality_gate_harness_result_extracts_structured_final_reply():
         rj.HARNESS_OPENCODE: json.dumps({
             "type": "text", "part": {"type": "text", "text": verdict},
         }, ensure_ascii=False),
+        rj.HARNESS_PI: "\n".join([
+            json.dumps({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": verdict}],
+                },
+            }, ensure_ascii=False),
+            json.dumps({
+                "type": "agent_end",
+                "messages": [{
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": verdict}],
+                }],
+            }, ensure_ascii=False),
+        ]),
     }
 
     for harness, stdout in samples.items():
@@ -1306,6 +1336,11 @@ def test_quality_gate_harness_result_extracts_structured_final_reply():
     (
         rj.HARNESS_CODEX,
         '{"type":"item.completed","item":{"type":"command_execution"}}',
+        "缺少最终结论",
+    ),
+    (
+        rj.HARNESS_PI,
+        '{"type":"message_end","message":{"role":"toolResult","content":[]}}',
         "缺少最终结论",
     ),
 ])
@@ -1327,6 +1362,16 @@ def test_quality_gate_harness_result_rejects_malformed_structured_output(
     (
         rj.HARNESS_OPENCODE,
         json.dumps({"type": "text", "part": {"type": "text", "text": "123456789"}}),
+    ),
+    (
+        rj.HARNESS_PI,
+        json.dumps({
+            "type": "turn_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "123456789"}],
+            },
+        }),
     ),
 ])
 def test_quality_gate_harness_result_rejects_oversized_reply(
@@ -1555,6 +1600,7 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
     docker_calls = []
     dumps = []
     env_calls = []
+    phase_users = []
     proxy_closes = []
     proxy = SimpleNamespace(
         container_base_url="http://host.docker.internal:43123/v1",
@@ -1583,13 +1629,16 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
             docker_calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
     monkeypatch.setattr(rj, "_exec_container_apt_setup", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(rj, "_prepare_agent_workspace_for_node", lambda *_args: None)
+    monkeypatch.setattr(
+        rj, "_prepare_agent_workspace_for_node", lambda *_args: "501:20",
+    )
     monkeypatch.setattr(
         rj, "_sync_claude_project_jsonl",
         lambda *_args: sync_calls.append("sync") or True,
     )
 
-    def fake_phase(*_args, on_tick=None, **_kwargs):
+    def fake_phase(*_args, on_tick=None, **kwargs):
+        phase_users.append(kwargs.get("runtime_user"))
         on_tick()
         on_tick()
         return SimpleNamespace(returncode=0, stdout="done", stderr="", aj_timed_out=False)
@@ -1602,7 +1651,7 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
     monkeypatch.setattr(rj, "_publish_snapshot", lambda sid: publications.append(sid))
     monkeypatch.setattr(
         rj, "_dump_harness_trace",
-        lambda *args: dumps.append(args),
+        lambda *args, **kwargs: dumps.append((args, kwargs)),
     )
 
     result = rj._run_agent(
@@ -1626,9 +1675,11 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
         )
     ]
     assert proxy_closes == [True]
+    assert phase_users == ["501:20"]
     assert "top-secret" not in json.dumps(docker_calls, ensure_ascii=False)
     assert "top-secret" not in json.dumps(result, ensure_ascii=False)
     assert len(dumps) == 1
+    assert dumps[0][1]["runtime_user"] == "501:20"
     assert docker_calls[-1][:4] == ["docker", "rm", "-f", "rj_agent_12_attempt-1"]
 
 
@@ -1693,9 +1744,12 @@ def test_run_agent_resumes_aborted_claude_session_once_and_requires_recovery(
     monkeypatch.setattr(
         rj, "update_reverse_judge_step_for_attempt", lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(rj, "_dump_harness_trace", lambda *_args: None)
     monkeypatch.setattr(
-        rj, "_resolve_resume_session_id", lambda *_args: "session-to-resume",
+        rj, "_dump_harness_trace", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        rj, "_resolve_resume_session_id",
+        lambda *_args, **_kwargs: "session-to-resume",
     )
     monkeypatch.setattr(
         rj, "_detect_claude_stop_reason", lambda *_args, **_kwargs: next(stop_reasons),
@@ -1744,6 +1798,88 @@ def test_normalize_claude_effort_allows_only_cli_supported_values(
     assert rj._normalize_claude_effort(value, fallback) == expected
 
 
+def test_prepare_agent_workspace_uses_bind_mount_owner_without_chowning_workspace(
+        monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((list(args), kwargs))
+        if args[3:6] == ["stat", "-c", "%u:%g"]:
+            return SimpleNamespace(returncode=0, stdout="501:20\n", stderr="")
+        if args[3:6] == ["id", "-g", "node"]:
+            return SimpleNamespace(returncode=0, stdout="1000\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rj.subprocess, "run", fake_run)
+
+    runtime_user = rj._prepare_agent_workspace_for_node("agent-container")
+
+    assert runtime_user == "501:1000"
+    assert len(calls) == 3
+    assert calls[0][0] == [
+        "docker", "exec", "agent-container", "stat", "-c", "%u:%g",
+        "/workspace",
+    ]
+    assert calls[1][0] == [
+        "docker", "exec", "agent-container", "id", "-g", "node",
+    ]
+    setup_args = calls[2][0]
+    assert setup_args[:5] == [
+        "docker", "exec", "agent-container", "bash", "-lc",
+    ]
+    assert setup_args[-3:] == ["agent-runtime-setup", "501", "1000"]
+    assert "chown -R" in setup_args[5]
+    assert "/home/node" in setup_args[5]
+    assert "/workspace" not in setup_args[5]
+    assert "/etc/passwd" in setup_args[5]
+
+
+def test_prepare_agent_workspace_keeps_node_fallback_for_root_owned_mount(
+        monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((list(args), kwargs))
+        stdout = "0:0\n" if args[3:6] == ["stat", "-c", "%u:%g"] else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(rj.subprocess, "run", fake_run)
+
+    runtime_user = rj._prepare_agent_workspace_for_node("agent-container")
+
+    assert runtime_user == "node"
+    assert len(calls) == 2
+    assert "chown node:node /home/node /workspace" in calls[1][0][5]
+    assert "! -name problem" in calls[1][0][5]
+
+
+@pytest.mark.parametrize("owner", ["", "not-an-owner", "-1:20", "2147483648:20"])
+def test_prepare_agent_workspace_rejects_untrusted_owner(monkeypatch, owner):
+    monkeypatch.setattr(
+        rj.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=owner, stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="UID:GID"):
+        rj._prepare_agent_workspace_for_node("agent-container")
+
+
+@pytest.mark.parametrize("node_gid", ["", "node", "0", "2147483648"])
+def test_prepare_agent_workspace_rejects_untrusted_container_group(
+        monkeypatch, node_gid):
+    def fake_run(args, **_kwargs):
+        stdout = "501:20\n" if args[3:6] == ["stat", "-c", "%u:%g"] else node_gid
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(rj.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="node 用户的 GID"):
+        rj._prepare_agent_workspace_for_node("agent-container")
+
+
 def test_exec_reverse_harness_phase_passes_only_normalized_effort(monkeypatch, tmp_path):
     commands = []
 
@@ -1777,10 +1913,16 @@ def test_exec_reverse_harness_phase_passes_only_normalized_effort(monkeypatch, t
         "agent-container", str(tmp_path), "reverse_solve", "prompt", 5,
         capture_dir=str(tmp_path), effort="turbo",
     )
+    numeric_user = rj._exec_reverse_harness_phase(
+        "agent-container", str(tmp_path), "reverse_solve", "prompt", 5,
+        capture_dir=str(tmp_path), runtime_user="501:20",
+    )
 
-    assert valid.returncode == invalid.returncode == 0
+    assert valid.returncode == invalid.returncode == numeric_user.returncode == 0
+    assert commands[0][3:5] == ["--user", "node"]
     assert "AJ_EFFORT=high" in commands[0]
     assert not any(arg.startswith("AJ_EFFORT=") for arg in commands[1])
+    assert commands[2][3:5] == ["--user", "501:20"]
 
 
 def test_retry_queued_submission_requeues_current_attempt(monkeypatch):

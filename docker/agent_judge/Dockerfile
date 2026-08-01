@@ -90,13 +90,12 @@ RUN pip3 install --no-cache-dir --break-system-packages playwright \
 RUN pip3 install --no-cache-dir --break-system-packages --force-reinstall "numpy<2"
 
 # 预装 Agent Harness CLI（关键：不放进评测关键路径）
-# Agent Harness 属于判题协议的一部分，版本漂移会直接改变评分行为。升级必须显式改这里并
-# 重建、验证镜像；ARG 特意紧邻唯一使用它们的步骤，避免版本更新使前面的 30GB 工具链
-# 缓存全部失效。仍可在受控构建中通过 --build-arg 覆盖做兼容性测试。
+# Agent Harness 属于判题协议的一部分。Claude/Codex/OpenCode 保持现有显式版本；
+# Pi 按产品口径信任上游 latest，不人为锁定。ARG 紧邻唯一使用它们的步骤，避免版本
+# 更新使前面的 30GB 工具链缓存全部失效。
 ARG CLAUDE_CODE_VERSION=2.1.197
 ARG CODEX_CLI_VERSION=0.144.5
 ARG OPENCODE_VERSION=1.18.3
-ARG PI_CODING_AGENT_VERSION=0.82.1
 ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=2.0.51
 ARG AI_SDK_ANTHROPIC_VERSION=3.0.85
 RUN npm install -g \
@@ -107,7 +106,7 @@ RUN npm install -g \
         @ai-sdk/anthropic@${AI_SDK_ANTHROPIC_VERSION} \
         --registry=https://registry.npmmirror.com
 RUN npm install -g --ignore-scripts \
-        @earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION} \
+        @earendil-works/pi-coding-agent \
         --registry=https://registry.npmmirror.com
 
 # report 上报命令

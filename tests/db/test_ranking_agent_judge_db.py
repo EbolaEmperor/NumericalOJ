@@ -102,7 +102,9 @@ def test_agent_judge_endpoints_store_harness_and_opencode_defaults(client):
     cid = _make_comp()
     ajdb.save_agent_judge_endpoints(cid, [
         {'harness': 'codex', 'base_url': 'https://gw/openai/v1', 'api_key': 'k1',
-         'model': 'gpt-5.4', 'concurrency_limit': 3, 'enabled': True},
+         'model': 'gpt-5.4', 'context_window_tokens': 200000,
+         'max_output_tokens': 50000, 'thinking_compatibility': False,
+         'concurrency_limit': 3, 'enabled': True},
         {'harness': 'opencode', 'base_url': '', 'api_key': 'k2',
          'model': '', 'concurrency_limit': 2, 'enabled': True},
         {'harness': 'codex', 'base_url': 'https://paused/v1', 'api_key': 'k3',
@@ -111,9 +113,15 @@ def test_agent_judge_endpoints_store_harness_and_opencode_defaults(client):
     eps = ajdb.list_agent_judge_endpoints(cid)
     assert eps[0]['harness'] == 'codex'
     assert eps[0]['base_url'] == 'https://gw/openai/v1'
+    assert eps[0]['context_window_tokens'] == 200000
+    assert eps[0]['max_output_tokens'] == 50000
+    assert eps[0]['thinking_compatibility'] is False
     assert eps[1]['harness'] == 'opencode'
     assert eps[1]['base_url'] == ajdb.DEFAULT_OPENCODE_GO_BASE_URL
     assert eps[1]['model'] == ajdb.DEFAULT_OPENCODE_GO_MODEL
+    assert eps[1]['context_window_tokens'] == 1_000_000
+    assert eps[1]['max_output_tokens'] == 384_000
+    assert eps[1]['thinking_compatibility'] is True
     assert eps[2]['status'] == 'paused'
     assert eps[2]['enabled'] == 0
     assert [e['id'] for e in ajdb.list_agent_judge_endpoints(cid, enabled_only=True)] == [
@@ -143,3 +151,37 @@ def test_agent_judge_endpoint_status_transitions_respect_manual_disabled(client)
     by_id = {e['id']: e for e in ajdb.list_agent_judge_endpoints(cid)}
     assert by_id[enabled_id]['status'] == 'enabled'
     assert by_id[disabled_id]['status'] == 'disabled'
+
+
+def test_existing_endpoint_edit_without_capabilities_preserves_saved_values(client):
+    cid = _make_comp()
+    ajdb.save_agent_judge_endpoints(cid, [{
+        'harness': 'pi',
+        'base_url': 'https://models.example/v1',
+        'api_key': 'k1',
+        'model': 'custom-thinking-model',
+        'context_window_tokens': 262_144,
+        'max_output_tokens': 65_536,
+        'thinking_compatibility': False,
+        'concurrency_limit': 1,
+        'status': 'enabled',
+    }])
+    saved = ajdb.list_agent_judge_endpoints(cid)[0]
+
+    # 模拟尚未认识新字段的旧前端/CLI：只回传旧契约字段，并留空密钥沿用。
+    ajdb.save_agent_judge_endpoints(cid, [{
+        'id': saved['id'],
+        'harness': saved['harness'],
+        'base_url': saved['base_url'],
+        'api_key': '',
+        'model': saved['model'],
+        'concurrency_limit': 2,
+        'status': 'paused',
+    }])
+
+    updated = ajdb.list_agent_judge_endpoints(cid)[0]
+    assert updated['context_window_tokens'] == 262_144
+    assert updated['max_output_tokens'] == 65_536
+    assert updated['thinking_compatibility'] is False
+    assert updated['concurrency_limit'] == 2
+    assert updated['status'] == 'paused'

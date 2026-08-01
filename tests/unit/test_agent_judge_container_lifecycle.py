@@ -52,6 +52,32 @@ def _docker_subcmds(calls):
     return [c[1] for c in calls if len(c) > 1 and c[0] == "docker"]
 
 
+def test_resolve_endpoints_preserves_model_capabilities(monkeypatch):
+    monkeypatch.setattr(m, "list_agent_judge_endpoints", lambda *_args, **_kwargs: [{
+        "id": 9,
+        "harness": m.HARNESS_CODEX,
+        "base_url": "https://model.example/v1",
+        "api_key": "temporary-token",
+        "model": "generic-model",
+        "context_window_tokens": 131_072,
+        "max_output_tokens": 16_384,
+        "thinking_compatibility": False,
+        "concurrency_limit": 3,
+    }])
+
+    assert m._resolve_endpoints(7) == [{
+        "id": 9,
+        "harness": m.HARNESS_CODEX,
+        "base_url": "https://model.example/v1",
+        "api_key": "temporary-token",
+        "model": "generic-model",
+        "context_window_tokens": 131_072,
+        "max_output_tokens": 16_384,
+        "thinking_compatibility": False,
+        "concurrency_limit": 3,
+    }]
+
+
 def _run(monkeypatch, running_seq, timeout_s, endpoint=None):
     fake = _FakeSubprocess(running_seq)
     monkeypatch.setattr(m, "subprocess", fake)
@@ -79,6 +105,29 @@ def test_run_args_have_no_rm_and_prerun_cleanup(monkeypatch):
     run_idx = fake.calls.index(run_call)
     pre = fake.calls[:run_idx]
     assert any(c[:3] == ["docker", "rm", "-f"] for c in pre), "run 前应先 docker rm -f 残留容器"
+
+
+def test_normal_agent_container_receives_selected_endpoint_capabilities(monkeypatch):
+    endpoint = {
+        "id": 9,
+        "harness": m.HARNESS_CODEX,
+        "base_url": "https://model.example/v1",
+        "api_key": "temporary-token",
+        "model": "generic-model",
+        "context_window_tokens": 131_072,
+        "max_output_tokens": 16_384,
+        "thinking_compatibility": False,
+        "concurrency_limit": 1,
+    }
+
+    fake, _ws, _timed_out, _ok = _run(
+        monkeypatch, ["false"], timeout_s=600, endpoint=endpoint,
+    )
+
+    run_call = next(c for c in fake.calls if len(c) > 1 and c[1] == "run")
+    assert "AJ_CONTEXT_WINDOW_TOKENS=131072" in run_call
+    assert "AJ_MAX_OUTPUT_TOKENS=16384" in run_call
+    assert "AJ_THINKING_COMPATIBILITY=0" in run_call
 
 
 def test_normal_exit_does_not_copy_raw_claude_state(monkeypatch):
@@ -222,7 +271,15 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
         competition={"title": "拓扑赛"},
         rules=rules,
         timeout_s=600,
-        endpoint={"harness": m.HARNESS_CLAUDE_CODE, "base_url": "http://x", "api_key": "k", "model": "m"},
+        endpoint={
+            "harness": m.HARNESS_CLAUDE_CODE,
+            "base_url": "http://x",
+            "api_key": "k",
+            "model": "m",
+            "context_window_tokens": 131_072,
+            "max_output_tokens": 16_384,
+            "thinking_compatibility": False,
+        },
         attempt_id="att",
     )
     assert (timed_out, ok) == (False, True)
@@ -231,6 +288,13 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
         ("rule_1", "11111111-1111-1111-1111-111111111111"),
         ("rule_3", "22222222-2222-2222-2222-222222222222"),
     ]
+    run_call = next(
+        call for call in fake_subprocess.calls
+        if len(call) > 1 and call[1] == "run"
+    )
+    assert "AJ_CONTEXT_WINDOW_TOKENS=131072" in run_call
+    assert "AJ_MAX_OUTPUT_TOKENS=16384" in run_call
+    assert "AJ_THINKING_COMPATIBILITY=0" in run_call
     # setup、每次真正执行的 resume、finally 都同步；依赖跳过的 rule_2 不伪造轨迹。
     assert trace_sessions == [
         "11111111-1111-1111-1111-111111111111",
