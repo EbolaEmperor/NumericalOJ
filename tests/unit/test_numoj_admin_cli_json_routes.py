@@ -767,6 +767,95 @@ def test_admin_ranking_detail_projects_quality_gate_configuration(monkeypatch, c
     assert "api_key" not in out["quality_gate_endpoints"][0]
 
 
+def test_admin_single_endpoint_cli_sends_model_metadata_and_accepts_pi(
+        monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(
+        cli.ranking.ranking_save_endpoint.__globals__,
+        "client_from_args",
+        lambda _args: fake_client,
+    )
+    parser = cli.build_parser()
+
+    default_args = parser.parse_args([
+        "ranking", "save-endpoint", "3",
+        "--harness", "pi",
+        "--agent-base-url", "https://api.example.com/v1",
+        "--api-key", "endpoint-secret",
+        "--model", "custom-model",
+    ])
+    default_args.func(default_args)
+    explicit_args = parser.parse_args([
+        "ranking", "save-endpoint", "3",
+        "--harness", "pi",
+        "--agent-base-url", "https://api.example.com/v1",
+        "--api-key", "endpoint-secret",
+        "--model", "custom-model",
+        "--context-window-tokens", "262144",
+        "--max-output-tokens", "65536",
+        "--no-thinking-compatibility",
+    ])
+    explicit_args.func(explicit_args)
+    capsys.readouterr()
+
+    default_endpoint = fake_client.requests[0][2]["json"]["endpoints"][0]
+    assert default_endpoint["harness"] == "pi"
+    assert default_endpoint["context_window_tokens"] == 1_000_000
+    assert default_endpoint["max_output_tokens"] == 384_000
+    assert default_endpoint["thinking_compatibility"] is True
+    explicit_endpoint = fake_client.requests[1][2]["json"]["endpoints"][0]
+    assert explicit_endpoint["context_window_tokens"] == 262_144
+    assert explicit_endpoint["max_output_tokens"] == 65_536
+    assert explicit_endpoint["thinking_compatibility"] is False
+
+    quality_args = parser.parse_args([
+        "ranking", "save-quality-gate-endpoint", "3",
+        "--harness", "pi",
+        "--agent-base-url", "https://api.example.com/v1",
+        "--api-key", "quality-secret",
+        "--model", "quality-model",
+        "--context-window-tokens", "524288",
+        "--max-output-tokens", "131072",
+        "--no-thinking-compatibility",
+    ])
+    assert quality_args.harness == "pi"
+    assert quality_args.context_window_tokens == 524_288
+    assert quality_args.max_output_tokens == 131_072
+    assert quality_args.thinking_compatibility is False
+
+
+def test_admin_endpoint_pool_json_preserves_model_metadata(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(
+        cli.ranking_endpoints.__globals__,
+        "client_from_args",
+        lambda _args: fake_client,
+    )
+    endpoint = {
+        "harness": "pi",
+        "base_url": "https://api.example.com/v1",
+        "api_key": "endpoint-secret",
+        "model": "custom-model",
+        "context_window_tokens": 131_072,
+        "max_output_tokens": 32_768,
+        "thinking_compatibility": False,
+    }
+
+    cli.ranking_endpoints(Namespace(
+        competition_id=3,
+        endpoints=cli.json.dumps([endpoint]),
+        env_file=None,
+        timeout_seconds=None,
+        reverse_finalize_timeout=None,
+        orchestration_mode=None,
+    ))
+    capsys.readouterr()
+
+    assert fake_client.requests[0][2]["json"]["endpoints"] == [endpoint]
+
+
 def test_admin_quality_gate_commands_reuse_file_and_env_secret_inputs(monkeypatch, capsys, tmp_path):
     cli = _load_numoj_admin_cli_module()
     fake_client = _FakeClient()
@@ -828,6 +917,9 @@ def test_admin_quality_gate_commands_reuse_file_and_env_secret_inputs(monkeypatc
             "base_url": "http://single-quality.local",
             "api_key": "secret-from-env",
             "model": "single-quality-model",
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 384_000,
+            "thinking_compatibility": True,
             "concurrency_limit": 1,
             "status": "paused",
         }

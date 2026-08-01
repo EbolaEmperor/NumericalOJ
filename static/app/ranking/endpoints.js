@@ -12,12 +12,19 @@
   var editApiKey = document.getElementById('ajeEditApiKey');
   var editModel = document.getElementById('ajeEditModel');
   var editConcurrency = document.getElementById('ajeEditConcurrency');
+  var editContextWindowTokens = document.getElementById('ajeEditContextWindowTokens');
+  var editMaxOutputTokens = document.getElementById('ajeEditMaxOutputTokens');
+  var editThinkingCompatibility = document.getElementById('ajeEditThinkingCompatibility');
   var editStatus = document.getElementById('ajeEditStatus');
   var editDelete = document.getElementById('ajeEditDelete');
   var editApply = document.getElementById('ajeEditApply');
   var harnessPickerCtrl = null;
   var statusPickerCtrl = null;
   var orchPickerCtrl = null;
+  var DEFAULT_CONTEXT_WINDOW_TOKENS = 1000000;
+  var DEFAULT_MAX_OUTPUT_TOKENS = 384000;
+  var DEFAULT_THINKING_COMPATIBILITY = true;
+  var MAX_TOKEN_SETTING = 1000000;
   function clampNumber(value, min, max, fallback){
     var n = parseInt(value, 10);
     if (!Number.isFinite(n)) n = fallback;
@@ -67,6 +74,19 @@
     var raw = e && e.status ? String(e.status).toLowerCase() : (e && e.enabled ? 'enabled' : 'disabled');
     return (raw === 'paused' || raw === 'disabled') ? raw : 'enabled';
   }
+  function normalizeTokenCount(value, fallback){
+    var n = Number(value);
+    if (!Number.isSafeInteger(n) || n < 1 || n > MAX_TOKEN_SETTING) return fallback;
+    return n;
+  }
+  function normalizeThinkingCompatibility(value){
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    var normalized = String(value == null ? '' : value).trim().toLowerCase();
+    if (normalized === 'false' || normalized === '0' || normalized === 'off' || normalized === 'no') return false;
+    if (normalized === 'true' || normalized === '1' || normalized === 'on' || normalized === 'yes') return true;
+    return DEFAULT_THINKING_COMPATIBILITY;
+  }
   function statusLabel(s){
     s = normalizeStatus({status:s});
     if (s === 'paused') return '暂停';
@@ -84,6 +104,12 @@
     return (list || []).map(function (e) {
       return {id: e.id, harness: e.harness || 'claude_code',
               base_url: e.base_url || '', model: e.model || '',
+              context_window_tokens: normalizeTokenCount(
+                e.context_window_tokens, DEFAULT_CONTEXT_WINDOW_TOKENS),
+              max_output_tokens: normalizeTokenCount(
+                e.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
+              thinking_compatibility: normalizeThinkingCompatibility(
+                e.thinking_compatibility),
               concurrency_limit: e.concurrency_limit || 1,
               status: normalizeStatus(e), enabled: normalizeStatus(e) === 'enabled',
               has_key: !!e.has_key, api_key: ''};
@@ -92,7 +118,11 @@
   initTimeoutControls();
   function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
   function defaultEndpoint(){
-    return {id:null, harness:'claude_code', base_url:'', model:'', concurrency_limit:1, status:'enabled', enabled:true, has_key:false, api_key:''};
+    return {id:null, harness:'claude_code', base_url:'', model:'',
+      context_window_tokens:DEFAULT_CONTEXT_WINDOW_TOKENS,
+      max_output_tokens:DEFAULT_MAX_OUTPUT_TOKENS,
+      thinking_compatibility:DEFAULT_THINKING_COMPATIBILITY,
+      concurrency_limit:1, status:'enabled', enabled:true, has_key:false, api_key:''};
   }
   function harnessLabel(h){
     if (h === 'codex') return 'Codex';
@@ -133,11 +163,30 @@
     if ((e.api_key || '').trim()) return '新 Key 待保存';
     return e.has_key ? 'Key 已配置' : 'Key 未配置';
   }
+  function compactTokenCount(value){
+    var n = normalizeTokenCount(value, 0);
+    if (n >= 1000000) {
+      return (Math.round(n / 100000) / 10).toFixed(1).replace(/\.0$/, '') + 'M';
+    }
+    if (n >= 1000) {
+      return (Math.round(n / 100) / 10).toFixed(1).replace(/\.0$/, '') + 'K';
+    }
+    return String(n);
+  }
+  function exactTokenCount(value){
+    return normalizeTokenCount(value, 0).toLocaleString('en-US') + ' Token';
+  }
   function endpointPayload(manager){
     return manager.eps.map(function(e){
       return {id:e.id, harness:e.harness || 'claude_code',
         base_url:(e.base_url||'').trim(), api_key:(e.api_key||'').trim(),
-        model:(e.model||'').trim(), concurrency_limit:parseInt(e.concurrency_limit)||1,
+        model:(e.model||'').trim(),
+        context_window_tokens:normalizeTokenCount(
+          e.context_window_tokens, DEFAULT_CONTEXT_WINDOW_TOKENS),
+        max_output_tokens:normalizeTokenCount(
+          e.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
+        thinking_compatibility:normalizeThinkingCompatibility(e.thinking_compatibility),
+        concurrency_limit:parseInt(e.concurrency_limit)||1,
         status:normalizeStatus(e), enabled:isEnabled(e)};
     });
   }
@@ -149,6 +198,11 @@
         api_key:(e.api_key || '').trim(),
         has_key:!!e.has_key,
         model:(e.model || '').trim(),
+        context_window_tokens:normalizeTokenCount(
+          e.context_window_tokens, DEFAULT_CONTEXT_WINDOW_TOKENS),
+        max_output_tokens:normalizeTokenCount(
+          e.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
+        thinking_compatibility:normalizeThinkingCompatibility(e.thinking_compatibility),
         concurrency_limit:parseInt(e.concurrency_limit, 10) || 1,
         status:normalizeStatus(e)
       };
@@ -198,6 +252,9 @@
         '</div>' +
         '<div class="aje-card-meta">' +
           '<span class="aje-chip"><i class="fas fa-gauge-high"></i>并发 ' + (parseInt(e.concurrency_limit)||1) + '</span>' +
+          '<span class="aje-chip aje-capability-chip" title="上下文窗口：' + esc(exactTokenCount(e.context_window_tokens)) + '"><i class="fas fa-layer-group"></i>' + esc(compactTokenCount(e.context_window_tokens)) + ' 上下文</span>' +
+          '<span class="aje-chip aje-capability-chip" title="最大输出：' + esc(exactTokenCount(e.max_output_tokens)) + '"><i class="fas fa-arrow-up-right-dots"></i>' + esc(compactTokenCount(e.max_output_tokens)) + ' 输出</span>' +
+          '<span class="aje-chip aje-capability-chip' + (normalizeThinkingCompatibility(e.thinking_compatibility) ? '' : ' muted') + '"><i class="fas fa-brain"></i>' + (normalizeThinkingCompatibility(e.thinking_compatibility) ? 'Thinking 兼容' : 'Thinking 常规') + '</span>' +
           '<span class="aje-chip"><i class="fas fa-key"></i>' + esc(keyText(e)) + '</span>' +
           (!e.id ? '<span class="aje-chip"><i class="fas fa-circle-plus"></i>未保存</span>' : '') +
           '<button type="button" class="aje-edit-btn" data-edit="' + i + '" title="编辑端点" aria-label="编辑端点"><i class="fas fa-pen"></i></button>' +
@@ -229,6 +286,13 @@
     editApiKey.value = e.api_key || '';
     editApiKey.placeholder = e.has_key ? '已配置' : '请输入 API Key';
     editModel.value = e.model || '';
+    editContextWindowTokens.value = normalizeTokenCount(
+      e.context_window_tokens, DEFAULT_CONTEXT_WINDOW_TOKENS);
+    editMaxOutputTokens.value = normalizeTokenCount(
+      e.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
+    editThinkingCompatibility.checked = normalizeThinkingCompatibility(
+      e.thinking_compatibility);
+    editMaxOutputTokens.setCustomValidity('');
     editConcurrency.value = parseInt(e.concurrency_limit) || 1;
     if (harnessPickerCtrl) harnessPickerCtrl.setValue(e.harness || 'claude_code');
     else editHarness.value = e.harness || 'claude_code';
@@ -323,6 +387,15 @@
   }
   editApply.addEventListener('click', function(){
     if (!activeManager) return;
+    editMaxOutputTokens.setCustomValidity('');
+    if (!editContextWindowTokens.reportValidity() || !editMaxOutputTokens.reportValidity()) return;
+    var contextWindowTokens = normalizeTokenCount(editContextWindowTokens.value, 0);
+    var maxOutputTokens = normalizeTokenCount(editMaxOutputTokens.value, 0);
+    if (maxOutputTokens > contextWindowTokens) {
+      editMaxOutputTokens.setCustomValidity('最大输出不能超过上下文窗口');
+      editMaxOutputTokens.reportValidity();
+      return;
+    }
     var h = editHarness.value || 'claude_code';
     var old = editIndex === null ? defaultEndpoint() : activeManager.eps[editIndex];
     var st = normalizeStatus({status: (statusPickerCtrl ? statusPickerCtrl.value() : editStatus.value) || 'enabled'});
@@ -331,6 +404,9 @@
       harness: h,
       base_url: usesFixedOpenCodeEndpoint(activeManager, h) ? '' : (editBaseUrl.value || '').trim(),
       model: (editModel.value || '').trim(),
+      context_window_tokens: contextWindowTokens,
+      max_output_tokens: maxOutputTokens,
+      thinking_compatibility: !!editThinkingCompatibility.checked,
       concurrency_limit: Math.max(1, parseInt(editConcurrency.value, 10) || 1),
       status: st,
       enabled: st === 'enabled',
@@ -341,6 +417,12 @@
     else activeManager.eps[editIndex] = next;
     renderManager(activeManager);
     if (modal) modal.hide();
+  });
+  editContextWindowTokens.addEventListener('input', function(){
+    editMaxOutputTokens.setCustomValidity('');
+  });
+  editMaxOutputTokens.addEventListener('input', function(){
+    editMaxOutputTokens.setCustomValidity('');
   });
   editDelete.addEventListener('click', function(){
     if (!activeManager || editIndex === null) return;

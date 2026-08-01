@@ -92,6 +92,18 @@ oj.py 只负责把上述组件装配起来
 
 GitHub Actions 对每次 push/PR 执行语法、unit、DB 和 E2E。集成 job 使用 GitHub-hosted runner 上的一次性 MySQL 8.4/Redis 服务，构建 `numericaloj-judger-lite` 后运行真实 C/C++/Python/Octave 判题；JUnit 结果作为 artifact 保留。只有需要外部密钥的 live AI 测试默认跳过，平台具备 Node、loopback、符号链接、FIFO 与 Docker 的测试不得仅因运行在 GitHub 上而跳过。
 
+真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、详情四步和下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再在本地 `.env` 填写 `DEEPSEEK_API_KEY`，最后运行：
+
+```bash
+NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 python -m pytest -q \
+  --basetemp=tmp/reverse-live-pytest \
+  tests/e2e/test_reverse_judge_live_ui.py
+```
+
+`--basetemp` 必须位于 Docker daemon 可双向访问的宿主路径；macOS + Colima 不要使用 pytest 默认的 `/private/var/...` 临时目录，否则容器内写入不会回写到宿主测试进程。GitHub CI 固定 `OJ_LIVE_AI=0`，不会下载浏览器或调用外部模型。
+
+该用例在任何容器变更前都会校验当前 Docker context 与 `DOCKER_HOST`，只接受本机 Unix socket、Windows named pipe 或 loopback TCP，拒绝 SSH 和非 loopback daemon；测试 Web 也只监听 `127.0.0.1`。结束时会显式删除提交、比赛和端点 Key，并验证相应 DB 行与 workspace 目录均已消失，清理失败会让用例失败而不是静默遗留。
+
 生产健康检查不属于测试矩阵，也不得嵌入 `deploy.sh`。部署完成后，运维人员可以在生产主机人工执行只读的 `curl -f http://127.0.0.1:2025/health/live` 与 `curl -f http://127.0.0.1:2025/health/ready`；前者只证明 Web 可响应，后者还检查 MySQL 与 Redis。它们不能替代发布前测试。
 
 DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性测试服务时才能执行；配置来源可以是显式环境变量、测试 `.env`，或测试镜像构建时由 `tests/ci/config.ci.py` 提供的隔离配置，不得为测试手工改写受版本控制的生产配置桥接层。安全门同时要求：

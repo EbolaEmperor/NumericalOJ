@@ -332,9 +332,8 @@ def mock_ai(monkeypatch, request):
 
 @pytest.fixture(autouse=True)
 def _skip_live_ai_without_keys(request):
-    """带 live_ai 标记的用例只在 OJ_LIVE_AI=1（CI 注入线上 key 后）时真跑；
-    否则自动 skip——本地或无 key 环境不会因缺真实 API 而失败。"""
+    """live_ai 只在本地显式启用；GitHub CI 与普通测试默认跳过。"""
     if request.node.get_closest_marker('live_ai') is None:
         return
     if os.environ.get('OJ_LIVE_AI') != '1':
-        pytest.skip('需要真实 AI 配置（设置 OJ_LIVE_AI=1，CI 会注入线上 key）')
+        pytest.skip('需要本地真实 AI 配置（显式设置 OJ_LIVE_AI=1 和对应密钥）')

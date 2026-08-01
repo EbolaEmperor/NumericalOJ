@@ -147,6 +147,15 @@ def test_reverse_quality_gate_schema_has_config_and_isolated_endpoint_pool():
     assert endpoints.columns["pool_kind"].lower() == (
         "varchar(32) not null default 'primary'"
     )
+    assert endpoints.columns["context_window_tokens"].lower() == (
+        "int not null default '1000000'"
+    )
+    assert endpoints.columns["max_output_tokens"].lower() == (
+        "int not null default '384000'"
+    )
+    assert endpoints.columns["thinking_compatibility"].lower() == (
+        "tinyint(1) not null default '1'"
+    )
     assert "idx_aje_comp_pool" in endpoints.indexes
     assert "(`competition_id`,`pool_kind`)" in endpoints.indexes["idx_aje_comp_pool"]
 

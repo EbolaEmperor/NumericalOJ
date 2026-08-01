@@ -62,6 +62,9 @@ def _endpoint_row(endpoint_id, pool_kind):
         'base_url': f'https://{pool_kind}.example/v1',
         'api_key': f'{pool_kind}-key',
         'model': 'gpt-test',
+        'context_window_tokens': 128_000,
+        'max_output_tokens': 16_000,
+        'thinking_compatibility': 0,
         'concurrency_limit': 2,
         'enabled': 1,
         'status': 'enabled',
@@ -137,6 +140,9 @@ def test_list_endpoint_pools_use_distinct_pool_predicates(monkeypatch):
 
     assert primary[0]['pool_kind'] == endpoint_db.ENDPOINT_POOL_PRIMARY
     assert quality[0]['pool_kind'] == endpoint_db.ENDPOINT_POOL_QUALITY_GATE
+    assert primary[0]['context_window_tokens'] == 128_000
+    assert primary[0]['max_output_tokens'] == 16_000
+    assert primary[0]['thinking_compatibility'] is False
     for conn, expected_kind in (
         (primary_conn, endpoint_db.ENDPOINT_POOL_PRIMARY),
         (quality_conn, endpoint_db.ENDPOINT_POOL_QUALITY_GATE),
@@ -189,8 +195,79 @@ def test_save_primary_pool_scopes_key_inheritance_delete_and_update(monkeypatch)
     assert 'pool_kind = %s' in delete_sql
     assert delete_params == (17, endpoint_db.ENDPOINT_POOL_PRIMARY, 7)
     assert 'pool_kind = %s' in update_sql
+    assert 'context_window_tokens = %s' in update_sql
+    assert 'max_output_tokens = %s' in update_sql
+    assert 'thinking_compatibility = %s' in update_sql
+    assert update_params[4:7] == (
+        endpoint_db.DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
+        endpoint_db.DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
+        1,
+    )
     assert update_params[-3:] == (7, 17, endpoint_db.ENDPOINT_POOL_PRIMARY)
     assert conn.committed is True
+
+
+def test_save_primary_configuration_rolls_back_settings_when_endpoint_invalid(
+        monkeypatch):
+    cursor = _FakeCursor(one_values=[{'id': 17}])
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(endpoint_db, 'get_db_connection', lambda: conn)
+
+    with pytest.raises(ValueError, match='不能超过上下文窗口'):
+        endpoint_db.save_agent_judge_configuration(
+            17,
+            [{
+                'harness': 'pi',
+                'base_url': 'https://primary.example/v1',
+                'api_key': 'secret',
+                'model': 'model',
+                'context_window_tokens': 10,
+                'max_output_tokens': 11,
+            }],
+            timeout_seconds=7200,
+            reverse_finalize_timeout_seconds=600,
+            orchestration_mode='topology',
+        )
+
+    assert not any(
+        'UPDATE ranking_competitions SET' in sql
+        for sql, _params in cursor.calls
+    )
+    assert conn.committed is False
+    assert conn.rolled_back is True
+
+
+def test_save_primary_configuration_commits_endpoints_and_settings_together(
+        monkeypatch):
+    cursor = _FakeCursor(one_values=[{'id': 17}])
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(endpoint_db, 'get_db_connection', lambda: conn)
+
+    saved = endpoint_db.save_agent_judge_configuration(
+        17,
+        [{
+            'harness': 'pi',
+            'base_url': 'https://primary.example/v1',
+            'api_key': 'secret',
+            'model': 'model',
+        }],
+        timeout_seconds=7200,
+        reverse_finalize_timeout_seconds=600,
+        orchestration_mode='topology',
+    )
+
+    assert saved[0]['harness'] == 'pi'
+    settings_sql, settings_params = next(
+        (sql, params)
+        for sql, params in cursor.calls
+        if 'UPDATE ranking_competitions SET' in sql
+    )
+    assert 'agent_judge_timeout_seconds = %s' in settings_sql
+    assert 'reverse_judge_finalize_timeout_seconds = %s' in settings_sql
+    assert 'agent_judge_orchestration_mode = %s' in settings_sql
+    assert settings_params == (7200, 600, 'topological', 17)
+    assert conn.committed is True
+    assert conn.rolled_back is False
 
 
 def test_save_quality_gate_pool_scopes_delete_and_insert(monkeypatch):
@@ -214,6 +291,115 @@ def test_save_quality_gate_pool_scopes_delete_and_insert(monkeypatch):
     assert delete_params == (17, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)
     assert '(competition_id, pool_kind,' in insert_sql
     assert insert_params[:2] == (17, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)
+    assert insert_params[6:9] == (
+        endpoint_db.DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
+        endpoint_db.DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
+        1,
+    )
+
+
+def test_endpoint_model_capability_defaults_and_existing_values_are_stable():
+    assert endpoint_db.normalize_endpoint_model_capabilities({}) == {
+        'context_window_tokens': 1_000_000,
+        'max_output_tokens': 384_000,
+        'thinking_compatibility': True,
+    }
+    existing = {
+        'context_window_tokens': 262_144,
+        'max_output_tokens': 65_536,
+        'thinking_compatibility': False,
+    }
+    assert endpoint_db.normalize_endpoint_model_capabilities({}, existing) == existing
+
+
+@pytest.mark.parametrize(
+    'value, expected',
+    [(True, True), (False, False), (1, True), (0, False),
+     ('true', True), ('TRUE', True), ('1', True),
+     ('false', False), ('FALSE', False), ('0', False)],
+)
+def test_endpoint_thinking_compatibility_strict_valid_values(value, expected):
+    normalized = endpoint_db.normalize_endpoint_model_capabilities({
+        'thinking_compatibility': value,
+    })
+    assert normalized['thinking_compatibility'] is expected
+
+
+@pytest.mark.parametrize('value', [None, '', 'yes', 'off', 2, -1, 1.0, [], {}])
+def test_endpoint_thinking_compatibility_rejects_ambiguous_values(value):
+    with pytest.raises(ValueError, match='布尔值'):
+        endpoint_db.normalize_endpoint_model_capabilities({
+            'thinking_compatibility': value,
+        })
+
+
+@pytest.mark.parametrize(
+    'field, value',
+    [('context_window_tokens', 0), ('context_window_tokens', -1),
+     ('context_window_tokens', True), ('context_window_tokens', '1.5'),
+     ('max_output_tokens', 0), ('max_output_tokens', -1),
+     ('max_output_tokens', False), ('max_output_tokens', None)],
+)
+def test_endpoint_model_token_limits_require_positive_integers(field, value):
+    with pytest.raises(ValueError, match='正整数'):
+        endpoint_db.normalize_endpoint_model_capabilities({field: value})
+
+
+@pytest.mark.parametrize(
+    'field', ['context_window_tokens', 'max_output_tokens'],
+)
+def test_endpoint_model_token_limits_reject_values_above_supported_contract(field):
+    payload = {
+        'context_window_tokens': endpoint_db.MAX_ENDPOINT_TOKEN_COUNT,
+        'max_output_tokens': 1,
+    }
+    payload[field] = endpoint_db.MAX_ENDPOINT_TOKEN_COUNT + 1
+    with pytest.raises(ValueError, match=str(endpoint_db.MAX_ENDPOINT_TOKEN_COUNT)):
+        endpoint_db.normalize_endpoint_model_capabilities(payload)
+
+
+def test_endpoint_max_output_cannot_exceed_context_window():
+    with pytest.raises(ValueError, match='不能超过'):
+        endpoint_db.normalize_endpoint_model_capabilities({
+            'context_window_tokens': 8192,
+            'max_output_tokens': 8193,
+        })
+
+
+@pytest.mark.parametrize('harness', ['claude_code', 'codex', 'pi', 'opencode'])
+def test_endpoint_pool_rejects_context_above_global_harness_contract(harness):
+    with pytest.raises(ValueError, match='1000000'):
+        endpoint_db._normalize_endpoint_items(
+            endpoint_db.ENDPOINT_POOL_PRIMARY,
+            [{
+                'harness': harness,
+                'base_url': 'https://model.example/v1',
+                'api_key': 'secret',
+                'model': 'model',
+                'context_window_tokens': 1_000_001,
+                'max_output_tokens': 384_000,
+            }],
+            [],
+        )
+
+
+def test_existing_endpoint_omitted_capabilities_survive_normalization():
+    existing = _endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY)
+    normalized = endpoint_db._normalize_endpoint_items(
+        endpoint_db.ENDPOINT_POOL_PRIMARY,
+        [{
+            'id': 7,
+            'harness': 'codex',
+            'base_url': 'https://primary.example/v1',
+            'api_key': '',
+            'model': 'gpt-test',
+        }],
+        [endpoint_db._endpoint_row(existing)],
+    )
+
+    assert normalized[0]['context_window_tokens'] == 128_000
+    assert normalized[0]['max_output_tokens'] == 16_000
+    assert normalized[0]['thinking_compatibility'] is False
 
 
 def test_quality_gate_configuration_and_pool_share_one_transaction(monkeypatch):
@@ -260,6 +446,13 @@ def test_quality_gate_configuration_and_pool_share_one_transaction(monkeypatch):
     )
     assert config_update[1] == (1, '不得隐藏私有协议', 17)
     assert sum('FOR UPDATE' in sql for sql, _params in cursor.calls) == 2
+    locked_endpoint_select = next(
+        sql for sql, _params in cursor.calls
+        if 'FROM ranking_agent_judge_endpoints' in sql and 'FOR UPDATE' in sql
+    )
+    assert 'context_window_tokens' in locked_endpoint_select
+    assert 'max_output_tokens' in locked_endpoint_select
+    assert 'thinking_compatibility' in locked_endpoint_select
 
 
 @pytest.mark.parametrize("endpoint, message", [
@@ -453,6 +646,9 @@ class _CopyCursor(_FakeCursor):
                 'base_url': 'https://quality.example/v1',
                 'api_key': 'quality-secret',
                 'model': 'gpt-test',
+                'context_window_tokens': 524288,
+                'max_output_tokens': 131072,
+                'thinking_compatibility': 0,
                 'concurrency_limit': 2,
                 'enabled': 1,
                 'status': 'enabled',
@@ -491,6 +687,7 @@ def test_copy_competition_preserves_quality_config_and_endpoint_pool(monkeypatch
     endpoint_sql, endpoint_params = endpoint_insert
     assert '(competition_id, pool_kind,' in endpoint_sql
     assert endpoint_params[:2] == (101, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)
+    assert endpoint_params[6:9] == (524288, 131072, 0)
     assert conn.committed is True
 
 

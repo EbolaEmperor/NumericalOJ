@@ -90,8 +90,9 @@ from oj_modules.ranking_agent_judge_db import (
     list_agent_judge_endpoints,
     list_competition_rules,
     list_quality_gate_endpoints,
+    normalize_endpoint_model_capabilities,
     replace_competition_rules,
-    save_agent_judge_endpoints,
+    save_agent_judge_configuration,
     save_reverse_quality_gate_configuration,
 )
 from oj_modules.ranking_agent_judge import max_score as _aj_max_score
@@ -271,6 +272,7 @@ def _masked_agent_endpoints(endpoints):
             'harness': e.get('harness') or 'claude_code',
             'base_url': e.get('base_url') or '',
             'model': e.get('model') or '',
+            **normalize_endpoint_model_capabilities(e),
             'concurrency_limit': int(e.get('concurrency_limit') or 1),
             'status': e.get('status') or 'enabled',
             'enabled': e.get('enabled'),
@@ -2479,7 +2481,9 @@ def ranking_save_agent_config(competition_id):
 def ranking_save_agent_endpoints(competition_id):
     """保存某比赛的 Agent 评测端点池（多个 模型 url + api_key，各带并发上限）+ 整体超时。
 
-    JSON：{timeout_seconds?, orchestration_mode?, endpoints:[{id?, harness, base_url, api_key, model, concurrency_limit, status|enabled}]}。
+    JSON：{timeout_seconds?, orchestration_mode?, endpoints:[{id?, harness, base_url,
+    api_key, model, context_window_tokens?, max_output_tokens?,
+    thinking_compatibility?, concurrency_limit, status|enabled}]}。
     实际 agent 评测并发 = 各启用端点 concurrency_limit 之和（由判题侧 Redis 槽位限流，改完即生效、无需重启）。"""
     user, err = _admin_json_guard()
     if err is not None:
@@ -2496,41 +2500,39 @@ def ranking_save_agent_endpoints(competition_id):
     orchestration_raw = payload.get('orchestration_mode')
     if orchestration_raw is None:
         orchestration_raw = payload.get('agent_judge_orchestration_mode')
+    timeout_value = None
     if timeout_raw is not None and str(timeout_raw).strip() != '':
         try:
-            update_competition(competition_id,
-                               agent_judge_timeout_seconds=int(_clamp(int(timeout_raw), 60, 7200)))
+            timeout_value = int(_clamp(int(timeout_raw), 60, 7200))
         except (TypeError, ValueError):
             pass
+    finalize_timeout_value = None
     if finalize_timeout_raw is not None and str(finalize_timeout_raw).strip() != '':
         try:
-            update_competition(
-                competition_id,
-                reverse_judge_finalize_timeout_seconds=int(_clamp(
-                    int(finalize_timeout_raw),
-                    REVERSE_FINALIZE_TIMEOUT_RANGE[0],
-                    REVERSE_FINALIZE_TIMEOUT_RANGE[1],
-                )),
-            )
+            finalize_timeout_value = int(_clamp(
+                int(finalize_timeout_raw),
+                REVERSE_FINALIZE_TIMEOUT_RANGE[0],
+                REVERSE_FINALIZE_TIMEOUT_RANGE[1],
+            ))
         except (TypeError, ValueError):
             pass
-    if orchestration_raw is not None:
-        update_competition(
-            competition_id,
-            agent_judge_orchestration_mode=_normalize_aj_orchestration(orchestration_raw),
-        )
+    orchestration_value = (
+        _normalize_aj_orchestration(orchestration_raw)
+        if orchestration_raw is not None else None
+    )
     try:
-        save_agent_judge_endpoints(
-            competition_id, endpoints if isinstance(endpoints, list) else [])
+        save_agent_judge_configuration(
+            competition_id,
+            endpoints if isinstance(endpoints, list) else [],
+            timeout_seconds=timeout_value,
+            reverse_finalize_timeout_seconds=finalize_timeout_value,
+            orchestration_mode=orchestration_value,
+        )
     except ValueError as e:
         return jsonify(success=False, message=str(e)), 400
     # 重新读取（拿到新 id），回传脱敏列表（api_key 只给 has_key 标记）
     saved = list_agent_judge_endpoints(competition_id)
-    masked = [{'id': e['id'], 'harness': e.get('harness') or 'claude_code',
-               'base_url': e['base_url'], 'model': e['model'],
-               'concurrency_limit': e['concurrency_limit'], 'status': e.get('status') or 'enabled',
-               'enabled': e['enabled'],
-               'has_key': bool(e['api_key'])} for e in saved]
+    masked = _masked_agent_endpoints(saved)
     total_conc = sum(e['concurrency_limit'] for e in saved if (e.get('status') == 'enabled'))
     comp_after = get_competition(competition_id) or comp
     return jsonify(success=True, count=len(saved),

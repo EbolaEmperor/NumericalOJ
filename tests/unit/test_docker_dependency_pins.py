@@ -15,7 +15,6 @@ def test_agent_judge_harness_dependencies_are_explicitly_versioned():
         '@anthropic-ai/claude-code': 'CLAUDE_CODE_VERSION',
         '@openai/codex': 'CODEX_CLI_VERSION',
         'opencode-ai': 'OPENCODE_VERSION',
-        '@earendil-works/pi-coding-agent': 'PI_CODING_AGENT_VERSION',
         '@ai-sdk/openai-compatible': 'AI_SDK_OPENAI_COMPATIBLE_VERSION',
         '@ai-sdk/anthropic': 'AI_SDK_ANTHROPIC_VERSION',
     }
@@ -25,21 +24,18 @@ def test_agent_judge_harness_dependencies_are_explicitly_versioned():
         assert f'{package}@${{{build_arg}}}' in dockerfile
 
 
-def test_lite_agent_judge_uses_the_same_claude_and_pi_pins():
+def test_lite_agent_judge_uses_same_claude_pin_and_unpinned_pi():
     full = _dockerfile('docker/agent_judge/Dockerfile')
     lite = _dockerfile('docker/agent_judge-lite/Dockerfile')
-    for build_arg, package in (
-        ('CLAUDE_CODE_VERSION', '@anthropic-ai/claude-code'),
-        ('PI_CODING_AGENT_VERSION', '@earendil-works/pi-coding-agent'),
-    ):
-        version_pattern = re.compile(
-            rf'^ARG {build_arg}=(\S+)$',
-            re.MULTILINE,
-        )
-        assert version_pattern.search(full).group(1) == version_pattern.search(lite).group(1)
-        assert f'{package}@${{{build_arg}}}' in lite
-
-    assert 'ARG PI_CODING_AGENT_VERSION=0.82.1' in full
+    version_pattern = re.compile(r'^ARG CLAUDE_CODE_VERSION=(\S+)$', re.MULTILINE)
+    assert version_pattern.search(full).group(1) == version_pattern.search(lite).group(1)
+    assert '@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}' in lite
+    assert 'PI_CODING_AGENT_VERSION' not in full
+    assert 'PI_CODING_AGENT_VERSION' not in lite
+    assert '@earendil-works/pi-coding-agent@' not in full
+    assert '@earendil-works/pi-coding-agent@' not in lite
+    assert '@earendil-works/pi-coding-agent' in full
+    assert '@earendil-works/pi-coding-agent' in lite
     assert 'npm install -g --ignore-scripts' in full
     assert 'npm install -g --ignore-scripts' in lite
 

@@ -80,6 +80,23 @@ def test_logging_config_template_defaults_are_strictly_typed(tmp_path):
     assert result.stdout.strip() == "('INFO', [], 'str', 'list')"
 
 
+def test_deepseek_live_e2e_key_defaults_empty_and_accepts_local_env(tmp_path):
+    default_result = _run_config_import(
+        tmp_path,
+        expression="(config.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY' in config.ENV_FILE_KEYS)",
+    )
+    assert default_result.returncode == 0, default_result.stderr
+    assert default_result.stdout.strip() == "('', False)"
+
+    local_result = _run_config_import(
+        tmp_path,
+        env_source='DEEPSEEK_API_KEY="local-deepseek-test-key"\n',
+        expression="(config.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY' in config.ENV_FILE_KEYS)",
+    )
+    assert local_result.returncode == 0, local_result.stderr
+    assert local_result.stdout.strip() == "('local-deepseek-test-key', True)"
+
+
 def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
     password = '  pa#ss=word$HOME\\tail"  '
     env_source = "\n".join(

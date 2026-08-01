@@ -29,6 +29,10 @@ ALLOWED_AGENT_HARNESSES = (
 )
 DEFAULT_OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
 DEFAULT_OPENCODE_GO_MODEL = 'mimo-v2.5-pro'
+DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS = 1_000_000
+DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS = 384_000
+DEFAULT_ENDPOINT_THINKING_COMPATIBILITY = True
+MAX_ENDPOINT_TOKEN_COUNT = 1_000_000
 ENDPOINT_STATUS_ENABLED = 'enabled'
 ENDPOINT_STATUS_DISABLED = 'disabled'
 ENDPOINT_STATUS_PAUSED = 'paused'
@@ -76,6 +80,94 @@ def _payload_enabled(value):
     return value is True or str(value).strip().lower() in ('1', 'true', 'on', 'yes')
 
 
+def _strict_bool(value, field_name):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ('1', 'true'):
+            return True
+        if normalized in ('0', 'false'):
+            return False
+    raise ValueError(f'{field_name} 必须是布尔值')
+
+
+def _positive_integer(value, field_name):
+    error_message = (
+        f'{field_name} 必须是正整数且不超过 {MAX_ENDPOINT_TOKEN_COUNT}'
+    )
+    if isinstance(value, bool):
+        raise ValueError(error_message)
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r'[0-9]+', value.strip()):
+        parsed = int(value.strip())
+    else:
+        raise ValueError(error_message)
+    if parsed <= 0 or parsed > MAX_ENDPOINT_TOKEN_COUNT:
+        raise ValueError(error_message)
+    return parsed
+
+
+def normalize_endpoint_model_capabilities(payload, existing_endpoint=None):
+    """归一化端点的模型容量与 thinking 兼容配置。
+
+    编辑已有端点时，旧客户端省略新字段必须沿用数据库中的值；新增端点省略
+    字段则使用稳定默认值。显式传入的值始终严格校验，不把非法输入静默改写。
+    """
+    payload = payload or {}
+    existing_endpoint = existing_endpoint or {}
+
+    if 'context_window_tokens' in payload:
+        context_window_tokens = _positive_integer(
+            payload.get('context_window_tokens'), '上下文窗口',
+        )
+    else:
+        context_window_tokens = _positive_integer(
+            existing_endpoint.get(
+                'context_window_tokens',
+                DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
+            ),
+            '上下文窗口',
+        )
+
+    if 'max_output_tokens' in payload:
+        max_output_tokens = _positive_integer(
+            payload.get('max_output_tokens'), '最大输出 Token 数',
+        )
+    else:
+        max_output_tokens = _positive_integer(
+            existing_endpoint.get(
+                'max_output_tokens', DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
+            ),
+            '最大输出 Token 数',
+        )
+
+    if max_output_tokens > context_window_tokens:
+        raise ValueError('最大输出 Token 数不能超过上下文窗口')
+
+    if 'thinking_compatibility' in payload:
+        thinking_compatibility = _strict_bool(
+            payload.get('thinking_compatibility'), 'Thinking 兼容',
+        )
+    else:
+        thinking_compatibility = _strict_bool(
+            existing_endpoint.get(
+                'thinking_compatibility',
+                DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+            ),
+            'Thinking 兼容',
+        )
+
+    return {
+        'context_window_tokens': context_window_tokens,
+        'max_output_tokens': max_output_tokens,
+        'thinking_compatibility': thinking_compatibility,
+    }
+
+
 def _normalize_endpoint_pool_kind(value):
     pool_kind = str(value or '').strip().lower()
     return pool_kind if pool_kind in ENDPOINT_POOL_KINDS else ENDPOINT_POOL_PRIMARY
@@ -94,6 +186,17 @@ def _endpoint_row(row):
         'base_url': row['base_url'] or '',
         'api_key': row['api_key'] or '',
         'model': (row.get('model') or ''),
+        'context_window_tokens': int(
+            row.get('context_window_tokens') or DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS
+        ),
+        'max_output_tokens': int(
+            row.get('max_output_tokens') or DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS
+        ),
+        'thinking_compatibility': bool(int(
+            row.get('thinking_compatibility')
+            if row.get('thinking_compatibility') is not None
+            else DEFAULT_ENDPOINT_THINKING_COMPATIBILITY
+        )),
         'concurrency_limit': int(row['concurrency_limit'] or 1),
         'status': status,
         'enabled': _status_enabled(status),
@@ -113,6 +216,7 @@ def _list_endpoints(competition_id, pool_kind, enabled_only=False):
     try:
         with conn.cursor() as cursor:
             sql = ("SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,"
+                   " context_window_tokens, max_output_tokens, thinking_compatibility,"
                    " concurrency_limit, enabled, status, ordering "
                    "FROM ranking_agent_judge_endpoints "
                    "WHERE competition_id = %s AND pool_kind = %s")
@@ -152,6 +256,7 @@ def list_paused_agent_judge_endpoints():
             cursor.execute(
                 """
                 SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,
+                       context_window_tokens, max_output_tokens, thinking_compatibility,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE status = 'paused'
@@ -270,6 +375,9 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
             raise ValueError('质量门禁端点模型不能为空')
         if model and len(model) > 128:
             raise ValueError('模型名过长（不超过 128 字）')
+        model_options = normalize_endpoint_model_capabilities(
+            it, existing.get(eid),
+        )
         try:
             climit = int(it.get('concurrency_limit'))
         except (TypeError, ValueError):
@@ -288,6 +396,7 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
         normalized.append({'id': eid if eid in existing else None,
                            'pool_kind': pool_kind,
                            'harness': harness, 'base_url': base_url, 'api_key': api_key, 'model': model,
+                           **model_options,
                            'concurrency_limit': climit, 'status': status,
                            'enabled': enabled, 'ordering': idx})
     return normalized
@@ -318,6 +427,9 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
                     base_url = %s,
                     api_key = %s,
                     model = %s,
+                    context_window_tokens = %s,
+                    max_output_tokens = %s,
+                    thinking_compatibility = %s,
                     concurrency_limit = %s,
                     enabled = %s,
                     status = %s,
@@ -325,6 +437,8 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
                 WHERE id = %s AND competition_id = %s AND pool_kind = %s
                 """,
                 (endpoint['harness'], endpoint['base_url'], endpoint['api_key'], endpoint['model'],
+                 endpoint['context_window_tokens'], endpoint['max_output_tokens'],
+                 1 if endpoint['thinking_compatibility'] else 0,
                  endpoint['concurrency_limit'], endpoint['enabled'], endpoint['status'],
                  endpoint['ordering'], endpoint['id'], competition_id, pool_kind),
             )
@@ -332,10 +446,13 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
             cursor.execute(
                 "INSERT INTO ranking_agent_judge_endpoints"
                 " (competition_id, pool_kind, harness, base_url, api_key, model,"
+                " context_window_tokens, max_output_tokens, thinking_compatibility,"
                 " concurrency_limit, enabled, status, ordering)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (competition_id, pool_kind, endpoint['harness'], endpoint['base_url'],
-                 endpoint['api_key'], endpoint['model'], endpoint['concurrency_limit'],
+                 endpoint['api_key'], endpoint['model'], endpoint['context_window_tokens'],
+                 endpoint['max_output_tokens'], 1 if endpoint['thinking_compatibility'] else 0,
+                 endpoint['concurrency_limit'],
                  endpoint['enabled'], endpoint['status'], endpoint['ordering']),
             )
 
@@ -343,7 +460,8 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
 def _save_endpoints(competition_id, pool_kind, items):
     """整体替换某比赛的单个端点池。校验在事务外，失败不动 DB。
 
-    items 中每项：{id?, harness, base_url, api_key, model, concurrency_limit, status|enabled}。
+    items 中每项：{id?, harness, base_url, api_key, model, context_window_tokens?,
+    max_output_tokens?, thinking_compatibility?, concurrency_limit, status|enabled}。
     api_key 留空且带已存在的 id → 沿用旧 key（前端编辑器不回显明文）；
     api_key 留空且无对应 id → 报错（新端点必须填 key）。返回归一化后的列表。"""
     pool_kind = _normalize_endpoint_pool_kind(pool_kind)
@@ -370,6 +488,67 @@ def _save_endpoints(competition_id, pool_kind, items):
 def save_agent_judge_endpoints(competition_id, items):
     """整体替换主评测端点池；不会读取、修改或删除质量门禁池。"""
     return _save_endpoints(competition_id, ENDPOINT_POOL_PRIMARY, items)
+
+
+def save_agent_judge_configuration(
+        competition_id, items, *, timeout_seconds=None,
+        reverse_finalize_timeout_seconds=None, orchestration_mode=None):
+    """原子保存主端点池及同页比赛设置，任何校验失败均不产生部分更新。"""
+    competition_id = int(competition_id)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM ranking_competitions WHERE id = %s FOR UPDATE",
+                (competition_id,),
+            )
+            if not cursor.fetchone():
+                raise ValueError('比赛不存在或已被删除')
+            cursor.execute(
+                """
+                SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,
+                       context_window_tokens, max_output_tokens, thinking_compatibility,
+                       concurrency_limit, enabled, status, ordering
+                FROM ranking_agent_judge_endpoints
+                WHERE competition_id = %s AND pool_kind = %s
+                ORDER BY ordering ASC, id ASC
+                FOR UPDATE
+                """,
+                (competition_id, ENDPOINT_POOL_PRIMARY),
+            )
+            existing = [_endpoint_row(row) for row in (cursor.fetchall() or [])]
+            normalized = _normalize_endpoint_items(
+                ENDPOINT_POOL_PRIMARY, items, existing,
+            )
+            _replace_endpoint_pool_with_cursor(
+                cursor, competition_id, ENDPOINT_POOL_PRIMARY, normalized,
+            )
+
+            assignments = []
+            params = []
+            if timeout_seconds is not None:
+                assignments.append('agent_judge_timeout_seconds = %s')
+                params.append(int(timeout_seconds))
+            if reverse_finalize_timeout_seconds is not None:
+                assignments.append('reverse_judge_finalize_timeout_seconds = %s')
+                params.append(int(reverse_finalize_timeout_seconds))
+            if orchestration_mode is not None:
+                assignments.append('agent_judge_orchestration_mode = %s')
+                params.append(aj.normalize_orchestration_mode(orchestration_mode))
+            if assignments:
+                cursor.execute(
+                    'UPDATE ranking_competitions SET '
+                    + ', '.join(assignments)
+                    + ' WHERE id = %s',
+                    tuple(params + [competition_id]),
+                )
+        conn.commit()
+        return normalized
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def save_quality_gate_endpoints(competition_id, items):
@@ -406,6 +585,7 @@ def save_reverse_quality_gate_configuration(
             cursor.execute(
                 """
                 SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,
+                       context_window_tokens, max_output_tokens, thinking_compatibility,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE competition_id = %s AND pool_kind = %s

@@ -3,12 +3,19 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from tests.environment_guard import (
     DestructiveTestTarget,
+    DockerTestTarget,
+    UnsafeDockerDaemonError,
     UnsafeTestEnvironmentError,
     assert_disposable_test_target,
+    assert_local_docker_daemon,
+    unsafe_docker_daemon_reasons,
     unsafe_environment_reasons,
 )
 from tests import conftest as test_fixtures
@@ -26,6 +33,17 @@ def _target(**overrides) -> DestructiveTestTarget:
     }
     values.update(overrides)
     return DestructiveTestTarget(**values)
+
+
+def _docker_target(**overrides) -> DockerTestTarget:
+    values = {
+        "test_env": "1",
+        "context_name": "colima-numericaloj-ci",
+        "context_endpoint": "unix:///Users/developer/.colima/docker.sock",
+        "docker_host_env": None,
+    }
+    values.update(overrides)
+    return DockerTestTarget(**values)
 
 
 @pytest.mark.parametrize(
@@ -123,6 +141,275 @@ def test_assertion_reports_every_unsafe_fact_at_once():
     assert "MYSQL_DB" in message
     assert "REDIS_HOST" in message
     assert "REDIS_DB" in message
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"context_endpoint": "unix:///var/run/docker.sock"},
+        {"context_endpoint": "npipe:////./pipe/docker_engine"},
+        {"context_endpoint": "tcp://127.0.0.1:2375"},
+        {"context_endpoint": "tcp://localhost:2375"},
+        {"context_endpoint": "tcp://[::1]:2375"},
+        {"docker_host_env": "unix:///tmp/docker-test.sock"},
+        {"docker_host_env": "tcp://127.0.0.1:2375"},
+    ],
+)
+def test_accepts_only_provably_local_docker_daemons(overrides):
+    target = _docker_target(**overrides)
+
+    assert unsafe_docker_daemon_reasons(target) == ()
+    assert_local_docker_daemon(target)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("context_endpoint", "ssh://deploy@why-server", "ssh"),
+        ("context_endpoint", "tcp://10.72.190.121:2375", "非 loopback"),
+        ("context_endpoint", "https://127.0.0.1:2376", "不受信任"),
+        ("context_endpoint", "unix://relative.sock", "Unix socket"),
+        ("context_endpoint", "", "为空"),
+        ("docker_host_env", "ssh://deploy@why-server", "DOCKER_HOST"),
+        ("docker_host_env", "tcp://docker.internal:2375", "DOCKER_HOST"),
+    ],
+)
+def test_rejects_remote_or_ambiguous_docker_daemons(field, value, message):
+    reasons = unsafe_docker_daemon_reasons(
+        _docker_target(**{field: value}),
+    )
+
+    assert any(message in reason for reason in reasons)
+
+
+def test_docker_guard_requires_opt_in_and_context_identity():
+    target = _docker_target(
+        test_env="0",
+        context_name="",
+        context_endpoint="ssh://deploy@why-server",
+        docker_host_env="tcp://10.0.0.8:2375",
+    )
+
+    with pytest.raises(UnsafeDockerDaemonError) as error:
+        assert_local_docker_daemon(target)
+
+    message = str(error.value)
+    assert "NUMOJ_TEST_ENV=1" in message
+    assert "Docker context" in message
+    assert "ssh" in message
+    assert "DOCKER_HOST" in message
+
+
+def test_live_e2e_web_entry_binds_only_loopback_without_reloader(monkeypatch):
+    from tests.e2e import loopback_web
+
+    calls = []
+
+    class FakeApp:
+        config = {"DEBUG": True}
+
+        def run(self, **kwargs):
+            calls.append(("run", kwargs))
+
+    fake_app = FakeApp()
+    monkeypatch.setitem(
+        sys.modules,
+        "oj",
+        SimpleNamespace(
+            app=fake_app,
+            ensure_background_schedulers=lambda: calls.append(("schedule", {})),
+        ),
+    )
+
+    loopback_web.main()
+
+    assert fake_app.config["DEBUG"] is False
+    assert calls == [
+        ("schedule", {}),
+        (
+            "run",
+            {
+                "host": "127.0.0.1",
+                "port": 2025,
+                "debug": False,
+                "use_reloader": False,
+                "threaded": True,
+            },
+        ),
+    ]
+
+
+def test_live_reverse_cleanup_deletes_every_db_submission_and_verifies_state(
+        monkeypatch):
+    from oj_modules import ranking_db
+    from tests.e2e import test_reverse_judge_live_ui as live
+
+    states = iter([
+        {
+            "submission_ids": {41, 42},
+            "endpoint_count": 3,
+            "competition_count": 1,
+        },
+        {
+            "submission_ids": set(),
+            "endpoint_count": 0,
+            "competition_count": 0,
+        },
+        {
+            "submission_ids": set(),
+            "endpoint_count": 0,
+            "competition_count": 0,
+        },
+    ])
+    monkeypatch.setattr(live, "_assert_disposable_environment", lambda: None)
+    monkeypatch.setattr(
+        live, "_reverse_cleanup_db_state", lambda _competition_id: next(states),
+    )
+    removed = []
+    monkeypatch.setattr(
+        live,
+        "_remove_live_artifact_dir",
+        lambda path, root, label, errors: removed.append((path, root, label)),
+    )
+    monkeypatch.setattr(
+        ranking_db, "submission_dir", lambda sid: f"submissions/{sid}",
+    )
+    monkeypatch.setattr(
+        ranking_db, "competition_dir", lambda cid: f"competitions/{cid}",
+    )
+
+    class Result:
+        returncode = 0
+
+        @staticmethod
+        def json():
+            return {"success": True}
+
+    class Cli:
+        calls = []
+
+        def admin(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return Result()
+
+    cli = Cli()
+    errors = live._cleanup_reverse_live_state(cli, 7, {41})
+
+    assert errors == []
+    assert [call[0] for call in cli.calls] == [
+        ("ranking", "delete-submission", "7", "41"),
+        ("ranking", "delete-submission", "7", "42"),
+        ("ranking", "delete", "7"),
+    ]
+    assert [item[2] for item in removed] == [
+        "提交 #41 workspace",
+        "提交 #41 反向评测临时目录",
+        "提交 #42 workspace",
+        "提交 #42 反向评测临时目录",
+        "比赛 #7 文件",
+    ]
+
+
+def test_live_reverse_cleanup_falls_back_but_reports_cli_failures(monkeypatch):
+    from oj_modules import ranking_db
+    from tests.e2e import test_reverse_judge_live_ui as live
+
+    states = iter([
+        {
+            "submission_ids": {51},
+            "endpoint_count": 2,
+            "competition_count": 1,
+        },
+        {
+            "submission_ids": {51},
+            "endpoint_count": 2,
+            "competition_count": 1,
+        },
+        {
+            "submission_ids": set(),
+            "endpoint_count": 0,
+            "competition_count": 0,
+        },
+    ])
+    monkeypatch.setattr(live, "_assert_disposable_environment", lambda: None)
+    monkeypatch.setattr(
+        live, "_reverse_cleanup_db_state", lambda _competition_id: next(states),
+    )
+    fallback_ids = []
+    monkeypatch.setattr(
+        ranking_db, "delete_competition", lambda cid: fallback_ids.append(cid),
+    )
+    monkeypatch.setattr(
+        ranking_db, "submission_dir", lambda sid: f"submissions/{sid}",
+    )
+    monkeypatch.setattr(
+        ranking_db, "competition_dir", lambda cid: f"competitions/{cid}",
+    )
+    monkeypatch.setattr(
+        live, "_remove_live_artifact_dir", lambda *_args, **_kwargs: None,
+    )
+
+    class FailedResult:
+        returncode = 17
+
+    class Cli:
+        @staticmethod
+        def admin(*_args, **_kwargs):
+            return FailedResult()
+
+    errors = live._cleanup_reverse_live_state(Cli(), 8, set())
+
+    assert fallback_ids == [8]
+    assert any("提交 #51 删除命令退出码 17" in error for error in errors)
+    assert any("比赛 #8 删除命令退出码 17" in error for error in errors)
+
+
+def test_live_reverse_artifact_cleanup_is_confined_to_exact_root(tmp_path):
+    from tests.e2e import test_reverse_judge_live_ui as live
+
+    artifact_root = tmp_path / "ranking_uploads" / "submissions"
+    target = artifact_root / "71"
+    target.mkdir(parents=True)
+    (target / "answer.zip").write_bytes(b"answer")
+    errors = []
+
+    live._remove_live_artifact_dir(
+        str(target), artifact_root, "提交 #71 workspace", errors,
+    )
+
+    assert errors == []
+    assert not target.exists()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    live._remove_live_artifact_dir(
+        str(outside), artifact_root, "越界目录", errors,
+    )
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert any("超出一次性测试产物目录" in error for error in errors)
+
+
+def test_live_reverse_artifact_cleanup_refuses_symlink(tmp_path):
+    from tests.e2e import test_reverse_judge_live_ui as live
+
+    artifact_root = tmp_path / "ranking_uploads" / "submissions"
+    artifact_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    linked = artifact_root / "72"
+    linked.symlink_to(outside, target_is_directory=True)
+    errors = []
+
+    live._remove_live_artifact_dir(
+        str(linked), artifact_root, "提交 #72 workspace", errors,
+    )
+
+    assert linked.is_symlink()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert errors == ["提交 #72 workspace是符号链接，拒绝自动清理"]
 
 
 def test_filesystem_reset_removes_stale_ranking_artifacts(tmp_path, monkeypatch):

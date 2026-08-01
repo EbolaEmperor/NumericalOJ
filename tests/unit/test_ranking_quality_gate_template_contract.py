@@ -62,6 +62,34 @@ def test_shared_endpoint_modal_exposes_pi_as_openai_compatible_harness():
     assert "if (h === 'pi') return 'Pi';" in TEMPLATE
 
 
+def test_endpoint_modal_roundtrips_model_capabilities_without_model_special_cases():
+    for field_id in (
+        "ajeEditContextWindowTokens",
+        "ajeEditMaxOutputTokens",
+        "ajeEditThinkingCompatibility",
+    ):
+        assert f'id="{field_id}"' in TEMPLATE
+
+    assert "DEFAULT_CONTEXT_WINDOW_TOKENS = 1000000" in TEMPLATE
+    assert "DEFAULT_MAX_OUTPUT_TOKENS = 384000" in TEMPLATE
+    assert "DEFAULT_THINKING_COMPATIBILITY = true" in TEMPLATE
+    assert "MAX_TOKEN_SETTING = 1000000" in TEMPLATE
+    assert TEMPLATE.count('max="1000000"') >= 2
+    for field in (
+        "context_window_tokens",
+        "max_output_tokens",
+        "thinking_compatibility",
+    ):
+        # 服务端加载、脏状态、保存 payload 与弹窗应用都必须携带能力字段。
+        assert TEMPLATE.count(field) >= 5
+
+    assert "最大输出不能超过上下文窗口" in TEMPLATE
+    assert "Thinking 兼容" in TEMPLATE
+    assert "Thinking 常规" in TEMPLATE
+    assert "PI_DEEPSEEK" not in TEMPLATE
+    assert "deepseek-v4" not in TEMPLATE.lower()
+
+
 def test_harness_picker_and_cards_share_the_bound_brand_logo_contract():
     assert "harness-logo--' + key" in TEMPLATE
     assert "harness_logo_class('claude_code')" in TEMPLATE

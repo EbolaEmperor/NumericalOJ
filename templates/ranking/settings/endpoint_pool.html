@@ -290,6 +290,47 @@
                   <span>模型</span>
                   <input type="text" id="ajeEditModel">
                 </label>
+                <section class="aje-model-capabilities full" aria-labelledby="ajeModelCapabilitiesTitle">
+                  <div class="aje-model-capabilities-head">
+                    <div>
+                      <h6 id="ajeModelCapabilitiesTitle">模型能力</h6>
+                      <p>用于向 Harness 描述模型的 Token 边界与多轮思考协议。</p>
+                    </div>
+                    <span class="aje-model-capabilities-badge">Model contract</span>
+                  </div>
+                  <div class="aje-model-capabilities-grid">
+                    <label class="aje-modal-field">
+                      <span>上下文窗口</span>
+                      <span class="aje-token-input">
+                        <input type="number" id="ajeEditContextWindowTokens"
+                               min="1" max="1000000" step="1" required
+                               inputmode="numeric" value="1000000">
+                        <span aria-hidden="true">Token</span>
+                      </span>
+                    </label>
+                    <label class="aje-modal-field">
+                      <span>最大输出</span>
+                      <span class="aje-token-input">
+                        <input type="number" id="ajeEditMaxOutputTokens"
+                               min="1" max="1000000" step="1" required
+                               inputmode="numeric" value="384000">
+                        <span aria-hidden="true">Token</span>
+                      </span>
+                    </label>
+                    <div class="aje-thinking-compatibility">
+                      <div>
+                        <label for="ajeEditThinkingCompatibility">Thinking 兼容</label>
+                        <p>保留多轮工具调用所需的 reasoning 内容。</p>
+                      </div>
+                      <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox"
+                               id="ajeEditThinkingCompatibility" checked
+                               aria-describedby="ajeThinkingCompatibilityHint">
+                      </div>
+                      <span class="visually-hidden" id="ajeThinkingCompatibilityHint">启用后保留多轮工具调用所需的 reasoning 内容</span>
+                    </div>
+                  </div>
+                </section>
               </div>
             </div>
             <div class="modal-footer d-flex justify-content-between">

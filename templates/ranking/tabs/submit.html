@@ -252,6 +252,13 @@
                  try{document.execCommand('copy');done();}catch(e){}document.body.removeChild(ta);}
           });
 
+          // 未配置 Git 仓库时，服务端只渲染说明，不渲染检查/确认控件。
+          // 反向评测仍可切换到 ZIP 提交；这里必须安静退出，不能让空节点
+          // 的事件绑定中断同页的节点选择、文件上传和详情弹窗脚本。
+          if (!checkBtn || !checkSpin || !checkLabel || !resultEl ||
+              !confirmEl || !submitBtn || !submitSpin || !submitLabel ||
+              !confirmHint) return;
+
           function setChecking(on){
             checkBtn.disabled=on; checkSpin.hidden=!on; checkLabel.textContent=on?'检查中':'检查仓库';
           }

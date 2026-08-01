@@ -123,6 +123,9 @@ def test_quality_gate_save_returns_masked_endpoints(monkeypatch):
             "base_url": endpoints[0]["base_url"],
             "api_key": "secret",
             "model": endpoints[0]["model"],
+            "context_window_tokens": endpoints[0]["context_window_tokens"],
+            "max_output_tokens": endpoints[0]["max_output_tokens"],
+            "thinking_compatibility": endpoints[0]["thinking_compatibility"],
             "concurrency_limit": endpoints[0]["concurrency_limit"],
             "status": "enabled",
             "enabled": 1,
@@ -149,6 +152,9 @@ def test_quality_gate_save_returns_masked_endpoints(monkeypatch):
             "base_url": "https://gate.example/v1",
             "api_key": "secret",
             "model": "gate-model",
+            "context_window_tokens": 200_000,
+            "max_output_tokens": 50_000,
+            "thinking_compatibility": False,
             "concurrency_limit": 2,
             "status": "enabled",
         }],
@@ -162,7 +168,30 @@ def test_quality_gate_save_returns_masked_endpoints(monkeypatch):
     assert data["enabled_count"] == 1
     assert data["total_concurrency"] == 2
     assert data["quality_gate_endpoints"][0]["has_key"] is True
+    assert data["quality_gate_endpoints"][0]["context_window_tokens"] == 200_000
+    assert data["quality_gate_endpoints"][0]["max_output_tokens"] == 50_000
+    assert data["quality_gate_endpoints"][0]["thinking_compatibility"] is False
     assert "api_key" not in data["quality_gate_endpoints"][0]
+
+
+def test_masked_endpoint_api_includes_default_capabilities_as_json_types():
+    masked = routes._masked_agent_endpoints([{
+        'id': 3,
+        'harness': 'pi',
+        'base_url': 'https://answer.example/v1',
+        'api_key': 'secret',
+        'model': 'custom-model',
+        'concurrency_limit': 1,
+        'status': 'enabled',
+        'enabled': 1,
+    }])
+
+    assert masked[0]['context_window_tokens'] == 1_000_000
+    assert masked[0]['max_output_tokens'] == 384_000
+    assert masked[0]['thinking_compatibility'] is True
+    assert isinstance(masked[0]['thinking_compatibility'], bool)
+    assert masked[0]['has_key'] is True
+    assert 'api_key' not in masked[0]
 
 
 def test_quality_gate_prompt_has_20000_character_limit(monkeypatch):
