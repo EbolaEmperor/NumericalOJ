@@ -80,8 +80,6 @@
   font-size:.74rem;
   line-height:1.1;
 }
-.aje-capability-chip { font-family:var(--mono); letter-spacing:-.01em; }
-.aje-capability-chip.muted { color:#7f8790; background:#fafafa; }
 .aje-edit-btn, .aje-add, .aje-save, .aje-modal-apply, .aje-modal-delete {
   display:inline-flex; align-items:center; justify-content:center; gap:.38rem;
   border-radius:7px;

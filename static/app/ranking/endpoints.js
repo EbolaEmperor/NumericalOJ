@@ -163,19 +163,6 @@
     if ((e.api_key || '').trim()) return '新 Key 待保存';
     return e.has_key ? 'Key 已配置' : 'Key 未配置';
   }
-  function compactTokenCount(value){
-    var n = normalizeTokenCount(value, 0);
-    if (n >= 1000000) {
-      return (Math.round(n / 100000) / 10).toFixed(1).replace(/\.0$/, '') + 'M';
-    }
-    if (n >= 1000) {
-      return (Math.round(n / 100) / 10).toFixed(1).replace(/\.0$/, '') + 'K';
-    }
-    return String(n);
-  }
-  function exactTokenCount(value){
-    return normalizeTokenCount(value, 0).toLocaleString('en-US') + ' Token';
-  }
   function endpointPayload(manager){
     return manager.eps.map(function(e){
       return {id:e.id, harness:e.harness || 'claude_code',
@@ -252,9 +239,6 @@
         '</div>' +
         '<div class="aje-card-meta">' +
           '<span class="aje-chip"><i class="fas fa-gauge-high"></i>并发 ' + (parseInt(e.concurrency_limit)||1) + '</span>' +
-          '<span class="aje-chip aje-capability-chip" title="上下文窗口：' + esc(exactTokenCount(e.context_window_tokens)) + '"><i class="fas fa-layer-group"></i>' + esc(compactTokenCount(e.context_window_tokens)) + ' 上下文</span>' +
-          '<span class="aje-chip aje-capability-chip" title="最大输出：' + esc(exactTokenCount(e.max_output_tokens)) + '"><i class="fas fa-arrow-up-right-dots"></i>' + esc(compactTokenCount(e.max_output_tokens)) + ' 输出</span>' +
-          '<span class="aje-chip aje-capability-chip' + (normalizeThinkingCompatibility(e.thinking_compatibility) ? '' : ' muted') + '"><i class="fas fa-brain"></i>' + (normalizeThinkingCompatibility(e.thinking_compatibility) ? 'Thinking 兼容' : 'Thinking 常规') + '</span>' +
           '<span class="aje-chip"><i class="fas fa-key"></i>' + esc(keyText(e)) + '</span>' +
           (!e.id ? '<span class="aje-chip"><i class="fas fa-circle-plus"></i>未保存</span>' : '') +
           '<button type="button" class="aje-edit-btn" data-edit="' + i + '" title="编辑端点" aria-label="编辑端点"><i class="fas fa-pen"></i></button>' +

@@ -85,9 +85,22 @@ def test_endpoint_modal_roundtrips_model_capabilities_without_model_special_case
 
     assert "最大输出不能超过上下文窗口" in TEMPLATE
     assert "Thinking 兼容" in TEMPLATE
-    assert "Thinking 常规" in TEMPLATE
     assert "PI_DEEPSEEK" not in TEMPLATE
     assert "deepseek-v4" not in TEMPLATE.lower()
+
+
+def test_endpoint_cards_keep_model_capabilities_in_edit_modal_only():
+    card_renderer = TEMPLATE.split("function renderManager(manager){", 1)[1].split(
+        "function applyHarnessMode(){", 1
+    )[0]
+
+    for field in (
+        "context_window_tokens",
+        "max_output_tokens",
+        "thinking_compatibility",
+    ):
+        assert field not in card_renderer
+    assert "aje-capability-chip" not in TEMPLATE
 
 
 def test_harness_picker_and_cards_share_the_bound_brand_logo_contract():
