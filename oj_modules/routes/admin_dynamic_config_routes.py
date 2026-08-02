@@ -5,7 +5,16 @@
 
 from functools import wraps
 
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from oj_modules.security.auth import admin_required, current_user
 from oj_modules.site_config import services as config_service
@@ -17,6 +26,8 @@ _dynamic_config_testers = {
     "mail": dynamic_config_testers.test_mail_settings,
     "web_search": dynamic_config_testers.test_web_search_settings,
 }
+
+_SITE_CONFIG_TABS = frozenset({"endpoints", "features", "other"})
 
 
 def configure_dynamic_config_testers(*, llm_endpoint=None, mail=None, web_search=None):
@@ -77,6 +88,14 @@ def create_admin_dynamic_config_blueprint(
             user=user,
             current_user=user,
         )
+
+    @blueprint.get("/admin/site-config#<tab>")
+    @admin_required
+    def site_config_encoded_fragment(tab):
+        """把误编码进请求路径的内部分页名规范化回 URL fragment。"""
+        if tab not in _SITE_CONFIG_TABS:
+            abort(404)
+        return redirect(url_for(".site_config", _anchor=tab))
 
     @blueprint.get("/api/admin/dynamic-config/meta")
     @admin_required

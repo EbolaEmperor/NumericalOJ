@@ -33,6 +33,24 @@ def test_site_config_route_identifier_is_stable(monkeypatch):
     assert rule.endpoint == "admin_dynamic_config.site_config"
 
 
+def test_site_config_encoded_internal_page_redirects_to_canonical_fragment(monkeypatch):
+    _app, client = make_client(monkeypatch)
+
+    for tab in ("endpoints", "features", "other"):
+        response = client.get(f"/admin/site-config%23{tab}")
+
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith(f"/admin/site-config#{tab}")
+
+
+def test_site_config_rejects_unknown_encoded_internal_page(monkeypatch):
+    _app, client = make_client(monkeypatch)
+
+    response = client.get("/admin/site-config%23unknown")
+
+    assert response.status_code == 404
+
+
 def test_endpoint_list_passes_current_admin_for_unlock_permission(monkeypatch):
     captured = {}
 
