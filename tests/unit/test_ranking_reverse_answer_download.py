@@ -75,6 +75,15 @@ def test_reverse_endpoint_proxy_rewrites_credentials_and_pins_upstream():
         "Accept": "text/event-stream",
         "Authorization": f"Bearer {real_key}",
     }
+    assert reverse_tasks._reverse_proxy_upstream_headers(
+        codex_incoming,
+        real_key,
+        reverse_tasks.HARNESS_PI,
+        protocol="anthropic",
+    ) == {
+        "Accept": "text/event-stream",
+        "x-api-key": real_key,
+    }
     assert reverse_tasks._reverse_proxy_target_url(
         upstream, "POST", "/v1/responses",
     ) == "https://real-endpoint.example/compatible/v1/responses?tenant=oj"

@@ -160,6 +160,41 @@ def test_reverse_quality_gate_schema_has_config_and_isolated_endpoint_pool():
     assert "(`competition_id`,`pool_kind`)" in endpoints.indexes["idx_aje_comp_pool"]
 
 
+def test_dynamic_site_config_schema_is_fully_declared():
+    from scripts import init_db_schema
+
+    specs = init_db_schema._load_schema_specs()
+
+    assert specs["problems"].columns["llm_endpoint_bindings"].lower() == (
+        "json default null"
+    )
+    assert specs["ranking_agent_judge_endpoints"].columns["protocol"].lower() == (
+        "varchar(16) default null"
+    )
+    assert specs["ranking_agent_judge_endpoints"].columns["thinking_format"].lower() == (
+        "varchar(32) default null"
+    )
+    for table in (
+        "llm_endpoints",
+        "llm_feature_bindings",
+        "dynamic_config_test_grants",
+        "site_mail_settings",
+        "site_web_search_settings",
+    ):
+        assert table in specs
+
+    endpoints = specs["llm_endpoints"]
+    assert endpoints.columns["protocol"].lower() == "varchar(16) not null"
+    assert endpoints.columns["thinking_format"].lower() == (
+        "varchar(32) not null default 'none'"
+    )
+    assert "uq_llm_endpoint_name" in endpoints.indexes
+
+    grants = specs["dynamic_config_test_grants"]
+    assert grants.columns["token_hash"].lower() == "char(64) not null"
+    assert "uq_dynamic_config_test_token" in grants.indexes
+
+
 def test_empty_database_dry_run_plans_full_schema_without_connecting_to_it(monkeypatch):
     from scripts import init_db_schema
 

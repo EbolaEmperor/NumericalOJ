@@ -8,7 +8,7 @@
 - get_ai_detection_results_for_user
 - get_ai_detection_dashboard_summary
 - get_undetected_submissions_for_problem / _for_user
-- get_filtered_submissions_for_detection（type=1 + lang 过滤 + 去重取每 (user,problem) 最高分最新 id）
+- get_filtered_submissions_for_detection（type=1 + 可选 lang 过滤 + 去重取每 (user,problem) 最高分最新 id）
 - upsert_ai_detection_task / get_ai_detection_tasks
 
 所有提交用真实 helpers.make_submission（写入 problems/submissions 真实行），
@@ -237,40 +237,52 @@ def test_undetected_for_problem_picks_latest_among_max_score():
     assert high_sid > low_sid
 
 
-def test_undetected_for_user_only_matlab_problems():
+def test_undetected_for_user_includes_all_programming_languages():
     h.make_user('undet_user')
     mat_pid = h.make_problem(lang='matlab', type=1)
     py_pid = h.make_problem(lang='python', type=1)
     mat_sid = h.make_submission(mat_pid, 'undet_user', code='x=1;', score=100)
-    h.make_submission(py_pid, 'undet_user', code='print(1)', score=100)
+    py_sid = h.make_submission(py_pid, 'undet_user', code='print(1)', score=100)
 
     rows = db.get_undetected_submissions_for_user('undet_user')
     pids = {r['problem_id'] for r in rows}
     assert mat_pid in pids
-    assert py_pid not in pids
+    assert py_pid in pids
     assert any(r['id'] == mat_sid for r in rows)
+    assert any(r['id'] == py_sid for r in rows)
 
 
 # ---------------------------------------------------------------------------
 # get_filtered_submissions_for_detection
 # ---------------------------------------------------------------------------
 
-def test_filtered_only_type1_and_lang():
+def test_filtered_all_languages_but_only_type1_by_default():
     h.make_user('filt_u')
     mat_pid = h.make_problem(lang='matlab', type=1)
     py_pid = h.make_problem(lang='python', type=1)
     written_pid = h.make_problem(lang='matlab', type=2)
     mat_sid = h.make_submission(mat_pid, 'filt_u', code='x=1;', score=50)
-    h.make_submission(py_pid, 'filt_u', code='print(1)', score=50)
+    py_sid = h.make_submission(py_pid, 'filt_u', code='print(1)', score=50)
     # type=2 书面题提交，create_submission 会写 problem_type=2 → 应被过滤掉
 
-    rows = db.get_filtered_submissions_for_detection(lang='matlab')
+    rows = db.get_filtered_submissions_for_detection()
     sids = {r['id'] for r in rows}
     assert mat_sid in sids
-    # python 题（lang 不匹配）不应出现
-    assert all(r['problem_id'] != py_pid for r in rows)
+    assert py_sid in sids
     # type2 写面题不应出现
     assert all(r['problem_id'] != written_pid for r in rows)
+
+
+def test_filtered_optional_language_filter_remains_generic():
+    h.make_user('filt_lang_u')
+    matlab_pid = h.make_problem(lang='matlab', type=1)
+    python_pid = h.make_problem(lang='python', type=1)
+    h.make_submission(matlab_pid, 'filt_lang_u', code='x=1;', score=50)
+    python_sid = h.make_submission(python_pid, 'filt_lang_u', code='print(1)', score=50)
+
+    rows = db.get_filtered_submissions_for_detection(lang='python')
+
+    assert [row['id'] for row in rows if row['username'] == 'filt_lang_u'] == [python_sid]
 
 
 def test_filtered_dedup_keeps_highest_score_then_latest_id():

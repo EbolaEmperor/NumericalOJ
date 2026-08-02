@@ -7,11 +7,8 @@ from oj_modules.api.helpers import apply_limit, clamp_limit, json_error, json_su
 from oj_modules.auth_helpers import current_user
 from oj_modules.promptly_guard import parse_promptly_review_config
 from oj_modules.routes.admin_problem_routes import (
-    _DEFAULT_PROGRAMMING_GRADING_MODEL,
-    _DEFAULT_WRITTEN_GRADING_MODEL,
     _DEFAULT_WRITTEN_GRADING_PROMPT,
-    _PROGRAMMING_GRADING_MODEL_OPTIONS,
-    _WRITTEN_GRADING_MODEL_OPTIONS,
+    _problem_llm_endpoint_candidates,
 )
 from oj_modules.routes.problem_core_routes import (
     build_problem_detail_context,
@@ -182,11 +179,8 @@ def _problem_form_options():
             {"value": 2, "label": "批改图片"},
             {"value": 3, "label": "Promptly"},
         ],
-        "programming_grading_model_options": _PROGRAMMING_GRADING_MODEL_OPTIONS,
-        "default_programming_grading_model": _DEFAULT_PROGRAMMING_GRADING_MODEL,
-        "written_grading_model_options": _WRITTEN_GRADING_MODEL_OPTIONS,
-        "default_written_grading_model": _DEFAULT_WRITTEN_GRADING_MODEL,
         "default_written_grading_prompt": _DEFAULT_WRITTEN_GRADING_PROMPT,
+        "llm_endpoint_candidates": _problem_llm_endpoint_candidates(),
     }
 
 
@@ -220,13 +214,12 @@ def problem_create_form():
             "time_limit": 2000,
             "submission_limit": 10,
             "programming_grading_mode": 1,
-            "programming_grading_model": _DEFAULT_PROGRAMMING_GRADING_MODEL,
             "programming_output_filename": "output.png",
             "programming_grading_prompt": "",
             "promptly_review_config": _promptly_review_config_from_prompt(""),
             "written_grading_mode": 1,
-            "written_grading_model": _DEFAULT_WRITTEN_GRADING_MODEL,
             "written_grading_prompt": _DEFAULT_WRITTEN_GRADING_PROMPT,
+            "llm_endpoint_bindings": {},
         },
         options=_problem_form_options(),
     )
@@ -245,6 +238,7 @@ def problem_edit_form(problem_id):
         return json_error("无权限", 403)
 
     problem = context["problem"]
+    bindings = dict(problem.get("llm_endpoint_bindings") or {})
     form = {
         "title": problem.get("title") or "",
         "content": problem.get("content") or "",
@@ -255,17 +249,20 @@ def problem_edit_form(problem_id):
         "time_limit": problem.get("time_limit_ms") or 2000,
         "submission_limit": problem.get("submission_limit") or 10,
         "programming_grading_mode": problem.get("programming_grading_mode") or 1,
-        "programming_grading_model": problem.get("programming_grading_model") or _DEFAULT_PROGRAMMING_GRADING_MODEL,
         "programming_output_filename": problem.get("programming_output_filename") or "output.png",
         "programming_grading_prompt": problem.get("programming_grading_prompt") or "",
         "promptly_review_config": _promptly_review_config_from_prompt(problem.get("programming_grading_prompt") or ""),
         "written_grading_mode": problem.get("written_grading_mode") or 1,
-        "written_grading_model": problem.get("written_grading_model") or _DEFAULT_WRITTEN_GRADING_MODEL,
         "written_grading_prompt": problem.get("written_grading_prompt") or "",
+        "llm_endpoint_bindings": bindings,
     }
+    form.update({key: value for key, value in bindings.items()})
+    api_problem = dict(problem)
+    api_problem.pop("programming_grading_model", None)
+    api_problem.pop("written_grading_model", None)
     return json_success(
         user=public_user(user),
-        problem=to_jsonable(problem),
+        problem=to_jsonable(api_problem),
         form=form,
         action=f"/admin/edit_problem/{problem_id}",
         method="POST",

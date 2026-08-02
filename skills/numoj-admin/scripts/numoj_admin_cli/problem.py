@@ -15,6 +15,156 @@ from . import common
 from .common import *  # noqa: F401,F403 - command modules share the CLI helper surface.
 
 
+PROBLEM_LLM_ENDPOINT_ARGUMENTS = (
+    (
+        "output_image_grading_endpoint_id",
+        "--output-image-grading-endpoint-id",
+        "Endpoint for grading a programming problem's output image.",
+    ),
+    (
+        "ocr_endpoint_id",
+        "--ocr-endpoint-id",
+        "Endpoint for OCR in written-homework grading.",
+    ),
+    (
+        "text_grading_endpoint_id",
+        "--text-grading-endpoint-id",
+        "Endpoint for text or TeX written-homework grading.",
+    ),
+    (
+        "direct_image_grading_endpoint_id",
+        "--direct-image-grading-endpoint-id",
+        "Endpoint for direct image written-homework grading.",
+    ),
+    (
+        "review_endpoint_id",
+        "--review-endpoint-id",
+        "Endpoint for reviewing a Promptly submission.",
+    ),
+    (
+        "code_generation_endpoint_id",
+        "--code-generation-endpoint-id",
+        "Endpoint for generating code from an accepted Promptly submission.",
+    ),
+)
+
+_ALL_PROBLEM_LLM_ENDPOINT_KEYS = frozenset(item[0] for item in PROBLEM_LLM_ENDPOINT_ARGUMENTS)
+_WRITTEN_LLM_ENDPOINT_KEYS = frozenset({
+    "ocr_endpoint_id",
+    "text_grading_endpoint_id",
+    "direct_image_grading_endpoint_id",
+})
+_PROMPTLY_LLM_ENDPOINT_KEYS = frozenset({"review_endpoint_id", "code_generation_endpoint_id"})
+_OUTPUT_IMAGE_LLM_ENDPOINT_KEYS = frozenset({"output_image_grading_endpoint_id"})
+
+
+def parse_problem_llm_endpoint_id(raw: str) -> Optional[int]:
+    """Parse a positive endpoint ID; the literal ``none`` explicitly clears it."""
+
+    value = str(raw or "").strip()
+    if value.lower() == "none":
+        return None
+    try:
+        endpoint_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("endpoint ID must be a positive integer or 'none'") from exc
+    if endpoint_id <= 0 or str(endpoint_id) != value:
+        raise argparse.ArgumentTypeError("endpoint ID must be a positive integer or 'none'")
+    return endpoint_id
+
+
+def _add_problem_llm_endpoint_args(parser: argparse.ArgumentParser, *, editing: bool) -> None:
+    suffix = (
+        " Omit to keep the current binding; pass 'none' to clear it."
+        if editing
+        else " Omit it (or pass 'none') to leave this feature unconfigured."
+    )
+    for dest, option, help_text in PROBLEM_LLM_ENDPOINT_ARGUMENTS:
+        parser.add_argument(
+            option,
+            dest=dest,
+            type=parse_problem_llm_endpoint_id,
+            default=argparse.SUPPRESS,
+            metavar="ID|none",
+            help=help_text + suffix,
+        )
+
+
+def _allowed_problem_llm_endpoint_keys(problem_type: Any, programming_grading_mode: Any) -> frozenset[str]:
+    try:
+        normalized_type = int(problem_type)
+    except (TypeError, ValueError):
+        return _ALL_PROBLEM_LLM_ENDPOINT_KEYS
+    if normalized_type == 2:
+        return _WRITTEN_LLM_ENDPOINT_KEYS
+    if normalized_type != 1:
+        return frozenset()
+    try:
+        normalized_mode = int(programming_grading_mode)
+    except (TypeError, ValueError):
+        normalized_mode = 1
+    return _PROMPTLY_LLM_ENDPOINT_KEYS if normalized_mode == 3 else _OUTPUT_IMAGE_LLM_ENDPOINT_KEYS
+
+
+def build_problem_llm_bindings_arg(
+    args: argparse.Namespace,
+    *,
+    current: Optional[Dict[str, Any]] = None,
+    problem_type: Any = None,
+) -> Optional[str]:
+    """Build the form's JSON binding value while preserving omitted edit options."""
+
+    supplied = {
+        key: getattr(args, key)
+        for key in _ALL_PROBLEM_LLM_ENDPOINT_KEYS
+        if hasattr(args, key)
+    }
+    current = current if isinstance(current, dict) else None
+    current_mode = current.get("programming_grading_mode") if current is not None else None
+    requested_mode = getattr(args, "programming_grading_mode", None)
+    mode_changed = (
+        current is not None
+        and requested_mode is not None
+        and str(requested_mode) != str(current_mode)
+    )
+
+    # Omitting all six options on a normal edit must leave the stored soft links
+    # untouched. A mode switch is the exception: incompatible old-mode links need
+    # to be removed so the server can validate the new mode's JSON shape.
+    if current is None and not supplied:
+        return None
+    if current is not None and not supplied and not mode_changed:
+        return None
+
+    bindings: Dict[str, Any] = {}
+    if current is not None:
+        raw_bindings = current.get("llm_endpoint_bindings")
+        if isinstance(raw_bindings, dict):
+            bindings = dict(raw_bindings)
+        elif isinstance(raw_bindings, str):
+            try:
+                parsed = json.loads(raw_bindings)
+            except (TypeError, ValueError):
+                parsed = {}
+            if isinstance(parsed, dict):
+                bindings = parsed
+
+        effective_mode = requested_mode if requested_mode is not None else current_mode
+        allowed = _allowed_problem_llm_endpoint_keys(problem_type, effective_mode)
+        bindings = {key: value for key, value in bindings.items() if key in allowed}
+
+    for key, endpoint_id in supplied.items():
+        if endpoint_id is None:
+            bindings.pop(key, None)
+        else:
+            # Keep explicitly supplied out-of-scope keys in the JSON so the
+            # server, which owns the authoritative problem-type rules, rejects
+            # them instead of the CLI silently ignoring an administrator typo.
+            bindings[key] = endpoint_id
+
+    return json.dumps(bindings, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def parse_promptly_review_config_value(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, dict):
         obj = raw
@@ -341,6 +491,7 @@ def problem_create_form(args: argparse.Namespace) -> None:
 def problem_create(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     programming_grading_prompt = build_promptly_grading_prompt_arg(args)
+    llm_endpoint_bindings = build_problem_llm_bindings_arg(args)
     if programming_grading_prompt is None:
         programming_grading_prompt = ""
     data = form_from_pairs(
@@ -355,12 +506,11 @@ def problem_create(args: argparse.Namespace) -> None:
             ("time_limit", args.time_limit),
             ("submission_limit", args.submission_limit),
             ("programming_grading_mode", args.programming_grading_mode),
-            ("programming_grading_model", args.programming_grading_model),
             ("programming_output_filename", args.programming_output_filename),
             ("programming_grading_prompt", programming_grading_prompt),
             ("written_grading_mode", args.written_grading_mode),
-            ("written_grading_model", args.written_grading_model),
             ("written_grading_prompt", read_text_value(args.written_grading_prompt)),
+            ("llm_endpoint_bindings", llm_endpoint_bindings),
         ]
     )
     resp = client.request("POST", "/admin/add_problem", data=data, headers={"Accept": "application/json"})
@@ -380,8 +530,16 @@ def problem_edit(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     form_resp = client.request("GET", f"/api/admin/problems/{args.problem_id}/edit-form")
     ensure_ok(form_resp, allow_redirect=False)
-    current = (form_resp.json() if response_is_json(form_resp) else {}).get("form") or {}
+    form_payload = form_resp.json() if response_is_json(form_resp) else {}
+    form_payload = form_payload if isinstance(form_payload, dict) else {}
+    current = form_payload.get("form") or {}
+    problem = form_payload.get("problem") or {}
     programming_grading_prompt = build_promptly_grading_prompt_arg(args, current)
+    llm_endpoint_bindings = build_problem_llm_bindings_arg(
+        args,
+        current=current,
+        problem_type=problem.get("type") if isinstance(problem, dict) else None,
+    )
     data = form_from_pairs(
         [
             ("title", current_or_arg(current, "title", args.title)),
@@ -393,12 +551,11 @@ def problem_edit(args: argparse.Namespace) -> None:
             ("time_limit", current_or_arg(current, "time_limit", args.time_limit)),
             ("submission_limit", current_or_arg(current, "submission_limit", args.submission_limit)),
             ("programming_grading_mode", current_or_arg(current, "programming_grading_mode", args.programming_grading_mode)),
-            ("programming_grading_model", current_or_arg(current, "programming_grading_model", args.programming_grading_model)),
             ("programming_output_filename", current_or_arg(current, "programming_output_filename", args.programming_output_filename)),
             ("programming_grading_prompt", programming_grading_prompt if programming_grading_prompt is not None else current.get("programming_grading_prompt", "")),
             ("written_grading_mode", current_or_arg(current, "written_grading_mode", args.written_grading_mode)),
-            ("written_grading_model", current_or_arg(current, "written_grading_model", args.written_grading_model)),
             ("written_grading_prompt", current_or_arg(current, "written_grading_prompt", args.written_grading_prompt)),
+            ("llm_endpoint_bindings", llm_endpoint_bindings),
         ]
     )
     resp = client.request("POST", f"/admin/edit_problem/{args.problem_id}", data=data)
@@ -647,7 +804,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=1,
         help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
     )
-    pa.add_argument("--programming-grading-model", help="Model identifier for programming image grading or Promptly review/code generation.")
     pa.add_argument("--programming-output-filename", help="Expected output image filename in programming image-grading mode.")
     pa.add_argument(
         "--programming-grading-prompt",
@@ -658,8 +814,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     add_promptly_review_args(pa)
     pa.add_argument("--written-grading-mode", type=int, default=1, help="Written grading mode: 1=OCR+text grading, 2=direct image grading, 3=ZIP/LaTeX, 4=manual grading.")
-    pa.add_argument("--written-grading-model", help="Model identifier for AI grading of written homework.")
     pa.add_argument("--written-grading-prompt", default="", help="Rubric for AI grading of written homework, or @file.")
+    _add_problem_llm_endpoint_args(pa, editing=False)
     pa.set_defaults(func=problem_create)
     pa = add_cli_parser(ps, "edit-form", "Fetch administrator edit-form metadata for an existing problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID whose edit form should be fetched.")
@@ -691,7 +847,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
     )
-    pa.add_argument("--programming-grading-model", help="Model identifier for programming image grading or Promptly review/code generation.")
     pa.add_argument("--programming-output-filename", help="Expected output image filename in programming image-grading mode.")
     pa.add_argument(
         "--programming-grading-prompt",
@@ -702,8 +857,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     add_promptly_review_args(pa)
     pa.add_argument("--written-grading-mode", type=int, help="Written grading mode: 1=OCR+text grading, 2=direct image grading, 3=ZIP/LaTeX, 4=manual grading.")
-    pa.add_argument("--written-grading-model", help="Model identifier for AI grading of written homework.")
     pa.add_argument("--written-grading-prompt", help="Rubric for AI grading of written homework, or @file.")
+    _add_problem_llm_endpoint_args(pa, editing=True)
     pa.set_defaults(func=problem_edit)
     pa = add_cli_parser(ps, "delete", "Delete a problem by ID.")
     pa.add_argument("problem_id", type=int, help="Problem ID to delete.")

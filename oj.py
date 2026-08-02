@@ -45,8 +45,10 @@ from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detec
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.routes.health_routes import create_health_blueprint
+from oj_modules.routes.admin_dynamic_config_routes import admin_dynamic_config_bp
 from oj_modules.request_auth import install_global_login_guard
 from oj_modules.request_security import install_same_origin_protection
+from oj_modules.dynamic_config_services import get_mail_settings
 from oj_modules.redis_clients import (
     create_binary_redis_client,
     create_blocking_redis_client,
@@ -165,6 +167,7 @@ app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
 app.register_blueprint(game_bp)
 app.register_blueprint(ranking_bp)
+app.register_blueprint(admin_dynamic_config_bp)
 app.register_blueprint(create_health_blueprint(rds, get_db_connection))
 for _api_bp in API_BLUEPRINTS:
     app.register_blueprint(_api_bp)
@@ -178,7 +181,14 @@ def inject_globals():
         class_adjust_enabled = is_class_adjust_enabled()
     except Exception:
         class_adjust_enabled = True
-    return {'class_adjust_enabled': class_adjust_enabled}
+    try:
+        mail_service_configured = bool(get_mail_settings())
+    except Exception:
+        mail_service_configured = False
+    return {
+        'class_adjust_enabled': class_adjust_enabled,
+        'mail_service_configured': mail_service_configured,
+    }
 
 
 # 默认 CSP：考虑到现有页面大量内联脚本/样式与本地打包资源，采用「不破坏现网」的宽松策略，

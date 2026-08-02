@@ -358,6 +358,7 @@ CREATE TABLE `problems` (
   `written_grading_mode` tinyint NOT NULL DEFAULT '1',
   `written_grading_model` varchar(32) NOT NULL DEFAULT '',
   `written_grading_prompt` text,
+  `llm_endpoint_bindings` json DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -1504,12 +1505,14 @@ CREATE TABLE `ranking_agent_judge_endpoints` (
   `competition_id` int NOT NULL,
   `pool_kind` varchar(32) NOT NULL DEFAULT 'primary',
   `harness` varchar(32) NOT NULL DEFAULT 'claude_code',
+  `protocol` varchar(16) DEFAULT NULL,
   `base_url` varchar(512) NOT NULL,
   `api_key` varchar(512) NOT NULL,
   `model` varchar(128) DEFAULT NULL,
   `context_window_tokens` int NOT NULL DEFAULT '1000000',
   `max_output_tokens` int NOT NULL DEFAULT '384000',
   `thinking_compatibility` tinyint(1) NOT NULL DEFAULT '1',
+  `thinking_format` varchar(32) DEFAULT NULL,
   `concurrency_limit` int NOT NULL DEFAULT '1',
   `enabled` tinyint(1) NOT NULL DEFAULT '1',
   `status` varchar(16) NOT NULL DEFAULT 'enabled',
@@ -1518,6 +1521,142 @@ CREATE TABLE `ranking_agent_judge_endpoints` (
   PRIMARY KEY (`id`),
   KEY `idx_aje_comp` (`competition_id`),
   KEY `idx_aje_comp_pool` (`competition_id`,`pool_kind`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `llm_endpoints`
+--
+
+DROP TABLE IF EXISTS `llm_endpoints`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `llm_endpoints` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `name` varchar(120) NOT NULL,
+  `protocol` varchar(16) NOT NULL,
+  `category` varchar(16) NOT NULL,
+  `base_url` varchar(1024) NOT NULL,
+  `api_key` text NOT NULL,
+  `model` varchar(255) NOT NULL,
+  `thinking_enabled` tinyint(1) NOT NULL DEFAULT '0',
+  `thinking_format` varchar(32) NOT NULL DEFAULT 'none',
+  `test_status` varchar(16) NOT NULL DEFAULT 'untested',
+  `test_message` text,
+  `test_latency_ms` int DEFAULT NULL,
+  `tested_at` datetime DEFAULT NULL,
+  `tested_by_user_id` int DEFAULT NULL,
+  `is_locked` tinyint(1) NOT NULL DEFAULT '0',
+  `lock_reason` varchar(1000) DEFAULT NULL,
+  `locked_by_user_id` int DEFAULT NULL,
+  `locked_at` datetime DEFAULT NULL,
+  `revision` bigint NOT NULL DEFAULT '1',
+  `created_by_user_id` int NOT NULL,
+  `updated_by_user_id` int NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_llm_endpoint_name` (`name`),
+  KEY `idx_llm_endpoint_category` (`category`),
+  KEY `idx_llm_endpoint_test_status` (`test_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `llm_feature_bindings`
+--
+
+DROP TABLE IF EXISTS `llm_feature_bindings`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `llm_feature_bindings` (
+  `feature_key` varchar(64) NOT NULL,
+  `endpoint_id` bigint DEFAULT NULL,
+  `is_locked` tinyint(1) NOT NULL DEFAULT '0',
+  `lock_reason` varchar(1000) DEFAULT NULL,
+  `locked_by_user_id` int DEFAULT NULL,
+  `locked_at` datetime DEFAULT NULL,
+  `revision` bigint NOT NULL DEFAULT '1',
+  `updated_by_user_id` int NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`feature_key`),
+  KEY `idx_llm_binding_endpoint` (`endpoint_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `dynamic_config_test_grants`
+--
+
+DROP TABLE IF EXISTS `dynamic_config_test_grants`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `dynamic_config_test_grants` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `token_hash` char(64) NOT NULL,
+  `config_kind` varchar(32) NOT NULL,
+  `target_id` bigint DEFAULT NULL,
+  `base_revision` bigint NOT NULL DEFAULT '0',
+  `payload_fingerprint` char(64) NOT NULL,
+  `status` varchar(16) NOT NULL,
+  `test_message` text,
+  `test_latency_ms` int DEFAULT NULL,
+  `created_by_user_id` int NOT NULL,
+  `created_at` datetime NOT NULL,
+  `expires_at` datetime NOT NULL,
+  `consumed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_dynamic_config_test_token` (`token_hash`),
+  KEY `idx_dynamic_config_test_lookup` (`config_kind`,`target_id`,`created_by_user_id`),
+  KEY `idx_dynamic_config_test_expiry` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `site_mail_settings`
+--
+
+DROP TABLE IF EXISTS `site_mail_settings`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `site_mail_settings` (
+  `id` tinyint NOT NULL DEFAULT '1',
+  `smtp_server` varchar(512) NOT NULL,
+  `smtp_port` int NOT NULL,
+  `smtp_username` varchar(512) NOT NULL,
+  `smtp_password` text NOT NULL,
+  `test_status` varchar(16) NOT NULL DEFAULT 'untested',
+  `test_message` text,
+  `test_latency_ms` int DEFAULT NULL,
+  `tested_at` datetime DEFAULT NULL,
+  `tested_by_user_id` int DEFAULT NULL,
+  `revision` bigint NOT NULL DEFAULT '1',
+  `updated_by_user_id` int NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `site_web_search_settings`
+--
+
+DROP TABLE IF EXISTS `site_web_search_settings`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `site_web_search_settings` (
+  `id` tinyint NOT NULL DEFAULT '1',
+  `base_url` varchar(1024) NOT NULL,
+  `authorization` text NOT NULL,
+  `test_status` varchar(16) NOT NULL DEFAULT 'untested',
+  `test_message` text,
+  `test_latency_ms` int DEFAULT NULL,
+  `tested_at` datetime DEFAULT NULL,
+  `tested_by_user_id` int DEFAULT NULL,
+  `revision` bigint NOT NULL DEFAULT '1',
+  `updated_by_user_id` int NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

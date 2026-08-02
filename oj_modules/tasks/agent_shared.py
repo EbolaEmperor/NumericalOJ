@@ -4,8 +4,8 @@
 import json
 import re
 import time
-
-import requests
+from dataclasses import dataclass
+from types import MappingProxyType
 
 from config import (
     AGENT_CONTEXT_KEEP_ROUNDS,
@@ -18,11 +18,7 @@ from config import (
     AGENT_MEMORY_ENABLED,
     AGENT_MEMORY_MAX_NOTES,
     AGENT_MEMORY_MAX_PATTERNS,
-    DASHSCOPE_API_KEY,
-    DASHSCOPE_BASE_URL,
     EVALUATE_SUBMISSION_LOCK_TTL_SECONDS,
-    QWEN_CODER_MODEL,
-    QWEN_TEXT_MODEL,
     SUBMISSION_SNAPSHOT_TTL_SECONDS,
 )
 from oj_modules.db_services import (
@@ -36,11 +32,11 @@ from oj_modules.redis_clients import (
     RedisClientProfile,
     create_optional_redis_client,
 )
-
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
+from oj_modules.dynamic_config_services import (
+    get_web_search_settings,
+    resolve_feature_endpoint,
+)
+from oj_modules.llm_endpoints import LLMEndpointSnapshot, call_chat
 
 AGENT_SOLVE_TASK_NAME = "oj.agent.solve_problem"
 AGENT_GENERATE_TESTDATA_TASK_NAME = "oj.agent.generate_testdata"
@@ -81,7 +77,42 @@ _AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS = _clamp_int(
 )
 _AGENT_SUBMIT_LIMIT = _clamp_int(AGENT_SUBMIT_LIMIT, 5, min_value=1, max_value=100)
 _TOOL_TIMEOUT_MAX_SECONDS = _clamp_int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, 60, min_value=60, max_value=3600)
-_SUMMARY_MODEL_DISPLAY = str(QWEN_TEXT_MODEL or "").strip() or "configured-model"
+
+
+_AGENT_ENDPOINT_FEATURE_LABELS = {
+    "solution_agent": "解题 Agent",
+    "agent_summary": "Agent 上下文摘要",
+    "repository_query_summary": "仓库检索问题摘要",
+    "repository_embedding": "仓库检索 Embedding",
+    "code_image_analysis": "代码输出图片分析",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class AgentEndpointResolution:
+    """任务启动时冻结的端点解析结果，不允许运行中重新查询配置。"""
+
+    feature_key: str
+    endpoint: LLMEndpointSnapshot | None = None
+    error: str = ""
+
+    @property
+    def available(self):
+        return self.endpoint is not None
+
+    def require(self, operation_label=None):
+        if self.endpoint is not None:
+            return self.endpoint
+        label = str(operation_label or "").strip()
+        if not label:
+            label = _AGENT_ENDPOINT_FEATURE_LABELS.get(
+                self.feature_key,
+                self.feature_key,
+            )
+        detail = str(self.error or "端点未配置或已被删除").strip()
+        raise RuntimeError(
+            f"{label}不可用：{detail}（该状态已在任务启动时固定，运行中不会重新读取配置）"
+        )
 
 
 def init_agent_progress_cache(redis_client, ttl_seconds=None, blocking_client=None):
@@ -252,20 +283,65 @@ def _compact_summary(summary):
     }
 
 
-def _is_invalid_secret(value):
-    text = str(value or "").strip()
-    return (not text) or ("YOUR" in text.upper())
+def _resolve_agent_endpoint_resolutions(*feature_keys):
+    """在任务启动时把每个功能冻结为端点快照或不可用错误。"""
+    resolutions = {}
+    for feature_key in feature_keys:
+        key = str(feature_key or "").strip()
+        if not key or key in resolutions:
+            continue
+        try:
+            resolutions[key] = AgentEndpointResolution(
+                feature_key=key,
+                endpoint=LLMEndpointSnapshot.from_mapping(
+                    resolve_feature_endpoint(key)
+                ),
+            )
+        except Exception as exc:
+            label = _AGENT_ENDPOINT_FEATURE_LABELS.get(key, key)
+            detail = str(exc).strip() or exc.__class__.__name__
+            resolutions[key] = AgentEndpointResolution(
+                feature_key=key,
+                error=f"全站配置中的“{label}”端点在任务启动时不可用：{detail}",
+            )
+    return resolutions
 
 
-def _resolve_chat_endpoint_for_model(model):
-    # 所有模型一律走普通 DashScope（compatible-mode）端点。
-    api_key = DASHSCOPE_API_KEY
-    if _is_invalid_secret(api_key):
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    base_url = str(DASHSCOPE_BASE_URL or "").strip()
-    if not base_url:
-        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
-    return str(api_key).strip(), base_url.rstrip("/")
+def _require_agent_endpoint(
+    endpoint_or_resolution,
+    *,
+    feature_key,
+    operation_label=None,
+):
+    """只消费已冻结的结果；绝不因缺少端点而回退查询数据库。"""
+    if isinstance(endpoint_or_resolution, LLMEndpointSnapshot):
+        return endpoint_or_resolution
+    if isinstance(endpoint_or_resolution, AgentEndpointResolution):
+        return endpoint_or_resolution.require(operation_label)
+    label = str(operation_label or "").strip()
+    if not label:
+        label = _AGENT_ENDPOINT_FEATURE_LABELS.get(feature_key, feature_key)
+    raise RuntimeError(
+        f"{label}不可用：任务启动时未冻结该端点（运行中不会重新读取配置）"
+    )
+
+
+def _resolve_agent_endpoint_snapshots(*feature_keys):
+    """解析必需端点；保留给必须在任务启动时失败的调用方。"""
+    resolutions = _resolve_agent_endpoint_resolutions(*feature_keys)
+    snapshots = {}
+    for key, resolution in resolutions.items():
+        try:
+            snapshots[key] = resolution.require()
+        except RuntimeError as exc:
+            raise RuntimeError(str(exc)) from exc
+    return snapshots
+
+
+def _resolve_web_search_settings_snapshot():
+    """固定当前任务使用的联网搜索配置，避免工具调用中途漂移。"""
+    settings = get_web_search_settings(include_secret=True) or {}
+    return MappingProxyType(dict(settings))
 
 
 def _extract_text_from_content(content):
@@ -283,17 +359,24 @@ def _extract_text_from_content(content):
     return ""
 
 
-def _build_api_request_payload(messages, model=None, tools=None, enable_thinking=None):
+def _build_api_request_payload(messages, endpoint_snapshot, tools=None):
+    endpoint = (
+        endpoint_snapshot
+        if isinstance(endpoint_snapshot, LLMEndpointSnapshot)
+        else LLMEndpointSnapshot.from_mapping(endpoint_snapshot)
+    )
     payload = {
-        "model": str(model or QWEN_CODER_MODEL),
+        "endpoint_id": endpoint.id,
+        "protocol": endpoint.protocol.value,
+        "model": endpoint.model,
         "messages": _safe_json_copy(messages, default=[]),
         "stream": False,
     }
     if isinstance(tools, list) and tools:
         payload["tools"] = _safe_json_copy(tools, default=[])
         payload["tool_choice"] = "auto"
-    if enable_thinking is not None:
-        payload["enable_thinking"] = bool(enable_thinking)
+    if endpoint.thinking_enabled:
+        payload["thinking_enabled"] = True
     return payload
 
 
@@ -395,97 +478,39 @@ def _normalize_assistant_message(raw_message):
     return message
 
 
-def _call_qwen_chat_completion(messages, model, timeout=180, tools=None, enable_thinking=None):
-    use_model = str(model or QWEN_CODER_MODEL)
-    api_key, base_url = _resolve_chat_endpoint_for_model(use_model)
-    api_messages = _coerce_message_roles_for_api(messages)
-    payload = _build_api_request_payload(
-        api_messages,
-        model=use_model,
-        tools=tools,
-        enable_thinking=enable_thinking,
+def _call_agent_chat_completion(endpoint_snapshot, messages, timeout=180, tools=None):
+    endpoint = (
+        endpoint_snapshot
+        if isinstance(endpoint_snapshot, LLMEndpointSnapshot)
+        else LLMEndpointSnapshot.from_mapping(endpoint_snapshot)
     )
-
-    if OpenAI is not None:
-        try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            kwargs = {
-                "model": use_model,
-                "messages": api_messages,
-                "stream": False,
-            }
-            if isinstance(tools, list) and tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-            if enable_thinking is not None:
-                kwargs["extra_body"] = {"enable_thinking": bool(enable_thinking)}
-            resp = client.chat.completions.create(**kwargs)
-            choices = getattr(resp, "choices", None) or []
-            if choices and getattr(choices[0], "message", None):
-                return _normalize_assistant_message(choices[0].message)
-        except Exception as e:
-            print(f"[Agent] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
-    resp.raise_for_status()
-    data = resp.json()
-    choices = data.get("choices") or []
-    if not choices:
-        raise RuntimeError("模型未返回有效结果。")
-    message = choices[0].get("message") or {}
-    return _normalize_assistant_message(message)
+    api_messages = _coerce_message_roles_for_api(messages)
+    result = call_chat(
+        endpoint,
+        api_messages,
+        tools=tools,
+        tool_choice="auto" if tools else None,
+        timeout=timeout,
+    )
+    return _normalize_assistant_message(result.to_openai_message())
 
 
-def _call_qwen_chat_model(
+def _call_agent_text_model(
+    endpoint_snapshot,
     messages,
-    model,
     timeout=180,
     empty_text_error="模型未返回有效文本。",
-    enable_thinking=None,
 ):
-    message = _call_qwen_chat_completion(
+    message = _call_agent_chat_completion(
+        endpoint_snapshot=endpoint_snapshot,
         messages=messages,
-        model=model,
         timeout=timeout,
         tools=None,
-        enable_thinking=enable_thinking,
     )
     text = _extract_text_from_content(message.get("content")).strip()
     if not text:
         raise RuntimeError(str(empty_text_error or "模型未返回有效文本。"))
     return text
-
-
-def _call_qwen3_coder_plus(messages, timeout=180):
-    return _call_qwen_chat_model(
-        messages=messages,
-        model=QWEN_CODER_MODEL,
-        timeout=timeout,
-        empty_text_error="模型未返回有效代码文本。",
-    )
-
-
-def _call_qwen3_coder_plus_with_tools(messages, tools, timeout=180):
-    return _call_qwen_chat_completion(
-        messages=messages,
-        model=QWEN_CODER_MODEL,
-        timeout=timeout,
-        tools=tools,
-    )
-
-
-def _call_qwen3_5_plus_text(messages, timeout=120, enable_thinking=None):
-    return _call_qwen_chat_model(
-        messages=messages,
-        model=QWEN_TEXT_MODEL,
-        timeout=timeout,
-        empty_text_error="模型未返回有效摘要文本。",
-        enable_thinking=enable_thinking,
-    )
 
 
 
@@ -586,7 +611,14 @@ def _serialize_messages_for_history_summary(messages, max_chars):
     return "\n".join(rows).strip()
 
 
-def _summarize_history_with_qwen35(history_messages, target_chars, state=None, round_idx=None, event_label="历史摘要"):
+def _summarize_agent_history(
+    history_messages,
+    target_chars,
+    summary_endpoint,
+    state=None,
+    round_idx=None,
+    event_label="历史摘要",
+):
     if not isinstance(history_messages, list) or not history_messages:
         return ""
 
@@ -598,7 +630,7 @@ def _summarize_history_with_qwen35(history_messages, target_chars, state=None, r
         "content": f"生成历史摘要，限制字数：{int(target_chars)}",
     })
 
-    request_body = _build_api_request_payload(messages, model=QWEN_TEXT_MODEL)
+    request_body = _build_api_request_payload(messages, summary_endpoint)
     _append_api_call_log(state, round_idx, request_body, api_type="context_summary")
     if isinstance(state, dict):
         _push_agent_event(
@@ -613,7 +645,12 @@ def _summarize_history_with_qwen35(history_messages, target_chars, state=None, r
             },
         )
     try:
-        summary = _call_qwen3_5_plus_text(messages, timeout=_AGENT_CONTEXT_SUMMARY_TIMEOUT)
+        summary = _call_agent_text_model(
+            summary_endpoint,
+            messages,
+            timeout=_AGENT_CONTEXT_SUMMARY_TIMEOUT,
+            empty_text_error="模型未返回有效摘要文本。",
+        )
     except Exception as e:
         print(f"[Agent] 历史摘要调用失败，回退本地压缩: {e}")
         return ""
@@ -685,7 +722,14 @@ def _drop_orphan_tool_messages(messages):
     return result
 
 
-def _trim_conversation_by_budget(conversation, max_chars, keep_rounds, state=None, round_idx=None):
+def _trim_conversation_by_budget(
+    conversation,
+    max_chars,
+    keep_rounds,
+    summary_endpoint,
+    state=None,
+    round_idx=None,
+):
     if not isinstance(conversation, list):
         return []
     cleaned = []
@@ -715,18 +759,37 @@ def _trim_conversation_by_budget(conversation, max_chars, keep_rounds, state=Non
 
     # 严禁本地裁剪：仅允许基于完整历史生成摘要，再整体替换上下文。
     _ = keep_rounds
+    try:
+        use_summary_endpoint = _require_agent_endpoint(
+            summary_endpoint,
+            feature_key="agent_summary",
+            operation_label="Agent 上下文摘要",
+        )
+    except RuntimeError as exc:
+        if isinstance(state, dict):
+            _push_agent_event(
+                state,
+                f"已跳过 Agent 上下文摘要：{exc}",
+                level="warning",
+                event_type="optional_endpoint_unavailable",
+                details={"feature_key": "agent_summary"},
+            )
+        return cleaned
+
     summary_budget = min(_AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS, max(600, int(max_chars * 0.9)))
-    full_summary = _summarize_history_with_qwen35(
+    full_summary = _summarize_agent_history(
         cleaned,
         target_chars=summary_budget,
+        summary_endpoint=use_summary_endpoint,
         state=state,
         round_idx=round_idx,
         event_label="全量历史摘要",
     )
     if full_summary:
+        summary_model_display = str(use_summary_endpoint.model or "configured-model")
         return [{
             "role": "assistant",
-            "content": f"【历史信息摘要（{_SUMMARY_MODEL_DISPLAY}）】\n" + full_summary,
+            "content": f"【历史信息摘要（{summary_model_display}）】\n" + full_summary,
         }]
     return cleaned
 

@@ -225,6 +225,28 @@
                     </div>
                   </div>
                 </label>
+                <label class="aje-modal-field" id="ajeEditSourceModeWrap">
+                  <span>创建方式</span>
+                  <select class="form-select" id="ajeEditSourceMode">
+                    <option value="custom">自定义</option>
+                    <option value="global">从全局端点复制</option>
+                  </select>
+                </label>
+                <label class="aje-modal-field" id="ajeEditProtocolWrap">
+                  <span>协议</span>
+                  <select class="form-select" id="ajeEditProtocol">
+                    <option value="">请选择协议</option>
+                    <option value="openai">OpenAI 兼容</option>
+                    <option value="anthropic">Anthropic 兼容</option>
+                  </select>
+                </label>
+                <label class="aje-modal-field full" id="ajeEditGlobalEndpointWrap" style="display:none;">
+                  <span>全局端点</span>
+                  <select class="form-select" id="ajeEditGlobalEndpoint">
+                    <option value="">请选择全局端点</option>
+                  </select>
+                  <small class="text-muted">保存时由后端复制 URL、API Key、model 与思考设置；之后与全局端点完全独立。</small>
+                </label>
                 <label class="aje-modal-field">
                   <span>并发上限</span>
                   <input type="number" id="ajeEditConcurrency" min="1" max="64" step="1">
@@ -282,11 +304,11 @@
                   <span id="ajeEditBaseUrlLabel">Base URL</span>
                   <input class="mono" type="text" id="ajeEditBaseUrl" placeholder="https://.../anthropic">
                 </label>
-                <label class="aje-modal-field full">
+                <label class="aje-modal-field full" id="ajeEditApiKeyWrap">
                   <span>API Key</span>
                   <input class="mono" type="password" id="ajeEditApiKey" autocomplete="new-password">
                 </label>
-                <label class="aje-modal-field full">
+                <label class="aje-modal-field full" id="ajeEditModelWrap">
                   <span>模型</span>
                   <input type="text" id="ajeEditModel">
                 </label>
@@ -348,5 +370,6 @@
         window.__SAVE_AJ_ENDPOINTS_URL__ = "{{ url_for('ranking.ranking_save_agent_endpoints', competition_id=competition.id) }}";
         window.__QUALITY_GATE_ENDPOINTS__ = {{ quality_gate_endpoints|tojson }};
         window.__SAVE_QUALITY_GATE_URL__ = "{{ url_for('ranking.ranking_save_reverse_quality_gate', competition_id=competition.id) }}";
+        window.__AJ_GLOBAL_ENDPOINT_CANDIDATES__ = {{ agent_global_endpoint_candidates|default({})|tojson }};
       </script>
       <script src="{{ url_for('static', filename='app/ranking/endpoints.js') }}"></script>

@@ -182,6 +182,109 @@ def test_claude_relay_only_overrides_main_streaming_messages_request():
     assert internal["max_tokens"] == 8
 
 
+@pytest.mark.parametrize(
+    ("thinking_format", "enabled", "expected"),
+    [
+        ("thinking_type", True, {"thinking": {"type": "enabled"}}),
+        ("thinking_type", False, {"thinking": {"type": "disabled"}}),
+        ("none", False, {}),
+    ],
+)
+def test_claude_messages_rewrite_uses_frozen_thinking_format(
+        thinking_format, enabled, expected):
+    module = _load_run_harness()
+    raw = {
+        "stream": True,
+        "max_tokens": 128,
+        "thinking": {"type": "stale"},
+        "enable_thinking": True,
+    }
+
+    rewritten = json.loads(module._rewrite_claude_request_body(
+        "/v1/messages",
+        json.dumps(raw).encode("utf-8"),
+        16_384,
+        thinking_format,
+        enabled,
+    ))
+
+    assert "enable_thinking" not in rewritten
+    assert {key: rewritten[key] for key in expected} == expected
+    if thinking_format == "none":
+        assert "thinking" not in rewritten
+
+
+@pytest.mark.parametrize(
+    ("thinking_format", "enabled", "expected"),
+    [
+        ("enable_thinking", True, {"enable_thinking": True}),
+        ("enable_thinking", False, {"enable_thinking": False}),
+        ("thinking_type", True, {"thinking": {"type": "enabled"}}),
+        ("none", False, {}),
+    ],
+)
+def test_openai_chat_completions_rewrite_uses_frozen_thinking_format(
+        thinking_format, enabled, expected):
+    module = _load_run_harness()
+    raw = {
+        "model": "local-metadata-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "thinking": {"type": "stale"},
+        "enable_thinking": True,
+    }
+
+    rewritten = json.loads(module._rewrite_codex_request_body(
+        "/v1/chat/completions",
+        json.dumps(raw).encode("utf-8"),
+        16_384,
+        enabled,
+        "actual-model",
+        thinking_format,
+    ))
+
+    assert rewritten["model"] == "actual-model"
+    assert {key: rewritten[key] for key in expected} == expected
+    if thinking_format != "enable_thinking":
+        assert "enable_thinking" not in rewritten
+    if thinking_format != "thinking_type":
+        assert "thinking" not in rewritten
+
+
+@pytest.mark.parametrize(
+    ("protocol", "path", "thinking_format", "enabled", "expected"),
+    [
+        ("openai", "/v1/chat/completions", "enable_thinking", True,
+         {"enable_thinking": True}),
+        ("openai", "/v1/chat/completions", "none", False, {}),
+        ("anthropic", "/v1/messages", "thinking_type", False,
+         {"thinking": {"type": "disabled"}}),
+    ],
+)
+def test_pi_dual_protocol_relay_rewrites_real_request_shape(
+        protocol, path, thinking_format, enabled, expected):
+    module = _load_run_harness()
+    relay = module._PiEndpointRelay(
+        "https://upstream.example/v1",
+        protocol,
+        thinking_format,
+        enabled,
+    )
+    raw = json.dumps({
+        "model": "model",
+        "messages": [],
+        "thinking": {"type": "stale"},
+        "enable_thinking": True,
+    }).encode("utf-8")
+
+    rewritten = json.loads(relay._rewrite_request_body(path, raw))
+
+    assert {key: rewritten[key] for key in expected} == expected
+    if thinking_format != "enable_thinking":
+        assert "enable_thinking" not in rewritten
+    if thinking_format != "thinking_type":
+        assert "thinking" not in rewritten
+
+
 def test_claude_run_uses_local_relay_and_stops_it(monkeypatch):
     module = _load_run_harness()
     events = []
@@ -771,6 +874,62 @@ def test_pi_endpoint_capabilities_are_model_agnostic_and_can_disable_thinking(
         "contextWindow": 131_072,
         "maxTokens": 16_384,
     }
+
+
+def test_pi_anthropic_provider_config_uses_messages_without_openai_compat(tmp_path):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+
+    module._write_pi_models_config(
+        str(config_dir),
+        "http://answer-model-proxy:18080/anthropic",
+        "mimo-v2.5-pro",
+        thinking_compatibility=True,
+        protocol="anthropic",
+    )
+
+    config = json.loads((config_dir / "models.json").read_text(encoding="utf-8"))
+    provider = config["providers"]["agent-judge"]
+    assert provider["api"] == "anthropic-messages"
+    assert provider["apiKey"] == "$PI_API_KEY"
+    assert provider["baseUrl"] == "http://answer-model-proxy:18080/anthropic"
+    assert "authHeader" not in provider
+    assert "compat" not in provider
+
+
+def test_run_pi_anthropic_protocol_reads_anthropic_environment(monkeypatch, tmp_path):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    calls = []
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
+    monkeypatch.setenv("AJ_ENDPOINT_PROTOCOL", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://answer-model-proxy:18080/anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "temporary-token")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "mimo-v2.5-pro")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://must-not-use.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-use")
+    monkeypatch.setenv("OPENAI_MODEL", "must-not-use")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda args, env=None, **_kwargs: (
+            calls.append((list(args), dict(env or {})))
+            or SimpleNamespace(returncode=0, stdout="", stderr="")
+        ),
+    )
+    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
+
+    assert module._run_pi("solve") == 0
+
+    args, env = calls[0]
+    assert args[args.index("--model") + 1] == "mimo-v2.5-pro"
+    assert env["PI_API_KEY"] == "temporary-token"
+    provider = json.loads(
+        (config_dir / "models.json").read_text(encoding="utf-8")
+    )["providers"]["agent-judge"]
+    assert provider["api"] == "anthropic-messages"
+    assert "must-not-use" not in json.dumps(provider)
 
 
 def test_pi_generic_thinking_omits_deepseek_wire_fields(tmp_path):

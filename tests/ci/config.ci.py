@@ -1,11 +1,6 @@
 # CI-only config. Copied to /app/config.py inside the test image.
 # Self-contained: must NOT import from `config`.
 
-MAIL_SERVER = 'localhost'
-MAIL_PORT = 465
-MAIL_USERNAME = 'ci@example.com'
-MAIL_PASSWORD = 'ci-mail-pass'
-
 # MySQL —— 指向 docker-compose 的 mysql 服务
 MYSQL_HOST = 'mysql'
 MYSQL_PORT = 3306
@@ -18,23 +13,6 @@ MYSQL_POOL_MAX_SIZE = 6
 MYSQL_POOL_WAIT_TIMEOUT = 3
 MYSQL_POOL_RECYCLE_SECONDS = 1200
 
-DASHSCOPE_APP_ID = "ci-dashscope-app"
-DASHSCOPE_API_KEY = "ci-dashscope-key"
-DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-MATLAB_AI_DETECT_API_KEY = "ci-matlab-detect-key"
-MATLAB_AI_DETECT_URL = "http://127.0.0.1:8000/v1"
-MATLAB_AI_DETECT_MODEL = "matlab-ai-detect"
-
-MIMO_URL_OPENAI = "https://example.invalid/v1"
-MIMO_URL_ANTHROPIC = "https://example.invalid/anthropic"
-MIMO_API_KEY = "ci-mimo-key"
-MIMO_MODEL = "mimo-v2.5-pro"
-
-QWEN_CODER_MODEL = "qwen3-coder-plus"
-QWEN_TEXT_MODEL = "qwen3.5-plus"
-AI_TUTOR_MODEL = "qwen3.5-flash"
-QWEN_OMNI_MODEL = "qwen3-vl-flash"
 AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT = 180
 
 # Redis —— 指向 docker-compose 的 redis 服务
@@ -53,10 +31,6 @@ REPOSITORY_MAX_DEPTH = 32
 REPOSITORY_MAX_PATH_BYTES = 1024
 REPOSITORY_UPLOAD_SESSION_TTL_SECONDS = 86400
 REPOSITORY_EMBEDDING_DIM = 1024
-REPOSITORY_SENTENCE_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-REPOSITORY_QWEN_EMBEDDING_MODEL = "text-embedding-v4"
-REPOSITORY_EMBEDDING_PROVIDER = "qwen_embedding"
-REPOSITORY_STRUCTURED_MODEL = "qwen3.5-plus"
 REPOSITORY_STRUCTURED_TIMEOUT = 240
 REPOSITORY_STRUCTURED_MAX_INPUT_CHARS = 120000
 REPOSITORY_EMBEDDING_TIMEOUT = 120
@@ -90,8 +64,4 @@ JUDGER_CASE_INPUT_MAX_BYTES = 67108864
 JUDGER_STDOUT_MAX_BYTES = 1048576
 JUDGER_STDERR_MAX_BYTES = 1048576
 
-MODELSCOPE_WEB_SEARCH_MCP_COMMAND = "npx"
-MODELSCOPE_WEB_SEARCH_MCP_ARGS = ["-y", "open-websearch@1.2.5"]
-MODELSCOPE_WEB_SEARCH_MCP_TOOL_NAME = "search"
-MODELSCOPE_WEB_SEARCH_DEFAULT_ENGINES = ["baidu"]
 MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS = 90
