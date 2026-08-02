@@ -290,8 +290,8 @@
     candidatesForHarness(harness).forEach(function(endpoint){
       var option = document.createElement('option');
       option.value = String(endpoint.id);
-      option.textContent = (endpoint.name || ('端点 #' + endpoint.id)) +
-        ' · ' + (endpoint.model || '') + '（' + protocolLabel(endpoint.protocol) + '）';
+      option.textContent = (endpoint.model || ('端点 #' + endpoint.id)) +
+        '（' + protocolLabel(endpoint.protocol) + '）';
       editGlobalEndpoint.appendChild(option);
     });
     editGlobalEndpoint.value = selectedId == null ? '' : String(selectedId);

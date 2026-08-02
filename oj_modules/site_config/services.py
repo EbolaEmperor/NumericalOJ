@@ -253,7 +253,6 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
         requested_format = "thinking_type"
 
     return {
-        "name": _clean_string(payload.get("name", existing.get("name")), "名称", max_length=120),
         "protocol": protocol,
         "category": category,
         "base_url": _normalize_http_url(
@@ -261,7 +260,11 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
             "Base URL",
         ),
         "api_key": api_key,
-        "model": _clean_string(payload.get("model", existing.get("model")), "模型", max_length=255),
+        "model": _clean_string(
+            payload.get("model", existing.get("model")),
+            "模型名称",
+            max_length=255,
+        ),
         "thinking_enabled": thinking_enabled,
         "thinking_format": requested_format,
     }
@@ -269,7 +272,6 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
 
 def _endpoint_candidate_from_row(row):
     return {
-        "name": row["name"],
         "protocol": row["protocol"],
         "category": row["category"],
         "base_url": row["base_url"],
@@ -315,20 +317,12 @@ def get_llm_endpoint(endpoint_id, *, include_secret=False, actor_user_id=None):
         conn.close()
 
 
-def list_llm_endpoints(*, category=None, include_secrets=False, actor_user_id=None):
-    params = []
-    sql = "SELECT * FROM llm_endpoints"
-    if category is not None:
-        category = str(category).strip().lower()
-        if category not in LLM_CATEGORIES:
-            raise DynamicConfigValidationError("无效的端点类别")
-        sql += " WHERE category=%s"
-        params.append(category)
-    sql += " ORDER BY name ASC, id ASC"
+def list_llm_endpoints(*, include_secrets=False, actor_user_id=None):
+    sql = "SELECT * FROM llm_endpoints ORDER BY model ASC, id ASC"
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(sql, params)
+            cursor.execute(sql)
             rows = cursor.fetchall()
         return [
             _public_endpoint(
@@ -535,8 +529,8 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
             )
             tested_at = grant.get("created_at") or datetime.utcnow()
             values = (
-                candidate["name"], candidate["protocol"], candidate["category"],
-                candidate["base_url"], candidate["api_key"], candidate["model"],
+                candidate["protocol"], candidate["category"], candidate["base_url"],
+                candidate["api_key"], candidate["model"],
                 int(candidate["thinking_enabled"]), candidate["thinking_format"],
                 grant.get("test_message"), grant.get("test_latency_ms"), tested_at, user_id,
             )
@@ -544,11 +538,11 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                 cursor.execute(
                     """
                     INSERT INTO llm_endpoints
-                        (name, protocol, category, base_url, api_key, model,
+                        (protocol, category, base_url, api_key, model,
                          thinking_enabled, thinking_format, test_status, test_message,
                          test_latency_ms, tested_at, tested_by_user_id,
                          created_by_user_id, updated_by_user_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'passed', %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'passed', %s, %s, %s, %s, %s, %s)
                     """,
                     values + (user_id, user_id),
                 )
@@ -557,7 +551,7 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                 cursor.execute(
                     """
                     UPDATE llm_endpoints
-                    SET name=%s, protocol=%s, category=%s, base_url=%s, api_key=%s,
+                    SET protocol=%s, category=%s, base_url=%s, api_key=%s,
                         model=%s, thinking_enabled=%s, thinking_format=%s,
                         test_status='passed', test_message=%s, test_latency_ms=%s,
                         tested_at=%s, tested_by_user_id=%s,
@@ -574,7 +568,7 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
     except pymysql.err.IntegrityError as exc:
         conn.rollback()
         if exc.args and int(exc.args[0]) == 1062:
-            raise DynamicConfigConflictError("端点名称已存在") from exc
+            raise DynamicConfigConflictError("模型名称已存在") from exc
         raise
     except Exception:
         conn.rollback()
@@ -718,8 +712,8 @@ _BINDING_ENDPOINT_SELECT = """
            b.locked_by_user_id, b.locked_at, b.revision,
            b.updated_by_user_id, b.updated_at,
            e.id AS endpoint_row_id,
-           e.name AS endpoint_name, e.protocol AS endpoint_protocol,
-           e.category AS endpoint_category, e.base_url AS endpoint_base_url,
+           e.protocol AS endpoint_protocol, e.category AS endpoint_category,
+           e.base_url AS endpoint_base_url,
            e.api_key AS endpoint_api_key, e.model AS endpoint_model,
            e.thinking_enabled AS endpoint_thinking_enabled,
            e.thinking_format AS endpoint_thinking_format,

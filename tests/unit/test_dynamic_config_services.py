@@ -7,7 +7,6 @@ from oj_modules.site_config import services
 
 def llm_payload(**overrides):
     payload = {
-        "name": "测试端点",
         "protocol": "openai",
         "category": "text",
         "base_url": "https://api.example.test/v1",
@@ -23,8 +22,15 @@ def llm_payload(**overrides):
 def test_llm_normalization_preserves_disabled_wire_format():
     normalized = services.normalize_llm_endpoint_payload(llm_payload())
 
+    assert "name" not in normalized
+    assert normalized["model"] == "model-a"
     assert normalized["thinking_enabled"] is False
     assert normalized["thinking_format"] == "enable_thinking"
+
+
+def test_llm_normalization_requires_model_as_endpoint_identity():
+    with pytest.raises(services.DynamicConfigValidationError, match="模型"):
+        services.normalize_llm_endpoint_payload(llm_payload(model=""))
 
 
 def test_llm_normalization_uses_internal_anthropic_machine_value():
@@ -119,6 +125,7 @@ def test_public_endpoint_unlock_permission_belongs_only_to_locker():
 
     assert locker_view["can_unlock"] is True
     assert other_admin_view["can_unlock"] is False
+    assert "name" not in locker_view
     assert locker_view["api_key"] == ""
     assert locker_view["api_key_configured"] is True
 
@@ -170,7 +177,7 @@ def test_meta_has_exact_confirmation_and_feature_machine_values():
     assert labels["repository_embedding"] == "Embedding"
 
 
-def test_list_endpoint_category_uses_exactly_one_sql_parameter(monkeypatch):
+def test_list_endpoints_has_no_filter_query(monkeypatch):
     calls = []
 
     class Cursor:
@@ -180,8 +187,8 @@ def test_list_endpoint_category_uses_exactly_one_sql_parameter(monkeypatch):
         def __exit__(self, *_args):
             return None
 
-        def execute(self, sql, params):
-            calls.append((sql, params))
+        def execute(self, sql):
+            calls.append(sql)
 
         def fetchall(self):
             return []
@@ -195,7 +202,5 @@ def test_list_endpoint_category_uses_exactly_one_sql_parameter(monkeypatch):
 
     monkeypatch.setattr(services, "get_db_connection", lambda: Connection())
 
-    assert services.list_llm_endpoints(category="text") == []
-    sql, params = calls[0]
-    assert sql.count("%s") == 1
-    assert params == ["text"]
+    assert services.list_llm_endpoints() == []
+    assert calls == ["SELECT * FROM llm_endpoints ORDER BY model ASC, id ASC"]

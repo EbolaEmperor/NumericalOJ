@@ -29,7 +29,7 @@
       <option value="">— 每次运行前请选择全局端点 —</option>
       {% for endpoint in ai_detection_endpoints or [] %}
         <option value="{{ endpoint.id }}">
-          {{ endpoint.name }} · {{ endpoint.model }}（{{ endpoint.protocol }} / {{ endpoint.category }}）
+          {{ endpoint.model }}（{{ endpoint.protocol }} / {{ endpoint.category }}）
         </option>
       {% endfor %}
     </select>

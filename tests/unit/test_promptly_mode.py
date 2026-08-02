@@ -25,7 +25,6 @@ def _promptly_review_config():
 def _text_endpoint(endpoint_id=1):
     return {
         "id": endpoint_id,
-        "name": f"test-text-{endpoint_id}",
         "category": "text",
         "protocol": "openai",
         "base_url": "https://llm.example/v1",

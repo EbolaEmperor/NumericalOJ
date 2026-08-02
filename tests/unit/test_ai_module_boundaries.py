@@ -38,7 +38,6 @@ def test_promptly_canonical_patch_point_controls_review(monkeypatch):
         student_prompt="使用单调队列维护窗口最值。",
         endpoint={
             "id": 1,
-            "name": "test-text",
             "category": "text",
             "protocol": "openai",
             "base_url": "https://llm.example/v1",

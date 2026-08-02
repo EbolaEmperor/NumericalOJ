@@ -131,7 +131,6 @@ class LLMEndpointSnapshot:
     """一次模型调用固定使用的端点快照。"""
 
     id: int | None
-    name: str
     category: LLMEndpointCategory | str
     protocol: LLMProtocol | str
     base_url: str
@@ -150,11 +149,8 @@ class LLMEndpointSnapshot:
                 raise LLMEndpointValidationError("端点 ID 无效。")
             object.__setattr__(self, "id", endpoint_id)
 
-        name = str(self.name or "").strip()
         model = str(self.model or "").strip()
         api_key = str(self.api_key or "").strip()
-        if not name:
-            raise LLMEndpointValidationError("端点名称不能为空。")
         if not model:
             raise LLMEndpointValidationError("模型名称不能为空。")
         if not api_key:
@@ -184,7 +180,6 @@ class LLMEndpointSnapshot:
         elif thinking_format is OpenAIThinkingWireFormat.NONE:
             thinking_enabled = False
 
-        object.__setattr__(self, "name", name)
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "api_key", api_key)
         object.__setattr__(self, "category", category)
@@ -204,7 +199,6 @@ class LLMEndpointSnapshot:
             thinking_format = value.get("thinking_format", OpenAIThinkingWireFormat.NONE.value)
         return cls(
             id=value.get("id", value.get("endpoint_id")),
-            name=value.get("name", value.get("endpoint_name", "")),
             category=value.get("category", ""),
             protocol=value.get("protocol", ""),
             base_url=value.get("base_url", ""),
@@ -227,7 +221,6 @@ class LLMEndpointSnapshot:
     def to_public_dict(self):
         return {
             "id": self.id,
-            "name": self.name,
             "category": self.category.value,
             "protocol": self.protocol.value,
             "base_url": self.base_url,

@@ -21,7 +21,6 @@ def _create_ai_detection_endpoint() -> int:
 
     admin = get_user_by_username("admin")
     payload = {
-        "name": "CLI AI 检测端点",
         "protocol": "anthropic",
         "category": "text",
         "base_url": "http://127.0.0.1:19101",

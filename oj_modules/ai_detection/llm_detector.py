@@ -125,7 +125,6 @@ def get_available_endpoints():
     return [
         {
             "id": int(endpoint["id"]),
-            "name": str(endpoint.get("name") or "").strip(),
             "protocol": str(endpoint.get("protocol") or "").strip().lower(),
             "category": str(endpoint.get("category") or "").strip().lower(),
             "model": str(endpoint.get("model") or "").strip(),

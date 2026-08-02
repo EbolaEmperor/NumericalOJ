@@ -9,7 +9,6 @@ from oj_modules.security.credentials import hash_password
 
 def endpoint_payload(**overrides):
     payload = {
-        "name": "全局文本端点",
         "protocol": "openai",
         "category": "text",
         "base_url": "https://api.example.test/v1",
@@ -222,7 +221,7 @@ def test_deleting_embedding_endpoint_keeps_locked_dangling_binding():
     admin = get_user_by_username("admin")
     endpoint = create_endpoint(
         admin["id"],
-        name="Embedding 端点",
+        model="embedding-model",
         category="embedding",
         thinking_enabled=False,
         thinking_format="none",

@@ -146,7 +146,6 @@ def list_global_endpoints_for_agent_harness(harness, endpoints=None):
             continue
         candidates.append({
             'id': int(endpoint['id']),
-            'name': str(endpoint.get('name') or '').strip(),
             'protocol': protocol,
             'category': category,
             'base_url': str(endpoint.get('base_url') or '').strip(),

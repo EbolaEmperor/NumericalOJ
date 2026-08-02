@@ -16,16 +16,17 @@ def test_available_detection_endpoints_filters_categories_and_secrets(monkeypatc
     monkeypatch.setattr(
         "oj_modules.site_config.services.list_llm_endpoints",
         lambda **_kwargs: [
-            {"id": 1, "name": "文本", "protocol": "anthropic", "category": "text", "model": "t", "api_key": "secret"},
-            {"id": 2, "name": "全模态", "protocol": "openai", "category": "omni", "model": "o", "api_key": "secret"},
-            {"id": 3, "name": "视觉", "protocol": "openai", "category": "vision", "model": "v", "api_key": "secret"},
-            {"id": 4, "name": "向量", "protocol": "openai", "category": "embedding", "model": "e", "api_key": "secret"},
+            {"id": 1, "protocol": "anthropic", "category": "text", "model": "t", "api_key": "secret"},
+            {"id": 2, "protocol": "openai", "category": "omni", "model": "o", "api_key": "secret"},
+            {"id": 3, "protocol": "openai", "category": "vision", "model": "v", "api_key": "secret"},
+            {"id": 4, "protocol": "openai", "category": "embedding", "model": "e", "api_key": "secret"},
         ],
     )
 
     endpoints = llm_detector.get_available_endpoints()
     assert [item["id"] for item in endpoints] == [1, 2]
     assert all("api_key" not in item for item in endpoints)
+    assert all("name" not in item for item in endpoints)
 
 
 def test_detect_with_llm_uses_one_unified_prompt_and_parser(monkeypatch):

@@ -14,7 +14,6 @@ from oj_modules.repository import index as index_services
 def _endpoint(category, endpoint_id):
     return LLMEndpointSnapshot(
         id=endpoint_id,
-        name=f"test-{category}",
         category=category,
         protocol="openai",
         base_url="https://llm.example.test/v1",

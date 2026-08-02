@@ -150,6 +150,32 @@ DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
 6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
 
+### LLM 端点 model 身份迁移
+
+`llm_endpoints` 不再保留独立的 `name`，`model` 是唯一身份字段。新安装由
+`database/bootstrap.sql` 直接创建 `uq_llm_endpoint_model`；已有数据库由
+`scripts/migrate_llm_endpoint_model_identity.py` 收缩旧结构。脚本默认只读检查，先拒绝空
+model、重复 model 和非预期索引，再按“增加 model 唯一索引 -> 删除 name 唯一索引 ->
+删除 name”的顺序执行。`deploy.sh` 只会在回滚点验证成功且 Web/Celery 全部停止后执行：
+
+```bash
+python3 scripts/migrate_llm_endpoint_model_identity.py
+python3 scripts/migrate_llm_endpoint_model_identity.py \
+  --apply --confirm-app-writers-stopped --confirm-backup-verified
+```
+
+需要向旧代码回滚结构时，保持全部写入者停止并使用同一份已验证备份，先检查再执行：
+
+```bash
+python3 scripts/migrate_llm_endpoint_model_identity.py --rollback
+python3 scripts/migrate_llm_endpoint_model_identity.py \
+  --rollback --apply \
+  --confirm-app-writers-stopped --confirm-backup-verified
+```
+
+结构回滚会以 `model` 重建旧 `name`；若必须恢复此前不同于 model 的历史显示名，应恢复
+部署前数据库回滚点，而不是猜测原值。
+
 ### 仓库存储运维
 
 仓库存储运维入口默认只读：
@@ -187,7 +213,7 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 3. 以 MySQL 服务端查询结果生成唯一备份计划，兼容矩阵只在 `deploy/backup/policy.py` 维护。兼容的本机 Oracle MySQL/Percona Server 使用固定版本 XtraBackup；无兼容映射时使用逻辑备份。XtraBackup 缺失或版本不匹配时，先通过交互式 `sudo` 与 Debian APT 供应固定版本；APT 动作必须先模拟、限制在审核后的包集合内，并拒绝连带改动 MySQL、Docker 等宿主关键服务。供应阶段的 sudo、APT、仓库、dpkg 或二进制校验失败可以把计划确定为逻辑备份。一旦供应成功，物理 plan 的 MySQL 身份、socket/datadir、本地 socket 认证、容量或后续执行条件验证失败都必须直接停止；计划冻结后不得因备份或 prepare 失败临时换策略。MySQL 认证复用严格加载的部署配置，并通过位于私有 plans 目录、权限 `0600` 的短期 option file 交给提权后的客户端；凭据值不得进入 plan、manifest、argv、环境或输出，option file 无论成功失败都必须删除。sudo 交互认证与凭据保活必须在停服前完成，停服后只能使用 `sudo -n`，凭据失效立即停止。
 4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
 5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
-6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，然后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；先判断结构同步或其他写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
+6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，然后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行带独立前置检查的显式迁移和一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；先判断迁移、结构同步或其他写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
 7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功并执行留存清理。日志采集异常必须告警，但不能阻断健康的业务服务。
 
 `deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。脚本还会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。

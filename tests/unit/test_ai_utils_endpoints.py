@@ -11,7 +11,6 @@ from oj_modules.ai.endpoints import LLMEndpointCategory, LLMEndpointSnapshot
 def endpoint_mapping(*, endpoint_id=7, category="text", protocol="openai"):
     return {
         "id": endpoint_id,
-        "name": f"测试 {category}",
         "category": category,
         "protocol": protocol,
         "base_url": "https://llm.example.test/v1",

@@ -10,220 +10,362 @@
 {% block content_container_class %}container-fluid p-0 site-config-shell{% endblock %}
 
 {% block content %}
-<section class="site-config"
+<section class="site-config-v2"
          data-site-config
          data-api-root="/api/admin/dynamic-config"
          data-current-user-id="{{ user.id if user else '' }}">
   <header class="site-config-header">
-    <div>
-      <p class="site-config-eyebrow">
-        <span>ADMIN CONTROL</span>
-        <i aria-hidden="true"></i>
-        <span>GLOBAL RUNTIME</span>
-      </p>
-      <div class="site-config-title-row">
-        <span class="site-config-index">CFG</span>
-        <div>
-          <h1>全站配置</h1>
-          <p>集中管理模型端点与运行时业务能力。修改保存后，新请求将直接读取最新配置。</p>
-        </div>
+    <div class="site-config-heading">
+      <div class="site-config-eyebrow">
+        <span>ADMIN</span>
+        <span aria-hidden="true">/</span>
+        <span>GLOBAL CONFIGURATION</span>
+      </div>
+      <div class="site-config-title-line">
+        <span class="site-config-id">CFG</span>
+        <h1>全站配置</h1>
       </div>
     </div>
-    <div class="site-config-header-state" aria-label="配置状态">
-      <span><small>ACCESS</small><strong>ADMIN</strong></span>
-      <span><small>SCOPE</small><strong>GLOBAL</strong></span>
-      <b><i aria-hidden="true"></i> LIVE</b>
+
+    <div class="site-config-header-facts" aria-label="配置范围">
+      <div class="site-config-header-fact">
+        <span>ACCESS</span>
+        <strong>ADMIN</strong>
+      </div>
+      <div class="site-config-header-fact">
+        <span>SCOPE</span>
+        <strong>GLOBAL</strong>
+      </div>
+      <span class="site-config-status-chip">
+        <i aria-hidden="true"></i>
+        <span>LIVE</span>
+      </span>
     </div>
-    <button class="site-config-mobile-nav" type="button" data-config-rail-toggle
-            aria-controls="siteConfigRail" aria-expanded="false">
-      <i class="fas fa-sliders-h" aria-hidden="true"></i> 配置分类
+
+    <button type="button"
+            class="site-config-mobile-rail-open"
+            data-config-rail-toggle
+            aria-controls="siteConfigRail"
+            aria-label="打开配置分类"
+            aria-expanded="false">
+      <i class="fas fa-sliders-h" aria-hidden="true"></i>
+      <span>配置分类</span>
     </button>
   </header>
 
   <div class="site-config-workspace">
-    <aside class="site-config-rail" id="siteConfigRail" data-config-rail aria-label="全站配置分类">
-      <button type="button" class="site-config-rail-close" data-config-rail-close aria-label="关闭配置分类">
+    <main class="site-config-content-scroll" data-config-content>
+      <div class="site-config-panel-stage">
+        <section class="site-config-panel active"
+                 id="configPanelEndpoints"
+                 role="tabpanel"
+                 aria-labelledby="configTabEndpoints"
+                 data-config-panel="endpoints">
+          <header class="site-config-panel-header">
+            <div>
+              <p class="site-config-kicker">ENDPOINT POOL</p>
+              <h2>LLM 端点</h2>
+            </div>
+            <button class="site-config-primary" type="button" data-endpoint-create>
+              <i class="fas fa-plus" aria-hidden="true"></i>
+              <span>新建端点</span>
+            </button>
+          </header>
+
+          <div class="site-config-loading" data-endpoint-loading role="status" aria-live="polite">
+            <span class="site-config-spinner" aria-hidden="true"></span>
+            <span>读取中</span>
+          </div>
+          <div class="site-config-endpoint-grid" data-endpoint-grid hidden></div>
+          <div class="site-config-empty" data-endpoint-empty hidden>
+            <span>00</span>
+            <h3>尚无端点</h3>
+          </div>
+        </section>
+
+        <section class="site-config-panel"
+                 id="configPanelFeatures"
+                 role="tabpanel"
+                 aria-labelledby="configTabFeatures"
+                 data-config-panel="features"
+                 hidden>
+          <header class="site-config-panel-header">
+            <div>
+              <p class="site-config-kicker">RUNTIME BINDINGS</p>
+              <h2>功能配置</h2>
+            </div>
+            <span class="site-config-auto-state">
+              <i aria-hidden="true"></i>
+              自动保存
+            </span>
+          </header>
+          <div class="site-config-feature-grid" data-feature-grid>
+            <div class="site-config-loading" role="status" aria-live="polite">
+              <span class="site-config-spinner" aria-hidden="true"></span>
+              <span>读取中</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="site-config-panel"
+                 id="configPanelOther"
+                 role="tabpanel"
+                 aria-labelledby="configTabOther"
+                 data-config-panel="other"
+                 hidden>
+          <header class="site-config-panel-header">
+            <div>
+              <p class="site-config-kicker">OTHER SERVICES</p>
+              <h2>其他配置</h2>
+            </div>
+          </header>
+
+          <div class="site-config-other-grid">
+            <form class="site-config-service-card" data-mail-form autocomplete="off">
+              <header>
+                <span class="site-config-service-icon">
+                  <i class="fas fa-envelope" aria-hidden="true"></i>
+                </span>
+                <div>
+                  <p>SMTP · SSL</p>
+                  <h3>邮件服务</h3>
+                </div>
+                <span class="site-config-service-state" data-mail-state>未配置</span>
+              </header>
+              <div class="site-config-form-grid">
+                <label class="wide">
+                  <span>SMTP 服务器</span>
+                  <input name="smtp_server" required autocomplete="off">
+                </label>
+                <label>
+                  <span>端口</span>
+                  <input name="smtp_port" required type="number" min="1" max="65535" value="465">
+                </label>
+                <label>
+                  <span>用户名</span>
+                  <input name="smtp_username" required autocomplete="username">
+                </label>
+                <label class="wide">
+                  <span>密码</span>
+                  <input name="smtp_password" type="password" autocomplete="new-password">
+                </label>
+              </div>
+              <footer>
+                <button class="site-config-danger-ghost" type="button" data-mail-clear>清除</button>
+                <span class="site-config-action-spacer"></span>
+                <button class="site-config-secondary" type="button" data-mail-test>
+                  <i class="fas fa-paper-plane" aria-hidden="true"></i>
+                  测试
+                </button>
+                <button class="site-config-primary" type="submit">保存</button>
+              </footer>
+            </form>
+
+            <form class="site-config-service-card" data-search-form autocomplete="off">
+              <header>
+                <span class="site-config-service-icon">
+                  <i class="fas fa-globe" aria-hidden="true"></i>
+                </span>
+                <div>
+                  <p>MCP · HTTP</p>
+                  <h3>联网搜索</h3>
+                </div>
+                <span class="site-config-service-state" data-search-state>未配置</span>
+              </header>
+              <div class="site-config-form-grid">
+                <label class="wide">
+                  <span>服务地址</span>
+                  <input name="base_url" required type="url" autocomplete="off">
+                </label>
+                <label class="wide">
+                  <span>认证信息</span>
+                  <input name="authorization" type="password" autocomplete="new-password">
+                </label>
+              </div>
+              <footer>
+                <button class="site-config-danger-ghost" type="button" data-search-clear>清除</button>
+                <span class="site-config-action-spacer"></span>
+                <button class="site-config-secondary" type="button" data-search-test>
+                  <i class="fas fa-satellite-dish" aria-hidden="true"></i>
+                  测试
+                </button>
+                <button class="site-config-primary" type="submit">保存</button>
+              </footer>
+            </form>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <aside class="site-config-function-rail"
+           id="siteConfigRail"
+           data-config-rail
+           aria-label="配置分类"
+           aria-hidden="false">
+      <button type="button"
+              class="site-config-rail-close"
+              data-config-rail-close
+              aria-label="关闭配置分类">
         <i class="fas fa-times" aria-hidden="true"></i>
       </button>
-      <p class="site-config-rail-label">CONFIGURATION</p>
-      <nav role="tablist" aria-label="配置分页">
-        <button class="site-config-tab active" id="configTabEndpoints" type="button" role="tab" aria-selected="true" tabindex="0"
-                aria-controls="configPanelEndpoints" data-config-tab="endpoints">
+
+      <nav class="site-config-rail-nav"
+           role="tablist"
+           aria-label="配置分页"
+           aria-orientation="vertical">
+        <p class="site-config-rail-group-label">CONFIGURATION</p>
+        <button class="site-config-rail-button active"
+                id="configTabEndpoints"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="configPanelEndpoints"
+                tabindex="0"
+                data-config-tab="endpoints">
           <i class="fas fa-project-diagram" aria-hidden="true"></i>
           <span>LLM 端点</span>
-          <b data-endpoint-count>—</b>
+          <span class="site-config-rail-count" data-endpoint-count>—</span>
         </button>
-        <button class="site-config-tab" id="configTabFeatures" type="button" role="tab" aria-selected="false" tabindex="-1"
-                aria-controls="configPanelFeatures" data-config-tab="features">
+        <button class="site-config-rail-button"
+                id="configTabFeatures"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="configPanelFeatures"
+                tabindex="-1"
+                data-config-tab="features">
           <i class="fas fa-toggle-on" aria-hidden="true"></i>
           <span>功能配置</span>
-          <b>8</b>
+          <span class="site-config-rail-count">8</span>
         </button>
-        <button class="site-config-tab" id="configTabOther" type="button" role="tab" aria-selected="false" tabindex="-1"
-                aria-controls="configPanelOther" data-config-tab="other">
+        <button class="site-config-rail-button"
+                id="configTabOther"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="configPanelOther"
+                tabindex="-1"
+                data-config-tab="other">
           <i class="fas fa-ellipsis-h" aria-hidden="true"></i>
           <span>其他配置</span>
         </button>
       </nav>
-      <div class="site-config-rail-note">
-        <i class="fas fa-bolt" aria-hidden="true"></i>
-        <div><strong>即时生效</strong><span>运行中的任务保留启动时快照；重跑会重新读取。</span></div>
+
+      <div class="site-config-rail-runtime">
+        <p>RUNTIME</p>
+        <span><i aria-hidden="true"></i> LIVE</span>
       </div>
     </aside>
-
-    <main class="site-config-content">
-      <section class="site-config-panel active" id="configPanelEndpoints" role="tabpanel" aria-labelledby="configTabEndpoints"
-               data-config-panel="endpoints">
-        <div class="site-config-panel-head">
-          <div>
-            <p class="site-config-kicker">ENDPOINT POOL</p>
-            <h2>LLM 端点</h2>
-            <p>每个端点对应一种兼容协议与一种能力类别。新建或编辑必须先通过真实连接测试。</p>
-          </div>
-          <button class="site-config-primary" type="button" data-endpoint-create>
-            <i class="fas fa-plus" aria-hidden="true"></i> 新建端点
-          </button>
-        </div>
-
-        <div class="site-config-toolbar" aria-label="端点筛选">
-          <label class="site-config-search">
-            <i class="fas fa-search" aria-hidden="true"></i>
-            <span class="visually-hidden">搜索名称或模型</span>
-            <input type="search" placeholder="搜索名称或 model" data-endpoint-search autocomplete="off">
-          </label>
-          <label>
-            <span>协议</span>
-            <select data-endpoint-protocol-filter><option value="">全部协议</option></select>
-          </label>
-          <label>
-            <span>类别</span>
-            <select data-endpoint-category-filter><option value="">全部类别</option></select>
-          </label>
-          <label>
-            <span>锁定</span>
-            <select data-endpoint-lock-filter>
-              <option value="">全部状态</option>
-              <option value="unlocked">未锁定</option>
-              <option value="locked">已锁定</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="site-config-loading" data-endpoint-loading>
-          <span class="site-config-spinner" aria-hidden="true"></span> 正在读取端点池
-        </div>
-        <div class="site-config-endpoint-grid" data-endpoint-grid hidden></div>
-        <div class="site-config-empty" data-endpoint-empty hidden>
-          <i class="fas fa-plug" aria-hidden="true"></i>
-          <h3>没有匹配的端点</h3>
-          <p>调整筛选条件，或创建第一个全局模型端点。</p>
-        </div>
-      </section>
-
-      <section class="site-config-panel" id="configPanelFeatures" role="tabpanel" aria-labelledby="configTabFeatures"
-               data-config-panel="features" hidden>
-        <div class="site-config-panel-head">
-          <div>
-            <p class="site-config-kicker">RUNTIME BINDINGS</p>
-            <h2>功能配置</h2>
-            <p>八项全站能力独立选择端点；改选立即保存，不复制端点内容。</p>
-          </div>
-          <span class="site-config-live-pill"><i aria-hidden="true"></i> 自动保存</span>
-        </div>
-        <div class="site-config-feature-grid" data-feature-grid>
-          <div class="site-config-loading"><span class="site-config-spinner" aria-hidden="true"></span> 正在读取功能绑定</div>
-        </div>
-      </section>
-
-      <section class="site-config-panel" id="configPanelOther" role="tabpanel" aria-labelledby="configTabOther"
-               data-config-panel="other" hidden>
-        <div class="site-config-panel-head">
-          <div>
-            <p class="site-config-kicker">OTHER SERVICES</p>
-            <h2>其他配置</h2>
-            <p>邮件与联网搜索可独立保存、测试或整组清除，不依赖模型端点池。</p>
-          </div>
-        </div>
-
-        <div class="site-config-other-grid">
-          <form class="site-config-service-card" data-mail-form autocomplete="off">
-            <header>
-              <span class="site-config-service-icon"><i class="fas fa-envelope" aria-hidden="true"></i></span>
-              <div><p>SMTP · SSL</p><h3>邮件服务</h3></div>
-              <span class="site-config-service-state" data-mail-state>未配置</span>
-            </header>
-            <p class="site-config-service-copy">用于注册、验证码与找回密码。测试邮件将发送到当前管理员邮箱。</p>
-            <div class="site-config-form-grid">
-              <label class="wide"><span>SMTP 服务器</span><input name="smtp_server" required placeholder="smtp.example.com"></label>
-              <label><span>端口</span><input name="smtp_port" required type="number" min="1" max="65535" value="465"></label>
-              <label><span>用户名</span><input name="smtp_username" required autocomplete="username" placeholder="admin@example.com"></label>
-              <label class="wide"><span>密码</span><input name="smtp_password" type="password" autocomplete="new-password" placeholder="首次保存必填；留空则保留"></label>
-            </div>
-            <footer>
-              <button class="site-config-danger-ghost" type="button" data-mail-clear>清除配置</button>
-              <span class="site-config-action-spacer"></span>
-              <button class="site-config-secondary" type="button" data-mail-test><i class="fas fa-paper-plane"></i> 发送测试邮件</button>
-              <button class="site-config-primary" type="submit">保存邮件配置</button>
-            </footer>
-          </form>
-
-          <form class="site-config-service-card" data-search-form autocomplete="off">
-            <header>
-              <span class="site-config-service-icon is-search"><i class="fas fa-globe" aria-hidden="true"></i></span>
-              <div><p>MCP · HTTP</p><h3>联网搜索</h3></div>
-              <span class="site-config-service-state" data-search-state>未配置</span>
-            </header>
-            <p class="site-config-service-copy">为 Agent 提供联网检索能力。Authorization 与 LLM API Key 完全独立。</p>
-            <div class="site-config-form-grid">
-              <label class="wide"><span>MCP Base URL</span><input name="base_url" required type="url" placeholder="https://example.com/mcp"></label>
-              <label class="wide"><span>Authorization</span><input name="authorization" type="password" autocomplete="new-password" placeholder="首次保存必填；留空则保留"></label>
-            </div>
-            <footer>
-              <button class="site-config-danger-ghost" type="button" data-search-clear>清除配置</button>
-              <span class="site-config-action-spacer"></span>
-              <button class="site-config-secondary" type="button" data-search-test><i class="fas fa-satellite-dish"></i> 测试连接</button>
-              <button class="site-config-primary" type="submit">保存搜索配置</button>
-            </footer>
-          </form>
-        </div>
-      </section>
-    </main>
   </div>
 
-  <div class="site-config-rail-backdrop" data-config-rail-backdrop></div>
+  <div class="site-config-rail-backdrop" data-config-rail-backdrop hidden></div>
 
   <div class="modal fade site-config-modal" id="endpointModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
       <form class="modal-content" data-endpoint-form autocomplete="off">
         <div class="modal-header">
-          <div><p>ENDPOINT EDITOR</p><h2 class="modal-title" data-endpoint-modal-title>新建端点</h2></div>
+          <div>
+            <p>ENDPOINT EDITOR</p>
+            <h2 class="modal-title" data-endpoint-modal-title>新建端点</h2>
+          </div>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
         </div>
         <div class="modal-body">
           <input type="hidden" name="endpoint_id">
           <div class="site-config-form-grid is-endpoint">
-            <label class="wide"><span>端点名称</span><input name="name" required maxlength="100" placeholder="例如：主文本模型"></label>
-            <label><span>兼容协议</span><select name="protocol" required></select></label>
-            <label><span>能力类别</span><select name="category" required></select></label>
-            <label class="wide"><span>Base URL <small>按 SDK Base URL 填写</small></span><input name="base_url" required type="url" placeholder="https://api.example.com/v1"></label>
-            <label><span>model</span><input name="model" required autocomplete="off" placeholder="模型标识"></label>
-            <label><span>API Key</span><input name="api_key" type="password" autocomplete="new-password" placeholder="创建必填；编辑留空保留"></label>
-            <label data-thinking-format-field><span>思考参数格式</span><select name="thinking_format"></select></label>
+            <label class="wide">
+              <span>模型名称</span>
+              <input name="model" required autocomplete="off">
+            </label>
+
+            <label>
+              <span>兼容协议</span>
+              <div class="rk-choice site-config-choice"
+                   data-config-choice
+                   data-choice-kind="protocol">
+                <input type="hidden" name="protocol" value="openai">
+                <button type="button"
+                        class="rk-choice-trigger"
+                        id="endpointProtocolTrigger"
+                        role="combobox"
+                        aria-haspopup="listbox"
+                        aria-expanded="false"
+                        aria-controls="endpointProtocolMenu">
+                  <span class="rk-choice-trigger-main">
+                    <i class="fas fa-code" data-rk-choice-icon aria-hidden="true"></i>
+                    <span data-rk-choice-label></span>
+                  </span>
+                  <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
+                </button>
+                <div class="rk-choice-menu"
+                     id="endpointProtocolMenu"
+                     role="listbox"
+                     aria-labelledby="endpointProtocolTrigger"></div>
+              </div>
+            </label>
+
+            <label>
+              <span>能力类别</span>
+              <div class="rk-choice site-config-choice"
+                   data-config-choice
+                   data-choice-kind="category">
+                <input type="hidden" name="category" value="text">
+                <button type="button"
+                        class="rk-choice-trigger"
+                        id="endpointCategoryTrigger"
+                        role="combobox"
+                        aria-haspopup="listbox"
+                        aria-expanded="false"
+                        aria-controls="endpointCategoryMenu">
+                  <span class="rk-choice-trigger-main">
+                    <i class="fas fa-font" data-rk-choice-icon aria-hidden="true"></i>
+                    <span data-rk-choice-label></span>
+                  </span>
+                  <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
+                </button>
+                <div class="rk-choice-menu"
+                     id="endpointCategoryMenu"
+                     role="listbox"
+                     aria-labelledby="endpointCategoryTrigger"></div>
+              </div>
+            </label>
+
+            <label class="wide">
+              <span>基础地址</span>
+              <input name="base_url" required type="url" autocomplete="url">
+            </label>
+            <label>
+              <span>API 密钥</span>
+              <input name="api_key" type="password" autocomplete="new-password">
+            </label>
+
             <label class="site-config-switch-field" data-thinking-toggle-field>
               <span>思考模式</span>
-              <button class="site-config-switch" type="button" role="switch" aria-checked="false" data-thinking-switch>
-                <i></i><b data-thinking-switch-label>关闭</b>
+              <button class="site-config-switch"
+                      type="button"
+                      role="switch"
+                      aria-checked="false"
+                      data-thinking-switch>
+                <i aria-hidden="true"></i>
+                <b data-thinking-switch-label>关闭</b>
               </button>
               <input name="thinking_enabled" type="hidden" value="false">
+              <input name="thinking_format" type="hidden" value="none">
             </label>
           </div>
-          <div class="site-config-test-result" data-endpoint-test-result hidden></div>
-          <p class="site-config-modal-help"><i class="fas fa-info-circle"></i> 修改任一字段后需要重新测试；测试成功前不会写入数据库。</p>
+          <div class="site-config-test-result"
+               data-endpoint-test-result
+               role="status"
+               aria-live="polite"
+               hidden></div>
         </div>
         <div class="modal-footer">
-          <button type="button" class="site-config-secondary" data-bs-dismiss="modal">放弃修改</button>
-          <button type="button" class="site-config-secondary" data-endpoint-test><i class="fas fa-vial"></i> 测试连接</button>
-          <button type="submit" class="site-config-primary" data-endpoint-save disabled>保存端点</button>
+          <button type="button" class="site-config-secondary" data-bs-dismiss="modal">放弃</button>
+          <button type="button" class="site-config-secondary" data-endpoint-test>
+            <i class="fas fa-vial" aria-hidden="true"></i>
+            测试
+          </button>
+          <button type="submit" class="site-config-primary" data-endpoint-save disabled>保存</button>
         </div>
       </form>
     </div>
@@ -233,16 +375,24 @@
     <div class="modal-dialog modal-dialog-centered">
       <form class="modal-content" data-lock-form>
         <div class="modal-header">
-          <div><p>CHANGE PROTECTION</p><h2 class="modal-title">加锁</h2></div>
+          <div>
+            <p>CHANGE PROTECTION</p>
+            <h2 class="modal-title">加锁</h2>
+          </div>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
         </div>
         <div class="modal-body">
-          <p class="site-config-modal-copy">加锁后不可编辑、复测或删除，只有你本人可以通过密码与确认文本解锁。</p>
-          <label class="site-config-field"><span>加锁原因</span><textarea name="reason" required maxlength="1000" rows="4" placeholder="请说明为何需要保护这项配置"></textarea></label>
+          <label class="site-config-field">
+            <span>加锁原因</span>
+            <textarea name="reason" required maxlength="1000" rows="4"></textarea>
+          </label>
         </div>
         <div class="modal-footer">
           <button type="button" class="site-config-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="site-config-primary"><i class="fas fa-lock"></i> 确认加锁</button>
+          <button type="submit" class="site-config-primary">
+            <i class="fas fa-lock" aria-hidden="true"></i>
+            加锁
+          </button>
         </div>
       </form>
     </div>
@@ -252,21 +402,39 @@
     <div class="modal-dialog modal-dialog-centered">
       <form class="modal-content" data-unlock-form autocomplete="off">
         <div class="modal-header">
-          <div><p>PROTECTED CONFIG</p><h2 class="modal-title">查看锁定信息</h2></div>
+          <div>
+            <p>PROTECTED CONFIG</p>
+            <h2 class="modal-title">锁定信息</h2>
+          </div>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
         </div>
         <div class="modal-body">
-          <div class="site-config-lock-reason"><span>加锁原因</span><p data-unlock-reason></p></div>
-          <div class="site-config-lock-denied" data-unlock-denied hidden><i class="fas fa-user-lock"></i> 你无法解锁</div>
+          <div class="site-config-lock-reason">
+            <span>加锁原因</span>
+            <p data-unlock-reason></p>
+          </div>
+          <div class="site-config-lock-denied" data-unlock-denied hidden>
+            <i class="fas fa-user-lock" aria-hidden="true"></i>
+            你无法解锁
+          </div>
           <div data-unlock-owner-fields>
-            <label class="site-config-field"><span>你的当前密码</span><input name="password" type="password" required autocomplete="current-password"></label>
-            <label class="site-config-field"><span>请输入完整确认文本</span><input name="confirmation" required autocomplete="off" data-unlock-confirmation></label>
+            <label class="site-config-field">
+              <span>当前密码</span>
+              <input name="password" type="password" required autocomplete="current-password">
+            </label>
+            <label class="site-config-field">
+              <span>确认文本</span>
+              <input name="confirmation" required autocomplete="off" data-unlock-confirmation>
+            </label>
             <p class="site-config-confirmation-copy" data-unlock-phrase></p>
           </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="site-config-secondary" data-bs-dismiss="modal">关闭</button>
-          <button type="submit" class="site-config-danger" data-unlock-submit><i class="fas fa-unlock"></i> 坚持解锁</button>
+          <button type="submit" class="site-config-danger" data-unlock-submit>
+            <i class="fas fa-unlock" aria-hidden="true"></i>
+            解锁
+          </button>
         </div>
       </form>
     </div>
@@ -276,25 +444,32 @@
     <div class="modal-dialog modal-dialog-centered modal-sm">
       <form class="modal-content" data-delete-form>
         <div class="modal-header">
-          <div><p>DELETE ENDPOINT</p><h2 class="modal-title">确认删除</h2></div>
+          <div>
+            <p>DELETE ENDPOINT</p>
+            <h2 class="modal-title">确认删除</h2>
+          </div>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
         </div>
         <div class="modal-body">
-          <p class="site-config-modal-copy">确定删除端点 <strong data-delete-name></strong>？引用它的配置会保留原 ID，并在调用时明确报错。</p>
+          <p class="site-config-modal-copy">删除端点 <strong data-delete-model></strong>？</p>
         </div>
         <div class="modal-footer">
           <button type="button" class="site-config-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="site-config-danger">确认删除</button>
+          <button type="submit" class="site-config-danger">删除</button>
         </div>
       </form>
     </div>
   </div>
 
-  <div class="site-config-toast-region" data-toast-region aria-live="polite" aria-atomic="true"></div>
+  <div class="site-config-toast-region"
+       data-toast-region
+       aria-live="polite"
+       aria-atomic="true"></div>
 </section>
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='app/choice-picker.js') }}"></script>
 <script src="{{ url_for('static', filename='app/site-config.js') }}"></script>
 {% endblock %}

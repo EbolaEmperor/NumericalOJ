@@ -81,6 +81,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert "deploy/backup_database.py backup" in script
     assert 'deploy/backup_database.py mark-success' in script
     assert 'deploy/backup_database.py prune' in script
+    assert "scripts/migrate_llm_endpoint_model_identity.py" in script
     assert "scripts/init_db_schema.py" in script
     assert (
         "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
@@ -134,7 +135,10 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert 'pkill' not in script
     assert script.index("phase='停止现有服务'") < script.index(
         "phase='创建并验证数据库回滚点'"
-    ) < script.index("scripts/init_db_schema.py")
+    ) < script.index("scripts/migrate_llm_endpoint_model_identity.py")
+    model_identity_migration = script.index(
+        "scripts/migrate_llm_endpoint_model_identity.py"
+    )
     schema_sync = script.index("scripts/init_db_schema.py")
     expired_upload_cleanup = script.index(
         "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
@@ -144,7 +148,8 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     )
     task_recovery = script.index("scripts/recover_pending_tasks.py")
     assert (
-        schema_sync
+        model_identity_migration
+        < schema_sync
         < expired_upload_cleanup
         < repository_doctor
         < task_recovery
@@ -308,6 +313,9 @@ def test_deploy_rechecks_app_writers_before_switching_runtime_and_syncing_schema
     assert backup_verified < runtime_switch < schema_sync
     assert "assert_service_stopped 'Celery' celery" in guarded_section
     assert "assert_service_stopped 'Web' web" in guarded_section
+    assert "scripts/migrate_llm_endpoint_model_identity.py" in guarded_section
+    assert "--confirm-app-writers-stopped" in guarded_section
+    assert "--confirm-backup-verified" in guarded_section
 
 
 def test_deploy_initializes_and_best_effort_restarts_log_collector():

@@ -11,7 +11,6 @@ from oj_modules.tasks.agent import solve_helpers as agent_solve_helpers
 def _endpoint(endpoint_id, *, model="model-a"):
     return {
         "id": endpoint_id,
-        "name": f"endpoint-{endpoint_id}",
         "category": "text",
         "protocol": "openai",
         "base_url": "https://llm.example/v1",

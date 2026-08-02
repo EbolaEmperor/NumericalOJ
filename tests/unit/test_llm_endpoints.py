@@ -43,7 +43,6 @@ def endpoint(
         )
     return adapter.LLMEndpointSnapshot(
         id=7,
-        name="测试端点",
         category=category,
         protocol=protocol,
         base_url=base_url,
@@ -68,7 +67,6 @@ def install_post(monkeypatch, response):
 def test_endpoint_snapshot_is_immutable_normalized_and_secret_safe():
     snapshot = adapter.LLMEndpointSnapshot.from_mapping({
         "endpoint_id": "9",
-        "endpoint_name": "  通用端点  ",
         "category": "TEXT",
         "protocol": "OPENAI",
         "base_url": "https://api.example.test/root/v1/",
@@ -79,7 +77,6 @@ def test_endpoint_snapshot_is_immutable_normalized_and_secret_safe():
     })
 
     assert snapshot.id == 9
-    assert snapshot.name == "通用端点"
     assert snapshot.category is adapter.LLMEndpointCategory.TEXT
     assert snapshot.protocol is adapter.LLMProtocol.OPENAI
     assert snapshot.base_url == "https://api.example.test/root/v1"
@@ -88,6 +85,7 @@ def test_endpoint_snapshot_is_immutable_normalized_and_secret_safe():
     assert snapshot.openai_thinking_format is adapter.OpenAIThinkingWireFormat.ENABLE_THINKING
     assert "secret-canary" not in repr(snapshot)
     assert "api_key" not in snapshot.to_public_dict()
+    assert "name" not in snapshot.to_public_dict()
     assert snapshot.to_public_dict()["has_api_key"] is True
     assert snapshot.to_public_dict()["thinking_format"] == "enable_thinking"
     with pytest.raises(AttributeError):
@@ -617,7 +615,6 @@ def test_dynamic_config_tester_adapter_returns_supported_shape(monkeypatch):
         "choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}],
     }))
     candidate = {
-        "name": "测试端点",
         "protocol": "openai",
         "category": "text",
         "base_url": "https://llm.example.test/v1",
@@ -639,7 +636,6 @@ def test_dynamic_config_tester_adapter_returns_supported_shape(monkeypatch):
 def test_dynamic_config_tester_adapter_converts_validation_error_without_secret():
     secret = "must-not-appear"
     result = adapter.test_endpoint_candidate({
-        "name": "坏端点",
         "protocol": "openai",
         "category": "text",
         "base_url": f"https://user:{secret}@llm.example.test/v1",

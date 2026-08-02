@@ -188,7 +188,13 @@ def test_dynamic_site_config_schema_is_fully_declared():
     assert endpoints.columns["thinking_format"].lower() == (
         "varchar(32) not null default 'none'"
     )
-    assert "uq_llm_endpoint_name" in endpoints.indexes
+    assert "name" not in endpoints.columns
+    assert endpoints.columns["model"].lower() == "varchar(255) not null"
+    assert "uq_llm_endpoint_name" not in endpoints.indexes
+    assert (
+        endpoints.indexes["uq_llm_endpoint_model"].lower()
+        == "unique key `uq_llm_endpoint_model` (`model`)"
+    )
 
     grants = specs["dynamic_config_test_grants"]
     assert grants.columns["token_hash"].lower() == "char(64) not null"

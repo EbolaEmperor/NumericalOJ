@@ -30,6 +30,7 @@ JAVASCRIPT_ASSETS = (
     "static/app/ranking/endpoints.js",
     "static/app/ranking/rules-editor.js",
     "static/app/ranking/topology.js",
+    "static/app/site-config.js",
     "static/app/submissions/detail.js",
 )
 
