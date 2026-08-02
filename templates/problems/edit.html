@@ -1,4 +1,5 @@
 {% extends "layouts/site.html" %}
+{% from "problems/components/llm_endpoint_select.html" import endpoint_select %}
 {% block title %}编辑题目 - {{ super() }}{% endblock %}
 {% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
 {% block content %}
@@ -11,6 +12,8 @@
 {% endif %}
 
 <form id="editProblemForm" method="POST" action="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}">
+  {% set endpoint_bindings = llm_endpoint_bindings|default(problem.llm_endpoint_bindings, true)|default({}, true) %}
+  {% set endpoint_candidates = llm_endpoint_candidates|default({}, true) %}
   {% if problem.type == 1 %}
   <!-- 同行：语言 + 时限 + 提交限制 -->
   <div class="row mb-3">
@@ -62,22 +65,38 @@
         value="{{ problem.programming_output_filename or 'output.png' }}"
         placeholder="例如：output.png">
     </div>
-    <div class="col-md-4" id="programmingGradingModelField">
-      <label for="programmingGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
-      {% set programming_model = (problem.programming_grading_model or default_programming_grading_model) %}
-      <select class="form-select" id="programmingGradingModelSelect" name="programming_grading_model">
-        {% for model_option in programming_grading_model_options %}
-        <option value="{{ model_option }}" {% if programming_model == model_option %}selected{% endif %}>
-          {% if 'vl' in model_option %}
-            Qwen3-VL
-          {% elif 'qwen3.5-plus' in model_option %}
-            Qwen-3.5-plus
-          {% else %}
-            {{ model_option }}
-          {% endif %}
-        </option>
-        {% endfor %}
-      </select>
+    <div class="col-md-4" id="programmingOutputImageEndpointField">
+      {{ endpoint_select(
+        'output_image_grading_endpoint_id',
+        'programmingOutputImageEndpointSelect',
+        '输出图片批改端点',
+        endpoint_candidates.get('output_image_grading_endpoint_id', []),
+        endpoint_bindings
+      ) }}
+    </div>
+    <div class="col-12" id="promptlyEndpointFields">
+      <div class="row g-3">
+        <div class="col-md-6">
+          {{ endpoint_select(
+            'review_endpoint_id',
+            'promptlyReviewEndpointSelect',
+            'Promptly 审查端点',
+            endpoint_candidates.get('review_endpoint_id', []),
+            endpoint_bindings,
+            '用于审查学生 Prompt。'
+          ) }}
+        </div>
+        <div class="col-md-6">
+          {{ endpoint_select(
+            'code_generation_endpoint_id',
+            'promptlyCodeGenerationEndpointSelect',
+            'Promptly 代码生成端点',
+            endpoint_candidates.get('code_generation_endpoint_id', []),
+            endpoint_bindings,
+            '用于根据通过审查的 Prompt 生成代码。'
+          ) }}
+        </div>
+      </div>
     </div>
   </div>
   <div class="mb-3" id="programmingGradingPromptField">
@@ -141,19 +160,39 @@
         <option value="4" {% if written_mode == 4 %}selected{% endif %}>纯人工批改</option>
       </select>
     </div>
-    <div class="col-md-3" id="writtenGradingModelField">
-      <label for="writtenGradingModelSelect" class="form-label"><i class="fas fa-robot me-2"></i> 批改模型</label>
-      {% set written_model = (problem.written_grading_model or default_written_grading_model) %}
-      <select class="form-select" id="writtenGradingModelSelect" name="written_grading_model">
-        {% for model_option in written_grading_model_options %}
-        <option value="{{ model_option }}" {% if written_model == model_option %}selected{% endif %}>{{ model_option }}</option>
-        {% endfor %}
-      </select>
-    </div>
     {% set sub_limit = (problem.submission_limit or 10) %}
     <div class="col-md-3">
       <label for="submissionLimitInput" class="form-label"><i class="fas fa-check-circle me-2"></i> 提交限制</label>
       <input type="number" class="form-control" id="submissionLimitInput" name="submission_limit" min="1" value="{{ sub_limit }}">
+    </div>
+  </div>
+  <div class="row g-3 mb-3" id="writtenEndpointFields">
+    <div class="col-md-4" id="writtenOcrEndpointField">
+      {{ endpoint_select(
+        'ocr_endpoint_id',
+        'writtenOcrEndpointSelect',
+        'OCR 端点',
+        endpoint_candidates.get('ocr_endpoint_id', []),
+        endpoint_bindings
+      ) }}
+    </div>
+    <div class="col-md-4" id="writtenTextGradingEndpointField">
+      {{ endpoint_select(
+        'text_grading_endpoint_id',
+        'writtenTextGradingEndpointSelect',
+        '文本 / TeX 批改端点',
+        endpoint_candidates.get('text_grading_endpoint_id', []),
+        endpoint_bindings
+      ) }}
+    </div>
+    <div class="col-md-4" id="writtenDirectImageEndpointField">
+      {{ endpoint_select(
+        'direct_image_grading_endpoint_id',
+        'writtenDirectImageEndpointSelect',
+        '图片直接批改端点',
+        endpoint_candidates.get('direct_image_grading_endpoint_id', []),
+        endpoint_bindings
+      ) }}
     </div>
   </div>
   <div class="mb-3" id="writtenGradingPromptField">
@@ -233,13 +272,21 @@
     const isImageMode = mode === '2';
     const isPromptlyMode = mode === '3';
     const outputField = document.getElementById('programmingOutputFilenameField');
-    const modelField = document.getElementById('programmingGradingModelField');
+    const outputEndpointField = document.getElementById('programmingOutputImageEndpointField');
+    const promptlyEndpointFields = document.getElementById('promptlyEndpointFields');
     const promptField = document.getElementById('programmingGradingPromptField');
     const promptLabel = document.getElementById('programmingGradingPromptLabelText');
     const promptInput = document.getElementById('programmingGradingPromptInput');
     const promptlyField = document.getElementById('promptlyReviewConfigField');
     if (outputField) outputField.style.display = isImageMode ? '' : 'none';
-    if (modelField) modelField.style.display = (isImageMode || isPromptlyMode) ? '' : 'none';
+    if (outputEndpointField) outputEndpointField.style.display = isImageMode ? '' : 'none';
+    if (promptlyEndpointFields) promptlyEndpointFields.style.display = isPromptlyMode ? '' : 'none';
+    const outputEndpointSelect = document.getElementById('programmingOutputImageEndpointSelect');
+    const reviewEndpointSelect = document.getElementById('promptlyReviewEndpointSelect');
+    const codeEndpointSelect = document.getElementById('promptlyCodeGenerationEndpointSelect');
+    if (outputEndpointSelect) outputEndpointSelect.disabled = !isImageMode;
+    if (reviewEndpointSelect) reviewEndpointSelect.disabled = !isPromptlyMode;
+    if (codeEndpointSelect) codeEndpointSelect.disabled = !isPromptlyMode;
     if (promptField) promptField.style.display = isImageMode ? '' : 'none';
     if (promptlyField) promptlyField.style.display = isPromptlyMode ? '' : 'none';
     if (promptLabel && promptInput) {
@@ -351,9 +398,19 @@
 
   function _toggleAiGradingFields(mode) {
     const hide = mode === '4';
-    const modelField = document.getElementById('writtenGradingModelField');
+    const ocrField = document.getElementById('writtenOcrEndpointField');
+    const textField = document.getElementById('writtenTextGradingEndpointField');
+    const imageField = document.getElementById('writtenDirectImageEndpointField');
     const promptField = document.getElementById('writtenGradingPromptField');
-    if (modelField) modelField.style.display = hide ? 'none' : '';
+    if (ocrField) ocrField.style.display = mode === '1' ? '' : 'none';
+    if (textField) textField.style.display = (mode === '1' || mode === '3') ? '' : 'none';
+    if (imageField) imageField.style.display = mode === '2' ? '' : 'none';
+    const ocrSelect = document.getElementById('writtenOcrEndpointSelect');
+    const textSelect = document.getElementById('writtenTextGradingEndpointSelect');
+    const imageSelect = document.getElementById('writtenDirectImageEndpointSelect');
+    if (ocrSelect) ocrSelect.disabled = mode !== '1';
+    if (textSelect) textSelect.disabled = !(mode === '1' || mode === '3');
+    if (imageSelect) imageSelect.disabled = mode !== '2';
     if (promptField) promptField.style.display = hide ? 'none' : '';
   }
 

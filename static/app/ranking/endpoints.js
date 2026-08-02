@@ -6,11 +6,19 @@
   var activeManager = null;
   var editIndex = null;
   var editHarness = document.getElementById('ajeEditHarness');
+  var editSourceModeWrap = document.getElementById('ajeEditSourceModeWrap');
+  var editSourceMode = document.getElementById('ajeEditSourceMode');
+  var editProtocolWrap = document.getElementById('ajeEditProtocolWrap');
+  var editProtocol = document.getElementById('ajeEditProtocol');
+  var editGlobalEndpointWrap = document.getElementById('ajeEditGlobalEndpointWrap');
+  var editGlobalEndpoint = document.getElementById('ajeEditGlobalEndpoint');
   var editBaseUrlWrap = document.getElementById('ajeEditBaseUrlWrap');
   var editBaseUrlLabel = document.getElementById('ajeEditBaseUrlLabel');
   var editBaseUrl = document.getElementById('ajeEditBaseUrl');
   var editApiKey = document.getElementById('ajeEditApiKey');
+  var editApiKeyWrap = document.getElementById('ajeEditApiKeyWrap');
   var editModel = document.getElementById('ajeEditModel');
+  var editModelWrap = document.getElementById('ajeEditModelWrap');
   var editConcurrency = document.getElementById('ajeEditConcurrency');
   var editContextWindowTokens = document.getElementById('ajeEditContextWindowTokens');
   var editMaxOutputTokens = document.getElementById('ajeEditMaxOutputTokens');
@@ -25,6 +33,7 @@
   var DEFAULT_MAX_OUTPUT_TOKENS = 384000;
   var DEFAULT_THINKING_COMPATIBILITY = true;
   var MAX_TOKEN_SETTING = 1000000;
+  var globalEndpointCandidates = window.__AJ_GLOBAL_ENDPOINT_CANDIDATES__ || {};
   function clampNumber(value, min, max, fallback){
     var n = parseInt(value, 10);
     if (!Number.isFinite(n)) n = fallback;
@@ -100,9 +109,20 @@
     return '';
   }
   function isEnabled(e){ return normalizeStatus(e) === 'enabled'; }
+  function inferProtocol(harness, protocol){
+    var normalized = String(protocol || '').trim().toLowerCase();
+    if (normalized === 'openai' || normalized === 'anthropic') return normalized;
+    return harness === 'claude_code' ? 'anthropic' : 'openai';
+  }
+  function protocolLabel(protocol){
+    return protocol === 'anthropic' ? 'Anthropic' : 'OpenAI';
+  }
   function fromServer(list){
     return (list || []).map(function (e) {
       return {id: e.id, harness: e.harness || 'claude_code',
+              protocol: e.protocol || null,
+              effective_protocol: e.effective_protocol || inferProtocol(e.harness || 'claude_code', e.protocol),
+              global_endpoint_id: null,
               base_url: e.base_url || '', model: e.model || '',
               context_window_tokens: normalizeTokenCount(
                 e.context_window_tokens, DEFAULT_CONTEXT_WINDOW_TOKENS),
@@ -118,7 +138,9 @@
   initTimeoutControls();
   function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
   function defaultEndpoint(){
-    return {id:null, harness:'claude_code', base_url:'', model:'',
+    return {id:null, harness:'claude_code', protocol:'anthropic',
+      effective_protocol:'anthropic', global_endpoint_id:null,
+      base_url:'', model:'',
       context_window_tokens:DEFAULT_CONTEXT_WINDOW_TOKENS,
       max_output_tokens:DEFAULT_MAX_OUTPUT_TOKENS,
       thinking_compatibility:DEFAULT_THINKING_COMPATIBILITY,
@@ -160,12 +182,15 @@
     return (e.base_url || '').trim() || '未填写 Base URL';
   }
   function keyText(e){
+    if (!e.id && e.global_endpoint_id) return '保存时安全复制 Key';
     if ((e.api_key || '').trim()) return '新 Key 待保存';
     return e.has_key ? 'Key 已配置' : 'Key 未配置';
   }
   function endpointPayload(manager){
     return manager.eps.map(function(e){
       return {id:e.id, harness:e.harness || 'claude_code',
+        protocol:e.protocol || null,
+        global_endpoint_id:(!e.id && e.global_endpoint_id) ? e.global_endpoint_id : null,
         base_url:(e.base_url||'').trim(), api_key:(e.api_key||'').trim(),
         model:(e.model||'').trim(),
         context_window_tokens:normalizeTokenCount(
@@ -181,6 +206,8 @@
     return manager.eps.map(function(e){
       return {
         harness:e.harness || 'claude_code',
+        protocol:e.protocol || null,
+        global_endpoint_id:(!e.id && e.global_endpoint_id) ? e.global_endpoint_id : null,
         base_url:(e.base_url || '').trim(),
         api_key:(e.api_key || '').trim(),
         has_key:!!e.has_key,
@@ -238,6 +265,7 @@
           '<div class="aje-url" title="' + esc(endpointText(manager, e)) + '">' + esc(endpointText(manager, e)) + '</div>' +
         '</div>' +
         '<div class="aje-card-meta">' +
+          '<span class="aje-chip"><i class="fas fa-link"></i>' + esc(protocolLabel(inferProtocol(harness, e.protocol))) + '</span>' +
           '<span class="aje-chip"><i class="fas fa-gauge-high"></i>并发 ' + (parseInt(e.concurrency_limit)||1) + '</span>' +
           '<span class="aje-chip"><i class="fas fa-key"></i>' + esc(keyText(e)) + '</span>' +
           (!e.id ? '<span class="aje-chip"><i class="fas fa-circle-plus"></i>未保存</span>' : '') +
@@ -249,15 +277,85 @@
     updateHead(manager);
     syncManagerDirty(manager);
   }
-  function applyHarnessMode(){
+  function candidatesForHarness(harness){
+    var rows = globalEndpointCandidates[harness];
+    return Array.isArray(rows) ? rows : [];
+  }
+  function populateGlobalEndpointOptions(harness, selectedId){
+    while (editGlobalEndpoint.options.length) editGlobalEndpoint.remove(0);
+    var blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = '请选择全局端点';
+    editGlobalEndpoint.appendChild(blank);
+    candidatesForHarness(harness).forEach(function(endpoint){
+      var option = document.createElement('option');
+      option.value = String(endpoint.id);
+      option.textContent = (endpoint.name || ('端点 #' + endpoint.id)) +
+        ' · ' + (endpoint.model || '') + '（' + protocolLabel(endpoint.protocol) + '）';
+      editGlobalEndpoint.appendChild(option);
+    });
+    editGlobalEndpoint.value = selectedId == null ? '' : String(selectedId);
+    if (editGlobalEndpoint.value !== String(selectedId == null ? '' : selectedId)) {
+      editGlobalEndpoint.value = '';
+    }
+  }
+  function selectedGlobalCandidate(){
+    var id = parseInt(editGlobalEndpoint.value, 10);
+    if (!id) return null;
+    return candidatesForHarness(editHarness.value || 'claude_code').find(function(endpoint){
+      return parseInt(endpoint.id, 10) === id;
+    }) || null;
+  }
+  function applySourceMode(){
     var h = editHarness.value || 'claude_code';
     var fixedOpenCode = usesFixedOpenCodeEndpoint(activeManager, h);
-    var openAiCompatible = h === 'codex' || h === 'pi' ||
-      (h === 'opencode' && !fixedOpenCode);
-    editBaseUrlWrap.style.display = fixedOpenCode ? 'none' : '';
-    editBaseUrlLabel.textContent = openAiCompatible ? 'Base URL（OpenAI 兼容）' : 'Base URL（Anthropic 兼容）';
-    editBaseUrl.placeholder = openAiCompatible ? 'https://.../v1' : 'https://.../anthropic';
+    var canCopy = editIndex === null && h !== 'opencode';
+    var sourceMode = canCopy && editSourceMode.value === 'global' ? 'global' : 'custom';
+    editSourceMode.value = sourceMode;
+    editSourceModeWrap.style.display = editIndex === null ? '' : 'none';
+    editSourceMode.querySelector('option[value="global"]').disabled = !canCopy;
+    editGlobalEndpointWrap.style.display = sourceMode === 'global' ? '' : 'none';
+    var custom = sourceMode === 'custom';
+    editBaseUrlWrap.style.display = custom && !fixedOpenCode ? '' : 'none';
+    editApiKeyWrap.style.display = custom ? '' : 'none';
+    editModelWrap.style.display = custom ? '' : 'none';
+    var candidate = sourceMode === 'global' ? selectedGlobalCandidate() : null;
+    if (candidate) {
+      editBaseUrl.value = candidate.base_url || '';
+      editModel.value = candidate.model || '';
+      editThinkingCompatibility.checked = !!candidate.thinking_enabled;
+      editProtocol.value = candidate.protocol || '';
+    }
+    editProtocol.disabled = sourceMode === 'global' || h !== 'pi';
+    if (sourceMode === 'global' && !candidate) editProtocol.value = '';
+    editApiKey.placeholder = sourceMode === 'global' ?
+      '由后端安全复制' : (editApiKey.dataset.customPlaceholder || '请输入 API Key');
+  }
+  function applyHarnessMode(){
+    var h = editHarness.value || 'claude_code';
+    var previousHarness = editProtocol.dataset.harness || '';
+    var harnessChanged = !!previousHarness && previousHarness !== h;
+    editProtocol.dataset.harness = h;
+    var fixedProtocol = h === 'claude_code' ? 'anthropic' :
+      ((h === 'codex' || h === 'opencode') ? 'openai' : '');
+    if (fixedProtocol) {
+      editProtocol.value = fixedProtocol;
+      if (harnessChanged) editProtocol.dataset.changed = 'true';
+    } else if (harnessChanged && editIndex === null) {
+      editProtocol.value = '';
+    } else if (harnessChanged) {
+      editProtocol.value = inferProtocol(h, null);
+      editProtocol.dataset.changed = 'true';
+    }
+    var selectedGlobalId = editGlobalEndpoint.value || '';
+    populateGlobalEndpointOptions(h, selectedGlobalId);
+    if (h === 'opencode') editSourceMode.value = 'custom';
+    var protocol = editProtocol.value || inferProtocol(h, null);
+    editBaseUrlLabel.textContent = protocol === 'anthropic' ?
+      'Base URL（Anthropic 兼容）' : 'Base URL（OpenAI 兼容）';
+    editBaseUrl.placeholder = protocol === 'anthropic' ? 'https://.../anthropic' : 'https://.../v1';
     editModel.placeholder = '';
+    applySourceMode();
   }
   function openEditor(manager, index){
     activeManager = manager;
@@ -266,9 +364,16 @@
     document.getElementById('ajeEditModalLabel').textContent =
       (editIndex === null ? '添加' : '编辑') + manager.endpointName;
     editHarness.value = e.harness || 'claude_code';
+    editSourceMode.value = (!e.id && e.global_endpoint_id) ? 'global' : 'custom';
+    editProtocol.value = e.protocol || e.effective_protocol || inferProtocol(e.harness || 'claude_code', null);
+    editProtocol.dataset.originalRaw = e.protocol || '';
+    editProtocol.dataset.changed = 'false';
+    editProtocol.dataset.harness = e.harness || 'claude_code';
+    populateGlobalEndpointOptions(e.harness || 'claude_code', e.global_endpoint_id);
     editBaseUrl.value = e.base_url || '';
     editApiKey.value = e.api_key || '';
-    editApiKey.placeholder = e.has_key ? '已配置' : '请输入 API Key';
+    editApiKey.dataset.customPlaceholder = e.has_key ? '已配置' : '请输入 API Key';
+    editApiKey.placeholder = editApiKey.dataset.customPlaceholder;
     editModel.value = e.model || '';
     editContextWindowTokens.value = normalizeTokenCount(
       e.context_window_tokens, DEFAULT_CONTEXT_WINDOW_TOKENS);
@@ -381,16 +486,49 @@
       return;
     }
     var h = editHarness.value || 'claude_code';
+    var sourceMode = (editIndex === null && h !== 'opencode' && editSourceMode.value === 'global') ? 'global' : 'custom';
+    var globalCandidate = sourceMode === 'global' ? selectedGlobalCandidate() : null;
+    editGlobalEndpoint.setCustomValidity('');
+    editProtocol.setCustomValidity('');
+    editBaseUrl.setCustomValidity('');
+    editApiKey.setCustomValidity('');
+    if (sourceMode === 'global' && !globalCandidate) {
+      editGlobalEndpoint.setCustomValidity('请选择要复制的全局端点');
+      editGlobalEndpoint.reportValidity();
+      return;
+    }
+    if (sourceMode === 'custom' && h === 'pi' && !editProtocol.value) {
+      editProtocol.setCustomValidity('新 Pi 端点必须明确选择协议');
+      editProtocol.reportValidity();
+      return;
+    }
+    if (sourceMode === 'custom' && !usesFixedOpenCodeEndpoint(activeManager, h) && !(editBaseUrl.value || '').trim()) {
+      editBaseUrl.setCustomValidity('请填写 Base URL');
+      editBaseUrl.reportValidity();
+      return;
+    }
     var old = editIndex === null ? defaultEndpoint() : activeManager.eps[editIndex];
+    if (sourceMode === 'custom' && !old.has_key && !(editApiKey.value || '').trim()) {
+      editApiKey.setCustomValidity('新端点必须填写 API Key');
+      editApiKey.reportValidity();
+      return;
+    }
     var st = normalizeStatus({status: (statusPickerCtrl ? statusPickerCtrl.value() : editStatus.value) || 'enabled'});
+    var protocol = globalCandidate ? globalCandidate.protocol : editProtocol.value;
+    if (old.id && !editProtocol.dataset.changed && !editProtocol.dataset.originalRaw) {
+      protocol = null;
+    }
     var next = {
       id: old.id || null,
       harness: h,
+      protocol: protocol || null,
+      effective_protocol: inferProtocol(h, protocol),
+      global_endpoint_id: globalCandidate ? parseInt(globalCandidate.id, 10) : null,
       base_url: usesFixedOpenCodeEndpoint(activeManager, h) ? '' : (editBaseUrl.value || '').trim(),
-      model: (editModel.value || '').trim(),
+      model: globalCandidate ? (globalCandidate.model || '') : (editModel.value || '').trim(),
       context_window_tokens: contextWindowTokens,
       max_output_tokens: maxOutputTokens,
-      thinking_compatibility: !!editThinkingCompatibility.checked,
+      thinking_compatibility: globalCandidate ? !!globalCandidate.thinking_enabled : !!editThinkingCompatibility.checked,
       concurrency_limit: Math.max(1, parseInt(editConcurrency.value, 10) || 1),
       status: st,
       enabled: st === 'enabled',
@@ -408,6 +546,20 @@
   editMaxOutputTokens.addEventListener('input', function(){
     editMaxOutputTokens.setCustomValidity('');
   });
+  editSourceMode.addEventListener('change', function(){
+    applySourceMode();
+  });
+  editGlobalEndpoint.addEventListener('change', function(){
+    editGlobalEndpoint.setCustomValidity('');
+    applySourceMode();
+  });
+  editProtocol.addEventListener('change', function(){
+    editProtocol.dataset.changed = 'true';
+    editProtocol.setCustomValidity('');
+    applyHarnessMode();
+  });
+  editBaseUrl.addEventListener('input', function(){ editBaseUrl.setCustomValidity(''); });
+  editApiKey.addEventListener('input', function(){ editApiKey.setCustomValidity(''); });
   editDelete.addEventListener('click', function(){
     if (!activeManager || editIndex === null) return;
     activeManager.eps.splice(editIndex, 1);

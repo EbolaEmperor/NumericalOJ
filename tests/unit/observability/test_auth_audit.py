@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +13,8 @@ from flask import Flask, g
 
 from oj_modules.routes import auth_routes
 
+
+ROOT = Path(__file__).resolve().parents[3]
 
 CLIENT_IP = "198.51.100.77"
 PEER_IP = "127.0.0.2"
@@ -26,7 +29,7 @@ COOKIE_SECRET = "audit-cookie-secret"
 
 @pytest.fixture
 def app():
-    application = Flask(__name__)
+    application = Flask(__name__, template_folder=str(ROOT / "templates"))
     application.config.update(SECRET_KEY="test-secret", TESTING=True)
     application.extensions["numericaloj_observability"] = {
         "trusted_proxy_networks": (ipaddress.ip_network("127.0.0.0/8"),),
@@ -324,6 +327,7 @@ def test_register_success_audits_identity_without_credentials_or_email(app, audi
     verification = {"code": code, "expires_at": datetime.now() + timedelta(minutes=5)}
     connection, _cursor = _connection_with_record(verification)
     with (
+        patch.object(auth_routes, "get_mail_settings", return_value={"smtp_server": "smtp.test"}),
         patch.object(auth_routes, "get_all_classes", return_value=[user_class]),
         patch.object(auth_routes, "get_class_by_en", return_value=user_class),
         patch.object(auth_routes, "_verify_attempt_allowed", return_value=True),
@@ -528,6 +532,16 @@ def test_send_verification_code_logs_fixed_exception_message_without_printing():
     smtp_context.__enter__.return_value.login.side_effect = RuntimeError(smtp_secret)
 
     with (
+        patch.object(
+            auth_routes,
+            "get_mail_settings",
+            return_value={
+                "smtp_server": "smtp.example.invalid",
+                "smtp_port": 465,
+                "smtp_username": "sender@example.invalid",
+                "smtp_password": "test-password",
+            },
+        ),
         patch.object(auth_routes, "get_db_connection", return_value=connection),
         patch.object(auth_routes.smtplib, "SMTP_SSL", return_value=smtp_context),
         patch.object(auth_routes.logger, "exception") as log_exception,
@@ -538,3 +552,29 @@ def test_send_verification_code_logs_fixed_exception_message_without_printing():
     log_exception.assert_called_once_with("验证码邮件发送失败")
     assert smtp_secret not in str(log_exception.call_args)
     print_mock.assert_not_called()
+
+
+def test_unconfigured_mail_blocks_code_operations_with_explicit_message(app):
+    message = "站点尚未配置邮件服务，请联系管理员"
+    with patch.object(auth_routes, "get_mail_settings", return_value=None):
+        response = app.test_client().post(
+            "/send_code",
+            data={"email": "student@example.invalid"},
+        )
+
+    assert response.status_code == 503
+    assert response.get_json() == {"success": False, "message": message}
+
+
+def test_unconfigured_mail_keeps_registration_page_but_disables_actions(app):
+    with (
+        patch.object(auth_routes, "get_mail_settings", return_value=None),
+        patch.object(auth_routes, "get_all_classes", return_value=[]),
+    ):
+        response = app.test_client().get("/register")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "站点尚未配置邮件服务，请联系管理员" in html
+    assert 'data-auth-send-code' in html
+    assert 'disabled aria-disabled="true"' in html

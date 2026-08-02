@@ -45,6 +45,11 @@ def _run_tex_task(monkeypatch, tmp_path, scenario):
     monkeypatch.setattr(written_tasks, 'refresh_submission_status_snapshot', lambda *_args: None)
     monkeypatch.setattr(
         written_tasks,
+        'resolve_problem_llm_endpoint_snapshot',
+        lambda _problem, binding_key: ('snapshot', binding_key),
+    )
+    monkeypatch.setattr(
+        written_tasks,
         'update_submission_score_and_comment',
         lambda *args: score_updates.append(args),
     )

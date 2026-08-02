@@ -11,11 +11,8 @@ import config as _cfg
 
 PLACEHOLDER = "<username>"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-]*$")
-BATCH_DEFAULT_TEMPLATE = getattr(
-    _cfg,
-    "RANKING_BATCH_DEFAULT_TEMPLATE",
-    "gitea@10.72.190.121:<username>/FinalProject.git",
-)
+# 这是批量评测页的产品文案，不是部署配置。
+BATCH_DEFAULT_TEMPLATE = "gitea@10.72.190.121:<username>/FinalProject.git"
 GIT_LSREMOTE_TIMEOUT = int(getattr(_cfg, "RANKING_BATCH_LSREMOTE_TIMEOUT", 20))
 GIT_CLONE_TIMEOUT = int(getattr(_cfg, "RANKING_BATCH_CLONE_TIMEOUT", 180))
 

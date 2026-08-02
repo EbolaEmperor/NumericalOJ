@@ -1,4 +1,4 @@
-"""Typed configuration bridge for .env.tmpl, .env, and process variables."""
+"""Typed bridge for deployment keys and environment-overridable code defaults."""
 
 from __future__ import annotations
 
@@ -40,7 +40,12 @@ def _strip_inline_comment(value: str, *, path: Path, line_number: int) -> str:
     return value.strip()
 
 
-def _read_env_file(path: Path, *, required: bool) -> dict[str, str]:
+def _read_env_file(
+    path: Path,
+    *,
+    required: bool,
+    accepted_keys: set[str] | frozenset[str] | None = None,
+) -> dict[str, str]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
@@ -61,6 +66,8 @@ def _read_env_file(path: Path, *, required: bool) -> dict[str, str]:
         key = key.strip()
         if not _ENV_KEY_RE.fullmatch(key):
             raise ValueError(f"{path}:{line_number}: 非法配置名 {key!r}")
+        if accepted_keys is not None and key not in accepted_keys:
+            continue
         if key in values:
             raise ValueError(f"{path}:{line_number}: 重复配置项 {key}")
         values[key] = _strip_inline_comment(
@@ -106,10 +113,167 @@ def _environment_text(raw_value: str, *, name: str) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+_REQUIRED_ENV_KEYS = frozenset(
+    {
+        "SECRET_KEY",
+        "MYSQL_HOST",
+        "MYSQL_PORT",
+        "MYSQL_DB",
+        "MYSQL_USERNAME",
+        "MYSQL_PASSWORD",
+        "REDIS_HOST",
+        "REDIS_PORT",
+        "REDIS_DB",
+    }
+)
+
+# 高级运行参数保留环境变量覆盖能力，但不再挤占部署必填模板。这里的值
+# 使用与 .env 相同的原始文本格式，所有类型仍由下方的 _env_* 桥接函数校验。
+# LLM、Embedding、SMTP 与 WebSearch 等业务配置必须从 MySQL 动态读取，不能
+# 在这里添加默认值或环境变量回退。
+_CODE_DEFAULTS: dict[str, str] = {
+    "FLASK_DEBUG": "false",
+    "SESSION_COOKIE_SECURE": "false",
+    "CONTENT_SECURITY_POLICY": '""',
+    "CSRF_TRUSTED_ORIGINS": "[]",
+    "LOG_LEVEL": '"INFO"',
+    "LOG_TRUSTED_PROXY_CIDRS": "[]",
+    "MYSQL_CONNECT_TIMEOUT": "5",
+    "MYSQL_POOL_MIN_SIZE": "2",
+    "MYSQL_POOL_MAX_SIZE": "6",
+    "MYSQL_POOL_WAIT_TIMEOUT": "3",
+    "MYSQL_POOL_RECYCLE_SECONDS": "1200",
+    "AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT": "180",
+    "REDIS_SOCKET_TIMEOUT_SECONDS": "3",
+    "REDIS_CONNECT_TIMEOUT_SECONDS": "3",
+    "REDIS_BLOCKING_SOCKET_TIMEOUT_SECONDS": "30",
+    "SUBMISSION_SNAPSHOT_TTL_SECONDS": "21600",
+    "EVALUATE_SUBMISSION_LOCK_TTL_SECONDS": "900",
+    "REPOSITORY_STORAGE_ROOT": '"repository_storage"',
+    "REPOSITORY_MAX_FILE_BYTES": "2097152",
+    "REPOSITORY_MAX_TOTAL_BYTES": "33554432",
+    "REPOSITORY_MAX_ENTRIES": "10000",
+    "REPOSITORY_MAX_DEPTH": "32",
+    "REPOSITORY_MAX_PATH_BYTES": "1024",
+    "REPOSITORY_UPLOAD_SESSION_TTL_SECONDS": "86400",
+    "REPOSITORY_EMBEDDING_DIM": "1024",
+    "REPOSITORY_STRUCTURED_TIMEOUT": "240",
+    "REPOSITORY_STRUCTURED_MAX_INPUT_CHARS": "120000",
+    "REPOSITORY_EMBEDDING_TIMEOUT": "120",
+    "REPOSITORY_EMBEDDING_BATCH_SIZE": "16",
+    "REPOSITORY_VECTOR_BACKEND": '"faiss"',
+    "REPOSITORY_FAISS_INDEX_ROOT": '"tmp/repository_vector_index"',
+    "LATEX_OCR_MAX_IMAGES_PER_REQUEST": "20",
+    "LATEX_OCR_STREAM_EMIT_INTERVAL": "0.6",
+    "LATEX_OCR_STREAM_EMIT_MIN_DELTA": "60",
+    "AGENT_MAX_ROUNDS": "32",
+    "AGENT_SUBMIT_LIMIT": "8",
+    "AGENT_MEMORY_ENABLED": "true",
+    "AGENT_CONTEXT_MAX_CHARS": "480000",
+    "AGENT_CONTEXT_KEEP_ROUNDS": "50",
+    "AGENT_MEMORY_MAX_PATTERNS": "24",
+    "AGENT_MEMORY_MAX_NOTES": "24",
+    "AGENT_MEMORY_MAX_DO_NOT_REPEAT": "24",
+    "AGENT_REPOSITORY_KNN_TOP_K": "5",
+    "AGENT_REPOSITORY_KNN_SCORE_THRESHOLD": "0.08",
+    "AGENT_CONTEXT_SUMMARY_TIMEOUT": "120",
+    "AGENT_CONTEXT_SUMMARY_INPUT_MAX_CHARS": "480000",
+    "AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS": "48000",
+    "MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS": "90",
+    "AGENT_JUDGE_DOCKER_IMAGE": '"numericaloj-agent-judge:latest"',
+    "AGENT_JUDGE_WORKSPACE_ROOT": '"ranking_uploads/judge_workspace"',
+    "AGENT_JUDGE_CONCURRENCY": "2",
+    "AGENT_JUDGE_DEFAULT_TIMEOUT": "1800",
+    "AGENT_JUDGE_MEM_LIMIT": '"4g"',
+    "AGENT_JUDGE_CPU_LIMIT": '"2"',
+    "AGENT_JUDGE_PIDS_LIMIT": '"512"',
+    "AGENT_JUDGE_RESULT_POLL_INTERVAL": "1.5",
+    "AGENT_JUDGE_PROGRESS_TTL": "21600",
+    "JUDGER_DOCKER_IMAGE": '"numericaloj-judger:latest"',
+    "JUDGER_DOCKER_MEM_LIMIT": '"1g"',
+    "JUDGER_DOCKER_CPU_LIMIT": '"2"',
+    "JUDGER_DOCKER_PIDS_LIMIT": '"128"',
+    "JUDGER_DOCKER_NETWORK": '"none"',
+    "JUDGER_DOCKER_RUNNER_UID": "65532",
+    "JUDGER_DOCKER_RUNNER_GID": "65532",
+    "JUDGER_DOCKER_CASE_TMPFS_BYTES": "134217728",
+    "JUDGER_DOCKER_EXPORT_TMPFS_BYTES": "100663296",
+    "JUDGER_CASE_INPUT_MAX_BYTES": "67108864",
+    "JUDGER_STDOUT_MAX_BYTES": "1048576",
+    "JUDGER_STDERR_MAX_BYTES": "1048576",
+    "OJ_ROOT_PATH": '""',
+    "JUDGER_RUN_ROOT": '""',
+    "JUDGER_TIMEOUT_KILL_AFTER_SEC": "1.0",
+    "JUDGER_OCTAVE_PLOT_WARMUP": "true",
+    "JUDGER_TARGET_ARCH": '""',
+    "JUDGER_NUMERIC_BACKEND": '""',
+    "JUDGER_ENABLE_MKL": '""',
+    "AGENT_JUDGE_TRACE_SYNC_INTERVAL_SECONDS": "5.0",
+    "AGENT_JUDGE_QUEUE_RETRY_SECONDS": "8",
+    "AGENT_JUDGE_MAX_QUEUE_RETRIES": "2000",
+    "AGENT_JUDGE_SLOT_TTL_BUFFER": "600",
+    "AGENT_JUDGE_PACKAGE_MAX_MEMBERS": "4096",
+    "AGENT_JUDGE_PACKAGE_MAX_FILE_BYTES": "268435456",
+    "AGENT_JUDGE_PACKAGE_MAX_TOTAL_BYTES": "536870912",
+    "AGENT_JUDGE_PACKAGE_MAX_COMPRESSION_RATIO": "500.0",
+    "AGENT_JUDGE_HELLO_TIMEOUT_SECONDS": "8.0",
+    "AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS": "1.0",
+    "AGENT_JUDGE_PAUSED_PROBE_INTERVAL_SECONDS": "3600",
+    "AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS": "30.0",
+    "TESTDATA_ZIP_MAX_MEMBERS": "4096",
+    "TESTDATA_ZIP_MAX_FILE_BYTES": "134217728",
+    "TESTDATA_ZIP_MAX_TOTAL_BYTES": "268435456",
+    "TESTDATA_ZIP_MAX_COMPRESSION_RATIO": "500.0",
+    "TESTDATA_TEXT_MAX_TOTAL_BYTES": "67108864",
+    "RANKING_BATCH_LSREMOTE_TIMEOUT": "20",
+    "RANKING_BATCH_CLONE_TIMEOUT": "180",
+    "RANKING_BATCH_PROBE_CONCURRENCY": "12",
+    "RANKING_BATCH_PROBE_MAX_USERS": "1000",
+    "RANKING_BATCH_CLONE_ZIP_MAX_BYTES": "134217728",
+    "RANKING_BATCH_JOB_TTL": "21600",
+    "RANKING_BATCH_PULL_RETRY": "3",
+    "RANKING_BATCH_CREATE_RETRY": "3",
+    "RANKING_BATCH_ITEM_SLEEP_SECONDS": "1.0",
+    "RANKING_BULK_REJUDGE_JOB_TTL": "21600",
+    "RANKING_BULK_REJUDGE_ITEM_SLEEP_SECONDS": "2.0",
+    "REVERSE_JUDGE_PROGRESS_TTL": "21600",
+    "REVERSE_JUDGE_WORKSPACE_ROOT": '"ranking_uploads/reverse_judge_workspace"',
+    "REVERSE_JUDGE_SCRIPT_TIMEOUT": "300",
+    "REVERSE_JUDGE_TRACE_SYNC_INTERVAL": "2.0",
+    "REVERSE_JUDGE_STREAM_TIMEOUT_BUFFER_SECONDS": "1200",
+    "REVERSE_QUALITY_GATE_TIMEOUT_SECONDS": "300",
+    "REVERSE_QUALITY_GATE_MAX_PROMPT_CHARS": "20000",
+    "REVERSE_QUALITY_GATE_RESULT_MAX_BYTES": "2097152",
+    "REVERSE_PACKAGE_MAX_MEMBERS": "4096",
+    "REVERSE_PACKAGE_MAX_FILE_BYTES": "268435456",
+    "REVERSE_PACKAGE_MAX_TOTAL_BYTES": "536870912",
+    "REVERSE_PACKAGE_MAX_COMPRESSION_RATIO": "500.0",
+    "REVERSE_ANSWER_MAX_FILES": "4096",
+    "REVERSE_ANSWER_MAX_FILE_BYTES": "268435456",
+    "REVERSE_ANSWER_MAX_TOTAL_BYTES": "536870912",
+    "REVERSE_ENDPOINT_PROXY_MAX_REQUEST_BYTES": "8388608",
+    "REVERSE_ENDPOINT_PROXY_MAX_CONNECTIONS": "2",
+    "REVERSE_ENDPOINT_PROXY_CLIENT_TIMEOUT_SECONDS": "30",
+    "REVERSE_ENDPOINT_PROXY_TIMEOUT_SECONDS": "600",
+    "REVERSE_ENDPOINT_PROXY_BIND_HOST": '"0.0.0.0"',
+    "REVERSE_ENDPOINT_PROXY_CONTAINER_HOST": '"host.docker.internal"',
+    "REVERSE_TRACE_RETENTION_SECONDS": "1209600",
+    "REVERSE_TRACE_MAX_ATTEMPTS": "8",
+    "REVERSE_TRACE_MIN_DELETE_AGE_SECONDS": "21600",
+}
+
 _template_values = _read_env_file(_ENV_TEMPLATE_PATH, required=True)
-_local_values = _read_env_file(_ENV_PATH, required=False)
+if frozenset(_template_values) != _REQUIRED_ENV_KEYS:
+    raise RuntimeError(".env.tmpl 必须且只能包含九项部署必填配置")
+_declared_keys = _REQUIRED_ENV_KEYS | _CODE_DEFAULTS.keys()
+_local_values = _read_env_file(
+    _ENV_PATH,
+    required=False,
+    accepted_keys=set(_declared_keys),
+)
 _process_values = dict(os.environ)
-_config_values = dict(_template_values)
+_config_values = dict(_CODE_DEFAULTS)
+_config_values.update(_template_values)
 _config_values.update(_local_values)
 for _key in tuple(_config_values):
     if _key in _process_values:
@@ -125,7 +289,7 @@ def _raw(name: str) -> str:
     try:
         return _config_values[name]
     except KeyError as exc:
-        raise RuntimeError(f"配置模板缺少必填项: {name}") from exc
+        raise RuntimeError(f"配置项未声明: {name}") from exc
 
 
 def _env_str(name: str) -> str:
@@ -198,7 +362,7 @@ def _env_str_list(name: str) -> list[str]:
     return value
 
 
-# Web / session / mail
+# Web / session
 SECRET_KEY = _env_optional_str("SECRET_KEY")
 FLASK_DEBUG = _env_bool("FLASK_DEBUG")
 SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE")
@@ -206,10 +370,6 @@ CONTENT_SECURITY_POLICY = _env_optional_str("CONTENT_SECURITY_POLICY")
 CSRF_TRUSTED_ORIGINS = _env_str_list("CSRF_TRUSTED_ORIGINS")
 LOG_LEVEL = _env_str("LOG_LEVEL")
 LOG_TRUSTED_PROXY_CIDRS = _env_str_list("LOG_TRUSTED_PROXY_CIDRS")
-MAIL_SERVER = _env_str("MAIL_SERVER")
-MAIL_PORT = _env_int("MAIL_PORT")
-MAIL_USERNAME = _env_str("MAIL_USERNAME")
-MAIL_PASSWORD = _env_str("MAIL_PASSWORD")
 
 # MySQL
 MYSQL_HOST = _env_str("MYSQL_HOST")
@@ -223,22 +383,6 @@ MYSQL_POOL_MAX_SIZE = _env_int("MYSQL_POOL_MAX_SIZE")
 MYSQL_POOL_WAIT_TIMEOUT = _env_int("MYSQL_POOL_WAIT_TIMEOUT")
 MYSQL_POOL_RECYCLE_SECONDS = _env_int("MYSQL_POOL_RECYCLE_SECONDS")
 
-# Model providers
-DEEPSEEK_API_KEY = _env_str("DEEPSEEK_API_KEY")
-DASHSCOPE_APP_ID = _env_str("DASHSCOPE_APP_ID")
-DASHSCOPE_API_KEY = _env_str("DASHSCOPE_API_KEY")
-DASHSCOPE_BASE_URL = _env_str("DASHSCOPE_BASE_URL")
-MATLAB_AI_DETECT_API_KEY = _env_str("MATLAB_AI_DETECT_API_KEY")
-MATLAB_AI_DETECT_URL = _env_str("MATLAB_AI_DETECT_URL")
-MATLAB_AI_DETECT_MODEL = _env_str("MATLAB_AI_DETECT_MODEL")
-MIMO_URL_OPENAI = _env_str("MIMO_URL_OPENAI")
-MIMO_URL_ANTHROPIC = _env_str("MIMO_URL_ANTHROPIC")
-MIMO_API_KEY = _env_str("MIMO_API_KEY")
-MIMO_MODEL = _env_str("MIMO_MODEL")
-QWEN_CODER_MODEL = _env_str("QWEN_CODER_MODEL")
-QWEN_TEXT_MODEL = _env_str("QWEN_TEXT_MODEL")
-AI_TUTOR_MODEL = _env_str("AI_TUTOR_MODEL")
-QWEN_OMNI_MODEL = _env_str("QWEN_OMNI_MODEL")
 AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT = _env_int(
     "AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT"
 )
@@ -268,10 +412,6 @@ REPOSITORY_UPLOAD_SESSION_TTL_SECONDS = _env_int(
     "REPOSITORY_UPLOAD_SESSION_TTL_SECONDS"
 )
 REPOSITORY_EMBEDDING_DIM = _env_int("REPOSITORY_EMBEDDING_DIM")
-REPOSITORY_SENTENCE_MODEL = _env_str("REPOSITORY_SENTENCE_MODEL")
-REPOSITORY_QWEN_EMBEDDING_MODEL = _env_str("REPOSITORY_QWEN_EMBEDDING_MODEL")
-REPOSITORY_EMBEDDING_PROVIDER = _env_str("REPOSITORY_EMBEDDING_PROVIDER")
-REPOSITORY_STRUCTURED_MODEL = _env_str("REPOSITORY_STRUCTURED_MODEL")
 REPOSITORY_STRUCTURED_TIMEOUT = _env_int("REPOSITORY_STRUCTURED_TIMEOUT")
 REPOSITORY_STRUCTURED_MAX_INPUT_CHARS = _env_int(
     "REPOSITORY_STRUCTURED_MAX_INPUT_CHARS"
@@ -305,15 +445,7 @@ AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS = _env_int(
     "AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS"
 )
 
-# ModelScope MCP
-MODELSCOPE_WEB_SEARCH_MCP_COMMAND = _env_str("MODELSCOPE_WEB_SEARCH_MCP_COMMAND")
-MODELSCOPE_WEB_SEARCH_MCP_ARGS = _env_str_list("MODELSCOPE_WEB_SEARCH_MCP_ARGS")
-MODELSCOPE_WEB_SEARCH_MCP_TOOL_NAME = _env_str(
-    "MODELSCOPE_WEB_SEARCH_MCP_TOOL_NAME"
-)
-MODELSCOPE_WEB_SEARCH_DEFAULT_ENGINES = _env_str_list(
-    "MODELSCOPE_WEB_SEARCH_DEFAULT_ENGINES"
-)
+# WebSearch MCP runtime limit; connection settings live in MySQL.
 MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS = _env_int(
     "MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS"
 )
@@ -380,14 +512,6 @@ AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS = _env_float(
     "AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS"
 )
 
-# ModelScope HTTP MCP
-MODELSCOPE_WEB_SEARCH_MCP_BASE_URL = _env_str(
-    "MODELSCOPE_WEB_SEARCH_MCP_BASE_URL"
-)
-MODELSCOPE_WEB_SEARCH_MCP_AUTHORIZATION = _env_optional_str(
-    "MODELSCOPE_WEB_SEARCH_MCP_AUTHORIZATION"
-)
-
 # Upload limits
 TESTDATA_ZIP_MAX_MEMBERS = _env_int("TESTDATA_ZIP_MAX_MEMBERS")
 TESTDATA_ZIP_MAX_FILE_BYTES = _env_int("TESTDATA_ZIP_MAX_FILE_BYTES")
@@ -398,7 +522,6 @@ TESTDATA_ZIP_MAX_COMPRESSION_RATIO = _env_float(
 TESTDATA_TEXT_MAX_TOTAL_BYTES = _env_int("TESTDATA_TEXT_MAX_TOTAL_BYTES")
 
 # Ranking batch operations
-RANKING_BATCH_DEFAULT_TEMPLATE = _env_str("RANKING_BATCH_DEFAULT_TEMPLATE")
 RANKING_BATCH_LSREMOTE_TIMEOUT = _env_int("RANKING_BATCH_LSREMOTE_TIMEOUT")
 RANKING_BATCH_CLONE_TIMEOUT = _env_int("RANKING_BATCH_CLONE_TIMEOUT")
 RANKING_BATCH_PROBE_CONCURRENCY = _env_int("RANKING_BATCH_PROBE_CONCURRENCY")
@@ -414,8 +537,6 @@ RANKING_BULK_REJUDGE_ITEM_SLEEP_SECONDS = _env_float(
 )
 
 # Reverse judge
-REVERSE_JUDGE_DEFAULT_EFFORT = _env_str("REVERSE_JUDGE_DEFAULT_EFFORT")
-REVERSE_JUDGE_RETRY_EFFORT = _env_str("REVERSE_JUDGE_RETRY_EFFORT")
 REVERSE_JUDGE_PROGRESS_TTL = _env_int("REVERSE_JUDGE_PROGRESS_TTL")
 REVERSE_JUDGE_WORKSPACE_ROOT = _env_str("REVERSE_JUDGE_WORKSPACE_ROOT")
 REVERSE_JUDGE_SCRIPT_TIMEOUT = _env_int("REVERSE_JUDGE_SCRIPT_TIMEOUT")
@@ -462,12 +583,3 @@ REVERSE_TRACE_MAX_ATTEMPTS = _env_int("REVERSE_TRACE_MAX_ATTEMPTS")
 REVERSE_TRACE_MIN_DELETE_AGE_SECONDS = _env_int(
     "REVERSE_TRACE_MIN_DELETE_AGE_SECONDS"
 )
-REVERSE_FORCE_FINALIZE_PROMPT = _env_str("REVERSE_FORCE_FINALIZE_PROMPT")
-
-
-# Preserve explicitly supplied optional knobs that are not part of the template's
-# typed surface yet. JSON literals keep booleans, numbers, lists, and dictionaries;
-# plain values remain strings.
-for _name, _raw_value in _config_values.items():
-    if _name.isupper() and _name not in globals():
-        globals()[_name] = _decode_value(_raw_value, name=_name)

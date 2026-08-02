@@ -9,8 +9,8 @@ from email.mime.text import MIMEText
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
-from config import MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME
 from oj_modules.classroom.logos import attach_class_logos
+from oj_modules.site_config.services import get_mail_settings
 from oj_modules.db_services import (
     create_user,
     get_all_classes,
@@ -32,6 +32,8 @@ from oj_modules.security.login_guard import safe_local_next
 
 auth_bp = Blueprint('auth', __name__)
 logger = logging.getLogger(__name__)
+
+_MAIL_UNAVAILABLE_MESSAGE = '站点尚未配置邮件服务，请联系管理员'
 
 # Redis 客户端（限流）。由 oj.py 的 init_auth_module 注入；为空时限流 fail-open。
 _rds = None
@@ -132,6 +134,10 @@ def _verify_attempt_allowed(email):
 
 
 def send_verification_code(email, code_type):
+    settings = get_mail_settings(include_secret=True)
+    if not settings:
+        return False
+
     code = ''.join(random.choices('0123456789', k=6))
     expires_at = datetime.now() + timedelta(minutes=5)
 
@@ -146,13 +152,13 @@ def send_verification_code(email, code_type):
 
     msg = MIMEText(f'您的验证码是：{code}，有效期5分钟。', 'plain', 'utf-8')
     msg['Subject'] = code_type
-    msg['From'] = MAIL_USERNAME
+    msg['From'] = settings['smtp_username']
     msg['To'] = email
 
     try:
-        with smtplib.SMTP_SSL(MAIL_SERVER, MAIL_PORT) as server:
-            server.login(MAIL_USERNAME, MAIL_PASSWORD)
-            server.sendmail(MAIL_USERNAME, [email], msg.as_string())
+        with smtplib.SMTP_SSL(settings['smtp_server'], settings['smtp_port']) as server:
+            server.login(settings['smtp_username'], settings['smtp_password'])
+            server.sendmail(settings['smtp_username'], [email], msg.as_string())
         return True
     except Exception:
         logger.exception('验证码邮件发送失败')
@@ -233,6 +239,9 @@ def login():
 
 @auth_bp.route('/send_code', methods=['POST'])
 def send_verification():
+    if not get_mail_settings():
+        return jsonify(success=False, message=_MAIL_UNAVAILABLE_MESSAGE), 503
+
     email = request.form.get('email', '').strip()
     if not email:
         return jsonify(success=False, message="邮箱不能为空")
@@ -252,7 +261,15 @@ def send_verification():
 @auth_bp.route('/register', methods=['GET', 'POST'])
 def register():
     public_classes = attach_class_logos(get_all_classes())
+    mail_configured = bool(get_mail_settings())
     if request.method == 'POST':
+        if not mail_configured:
+            return render_template(
+                'auth/register.html',
+                error_message=_MAIL_UNAVAILABLE_MESSAGE,
+                classes=public_classes,
+                mail_configured=False,
+            ), 503
         username = (request.form.get('username') or '').strip()
         password = (request.form.get('password') or '').strip()
         email = (request.form.get('email') or '').strip()
@@ -260,14 +277,14 @@ def register():
         user_class = get_class_by_en(request.form.get('class'))
 
         if not all([username, password, email, code, user_class]):
-            return render_template('auth/register.html', error_message="所有字段不能为空", classes=public_classes)
+            return render_template('auth/register.html', error_message="所有字段不能为空", classes=public_classes, mail_configured=mail_configured)
 
         username_ok, username, username_msg = validate_username(username)
         if not username_ok:
-            return render_template('auth/register.html', error_message=username_msg, classes=public_classes)
+            return render_template('auth/register.html', error_message=username_msg, classes=public_classes, mail_configured=mail_configured)
 
         if not _verify_attempt_allowed(email):
-            return render_template('auth/register.html', error_message="验证次数过多，请稍后再试", classes=public_classes)
+            return render_template('auth/register.html', error_message="验证次数过多，请稍后再试", classes=public_classes, mail_configured=mail_configured)
 
         conn = get_db_connection()
         try:
@@ -279,10 +296,10 @@ def register():
             conn.close()
 
         if not record or record['code'] != code or datetime.now() > record['expires_at']:
-            return render_template('auth/register.html', error_message="验证码错误或已过期", classes=public_classes)
+            return render_template('auth/register.html', error_message="验证码错误或已过期", classes=public_classes, mail_configured=mail_configured)
 
         if get_user_by_username(username) or get_user_by_email(email):
-            return render_template('auth/register.html', error_message="用户名或邮箱已被注册", classes=public_classes)
+            return render_template('auth/register.html', error_message="用户名或邮箱已被注册", classes=public_classes, mail_configured=mail_configured)
 
         try:
             user_id = create_user(
@@ -298,6 +315,7 @@ def register():
                 'auth/register.html',
                 error_message=str(exc),
                 classes=public_classes,
+                mail_configured=mail_configured,
             )
         _audit_auth(
             'register',
@@ -307,15 +325,20 @@ def register():
         )
         return redirect(url_for('auth.login', success="注册成功，请登录"))
 
-    return render_template('auth/register.html', classes=public_classes)
+    return render_template('auth/register.html', classes=public_classes, mail_configured=mail_configured)
 
 
 @auth_bp.route('/forgot_password', methods=['GET', 'POST'])
 def forgot_password():
     step = request.args.get('step', 'email')
+    # 已经取得验证码的用户即使管理员随后清除了 SMTP，也仍可完成验证步骤。
+    mail_configured = True if step == 'verify' else bool(get_mail_settings())
 
     if request.method == 'POST':
         if step == 'email':
+            if not mail_configured:
+                flash(_MAIL_UNAVAILABLE_MESSAGE, 'danger')
+                return redirect(url_for('auth.forgot_password'))
             email = request.form.get('email').strip()
 
             if not email:
@@ -378,7 +401,12 @@ def forgot_password():
             _audit_auth('password.reset', 'success', user=user)
             return redirect(url_for('auth.login'))
 
-    return render_template('auth/forgot_password.html', step=step, email=request.args.get('email'))
+    return render_template(
+        'auth/forgot_password.html',
+        step=step,
+        email=request.args.get('email'),
+        mail_configured=mail_configured,
+    )
 
 
 @auth_bp.route('/send_password_code', methods=['POST'])
@@ -389,6 +417,9 @@ def send_password_code():
     user = get_current_user()
     if not user:
         return jsonify(success=False, message="用户不存在"), 404
+
+    if not get_mail_settings():
+        return jsonify(success=False, message=_MAIL_UNAVAILABLE_MESSAGE), 503
 
     allowed, reason = _check_send_code_allowed(user['email'])
     if not allowed:

@@ -21,6 +21,30 @@ def _template_keys():
     return keys
 
 
+def _code_default_keys():
+    tree = ast.parse((ROOT / "config.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_CODE_DEFAULTS"
+        ):
+            return set(ast.literal_eval(node.value))
+    raise AssertionError("config.py 缺少 _CODE_DEFAULTS")
+
+
+def test_runtime_configuration_documents_every_advanced_default():
+    documentation = (ROOT / "docs" / "runtime-configuration.md").read_text(
+        encoding="utf-8"
+    )
+    missing = {
+        key for key in _code_default_keys()
+        if f"`{key}`" not in documentation
+    }
+
+    assert missing == set()
+
+
 def _run_config_import(
     tmp_path,
     *,
@@ -39,7 +63,7 @@ def _run_config_import(
             encoding="utf-8",
         )
     environment = os.environ.copy()
-    for key in _template_keys():
+    for key in _template_keys() | _code_default_keys():
         environment.pop(key, None)
     environment.update(process_overrides or {})
     environment["PYTHONPATH"] = str(tmp_path)
@@ -53,12 +77,13 @@ def _run_config_import(
     )
 
 
-def test_config_imports_template_defaults_without_private_env(tmp_path):
+def test_config_imports_code_defaults_without_private_env(tmp_path):
     result = _run_config_import(
         tmp_path,
         expression=(
             "(config.MYSQL_USERNAME, config.ENV_FILE_LOADED, "
-            "type(config.MAIL_PORT).__name__, config.AGENT_MEMORY_ENABLED)"
+            "type(config.RANKING_BATCH_CLONE_TIMEOUT).__name__, "
+            "config.AGENT_MEMORY_ENABLED)"
         ),
     )
 
@@ -66,7 +91,7 @@ def test_config_imports_template_defaults_without_private_env(tmp_path):
     assert result.stdout.strip() == "('oj', False, 'int', True)"
 
 
-def test_logging_config_template_defaults_are_strictly_typed(tmp_path):
+def test_logging_code_defaults_are_strictly_typed(tmp_path):
     result = _run_config_import(
         tmp_path,
         expression=(
@@ -80,21 +105,32 @@ def test_logging_config_template_defaults_are_strictly_typed(tmp_path):
     assert result.stdout.strip() == "('INFO', [], 'str', 'list')"
 
 
-def test_deepseek_live_e2e_key_defaults_empty_and_accepts_local_env(tmp_path):
-    default_result = _run_config_import(
+def test_business_and_unknown_env_keys_are_ignored(tmp_path):
+    result = _run_config_import(
         tmp_path,
-        expression="(config.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY' in config.ENV_FILE_KEYS)",
+        env_source=(
+            'MAIL_SERVER="legacy.example"\n'
+            'DASHSCOPE_API_KEY="legacy-secret"\n'
+            'REPOSITORY_EMBEDDING_PROVIDER="legacy-provider"\n'
+            'CUSTOM_PRODUCTION_SETTING="ignored"\n'
+            'UNKNOWN_WITH_BROKEN_QUOTE="ignored too\n'
+        ),
+        process_overrides={
+            "QWEN_TEXT_MODEL": "legacy-model",
+            "MODELSCOPE_WEB_SEARCH_MCP_BASE_URL": "https://legacy.invalid",
+        },
+        expression=(
+            "(hasattr(config, 'MAIL_SERVER'), "
+            "hasattr(config, 'DASHSCOPE_API_KEY'), "
+            "hasattr(config, 'REPOSITORY_EMBEDDING_PROVIDER'), "
+            "hasattr(config, 'QWEN_TEXT_MODEL'), "
+            "hasattr(config, 'MODELSCOPE_WEB_SEARCH_MCP_BASE_URL'), "
+            "hasattr(config, 'CUSTOM_PRODUCTION_SETTING'), "
+            "sorted(config.ENV_FILE_KEYS))"
+        ),
     )
-    assert default_result.returncode == 0, default_result.stderr
-    assert default_result.stdout.strip() == "('', False)"
-
-    local_result = _run_config_import(
-        tmp_path,
-        env_source='DEEPSEEK_API_KEY="local-deepseek-test-key"\n',
-        expression="(config.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY' in config.ENV_FILE_KEYS)",
-    )
-    assert local_result.returncode == 0, local_result.stderr
-    assert local_result.stdout.strip() == "('local-deepseek-test-key', True)"
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "(False, False, False, False, False, False, [])"
 
 
 def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
@@ -103,7 +139,6 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
         (
             'MYSQL_USERNAME="production-user"',
             f"MYSQL_PASSWORD={json.dumps(password)}",
-            "MAIL_PORT=2525",
             "AGENT_MEMORY_ENABLED=false",
             "AGENT_REPOSITORY_KNN_SCORE_THRESHOLD=0.25",
             'CSRF_TRUSTED_ORIGINS=["https://oj.example","https://admin.example"]',
@@ -116,10 +151,11 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
         tmp_path,
         env_source=env_source,
         expression=(
-            "(config.MYSQL_USERNAME, config.MYSQL_PASSWORD, config.MAIL_PORT, "
+            "(config.MYSQL_USERNAME, config.MYSQL_PASSWORD, "
             "config.AGENT_MEMORY_ENABLED, "
             "config.AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, "
-            "config.CSRF_TRUSTED_ORIGINS, config.CUSTOM_PRODUCTION_SETTING, "
+            "config.CSRF_TRUSTED_ORIGINS, "
+            "hasattr(config, 'CUSTOM_PRODUCTION_SETTING'), "
             "config.CONTENT_SECURITY_POLICY, config.ENV_FILE_LOADED, "
             "sorted(config.ENV_FILE_KEYS), "
             "__import__('os').environ['MYSQL_PASSWORD'])"
@@ -131,22 +167,19 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
     assert values == (
         "production-user",
         password,
-        2525,
         False,
         0.25,
         ["https://oj.example", "https://admin.example"],
-        ["kept-local"],
+        False,
         None,
         True,
         sorted(
             {
                 "MYSQL_USERNAME",
                 "MYSQL_PASSWORD",
-                "MAIL_PORT",
                 "AGENT_MEMORY_ENABLED",
                 "AGENT_REPOSITORY_KNN_SCORE_THRESHOLD",
                 "CSRF_TRUSTED_ORIGINS",
-                "CUSTOM_PRODUCTION_SETTING",
                 "CONTENT_SECURITY_POLICY",
             }
         ),
@@ -278,7 +311,21 @@ def test_legacy_config_local_is_not_executed(tmp_path):
     assert not list(pycache.glob("config_local*.pyc"))
 
 
-def test_every_typed_config_key_exists_in_template():
+def test_template_contains_exactly_the_nine_deployment_keys():
+    assert _template_keys() == {
+        "SECRET_KEY",
+        "MYSQL_HOST",
+        "MYSQL_PORT",
+        "MYSQL_DB",
+        "MYSQL_USERNAME",
+        "MYSQL_PASSWORD",
+        "REDIS_HOST",
+        "REDIS_PORT",
+        "REDIS_DB",
+    }
+
+
+def test_every_typed_config_key_is_declared():
     source = (ROOT / "config.py").read_text(encoding="utf-8")
     helper_names = {
         "_env_str",
@@ -300,7 +347,8 @@ def test_every_typed_config_key_exists_in_template():
         and isinstance(node.args[0].value, str)
     }
 
-    assert referenced <= _template_keys()
+    assert referenced <= (_template_keys() | _code_default_keys())
+    assert not (_template_keys() & _code_default_keys())
 
 
 def test_private_env_is_ignored_but_template_is_not():

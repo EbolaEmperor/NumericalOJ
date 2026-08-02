@@ -6,20 +6,14 @@ import os
 import tempfile
 import time
 
-import requests
-
 from config import (
-    DASHSCOPE_API_KEY,
     LATEX_OCR_MAX_IMAGES_PER_REQUEST,
     LATEX_OCR_STREAM_EMIT_INTERVAL,
     LATEX_OCR_STREAM_EMIT_MIN_DELTA,
-    QWEN_OMNI_MODEL,
-    QWEN_TEXT_MODEL,
 )
 from oj_modules.ai.client import (
-    OpenAI,
-    _extract_text_from_response_content,
-    _resolve_dashscope_base_url,
+    _call_llm_vision,
+    resolve_llm_endpoint_snapshot,
 )
 from oj_modules.ai.parsing import _strip_markdown_code_fence_markers
 from oj_modules.judging import core as judger_core
@@ -53,7 +47,7 @@ def render_pdf_to_images(pdf_path, output_dir):
     return image_paths
 
 
-# 视觉模型（Qwen-VL / Omni）可稳定接受的图片 MIME；其余格式（bmp/gif/tiff 等）
+# 通用视觉端点可稳定接受的图片 MIME；其余格式（bmp/gif/tiff 等）
 # 在发送前就地无损转成 PNG，避免模型拒收导致图片题 AI 批改失败。
 _VISION_SAFE_IMAGE_MIME = {'image/png', 'image/jpeg', 'image/webp'}
 
@@ -97,92 +91,36 @@ def _split_image_batches(image_data_urls, max_images_per_request=None):
     ]
 
 
-def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url, on_delta=None):
-    omni_model = str(QWEN_OMNI_MODEL or "").strip() or str(QWEN_TEXT_MODEL or "").strip()
-    message_content = [
-        {
-            "type": "image_url",
-            "image_url": {"url": image_url}
-        }
-        for image_url in image_urls
-    ]
-    message_content.append({
-        "type": "text",
-        "text": prompt_text
-    })
-
-    if OpenAI is not None:
-        try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            stream = client.chat.completions.create(
-                model=omni_model,
-                messages=[{
-                    "role": "user",
-                    "content": message_content
-                }],
-                modalities=["text"],
-                stream=True,
-                stream_options={"include_usage": True},
-            )
-            parts = []
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta_content = chunk.choices[0].delta.content
-                delta_text = _extract_text_from_response_content(delta_content)
-                if not delta_text:
-                    continue
-                parts.append(delta_text)
-                if callable(on_delta):
-                    try:
-                        on_delta(delta_text)
-                    except Exception:
-                        pass
-            latex_text = _strip_markdown_code_fence_markers(''.join(parts))
-            if latex_text:
-                return latex_text
-        except Exception as e:
-            print(f"[LaTeX OCR] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": omni_model,
-        "messages": [{
-            "role": "user",
-            "content": message_content
-        }],
-        "modalities": ["text"]
-    }
-    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=300)
-    resp.raise_for_status()
-    result = resp.json()
-    choices = result.get('choices') or []
-    if not choices:
-        raise RuntimeError("模型未返回有效结果。")
-    content = (choices[0].get('message') or {}).get('content')
-    latex_text = _strip_markdown_code_fence_markers(_extract_text_from_response_content(content))
+def _transcribe_image_batch(image_urls, prompt_text, endpoint, on_delta=None):
+    latex_text = _strip_markdown_code_fence_markers(
+        _call_llm_vision(
+            prompt_text,
+            image_urls,
+            endpoint,
+            timeout=300,
+            on_delta=on_delta,
+        )
+    )
     if not latex_text:
         raise RuntimeError("模型未返回可用的 LaTeX 文本。")
-    if callable(on_delta):
-        try:
-            on_delta(latex_text)
-        except Exception:
-            pass
     return latex_text
 
 
-def transcribe_images_to_latex(image_paths, on_partial_text=None):
+def transcribe_images_to_latex(
+    image_paths,
+    on_partial_text=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     if not image_paths:
         raise RuntimeError("未生成可用于识别的图片。")
-
-    api_key = DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-
-    base_url = _resolve_dashscope_base_url()
+    use_endpoint = resolve_llm_endpoint_snapshot(
+        endpoint,
+        endpoint_id=endpoint_id,
+        allowed_categories={"omni", "vision"},
+        purpose="书面作业 OCR",
+    )
     prompt = (
         "请将这份书面作业完整转写为 Markdown 内嵌 LaTeX 的格式。"
         "要求："
@@ -231,7 +169,12 @@ def transcribe_images_to_latex(image_paths, on_partial_text=None):
             current_raw_part.append(delta_text)
             _emit_partial_preview()
 
-        part = _transcribe_image_batch(batch, chunk_prompt, api_key, base_url, on_delta=_on_delta)
+        part = _transcribe_image_batch(
+            batch,
+            chunk_prompt,
+            use_endpoint,
+            on_delta=_on_delta,
+        )
         if part:
             transcribed_parts.append(part.strip())
             current_raw_part = []
@@ -257,7 +200,15 @@ def _atomic_write_text(path, content):
                 pass
 
 
-def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename, on_partial_latex=None):
+def save_transcribed_latex(
+    pdf_path,
+    upload_folder,
+    uploaded_filename,
+    on_partial_latex=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     image_paths = render_pdf_to_images(pdf_path, upload_folder)
     markdown_filename = f"{os.path.splitext(uploaded_filename)[0]}.md"
     markdown_path = os.path.join(upload_folder, markdown_filename)
@@ -296,7 +247,12 @@ def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename, on_partia
             except Exception:
                 pass
 
-    latex_text = transcribe_images_to_latex(image_paths, on_partial_text=_on_partial_text)
+    latex_text = transcribe_images_to_latex(
+        image_paths,
+        on_partial_text=_on_partial_text,
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
     _atomic_write_text(markdown_path, latex_text)
     if callable(on_partial_latex):
         try:

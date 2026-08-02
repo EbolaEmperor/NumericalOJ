@@ -131,7 +131,7 @@ def test_run_detection_result_shape_and_passthrough(monkeypatch):
         {'id': 42, 'username': 'bob', 'problem_id': 7,
          'code': 'y=2;', 'status': 'Accepted'},
         {'id': 7, 'content': '题面', 'lang': 'matlab', 'type': 1},
-        model_id='qwen', task_id='task-xyz',
+        endpoint=object(), task_id='task-xyz',
     )
     # 透传的标识字段
     assert out['submission_id'] == 42

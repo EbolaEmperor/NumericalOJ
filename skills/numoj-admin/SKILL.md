@@ -167,10 +167,10 @@ python3 scripts/numoj_admin.py ranking edit <competition_id> \
   --agent-timeout 600
 python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
   --harness pi \
-  --agent-base-url https://api.deepseek.com/v1 \
-  --api-key-env DEEPSEEK_API_KEY \
-  --env-file .env \
-  --model deepseek-v4-flash \
+  --agent-base-url https://llm.example.com/v1 \
+  --api-key-env LLM_API_KEY \
+  --env-file agent-secrets.env \
+  --model example-model \
   --context-window-tokens 1000000 \
   --max-output-tokens 384000 \
   --thinking-compatibility \
@@ -197,7 +197,7 @@ python3 scripts/numoj_admin.py ranking save-quality-gate <competition_id> \
   --prompt @quality-gate-prompt.txt
 python3 scripts/numoj_admin.py ranking save-quality-gate-endpoints <competition_id> \
   @quality-gate-endpoints.json \
-  --env-file .env
+  --env-file agent-secrets.env
 python3 scripts/numoj_admin.py ranking save-quality-gate <competition_id> --enabled
 ```
 

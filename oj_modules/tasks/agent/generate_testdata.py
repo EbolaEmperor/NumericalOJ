@@ -101,6 +101,18 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
             _push_agent_event(state, "标准程序不能为空", level="error", status="Failed")
             return {"success": False, "message": "标准程序不能为空", "task_id": task_id}
 
+        try:
+            endpoint_snapshots = _resolve_agent_endpoint_snapshots(
+                "testdata_agent",
+                "agent_summary",
+            )
+        except Exception as exc:
+            message = str(exc)
+            _push_agent_event(state, message, level="error", status="Failed")
+            return {"success": False, "message": message, "task_id": task_id}
+        testdata_endpoint = endpoint_snapshots["testdata_agent"]
+        summary_endpoint = endpoint_snapshots["agent_summary"]
+
         problem_id_int = int(problem.get("id") or problem_id)
         interactor_code = str(problem.get("test_code") or "")
         workspace_dir = os.path.abspath(os.path.join("tmp", "agent_data_runs", f"{problem_id_int}_{task_id}"))
@@ -181,6 +193,7 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
                     conversation,
                     max_chars=_AGENT_CONTEXT_MAX_CHARS,
                     keep_rounds=_AGENT_CONTEXT_KEEP_ROUNDS,
+                    summary_endpoint=summary_endpoint,
                     state=state,
                     round_idx=round_idx,
                 )
@@ -195,7 +208,11 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
                     )
 
                 messages = [system_message] + list(conversation)
-                api_request_body = _build_api_request_payload(messages, tools=tools)
+                api_request_body = _build_api_request_payload(
+                    messages,
+                    testdata_endpoint,
+                    tools=tools,
+                )
                 _append_api_call_log(state, round_idx, api_request_body, api_type="data_generation")
                 _push_agent_event(
                     state,
@@ -210,7 +227,11 @@ def register_agent_generate_testdata_task(celery_app, evaluate_submission_task):
                 )
 
                 try:
-                    assistant_output = _call_qwen3_coder_plus_with_tools(messages, tools=tools)
+                    assistant_output = _call_agent_chat_completion(
+                        testdata_endpoint,
+                        messages,
+                        tools=tools,
+                    )
                 except Exception as e:
                     msg = f"第 {round_idx} 轮模型调用失败: {e}"
                     _push_agent_event(state, msg, level="error", status="Failed")

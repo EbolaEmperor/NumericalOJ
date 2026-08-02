@@ -10,6 +10,7 @@ PACKAGE_INITIALIZERS = (
     "oj_modules/tasks/__init__.py",
     "oj_modules/tasks/agent/__init__.py",
     "oj_modules/ai_detection/__init__.py",
+    "oj_modules/site_config/__init__.py",
 )
 
 
@@ -40,6 +41,7 @@ import oj_modules.api
 import oj_modules.tasks
 import oj_modules.tasks.agent
 import oj_modules.ai_detection
+import oj_modules.site_config
 for name in (
     'oj_modules.api.registry',
     'oj_modules.tasks.registry',
@@ -64,6 +66,7 @@ def test_legacy_package_initializers_have_no_lazy_compatibility_hook():
         "oj_modules/api/__init__.py",
         "oj_modules/tasks/__init__.py",
         "oj_modules/ai_detection/__init__.py",
+        "oj_modules/site_config/__init__.py",
     ):
         tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
         assert not any(

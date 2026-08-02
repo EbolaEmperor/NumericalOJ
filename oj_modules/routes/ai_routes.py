@@ -6,10 +6,10 @@ import json
 
 from flask import Blueprint, jsonify, request
 
-from config import AI_TUTOR_MODEL
 from oj_modules.ai.code_feedback import (
     generate_ai_code_marks_from_submission_context,
 )
+from oj_modules.ai.client import resolve_llm_endpoint_snapshot
 from oj_modules.db_services import (
     get_cached_ai_code_marks_for_submission,
     get_submission_by_id,
@@ -33,6 +33,14 @@ _rds = None
 # AI 标注是昂贵的 LLM 调用，按用户限流。
 _MARKS_MAX_PER_WINDOW = 15
 _MARKS_WINDOW = 300
+
+
+def _truthy(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def init_ai_module(redis_client):
@@ -114,6 +122,26 @@ def ask_ai_code_marks():
         )
 
     try:
+        # 一次请求只解析一次端点。即使管理员在生成过程中修改全站绑定或端点，
+        # 本次生成仍使用这里取得的不可变快照。
+        marks_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key="ai_code_annotation",
+            allowed_categories={"omni", "text"},
+            purpose="AI 代码标注",
+        )
+        needs_image_analysis = any(
+            _truthy((point or {}).get("has_output_image"))
+            and str((point or {}).get("status") or "").strip().lower() != "accepted"
+            for point in (submission.get("test_points") or [])
+            if isinstance(point, dict)
+        )
+        image_endpoint = None
+        if needs_image_analysis:
+            image_endpoint = resolve_llm_endpoint_snapshot(
+                feature_key="code_image_analysis",
+                allowed_categories={"omni", "vision"},
+                purpose="代码图片分析",
+            )
         result = generate_ai_code_marks_from_submission_context(
             problem_content=problem_content,
             user_code=user_code,
@@ -123,6 +151,8 @@ def ask_ai_code_marks():
             test_points=submission.get("test_points") or [],
             max_issues=8,
             timeout=240,
+            endpoint=marks_endpoint,
+            image_endpoint=image_endpoint,
         )
         issues = result.get('issues') or []
         summary = str(result.get('summary') or '').strip()
@@ -136,7 +166,7 @@ def ask_ai_code_marks():
             "image_mismatch_analysis": image_mismatch_analysis,
             "image_analysis_test_index": image_analysis_test_index,
             "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "model": AI_TUTOR_MODEL,
+            "model": marks_endpoint.model,
         }
         save_submission_ai_code_marks_json(sid, cache_payload)
         return jsonify(

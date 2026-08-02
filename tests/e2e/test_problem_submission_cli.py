@@ -21,11 +21,9 @@ from tests.e2e.conftest import (
 
 
 PROBLEM_SECRET_KEYS = {
-    "programming_grading_model",
     "programming_grading_prompt",
     "programming_output_filename",
     "written_grading_mode",
-    "written_grading_model",
     "written_grading_prompt",
     "test_code",
     "testdata",
@@ -42,18 +40,19 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
     assert cli.init_user(username)["success"] is True
 
     title = f"CLI Problem {unique_suffix}"
-    secret_terms = (f"secret-model-{unique_suffix}", f"secret-output-{unique_suffix}.png", f"secret-prompt-{unique_suffix}")
+    endpoint_id = int(unique_suffix[-8:]) + 1000
+    secret_terms = (f"secret-output-{unique_suffix}.png", f"secret-prompt-{unique_suffix}")
     problem_id, _ = create_problem_with_homework(
         cli,
         title,
         submission_limit=5,
         extra=[
-            "--programming-grading-model",
-            secret_terms[0],
             "--programming-output-filename",
-            secret_terms[1],
+            secret_terms[0],
             "--programming-grading-prompt",
-            secret_terms[2],
+            secret_terms[1],
+            "--output-image-grading-endpoint-id",
+            str(endpoint_id),
             "--test-code",
             f"secret-test-code-{unique_suffix}",
             "--forbidden-func",
@@ -87,7 +86,19 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
         "5",
     )["success"] is True
     assert cli.admin_json("problem", "detail", str(problem_id))["problem"]["title"] == edited_title
-    assert cli.admin_json("problem", "edit-form", str(problem_id))["success"] is True
+    edit_form = cli.admin_json("problem", "edit-form", str(problem_id))
+    assert edit_form["form"]["llm_endpoint_bindings"] == {
+        "output_image_grading_endpoint_id": endpoint_id,
+    }
+    assert cli.admin_json(
+        "problem",
+        "edit",
+        str(problem_id),
+        "--output-image-grading-endpoint-id",
+        "none",
+    )["success"] is True
+    cleared_form = cli.admin_json("problem", "edit-form", str(problem_id))
+    assert cleared_form["form"]["llm_endpoint_bindings"] == {}
 
     testdata_zip = write_testdata_zip(tmp_path / "testdata.zip")
     assert cli.admin_json("problem", "upload-testdata", str(problem_id), str(testdata_zip))["success"] is True
@@ -260,8 +271,6 @@ def test_promptly_problem_submit_generates_code(cli, unique_suffix, tmp_path):
 
 @pytest.mark.e2e
 def test_promptly_review_cli_submit_accepts_and_rejects_prompts(cli, unique_suffix, tmp_path):
-    from oj_modules import db_services
-
     username = f"cli_promptly_review_{unique_suffix}"
     create_regular_user(username=username, password="pw123456")
     assert cli.init_admin()["success"] is True
@@ -269,8 +278,6 @@ def test_promptly_review_cli_submit_accepts_and_rejects_prompts(cli, unique_suff
 
     title = f"CLI Promptly Review {unique_suffix}"
     review_reply = "Please explain the monotonic deque and expired index handling."
-    promptly_model = str(getattr(db_services, "_QWEN_CODER_MODEL_KEY", "") or "").strip().lower()
-    assert promptly_model and promptly_model in db_services._ALLOWED_PROGRAMMING_GRADING_MODELS
     problem_id, _ = create_problem_with_homework(
         cli,
         title,
@@ -278,8 +285,6 @@ def test_promptly_review_cli_submit_accepts_and_rejects_prompts(cli, unique_suff
         extra=[
             "--programming-grading-mode",
             "3",
-            "--programming-grading-model",
-            promptly_model,
             "--promptly-brief",
             "Submit a prompt that describes the required algorithm before generated code prints hello.",
             "--promptly-requirements",
@@ -290,7 +295,7 @@ def test_promptly_review_cli_submit_accepts_and_rejects_prompts(cli, unique_suff
     )
     admin_problem_form = cli.admin_json("problem", "edit-form", str(problem_id))
     assert admin_problem_form["form"]["programming_grading_mode"] == 3
-    assert admin_problem_form["form"]["programming_grading_model"] == promptly_model
+    assert "programming_grading_model" not in admin_problem_form["form"]
     testdata_zip = write_testdata_zip(tmp_path / "promptly_review_testdata.zip")
     assert cli.admin_json("problem", "upload-testdata", str(problem_id), str(testdata_zip))["success"] is True
 
@@ -391,8 +396,6 @@ def test_promptly_review_cli_submit_accepts_and_rejects_prompts(cli, unique_suff
         extra=[
             "--programming-grading-mode",
             "3",
-            "--programming-grading-model",
-            promptly_model,
             "--promptly-brief",
             "Submit a prompt that describes the required algorithm before generated code is judged.",
             "--promptly-requirements",

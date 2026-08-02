@@ -5,20 +5,10 @@ import os
 import re
 import secrets
 
-from config import (
-    AI_TUTOR_MODEL,
-    DASHSCOPE_API_KEY,
-    MIMO_API_KEY,
-    MIMO_MODEL,
-    MIMO_URL_OPENAI,
-    QWEN_OMNI_MODEL,
-    QWEN_TEXT_MODEL,
-)
 from oj_modules.ai.client import (
-    _call_qwen_text,
-    _call_qwen_text_with_images,
-    _is_invalid_secret,
-    _resolve_dashscope_base_url,
+    _call_llm_text,
+    _call_llm_vision,
+    resolve_problem_llm_endpoint_snapshot,
 )
 from oj_modules.ai.parsing import (
     _extract_first_json_object_relaxed,
@@ -28,16 +18,6 @@ from oj_modules.ai.parsing import (
 from oj_modules.ai.transcription import _build_image_data_url
 
 
-_WRITTEN_GRADING_MODEL_SPECS = {
-    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "dashscope"),
-    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking": (str(QWEN_TEXT_MODEL or "").strip(), True, "dashscope"),
-    str(AI_TUTOR_MODEL or "").strip().lower(): (str(AI_TUTOR_MODEL or "").strip(), False, "dashscope"),
-    f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking": (str(AI_TUTOR_MODEL or "").strip(), True, "dashscope"),
-    # MIMO（xiaomimimo OpenAI 兼容端点）。enable_thinking 设为 None：不向普通 OpenAI 端点发送
-    # DashScope 专有的 thinking 参数，避免被拒。
-    "mimo": (str(MIMO_MODEL or "mimo-v2.5-pro").strip(), None, "mimo"),
-}
-_DEFAULT_WRITTEN_GRADING_MODEL_SPEC = f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
 DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
     "1) 5 分（满分）必须同时满足：\n"
     "- 关键结论都有明确推导，不跳步；\n"
@@ -50,45 +30,6 @@ DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
     "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
     "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。"
 )
-_DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC = str(QWEN_OMNI_MODEL or "").strip().lower() or str(QWEN_TEXT_MODEL or "").strip().lower()
-_PROGRAMMING_IMAGE_GRADING_MODEL_SPECS = {
-    str(QWEN_OMNI_MODEL or "").strip().lower(): (str(QWEN_OMNI_MODEL or "").strip(), False, "dashscope"),
-    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "dashscope"),
-}
-
-def _parse_written_grading_model_spec(model_spec):
-    key = str(model_spec or _DEFAULT_WRITTEN_GRADING_MODEL_SPEC).strip().lower()
-    return _WRITTEN_GRADING_MODEL_SPECS.get(
-        key,
-        _WRITTEN_GRADING_MODEL_SPECS[_DEFAULT_WRITTEN_GRADING_MODEL_SPEC],
-    )
-
-
-def _parse_programming_image_grading_model_spec(model_spec):
-    key = str(model_spec or _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC).strip().lower()
-    return _PROGRAMMING_IMAGE_GRADING_MODEL_SPECS.get(
-        key,
-        _PROGRAMMING_IMAGE_GRADING_MODEL_SPECS[_DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC],
-    )
-
-
-def _resolve_endpoint_for_written_grading_route(route_key):
-    # route_key=='mimo' → 走 MIMO（xiaomimimo）的 OpenAI 兼容端点；其余一律 DashScope。
-    if str(route_key or "").strip().lower() == "mimo":
-        api_key = MIMO_API_KEY
-        base_url = str(MIMO_URL_OPENAI or "").strip()
-        if _is_invalid_secret(api_key):
-            raise RuntimeError("未配置 MIMO_API_KEY。")
-        if not base_url:
-            raise RuntimeError("未配置 MIMO_URL_OPENAI。")
-        return str(api_key).strip(), base_url.rstrip('/')
-    api_key = DASHSCOPE_API_KEY
-    base_url = _resolve_dashscope_base_url()
-    if _is_invalid_secret(api_key):
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    if not str(base_url or "").strip():
-        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
-    return str(api_key).strip(), str(base_url).rstrip('/')
 
 def _repair_grading_json_text_locally(raw_text):
     text = str(raw_text or "").strip()
@@ -114,7 +55,7 @@ def _repair_grading_json_text_locally(raw_text):
     return text
 
 
-def _repair_grading_json_with_qwen_flash(raw_text):
+def _repair_grading_json_with_llm(raw_text, endpoint):
     prompt = (
         "你是 JSON 修复器。请把下面这段“接近 JSON 但格式错误”的文本整理成合法 JSON 对象。\n"
         "要求：\n"
@@ -125,26 +66,25 @@ def _repair_grading_json_with_qwen_flash(raw_text):
         "5. 若字段值中包含 LaTeX 命令，JSON 字符串里的反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
         f"待修复文本：\n```text\n{str(raw_text or '')}\n```"
     )
-    api_key, base_url = _resolve_endpoint_for_written_grading_route("dashscope")
-    return _call_qwen_text(
-        prompt_text=prompt,
-        api_key=api_key,
-        base_url=base_url,
+    return _call_llm_text(
+        prompt,
+        endpoint,
         timeout=90,
-        model=AI_TUTOR_MODEL,
-        enable_thinking=False,
-        resolve_endpoint=False,
     )
 
-def _parse_written_homework_grading_result(response_text):
+
+def _parse_written_homework_grading_result(response_text, repair_endpoint=None):
     data = _extract_first_json_object_relaxed(response_text)
     if not data:
         locally_repaired = _repair_grading_json_text_locally(response_text)
         if locally_repaired:
             data = _extract_first_json_object_relaxed(locally_repaired)
-    if not data:
+    if not data and repair_endpoint is not None:
         try:
-            model_repaired = _repair_grading_json_with_qwen_flash(response_text)
+            model_repaired = _repair_grading_json_with_llm(
+                response_text,
+                repair_endpoint,
+            )
             data = _extract_first_json_object_relaxed(model_repaired)
         except Exception:
             data = None
@@ -235,20 +175,30 @@ def _parse_program_output_image_grading_result(response_text):
     return score, comment
 
 
-def evaluate_program_output_image_with_ai(problem, student_username, image_path):
+def evaluate_program_output_image_with_ai(
+    problem,
+    student_username,
+    image_path,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     if not image_path or not os.path.isfile(image_path):
         raise RuntimeError("未找到可用于图片批改的输出图片。")
 
     fake_result = os.getenv("NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT")
     if fake_result is not None:
         return _parse_program_output_image_grading_result(fake_result)
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "output_image_grading_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
 
     grading_rules = str((problem or {}).get("programming_grading_prompt") or "").strip()
-    programming_grading_model = str((problem or {}).get("programming_grading_model") or _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC).strip().lower()
     if not grading_rules:
         grading_rules = "仅当图片内容与题目要求完全一致时记 1 分，否则记 0 分。"
-    model_name, enable_thinking, route_key = _parse_programming_image_grading_model_spec(programming_grading_model)
-    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
 
     prompt = (
         "你是编程题图片批改助手。你将收到教师评分标准、学生用户名，以及学生程序生成的一张图片。\n"
@@ -264,22 +214,30 @@ def evaluate_program_output_image_with_ai(problem, student_username, image_path)
         "3. `comment` 要具体说明得分原因或关键不符合点。"
     )
     image_data_url = _build_image_data_url(image_path)
-    response_text = _call_qwen_text_with_images(
-        prompt_text=prompt,
-        image_data_urls=[image_data_url],
-        api_key=api_key,
-        base_url=base_url,
+    response_text = _call_llm_vision(
+        prompt,
+        [image_data_url],
+        use_endpoint,
         timeout=180,
-        model=model_name,
-        enable_thinking=enable_thinking,
-        resolve_endpoint=False,
     )
     return _parse_program_output_image_grading_result(response_text)
 
 
-def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec=_DEFAULT_WRITTEN_GRADING_MODEL_SPEC):
-    model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
-    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
+def evaluate_written_homework_with_ai(
+    problem,
+    student_latex,
+    grading_model_spec=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
+    del grading_model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "text_grading_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
     problem_title = (problem or {}).get('title', '')
     problem_content = (problem or {}).get('content', '')
     written_grading_prompt = str((problem or {}).get('written_grading_prompt') or '').strip()
@@ -306,16 +264,15 @@ def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec
         f"【学生答案结束 STUDENT_ANSWER_{fence}】\n"
     )
 
-    response_text = _call_qwen_text(
+    response_text = _call_llm_text(
         prompt,
-        api_key=api_key,
-        base_url=base_url,
+        use_endpoint,
         timeout=300,
-        model=model_name,
-        enable_thinking=enable_thinking,
-        resolve_endpoint=False,
     )
-    score, deductions, comment = _parse_written_homework_grading_result(response_text)
+    score, deductions, comment = _parse_written_homework_grading_result(
+        response_text,
+        repair_endpoint=use_endpoint,
+    )
     final_comment = _format_written_homework_comment(score, deductions, comment)
     return score, final_comment
 
@@ -323,13 +280,21 @@ def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec
 def evaluate_written_homework_with_ai_from_images(
     problem,
     image_paths,
-    grading_model_spec=_DEFAULT_WRITTEN_GRADING_MODEL_SPEC,
+    grading_model_spec=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
 ):
     if not image_paths:
         raise RuntimeError("未找到可用于图片批改的页面图片。")
 
-    model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
-    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
+    del grading_model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "direct_image_grading_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
     image_data_urls = [_build_image_data_url(path) for path in image_paths]
 
     problem_title = (problem or {}).get('title', '')
@@ -353,16 +318,15 @@ def evaluate_written_homework_with_ai_from_images(
         "请直接阅读图片中的手写内容进行评分。"
     )
 
-    response_text = _call_qwen_text_with_images(
-        prompt_text=prompt,
-        image_data_urls=image_data_urls,
-        api_key=api_key,
-        base_url=base_url,
+    response_text = _call_llm_vision(
+        prompt,
+        image_data_urls,
+        use_endpoint,
         timeout=360,
-        model=model_name,
-        enable_thinking=enable_thinking,
-        resolve_endpoint=False,
     )
-    score, deductions, comment = _parse_written_homework_grading_result(response_text)
+    score, deductions, comment = _parse_written_homework_grading_result(
+        response_text,
+        repair_endpoint=use_endpoint,
+    )
     final_comment = _format_written_homework_comment(score, deductions, comment)
     return score, final_comment

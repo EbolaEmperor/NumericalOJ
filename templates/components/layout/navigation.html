@@ -66,6 +66,9 @@
       <a class="numoj-nav-item{% if request.blueprint == 'ai_detection' %} active{% endif %}" href="{{ url_for('ai_detection.dashboard') }}" title="AI 检测">
         {{ icon('ai') }}<span class="numoj-nav-label">AI 检测</span>
       </a>
+      <a class="numoj-nav-item{% if request.blueprint == 'admin_dynamic_config' %} active{% endif %}" href="{{ url_for('admin_dynamic_config.site_config') }}" title="全站配置">
+        {{ icon('site-config') }}<span class="numoj-nav-label">全站配置</span>
+      </a>
     </section>
     {% endif %}
 
@@ -192,6 +195,12 @@
           <a class="nav-link" href="{{ url_for('ai_detection.dashboard') }}">
             <i class="fas fa-shield-alt me-2"></i>
             AI 检测
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('admin_dynamic_config.site_config') }}">
+            <i class="fas fa-sliders-h me-2"></i>
+            全站配置
           </a>
         </li>
       {% endif %}

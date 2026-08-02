@@ -4,6 +4,9 @@
 {% block title %}注册 - Numerical OJ{% endblock %}
 
 {% block auth_content %}
+{% if not mail_configured %}
+<p class="numoj-auth-notice" role="status">站点尚未配置邮件服务，请联系管理员</p>
+{% endif %}
 <form class="numoj-auth-form" method="POST" action="{{ url_for('auth.register') }}"
   data-auth-register-form>
   <div class="numoj-auth-field">
@@ -25,7 +28,8 @@
       </span>
       <button class="numoj-auth-code-button" id="send-code-btn" type="button"
         data-auth-send-code
-        data-send-code-url="{{ url_for('auth.send_verification') }}">获取验证码</button>
+        data-send-code-url="{{ url_for('auth.send_verification') }}"
+        {% if not mail_configured %}disabled aria-disabled="true" title="站点尚未配置邮件服务，请联系管理员"{% endif %}>获取验证码</button>
     </span>
     <p class="numoj-auth-field-status" data-auth-code-status aria-live="polite" hidden></p>
   </div>
@@ -100,7 +104,7 @@
     </div>
   </div>
 
-  <button class="numoj-auth-primary" type="submit">注册</button>
+  <button class="numoj-auth-primary" type="submit" {% if not mail_configured %}disabled aria-disabled="true"{% endif %}>注册</button>
 </form>
 
 <div class="numoj-auth-secondary is-centered">

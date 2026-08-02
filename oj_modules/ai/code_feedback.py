@@ -3,19 +3,11 @@
 import json
 import os
 
-import requests
-
-from config import (
-    AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT,
-    AI_TUTOR_MODEL,
-    DASHSCOPE_API_KEY,
-    QWEN_OMNI_MODEL,
-)
+from config import AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT
 from oj_modules.ai.client import (
-    OpenAI,
-    _call_qwen_text,
-    _extract_text_from_response_content,
-    _resolve_dashscope_base_url,
+    _call_llm_text,
+    _call_llm_vision,
+    resolve_llm_endpoint_snapshot,
 )
 from oj_modules.ai.parsing import _extract_first_json_object
 from oj_modules.ai.transcription import _build_image_data_url
@@ -181,56 +173,13 @@ def _find_submission_output_image_path(submission_id, test_index, test_points=No
     return None
 
 
-def _call_qwen_omni_with_image(prompt_text, image_data_url, api_key, base_url, timeout=180):
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image_url", "image_url": {"url": image_data_url}},
-            {"type": "text", "text": str(prompt_text or "").strip()},
-        ],
-    }]
-    model = str(QWEN_OMNI_MODEL)
-
-    if OpenAI is not None:
-        try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                modalities=["text"],
-                stream=False,
-            )
-            choices = getattr(resp, "choices", None) or []
-            if choices and getattr(choices[0], "message", None):
-                text = _extract_text_from_response_content(choices[0].message.content).strip()
-                if text:
-                    return text
-        except Exception as e:
-            print(f"[Image Analysis] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": model,
-        "messages": messages,
-        "modalities": ["text"],
-    }
-    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
-    resp.raise_for_status()
-    result = resp.json()
-    choices = result.get("choices") or []
-    if not choices:
-        raise RuntimeError("图片分析模型未返回有效结果。")
-    content = (choices[0].get("message") or {}).get("content")
-    text = _extract_text_from_response_content(content).strip()
-    if not text:
-        raise RuntimeError("图片分析模型未返回可用文本。")
-    return text
-
-
-def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_points):
+def _analyze_image_mismatch_against_problem(
+    problem_text,
+    submission_id,
+    test_points,
+    *,
+    endpoint=None,
+):
     if not submission_id:
         return "", None
     points = test_points if isinstance(test_points, list) else []
@@ -289,16 +238,13 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
         f"[题目要求]\n{problem_text}"
     )
 
-    api_key = DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        return "", None
-    base_url = _resolve_dashscope_base_url()
+    if endpoint is None:
+        raise RuntimeError("代码图片分析尚未解析端点快照。")
     try:
-        analysis = _call_qwen_omni_with_image(
-            prompt_text=prompt,
-            image_data_url=image_url,
-            api_key=api_key,
-            base_url=base_url,
+        analysis = _call_llm_vision(
+            prompt,
+            [image_url],
+            endpoint,
             timeout=int(AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT),
         )
     except Exception as e:
@@ -308,7 +254,14 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
     return str(analysis or "").strip(), used_idx
 
 
-def analyze_submission_output_image_against_problem(problem_text, submission_id, test_points):
+def analyze_submission_output_image_against_problem(
+    problem_text,
+    submission_id,
+    test_points,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     text = str(problem_text or "").strip()
     points = test_points if isinstance(test_points, list) else []
     if not text or not points or not submission_id:
@@ -324,10 +277,24 @@ def analyze_submission_output_image_against_problem(problem_text, submission_id,
             "analysis": "",
             "test_index": None,
         }
+    if endpoint is None and endpoint_id is None:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key="code_image_analysis",
+            allowed_categories={"omni", "vision"},
+            purpose="代码图片分析",
+        )
+    else:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            endpoint,
+            endpoint_id=endpoint_id,
+            allowed_categories={"omni", "vision"},
+            purpose="代码图片分析",
+        )
     analysis, used_idx = _analyze_image_mismatch_against_problem(
         problem_text=text,
         submission_id=submission_id,
         test_points=points,
+        endpoint=use_endpoint,
     )
     return {
         "has_output_image": True,
@@ -345,6 +312,11 @@ def generate_ai_code_marks_from_submission_context(
     test_points=None,
     max_issues=8,
     timeout=240,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+    image_endpoint=None,
+    image_endpoint_id=None,
 ):
     problem_text = str(problem_content or "").strip()
     code_text = str(user_code or "").replace('\r\n', '\n').replace('\r', '\n')
@@ -352,6 +324,45 @@ def generate_ai_code_marks_from_submission_context(
         raise RuntimeError("缺少题目内容")
     if not code_text.strip():
         raise RuntimeError("缺少用户代码")
+    if endpoint is None and endpoint_id is None:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key="ai_code_annotation",
+            allowed_categories={"omni", "text"},
+            purpose="AI 代码批注",
+        )
+    else:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            endpoint,
+            endpoint_id=endpoint_id,
+            allowed_categories={"omni", "text"},
+            purpose="AI 代码批注",
+        )
+
+    test_points_rows = (
+        test_points
+        if isinstance(test_points, list)
+        else _parse_test_points_text(test_points_text)
+    )
+    needs_image_analysis = any(
+        _to_bool((point or {}).get("has_output_image"))
+        and str((point or {}).get("status") or "").strip().lower() != "accepted"
+        for point in test_points_rows
+    )
+    use_image_endpoint = None
+    if needs_image_analysis:
+        if image_endpoint is None and image_endpoint_id is None:
+            use_image_endpoint = resolve_llm_endpoint_snapshot(
+                feature_key="code_image_analysis",
+                allowed_categories={"omni", "vision"},
+                purpose="代码图片分析",
+            )
+        else:
+            use_image_endpoint = resolve_llm_endpoint_snapshot(
+                image_endpoint,
+                endpoint_id=image_endpoint_id,
+                allowed_categories={"omni", "vision"},
+                purpose="代码图片分析",
+            )
 
     repo_files = repository_files if isinstance(repository_files, dict) else {}
     repository_context = ""
@@ -363,16 +374,17 @@ def generate_ai_code_marks_from_submission_context(
     numbered_lines = [f"{idx:4d}| {line}" for idx, line in enumerate(code_text.split('\n'), start=1)]
     numbered_code = "\n".join(numbered_lines)
 
-    test_points_rows = test_points if isinstance(test_points, list) else _parse_test_points_text(test_points_text)
     image_mismatch_analysis, image_test_index = _analyze_image_mismatch_against_problem(
         problem_text=problem_text,
         submission_id=submission_id,
         test_points=test_points_rows,
+        endpoint=use_image_endpoint,
     )
     image_context = ""
     if image_mismatch_analysis:
         image_context = (
-            f"\n\n[输出图片一致性分析（由 {QWEN_OMNI_MODEL} 基于测试点#{image_test_index} 输出图片生成）]\n"
+            f"\n\n[输出图片一致性分析（由 {use_image_endpoint.model} "
+            f"基于测试点#{image_test_index} 输出图片生成）]\n"
             f"{image_mismatch_analysis}\n"
         )
 
@@ -412,11 +424,11 @@ def generate_ai_code_marks_from_submission_context(
 {image_context}
 """
 
-    api_key = DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    base_url = _resolve_dashscope_base_url()
-    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout, model=AI_TUTOR_MODEL)
+    response_text = _call_llm_text(
+        prompt,
+        use_endpoint,
+        timeout=timeout,
+    )
     data_obj = _extract_first_json_object(response_text)
     if not isinstance(data_obj, dict):
         raise RuntimeError(f"模型返回无法解析为 JSON：{response_text[:300]}")

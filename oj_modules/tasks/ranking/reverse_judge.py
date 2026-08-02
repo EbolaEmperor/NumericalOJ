@@ -83,6 +83,7 @@ from oj_modules.ranking.agent_judge.db import (
     HARNESS_CODEX,
     HARNESS_OPENCODE,
     HARNESS_PI,
+    infer_agent_endpoint_protocol,
     list_agent_judge_endpoints,
     list_quality_gate_endpoints,
     normalize_endpoint_model_capabilities,
@@ -124,13 +125,10 @@ def _normalize_claude_effort(value, fallback=''):
 # =abort，未输出任何工具调用或最终回复），让 agent_answer 误判 passed、提交空
 # 答案给 ai_judge 跑出 0 分。下面两个 knob 控制 reverse_solve 的努力级别：默认
 # 用 DEFAULT_EFFORT（保留成本），仅当检测到 abort 才升级到 RETRY_EFFORT 重试
-# 一次。两个值都需是 claude CLI 的 --effort 合法值（low/medium/high/xhigh/max）。
-REVERSE_DEFAULT_EFFORT = _normalize_claude_effort(
-    getattr(_cfg, 'REVERSE_JUDGE_DEFAULT_EFFORT', 'high'), 'high',
-)
-REVERSE_RETRY_EFFORT = _normalize_claude_effort(
-    getattr(_cfg, 'REVERSE_JUDGE_RETRY_EFFORT', 'max'), 'max',
-)
+# 一次。两个实现内部常量都需是 claude CLI 的 --effort 合法值
+#（low/medium/high/xhigh/max），不从启动配置或全站配置读取。
+REVERSE_DEFAULT_EFFORT = _normalize_claude_effort('high', 'high')
+REVERSE_RETRY_EFFORT = _normalize_claude_effort('max', 'max')
 REVERSE_PROGRESS_TTL = int(getattr(_cfg, 'REVERSE_JUDGE_PROGRESS_TTL', 21600))
 REVERSE_WORKSPACE_ROOT = getattr(
     _cfg, 'REVERSE_JUDGE_WORKSPACE_ROOT', 'ranking_uploads/reverse_judge_workspace',
@@ -202,10 +200,9 @@ REVERSE_TRACE_MIN_DELETE_AGE_SECONDS = max(
     3600, int(getattr(_cfg, 'REVERSE_TRACE_MIN_DELETE_AGE_SECONDS', 6 * 3600)),
 )
 REVERSE_FORCE_FINALIZE_TIMEOUT_DEFAULT = 180
-REVERSE_FORCE_FINALIZE_PROMPT = getattr(
-    _cfg, 'REVERSE_FORCE_FINALIZE_PROMPT',
+REVERSE_FORCE_FINALIZE_PROMPT = (
     '无论你当前已经实现了什么，无论正确性与性能是否达标，都请停下你的工作。'
-    '现在请立刻整理代码，形成一个可运行的交付物。',
+    '现在请立刻整理代码，形成一个可运行的交付物。'
 )
 _HARNESS_TIMEOUT_EXIT_CODES = {124, 137}
 _TERMINAL_STATUSES = {'Accepted', 'Error'}
@@ -1030,28 +1027,19 @@ def _reverse_proxy_target_url(upstream, method, raw_path):
     ))
 
 
-def _reverse_proxy_upstream_headers(headers, real_key, harness):
+def _reverse_proxy_upstream_headers(headers, real_key, harness, protocol=None):
     forwarded = {}
-    incoming_credential_headers = set()
     for name, value in (headers.items() if headers is not None else ()):
         lowered = str(name).lower()
         if lowered in _REVERSE_PROXY_HOP_HEADERS:
             continue
         if lowered in _REVERSE_PROXY_CREDENTIAL_HEADERS:
-            incoming_credential_headers.add(lowered)
             continue
         forwarded[str(name)] = str(value)
-    if 'authorization' in incoming_credential_headers:
-        forwarded['Authorization'] = f'Bearer {real_key}'
-    if 'x-api-key' in incoming_credential_headers:
+    if infer_agent_endpoint_protocol(harness, protocol) == 'anthropic':
         forwarded['x-api-key'] = str(real_key)
-    if 'api-key' in incoming_credential_headers:
-        forwarded['api-key'] = str(real_key)
-    if not incoming_credential_headers:
-        if str(harness or '').strip().lower() == HARNESS_CLAUDE_CODE:
-            forwarded['x-api-key'] = str(real_key)
-        else:
-            forwarded['Authorization'] = f'Bearer {real_key}'
+    else:
+        forwarded['Authorization'] = f'Bearer {real_key}'
     return forwarded
 
 
@@ -1188,7 +1176,7 @@ class _ReverseEndpointProxy:
             self.thread.join(timeout=5)
 
 
-def _start_reverse_endpoint_proxy(base_url, api_key, harness):
+def _start_reverse_endpoint_proxy(base_url, api_key, harness, protocol=None):
     """启动 attempt 内有效的模型代理，确保真实端点凭证不进入 Agent 容器。"""
     upstream = urlsplit(str(base_url or '').strip())
     real_key = str(api_key or '')
@@ -1254,7 +1242,7 @@ def _start_reverse_endpoint_proxy(base_url, api_key, harness):
                 return
 
             headers = _reverse_proxy_upstream_headers(
-                self.headers, real_key, harness,
+                self.headers, real_key, harness, protocol,
             )
 
             request_obj = urllib.request.Request(
@@ -1423,8 +1411,10 @@ while True:
 
 
 def _start_isolated_quality_gate_proxy(
-        base_url, api_key, harness, network_name, relay_name):
-    endpoint_proxy = _start_reverse_endpoint_proxy(base_url, api_key, harness)
+        base_url, api_key, harness, network_name, relay_name, protocol=None):
+    endpoint_proxy = _start_reverse_endpoint_proxy(
+        base_url, api_key, harness, protocol,
+    )
     target = urlsplit(endpoint_proxy.local_base_url)
     if target.hostname != '127.0.0.1' or not target.port:
         endpoint_proxy.close()
@@ -2411,7 +2401,12 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
     except Exception:
         pass
     try:
-        endpoint_proxy = _start_reverse_endpoint_proxy(base_url, api_key, harness)
+        endpoint_proxy = _start_reverse_endpoint_proxy(
+            base_url,
+            api_key,
+            harness,
+            endpoint.get('protocol'),
+        )
     except Exception as exc:
         return {
             'ok': False,
@@ -3231,6 +3226,7 @@ def _run_quality_gate_agent(
         )
         proxy = _start_isolated_quality_gate_proxy(
             base_url, api_key, harness, network_name, relay_name,
+            protocol=endpoint.get('protocol'),
         )
         sensitive_values.extend([
             proxy.token, proxy.container_base_url,

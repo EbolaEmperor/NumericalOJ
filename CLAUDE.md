@@ -57,12 +57,12 @@ celery -A oj.celery worker -Q judge -c 16
 
 仓库尚未提供带哈希的完整传递依赖锁文件；不得把直接 pin 描述为位级可复现构建，后续应在 Python 3.12 上生成并由 CI 校验 lock。
 
-`config.py` 是受版本控制的严格类型桥接层，默认值和完整键清单位于 `.env.tmpl`；部署时复制为 Git 忽略的 `.env` 并填写真实值。配置优先级为“已有进程环境变量 > `.env` > `.env.tmpl`”，字符串使用 JSON 双引号，布尔值使用 `true` / `false`，列表使用 JSON 数组。`config_local.py` 已停用，不得把密钥写入 tracked 文件。
+`config.py` 是受版本控制的严格类型桥接层；`.env.tmpl` 只包含 `SECRET_KEY`、五项 `MYSQL_*`、三项 `REDIS_*` 共九个部署必填键。高级运行参数及类型化代码默认值完整记录在 `docs/runtime-configuration.md`，仍可通过 `.env` 或进程环境覆盖。配置优先级为“已有进程环境变量 > `.env` > 代码默认值”，字符串使用 JSON 双引号，布尔值使用 `true` / `false`，列表使用 JSON 数组。`config_local.py` 已停用，不得把密钥写入 tracked 文件。
 
 关键设置：
 
 - `MYSQL_*`、`REDIS_*`：基础设施；
-- `DASHSCOPE_*`、`QWEN_*`、`AI_TUTOR_MODEL`：AI 调用；
+- LLM、Embedding、SMTP 与 WebSearch MCP：只从 MySQL 动态配置读取，不得重新增加环境变量回退；
 - `REPOSITORY_*`：代码仓库解析、embedding 与 FAISS；
 - `JUDGER_DOCKER_*`：普通判题镜像和容器资源；
 - `AGENT_JUDGE_*`：Agent-as-Judge 镜像、资源与超时；
@@ -123,7 +123,8 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 - `oj_modules/tasks/`：Celery 适配层；处理重试、进度、锁和后台工作流，复杂任务按 `agent/`、`ranking/` 等子包组织；组合根从 `tasks/registry.py` 聚合注册，普通子模块导入不得触发全任务加载。
 - `oj_modules/classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/`：领域服务及其数据访问和事务边界。
 - `oj_modules/editor/`、`judging/`、`repository/`：编辑器、普通判题、容器执行和代码仓库能力。
-- `oj_modules/ai/`、`integrations/`：模型调用应用能力与外部服务协议适配。
+- `oj_modules/ai/`、`integrations/`：模型调用应用能力与外部服务协议适配；统一 LLM 协议位于 `ai/endpoints.py`。
+- `oj_modules/site_config/`：全站动态配置的持久化、事务校验与连通性测试；HTTP 管理适配仍位于 `routes/`。
 - `oj_modules/security/`、`shared/`：安全策略与跨域通用 helper；领域专有逻辑不得为了复用表象放入 `shared/`。
 - `oj_modules/infrastructure/`：MySQL、Redis 等基础设施连接原语，不放业务查询。
 - `oj_modules/runtime/`：显式停机恢复、watchdog 与运行期编排；不得在 import 时执行恢复或投递任务。
@@ -141,6 +142,7 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 - `classroom/membership.py`：班级成员关系与人数计数的事务边界；
 - `submissions/written_artifacts.py`：人工书面作业不可变代次、DB 快照 CAS、发布 journal 与崩溃恢复；
 - `infrastructure/mysql.safe_table_name()`：动态 SQL 标识符校验。
+- `site_config/services.py`：LLM、Embedding、SMTP 与 WebSearch 动态配置的唯一数据入口。
 
 禁止在路由/任务里复制这些能力。代码只导入规范路径；仓库不提供根级旧模块或旧任务模块的导入门面。三个以上同前缀同职责文件应考虑归入子目录并简化名称，但不要为目录整齐引入无意义实体。
 

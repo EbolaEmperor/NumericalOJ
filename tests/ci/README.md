@@ -99,7 +99,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 | `Dockerfile` | 基于 `python:3.12-slim-bookworm` 构建测试镜像：安装 `gcc/g++/build-essential`、`octave`、`coreutils`、`default-mysql-client`、`ca-certificates` 和 Python 依赖；构建时校验 Python/pip 基线，并用 `config.ci.py` 覆盖 `/app/config.py`。 |
 | `docker-compose.local.yml` | 推荐的本地/非生产 CI compose 文件；编排独立 `mysql`、`redis`、`test`，不挂载生产路径。 |
 | `docker-compose.ci.yml` | 历史主机专用 compose 文件，包含宿主 MKL 挂载；日常 CI 优先使用 `docker-compose.local.yml`，且任何 compose 文件都不能在 `why-server` / host `computing` 上运行。 |
-| `config.ci.py` | 自包含 CI 配置。MySQL/Redis 指向 compose 服务名 `mysql`/`redis`，使用 `myojdb_test` / Redis DB 15；AI/SMTP 使用测试占位值，测试中网络 AI 通常 mock 或 skip。 |
+| `config.ci.py` | 自包含 CI 启动配置。MySQL/Redis 指向 compose 服务名 `mysql`/`redis`，使用 `myojdb_test` / Redis DB 15；LLM、邮件和搜索配置由测试数据库及 fixture 提供，外部网络调用通常 mock 或 skip。 |
 | `run-ci.sh` | 在容器或 GitHub runner 上逐模块顺序跑 pytest（默认 unit -> db -> CLI e2e，也可传入模块路径），逐模块打印结果并写 JUnit XML；任一模块失败则整体非零退出。 |
 | `INSTALL-DOCKER.md` | Docker 安装记录和排错参考；不要把 `why-server` / `computing` 作为 CI 运行目标。 |
 

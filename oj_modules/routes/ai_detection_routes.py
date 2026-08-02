@@ -15,7 +15,7 @@ from oj_modules.ai_detection.task_tracker import (
     TASK_TYPE_LABELS,
 )
 from oj_modules.ai_detection.presentation import decode_detection_result_details
-from oj_modules.ai_detection.llm_detector import get_available_models
+from oj_modules.ai_detection.llm_detector import get_available_endpoints
 from oj_modules.db_services import (
     delete_ai_detection_results_by_task,
     get_ai_detection_dashboard_summary,
@@ -89,16 +89,21 @@ def _parse_filters_from_request():
         'score_min':    _int_or_none('score_min'),
         'score_max':    _int_or_none('score_max'),
         'deduplicate':  str(data.get('deduplicate', '1')).strip() not in ('0', 'false', 'False'),
-        'lang':         'matlab',
     }
 
 
-def _get_model_id_from_request():
-    """Extract and validate model_id from current request (JSON or form)."""
+def _get_endpoint_id_from_request():
+    """读取本次任务显式选择的全局端点；不存在或类别错误时拒绝。"""
     data = request.get_json(silent=True) or request.form
-    model_id = str(data.get('model_id', '') or '').strip()
-    valid = {m['id'] for m in get_available_models() if m['available']}
-    return model_id if model_id in valid else 'qwen'
+    raw = data.get('endpoint_id')
+    try:
+        endpoint_id = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError('请选择本次 AI 检测使用的全局端点') from None
+    valid = {int(endpoint['id']) for endpoint in get_available_endpoints()}
+    if endpoint_id <= 0 or endpoint_id not in valid:
+        raise ValueError('所选全局端点不存在，或不是纯文本/全模态端点')
+    return endpoint_id
 
 
 @ai_detection_bp.route('/admin/ai_detection')
@@ -111,8 +116,7 @@ def dashboard():
     classes = get_all_classes()
     problems = [
         p for p in get_all_problems()
-        if (p.get('lang') or 'matlab').strip().lower() == 'matlab'
-        and int(p.get('type') or 1) == 1
+        if int(p.get('type') or 1) == 1
     ]
     problems.sort(key=lambda p: p['id'])
 
@@ -122,6 +126,7 @@ def dashboard():
         summary=summary,
         classes=classes,
         problems=problems,
+        ai_detection_endpoints=get_available_endpoints(),
         strip_tags=_strip_problem_title_tags,
     )
 
@@ -166,8 +171,11 @@ def run_filtered_detection():
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
     filters = _parse_filters_from_request()
-    model_id = _get_model_id_from_request()
-    task = _detect_filtered_task.delay(filters, model_id)
+    try:
+        endpoint_id = _get_endpoint_id_from_request()
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    task = _detect_filtered_task.delay(filters, endpoint_id)
     parts = []
     if filters.get('class_en'):   parts.append(f"班级={filters['class_en']}")
     if filters.get('username'):   parts.append(f"用户={filters['username']}")
@@ -178,7 +186,8 @@ def run_filtered_detection():
         hi = filters.get('score_max', '')
         parts.append(f"得分{lo}~{hi}")
     parts.append("去重" if filters.get('deduplicate') else "不去重")
-    record_task_submitted(task.id, "filtered", "  ".join(parts) if parts else "全部 MATLAB 提交")
+    parts.append(f"端点={endpoint_id}")
+    record_task_submitted(task.id, "filtered", "  ".join(parts) if parts else "全部编程提交")
     return jsonify({
         'success': True,
         'message': '已提交检测任务，请稍后刷新页面查看结果',
@@ -209,6 +218,7 @@ def problem_detail(problem_id):
         problem=problem,
         results=results,
         risk_filter=risk_filter,
+        ai_detection_endpoints=get_available_endpoints(),
         strip_tags=_strip_problem_title_tags,
     )
 
@@ -228,6 +238,7 @@ def student_detail(username):
         user=user,
         view='student',
         target_username=username,
+        ai_detection_endpoints=get_available_endpoints(),
         results=results,
         strip_tags=_strip_problem_title_tags,
     )
@@ -246,8 +257,11 @@ def run_batch_detection(problem_id):
     if _detect_batch_task is None:
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
-    model_id = _get_model_id_from_request()
-    task = _detect_batch_task.delay(problem_id, model_id)
+    try:
+        endpoint_id = _get_endpoint_id_from_request()
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    task = _detect_batch_task.delay(problem_id, endpoint_id)
     record_task_submitted(task.id, "batch", f"题目={problem_id} {_strip_problem_title_tags(problem.get('title',''))}")
     return jsonify({
         'success': True,
@@ -265,8 +279,11 @@ def run_single_detection(submission_id):
     if _detect_single_task is None:
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
-    model_id = _get_model_id_from_request()
-    task = _detect_single_task.delay(submission_id, model_id)
+    try:
+        endpoint_id = _get_endpoint_id_from_request()
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    task = _detect_single_task.delay(submission_id, endpoint_id)
     record_task_submitted(task.id, "single", f"提交={submission_id}")
     return jsonify({
         'success': True,
@@ -284,8 +301,11 @@ def run_user_detection(username):
     if _detect_user_task is None:
         return jsonify({'success': False, 'message': 'Detection task not registered'}), 500
 
-    model_id = _get_model_id_from_request()
-    task = _detect_user_task.delay(username, model_id)
+    try:
+        endpoint_id = _get_endpoint_id_from_request()
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    task = _detect_user_task.delay(username, endpoint_id)
     record_task_submitted(task.id, "user", f"用户={username}")
     return jsonify({
         'success': True,
@@ -310,7 +330,8 @@ def api_available_models():
     user, err = _require_admin()
     if err:
         return jsonify({'success': False, 'message': 'Unauthorized'}), 401
-    return jsonify({'success': True, 'models': get_available_models()})
+    endpoints = get_available_endpoints()
+    return jsonify({'success': True, 'endpoints': endpoints, 'models': endpoints})
 
 
 @ai_detection_bp.route('/admin/ai_detection/api/summary')

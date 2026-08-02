@@ -3,9 +3,12 @@
 
 """Promptly 模式：学生 prompt 生成代码后进入普通评测流水线。"""
 
+import os
+
 from celery.exceptions import SoftTimeLimitExceeded
 
 from oj_modules.ai.promptly import generate_promptly_code, review_promptly_student_prompt
+from oj_modules.ai.client import resolve_problem_llm_endpoint_snapshot
 from oj_modules.db_services import (
     get_problem,
     get_submission_by_id,
@@ -63,10 +66,24 @@ def register_promptly_generate_submission_task(celery_app, evaluate_submission_t
                 score=0,
                 test_points=[],
             )
+            # 两个题目级软链接都在任务真正开始时解析成不可变快照。这样管理员
+            # 随后编辑或删除全局端点，只会影响下一次运行。
+            review_endpoint = None
+            if os.getenv("NUMOJ_FAKE_PROMPTLY_REVIEW_REQUIRED_TERMS") is None:
+                review_endpoint = resolve_problem_llm_endpoint_snapshot(
+                    problem,
+                    "review_endpoint_id",
+                )
+            code_endpoint = None
+            if os.getenv("NUMOJ_FAKE_PROMPTLY_CODE") is None:
+                code_endpoint = resolve_problem_llm_endpoint_snapshot(
+                    problem,
+                    "code_generation_endpoint_id",
+                )
             nice, reply = review_promptly_student_prompt(
                 problem=problem,
                 student_prompt=prompt_text,
-                model_spec=problem.get("programming_grading_model"),
+                endpoint=review_endpoint,
             )
             if not nice:
                 message = reply or "请补充更具体的算法思路。"
@@ -76,7 +93,7 @@ def register_promptly_generate_submission_task(celery_app, evaluate_submission_t
             generated_code = generate_promptly_code(
                 problem=problem,
                 student_prompt=prompt_text,
-                model_spec=problem.get("programming_grading_model"),
+                endpoint=code_endpoint,
             )
             update_submission_generated_code(submission_id, generated_code, status="Pending")
             if evaluate_submission_task is not None:

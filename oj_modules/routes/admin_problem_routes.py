@@ -8,30 +8,33 @@ import tempfile
 import zipfile
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
-
 from oj_modules.db_services import (
     create_problem,
     get_db_connection,
     get_problem,
     get_user_by_username,
-    normalize_programming_grading_model,
     normalize_programming_output_filename,
-    normalize_written_grading_model,
     safe_table_name,
     update_problem,
 )
 from oj_modules.problems.grading import (
-    DEFAULT_PROGRAMMING_GRADING_MODEL as _DEFAULT_PROGRAMMING_GRADING_MODEL,
-    DEFAULT_WRITTEN_GRADING_MODEL as _DEFAULT_WRITTEN_GRADING_MODEL,
     DEFAULT_WRITTEN_GRADING_PROMPT as _DEFAULT_WRITTEN_GRADING_PROMPT,
-    PROGRAMMING_GRADING_MODEL_OPTIONS as _PROGRAMMING_GRADING_MODEL_OPTIONS,
-    WRITTEN_GRADING_MODEL_OPTIONS as _WRITTEN_GRADING_MODEL_OPTIONS,
+)
+from oj_modules.problems.llm_bindings import (
+    ProblemLlmBindingsError,
+    get_problem_llm_endpoint_candidates as _problem_llm_endpoint_candidates,
+    problem_llm_bindings_from_form,
 )
 from oj_modules.problems.testdata import TestdataValidationError, import_testdata_zip
 
 
 admin_problem_bp = Blueprint('admin_problem', __name__)
 ALLOWED_EXTENSIONS = {'zip'}
+def _problem_llm_form_context(bindings=None):
+    return {
+        "llm_endpoint_bindings": dict(bindings or {}),
+        "llm_endpoint_candidates": _problem_llm_endpoint_candidates(),
+    }
 
 
 def _wants_json_response():
@@ -88,11 +91,6 @@ def parse_written_grading_mode_from_form(form, default=1):
     return mode if mode in (1, 2, 3, 4) else int(default)
 
 
-def parse_written_grading_model_from_form(form, default=_DEFAULT_WRITTEN_GRADING_MODEL):
-    raw = str(form.get('written_grading_model', default) or default).strip().lower()
-    return normalize_written_grading_model(raw, default=default)
-
-
 def parse_written_grading_prompt_from_form(form):
     text = str(form.get('written_grading_prompt') or '').strip()
     if len(text) > 12000:
@@ -112,11 +110,6 @@ def parse_programming_grading_mode_from_form(form, default=1):
 def parse_programming_output_filename_from_form(form, default="output.png"):
     raw = str(form.get('programming_output_filename') or default).strip()
     return normalize_programming_output_filename(raw, default=default)
-
-
-def parse_programming_grading_model_from_form(form, default=_DEFAULT_PROGRAMMING_GRADING_MODEL):
-    raw = str(form.get('programming_grading_model', default) or default).strip().lower()
-    return normalize_programming_grading_model(raw, default=default)
 
 
 def _form_has_promptly_review_fields(form):
@@ -200,15 +193,29 @@ def add_problem():
         forbidden_func = request.form.get('forbidden_func', '').strip()
         problem_type = request.form.get('type')
         programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=1)
-        programming_grading_model = parse_programming_grading_model_from_form(request.form, default=_DEFAULT_PROGRAMMING_GRADING_MODEL)
         programming_output_filename = parse_programming_output_filename_from_form(request.form, default="output.png")
         programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         written_grading_mode = parse_written_grading_mode_from_form(request.form, default=1)
-        written_grading_model = parse_written_grading_model_from_form(request.form, default=_DEFAULT_WRITTEN_GRADING_MODEL)
         written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
         lang = (request.form.get('lang') or 'matlab').strip().lower()
         time_limit_ms = parse_time_limit_ms_from_form(request.form)
         submission_limit = int(request.form.get('submission_limit', 10))
+        try:
+            llm_endpoint_bindings = problem_llm_bindings_from_form(
+                request.form,
+                problem_type=problem_type,
+                programming_grading_mode=programming_grading_mode,
+            )
+        except ProblemLlmBindingsError as exc:
+            if _wants_json_response():
+                return jsonify(success=False, message=str(exc)), 400
+            return render_template(
+                'problems/create.html',
+                user=user,
+                error_message=str(exc),
+                default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
+                **_problem_llm_form_context(),
+            ), 400
 
         if not title or not content:
             if _wants_json_response():
@@ -217,11 +224,8 @@ def add_problem():
                 'problems/create.html',
                 user=user,
                 error_message="标题和内容不能为空",
-                programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
-                default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
-                written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
-                default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
                 default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
+                **_problem_llm_form_context(llm_endpoint_bindings),
             )
 
         problem_id = create_problem(
@@ -235,12 +239,11 @@ def add_problem():
             time_limit_ms,
             submission_limit,
             programming_grading_mode,
-            programming_grading_model,
-            programming_output_filename,
-            programming_grading_prompt,
-            written_grading_mode,
-            written_grading_model,
-            written_grading_prompt,
+            programming_output_filename=programming_output_filename,
+            programming_grading_prompt=programming_grading_prompt,
+            written_grading_mode=written_grading_mode,
+            written_grading_prompt=written_grading_prompt,
+            llm_endpoint_bindings=llm_endpoint_bindings,
         )
         if _wants_json_response():
             return jsonify(success=True, problem_id=problem_id, message="题目创建成功")
@@ -250,11 +253,8 @@ def add_problem():
         'problems/create.html',
         user=user,
         error_message=None,
-        programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
-        default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
-        written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
-        default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
         default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
+        **_problem_llm_form_context(),
     )
 
 
@@ -287,16 +287,29 @@ def edit_problem(problem_id):
         new_submission_limit = int(request.form.get('submission_limit', problem.get('submission_limit', 10)))
         default_programming_mode = problem.get('programming_grading_mode', 1)
         new_programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=default_programming_mode)
-        default_programming_model = problem.get('programming_grading_model', _DEFAULT_PROGRAMMING_GRADING_MODEL)
-        new_programming_grading_model = parse_programming_grading_model_from_form(request.form, default=default_programming_model)
         default_output_filename = problem.get('programming_output_filename', 'output.png')
         new_programming_output_filename = parse_programming_output_filename_from_form(request.form, default=default_output_filename)
         new_programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         default_mode = problem.get('written_grading_mode', 1)
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)
-        default_model = problem.get('written_grading_model', _DEFAULT_WRITTEN_GRADING_MODEL)
-        new_written_grading_model = parse_written_grading_model_from_form(request.form, default=default_model)
         new_written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
+        try:
+            new_llm_endpoint_bindings = problem_llm_bindings_from_form(
+                request.form,
+                problem_type=problem.get('type'),
+                programming_grading_mode=new_programming_grading_mode,
+                existing=problem.get('llm_endpoint_bindings'),
+            )
+        except ProblemLlmBindingsError as exc:
+            if _wants_json_response():
+                return jsonify(success=False, message=str(exc)), 400
+            return render_template(
+                'problems/edit.html',
+                problem=problem,
+                user=user,
+                error_message=str(exc),
+                **_problem_llm_form_context(problem.get('llm_endpoint_bindings')),
+            ), 400
 
         if not new_title or not new_content:
             return render_template(
@@ -304,10 +317,7 @@ def edit_problem(problem_id):
                 problem=problem,
                 user=user,
                 error_message="标题和内容不能为空",
-                programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
-                default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
-                written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
-                default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+                **_problem_llm_form_context(new_llm_endpoint_bindings),
             )
 
         update_problem(
@@ -321,12 +331,11 @@ def edit_problem(problem_id):
             new_time_limit_ms,
             new_submission_limit,
             new_programming_grading_mode,
-            new_programming_grading_model,
-            new_programming_output_filename,
-            new_programming_grading_prompt,
-            new_written_grading_mode,
-            new_written_grading_model,
-            new_written_grading_prompt,
+            new_programming_output_filename=new_programming_output_filename,
+            new_programming_grading_prompt=new_programming_grading_prompt,
+            new_written_grading_mode=new_written_grading_mode,
+            new_written_grading_prompt=new_written_grading_prompt,
+            new_llm_endpoint_bindings=new_llm_endpoint_bindings,
         )
         return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
@@ -335,10 +344,7 @@ def edit_problem(problem_id):
         problem=problem,
         user=user,
         error_message=None,
-        programming_grading_model_options=_PROGRAMMING_GRADING_MODEL_OPTIONS,
-        default_programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
-        written_grading_model_options=_WRITTEN_GRADING_MODEL_OPTIONS,
-        default_written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
+        **_problem_llm_form_context(problem.get('llm_endpoint_bindings')),
     )
 
 

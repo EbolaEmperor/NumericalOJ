@@ -7,13 +7,7 @@ import time
 
 from flask import session
 
-from config import (
-    AI_TUTOR_MODEL,
-    QWEN_TEXT_MODEL,
-    SUBMISSION_SNAPSHOT_TTL_SECONDS,
-    QWEN_OMNI_MODEL,
-)
-import config as _config
+from config import SUBMISSION_SNAPSHOT_TTL_SECONDS
 from oj_modules.ai.code_feedback import _normalize_ai_code_issues
 from oj_modules.forum.identity import (
     assert_identity_name_available,
@@ -33,6 +27,11 @@ from oj_modules.observability import (
     emit_audit,
     safe_file_fingerprint,
 )
+from oj_modules.problems.llm_bindings import (
+    deserialize_problem_llm_bindings,
+    normalize_problem_llm_bindings,
+    serialize_problem_llm_bindings,
+)
 from oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
@@ -40,6 +39,9 @@ from oj_modules.infrastructure.redis import (
 
 
 logger = logging.getLogger(__name__)
+
+
+_UNSET = object()
 
 
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
@@ -67,36 +69,6 @@ _submission_snapshot_ttl_seconds = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 # problems 表惰性补列的「已补加」缓存改用 _ensured_problem_columns 集合（见 _ensure_problem_column）。
 _daily_submission_stats_table_ready = False
 
-_QWEN_TEXT_MODEL_KEY = str(QWEN_TEXT_MODEL or "").strip().lower()
-_AI_TUTOR_MODEL_KEY = str(AI_TUTOR_MODEL or "").strip().lower()
-_DEFAULT_WRITTEN_GRADING_MODEL = (
-    (f"{_QWEN_TEXT_MODEL_KEY}-thinking" if _QWEN_TEXT_MODEL_KEY else "")
-    or (f"{_AI_TUTOR_MODEL_KEY}-thinking" if _AI_TUTOR_MODEL_KEY else "")
-)
-_ALLOWED_WRITTEN_GRADING_MODELS = {
-    item for item in {
-        _QWEN_TEXT_MODEL_KEY,
-        f"{_QWEN_TEXT_MODEL_KEY}-thinking" if _QWEN_TEXT_MODEL_KEY else "",
-        _AI_TUTOR_MODEL_KEY,
-        f"{_AI_TUTOR_MODEL_KEY}-thinking" if _AI_TUTOR_MODEL_KEY else "",
-        "mimo",   # MIMO（xiaomimimo OpenAI 兼容端点）
-    } if item
-}
-_QWEN_OMNI_MODEL_KEY = str(QWEN_OMNI_MODEL or "").strip().lower()
-try:
-    _QWEN_CODER_MODEL_KEY = str(getattr(_config, 'QWEN_CODER_MODEL', '') or "").strip().lower()
-except Exception:
-    _QWEN_CODER_MODEL_KEY = ""
-_DEFAULT_PROGRAMMING_GRADING_MODEL = _QWEN_OMNI_MODEL_KEY or _QWEN_TEXT_MODEL_KEY
-_ALLOWED_PROGRAMMING_GRADING_MODELS = {
-    item for item in {
-        _QWEN_OMNI_MODEL_KEY,
-        _QWEN_TEXT_MODEL_KEY,
-        _QWEN_CODER_MODEL_KEY,
-    } if item
-}
-
-
 # Schema synchronization is owned by the explicit deploy/bootstrap workflow in
 # scripts/init_db_schema.py. Process startup and runtime data paths must not
 # issue DDL.
@@ -122,13 +94,6 @@ def ensure_problem_written_grading_mode_column():
     return _schema_is_managed_at_startup()
 
 
-def normalize_written_grading_model(value, default=_DEFAULT_WRITTEN_GRADING_MODEL):
-    text = str(value or "").strip().lower()
-    if text in _ALLOWED_WRITTEN_GRADING_MODELS:
-        return text
-    return str(default or _DEFAULT_WRITTEN_GRADING_MODEL).strip().lower()
-
-
 def ensure_problem_written_grading_model_column():
     return _schema_is_managed_at_startup()
 
@@ -152,13 +117,6 @@ def normalize_programming_output_filename(value, default="output.png"):
     if len(text) > 255:
         text = text[:255]
     return text or "output.png"
-
-
-def normalize_programming_grading_model(value, default=_DEFAULT_PROGRAMMING_GRADING_MODEL):
-    text = str(value or "").strip().lower()
-    if text in _ALLOWED_PROGRAMMING_GRADING_MODELS:
-        return text
-    return str(default or _DEFAULT_PROGRAMMING_GRADING_MODEL).strip().lower()
 
 
 def ensure_problem_programming_grading_mode_column():
@@ -1005,12 +963,18 @@ def get_all_problems():
         with conn.cursor() as cursor:
             sql = (
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,"
-                "written_grading_mode,written_grading_model,written_grading_prompt,"
-                "programming_grading_mode,programming_grading_model,programming_output_filename,programming_grading_prompt "
+                "written_grading_mode,written_grading_prompt,"
+                "programming_grading_mode,programming_output_filename,programming_grading_prompt,"
+                "llm_endpoint_bindings "
                 "FROM problems ORDER BY id ASC"
             )
             cursor.execute(sql)
-            return cursor.fetchall()
+            rows = cursor.fetchall()
+            for row in rows:
+                row["llm_endpoint_bindings"] = deserialize_problem_llm_bindings(
+                    row.get("llm_endpoint_bindings")
+                )
+            return rows
     finally:
         conn.close()
 
@@ -1021,12 +985,18 @@ def get_problem(problem_id):
         with conn.cursor() as cursor:
             sql = (
                 "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,"
-                "time_limit_ms,submission_limit,written_grading_mode,written_grading_model,written_grading_prompt,"
-                "programming_grading_mode,programming_grading_model,programming_output_filename,programming_grading_prompt "
+                "time_limit_ms,submission_limit,written_grading_mode,written_grading_prompt,"
+                "programming_grading_mode,programming_output_filename,programming_grading_prompt,"
+                "llm_endpoint_bindings "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
-            return cursor.fetchone()
+            row = cursor.fetchone()
+            if row:
+                row["llm_endpoint_bindings"] = deserialize_problem_llm_bindings(
+                    row.get("llm_endpoint_bindings")
+                )
+            return row
     finally:
         conn.close()
 
@@ -1037,12 +1007,18 @@ def get_problem_title(problem_id):
         with conn.cursor() as cursor:
             sql = (
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,"
-                "written_grading_mode,written_grading_model,written_grading_prompt,"
-                "programming_grading_mode,programming_grading_model,programming_output_filename,programming_grading_prompt "
+                "written_grading_mode,written_grading_prompt,"
+                "programming_grading_mode,programming_output_filename,programming_grading_prompt,"
+                "llm_endpoint_bindings "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
-            return cursor.fetchone()
+            row = cursor.fetchone()
+            if row:
+                row["llm_endpoint_bindings"] = deserialize_problem_llm_bindings(
+                    row.get("llm_endpoint_bindings")
+                )
+            return row
     finally:
         conn.close()
 
@@ -1058,22 +1034,19 @@ def create_problem(
     time_limit_ms=2000,
     submission_limit=10,
     programming_grading_mode=1,
-    programming_grading_model=_DEFAULT_PROGRAMMING_GRADING_MODEL,
     programming_output_filename='output.png',
     programming_grading_prompt='',
     written_grading_mode=1,
-    written_grading_model=_DEFAULT_WRITTEN_GRADING_MODEL,
     written_grading_prompt='',
+    llm_endpoint_bindings=None,
 ):
     conn = get_db_connection()
     try:
         max_score = (0 if int(type) == 1 else 5)
         use_programming_mode = 1
-        use_programming_model = _DEFAULT_PROGRAMMING_GRADING_MODEL
         use_programming_output_filename = "output.png"
         use_programming_prompt = ""
         use_written_mode = 1
-        use_written_model = _DEFAULT_WRITTEN_GRADING_MODEL
         use_written_prompt = ""
         if int(type) == 1:
             try:
@@ -1082,7 +1055,6 @@ def create_problem(
                 use_programming_mode = 1
             if use_programming_mode not in (1, 2, 3):
                 use_programming_mode = 1
-            use_programming_model = normalize_programming_grading_model(programming_grading_model)
             use_programming_output_filename = normalize_programming_output_filename(programming_output_filename)
             use_programming_prompt = str(programming_grading_prompt or "").strip()
         elif int(type) == 2:
@@ -1092,14 +1064,18 @@ def create_problem(
                 use_written_mode = 1
             if use_written_mode not in (1, 2, 3, 4):
                 use_written_mode = 1
-            use_written_model = normalize_written_grading_model(written_grading_model)
             use_written_prompt = str(written_grading_prompt or "").strip()
+        normalized_llm_bindings = normalize_problem_llm_bindings(
+            llm_endpoint_bindings,
+            problem_type=type,
+            programming_grading_mode=use_programming_mode,
+        )
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems
                      (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit,
-                      programming_grading_mode, programming_grading_model, programming_output_filename, programming_grading_prompt,
-                      written_grading_mode, written_grading_model, written_grading_prompt)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                      programming_grading_mode, programming_output_filename, programming_grading_prompt,
+                      written_grading_mode, written_grading_prompt, llm_endpoint_bindings)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(
                 sql,
                 (
@@ -1114,12 +1090,11 @@ def create_problem(
                     time_limit_ms,
                     submission_limit,
                     use_programming_mode,
-                    use_programming_model,
                     use_programming_output_filename,
                     use_programming_prompt,
                     use_written_mode,
-                    use_written_model,
                     use_written_prompt,
+                    serialize_problem_llm_bindings(normalized_llm_bindings),
                 ),
             )
             problem_id = cursor.lastrowid
@@ -1206,12 +1181,11 @@ def update_problem(
     new_time_limit_ms=None,
     new_submission_limit=None,
     new_programming_grading_mode=None,
-    new_programming_grading_model=None,
     new_programming_output_filename=None,
     new_programming_grading_prompt=None,
     new_written_grading_mode=None,
-    new_written_grading_model=None,
     new_written_grading_prompt=None,
+    new_llm_endpoint_bindings=_UNSET,
 ):
     conn = get_db_connection()
     try:
@@ -1223,9 +1197,6 @@ def update_problem(
                 programming_mode_val = 1
             if programming_mode_val not in (1, 2, 3):
                 programming_mode_val = 1
-        programming_model_val = None
-        if new_programming_grading_model is not None:
-            programming_model_val = normalize_programming_grading_model(new_programming_grading_model)
         programming_output_filename_val = None
         if new_programming_output_filename is not None:
             programming_output_filename_val = normalize_programming_output_filename(new_programming_output_filename)
@@ -1240,38 +1211,64 @@ def update_problem(
                 mode_val = 1
             if mode_val not in (1, 2, 3, 4):
                 mode_val = 1
-        model_val = None
-        if new_written_grading_model is not None:
-            model_val = normalize_written_grading_model(new_written_grading_model)
         prompt_val = None
         if new_written_grading_prompt is not None:
             prompt_val = str(new_written_grading_prompt or "").strip()
         with conn.cursor() as cursor:
-            sql = """UPDATE problems
-                     SET title=%s, content=%s, initial_code=%s, test_code=%s, forbidden_func=%s, lang=%s, time_limit_ms=%s, submission_limit=%s,
-                         programming_grading_mode=%s, programming_grading_model=%s, programming_output_filename=%s, programming_grading_prompt=%s,
-                         written_grading_mode=%s, written_grading_model=%s, written_grading_prompt=%s
-                     WHERE id=%s"""
+            assignments = [
+                "title=%s",
+                "content=%s",
+                "initial_code=%s",
+                "test_code=%s",
+                "forbidden_func=%s",
+                "lang=%s",
+                "time_limit_ms=%s",
+                "submission_limit=%s",
+                "programming_grading_mode=%s",
+                "programming_output_filename=%s",
+                "programming_grading_prompt=%s",
+                "written_grading_mode=%s",
+                "written_grading_prompt=%s",
+            ]
+            values = [
+                new_title,
+                new_content,
+                new_initial_code,
+                new_test_code,
+                new_forbidden_func,
+                new_lang,
+                new_time_limit_ms,
+                new_submission_limit,
+                programming_mode_val if programming_mode_val is not None else 1,
+                programming_output_filename_val if programming_output_filename_val is not None else "output.png",
+                programming_prompt_val if programming_prompt_val is not None else "",
+                mode_val if mode_val is not None else 1,
+                prompt_val if prompt_val is not None else "",
+            ]
+            if new_llm_endpoint_bindings is not _UNSET:
+                cursor.execute(
+                    "SELECT type, programming_grading_mode FROM problems WHERE id=%s",
+                    (problem_id,),
+                )
+                current_problem = cursor.fetchone()
+                if not current_problem:
+                    raise LookupError("题目不存在")
+                normalized_llm_bindings = normalize_problem_llm_bindings(
+                    new_llm_endpoint_bindings,
+                    problem_type=current_problem.get("type"),
+                    programming_grading_mode=(
+                        programming_mode_val
+                        if programming_mode_val is not None
+                        else current_problem.get("programming_grading_mode")
+                    ),
+                )
+                assignments.append("llm_endpoint_bindings=%s")
+                values.append(serialize_problem_llm_bindings(normalized_llm_bindings))
+
+            values.append(problem_id)
             cursor.execute(
-                sql,
-                (
-                    new_title,
-                    new_content,
-                    new_initial_code,
-                    new_test_code,
-                    new_forbidden_func,
-                    new_lang,
-                    new_time_limit_ms,
-                    new_submission_limit,
-                    programming_mode_val if programming_mode_val is not None else 1,
-                    programming_model_val if programming_model_val is not None else _DEFAULT_PROGRAMMING_GRADING_MODEL,
-                    programming_output_filename_val if programming_output_filename_val is not None else "output.png",
-                    programming_prompt_val if programming_prompt_val is not None else "",
-                    mode_val if mode_val is not None else 1,
-                    model_val if model_val is not None else _DEFAULT_WRITTEN_GRADING_MODEL,
-                    prompt_val if prompt_val is not None else "",
-                    problem_id,
-                ),
+                f"UPDATE problems SET {', '.join(assignments)} WHERE id=%s",
+                tuple(values),
             )
         conn.commit()
     finally:
@@ -2545,7 +2542,7 @@ def _representative_submission_sql():
     )
 
 
-def get_undetected_submissions_for_problem(problem_id, lang="matlab"):
+def get_undetected_submissions_for_problem(problem_id):
     """
     Per user, pick the representative submission (last among max-score)
     that hasn't been analyzed yet.
@@ -2569,7 +2566,7 @@ def get_undetected_submissions_for_problem(problem_id, lang="matlab"):
 
 def get_undetected_submissions_for_user(username):
     """
-    For a given user, across all MATLAB problems, pick the representative
+    For a given user, across all programming problems, pick the representative
     submission per problem that hasn't been analyzed yet.
     """
     conn = get_db_connection()
@@ -2580,8 +2577,7 @@ def get_undetected_submissions_for_user(username):
                 "       r.status, r.created_at "
                 "FROM (" + _representative_submission_sql() + ") r "
                 "LEFT JOIN ai_detection_results d ON r.id = d.submission_id "
-                "JOIN problems p ON r.problem_id = p.id "
-                "WHERE r.username=%s AND p.lang='matlab' AND d.id IS NULL "
+                "WHERE r.username=%s AND d.id IS NULL "
                 "ORDER BY r.id ASC"
             )
             cursor.execute(sql, (username,))
@@ -2593,7 +2589,7 @@ def get_undetected_submissions_for_user(username):
 def get_filtered_submissions_for_detection(
     class_en=None, username=None, problem_id=None,
     submission_id=None, score_min=None, score_max=None,
-    deduplicate=True, lang='matlab',
+    deduplicate=True, lang=None,
 ):
     """
     Flexibly filter submissions for AI detection.
@@ -2607,7 +2603,7 @@ def get_filtered_submissions_for_detection(
     score_min/max : score range (inclusive)
     deduplicate   : if True, per (username, problem_id) keep only the
                     last submission among those with the highest score
-    lang          : problem language filter (default 'matlab')
+    lang          : optional problem language filter; omitted means all languages
     """
     conn = get_db_connection()
     try:
@@ -2620,8 +2616,12 @@ def get_filtered_submissions_for_detection(
                     "JOIN user_class_map _ucm ON _ucm.user_id = _u.id "
                 )
 
-            conditions = ["s.problem_type = 1", "p.lang = %s"]
-            params = [lang]
+            conditions = ["s.problem_type = 1"]
+            params = []
+
+            if lang is not None and str(lang).strip():
+                conditions.append("p.lang = %s")
+                params.append(str(lang).strip().lower())
 
             if need_class:
                 conditions.append("_ucm.class_en = %s")

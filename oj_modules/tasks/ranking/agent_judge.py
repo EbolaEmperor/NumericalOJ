@@ -45,7 +45,7 @@ from oj_modules.ranking.agent_judge.db import (
     agent_judge_trace_dir, agent_judge_trace_id,
     build_judge_snapshot, clear_judge_results_for_attempt,
     list_agent_judge_endpoints, list_competition_rules, list_judge_results,
-    normalize_endpoint_model_capabilities,
+    infer_agent_endpoint_protocol, normalize_endpoint_model_capabilities,
     list_paused_agent_judge_endpoints, pause_agent_judge_endpoint,
     resume_paused_agent_judge_endpoint, upsert_judge_result_for_attempt,
 )
@@ -463,13 +463,14 @@ def _append_api_path(base_url, path):
 
 def _hello_probe_request(endpoint):
     harness = str(endpoint.get('harness') or HARNESS_CLAUDE_CODE).strip().lower()
+    protocol = infer_agent_endpoint_protocol(harness, endpoint.get('protocol'))
     base_url = str(endpoint.get('base_url') or '').strip()
     api_key = str(endpoint.get('api_key') or '').strip()
     model = str(endpoint.get('model') or '').strip()
     if not base_url or not api_key or not model:
         return None, '端点 URL、API Key 或模型为空'
 
-    if harness == HARNESS_CLAUDE_CODE:
+    if protocol == 'anthropic':
         payload = {
             'model': model,
             'max_tokens': 8,
@@ -907,11 +908,23 @@ def _agent_env_args(
         harness, base_url, api_key, model, result_name, include_prompt=False,
         endpoint=None):
     capabilities = normalize_endpoint_model_capabilities(endpoint)
+    protocol = infer_agent_endpoint_protocol(
+        harness, (endpoint or {}).get('protocol'),
+    )
+    copied_thinking_format = str(
+        (endpoint or {}).get('thinking_format') or ''
+    ).strip().lower()
+    if copied_thinking_format not in {'enable_thinking', 'thinking_type', 'none'}:
+        copied_thinking_format = ''
     source_base_url = str((endpoint or {}).get('base_url') or base_url or '').strip()
-    # Wire profile 只能从端点事实推导，绝不按模型名猜。官方 DeepSeek 域名
-    # 需要 reasoning_content session replay；未知/opaque gateway 采用 generic
-    # OpenAI reasoning 协议，避免给其它 provider 强塞 DeepSeek 字段。
-    thinking_format = _thinking_wire_profile(source_base_url)
+    # 新复制端点只采用管理员冻结的通用协议字段；不再按厂商 URL 做适配。
+    # 只有 thinking_format 为 NULL 的旧独立端点沿用历史 wire profile 推断，
+    # 避免改变既有比赛的运行行为。
+    thinking_format = (
+        'generic'
+        if copied_thinking_format
+        else _thinking_wire_profile(source_base_url)
+    )
     args = [
         '-e', 'IS_SANDBOX=1',
         # 关闭 claude 的非必要外联（遥测/自动更新/错误上报），否则在受限容器内会卡住
@@ -920,6 +933,7 @@ def _agent_env_args(
         '-e', 'DISABLE_AUTOUPDATER=1',
         '-e', 'DISABLE_ERROR_REPORTING=1',
         '-e', f'AJ_HARNESS={harness}',
+        '-e', f'AJ_ENDPOINT_PROTOCOL={protocol}',
         '-e', (
             'AJ_CONTEXT_WINDOW_TOKENS='
             f"{capabilities['context_window_tokens']}"
@@ -929,6 +943,7 @@ def _agent_env_args(
             'AJ_THINKING_COMPATIBILITY='
             f"{1 if capabilities['thinking_compatibility'] else 0}"
         ),
+        '-e', f'AJ_ENDPOINT_THINKING_FORMAT={copied_thinking_format}',
         '-e', f'AJ_THINKING_FORMAT={thinking_format}',
         '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
         '-e', 'AJ_SESSION_STATE=/workspace/.aj_session_state.json',
