@@ -86,6 +86,7 @@ from oj_modules.ranking.agent_judge.db import (
     agent_judge_trace_id,
     apply_rule_overrides,
     build_judge_snapshot,
+    global_agent_endpoint_candidates,
     list_agent_judge_endpoints,
     list_competition_rules,
     list_quality_gate_endpoints,
@@ -122,7 +123,7 @@ from oj_modules.ranking.presentation import (
     SUBMISSIONS_PER_PAGE,
     competition_answer_format as _competition_answer_format,
     competition_scoring_mode as _competition_scoring_mode,
-    masked_agent_endpoints as _masked_agent_endpoints,
+    masked_agent_endpoints as _canonical_masked_agent_endpoints,
     normalize_answer_format as _normalize_answer_format,
     normalize_scoring_mode as _normalize_scoring_mode,
     page_window as _page_window,
@@ -135,16 +136,16 @@ from oj_modules.ranking.readiness import (
     fake_agent_judge_enabled as _fake_agent_judge_enabled,
     quality_gate_endpoint_ready as _quality_gate_endpoint_ready,
     ranking_submit_block_reason as _ranking_submit_block_reason,
-    reverse_quality_gate_block_reason as _reverse_quality_gate_block_reason,
+    reverse_quality_gate_block_reason as _canonical_reverse_quality_gate_block_reason,
     reverse_quality_gate_enabled as _reverse_quality_gate_enabled,
-    reverse_quality_gate_ready as _reverse_quality_gate_ready,
+    reverse_quality_gate_ready as _canonical_reverse_quality_gate_ready,
 )
 from oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
 
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
-# 「批量评测」标签页预填的 Git 仓库标准命名示例（可在 config.py 覆盖）。
+# 标签页、分页和批量仓库文案由 ranking.presentation / ranking.batch 统一提供。
 # 对战列表 / 详情的 Redis 缓存
 # scope 用于区分 "全部" 和 "与我相关"：scope = '' 或 user:<username>
 # 所有可见客户端共享同一份全局导航快照，避免每个 10s 轮询都重复执行多表聚合。
@@ -215,6 +216,18 @@ def _reverse_judge_stream_timeout_seconds(comp):
         + REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
     )
     return max(REVERSE_STREAM_MIN_TIMEOUT_SECONDS, legal_upper_bound)
+
+
+def _reverse_quality_gate_block_reason(competition_id, comp):
+    return _canonical_reverse_quality_gate_block_reason(competition_id, comp)
+
+
+def _reverse_quality_gate_ready(competition_id, comp):
+    return _canonical_reverse_quality_gate_ready(competition_id, comp)
+
+
+def _masked_agent_endpoints(endpoints):
+    return _canonical_masked_agent_endpoints(endpoints)
 
 
 def _request_agent_endpoint_id():
@@ -895,6 +908,7 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
     aj_endpoints = []
     quality_gate_endpoints = []
+    agent_global_endpoint_candidates = {}
     agent_judge_ready = False
     quality_gate_ready = (
         _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
@@ -919,6 +933,11 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
                     )
                 except Exception:
                     quality_gate_endpoints = []
+        if is_admin:
+            try:
+                agent_global_endpoint_candidates = global_agent_endpoint_candidates()
+            except Exception:
+                agent_global_endpoint_candidates = {}
 
     batch_classes = get_all_classes() if tab == 'batch_eval' else []
 
@@ -1026,6 +1045,7 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
         'agent_judge_api_key_set': agent_judge_api_key_set,
         'aj_endpoints': aj_endpoints,
         'quality_gate_endpoints': quality_gate_endpoints,
+        'agent_global_endpoint_candidates': agent_global_endpoint_candidates,
         'agent_judge_ready': agent_judge_ready,
         'quality_gate_ready': quality_gate_ready,
         'is_reverse_judge': is_reverse_judge,

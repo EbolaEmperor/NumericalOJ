@@ -418,12 +418,92 @@ def test_runtime_cli_error_is_json(capsys, tmp_path):
 def test_ai_detection_run_filtered_requires_filter(capsys):
     cli = _load_numoj_admin_cli_module()
 
-    rc = cli.main(["ai-detection", "run-filtered"])
+    rc = cli.main(["ai-detection", "run-filtered", "--endpoint-id", "7"])
 
     assert rc == 2
     payload = cli.json.loads(capsys.readouterr().out)
     assert payload["success"] is False
     assert "requires at least one filter" in payload["message"]
+
+
+def test_ai_detection_run_commands_require_positive_endpoint_id_and_preview_does_not():
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+
+    preview = parser.parse_args(["ai-detection", "preview", "--submission-id", "9"])
+    assert not hasattr(preview, "endpoint_id")
+
+    run_commands = (
+        ["ai-detection", "run-filtered", "--submission-id", "9"],
+        ["ai-detection", "run-problem", "3"],
+        ["ai-detection", "run-single", "9"],
+        ["ai-detection", "run-user", "alice"],
+    )
+    for argv in run_commands:
+        with pytest.raises(SystemExit):
+            parser.parse_args(argv)
+        with pytest.raises(SystemExit):
+            parser.parse_args([*argv, "--endpoint-id", "0"])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "ai-detection",
+            "run-single",
+            "9",
+            "--model",
+            "legacy-model",
+        ])
+
+
+def test_ai_detection_cli_posts_endpoint_id_for_every_run_command(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+    fake_client = _FakeClient()
+    monkeypatch.setattr(cli.ai_detection, "client_from_args", lambda _args: fake_client)
+
+    cases = (
+        (
+            ["ai-detection", "run-filtered", "--submission-id", "9", "--endpoint-id", "101"],
+            "/admin/ai_detection/run_filtered",
+            {"submission_id": 9, "endpoint_id": 101},
+        ),
+        (
+            ["ai-detection", "run-problem", "3", "--endpoint-id", "102"],
+            "/admin/ai_detection/run/3",
+            {"endpoint_id": 102},
+        ),
+        (
+            ["ai-detection", "run-single", "9", "--endpoint-id", "103"],
+            "/admin/ai_detection/run_single/9",
+            {"endpoint_id": 103},
+        ),
+        (
+            ["ai-detection", "run-user", "alice", "--endpoint-id", "104"],
+            "/admin/ai_detection/run_user/alice",
+            {"endpoint_id": 104},
+        ),
+    )
+    for argv, expected_path, expected_json in cases:
+        args = parser.parse_args(argv)
+        args.func(args)
+        method, path, kwargs = fake_client.requests[-1]
+        assert (method, path) == ("POST", expected_path)
+        assert kwargs["json"] == expected_json
+        assert "model_id" not in kwargs["json"]
+
+    preview = parser.parse_args([
+        "ai-detection",
+        "preview",
+        "--submission-id",
+        "9",
+    ])
+    preview.func(preview)
+    assert fake_client.requests[-1] == (
+        "POST",
+        "/admin/ai_detection/preview",
+        {"json": {"submission_id": 9}},
+    )
+    capsys.readouterr()
 
 
 def test_ranking_git_http_json_failure_is_nonzero(monkeypatch):
@@ -1165,6 +1245,207 @@ def test_admin_problem_edit_form_omits_large_text_fields(monkeypatch, capsys):
     }
 
 
+def test_admin_problem_parser_exposes_six_endpoint_options_and_rejects_legacy_model_flags():
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+
+    args = parser.parse_args([
+        "problem",
+        "create",
+        "--title",
+        "题目",
+        "--content",
+        "题面",
+        "--output-image-grading-endpoint-id",
+        "11",
+        "--ocr-endpoint-id",
+        "12",
+        "--text-grading-endpoint-id",
+        "13",
+        "--direct-image-grading-endpoint-id",
+        "14",
+        "--review-endpoint-id",
+        "15",
+        "--code-generation-endpoint-id",
+        "none",
+    ])
+
+    assert args.output_image_grading_endpoint_id == 11
+    assert args.ocr_endpoint_id == 12
+    assert args.text_grading_endpoint_id == 13
+    assert args.direct_image_grading_endpoint_id == 14
+    assert args.review_endpoint_id == 15
+    assert args.code_generation_endpoint_id is None
+
+    for legacy_option in ("--programming-grading-model", "--written-grading-model"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "problem",
+                "create",
+                "--title",
+                "题目",
+                "--content",
+                "题面",
+                legacy_option,
+                "legacy-model",
+            ])
+
+
+def test_admin_problem_create_sends_endpoint_binding_json_and_allows_unconfigured(
+        monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(cli.problem_create.__globals__, "client_from_args", lambda _args: fake_client)
+
+    configured = parser.parse_args([
+        "problem",
+        "create",
+        "--title",
+        "Promptly 题",
+        "--content",
+        "题面",
+        "--programming-grading-mode",
+        "3",
+        "--review-endpoint-id",
+        "31",
+        "--code-generation-endpoint-id",
+        "32",
+    ])
+    configured.func(configured)
+    configured_data = fake_client.requests[-1][2]["data"]
+
+    assert cli.json.loads(configured_data["llm_endpoint_bindings"]) == {
+        "review_endpoint_id": 31,
+        "code_generation_endpoint_id": 32,
+    }
+    assert "programming_grading_model" not in configured_data
+    assert "written_grading_model" not in configured_data
+
+    unconfigured = parser.parse_args([
+        "problem",
+        "create",
+        "--title",
+        "普通题",
+        "--content",
+        "题面",
+    ])
+    unconfigured.func(unconfigured)
+    unconfigured_data = fake_client.requests[-1][2]["data"]
+
+    assert "llm_endpoint_bindings" not in unconfigured_data
+    capsys.readouterr()
+
+
+def test_admin_problem_edit_omitted_endpoints_are_preserved_by_omitting_binding_payload(
+        monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+    client = _SequenceClient([
+        _PayloadResponse({
+            "success": True,
+            "problem": {"id": 42, "type": 1},
+            "form": {
+                "title": "旧标题",
+                "content": "旧题面",
+                "programming_grading_mode": 2,
+                "llm_endpoint_bindings": {"output_image_grading_endpoint_id": 41},
+            },
+        }),
+        _FakeResponse(),
+    ])
+    monkeypatch.setitem(cli.problem_edit.__globals__, "client_from_args", lambda _args: client)
+    args = parser.parse_args(["problem", "edit", "42", "--title", "新标题"])
+
+    args.func(args)
+
+    edit_data = client.requests[1][2]["data"]
+    assert "llm_endpoint_bindings" not in edit_data
+    assert "programming_grading_model" not in edit_data
+    assert "written_grading_model" not in edit_data
+    capsys.readouterr()
+
+
+def test_admin_problem_edit_merges_updates_and_none_clears_one_binding(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+    client = _SequenceClient([
+        _PayloadResponse({
+            "success": True,
+            "problem": {"id": 42, "type": 2},
+            "form": {
+                "title": "书面题",
+                "content": "题面",
+                "written_grading_mode": 1,
+                "llm_endpoint_bindings": {
+                    "ocr_endpoint_id": 51,
+                    "text_grading_endpoint_id": 52,
+                    "direct_image_grading_endpoint_id": 53,
+                },
+            },
+        }),
+        _FakeResponse(),
+    ])
+    monkeypatch.setitem(cli.problem_edit.__globals__, "client_from_args", lambda _args: client)
+    args = parser.parse_args([
+        "problem",
+        "edit",
+        "42",
+        "--ocr-endpoint-id",
+        "none",
+        "--text-grading-endpoint-id",
+        "62",
+    ])
+
+    args.func(args)
+
+    bindings = cli.json.loads(client.requests[1][2]["data"]["llm_endpoint_bindings"])
+    assert bindings == {
+        "text_grading_endpoint_id": 62,
+        "direct_image_grading_endpoint_id": 53,
+    }
+    capsys.readouterr()
+
+
+def test_admin_problem_edit_mode_switch_drops_incompatible_old_binding(monkeypatch, capsys):
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+    client = _SequenceClient([
+        _PayloadResponse({
+            "success": True,
+            "problem": {"id": 42, "type": 1},
+            "form": {
+                "title": "图片题",
+                "content": "题面",
+                "programming_grading_mode": 2,
+                "llm_endpoint_bindings": {"output_image_grading_endpoint_id": 71},
+            },
+        }),
+        _FakeResponse(),
+    ])
+    monkeypatch.setitem(cli.problem_edit.__globals__, "client_from_args", lambda _args: client)
+    args = parser.parse_args([
+        "problem",
+        "edit",
+        "42",
+        "--programming-grading-mode",
+        "3",
+        "--review-endpoint-id",
+        "72",
+        "--code-generation-endpoint-id",
+        "73",
+    ])
+
+    args.func(args)
+
+    bindings = cli.json.loads(client.requests[1][2]["data"]["llm_endpoint_bindings"])
+    assert bindings == {
+        "review_endpoint_id": 72,
+        "code_generation_endpoint_id": 73,
+    }
+    capsys.readouterr()
+
+
 class _LoginSession:
     trust_env = False
 
@@ -1595,10 +1876,10 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["ai-detection", "problem-page", "1"],
         ["ai-detection", "student-page", "alice"],
         ["ai-detection", "preview"],
-        ["ai-detection", "run-filtered", "--submission-id", "1"],
-        ["ai-detection", "run-problem", "1"],
-        ["ai-detection", "run-single", "1"],
-        ["ai-detection", "run-user", "alice"],
+        ["ai-detection", "run-filtered", "--submission-id", "1", "--endpoint-id", "1"],
+        ["ai-detection", "run-problem", "1", "--endpoint-id", "1"],
+        ["ai-detection", "run-single", "1", "--endpoint-id", "1"],
+        ["ai-detection", "run-user", "alice", "--endpoint-id", "1"],
         ["ai-detection", "summary"],
         ["ai-detection", "tasks"],
         ["ai-detection", "models"],

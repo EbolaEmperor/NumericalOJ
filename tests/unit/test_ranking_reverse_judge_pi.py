@@ -21,6 +21,7 @@ def _pi_endpoint():
         "id": 7,
         "pool_kind": "primary",
         "harness": rj.HARNESS_PI,
+        "protocol": "openai",
         "base_url": "https://pi.example/v1",
         "api_key": "real-pi-key",
         "model": "pi-model",
@@ -48,8 +49,8 @@ def _prepare_run_agent(
     monkeypatch.setattr(
         rj,
         "_start_reverse_endpoint_proxy",
-        lambda base_url, api_key, harness: (
-            proxy_calls.append((base_url, api_key, harness)) or proxy
+        lambda base_url, api_key, harness, protocol=None: (
+            proxy_calls.append((base_url, api_key, harness, protocol)) or proxy
         ),
     )
     if not use_real_agent_env:
@@ -156,15 +157,47 @@ def test_pi_reverse_container_env_uses_attempt_proxy_and_openai_contract():
     }
 
     assert env["AJ_HARNESS"] == rj.HARNESS_PI
+    assert env["AJ_ENDPOINT_PROTOCOL"] == "openai"
     assert env["OPENAI_BASE_URL"] == "http://host.docker.internal:43123/v1"
     assert env["OPENAI_API_KEY"] == "attempt-token"
     assert env["OPENAI_MODEL"] == "deepseek-v4-flash"
     assert env["AJ_CONTEXT_WINDOW_TOKENS"] == "131072"
     assert env["AJ_MAX_OUTPUT_TOKENS"] == "16384"
     assert env["AJ_THINKING_COMPATIBILITY"] == "0"
+    assert env["AJ_ENDPOINT_THINKING_FORMAT"] == ""
     assert env["AJ_THINKING_FORMAT"] == "generic"
     assert env["AJ_PI_THINKING_FORMAT"] == "generic"
     assert "AJ_PROMPT" not in env
+
+
+def test_pi_reverse_container_env_marks_anthropic_protocol():
+    args = rj._agent_env_args(
+        rj.HARNESS_PI,
+        "http://host.docker.internal:43123/anthropic",
+        "attempt-token",
+        "mimo-v2.5-pro",
+        "unused.jsonl",
+        include_prompt=False,
+        endpoint={
+            "protocol": "anthropic",
+            "base_url": "https://api.xiaomimimo.com/anthropic",
+            "context_window_tokens": 131_072,
+            "max_output_tokens": 16_384,
+            "thinking_compatibility": True,
+            "thinking_format": "thinking_type",
+        },
+    )
+    env = {
+        args[index + 1].split("=", 1)[0]: args[index + 1].split("=", 1)[1]
+        for index, value in enumerate(args[:-1])
+        if value == "-e" and "=" in args[index + 1]
+    }
+
+    assert env["AJ_ENDPOINT_PROTOCOL"] == "anthropic"
+    assert env["AJ_ENDPOINT_THINKING_FORMAT"] == "thinking_type"
+    assert env["ANTHROPIC_BASE_URL"] == "http://host.docker.internal:43123/anthropic"
+    assert env["ANTHROPIC_API_KEY"] == "attempt-token"
+    assert env["ANTHROPIC_MODEL"] == "mimo-v2.5-pro"
 
 
 @pytest.mark.parametrize(("base_url", "expected"), [
@@ -201,6 +234,27 @@ def test_pi_reverse_proxy_keeps_original_deepseek_profile_without_exposing_origi
     assert "api.deepseek.com" not in rendered
     assert "real-key-must-not-enter-container" not in rendered
     assert "attempt-token" in rendered
+
+
+def test_copied_global_endpoint_does_not_use_vendor_url_wire_profile():
+    args = rj._agent_env_args(
+        rj.HARNESS_PI,
+        "http://host.docker.internal:43123/v1",
+        "attempt-token",
+        "opaque-model-name",
+        "unused.jsonl",
+        endpoint={
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "real-key-must-not-enter-container",
+            "protocol": "openai",
+            "thinking_compatibility": True,
+            "thinking_format": "enable_thinking",
+        },
+    )
+
+    assert "AJ_ENDPOINT_THINKING_FORMAT=enable_thinking" in args
+    assert "AJ_THINKING_FORMAT=generic" in args
+    assert "AJ_PI_THINKING_FORMAT=generic" in args
 
 
 def test_pi_reverse_run_never_injects_real_api_key_into_agent_container(
@@ -241,7 +295,7 @@ def test_pi_reverse_run_never_injects_real_api_key_into_agent_container(
     assert "OPENAI_API_KEY=attempt-token" in docker_run
     assert "OPENAI_MODEL=pi-model" in docker_run
     assert proxy_calls == [
-        ("https://pi.example/v1", "real-pi-key", rj.HARNESS_PI),
+        ("https://pi.example/v1", "real-pi-key", rj.HARNESS_PI, "openai"),
     ]
     assert proxy_closes == [True]
 
@@ -256,6 +310,22 @@ def test_pi_hello_probe_uses_openai_chat_completions_and_bearer():
         "model": "pi-model",
         "messages": [{"role": "user", "content": "hello"}],
         "max_tokens": 8,
+    }
+
+
+def test_pi_anthropic_hello_probe_uses_messages_and_x_api_key():
+    endpoint = {**_pi_endpoint(), "protocol": "anthropic"}
+    request, error = aj._hello_probe_request(endpoint)
+
+    assert error is None
+    assert request.full_url == "https://pi.example/v1/messages"
+    assert request.get_header("X-api-key") == "real-pi-key"
+    assert request.get_header("Anthropic-version") == "2023-06-01"
+    assert request.get_header("Authorization") is None
+    assert json.loads(request.data.decode("utf-8")) == {
+        "model": "pi-model",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "hello"}],
     }
 
 
@@ -528,7 +598,7 @@ def test_run_agent_pi_timeout_resumes_same_native_session(
     assert resolve_users == ["501:20"]
     assert dump_users == ["501:20"]
     assert proxy_calls == [
-        ("https://pi.example/v1", "real-pi-key", rj.HARNESS_PI),
+        ("https://pi.example/v1", "real-pi-key", rj.HARNESS_PI, "openai"),
     ]
     assert proxy_closes == [True]
 

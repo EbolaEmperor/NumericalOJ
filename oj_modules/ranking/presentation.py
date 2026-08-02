@@ -38,6 +38,8 @@ def masked_agent_endpoints(endpoints):
         {
             "id": endpoint["id"],
             "harness": endpoint.get("harness") or "claude_code",
+            "protocol": endpoint.get("protocol"),
+            "effective_protocol": endpoint.get("effective_protocol") or "",
             "base_url": endpoint.get("base_url") or "",
             "model": endpoint.get("model") or "",
             **normalize_endpoint_model_capabilities(endpoint),

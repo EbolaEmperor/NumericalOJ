@@ -66,8 +66,8 @@ python -m pip install -r requirements/production.txt -r requirements/test.txt
 
 ## 配置
 
-仓库中的 `config.py` 只负责严格解析和类型转换，配置值集中在 `.env` 中。首次配置先
-复制受版本控制的 `.env.tmpl`，再填入当前环境的真实值；`.env` 已被 Git 忽略，正常的
+仓库中的 `config.py` 负责严格解析启动配置和高级运行参数。首次配置先复制受版本控制的
+`.env.tmpl`，再填入当前环境的九项启动配置；`.env` 已被 Git 忽略，正常的
 `git pull --ff-only` 不会覆盖生产密钥：
 
 ```bash
@@ -78,13 +78,17 @@ chmod 600 .env
 至少确认以下设置：
 
 - `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` / `MYSQL_USERNAME` / `MYSQL_PASSWORD`；
-- `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` 与普通、阻塞读取的超时；
-- `SECRET_KEY`、SMTP 和 DashScope/Qwen 配置；
-- `JUDGER_*` 与 `AGENT_JUDGE_*` 镜像、资源和超时设置。
+- `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB`；
+- 固定且不可公开的 `SECRET_KEY`。
+
+LLM、Embedding、SMTP 与 WebSearch MCP 在管理员“全站配置”页面中管理并实时生效，
+不再从 `.env` 读取。容器资源、超时、上传边界等高级启动参数使用代码默认值，需要时仍可
+通过 `.env` 或进程环境覆盖；完整键、类型与默认值见
+[`docs/runtime-configuration.md`](docs/runtime-configuration.md)。
 
 浏览器写请求统一校验 `Origin` / `Referer`。反向代理下若公开 Origin 与应用看到的 Host 不同，用 `CSRF_TRUSTED_ORIGINS` 显式列出可信 Origin；不要用通配符放开。
 
-配置优先级为“进程环境变量 > `.env` > `.env.tmpl` 默认值”。字符串使用 JSON 双引号，
+启动配置优先级为“进程环境变量 > `.env` > 代码默认值”。字符串使用 JSON 双引号，
 布尔值使用 `true` / `false`，列表使用 JSON 数组；值中的 `#`、`=`、`$` 不会被 shell
 执行或插值。生产 `.env` 必须归部署用户所有，权限为 `0400` 或 `0600`，不得提交密钥。
 旧的 `config_local.py` 不再被执行。
@@ -307,7 +311,8 @@ Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 Base
 - `oj_modules/tasks/`：Celery 适配层；`agent/`、`ranking/` 按任务域组织，`registry.py` 仅供组合根聚合注册，任务名和队列属于稳定外部契约；
 - `oj_modules/classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/`：领域服务与数据访问；
 - `oj_modules/editor/`、`judging/`、`repository/`：编辑器、普通判题和代码仓库等独立能力边界；
-- `oj_modules/ai/`、`integrations/`：模型应用能力与 ModelScope 等外部服务适配；
+- `oj_modules/ai/`、`integrations/`：模型应用能力、统一 LLM 协议与 ModelScope 等外部服务适配；
+- `oj_modules/site_config/`：全站动态配置的持久化、事务校验与连通性测试；
 - `oj_modules/security/`、`shared/`：安全策略和经过确认的跨域基础 helper；
 - `oj_modules/infrastructure/`：MySQL、Redis 等基础设施连接原语，业务查询仍留在所属领域；
 - `oj_modules/db_services.py`：尚未完成领域归属的存量数据访问层；新查询应进入所属领域包；

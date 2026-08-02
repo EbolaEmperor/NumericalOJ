@@ -8,14 +8,16 @@ import subprocess
 from config import (
     AGENT_REPOSITORY_KNN_TOP_K,
     AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
-    AI_TUTOR_MODEL,
 )
 from oj_modules.ai.code_feedback import analyze_submission_output_image_against_problem
 from oj_modules.integrations.modelscope_web_search import (
     web_fetch_content_via_modelscope_mcp,
     web_search_via_modelscope_mcp,
 )
-from oj_modules.repository.index import encode_texts_with_qwen_embedding, search_repository_chunks
+from oj_modules.repository.index import (
+    encode_texts_with_repository_embedding,
+    search_repository_chunks,
+)
 from oj_modules.repository.workspace import (
     REPOSITORY_SANDBOX_DIRECTORY,
     materialize_repository_tree,
@@ -264,7 +266,7 @@ def _build_problem_summary_source(problem):
     return "\n\n".join([x for x in lines if x]).strip()
 
 
-def _summarize_problem_for_repository_search(query_text):
+def _summarize_problem_for_repository_search(query_text, summary_endpoint):
     source = str(query_text or "").strip()
     if not source:
         return ""
@@ -286,12 +288,11 @@ def _summarize_problem_for_repository_search(query_text):
         },
     ]
     try:
-        summary = _call_qwen_chat_model(
+        summary = _call_agent_text_model(
+            summary_endpoint,
             messages=messages,
-            model=AI_TUTOR_MODEL,
             timeout=60,
             empty_text_error="题目大意归纳失败。",
-            enable_thinking=False,
         )
     except Exception:
         return source
@@ -334,17 +335,35 @@ def _format_repository_knn_memory_message(knn_result, top_k):
     return _truncate_text("\n".join(lines), limit=4200)
 
 
-def _build_repository_knn_memory_message(user_id, problem):
+def _build_repository_knn_memory_message(
+    user_id,
+    problem,
+    summary_endpoint,
+    embedding_endpoint,
+):
     use_top_k = int(_AGENT_REPOSITORY_KNN_TOP_K)
     query_seed = _build_problem_summary_source(problem=problem)
     if not query_seed:
         return "", 0
-    query = _summarize_problem_for_repository_search(query_seed)
+    summary_endpoint = _require_agent_endpoint(
+        summary_endpoint,
+        feature_key="repository_query_summary",
+        operation_label="仓库检索问题摘要",
+    )
+    embedding_endpoint = _require_agent_endpoint(
+        embedding_endpoint,
+        feature_key="repository_embedding",
+        operation_label="仓库检索 Embedding",
+    )
+    query = _summarize_problem_for_repository_search(query_seed, summary_endpoint)
 
     query_vector = None
     query_embedding_model = ""
     try:
-        vectors, model_used = encode_texts_with_qwen_embedding([query])
+        vectors, model_used = encode_texts_with_repository_embedding(
+            [query],
+            endpoint=embedding_endpoint,
+        )
         if getattr(vectors, "shape", (0, 0))[0] > 0:
             query_vector = vectors[0]
             query_embedding_model = str(model_used or "").strip()
@@ -360,6 +379,7 @@ def _build_repository_knn_memory_message(user_id, problem):
             score_threshold=_AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
             query_vector=query_vector,
             query_embedding_model=query_embedding_model,
+            endpoint=embedding_endpoint,
         )
     except Exception:
         if query_vector is None:
@@ -370,6 +390,7 @@ def _build_repository_knn_memory_message(user_id, problem):
                 query=query,
                 top_k=use_top_k,
                 score_threshold=_AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
+                endpoint=embedding_endpoint,
             )
         except Exception:
             return "", 0
@@ -379,16 +400,30 @@ def _build_repository_knn_memory_message(user_id, problem):
     return text, len(hits)
 
 
-def _tool_search_useful_code(user_id, description, top_k=None):
+def _tool_search_useful_code(
+    user_id,
+    description,
+    top_k=None,
+    *,
+    embedding_endpoint,
+):
     query = str(description or "").strip()
     if not query:
         raise RuntimeError("description 不能为空。")
+    embedding_endpoint = _require_agent_endpoint(
+        embedding_endpoint,
+        feature_key="repository_embedding",
+        operation_label="仓库代码检索",
+    )
     use_top_k = _clamp_int(top_k, _AGENT_REPOSITORY_KNN_TOP_K, min_value=1, max_value=20)
 
     query_vector = None
     query_embedding_model = ""
     try:
-        vectors, model_used = encode_texts_with_qwen_embedding([query])
+        vectors, model_used = encode_texts_with_repository_embedding(
+            [query],
+            endpoint=embedding_endpoint,
+        )
         if getattr(vectors, "shape", (0, 0))[0] > 0:
             query_vector = vectors[0]
             query_embedding_model = str(model_used or "").strip()
@@ -404,6 +439,7 @@ def _tool_search_useful_code(user_id, description, top_k=None):
             score_threshold=_AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
             query_vector=query_vector,
             query_embedding_model=query_embedding_model,
+            endpoint=embedding_endpoint,
         )
     except Exception:
         if query_vector is None:
@@ -413,6 +449,7 @@ def _tool_search_useful_code(user_id, description, top_k=None):
             query=query,
             top_k=use_top_k,
             score_threshold=_AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
+            endpoint=embedding_endpoint,
         )
 
     raw_hits = knn_result.get("hits") if isinstance(knn_result.get("hits"), list) else []
@@ -442,11 +479,12 @@ def _tool_search_useful_code(user_id, description, top_k=None):
     }
 
 
-def _tool_web_search(query, limit=None, engines=None):
+def _tool_web_search(query, limit=None, engines=None, settings=None):
     return web_search_via_modelscope_mcp(
         query=query,
         limit=limit,
         engines=engines,
+        settings=settings,
     )
 
 
@@ -457,12 +495,17 @@ def _tool_web_fetch_content(url, max_chars=None):
     )
 
 
-def _analyze_submission_output_image_for_agent(problem, submission_id, test_points):
+def _analyze_submission_output_image_for_agent(
+    problem,
+    submission_id,
+    test_points,
+    endpoint_snapshot,
+):
     if not submission_id or not isinstance(problem, dict):
-        return "", None, False
+        return "", None, False, ""
     problem_text = str(problem.get("content") or "").strip()
     if not problem_text:
-        return "", None, False
+        return "", None, False, ""
 
     points = []
     for idx, tp in enumerate(test_points or [], start=1):
@@ -474,23 +517,47 @@ def _analyze_submission_output_image_for_agent(problem, submission_id, test_poin
         points.append(item)
 
     if not points:
-        return "", None, False
+        return "", None, False, ""
+
+    def has_image_flag(value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    has_output_image = any(
+        has_image_flag(point.get("has_output_image"))
+        for point in points
+    )
+    if not has_output_image:
+        return "", None, False, ""
+
+    try:
+        use_endpoint = _require_agent_endpoint(
+            endpoint_snapshot,
+            feature_key="code_image_analysis",
+            operation_label="代码输出图片分析",
+        )
+    except RuntimeError as exc:
+        return "", None, True, str(exc)
 
     try:
         analyzed = analyze_submission_output_image_against_problem(
             problem_text=problem_text,
             submission_id=submission_id,
             test_points=points,
+            endpoint=use_endpoint,
         )
-    except Exception:
-        return "", None, False
+    except Exception as exc:
+        return "", None, True, f"代码输出图片分析调用失败：{exc}"
 
     if not isinstance(analyzed, dict):
-        return "", None, False
+        return "", None, True, "代码输出图片分析调用失败：模型返回格式无效"
     analysis = str(analyzed.get("analysis") or "").strip()
     test_index = analyzed.get("test_index")
     has_output_image = bool(analyzed.get("has_output_image"))
-    return analysis, test_index, has_output_image
+    return analysis, test_index, has_output_image, ""
 
 
 

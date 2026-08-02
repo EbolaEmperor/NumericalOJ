@@ -15,6 +15,8 @@ LEGACY_MODULES = (
     "oj_modules.class_logo_services",
     "oj_modules.class_membership_services",
     "oj_modules.dashboard_services",
+    "oj_modules.dynamic_config_services",
+    "oj_modules.dynamic_config_testers",
     "oj_modules.docker_sandbox",
     "oj_modules.editor_toolchain",
     "oj_modules.forum_identity_services",
@@ -25,11 +27,13 @@ LEGACY_MODULES = (
     "oj_modules.judger_case_runner",
     "oj_modules.judger_core",
     "oj_modules.language_server_services",
+    "oj_modules.llm_endpoints",
     "oj_modules.markdown_utils",
     "oj_modules.modelscope_web_search_mcp",
     "oj_modules.octave_language_services",
     "oj_modules.promptly_guard",
     "oj_modules.python_language_services",
+    "oj_modules.problem_llm_bindings",
     "oj_modules.ranking_agent_judge",
     "oj_modules.ranking_agent_judge_db",
     "oj_modules.ranking_db",
@@ -73,6 +77,14 @@ def test_legacy_module_paths_are_absent():
         module_path = ROOT / (module_name.replace(".", "/") + ".py")
         assert not module_path.exists(), module_name
         assert importlib.util.find_spec(module_name) is None, module_name
+
+
+def test_oj_modules_root_only_keeps_explicit_transition_seams():
+    root_modules = {
+        path.name
+        for path in (ROOT / "oj_modules").glob("*.py")
+    }
+    assert root_modules == {"__init__.py", "db_services.py", "project_paths.py"}
 
 
 def test_packages_do_not_reexport_former_compatibility_symbols():

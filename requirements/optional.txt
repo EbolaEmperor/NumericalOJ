@@ -1,3 +1,1 @@
-# Optional local embedding backend. The default qwen_embedding provider does not
-# need this heavyweight PyTorch/Transformers dependency chain.
-sentence-transformers==5.6.0
+# 当前默认运行路径之外没有额外的可选 Python 依赖。

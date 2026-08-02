@@ -281,39 +281,9 @@ def admin_login(login):
     return ADMIN_USERNAME
 
 
-# ---- AI / SMTP 防护：默认 mock 掉所有网络 AI 接缝，单测可再覆盖 ----
+# ---- SMTP 防护：单元测试默认禁止真实邮件外发 ----
 @pytest.fixture(autouse=True)
-def mock_ai(monkeypatch, request):
-    # 带 live_ai 标记的用例要打真实 AI 接口，不 mock 这三个调用接缝；其余
-    # 用例（绝大多数）仍 mock，保持快速与确定。SMTP / embedding 始终 mock。
-    live_ai = request.node.get_closest_marker('live_ai') is not None
-    from oj_modules.ai import client as ai_client
-    from oj_modules.ai import code_feedback as ai_code_feedback
-    from oj_modules.ai import grading as ai_grading
-    from oj_modules.ai import promptly as ai_promptly
-    if not live_ai:
-        fake_text = lambda *a, **k: '{}'
-        monkeypatch.setattr(ai_client, '_call_qwen_text', fake_text)
-        monkeypatch.setattr(ai_client, '_call_qwen_text_with_images', fake_text)
-        monkeypatch.setattr(ai_promptly, '_call_qwen_text', fake_text)
-        monkeypatch.setattr(ai_grading, '_call_qwen_text', fake_text)
-        monkeypatch.setattr(ai_grading, '_call_qwen_text_with_images', fake_text)
-        monkeypatch.setattr(ai_code_feedback, '_call_qwen_text', fake_text)
-        monkeypatch.setattr(ai_code_feedback, '_call_qwen_omni_with_image', fake_text)
-    try:
-        from oj_modules.repository import index as ris
-        import numpy as np
-
-        def _fake_encode(texts, model_name=None):
-            n = len(list(texts))
-            dim = int(getattr(config, 'REPOSITORY_EMBEDDING_DIM', 1024))
-            vecs = np.ones((n, dim), dtype='float32')
-            vecs = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
-            return vecs, (model_name or 'fake-embed')
-        monkeypatch.setattr(ris, '_encode_with_qwen_embedding', _fake_encode, raising=False)
-    except Exception:
-        pass
-
+def mock_smtp(monkeypatch):
     import smtplib
 
     class _FakeSMTP:

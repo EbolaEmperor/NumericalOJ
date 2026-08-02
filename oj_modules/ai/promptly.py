@@ -4,8 +4,10 @@ import json
 import os
 import re
 
-from config import AI_TUTOR_MODEL, QWEN_CODER_MODEL, QWEN_TEXT_MODEL
-from oj_modules.ai.client import _call_qwen_text
+from oj_modules.ai.client import (
+    _call_llm_text,
+    resolve_problem_llm_endpoint_snapshot,
+)
 from oj_modules.ai.parsing import (
     _extract_first_json_object_relaxed,
     _strip_markdown_code_fence_markers,
@@ -64,7 +66,15 @@ def _fake_promptly_review_from_env(prompt):
     return False, reply
 
 
-def review_promptly_student_prompt(problem, student_prompt, model_spec=None, timeout=120):
+def review_promptly_student_prompt(
+    problem,
+    student_prompt,
+    model_spec=None,
+    timeout=120,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     """Return (nice, reply) for a Promptly student prompt before code generation."""
     problem = problem or {}
     prompt = str(student_prompt or "").strip()
@@ -73,17 +83,18 @@ def review_promptly_student_prompt(problem, student_prompt, model_spec=None, tim
     fake_review = _fake_promptly_review_from_env(prompt)
     if fake_review is not None:
         return fake_review
+    del model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "review_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
 
     config = parse_promptly_review_config(problem)
     brief = str(config.get("brief") or "").strip()
     requirements = str(config.get("prompt_requirements") or "").strip()
     examples_text = _format_promptly_example_replies(config.get("example_replies") or [])
-
-    model = str(model_spec or "").strip()
-    if not model:
-        model = str(QWEN_TEXT_MODEL or AI_TUTOR_MODEL or QWEN_CODER_MODEL).strip()
-    if not model:
-        raise RuntimeError("未配置 Promptly prompt 审查模型。")
 
     system_prompt = (
         "你是一个编程题阅卷老师，下面是题目的简要描述：\n\n"
@@ -112,11 +123,10 @@ def review_promptly_student_prompt(problem, student_prompt, model_spec=None, tim
         "请给出你的判断，回复严格的 JSON 格式。"
     )
 
-    raw_text = _call_qwen_text(
-        prompt_text=user_prompt,
+    raw_text = _call_llm_text(
+        user_prompt,
+        use_endpoint,
         timeout=timeout,
-        model=model,
-        enable_thinking=False,
         system_prompt=system_prompt,
     )
     payload = _extract_first_json_object_relaxed(raw_text)
@@ -134,7 +144,15 @@ def review_promptly_student_prompt(problem, student_prompt, model_spec=None, tim
     return nice, reply
 
 
-def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300):
+def generate_promptly_code(
+    problem,
+    student_prompt,
+    model_spec=None,
+    timeout=300,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     """根据 Promptly 模式的学生 prompt 生成待评测代码。"""
     fake_code = os.getenv("NUMOJ_FAKE_PROMPTLY_CODE")
     if fake_code is not None:
@@ -146,13 +164,15 @@ def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300
     prompt = str(student_prompt or "").strip()
     if not prompt:
         raise RuntimeError("prompt 不能为空。")
+    del model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "code_generation_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
 
     lang = str(problem.get("lang") or "matlab").strip().lower()
-    model = str(model_spec or "").strip()
-    if not model:
-        model = str(QWEN_CODER_MODEL or QWEN_TEXT_MODEL or AI_TUTOR_MODEL).strip()
-    if not model:
-        raise RuntimeError("未配置 Promptly 代码生成模型。")
 
     user_prompt = (
         "你正在为 NumericalOJ 的编程题生成一份学生提交代码。\n"
@@ -163,11 +183,10 @@ def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300
         f"提交页面中学生可见的初始代码：\n{problem.get('initial_code') or ''}\n\n"
         f"学生提交的 prompt：\n{prompt}\n"
     )
-    raw_text = _call_qwen_text(
-        prompt_text=user_prompt,
+    raw_text = _call_llm_text(
+        user_prompt,
+        use_endpoint,
         timeout=timeout,
-        model=model,
-        enable_thinking=False,
         system_prompt=PROMPTLY_CODE_GENERATION_SYSTEM_PROMPT,
     )
     code = _extract_code_from_model_text(raw_text)

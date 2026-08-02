@@ -116,6 +116,27 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             _push_agent_event(state, "评测任务未初始化", level="error", status="Failed")
             return {"success": False, "message": "评测任务未初始化", "task_id": task_id}
 
+        try:
+            endpoint_resolutions = _resolve_agent_endpoint_resolutions(
+                "solution_agent",
+                "agent_summary",
+                "repository_query_summary",
+                "repository_embedding",
+                "code_image_analysis",
+            )
+            web_search_settings = _resolve_web_search_settings_snapshot()
+            solution_endpoint = endpoint_resolutions["solution_agent"].require(
+                "解题 Agent"
+            )
+        except Exception as exc:
+            message = str(exc)
+            _push_agent_event(state, message, level="error", status="Failed")
+            return {"success": False, "message": message, "task_id": task_id}
+        summary_endpoint = endpoint_resolutions["agent_summary"]
+        repository_summary_endpoint = endpoint_resolutions["repository_query_summary"]
+        repository_embedding_endpoint = endpoint_resolutions["repository_embedding"]
+        image_analysis_endpoint = endpoint_resolutions["code_image_analysis"]
+
         _push_agent_event(
             state,
             f"开始解题：{problem.get('title', '')}",
@@ -185,10 +206,27 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             "force_fail_submit_limit": False,
             "force_fail_message": "",
         }
-        knn_memory_text, knn_hits = _build_repository_knn_memory_message(
-            user_id=user["id"],
-            problem=problem,
-        )
+        try:
+            knn_memory_text, knn_hits = _build_repository_knn_memory_message(
+                user_id=user["id"],
+                problem=problem,
+                summary_endpoint=repository_summary_endpoint,
+                embedding_endpoint=repository_embedding_endpoint,
+            )
+        except RuntimeError as exc:
+            knn_memory_text, knn_hits = "", 0
+            _push_agent_event(
+                state,
+                f"已跳过代码仓库向量记忆：{exc}",
+                level="warning",
+                event_type="optional_endpoint_unavailable",
+                details={
+                    "feature_keys": [
+                        "repository_query_summary",
+                        "repository_embedding",
+                    ],
+                },
+            )
         runtime["repository_knn_memory"] = knn_memory_text
         if knn_memory_text:
             _push_agent_event(
@@ -230,6 +268,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 conversation,
                 max_chars=_AGENT_CONTEXT_MAX_CHARS,
                 keep_rounds=_AGENT_CONTEXT_KEEP_ROUNDS,
+                summary_endpoint=summary_endpoint,
                 state=state,
                 round_idx=round_idx,
             )
@@ -252,7 +291,11 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                 main_code_path=runtime.get("main_code_path") or "",
                 repository_knn_memory=runtime.get("repository_knn_memory") or "",
             )
-            api_request_body = _build_api_request_payload(messages, tools=tools)
+            api_request_body = _build_api_request_payload(
+                messages,
+                solution_endpoint,
+                tools=tools,
+            )
             _append_api_call_log(state, round_idx, api_request_body, api_type="solve")
             _push_agent_event(
                 state,
@@ -267,7 +310,11 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
             )
 
             try:
-                assistant_output = _call_qwen3_coder_plus_with_tools(messages, tools=tools)
+                assistant_output = _call_agent_chat_completion(
+                    solution_endpoint,
+                    messages,
+                    tools=tools,
+                )
             except Exception as e:
                 msg = f"第 {round_idx} 轮模型调用失败: {e}"
                 _push_agent_event(state, msg, level="error", status="Failed")
@@ -374,6 +421,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             user_id=user["id"],
                             description=arguments.get("description", ""),
                             top_k=arguments.get("top_k", _AGENT_REPOSITORY_KNN_TOP_K),
+                            embedding_endpoint=repository_embedding_endpoint,
                         )
                         tool_result = {"success": True, **search_result}
                     elif func_name == "web_search":
@@ -381,6 +429,7 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                             query=arguments.get("query", ""),
                             limit=arguments.get("limit", 5),
                             engines=arguments.get("engines"),
+                            settings=web_search_settings,
                         )
                         tool_result = {"success": True, **search_result}
                     elif func_name == "web_fetch_content":
@@ -507,10 +556,16 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
 
                         raw_test_points = summary.get("test_points") if isinstance(summary.get("test_points"), list) else []
                         raw_failed_points = summary.get("failed_points") if isinstance(summary.get("failed_points"), list) else []
-                        image_mismatch_analysis, image_analysis_test_index, has_output_image = _analyze_submission_output_image_for_agent(
+                        (
+                            image_mismatch_analysis,
+                            image_analysis_test_index,
+                            has_output_image,
+                            image_analysis_error,
+                        ) = _analyze_submission_output_image_for_agent(
                             problem=problem,
                             submission_id=submission_id,
                             test_points=raw_test_points,
+                            endpoint_snapshot=image_analysis_endpoint,
                         )
                         judge_result = {
                             "status": compact_summary.get("status"),
@@ -526,6 +581,15 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         if image_mismatch_analysis:
                             judge_result["image_mismatch_analysis"] = image_mismatch_analysis
                             judge_result["image_analysis_test_index"] = image_analysis_test_index
+                        if image_analysis_error:
+                            judge_result["image_analysis_error"] = image_analysis_error
+                            _push_agent_event(
+                                state,
+                                f"已跳过代码输出图片分析：{image_analysis_error}",
+                                level="warning",
+                                event_type="optional_endpoint_unavailable",
+                                details={"feature_key": "code_image_analysis"},
+                            )
                         if not raw_test_points:
                             judge_result["note"] = "当前评测未返回测试点明细（可能是编译阶段失败，或题目尚未配置测试点）。"
 
@@ -551,6 +615,8 @@ def register_agent_solve_problem_task(celery_app, evaluate_submission_task):
                         if image_mismatch_analysis:
                             tool_result["image_mismatch_analysis"] = image_mismatch_analysis
                             tool_result["image_analysis_test_index"] = image_analysis_test_index
+                        if image_analysis_error:
+                            tool_result["image_analysis_error"] = image_analysis_error
                         if (not is_accepted) and current_submit_calls >= int(runtime["submit_limit"]):
                             limit_msg = (
                                 f"submit_evaluation 调用已达到上限 {runtime['submit_limit']} 次，"

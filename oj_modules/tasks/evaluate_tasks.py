@@ -14,6 +14,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from oj_modules.judging import core
 
 from oj_modules.ai.grading import evaluate_program_output_image_with_ai
+from oj_modules.ai.client import resolve_problem_llm_endpoint_snapshot
 from oj_modules.db_services import (
     get_db_connection,
     insert_user_problem_ac_record_if_absent,
@@ -352,6 +353,17 @@ def register_evaluate_submission_task(celery_app):
                     code = code.replace(_marker, "")
             problem = get_problem(problem_id)
             programming_grading_mode = _normalize_programming_grading_mode(problem)
+            image_grading_endpoint = None
+            if (
+                programming_grading_mode == 2
+                and os.getenv("NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT") is None
+            ):
+                # Celery 任务开始处理题目时固定端点快照；后续全站端点修改只影响
+                # 新任务，不能让同一次判题在运行中切换目标。
+                image_grading_endpoint = resolve_problem_llm_endpoint_snapshot(
+                    problem,
+                    "output_image_grading_endpoint_id",
+                )
             required_output_image_filename = (
                 str(problem.get('programming_output_filename') or 'output.png').strip()
                 or 'output.png'
@@ -531,6 +543,7 @@ def register_evaluate_submission_task(celery_app):
                                     problem=problem,
                                     student_username=submission.get('username'),
                                     image_path=image_path,
+                                    endpoint=image_grading_endpoint,
                                 )
                             except requests.RequestException as e:
                                 image_comment = f"图片批改 API 调用失败：{str(e)}"

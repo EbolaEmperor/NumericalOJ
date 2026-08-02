@@ -8,7 +8,7 @@ import uuid
 
 import pymysql
 
-from config import AI_TUTOR_MODEL, EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, QWEN_TEXT_MODEL
+from config import EVALUATE_SUBMISSION_LOCK_TTL_SECONDS
 from oj_modules.shared.archive import (
     ArchiveExtractionError,
     ZipExtractionPolicy,
@@ -22,6 +22,7 @@ from oj_modules.ai.transcription import (
     render_pdf_to_images,
     save_transcribed_latex,
 )
+from oj_modules.ai.client import resolve_problem_llm_endpoint_snapshot
 from oj_modules.db_services import (
     get_problem,
     get_submission_by_id,
@@ -37,11 +38,6 @@ from oj_modules.submissions.locks import acquire_submission_lock, release_submis
 
 
 WRITTEN_TASK_NAME = "oj.transcribe_written_homework_to_latex"
-_DEFAULT_WRITTEN_GRADING_MODEL_SPEC = (
-    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
-    if str(QWEN_TEXT_MODEL or "").strip()
-    else f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking"
-)
 # 硬超时必须小于幂等锁 TTL（EVALUATE_SUBMISSION_LOCK_TTL_SECONDS），否则锁会先于任务过期，
 # 导致重投的副本拿到锁并重复评分（重复计费 AI）。这里预留 120s，使「锁存活 > 任务时限」。
 _WRITTEN_TASK_TIME_LIMIT = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS) - 120)
@@ -477,7 +473,8 @@ def register_written_homework_task(celery_app):
                 written_mode = int(problem.get('written_grading_mode') or 1)
             except Exception:
                 written_mode = 1
-            written_model = str(problem.get('written_grading_model') or _DEFAULT_WRITTEN_GRADING_MODEL_SPEC).strip().lower()
+            if written_mode not in (1, 2, 3, 4):
+                written_mode = 1
 
             fake_grade = _fake_written_homework_grade_from_env()
             if fake_grade is not None:
@@ -491,12 +488,43 @@ def register_written_homework_task(celery_app):
                 )
                 return
 
+            # 任务开始时把本次实际会使用的题目软链接解析成快照；OCR、编译或
+            # 图片渲染耗时期间发生的全局配置修改不会影响本次任务。
+            ocr_endpoint = None
+            text_grading_endpoint = None
+            direct_image_endpoint = None
+            if written_mode == 2:
+                direct_image_endpoint = resolve_problem_llm_endpoint_snapshot(
+                    problem,
+                    "direct_image_grading_endpoint_id",
+                )
+            elif written_mode == 3:
+                text_grading_endpoint = resolve_problem_llm_endpoint_snapshot(
+                    problem,
+                    "text_grading_endpoint_id",
+                )
+            elif written_mode == 1:
+                ocr_endpoint = resolve_problem_llm_endpoint_snapshot(
+                    problem,
+                    "ocr_endpoint_id",
+                )
+                text_grading_endpoint = resolve_problem_llm_endpoint_snapshot(
+                    problem,
+                    "text_grading_endpoint_id",
+                )
+            else:
+                # 纯人工批改不应进入本任务；若模式在排队期间被切换，恢复为待
+                # 人工处理状态并停止，不能误用 OCR/评分端点。
+                update_submission_status(submission_id, 'Pending')
+                refresh_submission_status_snapshot(submission_id)
+                return
+
             if written_mode == 2:
                 image_paths = render_pdf_to_images(file_path, upload_folder)
                 score, ai_comment = evaluate_written_homework_with_ai_from_images(
                     problem,
                     image_paths,
-                    grading_model_spec=written_model,
+                    endpoint=direct_image_endpoint,
                 )
             elif written_mode == 3:
                 if not str(file_path).lower().endswith('.zip'):
@@ -601,7 +629,7 @@ def register_written_homework_task(celery_app):
                     score, ai_comment = evaluate_written_homework_with_ai(
                         problem,
                         tex_text,
-                        grading_model_spec=written_model,
+                        endpoint=text_grading_endpoint,
                     )
                 except Exception as tex_error:
                     score = 0
@@ -624,6 +652,7 @@ def register_written_homework_task(celery_app):
                     upload_folder=upload_folder,
                     uploaded_filename=uploaded_filename,
                     on_partial_latex=_on_partial_latex,
+                    endpoint=ocr_endpoint,
                 )
                 with open(markdown_path, 'r', encoding='utf-8') as f:
                     latex_text = f.read()
@@ -634,7 +663,7 @@ def register_written_homework_task(celery_app):
                 score, ai_comment = evaluate_written_homework_with_ai(
                     problem,
                     latex_text,
-                    grading_model_spec=written_model,
+                    endpoint=text_grading_endpoint,
                 )
 
             update_submission_score_and_comment(submission_id, score, ai_comment)

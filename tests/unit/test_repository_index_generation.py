@@ -3,10 +3,26 @@
 
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from oj_modules.ai.endpoints import LLMEndpointSnapshot
 from oj_modules.repository import index as index_services
+
+
+def _endpoint(category, endpoint_id):
+    return LLMEndpointSnapshot(
+        id=endpoint_id,
+        name=f"test-{category}",
+        category=category,
+        protocol="openai",
+        base_url="https://llm.example.test/v1",
+        api_key="test-key",
+        model=f"{category}-model",
+        thinking_enabled=False,
+        thinking_format="none",
+    )
 
 
 class _StaleJobCursor:
@@ -286,39 +302,78 @@ class _CancelingReservationConnection:
 
 def test_embedding_cache_key_is_path_independent():
     text = "math::sum\nint sum(int a, int b)\nreturn a + b;"
-    first = index_services._embedding_input_hash(text, "embedding-model")
-    moved = index_services._embedding_input_hash(text, "embedding-model")
+    embedding_endpoint = _endpoint("embedding", 2)
+    structured_endpoint = _endpoint("text", 1)
+    first = index_services._embedding_input_hash(
+        text,
+        embedding_endpoint,
+        structured_endpoint,
+    )
+    moved = index_services._embedding_input_hash(
+        text,
+        embedding_endpoint,
+        structured_endpoint,
+    )
     assert first == moved
+
+
+def test_repository_embedding_uses_snapshot_and_generic_adapter(monkeypatch):
+    embedding_endpoint = _endpoint("embedding", 2)
+    calls = []
+
+    def fake_create_embeddings(endpoint, texts, **kwargs):
+        calls.append((endpoint, list(texts), kwargs))
+        return SimpleNamespace(vectors=((3.0, 4.0), (0.0, 2.0)))
+
+    monkeypatch.setattr(
+        index_services,
+        "create_embeddings",
+        fake_create_embeddings,
+    )
+
+    vectors, model = index_services.encode_texts_with_repository_embedding(
+        ["first", "second"],
+        endpoint=embedding_endpoint,
+    )
+
+    assert model == "embedding-model"
+    assert vectors[0].tolist() == pytest.approx([0.6, 0.8])
+    assert vectors[1].tolist() == pytest.approx([0.0, 1.0])
+    assert calls[0][0] is embedding_endpoint
+    assert calls[0][1] == ["first", "second"]
 
 
 def test_structuring_prompts_never_receive_repository_path(monkeypatch):
     prompts = []
 
-    def fake_call_qwen_text(**kwargs):
-        prompts.append(kwargs["prompt_text"])
-        if "[函数代码]" in kwargs["prompt_text"]:
+    def fake_call_llm_text(prompt_text, _endpoint, **_kwargs):
+        prompts.append(prompt_text)
+        if "[函数代码]" in prompt_text:
             return '{"summary":"求和","params":[],"returns":{"description":"结果"}}'
         return (
             '{"class_name":"Vector","qualified_name":"math::Vector",'
             '"kind":"class","bases":[],"member_variables":[],"member_methods":[]}'
         )
 
-    monkeypatch.setattr(index_services, "_call_qwen_text", fake_call_qwen_text)
+    monkeypatch.setattr(index_services, "_call_llm_text", fake_call_llm_text)
     sensitive_path = "private/course/A/B/vector.hpp"
-    index_services._call_qwen_structured_function_entity(
+    endpoint = _endpoint("text", 1)
+    index_services._call_structured_function_entity(
         {
             "filename": sensitive_path,
             "qualified_name": "math::sum",
             "code": "int sum(int a, int b) { return a + b; }",
-        }
+        },
+        endpoint,
     )
-    index_services._call_qwen_structured_class_entity(
+    index_services._call_structured_class_entity(
         {
             "filename": sensitive_path,
             "class_name": "Vector",
             "qualified_name": "math::Vector",
             "kind": "class",
-        }
+        },
+        endpoint,
     )
 
     assert len(prompts) == 2
@@ -495,6 +550,7 @@ def test_terminal_index_lease_rejects_late_worker_publish(monkeypatch):
             embedding_map={},
             embedding_hashes={},
             embedding_model="test-embedding",
+            structured_model="test-structured",
         )
 
     assert inserted == []
@@ -542,6 +598,15 @@ def test_failed_candidate_never_reaches_publish(monkeypatch):
     staged = []
     monkeypatch.setattr(index_services, "_try_mark_repository_index_job_running", lambda _job: True)
     monkeypatch.setattr(index_services, "_is_repository_index_job_cancel_requested", lambda _job: False)
+    endpoints = {
+        "repository_structuring": _endpoint("text", 1),
+        "repository_embedding": _endpoint("embedding", 2),
+    }
+    monkeypatch.setattr(
+        index_services,
+        "resolve_llm_endpoint_snapshot",
+        lambda *, feature_key, **_kwargs: endpoints[feature_key],
+    )
     monkeypatch.setattr(
         index_services,
         "_load_repository_index_snapshot",
@@ -555,14 +620,18 @@ def test_failed_candidate_never_reaches_publish(monkeypatch):
             }],
         ),
     )
-    monkeypatch.setattr(index_services, "_load_active_repository_index_cache", lambda _user: ({}, {}))
+    monkeypatch.setattr(
+        index_services,
+        "_load_active_repository_index_cache",
+        lambda _user, _endpoint: ({}, {}),
+    )
 
     def fail_structuring(**_kwargs):
         raise RuntimeError("simulated parser failure")
 
     monkeypatch.setattr(
         index_services,
-        "_build_structured_with_treesitter_and_qwen",
+        "_build_structured_with_treesitter_and_llm",
         fail_structuring,
     )
     monkeypatch.setattr(

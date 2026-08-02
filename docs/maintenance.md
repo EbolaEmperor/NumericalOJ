@@ -99,10 +99,10 @@ oj.py 只负责把上述组件装配起来
 
 GitHub Actions 对每次 push/PR 执行语法、unit、DB 和 E2E。集成 job 使用 GitHub-hosted runner 上的一次性 MySQL 8.4/Redis 服务，构建 `numericaloj-judger-lite` 后运行真实 C/C++/Python/Octave 判题；JUnit 结果作为 artifact 保留。只有需要外部密钥的 live AI 测试默认跳过，平台具备 Node、loopback、符号链接、FIFO 与 Docker 的测试不得仅因运行在 GitHub 上而跳过。
 
-真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、详情四步和下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再在本地 `.env` 填写 `DEEPSEEK_API_KEY`，最后运行：
+真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、详情四步和下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再通过测试专用环境变量 `NUMOJ_REVERSE_LIVE_API_KEY` 提供密钥（不要写入站点 `.env`），最后运行：
 
 ```bash
-NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 python -m pytest -q \
+NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 NUMOJ_REVERSE_LIVE_API_KEY='...' python -m pytest -q \
   --basetemp=tmp/reverse-live-pytest \
   tests/e2e/test_reverse_judge_live_ui.py
 ```

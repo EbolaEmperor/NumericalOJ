@@ -18,6 +18,7 @@
 | `judging/` | 普通判题协议、Docker 沙箱、case runner | 排名赛业务规则 |
 | `repository/` | 代码仓库存储、解析、索引和工作区 | 提交或比赛专有规则 |
 | `ai/` | 模型客户端、Promptly、转写、批改与代码反馈 | Blueprint 和 Celery 注册 |
+| `site_config/` | 全站动态配置的持久化、校验与连接测试 | HTTP 管理界面、具体模型调用 |
 | `integrations/` | ModelScope 等第三方协议适配 | 领域展示或持久化规则 |
 | `security/` | 登录、凭据、限流、同源策略 | 某一领域的权限业务规则 |
 | `infrastructure/` | MySQL、Redis 等连接与客户端原语 | 业务 SQL |
