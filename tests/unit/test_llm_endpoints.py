@@ -154,9 +154,9 @@ def test_standard_url_joining():
     ("wire_format", "thinking_enabled", "expected"),
     [
         ("enable_thinking", True, {"enable_thinking": True}),
-        ("enable_thinking", False, {"enable_thinking": False}),
-        ("thinking.type", True, {"thinking": {"type": "enabled"}}),
-        ("thinking.type", False, {"thinking": {"type": "disabled"}}),
+        ("enable_thinking", False, {}),
+        ("thinking.type", True, {"enable_thinking": True}),
+        ("thinking.type", False, {}),
         ("none", True, {}),
     ],
 )
@@ -296,7 +296,7 @@ def test_anthropic_auth_thinking_message_and_tool_translation(monkeypatch):
     payload = kwargs["json"]
     assert payload["system"] == "系统约束"
     assert payload["max_tokens"] == 123
-    assert payload["thinking"] == {"type": "disabled"}
+    assert "thinking" not in payload
     assert payload["tools"][0]["input_schema"]["required"] == ["x"]
     assert payload["tool_choice"] == {"type": "tool", "name": "lookup"}
     assert payload["messages"][0] == {
@@ -341,7 +341,7 @@ def test_anthropic_thinking_enabled_is_explicit_and_has_no_budget_or_effort(monk
     )
 
     payload = calls[0][1]["json"]
-    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["thinking"] == {"type": "adaptive"}
     assert payload["max_tokens"] == 4096
     serialized = json.dumps(payload)
     assert "effort" not in serialized

@@ -3,11 +3,9 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import os
 import re
 import sys
 import time
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urljoin
 
@@ -570,39 +568,11 @@ def ranking_endpoints(args: argparse.Namespace) -> None:
 
 
 def _read_dotenv_values(path: str) -> Dict[str, str]:
-    env_path = Path(path).expanduser()
-    try:
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise CliError(f"Cannot read env file: {env_path}: {exc.strerror or exc}") from exc
-    values: Dict[str, str] = {}
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if key.startswith("export "):
-            key = key[len("export "):].strip()
-        if not key:
-            continue
-        values[key] = value.strip().strip('"').strip("'")
-    return values
+    return common.read_dotenv_values(path)
 
 
 def _read_env_secret(name: str, env_file: Optional[str] = None) -> str:
-    key_name = (name or "").strip()
-    if not key_name:
-        raise CliError("Missing environment variable name.")
-    if env_file:
-        value = _read_dotenv_values(env_file).get(key_name)
-        if value:
-            return value
-    value = os.environ.get(key_name, "").strip()
-    if value:
-        return value
-    source = f" in {env_file}" if env_file else ""
-    raise CliError(f"Environment variable {key_name}{source} is empty or not set.")
+    return common.read_env_secret(name, env_file)
 
 
 def _resolve_endpoint_secret_fields(endpoint: Any, default_env_file: Optional[str] = None) -> Any:

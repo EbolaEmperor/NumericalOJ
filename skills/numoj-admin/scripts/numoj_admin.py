@@ -28,6 +28,7 @@ from numoj_admin_cli import (  # noqa: E402
     ranking,
     repository,
     site,
+    site_config,
     submission,
     user,
 )
@@ -203,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     auth.register_init(subparsers)
     site.register(subparsers)
+    site_config.register(subparsers)
     auth.register(subparsers)
     me.register(subparsers)
     submission.register(subparsers)

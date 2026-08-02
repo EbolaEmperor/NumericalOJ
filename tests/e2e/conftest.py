@@ -42,12 +42,27 @@ QUALITY_GATE_STUB_PORT = 19101
 
 
 class _QualityGateStubHandler(BaseHTTPRequestHandler):
-    """仅用于 e2e：强制每次正式审核前先完成一次 hello。"""
+    """E2E 本地协议桩：保留质量门禁，并接受动态配置连通性探测。"""
 
     protocol_version = "HTTP/1.1"
     hello_count: dict[str, int] = {}
     review_count: dict[str, int] = {}
     recovery_healthy = False
+    dynamic_probe_requests: list[dict[str, Any]] = []
+    dynamic_probe_lock = threading.Lock()
+
+    _QUALITY_MODELS = {
+        "quality-pool-secret": "fake-quality-model",
+        "recovering-quality-secret": "recovering-quality-model",
+    }
+    _SENSITIVE_KEYS = {
+        "api_key",
+        "apikey",
+        "authorization",
+        "password",
+        "smtp_password",
+        "token",
+    }
 
     def log_message(self, _format: str, *args: Any) -> None:
         return
@@ -60,24 +75,72 @@ class _QualityGateStubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self) -> None:  # noqa: N802
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except Exception:
-            self._reply(400, {"error": "invalid json"})
-            return
-        api_key = self.headers.get("x-api-key") or ""
-        allowed_models = {
-            "quality-pool-secret": "fake-quality-model",
-            "recovering-quality-secret": "recovering-quality-model",
+    @classmethod
+    def _sanitize_probe_value(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): (
+                    "[redacted]"
+                    if str(key).strip().lower() in cls._SENSITIVE_KEYS
+                    else cls._sanitize_probe_value(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._sanitize_probe_value(item) for item in value]
+        return value
+
+    def _record_dynamic_probe(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        auth_header: str,
+    ) -> None:
+        authorization = str(self.headers.get(auth_header) or "")
+        record = {
+            "kind": kind,
+            "method": "POST",
+            "path": self.path,
+            "headers": {
+                "authorization": (
+                    "[redacted]" if self.headers.get("Authorization") else ""
+                ),
+                "x-api-key": (
+                    "[redacted]" if self.headers.get("x-api-key") else ""
+                ),
+                "anthropic-version": str(
+                    self.headers.get("anthropic-version") or ""
+                ),
+                "content-type": str(self.headers.get("Content-Type") or ""),
+                "authenticated": bool(authorization),
+            },
+            "payload": type(self)._sanitize_probe_value(payload),
         }
-        if (self.path != "/v1/messages"
-                or allowed_models.get(api_key) != payload.get("model")):
+        with type(self).dynamic_probe_lock:
+            type(self).dynamic_probe_requests.append(record)
+
+    @staticmethod
+    def _auth_marker(value: str, *, bearer: bool = False) -> str:
+        marker = str(value or "").strip()
+        if bearer and marker.lower().startswith("bearer "):
+            marker = marker[7:].strip()
+        return marker
+
+    @classmethod
+    def _dynamic_auth_passes(cls, value: str, *, bearer: bool = False) -> bool:
+        return cls._auth_marker(value, bearer=bearer).startswith("e2e-pass-")
+
+    def _handle_quality_gate(self, payload: dict[str, Any], api_key: str) -> None:
+        if self.path != "/v1/messages" or self._QUALITY_MODELS.get(api_key) != payload.get("model"):
             self._reply(401, {"error": "wrong endpoint configuration"})
             return
         messages = payload.get("messages") or []
-        last_content = messages[-1].get("content") if messages and isinstance(messages[-1], dict) else ""
+        last_content = (
+            messages[-1].get("content")
+            if messages and isinstance(messages[-1], dict)
+            else ""
+        )
         if last_content == "hello" and not payload.get("system"):
             if api_key == "recovering-quality-secret" and not type(self).recovery_healthy:
                 self._reply(503, {"error": "temporarily unhealthy"})
@@ -114,11 +177,165 @@ class _QualityGateStubHandler(BaseHTTPRequestHandler):
             }],
         })
 
+    def _handle_openai_chat(self, payload: dict[str, Any]) -> None:
+        authorization = self.headers.get("Authorization") or ""
+        self._record_dynamic_probe(
+            "openai_chat",
+            payload,
+            auth_header="Authorization",
+        )
+        if (
+            not str(authorization).lower().startswith("bearer ")
+            or not self._dynamic_auth_passes(authorization, bearer=True)
+        ):
+            self._reply(401, {"error": {"message": "invalid API key"}})
+            return
+        if not str(payload.get("model") or "").strip() or not isinstance(
+            payload.get("messages"), list
+        ):
+            self._reply(400, {"error": {"message": "model and messages required"}})
+            return
+        self._reply(200, {
+            "id": "chatcmpl-e2e-probe",
+            "object": "chat.completion",
+            "model": payload.get("model"),
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "OK"},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        })
+
+    def _handle_openai_embeddings(self, payload: dict[str, Any]) -> None:
+        authorization = self.headers.get("Authorization") or ""
+        self._record_dynamic_probe(
+            "openai_embeddings",
+            payload,
+            auth_header="Authorization",
+        )
+        if (
+            not str(authorization).lower().startswith("bearer ")
+            or not self._dynamic_auth_passes(authorization, bearer=True)
+        ):
+            self._reply(401, {"error": {"message": "invalid API key"}})
+            return
+        inputs = payload.get("input")
+        if (
+            not str(payload.get("model") or "").strip()
+            or not isinstance(inputs, list)
+            or not inputs
+        ):
+            self._reply(400, {"error": {"message": "model and input required"}})
+            return
+        input_count = len(inputs) if isinstance(inputs, list) else 1
+        self._reply(200, {
+            "object": "list",
+            "model": payload.get("model"),
+            "data": [
+                {
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": [float(index + 1), 0.5, -0.25],
+                }
+                for index in range(input_count)
+            ],
+            "usage": {"prompt_tokens": input_count, "total_tokens": input_count},
+        })
+
+    def _handle_anthropic_messages(self, payload: dict[str, Any]) -> None:
+        api_key = self.headers.get("x-api-key") or ""
+        self._record_dynamic_probe(
+            "anthropic_messages",
+            payload,
+            auth_header="x-api-key",
+        )
+        if not self._dynamic_auth_passes(api_key):
+            self._reply(401, {"type": "error", "error": {"message": "invalid API key"}})
+            return
+        if (
+            not self.headers.get("anthropic-version")
+            or not str(payload.get("model") or "").strip()
+            or not isinstance(payload.get("messages"), list)
+        ):
+            self._reply(400, {
+                "type": "error",
+                "error": {"message": "model, messages, and anthropic-version required"},
+            })
+            return
+        self._reply(200, {
+            "id": "msg-e2e-probe",
+            "type": "message",
+            "role": "assistant",
+            "model": payload.get("model"),
+            "content": [{"type": "text", "text": "OK"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+
+    def _handle_web_search(self, payload: dict[str, Any]) -> None:
+        authorization = self.headers.get("Authorization") or ""
+        self._record_dynamic_probe(
+            "web_search_mcp",
+            payload,
+            auth_header="Authorization",
+        )
+        if not self._dynamic_auth_passes(authorization, bearer=True):
+            self._reply(401, {"error": "invalid authorization"})
+            return
+        if payload.get("jsonrpc") != "2.0" or payload.get("method") != "initialize":
+            self._reply(400, {
+                "jsonrpc": "2.0",
+                "id": payload.get("id"),
+                "error": {"code": -32600, "message": "initialize required"},
+            })
+            return
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        self._reply(200, {
+            "jsonrpc": "2.0",
+            "id": payload.get("id"),
+            "result": {
+                "protocolVersion": params.get("protocolVersion") or "2024-11-05",
+                "capabilities": {},
+                "serverInfo": {"name": "numoj-e2e-web-search", "version": "1.0.0"},
+            },
+        })
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            self._reply(400, {"error": "invalid json"})
+            return
+        if not isinstance(payload, dict):
+            self._reply(400, {"error": "json object required"})
+            return
+
+        api_key = self.headers.get("x-api-key") or ""
+        if api_key in self._QUALITY_MODELS:
+            self._handle_quality_gate(payload, api_key)
+        elif self.path == "/v1/chat/completions":
+            self._handle_openai_chat(payload)
+        elif self.path == "/v1/embeddings":
+            self._handle_openai_embeddings(payload)
+        elif self.path == "/v1/messages":
+            self._handle_anthropic_messages(payload)
+        elif self.path == "/mcp":
+            self._handle_web_search(payload)
+        else:
+            self._reply(404, {"error": "unknown e2e stub route"})
+
 
 def _start_quality_gate_stub() -> tuple[ThreadingHTTPServer, threading.Thread]:
     _QualityGateStubHandler.hello_count = {}
     _QualityGateStubHandler.review_count = {}
     _QualityGateStubHandler.recovery_healthy = False
+    clear_dynamic_probe_requests()
     try:
         server = ThreadingHTTPServer(
             ("127.0.0.1", QUALITY_GATE_STUB_PORT),
@@ -133,6 +350,21 @@ def _start_quality_gate_stub() -> tuple[ThreadingHTTPServer, threading.Thread]:
 
 def set_quality_gate_stub_recovery_healthy(healthy: bool) -> None:
     _QualityGateStubHandler.recovery_healthy = bool(healthy)
+
+
+def dynamic_config_probe_requests() -> list[dict[str, Any]]:
+    """返回本次 E2E 服务期间收到的已脱敏动态配置探测快照。"""
+    with _QualityGateStubHandler.dynamic_probe_lock:
+        return json.loads(json.dumps(
+            _QualityGateStubHandler.dynamic_probe_requests,
+            ensure_ascii=False,
+        ))
+
+
+def clear_dynamic_probe_requests() -> None:
+    """清空动态配置探测记录，不影响质量门禁计数器。"""
+    with _QualityGateStubHandler.dynamic_probe_lock:
+        _QualityGateStubHandler.dynamic_probe_requests = []
 
 
 def judger_image_name() -> str:
@@ -241,6 +473,28 @@ def local_numoj_server(tmp_path: Path) -> str:
     _assert_disposable_environment()
     _assert_port_free()
     env = os.environ.copy()
+    # 普通 E2E 不应访问外网。httpx 会在创建 Client 时立即解析
+    # SOCKS/HTTP 代理（即使请求目标在 NO_PROXY 中），因此子进程显式
+    # 移除代理并保留 loopback 直连名单，避免本地 MCP 探测假失败。
+    for proxy_name in (
+        "ALL_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "all_proxy",
+        "https_proxy",
+        "http_proxy",
+    ):
+        env.pop(proxy_name, None)
+    for no_proxy_name in ("NO_PROXY", "no_proxy"):
+        no_proxy_values = [
+            item.strip()
+            for item in str(env.get(no_proxy_name) or "").split(",")
+            if item.strip()
+        ]
+        for loopback_name in ("127.0.0.1", "localhost"):
+            if loopback_name not in no_proxy_values:
+                no_proxy_values.append(loopback_name)
+        env[no_proxy_name] = ",".join(no_proxy_values)
     env["PYTHONUNBUFFERED"] = "1"
     env["OJ_LIVE_AI"] = "0"
     env["NUMOJ_FAKE_AGENT_JUDGE"] = "1"
@@ -255,13 +509,14 @@ def local_numoj_server(tmp_path: Path) -> str:
     env["NUMOJ_FAKE_PROMPTLY_REVIEW_REQUIRED_TERMS"] = '["monotonic deque", "expired index"]'
     env["NUMOJ_FAKE_PROMPTLY_REVIEW_REPLY"] = "Please explain the monotonic deque and expired index handling."
     env["NUMOJ_FAKE_PROMPTLY_CODE"] = "print('hello')\n"
+    env["NUMOJ_E2E_FAKE_DYNAMIC_CONFIG_TESTERS"] = "1"
     quality_gate_server, quality_gate_thread = _start_quality_gate_stub()
     web_log_path = tmp_path / "numoj-web.log"
     celery_log_path = tmp_path / "numoj-celery.log"
     web_log = web_log_path.open("w", encoding="utf-8")
     celery_log = celery_log_path.open("w", encoding="utf-8")
     web_proc = subprocess.Popen(
-        [sys.executable, "-B", "oj.py"],
+        [sys.executable, "-B", "-m", "tests.e2e.loopback_web"],
         cwd=ROOT,
         env=env,
         stdout=web_log,

@@ -185,8 +185,8 @@ def test_claude_relay_only_overrides_main_streaming_messages_request():
 @pytest.mark.parametrize(
     ("thinking_format", "enabled", "expected"),
     [
-        ("thinking_type", True, {"thinking": {"type": "enabled"}}),
-        ("thinking_type", False, {"thinking": {"type": "disabled"}}),
+        ("thinking_type", True, {"thinking": {"type": "adaptive"}}),
+        ("thinking_type", False, {}),
         ("none", False, {}),
     ],
 )
@@ -218,8 +218,8 @@ def test_claude_messages_rewrite_uses_frozen_thinking_format(
     ("thinking_format", "enabled", "expected"),
     [
         ("enable_thinking", True, {"enable_thinking": True}),
-        ("enable_thinking", False, {"enable_thinking": False}),
-        ("thinking_type", True, {"thinking": {"type": "enabled"}}),
+        ("enable_thinking", False, {}),
+        ("thinking_type", True, {"enable_thinking": True}),
         ("none", False, {}),
     ],
 )
@@ -244,9 +244,9 @@ def test_openai_chat_completions_rewrite_uses_frozen_thinking_format(
 
     assert rewritten["model"] == "actual-model"
     assert {key: rewritten[key] for key in expected} == expected
-    if thinking_format != "enable_thinking":
+    if "enable_thinking" not in expected:
         assert "enable_thinking" not in rewritten
-    if thinking_format != "thinking_type":
+    if "thinking" not in expected:
         assert "thinking" not in rewritten
 
 
@@ -256,8 +256,9 @@ def test_openai_chat_completions_rewrite_uses_frozen_thinking_format(
         ("openai", "/v1/chat/completions", "enable_thinking", True,
          {"enable_thinking": True}),
         ("openai", "/v1/chat/completions", "none", False, {}),
-        ("anthropic", "/v1/messages", "thinking_type", False,
-         {"thinking": {"type": "disabled"}}),
+        ("anthropic", "/v1/messages", "thinking_type", True,
+         {"thinking": {"type": "adaptive"}}),
+        ("anthropic", "/v1/messages", "thinking_type", False, {}),
     ],
 )
 def test_pi_dual_protocol_relay_rewrites_real_request_shape(
@@ -279,9 +280,9 @@ def test_pi_dual_protocol_relay_rewrites_real_request_shape(
     rewritten = json.loads(relay._rewrite_request_body(path, raw))
 
     assert {key: rewritten[key] for key in expected} == expected
-    if thinking_format != "enable_thinking":
+    if "enable_thinking" not in expected:
         assert "enable_thinking" not in rewritten
-    if thinking_format != "thinking_type":
+    if "thinking" not in expected:
         assert "thinking" not in rewritten
 
 

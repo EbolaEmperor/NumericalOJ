@@ -52,6 +52,70 @@ def read_text_value(value: Optional[str]) -> str:
     return value
 
 
+def read_dotenv_values(path: str) -> Dict[str, str]:
+    """读取 CLI 密钥参数使用的 ``KEY=value`` 子集。
+
+    双引号值遵循项目 ``.env`` 约定，按 JSON 字符串解析，因此引号、反斜杠和
+    Unicode 转义不会被静默改写；单引号只做成对去壳，未加引号的值去除首尾空白。
+    """
+    env_path = Path(path).expanduser()
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise CliError(
+            f"Cannot read env file: {env_path}: {exc.strerror or exc}"
+        ) from exc
+    values: Dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export ") :].strip()
+        if not key:
+            continue
+        raw_value = value.strip()
+        if raw_value.startswith('"'):
+            try:
+                parsed = json.loads(raw_value)
+            except json.JSONDecodeError as exc:
+                raise CliError(
+                    f"Invalid JSON string for {key} in {env_path}: {exc}"
+                ) from exc
+            if not isinstance(parsed, str):
+                raise CliError(
+                    f"Expected a JSON string for {key} in {env_path}."
+                )
+            values[key] = parsed
+        elif (
+            len(raw_value) >= 2
+            and raw_value.startswith("'")
+            and raw_value.endswith("'")
+        ):
+            values[key] = raw_value[1:-1]
+        else:
+            values[key] = raw_value
+    return values
+
+
+def read_env_secret(name: str, env_file: Optional[str] = None) -> str:
+    """Resolve one non-empty secret from an optional dotenv file, then the process."""
+    key_name = (name or "").strip()
+    if not key_name:
+        raise CliError("Missing environment variable name.")
+    if env_file:
+        value = read_dotenv_values(env_file).get(key_name, "").strip()
+        if value:
+            return value
+    value = os.environ.get(key_name, "").strip()
+    if value:
+        return value
+    source = f" in {env_file}" if env_file else ""
+    raise CliError(f"Environment variable {key_name}{source} is empty or not set.")
+
+
 def parse_json_value(value: str) -> Any:
     text = read_text_value(value)
     try:
