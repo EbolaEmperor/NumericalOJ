@@ -142,7 +142,6 @@ def test_candidates_are_grouped_by_usage_without_secret_fields():
         [
             {
                 "id": 1,
-                "name": "多模态",
                 "protocol": "openai",
                 "category": "omni",
                 "model": "omni-model",
@@ -150,21 +149,18 @@ def test_candidates_are_grouped_by_usage_without_secret_fields():
             },
             {
                 "id": 2,
-                "name": "文本",
                 "protocol": "anthropic",
                 "category": "text",
                 "model": "text-model",
             },
             {
                 "id": 3,
-                "name": "视觉",
                 "protocol": "anthropic",
                 "category": "vision",
                 "model": "vision-model",
             },
             {
                 "id": 4,
-                "name": "向量",
                 "protocol": "openai",
                 "category": "embedding",
                 "model": "embedding-model",
@@ -176,6 +172,11 @@ def test_candidates_are_grouped_by_usage_without_secret_fields():
     assert [item["id"] for item in candidates[OCR_ENDPOINT_ID]] == [1, 3]
     assert all(
         "api_key" not in endpoint
+        for grouped in candidates.values()
+        for endpoint in grouped
+    )
+    assert all(
+        "name" not in endpoint
         for grouped in candidates.values()
         for endpoint in grouped
     )

@@ -600,7 +600,6 @@ def test_global_endpoint_copy_uses_server_secret_and_protocol(monkeypatch):
         '_get_global_endpoint_for_copy',
         lambda endpoint_id: {
             'id': endpoint_id,
-            'name': '全局 Anthropic',
             'category': 'text',
             'protocol': 'anthropic',
             'base_url': 'https://global.example/anthropic',
@@ -719,17 +718,17 @@ def test_global_endpoint_copy_rejects_incompatible_harness(monkeypatch):
 def test_global_endpoint_candidates_filter_protocol_category_and_secrets():
     endpoints = [
         {
-            'id': 1, 'name': 'Anthropic Text', 'category': 'text',
+            'id': 1, 'category': 'text',
             'protocol': 'anthropic', 'base_url': 'https://a.example',
             'api_key': 'must-not-leak', 'model': 'a',
         },
         {
-            'id': 2, 'name': 'OpenAI Omni', 'category': 'omni',
+            'id': 2, 'category': 'omni',
             'protocol': 'openai', 'base_url': 'https://o.example',
             'api_key': 'must-not-leak', 'model': 'o',
         },
         {
-            'id': 3, 'name': 'OpenAI Vision', 'category': 'vision',
+            'id': 3, 'category': 'vision',
             'protocol': 'openai', 'base_url': 'https://v.example',
             'api_key': 'must-not-leak', 'model': 'v',
         },
@@ -743,6 +742,7 @@ def test_global_endpoint_candidates_filter_protocol_category_and_secrets():
     assert [item['id'] for item in codex] == [2]
     assert opencode == []
     assert all('api_key' not in item for item in pi + codex)
+    assert all('name' not in item for item in pi + codex)
 
 
 @pytest.mark.parametrize("value", [None, "", "unknown-agent"])

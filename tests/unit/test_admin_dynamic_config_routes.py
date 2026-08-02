@@ -26,7 +26,7 @@ def make_client(monkeypatch, **factory_kwargs):
     return app, app.test_client()
 
 
-def test_site_config_endpoint_name_is_stable(monkeypatch):
+def test_site_config_route_identifier_is_stable(monkeypatch):
     app, _client = make_client(monkeypatch)
 
     rule = next(rule for rule in app.url_map.iter_rules() if rule.rule == "/admin/site-config")
@@ -44,13 +44,13 @@ def test_endpoint_list_passes_current_admin_for_unlock_permission(monkeypatch):
     _app, client = make_client(monkeypatch)
 
     response = client.get(
-        "/api/admin/dynamic-config/llm-endpoints?category=text",
+        "/api/admin/dynamic-config/llm-endpoints",
         headers={"Accept": "application/json"},
     )
 
     assert response.status_code == 200
     assert response.get_json() == {"success": True, "endpoints": []}
-    assert captured == {"category": "text", "actor_user_id": 17}
+    assert captured == {"actor_user_id": 17}
 
 
 def test_llm_test_token_is_top_level(monkeypatch):
@@ -74,7 +74,7 @@ def test_llm_test_token_is_top_level(monkeypatch):
 
     response = client.post(
         "/api/admin/dynamic-config/llm-endpoints/test",
-        json={"id": 3, "name": "端点"},
+        json={"id": 3, "model": "model-a"},
     )
 
     assert response.status_code == 200

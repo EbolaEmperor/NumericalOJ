@@ -89,9 +89,7 @@ def create_admin_dynamic_config_blueprint(
     @_api_errors
     def llm_endpoint_list():
         user = current_user()
-        category = request.args.get("category") or None
         endpoints = config_service.list_llm_endpoints(
-            category=category,
             actor_user_id=user["id"],
         )
         return jsonify(success=True, endpoints=endpoints)

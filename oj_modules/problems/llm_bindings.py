@@ -230,7 +230,6 @@ def build_problem_llm_endpoint_candidates(endpoints):
         safe_endpoints.append(
             {
                 "id": endpoint_id,
-                "name": str(endpoint.get("name") or "").strip(),
                 "protocol": str(endpoint.get("protocol") or "").strip().lower(),
                 "category": category,
                 "model": str(endpoint.get("model") or "").strip(),
