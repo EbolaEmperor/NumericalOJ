@@ -2,30 +2,53 @@
 # -*- coding: utf-8 -*-
 
 import pymysql
-from flask import Blueprint, request
+from flask import Blueprint, make_response, request
 
 from oj_modules.api.helpers import json_error, json_success, public_user
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 from oj_modules.db_services import (
     get_all_classes,
     get_all_problems,
     get_class_by_en,
-    get_db_connection,
     get_problem,
-    safe_table_name,
 )
-from oj_modules.ranking_db import list_competitions
-from oj_modules.routes.homework_routes import (
-    build_plagiarism_records_csv_response,
-    delete_plagiarism_records_for_class,
+from oj_modules.homework.records import (
+    build_plagiarism_records_csv,
+    delete_plagiarism_records_for_class as _delete_plagiarism_records_for_class,
+    load_plagiarism_records_for_class,
+)
+from oj_modules.homework.runtime import (
     get_plagiarism_progress_payload,
-    parse_plagiarism_mark_payload,
+    invalidate_problem_list_cache_for_class,
     start_plagiarism_mark_task,
-    _load_plagiarism_records_for_class,
 )
+from oj_modules.homework.targets import parse_plagiarism_mark_payload
+from oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
+from oj_modules.ranking.db import list_competitions
 
 
 homework_api_bp = Blueprint("homework_api", __name__, url_prefix="/api/admin")
+
+# 保留旧测试与调用方使用的模块级 patch seam。
+_load_plagiarism_records_for_class = load_plagiarism_records_for_class
+
+
+def build_plagiarism_records_csv_response(class_en):
+    artifact = build_plagiarism_records_csv(class_en)
+    response = make_response(artifact.content)
+    response.headers["Content-Type"] = artifact.content_type
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{artifact.filename}"'
+    )
+    return response
+
+
+def delete_plagiarism_records_for_class(class_en, record_ids):
+    return _delete_plagiarism_records_for_class(
+        class_en,
+        record_ids,
+        invalidate_callback=invalidate_problem_list_cache_for_class,
+    )
 
 
 @homework_api_bp.route("/homework", methods=["GET"])

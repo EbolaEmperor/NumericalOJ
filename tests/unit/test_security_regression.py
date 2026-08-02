@@ -18,7 +18,7 @@ from flask import Flask, session
 
 # ---------------- 会话用户请求内复用 ----------------
 def test_current_user_reuses_request_lookup_and_tracks_session_changes(monkeypatch):
-    from oj_modules import auth_helpers
+    from oj_modules.security import auth
 
     app = Flask(__name__)
     app.secret_key = 'test'
@@ -28,26 +28,26 @@ def test_current_user_reuses_request_lookup_and_tracks_session_changes(monkeypat
         lookups.append(username)
         return {'username': username}
 
-    monkeypatch.setattr(auth_helpers, 'get_user_by_username', load_user)
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
     with app.test_request_context('/'):
         session['username'] = 'alice'
-        assert auth_helpers.current_user() == {'username': 'alice'}
-        assert auth_helpers.current_user() == {'username': 'alice'}
+        assert auth.current_user() == {'username': 'alice'}
+        assert auth.current_user() == {'username': 'alice'}
         session['username'] = 'bob'
-        assert auth_helpers.current_user() == {'username': 'bob'}
+        assert auth.current_user() == {'username': 'bob'}
 
     assert lookups == ['alice', 'bob']
 
 
 # ---------------- safe_table_name ----------------
 def test_safe_table_name_accepts_valid():
-    from oj_modules.db_services import safe_table_name
+    from oj_modules.infrastructure.mysql import safe_table_name
     assert safe_table_name('C2024class') == 'C2024class'
     assert safe_table_name('abc_123') == 'abc_123'
 
 
 def test_safe_table_name_rejects_injection():
-    from oj_modules.db_services import safe_table_name
+    from oj_modules.infrastructure.mysql import safe_table_name
     for bad in ['', 'a b', 'a;b', "a'", 'a-b', 'a.b', 'DROP TABLE x', '班级', 'x);--', None]:
         with pytest.raises(ValueError):
             safe_table_name(bad)
@@ -55,7 +55,7 @@ def test_safe_table_name_rejects_injection():
 
 # ---------------- 口令哈希 ----------------
 def test_legacy_sha256_verifies_and_flags_rehash():
-    from oj_modules.security_utils import verify_password
+    from oj_modules.security.credentials import verify_password
     pw = "secret123"
     legacy = hashlib.sha256(pw.encode()).hexdigest()
     ok, needs_rehash = verify_password(legacy, pw)
@@ -64,7 +64,7 @@ def test_legacy_sha256_verifies_and_flags_rehash():
 
 
 def test_werkzeug_hash_roundtrip_no_rehash():
-    from oj_modules.security_utils import hash_password, verify_password
+    from oj_modules.security.credentials import hash_password, verify_password
     h = hash_password("secret123")
     assert ':' in h                      # werkzeug 形如 pbkdf2:sha256:... / scrypt:...
     ok, needs_rehash = verify_password(h, "secret123")
@@ -73,7 +73,7 @@ def test_werkzeug_hash_roundtrip_no_rehash():
 
 
 def test_verify_password_empty_stored():
-    from oj_modules.security_utils import verify_password
+    from oj_modules.security.credentials import verify_password
     assert verify_password(None, "x") == (False, False)
     assert verify_password("", "x") == (False, False)
 
@@ -105,7 +105,7 @@ class _FakeRedis:
 
 
 def test_rate_limit_blocks_after_max():
-    from oj_modules.security_utils import rate_limit_hit
+    from oj_modules.security.throttling import rate_limit_hit
     r = _FakeRedis()
     for _ in range(3):
         assert rate_limit_hit(r, 'k', 3, 60)[0] is True
@@ -115,12 +115,12 @@ def test_rate_limit_blocks_after_max():
 
 
 def test_rate_limit_fail_open_without_redis():
-    from oj_modules.security_utils import rate_limit_hit
+    from oj_modules.security.throttling import rate_limit_hit
     assert rate_limit_hit(None, 'k', 1, 60)[0] is True
 
 
 def test_cooldown_blocks_second_call():
-    from oj_modules.security_utils import cooldown_active
+    from oj_modules.security.throttling import cooldown_active
     r = _FakeRedis()
     assert cooldown_active(r, 'cd', 60)[0] is True
     assert cooldown_active(r, 'cd', 60)[0] is False
@@ -128,7 +128,7 @@ def test_cooldown_blocks_second_call():
 
 # ---------------- sanitize_html ----------------
 def test_sanitize_strips_script_and_events_and_protocols():
-    from oj_modules.markdown_utils import sanitize_html
+    from oj_modules.shared.markdown import sanitize_html
     out = sanitize_html('<script>alert(1)</script><b>hi</b>')
     assert '<script' not in out.lower()
     assert 'hi' in out
@@ -141,7 +141,7 @@ def test_sanitize_strips_script_and_events_and_protocols():
 
 
 def test_sanitize_keeps_benign_markup():
-    from oj_modules.markdown_utils import sanitize_html
+    from oj_modules.shared.markdown import sanitize_html
     out = sanitize_html('<pre><code>vector&lt;int&gt;</code></pre>')
     assert '<code' in out.lower() or '&lt;code' in out.lower()
     out2 = sanitize_html('<a href="https://example.com">link</a>')
@@ -159,10 +159,10 @@ def test_sanitize_keeps_benign_markup():
     ),
 )
 def test_sanitize_fails_closed_when_bleach_is_unavailable(monkeypatch, payload):
-    from oj_modules import markdown_utils
+    from oj_modules.shared import markdown
 
-    monkeypatch.setattr(markdown_utils, 'bleach', None)
-    out = markdown_utils.sanitize_html(payload)
+    monkeypatch.setattr(markdown, 'bleach', None)
+    out = markdown.sanitize_html(payload)
 
     assert '<a' not in out.lower()
     assert '<img' not in out.lower()
@@ -172,15 +172,15 @@ def test_sanitize_fails_closed_when_bleach_is_unavailable(monkeypatch, payload):
 
 
 def test_sanitize_fails_closed_when_bleach_raises(monkeypatch):
-    from oj_modules import markdown_utils
+    from oj_modules.shared import markdown
 
     class BrokenBleach:
         @staticmethod
         def clean(*_args, **_kwargs):
             raise RuntimeError('simulated sanitizer failure')
 
-    monkeypatch.setattr(markdown_utils, 'bleach', BrokenBleach())
-    out = markdown_utils.sanitize_html(
+    monkeypatch.setattr(markdown, 'bleach', BrokenBleach())
+    out = markdown.sanitize_html(
         '<a href=javascript:alert(1)>click</a>'
     )
 
@@ -189,7 +189,7 @@ def test_sanitize_fails_closed_when_bleach_raises(monkeypatch):
 
 # ---------------- 用户名白名单 / 管理员页 XSS 回归 ----------------
 def test_validate_username_accepts_safe_identifiers():
-    from oj_modules.security_utils import validate_username
+    from oj_modules.security.credentials import validate_username
     for username in ('alice', 'student_001', 'u-2026.07'):
         ok, cleaned, msg = validate_username(f' {username} ')
         assert ok is True
@@ -198,7 +198,7 @@ def test_validate_username_accepts_safe_identifiers():
 
 
 def test_validate_username_rejects_xss_and_paths():
-    from oj_modules.security_utils import validate_username
+    from oj_modules.security.credentials import validate_username
     for bad in (
         '',
         '-starts-with-dash',
@@ -261,7 +261,7 @@ def test_register_offers_every_real_class_from_the_data_layer():
 
 # ---------------- 用户头文件名白名单 ----------------
 def test_safe_user_header_filename():
-    from oj_modules import judger_core
+    from oj_modules.judging import core as judger_core
     assert judger_core.safe_user_header_filename('mylib.h') == 'mylib.h'
     assert judger_core.safe_user_header_filename('include/helper.hpp') == 'include/helper.hpp'
     assert judger_core.safe_user_header_filename('notes/read me.inc') == 'notes/read me.inc'

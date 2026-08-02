@@ -62,7 +62,7 @@
 - `layouts/base.html` 提供最小页面骨架，site/embedded 只表达各自差异；MathJax 从全局约 1.17 MiB 依赖改为 8 个有公式页面显式 opt-in。
 - 排名规则拓扑只保留 `static/app/ranking/topology.js` 一份算法，三个消费者通过不同几何参数复用；确定性布局与环检测由 Node 契约测试保护。
 - 生产 Supervisor 中隐式结构同步入口从 4 个降到 0，结构同步只有部署状态机一个所有者。
-- 生产代码自行构造 Redis 客户端的位置从多套实现降到 0，由 `oj_modules/redis_clients.py` 统一。
+- 生产代码自行构造 Redis 客户端的位置从多套实现降到 0，由 `oj_modules/infrastructure/redis.py` 统一。
 - 持久日志从 `/tmp` 收口到 Git 忽略的项目内 `logs/`；9 个 dataset 由单写采集器按用途轮转，Web/Celery 使用同一 schema、脱敏和关联上下文，登录与提交关键事实有专门审计出口。
 - 删除无调用方模板、停用动画、重复/残缺 vendor 资源、孤儿课程数据和过期生成式 Wiki；`deploy.sh` 不操作 `static/`，生产目录中非 Git 管理的额外资产不会被部署脚本清理。
 

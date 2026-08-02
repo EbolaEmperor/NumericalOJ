@@ -21,7 +21,7 @@ NumericalOJ 是面向高校教学的中文在线评测系统，支持 MATLAB/Oct
    - `agent`：耗时较长的 AI 智能体任务，生产配置并发为 1；
    - `judge`：打榜赛 Agent-as-Judge 与反向评测任务。
 
-普通判题没有独立的 `5050` HTTP 服务。`evaluate_tasks.py` 在 `celery` worker 内调用 `oj_modules/judger_core.py`，后者通过 `oj_modules/docker_sandbox.py` 启动 Docker 容器执行用户代码。容器默认断网、只读根文件系统、非 root 运行，并设置内存、CPU 和进程数限制。
+普通判题没有独立的 `5050` HTTP 服务。`tasks/evaluate_tasks.py` 在 `celery` worker 内调用 `oj_modules/judging/core.py`，后者通过 `oj_modules/judging/sandbox.py` 启动 Docker 容器执行用户代码。容器默认断网、只读根文件系统、非 root 运行，并设置内存、CPU 和进程数限制。
 
 外部基础设施：
 
@@ -303,11 +303,15 @@ Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 Base
 ## 目录边界
 
 - `oj.py`：应用装配、Celery 注册、幂等调度引导与显式停机恢复入口；
-- `oj_modules/routes/`、`oj_modules/api/`：页面与 HTTP API；
-- `oj_modules/tasks/`：Celery 后台任务；
-- `oj_modules/db_services.py`、`oj_modules/ranking*_db.py`：数据访问；
-- `oj_modules/judger_core.py`、`oj_modules/docker_sandbox.py`：普通判题与容器沙箱；
-- `oj_modules/*_services.py`：可复用业务服务；
+- `oj_modules/routes/`、`oj_modules/api/`：页面与 HTTP API 适配层，只处理协议、鉴权和响应；
+- `oj_modules/tasks/`：Celery 适配层；`agent/`、`ranking/` 按任务域组织，`registry.py` 仅供组合根聚合注册，任务名和队列属于稳定外部契约；
+- `oj_modules/classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/`：领域服务与数据访问；
+- `oj_modules/editor/`、`judging/`、`repository/`：编辑器、普通判题和代码仓库等独立能力边界；
+- `oj_modules/ai/`、`integrations/`：模型应用能力与 ModelScope 等外部服务适配；
+- `oj_modules/security/`、`shared/`：安全策略和经过确认的跨域基础 helper；
+- `oj_modules/infrastructure/`：MySQL、Redis 等基础设施连接原语，业务查询仍留在所属领域；
+- `oj_modules/db_services.py`：尚未完成领域归属的存量数据访问层；新查询应进入所属领域包；
+- `oj_modules/runtime/`：显式停机恢复、watchdog 与进程运行期编排；
 - `oj_modules/observability/`、`scripts/log_admin.py`：结构化事件、上下文传播、日志采集与运维查询；
 - `templates/`、`static/`：按业务域组织的服务端模板和静态资源；
 - `deploy/`、`deploy.sh`：生产进程配置、数据库备份和原地一键部署；
@@ -315,6 +319,8 @@ Python 编辑器复用同一套持久化 LSP 桥接层，由固定版本的 Base
 - `requirements/`：生产、测试和可选依赖分层；
 - `scripts/mysql_admin.py`、`scripts/init_db_schema.py`、`scripts/recover_pending_tasks.py`：运维数据库连接、结构同步与停机恢复工具；
 - `tests/unit`、`tests/db`、`tests/e2e`：按基础设施依赖分层的测试。
+
+旧的根级 `*_services.py`、`*_utils.py`、判题、编辑器和排名模块路径已经删除，不再提供 Python 导入兼容。HTTP、CLI 与 Celery wire contract 保持不变；Python 调用方必须导入上述规范包路径。
 
 维护规则、变更清单、测试矩阵和发布/回滚原则见 [`docs/maintenance.md`](docs/maintenance.md)。生产部署约束见 [`CLAUDE.md`](CLAUDE.md)。
 治理前基线与本轮逐项验收分别见 [`docs/reviews/initial-maintainability-review.md`](docs/reviews/initial-maintainability-review.md) 和 [`docs/reviews/2026-07-maintainability-follow-up.md`](docs/reviews/2026-07-maintainability-follow-up.md)。

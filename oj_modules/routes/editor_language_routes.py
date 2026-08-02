@@ -9,12 +9,12 @@ import threading
 from flask import Blueprint, jsonify, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
-from oj_modules.auth_helpers import current_user, login_required
-from oj_modules.clangd_services import (
+from oj_modules.security.auth import current_user, login_required
+from oj_modules.editor.clangd import (
     get_clangd_service,
     get_repository_clangd_service,
 )
-from oj_modules.language_server_services import (
+from oj_modules.editor.language_server import (
     LANGUAGE_SOURCE_MAX_BYTES,
     LanguageServiceBusyError,
     LanguageServiceError,
@@ -22,16 +22,16 @@ from oj_modules.language_server_services import (
     LanguageServiceTimeoutError,
     LanguageServiceUnavailableError,
 )
-from oj_modules.octave_language_services import get_octave_language_service
-from oj_modules.python_language_services import get_python_language_service
+from oj_modules.editor.octave import get_octave_language_service
+from oj_modules.editor.python import get_python_language_service
+from oj_modules.editor.token_cache import SemanticTokenResultCache
 from oj_modules.repository import tree as repository_tree
 from oj_modules.repository.language import (
     capture_repository_semantic_snapshot,
     ensure_repository_semantic_target_current,
     get_repository_semantic_target,
 )
-from oj_modules.security_utils import rate_limit_hit
-from oj_modules.semantic_token_cache import SemanticTokenResultCache
+from oj_modules.security.throttling import rate_limit_hit
 
 
 editor_language_bp = Blueprint("editor_language", __name__)

@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-from oj_modules import docker_sandbox
-from oj_modules import judger_case_runner
+from oj_modules.judging import case_runner as judger_case_runner
+from oj_modules.judging import sandbox as docker_sandbox
 
 
 def _protocol_payload(
@@ -89,7 +89,7 @@ def test_case_runner_source_accepts_root_or_service_owner_only(monkeypatch):
             )(),
         )
         assert docker_sandbox._validate_case_runner_source().endswith(
-            "judger_case_runner.py"
+            "case_runner.py"
         )
 
     untrusted_uid = max(1, os.geteuid() + 1)

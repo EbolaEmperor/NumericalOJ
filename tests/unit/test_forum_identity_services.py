@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from oj_modules import forum_identity_services as identities
+from oj_modules.forum import identity as identities
 
 
 class _IdentityStore:

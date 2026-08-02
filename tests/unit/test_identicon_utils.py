@@ -2,7 +2,8 @@
 
 import pytest
 
-from oj_modules import class_logo_services, identicon_utils
+from oj_modules.classroom import logos as class_logo_services
+from oj_modules.shared import identicon
 
 
 def test_legacy_5x5_helper_preserves_exact_class_logo_cell_order():
@@ -23,8 +24,8 @@ def test_legacy_5x5_helper_preserves_exact_class_logo_cell_order():
         (4, 3),
     ]
 
-    assert identicon_utils.nibble_mirror_cells(material) == expected
-    assert identicon_utils.nibble_identicon_presentation(material) == {
+    assert identicon.nibble_mirror_cells(material) == expected
+    assert identicon.nibble_identicon_presentation(material) == {
         "cells": expected
     }
     assert class_logo_services.class_logo_presentation(
@@ -64,11 +65,11 @@ def test_8x8_text_identicon_is_deterministic_symmetric_and_browser_compatible():
         43, 44, 49, 50, 51, 52, 53, 54, 56, 59, 60, 63,
     ]
 
-    first = identicon_utils.text_mirror_cells("Alice")
-    second = identicon_utils.text_mirror_cells("Alice")
+    first = identicon.text_mirror_cells("Alice")
+    second = identicon.text_mirror_cells("Alice")
 
     assert first == second == expected
-    assert identicon_utils.text_identicon_presentation("Alice") == {
+    assert identicon.text_identicon_presentation("Alice") == {
         "cells": expected
     }
     assert first == sorted(set(first))
@@ -78,7 +79,7 @@ def test_8x8_text_identicon_is_deterministic_symmetric_and_browser_compatible():
 
 
 def test_8x8_text_identicon_hashes_utf8_not_python_codepoints():
-    assert identicon_utils.text_mirror_cells("匿名甲") == [
+    assert identicon.text_mirror_cells("匿名甲") == [
         1, 3, 4, 6, 8, 9, 10, 13, 14, 15, 16, 18, 19, 20, 21, 23,
         24, 31, 32, 33, 34, 37, 38, 39, 40, 41, 46, 47, 48, 49,
         54, 55, 56, 57, 58, 61, 62, 63,
@@ -88,11 +89,11 @@ def test_8x8_text_identicon_hashes_utf8_not_python_codepoints():
 @pytest.mark.parametrize("grid_size", [0, -1, "bad"])
 def test_identicon_helpers_reject_invalid_grid_sizes(grid_size):
     with pytest.raises(ValueError, match="grid_size"):
-        identicon_utils.nibble_mirror_cells(b"\x00", grid_size=grid_size)
+        identicon.nibble_mirror_cells(b"\x00", grid_size=grid_size)
     with pytest.raises(ValueError, match="grid_size"):
-        identicon_utils.text_mirror_cells("Alice", grid_size=grid_size)
+        identicon.text_mirror_cells("Alice", grid_size=grid_size)
 
 
 def test_text_identicon_requires_an_even_grid():
     with pytest.raises(ValueError, match="必须是偶数"):
-        identicon_utils.text_mirror_cells("Alice", grid_size=5)
+        identicon.text_mirror_cells("Alice", grid_size=5)

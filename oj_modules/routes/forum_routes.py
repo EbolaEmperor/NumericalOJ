@@ -8,7 +8,7 @@
 
 from flask import Blueprint, redirect, render_template, request, url_for
 
-from oj_modules.auth_helpers import current_user, login_required
+from oj_modules.security.auth import current_user, login_required
 
 
 forum_bp = Blueprint("forum", __name__)

@@ -9,8 +9,11 @@ from pathlib import Path
 import pytest
 from flask import Flask
 
-from oj_modules import db_services, submission_archive
-from oj_modules import written_submission_artifacts as artifacts
+from oj_modules import db_services
+from oj_modules.judging import core as judger_core
+from oj_modules.project_paths import PROJECT_ROOT
+from oj_modules.submissions import archive as submission_archive
+from oj_modules.submissions import written_artifacts as artifacts
 from oj_modules.routes import problem_core_routes
 
 
@@ -43,7 +46,7 @@ def _submission(filename="old.pdf", **overrides):
 def publish_environment(monkeypatch, tmp_path):
     upload_root = tmp_path / "uploads"
     run_root = tmp_path / "judger"
-    monkeypatch.setattr(submission_archive.judger_core, "JUDGER_RUN_ROOT", str(run_root))
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(run_root))
 
     upload_target = upload_root / "41"
     upload_target.mkdir(parents=True)
@@ -428,7 +431,7 @@ def test_manual_overwrite_route_passes_expected_snapshot_to_cas(monkeypatch):
 
 
 def test_watchdog_and_stopped_worker_recovery_both_include_publication_recovery():
-    source = Path(artifacts.__file__).with_name("startup_requeue.py")
+    source = PROJECT_ROOT / "oj_modules" / "runtime" / "pending_recovery.py"
     text = source.read_text(encoding="utf-8")
     assert "recover_written_submission_publications" in text
     assert "min_age_seconds=0" in text

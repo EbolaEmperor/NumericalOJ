@@ -3,7 +3,7 @@
 
 import pytest
 
-from oj_modules import judger_core
+from oj_modules.judging import core as judger_core
 from oj_modules.repository.workspace import (
     InvalidRepositoryPath,
     materialize_repository_tree,

@@ -115,7 +115,7 @@ def test_destructive_recovery_is_separate_from_safe_scheduler_bootstrap():
 
 def test_pending_watchdog_also_reclaims_expired_repository_upload_staging():
     source = (
-        ROOT / "oj_modules" / "startup_requeue.py"
+        ROOT / "oj_modules" / "runtime" / "pending_recovery.py"
     ).read_text(encoding="utf-8")
 
     register_start = source.index("def register_pending_requeue_watchdog_task")

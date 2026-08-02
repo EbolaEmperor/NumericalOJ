@@ -529,6 +529,7 @@ def create_problem(
     *,
     problem_type: str = "1",
     lang: str = "python",
+    time_limit_ms: int = 1000,
     submission_limit: int = 10,
     content: str = "Created by CLI e2e.",
     extra: Optional[list[str]] = None,
@@ -545,7 +546,7 @@ def create_problem(
         "--lang",
         lang,
         "--time-limit-ms",
-        "1000",
+        str(int(time_limit_ms)),
         "--submission-limit",
         str(submission_limit),
     ]

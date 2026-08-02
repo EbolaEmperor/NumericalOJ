@@ -547,7 +547,7 @@ def _wait_for_terminal_submission(
             "Pending", "Queued", "Judging",
         }:
             if last_row.get("status") != "Accepted":
-                from oj_modules.ranking_reverse_judge_db import (
+                from oj_modules.ranking.reverse_judge.service import (
                     build_reverse_judge_snapshot,
                 )
 
@@ -806,10 +806,8 @@ def _assert_real_snapshot(
     harness: str,
     secret: str,
 ) -> dict[str, Any]:
-    from oj_modules.ranking_reverse_judge_db import (
-        build_reverse_judge_snapshot,
-        list_reverse_judge_steps,
-    )
+    from oj_modules.ranking.reverse_judge.db import list_reverse_judge_steps
+    from oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
 
     snapshot = build_reverse_judge_snapshot(submission_id)
     assert snapshot
@@ -1013,15 +1011,15 @@ def _cleanup_reverse_live_state(
         # Web 接口失败时仍必须从一次性测试 DB 删除明文端点 Key。这个兜底再次
         # 经过环境护栏，且只调用生产已有的按 competition_id 精确删除事务。
         try:
-            from oj_modules.ranking_db import delete_competition
+            from oj_modules.ranking.db import delete_competition
 
             _assert_disposable_environment()
             delete_competition(competition_id)
         except Exception as exc:
             errors.append(f"比赛 DB 兜底删除异常（{type(exc).__name__}）")
 
-    from oj_modules.ranking_db import competition_dir, submission_dir
-    from oj_modules.tasks.ranking_reverse_judge_tasks import REVERSE_WORKSPACE_ROOT
+    from oj_modules.ranking.db import competition_dir, submission_dir
+    from oj_modules.tasks.ranking.reverse_judge import REVERSE_WORKSPACE_ROOT
 
     submission_root = ROOT / "ranking_uploads" / "submissions"
     reverse_workspace_root = Path(REVERSE_WORKSPACE_ROOT)

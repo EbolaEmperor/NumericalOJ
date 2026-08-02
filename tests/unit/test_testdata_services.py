@@ -2,7 +2,7 @@ import zipfile
 
 import pytest
 
-from oj_modules import testdata_services
+from oj_modules.problems import testdata as testdata_services
 
 
 def test_import_testdata_uses_restricted_extraction_and_replaces_stale_files(

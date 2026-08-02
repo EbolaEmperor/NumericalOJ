@@ -6,8 +6,9 @@ import zipfile
 
 import pytest
 
-import oj_modules.ranking_reverse_judge_db as rjdb
-import oj_modules.tasks.ranking_reverse_judge_tasks as rj
+import oj_modules.ranking.reverse_judge.db as reverse_db
+import oj_modules.ranking.reverse_judge.traces as rjdb
+import oj_modules.tasks.ranking.reverse_judge as rj
 
 
 def _without_trace_identity(messages):
@@ -270,10 +271,10 @@ def test_historical_three_step_snapshot_is_projected_to_canonical_four_step_orde
         def close(self):
             return None
 
-    monkeypatch.setattr(rjdb, "get_ranking_submission", lambda _sid: {"status": "Accepted"})
-    monkeypatch.setattr(rjdb, "get_db_connection", lambda: Connection())
+    monkeypatch.setattr(reverse_db, "get_ranking_submission", lambda _sid: {"status": "Accepted"})
+    monkeypatch.setattr(reverse_db, "get_db_connection", lambda: Connection())
 
-    steps = rjdb.list_reverse_judge_steps(17)
+    steps = reverse_db.list_reverse_judge_steps(17)
 
     assert [step["step_key"] for step in steps] == [
         "solution_check", "quality_gate", "agent_answer", "ai_judge",

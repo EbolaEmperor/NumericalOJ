@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-from oj_modules import class_membership_services as memberships
+from oj_modules.classroom import membership as memberships
 
 
 class _FakeCursor:

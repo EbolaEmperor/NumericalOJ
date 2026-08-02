@@ -287,11 +287,19 @@ def mock_ai(monkeypatch, request):
     # 带 live_ai 标记的用例要打真实 AI 接口，不 mock 这三个调用接缝；其余
     # 用例（绝大多数）仍 mock，保持快速与确定。SMTP / embedding 始终 mock。
     live_ai = request.node.get_closest_marker('live_ai') is not None
-    import oj_modules.ai_utils as ai
+    from oj_modules.ai import client as ai_client
+    from oj_modules.ai import code_feedback as ai_code_feedback
+    from oj_modules.ai import grading as ai_grading
+    from oj_modules.ai import promptly as ai_promptly
     if not live_ai:
-        monkeypatch.setattr(ai, '_call_qwen_text', lambda *a, **k: '{}', raising=False)
-        monkeypatch.setattr(ai, '_call_qwen_text_with_images', lambda *a, **k: '{}', raising=False)
-        monkeypatch.setattr(ai, '_call_qwen_omni_with_image', lambda *a, **k: '{}', raising=False)
+        fake_text = lambda *a, **k: '{}'
+        monkeypatch.setattr(ai_client, '_call_qwen_text', fake_text)
+        monkeypatch.setattr(ai_client, '_call_qwen_text_with_images', fake_text)
+        monkeypatch.setattr(ai_promptly, '_call_qwen_text', fake_text)
+        monkeypatch.setattr(ai_grading, '_call_qwen_text', fake_text)
+        monkeypatch.setattr(ai_grading, '_call_qwen_text_with_images', fake_text)
+        monkeypatch.setattr(ai_code_feedback, '_call_qwen_text', fake_text)
+        monkeypatch.setattr(ai_code_feedback, '_call_qwen_omni_with_image', fake_text)
     try:
         from oj_modules.repository import index as ris
         import numpy as np

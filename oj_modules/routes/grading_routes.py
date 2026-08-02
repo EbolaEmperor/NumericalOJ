@@ -12,7 +12,7 @@ from oj_modules.db_services import (
     get_user_by_username,
     update_submission_status,
 )
-from oj_modules.grading_services import (
+from oj_modules.submissions.grading import (
     get_file_path_for_submission,
     invalidate_previous_pending_submissions,
     update_submission_score_and_comment,
@@ -22,7 +22,7 @@ from oj_modules.grading_services import (
 grading_bp = Blueprint('grading', __name__)
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 
 
 def _find_written_submission_pdf(submission, problem):

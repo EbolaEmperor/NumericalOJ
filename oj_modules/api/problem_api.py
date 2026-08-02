@@ -4,16 +4,16 @@
 from flask import Blueprint, request
 
 from oj_modules.api.helpers import apply_limit, clamp_limit, json_error, json_success, public_problem, public_user, to_jsonable
-from oj_modules.auth_helpers import current_user
-from oj_modules.promptly_guard import parse_promptly_review_config
-from oj_modules.routes.admin_problem_routes import (
-    _DEFAULT_PROGRAMMING_GRADING_MODEL,
-    _DEFAULT_WRITTEN_GRADING_MODEL,
-    _DEFAULT_WRITTEN_GRADING_PROMPT,
-    _PROGRAMMING_GRADING_MODEL_OPTIONS,
-    _WRITTEN_GRADING_MODEL_OPTIONS,
+from oj_modules.security.auth import current_user
+from oj_modules.problems.promptly import parse_promptly_review_config
+from oj_modules.problems.grading import (
+    DEFAULT_PROGRAMMING_GRADING_MODEL as _DEFAULT_PROGRAMMING_GRADING_MODEL,
+    DEFAULT_WRITTEN_GRADING_MODEL as _DEFAULT_WRITTEN_GRADING_MODEL,
+    DEFAULT_WRITTEN_GRADING_PROMPT as _DEFAULT_WRITTEN_GRADING_PROMPT,
+    PROGRAMMING_GRADING_MODEL_OPTIONS as _PROGRAMMING_GRADING_MODEL_OPTIONS,
+    WRITTEN_GRADING_MODEL_OPTIONS as _WRITTEN_GRADING_MODEL_OPTIONS,
 )
-from oj_modules.routes.problem_core_routes import (
+from oj_modules.problems.context import (
     build_problem_detail_context,
     build_problem_list_context,
 )

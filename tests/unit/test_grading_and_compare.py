@@ -90,7 +90,7 @@ def test_finalize_terminal_programming_submission_preserves_terminal_status(monk
 
 # ---------------- _parse_written_homework_grading_result ----------------
 def _parse():
-    from oj_modules.ai_utils import _parse_written_homework_grading_result
+    from oj_modules.ai.grading import _parse_written_homework_grading_result
     return _parse_written_homework_grading_result
 
 

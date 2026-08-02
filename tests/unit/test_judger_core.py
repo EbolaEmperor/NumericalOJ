@@ -14,7 +14,9 @@ import sys
 
 import pytest
 
-from oj_modules import docker_sandbox, judger_core
+from oj_modules.judging import core as judger_core
+from oj_modules.judging import sandbox as docker_sandbox
+from oj_modules.project_paths import PROJECT_ROOT
 
 
 # ============== check_forbidden ==============
@@ -75,11 +77,13 @@ def test_check_forbidden_only_checks_user_code_markers():
 # ============== JUDGER_RUN_ROOT 默认位置 ==============
 def test_default_run_root_is_oj_root_judger_not_tmp(monkeypatch):
     """默认运行根必须是 <OJ_ROOT>/judger，且不再经过 tmp/。"""
+    monkeypatch.delenv("OJ_ROOT_PATH", raising=False)
     monkeypatch.delenv("JUDGER_RUN_ROOT", raising=False)
     import importlib
     reloaded = importlib.reload(judger_core)
     try:
         expected = os.path.join(reloaded.OJ_ROOT_PATH, "judger")
+        assert reloaded.OJ_ROOT_PATH == str(PROJECT_ROOT)
         assert reloaded.JUDGER_RUN_ROOT == expected
         norm = os.path.normpath(reloaded.JUDGER_RUN_ROOT)
         assert (os.sep + "tmp" + os.sep) not in norm + os.sep

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Task 16: ELO 评分纯函数单测（参考 §5c）。
 
-覆盖 oj_modules.tasks.ranking_elo_tasks 中不依赖 DB/Redis 的纯函数：
+覆盖 oj_modules.tasks.ranking.elo 中不依赖 DB/Redis 的纯函数：
   - _expected_score：对称 / 单调。
   - _new_ratings：winner=1 升降且守恒；平局对等；K 越大变化越大。
   - _pick_partner / _pick_pair：<2 人或同名→None；满足时返回两个不同用户名的提交。
@@ -12,7 +12,7 @@ import random
 
 import pytest
 
-from oj_modules.tasks import ranking_elo_tasks as elo
+from oj_modules.tasks.ranking import elo
 
 
 # ---------------------------------------------------------------------------

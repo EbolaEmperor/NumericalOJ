@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from oj_modules.semantic_token_cache import SemanticTokenResultCache
+from oj_modules.editor.token_cache import SemanticTokenResultCache
 
 
 def test_cache_collapses_inflight_work_and_copies_successful_results():

@@ -4,9 +4,8 @@
 import os
 import json
 import logging
-import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import uuid4
 
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
@@ -18,37 +17,36 @@ from oj_modules.db_services import (
     archive_submission_file_by_id,
     can_submit,
     create_submission,
-    get_all_problems,
     get_agent_run_by_task_id,
     get_agent_runs_paginated,
     get_db_connection,
     get_filtered_submissions_paginated,
-    get_last_10_days_counts_from_counter,
     get_latest_written_submission,
     get_problem,
-    get_remaining_submissions,
     get_submission_problem_options,
-    get_submission_summaries_by_user_and_problem,
-    get_today_submission_total_from_counter,
     mark_submission_archive_failed,
     normalize_submission_list_status_filter,
     overwrite_written_submission,
     upsert_agent_run_snapshot,
 )
-from oj_modules.tasks.agent_tasks import get_agent_run_snapshot, subscribe_agent_run_events
-from oj_modules.auth_helpers import current_user
-from oj_modules.dashboard_services import (
-    attach_submission_metrics,
-    clear_dashboard_cache,
+from oj_modules.security.auth import current_user
+from oj_modules.classroom.dashboard import (
     get_class_activity,
     get_layout_navigation_context,
-    get_problem_submission_metrics,
     select_visible_class,
     visible_classes_for_user_cached,
 )
-from oj_modules.class_logo_services import attach_class_logos
-from oj_modules.markdown_utils import render_rich_markdown
-from oj_modules.written_submission_artifacts import (
+from oj_modules.problems.agent_runs import decorate_agent_run_summaries
+from oj_modules.problems.catalog import get_homeworks, get_user_classes_cached
+from oj_modules.problems.context import (
+    build_problem_detail_context,
+    build_problem_library_context,
+    build_problem_list_context,
+)
+from oj_modules.problems.presentation import (
+    strip_problem_title_tags as _strip_problem_title_tags,
+)
+from oj_modules.submissions.written_artifacts import (
     WrittenSubmissionArtifactError,
     publish_manual_written_submission,
 )
@@ -62,128 +60,8 @@ _promptly_generate_submission_task = None
 _transcribe_written_homework_task = None
 _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
-_HOMEWORKS_CACHE_TTL_SECONDS = 10
-_CLASS_GRADES_CACHE_TTL_SECONDS = 20
-_homeworks_cache = {}
-_class_grades_cache = {}
-
-
-def invalidate_problem_list_cache_for_user(user_id=None, username=None):
-    """
-    失效指定用户在 problem list 相关路径上的缓存。
-    """
-    if user_id is not None:
-        clear_dashboard_cache()
-        for cache_key in list(_homeworks_cache.keys()):
-            if cache_key[0] == user_id:
-                _homeworks_cache.pop(cache_key, None)
-
-    if username:
-        for cache_key in list(_class_grades_cache.keys()):
-            if cache_key[0] == username:
-                _class_grades_cache.pop(cache_key, None)
-
-
-def invalidate_problem_list_cache_for_class(class_en):
-    """
-    失效包含指定班级的作业/成绩缓存。
-    """
-    if not class_en:
-        return
-
-    clear_dashboard_cache()
-
-    for cache_key in list(_homeworks_cache.keys()):
-        class_list = cache_key[1]
-        if class_en in class_list:
-            _homeworks_cache.pop(cache_key, None)
-
-    for cache_key in list(_class_grades_cache.keys()):
-        class_list = cache_key[1]
-        if class_en in class_list:
-            _class_grades_cache.pop(cache_key, None)
-
-
-def invalidate_problem_list_cache_all():
-    """
-    全量失效 problem list 相关缓存。
-    """
-    clear_dashboard_cache()
-    _homeworks_cache.clear()
-    _class_grades_cache.clear()
-
-
-def _strip_problem_title_tags(title):
-    """
-    去掉题目标题中的分组标签，如「NA-1」。
-    仅用于普通用户展示，不改动数据库原始标题。
-    """
-    if title is None:
-        return title
-    original = str(title).strip()
-    text = original
-    # 移除所有全角书名号里的短标签
-    text = re.sub(r'\s*「[^」]{1,32}」\s*', ' ', text)
-    # 合并多余空白
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text if text else original
-
-
-def _decode_plagiarism_usernames(raw_value):
-    if not raw_value:
-        return []
-    try:
-        value = json.loads(raw_value)
-        if isinstance(value, list):
-            return [str(item) for item in value if str(item).strip()]
-    except Exception:
-        pass
-    return [part.strip() for part in str(raw_value).split(',') if part.strip()]
-
-
-def _format_plagiarism_notice(record):
-    if not record:
-        return None
-    names = _decode_plagiarism_usernames(record.get("matched_usernames"))
-    names_text = "、".join(names) if names else "其他同学"
-    rule = str(record.get("comparison_rule") or "").strip()
-    if rule == "byte-identical":
-        return f"经查，您本题代码与 {names_text} 完全一致"
-
-    try:
-        pct = float(rule) * 100
-        pct_text = str(int(pct)) if pct.is_integer() else f"{pct:.1f}".rstrip("0").rstrip(".")
-    except ValueError:
-        pct_text = rule
-    return f"经查，您本题代码与 {names_text} 的相似度达到 {pct_text}% 以上"
-
-
-def _load_plagiarism_notice_map(username, class_en_list, cursor):
-    if not username or not class_en_list:
-        return {}
-
-    placeholders = ",".join(["%s"] * len(class_en_list))
-    try:
-        cursor.execute(
-            f"""
-            SELECT pr.class_en, pr.problem_id, pr.comparison_rule, pr.matched_usernames
-            FROM plagiarism_records pr
-            JOIN (
-                SELECT class_en, problem_id, MAX(id) AS latest_id
-                FROM plagiarism_records
-                WHERE username=%s AND class_en IN ({placeholders})
-                GROUP BY class_en, problem_id
-            ) latest ON latest.latest_id = pr.id
-            """,
-            tuple([username] + list(class_en_list)),
-        )
-        return {
-            (row["class_en"], int(row["problem_id"])): row
-            for row in cursor.fetchall()
-            if row.get("problem_id") is not None
-        }
-    except Exception:
-        return {}
+_get_agent_run_snapshot = None
+_subscribe_agent_run_events = None
 
 
 def init_problem_core_module(
@@ -192,13 +70,17 @@ def init_problem_core_module(
     promptly_generate_submission_task=None,
     agent_solve_problem_task=None,
     agent_generate_testdata_task=None,
+    get_agent_run_snapshot=None,
+    subscribe_agent_run_events=None,
 ):
-    global _evaluate_submission_task, _promptly_generate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task, _agent_generate_testdata_task
+    global _evaluate_submission_task, _promptly_generate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task, _agent_generate_testdata_task, _get_agent_run_snapshot, _subscribe_agent_run_events
     _evaluate_submission_task = evaluate_submission_task
     _promptly_generate_submission_task = promptly_generate_submission_task
     _transcribe_written_homework_task = transcribe_written_homework_task
     _agent_solve_problem_task = agent_solve_problem_task
     _agent_generate_testdata_task = agent_generate_testdata_task
+    _get_agent_run_snapshot = get_agent_run_snapshot
+    _subscribe_agent_run_events = subscribe_agent_run_events
 
 
 def _is_agent_state_finished(state):
@@ -255,7 +137,7 @@ def _build_agent_state_from_async_result(task_id):
 
 
 def _get_agent_run_state(task_id):
-    state = get_agent_run_snapshot(task_id)
+    state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
         return state
     state = get_agent_run_by_task_id(task_id)
@@ -288,540 +170,6 @@ def _load_expected_written_submission(username, problem_id, expected_id):
     if latest and int(latest['id']) == int(expected_id):
         return latest
     return None
-
-
-def get_user_classes_cached(user_id):
-    return visible_classes_for_user_cached({"id": user_id, "is_admin": 0})
-
-
-def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=None):
-    """
-    批量读取多个班级作业，并一次性补齐题目标题、AC 状态、最高分。
-    支持两类作业：题目（problem_id）与打榜赛（ranking_competition_id）。
-    返回: {class_en: [hw, ...]}
-    """
-    result = {cls: [] for cls in class_en_list}
-    if not class_en_list:
-        return result
-
-    cache_key = (user_id, tuple(class_en_list))
-    now_ts = time.time()
-    cached = _homeworks_cache.get(cache_key)
-    if cached and now_ts < cached["expires_at"]:
-        return cached["value"]
-
-    db_cursor = cursor
-    conn = None
-    try:
-        if db_cursor is None:
-            conn = get_db_connection()
-            db_cursor = conn.cursor()
-
-        union_parts = []
-        union_params = []
-        for cls in class_en_list:
-            union_parts.append(
-                f"SELECT %s AS class_en, id, problem_id, ranking_competition_id, ddl, complete_cnt FROM `{cls}`"
-            )
-            union_params.append(cls)
-        if not union_parts:
-            return result
-
-        union_sql = " UNION ALL ".join(union_parts)
-        db_cursor.execute(
-            f"""
-            SELECT t.class_en, t.id, t.problem_id, t.ranking_competition_id, t.ddl, t.complete_cnt,
-                   p.title AS problem_title, p.max_score AS total_score,
-                   p.type AS problem_type, p.lang AS problem_lang,
-                   ar.is_ac, ms.score AS user_score,
-                   rc.title AS rk_title, rc.max_score AS rk_total, rc.scoring_mode AS rk_mode,
-                   rk.rk_best
-            FROM ({union_sql}) t
-            LEFT JOIN problems p ON p.id = t.problem_id
-            LEFT JOIN ac_record ar ON ar.userid=%s AND ar.problem_id = t.problem_id
-            LEFT JOIN max_score ms ON ms.userid=%s AND ms.problem_id = t.problem_id
-            LEFT JOIN ranking_competitions rc ON rc.id = t.ranking_competition_id
-            LEFT JOIN (
-                SELECT competition_id, MAX(score) AS rk_best
-                FROM ranking_submissions
-                WHERE username=%s AND score IS NOT NULL
-                GROUP BY competition_id
-            ) rk ON rk.competition_id = t.ranking_competition_id
-            ORDER BY t.class_en ASC, t.id ASC
-            """,
-            tuple(union_params + [user_id, user_id, username]),
-        )
-        homework_rows = db_cursor.fetchall()
-        plagiarism_notice_map = _load_plagiarism_notice_map(username, class_en_list, db_cursor)
-
-        for row in homework_rows:
-            cls = row["class_en"]
-            if cls not in result:
-                continue
-            rcid = row.get("ranking_competition_id")
-            if rcid:
-                best = row.get("rk_best")
-                is_elo = (row.get("rk_mode") == "elo")
-                hw = {
-                    "id": row["id"],
-                    "kind": "ranking",
-                    "competition_id": int(rcid),
-                    "problem_id": None,
-                    "ddl": row["ddl"],
-                    "complete_cnt": row["complete_cnt"],
-                    "problem_title": row.get("rk_title") or row.get("problem_title") or f"打榜赛 {rcid}",
-                    "problem_type": None,
-                    "problem_lang": None,
-                    "scoring_mode": row.get("rk_mode") or "absolute",
-                    "total_score": (None if is_elo else row.get("rk_total")),
-                    "is_completed": (best is not None),
-                    "max_score": best,
-                    "has_submission": (best is not None),
-                }
-            else:
-                pid = row["problem_id"]
-                try:
-                    pid = int(pid)
-                except Exception:
-                    pass
-                hw = {
-                    "id": row["id"],
-                    "kind": "problem",
-                    "problem_id": pid,
-                    "ddl": row["ddl"],
-                    "complete_cnt": row["complete_cnt"],
-                    "problem_title": row.get("problem_title"),
-                    "problem_type": row.get("problem_type"),
-                    "problem_lang": row.get("problem_lang"),
-                    "total_score": row.get("total_score"),
-                    "is_completed": (row.get("is_ac") == 1),
-                    "max_score": row.get("user_score"),
-                    "plagiarism_notice": _format_plagiarism_notice(plagiarism_notice_map.get((cls, pid))),
-                }
-            result[cls].append(hw)
-
-        for cls, hw_list in result.items():
-            for hw in hw_list:
-                if hw.get("kind") == "ranking":
-                    continue
-                pid = hw["problem_id"]
-                hw["problem_title"] = (
-                    hw.get("problem_title") if hw.get("problem_title") else f"Problem {pid}"
-                )
-                hw["problem_title"] = _strip_problem_title_tags(hw["problem_title"])
-                hw["total_score"] = (
-                    hw.get("total_score") if hw.get("total_score") is not None else 0
-                )
-                hw["has_submission"] = bool(
-                    hw["max_score"] is not None
-                    or hw["is_completed"]
-                )
-        _homeworks_cache[cache_key] = {
-            "expires_at": now_ts + _HOMEWORKS_CACHE_TTL_SECONDS,
-            "value": result,
-        }
-        return result
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-def get_class_grades_map(student_id, class_en_list, cursor=None):
-    if not class_en_list:
-        return {}
-
-    cache_key = (student_id, tuple(class_en_list))
-    now_ts = time.time()
-    cached = _class_grades_cache.get(cache_key)
-    if cached and now_ts < cached["expires_at"]:
-        return cached["value"]
-
-    db_cursor = cursor
-    conn = None
-    try:
-        if db_cursor is None:
-            conn = get_db_connection()
-            db_cursor = conn.cursor()
-
-        placeholders = ",".join(["%s"] * len(class_en_list))
-        db_cursor.execute(
-            f"""
-            SELECT class_en, regular_score, final_score
-            FROM final_exam_scores
-            WHERE student_id=%s AND class_en IN ({placeholders})
-            """,
-            tuple([student_id] + class_en_list),
-        )
-        rows = db_cursor.fetchall()
-    except Exception:
-        return {}
-    finally:
-        if conn is not None:
-            conn.close()
-
-    grades_map = {}
-    for row in rows:
-        grades_map[row["class_en"]] = {
-            "regular_score": (
-                round(row["regular_score"], 1) if row["regular_score"] is not None else None
-            ),
-            "final_score": (
-                round(row["final_score"], 1) if row["final_score"] is not None else None
-            ),
-        }
-    _class_grades_cache[cache_key] = {
-        "expires_at": now_ts + _CLASS_GRADES_CACHE_TTL_SECONDS,
-        "value": grades_map,
-    }
-    return grades_map
-
-
-def get_homeworks_and_grades_map(user_id, student_id, class_en_list):
-    """
-    在缓存未命中时复用同一连接拿到作业数据与班级成绩，减少 problem_list 路径连接数。
-    """
-    if not class_en_list:
-        return {}, {}
-
-    class_key = tuple(class_en_list)
-    now_ts = time.time()
-    h_cached = _homeworks_cache.get((user_id, class_key))
-    g_cached = _class_grades_cache.get((student_id, class_key))
-    if (
-        h_cached and g_cached
-        and now_ts < h_cached["expires_at"]
-        and now_ts < g_cached["expires_at"]
-    ):
-        return h_cached["value"], g_cached["value"]
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            homeworks_map = _get_homeworks_for_classes(user_id, class_en_list, cursor=cursor, username=student_id)
-            grades_map = get_class_grades_map(student_id, class_en_list, cursor=cursor)
-    finally:
-        conn.close()
-    return homeworks_map, grades_map
-
-
-def get_homeworks(user):
-    classes = get_user_classes_cached(user['id'])
-    class_tables = [c['class_en'] for c in classes]
-    if not class_tables:
-        return []
-
-    homeworks_by_class = _get_homeworks_for_classes(user['id'], class_tables, username=user.get('username'))
-    merged = {}
-    for cls in class_tables:
-        for hw in homeworks_by_class.get(cls, []):
-            # 本函数仅用于题目访问/DDL 判定，跳过打榜赛作业行
-            if hw.get('kind') == 'ranking' or hw.get('problem_id') is None:
-                continue
-            pid = hw['problem_id']
-            existing = merged.get(pid)
-            if existing is None:
-                merged[pid] = {
-                    "problem_id": pid,
-                    "ddl": hw.get("ddl"),
-                    "problem_title": hw.get("problem_title", f"Problem {pid}"),
-                    "complete_cnt": 1 if hw.get("is_completed") else 0,
-                }
-                continue
-
-            old_ddl = existing.get("ddl")
-            new_ddl = hw.get("ddl")
-            if old_ddl is None or (new_ddl is not None and new_ddl > old_ddl):
-                existing["ddl"] = new_ddl
-                existing["problem_title"] = hw.get("problem_title", existing["problem_title"])
-            if hw.get("is_completed"):
-                existing["complete_cnt"] = 1
-
-    return [merged[pid] for pid in sorted(merged.keys())]
-
-
-def get_homeworks_for_class(user_id, class_en):
-    return _get_homeworks_for_classes(user_id, [class_en]).get(class_en, [])
-
-
-def get_today_submission_counts():
-    """返回 (total_submissions, total_accepted)。
-
-    total_submissions 走 daily_submission_stats 计数表（含 programming + ranking 两类提交）。
-    total_accepted 仍直接查 submissions 表（仅 programming），单日范围 + idx_submissions_created_status，
-    本身已经很快，没必要也搬到计数表。
-    """
-    total_submissions = get_today_submission_total_from_counter()
-
-    today_start = datetime.combine(datetime.today().date(), datetime.min.time())
-    tomorrow_start = today_start + timedelta(days=1)
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT COUNT(*) AS total_accepted
-                FROM submissions
-                WHERE created_at >= %s AND created_at < %s
-                  AND status = 'Accepted'
-                """,
-                (today_start, tomorrow_start),
-            )
-            row = cursor.fetchone() or {}
-            total_accepted = int(row.get('total_accepted') or 0)
-    finally:
-        conn.close()
-    return total_submissions, total_accepted
-
-
-def _base_problem_list_context():
-    total_submissions, total_accepted = get_today_submission_counts()
-    last_10_days, daily_counts = get_last_10_days_counts_from_counter()
-    return {
-        "total_submissions": total_submissions,
-        "total_accepted": total_accepted,
-        "total_grade": 100,
-        "last_10_days": last_10_days,
-        "daily_counts": daily_counts,
-        "now": datetime.now(),
-    }
-
-
-def _selected_class_context(context, classes, requested_class_en):
-    selected_class = select_visible_class(classes, requested_class_en)
-    context["selected_class"] = selected_class
-    context["selected_class_en"] = (
-        selected_class.get("class_en") if selected_class else None
-    )
-    context["selected_class_cn"] = (
-        selected_class.get("class_cn") if selected_class else None
-    )
-    return selected_class
-
-
-def build_problem_list_context(
-    user,
-    *,
-    admin_class_view=False,
-    selected_class_en=None,
-    include_dashboard=False,
-    include_class_activity=True,
-):
-    """
-    组装题库页的完整数据上下文。
-    HTML 页面和 JSON API 共用这里，避免 CLI 再从模板 HTML 里反向解析信息。
-    """
-    context = _base_problem_list_context()
-    context["user"] = user
-
-    if user['is_admin'] == 1 and not admin_class_view:
-        context["problems"] = get_all_problems()
-        context["view_mode"] = "admin"
-        return context
-
-    if user['is_admin'] == 1:
-        classes = attach_class_logos(visible_classes_for_user_cached(user))
-        context["classes"] = classes
-        # 旧移动端仍使用管理员总题库列表；桌面端使用下面的班级作业上下文。
-        context["problems"] = get_all_problems()
-        selected_class = _selected_class_context(context, classes, selected_class_en)
-        if not selected_class:
-            context.update({
-                "selected_homeworks": [],
-                "class_activity": [],
-                "view_mode": "admin_class_empty",
-            })
-            return context
-
-        class_en = selected_class["class_en"]
-        selected_homeworks = _get_homeworks_for_classes(
-            user["id"], [class_en], username=user.get("username")
-        ).get(class_en, [])
-        context.update({
-            "selected_homeworks": attach_submission_metrics(
-                selected_homeworks, class_en=class_en
-            ),
-            "class_activity": (
-                get_class_activity(class_en) if include_class_activity else []
-            ),
-            "view_mode": "admin_class",
-        })
-        return context
-
-    classes = attach_class_logos(get_user_classes_cached(user['id']))
-    context["classes"] = classes
-
-    if not classes:
-        context["homeworks"] = []
-        if include_dashboard:
-            context["selected_homeworks"] = []
-            context["class_activity"] = []
-        context["view_mode"] = "student_empty"
-        return context
-
-    if len(classes) == 1:
-        cls = classes[0]['class_en']
-        homeworks_map, grades_map = get_homeworks_and_grades_map(user['id'], user['username'], [cls])
-        homeworks = homeworks_map.get(cls, [])
-        context.update({
-            "homeworks": homeworks,
-            "single_class_en": cls,
-            "single_class_cn": classes[0]['class_cn'],
-            "class_grades": grades_map.get(cls),
-            "view_mode": "student_single_class",
-        })
-        if include_dashboard:
-            dashboard_homeworks = attach_submission_metrics(
-                homeworks,
-                class_en=cls,
-            )
-            context.update({
-                "selected_class": classes[0],
-                "selected_class_en": cls,
-                "selected_class_cn": classes[0]['class_cn'],
-                "selected_homeworks": dashboard_homeworks,
-                "class_activity": (
-                    get_class_activity(cls) if include_class_activity else []
-                ),
-            })
-        return context
-
-    class_en_list = [c['class_en'] for c in classes]
-    class_homeworks_map, class_grades_map = get_homeworks_and_grades_map(
-        user['id'],
-        user['username'],
-        class_en_list,
-    )
-
-    homeworks_by_class = []
-    for c in classes:
-        items = class_homeworks_map.get(c['class_en'], [])
-        grades = class_grades_map.get(c['class_en'])
-        homeworks_by_class.append({
-            "class_en": c['class_en'],
-            "class_cn": c['class_cn'],
-            "hw_list": items,
-            "grades": grades,
-        })
-
-    context["homeworks_by_class"] = homeworks_by_class
-    context["view_mode"] = "student_multi_class"
-    if not include_dashboard:
-        return context
-
-    selected_class = _selected_class_context(context, classes, selected_class_en)
-    selected_homeworks = []
-    if selected_class:
-        for block in homeworks_by_class:
-            if block["class_en"] == selected_class["class_en"]:
-                selected_homeworks = block["hw_list"]
-                break
-        selected_homeworks = attach_submission_metrics(
-            selected_homeworks, class_en=selected_class["class_en"]
-        )
-    context["selected_homeworks"] = selected_homeworks
-    context["class_activity"] = (
-        get_class_activity(selected_class["class_en"])
-        if selected_class and include_class_activity
-        else []
-    )
-    return context
-
-
-def build_problem_library_context(user):
-    """构造管理员总题库桌面视图，不混入班级 DDL。"""
-    context = _base_problem_list_context()
-    problems = [dict(problem) for problem in (get_all_problems() or [])]
-    metrics = get_problem_submission_metrics(
-        [problem.get("id") for problem in problems]
-    )
-    for problem in problems:
-        problem["submission_metrics"] = metrics.get(int(problem["id"]))
-    context.update({
-        "user": user,
-        "problems": problems,
-        "view_mode": "admin_library",
-    })
-    return context
-
-
-def _get_selected_problem_homework(user, class_en, problem_id):
-    """仅从用户可见的指定班级读取普通题作业。"""
-    if not class_en:
-        return None
-    selected_class = select_visible_class(
-        visible_classes_for_user_cached(user), class_en
-    )
-    if not selected_class or selected_class.get("class_en") != class_en:
-        return None
-    class_homeworks = _get_homeworks_for_classes(
-        user["id"], [class_en], username=user.get("username")
-    ).get(class_en, [])
-    return next(
-        (
-            item for item in class_homeworks
-            if item.get("kind") == "problem"
-            and item.get("problem_id") == problem_id
-        ),
-        None,
-    )
-
-
-def build_problem_detail_context(user, problem_id, selected_class_en=None):
-    """
-    组装题目详情页的完整数据上下文。
-    返回 (context, error_code)，error_code 为 not_found / forbidden / None。
-    """
-    problem = get_problem(problem_id)
-    if not problem:
-        return None, "not_found"
-
-    homework = None
-    if user['is_admin'] != 1:
-        homeworks = get_homeworks(user)
-        homework = next(
-            (item for item in homeworks if item['problem_id'] == problem_id),
-            None,
-        )
-        if homework is None:
-            return None, "forbidden"
-        selected_homework = _get_selected_problem_homework(
-            user, selected_class_en, problem_id
-        )
-        if selected_homework:
-            homework = selected_homework
-    elif selected_class_en:
-        homework = _get_selected_problem_homework(
-            user, selected_class_en, problem_id
-        )
-
-    rendered_content = render_rich_markdown(problem['content'])
-
-    # 题目详情页只展示最近 3 条提交，直接用 LIMIT 取，避免把该用户该题的全部提交拉进内存。
-    last_submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id, limit=3)
-    initial_code = problem.get('initial_code', '')
-
-    submission_limit = problem.get('submission_limit', 10)
-    remaining_submissions = (
-        get_remaining_submissions(user['username'], problem_id, submission_limit)
-        if user['is_admin'] != 1
-        else None
-    )
-    can_submit_flag = (
-        can_submit(user['username'], problem_id, submission_limit)
-        if user['is_admin'] != 1
-        else True
-    )
-
-    return {
-        "problem": problem,
-        "rendered_content": rendered_content,
-        "user": user,
-        "last_submissions": last_submissions,
-        "initial_code": initial_code,
-        "remaining_submissions": remaining_submissions,
-        "can_submit": can_submit_flag,
-        "homework": homework,
-    }, None
 
 
 @problem_core_bp.route('/problems', methods=['GET'])
@@ -1169,7 +517,11 @@ def admin_agent_run_stream(task_id):
             return
 
         start_ts = time.time()
-        pubsub = subscribe_agent_run_events(task_id)
+        pubsub = (
+            _subscribe_agent_run_events(task_id)
+            if _subscribe_agent_run_events is not None
+            else None
+        )
         if pubsub is None:
             last_marker = (
                 first_payload.get("status"),
@@ -1483,15 +835,7 @@ def admin_agent_tasks():
     page = max(1, request.args.get('page', 1, type=int))
     per_page = 20
     runs, total_pages = get_agent_runs_paginated(page=page, per_page=per_page)
-
-    for run in runs:
-        run['display_problem_title'] = (
-            str(run.get('problem_title') or '').strip()
-            or f"Problem {run.get('problem_id') or '-'}"
-        )
-        run['display_status'] = str(run.get('status') or 'Pending')
-        run['display_rounds'] = f"{int(run.get('rounds_run') or 0)}"
-        run['display_best_score'] = int(run.get('best_score') or 0)
+    decorate_agent_run_summaries(runs)
 
     page_start = max(1, page - 8)
     page_end = min(total_pages, page + 8)

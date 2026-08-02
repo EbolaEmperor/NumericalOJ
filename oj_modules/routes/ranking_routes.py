@@ -27,10 +27,9 @@ import config as _cfg
 from oj_modules.db_services import (
     get_all_classes, get_user_by_username, get_users_in_classes,
 )
-from oj_modules.markdown_utils import render_rich_markdown
-from oj_modules.redis_clients import create_optional_redis_client
-from oj_modules.security_utils import rate_limit_hit
-from oj_modules.ranking_db import (
+from oj_modules.infrastructure.redis import create_optional_redis_client
+from oj_modules.security.throttling import rate_limit_hit
+from oj_modules.ranking.db import (
     activate_elo_submission,
     competition_attachments_dir,
     competition_dir,
@@ -83,55 +82,71 @@ from oj_modules.ranking_db import (
     update_competition_scoring_script,
     update_submission_result,
 )
-from oj_modules.ranking_agent_judge_db import (
+from oj_modules.ranking.agent_judge.db import (
     agent_judge_trace_id,
     apply_rule_overrides,
     build_judge_snapshot,
     list_agent_judge_endpoints,
     list_competition_rules,
     list_quality_gate_endpoints,
-    normalize_endpoint_model_capabilities,
     replace_competition_rules,
     save_agent_judge_configuration,
     save_reverse_quality_gate_configuration,
 )
-from oj_modules.ranking_agent_judge import max_score as _aj_max_score
-from oj_modules.ranking_agent_judge import normalize_orchestration_mode as _normalize_aj_orchestration
-from oj_modules.ranking_agent_judge import render_snapshot_html as _render_snapshot_html
-from oj_modules.tasks import (
-    build_current_judge_snapshot,
-    get_judge_progress_snapshot,
-    subscribe_judge_run_events,
+from oj_modules.ranking.agent_judge.rules import max_score as _aj_max_score
+from oj_modules.ranking.agent_judge.rules import normalize_orchestration_mode as _normalize_aj_orchestration
+from oj_modules.ranking.agent_judge.rules import render_snapshot_html as _render_snapshot_html
+from oj_modules.ranking.artifacts import (
+    INLINE_MEDIA_MIME as _INLINE_MEDIA_MIME,
+    attachment_media_kind as _attachment_media_kind,
+    can_access_submission as _can_access_submission,
+    resolve_reverse_agent_answer_archive,
+    send_reverse_agent_answer_archive,
 )
-from oj_modules.tasks import get_reverse_judge_progress_snapshot, subscribe_reverse_judge_events
-from oj_modules.tasks import get_probe_job
-from oj_modules.tasks import get_bulk_rejudge_job, save_bulk_rejudge_job
-from oj_modules.tasks.ranking_batch_pull_tasks import (
-    PLACEHOLDER as BATCH_PLACEHOLDER, USERNAME_RE as BATCH_USERNAME_RE, build_repo_url,
+from oj_modules.ranking.batch import (
+    BATCH_DEFAULT_TEMPLATE,
+    PLACEHOLDER as BATCH_PLACEHOLDER,
+    USERNAME_RE as BATCH_USERNAME_RE,
+    build_repo_url,
     repo_last_commit,
 )
-from oj_modules.ranking_reverse_judge_db import (
-    available_reverse_agent_answer_archive_path,
-    build_reverse_judge_snapshot,
+from oj_modules.ranking.matches import (
+    fetch_competition_match_detail_cached,
+    fetch_competition_matches_cached,
+    init_match_cache,
+    invalidate_competition_match_caches as _invalidate_competition_match_caches,
 )
+from oj_modules.ranking.presentation import (
+    ALLOWED_TABS,
+    MATCHES_PER_PAGE,
+    SUBMISSIONS_PER_PAGE,
+    competition_answer_format as _competition_answer_format,
+    competition_scoring_mode as _competition_scoring_mode,
+    masked_agent_endpoints as _masked_agent_endpoints,
+    normalize_answer_format as _normalize_answer_format,
+    normalize_scoring_mode as _normalize_scoring_mode,
+    page_window as _page_window,
+    render_description as _render_description,
+    submission_quota_message as _submission_quota_message,
+)
+from oj_modules.ranking.readiness import (
+    agent_judge_endpoint_ready as _agent_judge_endpoint_ready,
+    configured_file as _configured_file,
+    fake_agent_judge_enabled as _fake_agent_judge_enabled,
+    quality_gate_endpoint_ready as _quality_gate_endpoint_ready,
+    ranking_submit_block_reason as _ranking_submit_block_reason,
+    reverse_quality_gate_block_reason as _reverse_quality_gate_block_reason,
+    reverse_quality_gate_enabled as _reverse_quality_gate_enabled,
+    reverse_quality_gate_ready as _reverse_quality_gate_ready,
+)
+from oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
 
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 
-ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'appeals', 'edit', 'batch_eval')
-SUBMISSIONS_PER_PAGE = 50
-MATCHES_PER_PAGE = 20
 # 「批量评测」标签页预填的 Git 仓库标准命名示例（可在 config.py 覆盖）。
-BATCH_DEFAULT_TEMPLATE = getattr(
-    _cfg, 'RANKING_BATCH_DEFAULT_TEMPLATE', 'gitea@10.72.190.121:<username>/FinalProject.git',
-)
-
 # 对战列表 / 详情的 Redis 缓存
 # scope 用于区分 "全部" 和 "与我相关"：scope = '' 或 user:<username>
-ELO_MATCHES_LIST_CACHE_KEY = "ranking:elo:matches_list:{comp}:{scope}:{page}:{per_page}"
-ELO_MATCHES_LIST_CACHE_TTL = 30           # 列表频繁追加新对战，TTL 短一些；可接受最多 30s 旧数据
-ELO_MATCH_DETAIL_CACHE_KEY = "ranking:elo:match_detail:{match_id}"
-ELO_MATCH_DETAIL_CACHE_TTL = 3600         # 单场记录写入后不变（immutable），缓 1 小时
 # 所有可见客户端共享同一份全局导航快照，避免每个 10s 轮询都重复执行多表聚合。
 # 生产 Web 是单进程 gthread；按比赛分锁既能合并并发 miss，也不会阻塞其它比赛。
 RANKING_NAVIGATION_STATE_CACHE_TTL = 5.0
@@ -145,16 +160,13 @@ ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024   # 256MB
 SCORING_SCRIPT_MAX_BYTES = 4 * 1024 * 1024 # 4MB
 REFERENCE_MAX_BYTES = 64 * 1024 * 1024     # 64MB
 
-ALLOWED_ANSWER_FORMATS = ('json', 'zip')
-ALLOWED_SCORING_MODES = ('absolute', 'elo', 'agent_judge', 'reverse_judge')
-
 # ELO 参数取值范围
 ELO_INITIAL_RATING_RANGE = (100.0, 5000.0)
 ELO_K_FACTOR_RANGE = (1.0, 200.0)
 ELO_MAX_MATCHES_RANGE = (1, 10000)
 ELO_MATCH_INTERVAL_RANGE = (5, 3600)
 ELO_INITIAL_BURST_RANGE = (0, 50)
-ELO_MAX_PAIRS_PER_ROUND_RANGE = (1, 8)   # 与 ranking_elo_tasks.MAX_PAIRS_PER_ROUND 保持一致
+ELO_MAX_PAIRS_PER_ROUND_RANGE = (1, 8)   # 与 tasks.ranking.elo.MAX_PAIRS_PER_ROUND 保持一致
 SCORING_SCRIPT_TIMEOUT_RANGE = (5, 600)
 REVERSE_FINALIZE_TIMEOUT_DEFAULT = 180
 REVERSE_FINALIZE_TIMEOUT_RANGE = (30, 7200)
@@ -174,50 +186,6 @@ REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS = max(
     120,
     int(getattr(_cfg, 'REVERSE_JUDGE_STREAM_TIMEOUT_BUFFER_SECONDS', 1200)),
 )
-
-
-def _normalize_answer_format(value, default='json'):
-    fmt = str(value or '').strip().lower()
-    return fmt if fmt in ALLOWED_ANSWER_FORMATS else default
-
-
-def _competition_answer_format(comp):
-    return _normalize_answer_format((comp or {}).get('answer_format'))
-
-
-def _normalize_scoring_mode(value, default='absolute'):
-    mode = str(value or '').strip().lower()
-    return mode if mode in ALLOWED_SCORING_MODES else default
-
-
-def _competition_scoring_mode(comp):
-    return _normalize_scoring_mode((comp or {}).get('scoring_mode'))
-
-
-def _configured_file(path):
-    path = str(path or '').strip()
-    return bool(path and os.path.isfile(path))
-
-
-def _agent_judge_endpoint_ready(competition_id, comp):
-    """Agent 评测是否就绪：要求端点池中至少有一个**启用**端点（不再回退旧的单端点字段）。"""
-    try:
-        return bool(list_agent_judge_endpoints(competition_id, enabled_only=True))
-    except Exception:
-        return False
-
-
-def _quality_gate_endpoint_ready(competition_id):
-    """质量门禁端点池是否至少有一个可调度端点。"""
-    try:
-        return bool(list_quality_gate_endpoints(competition_id, enabled_only=True))
-    except Exception:
-        return False
-
-
-def _reverse_quality_gate_enabled(comp):
-    value = (comp or {}).get('reverse_quality_gate_enabled')
-    return value is True or str(value or '').strip().lower() in ('1', 'true', 'on', 'yes')
 
 
 def _reverse_judge_stream_timeout_seconds(comp):
@@ -249,39 +217,6 @@ def _reverse_judge_stream_timeout_seconds(comp):
     return max(REVERSE_STREAM_MIN_TIMEOUT_SECONDS, legal_upper_bound)
 
 
-def _reverse_quality_gate_block_reason(competition_id, comp):
-    """返回质量门禁配置阻止提交的原因；未启用时为空。"""
-    if not _reverse_quality_gate_enabled(comp):
-        return ''
-    if not str((comp or {}).get('reverse_quality_gate_prompt') or '').strip():
-        return '该比赛已启用质量门禁，但管理员尚未设置审核标准，暂时无法提交。'
-    if not _quality_gate_endpoint_ready(competition_id):
-        return '该比赛已启用质量门禁，但管理员尚未配置质量门禁端点，暂时无法提交。'
-    return ''
-
-
-def _reverse_quality_gate_ready(competition_id, comp):
-    return not _reverse_quality_gate_block_reason(competition_id, comp)
-
-
-def _masked_agent_endpoints(endpoints):
-    """管理端可见的端点配置；密钥仅返回是否已配置。"""
-    return [
-        {
-            'id': e['id'],
-            'harness': e.get('harness') or 'claude_code',
-            'base_url': e.get('base_url') or '',
-            'model': e.get('model') or '',
-            **normalize_endpoint_model_capabilities(e),
-            'concurrency_limit': int(e.get('concurrency_limit') or 1),
-            'status': e.get('status') or 'enabled',
-            'enabled': e.get('enabled'),
-            'has_key': bool(e.get('api_key')),
-        }
-        for e in (endpoints or [])
-    ]
-
-
 def _request_agent_endpoint_id():
     raw = request.form.get('agent_endpoint_id')
     if raw is None and request.is_json:
@@ -309,73 +244,6 @@ def _validate_reverse_endpoint_choice(competition_id):
             return None, '选择的 AI 作答节点当前不可用'
         return endpoint_id, ''
     return None, '选择的 AI 作答节点不存在'
-
-
-def _submission_quota_message(quota):
-    return (
-        f"本轮提交次数已用完（每 48 小时上限 {quota['limit']} 次），"
-        f"将于 {quota['next_reset']:%Y-%m-%d %H:%M} 刷新。"
-    )
-
-
-def _fake_agent_judge_enabled():
-    raw = os.getenv('NUMOJ_FAKE_AGENT_JUDGE')
-    if raw is None:
-        raw = getattr(_cfg, 'NUMOJ_FAKE_AGENT_JUDGE', False)
-    return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
-
-
-def _ranking_submit_block_reason(comp, competition_id, user=None):
-    if not comp:
-        return '比赛不存在或已被删除'
-
-    is_admin = bool(user and user.get('is_admin') == 1)
-    if not is_admin and comp.get('is_active') != 1:
-        return '该比赛未开放'
-
-    scoring_mode = _competition_scoring_mode(comp)
-    if scoring_mode == 'absolute':
-        missing_ref = not _configured_file(comp.get('reference_answer_path'))
-        missing_script = not _configured_file(comp.get('scoring_script_path'))
-        if missing_ref and missing_script:
-            return '该比赛为标准答案评分模式，但管理员尚未上传标准答案和评测脚本，暂时无法提交。'
-        if missing_ref:
-            return '该比赛为标准答案评分模式，但管理员尚未上传标准答案，暂时无法提交。'
-        if missing_script:
-            return '该比赛为标准答案评分模式，但管理员尚未上传评测脚本，暂时无法提交。'
-        return ''
-
-    if scoring_mode == 'elo':
-        if not _configured_file(comp.get('scoring_script_path')):
-            return '该比赛为 ELO 模式，但管理员尚未上传评测脚本，暂时无法提交。'
-        return ''
-
-    if scoring_mode == 'agent_judge':
-        if not _fake_agent_judge_enabled():
-            if not _agent_judge_endpoint_ready(competition_id, comp):
-                return '该比赛为 Agent 评测模式，但管理员尚未配置模型端点，暂时无法提交。'
-            if not list_competition_rules(competition_id):
-                return '该比赛尚未设置评分规则，暂时无法提交。'
-        method = (comp.get('submission_method') or 'zip').strip().lower()
-        if method == 'git':
-            tmpl = (comp.get('git_format') or '').strip()
-            if not tmpl or BATCH_PLACEHOLDER not in tmpl:
-                return '该比赛启用 Git 提交方式，但管理员尚未配置 Git 仓库标准命名，暂时无法提交。'
-            if user:
-                uname = (user.get('username') or '').strip()
-                if not BATCH_USERNAME_RE.match(uname):
-                    return '你的用户名不符合 Git 仓库命名要求，暂时无法提交。'
-        return ''
-
-    if scoring_mode == 'reverse_judge':
-        if not _agent_judge_endpoint_ready(competition_id, comp):
-            return '该比赛为反向评测模式，但管理员尚未配置模型端点，暂时无法提交。'
-        quality_gate_reason = _reverse_quality_gate_block_reason(competition_id, comp)
-        if quality_gate_reason:
-            return quality_gate_reason
-        return ''
-
-    return '该比赛评分模式配置异常，暂时无法提交。'
 
 
 def _wants_json_response():
@@ -437,12 +305,6 @@ def _clamp(value, lo, hi):
     if value > hi:
         return hi
     return value
-
-
-def _page_window(current_page, total_pages, radius=5):
-    start = max(1, current_page - radius)
-    end = min(total_pages, current_page + radius)
-    return list(range(start, end + 1))
 
 
 def _redis_client():
@@ -683,11 +545,6 @@ def _cancel_ranking_submission_runtime(submission, competition):
     return [w for w in warnings if w]
 
 
-def _serialize_for_cache(obj):
-    """datetime → str；其余按默认 json 处理。"""
-    return json.dumps(obj, default=str, ensure_ascii=False)
-
-
 def _normalize_dt(raw):
     text = str(raw or '').strip().replace('T', ' ')
     if not text:
@@ -751,68 +608,6 @@ def _serialize_bulk_ranking_submission(row, is_elo=False):
     }
 
 
-def fetch_competition_matches_cached(competition_id, page, per_page, username=None):
-    """先看 Redis，命中返回；未命中查 DB 再回填。
-    username 不为空时只返回该用户参与的对战，cache key 隔离开。
-    返回 (rows, page, total)。"""
-    rds = _redis_client()
-    scope = ('user:' + str(username)) if username else ''
-    cache_key = ELO_MATCHES_LIST_CACHE_KEY.format(
-        comp=int(competition_id), scope=scope, page=int(page), per_page=int(per_page),
-    )
-    if rds is not None:
-        try:
-            cached = rds.get(cache_key)
-            if cached:
-                payload = json.loads(cached)
-                return payload['rows'], int(payload['page']), int(payload['total'])
-        except Exception:
-            pass
-    rows, eff_page, total = list_competition_matches(
-        int(competition_id), page=int(page), per_page=int(per_page), username=username,
-    )
-    if rds is not None:
-        try:
-            rds.set(
-                cache_key,
-                _serialize_for_cache({'rows': rows, 'page': eff_page, 'total': total}),
-                ex=ELO_MATCHES_LIST_CACHE_TTL,
-            )
-        except Exception:
-            pass
-    return rows, eff_page, total
-
-
-def fetch_competition_match_detail_cached(match_id, competition_id):
-    """单场对战详情：缓存 1h。返回 dict 或 None。"""
-    rds = _redis_client()
-    cache_key = ELO_MATCH_DETAIL_CACHE_KEY.format(match_id=int(match_id))
-    if rds is not None:
-        try:
-            cached = rds.get(cache_key)
-            if cached:
-                row = json.loads(cached)
-                # 命中后再校验属于此 comp（防止跨比赛猜 ID）
-                if int(row.get('competition_id') or 0) != int(competition_id):
-                    return None
-                return row
-        except Exception:
-            pass
-    row = get_competition_match(int(match_id), int(competition_id))
-    if not row:
-        return None
-    if rds is not None:
-        try:
-            rds.set(
-                cache_key,
-                _serialize_for_cache(row),
-                ex=ELO_MATCH_DETAIL_CACHE_TTL,
-            )
-        except Exception:
-            pass
-    return row
-
-
 _evaluate_ranking_task = None
 _elo_initial_burst_task = None
 _agent_judge_task = None
@@ -820,6 +615,21 @@ _reverse_judge_task = None
 _batch_probe_task = None
 _batch_run_task = None
 _bulk_rejudge_task = None
+
+
+def _no_runtime_value(*_args, **_kwargs):
+    return None
+
+
+build_current_judge_snapshot = build_judge_snapshot
+get_judge_progress_snapshot = build_judge_snapshot
+subscribe_judge_run_events = _no_runtime_value
+get_reverse_judge_progress_snapshot = build_reverse_judge_snapshot
+subscribe_reverse_judge_events = _no_runtime_value
+get_probe_job = _no_runtime_value
+get_bulk_rejudge_job = _no_runtime_value
+save_bulk_rejudge_job = _no_runtime_value
+
 # Redis 客户端（提交限流）。由 oj.py 注入；为空时 fail-open。
 _rds = None
 # 打榜赛提交（尤其 agent_judge 每次起一个 Docker 评测）成本高，按用户+比赛限流。
@@ -833,9 +643,18 @@ _BULK_REJUDGE_INTERVAL_SECONDS = 2
 def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agent_judge_task=None,
                         reverse_judge_task=None,
                         redis_client=None, batch_probe_task=None, batch_run_task=None,
-                        bulk_rejudge_task=None):
+                        bulk_rejudge_task=None,
+                        judge_progress_reader=None, judge_event_subscriber=None,
+                        current_judge_snapshot_builder=None,
+                        reverse_progress_reader=None, reverse_event_subscriber=None,
+                        batch_job_reader=None, bulk_job_reader=None,
+                        bulk_job_writer=None):
     global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task, _reverse_judge_task, _rds
     global _batch_probe_task, _batch_run_task, _bulk_rejudge_task
+    global build_current_judge_snapshot, get_judge_progress_snapshot
+    global subscribe_judge_run_events, get_reverse_judge_progress_snapshot
+    global subscribe_reverse_judge_events, get_probe_job
+    global get_bulk_rejudge_job, save_bulk_rejudge_job
     _evaluate_ranking_task = evaluate_ranking_task
     _elo_initial_burst_task = elo_initial_burst_task
     _agent_judge_task = agent_judge_task
@@ -843,8 +662,19 @@ def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agen
     _batch_probe_task = batch_probe_task
     _batch_run_task = batch_run_task
     _bulk_rejudge_task = bulk_rejudge_task
+    build_current_judge_snapshot = current_judge_snapshot_builder or build_judge_snapshot
+    get_judge_progress_snapshot = judge_progress_reader or build_judge_snapshot
+    subscribe_judge_run_events = judge_event_subscriber or _no_runtime_value
+    get_reverse_judge_progress_snapshot = (
+        reverse_progress_reader or build_reverse_judge_snapshot
+    )
+    subscribe_reverse_judge_events = reverse_event_subscriber or _no_runtime_value
+    get_probe_job = batch_job_reader or _no_runtime_value
+    get_bulk_rejudge_job = bulk_job_reader or _no_runtime_value
+    save_bulk_rejudge_job = bulk_job_writer or _no_runtime_value
     if redis_client is not None:
         _rds = redis_client
+        init_match_cache(redis_client)
 
 
 def _current_user():
@@ -936,10 +766,6 @@ def _create_uploaded_ranking_submission(
         )
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
-
-
-def _render_description(text):
-    return render_rich_markdown(text)
 
 
 # ---------- 列表页 ----------
@@ -1334,31 +1160,6 @@ def ranking_navigation_state(competition_id):
         revision=state['revision'],
         navigation=_ranking_navigation_payload(state, is_admin),
     )
-
-
-def _invalidate_competition_match_caches(competition_id, match_id=None):
-    """删除/撤销对战后，清掉该赛事的对战列表与详情缓存。
-    列表 key 形如 ranking:elo:matches_list:<comp>:*；详情 key 形如
-    ranking:elo:match_detail:<match_id>。"""
-    rds = _redis_client()
-    if rds is None:
-        return
-    try:
-        list_pattern = ELO_MATCHES_LIST_CACHE_KEY.format(
-            comp=int(competition_id), scope='*', page='*', per_page='*',
-        )
-        for key in rds.scan_iter(match=list_pattern, count=200):
-            try:
-                rds.delete(key)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    if match_id is not None:
-        try:
-            rds.delete(ELO_MATCH_DETAIL_CACHE_KEY.format(match_id=int(match_id)))
-        except Exception:
-            pass
 
 
 # ---------- 对战详情 JSON（公开给登录用户） ----------
@@ -3337,25 +3138,6 @@ def ranking_delete_attachment(competition_id, file_id):
 # 可在浏览器里直接预览（图片/视频）的扩展名 -> 显式 MIME。仅白名单类型允许 inline 展示，且强制
 # nosniff，避免上传的任意文件被浏览器当 HTML/SVG 在本站点 origin 下执行（存储型 XSS）。
 # SVG 故意不在其列（可内嵌 <script>，直接打开 URL 会执行）。
-_INLINE_MEDIA_MIME = {
-    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
-    '.mp4': 'video/mp4', '.webm': 'video/webm', '.ogv': 'video/ogg',
-    '.ogg': 'video/ogg', '.mov': 'video/quicktime', '.m4v': 'video/x-m4v',
-}
-_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
-
-
-def _attachment_media_kind(filename):
-    """按扩展名判断附件能否在浏览器里直接预览：返回 'image' / 'video' / None。"""
-    ext = os.path.splitext((filename or '').lower())[1]
-    if ext in _IMAGE_EXTS:
-        return 'image'
-    if ext in _INLINE_MEDIA_MIME:   # 余下白名单均为视频
-        return 'video'
-    return None
-
-
 @ranking_bp.route('/<int:competition_id>/attachment/<int:file_id>/download', methods=['GET'])
 def ranking_download_attachment(competition_id, file_id):
     user, resp = _require_user()
@@ -3515,48 +3297,6 @@ def ranking_clear_scoring_script(competition_id):
 
 
 # ---------- 提交文件下载 ----------
-
-def _can_access_submission(user, submission):
-    if not submission:
-        return False
-    if user.get('is_admin') == 1:
-        return True
-    return submission.get('username') == user.get('username')
-
-
-def resolve_reverse_agent_answer_archive(user, submission_id, competition_id=None):
-    """解析用户可下载的当前 attempt AI 解答归档；不可访问时返回 ``None``。"""
-    sub = get_ranking_submission(submission_id)
-    if not sub or not _can_access_submission(user, sub):
-        return None
-    try:
-        actual_competition_id = int(sub.get('competition_id'))
-        if competition_id is not None and actual_competition_id != int(competition_id):
-            return None
-    except (TypeError, ValueError):
-        return None
-    competition = get_competition(actual_competition_id)
-    if not competition or _competition_scoring_mode(competition) != 'reverse_judge':
-        return None
-    return available_reverse_agent_answer_archive_path(
-        submission_id,
-        sub.get('judge_attempt_id'),
-        sub.get('status'),
-    )
-
-
-def send_reverse_agent_answer_archive(archive_path, submission_id):
-    response = send_file(
-        archive_path,
-        mimetype='application/zip',
-        as_attachment=True,
-        download_name=f'reverse_ai_answer_{int(submission_id)}.zip',
-        conditional=True,
-    )
-    response.headers['Cache-Control'] = 'private, no-store'
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    return response
-
 
 @ranking_bp.route(
     '/<int:competition_id>/submission/<int:submission_id>/reverse_agent_answer',

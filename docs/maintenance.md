@@ -13,9 +13,13 @@ NumericalOJ 保持模块化单体，不因文件较大就拆微服务。只有�
 | 组合根 | `oj.py` | 创建 Flask/Celery、注册 Blueprint/任务、注入依赖、显式启动工作 | 业务规则、复杂 SQL、请求级流程 |
 | HTTP 适配层 | `oj_modules/routes/`、`oj_modules/api/` | 解析请求、鉴权、校验、调用服务、返回响应 | 后台任务实现、跨功能 SQL、可复用算法 |
 | 后台适配层 | `oj_modules/tasks/` | Celery 重试、幂等锁、进度、超时、任务编排 | Flask request/session、页面响应 |
-| 领域/应用服务 | `oj_modules/*_services.py` 与领域 helper | 可复用业务规则、事务用例、纯计算 | Blueprint 注册、Celery 装饰器 |
-| 数据访问层 | `db_services.py`、`ranking_db.py`、`ranking_*_db.py` | 查询、持久化、事务和行锁 | HTTP/Celery 对象、模板 |
-| 判题边界 | `judger_core.py`、`docker_sandbox.py` | 判题协议、文件准备、Docker 隔离执行 | Web 会话、业务页面 |
+| 领域/应用服务 | `classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/` 等领域包 | 可复用业务规则、事务用例、纯计算 | Blueprint 注册、Celery 装饰器 |
+| 数据访问层 | 各领域包中的 `db.py`，以及尚在渐进收口的 `db_services.py` | 查询、持久化、事务和行锁 | HTTP/Celery 对象、模板 |
+| 基础设施层 | `infrastructure/` | MySQL/Redis 客户端、连接池和通用连接原语 | 业务查询、HTTP/Celery 对象 |
+| 能力边界 | `editor/`、`judging/`、`repository/` | 编辑器协议、判题与沙箱、代码仓库解析和索引 | Web 会话、业务页面 |
+| 外部能力 | `ai/`、`integrations/` | 模型应用流程与第三方服务协议适配 | Blueprint/Celery 注册、领域持久化 |
+| 跨域公共层 | `security/`、`shared/` | 安全策略和经确认的通用 helper | 某一个业务域的专有规则 |
+| 运行期编排 | `runtime/` | 显式恢复、watchdog 和进程运行期协调 | import-time 写入、领域业务算法 |
 | 展示层 | `templates/`、`static/` | HTML、样式、浏览器交互 | SQL、任务注册、服务端业务规则 |
 
 期望依赖方向：
@@ -25,7 +29,7 @@ routes / api ─┐
               ├─> application/domain services ─> data access
 Celery tasks ─┘
 
-evaluate task ─> judger_core ─> docker_sandbox ─> Docker
+evaluate task ─> judging.core ─> judging.sandbox ─> Docker
 
 oj.py 只负责把上述组件装配起来
 ```
@@ -35,12 +39,15 @@ oj.py 只负责把上述组件装配起来
 ### 依赖与复用规则
 
 - 路由和任务共享的逻辑下沉到服务/helper，不互相导入私有函数。
+- `routes/`、`api/` 与 `tasks/` 是并列适配层，不允许相互导入实现；需要共享的逻辑下沉到领域包。
 - 数据连接统一从 `get_db_connection()` 获取；一个业务用例需要原子性时，在同一个连接与事务中完成。
 - 动态 SQL 标识符必须用 `safe_table_name()`；值始终使用参数化 SQL。
 - 新任务使用 `register_xxx_task -> oj.py 注入 -> init_xxx_module`，避免路由导入绑定任务。
-- 归档解压统一使用 `archive_utils.py` 的策略与校验，不自行调用 `ZipFile.extractall()`。
-- Markdown 配合模板 `| safe` 前必须经过 `markdown_utils.py` 清洗。
+- Blueprint/任务的全量聚合只放在 `api/registry.py`、`tasks/registry.py` 并由组合根导入；包级 `__init__.py` 必须保持轻量，不承担历史路径重导出。
+- 归档解压统一使用 `shared/archive.py` 的策略与校验，不自行调用 `ZipFile.extractall()`。
+- Markdown 配合模板 `| safe` 前必须经过 `shared/markdown.py` 清洗。
 - 新增状态值、事件名或跨模块字典字段时，应先寻找现有定义；同一概念出现三处后应建立唯一来源。
+- 代码只导入规范包路径。根级旧模块和旧任务模块不提供导入门面；调整目录时必须同步更新仓库内调用方、测试、CLI 与运维脚本，并保持 HTTP 和 Celery wire contract。
 - 函数超过约 80 行、文件超过约 800 行或同时承担三个以上职责时，触发边界复核；数字是评审信号，不是机械拆分指标。
 
 ## 2. 变更检查清单
@@ -62,7 +69,7 @@ oj.py 只负责把上述组件装配起来
 - 对用户、题目、提交、比赛等标识使用稳定主键；用户名等可变字段不能充当隐式外键而没有统一更新策略。
 - 新增 ZIP/上传处理时设置成员数、单文件、总解压大小、压缩率与路径穿越限制。
 - 临时上传和解压目录必须按请求/任务隔离，并在所有成功、失败和提前返回路径清理；需要长期保留的产物先显式复制到稳定目录。
-- 文件系统与数据库共同发布时，必须明确提交点和崩溃恢复依据，并按故障模型选择不可变代次、CAS、outbox 或持久 journal；不能用进程内回调或无条件“写回旧快照”猜测最终状态。已有书面作业产物应复用 `written_submission_artifacts.py` 的既定协议，不得复制一套近似实现。
+- 文件系统与数据库共同发布时，必须明确提交点和崩溃恢复依据，并按故障模型选择不可变代次、CAS、outbox 或持久 journal；不能用进程内回调或无条件“写回旧快照”猜测最终状态。已有书面作业产物应复用 `submissions/written_artifacts.py` 的既定协议，不得复制一套近似实现。
 - UI 改动优先拆模板 partial 和独立静态模块，不继续扩大单文件内联 JS/CSS。
 
 ### 依赖与配置

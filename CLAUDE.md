@@ -36,7 +36,7 @@ celery -A oj.celery worker -Q judge -c 16
 - `agent`：AI 解题、造数据和 Promptly 等长任务；
 - `judge`：打榜赛 Agent-as-Judge、反向评测等隔离任务。
 
-普通判题的调用链是 `evaluate_tasks.py -> judger_core.py -> docker_sandbox.py -> Docker`。`judger_core.py` 作为库在 `celery` worker 内运行，但**用户代码在 Docker 容器内执行**；不存在旧的 `5050` 判题 HTTP 服务，也不再使用宿主进程 RLIMIT 沙箱。默认运行目录为 `<OJ_ROOT>/judger/<sid>`。
+普通判题的调用链是 `tasks/evaluate_tasks.py -> judging/core.py -> judging/sandbox.py -> Docker`。`judging/core.py` 作为库在 `celery` worker 内运行，但**用户代码在 Docker 容器内执行**；不存在旧的 `5050` 判题 HTTP 服务，也不再使用宿主进程 RLIMIT 沙箱。默认运行目录为 `<OJ_ROOT>/judger/<sid>`。
 
 `oj.py` 在导入时创建 Flask/Celery 对象并注册任务，但不执行外部写操作。幂等的 ELO tick、watchdog 和暂停端点探测链由 `ensure_background_schedulers()` 确保存在；本地入口和 `deploy/gunicorn.py` 的 `post_worker_init` 都可以安全调用。会清锁、重置 Running 状态和重投任务的恢复逻辑严格隔离在 `recover_pending_after_all_workers_stopped()`，只能由 `scripts/recover_pending_tasks.py --confirm-celery-stopped` 在全部 Celery worker 停止后显式执行。新增启动行为不得重新变成 import-time 写操作，也不得把破坏性恢复绑定到 Web worker 生命周期。
 
@@ -69,7 +69,7 @@ celery -A oj.celery worker -Q judge -c 16
 - `SECRET_KEY`、`SESSION_COOKIE_SECURE`、`CONTENT_SECURITY_POLICY`：Web 安全；
 - `CSRF_TRUSTED_ORIGINS`：反向代理导致应用内外 Origin 不同时，显式列出可信的公开站点 Origin。
 
-Redis 客户端统一由 `oj_modules/redis_clients.py` 创建。普通命令的 `REDIS_SOCKET_TIMEOUT_SECONDS` 与 `REDIS_CONNECT_TIMEOUT_SECONDS` 默认 3 秒；Pub/Sub 使用独立的 `REDIS_BLOCKING_SOCKET_TIMEOUT_SECONDS`，默认 30 秒。业务模块不得自行构造 `Redis` / `StrictRedis`。
+Redis 客户端统一由 `oj_modules/infrastructure/redis.py` 创建。普通命令的 `REDIS_SOCKET_TIMEOUT_SECONDS` 与 `REDIS_CONNECT_TIMEOUT_SECONDS` 默认 3 秒；Pub/Sub 使用独立的 `REDIS_BLOCKING_SOCKET_TIMEOUT_SECONDS`，默认 30 秒。业务模块不得自行构造 `Redis` / `StrictRedis`。
 
 `TESTDATA_TEXT_MAX_TOTAL_BYTES` 是 `.env` 中可选的非敏感整数，默认 64 MiB，限制一次测试数据导入实际读入内存的 `.in/.out` 文本总量；修改后需要重启 Web 进程。
 
@@ -84,7 +84,7 @@ Redis 客户端统一由 `oj_modules/redis_clients.py` 创建。普通命令的 
 
 它不会删除或重命名表/列，不负责数据回填，也没有 migration 版本表或已执行迁移账本。换言之，仓库目前**没有版本化迁移系统**。涉及删除、重命名、回填、约束或语义变化时，必须使用可审计的显式迁移并准备备份与回滚，不能假设启动脚本能够表达或撤销。完整数据库变更流程统一维护在 `docs/maintenance.md` 第 4 节。
 
-所有业务连接必须经 `oj_modules.db_services.get_db_connection()` 或相应数据层取得，不要直接新建 PyMySQL 连接。动态表名必须先经 `safe_table_name()` 校验。
+所有业务连接必须经 `oj_modules.infrastructure.mysql.get_db_connection()` 或相应数据层取得，不要直接新建 PyMySQL 连接。`oj_modules.db_services` 在迁移期继续重导出该接口。动态表名必须先经 `safe_table_name()` 校验。
 
 ## 测试与数据安全
 
@@ -120,26 +120,29 @@ docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
 
 - `oj.py`：应用组合根；负责注册 Blueprint、Celery 任务和显式启动工作，不承载新业务逻辑。
 - `oj_modules/routes/`、`oj_modules/api/`：HTTP 适配层；解析请求、鉴权、调用服务并构造响应。
-- `oj_modules/tasks/`：Celery 适配层；处理重试、进度、锁和后台工作流。
-- `db_services.py`、`ranking_db.py`、`ranking_*_db.py`：数据访问与事务边界。
-- `*_services.py` 及领域 helper：可复用业务逻辑，不依赖 Flask request/session。
-- `judger_core.py`、`docker_sandbox.py`：普通判题协议和容器执行原语。
+- `oj_modules/tasks/`：Celery 适配层；处理重试、进度、锁和后台工作流，复杂任务按 `agent/`、`ranking/` 等子包组织；组合根从 `tasks/registry.py` 聚合注册，普通子模块导入不得触发全任务加载。
+- `oj_modules/classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/`：领域服务及其数据访问和事务边界。
+- `oj_modules/editor/`、`judging/`、`repository/`：编辑器、普通判题、容器执行和代码仓库能力。
+- `oj_modules/ai/`、`integrations/`：模型调用应用能力与外部服务协议适配。
+- `oj_modules/security/`、`shared/`：安全策略与跨域通用 helper；领域专有逻辑不得为了复用表象放入 `shared/`。
+- `oj_modules/infrastructure/`：MySQL、Redis 等基础设施连接原语，不放业务查询。
+- `oj_modules/runtime/`：显式停机恢复、watchdog 与运行期编排；不得在 import 时执行恢复或投递任务。
 - `templates/`、`static/`：服务端页面；不要继续把大型页面逻辑堆进单个模板。
 
 新增后台任务继续使用现有 `register -> init` 模式：任务模块提供 `register_xxx_task(celery, ...)` 并返回绑定任务，`oj.py` 再把任务注入路由。路由不得直接导入任务私有实现。
 
-跨模块 helper：
+规范的跨模块入口：
 
-- `auth_helpers.py`：`current_user` / `is_admin` 与登录、管理员装饰器；
-- `security_utils.py`：密码哈希、旧哈希升级、限流与冷却；
-- `markdown_utils.py`：Markdown 渲染和 HTML 清洗；所有配合 `| safe` 的内容必须先清洗；
-- `archive_utils.py`：带成员数、单文件大小、总大小、压缩率和路径校验的 ZIP 解压；
-- `redis_clients.py`：普通、二进制、阻塞订阅和 fail-open 可选 Redis 客户端的唯一构造入口；
-- `class_membership_services.py`：班级成员关系与人数计数的事务边界；
-- `written_submission_artifacts.py`：人工书面作业不可变代次、DB 快照 CAS、发布 journal 与崩溃恢复；
-- `db_services.safe_table_name()`：动态 SQL 标识符校验。
+- `security/auth.py`：`current_user` / `is_admin` 与登录、管理员装饰器；
+- `security/credentials.py`、`security/throttling.py`：密码策略、旧哈希升级、限流与冷却；
+- `shared/markdown.py`：Markdown 渲染和 HTML 清洗；所有配合 `| safe` 的内容必须先清洗；
+- `shared/archive.py`：带成员数、单文件大小、总大小、压缩率和路径校验的 ZIP 解压；
+- `infrastructure/redis.py`：普通、二进制、阻塞订阅和 fail-open 可选 Redis 客户端的唯一构造入口；
+- `classroom/membership.py`：班级成员关系与人数计数的事务边界；
+- `submissions/written_artifacts.py`：人工书面作业不可变代次、DB 快照 CAS、发布 journal 与崩溃恢复；
+- `infrastructure/mysql.safe_table_name()`：动态 SQL 标识符校验。
 
-禁止在路由/任务里复制这些能力。三个以上同前缀同职责文件应考虑归入子目录并简化名称，但不要为目录整齐引入无意义实体。
+禁止在路由/任务里复制这些能力。代码只导入规范路径；仓库不提供根级旧模块或旧任务模块的导入门面。三个以上同前缀同职责文件应考虑归入子目录并简化名称，但不要为目录整齐引入无意义实体。
 
 ## Docker 镜像
 

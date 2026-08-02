@@ -8,14 +8,14 @@ import tempfile
 import openpyxl
 from flask import Blueprint, current_app, flash, jsonify, request
 
-from oj_modules.class_membership_services import (
+from oj_modules.classroom.membership import (
     LastMembershipError,
     MembershipNotFoundError,
     add_class_membership,
     leave_class_membership,
     remove_class_membership,
 )
-from oj_modules.class_logo_services import attach_class_logos
+from oj_modules.classroom.logos import attach_class_logos
 from oj_modules.db_services import (
     get_all_classes,
     get_class_by_en,
@@ -24,6 +24,7 @@ from oj_modules.db_services import (
     get_user_by_id,
     is_class_adjust_enabled,
 )
+from oj_modules.problems.catalog import invalidate_problem_list_cache_for_user
 
 
 class_management_bp = Blueprint('class_management', __name__)
@@ -33,14 +34,13 @@ ALLOWED_GRADES_EXTENSIONS = {'xlsx', 'xls'}
 
 def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
     try:
-        from oj_modules.routes.problem_core_routes import invalidate_problem_list_cache_for_user
         invalidate_problem_list_cache_for_user(user_id=user_id, username=username)
     except Exception:
         # 缓存失效失败不影响主流程
         pass
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 
 
 def allowed_grade_file(filename):

@@ -3,15 +3,62 @@ from unittest.mock import MagicMock
 
 from flask import Flask
 
+from oj_modules.problems import catalog as problem_catalog
+from oj_modules.problems import context as problem_context
 from oj_modules.routes import problem_core_routes
 
 
 def _stub_base_context(monkeypatch):
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "_base_problem_list_context",
         lambda: {"now": datetime(2026, 7, 22, 11, 35)},
     )
+
+
+def test_problem_catalog_cache_invalidation_keeps_original_scope(monkeypatch):
+    clear_dashboard = MagicMock()
+    monkeypatch.setattr(problem_catalog, "clear_dashboard_cache", clear_dashboard)
+    monkeypatch.setattr(
+        problem_catalog,
+        "_homeworks_cache",
+        {
+            (1, ("C1",)): "user-one",
+            (2, ("C1", "C2")): "class-two",
+            (3, ("C3",)): "unrelated",
+        },
+    )
+    monkeypatch.setattr(
+        problem_catalog,
+        "_class_grades_cache",
+        {
+            ("alice", ("C1",)): "user-one",
+            ("bob", ("C2",)): "class-two",
+            ("carol", ("C3",)): "unrelated",
+        },
+    )
+
+    problem_catalog.invalidate_problem_list_cache_for_user(
+        user_id=1,
+        username="alice",
+    )
+    assert set(problem_catalog._homeworks_cache) == {
+        (2, ("C1", "C2")),
+        (3, ("C3",)),
+    }
+    assert set(problem_catalog._class_grades_cache) == {
+        ("bob", ("C2",)),
+        ("carol", ("C3",)),
+    }
+
+    problem_catalog.invalidate_problem_list_cache_for_class("C2")
+    assert set(problem_catalog._homeworks_cache) == {(3, ("C3",))}
+    assert set(problem_catalog._class_grades_cache) == {("carol", ("C3",))}
+
+    problem_catalog.invalidate_problem_list_cache_all()
+    assert problem_catalog._homeworks_cache == {}
+    assert problem_catalog._class_grades_cache == {}
+    assert clear_dashboard.call_count == 3
 
 
 def test_admin_problem_list_rejects_unseen_class_and_uses_stable_first_class(monkeypatch):
@@ -20,16 +67,16 @@ def test_admin_problem_list_rejects_unseen_class_and_uses_stable_first_class(mon
         {"class_en": "C1", "class_cn": "一班"},
         {"class_en": "C2", "class_cn": "二班"},
     ]
-    monkeypatch.setattr(problem_core_routes, "visible_classes_for_user_cached", lambda _user: classes)
-    monkeypatch.setattr(problem_core_routes, "get_all_problems", lambda: [{"id": 9}])
+    monkeypatch.setattr(problem_context, "visible_classes_for_user_cached", lambda _user: classes)
+    monkeypatch.setattr(problem_context, "get_all_problems", lambda: [{"id": 9}])
     load_homeworks = MagicMock(return_value={"C1": [{"id": 3, "problem_id": 7}]})
-    monkeypatch.setattr(problem_core_routes, "_get_homeworks_for_classes", load_homeworks)
+    monkeypatch.setattr(problem_context, "_get_homeworks_for_classes", load_homeworks)
     attach_metrics = MagicMock(side_effect=lambda rows, **_kwargs: rows)
-    monkeypatch.setattr(problem_core_routes, "attach_submission_metrics", attach_metrics)
-    monkeypatch.setattr(problem_core_routes, "get_class_activity", lambda class_en: [class_en])
+    monkeypatch.setattr(problem_context, "attach_submission_metrics", attach_metrics)
+    monkeypatch.setattr(problem_context, "get_class_activity", lambda class_en: [class_en])
     user = {"id": 1, "username": "admin", "is_admin": 1}
 
-    context = problem_core_routes.build_problem_list_context(
+    context = problem_context.build_problem_list_context(
         user,
         admin_class_view=True,
         selected_class_en="NOT_VISIBLE",
@@ -47,10 +94,10 @@ def test_admin_problem_list_rejects_unseen_class_and_uses_stable_first_class(mon
 
 def test_admin_problem_list_without_classes_has_explicit_empty_workspace(monkeypatch):
     _stub_base_context(monkeypatch)
-    monkeypatch.setattr(problem_core_routes, "visible_classes_for_user_cached", lambda _user: [])
-    monkeypatch.setattr(problem_core_routes, "get_all_problems", lambda: [])
+    monkeypatch.setattr(problem_context, "visible_classes_for_user_cached", lambda _user: [])
+    monkeypatch.setattr(problem_context, "get_all_problems", lambda: [])
 
-    context = problem_core_routes.build_problem_list_context(
+    context = problem_context.build_problem_list_context(
         {"id": 1, "is_admin": 1},
         admin_class_view=True,
         include_dashboard=True,
@@ -68,9 +115,9 @@ def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch)
         {"class_en": "C1", "class_cn": "一班"},
         {"class_en": "C2", "class_cn": "二班"},
     ]
-    monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: classes)
+    monkeypatch.setattr(problem_context, "get_user_classes_cached", lambda _uid: classes)
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "get_homeworks_and_grades_map",
         lambda *_args: (
             {
@@ -81,10 +128,10 @@ def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch)
         ),
     )
     attach_metrics = MagicMock(side_effect=lambda rows, **_kwargs: rows)
-    monkeypatch.setattr(problem_core_routes, "attach_submission_metrics", attach_metrics)
-    monkeypatch.setattr(problem_core_routes, "get_class_activity", lambda class_en: [class_en])
+    monkeypatch.setattr(problem_context, "attach_submission_metrics", attach_metrics)
+    monkeypatch.setattr(problem_context, "get_class_activity", lambda class_en: [class_en])
 
-    context = problem_core_routes.build_problem_list_context(
+    context = problem_context.build_problem_list_context(
         {"id": 8, "username": "student", "is_admin": 0},
         selected_class_en="C2",
         include_dashboard=True,
@@ -101,18 +148,18 @@ def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch)
 def test_student_api_context_skips_dashboard_aggregation(monkeypatch):
     _stub_base_context(monkeypatch)
     classes = [{"class_en": "C1", "class_cn": "一班"}]
-    monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: classes)
+    monkeypatch.setattr(problem_context, "get_user_classes_cached", lambda _uid: classes)
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "get_homeworks_and_grades_map",
         lambda *_args: ({"C1": [{"id": 1, "problem_id": 11}]}, {}),
     )
     attach_metrics = MagicMock()
     class_activity = MagicMock()
-    monkeypatch.setattr(problem_core_routes, "attach_submission_metrics", attach_metrics)
-    monkeypatch.setattr(problem_core_routes, "get_class_activity", class_activity)
+    monkeypatch.setattr(problem_context, "attach_submission_metrics", attach_metrics)
+    monkeypatch.setattr(problem_context, "get_class_activity", class_activity)
 
-    context = problem_core_routes.build_problem_list_context(
+    context = problem_context.build_problem_list_context(
         {"id": 8, "username": "student", "is_admin": 0}
     )
 
@@ -126,21 +173,21 @@ def test_student_api_context_skips_dashboard_aggregation(monkeypatch):
 def test_problem_list_context_can_defer_class_activity(monkeypatch):
     _stub_base_context(monkeypatch)
     classes = [{"class_en": "C1", "class_cn": "一班"}]
-    monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: classes)
+    monkeypatch.setattr(problem_context, "get_user_classes_cached", lambda _uid: classes)
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "get_homeworks_and_grades_map",
         lambda *_args: ({"C1": [{"id": 1, "problem_id": 11}]}, {}),
     )
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "attach_submission_metrics",
         lambda rows, **_kwargs: rows,
     )
     class_activity = MagicMock()
-    monkeypatch.setattr(problem_core_routes, "get_class_activity", class_activity)
+    monkeypatch.setattr(problem_context, "get_class_activity", class_activity)
 
-    context = problem_core_routes.build_problem_list_context(
+    context = problem_context.build_problem_list_context(
         {"id": 8, "username": "student", "is_admin": 0},
         include_dashboard=True,
         include_class_activity=False,
@@ -154,13 +201,13 @@ def test_problem_list_context_can_defer_class_activity(monkeypatch):
 def test_problem_library_attaches_global_metrics_without_deadline(monkeypatch):
     _stub_base_context(monkeypatch)
     problems = [{"id": 1, "title": "A"}, {"id": 2, "title": "B"}]
-    monkeypatch.setattr(problem_core_routes, "get_all_problems", lambda: problems)
+    monkeypatch.setattr(problem_context, "get_all_problems", lambda: problems)
     get_metrics = MagicMock(
         return_value={1: {"submission_count": 3, "accepted_count": 2, "pass_rate": 2 / 3}}
     )
-    monkeypatch.setattr(problem_core_routes, "get_problem_submission_metrics", get_metrics)
+    monkeypatch.setattr(problem_context, "get_problem_submission_metrics", get_metrics)
 
-    context = problem_core_routes.build_problem_library_context(
+    context = problem_context.build_problem_library_context(
         {"id": 1, "is_admin": 1}
     )
 
@@ -179,9 +226,9 @@ def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
         "initial_code": "",
         "submission_limit": 10,
     }
-    monkeypatch.setattr(problem_core_routes, "get_problem", lambda _id: problem)
+    monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "visible_classes_for_user_cached",
         lambda _user: [{"class_en": "C1"}],
     )
@@ -193,15 +240,15 @@ def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
             ]
         }
     )
-    monkeypatch.setattr(problem_core_routes, "_get_homeworks_for_classes", load_homeworks)
+    monkeypatch.setattr(problem_context, "_get_homeworks_for_classes", load_homeworks)
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "get_submission_summaries_by_user_and_problem",
         lambda *_args, **_kwargs: [],
     )
     user = {"id": 1, "username": "admin", "is_admin": 1}
 
-    context, error = problem_core_routes.build_problem_detail_context(
+    context, error = problem_context.build_problem_detail_context(
         user, 7, selected_class_en="C1"
     )
 
@@ -210,7 +257,7 @@ def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
     load_homeworks.assert_called_once_with(1, ["C1"], username="admin")
 
     load_homeworks.reset_mock()
-    context, error = problem_core_routes.build_problem_detail_context(
+    context, error = problem_context.build_problem_detail_context(
         user, 7, selected_class_en="INJECTED"
     )
     assert error is None
@@ -231,15 +278,15 @@ def test_problem_detail_context_uses_shared_rich_markdown_renderer(monkeypatch):
             "<pre><code><span class=\"nb\">print</span></code></pre></div>"
         )
     )
-    monkeypatch.setattr(problem_core_routes, "get_problem", lambda _id: problem)
-    monkeypatch.setattr(problem_core_routes, "render_rich_markdown", renderer)
+    monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
+    monkeypatch.setattr(problem_context, "render_rich_markdown", renderer)
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "get_submission_summaries_by_user_and_problem",
         lambda *_args, **_kwargs: [],
     )
 
-    context, error = problem_core_routes.build_problem_detail_context(
+    context, error = problem_context.build_problem_detail_context(
         {"id": 1, "username": "admin", "is_admin": 1},
         7,
     )
@@ -257,33 +304,33 @@ def test_student_problem_detail_prefers_selected_class_deadline(monkeypatch):
         "submission_limit": 10,
     }
     user = {"id": 8, "username": "student", "is_admin": 0}
-    monkeypatch.setattr(problem_core_routes, "get_problem", lambda _id: problem)
+    monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "get_homeworks",
         lambda _user: [{"problem_id": 7, "ddl": "merged-latest"}],
     )
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "visible_classes_for_user_cached",
         lambda _user: [{"class_en": "C2"}],
     )
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "_get_homeworks_for_classes",
         lambda *_args, **_kwargs: {
             "C2": [{"kind": "problem", "problem_id": 7, "ddl": "selected-class"}]
         },
     )
     monkeypatch.setattr(
-        problem_core_routes,
+        problem_context,
         "get_submission_summaries_by_user_and_problem",
         lambda *_args, **_kwargs: [],
     )
-    monkeypatch.setattr(problem_core_routes, "get_remaining_submissions", lambda *_args: 9)
-    monkeypatch.setattr(problem_core_routes, "can_submit", lambda *_args: True)
+    monkeypatch.setattr(problem_context, "get_remaining_submissions", lambda *_args: 9)
+    monkeypatch.setattr(problem_context, "can_submit", lambda *_args: True)
 
-    context, error = problem_core_routes.build_problem_detail_context(
+    context, error = problem_context.build_problem_detail_context(
         user, 7, selected_class_en="C2"
     )
 

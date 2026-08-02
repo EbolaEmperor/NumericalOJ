@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from oj_modules.repository import tree as repository_tree
-from oj_modules.tasks import agent_solve_helpers
+from oj_modules.tasks.agent import solve_helpers
 
 
 def test_agent_header_sync_preserves_paths_and_prefers_repository_subtree(
@@ -47,7 +47,7 @@ def test_agent_header_sync_preserves_paths_and_prefers_repository_subtree(
         fake_upsert,
     )
 
-    result = agent_solve_helpers._tool_sync_workspace_headers_to_repository(
+    result = solve_helpers._tool_sync_workspace_headers_to_repository(
         17,
         str(tmp_path),
     )

@@ -10,7 +10,7 @@ from email.mime.text import MIMEText
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
 from config import MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME
-from oj_modules.class_logo_services import attach_class_logos
+from oj_modules.classroom.logos import attach_class_logos
 from oj_modules.db_services import (
     create_user,
     get_all_classes,
@@ -20,19 +20,14 @@ from oj_modules.db_services import (
     get_user_by_email,
     get_user_by_username,
 )
-from oj_modules.security_utils import (
-    cooldown_active,
-    hash_password,
-    rate_limit_hit,
-    validate_username,
-    verify_password,
-)
+from oj_modules.security.credentials import hash_password, validate_username, verify_password
+from oj_modules.security.throttling import cooldown_active, rate_limit_hit
 from oj_modules.observability import (
     client_ip,
     emit_audit,
     request_audit_fields,
 )
-from oj_modules.request_auth import safe_local_next
+from oj_modules.security.login_guard import safe_local_next
 
 
 auth_bp = Blueprint('auth', __name__)

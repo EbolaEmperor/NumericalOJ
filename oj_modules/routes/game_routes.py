@@ -31,7 +31,7 @@ from oj_modules.arc_agi_3.services import (
     perform_arc_action,
     start_arc_game,
 )
-from oj_modules.auth_helpers import current_user, is_admin, login_required
+from oj_modules.security.auth import current_user, is_admin, login_required
 
 
 def _arc_current_username():

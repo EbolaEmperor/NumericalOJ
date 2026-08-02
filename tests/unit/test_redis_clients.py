@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.redis_clients import (
+from oj_modules.infrastructure.redis import (
     DEFAULT_BLOCKING_SOCKET_TIMEOUT_SECONDS,
     DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS,
     RedisClientProfile,
@@ -151,7 +151,7 @@ def test_optional_client_returns_none_when_cache_is_unavailable():
 
 
 def test_production_modules_do_not_construct_redis_clients_outside_factory():
-    allowed_file = PROJECT_ROOT / "oj_modules" / "redis_clients.py"
+    allowed_file = PROJECT_ROOT / "oj_modules" / "infrastructure" / "redis.py"
     production_files = [PROJECT_ROOT / "oj.py"]
     production_files.extend((PROJECT_ROOT / "oj_modules").rglob("*.py"))
     violations = []

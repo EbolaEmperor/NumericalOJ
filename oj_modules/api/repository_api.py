@@ -5,10 +5,10 @@ from flask import Blueprint
 
 from config import REPOSITORY_MAX_FILE_BYTES
 from oj_modules.api.helpers import json_error, json_success, public_user
-from oj_modules.auth_helpers import current_user
-from oj_modules.routes.repository_routes import (
-    _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD,
-    _DEFAULT_REPOSITORY_SEARCH_TOP_K,
+from oj_modules.security.auth import current_user
+from oj_modules.repository.settings import (
+    DEFAULT_SEARCH_SCORE_THRESHOLD,
+    DEFAULT_SEARCH_TOP_K,
 )
 
 
@@ -36,8 +36,8 @@ def repository_context():
             "classes": "/api/repository/index/classes",
         },
         defaults={
-            "search_top_k": _DEFAULT_REPOSITORY_SEARCH_TOP_K,
-            "search_score_threshold": _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD,
+            "search_top_k": DEFAULT_SEARCH_TOP_K,
+            "search_score_threshold": DEFAULT_SEARCH_SCORE_THRESHOLD,
         },
         allowed_extensions=None,
         indexable_extensions=[".h", ".hpp", ".c", ".cpp"],

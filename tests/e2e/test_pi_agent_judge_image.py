@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from oj_modules import ranking_reverse_judge_db as reverse_db
-from oj_modules.tasks import ranking_reverse_judge_tasks as reverse_tasks
+from oj_modules.ranking.reverse_judge import traces as reverse_db
+from oj_modules.tasks.ranking import reverse_judge as reverse_tasks
 
 
 _IMAGE_ENV = "NUMOJ_PI_AGENT_JUDGE_IMAGE"

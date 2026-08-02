@@ -4,14 +4,10 @@
 import os
 import json
 import time
-import re
-import html
-
-import markdown
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, stream_with_context, url_for
 
-from oj_modules import judger_core
+from oj_modules.judging import core as judger_core
 
 from oj_modules.db_services import (
     get_cached_ai_code_marks_for_submission,
@@ -22,47 +18,20 @@ from oj_modules.db_services import (
     subscribe_submission_status_events,
     get_user_by_username,
 )
+from oj_modules.problems.presentation import (
+    strip_problem_title_tags as _strip_problem_title_tags,
+)
+from oj_modules.submissions.presentation import (
+    load_written_submission_latex_and_error as _load_written_submission_latex_and_error,
+    render_written_markdown_to_html as _render_written_markdown_to_html,
+    summarize_panel_test_points as _summarize_panel_test_points,
+)
 
 
 submission_bp = Blueprint('submission', __name__)
-_EXACT_DOUBLE_BACKSLASH_PATTERN = re.compile(r'(?<!\\)\\\\(?!\\)')
 
 
-def _strip_problem_title_tags(title):
-    if title is None:
-        return title
-    original = str(title).strip()
-    text = re.sub(r'\s*「[^」]{1,32}」\s*', ' ', original)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text if text else original
-
-
-def _summarize_panel_test_points(raw_points):
-    """将测试点收敛为面板需要的摘要字段，并限制可变长输出。"""
-    points = []
-    for fallback_index, raw_point in enumerate(raw_points or (), start=1):
-        if not isinstance(raw_point, dict):
-            continue
-        try:
-            test_index = int(
-                raw_point.get("test_index")
-                or raw_point.get("index")
-                or fallback_index
-            )
-        except (TypeError, ValueError):
-            test_index = fallback_index
-        points.append({
-            "test_index": test_index,
-            "status": str(raw_point.get("status") or "Unknown"),
-            "time": raw_point.get("time"),
-            "stderr": str(raw_point.get("stderr") or "")[:600],
-            "stdout": str(raw_point.get("stdout") or "")[:600],
-            "has_output_image": bool(raw_point.get("has_output_image")),
-        })
-    return points
-
-
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 
 
 def _get_authorized_submission_snapshot(submission_id, user):
@@ -75,112 +44,6 @@ def _get_authorized_submission_snapshot(submission_id, user):
     ):
         snapshot = get_submission_status_snapshot(submission_id, prefer_cache=False)
     return snapshot
-
-
-def _read_text_file_safe(path, max_chars=200000):
-    if not path or not os.path.isfile(path):
-        return ""
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return (f.read() or "")[:max_chars]
-    except Exception:
-        return ""
-
-
-def _normalize_transcribed_backslashes_for_mathjax(text):
-    """
-    只把“恰好两个反斜杠”替换为“四个反斜杠”。
-    已经是四个及以上连续反斜杠的片段保持不变。
-    """
-    raw = str(text or "")
-    if not raw:
-        return ""
-    return _EXACT_DOUBLE_BACKSLASH_PATTERN.sub(r"\\\\\\\\", raw)
-
-
-def _render_written_markdown_to_html(markdown_text):
-    raw_text = str(markdown_text or "")
-    if not raw_text.strip():
-        return ""
-
-    # 转写内容来自用户上传文件，先转义原始 HTML 再解析 Markdown，避免注入。
-    escaped_text = html.escape(raw_text, quote=False)
-    try:
-        rendered = markdown.markdown(
-            escaped_text,
-            extensions=['extra', 'fenced_code', 'tables', 'sane_lists'],
-        )
-    except Exception:
-        return escaped_text.replace("\n", "<br>")
-
-    # 限制危险链接协议。
-    rendered = re.sub(
-        r'(?i)\s(href|src)\s*=\s*([\'"])\s*(javascript:|vbscript:|data:)',
-        r' \1=\2#',
-        rendered,
-    )
-    return rendered
-
-
-def _load_written_submission_latex_and_error(submission):
-    if not submission or int(submission.get("problem_type") or 0) != 2:
-        return "", ""
-
-    sid = submission.get("id")
-    if not sid:
-        return "", ""
-
-    upload_dir = os.path.join("uploads", str(sid))
-    if not os.path.isdir(upload_dir):
-        return "", ""
-
-    test_points = submission.get("test_points")
-    source_filename = ""
-    if isinstance(test_points, list) and test_points:
-        source_filename = os.path.basename(str(test_points[0] or "").strip())
-
-    latex_candidates = []
-    err_candidates = []
-    if source_filename:
-        base_name, _ = os.path.splitext(source_filename)
-        if base_name:
-            latex_candidates.append(os.path.join(upload_dir, f"{base_name}.md"))
-            latex_candidates.append(os.path.join(upload_dir, f"{base_name}.tex"))
-            err_candidates.append(os.path.join(upload_dir, f"{base_name}_latex_error.txt"))
-
-    try:
-        for name in sorted(os.listdir(upload_dir)):
-            lower = name.lower()
-            abs_path = os.path.join(upload_dir, name)
-            if lower.endswith(".md") or lower.endswith(".tex"):
-                latex_candidates.append(abs_path)
-            elif lower.endswith("_latex_error.txt"):
-                err_candidates.append(abs_path)
-    except Exception:
-        pass
-
-    latex_text = ""
-    seen_latex = set()
-    for path in latex_candidates:
-        if path in seen_latex:
-            continue
-        seen_latex.add(path)
-        latex_text = _read_text_file_safe(path)
-        if latex_text.strip():
-            break
-    latex_text = _normalize_transcribed_backslashes_for_mathjax(latex_text)
-
-    error_text = ""
-    seen_err = set()
-    for path in err_candidates:
-        if path in seen_err:
-            continue
-        seen_err.add(path)
-        error_text = _read_text_file_safe(path, max_chars=12000)
-        if error_text.strip():
-            break
-
-    return latex_text, error_text
 
 
 @submission_bp.route('/submission_detail/<int:submission_id>')

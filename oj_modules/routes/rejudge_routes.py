@@ -12,14 +12,12 @@ from oj_modules.db_services import (
     get_user_by_username,
     reset_submission_for_rejudge,
 )
-from oj_modules.tasks.evaluate_tasks import clear_submission_lock
+from oj_modules.submissions.locks import clear_submission_lock
 
 
 rejudge_bp = Blueprint('rejudge', __name__)
 
 _rds = None
-_evaluate_submission = None
-_transcribe_written_task = None
 _rejudge_task = None
 
 # 时间范围重测共用的进度键（同一时刻只跑一次，足够）
@@ -28,31 +26,15 @@ _TIME_RANGE_MAX_TOTAL = 500
 _REJUDGE_STAGGER_SECONDS = 1
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 
 
-def init_rejudge_module(celery_app, redis_client, evaluate_submission_func, transcribe_written_func=None):
-    global _rds, _evaluate_submission, _transcribe_written_task, _rejudge_task
+def init_rejudge_module(redis_client, rejudge_task):
+    """注入重测路由所需的 Redis 客户端与已注册任务。"""
+
+    global _rds, _rejudge_task
     _rds = redis_client
-    _evaluate_submission = evaluate_submission_func
-    _transcribe_written_task = transcribe_written_func
-
-    if _rejudge_task is None:
-        @celery_app.task(name='oj.rejudge.evaluate_submission_and_update')
-        def evaluate_submission_and_update(submission_id, progress_key):
-            # 按 problem_type 分派：书面作业(type 2) 走转写评分任务，其余走程序题评测。
-            try:
-                submission = get_submission_by_id(submission_id)
-                if submission and submission.get('problem_type') == 2:
-                    if _transcribe_written_task is not None:
-                        _transcribe_written_task(submission_id)
-                else:
-                    _evaluate_submission(submission_id)
-            finally:
-                if _rds is not None and progress_key:
-                    _rds.hincrby(progress_key, "done", 1)
-
-        _rejudge_task = evaluate_submission_and_update
+    _rejudge_task = rejudge_task
 
 
 def get_all_submissions_for_problem(problem_id):

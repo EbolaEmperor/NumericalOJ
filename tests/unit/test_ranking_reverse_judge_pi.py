@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import oj_modules.tasks.ranking_reverse_judge_tasks as rj
-import oj_modules.tasks.ranking_agent_judge_tasks as aj
+import oj_modules.tasks.ranking.reverse_judge as rj
+import oj_modules.tasks.ranking.agent_judge as aj
 
 
 _SESSION_ID = "12345678-1234-1234-1234-123456789abc"

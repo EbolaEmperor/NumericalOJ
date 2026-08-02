@@ -9,14 +9,16 @@ import uuid
 import pymysql
 
 from config import AI_TUTOR_MODEL, EVALUATE_SUBMISSION_LOCK_TTL_SECONDS, QWEN_TEXT_MODEL
-from oj_modules.archive_utils import (
+from oj_modules.shared.archive import (
     ArchiveExtractionError,
     ZipExtractionPolicy,
     extract_zip,
 )
-from oj_modules.ai_utils import (
+from oj_modules.ai.grading import (
     evaluate_written_homework_with_ai,
     evaluate_written_homework_with_ai_from_images,
+)
+from oj_modules.ai.transcription import (
     render_pdf_to_images,
     save_transcribed_latex,
 )
@@ -26,12 +28,12 @@ from oj_modules.db_services import (
     refresh_submission_status_snapshot,
     update_submission_status,
 )
-from oj_modules.grading_services import (
+from oj_modules.submissions.grading import (
     get_file_path_for_submission,
     update_submission_comment,
     update_submission_score_and_comment,
 )
-from oj_modules.tasks.evaluate_tasks import acquire_submission_lock, release_submission_lock
+from oj_modules.submissions.locks import acquire_submission_lock, release_submission_lock
 
 
 WRITTEN_TASK_NAME = "oj.transcribe_written_homework_to_latex"
@@ -236,7 +238,7 @@ def _compile_tex_with_xelatex(tex_path, output_dir, timeout_seconds=120):
     if os.path.dirname(tex_abs) != work_dir_abs:
         return False, None, "TeX 主文件必须位于编译目录根。"
 
-    from oj_modules.docker_sandbox import run_case_in_container
+    from oj_modules.judging.sandbox import run_case_in_container
 
     stage_timeout = max(10, int(timeout_seconds))
     total_timeout = stage_timeout * 4 + 20

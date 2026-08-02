@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from oj_modules import clangd_services
+from oj_modules.editor import clangd as clangd_services
 from oj_modules.repository import language as repository_language
 from oj_modules.repository import storage
 from oj_modules.repository import tree

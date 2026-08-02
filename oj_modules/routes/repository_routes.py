@@ -4,7 +4,6 @@
 import hashlib
 
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for
-from config import AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, AGENT_REPOSITORY_KNN_TOP_K
 
 from oj_modules.repository.index import (
     fail_repository_index_job_dispatch,
@@ -15,6 +14,10 @@ from oj_modules.repository.index import (
     request_cancel_repository_index_job,
     search_repository_chunks,
     update_repository_index_job,
+)
+from oj_modules.repository.settings import (
+    DEFAULT_SEARCH_SCORE_THRESHOLD as _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD,
+    DEFAULT_SEARCH_TOP_K as _DEFAULT_REPOSITORY_SEARCH_TOP_K,
 )
 from oj_modules.repository.tree import (
     RepositoryDomainError,
@@ -40,14 +43,6 @@ from oj_modules.repository.tree import (
 
 repository_bp = Blueprint('repository', __name__)
 _repository_build_index_task = None
-try:
-    _DEFAULT_REPOSITORY_SEARCH_TOP_K = max(1, int(AGENT_REPOSITORY_KNN_TOP_K))
-except Exception:
-    _DEFAULT_REPOSITORY_SEARCH_TOP_K = 1
-try:
-    _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD = float(AGENT_REPOSITORY_KNN_SCORE_THRESHOLD)
-except Exception:
-    _DEFAULT_REPOSITORY_SEARCH_SCORE_THRESHOLD = 0.0
 
 
 def init_repository_index_module(repository_build_index_task):
@@ -55,7 +50,7 @@ def init_repository_index_module(repository_build_index_task):
     _repository_build_index_task = repository_build_index_task
 
 
-from oj_modules.auth_helpers import current_user
+from oj_modules.security.auth import current_user
 
 
 @repository_bp.route('/code_repository')

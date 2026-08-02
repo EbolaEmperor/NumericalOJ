@@ -1,40 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import atexit
 import json
 import logging
-import os
-import queue
-import re
-import threading
 import time
 
-import pymysql
 from flask import session
 
 from config import (
     AI_TUTOR_MODEL,
-    MYSQL_CONNECT_TIMEOUT,
-    MYSQL_PASSWORD,
-    MYSQL_POOL_MAX_SIZE,
-    MYSQL_POOL_MIN_SIZE,
-    MYSQL_POOL_RECYCLE_SECONDS,
-    MYSQL_POOL_WAIT_TIMEOUT,
-    MYSQL_USERNAME,
     QWEN_TEXT_MODEL,
     SUBMISSION_SNAPSHOT_TTL_SECONDS,
     QWEN_OMNI_MODEL,
 )
 import config as _config
-# CI / 多环境可通过 config 覆盖 MySQL 连接目标；生产 config.py 未定义这些键时回退到历史默认值。
-_MYSQL_HOST = getattr(_config, 'MYSQL_HOST', '127.0.0.1')
-_MYSQL_PORT = int(getattr(_config, 'MYSQL_PORT', 3306))
-_MYSQL_DB = getattr(_config, 'MYSQL_DB', 'myojdb')
-from oj_modules.ai_utils import _normalize_ai_code_issues
-from oj_modules.forum_identity_services import (
+from oj_modules.ai.code_feedback import _normalize_ai_code_issues
+from oj_modules.forum.identity import (
     assert_identity_name_available,
     run_identity_namespace_transaction,
+)
+from oj_modules.infrastructure.mysql import (
+    _MySQLConnectionPool,
+    _PooledConnectionProxy,
+    _create_raw_mysql_connection,
+    _get_db_pool,
+    get_db_connection,
+    safe_table_name,
 )
 from oj_modules.observability import (
     content_fingerprint,
@@ -42,7 +33,7 @@ from oj_modules.observability import (
     emit_audit,
     safe_file_fingerprint,
 )
-from oj_modules.redis_clients import (
+from oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
 )
@@ -66,24 +57,6 @@ class SubmissionLimitExceeded(RuntimeError):
             f"submission limit exceeded: user={username!r}, "
             f"problem_id={problem_id}, count={current_count}, limit={limit}"
         )
-
-
-# 每个班级对应一张以「班级英文名」命名的动态表，多处 SQL 需要把表名拼进语句。
-# 表名无法用占位符参数化，因此用统一白名单校验作为防 SQL 注入的最后防线：
-# 所有把班级/动态表名拼进 SQL 的地方都必须先经过 safe_table_name()。
-_VALID_TABLE_NAME_RE = re.compile(r'^[A-Za-z0-9_]+$')
-
-
-def safe_table_name(name):
-    """校验动态表名仅由字母、数字、下划线构成；非法时抛 ValueError。
-
-    防止把用户/管理员可控的班级英文名直接拼进 SQL 造成注入。所有动态表名拼接点
-    （CREATE/SELECT/UPDATE/INSERT/DELETE/ALTER ... {table}）都应先调用本函数。
-    """
-    s = '' if name is None else str(name)
-    if not _VALID_TABLE_NAME_RE.match(s):
-        raise ValueError(f"非法的表名: {name!r}")
-    return s
 
 
 _settings_table_ready = False
@@ -122,213 +95,6 @@ _ALLOWED_PROGRAMMING_GRADING_MODELS = {
         _QWEN_CODER_MODEL_KEY,
     } if item
 }
-
-
-def _create_raw_mysql_connection():
-    return pymysql.connect(
-        host=_MYSQL_HOST,
-        port=_MYSQL_PORT,
-        user=MYSQL_USERNAME,
-        password=MYSQL_PASSWORD,
-        database=_MYSQL_DB,
-        charset='utf8mb4',
-        connect_timeout=int(MYSQL_CONNECT_TIMEOUT),
-        cursorclass=pymysql.cursors.DictCursor,
-    )
-
-
-class _PooledConnectionProxy:
-    """
-    连接代理：
-    - 对外表现与 pymysql Connection 一致
-    - close() 时将连接归还池，而不是实际断开
-    """
-
-    def __init__(self, pool, raw_conn):
-        self._pool = pool
-        self._raw_conn = raw_conn
-        self._closed = False
-
-    def __getattr__(self, item):
-        return getattr(self._raw_conn, item)
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        self._pool.release(self._raw_conn)
-
-    def discard(self):
-        """物理丢弃异常连接，不把连接级状态（例如 advisory lock）带回池中。"""
-        if self._closed:
-            return
-        self._closed = True
-        self._pool._discard(self._raw_conn)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-
-class _MySQLConnectionPool:
-    def __init__(self, min_size=2, max_size=6, wait_timeout=5, recycle_seconds=1200):
-        self._min_size = max(1, int(min_size))
-        self._max_size = max(self._min_size, int(max_size))
-        self._wait_timeout = max(1, int(wait_timeout))
-        self._recycle_seconds = max(60, int(recycle_seconds))
-
-        self._idle = queue.Queue(maxsize=self._max_size)
-        self._lock = threading.Lock()
-        self._created = 0
-        self._conn_birth = {}
-        self._pid = os.getpid()
-
-        self._warm_up()
-        atexit.register(self.close_idle_connections)
-
-    def _ensure_fork_safe(self):
-        """Celery prefork 子进程不能复用父进程打开的 MySQL socket。"""
-        current_pid = os.getpid()
-        if current_pid == self._pid:
-            return
-
-        with self._lock:
-            if current_pid == self._pid:
-                return
-            while not self._idle.empty():
-                try:
-                    conn = self._idle.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-            self._conn_birth.clear()
-            self._created = 0
-            self._pid = current_pid
-
-    def _warm_up(self):
-        target = self._min_size
-        for _ in range(target):
-            try:
-                conn = _create_raw_mysql_connection()
-            except Exception:
-                # 启动阶段不因预热失败中断，后续按需创建
-                break
-            with self._lock:
-                conn_id = id(conn)
-                self._conn_birth[conn_id] = time.time()
-                self._idle.put_nowait(conn)
-                self._created += 1
-
-    def _should_recycle(self, conn):
-        born_at = self._conn_birth.get(id(conn), 0)
-        return (time.time() - born_at) >= self._recycle_seconds
-
-    def _discard(self, conn):
-        try:
-            conn.close()
-        except Exception:
-            pass
-        with self._lock:
-            self._conn_birth.pop(id(conn), None)
-            if self._created > 0:
-                self._created -= 1
-
-    def _prepare_for_checkout(self, conn):
-        if self._should_recycle(conn):
-            self._discard(conn)
-            new_conn = _create_raw_mysql_connection()
-            with self._lock:
-                self._created += 1
-            return new_conn
-
-        try:
-            conn.ping(reconnect=True)
-            return conn
-        except Exception:
-            self._discard(conn)
-            new_conn = _create_raw_mysql_connection()
-            with self._lock:
-                self._created += 1
-            return new_conn
-
-    def acquire(self):
-        self._ensure_fork_safe()
-        conn = None
-        with self._lock:
-            if not self._idle.empty():
-                conn = self._idle.get_nowait()
-            elif self._created < self._max_size:
-                conn = _create_raw_mysql_connection()
-                self._created += 1
-
-        if conn is None:
-            try:
-                conn = self._idle.get(timeout=self._wait_timeout)
-            except queue.Empty as e:
-                raise pymysql.err.OperationalError(1040, "MySQL 连接池耗尽，请稍后重试") from e
-
-        prepared = self._prepare_for_checkout(conn)
-        with self._lock:
-            if id(prepared) not in self._conn_birth:
-                self._conn_birth[id(prepared)] = time.time()
-        return _PooledConnectionProxy(self, prepared)
-
-    def release(self, conn):
-        try:
-            # 避免事务泄露到下一次使用
-            conn.rollback()
-        except Exception:
-            self._discard(conn)
-            return
-
-        if self._should_recycle(conn):
-            self._discard(conn)
-            return
-
-        try:
-            self._idle.put_nowait(conn)
-        except queue.Full:
-            self._discard(conn)
-
-    def close_idle_connections(self):
-        while not self._idle.empty():
-            conn = self._idle.get_nowait()
-            try:
-                conn.close()
-            except Exception:
-                pass
-        with self._lock:
-            self._conn_birth.clear()
-            self._created = 0
-
-
-_db_pool = None
-_db_pool_init_lock = threading.Lock()
-
-
-def _get_db_pool():
-    """按需创建连接池，避免导入模块时就访问 MySQL。"""
-    global _db_pool
-    if _db_pool is None:
-        with _db_pool_init_lock:
-            if _db_pool is None:
-                _db_pool = _MySQLConnectionPool(
-                    min_size=int(MYSQL_POOL_MIN_SIZE),
-                    max_size=int(MYSQL_POOL_MAX_SIZE),
-                    wait_timeout=int(MYSQL_POOL_WAIT_TIMEOUT),
-                    recycle_seconds=int(MYSQL_POOL_RECYCLE_SECONDS),
-                )
-    return _db_pool
-
-
-def get_db_connection():
-    """返回一个连接池代理连接（close() 时归还池）。"""
-    return _get_db_pool().acquire()
 
 
 # Schema synchronization is owned by the explicit deploy/bootstrap workflow in
@@ -1059,7 +825,10 @@ def create_user(username, password_hash, email, user_class):
         cursor.execute(sql, (user_id, user_class['class_en']))
         return int(user_id)
 
-    return run_identity_namespace_transaction(operation)
+    return run_identity_namespace_transaction(
+        operation,
+        connection_factory=get_db_connection,
+    )
 
 
 def rename_user(user_id, new_username):
@@ -1109,7 +878,10 @@ def rename_user(user_id, new_username):
         )
         return old_username
 
-    return run_identity_namespace_transaction(operation)
+    return run_identity_namespace_transaction(
+        operation,
+        connection_factory=get_db_connection,
+    )
 
 
 def get_user_classes(user_id):
@@ -1632,7 +1404,7 @@ def create_submission(
             except (TypeError, ValueError):
                 is_programming_submission = False
             if is_programming_submission:
-                from oj_modules.submission_repository_snapshots import (
+                from oj_modules.submissions.repository_snapshots import (
                     capture_submission_repository_snapshot,
                 )
                 capture_submission_repository_snapshot(
@@ -2172,7 +1944,7 @@ def archive_submission_by_id(submission_id, raise_errors=False):
         classes = []
         if user and user.get('id') is not None:
             classes = get_user_classes(user['id'])
-        from oj_modules.submission_archive import archive_submission_record
+        from oj_modules.submissions.archive import archive_submission_record
         return archive_submission_record(submission, problem, user, classes)
     except Exception as e:
         if raise_errors:
@@ -2185,7 +1957,7 @@ def archive_submission_file_by_id(submission_id, source_path, preferred_filename
     """Archive an uploaded submission file."""
     try:
         archive_submission_by_id(submission_id, raise_errors=raise_errors)
-        from oj_modules.submission_archive import archive_uploaded_submission_file
+        from oj_modules.submissions.archive import archive_uploaded_submission_file
         archived_path = archive_uploaded_submission_file(
             submission_id, source_path, preferred_filename,
         )

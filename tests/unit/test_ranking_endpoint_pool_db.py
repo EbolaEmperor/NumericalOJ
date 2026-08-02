@@ -3,8 +3,8 @@
 
 import pytest
 
-from oj_modules import ranking_agent_judge_db as endpoint_db
-from oj_modules import ranking_db
+from oj_modules.ranking.agent_judge import db as endpoint_db
+from oj_modules.ranking import db as ranking_db
 
 
 class _FakeCursor:

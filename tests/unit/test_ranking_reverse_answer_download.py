@@ -12,9 +12,11 @@ from flask import Flask
 from werkzeug.exceptions import NotFound
 
 from oj_modules.api import ranking_api
-import oj_modules.ranking_reverse_judge_db as reverse_db
+from oj_modules.ranking import artifacts as ranking_artifacts
+import oj_modules.ranking.reverse_judge.db as reverse_db
+import oj_modules.ranking.reverse_judge.service as reverse_service
 from oj_modules.routes import ranking_routes as routes
-import oj_modules.tasks.ranking_reverse_judge_tasks as reverse_tasks
+import oj_modules.tasks.ranking.reverse_judge as reverse_tasks
 
 
 def _app():
@@ -546,8 +548,8 @@ def test_reverse_snapshot_exposes_only_current_attempt_archive_availability(
         "score": 75,
         "error_message": "",
     }
-    monkeypatch.setattr(reverse_db, "get_ranking_submission", lambda _sid: submission)
-    monkeypatch.setattr(reverse_db, "list_reverse_judge_steps", lambda _sid: [{
+    monkeypatch.setattr(reverse_service, "get_ranking_submission", lambda _sid: submission)
+    monkeypatch.setattr(reverse_service, "list_reverse_judge_steps", lambda _sid: [{
         "step_key": reverse_db.STEP_AGENT,
         "step_order": 3,
         "title": "AI 作答",
@@ -557,7 +559,7 @@ def test_reverse_snapshot_exposes_only_current_attempt_archive_availability(
     os.makedirs(os.path.dirname(old_archive), exist_ok=True)
     Path(old_archive).write_bytes(b"old")
 
-    unavailable = reverse_db.build_reverse_judge_snapshot(9)
+    unavailable = reverse_service.build_reverse_judge_snapshot(9)
     agent_step = next(
         step for step in unavailable["steps"] if step["step_key"] == "agent_answer"
     )
@@ -566,7 +568,7 @@ def test_reverse_snapshot_exposes_only_current_attempt_archive_availability(
 
     current_archive = reverse_db.reverse_agent_answer_archive_path(9, "current-attempt")
     Path(current_archive).write_bytes(b"current")
-    available = reverse_db.build_reverse_judge_snapshot(9)
+    available = reverse_service.build_reverse_judge_snapshot(9)
     agent_step = next(
         step for step in available["steps"] if step["step_key"] == "agent_answer"
     )
@@ -574,7 +576,7 @@ def test_reverse_snapshot_exposes_only_current_attempt_archive_availability(
     assert "answer_path" not in agent_step
 
     submission["status"] = "Judging"
-    running = reverse_db.build_reverse_judge_snapshot(9)
+    running = reverse_service.build_reverse_judge_snapshot(9)
     agent_step = next(
         step for step in running["steps"] if step["step_key"] == "agent_answer"
     )
@@ -589,7 +591,7 @@ def test_reverse_snapshot_exposes_only_current_attempt_archive_availability(
         current_archive_path.symlink_to(outside_archive)
     except OSError:
         pytest.skip("当前文件系统不支持符号链接")
-    linked = reverse_db.build_reverse_judge_snapshot(9)
+    linked = reverse_service.build_reverse_judge_snapshot(9)
     agent_step = next(
         step for step in linked["steps"] if step["step_key"] == "agent_answer"
     )
@@ -609,7 +611,7 @@ def test_download_reverse_agent_answer_allows_owner_and_admin(
         routes, "_require_user",
         lambda: (viewer, None),
     )
-    monkeypatch.setattr(routes, "get_ranking_submission", lambda _sid: {
+    monkeypatch.setattr(ranking_artifacts, "get_ranking_submission", lambda _sid: {
         "id": 9,
         "competition_id": 3,
         "username": "alice",
@@ -617,12 +619,12 @@ def test_download_reverse_agent_answer_allows_owner_and_admin(
         "status": "Accepted",
     })
     monkeypatch.setattr(
-        routes, "get_competition",
+        ranking_artifacts, "get_competition",
         lambda _cid: {"id": 3, "scoring_mode": "reverse_judge"},
     )
     seen = []
     monkeypatch.setattr(
-        routes, "available_reverse_agent_answer_archive_path",
+        ranking_artifacts, "available_reverse_agent_answer_archive_path",
         lambda sid, attempt, status: (
             seen.append((sid, attempt, status)) or str(archive_path)
         ),
@@ -667,10 +669,10 @@ def test_download_reverse_agent_answer_hides_unauthorized_or_wrong_mode(
     archive_path = tmp_path / "answer.zip"
     archive_path.write_bytes(b"zip")
     monkeypatch.setattr(routes, "_require_user", lambda: (user, None))
-    monkeypatch.setattr(routes, "get_ranking_submission", lambda _sid: submission)
-    monkeypatch.setattr(routes, "get_competition", lambda _cid: competition)
+    monkeypatch.setattr(ranking_artifacts, "get_ranking_submission", lambda _sid: submission)
+    monkeypatch.setattr(ranking_artifacts, "get_competition", lambda _cid: competition)
     monkeypatch.setattr(
-        routes,
+        ranking_artifacts,
         "available_reverse_agent_answer_archive_path",
         lambda *_args: str(archive_path),
     )
@@ -686,19 +688,19 @@ def test_download_reverse_agent_answer_rejects_missing_or_symlink_archive(
         routes, "_require_user",
         lambda: ({"username": "alice", "is_admin": 0}, None),
     )
-    monkeypatch.setattr(routes, "get_ranking_submission", lambda _sid: {
+    monkeypatch.setattr(ranking_artifacts, "get_ranking_submission", lambda _sid: {
         "competition_id": 3,
         "username": "alice",
         "judge_attempt_id": "current",
         "status": "Accepted",
     })
     monkeypatch.setattr(
-        routes, "get_competition",
+        ranking_artifacts, "get_competition",
         lambda _cid: {"id": 3, "scoring_mode": "reverse_judge"},
     )
     missing = tmp_path / "missing.zip"
     monkeypatch.setattr(
-        routes,
+        ranking_artifacts,
         "available_reverse_agent_answer_archive_path",
         lambda *_args: None,
     )
@@ -719,7 +721,7 @@ def test_download_reverse_agent_answer_rejects_missing_or_symlink_archive(
         lambda *_args: str(missing),
     )
     monkeypatch.setattr(
-        routes,
+        ranking_artifacts,
         "available_reverse_agent_answer_archive_path",
         reverse_db.available_reverse_agent_answer_archive_path,
     )
@@ -736,18 +738,18 @@ def test_download_reverse_agent_answer_is_hidden_until_submission_finishes(
         routes, "_require_user",
         lambda: ({"username": "alice", "is_admin": 0}, None),
     )
-    monkeypatch.setattr(routes, "get_ranking_submission", lambda _sid: {
+    monkeypatch.setattr(ranking_artifacts, "get_ranking_submission", lambda _sid: {
         "competition_id": 3,
         "username": "alice",
         "judge_attempt_id": "current",
         "status": "Judging",
     })
     monkeypatch.setattr(
-        routes, "get_competition",
+        ranking_artifacts, "get_competition",
         lambda _cid: {"id": 3, "scoring_mode": "reverse_judge"},
     )
     monkeypatch.setattr(
-        routes,
+        ranking_artifacts,
         "available_reverse_agent_answer_archive_path",
         lambda *_args: None,
     )
@@ -860,17 +862,17 @@ def test_available_reverse_agent_answer_archive_path_rejects_unavailable_inputs(
 
 def test_build_reverse_judge_snapshot_missing_submission_short_circuits(
         monkeypatch):
-    monkeypatch.setattr(reverse_db, "get_ranking_submission", lambda _sid: None)
+    monkeypatch.setattr(reverse_service, "get_ranking_submission", lambda _sid: None)
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("提交不存在时不应继续查询步骤或归档")
 
-    monkeypatch.setattr(reverse_db, "list_reverse_judge_steps", unexpected)
+    monkeypatch.setattr(reverse_service, "list_reverse_judge_steps", unexpected)
     monkeypatch.setattr(
-        reverse_db, "available_reverse_agent_answer_archive_path", unexpected,
+        reverse_service, "available_reverse_agent_answer_archive_path", unexpected,
     )
 
-    assert reverse_db.build_reverse_judge_snapshot(9) is None
+    assert reverse_service.build_reverse_judge_snapshot(9) is None
 
 
 @pytest.mark.parametrize(
@@ -887,9 +889,9 @@ def test_build_reverse_judge_snapshot_exposes_current_archive_only_on_agent_step
         "error_message": "",
     }
     monkeypatch.setattr(
-        reverse_db, "get_ranking_submission", lambda _sid: submission,
+        reverse_service, "get_ranking_submission", lambda _sid: submission,
     )
-    monkeypatch.setattr(reverse_db, "list_reverse_judge_steps", lambda _sid: [
+    monkeypatch.setattr(reverse_service, "list_reverse_judge_steps", lambda _sid: [
         {
             "step_key": reverse_db.STEP_AGENT,
             "step_order": 3,
@@ -905,17 +907,17 @@ def test_build_reverse_judge_snapshot_exposes_current_archive_only_on_agent_step
     ])
     archive_calls = []
     monkeypatch.setattr(
-        reverse_db,
+        reverse_service,
         "available_reverse_agent_answer_archive_path",
         lambda submission_id, attempt_id, status: (
             archive_calls.append((submission_id, attempt_id, status))
             or archive_path
         ),
     )
-    monkeypatch.setattr(reverse_db, "_collect_trace_files", lambda _path: [])
-    monkeypatch.setattr(reverse_db, "_collect_trace_messages", lambda _path: [])
+    monkeypatch.setattr(reverse_service, "collect_agent_trace_files", lambda _path: [])
+    monkeypatch.setattr(reverse_service, "collect_agent_trace_messages", lambda _path: [])
 
-    snapshot = reverse_db.build_reverse_judge_snapshot(9)
+    snapshot = reverse_service.build_reverse_judge_snapshot(9)
 
     assert archive_calls == [(9, "current", "Accepted")]
     assert snapshot is not None
@@ -935,20 +937,20 @@ def test_build_reverse_judge_snapshot_exposes_current_archive_only_on_agent_step
 )
 def test_resolve_reverse_agent_answer_archive_authorized_user_uses_current_attempt(
         monkeypatch, viewer, requested_competition_id):
-    monkeypatch.setattr(routes, "get_ranking_submission", lambda _sid: {
+    monkeypatch.setattr(ranking_artifacts, "get_ranking_submission", lambda _sid: {
         "id": 9,
         "competition_id": 3,
         "username": "alice",
         "judge_attempt_id": "a2",
         "status": "Accepted",
     })
-    monkeypatch.setattr(routes, "get_competition", lambda _cid: {
+    monkeypatch.setattr(ranking_artifacts, "get_competition", lambda _cid: {
         "id": 3,
         "scoring_mode": "reverse_judge",
     })
     calls = []
     monkeypatch.setattr(
-        routes,
+        ranking_artifacts,
         "available_reverse_agent_answer_archive_path",
         lambda submission_id, attempt_id, status: (
             calls.append((submission_id, attempt_id, status))
@@ -956,7 +958,7 @@ def test_resolve_reverse_agent_answer_archive_authorized_user_uses_current_attem
         ),
     )
 
-    result = routes.resolve_reverse_agent_answer_archive(
+    result = ranking_artifacts.resolve_reverse_agent_answer_archive(
         viewer, 9, competition_id=requested_competition_id,
     )
 
@@ -1003,18 +1005,18 @@ def test_resolve_reverse_agent_answer_archive_authorized_user_uses_current_attem
 def test_resolve_reverse_agent_answer_archive_hides_invalid_or_unauthorized(
         monkeypatch, viewer, submission, requested_competition_id, competition):
     monkeypatch.setattr(
-        routes, "get_ranking_submission", lambda _sid: submission,
+        ranking_artifacts, "get_ranking_submission", lambda _sid: submission,
     )
-    monkeypatch.setattr(routes, "get_competition", lambda _cid: competition)
+    monkeypatch.setattr(ranking_artifacts, "get_competition", lambda _cid: competition)
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("guard 失败后不应检查归档")
 
     monkeypatch.setattr(
-        routes, "available_reverse_agent_answer_archive_path", unexpected,
+        ranking_artifacts, "available_reverse_agent_answer_archive_path", unexpected,
     )
 
-    assert routes.resolve_reverse_agent_answer_archive(
+    assert ranking_artifacts.resolve_reverse_agent_answer_archive(
         viewer, 9, competition_id=requested_competition_id,
     ) is None
 
@@ -1026,7 +1028,7 @@ def test_send_reverse_agent_answer_archive_returns_hardened_zip(
     archive_path.write_bytes(archive_bytes)
 
     with _app().test_request_context("/api/download"):
-        response = routes.send_reverse_agent_answer_archive(str(archive_path), 9)
+        response = ranking_artifacts.send_reverse_agent_answer_archive(str(archive_path), 9)
         response.direct_passthrough = False
         body = response.get_data()
         response.close()

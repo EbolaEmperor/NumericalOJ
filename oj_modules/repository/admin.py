@@ -21,9 +21,9 @@ import stat
 import unicodedata
 import uuid
 
-from oj_modules.db_services import get_db_connection
+from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.repository import storage
-from oj_modules import submission_repository_snapshots as snapshot_services
+from oj_modules.submissions import repository_snapshots as snapshot_services
 
 
 def _issue(code, message, *, user_id=None, path=None, **details):

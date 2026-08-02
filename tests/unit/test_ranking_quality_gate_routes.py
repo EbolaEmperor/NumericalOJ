@@ -4,6 +4,7 @@ from flask import Flask
 
 from oj_modules.api import ranking_api
 from oj_modules.api.ranking_api import _public_answer_endpoints, _safe_competition
+from oj_modules.ranking import presentation, readiness
 from oj_modules.routes import ranking_routes as routes
 
 
@@ -19,24 +20,24 @@ def test_quality_gate_readiness_uses_independent_pool(monkeypatch):
         "reverse_quality_gate_prompt": "不得隐藏私有协议",
     }
     monkeypatch.setattr(
-        routes,
+        readiness,
         "list_quality_gate_endpoints",
         lambda competition_id, enabled_only=False: ([{"id": 8}] if enabled_only else []),
     )
 
-    assert routes._reverse_quality_gate_block_reason(5, comp) == ""
+    assert readiness.reverse_quality_gate_block_reason(5, comp) == ""
 
-    monkeypatch.setattr(routes, "list_quality_gate_endpoints", lambda *args, **kwargs: [])
-    assert "质量门禁端点" in routes._reverse_quality_gate_block_reason(5, comp)
+    monkeypatch.setattr(readiness, "list_quality_gate_endpoints", lambda *args, **kwargs: [])
+    assert "质量门禁端点" in readiness.reverse_quality_gate_block_reason(5, comp)
 
 
 def test_disabled_quality_gate_does_not_require_prompt_or_pool(monkeypatch):
     monkeypatch.setattr(
-        routes,
+        readiness,
         "list_quality_gate_endpoints",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不应读取端点池")),
     )
-    assert routes._reverse_quality_gate_block_reason(
+    assert readiness.reverse_quality_gate_block_reason(
         5,
         {"reverse_quality_gate_enabled": 0, "reverse_quality_gate_prompt": ""},
     ) == ""
@@ -175,7 +176,7 @@ def test_quality_gate_save_returns_masked_endpoints(monkeypatch):
 
 
 def test_masked_endpoint_api_includes_default_capabilities_as_json_types():
-    masked = routes._masked_agent_endpoints([{
+    masked = presentation.masked_agent_endpoints([{
         'id': 3,
         'harness': 'pi',
         'base_url': 'https://answer.example/v1',

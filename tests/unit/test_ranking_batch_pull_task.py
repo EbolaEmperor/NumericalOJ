@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """打榜赛 Git 批量拉取任务的模式分派测试。"""
 
-import oj_modules.tasks.ranking_batch_pull_tasks as m
+import oj_modules.tasks.ranking.batch_pull as m
 
 
 class _FakeCelery:

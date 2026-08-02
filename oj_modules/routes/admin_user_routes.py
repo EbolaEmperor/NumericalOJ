@@ -5,7 +5,7 @@ import re
 
 from flask import Blueprint, current_app, flash, jsonify, render_template, request, session
 
-from oj_modules.class_logo_services import generate_class_logo_seed
+from oj_modules.classroom.logos import generate_class_logo_seed
 from oj_modules.db_services import (
     delete_user_problem_max_score,
     get_all_classes,
@@ -18,7 +18,8 @@ from oj_modules.db_services import (
     safe_table_name,
     upsert_user_problem_max_score,
 )
-from oj_modules.security_utils import validate_username
+from oj_modules.problems.catalog import invalidate_problem_list_cache_for_user
+from oj_modules.security.credentials import validate_username
 
 
 admin_user_bp = Blueprint('admin_user', __name__)
@@ -26,14 +27,13 @@ admin_user_bp = Blueprint('admin_user', __name__)
 
 def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
     try:
-        from oj_modules.routes.problem_core_routes import invalidate_problem_list_cache_for_user
         invalidate_problem_list_cache_for_user(user_id=user_id, username=username)
     except Exception:
         # 缓存失效失败不影响主流程
         current_app.logger.exception('用户题目列表缓存失效失败')
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 
 
 @admin_user_bp.route('/admin/users')
