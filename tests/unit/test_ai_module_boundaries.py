@@ -26,17 +26,27 @@ def test_promptly_canonical_patch_point_controls_review(monkeypatch):
 
     captured = {}
 
-    def fake_call(prompt_text, **kwargs):
+    def fake_call(prompt_text, _endpoint, **kwargs):
         captured["prompt_text"] = prompt_text
         captured["system_prompt"] = kwargs.get("system_prompt")
         return '{"nice": true}'
 
-    monkeypatch.setattr(promptly, "_call_qwen_text", fake_call)
+    monkeypatch.setattr(promptly, "_call_llm_text", fake_call)
 
     nice, reply = promptly.review_promptly_student_prompt(
         problem={"programming_grading_prompt": "简要题意"},
         student_prompt="使用单调队列维护窗口最值。",
-        model_spec="test-model",
+        endpoint={
+            "id": 1,
+            "name": "test-text",
+            "category": "text",
+            "protocol": "openai",
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-secret",
+            "model": "test-model",
+            "thinking_enabled": False,
+            "thinking_format": "none",
+        },
     )
 
     assert (nice, reply) == (True, "")

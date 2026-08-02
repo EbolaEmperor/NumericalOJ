@@ -28,10 +28,11 @@ from oj_modules.tasks.agent.shared import (
     _AGENT_MEMORY_MAX_PATTERNS,
     _AGENT_SUBMIT_LIMIT,
     _TOOL_TIMEOUT_MAX_SECONDS,
-    _call_qwen_chat_model,
+    _call_agent_text_model,
     _clamp_int,
     _extract_retry_diagnosis,
     _normalize_text_line,
+    _require_agent_endpoint,
     _truncate_text,
 )
 

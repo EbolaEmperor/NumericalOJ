@@ -1,6 +1,6 @@
 import pytest
 
-from oj_modules import modelscope_web_search_mcp as web_search
+from oj_modules.integrations import modelscope_web_search as web_search
 
 
 def test_web_search_runtime_requires_database_settings(monkeypatch):

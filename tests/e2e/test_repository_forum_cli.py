@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -70,10 +71,13 @@ def test_repository_file_upload_index_and_search_commands(cli, unique_suffix, tm
     classes = cli.user_json("repository", "classes")
     assert isinstance(classes["classes"], list)
     search = cli.user("repository", "search", "--query", "helper", "--top-k", "3", check=False)
-    if search.returncode == 0:
-        assert isinstance(search.json()["hits"], list)
-    else:
-        assert "faiss" in search.stderr.lower()
+    assert search.returncode == 2
+    error_prefix = "error: HTTP 500: "
+    assert search.stderr.startswith(error_prefix), search.stderr
+    error_payload = json.loads(search.stderr[len(error_prefix):])
+    error_message = str(error_payload.get("message") or "")
+    assert "代码仓库 Embedding" in error_message
+    assert "尚未绑定 LLM 端点" in error_message
 
     assert cli.user_json("repository", "delete", str(file_id))["success"] is True
     admin_files = cli.admin_json("repository", "files")
