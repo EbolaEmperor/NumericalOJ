@@ -1569,6 +1569,49 @@ class _HygieneClient:
             return _PayloadResponse({**self._noise(), "success": True, "problem": {"id": 1}, "results": []})
         if path == "/api/admin/ai-detection/student/alice":
             return _PayloadResponse({**self._noise(), "success": True, "student": {"username": "alice"}, "results": []})
+        if path == "/api/admin/dynamic-config/meta":
+            return _PayloadResponse({**self._noise(), "success": True, "protocols": ["openai"], "features": []})
+        if path == "/api/admin/dynamic-config/llm-endpoints/test":
+            return _PayloadResponse({
+                **self._noise(),
+                "success": True,
+                "test": {"passed": True, "latency_ms": 1},
+                "test_token": "one-time-token",
+            })
+        if path == "/api/admin/dynamic-config/llm-endpoints" and method.upper() == "GET":
+            return _PayloadResponse({
+                **self._noise(),
+                "success": True,
+                "endpoints": [{
+                    "id": 1,
+                    "protocol": "openai",
+                    "category": "text",
+                    "base_url": "http://model",
+                    "model": "model",
+                    "api_key": "",
+                    "api_key_configured": True,
+                    "thinking_enabled": False,
+                    "thinking_format": "none",
+                }],
+            })
+        if path.startswith("/api/admin/dynamic-config/llm-endpoints"):
+            return _PayloadResponse({
+                **self._noise(),
+                "success": True,
+                "endpoint": {"id": 1, "model": "model", "api_key": "", "api_key_configured": True},
+            })
+        if path == "/api/admin/dynamic-config/feature-bindings":
+            return _PayloadResponse({**self._noise(), "success": True, "bindings": []})
+        if path.startswith("/api/admin/dynamic-config/feature-bindings/"):
+            return _PayloadResponse({**self._noise(), "success": True, "binding": {"feature_key": "ai_code_annotation"}})
+        if path == "/api/admin/dynamic-config/mail":
+            return _PayloadResponse({**self._noise(), "success": True, "settings": None})
+        if path == "/api/admin/dynamic-config/mail/test":
+            return _PayloadResponse({**self._noise(), "success": True, "test": {"passed": True}})
+        if path == "/api/admin/dynamic-config/web-search":
+            return _PayloadResponse({**self._noise(), "success": True, "settings": None})
+        if path == "/api/admin/dynamic-config/web-search/test":
+            return _PayloadResponse({**self._noise(), "success": True, "test": {"passed": True}})
         if path == "/api/ranking/competitions":
             return _PayloadResponse(self._ranking_list_payload())
         if path == "/api/ranking/competitions/1":
@@ -1772,6 +1815,7 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         cli.user,
     ):
         monkeypatch.setattr(module, "client_from_args", lambda _args, client=fake_client: client)
+    monkeypatch.setattr(cli.site_config.common, "client_from_args", lambda _args: fake_client)
 
     monkeypatch.setattr(cli.auth.requests, "Session", _LoginSession)
     monkeypatch.setattr(cli.auth, "load_config", lambda _path: {"base_url": "http://oj", "username": "admin", "cookies": {"session": "x"}})
@@ -1788,6 +1832,26 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
     command_argvs = [
         ["init", "--base-url", "http://oj", "-u", "admin", "-p", "pw"],
         ["site", "home"],
+        ["site-config", "meta"],
+        ["site-config", "llm", "list"],
+        ["site-config", "llm", "test", "1"],
+        ["site-config", "llm", "create", "--protocol", "openai", "--category", "text", "--endpoint-base-url", "http://model", "--api-key", "key", "--model", "model"],
+        ["site-config", "llm", "update", "1", "--model", "model-v2"],
+        ["site-config", "llm", "delete", "1"],
+        ["site-config", "llm", "lock", "1", "--reason", "verified"],
+        ["site-config", "llm", "unlock", "1", "--password", "pw", "--confirmation", "confirm"],
+        ["site-config", "binding", "list"],
+        ["site-config", "binding", "set", "ai_code_annotation", "--endpoint-id", "1"],
+        ["site-config", "binding", "lock-embedding", "--reason", "verified"],
+        ["site-config", "binding", "unlock-embedding", "--password", "pw", "--confirmation", "confirm"],
+        ["site-config", "mail", "get"],
+        ["site-config", "mail", "test"],
+        ["site-config", "mail", "set", "--smtp-server", "smtp.example.com", "--smtp-port", "465", "--smtp-username", "admin@example.com", "--smtp-password", "secret"],
+        ["site-config", "mail", "clear"],
+        ["site-config", "web-search", "get"],
+        ["site-config", "web-search", "test"],
+        ["site-config", "web-search", "set", "--search-base-url", "http://search", "--authorization", "secret"],
+        ["site-config", "web-search", "clear"],
         ["auth", "login", "--base-url", "http://oj", "-u", "admin", "-p", "pw"],
         ["auth", "logout"],
         ["auth", "status"],

@@ -421,18 +421,20 @@ def _json_copy(value, field_name):
 
 
 def _apply_thinking(endpoint, payload):
+    # 管理员只配置“是否开启思考”。关闭时不向兼容端点发送任何思考字段；
+    # 开启时只按协议选择通用 wire shape，不对具体模型厂商做分支。
+    if (
+        not endpoint.thinking_enabled
+        or endpoint.thinking_format is OpenAIThinkingWireFormat.NONE
+    ):
+        return
     if endpoint.protocol is LLMProtocol.ANTHROPIC:
         if endpoint.thinking_format is OpenAIThinkingWireFormat.THINKING_TYPE:
-            payload["thinking"] = {
-                "type": "enabled" if endpoint.thinking_enabled else "disabled",
-            }
+            payload["thinking"] = {"type": "adaptive"}
         return
-    if endpoint.thinking_format is OpenAIThinkingWireFormat.ENABLE_THINKING:
-        payload["enable_thinking"] = bool(endpoint.thinking_enabled)
-    elif endpoint.thinking_format is OpenAIThinkingWireFormat.THINKING_TYPE:
-        payload["thinking"] = {
-            "type": "enabled" if endpoint.thinking_enabled else "disabled",
-        }
+    # OpenAI-compatible 统一使用 enable_thinking；thinking_type 只作为旧数据
+    # 的内部兼容值读取，不能改变协议层的通用请求形状。
+    payload["enable_thinking"] = True
 
 
 def _text_from_content(content):

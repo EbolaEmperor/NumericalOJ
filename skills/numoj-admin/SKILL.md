@@ -50,6 +50,10 @@ Do not use commands that launch external model/API work, large judging workloads
 
 - `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
 - `site`: inspect public site routes and login/problem-list redirects.
+- `site-config`: inspect and manage global LLM endpoints, feature bindings,
+  SMTP settings, and WebSearch MCP settings. LLM create/update commands always
+  run the server's real connection test and consume its one-time test token
+  before saving.
 - `me`: view current account classes, join or leave classes, view current account submissions, and summarize visible grades.
 - `submission`: list visible submissions, list submissions for one problem, inspect details/status/streams, fetch last submitted code, download output images, and download written-submission files.
 - `problem`: list/view/create/edit/delete problems, fetch create/edit/submit contexts, submit programming/Promptly/written homework as the administrator, upload test data, inspect scores, rejudge submissions, check rejudge status, and manage problem-solving or test-data-generation agent tasks.
@@ -70,6 +74,67 @@ Check administrator login:
 
 ```bash
 python3 scripts/numoj_admin.py auth status
+```
+
+Inspect dynamic-config metadata and current global settings:
+
+```bash
+python3 scripts/numoj_admin.py site-config meta
+python3 scripts/numoj_admin.py site-config llm list
+python3 scripts/numoj_admin.py site-config binding list
+python3 scripts/numoj_admin.py site-config mail get
+python3 scripts/numoj_admin.py site-config web-search get
+```
+
+Create an OpenAI-compatible text endpoint. `create` and `update` perform the
+required connection test and save in one command; the API key and one-time test
+token are never printed:
+
+```bash
+python3 scripts/numoj_admin.py site-config llm create \
+  --protocol openai \
+  --category text \
+  --endpoint-base-url https://llm.example.com/v1 \
+  --api-key-env NUMOJ_LLM_API_KEY \
+  --env-file site-config-secrets.env \
+  --model example-model \
+  --thinking
+
+python3 scripts/numoj_admin.py site-config llm update <endpoint_id> \
+  --model example-model-v2 \
+  --api-key @llm-api-key.txt
+```
+
+Bind a feature, then lock and unlock the repository Embedding binding. Read the
+exact confirmation phrase from `site-config meta`; omit `--password` to use the
+non-echoing interactive password prompt:
+
+```bash
+python3 scripts/numoj_admin.py site-config binding set ai_code_annotation \
+  --endpoint-id <endpoint_id>
+python3 scripts/numoj_admin.py site-config binding lock-embedding \
+  --reason "Index configuration is verified"
+python3 scripts/numoj_admin.py site-config binding unlock-embedding \
+  --confirmation "我已阅读上述内容，我清楚后果，我坚持要解锁"
+```
+
+Save and test SMTP or WebSearch settings. Secret values accept direct text,
+`@file`, or an environment-variable name with an optional dotenv file:
+
+```bash
+python3 scripts/numoj_admin.py site-config mail set \
+  --smtp-server smtp.example.com \
+  --smtp-port 465 \
+  --smtp-username noreply@example.com \
+  --smtp-password-env NUMOJ_SMTP_PASSWORD \
+  --env-file site-config-secrets.env
+python3 scripts/numoj_admin.py site-config mail test
+
+python3 scripts/numoj_admin.py site-config web-search set \
+  --search-base-url https://search.example.com/mcp \
+  --authorization-env NUMOJ_WEB_SEARCH_AUTHORIZATION \
+  --env-file site-config-secrets.env
+python3 scripts/numoj_admin.py site-config web-search test
 ```
 
 List users and inspect the current administrator account:

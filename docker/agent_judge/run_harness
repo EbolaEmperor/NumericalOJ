@@ -341,16 +341,19 @@ def _apply_endpoint_thinking_fields(
         raise ValueError("unsupported endpoint thinking format")
     payload.pop("enable_thinking", None)
     payload.pop("thinking", None)
-    if thinking_format == "none":
+    if thinking_format == "none" or not thinking_enabled:
         return
     if thinking_format == "enable_thinking":
         if protocol != "openai":
             raise ValueError("enable_thinking is only valid for OpenAI-compatible endpoints")
-        payload["enable_thinking"] = bool(thinking_enabled)
+        payload["enable_thinking"] = True
         return
-    payload["thinking"] = {
-        "type": "enabled" if thinking_enabled else "disabled",
-    }
+    if protocol == "anthropic":
+        payload["thinking"] = {"type": "adaptive"}
+        return
+    # 旧副本可能把 thinking_type 与 OpenAI 协议组合；按当前通用协议契约
+    # 收敛成 enable_thinking，而不是继续发送厂商私有的 thinking.type。
+    payload["enable_thinking"] = True
 
 
 class _CodexEndpointRelay:
