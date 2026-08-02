@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from flask import Flask
 
-from oj_modules import ranking_db
+from oj_modules.ranking import db as ranking_db
 from oj_modules.routes import ranking_routes
 
 

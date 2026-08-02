@@ -17,7 +17,11 @@ def _upload_app():
     return app
 
 
-def test_concurrent_same_name_uploads_use_isolated_temporary_roots(monkeypatch):
+def test_concurrent_same_name_uploads_use_isolated_temporary_roots(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
     app = _upload_app()
     monkeypatch.setattr(
         admin_problem_routes,
@@ -84,7 +88,8 @@ def test_concurrent_same_name_uploads_use_isolated_temporary_roots(monkeypatch):
         assert not archive_path.parent.exists()
 
 
-def test_failed_upload_also_cleans_its_temporary_root(monkeypatch):
+def test_failed_upload_also_cleans_its_temporary_root(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     app = _upload_app()
     monkeypatch.setattr(
         admin_problem_routes,

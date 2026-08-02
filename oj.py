@@ -24,7 +24,7 @@ from oj_modules.db_services import (
     init_submission_snapshot_cache,
     is_class_adjust_enabled,
 )
-from oj_modules.auth_helpers import current_user
+from oj_modules.security.auth import current_user
 from oj_modules.routes.submission_routes import submission_bp
 from oj_modules.routes.admin_problem_routes import admin_problem_bp
 from oj_modules.routes.repository_routes import repository_bp, init_repository_index_module
@@ -34,34 +34,46 @@ from oj_modules.routes.ai_routes import ai_bp, init_ai_module
 from oj_modules.routes.class_management_routes import class_management_bp
 from oj_modules.routes.rejudge_routes import rejudge_bp, init_rejudge_module
 from oj_modules.routes.admin_user_routes import admin_user_bp
-from oj_modules.routes.homework_routes import homework_bp, init_homework_module
+from oj_modules.routes.homework_routes import (
+    homework_bp,
+    init_homework_module,
+)
 from oj_modules.routes.auth_routes import auth_bp, init_auth_module
 from oj_modules.routes.editor_language_routes import (
     editor_language_bp,
     init_editor_language_module,
 )
-from oj_modules.routes.problem_core_routes import problem_core_bp, init_problem_core_module
+from oj_modules.routes.problem_core_routes import (
+    init_problem_core_module,
+    problem_core_bp,
+)
+from oj_modules.problems.catalog import invalidate_problem_list_cache_for_class
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.routes.health_routes import create_health_blueprint
-from oj_modules.request_auth import install_global_login_guard
-from oj_modules.request_security import install_same_origin_protection
-from oj_modules.redis_clients import (
+from oj_modules.security.login_guard import install_global_login_guard
+from oj_modules.security.origin_guard import install_same_origin_protection
+from oj_modules.infrastructure.redis import (
     create_binary_redis_client,
     create_blocking_redis_client,
     create_text_redis_client,
 )
-from oj_modules.api import API_BLUEPRINTS
-from oj_modules.tasks import (
+from oj_modules.api.registry import API_BLUEPRINTS
+from oj_modules.tasks.registry import (
+    get_agent_run_snapshot,
     init_agent_progress_cache,
+    build_homework_task_operations,
     register_agent_generate_testdata_task,
     register_repository_index_build_task,
     register_agent_solve_problem_task,
     register_evaluate_submission_task,
+    register_homework_admin_tasks,
     register_promptly_generate_submission_task,
+    register_rejudge_task,
     register_written_homework_task,
     register_ai_detection_tasks,
+    subscribe_agent_run_events,
     register_ranking_evaluate_task,
     register_ranking_elo_match_task,
     register_ranking_elo_initial_burst_task,
@@ -71,14 +83,22 @@ from oj_modules.tasks import (
     register_ranking_agent_judge_paused_probe_task,
     seed_agent_judge_paused_probe,
     init_judge_progress_cache,
+    build_current_judge_snapshot,
+    get_judge_progress_snapshot,
+    subscribe_judge_run_events,
     register_ranking_reverse_judge_task,
     init_reverse_judge_progress_cache,
+    get_reverse_judge_progress_snapshot,
+    subscribe_reverse_judge_events,
     register_ranking_batch_tasks,
     init_batch_progress_cache,
+    get_probe_job,
     register_ranking_bulk_rejudge_task,
     init_bulk_rejudge_progress_cache,
+    get_bulk_rejudge_job,
+    save_bulk_rejudge_job,
 )
-from oj_modules.startup_requeue import (
+from oj_modules.runtime.pending_recovery import (
     requeue_pending_on_startup,
     register_pending_requeue_watchdog_task,
     seed_pending_requeue_watchdog,
@@ -266,6 +286,19 @@ celery.conf.task_acks_late = True
 celery.conf.task_reject_on_worker_lost = True
 evaluate_submission = register_evaluate_submission_task(celery)
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
+rejudge_submission_and_update = register_rejudge_task(
+    celery,
+    rds,
+    evaluate_submission,
+    transcribe_written_homework_to_latex,
+)
+export_codes_with_plagiarism_check, mark_homework_plagiarism = (
+    register_homework_admin_tasks(
+        celery,
+        rds_binary,
+        build_homework_task_operations(rds),
+    )
+)
 promptly_generate_submission = register_promptly_generate_submission_task(celery, evaluate_submission)
 agent_solve_problem = register_agent_solve_problem_task(celery, evaluate_submission)
 agent_generate_testdata = register_agent_generate_testdata_task(celery, evaluate_submission)
@@ -302,10 +335,16 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     reverse_judge_task=evaluate_ranking_reverse_judge,
 )
 
-# 初始化重测模块（依赖 Celery、Redis、程序题评测 + 书面作业转写评分任务）
-init_rejudge_module(celery, rds, evaluate_submission, transcribe_written_homework_to_latex)
-# 初始化作业管理模块（依赖 Celery、Redis）
-init_homework_module(celery, rds, rds_binary)
+# 初始化重测模块（依赖 Redis 与已注册的分派任务）
+init_rejudge_module(rds, rejudge_submission_and_update)
+# 初始化作业管理模块（依赖 Redis 与已注册的导出/查重任务）
+init_homework_module(
+    rds,
+    rds_binary,
+    export_codes_with_plagiarism_check,
+    mark_homework_plagiarism,
+    problem_list_cache_invalidator=invalidate_problem_list_cache_for_class,
+)
 # 初始化题目核心模块（依赖 Celery 任务）
 init_problem_core_module(
     evaluate_submission,
@@ -313,6 +352,8 @@ init_problem_core_module(
     promptly_generate_submission,
     agent_solve_problem,
     agent_generate_testdata,
+    get_agent_run_snapshot,
+    subscribe_agent_run_events,
 )
 # 初始化代码仓库结构化整理模块（依赖 Celery 任务）
 init_repository_index_module(build_repository_index)
@@ -325,6 +366,14 @@ init_ranking_module(
     redis_client=rds,
     batch_probe_task=ranking_batch_probe, batch_run_task=ranking_batch_run,
     bulk_rejudge_task=ranking_bulk_rejudge,
+    judge_progress_reader=get_judge_progress_snapshot,
+    judge_event_subscriber=subscribe_judge_run_events,
+    current_judge_snapshot_builder=build_current_judge_snapshot,
+    reverse_progress_reader=get_reverse_judge_progress_snapshot,
+    reverse_event_subscriber=subscribe_reverse_judge_events,
+    batch_job_reader=get_probe_job,
+    bulk_job_reader=get_bulk_rejudge_job,
+    bulk_job_writer=save_bulk_rejudge_job,
 )
 # 初始化认证模块（登录/发码限流依赖 Redis）
 init_auth_module(rds)

@@ -4,21 +4,21 @@
 from flask import Blueprint, request
 
 from oj_modules.api.helpers import apply_limit, clamp_limit, clamp_page, json_error, json_success, public_user
-from oj_modules.auth_helpers import current_user
-from oj_modules.ranking_agent_judge import (
+from oj_modules.security.auth import current_user
+from oj_modules.ranking.agent_judge.rules import (
     normalize_orchestration_mode as _normalize_aj_orchestration,
     render_snapshot_html as _render_snapshot_html,
 )
-from oj_modules.ranking_agent_judge_db import (
+from oj_modules.ranking.agent_judge.db import (
     build_judge_snapshot,
     list_agent_judge_endpoints,
     list_competition_rules,
     list_quality_gate_endpoints,
 )
-from oj_modules.ranking_reverse_judge_db import (
+from oj_modules.ranking.reverse_judge.db import (
     available_reverse_agent_answer_archive_path,
 )
-from oj_modules.ranking_db import (
+from oj_modules.ranking.db import (
     get_appeal,
     get_appeal_stats,
     get_competition,
@@ -32,26 +32,32 @@ from oj_modules.ranking_db import (
     list_competitions,
     list_user_submissions,
 )
-from oj_modules.routes.ranking_routes import (
-    ALLOWED_TABS,
-    BATCH_DEFAULT_TEMPLATE,
-    BATCH_USERNAME_RE,
-    MATCHES_PER_PAGE,
-    SUBMISSIONS_PER_PAGE,
-    _agent_judge_endpoint_ready,
-    _attachment_media_kind,
-    _competition_scoring_mode,
-    _masked_agent_endpoints,
-    _normalize_answer_format,
-    _page_window,
-    _ranking_submit_block_reason,
-    _render_description,
-    _reverse_quality_gate_ready,
-    _submission_quota_message,
-    build_repo_url,
-    fetch_competition_matches_cached,
+from oj_modules.ranking.artifacts import (
+    attachment_media_kind as _attachment_media_kind,
     resolve_reverse_agent_answer_archive,
     send_reverse_agent_answer_archive,
+)
+from oj_modules.ranking.batch import (
+    BATCH_DEFAULT_TEMPLATE,
+    USERNAME_RE as BATCH_USERNAME_RE,
+    build_repo_url,
+)
+from oj_modules.ranking.matches import fetch_competition_matches_cached
+from oj_modules.ranking.presentation import (
+    ALLOWED_TABS,
+    MATCHES_PER_PAGE,
+    SUBMISSIONS_PER_PAGE,
+    competition_scoring_mode as _competition_scoring_mode,
+    masked_agent_endpoints as _masked_agent_endpoints,
+    normalize_answer_format as _normalize_answer_format,
+    page_window as _page_window,
+    render_description as _render_description,
+    submission_quota_message as _submission_quota_message,
+)
+from oj_modules.ranking.readiness import (
+    agent_judge_endpoint_ready as _agent_judge_endpoint_ready,
+    ranking_submit_block_reason as _ranking_submit_block_reason,
+    reverse_quality_gate_ready as _reverse_quality_gate_ready,
 )
 
 

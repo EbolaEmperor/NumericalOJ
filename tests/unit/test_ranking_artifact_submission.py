@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from flask import Flask
 
-from oj_modules import ranking_db
+from oj_modules.ranking import db as ranking_db
 from oj_modules.routes import ranking_routes
-from oj_modules.tasks import ranking_evaluate_tasks
+from oj_modules.tasks.ranking import evaluate as ranking_evaluate_tasks
 
 
 class _FakeCursor:

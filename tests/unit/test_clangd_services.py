@@ -6,8 +6,9 @@ import threading
 
 import pytest
 
-from oj_modules import clangd_services, language_server_services
-from oj_modules.editor_toolchain import EditorToolchain
+from oj_modules.editor import clangd as clangd_services
+from oj_modules.editor import language_server as language_server_services
+from oj_modules.editor.toolchain import EditorToolchain
 
 
 class FakeClangdService(clangd_services.ClangdService):

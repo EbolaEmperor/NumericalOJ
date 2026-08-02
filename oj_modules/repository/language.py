@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import PurePosixPath
 
-from oj_modules.db_services import get_db_connection
+from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.repository import storage
 from oj_modules.repository import tree
 

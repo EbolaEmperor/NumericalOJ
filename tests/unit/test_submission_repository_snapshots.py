@@ -7,7 +7,7 @@ import os
 import pytest
 
 from oj_modules.repository import storage as repository_storage
-from oj_modules import submission_repository_snapshots as snapshots
+from oj_modules.submissions import repository_snapshots as snapshots
 from oj_modules.tasks import evaluate_tasks
 
 

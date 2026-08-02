@@ -7,7 +7,7 @@ import zipfile
 
 import pytest
 
-from oj_modules.archive_utils import (
+from oj_modules.shared.archive import (
     ArchiveExtractionError,
     ZipExtractionPolicy,
     extract_zip,
@@ -220,7 +220,7 @@ def test_extract_zip_cleanup_policy_also_applies_to_invalid_zip_files(tmp_path):
 
 
 def test_agent_workspace_does_not_copy_a_policy_rejected_zip(monkeypatch, tmp_path):
-    from oj_modules.tasks import ranking_agent_judge_tasks as agent_tasks
+    from oj_modules.tasks.ranking import agent_judge as agent_tasks
 
     archive = tmp_path / "too-many.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -244,7 +244,7 @@ def test_agent_workspace_does_not_copy_a_policy_rejected_zip(monkeypatch, tmp_pa
 
 
 def test_agent_workspace_still_accepts_a_plain_source_file(monkeypatch, tmp_path):
-    from oj_modules.tasks import ranking_agent_judge_tasks as agent_tasks
+    from oj_modules.tasks.ranking import agent_judge as agent_tasks
 
     source = tmp_path / "main.py"
     source.write_text("print('ok')\n", encoding="utf-8")
@@ -266,7 +266,7 @@ def test_agent_workspace_still_accepts_a_plain_source_file(monkeypatch, tmp_path
 
 
 def test_agent_workspace_does_not_copy_a_crc_damaged_zip(monkeypatch, tmp_path):
-    from oj_modules.tasks import ranking_agent_judge_tasks as agent_tasks
+    from oj_modules.tasks.ranking import agent_judge as agent_tasks
 
     archive = tmp_path / "damaged.dat"
     original_payload = b"unique archive payload"

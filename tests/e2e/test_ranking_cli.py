@@ -557,7 +557,7 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     ]
 
     set_quality_gate_stub_recovery_healthy(True)
-    from oj_modules.tasks import ranking_agent_judge_tasks as endpoint_probe_tasks
+    from oj_modules.tasks.ranking import agent_judge as endpoint_probe_tasks
 
     class _DirectCelery:
         tasks = {}

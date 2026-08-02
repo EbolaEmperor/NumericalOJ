@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from flask import Flask, session
 
-from oj_modules.request_auth import install_global_login_guard, safe_local_next
+from oj_modules.security.login_guard import install_global_login_guard, safe_local_next
 from oj_modules.routes import auth_routes
 
 

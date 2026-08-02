@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import json
-
 from flask import Blueprint, request
 
 from oj_modules.ai_detection.task_tracker import TASK_TYPE_LABELS, get_recent_tasks
+from oj_modules.ai_detection.presentation import serialize_detection_result
 from oj_modules.api.helpers import json_error, json_success, public_user
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 from oj_modules.db_services import (
     get_ai_detection_dashboard_summary,
     get_ai_detection_results_for_problem,
@@ -16,7 +15,9 @@ from oj_modules.db_services import (
     get_all_problems,
     get_problem,
 )
-from oj_modules.routes.ai_detection_routes import _strip_problem_title_tags
+from oj_modules.problems.presentation import (
+    strip_problem_title_tags as _strip_problem_title_tags,
+)
 
 
 ai_detection_api_bp = Blueprint("ai_detection_api", __name__, url_prefix="/api/admin/ai-detection")
@@ -29,17 +30,6 @@ def _require_admin():
     if not is_admin(user):
         return None, json_error("无权限", 403)
     return user, None
-
-
-def _decorate_result(row):
-    out = dict(row or {})
-    out["problem_title"] = _strip_problem_title_tags(out.get("problem_title") or "")
-    for src, dst in (("llm_evidence", "_evidence"), ("behavior_detail", "_signals")):
-        try:
-            out[dst] = json.loads(out.get(src) or "[]")
-        except Exception:
-            out[dst] = []
-    return out
 
 
 @ai_detection_api_bp.route("/dashboard", methods=["GET"])
@@ -75,7 +65,13 @@ def problem(problem_id):
     if not problem_row:
         return json_error("题目不存在", 404)
     risk_filter = (request.args.get("risk") or "").strip() or None
-    results = [_decorate_result(r) for r in get_ai_detection_results_for_problem(problem_id, risk_level=risk_filter)]
+    results = [
+        serialize_detection_result(r)
+        for r in get_ai_detection_results_for_problem(
+            problem_id,
+            risk_level=risk_filter,
+        )
+    ]
     return json_success(
         user=public_user(user),
         view="problem",
@@ -91,7 +87,10 @@ def student(username):
     user, error = _require_admin()
     if error is not None:
         return error
-    results = [_decorate_result(r) for r in get_ai_detection_results_for_user(username)]
+    results = [
+        serialize_detection_result(r)
+        for r in get_ai_detection_results_for_user(username)
+    ]
     return json_success(
         user=public_user(user),
         view="student",

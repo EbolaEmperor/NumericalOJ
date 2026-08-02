@@ -42,7 +42,7 @@ def get_user_repository_files_by_names(user_id, filenames, submission_id=None):
         return {}
 
     if submission_id is not None:
-        from oj_modules.submission_repository_snapshots import (
+        from oj_modules.submissions.repository_snapshots import (
             load_submission_repository_files,
         )
         files = load_submission_repository_files(

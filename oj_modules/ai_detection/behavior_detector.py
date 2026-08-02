@@ -10,7 +10,7 @@ Analyzes submission patterns to identify suspicious behavior:
 - Abnormally short time between submissions
 """
 
-from oj_modules.db_services import get_db_connection
+from oj_modules.infrastructure.mysql import get_db_connection
 
 
 def _get_user_submission_history(username, problem_id):

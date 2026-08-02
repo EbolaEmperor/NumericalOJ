@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from flask import Flask
 
-from oj_modules import auth_helpers
-from oj_modules.language_server_services import LanguageServiceBusyError
+from oj_modules.security import auth
+from oj_modules.editor.language_server import LanguageServiceBusyError
 from oj_modules.repository import tree as repository_tree
 from oj_modules.repository.language import RepositorySemanticTarget
 from oj_modules.routes import editor_language_routes
@@ -29,7 +29,7 @@ def _app(monkeypatch, service):
     app.secret_key = "test-only"
     app.register_blueprint(editor_language_routes.editor_language_bp)
     monkeypatch.setattr(
-        auth_helpers,
+        auth,
         "get_user_by_username",
         lambda username: {
             "id": {"alice": 7, "bob": 8}.get(username, 9),

@@ -13,12 +13,15 @@ from datetime import datetime, timedelta
 import numpy as np
 import requests
 
-from oj_modules.ai_utils import _call_qwen_text, _extract_first_json_object_relaxed
-from oj_modules.db_services import get_db_connection
+from oj_modules.ai.client import _call_qwen_text
+from oj_modules.ai.parsing import _extract_first_json_object_relaxed
+from oj_modules.infrastructure.mysql import get_db_connection
+from oj_modules.repository.settings import (
+    DEFAULT_SEARCH_SCORE_THRESHOLD as _DEFAULT_SEARCH_SCORE_THRESHOLD,
+    DEFAULT_SEARCH_TOP_K as _DEFAULT_SEARCH_TOP_K,
+)
 from config import (
     AI_TUTOR_MODEL,
-    AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
-    AGENT_REPOSITORY_KNN_TOP_K,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     QWEN_TEXT_MODEL,
@@ -77,14 +80,6 @@ REPOSITORY_INDEX_TASK_STALE_AFTER_SECONDS = (
     REPOSITORY_INDEX_TASK_HARD_TIME_LIMIT_SECONDS
     + REPOSITORY_INDEX_TASK_STALE_GRACE_SECONDS
 )
-try:
-    _DEFAULT_SEARCH_TOP_K = max(1, int(AGENT_REPOSITORY_KNN_TOP_K))
-except Exception:
-    _DEFAULT_SEARCH_TOP_K = 1
-try:
-    _DEFAULT_SEARCH_SCORE_THRESHOLD = float(AGENT_REPOSITORY_KNN_SCORE_THRESHOLD)
-except Exception:
-    _DEFAULT_SEARCH_SCORE_THRESHOLD = 0.0
 
 _sentence_model_cache = {}
 _tree_sitter_parser_cache = {}

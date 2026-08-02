@@ -11,8 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules import db_services, submission_archive, submission_repository_snapshots
-from oj_modules import written_submission_artifacts as artifacts
+from oj_modules import db_services
+from oj_modules.judging import core as judger_core
+from oj_modules.submissions import archive as submission_archive
+from oj_modules.submissions import repository_snapshots as submission_repository_snapshots
+from oj_modules.submissions import written_artifacts as artifacts
 
 
 class _DatabaseCursor:
@@ -492,7 +495,7 @@ def test_audit_published_submission_records_metadata_without_content_or_path(
 def _prepare_manual_publish(monkeypatch, tmp_path, *, payload=b"manual-upload-secret"):
     upload_root = tmp_path / "uploads"
     run_root = tmp_path / "judger"
-    monkeypatch.setattr(submission_archive.judger_core, "JUDGER_RUN_ROOT", str(run_root))
+    monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", str(run_root))
 
     def build_archive(archive_staging, **_kwargs):
         Path(archive_staging, "metadata.json").write_text("{}", encoding="utf-8")

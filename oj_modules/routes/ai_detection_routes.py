@@ -4,8 +4,6 @@
 Admin routes for AI code detection dashboard.
 """
 
-import json
-import re
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
@@ -16,6 +14,7 @@ from oj_modules.ai_detection.task_tracker import (
     delete_task as tracker_delete_task,
     TASK_TYPE_LABELS,
 )
+from oj_modules.ai_detection.presentation import decode_detection_result_details
 from oj_modules.ai_detection.llm_detector import get_available_models
 from oj_modules.db_services import (
     delete_ai_detection_results_by_task,
@@ -27,6 +26,9 @@ from oj_modules.db_services import (
     get_filtered_submissions_for_detection,
     get_problem,
     get_user_by_username,
+)
+from oj_modules.problems.presentation import (
+    strip_problem_title_tags as _strip_problem_title_tags,
 )
 
 
@@ -58,15 +60,6 @@ def _require_admin():
     if not user or user.get('is_admin') != 1:
         return None, redirect(url_for('auth.login'))
     return user, None
-
-
-def _strip_problem_title_tags(title):
-    if title is None:
-        return title
-    original = str(title).strip()
-    text = re.sub(r'\s*「[^」]{1,32}」\s*', ' ', original)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text if text else original
 
 
 def _parse_filters_from_request():
@@ -206,15 +199,8 @@ def problem_detail(problem_id):
     risk_filter = request.args.get('risk', '').strip() or None
     results = get_ai_detection_results_for_problem(problem_id, risk_level=risk_filter)
 
-    for r in results:
-        try:
-            r['_evidence'] = json.loads(r.get('llm_evidence') or '[]')
-        except Exception:
-            r['_evidence'] = []
-        try:
-            r['_signals'] = json.loads(r.get('behavior_detail') or '[]')
-        except Exception:
-            r['_signals'] = []
+    for result in results:
+        decode_detection_result_details(result)
 
     return render_template(
         'admin/ai_detection.html',
@@ -234,15 +220,8 @@ def student_detail(username):
         return err
 
     results = get_ai_detection_results_for_user(username)
-    for r in results:
-        try:
-            r['_evidence'] = json.loads(r.get('llm_evidence') or '[]')
-        except Exception:
-            r['_evidence'] = []
-        try:
-            r['_signals'] = json.loads(r.get('behavior_detail') or '[]')
-        except Exception:
-            r['_signals'] = []
+    for result in results:
+        decode_detection_result_details(result)
 
     return render_template(
         'admin/ai_detection.html',

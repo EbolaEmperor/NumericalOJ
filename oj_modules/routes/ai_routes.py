@@ -7,7 +7,7 @@ import json
 from flask import Blueprint, jsonify, request
 
 from config import AI_TUTOR_MODEL
-from oj_modules.ai_utils import (
+from oj_modules.ai.code_feedback import (
     generate_ai_code_marks_from_submission_context,
 )
 from oj_modules.db_services import (
@@ -15,14 +15,15 @@ from oj_modules.db_services import (
     get_submission_by_id,
     save_submission_ai_code_marks_json,
 )
+from oj_modules.problems.context import build_problem_detail_context
 from oj_modules.repository.includes import (
     extract_includes_from_code,
     get_user_repository_files_by_names,
 )
-from oj_modules.submission_repository_snapshots import (
+from oj_modules.submissions.repository_snapshots import (
     resolve_submission_repository_user_id,
 )
-from oj_modules.security_utils import rate_limit_hit
+from oj_modules.security.throttling import rate_limit_hit
 
 
 ai_bp = Blueprint('ai', __name__)
@@ -39,7 +40,7 @@ def init_ai_module(redis_client):
     _rds = redis_client
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 
 
 def _load_accessible_problem(user, raw_problem_id):
@@ -47,8 +48,6 @@ def _load_accessible_problem(user, raw_problem_id):
         problem_id = int(raw_problem_id)
     except (TypeError, ValueError):
         return None, None, (jsonify(success=False, message="题目不存在"), 404)
-
-    from oj_modules.routes.problem_core_routes import build_problem_detail_context
 
     context, error_code = build_problem_detail_context(user, problem_id)
     if error_code == "not_found":

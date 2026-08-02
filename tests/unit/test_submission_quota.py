@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from flask import Flask
 
-from oj_modules import db_services, submission_repository_snapshots
+from oj_modules import db_services
+from oj_modules.submissions import repository_snapshots as submission_repository_snapshots
 from oj_modules.routes import problem_core_routes
 
 
@@ -484,7 +485,6 @@ def _install_submit_route_fakes(monkeypatch):
     monkeypatch.setattr(problem_core_routes, "get_problem", lambda _pid: problem)
     monkeypatch.setattr(problem_core_routes, "get_homeworks", lambda _user: [])
     monkeypatch.setattr(problem_core_routes, "can_submit", lambda *_args: True)
-    monkeypatch.setattr(problem_core_routes, "get_remaining_submissions", lambda *_args: 1)
     monkeypatch.setattr(problem_core_routes, "url_for", lambda endpoint, **values: f"/{endpoint}")
     return user, problem
 

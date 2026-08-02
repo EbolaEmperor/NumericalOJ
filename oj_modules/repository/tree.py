@@ -26,7 +26,7 @@ import uuid
 import pymysql
 
 import config
-from oj_modules.db_services import get_db_connection
+from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.repository import storage
 
 

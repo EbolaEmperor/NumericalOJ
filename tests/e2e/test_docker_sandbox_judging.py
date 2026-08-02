@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from oj_modules import judger_core
+from oj_modules.judging import core as judger_core
 from tests.e2e.conftest import (
     create_problem,
     require_docker_judger_image,
@@ -397,7 +397,13 @@ else:
 
         title = f"DockerSandbox {lang_key} {int(time.time()*1000)}"
         problem_id = create_problem(
-            cli, title, lang=sol["lang"], submission_limit=10,
+            cli,
+            title,
+            lang=sol["lang"],
+            # Octave 的首次启动在 x86_64 Colima 中会稳定越过 1 秒；这个
+            # 用例验证沙箱执行正确性，不把宿主模拟器冷启动性能当成判题失败。
+            time_limit_ms=3000 if lang_key == "matlab" else 1000,
+            submission_limit=10,
         )
 
         testdata_zip = write_zip(

@@ -2,7 +2,7 @@
 
 import zipfile
 
-from oj_modules.routes import homework_routes
+from oj_modules.homework import plagiarism as homework_plagiarism
 
 
 def _item(username, code, problem_id=1, submission_id=1):
@@ -18,7 +18,7 @@ def _item(username, code, problem_id=1, submission_id=1):
 
 
 def _fingerprint(label, content):
-    return f"{label}:{homework_routes.hashlib.sha256(content).hexdigest()}"
+    return f"{label}:{homework_plagiarism.hashlib.sha256(content).hexdigest()}"
 
 
 def test_byte_plagiarism_requires_exact_raw_code():
@@ -28,8 +28,8 @@ def test_byte_plagiarism_requires_exact_raw_code():
         _item("u3", "x=1;\n", submission_id=3),
     ]
 
-    components = homework_routes._build_plagiarism_components(data, mode="byte", threshold=1)
-    records = homework_routes._build_plagiarism_record_rows(
+    components = homework_plagiarism._build_plagiarism_components(data, mode="byte", threshold=1)
+    records = homework_plagiarism._build_plagiarism_record_rows(
         components,
         "Ctest",
         "测试班级",
@@ -43,7 +43,7 @@ def test_byte_plagiarism_requires_exact_raw_code():
 
 def test_byte_plagiarism_groups_by_raw_code_hash(monkeypatch):
     seen_hash_inputs = []
-    real_sha256 = homework_routes.hashlib.sha256
+    real_sha256 = homework_plagiarism.hashlib.sha256
 
     def recording_sha256(data):
         seen_hash_inputs.append(data)
@@ -52,8 +52,8 @@ def test_byte_plagiarism_groups_by_raw_code_hash(monkeypatch):
     def fail_similarity(_code1, _code2):
         raise AssertionError("byte-identical mode should not use similarity comparison")
 
-    monkeypatch.setattr(homework_routes.hashlib, "sha256", recording_sha256)
-    monkeypatch.setattr(homework_routes, "calculate_code_similarity", fail_similarity)
+    monkeypatch.setattr(homework_plagiarism.hashlib, "sha256", recording_sha256)
+    monkeypatch.setattr(homework_plagiarism, "calculate_code_similarity", fail_similarity)
 
     data = [
         _item("u1", "x = 1;\n", submission_id=1),
@@ -62,7 +62,7 @@ def test_byte_plagiarism_groups_by_raw_code_hash(monkeypatch):
         _item("u4", "", submission_id=4),
     ]
 
-    components = homework_routes._build_plagiarism_components(data, mode="byte", threshold=1)
+    components = homework_plagiarism._build_plagiarism_components(data, mode="byte", threshold=1)
 
     assert [[item["username"] for item in comp] for comp in components] == [["u1", "u2"]]
     assert seen_hash_inputs == [b"x = 1;\n", b"x = 1;\n"]
@@ -83,10 +83,10 @@ def test_threshold_plagiarism_uses_dsu_transitive_merge(monkeypatch):
     def fake_similarity(code1, code2):
         return scores[frozenset((code1, code2))]
 
-    monkeypatch.setattr(homework_routes, "calculate_code_similarity", fake_similarity)
+    monkeypatch.setattr(homework_plagiarism, "calculate_code_similarity", fake_similarity)
 
-    components = homework_routes._build_plagiarism_components(data, mode="threshold", threshold=0.9)
-    records = homework_routes._build_plagiarism_record_rows(components, "Ctest", "测试班级", "0.90")
+    components = homework_plagiarism._build_plagiarism_components(data, mode="threshold", threshold=0.9)
+    records = homework_plagiarism._build_plagiarism_record_rows(components, "Ctest", "测试班级", "0.90")
 
     assert len(components) == 1
     assert {item["username"] for item in components[0]} == {"u1", "u2", "u3"}
@@ -110,7 +110,7 @@ def test_promptly_plagiarism_compares_prompt_text():
         },
     ]
 
-    components = homework_routes._build_plagiarism_components(data, mode="byte", threshold=1)
+    components = homework_plagiarism._build_plagiarism_components(data, mode="byte", threshold=1)
 
     assert [[item["username"] for item in comp] for comp in components] == [["u1", "u2"]]
 
@@ -135,7 +135,7 @@ def test_tex_similarity_pairs_same_filename_only():
         },
     ]
 
-    components = homework_routes._build_plagiarism_components(data, mode="threshold", threshold=0.99)
+    components = homework_plagiarism._build_plagiarism_components(data, mode="threshold", threshold=0.99)
 
     assert [[item["username"] for item in comp] for comp in components] == [["u1", "u2"]]
 
@@ -163,7 +163,7 @@ def test_byte_plagiarism_supports_multiple_fingerprints_for_elo():
         },
     ]
 
-    components = homework_routes._build_plagiarism_components(data, mode="byte", threshold=1)
+    components = homework_plagiarism._build_plagiarism_components(data, mode="byte", threshold=1)
 
     assert [[item["username"] for item in comp] for comp in components] == [["u1", "u2"]]
 
@@ -179,8 +179,8 @@ def test_agent_judge_zip_content_fingerprint_ignores_entry_order(tmp_path):
         zf.writestr("lib/helper.py", "x = 1\n")
         zf.writestr("main.py", "print(1)\n")
 
-    assert homework_routes._zip_content_sha256_fingerprint(str(zip_a), label="agent-files")
+    assert homework_plagiarism._zip_content_sha256_fingerprint(str(zip_a), label="agent-files")
     assert (
-        homework_routes._zip_content_sha256_fingerprint(str(zip_a), label="agent-files")
-        == homework_routes._zip_content_sha256_fingerprint(str(zip_b), label="agent-files")
+        homework_plagiarism._zip_content_sha256_fingerprint(str(zip_a), label="agent-files")
+        == homework_plagiarism._zip_content_sha256_fingerprint(str(zip_b), label="agent-files")
     )

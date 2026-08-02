@@ -10,7 +10,7 @@ Secondary store: MySQL           — persistent, survives Redis flushes.
 import json
 import time
 
-from oj_modules.redis_clients import create_optional_redis_client
+from oj_modules.infrastructure.redis import create_optional_redis_client
 
 _TASK_KEY_PREFIX = "ai_detection:task:"
 _RECENT_TASKS_KEY = "ai_detection:recent_tasks"  # sorted set: score=submitted_ts

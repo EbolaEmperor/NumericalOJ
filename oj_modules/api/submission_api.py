@@ -13,7 +13,7 @@ from oj_modules.api.helpers import (
     public_problem,
     public_user,
 )
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 from oj_modules.db_services import (
     get_filtered_submissions_paginated,
     get_cached_ai_code_marks_for_submission,
@@ -23,11 +23,13 @@ from oj_modules.db_services import (
     get_submission_summaries_by_user_and_problem_paginated,
     normalize_submission_list_status_filter,
 )
-from oj_modules.routes.submission_routes import (
-    _load_written_submission_latex_and_error,
-    _render_written_markdown_to_html,
-    _strip_problem_title_tags,
-    _summarize_panel_test_points,
+from oj_modules.problems.presentation import (
+    strip_problem_title_tags as _strip_problem_title_tags,
+)
+from oj_modules.submissions.presentation import (
+    load_written_submission_latex_and_error as _load_written_submission_latex_and_error,
+    render_written_markdown_to_html as _render_written_markdown_to_html,
+    summarize_panel_test_points as _summarize_panel_test_points,
 )
 
 

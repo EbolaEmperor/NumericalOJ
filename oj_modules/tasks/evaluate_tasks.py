@@ -5,19 +5,15 @@ import json
 import math
 import os
 import re
-import uuid
 
 import requests
 import pymysql
 
 from celery.exceptions import SoftTimeLimitExceeded
 
-from oj_modules import judger_core as core
+from oj_modules.judging import core
 
-from config import (
-    EVALUATE_SUBMISSION_LOCK_TTL_SECONDS,
-)
-from oj_modules.ai_utils import evaluate_program_output_image_with_ai
+from oj_modules.ai.grading import evaluate_program_output_image_with_ai
 from oj_modules.db_services import (
     get_db_connection,
     insert_user_problem_ac_record_if_absent,
@@ -31,8 +27,8 @@ from oj_modules.db_services import (
     update_submission_evaluation,
     update_submission_status,
 )
-from oj_modules.redis_clients import create_optional_redis_client
-from oj_modules.submission_repository_snapshots import (
+from oj_modules.submissions import locks as submission_locks
+from oj_modules.submissions.repository_snapshots import (
     RepositorySnapshotError,
     load_submission_repository_entries,
     resolve_submission_repository_user_id,
@@ -40,8 +36,6 @@ from oj_modules.submission_repository_snapshots import (
 
 
 EVALUATE_TASK_NAME = "oj.evaluate_submission"
-_LOCK_TTL_SECONDS = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS))
-_lock_rds = None
 _MYSQL_RETRY_ERRORS = (
     pymysql.err.OperationalError,
     pymysql.err.InterfaceError,
@@ -215,49 +209,16 @@ def _finalize_programming_submission(submission, problem_id, test_point_statuses
     update_submission_evaluation(submission['id'], test_point_statuses, score, final_status)
 
 
-def _get_lock_redis_client():
-    global _lock_rds
-    if _lock_rds is not None:
-        return _lock_rds
-
-    _lock_rds = create_optional_redis_client()
-    return _lock_rds
-
-
 def _submission_lock_key(submission_id):
-    return f"submission:{submission_id}:lock"
+    return submission_locks.submission_lock_key(submission_id)
 
 
 def _acquire_submission_lock(submission_id):
-    client = _get_lock_redis_client()
-    if client is None:
-        return None, None, None
-
-    key = _submission_lock_key(submission_id)
-    token = uuid.uuid4().hex
-    try:
-        acquired = client.set(key, token, nx=True, ex=_LOCK_TTL_SECONDS)
-    except Exception:
-        return None, None, None
-
-    if not acquired:
-        return client, key, None
-    return client, key, token
+    return submission_locks.acquire_submission_lock(submission_id)
 
 
 def _release_submission_lock(client, key, token):
-    if client is None or not key or not token:
-        return
-    try:
-        client.eval(
-            "if redis.call('get', KEYS[1]) == ARGV[1] then "
-            "return redis.call('del', KEYS[1]) else return 0 end",
-            1,
-            key,
-            token,
-        )
-    except Exception:
-        pass
+    submission_locks.release_submission_lock(client, key, token)
 
 
 def acquire_submission_lock(submission_id):
@@ -275,24 +236,12 @@ def clear_submission_lock(submission_id):
     评测中的任务，残留的 submission:{id}:lock 必然是上次进程被杀留下的“僵尸锁”。
     清掉它，重新入队的任务才能拿到锁正常重跑（否则会被幂等逻辑跳过）。
     """
-    client = _get_lock_redis_client()
-    if client is None:
-        return
-    try:
-        client.delete(_submission_lock_key(submission_id))
-    except Exception:
-        pass
+    submission_locks.clear_submission_lock(submission_id)
 
 
 def has_submission_lock(submission_id):
     """返回某条提交是否仍持有评测幂等锁。"""
-    client = _get_lock_redis_client()
-    if client is None:
-        return False
-    try:
-        return bool(client.exists(_submission_lock_key(submission_id)))
-    except Exception:
-        return False
+    return submission_locks.has_submission_lock(submission_id)
 
 
 def compare_float_strings(str1, str2, tolerance=1e-5):

@@ -14,8 +14,8 @@ from datetime import timezone
 from flask import Blueprint, current_app, request
 
 from oj_modules.api.helpers import json_error, json_success
-from oj_modules.auth_helpers import current_user
-from oj_modules.forum_identity_services import (
+from oj_modules.security.auth import current_user
+from oj_modules.forum.identity import (
     AnonymousIdentityCooldownError,
     AnonymousIdentityRequiredError,
     AnonymousNameValidationError,
@@ -33,7 +33,7 @@ from oj_modules.forum_identity_services import (
     rotate_anonymous_identity,
     set_anonymous_mode,
 )
-from oj_modules.forum_services import (
+from oj_modules.forum.services import (
     ForumError,
     count_thread_replies,
     create_reply,

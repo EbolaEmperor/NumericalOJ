@@ -210,8 +210,9 @@ def test_ranking_description_reuses_problem_detail_markdown_renderer():
     layout_stylesheet = _read(ROOT / "static" / "app" / "layout.css")
     stylesheet = _read(STATIC / "detail-v2.css")
 
-    assert "from oj_modules.markdown_utils import render_rich_markdown" in route
-    assert "return render_rich_markdown(text)" in route
+    presentation = _read(ROOT / "oj_modules" / "ranking" / "presentation.py")
+    assert "from oj_modules.shared.markdown import render_rich_markdown" in presentation
+    assert "return render_rich_markdown(text)" in presentation
     assert "\nimport markdown\n" not in route
     assert "sanitize_html(markdown.markdown(" not in route
 

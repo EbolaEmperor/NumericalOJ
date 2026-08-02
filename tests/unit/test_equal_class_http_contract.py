@@ -4,7 +4,7 @@ from flask import Flask
 
 from oj_modules.api import admin_api
 from oj_modules.api.helpers import public_user
-from oj_modules.class_membership_services import LastMembershipError
+from oj_modules.classroom.membership import LastMembershipError
 from oj_modules.routes import admin_user_routes, class_management_routes
 
 

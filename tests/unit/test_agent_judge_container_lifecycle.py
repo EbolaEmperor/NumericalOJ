@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-import oj_modules.tasks.ranking_agent_judge_tasks as m
+import oj_modules.tasks.ranking.agent_judge as m
 
 
 class _FakeProc:

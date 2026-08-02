@@ -7,9 +7,16 @@ from oj_modules import db_services
 
 
 ROOT = Path(__file__).resolve().parents[2]
-HOMEWORK_ROUTES = (
-    ROOT / 'oj_modules' / 'routes' / 'homework_routes.py'
-).read_text(encoding='utf-8')
+HOMEWORK_QUERY_SOURCE = '\n'.join(
+    (
+        ROOT / 'oj_modules' / relative_path
+    ).read_text(encoding='utf-8')
+    for relative_path in (
+        'routes/homework_routes.py',
+        'homework/plagiarism.py',
+        'tasks/homework_admin_tasks.py',
+    )
+)
 
 
 class _Cursor:
@@ -45,7 +52,7 @@ def test_homework_student_queries_exclude_administrator_memberships():
     membership_queries = re.findall(
         r'FROM\s+user_class_map\s+m\s+'
         r'JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*m\.user_id',
-        HOMEWORK_ROUTES,
+        HOMEWORK_QUERY_SOURCE,
         flags=re.IGNORECASE,
     )
     student_queries = re.findall(
@@ -53,7 +60,7 @@ def test_homework_student_queries_exclude_administrator_memberships():
         r'JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*m\.user_id\s+'
         r'WHERE\s+m\.class_en\s*=\s*%s\s+'
         r'AND\s+u\.is_admin\s*=\s*0',
-        HOMEWORK_ROUTES,
+        HOMEWORK_QUERY_SOURCE,
         flags=re.IGNORECASE,
     )
 

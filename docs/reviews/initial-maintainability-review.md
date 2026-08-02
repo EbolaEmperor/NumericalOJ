@@ -27,8 +27,8 @@
 - Blueprint、任务模块、数据库层、API 层已经形成基本结构，当前静态依赖图没有明显循环导入。
 - 数据库连接池考虑了 Celery prefork，动态表名有统一校验；密码、Markdown 消毒、限流等横切能力已经集中。
 - Celery 使用 late ack、幂等锁、attempt ID、启动恢复和 watchdog，可靠性设计明显经过真实事故打磨。
-- Docker 判题边界相对独立，[docker_sandbox.py](/Users/bytedance/personal-codes/NumericalOJ/oj_modules/docker_sandbox.py:3) 的职责和安全参数都比较清晰。
-- 测试规模不小：约 1.78 万行测试、621 个测试函数；新的 ranking 代码已经出现同事务 `FOR UPDATE` 控制配额的良好实现，可作为旧代码重构范本，[ranking_db.py](/Users/bytedance/personal-codes/NumericalOJ/oj_modules/ranking_db.py:666)。
+- Docker 判题边界相对独立，现位于 `oj_modules/judging/sandbox.py` 的职责和安全参数都比较清晰。
+- 测试规模不小：约 1.78 万行测试、621 个测试函数；新的 ranking 代码已经出现同事务 `FOR UPDATE` 控制配额的良好实现，可作为旧代码重构范本，现位于 `oj_modules/ranking/db.py`。
 
 ## 最关键的问题
 
@@ -109,7 +109,7 @@ e2e 虽然有环境检查，但它位于 e2e fixture 内，[tests/e2e/conftest.p
 
 ### P1：安全公共组件已经建立，但执行仍靠人工约定
 
-`auth_helpers.py` 已提供 `login_required/admin_required`，[auth_helpers.py](/Users/bytedance/personal-codes/NumericalOJ/oj_modules/auth_helpers.py:41)，但审计到的 176 个路由中使用次数为 0；ranking、AI detection 等仍各自重新实现权限判断。
+认证 helper 已提供 `login_required/admin_required`，现位于 `oj_modules/security/auth.py`；但审计到的 176 个路由中使用次数为 0，ranking、AI detection 等仍各自重新实现权限判断。
 
 全站也没有统一 CSRF token；CSP 因大量内联脚本仍允许 `unsafe-inline/unsafe-eval`。这意味着每个新增端点、模板和脚本都要依赖开发者记得处理安全细节，长期一定会漂移。
 

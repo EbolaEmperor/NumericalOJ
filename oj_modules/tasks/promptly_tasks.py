@@ -5,7 +5,7 @@
 
 from celery.exceptions import SoftTimeLimitExceeded
 
-from oj_modules.ai_utils import generate_promptly_code, review_promptly_student_prompt
+from oj_modules.ai.promptly import generate_promptly_code, review_promptly_student_prompt
 from oj_modules.db_services import (
     get_problem,
     get_submission_by_id,

@@ -7,7 +7,15 @@ import subprocess
 import pytest
 
 from deploy import export_editor_headers, prepare_editor_toolchain
-from oj_modules import editor_toolchain
+from oj_modules.editor import toolchain as editor_toolchain
+from oj_modules.project_paths import PROJECT_ROOT
+
+
+def test_default_toolchain_path_uses_stable_project_root():
+    assert editor_toolchain.PROJECT_ROOT == PROJECT_ROOT
+    assert editor_toolchain.DEFAULT_CURRENT_TOOLCHAIN == (
+        PROJECT_ROOT / ".deploy" / "current-editor-toolchain"
+    )
 
 
 def _populate_export(root: Path) -> None:

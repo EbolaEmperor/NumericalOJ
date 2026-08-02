@@ -2,7 +2,7 @@
 """agent_judge 纯逻辑单测：DAG 校验、拓扑序、effective/score 裁决、result 行解析。"""
 import pytest
 
-from oj_modules import ranking_agent_judge as aj
+from oj_modules.ranking.agent_judge import rules as aj
 
 
 def _rules(*specs):

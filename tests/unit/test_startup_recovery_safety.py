@@ -5,8 +5,11 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from oj_modules import startup_requeue
-from oj_modules.tasks import ranking_agent_judge_tasks, ranking_elo_tasks
+from oj_modules.runtime import pending_recovery as startup_requeue
+from oj_modules.tasks.ranking import (
+    agent_judge as ranking_agent_judge_tasks,
+    elo as ranking_elo_tasks,
+)
 from scripts import recover_pending_tasks
 
 

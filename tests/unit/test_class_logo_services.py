@@ -1,4 +1,4 @@
-from oj_modules import class_logo_services
+from oj_modules.classroom import logos as class_logo_services
 
 
 class _Cursor:

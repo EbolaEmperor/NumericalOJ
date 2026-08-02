@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """打榜赛批量重测任务：必须在原提交记录上重测，不创建新提交。"""
 
-import oj_modules.tasks.ranking_bulk_rejudge_tasks as m
+import oj_modules.tasks.ranking.bulk_rejudge as m
 
 
 class _FakeCelery:

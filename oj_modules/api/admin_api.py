@@ -4,9 +4,9 @@
 from flask import Blueprint, request
 
 from oj_modules.api.helpers import clamp_page, json_error, json_success, page_numbers, public_user
-from oj_modules.auth_helpers import current_user, is_admin
-from oj_modules.db_services import get_all_classes, get_db_connection
-from oj_modules.routes.problem_core_routes import get_agent_runs_paginated
+from oj_modules.security.auth import current_user, is_admin
+from oj_modules.db_services import get_agent_runs_paginated, get_all_classes, get_db_connection
+from oj_modules.problems.agent_runs import decorate_agent_run_summaries
 
 
 admin_api_bp = Blueprint("admin_api", __name__, url_prefix="/api/admin")
@@ -138,14 +138,7 @@ def agent_tasks():
     page = clamp_page(request.args.get("page", 1))
     per_page = 20
     runs, total_pages = get_agent_runs_paginated(page=page, per_page=per_page)
-    for run in runs:
-        run["display_problem_title"] = (
-            str(run.get("problem_title") or "").strip()
-            or f"Problem {run.get('problem_id') or '-'}"
-        )
-        run["display_status"] = str(run.get("status") or "Pending")
-        run["display_rounds"] = f"{int(run.get('rounds_run') or 0)}"
-        run["display_best_score"] = int(run.get("best_score") or 0)
+    decorate_agent_run_summaries(runs)
 
     return json_success(
         user=public_user(admin),

@@ -8,8 +8,6 @@ import tempfile
 import zipfile
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
-from config import AI_TUTOR_MODEL, QWEN_CODER_MODEL, QWEN_OMNI_MODEL, QWEN_TEXT_MODEL
-from oj_modules.ai_utils import DEFAULT_WRITTEN_GRADING_RULES_TEXT
 
 from oj_modules.db_services import (
     create_problem,
@@ -22,43 +20,18 @@ from oj_modules.db_services import (
     safe_table_name,
     update_problem,
 )
-from oj_modules.testdata_services import TestdataValidationError, import_testdata_zip
+from oj_modules.problems.grading import (
+    DEFAULT_PROGRAMMING_GRADING_MODEL as _DEFAULT_PROGRAMMING_GRADING_MODEL,
+    DEFAULT_WRITTEN_GRADING_MODEL as _DEFAULT_WRITTEN_GRADING_MODEL,
+    DEFAULT_WRITTEN_GRADING_PROMPT as _DEFAULT_WRITTEN_GRADING_PROMPT,
+    PROGRAMMING_GRADING_MODEL_OPTIONS as _PROGRAMMING_GRADING_MODEL_OPTIONS,
+    WRITTEN_GRADING_MODEL_OPTIONS as _WRITTEN_GRADING_MODEL_OPTIONS,
+)
+from oj_modules.problems.testdata import TestdataValidationError, import_testdata_zip
 
 
 admin_problem_bp = Blueprint('admin_problem', __name__)
 ALLOWED_EXTENSIONS = {'zip'}
-_DEFAULT_WRITTEN_GRADING_MODEL = (
-    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
-    if str(QWEN_TEXT_MODEL or "").strip()
-    else f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking"
-)
-_WRITTEN_GRADING_MODEL_OPTIONS = [
-    item for item in dict.fromkeys([
-        f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking" if str(QWEN_TEXT_MODEL or "").strip() else "",
-        str(QWEN_TEXT_MODEL or "").strip().lower(),
-        f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking" if str(AI_TUTOR_MODEL or "").strip() else "",
-        str(AI_TUTOR_MODEL or "").strip().lower(),
-        "mimo",  # MIMO（xiaomimimo OpenAI 兼容端点）
-    ])
-    if item
-]
-if _DEFAULT_WRITTEN_GRADING_MODEL and _DEFAULT_WRITTEN_GRADING_MODEL not in _WRITTEN_GRADING_MODEL_OPTIONS:
-    _WRITTEN_GRADING_MODEL_OPTIONS.insert(0, _DEFAULT_WRITTEN_GRADING_MODEL)
-_DEFAULT_WRITTEN_GRADING_PROMPT = DEFAULT_WRITTEN_GRADING_RULES_TEXT
-_DEFAULT_PROGRAMMING_GRADING_MODEL = (
-    str(QWEN_OMNI_MODEL or '').strip().lower()
-    or str(QWEN_TEXT_MODEL or '').strip().lower()
-)
-_PROGRAMMING_GRADING_MODEL_OPTIONS = [
-    item for item in dict.fromkeys([
-        str(QWEN_CODER_MODEL or '').strip().lower(),
-        str(QWEN_OMNI_MODEL or '').strip().lower(),
-        str(QWEN_TEXT_MODEL or '').strip().lower(),
-    ])
-    if item
-]
-if _DEFAULT_PROGRAMMING_GRADING_MODEL and _DEFAULT_PROGRAMMING_GRADING_MODEL not in _PROGRAMMING_GRADING_MODEL_OPTIONS:
-    _PROGRAMMING_GRADING_MODEL_OPTIONS.insert(0, _DEFAULT_PROGRAMMING_GRADING_MODEL)
 
 
 def _wants_json_response():
@@ -77,7 +50,7 @@ def _json_or_problem_redirect(message, status=400, *, problem_id=None):
     return redirect(url_for('problem_core.problem_list'))
 
 
-from oj_modules.auth_helpers import current_user, is_admin
+from oj_modules.security.auth import current_user, is_admin
 
 
 def allowed_file(filename):

@@ -3,7 +3,7 @@
 
 import os
 
-from oj_modules import docker_sandbox
+from oj_modules.judging import sandbox as docker_sandbox
 from oj_modules.tasks import written_homework_tasks
 
 

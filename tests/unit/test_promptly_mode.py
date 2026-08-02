@@ -23,7 +23,7 @@ def _promptly_review_config():
 
 
 def test_parse_promptly_review_config_json():
-    from oj_modules.promptly_guard import parse_promptly_review_config
+    from oj_modules.problems.promptly import parse_promptly_review_config
 
     config = parse_promptly_review_config({"programming_grading_prompt": _promptly_review_config()})
 
@@ -34,7 +34,7 @@ def test_parse_promptly_review_config_json():
 
 
 def test_parse_promptly_review_config_plain_text_as_brief():
-    from oj_modules.promptly_guard import parse_promptly_review_config
+    from oj_modules.problems.promptly import parse_promptly_review_config
 
     config = parse_promptly_review_config({"programming_grading_prompt": "Only a brief."})
 
@@ -130,7 +130,7 @@ def test_admin_cli_edit_preserves_unspecified_promptly_fields():
 
 
 def test_review_promptly_student_prompt_accepts_nice(monkeypatch):
-    from oj_modules import ai_utils
+    from oj_modules.ai import promptly as promptly_ai
 
     captured = {}
 
@@ -139,9 +139,9 @@ def test_review_promptly_student_prompt_accepts_nice(monkeypatch):
         captured["system_prompt"] = kwargs.get("system_prompt")
         return '{"nice": true}'
 
-    monkeypatch.setattr(ai_utils, "_call_qwen_text", fake_call_qwen_text)
+    monkeypatch.setattr(promptly_ai, "_call_qwen_text", fake_call_qwen_text)
 
-    nice, reply = ai_utils.review_promptly_student_prompt(
+    nice, reply = promptly_ai.review_promptly_student_prompt(
         problem={"programming_grading_prompt": _promptly_review_config()},
         student_prompt="用两个单调队列维护最大最小值。",
         model_spec="test-model",
@@ -156,14 +156,14 @@ def test_review_promptly_student_prompt_accepts_nice(monkeypatch):
 
 
 def test_review_promptly_student_prompt_rejects_with_reply(monkeypatch):
-    from oj_modules import ai_utils
+    from oj_modules.ai import promptly as promptly_ai
 
     def fake_call_qwen_text(prompt_text, **kwargs):
         return '{"nice": false, "reply": "请说明具体使用的数据结构和更新规则。"}'
 
-    monkeypatch.setattr(ai_utils, "_call_qwen_text", fake_call_qwen_text)
+    monkeypatch.setattr(promptly_ai, "_call_qwen_text", fake_call_qwen_text)
 
-    nice, reply = ai_utils.review_promptly_student_prompt(
+    nice, reply = promptly_ai.review_promptly_student_prompt(
         problem={"programming_grading_prompt": _promptly_review_config()},
         student_prompt="帮我写 O(n) 算法。",
         model_spec="test-model",
@@ -174,12 +174,12 @@ def test_review_promptly_student_prompt_rejects_with_reply(monkeypatch):
 
 
 def test_review_promptly_student_prompt_fake_env(monkeypatch):
-    from oj_modules import ai_utils
+    from oj_modules.ai import promptly as promptly_ai
 
     monkeypatch.setenv("NUMOJ_FAKE_PROMPTLY_REVIEW_REQUIRED_TERMS", '["monotonic deque", "expired index"]')
     monkeypatch.setenv("NUMOJ_FAKE_PROMPTLY_REVIEW_REPLY", "Please explain the required algorithm.")
 
-    nice, reply = ai_utils.review_promptly_student_prompt(
+    nice, reply = promptly_ai.review_promptly_student_prompt(
         problem={"programming_grading_prompt": _promptly_review_config()},
         student_prompt="Use a monotonic deque and remove each expired index.",
         model_spec="",
@@ -187,7 +187,7 @@ def test_review_promptly_student_prompt_fake_env(monkeypatch):
     assert nice is True
     assert reply == ""
 
-    nice, reply = ai_utils.review_promptly_student_prompt(
+    nice, reply = promptly_ai.review_promptly_student_prompt(
         problem={"programming_grading_prompt": _promptly_review_config()},
         student_prompt="Please write an O(n) algorithm.",
         model_spec="",
@@ -478,7 +478,7 @@ def test_promptly_task_keeps_pending_submission_when_evaluation_enqueue_fails(mo
 
 
 def test_promptly_generation_uses_full_problem_after_review(monkeypatch):
-    from oj_modules import ai_utils
+    from oj_modules.ai import promptly as promptly_ai
 
     captured = {}
 
@@ -488,9 +488,9 @@ def test_promptly_generation_uses_full_problem_after_review(monkeypatch):
         return "int main() { return 0; }"
 
     monkeypatch.delenv("NUMOJ_FAKE_PROMPTLY_CODE", raising=False)
-    monkeypatch.setattr(ai_utils, "_call_qwen_text", fake_call_qwen_text)
+    monkeypatch.setattr(promptly_ai, "_call_qwen_text", fake_call_qwen_text)
 
-    code = ai_utils.generate_promptly_code(
+    code = promptly_ai.generate_promptly_code(
         problem={
             "title": "VISIBLE TITLE",
             "content": "VISIBLE PROBLEM CONTENT",

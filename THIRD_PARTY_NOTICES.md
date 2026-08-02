@@ -3,7 +3,7 @@
 ## dgraham/identicon
 
 The black-and-white class avatar generator in
-`oj_modules/class_logo_services.py` adapts the symmetric 5×5 grid algorithm
+`oj_modules/classroom/logos.py` adapts the symmetric 5×5 grid algorithm
 from [dgraham/identicon](https://github.com/dgraham/identicon). NumericalOJ
 uses a monochrome palette instead of the original hash-derived HSL color.
 
