@@ -802,12 +802,12 @@ def test_pi_reverse_agent_completes_with_real_deepseek_v4_flash(
     except (OSError, subprocess.SubprocessError):
         pytest.skip(f"本地不存在 Agent Judge 镜像 {image}")
 
-    api_key = str(os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    api_key = str(os.environ.get("NUMOJ_PI_LIVE_API_KEY") or "").strip()
     if not api_key:
-        pytest.skip("本地 .env 未提供 DEEPSEEK_API_KEY")
+        pytest.skip("未通过 NUMOJ_PI_LIVE_API_KEY 提供真实测试密钥")
     # Key 只保存在此测试的局部变量中；阻止 Flask/Celery、Docker 和 Agent 子进程
     # 从环境继承真实凭证。_run_agent 只把它交给宿主的一次性转发代理。
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("NUMOJ_PI_LIVE_API_KEY", "")
     monkeypatch.setenv("API_KEY", "")
 
     expected_answer = f"NUMOJ_PI_LIVE_OK_{uuid.uuid4().hex}"

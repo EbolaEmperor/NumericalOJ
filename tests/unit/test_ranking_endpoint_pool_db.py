@@ -198,7 +198,7 @@ def test_save_primary_pool_scopes_key_inheritance_delete_and_update(monkeypatch)
     assert 'context_window_tokens = %s' in update_sql
     assert 'max_output_tokens = %s' in update_sql
     assert 'thinking_compatibility = %s' in update_sql
-    assert update_params[4:7] == (
+    assert update_params[5:8] == (
         endpoint_db.DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
         endpoint_db.DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
         1,
@@ -218,6 +218,7 @@ def test_save_primary_configuration_rolls_back_settings_when_endpoint_invalid(
             17,
             [{
                 'harness': 'pi',
+                'protocol': 'openai',
                 'base_url': 'https://primary.example/v1',
                 'api_key': 'secret',
                 'model': 'model',
@@ -247,6 +248,7 @@ def test_save_primary_configuration_commits_endpoints_and_settings_together(
         17,
         [{
             'harness': 'pi',
+            'protocol': 'anthropic',
             'base_url': 'https://primary.example/v1',
             'api_key': 'secret',
             'model': 'model',
@@ -257,6 +259,7 @@ def test_save_primary_configuration_commits_endpoints_and_settings_together(
     )
 
     assert saved[0]['harness'] == 'pi'
+    assert saved[0]['protocol'] == 'anthropic'
     settings_sql, settings_params = next(
         (sql, params)
         for sql, params in cursor.calls
@@ -291,7 +294,7 @@ def test_save_quality_gate_pool_scopes_delete_and_insert(monkeypatch):
     assert delete_params == (17, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)
     assert '(competition_id, pool_kind,' in insert_sql
     assert insert_params[:2] == (17, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)
-    assert insert_params[6:9] == (
+    assert insert_params[7:10] == (
         endpoint_db.DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS,
         endpoint_db.DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
         1,
@@ -373,6 +376,7 @@ def test_endpoint_pool_rejects_context_above_global_harness_contract(harness):
             endpoint_db.ENDPOINT_POOL_PRIMARY,
             [{
                 'harness': harness,
+                **({'protocol': 'openai'} if harness == 'pi' else {}),
                 'base_url': 'https://model.example/v1',
                 'api_key': 'secret',
                 'model': 'model',
@@ -439,7 +443,7 @@ def test_quality_gate_configuration_and_pool_share_one_transaction(monkeypatch):
         (sql, params) for sql, params in cursor.calls
         if 'UPDATE ranking_agent_judge_endpoints' in sql
     )
-    assert endpoint_update[1][2] == 'quality_gate-key'
+    assert endpoint_update[1][3] == 'quality_gate-key'
     config_update = next(
         (sql, params) for sql, params in cursor.calls
         if 'UPDATE ranking_competitions SET' in sql
@@ -500,11 +504,245 @@ def test_pi_endpoint_requires_explicit_model():
             endpoint_db.ENDPOINT_POOL_PRIMARY,
             [{
                 'harness': 'pi',
+                'protocol': 'openai',
                 'base_url': 'https://pi.example/v1',
                 'api_key': 'secret',
             }],
             [],
         )
+
+
+def test_new_pi_endpoint_requires_explicit_protocol():
+    with pytest.raises(ValueError, match='必须明确选择'):
+        endpoint_db._normalize_endpoint_items(
+            endpoint_db.ENDPOINT_POOL_PRIMARY,
+            [{
+                'harness': 'pi',
+                'base_url': 'https://pi.example/v1',
+                'api_key': 'secret',
+                'model': 'mimo-v2.5-pro',
+            }],
+            [],
+        )
+
+
+@pytest.mark.parametrize(
+    'harness, expected',
+    [
+        ('claude_code', ('anthropic',)),
+        ('codex', ('openai',)),
+        ('opencode', ('openai',)),
+        ('pi', ('openai', 'anthropic')),
+    ],
+)
+def test_harness_protocol_matrix(harness, expected):
+    assert endpoint_db.allowed_agent_endpoint_protocols(harness) == expected
+
+
+@pytest.mark.parametrize(
+    'harness, expected',
+    [
+        ('claude_code', 'anthropic'),
+        ('codex', 'openai'),
+        ('opencode', 'openai'),
+        ('pi', 'openai'),
+    ],
+)
+def test_legacy_null_protocol_inference(harness, expected):
+    assert endpoint_db.infer_agent_endpoint_protocol(harness, None) == expected
+
+
+def test_editing_legacy_endpoint_preserves_null_protocol():
+    existing = endpoint_db._endpoint_row({
+        **_endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY),
+        'harness': 'pi',
+        'protocol': None,
+    })
+    normalized = endpoint_db._normalize_endpoint_items(
+        endpoint_db.ENDPOINT_POOL_PRIMARY,
+        [{
+            'id': 7,
+            'harness': 'pi',
+            'base_url': 'https://primary.example/v1',
+            'api_key': '',
+            'model': 'legacy-model',
+        }],
+        [existing],
+    )
+
+    assert normalized[0]['protocol'] is None
+    assert normalized[0]['effective_protocol'] == 'openai'
+
+
+def test_existing_explicit_protocol_cannot_be_reused_by_incompatible_harness():
+    existing = endpoint_db._endpoint_row({
+        **_endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY),
+        'harness': 'pi',
+        'protocol': 'anthropic',
+    })
+    with pytest.raises(ValueError, match='codex 不支持 anthropic'):
+        endpoint_db._normalize_endpoint_items(
+            endpoint_db.ENDPOINT_POOL_PRIMARY,
+            [{
+                'id': 7,
+                'harness': 'codex',
+                'base_url': 'https://primary.example/v1',
+                'api_key': '',
+                'model': 'model',
+            }],
+            [existing],
+        )
+
+
+def test_global_endpoint_copy_uses_server_secret_and_protocol(monkeypatch):
+    monkeypatch.setattr(
+        endpoint_db,
+        '_get_global_endpoint_for_copy',
+        lambda endpoint_id: {
+            'id': endpoint_id,
+            'name': '全局 Anthropic',
+            'category': 'text',
+            'protocol': 'anthropic',
+            'base_url': 'https://global.example/anthropic',
+            'api_key': 'server-only-secret',
+            'model': 'mimo-v2.5-pro',
+            'thinking_enabled': True,
+            'thinking_format': 'thinking_type',
+        },
+    )
+
+    normalized = endpoint_db._normalize_endpoint_items(
+        endpoint_db.ENDPOINT_POOL_PRIMARY,
+        [{
+            'harness': 'pi',
+            'global_endpoint_id': 23,
+            'concurrency_limit': 2,
+        }],
+        [],
+    )
+
+    assert normalized[0]['protocol'] == 'anthropic'
+    assert normalized[0]['base_url'] == 'https://global.example/anthropic'
+    assert normalized[0]['api_key'] == 'server-only-secret'
+    assert normalized[0]['model'] == 'mimo-v2.5-pro'
+    assert normalized[0]['thinking_compatibility'] is True
+    assert normalized[0]['thinking_format'] == 'thinking_type'
+    assert 'global_endpoint_id' not in normalized[0]
+
+
+def test_editing_copied_endpoint_preserves_frozen_thinking_format(monkeypatch):
+    def should_not_read_global(_endpoint_id):
+        raise AssertionError('编辑独立副本不应重新读取全局端点')
+
+    monkeypatch.setattr(
+        endpoint_db, '_get_global_endpoint_for_copy', should_not_read_global,
+    )
+    existing = endpoint_db._endpoint_row({
+        **_endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY),
+        'harness': 'pi',
+        'protocol': 'openai',
+        'thinking_compatibility': 1,
+        'thinking_format': 'enable_thinking',
+    })
+
+    normalized = endpoint_db._normalize_endpoint_items(
+        endpoint_db.ENDPOINT_POOL_PRIMARY,
+        [{
+            'id': 7,
+            'harness': 'pi',
+            'protocol': 'openai',
+            'base_url': 'https://independent.example/v1',
+            'api_key': '',
+            'model': 'independent-model',
+        }],
+        [existing],
+    )
+
+    assert normalized[0]['thinking_format'] == 'enable_thinking'
+
+
+def test_editing_copied_endpoint_rejects_protocol_incompatible_frozen_thinking():
+    existing = endpoint_db._endpoint_row({
+        **_endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY),
+        'harness': 'pi',
+        'protocol': 'openai',
+        'thinking_compatibility': 1,
+        'thinking_format': 'enable_thinking',
+    })
+
+    with pytest.raises(ValueError, match='Anthropic.*enable_thinking'):
+        endpoint_db._normalize_endpoint_items(
+            endpoint_db.ENDPOINT_POOL_PRIMARY,
+            [{
+                'id': 7,
+                'harness': 'claude_code',
+                'protocol': 'anthropic',
+                'base_url': 'https://independent.example/anthropic',
+                'api_key': '',
+                'model': 'independent-model',
+            }],
+            [existing],
+        )
+
+
+def test_legacy_endpoint_row_keeps_null_thinking_format():
+    endpoint = endpoint_db._endpoint_row({
+        **_endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY),
+        'thinking_format': None,
+    })
+
+    assert endpoint['thinking_format'] is None
+
+
+def test_global_endpoint_copy_rejects_incompatible_harness(monkeypatch):
+    monkeypatch.setattr(
+        endpoint_db,
+        '_get_global_endpoint_for_copy',
+        lambda _endpoint_id: {
+            'id': 23,
+            'category': 'text',
+            'protocol': 'anthropic',
+            'base_url': 'https://global.example/anthropic',
+            'api_key': 'secret',
+            'model': 'model',
+        },
+    )
+
+    with pytest.raises(ValueError, match='codex 不支持'):
+        endpoint_db._normalize_endpoint_items(
+            endpoint_db.ENDPOINT_POOL_PRIMARY,
+            [{'harness': 'codex', 'global_endpoint_id': 23}],
+            [],
+        )
+
+
+def test_global_endpoint_candidates_filter_protocol_category_and_secrets():
+    endpoints = [
+        {
+            'id': 1, 'name': 'Anthropic Text', 'category': 'text',
+            'protocol': 'anthropic', 'base_url': 'https://a.example',
+            'api_key': 'must-not-leak', 'model': 'a',
+        },
+        {
+            'id': 2, 'name': 'OpenAI Omni', 'category': 'omni',
+            'protocol': 'openai', 'base_url': 'https://o.example',
+            'api_key': 'must-not-leak', 'model': 'o',
+        },
+        {
+            'id': 3, 'name': 'OpenAI Vision', 'category': 'vision',
+            'protocol': 'openai', 'base_url': 'https://v.example',
+            'api_key': 'must-not-leak', 'model': 'v',
+        },
+    ]
+
+    pi = endpoint_db.list_global_endpoints_for_agent_harness('pi', endpoints=endpoints)
+    codex = endpoint_db.list_global_endpoints_for_agent_harness('codex', endpoints=endpoints)
+    opencode = endpoint_db.list_global_endpoints_for_agent_harness('opencode', endpoints=endpoints)
+
+    assert [item['id'] for item in pi] == [1, 2]
+    assert [item['id'] for item in codex] == [2]
+    assert opencode == []
+    assert all('api_key' not in item for item in pi + codex)
 
 
 @pytest.mark.parametrize("value", [None, "", "unknown-agent"])
@@ -643,12 +881,14 @@ class _CopyCursor(_FakeCursor):
             self._current_rows = [{
                 'pool_kind': 'quality_gate',
                 'harness': 'codex',
+                'protocol': 'openai',
                 'base_url': 'https://quality.example/v1',
                 'api_key': 'quality-secret',
                 'model': 'gpt-test',
                 'context_window_tokens': 524288,
                 'max_output_tokens': 131072,
                 'thinking_compatibility': 0,
+                'thinking_format': 'none',
                 'concurrency_limit': 2,
                 'enabled': 1,
                 'status': 'enabled',
@@ -687,7 +927,8 @@ def test_copy_competition_preserves_quality_config_and_endpoint_pool(monkeypatch
     endpoint_sql, endpoint_params = endpoint_insert
     assert '(competition_id, pool_kind,' in endpoint_sql
     assert endpoint_params[:2] == (101, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)
-    assert endpoint_params[6:9] == (524288, 131072, 0)
+    assert endpoint_params[3] == 'openai'
+    assert endpoint_params[7:11] == (524288, 131072, 0, 'none')
     assert conn.committed is True
 
 

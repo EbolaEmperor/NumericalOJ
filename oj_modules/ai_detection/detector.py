@@ -7,6 +7,7 @@ Combines LLM detection and behavioral analysis into a final risk score.
 """
 
 import json
+import traceback
 
 from oj_modules.ai_detection.llm_detector import detect_with_llm
 from oj_modules.ai_detection.behavior_detector import detect_behavior
@@ -29,14 +30,22 @@ def _compute_risk_level(score):
     return "low"
 
 
-def run_detection(submission, problem, model_id="qwen", task_id=None):
+def run_detection(
+    submission,
+    problem,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+    task_id=None,
+):
     """
     Run AI detection on a single submission.
 
     Args:
         submission: dict with keys id, username, problem_id, code, status, score, created_at
         problem: dict with keys id, title, content, lang
-        model_id: LLM model to use ("qwen" or "matlab_ai_detect")
+        endpoint: 任务开始时解析并固定的端点快照
+        endpoint_id: 仅供同步调用；任务代码应优先传 endpoint 快照
         task_id: Celery task ID — stored in the result row so the task's records
                  can be deleted cleanly without touching other tasks' results.
 
@@ -68,7 +77,13 @@ def run_detection(submission, problem, model_id="qwen", task_id=None):
 
     # --- LLM Detection ---
     # Let LLMDetectionFailed propagate — caller should not upsert a 0.0 record.
-    llm_result = detect_with_llm(code, problem_content, model_id=model_id)
+    llm_result = detect_with_llm(
+        code,
+        problem_content,
+        language=problem.get("lang") or "未注明",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
 
     if llm_result:
         result["llm_score"] = round(llm_result["score"], 4)

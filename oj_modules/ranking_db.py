@@ -445,12 +445,14 @@ def get_ranking_navigation_state(competition_id, username=None):
                                     CAST(e.id AS CHAR),
                                     COALESCE(e.pool_kind, ''),
                                     COALESCE(e.harness, ''),
+                                    COALESCE(e.protocol, ''),
                                     COALESCE(e.base_url, ''),
                                     COALESCE(e.api_key, ''),
                                     COALESCE(e.model, ''),
                                     COALESCE(CAST(e.context_window_tokens AS CHAR), ''),
                                     COALESCE(CAST(e.max_output_tokens AS CHAR), ''),
                                     COALESCE(CAST(e.thinking_compatibility AS CHAR), ''),
+                                    COALESCE(e.thinking_format, ''),
                                     COALESCE(CAST(e.concurrency_limit AS CHAR), ''),
                                     COALESCE(CAST(e.enabled AS CHAR), ''),
                                     COALESCE(e.status, ''),
@@ -466,12 +468,14 @@ def get_ranking_navigation_state(competition_id, username=None):
                                     CAST(e.id AS CHAR),
                                     COALESCE(e.pool_kind, ''),
                                     COALESCE(e.harness, ''),
+                                    COALESCE(e.protocol, ''),
                                     COALESCE(e.base_url, ''),
                                     COALESCE(e.api_key, ''),
                                     COALESCE(e.model, ''),
                                     COALESCE(CAST(e.context_window_tokens AS CHAR), ''),
                                     COALESCE(CAST(e.max_output_tokens AS CHAR), ''),
                                     COALESCE(CAST(e.thinking_compatibility AS CHAR), ''),
+                                    COALESCE(e.thinking_format, ''),
                                     COALESCE(CAST(e.concurrency_limit AS CHAR), ''),
                                     COALESCE(CAST(e.enabled AS CHAR), ''),
                                     COALESCE(e.status, ''),
@@ -618,8 +622,9 @@ def copy_competition(src_id, *, created_by=None):
             )
             files = cursor.fetchall() or []
             cursor.execute(
-                "SELECT pool_kind, harness, base_url, api_key, model, context_window_tokens, "
-                "max_output_tokens, thinking_compatibility, concurrency_limit, enabled, status, ordering "
+                "SELECT pool_kind, harness, protocol, base_url, api_key, model, context_window_tokens, "
+                "max_output_tokens, thinking_compatibility, thinking_format, "
+                "concurrency_limit, enabled, status, ordering "
                 "FROM ranking_agent_judge_endpoints WHERE competition_id = %s ORDER BY ordering, id",
                 (int(src_id),),
             )
@@ -688,15 +693,17 @@ def copy_competition(src_id, *, created_by=None):
                 )
                 cursor.execute(
                     "INSERT INTO ranking_agent_judge_endpoints "
-                    "(competition_id, pool_kind, harness, base_url, api_key, model, "
-                    "context_window_tokens, max_output_tokens, thinking_compatibility, "
+                    "(competition_id, pool_kind, harness, protocol, base_url, api_key, model, "
+                    "context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format, "
                     "concurrency_limit, enabled, status, ordering) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (new_id, e.get('pool_kind') or 'primary',
-                     e.get('harness') or 'claude_code', e['base_url'], e['api_key'], e['model'],
+                     e.get('harness') or 'claude_code', e.get('protocol'),
+                     e['base_url'], e['api_key'], e['model'],
                      int(e.get('context_window_tokens') or 1_000_000),
                      int(e.get('max_output_tokens') or 384_000),
                      1 if e.get('thinking_compatibility', True) else 0,
+                     e.get('thinking_format'),
                      e['concurrency_limit'], 1 if status == 'enabled' else 0, status, e['ordering']),
                 )
         conn.commit()

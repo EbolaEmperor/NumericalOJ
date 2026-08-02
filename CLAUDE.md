@@ -57,12 +57,12 @@ celery -A oj.celery worker -Q judge -c 16
 
 仓库尚未提供带哈希的完整传递依赖锁文件；不得把直接 pin 描述为位级可复现构建，后续应在 Python 3.12 上生成并由 CI 校验 lock。
 
-`config.py` 是受版本控制的严格类型桥接层，默认值和完整键清单位于 `.env.tmpl`；部署时复制为 Git 忽略的 `.env` 并填写真实值。配置优先级为“已有进程环境变量 > `.env` > `.env.tmpl`”，字符串使用 JSON 双引号，布尔值使用 `true` / `false`，列表使用 JSON 数组。`config_local.py` 已停用，不得把密钥写入 tracked 文件。
+`config.py` 是受版本控制的严格类型桥接层；`.env.tmpl` 只包含 `SECRET_KEY`、五项 `MYSQL_*`、三项 `REDIS_*` 共九个部署必填键。高级运行参数及类型化代码默认值完整记录在 `docs/runtime-configuration.md`，仍可通过 `.env` 或进程环境覆盖。配置优先级为“已有进程环境变量 > `.env` > 代码默认值”，字符串使用 JSON 双引号，布尔值使用 `true` / `false`，列表使用 JSON 数组。`config_local.py` 已停用，不得把密钥写入 tracked 文件。
 
 关键设置：
 
 - `MYSQL_*`、`REDIS_*`：基础设施；
-- `DASHSCOPE_*`、`QWEN_*`、`AI_TUTOR_MODEL`：AI 调用；
+- LLM、Embedding、SMTP 与 WebSearch MCP：只从 MySQL 动态配置读取，不得重新增加环境变量回退；
 - `REPOSITORY_*`：代码仓库解析、embedding 与 FAISS；
 - `JUDGER_DOCKER_*`：普通判题镜像和容器资源；
 - `AGENT_JUDGE_*`：Agent-as-Judge 镜像、资源与超时；

@@ -27,11 +27,22 @@ ALLOWED_AGENT_HARNESSES = (
     HARNESS_OPENCODE,
     HARNESS_PI,
 )
+ENDPOINT_PROTOCOL_OPENAI = 'openai'
+ENDPOINT_PROTOCOL_ANTHROPIC = 'anthropic'
+ALLOWED_ENDPOINT_PROTOCOLS = (
+    ENDPOINT_PROTOCOL_OPENAI,
+    ENDPOINT_PROTOCOL_ANTHROPIC,
+)
 DEFAULT_OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
 DEFAULT_OPENCODE_GO_MODEL = 'mimo-v2.5-pro'
 DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_ENDPOINT_THINKING_COMPATIBILITY = True
+COPIED_ENDPOINT_THINKING_FORMATS = frozenset((
+    'enable_thinking',
+    'thinking_type',
+    'none',
+))
 MAX_ENDPOINT_TOKEN_COUNT = 1_000_000
 ENDPOINT_STATUS_ENABLED = 'enabled'
 ENDPOINT_STATUS_DISABLED = 'disabled'
@@ -56,6 +67,106 @@ def normalize_agent_harness(value):
     if harness == 'pi_agent':
         harness = HARNESS_PI
     return harness if harness in ALLOWED_AGENT_HARNESSES else HARNESS_CLAUDE_CODE
+
+
+def allowed_agent_endpoint_protocols(harness):
+    """返回 harness 实际支持的上游协议。"""
+
+    harness = normalize_agent_harness(harness)
+    if harness == HARNESS_CLAUDE_CODE:
+        return (ENDPOINT_PROTOCOL_ANTHROPIC,)
+    if harness in (HARNESS_CODEX, HARNESS_OPENCODE):
+        return (ENDPOINT_PROTOCOL_OPENAI,)
+    return ALLOWED_ENDPOINT_PROTOCOLS
+
+
+def infer_agent_endpoint_protocol(harness, protocol=None):
+    """解析有效协议；旧 NULL 记录保持历史 harness 推断。"""
+
+    normalized = str(protocol or '').strip().lower()
+    if normalized in ALLOWED_ENDPOINT_PROTOCOLS:
+        return normalized
+    harness = normalize_agent_harness(harness)
+    if harness == HARNESS_CLAUDE_CODE:
+        return ENDPOINT_PROTOCOL_ANTHROPIC
+    # Codex、opencode 以及历史 Pi 都一直走 OpenAI 兼容链路。
+    return ENDPOINT_PROTOCOL_OPENAI
+
+
+def _normalize_endpoint_protocol(value, *, harness, existing_endpoint=None):
+    existing_endpoint = existing_endpoint or {}
+    supplied = value is not None and str(value).strip() != ''
+    if supplied:
+        protocol = str(value).strip().lower()
+        if protocol not in ALLOWED_ENDPOINT_PROTOCOLS:
+            raise ValueError('端点协议必须是 openai 或 anthropic')
+        if protocol not in allowed_agent_endpoint_protocols(harness):
+            raise ValueError(f'{normalize_agent_harness(harness)} 不支持 {protocol} 协议')
+        return protocol
+
+    # 编辑旧记录时保留真正的 NULL，不把“兼容推断”悄悄写回数据库。
+    if existing_endpoint:
+        existing_protocol = existing_endpoint.get('protocol')
+        if str(existing_protocol or '').strip().lower() in ALLOWED_ENDPOINT_PROTOCOLS:
+            existing_protocol = str(existing_protocol).strip().lower()
+            if existing_protocol not in allowed_agent_endpoint_protocols(harness):
+                raise ValueError(
+                    f'{normalize_agent_harness(harness)} 不支持 {existing_protocol} 协议'
+                )
+            return existing_protocol
+        return None
+
+    if normalize_agent_harness(harness) == HARNESS_PI:
+        raise ValueError('新 Pi 端点必须明确选择 openai 或 anthropic 协议')
+    return allowed_agent_endpoint_protocols(harness)[0]
+
+
+def _get_global_endpoint_for_copy(endpoint_id):
+    from oj_modules.dynamic_config_services import get_llm_endpoint
+
+    return get_llm_endpoint(endpoint_id, include_secret=True)
+
+
+def list_global_endpoints_for_agent_harness(harness, endpoints=None):
+    """返回可复制到指定 harness 的全局候选，且绝不包含密钥。"""
+
+    harness = normalize_agent_harness(harness)
+    if harness == HARNESS_OPENCODE:
+        return []
+    if endpoints is None:
+        from oj_modules.dynamic_config_services import list_llm_endpoints
+
+        endpoints = list_llm_endpoints(include_secrets=False)
+    allowed_protocols = set(allowed_agent_endpoint_protocols(harness))
+    candidates = []
+    for endpoint in endpoints or []:
+        category = str(endpoint.get('category') or '').strip().lower()
+        protocol = str(endpoint.get('protocol') or '').strip().lower()
+        if category not in {'omni', 'text'} or protocol not in allowed_protocols:
+            continue
+        candidates.append({
+            'id': int(endpoint['id']),
+            'name': str(endpoint.get('name') or '').strip(),
+            'protocol': protocol,
+            'category': category,
+            'base_url': str(endpoint.get('base_url') or '').strip(),
+            'model': str(endpoint.get('model') or '').strip(),
+            'thinking_enabled': bool(endpoint.get('thinking_enabled')),
+            'thinking_format': str(endpoint.get('thinking_format') or 'none'),
+        })
+    return candidates
+
+
+def global_agent_endpoint_candidates():
+    """一次查询生成各 harness 的安全候选上下文。"""
+
+    from oj_modules.dynamic_config_services import list_llm_endpoints
+
+    endpoints = list_llm_endpoints(include_secrets=False)
+    return {
+        harness: list_global_endpoints_for_agent_harness(harness, endpoints=endpoints)
+        for harness in ALLOWED_AGENT_HARNESSES
+    }
 
 
 def normalize_endpoint_status(value, *, fallback_enabled=None):
@@ -178,11 +289,18 @@ def _endpoint_row(row):
         row.get('status'),
         fallback_enabled=bool(int(row.get('enabled') or 0)),
     )
+    raw_protocol = str(row.get('protocol') or '').strip().lower() or None
+    harness = normalize_agent_harness(row.get('harness'))
+    thinking_format = str(row.get('thinking_format') or '').strip().lower() or None
+    if thinking_format not in COPIED_ENDPOINT_THINKING_FORMATS:
+        thinking_format = None
     return {
         'id': int(row['id']),
         'competition_id': int(row.get('competition_id') or 0),
         'pool_kind': _normalize_endpoint_pool_kind(row.get('pool_kind')),
-        'harness': normalize_agent_harness(row.get('harness')),
+        'harness': harness,
+        'protocol': raw_protocol,
+        'effective_protocol': infer_agent_endpoint_protocol(harness, raw_protocol),
         'base_url': row['base_url'] or '',
         'api_key': row['api_key'] or '',
         'model': (row.get('model') or ''),
@@ -197,6 +315,9 @@ def _endpoint_row(row):
             if row.get('thinking_compatibility') is not None
             else DEFAULT_ENDPOINT_THINKING_COMPATIBILITY
         )),
+        # NULL 表示旧的独立端点，继续使用原有 harness 兼容行为；非 NULL
+        # 只由全局端点复制产生，完整冻结当时的请求参数格式。
+        'thinking_format': thinking_format,
         'concurrency_limit': int(row['concurrency_limit'] or 1),
         'status': status,
         'enabled': _status_enabled(status),
@@ -215,8 +336,8 @@ def _list_endpoints(competition_id, pool_kind, enabled_only=False):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = ("SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,"
-                   " context_window_tokens, max_output_tokens, thinking_compatibility,"
+            sql = ("SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,"
+                   " context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,"
                    " concurrency_limit, enabled, status, ordering "
                    "FROM ranking_agent_judge_endpoints "
                    "WHERE competition_id = %s AND pool_kind = %s")
@@ -255,8 +376,8 @@ def list_paused_agent_judge_endpoints():
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,
-                       context_window_tokens, max_output_tokens, thinking_compatibility,
+                SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,
+                       context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE status = 'paused'
@@ -321,7 +442,7 @@ def resume_paused_agent_judge_endpoint(endpoint_id):
 
 
 def _normalize_endpoint_items(pool_kind, items, existing_rows):
-    """纯函数式归一化一个端点池，保留已有端点的密钥和人工状态语义。"""
+    """归一化一个端点池，保留旧密钥/NULL 协议并支持从全局端点复制。"""
     if not isinstance(items, list):
         raise ValueError('端点格式非法')
     pool_kind = _normalize_endpoint_pool_kind(pool_kind)
@@ -335,16 +456,6 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
         if not isinstance(it, dict):
             raise ValueError('端点格式非法')
         harness = normalize_agent_harness(it.get('harness'))
-        base_url = str(it.get('base_url') or '').strip()
-        if (pool_kind == ENDPOINT_POOL_PRIMARY
-                and harness == HARNESS_OPENCODE and not base_url):
-            base_url = DEFAULT_OPENCODE_GO_BASE_URL
-        if not base_url:
-            raise ValueError('端点 URL 不能为空')
-        if not (base_url.startswith('http://') or base_url.startswith('https://')):
-            raise ValueError(f'端点 URL 必须以 http(s):// 开头：{base_url[:60]}')
-        if len(base_url) > 512:
-            raise ValueError('端点 URL 过长（不超过 512 字）')
         eid = it.get('id')
         try:
             eid = int(eid) if eid not in (None, '', 'null') else None
@@ -354,7 +465,59 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
             if eid in seen_existing_ids:
                 raise ValueError(f'端点 ID {eid} 重复')
             seen_existing_ids.add(eid)
-        key_in = str(it.get('api_key') or '').strip()
+
+        source_endpoint_id = (
+            it.get('global_endpoint_id')
+            if it.get('global_endpoint_id') not in (None, '', 'null')
+            else it.get('source_global_endpoint_id')
+        )
+        source_endpoint = None
+        if source_endpoint_id not in (None, '', 'null'):
+            if eid in existing:
+                raise ValueError('只能在新建独立端点时从全局端点复制')
+            if harness == HARNESS_OPENCODE:
+                raise ValueError('opencode 端点不能从全局端点复制')
+            try:
+                source_endpoint_id = int(source_endpoint_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError('全局端点 ID 不合法') from exc
+            if source_endpoint_id <= 0:
+                raise ValueError('全局端点 ID 不合法')
+            source_endpoint = _get_global_endpoint_for_copy(source_endpoint_id)
+            if not source_endpoint:
+                raise ValueError(f'全局端点不存在（ID: {source_endpoint_id}）')
+            source_category = str(source_endpoint.get('category') or '').strip().lower()
+            if source_category not in {'omni', 'text'}:
+                raise ValueError('Agent 端点只能从全模态或纯文本全局端点复制')
+            source_protocol = str(source_endpoint.get('protocol') or '').strip().lower()
+            if source_protocol not in allowed_agent_endpoint_protocols(harness):
+                raise ValueError(f'{harness} 不支持所选全局端点的 {source_protocol} 协议')
+
+        existing_endpoint = existing.get(eid) or {}
+        protocol_input = (
+            source_endpoint.get('protocol') if source_endpoint else it.get('protocol')
+        )
+        protocol = _normalize_endpoint_protocol(
+            protocol_input,
+            harness=harness,
+            existing_endpoint=existing_endpoint,
+        )
+
+        base_url = str(
+            source_endpoint.get('base_url') if source_endpoint else it.get('base_url') or ''
+        ).strip()
+        if (pool_kind == ENDPOINT_POOL_PRIMARY
+                and harness == HARNESS_OPENCODE and not base_url):
+            base_url = DEFAULT_OPENCODE_GO_BASE_URL
+        if not base_url:
+            raise ValueError('端点 URL 不能为空')
+        if not (base_url.startswith('http://') or base_url.startswith('https://')):
+            raise ValueError(f'端点 URL 必须以 http(s):// 开头：{base_url[:60]}')
+        if len(base_url) > 512:
+            raise ValueError('端点 URL 过长（不超过 512 字）')
+        key_in = str(
+            source_endpoint.get('api_key') if source_endpoint else it.get('api_key') or ''
+        ).strip()
         if key_in:
             api_key = key_in
         elif eid is not None and existing.get(eid, {}).get('api_key'):
@@ -365,7 +528,10 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
             raise ValueError('API Key 过长（不超过 512 字）')
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in api_key):
             raise ValueError('API Key 不能包含换行或控制字符')
-        model = (str(it.get('model') or '').strip() or None)
+        model = (
+            str(source_endpoint.get('model') if source_endpoint else it.get('model') or '').strip()
+            or None
+        )
         if (pool_kind == ENDPOINT_POOL_PRIMARY
                 and harness == HARNESS_OPENCODE and not model):
             model = DEFAULT_OPENCODE_GO_MODEL
@@ -375,9 +541,34 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
             raise ValueError('质量门禁端点模型不能为空')
         if model and len(model) > 128:
             raise ValueError('模型名过长（不超过 128 字）')
+        capability_payload = dict(it)
+        if source_endpoint is not None:
+            # 把全局端点当时的开关与 wire format 一并冻结到独立副本。
+            capability_payload['thinking_compatibility'] = bool(
+                source_endpoint.get('thinking_enabled')
+            )
         model_options = normalize_endpoint_model_capabilities(
-            it, existing.get(eid),
+            capability_payload, existing_endpoint,
         )
+        if source_endpoint is not None:
+            thinking_format = str(
+                source_endpoint.get('thinking_format') or 'none'
+            ).strip().lower()
+            if thinking_format not in COPIED_ENDPOINT_THINKING_FORMATS:
+                raise ValueError('全局端点的思考参数格式无效')
+        else:
+            # 自定义独立端点沿用原有布尔兼容开关；编辑从全局复制而来的
+            # 独立副本时保留已冻结的格式，不再读取全局端点。
+            thinking_format = existing_endpoint.get('thinking_format')
+            if thinking_format not in COPIED_ENDPOINT_THINKING_FORMATS:
+                thinking_format = None
+        # 独立副本允许编辑 harness / protocol，但冻结的思考 wire format 也必须
+        # 继续与编辑后的协议兼容；否则错误会被拖到容器运行期才暴露。
+        if (
+            protocol == ENDPOINT_PROTOCOL_ANTHROPIC
+            and thinking_format == 'enable_thinking'
+        ):
+            raise ValueError('Anthropic 端点不能使用 enable_thinking 思考格式')
         try:
             climit = int(it.get('concurrency_limit'))
         except (TypeError, ValueError):
@@ -395,8 +586,11 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
         # 不去重：同一厂商(同 url)可能有多个账号 → 不同 api_key，应允许并存（各自独立并发槽位）。
         normalized.append({'id': eid if eid in existing else None,
                            'pool_kind': pool_kind,
-                           'harness': harness, 'base_url': base_url, 'api_key': api_key, 'model': model,
+                           'harness': harness, 'protocol': protocol,
+                           'effective_protocol': infer_agent_endpoint_protocol(harness, protocol),
+                           'base_url': base_url, 'api_key': api_key, 'model': model,
                            **model_options,
+                           'thinking_format': thinking_format,
                            'concurrency_limit': climit, 'status': status,
                            'enabled': enabled, 'ordering': idx})
     return normalized
@@ -424,34 +618,38 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
                 """
                 UPDATE ranking_agent_judge_endpoints
                 SET harness = %s,
+                    protocol = %s,
                     base_url = %s,
                     api_key = %s,
                     model = %s,
                     context_window_tokens = %s,
                     max_output_tokens = %s,
                     thinking_compatibility = %s,
+                    thinking_format = %s,
                     concurrency_limit = %s,
                     enabled = %s,
                     status = %s,
                     ordering = %s
                 WHERE id = %s AND competition_id = %s AND pool_kind = %s
                 """,
-                (endpoint['harness'], endpoint['base_url'], endpoint['api_key'], endpoint['model'],
+                (endpoint['harness'], endpoint.get('protocol'), endpoint['base_url'], endpoint['api_key'], endpoint['model'],
                  endpoint['context_window_tokens'], endpoint['max_output_tokens'],
                  1 if endpoint['thinking_compatibility'] else 0,
+                 endpoint.get('thinking_format'),
                  endpoint['concurrency_limit'], endpoint['enabled'], endpoint['status'],
                  endpoint['ordering'], endpoint['id'], competition_id, pool_kind),
             )
         else:
             cursor.execute(
                 "INSERT INTO ranking_agent_judge_endpoints"
-                " (competition_id, pool_kind, harness, base_url, api_key, model,"
-                " context_window_tokens, max_output_tokens, thinking_compatibility,"
+                " (competition_id, pool_kind, harness, protocol, base_url, api_key, model,"
+                " context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,"
                 " concurrency_limit, enabled, status, ordering)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (competition_id, pool_kind, endpoint['harness'], endpoint['base_url'],
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (competition_id, pool_kind, endpoint['harness'], endpoint.get('protocol'), endpoint['base_url'],
                  endpoint['api_key'], endpoint['model'], endpoint['context_window_tokens'],
                  endpoint['max_output_tokens'], 1 if endpoint['thinking_compatibility'] else 0,
+                 endpoint.get('thinking_format'),
                  endpoint['concurrency_limit'],
                  endpoint['enabled'], endpoint['status'], endpoint['ordering']),
             )
@@ -460,8 +658,9 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
 def _save_endpoints(competition_id, pool_kind, items):
     """整体替换某比赛的单个端点池。校验在事务外，失败不动 DB。
 
-    items 中每项：{id?, harness, base_url, api_key, model, context_window_tokens?,
-    max_output_tokens?, thinking_compatibility?, concurrency_limit, status|enabled}。
+    items 中每项：{id?, harness, protocol?, global_endpoint_id?, base_url, api_key,
+    model, context_window_tokens?, max_output_tokens?, thinking_compatibility?,
+    concurrency_limit, status|enabled}。
     api_key 留空且带已存在的 id → 沿用旧 key（前端编辑器不回显明文）；
     api_key 留空且无对应 id → 报错（新端点必须填 key）。返回归一化后的列表。"""
     pool_kind = _normalize_endpoint_pool_kind(pool_kind)
@@ -506,8 +705,8 @@ def save_agent_judge_configuration(
                 raise ValueError('比赛不存在或已被删除')
             cursor.execute(
                 """
-                SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,
-                       context_window_tokens, max_output_tokens, thinking_compatibility,
+                SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,
+                       context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE competition_id = %s AND pool_kind = %s
@@ -584,8 +783,8 @@ def save_reverse_quality_gate_configuration(
 
             cursor.execute(
                 """
-                SELECT id, competition_id, pool_kind, harness, base_url, api_key, model,
-                       context_window_tokens, max_output_tokens, thinking_compatibility,
+                SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,
+                       context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE competition_id = %s AND pool_kind = %s

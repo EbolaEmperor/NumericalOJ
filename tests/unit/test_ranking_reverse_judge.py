@@ -1100,7 +1100,7 @@ def test_start_isolated_quality_gate_proxy_builds_internal_agent_network(monkeyp
         close=lambda: calls.append(("endpoint-close",)),
     )
     monkeypatch.setattr(
-        rj, "_start_reverse_endpoint_proxy", lambda *_args: endpoint_proxy,
+        rj, "_start_reverse_endpoint_proxy", lambda *_args, **_kwargs: endpoint_proxy,
     )
     monkeypatch.setattr(rj, "_wait_quality_gate_container_ready", lambda _name: True)
 
@@ -1148,7 +1148,7 @@ def test_start_isolated_quality_gate_proxy_failure_cleans_all_layers(monkeypatch
         close=lambda: events.append("endpoint-close"),
     )
     monkeypatch.setattr(
-        rj, "_start_reverse_endpoint_proxy", lambda *_args: endpoint_proxy,
+        rj, "_start_reverse_endpoint_proxy", lambda *_args, **_kwargs: endpoint_proxy,
     )
     monkeypatch.setattr(rj, "_wait_quality_gate_container_ready", lambda _name: False)
 
@@ -1451,7 +1451,9 @@ def test_run_quality_gate_agent_executes_harness_parses_json_and_cleans_up(
         "http://quality-model-proxy:18080/v1",
     )
     monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: False)
-    monkeypatch.setattr(rj, "_start_isolated_quality_gate_proxy", lambda *_args: proxy)
+    monkeypatch.setattr(
+        rj, "_start_isolated_quality_gate_proxy", lambda *_args, **_kwargs: proxy,
+    )
     monkeypatch.setattr(rj.secrets, "token_hex", lambda _size: "nonce")
     monkeypatch.setattr(rj, "_quality_gate_container_running", lambda _name: True)
     monkeypatch.setattr(rj, "_quality_gate_image_supports_audit_mode", lambda _name: True)
@@ -1545,7 +1547,9 @@ def test_run_quality_gate_agent_fails_closed_on_malformed_structured_stdout(
         "http://quality-model-proxy:18080/v1",
     )
     monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: False)
-    monkeypatch.setattr(rj, "_start_isolated_quality_gate_proxy", lambda *_args: proxy)
+    monkeypatch.setattr(
+        rj, "_start_isolated_quality_gate_proxy", lambda *_args, **_kwargs: proxy,
+    )
     monkeypatch.setattr(rj, "_quality_gate_container_running", lambda _name: True)
     monkeypatch.setattr(rj, "_quality_gate_image_supports_audit_mode", lambda _name: True)
     monkeypatch.setattr(rj, "_stop_quality_gate_container", lambda _name: True)
@@ -1612,9 +1616,10 @@ def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
     monkeypatch.setattr(rj, "submission_dir", lambda _sid: str(tmp_path / "submission"))
     monkeypatch.setattr(
         rj, "_start_reverse_endpoint_proxy",
-        lambda base_url, api_key, harness: (
-            proxy if (base_url, api_key, harness) == (
+        lambda base_url, api_key, harness, protocol=None: (
+            proxy if (base_url, api_key, harness, protocol) == (
                 "https://gate-3.example/v1", "top-secret", rj.HARNESS_CLAUDE_CODE,
+                None,
             ) else pytest.fail("代理收到错误的真实端点配置")
         ),
     )
@@ -1731,7 +1736,9 @@ def test_run_agent_resumes_aborted_claude_session_once_and_requires_recovery(
 
     monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: False)
     monkeypatch.setattr(rj, "submission_dir", lambda _sid: str(tmp_path / "submission"))
-    monkeypatch.setattr(rj, "_start_reverse_endpoint_proxy", lambda *_args: proxy)
+    monkeypatch.setattr(
+        rj, "_start_reverse_endpoint_proxy", lambda *_args, **_kwargs: proxy,
+    )
     monkeypatch.setattr(rj, "_agent_env_args", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         rj.subprocess, "run",

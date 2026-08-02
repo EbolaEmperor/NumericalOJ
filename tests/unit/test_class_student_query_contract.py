@@ -79,7 +79,7 @@ def test_class_scoped_detection_excludes_administrators(monkeypatch):
     assert 'JOIN user_class_map _ucm ON _ucm.user_id = _u.id' in sql
     assert '_ucm.class_en = %s' in sql
     assert '_u.is_admin = 0' in sql
-    assert params == ['matlab', 'C1']
+    assert params == ['C1']
 
 
 def test_multi_class_student_lookup_excludes_administrators(monkeypatch):

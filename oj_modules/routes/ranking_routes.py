@@ -87,6 +87,7 @@ from oj_modules.ranking_agent_judge_db import (
     agent_judge_trace_id,
     apply_rule_overrides,
     build_judge_snapshot,
+    global_agent_endpoint_candidates,
     list_agent_judge_endpoints,
     list_competition_rules,
     list_quality_gate_endpoints,
@@ -121,10 +122,8 @@ ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
 ALLOWED_TABS = ('description', 'submit', 'leaderboard', 'matches', 'all_submissions', 'appeals', 'edit', 'batch_eval')
 SUBMISSIONS_PER_PAGE = 50
 MATCHES_PER_PAGE = 20
-# 「批量评测」标签页预填的 Git 仓库标准命名示例（可在 config.py 覆盖）。
-BATCH_DEFAULT_TEMPLATE = getattr(
-    _cfg, 'RANKING_BATCH_DEFAULT_TEMPLATE', 'gitea@10.72.190.121:<username>/FinalProject.git',
-)
+# 「批量评测」标签页预填的 Git 仓库标准命名示例是产品文案，不是启动配置。
+BATCH_DEFAULT_TEMPLATE = 'gitea@10.72.190.121:<username>/FinalProject.git'
 
 # 对战列表 / 详情的 Redis 缓存
 # scope 用于区分 "全部" 和 "与我相关"：scope = '' 或 user:<username>
@@ -270,6 +269,8 @@ def _masked_agent_endpoints(endpoints):
         {
             'id': e['id'],
             'harness': e.get('harness') or 'claude_code',
+            'protocol': e.get('protocol'),
+            'effective_protocol': e.get('effective_protocol') or '',
             'base_url': e.get('base_url') or '',
             'model': e.get('model') or '',
             **normalize_endpoint_model_capabilities(e),
@@ -1069,6 +1070,7 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
     agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
     aj_endpoints = []
     quality_gate_endpoints = []
+    agent_global_endpoint_candidates = {}
     agent_judge_ready = False
     quality_gate_ready = (
         _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
@@ -1093,6 +1095,11 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
                     )
                 except Exception:
                     quality_gate_endpoints = []
+        if is_admin:
+            try:
+                agent_global_endpoint_candidates = global_agent_endpoint_candidates()
+            except Exception:
+                agent_global_endpoint_candidates = {}
 
     batch_classes = get_all_classes() if tab == 'batch_eval' else []
 
@@ -1200,6 +1207,7 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
         'agent_judge_api_key_set': agent_judge_api_key_set,
         'aj_endpoints': aj_endpoints,
         'quality_gate_endpoints': quality_gate_endpoints,
+        'agent_global_endpoint_candidates': agent_global_endpoint_candidates,
         'agent_judge_ready': agent_judge_ready,
         'quality_gate_ready': quality_gate_ready,
         'is_reverse_judge': is_reverse_judge,

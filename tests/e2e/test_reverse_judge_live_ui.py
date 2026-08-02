@@ -141,15 +141,12 @@ def _assert_local_test_docker_daemon() -> None:
 @pytest.fixture
 def live_numoj_server(tmp_path: Path) -> _LiveServer:
     """启动不含任何 fake 接缝的本地 Web/Celery 服务。"""
-    import config
-
     _assert_disposable_environment()
     _assert_port_free()
-    if "DEEPSEEK_API_KEY" not in config.ENV_FILE_KEYS:
-        _fail("本地 .env 必须显式配置 DEEPSEEK_API_KEY")
-    secret = str(config.DEEPSEEK_API_KEY or "").strip()
+    secret = str(os.environ.get("NUMOJ_REVERSE_LIVE_API_KEY") or "").strip()
     if not secret:
-        _fail("本地 .env 中的 DEEPSEEK_API_KEY 为空")
+        _fail("必须通过 NUMOJ_REVERSE_LIVE_API_KEY 提供真实测试密钥")
+    import config
     if shutil.which("docker") is None:
         _fail("真实反向评测 E2E 需要本地 Docker CLI")
     _assert_local_test_docker_daemon()
@@ -192,9 +189,9 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
         "NUMOJ_FAKE_REVERSE_QUALITY_GATE": "0",
         "AGENT_JUDGE_DOCKER_IMAGE": agent_image,
         "JUDGER_DOCKER_IMAGE": judger_image,
-        # 凭证只能由管理员 CLI 从 .env 写入一次性测试数据库。Web、Celery、
+        # 凭证只能由管理员 CLI 从独立测试密钥文件写入一次性测试数据库。Web、Celery、
         # Playwright 和 Agent 容器都不得从进程环境继承真实 Key。
-        "DEEPSEEK_API_KEY": "",
+        "NUMOJ_REVERSE_LIVE_API_KEY": "",
         "API_KEY": "",
     })
     web_log_path = tmp_path / "reverse-live-web.log"
@@ -299,7 +296,7 @@ def _endpoint(harness: str, base_url: str) -> dict[str, Any]:
     return {
         "harness": harness,
         "base_url": base_url,
-        "api_key_env": "DEEPSEEK_API_KEY",
+        "api_key_env": "NUMOJ_REVERSE_LIVE_API_KEY",
         "model": _MODEL,
         "context_window_tokens": _CONTEXT_WINDOW_TOKENS,
         "max_output_tokens": _MAX_OUTPUT_TOKENS,
@@ -313,39 +310,48 @@ def _configure_live_endpoints(
     cli: CliRunner,
     competition_id: int,
     tmp_path: Path,
+    secret: str,
 ) -> dict[str, int]:
-    env_file = ROOT / ".env"
+    env_file = tmp_path / "reverse-live-secrets.env"
+    env_file.write_text(
+        "NUMOJ_REVERSE_LIVE_API_KEY=" + json.dumps(secret) + "\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
     answer_payload = [
         _endpoint("claude_code", "https://api.deepseek.com/anthropic"),
         _endpoint("pi", "https://api.deepseek.com/v1"),
     ]
-    saved = cli.admin_json(
-        "ranking",
-        "save-endpoints",
-        str(competition_id),
-        json.dumps(answer_payload, ensure_ascii=False),
-        "--env-file",
-        str(env_file),
-        "--timeout-seconds",
-        "600",
-        "--reverse-finalize-timeout",
-        "120",
-    )
-    assert saved["success"] is True
-    assert len(saved["endpoints"]) == 2
-    assert all("api_key" not in row for row in saved["endpoints"])
+    try:
+        saved = cli.admin_json(
+            "ranking",
+            "save-endpoints",
+            str(competition_id),
+            json.dumps(answer_payload, ensure_ascii=False),
+            "--env-file",
+            str(env_file),
+            "--timeout-seconds",
+            "600",
+            "--reverse-finalize-timeout",
+            "120",
+        )
+        assert saved["success"] is True
+        assert len(saved["endpoints"]) == 2
+        assert all("api_key" not in row for row in saved["endpoints"])
 
-    gate_saved = cli.admin_json(
-        "ranking",
-        "save-quality-gate-endpoints",
-        str(competition_id),
-        json.dumps(
-            [_endpoint("pi", "https://api.deepseek.com/v1")],
-            ensure_ascii=False,
-        ),
-        "--env-file",
-        str(env_file),
-    )
+        gate_saved = cli.admin_json(
+            "ranking",
+            "save-quality-gate-endpoints",
+            str(competition_id),
+            json.dumps(
+                [_endpoint("pi", "https://api.deepseek.com/v1")],
+                ensure_ascii=False,
+            ),
+            "--env-file",
+            str(env_file),
+        )
+    finally:
+        env_file.unlink(missing_ok=True)
     assert gate_saved["success"] is True
     assert gate_saved["enabled_count"] == 1
     assert all(
@@ -1067,9 +1073,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """真实创建题目、双 harness 作答，并点击验证全部用户结果入口。"""
-    import config
-
-    secret = str(config.DEEPSEEK_API_KEY or "").strip()
+    secret = str(os.environ.get("NUMOJ_REVERSE_LIVE_API_KEY") or "").strip()
     cli = CliRunner(live_numoj_server.base_url, tmp_path)
     suffix = uuid4().hex[:12]
     username = f"reverse_live_{suffix}"
@@ -1083,7 +1087,9 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
         competition_id = _create_reverse_competition(
             cli, f"Reverse Live DeepSeek {suffix}",
         )
-        endpoint_ids = _configure_live_endpoints(cli, competition_id, tmp_path)
+        endpoint_ids = _configure_live_endpoints(
+            cli, competition_id, tmp_path, secret,
+        )
         packages = {
             "claude_code": _algorithm_package(
                 tmp_path / "max-subarray-claude-code.zip",
@@ -1092,7 +1098,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
         }
 
         # 端点写入一次性数据库后立即从后续浏览器/子进程环境移除真实 Key。
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+        monkeypatch.setenv("NUMOJ_REVERSE_LIVE_API_KEY", "")
         monkeypatch.setenv("API_KEY", "")
         try:
             from playwright.sync_api import Error as PlaywrightError

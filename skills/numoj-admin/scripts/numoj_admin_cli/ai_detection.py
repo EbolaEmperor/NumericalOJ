@@ -15,6 +15,16 @@ from . import common
 from .common import *  # noqa: F401,F403 - command modules share the CLI helper surface.
 
 
+def positive_endpoint_id(raw: str) -> int:
+    try:
+        endpoint_id = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("endpoint ID must be a positive integer") from exc
+    if endpoint_id <= 0 or str(endpoint_id) != str(raw).strip():
+        raise argparse.ArgumentTypeError("endpoint ID must be a positive integer")
+    return endpoint_id
+
+
 def necessary_ai_detection_page_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
@@ -53,8 +63,8 @@ def ai_filter_payload(args: argparse.Namespace) -> Dict[str, Any]:
             payload[key] = value
     if getattr(args, "deduplicate", None) is not None:
         payload["deduplicate"] = bool(args.deduplicate)
-    if getattr(args, "model", None):
-        payload["model_id"] = args.model
+    if getattr(args, "endpoint_id", None) is not None:
+        payload["endpoint_id"] = args.endpoint_id
     return payload
 
 
@@ -78,19 +88,31 @@ def ai_run_filtered(args: argparse.Namespace) -> None:
 
 def ai_run_problem(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/admin/ai_detection/run/{args.problem_id}", json={"model_id": args.model} if args.model else {})
+    resp = client.request(
+        "POST",
+        f"/admin/ai_detection/run/{args.problem_id}",
+        json={"endpoint_id": args.endpoint_id},
+    )
     print_or_save_response(resp)
 
 
 def ai_run_single(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/admin/ai_detection/run_single/{args.submission_id}", json={"model_id": args.model} if args.model else {})
+    resp = client.request(
+        "POST",
+        f"/admin/ai_detection/run_single/{args.submission_id}",
+        json={"endpoint_id": args.endpoint_id},
+    )
     print_or_save_response(resp)
 
 
 def ai_run_user(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/admin/ai_detection/run_user/{args.username}", json={"model_id": args.model} if args.model else {})
+    resp = client.request(
+        "POST",
+        f"/admin/ai_detection/run_user/{args.username}",
+        json={"endpoint_id": args.endpoint_id},
+    )
     print_or_save_response(resp)
 
 
@@ -151,21 +173,26 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         pa.add_argument("--score-min", type=float, help="Minimum existing AI-detection score to include.")
         pa.add_argument("--score-max", type=float, help="Maximum existing AI-detection score to include.")
         pa.add_argument("--deduplicate", action="store_true", default=None, help="Ask the server to keep only one candidate per user/problem when supported.")
-        pa.add_argument("--model", help="Detection model identifier to use.")
         if name == "run-filtered":
             pa.add_argument("--all", action="store_true", help="Explicitly scan all submissions without narrowing filters.")
+            pa.add_argument(
+                "--endpoint-id",
+                type=positive_endpoint_id,
+                required=True,
+                help="Global text or omni LLM endpoint ID to use for this detection run.",
+            )
         pa.set_defaults(func=func)
     pa = add_cli_parser(ais, "run-problem", "Start AI-detection for all relevant submissions of one problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID to scan.")
-    pa.add_argument("--model", help="Detection model identifier to use.")
+    pa.add_argument("--endpoint-id", type=positive_endpoint_id, required=True, help="Global text or omni LLM endpoint ID to use for this detection run.")
     pa.set_defaults(func=ai_run_problem)
     pa = add_cli_parser(ais, "run-single", "Start AI-detection for one submission.")
     pa.add_argument("submission_id", type=int, help="Submission ID to scan.")
-    pa.add_argument("--model", help="Detection model identifier to use.")
+    pa.add_argument("--endpoint-id", type=positive_endpoint_id, required=True, help="Global text or omni LLM endpoint ID to use for this detection run.")
     pa.set_defaults(func=ai_run_single)
     pa = add_cli_parser(ais, "run-user", "Start AI-detection for submissions from one user.")
     pa.add_argument("username", help="Username whose submissions should be scanned.")
-    pa.add_argument("--model", help="Detection model identifier to use.")
+    pa.add_argument("--endpoint-id", type=positive_endpoint_id, required=True, help="Global text or omni LLM endpoint ID to use for this detection run.")
     pa.set_defaults(func=ai_run_user)
     for name, path, description in (
         ("summary", "/admin/ai_detection/api/summary", "Fetch AI-detection summary metrics."),

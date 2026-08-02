@@ -10,46 +10,26 @@ import secrets
 import tempfile
 import time
 
-import requests
-
 from config import (
-    AI_TUTOR_MODEL,
     AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT,
-    DASHSCOPE_API_KEY,
-    DASHSCOPE_BASE_URL,
     LATEX_OCR_MAX_IMAGES_PER_REQUEST,
     LATEX_OCR_STREAM_EMIT_INTERVAL,
     LATEX_OCR_STREAM_EMIT_MIN_DELTA,
-    MIMO_API_KEY,
-    MIMO_MODEL,
-    MIMO_URL_OPENAI,
-    QWEN_CODER_MODEL,
-    QWEN_OMNI_MODEL,
-    QWEN_TEXT_MODEL,
 )
 
 from oj_modules import judger_core
+from oj_modules.llm_endpoints import (
+    LLMEndpointCategory,
+    LLMEndpointSnapshot,
+    LLMEndpointValidationError,
+    call_text,
+    call_vision,
+)
+from oj_modules.problem_llm_bindings import (
+    PROBLEM_LLM_BINDING_CATEGORIES,
+    deserialize_problem_llm_bindings,
+)
 from oj_modules.promptly_guard import parse_promptly_review_config
-
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-
-
-def _extract_text_from_response_content(content):
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            if isinstance(item, dict) and isinstance(item.get('text'), str):
-                parts.append(item['text'])
-        return ''.join(parts)
-    return ""
 
 
 def _strip_markdown_code_fence_markers(text):
@@ -64,16 +44,6 @@ def _strip_markdown_code_fence_markers(text):
     return "\n".join(cleaned_lines).strip()
 
 
-_WRITTEN_GRADING_MODEL_SPECS = {
-    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "dashscope"),
-    f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking": (str(QWEN_TEXT_MODEL or "").strip(), True, "dashscope"),
-    str(AI_TUTOR_MODEL or "").strip().lower(): (str(AI_TUTOR_MODEL or "").strip(), False, "dashscope"),
-    f"{str(AI_TUTOR_MODEL or '').strip().lower()}-thinking": (str(AI_TUTOR_MODEL or "").strip(), True, "dashscope"),
-    # MIMO（xiaomimimo OpenAI 兼容端点）。enable_thinking 设为 None：不向普通 OpenAI 端点发送
-    # DashScope 专有的 thinking 参数，避免被拒。
-    "mimo": (str(MIMO_MODEL or "mimo-v2.5-pro").strip(), None, "mimo"),
-}
-_DEFAULT_WRITTEN_GRADING_MODEL_SPEC = f"{str(QWEN_TEXT_MODEL or '').strip().lower()}-thinking"
 DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
     "1) 5 分（满分）必须同时满足：\n"
     "- 关键结论都有明确推导，不跳步；\n"
@@ -86,11 +56,6 @@ DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
     "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
     "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。"
 )
-_DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC = str(QWEN_OMNI_MODEL or "").strip().lower() or str(QWEN_TEXT_MODEL or "").strip().lower()
-_PROGRAMMING_IMAGE_GRADING_MODEL_SPECS = {
-    str(QWEN_OMNI_MODEL or "").strip().lower(): (str(QWEN_OMNI_MODEL or "").strip(), False, "dashscope"),
-    str(QWEN_TEXT_MODEL or "").strip().lower(): (str(QWEN_TEXT_MODEL or "").strip(), False, "dashscope"),
-}
 _CONTROL_ESCAPE_TO_LATEX_PREFIX = {
     "\n": "n",
     "\t": "t",
@@ -145,151 +110,180 @@ def _repair_latex_escape_artifacts(text):
     return _LATEX_ESCAPE_ARTIFACT_PATTERN.sub(_replace_match, raw)
 
 
-def _is_invalid_secret(value):
-    text = str(value or "").strip()
-    return (not text) or ("YOUR" in text.upper())
+_PROBLEM_ENDPOINT_LABELS = {
+    "output_image_grading_endpoint_id": "程序输出图片批改",
+    "ocr_endpoint_id": "书面作业 OCR",
+    "text_grading_endpoint_id": "书面作业文本批改",
+    "direct_image_grading_endpoint_id": "书面作业图片批改",
+    "review_endpoint_id": "Promptly 思路审查",
+    "code_generation_endpoint_id": "Promptly 代码生成",
+}
 
 
-def _resolve_dashscope_base_url():
-    base_url = str(DASHSCOPE_BASE_URL or "").strip().rstrip("/")
-    if not base_url:
-        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
-    return base_url
-
-
-def _post_chat_completions(base_url, headers, payload, timeout):
-    url = f"{str(base_url).rstrip('/')}/chat/completions"
-    return requests.post(url, headers=headers, json=payload, timeout=timeout)
-
-
-def _resolve_chat_endpoint_for_model(model, fallback_api_key=None, fallback_base_url=None):
-    # 所有模型一律走普通 DashScope（compatible-mode）端点。
-    api_key = fallback_api_key
-    if api_key is None:
-        api_key = DASHSCOPE_API_KEY
-    base_url = fallback_base_url
-    if base_url is None:
-        base_url = _resolve_dashscope_base_url()
-    if _is_invalid_secret(api_key):
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    if not str(base_url or "").strip():
-        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
-    return str(api_key).strip(), str(base_url).rstrip('/')
-
-
-def _parse_written_grading_model_spec(model_spec):
-    key = str(model_spec or _DEFAULT_WRITTEN_GRADING_MODEL_SPEC).strip().lower()
-    return _WRITTEN_GRADING_MODEL_SPECS.get(
-        key,
-        _WRITTEN_GRADING_MODEL_SPECS[_DEFAULT_WRITTEN_GRADING_MODEL_SPEC],
-    )
-
-
-def _parse_programming_image_grading_model_spec(model_spec):
-    key = str(model_spec or _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC).strip().lower()
-    return _PROGRAMMING_IMAGE_GRADING_MODEL_SPECS.get(
-        key,
-        _PROGRAMMING_IMAGE_GRADING_MODEL_SPECS[_DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC],
-    )
-
-
-def _resolve_endpoint_for_written_grading_route(route_key):
-    # route_key=='mimo' → 走 MIMO（xiaomimimo）的 OpenAI 兼容端点；其余一律 DashScope。
-    if str(route_key or "").strip().lower() == "mimo":
-        api_key = MIMO_API_KEY
-        base_url = str(MIMO_URL_OPENAI or "").strip()
-        if _is_invalid_secret(api_key):
-            raise RuntimeError("未配置 MIMO_API_KEY。")
-        if not base_url:
-            raise RuntimeError("未配置 MIMO_URL_OPENAI。")
-        return str(api_key).strip(), base_url.rstrip('/')
-    api_key = DASHSCOPE_API_KEY
-    base_url = _resolve_dashscope_base_url()
-    if _is_invalid_secret(api_key):
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    if not str(base_url or "").strip():
-        raise RuntimeError("未配置 DASHSCOPE_BASE_URL。")
-    return str(api_key).strip(), str(base_url).rstrip('/')
-
-
-def _call_qwen_text(
-    prompt_text,
-    api_key=None,
-    base_url=None,
-    timeout=300,
-    model=None,
-    enable_thinking=True,
-    resolve_endpoint=True,
-    system_prompt=None,
+def resolve_llm_endpoint_snapshot(
+    endpoint=None,
+    *,
+    endpoint_id=None,
+    feature_key=None,
+    allowed_categories=None,
+    purpose="LLM",
 ):
-    text_model = str(model or QWEN_TEXT_MODEL)
-    if resolve_endpoint:
-        use_api_key, use_base_url = _resolve_chat_endpoint_for_model(
-            text_model,
-            fallback_api_key=api_key,
-            fallback_base_url=base_url,
-        )
-    else:
-        if not str(api_key or "").strip() or not str(base_url or "").strip():
-            raise RuntimeError("缺少模型调用凭证或地址。")
-        use_api_key = str(api_key).strip()
-        use_base_url = str(base_url).rstrip('/')
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": str(system_prompt)})
-    messages.append({"role": "user", "content": prompt_text})
+    """解析一次运行时端点并返回不可变快照。
 
-    if OpenAI is not None:
+    调用方必须在 ``endpoint``、``endpoint_id``、``feature_key`` 三种来源中恰选
+    一种。数据库访问只发生在这里；把返回快照向下传即可保证运行中的配置不漂移。
+    """
+
+    source_count = sum(
+        value is not None
+        for value in (endpoint, endpoint_id, feature_key)
+    )
+    if source_count != 1:
+        raise RuntimeError(f"{purpose}必须且只能指定一个端点来源。")
+
+    raw_endpoint = endpoint
+    if endpoint_id is not None:
+        if isinstance(endpoint_id, bool):
+            raise RuntimeError(f"{purpose}端点 ID 无效。")
         try:
-            client = OpenAI(api_key=use_api_key, base_url=use_base_url)
-            kwargs = {
-                "model": text_model,
-                "messages": messages,
-                "stream": True,
-            }
-            if enable_thinking is not None:
-                kwargs["extra_body"] = {"enable_thinking": bool(enable_thinking)}
-            stream = client.chat.completions.create(**kwargs)
-            parts = []
-            reasoning_parts = []
-            for chunk in stream:
-                if not getattr(chunk, "choices", None):
-                    continue
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    parts.append(delta.content)
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    reasoning_parts.append(delta.reasoning_content)
-            text = ''.join(parts).strip()
-            if text:
-                return text
-            fallback_text = ''.join(reasoning_parts).strip()
-            if fallback_text:
-                return fallback_text
-        except Exception as e:
-            print(f"[Qwen API] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
+            use_endpoint_id = int(endpoint_id)
+        except (TypeError, ValueError):
+            raise RuntimeError(f"{purpose}端点 ID 无效。") from None
+        if use_endpoint_id <= 0:
+            raise RuntimeError(f"{purpose}端点 ID 无效。")
+        from oj_modules.dynamic_config_services import (
+            DynamicConfigNotFoundError,
+            get_llm_endpoint,
+        )
 
-    headers = {
-        "Authorization": f"Bearer {use_api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": text_model,
-        "messages": messages,
-    }
-    if enable_thinking is not None:
-        payload["enable_thinking"] = bool(enable_thinking)
-    resp = _post_chat_completions(use_base_url, headers, payload, timeout)
-    if resp.status_code >= 400:
-        payload.pop("enable_thinking", None)
-        resp = _post_chat_completions(use_base_url, headers, payload, timeout)
-    resp.raise_for_status()
-    result = resp.json()
-    choices = result.get('choices') or []
-    if not choices:
-        raise RuntimeError("模型未返回有效结果。")
-    content = (choices[0].get('message') or {}).get('content')
-    text = _extract_text_from_response_content(content).strip()
+        try:
+            raw_endpoint = get_llm_endpoint(use_endpoint_id, include_secret=True)
+        except DynamicConfigNotFoundError:
+            raise RuntimeError(
+                f"{purpose}端点不存在或已删除（ID: {use_endpoint_id}）。"
+            ) from None
+    elif feature_key is not None:
+        use_feature_key = str(feature_key or "").strip()
+        if not use_feature_key:
+            raise RuntimeError(f"{purpose}功能绑定键不能为空。")
+        from oj_modules.dynamic_config_services import (
+            DynamicConfigNotFoundError,
+            resolve_feature_endpoint,
+        )
+
+        try:
+            raw_endpoint = resolve_feature_endpoint(use_feature_key)
+        except DynamicConfigNotFoundError as exc:
+            # 配置层会区分“从未绑定”和“绑定 ID 已被删除”。这里必须保留原始
+            # 诊断，尤其不能吞掉悬空 ID，否则管理员无法定位删除后果。
+            raise RuntimeError(f"{purpose}：{exc}") from None
+
+    try:
+        snapshot = (
+            raw_endpoint
+            if isinstance(raw_endpoint, LLMEndpointSnapshot)
+            else LLMEndpointSnapshot.from_mapping(raw_endpoint)
+        )
+    except (LLMEndpointValidationError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{purpose}端点配置无效：{exc}") from None
+
+    if allowed_categories is not None:
+        normalized_categories = {
+            item
+            if isinstance(item, LLMEndpointCategory)
+            else LLMEndpointCategory(str(item or "").strip().lower())
+            for item in allowed_categories
+        }
+        if snapshot.category not in normalized_categories:
+            allowed_text = "、".join(sorted(item.value for item in normalized_categories))
+            raise RuntimeError(
+                f"{purpose}端点类别不兼容：需要 {allowed_text}，"
+                f"实际为 {snapshot.category.value}。"
+            )
+    return snapshot
+
+
+def resolve_problem_llm_endpoint_snapshot(
+    problem,
+    binding_key,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
+    """解析题目软绑定；缺失或悬空时给出可诊断错误。"""
+
+    key = str(binding_key or "").strip()
+    if key not in PROBLEM_LLM_BINDING_CATEGORIES:
+        raise RuntimeError("未知的题目 LLM 端点绑定。")
+    purpose = _PROBLEM_ENDPOINT_LABELS.get(key, "题目 LLM")
+    if endpoint is not None and endpoint_id is not None:
+        raise RuntimeError(f"{purpose}不能同时指定 endpoint 和 endpoint_id。")
+    if endpoint is None and endpoint_id is None:
+        raw_bindings = (problem or {}).get("llm_endpoint_bindings")
+        bindings = deserialize_problem_llm_bindings(raw_bindings)
+        endpoint_id = bindings.get(key)
+        if endpoint_id is None:
+            raise RuntimeError(f"题目尚未配置{purpose}端点。")
+    return resolve_llm_endpoint_snapshot(
+        endpoint,
+        endpoint_id=endpoint_id,
+        allowed_categories=PROBLEM_LLM_BINDING_CATEGORIES[key],
+        purpose=purpose,
+    )
+
+
+def _safe_delta_callback(callback):
+    if not callable(callback):
+        return None
+
+    def _emit(delta_text):
+        try:
+            callback(delta_text)
+        except Exception:
+            pass
+
+    return _emit
+
+
+def _call_llm_text(
+    prompt_text,
+    endpoint,
+    *,
+    timeout=300,
+    system_prompt=None,
+    on_delta=None,
+):
+    result = call_text(
+        endpoint,
+        str(prompt_text or ""),
+        system_prompt=system_prompt,
+        timeout=timeout,
+        on_text_delta=_safe_delta_callback(on_delta),
+    )
+    text = str(result.text or "").strip()
+    if not text:
+        raise RuntimeError("模型未返回可用文本。")
+    return text
+
+
+def _call_llm_vision(
+    prompt_text,
+    image_data_urls,
+    endpoint,
+    *,
+    timeout=300,
+    system_prompt=None,
+    on_delta=None,
+):
+    result = call_vision(
+        endpoint,
+        str(prompt_text or ""),
+        list(image_data_urls or []),
+        system_prompt=system_prompt,
+        timeout=timeout,
+        on_text_delta=_safe_delta_callback(on_delta),
+    )
+    text = str(result.text or "").strip()
     if not text:
         raise RuntimeError("模型未返回可用文本。")
     return text
@@ -406,7 +400,15 @@ def _fake_promptly_review_from_env(prompt):
     return False, reply
 
 
-def review_promptly_student_prompt(problem, student_prompt, model_spec=None, timeout=120):
+def review_promptly_student_prompt(
+    problem,
+    student_prompt,
+    model_spec=None,
+    timeout=120,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     """Return (nice, reply) for a Promptly student prompt before code generation."""
     problem = problem or {}
     prompt = str(student_prompt or "").strip()
@@ -415,17 +417,18 @@ def review_promptly_student_prompt(problem, student_prompt, model_spec=None, tim
     fake_review = _fake_promptly_review_from_env(prompt)
     if fake_review is not None:
         return fake_review
+    del model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "review_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
 
     config = parse_promptly_review_config(problem)
     brief = str(config.get("brief") or "").strip()
     requirements = str(config.get("prompt_requirements") or "").strip()
     examples_text = _format_promptly_example_replies(config.get("example_replies") or [])
-
-    model = str(model_spec or "").strip()
-    if not model:
-        model = str(QWEN_TEXT_MODEL or AI_TUTOR_MODEL or QWEN_CODER_MODEL).strip()
-    if not model:
-        raise RuntimeError("未配置 Promptly prompt 审查模型。")
 
     system_prompt = (
         "你是一个编程题阅卷老师，下面是题目的简要描述：\n\n"
@@ -454,11 +457,10 @@ def review_promptly_student_prompt(problem, student_prompt, model_spec=None, tim
         "请给出你的判断，回复严格的 JSON 格式。"
     )
 
-    raw_text = _call_qwen_text(
-        prompt_text=user_prompt,
+    raw_text = _call_llm_text(
+        user_prompt,
+        use_endpoint,
         timeout=timeout,
-        model=model,
-        enable_thinking=False,
         system_prompt=system_prompt,
     )
     payload = _extract_first_json_object_relaxed(raw_text)
@@ -476,7 +478,15 @@ def review_promptly_student_prompt(problem, student_prompt, model_spec=None, tim
     return nice, reply
 
 
-def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300):
+def generate_promptly_code(
+    problem,
+    student_prompt,
+    model_spec=None,
+    timeout=300,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     """根据 Promptly 模式的学生 prompt 生成待评测代码。"""
     fake_code = os.getenv("NUMOJ_FAKE_PROMPTLY_CODE")
     if fake_code is not None:
@@ -488,13 +498,15 @@ def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300
     prompt = str(student_prompt or "").strip()
     if not prompt:
         raise RuntimeError("prompt 不能为空。")
+    del model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "code_generation_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
 
     lang = str(problem.get("lang") or "matlab").strip().lower()
-    model = str(model_spec or "").strip()
-    if not model:
-        model = str(QWEN_CODER_MODEL or QWEN_TEXT_MODEL or AI_TUTOR_MODEL).strip()
-    if not model:
-        raise RuntimeError("未配置 Promptly 代码生成模型。")
 
     user_prompt = (
         "你正在为 NumericalOJ 的编程题生成一份学生提交代码。\n"
@@ -505,11 +517,10 @@ def generate_promptly_code(problem, student_prompt, model_spec=None, timeout=300
         f"提交页面中学生可见的初始代码：\n{problem.get('initial_code') or ''}\n\n"
         f"学生提交的 prompt：\n{prompt}\n"
     )
-    raw_text = _call_qwen_text(
-        prompt_text=user_prompt,
+    raw_text = _call_llm_text(
+        user_prompt,
+        use_endpoint,
         timeout=timeout,
-        model=model,
-        enable_thinking=False,
         system_prompt=PROMPTLY_CODE_GENERATION_SYSTEM_PROMPT,
     )
     code = _extract_code_from_model_text(raw_text)
@@ -542,7 +553,7 @@ def _repair_grading_json_text_locally(raw_text):
     return text
 
 
-def _repair_grading_json_with_qwen_flash(raw_text):
+def _repair_grading_json_with_llm(raw_text, endpoint):
     prompt = (
         "你是 JSON 修复器。请把下面这段“接近 JSON 但格式错误”的文本整理成合法 JSON 对象。\n"
         "要求：\n"
@@ -553,15 +564,10 @@ def _repair_grading_json_with_qwen_flash(raw_text):
         "5. 若字段值中包含 LaTeX 命令，JSON 字符串里的反斜杠必须双写（例如 \"\\\\neq\"、\"\\\\frac{a}{b}\"）。\n\n"
         f"待修复文本：\n```text\n{str(raw_text or '')}\n```"
     )
-    api_key, base_url = _resolve_endpoint_for_written_grading_route("dashscope")
-    return _call_qwen_text(
-        prompt_text=prompt,
-        api_key=api_key,
-        base_url=base_url,
+    return _call_llm_text(
+        prompt,
+        endpoint,
         timeout=90,
-        model=AI_TUTOR_MODEL,
-        enable_thinking=False,
-        resolve_endpoint=False,
     )
 
 
@@ -593,7 +599,7 @@ def render_pdf_to_images(pdf_path, output_dir):
     return image_paths
 
 
-# 视觉模型（Qwen-VL / Omni）可稳定接受的图片 MIME；其余格式（bmp/gif/tiff 等）
+# 通用视觉端点可稳定接受的图片 MIME；其余格式（bmp/gif/tiff 等）
 # 在发送前就地无损转成 PNG，避免模型拒收导致图片题 AI 批改失败。
 _VISION_SAFE_IMAGE_MIME = {'image/png', 'image/jpeg', 'image/webp'}
 
@@ -637,92 +643,36 @@ def _split_image_batches(image_data_urls, max_images_per_request=None):
     ]
 
 
-def _transcribe_image_batch(image_urls, prompt_text, api_key, base_url, on_delta=None):
-    omni_model = str(QWEN_OMNI_MODEL or "").strip() or str(QWEN_TEXT_MODEL or "").strip()
-    message_content = [
-        {
-            "type": "image_url",
-            "image_url": {"url": image_url}
-        }
-        for image_url in image_urls
-    ]
-    message_content.append({
-        "type": "text",
-        "text": prompt_text
-    })
-
-    if OpenAI is not None:
-        try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            stream = client.chat.completions.create(
-                model=omni_model,
-                messages=[{
-                    "role": "user",
-                    "content": message_content
-                }],
-                modalities=["text"],
-                stream=True,
-                stream_options={"include_usage": True},
-            )
-            parts = []
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta_content = chunk.choices[0].delta.content
-                delta_text = _extract_text_from_response_content(delta_content)
-                if not delta_text:
-                    continue
-                parts.append(delta_text)
-                if callable(on_delta):
-                    try:
-                        on_delta(delta_text)
-                    except Exception:
-                        pass
-            latex_text = _strip_markdown_code_fence_markers(''.join(parts))
-            if latex_text:
-                return latex_text
-        except Exception as e:
-            print(f"[LaTeX OCR] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": omni_model,
-        "messages": [{
-            "role": "user",
-            "content": message_content
-        }],
-        "modalities": ["text"]
-    }
-    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=300)
-    resp.raise_for_status()
-    result = resp.json()
-    choices = result.get('choices') or []
-    if not choices:
-        raise RuntimeError("模型未返回有效结果。")
-    content = (choices[0].get('message') or {}).get('content')
-    latex_text = _strip_markdown_code_fence_markers(_extract_text_from_response_content(content))
+def _transcribe_image_batch(image_urls, prompt_text, endpoint, on_delta=None):
+    latex_text = _strip_markdown_code_fence_markers(
+        _call_llm_vision(
+            prompt_text,
+            image_urls,
+            endpoint,
+            timeout=300,
+            on_delta=on_delta,
+        )
+    )
     if not latex_text:
         raise RuntimeError("模型未返回可用的 LaTeX 文本。")
-    if callable(on_delta):
-        try:
-            on_delta(latex_text)
-        except Exception:
-            pass
     return latex_text
 
 
-def transcribe_images_to_latex(image_paths, on_partial_text=None):
+def transcribe_images_to_latex(
+    image_paths,
+    on_partial_text=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     if not image_paths:
         raise RuntimeError("未生成可用于识别的图片。")
-
-    api_key = DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-
-    base_url = _resolve_dashscope_base_url()
+    use_endpoint = resolve_llm_endpoint_snapshot(
+        endpoint,
+        endpoint_id=endpoint_id,
+        allowed_categories={"omni", "vision"},
+        purpose="书面作业 OCR",
+    )
     prompt = (
         "请将这份书面作业完整转写为 Markdown 内嵌 LaTeX 的格式。"
         "要求："
@@ -771,7 +721,12 @@ def transcribe_images_to_latex(image_paths, on_partial_text=None):
             current_raw_part.append(delta_text)
             _emit_partial_preview()
 
-        part = _transcribe_image_batch(batch, chunk_prompt, api_key, base_url, on_delta=_on_delta)
+        part = _transcribe_image_batch(
+            batch,
+            chunk_prompt,
+            use_endpoint,
+            on_delta=_on_delta,
+        )
         if part:
             transcribed_parts.append(part.strip())
             current_raw_part = []
@@ -782,103 +737,18 @@ def transcribe_images_to_latex(image_paths, on_partial_text=None):
     return "\n\n".join(transcribed_parts).strip()
 
 
-def _call_qwen_text_with_images(
-    prompt_text,
-    image_data_urls,
-    api_key=None,
-    base_url=None,
-    timeout=300,
-    model=None,
-    enable_thinking=True,
-    resolve_endpoint=True,
-):
-    if resolve_endpoint:
-        use_api_key, use_base_url = _resolve_chat_endpoint_for_model(
-            model,
-            fallback_api_key=api_key,
-            fallback_base_url=base_url,
-        )
-    else:
-        if not str(api_key or "").strip() or not str(base_url or "").strip():
-            raise RuntimeError("缺少模型调用凭证或地址。")
-        use_api_key = str(api_key).strip()
-        use_base_url = str(base_url).rstrip('/')
-
-    message_content = [
-        {"type": "image_url", "image_url": {"url": str(image_url)}}
-        for image_url in (image_data_urls or [])
-        if str(image_url or "").strip()
-    ]
-    message_content.append({"type": "text", "text": str(prompt_text or "").strip()})
-    messages = [{"role": "user", "content": message_content}]
-
-    if OpenAI is not None:
-        try:
-            client = OpenAI(api_key=use_api_key, base_url=use_base_url)
-            kwargs = {
-                "model": str(model or QWEN_TEXT_MODEL),
-                "messages": messages,
-                "modalities": ["text"],
-                "stream": True,
-            }
-            if enable_thinking is not None:
-                kwargs["extra_body"] = {"enable_thinking": bool(enable_thinking)}
-            stream = client.chat.completions.create(**kwargs)
-            parts = []
-            reasoning_parts = []
-            for chunk in stream:
-                if not getattr(chunk, "choices", None):
-                    continue
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    parts.append(_extract_text_from_response_content(delta.content))
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    reasoning_parts.append(_extract_text_from_response_content(delta.reasoning_content))
-            text = ''.join(parts).strip()
-            if text:
-                return text
-            fallback_text = ''.join(reasoning_parts).strip()
-            if fallback_text:
-                return fallback_text
-        except Exception as e:
-            print(f"[Qwen Vision Grade] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
-
-    headers = {
-        "Authorization": f"Bearer {use_api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": str(model or QWEN_TEXT_MODEL),
-        "messages": messages,
-        "modalities": ["text"],
-    }
-    if enable_thinking is not None:
-        payload["enable_thinking"] = bool(enable_thinking)
-    resp = _post_chat_completions(use_base_url, headers, payload, timeout)
-    if resp.status_code >= 400:
-        payload.pop("enable_thinking", None)
-        resp = _post_chat_completions(use_base_url, headers, payload, timeout)
-    resp.raise_for_status()
-    result = resp.json()
-    choices = result.get("choices") or []
-    if not choices:
-        raise RuntimeError("模型未返回有效结果。")
-    content = (choices[0].get("message") or {}).get("content")
-    text = _extract_text_from_response_content(content).strip()
-    if not text:
-        raise RuntimeError("模型未返回可用文本。")
-    return text
-
-
-def _parse_written_homework_grading_result(response_text):
+def _parse_written_homework_grading_result(response_text, repair_endpoint=None):
     data = _extract_first_json_object_relaxed(response_text)
     if not data:
         locally_repaired = _repair_grading_json_text_locally(response_text)
         if locally_repaired:
             data = _extract_first_json_object_relaxed(locally_repaired)
-    if not data:
+    if not data and repair_endpoint is not None:
         try:
-            model_repaired = _repair_grading_json_with_qwen_flash(response_text)
+            model_repaired = _repair_grading_json_with_llm(
+                response_text,
+                repair_endpoint,
+            )
             data = _extract_first_json_object_relaxed(model_repaired)
         except Exception:
             data = None
@@ -969,20 +839,30 @@ def _parse_program_output_image_grading_result(response_text):
     return score, comment
 
 
-def evaluate_program_output_image_with_ai(problem, student_username, image_path):
+def evaluate_program_output_image_with_ai(
+    problem,
+    student_username,
+    image_path,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     if not image_path or not os.path.isfile(image_path):
         raise RuntimeError("未找到可用于图片批改的输出图片。")
 
     fake_result = os.getenv("NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT")
     if fake_result is not None:
         return _parse_program_output_image_grading_result(fake_result)
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "output_image_grading_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
 
     grading_rules = str((problem or {}).get("programming_grading_prompt") or "").strip()
-    programming_grading_model = str((problem or {}).get("programming_grading_model") or _DEFAULT_PROGRAMMING_IMAGE_GRADING_MODEL_SPEC).strip().lower()
     if not grading_rules:
         grading_rules = "仅当图片内容与题目要求完全一致时记 1 分，否则记 0 分。"
-    model_name, enable_thinking, route_key = _parse_programming_image_grading_model_spec(programming_grading_model)
-    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
 
     prompt = (
         "你是编程题图片批改助手。你将收到教师评分标准、学生用户名，以及学生程序生成的一张图片。\n"
@@ -998,22 +878,30 @@ def evaluate_program_output_image_with_ai(problem, student_username, image_path)
         "3. `comment` 要具体说明得分原因或关键不符合点。"
     )
     image_data_url = _build_image_data_url(image_path)
-    response_text = _call_qwen_text_with_images(
-        prompt_text=prompt,
-        image_data_urls=[image_data_url],
-        api_key=api_key,
-        base_url=base_url,
+    response_text = _call_llm_vision(
+        prompt,
+        [image_data_url],
+        use_endpoint,
         timeout=180,
-        model=model_name,
-        enable_thinking=enable_thinking,
-        resolve_endpoint=False,
     )
     return _parse_program_output_image_grading_result(response_text)
 
 
-def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec=_DEFAULT_WRITTEN_GRADING_MODEL_SPEC):
-    model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
-    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
+def evaluate_written_homework_with_ai(
+    problem,
+    student_latex,
+    grading_model_spec=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
+    del grading_model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "text_grading_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
     problem_title = (problem or {}).get('title', '')
     problem_content = (problem or {}).get('content', '')
     written_grading_prompt = str((problem or {}).get('written_grading_prompt') or '').strip()
@@ -1040,16 +928,15 @@ def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec
         f"【学生答案结束 STUDENT_ANSWER_{fence}】\n"
     )
 
-    response_text = _call_qwen_text(
+    response_text = _call_llm_text(
         prompt,
-        api_key=api_key,
-        base_url=base_url,
+        use_endpoint,
         timeout=300,
-        model=model_name,
-        enable_thinking=enable_thinking,
-        resolve_endpoint=False,
     )
-    score, deductions, comment = _parse_written_homework_grading_result(response_text)
+    score, deductions, comment = _parse_written_homework_grading_result(
+        response_text,
+        repair_endpoint=use_endpoint,
+    )
     final_comment = _format_written_homework_comment(score, deductions, comment)
     return score, final_comment
 
@@ -1057,13 +944,20 @@ def evaluate_written_homework_with_ai(problem, student_latex, grading_model_spec
 def evaluate_written_homework_with_ai_from_images(
     problem,
     image_paths,
-    grading_model_spec=_DEFAULT_WRITTEN_GRADING_MODEL_SPEC,
+    grading_model_spec=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
 ):
     if not image_paths:
         raise RuntimeError("未找到可用于图片批改的页面图片。")
-
-    model_name, enable_thinking, route_key = _parse_written_grading_model_spec(grading_model_spec)
-    api_key, base_url = _resolve_endpoint_for_written_grading_route(route_key)
+    del grading_model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
+    use_endpoint = resolve_problem_llm_endpoint_snapshot(
+        problem,
+        "direct_image_grading_endpoint_id",
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
     image_data_urls = [_build_image_data_url(path) for path in image_paths]
 
     problem_title = (problem or {}).get('title', '')
@@ -1087,17 +981,16 @@ def evaluate_written_homework_with_ai_from_images(
         "请直接阅读图片中的手写内容进行评分。"
     )
 
-    response_text = _call_qwen_text_with_images(
-        prompt_text=prompt,
-        image_data_urls=image_data_urls,
-        api_key=api_key,
-        base_url=base_url,
+    response_text = _call_llm_vision(
+        prompt,
+        image_data_urls,
+        use_endpoint,
         timeout=360,
-        model=model_name,
-        enable_thinking=enable_thinking,
-        resolve_endpoint=False,
     )
-    score, deductions, comment = _parse_written_homework_grading_result(response_text)
+    score, deductions, comment = _parse_written_homework_grading_result(
+        response_text,
+        repair_endpoint=use_endpoint,
+    )
     final_comment = _format_written_homework_comment(score, deductions, comment)
     return score, final_comment
 
@@ -1118,7 +1011,15 @@ def _atomic_write_text(path, content):
                 pass
 
 
-def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename, on_partial_latex=None):
+def save_transcribed_latex(
+    pdf_path,
+    upload_folder,
+    uploaded_filename,
+    on_partial_latex=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     image_paths = render_pdf_to_images(pdf_path, upload_folder)
     markdown_filename = f"{os.path.splitext(uploaded_filename)[0]}.md"
     markdown_path = os.path.join(upload_folder, markdown_filename)
@@ -1157,7 +1058,12 @@ def save_transcribed_latex(pdf_path, upload_folder, uploaded_filename, on_partia
             except Exception:
                 pass
 
-    latex_text = transcribe_images_to_latex(image_paths, on_partial_text=_on_partial_text)
+    latex_text = transcribe_images_to_latex(
+        image_paths,
+        on_partial_text=_on_partial_text,
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
+    )
     _atomic_write_text(markdown_path, latex_text)
     if callable(on_partial_latex):
         try:
@@ -1326,56 +1232,13 @@ def _find_submission_output_image_path(submission_id, test_index, test_points=No
     return None
 
 
-def _call_qwen_omni_with_image(prompt_text, image_data_url, api_key, base_url, timeout=180):
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image_url", "image_url": {"url": image_data_url}},
-            {"type": "text", "text": str(prompt_text or "").strip()},
-        ],
-    }]
-    model = str(QWEN_OMNI_MODEL)
-
-    if OpenAI is not None:
-        try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                modalities=["text"],
-                stream=False,
-            )
-            choices = getattr(resp, "choices", None) or []
-            if choices and getattr(choices[0], "message", None):
-                text = _extract_text_from_response_content(choices[0].message.content).strip()
-                if text:
-                    return text
-        except Exception as e:
-            print(f"[Image Analysis] OpenAI SDK 调用失败，尝试 requests 回退: {e}")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": model,
-        "messages": messages,
-        "modalities": ["text"],
-    }
-    resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=timeout)
-    resp.raise_for_status()
-    result = resp.json()
-    choices = result.get("choices") or []
-    if not choices:
-        raise RuntimeError("图片分析模型未返回有效结果。")
-    content = (choices[0].get("message") or {}).get("content")
-    text = _extract_text_from_response_content(content).strip()
-    if not text:
-        raise RuntimeError("图片分析模型未返回可用文本。")
-    return text
-
-
-def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_points):
+def _analyze_image_mismatch_against_problem(
+    problem_text,
+    submission_id,
+    test_points,
+    *,
+    endpoint=None,
+):
     if not submission_id:
         return "", None
     points = test_points if isinstance(test_points, list) else []
@@ -1434,16 +1297,13 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
         f"[题目要求]\n{problem_text}"
     )
 
-    api_key = DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        return "", None
-    base_url = _resolve_dashscope_base_url()
+    if endpoint is None:
+        raise RuntimeError("代码图片分析尚未解析端点快照。")
     try:
-        analysis = _call_qwen_omni_with_image(
-            prompt_text=prompt,
-            image_data_url=image_url,
-            api_key=api_key,
-            base_url=base_url,
+        analysis = _call_llm_vision(
+            prompt,
+            [image_url],
+            endpoint,
             timeout=int(AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT),
         )
     except Exception as e:
@@ -1453,7 +1313,14 @@ def _analyze_image_mismatch_against_problem(problem_text, submission_id, test_po
     return str(analysis or "").strip(), used_idx
 
 
-def analyze_submission_output_image_against_problem(problem_text, submission_id, test_points):
+def analyze_submission_output_image_against_problem(
+    problem_text,
+    submission_id,
+    test_points,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
     text = str(problem_text or "").strip()
     points = test_points if isinstance(test_points, list) else []
     if not text or not points or not submission_id:
@@ -1469,10 +1336,24 @@ def analyze_submission_output_image_against_problem(problem_text, submission_id,
             "analysis": "",
             "test_index": None,
         }
+    if endpoint is None and endpoint_id is None:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key="code_image_analysis",
+            allowed_categories={"omni", "vision"},
+            purpose="代码图片分析",
+        )
+    else:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            endpoint,
+            endpoint_id=endpoint_id,
+            allowed_categories={"omni", "vision"},
+            purpose="代码图片分析",
+        )
     analysis, used_idx = _analyze_image_mismatch_against_problem(
         problem_text=text,
         submission_id=submission_id,
         test_points=points,
+        endpoint=use_endpoint,
     )
     return {
         "has_output_image": True,
@@ -1490,6 +1371,11 @@ def generate_ai_code_marks_from_submission_context(
     test_points=None,
     max_issues=8,
     timeout=240,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+    image_endpoint=None,
+    image_endpoint_id=None,
 ):
     problem_text = str(problem_content or "").strip()
     code_text = str(user_code or "").replace('\r\n', '\n').replace('\r', '\n')
@@ -1497,6 +1383,45 @@ def generate_ai_code_marks_from_submission_context(
         raise RuntimeError("缺少题目内容")
     if not code_text.strip():
         raise RuntimeError("缺少用户代码")
+    if endpoint is None and endpoint_id is None:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key="ai_code_annotation",
+            allowed_categories={"omni", "text"},
+            purpose="AI 代码批注",
+        )
+    else:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            endpoint,
+            endpoint_id=endpoint_id,
+            allowed_categories={"omni", "text"},
+            purpose="AI 代码批注",
+        )
+
+    test_points_rows = (
+        test_points
+        if isinstance(test_points, list)
+        else _parse_test_points_text(test_points_text)
+    )
+    needs_image_analysis = any(
+        _to_bool((point or {}).get("has_output_image"))
+        and str((point or {}).get("status") or "").strip().lower() != "accepted"
+        for point in test_points_rows
+    )
+    use_image_endpoint = None
+    if needs_image_analysis:
+        if image_endpoint is None and image_endpoint_id is None:
+            use_image_endpoint = resolve_llm_endpoint_snapshot(
+                feature_key="code_image_analysis",
+                allowed_categories={"omni", "vision"},
+                purpose="代码图片分析",
+            )
+        else:
+            use_image_endpoint = resolve_llm_endpoint_snapshot(
+                image_endpoint,
+                endpoint_id=image_endpoint_id,
+                allowed_categories={"omni", "vision"},
+                purpose="代码图片分析",
+            )
 
     repo_files = repository_files if isinstance(repository_files, dict) else {}
     repository_context = ""
@@ -1508,16 +1433,17 @@ def generate_ai_code_marks_from_submission_context(
     numbered_lines = [f"{idx:4d}| {line}" for idx, line in enumerate(code_text.split('\n'), start=1)]
     numbered_code = "\n".join(numbered_lines)
 
-    test_points_rows = test_points if isinstance(test_points, list) else _parse_test_points_text(test_points_text)
     image_mismatch_analysis, image_test_index = _analyze_image_mismatch_against_problem(
         problem_text=problem_text,
         submission_id=submission_id,
         test_points=test_points_rows,
+        endpoint=use_image_endpoint,
     )
     image_context = ""
     if image_mismatch_analysis:
         image_context = (
-            f"\n\n[输出图片一致性分析（由 {QWEN_OMNI_MODEL} 基于测试点#{image_test_index} 输出图片生成）]\n"
+            f"\n\n[输出图片一致性分析（由 {use_image_endpoint.model} "
+            f"基于测试点#{image_test_index} 输出图片生成）]\n"
             f"{image_mismatch_analysis}\n"
         )
 
@@ -1557,11 +1483,11 @@ def generate_ai_code_marks_from_submission_context(
 {image_context}
 """
 
-    api_key = DASHSCOPE_API_KEY
-    if not api_key or str(api_key).strip() == "" or "YOUR" in str(api_key).upper():
-        raise RuntimeError("未配置 DASHSCOPE_API_KEY。")
-    base_url = _resolve_dashscope_base_url()
-    response_text = _call_qwen_text(prompt, api_key, base_url, timeout=timeout, model=AI_TUTOR_MODEL)
+    response_text = _call_llm_text(
+        prompt,
+        use_endpoint,
+        timeout=timeout,
+    )
     data_obj = _extract_first_json_object(response_text)
     if not isinstance(data_obj, dict):
         raise RuntimeError(f"模型返回无法解析为 JSON：{response_text[:300]}")

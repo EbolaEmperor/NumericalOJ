@@ -11,33 +11,23 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import numpy as np
-import requests
 
-from oj_modules.ai_utils import _call_qwen_text, _extract_first_json_object_relaxed
+from oj_modules.ai_utils import (
+    _call_llm_text,
+    _extract_first_json_object_relaxed,
+    resolve_llm_endpoint_snapshot,
+)
 from oj_modules.db_services import get_db_connection
+from oj_modules.llm_endpoints import create_embeddings
 from config import (
-    AI_TUTOR_MODEL,
     AGENT_REPOSITORY_KNN_SCORE_THRESHOLD,
     AGENT_REPOSITORY_KNN_TOP_K,
-    DASHSCOPE_API_KEY,
-    DASHSCOPE_BASE_URL,
-    QWEN_TEXT_MODEL,
     REPOSITORY_EMBEDDING_BATCH_SIZE,
-    REPOSITORY_EMBEDDING_DIM,
-    REPOSITORY_EMBEDDING_PROVIDER,
     REPOSITORY_EMBEDDING_TIMEOUT,
     REPOSITORY_FAISS_INDEX_ROOT,
-    REPOSITORY_QWEN_EMBEDDING_MODEL,
-    REPOSITORY_SENTENCE_MODEL,
-    REPOSITORY_STRUCTURED_MODEL,
     REPOSITORY_STRUCTURED_TIMEOUT,
     REPOSITORY_VECTOR_BACKEND,
 )
-
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
 
 try:
     import faiss
@@ -57,12 +47,6 @@ _ALLOWED_REPO_EXTENSIONS = ('.h', '.hpp', '.c', '.cpp')
 _ALLOWED_ACCESS = {'public', 'private', 'protected'}
 _ALLOWED_FUNC_KIND = {'function', 'method', 'constructor', 'destructor', 'operator'}
 
-_DEFAULT_EMBEDDING_DIM = int(REPOSITORY_EMBEDDING_DIM)
-_DEFAULT_SENTENCE_MODEL = str(REPOSITORY_SENTENCE_MODEL or '').strip()
-_DEFAULT_QWEN_EMBEDDING_MODEL = str(REPOSITORY_QWEN_EMBEDDING_MODEL or '').strip()
-_DEFAULT_PROVIDER = str(REPOSITORY_EMBEDDING_PROVIDER or '').strip().lower()
-_DEFAULT_LLM_MODEL = str(REPOSITORY_STRUCTURED_MODEL or '').strip() or str(QWEN_TEXT_MODEL or '').strip()
-_STRUCTURED_ENTITY_MODEL = str(AI_TUTOR_MODEL or '').strip() or _DEFAULT_LLM_MODEL
 _DEFAULT_LLM_TIMEOUT_SECONDS = int(REPOSITORY_STRUCTURED_TIMEOUT)
 _DEFAULT_EMBEDDING_TIMEOUT_SECONDS = int(REPOSITORY_EMBEDDING_TIMEOUT)
 _DEFAULT_EMBEDDING_BATCH_SIZE = max(1, int(REPOSITORY_EMBEDDING_BATCH_SIZE))
@@ -86,7 +70,6 @@ try:
 except Exception:
     _DEFAULT_SEARCH_SCORE_THRESHOLD = 0.0
 
-_sentence_model_cache = {}
 _tree_sitter_parser_cache = {}
 
 
@@ -1519,7 +1502,7 @@ def _build_member_variable_decl_for_prompt(member):
     return ''
 
 
-def _call_qwen_structured_function_entity(function_item):
+def _call_structured_function_entity(function_item, endpoint):
     leading_comment = _safe_str((function_item or {}).get('_leading_comment'))
     comment_block = leading_comment if leading_comment else '(无)'
     prompt = (
@@ -1540,11 +1523,10 @@ def _call_qwen_structured_function_entity(function_item):
         f"[函数前人工注释]\n{comment_block}\n\n"
         f"[函数代码]\n{function_item.get('code')}\n"
     )
-    text = _call_qwen_text(
-        prompt_text=prompt,
+    text = _call_llm_text(
+        prompt,
+        endpoint,
         timeout=_DEFAULT_LLM_TIMEOUT_SECONDS,
-        model=_STRUCTURED_ENTITY_MODEL,
-        enable_thinking=False,
     )
     data = _extract_first_json_object_relaxed(text)
     if not isinstance(data, dict):
@@ -1554,7 +1536,7 @@ def _call_qwen_structured_function_entity(function_item):
     return data
 
 
-def _call_qwen_structured_class_entity(class_item):
+def _call_structured_class_entity(class_item, endpoint):
     payload = {
         'class_name': class_item.get('class_name'),
         'qualified_name': class_item.get('qualified_name'),
@@ -1575,11 +1557,10 @@ def _call_qwen_structured_class_entity(class_item):
         "\"is_static\":false,\"is_virtual\":false,\"is_const\":false,\"is_pure_virtual\":false,\"start_line\":0,\"end_line\":0}\n\n"
         f"[类声明输入]\n{json.dumps(payload, ensure_ascii=False)}\n"
     )
-    text = _call_qwen_text(
-        prompt_text=prompt,
+    text = _call_llm_text(
+        prompt,
+        endpoint,
         timeout=_DEFAULT_LLM_TIMEOUT_SECONDS,
-        model=_STRUCTURED_ENTITY_MODEL,
-        enable_thinking=False,
     )
     data = _extract_first_json_object_relaxed(text)
     if not isinstance(data, dict):
@@ -1676,8 +1657,9 @@ def _notify_structuring_progress(progress_callback, stage, detail):
         pass
 
 
-def _build_structured_with_treesitter_and_qwen(
+def _build_structured_with_treesitter_and_llm(
     file_item,
+    endpoint,
     progress_callback=None,
     function_callback=None,
     *,
@@ -1712,7 +1694,10 @@ def _build_structured_with_treesitter_and_qwen(
         for noisy_key in ('_prompt_member_variable_decls', '_prompt_member_method_decls', '_clang_decl_id'):
             class_payload.pop(noisy_key, None)
         try:
-            llm_cls = _call_qwen_structured_class_entity(class_item=cls)
+            llm_cls = _call_structured_class_entity(
+                class_item=cls,
+                endpoint=endpoint,
+            )
             if isinstance(llm_cls, dict):
                 for field in ('kind', 'bases', 'member_variables', 'member_methods'):
                     if llm_cls.get(field) is not None:
@@ -1745,7 +1730,10 @@ def _build_structured_with_treesitter_and_qwen(
         )
         merged = dict(func)
         try:
-            llm_func = _call_qwen_structured_function_entity(function_item=func)
+            llm_func = _call_structured_function_entity(
+                function_item=func,
+                endpoint=endpoint,
+            )
             merged = _merge_function_with_llm_enrichment(func, llm_func)
         except Exception as exc:
             if strict_structuring:
@@ -1942,13 +1930,20 @@ def _normalize_function_item(item, filename, repo_file_id, source_hash):
     }
 
 
-def _embedding_model_name(provider=None):
-    use_provider = str(provider or _DEFAULT_PROVIDER).strip().lower()
-    if use_provider == 'sentence_transformers':
-        return _DEFAULT_SENTENCE_MODEL
-    if use_provider == 'qwen_embedding':
-        return _DEFAULT_QWEN_EMBEDDING_MODEL
-    return _DEFAULT_QWEN_EMBEDDING_MODEL
+def _bounded_model_name(model, max_length):
+    value = str(model or '').strip()
+    if len(value) <= int(max_length):
+        return value
+    digest = hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]
+    return f"{value[:int(max_length) - 17]}#{digest}"
+
+
+def _embedding_model_name(endpoint):
+    return _bounded_model_name(endpoint.model, 128)
+
+
+def _structured_model_name(endpoint):
+    return _bounded_model_name(endpoint.model, 191)
 
 
 def _normalize_l2(vectors):
@@ -1960,97 +1955,67 @@ def _normalize_l2(vectors):
     return arr / norms
 
 
-def _resolve_dashscope_credentials():
-    api_key = DASHSCOPE_API_KEY
-    base_url = DASHSCOPE_BASE_URL
-    api_key = str(api_key or '').strip()
-    base_url = str(base_url or '').strip().rstrip('/')
-    if (not api_key) or ('YOUR' in api_key.upper()):
-        raise RuntimeError('未配置 DASHSCOPE_API_KEY，无法执行真实向量化。')
-    if not base_url:
-        raise RuntimeError('未配置 DASHSCOPE_BASE_URL，无法执行真实向量化。')
-    return api_key, base_url
-
-
-def _encode_with_qwen_embedding(texts, model_name=None):
+def _encode_with_embedding_endpoint(texts, endpoint):
     use_texts = [str(x or '') for x in texts]
+    use_model = _embedding_model_name(endpoint)
     if not use_texts:
-        return np.zeros((0, 0), dtype=np.float32), str(model_name or _DEFAULT_QWEN_EMBEDDING_MODEL)
-
-    api_key, base_url = _resolve_dashscope_credentials()
-    use_model = str(model_name or _DEFAULT_QWEN_EMBEDDING_MODEL).strip()
-    headers = {
-        'Authorization': f'Bearer {api_key}',
-        'Content-Type': 'application/json',
-    }
+        return np.zeros((0, 0), dtype=np.float32), use_model
 
     vectors = []
     for i in range(0, len(use_texts), _DEFAULT_EMBEDDING_BATCH_SIZE):
         batch = use_texts[i:i + _DEFAULT_EMBEDDING_BATCH_SIZE]
-        payload = {
-            'model': use_model,
-            'input': batch,
-        }
-        resp = requests.post(
-            f'{base_url}/embeddings',
-            headers=headers,
-            json=payload,
+        result = create_embeddings(
+            endpoint,
+            batch,
             timeout=_DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
         )
-        resp.raise_for_status()
-        result = resp.json() or {}
-        data = result.get('data') or []
-        if not isinstance(data, list) or len(data) != len(batch):
-            raise RuntimeError(f'Embedding 返回格式异常: count={len(data)} expected={len(batch)}')
-        ordered = sorted(data, key=lambda x: int(x.get('index', 0)))
-        for item in ordered:
-            embedding = item.get('embedding')
-            if not isinstance(embedding, list) or not embedding:
-                raise RuntimeError('Embedding 向量为空或格式错误。')
-            vectors.append(embedding)
+        if len(result.vectors) != len(batch):
+            raise RuntimeError(
+                f'Embedding 返回格式异常: count={len(result.vectors)} '
+                f'expected={len(batch)}'
+            )
+        vectors.extend(result.vectors)
 
     arr = np.asarray(vectors, dtype=np.float32)
     arr = _normalize_l2(arr)
     return arr, use_model
 
 
-def _get_sentence_model(model_name=None):
-    use_model = str(model_name or _DEFAULT_SENTENCE_MODEL).strip()
-    if use_model in _sentence_model_cache:
-        return _sentence_model_cache[use_model]
-    if SentenceTransformer is None:
-        raise RuntimeError('未安装 sentence-transformers，无法执行真实向量化。')
-    model = SentenceTransformer(use_model)
-    _sentence_model_cache[use_model] = model
-    return model
+def encode_texts(
+    texts,
+    embedding_model_override=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
+    del embedding_model_override  # 兼容旧调用签名；模型只来自端点快照。
+    if endpoint is None and endpoint_id is None:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key='repository_embedding',
+            allowed_categories={'embedding'},
+            purpose='代码仓库 Embedding',
+        )
+    else:
+        use_endpoint = resolve_llm_endpoint_snapshot(
+            endpoint,
+            endpoint_id=endpoint_id,
+            allowed_categories={'embedding'},
+            purpose='代码仓库 Embedding',
+        )
+    return _encode_with_embedding_endpoint(texts, use_endpoint)
 
 
-def _encode_with_sentence_transformers(texts, model_name=None):
-    use_texts = [str(x or '') for x in texts]
-    use_model = str(model_name or _DEFAULT_SENTENCE_MODEL).strip()
-    if not use_texts:
-        return np.zeros((0, 0), dtype=np.float32), use_model
-    model = _get_sentence_model(use_model)
-    vecs = model.encode(use_texts, normalize_embeddings=True)
-    arr = np.asarray(vecs, dtype=np.float32)
-    arr = _normalize_l2(arr)
-    return arr, use_model
-
-
-def encode_texts(texts, embedding_model_override=None):
-    provider = _DEFAULT_PROVIDER
-    if provider == 'qwen_embedding':
-        return _encode_with_qwen_embedding(texts, model_name=embedding_model_override)
-    if provider == 'sentence_transformers':
-        return _encode_with_sentence_transformers(texts, model_name=embedding_model_override)
-    raise RuntimeError(
-        f'不支持的 REPOSITORY_EMBEDDING_PROVIDER={provider}。'
-        '请使用 qwen_embedding 或 sentence_transformers。'
+def encode_texts_with_repository_embedding(
+    texts,
+    *,
+    endpoint=None,
+    endpoint_id=None,
+):
+    return encode_texts(
+        texts,
+        endpoint=endpoint,
+        endpoint_id=endpoint_id,
     )
-
-
-def encode_texts_with_qwen_embedding(texts, embedding_model_override=None):
-    return _encode_with_qwen_embedding(texts, model_name=embedding_model_override)
 
 
 def _build_embedding_input(chunk, class_map):
@@ -2132,6 +2097,7 @@ def _write_faiss_index(
     embedding_model,
     *,
     index_generation=None,
+    embedding_endpoint_identity=None,
 ):
     _ensure_faiss_available()
     paths = _faiss_paths(user_id, index_generation=index_generation)
@@ -2140,6 +2106,9 @@ def _write_faiss_index(
     if not chunk_ids:
         meta = {
             'embedding_model': str(embedding_model or ''),
+            'embedding_endpoint_identity': str(
+                embedding_endpoint_identity or ''
+            ),
             'vector_db_backend': 'faiss',
             'dimension': 0,
             'chunk_ids': [],
@@ -2174,6 +2143,7 @@ def _write_faiss_index(
 
     meta = {
         'embedding_model': str(embedding_model or ''),
+        'embedding_endpoint_identity': str(embedding_endpoint_identity or ''),
         'vector_db_backend': 'faiss',
         'dimension': dim,
         'chunk_ids': list(chunk_ids),
@@ -2232,6 +2202,8 @@ def _stage_faiss_generation(
     chunk_ids,
     embeddings,
     embedding_model,
+    *,
+    embedding_endpoint_identity=None,
 ):
     """完整写好一个不可变 FAISS generation，尚不改变读者可见指针。"""
     generation = int(index_generation)
@@ -2246,6 +2218,7 @@ def _stage_faiss_generation(
         embeddings,
         embedding_model,
         index_generation=generation,
+        embedding_endpoint_identity=embedding_endpoint_identity,
     )
     return final_paths
 
@@ -2304,23 +2277,34 @@ def _format_repository_progress_message(stage, detail=''):
     return f"[stage:{stage_key}]"
 
 
-def _parser_cache_key(source_hash):
+def _endpoint_cache_identity(endpoint):
     payload = '\0'.join([
-        _safe_str(source_hash),
-        _PARSER_SCHEMA_VERSION,
-        _STRUCTURED_ENTITY_MODEL,
+        str(endpoint.id or ''),
+        endpoint.protocol.value,
+        endpoint.category.value,
+        endpoint.base_url,
+        endpoint.model,
+        '1' if endpoint.thinking_enabled else '0',
+        endpoint.thinking_format.value,
     ])
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
-def _embedding_input_hash(text, embedding_model):
+def _parser_cache_key(source_hash, structured_endpoint):
+    payload = '\0'.join([
+        _safe_str(source_hash),
+        _PARSER_SCHEMA_VERSION,
+        _endpoint_cache_identity(structured_endpoint),
+    ])
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _embedding_input_hash(text, embedding_endpoint, structured_endpoint):
     payload = '\0'.join([
         _EMBEDDING_SCHEMA_VERSION,
         _PARSER_SCHEMA_VERSION,
-        _STRUCTURED_ENTITY_MODEL,
-        _DEFAULT_PROVIDER,
-        _safe_str(embedding_model),
-        str(_DEFAULT_EMBEDDING_DIM),
+        _endpoint_cache_identity(structured_endpoint),
+        _endpoint_cache_identity(embedding_endpoint),
         str(text or ''),
     ])
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
@@ -2353,7 +2337,7 @@ def _clone_cached_structured_file(cache_item, file_item):
     return {'classes': classes, 'functions': functions, 'source_hash': source_hash}
 
 
-def _load_active_repository_index_cache(user_id):
+def _load_active_repository_index_cache(user_id, structured_endpoint):
     """读取当前 active generation 的结构与向量缓存，不改变任何可见状态。"""
     active_generation = _get_active_repository_index_generation(user_id)
     if active_generation is None:
@@ -2398,12 +2382,14 @@ def _load_active_repository_index_cache(user_id):
             continue
         marker = payload.get('_index_cache') if isinstance(payload, dict) else None
         source_hash = _safe_str(row.get('source_hash'))
-        expected_file_key = _parser_cache_key(source_hash)
+        expected_file_key = _parser_cache_key(source_hash, structured_endpoint)
         if (
             not isinstance(marker, dict)
             or marker.get('file_cache_key') != expected_file_key
             or _safe_str(row.get('parser_version')) != _PARSER_SCHEMA_VERSION
-            or _safe_str(row.get('structured_model')) != _STRUCTURED_ENTITY_MODEL
+            or _safe_str(row.get('structured_model')) != _structured_model_name(
+                structured_endpoint
+            )
         ):
             continue
         bucket = grouped_file_cache.setdefault(
@@ -2430,12 +2416,14 @@ def _load_active_repository_index_cache(user_id):
             continue
         marker = payload.get('_index_cache') if isinstance(payload, dict) else None
         source_hash = _safe_str(row.get('source_hash'))
-        expected_file_key = _parser_cache_key(source_hash)
+        expected_file_key = _parser_cache_key(source_hash, structured_endpoint)
         if (
             not isinstance(marker, dict)
             or marker.get('file_cache_key') != expected_file_key
             or marker.get('parser_version') != _PARSER_SCHEMA_VERSION
-            or marker.get('structured_model') != _STRUCTURED_ENTITY_MODEL
+            or marker.get('structured_model') != _structured_model_name(
+                structured_endpoint
+            )
         ):
             continue
         bucket = grouped_file_cache.setdefault(
@@ -2449,19 +2437,30 @@ def _load_active_repository_index_cache(user_id):
     return file_cache, vector_cache
 
 
-def _attach_index_cache_metadata(classes, functions, embedding_hashes):
+def _attach_index_cache_metadata(
+    classes,
+    functions,
+    embedding_hashes,
+    structured_endpoint,
+):
     for cls in classes:
         cls['_index_cache'] = {
-            'file_cache_key': _parser_cache_key(cls.get('source_hash')),
+            'file_cache_key': _parser_cache_key(
+                cls.get('source_hash'),
+                structured_endpoint,
+            ),
             'parser_version': _PARSER_SCHEMA_VERSION,
-            'structured_model': _STRUCTURED_ENTITY_MODEL,
+            'structured_model': _structured_model_name(structured_endpoint),
         }
     for func in functions:
         chunk_id = _safe_str(func.get('chunk_id'))
         func['_index_cache'] = {
-            'file_cache_key': _parser_cache_key(func.get('source_hash')),
+            'file_cache_key': _parser_cache_key(
+                func.get('source_hash'),
+                structured_endpoint,
+            ),
             'parser_version': _PARSER_SCHEMA_VERSION,
-            'structured_model': _STRUCTURED_ENTITY_MODEL,
+            'structured_model': _structured_model_name(structured_endpoint),
             'embedding_schema_version': _EMBEDDING_SCHEMA_VERSION,
             'embedding_input_hash': _safe_str(embedding_hashes.get(chunk_id)),
         }
@@ -2477,6 +2476,7 @@ def _insert_index_generation_rows(
     embedding_map,
     embedding_hashes,
     embedding_model,
+    structured_model,
 ):
     for cls in classes:
         cursor.execute(
@@ -2547,7 +2547,7 @@ def _insert_index_generation_rows(
                 func.get('source_hash') or '',
                 _safe_str(embedding_hashes.get(chunk_id)),
                 _PARSER_SCHEMA_VERSION,
-                _STRUCTURED_ENTITY_MODEL,
+                structured_model,
                 func.get('code') or '',
                 json.dumps(func.get('params') or [], ensure_ascii=False),
                 json.dumps(func.get('returns') or {}, ensure_ascii=False),
@@ -2582,6 +2582,7 @@ def _publish_repository_index_generation(
     embedding_map,
     embedding_hashes,
     embedding_model,
+    structured_model,
 ):
     """在一个事务中发布 DB generation，并以 state 指针作为提交点。"""
     from oj_modules.repository.tree import repository_user_lock
@@ -2637,6 +2638,7 @@ def _publish_repository_index_generation(
                     embedding_map=embedding_map,
                     embedding_hashes=embedding_hashes,
                     embedding_model=embedding_model,
+                    structured_model=structured_model,
                 )
                 cursor.execute(
                     """
@@ -2803,6 +2805,17 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
         if _is_repository_index_job_cancel_requested(job_id):
             raise RepositoryIndexJobCancelled('结构化整理任务已被取消。')
 
+        structured_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key='repository_structuring',
+            allowed_categories={'text', 'omni'},
+            purpose='代码仓库结构化',
+        )
+        embedding_endpoint = resolve_llm_endpoint_snapshot(
+            feature_key='repository_embedding',
+            allowed_categories={'embedding'},
+            purpose='代码仓库 Embedding',
+        )
+
         base_generation, files = _load_repository_index_snapshot(user_id)
         if target_file_id > 0 and not any(
             _safe_int(item.get('id'), 0) == target_file_id for item in files
@@ -2823,7 +2836,10 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
             ),
         )
 
-        file_cache, vector_cache = _load_active_repository_index_cache(user_id)
+        file_cache, vector_cache = _load_active_repository_index_cache(
+            user_id,
+            structured_endpoint,
+        )
         all_functions = []
         all_classes = []
         reused_structured_files = 0
@@ -2851,7 +2867,7 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
                     ),
                 )
 
-            cache_key = _parser_cache_key(content_hash)
+            cache_key = _parser_cache_key(content_hash, structured_endpoint)
             cached = file_cache.get(cache_key)
             if cached:
                 normalized = _clone_cached_structured_file(cached, file_item)
@@ -2862,8 +2878,9 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
                 )
             else:
                 _report_file_progress('file_prepare', '开始严格结构化处理。')
-                normalized = _build_structured_with_treesitter_and_qwen(
+                normalized = _build_structured_with_treesitter_and_llm(
                     file_item=file_item,
+                    endpoint=structured_endpoint,
                     progress_callback=_report_file_progress,
                     strict_structuring=True,
                 )
@@ -2895,7 +2912,7 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
             if simple and simple not in class_map:
                 class_map[simple] = cls
 
-        embedding_model = _embedding_model_name()
+        embedding_model = _embedding_model_name(embedding_endpoint)
         embedding_map = {}
         embedding_hashes = {}
         missing_functions = []
@@ -2903,7 +2920,11 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
         reused_vectors = 0
         for func in all_functions:
             text = _build_embedding_input(func, class_map)
-            input_hash = _embedding_input_hash(text, embedding_model)
+            input_hash = _embedding_input_hash(
+                text,
+                embedding_endpoint,
+                structured_endpoint,
+            )
             chunk_id = _safe_str(func.get('chunk_id'))
             embedding_hashes[chunk_id] = input_hash
             cached_vector = vector_cache.get((input_hash, embedding_model))
@@ -2932,7 +2953,7 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
             )
             vectors, model_used = encode_texts(
                 batch_texts,
-                embedding_model_override=embedding_model,
+                endpoint=embedding_endpoint,
             )
             if _safe_str(model_used) != embedding_model:
                 raise RuntimeError(
@@ -2950,6 +2971,7 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
             all_classes,
             all_functions,
             embedding_hashes,
+            structured_endpoint,
         )
         candidate_vectors = _build_cumulative_embeddings(
             all_functions,
@@ -2971,6 +2993,9 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
             [item['chunk_id'] for item in all_functions],
             candidate_vectors,
             embedding_model,
+            embedding_endpoint_identity=_endpoint_cache_identity(
+                embedding_endpoint
+            ),
         )
 
         if _is_repository_index_job_cancel_requested(job_id):
@@ -2984,6 +3009,7 @@ def _run_repository_index_job_once(user_id, job_id, file_id=None):
             embedding_map=embedding_map,
             embedding_hashes=embedding_hashes,
             embedding_model=embedding_model,
+            structured_model=_structured_model_name(structured_endpoint),
         )
         return {
             'success': True,
@@ -3169,13 +3195,34 @@ def search_repository_chunks(
     score_threshold=None,
     query_vector=None,
     query_embedding_model=None,
+    *,
+    endpoint=None,
+    endpoint_id=None,
 ):
     text = str(query or '').strip()
+    use_embedding_endpoint = None
+    default_model = str(query_embedding_model or '').strip()
+    if endpoint is not None or endpoint_id is not None:
+        use_embedding_endpoint = resolve_llm_endpoint_snapshot(
+            endpoint,
+            endpoint_id=endpoint_id,
+            allowed_categories={'embedding'},
+            purpose='代码仓库 Embedding',
+        )
+        default_model = _embedding_model_name(use_embedding_endpoint)
+    elif query_vector is None and text:
+        if endpoint is None and endpoint_id is None:
+            use_embedding_endpoint = resolve_llm_endpoint_snapshot(
+                feature_key='repository_embedding',
+                allowed_categories={'embedding'},
+                purpose='代码仓库 Embedding',
+            )
+        default_model = _embedding_model_name(use_embedding_endpoint)
     if query_vector is None and not text:
         return {
             'query': text,
             'hits': [],
-            'embedding_model': _embedding_model_name(),
+            'embedding_model': default_model,
             'vector_db_backend': _VECTOR_DB_BACKEND,
         }
 
@@ -3190,7 +3237,7 @@ def search_repository_chunks(
         return {
             'query': text,
             'hits': [],
-            'embedding_model': _embedding_model_name(),
+            'embedding_model': default_model,
             'vector_db_backend': _VECTOR_DB_BACKEND,
         }
     index, meta = _load_faiss_index(
@@ -3201,7 +3248,7 @@ def search_repository_chunks(
         return {
             'query': text,
             'hits': [],
-            'embedding_model': _embedding_model_name(),
+            'embedding_model': default_model,
             'vector_db_backend': _VECTOR_DB_BACKEND,
         }
 
@@ -3210,21 +3257,32 @@ def search_repository_chunks(
         return {
             'query': text,
             'hits': [],
-            'embedding_model': str(meta.get('embedding_model') or _embedding_model_name()),
+            'embedding_model': str(meta.get('embedding_model') or default_model),
             'vector_db_backend': _VECTOR_DB_BACKEND,
         }
     if index is None:
         return {
             'query': text,
             'hits': [],
-            'embedding_model': str(meta.get('embedding_model') or _embedding_model_name()),
+            'embedding_model': str(meta.get('embedding_model') or default_model),
             'vector_db_backend': _VECTOR_DB_BACKEND,
         }
 
     index_dim = int(index.d)
-    model_used = str(meta.get('embedding_model') or _embedding_model_name())
+    model_used = str(meta.get('embedding_model') or default_model)
+    if use_embedding_endpoint is not None:
+        stored_identity = str(meta.get('embedding_endpoint_identity') or '')
+        current_identity = _endpoint_cache_identity(use_embedding_endpoint)
+        if not stored_identity or stored_identity != current_identity:
+            raise RuntimeError(
+                '代码仓库 Embedding 端点已变化或旧索引缺少端点快照；'
+                '请重新执行“结构化整理”以重建向量库。'
+            )
     if query_vector is None:
-        query_vec, model_used = encode_texts([text], embedding_model_override=meta.get('embedding_model'))
+        query_vec, model_used = encode_texts(
+            [text],
+            endpoint=use_embedding_endpoint,
+        )
         if query_vec.shape[0] == 0:
             return {
                 'query': text,
@@ -3241,7 +3299,7 @@ def search_repository_chunks(
             return {
                 'query': text,
                 'hits': [],
-                'embedding_model': str(query_embedding_model or model_used or _embedding_model_name()),
+                'embedding_model': str(query_embedding_model or model_used or default_model),
                 'vector_db_backend': _VECTOR_DB_BACKEND,
             }
         q = _normalize_l2(raw_vec[:1])

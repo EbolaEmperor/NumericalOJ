@@ -6,6 +6,7 @@ import json
 from flask import Blueprint, request
 
 from oj_modules.ai_detection.task_tracker import TASK_TYPE_LABELS, get_recent_tasks
+from oj_modules.ai_detection.llm_detector import get_available_endpoints
 from oj_modules.api.helpers import json_error, json_success, public_user
 from oj_modules.auth_helpers import current_user, is_admin
 from oj_modules.db_services import (
@@ -51,8 +52,7 @@ def dashboard():
     classes = get_all_classes()
     problems = [
         p for p in get_all_problems()
-        if (p.get("lang") or "matlab").strip().lower() == "matlab"
-        and int(p.get("type") or 1) == 1
+        if int(p.get("type") or 1) == 1
     ]
     problems.sort(key=lambda p: p["id"])
     for p in problems:
@@ -62,6 +62,7 @@ def dashboard():
         summary=summary,
         classes=classes,
         problems=problems,
+        endpoints=get_available_endpoints(),
         view="dashboard",
     )
 

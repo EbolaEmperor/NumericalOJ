@@ -47,14 +47,9 @@ def test_quality_gate_opencode_keeps_and_displays_configured_api_url():
         "(editBaseUrl.value || '').trim()"
         in TEMPLATE
     )
-    assert (
-        "var openAiCompatible = h === 'codex' || h === 'pi' ||"
-        in TEMPLATE
-    )
-    assert (
-        "(h === 'opencode' && !fixedOpenCode);"
-        in TEMPLATE
-    )
+    assert "function inferProtocol(harness, protocol)" in TEMPLATE
+    assert "editProtocol.disabled = sourceMode === 'global' || h !== 'pi'" in TEMPLATE
+    assert "h === 'codex' || h === 'opencode'" in TEMPLATE
 
 
 def test_shared_endpoint_modal_exposes_pi_as_openai_compatible_harness():

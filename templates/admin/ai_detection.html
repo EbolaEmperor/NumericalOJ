@@ -22,6 +22,21 @@
   .stat-card { border-radius: 8px; }
 </style>
 
+<div class="card mb-3">
+  <div class="card-body py-3">
+    <label for="f_endpoint" class="form-label form-label-sm mb-1">本次检测端点</label>
+    <select id="f_endpoint" class="form-select form-select-sm" required>
+      <option value="">— 每次运行前请选择全局端点 —</option>
+      {% for endpoint in ai_detection_endpoints or [] %}
+        <option value="{{ endpoint.id }}">
+          {{ endpoint.name }} · {{ endpoint.model }}（{{ endpoint.protocol }} / {{ endpoint.category }}）
+        </option>
+      {% endfor %}
+    </select>
+    <div class="form-text">仅显示纯文本或全模态端点；该选择只用于本次新任务。</div>
+  </div>
+</div>
+
 {% if view == 'problem' %}
 {# ============================================================ Per-Problem View ============ #}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -200,14 +215,6 @@
       </div>
     </div>
 
-    <div class="col-md-3">
-      <label class="form-label form-label-sm">检测模型</label>
-      <select id="f_model" class="form-select form-select-sm">
-        <option value="qwen">Qwen3.5-Plus（默认）</option>
-        {# matlab-ai-detect 选项由 JS 动态插入（仅在 API 已配置时显示）#}
-      </select>
-    </div>
-
     <div class="col-md-3 d-flex align-items-end gap-2">
       <button class="btn btn-outline-secondary btn-sm" onclick="previewFilter()">
         <i class="fas fa-search me-1"></i> 预览
@@ -355,8 +362,14 @@
 {% endif %} {# end view #}
 
 <script>
-function _getModelId() {
-  return document.getElementById('f_model')?.value || 'qwen';
+function _getEndpointId() {
+  return document.getElementById('f_endpoint')?.value || '';
+}
+
+function _requireEndpointId() {
+  const endpointId = _getEndpointId();
+  if (!endpointId) alert('请先选择本次 AI 检测使用的全局端点');
+  return endpointId;
 }
 
 function _getFilters() {
@@ -368,28 +381,8 @@ function _getFilters() {
     score_min:     document.getElementById('f_score_min')?.value || '',
     score_max:     document.getElementById('f_score_max')?.value || '',
     deduplicate:   document.getElementById('f_deduplicate')?.checked ? '1' : '0',
-    model_id:      _getModelId(),
+    endpoint_id:   _getEndpointId(),
   };
-}
-
-// 检测可用模型，动态插入 matlab-ai-detect 选项
-function _loadAvailableModels() {
-  fetch('/admin/ai_detection/api/available_models')
-    .then(r => r.json())
-    .then(data => {
-      if (!data.success) return;
-      const sel = document.getElementById('f_model');
-      if (!sel) return;
-      (data.models || []).forEach(m => {
-        if (m.id === 'qwen') return;  // 默认选项已在 HTML 中
-        if (!m.available) return;     // 未配置的模型不显示
-        const opt = document.createElement('option');
-        opt.value = m.id;
-        opt.textContent = m.name;
-        sel.appendChild(opt);
-      });
-    })
-    .catch(() => {});
 }
 
 function previewFilter() {
@@ -447,9 +440,11 @@ function previewFilter() {
 
 function startDetection() {
   const btn = document.getElementById('btnStartDetect');
+  const endpointId = _requireEndpointId();
+  if (!endpointId) return;
   const total = btn.textContent.match(/\d+/)?.[0] || '?';
-  const modelName = document.getElementById('f_model')?.selectedOptions[0]?.text || '';
-  if (!confirm(`确认使用「${modelName}」对这 ${total} 条提交记录运行 AI 检测？`)) return;
+  const endpointName = document.getElementById('f_endpoint')?.selectedOptions[0]?.text || '';
+  if (!confirm(`确认使用「${endpointName}」对这 ${total} 条提交记录运行 AI 检测？`)) return;
   btn.disabled = true;
 
   fetch('/admin/ai_detection/run_filtered', {
@@ -471,11 +466,13 @@ function startDetection() {
 }
 
 function runBatchDetection(problemId) {
+  const endpointId = _requireEndpointId();
+  if (!endpointId) return;
   if (!confirm('确认对该题目的代表性提交运行 AI 检测？')) return;
   fetch('/admin/ai_detection/run/' + problemId, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({model_id: _getModelId()}),
+    body: JSON.stringify({endpoint_id: endpointId}),
   })
     .then(r => r.json())
     .then(data => { alert(data.success ? data.message : '失败：' + data.message); })
@@ -483,11 +480,13 @@ function runBatchDetection(problemId) {
 }
 
 function runUserDetection(username) {
+  const endpointId = _requireEndpointId();
+  if (!endpointId) return;
   if (!confirm('确认对用户 ' + username + ' 的未检测提交运行 AI 检测？')) return;
   fetch('/admin/ai_detection/run_user/' + username, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({model_id: _getModelId()}),
+    body: JSON.stringify({endpoint_id: endpointId}),
   })
     .then(r => r.json())
     .then(data => { alert(data.success ? data.message : '失败：' + data.message); })
@@ -710,7 +709,6 @@ function refreshTasks() {
 }
 
 // Initial load
-_loadAvailableModels();
 refreshTasks();
 refreshSummary();
 </script>

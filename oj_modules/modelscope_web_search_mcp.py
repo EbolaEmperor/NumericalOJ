@@ -2,16 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import json
-import os
 import re
 from html import unescape
 
 import httpx
 
-from config import DASHSCOPE_API_KEY, MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS
+from config import MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS
+from oj_modules.dynamic_config_services import get_web_search_settings
 
 
-_ALIYUN_WEBSEARCH_MCP_BASE_URL = "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
 _DEFAULT_SEARCH_TOOL_NAME = "bailian_web_search"
 
 
@@ -27,37 +26,22 @@ def _clamp_int(value, default, min_value=None, max_value=None):
     return val
 
 
-def _is_placeholder_key(value):
-    key = str(value or "").strip()
-    if not key:
-        return True
-    upper = key.upper()
-    if "YOUR" in upper and "KEY" in upper:
-        return True
-    return False
-
-
-def _resolve_runtime_settings(timeout_seconds):
-    env = os.environ
-    base_url = str(env.get("MODELSCOPE_WEB_SEARCH_MCP_BASE_URL") or "").strip() or _ALIYUN_WEBSEARCH_MCP_BASE_URL
-    auth_header = str(env.get("MODELSCOPE_WEB_SEARCH_MCP_AUTHORIZATION") or "").strip()
-    if not auth_header:
-        key = str(env.get("DASHSCOPE_API_KEY") or DASHSCOPE_API_KEY or "").strip()
-        if _is_placeholder_key(key):
-            key = ""
-        if key:
-            auth_header = f"Bearer {key}"
-    if not auth_header:
-        raise RuntimeError("未配置有效的 DASHSCOPE_API_KEY，无法调用阿里云 WebSearch MCP。")
-
-    env_timeout = os.environ.get("MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS")
-    timeout_seed = env_timeout if env_timeout is not None else MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS
-    use_timeout = _clamp_int(timeout_seconds, timeout_seed, min_value=10, max_value=240)
-
-    configured_tool_name = str(env.get("MODELSCOPE_WEB_SEARCH_MCP_TOOL_NAME") or "").strip()
-    if not configured_tool_name:
-        configured_tool_name = _DEFAULT_SEARCH_TOOL_NAME
-    return base_url, auth_header, configured_tool_name, use_timeout
+def _resolve_runtime_settings(timeout_seconds, settings=None):
+    if settings is None:
+        settings = get_web_search_settings(include_secret=True)
+    if not settings:
+        raise RuntimeError("站点尚未配置联网搜索，请联系管理员。")
+    base_url = str(settings.get("base_url") or "").strip()
+    auth_header = str(settings.get("authorization") or "").strip()
+    if not base_url or not auth_header:
+        raise RuntimeError("站点联网搜索配置不完整，请联系管理员。")
+    use_timeout = _clamp_int(
+        timeout_seconds,
+        MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS,
+        min_value=10,
+        max_value=240,
+    )
+    return base_url, auth_header, _DEFAULT_SEARCH_TOOL_NAME, use_timeout
 
 
 def _make_http_headers(auth_header):
@@ -137,8 +121,11 @@ def _resolve_search_tool_name(client, base_url, headers, configured_tool_name):
     return configured_tool_name
 
 
-def _call_web_mcp_tool(tool_name, arguments, timeout_seconds=None):
-    base_url, auth_header, configured_tool_name, use_timeout = _resolve_runtime_settings(timeout_seconds)
+def _call_web_mcp_tool(tool_name, arguments, timeout_seconds=None, *, settings=None):
+    base_url, auth_header, configured_tool_name, use_timeout = _resolve_runtime_settings(
+        timeout_seconds,
+        settings,
+    )
     headers = _make_http_headers(auth_header)
     use_tool_name = str(tool_name or "").strip() or configured_tool_name
 
@@ -196,7 +183,14 @@ def _call_web_mcp_tool(tool_name, arguments, timeout_seconds=None):
     }
 
 
-def web_search_via_modelscope_mcp(query, limit=5, engines=None, timeout_seconds=None):
+def web_search_via_modelscope_mcp(
+    query,
+    limit=5,
+    engines=None,
+    timeout_seconds=None,
+    *,
+    settings=None,
+):
     use_query = str(query or "").strip()
     if not use_query:
         raise RuntimeError("query 不能为空。")
@@ -211,6 +205,7 @@ def web_search_via_modelscope_mcp(query, limit=5, engines=None, timeout_seconds=
         tool_name="",
         arguments=search_args,
         timeout_seconds=timeout_seconds,
+        settings=settings,
     )
 
     raw_text = _extract_text_blocks_from_tool_response(result)

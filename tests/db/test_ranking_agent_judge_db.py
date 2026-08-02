@@ -157,6 +157,7 @@ def test_existing_endpoint_edit_without_capabilities_preserves_saved_values(clie
     cid = _make_comp()
     ajdb.save_agent_judge_endpoints(cid, [{
         'harness': 'pi',
+        'protocol': 'openai',
         'base_url': 'https://models.example/v1',
         'api_key': 'k1',
         'model': 'custom-thinking-model',

@@ -22,6 +22,20 @@ def _promptly_review_config():
     )
 
 
+def _text_endpoint(endpoint_id=1):
+    return {
+        "id": endpoint_id,
+        "name": f"test-text-{endpoint_id}",
+        "category": "text",
+        "protocol": "openai",
+        "base_url": "https://llm.example/v1",
+        "api_key": "test-secret",
+        "model": "test-model",
+        "thinking_enabled": False,
+        "thinking_format": "none",
+    }
+
+
 def test_parse_promptly_review_config_json():
     from oj_modules.promptly_guard import parse_promptly_review_config
 
@@ -134,17 +148,17 @@ def test_review_promptly_student_prompt_accepts_nice(monkeypatch):
 
     captured = {}
 
-    def fake_call_qwen_text(prompt_text, **kwargs):
+    def fake_call_llm_text(prompt_text, _endpoint, **kwargs):
         captured["prompt_text"] = prompt_text
         captured["system_prompt"] = kwargs.get("system_prompt")
         return '{"nice": true}'
 
-    monkeypatch.setattr(ai_utils, "_call_qwen_text", fake_call_qwen_text)
+    monkeypatch.setattr(ai_utils, "_call_llm_text", fake_call_llm_text)
 
     nice, reply = ai_utils.review_promptly_student_prompt(
         problem={"programming_grading_prompt": _promptly_review_config()},
         student_prompt="用两个单调队列维护最大最小值。",
-        model_spec="test-model",
+        endpoint=_text_endpoint(),
     )
 
     assert nice is True
@@ -158,15 +172,15 @@ def test_review_promptly_student_prompt_accepts_nice(monkeypatch):
 def test_review_promptly_student_prompt_rejects_with_reply(monkeypatch):
     from oj_modules import ai_utils
 
-    def fake_call_qwen_text(prompt_text, **kwargs):
+    def fake_call_llm_text(prompt_text, _endpoint, **kwargs):
         return '{"nice": false, "reply": "请说明具体使用的数据结构和更新规则。"}'
 
-    monkeypatch.setattr(ai_utils, "_call_qwen_text", fake_call_qwen_text)
+    monkeypatch.setattr(ai_utils, "_call_llm_text", fake_call_llm_text)
 
     nice, reply = ai_utils.review_promptly_student_prompt(
         problem={"programming_grading_prompt": _promptly_review_config()},
         student_prompt="帮我写 O(n) 算法。",
-        model_spec="test-model",
+        endpoint=_text_endpoint(),
     )
 
     assert nice is False
@@ -454,6 +468,15 @@ def test_promptly_task_keeps_pending_submission_when_evaluation_enqueue_fails(mo
     )
     monkeypatch.setattr(promptly_tasks, "update_submission_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(promptly_tasks, "set_submission_status_snapshot", lambda **kwargs: None)
+    resolved_endpoints = {
+        "review_endpoint_id": object(),
+        "code_generation_endpoint_id": object(),
+    }
+    monkeypatch.setattr(
+        promptly_tasks,
+        "resolve_problem_llm_endpoint_snapshot",
+        lambda _problem, binding_key: resolved_endpoints[binding_key],
+    )
     monkeypatch.setattr(promptly_tasks, "review_promptly_student_prompt", lambda **kwargs: (True, ""))
     monkeypatch.setattr(promptly_tasks, "generate_promptly_code", lambda **kwargs: "print('hello')\n")
     monkeypatch.setattr(
@@ -482,13 +505,13 @@ def test_promptly_generation_uses_full_problem_after_review(monkeypatch):
 
     captured = {}
 
-    def fake_call_qwen_text(prompt_text, **kwargs):
+    def fake_call_llm_text(prompt_text, _endpoint, **kwargs):
         captured["prompt_text"] = prompt_text
         captured["system_prompt"] = kwargs.get("system_prompt")
         return "int main() { return 0; }"
 
     monkeypatch.delenv("NUMOJ_FAKE_PROMPTLY_CODE", raising=False)
-    monkeypatch.setattr(ai_utils, "_call_qwen_text", fake_call_qwen_text)
+    monkeypatch.setattr(ai_utils, "_call_llm_text", fake_call_llm_text)
 
     code = ai_utils.generate_promptly_code(
         problem={
@@ -499,7 +522,7 @@ def test_promptly_generation_uses_full_problem_after_review(monkeypatch):
             "programming_grading_prompt": _promptly_review_config(),
         },
         student_prompt="Use the algorithm I described.",
-        model_spec="test-model",
+        endpoint=_text_endpoint(),
     )
 
     assert code == "int main() { return 0; }"

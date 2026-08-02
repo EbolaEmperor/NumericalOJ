@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""DB 层测试：题目 CRUD + grading 列归一化 + ensure_*_column 幂等。
+"""DB 层测试：题目 CRUD、LLM 端点软绑定与 ensure_*_column 幂等。
 
 被测函数（oj_modules/db_services.py）：
-- create_problem  : type1 → max_score=0；type2 → max_score=5；模型/输出文件名归一化；commit。
+- create_problem  : type1 → max_score=0；type2 → max_score=5；输出文件名/端点绑定归一化；commit。
 - get_problem     : 返回整行（含 content/initial_code/test_code/forbidden_func/submission_limit
-                    及全部 grading 列）；不存在→None。
+                    及运行所需 grading 列和端点绑定）；不存在→None。
 - get_all_problems: 按 id 升序；省略 content/initial_code/test_code/forbidden_func/submission_limit 等大字段。
-- update_problem  : 普通字段直接写入；mode/model/filename 仅非 None 才归一化生效，None → 默认值。
+- update_problem  : 普通字段直接写入；mode/filename 归一化，端点绑定按显式输入替换。
 - ensure_problem_*_column / ensure_problem_grading_columns: 借助模块级 _*_ready 标志做幂等，连调两次不报错。
 """
 from oj_modules import db_services as db
@@ -47,62 +47,20 @@ def test_create_problem_type2_max_score_five():
 
 
 def test_create_problem_normalizes_programming_fields():
-    # type=1 时归一化 programming 列：非法 model → 默认；含路径分隔符的文件名取最后一段。
     db.create_problem(
         title='编程题归一化',
         content='c',
         type=1,
         lang='c',
         programming_grading_mode=99,                 # 越界 → 1
-        programming_grading_model='Not-A-Real-Model',  # 非法 → 默认
         programming_output_filename='dir\\sub\\out.PNG',  # 取最后一段
     )
     row = _get_problem_by_title('编程题归一化')
     assert row['programming_grading_mode'] == 1
-    assert row['programming_grading_model'] == db._DEFAULT_PROGRAMMING_GRADING_MODEL
+    assert row['programming_grading_model'] == ''
     fn = row['programming_output_filename']
     assert fn.endswith('out.PNG')
     assert '\\' not in fn and '/' not in fn
-
-
-def test_create_problem_keeps_valid_programming_model():
-    # 合法 model（来自 allowed 集合）应被保留（大小写归一为小写）。
-    allowed = db._ALLOWED_PROGRAMMING_GRADING_MODELS
-    if not allowed:
-        # CI config 一定非空；防御性跳过。
-        return
-    valid = next(iter(allowed))
-    db.create_problem(
-        title='编程题合法model',
-        content='c',
-        type=1,
-        lang='c',
-        programming_grading_model=valid.upper(),  # 验证小写归一
-    )
-    row = _get_problem_by_title('编程题合法model')
-    assert row['programming_grading_model'] == valid
-
-
-def test_create_promptly_problem_preserves_selected_programming_model():
-    default_model = str(db._DEFAULT_PROGRAMMING_GRADING_MODEL or "").strip().lower()
-    selected = next(
-        (model for model in sorted(db._ALLOWED_PROGRAMMING_GRADING_MODELS) if model != default_model),
-        None,
-    )
-    if not selected:
-        # 极简配置里如果只有一个可选模型，无法区分“保留选择”和“回退默认”。
-        return
-    db.create_problem(
-        title='Promptly保留model',
-        content='c',
-        type=1,
-        lang='python',
-        programming_grading_mode=3,
-        programming_grading_model=selected.upper(),
-    )
-    row = _get_problem_by_title('Promptly保留model')
-    assert row['programming_grading_mode'] == 3
-    assert row['programming_grading_model'] == selected
 
 
 def test_create_problem_normalizes_written_fields():
@@ -112,11 +70,29 @@ def test_create_problem_normalizes_written_fields():
         type=2,
         lang='matlab',
         written_grading_mode=77,                  # 越界 → 1
-        written_grading_model='bogus-written-model',  # 非法 → 默认
     )
     row = _get_problem_by_title('书面题归一化')
     assert row['written_grading_mode'] == 1
-    assert row['written_grading_model'] == db._DEFAULT_WRITTEN_GRADING_MODEL
+    assert row['written_grading_model'] == ''
+
+
+def test_create_problem_persists_written_llm_endpoint_bindings_as_json():
+    bindings = {
+        'ocr_endpoint_id': 101,
+        'text_grading_endpoint_id': 102,
+        'direct_image_grading_endpoint_id': 103,
+    }
+    pid = db.create_problem(
+        title='书面题端点绑定',
+        content='w',
+        type=2,
+        lang='matlab',
+        llm_endpoint_bindings=bindings,
+    )
+
+    assert db.get_problem(pid)['llm_endpoint_bindings'] == bindings
+    raw = _get_problem_by_title('书面题端点绑定')
+    assert raw['llm_endpoint_bindings'] is not None
 
 
 # --------------------------------------------------------------------------
@@ -140,11 +116,14 @@ def test_get_problem_returns_full_row():
     for col in (
         'id', 'title', 'content', 'initial_code', 'test_code', 'forbidden_func',
         'type', 'lang', 'max_score', 'time_limit_ms', 'submission_limit',
-        'written_grading_mode', 'written_grading_model', 'written_grading_prompt',
-        'programming_grading_mode', 'programming_grading_model',
+        'written_grading_mode', 'written_grading_prompt',
+        'programming_grading_mode',
         'programming_output_filename', 'programming_grading_prompt',
+        'llm_endpoint_bindings',
     ):
         assert col in row, f"缺少列: {col}"
+    assert 'written_grading_model' not in row
+    assert 'programming_grading_model' not in row
     assert row['id'] == pid
     assert row['title'] == '全列题'
     assert row['content'] == '完整题面'
@@ -214,12 +193,12 @@ def test_update_problem_none_grading_fields_use_defaults():
     db.update_problem(pid, new_title='默认归一化题', new_content='c', new_lang='python')
     row = db.get_problem(pid)
     assert row['programming_grading_mode'] == 1
-    assert row['programming_grading_model'] == db._DEFAULT_PROGRAMMING_GRADING_MODEL
     assert row['programming_output_filename'] == 'output.png'
     assert row['programming_grading_prompt'] == ''
     assert row['written_grading_mode'] == 1
-    assert row['written_grading_model'] == db._DEFAULT_WRITTEN_GRADING_MODEL
     assert row['written_grading_prompt'] == ''
+    assert 'programming_grading_model' not in row
+    assert 'written_grading_model' not in row
 
 
 def test_update_problem_non_none_grading_fields_take_effect():
@@ -232,13 +211,50 @@ def test_update_problem_non_none_grading_fields_take_effect():
         new_programming_grading_mode=2,
         new_programming_output_filename='res\\final.png',
         new_programming_grading_prompt='  请评分  ',
-        new_programming_grading_model='invalid-model-xyz',  # 非法 → 默认
     )
     row = db.get_problem(pid)
     assert row['programming_grading_mode'] == 2
     assert row['programming_output_filename'] == 'final.png'
     assert row['programming_grading_prompt'] == '请评分'   # 被 strip
-    assert row['programming_grading_model'] == db._DEFAULT_PROGRAMMING_GRADING_MODEL
+    assert _get_problem_by_title('生效归一化题')['programming_grading_model'] == ''
+
+
+def test_update_problem_replaces_bindings_without_rewriting_legacy_model_string():
+    pid = db.create_problem(
+        title='Promptly端点绑定',
+        content='c',
+        type=1,
+        lang='python',
+        programming_grading_mode=3,
+    )
+    conn = db.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE problems SET programming_grading_model=%s WHERE id=%s",
+                ('legacy-custom-model', pid),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db.update_problem(
+        pid,
+        new_title='Promptly端点绑定',
+        new_content='c2',
+        new_lang='python',
+        new_llm_endpoint_bindings={
+            'review_endpoint_id': 201,
+            'code_generation_endpoint_id': 202,
+        },
+    )
+
+    row = db.get_problem(pid)
+    assert _get_problem_by_title('Promptly端点绑定')['programming_grading_model'] == 'legacy-custom-model'
+    assert row['llm_endpoint_bindings'] == {
+        'review_endpoint_id': 201,
+        'code_generation_endpoint_id': 202,
+    }
 
 
 # --------------------------------------------------------------------------
