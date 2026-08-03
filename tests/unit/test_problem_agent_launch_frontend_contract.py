@@ -74,6 +74,13 @@ def test_agent_launch_loads_task_specific_options_and_restores_preference():
     assert "sessionStorage" not in script
 
 
+def test_agent_launch_disambiguates_duplicate_models_with_endpoint_id():
+    script = _read(SCRIPT)
+
+    assert "'节点 #' + endpoint.id" in script
+    assert "meta: endpointMeta(endpoint)" in script
+
+
 def test_agent_launch_payloads_include_harness_and_endpoint_without_secrets():
     template = _read(TEMPLATE)
     script = _read(SCRIPT)

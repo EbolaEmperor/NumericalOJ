@@ -71,6 +71,7 @@
 
   function endpointMeta(endpoint) {
     return [
+      '节点 #' + endpoint.id,
       PROTOCOL_LABELS[endpoint.protocol] || endpoint.protocol,
       CATEGORY_LABELS[endpoint.category] || endpoint.category
     ].filter(Boolean).join(' · ');

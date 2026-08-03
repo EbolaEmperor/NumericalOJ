@@ -161,7 +161,7 @@ def _add_llm_candidate_args(parser: argparse.ArgumentParser, *, required: bool) 
         label="API key",
         required=required,
     )
-    parser.add_argument("--model", required=required, help="Model identifier and endpoint name.")
+    parser.add_argument("--model", required=required, help="Provider model identifier.")
     _add_thinking_args(parser)
 
 

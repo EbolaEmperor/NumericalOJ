@@ -197,16 +197,23 @@
     return {className: '', label: '尚未测试'};
   }
 
-  function endpointCard(endpoint, position) {
+  function endpointIdentity(endpoint) {
+    const model = String(endpoint?.model || '未命名模型');
+    const id = Number(endpoint?.id);
+    return Number.isSafeInteger(id) && id > 0 ? `${model}（节点 #${id}）` : model;
+  }
+
+  function endpointCard(endpoint) {
     const status = testStatus(endpoint);
     const locked = Boolean(endpoint.is_locked);
     const apiKey = endpoint.api_key_configured ? '密钥已配置' : '密钥缺失';
+    const identity = endpointIdentity(endpoint);
     return `
       <article class="site-config-endpoint-card" data-endpoint-id="${Number(endpoint.id)}">
         <div class="site-config-endpoint-main">
           <div class="site-config-endpoint-top">
             <div>
-              <span class="site-config-endpoint-number">端点 ${String(position + 1).padStart(2, '0')}</span>
+              <span class="site-config-endpoint-number">节点 #${Number(endpoint.id)}</span>
               <h3 class="site-config-endpoint-title" title="${escapeHtml(endpoint.model)}">${escapeHtml(endpoint.model)}</h3>
             </div>
             <div class="site-config-endpoint-chips">
@@ -219,10 +226,10 @@
         <footer class="site-config-endpoint-foot">
           <span class="site-config-test-state ${status.className}" title="${escapeHtml(endpoint.test_message || '')}"><i aria-hidden="true"></i>${escapeHtml(status.label)}</span>
           ${locked ? '' : `
-            <button class="site-config-icon-button" type="button" data-endpoint-action="test" title="复测连接" aria-label="复测 ${escapeHtml(endpoint.model)}"><i class="fas fa-vial" aria-hidden="true"></i></button>
-            <button class="site-config-icon-button" type="button" data-endpoint-action="lock" title="加锁" aria-label="加锁 ${escapeHtml(endpoint.model)}"><i class="fas fa-lock" aria-hidden="true"></i></button>
-            <button class="site-config-icon-button" type="button" data-endpoint-action="edit" title="编辑" aria-label="编辑 ${escapeHtml(endpoint.model)}"><i class="fas fa-pen" aria-hidden="true"></i></button>
-            <button class="site-config-icon-button is-danger" type="button" data-endpoint-action="delete" title="删除" aria-label="删除 ${escapeHtml(endpoint.model)}"><i class="fas fa-trash-alt" aria-hidden="true"></i></button>`}
+            <button class="site-config-icon-button" type="button" data-endpoint-action="test" title="复测连接" aria-label="复测 ${escapeHtml(identity)}"><i class="fas fa-vial" aria-hidden="true"></i></button>
+            <button class="site-config-icon-button" type="button" data-endpoint-action="lock" title="加锁" aria-label="加锁 ${escapeHtml(identity)}"><i class="fas fa-lock" aria-hidden="true"></i></button>
+            <button class="site-config-icon-button" type="button" data-endpoint-action="edit" title="编辑" aria-label="编辑 ${escapeHtml(identity)}"><i class="fas fa-pen" aria-hidden="true"></i></button>
+            <button class="site-config-icon-button is-danger" type="button" data-endpoint-action="delete" title="删除" aria-label="删除 ${escapeHtml(identity)}"><i class="fas fa-trash-alt" aria-hidden="true"></i></button>`}
         </footer>
         ${locked ? '<div class="site-config-lock-overlay"><button type="button" data-endpoint-action="unlock"><i class="fas fa-unlock-alt" aria-hidden="true"></i> 解锁</button></div>' : ''}
       </article>`;
@@ -307,7 +314,7 @@
         value: selectedId,
         label: selectedEndpoint ? selectedEndpoint.model : `端点 ${selectedId}`,
         meta: selectedEndpoint
-          ? `${protocolLabels[selectedEndpoint.protocol] || selectedEndpoint.protocol} · ${categoryLabels[selectedEndpoint.category] || selectedEndpoint.category}`
+          ? `节点 #${selectedEndpoint.id} · ${protocolLabels[selectedEndpoint.protocol] || selectedEndpoint.protocol} · ${categoryLabels[selectedEndpoint.category] || selectedEndpoint.category}`
           : '端点已删除',
         icon: 'fa-exclamation-triangle',
         missing: true,
@@ -317,7 +324,7 @@
       options.push({
         value: String(endpoint.id),
         label: endpoint.model,
-        meta: `${protocolLabels[endpoint.protocol] || endpoint.protocol} · ${categoryLabels[endpoint.category] || endpoint.category}`,
+        meta: `节点 #${endpoint.id} · ${protocolLabels[endpoint.protocol] || endpoint.protocol} · ${categoryLabels[endpoint.category] || endpoint.category}`,
         icon: categoryIcons[endpoint.category] || 'fa-circle',
       });
     });
@@ -483,9 +490,9 @@
           thinking_format: endpoint.thinking_format,
         },
       });
-      toast(`“${endpoint.model}”连接正常`);
+      toast(`“${endpointIdentity(endpoint)}”连接正常`);
     } catch (error) {
-      toast(`“${endpoint.model}”复测失败：${error.message}`, 'error');
+      toast(`“${endpointIdentity(endpoint)}”复测失败：${error.message}`, 'error');
     } finally {
       setBusy(button, false);
       await loadEndpoints().catch(() => {});
@@ -496,7 +503,7 @@
     state.lockTarget = {kind, item};
     const form = $('[data-lock-form]');
     form.reset();
-    $('.modal-title', form).textContent = kind === 'endpoint' ? `加锁 · ${item.model}` : '加锁 · Embedding 绑定';
+    $('.modal-title', form).textContent = kind === 'endpoint' ? `加锁 · ${endpointIdentity(item)}` : '加锁 · Embedding 绑定';
     modal('lockModal').show();
   }
 
@@ -524,6 +531,7 @@
     state.unlockTarget = {kind, item};
     const form = $('[data-unlock-form]');
     form.reset();
+    $('.modal-title', form).textContent = kind === 'endpoint' ? `解锁 · ${endpointIdentity(item)}` : '解锁 · Embedding 绑定';
     const allowed = canUnlock(item);
     $('[data-unlock-reason]', form).textContent = item.lock_reason || '未记录原因';
     $('[data-unlock-denied]', form).hidden = allowed;
@@ -569,7 +577,7 @@
 
   function openDelete(endpoint) {
     state.deleteTarget = endpoint;
-    $('[data-delete-model]').textContent = endpoint.model;
+    $('[data-delete-model]').textContent = endpointIdentity(endpoint);
     modal('deleteModal').show();
   }
 

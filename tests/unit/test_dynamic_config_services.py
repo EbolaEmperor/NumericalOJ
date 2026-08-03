@@ -28,7 +28,7 @@ def test_llm_normalization_preserves_disabled_wire_format():
     assert normalized["thinking_format"] == "enable_thinking"
 
 
-def test_llm_normalization_requires_model_as_endpoint_identity():
+def test_llm_normalization_requires_provider_model_identifier():
     with pytest.raises(services.DynamicConfigValidationError, match="模型"):
         services.normalize_llm_endpoint_payload(llm_payload(model=""))
 

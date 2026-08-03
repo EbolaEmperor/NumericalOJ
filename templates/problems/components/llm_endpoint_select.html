@@ -13,7 +13,7 @@
       <option
         value="{{ endpoint.id }}"
         {% if selected_id is not none and (endpoint.id|string) == (selected_id|string) %}selected{% endif %}>
-        {{ endpoint.model }}（{{ endpoint.protocol }} / {{ endpoint.category }}）
+        {{ endpoint.model }}（节点 #{{ endpoint.id }} / {{ endpoint.protocol }} / {{ endpoint.category }}）
       </option>
     {% endfor %}
     {% if selected_id is not none and not state.found %}
