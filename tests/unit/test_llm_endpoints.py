@@ -601,6 +601,8 @@ def test_real_probe_shape_for_all_four_categories(
     assert result.message == "端点测试成功。"
     assert calls[0][0].endswith(expected_suffix)
     body = calls[0][1]["json"]
+    if snapshot.category is not adapter.LLMEndpointCategory.EMBEDDING:
+        assert body["max_tokens"] == 372_000
     if snapshot.category in {adapter.LLMEndpointCategory.VISION, adapter.LLMEndpointCategory.OMNI}:
         content = body["messages"][0]["content"]
         assert any(block["type"] in {"image", "image_url"} for block in content)
