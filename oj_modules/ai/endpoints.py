@@ -62,6 +62,7 @@ _FULL_REQUEST_PATH_SUFFIXES = (
 )
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
+_PROBE_MAX_TOKENS = 372_000
 
 
 class LLMEndpointError(RuntimeError):
@@ -1296,7 +1297,7 @@ def probe_endpoint(endpoint, *, timeout=30):
             result = call_text(
                 use_endpoint,
                 "只回复 OK。",
-                max_tokens=16,
+                max_tokens=_PROBE_MAX_TOKENS,
                 timeout=timeout,
             )
             if not result.text.strip():
@@ -1306,7 +1307,7 @@ def probe_endpoint(endpoint, *, timeout=30):
                 use_endpoint,
                 "只回复这张图片的主要颜色。",
                 [_probe_image()],
-                max_tokens=32,
+                max_tokens=_PROBE_MAX_TOKENS,
                 timeout=timeout,
             )
             if not result.text.strip():
