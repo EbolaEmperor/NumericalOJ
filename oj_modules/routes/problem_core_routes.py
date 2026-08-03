@@ -521,7 +521,7 @@ def admin_agent_solve_problem(problem_id):
         success=True,
         message='Agent 任务已启动',
         task_id=task_id,
-        view_url=url_for('problem_core.admin_agent_run', task_id=task_id),
+        view_url=url_for('problem_core.admin_agent_tasks', task_id=task_id),
     )
 
 
@@ -662,7 +662,7 @@ def admin_agent_generate_testdata(problem_id):
         success=True,
         message='数据生成 Agent 任务已启动',
         task_id=task_id,
-        view_url=url_for('problem_core.admin_agent_run', task_id=task_id),
+        view_url=url_for('problem_core.admin_agent_tasks', task_id=task_id),
     )
 
 
@@ -674,21 +674,8 @@ def admin_agent_run(task_id):
     if user.get('is_admin') != 1:
         flash('无权限访问该页面', 'danger')
         return redirect(url_for('problem_core.problem_list'))
-
-    state = _get_agent_run_state(task_id) or {"task_id": task_id}
-    problem_id = state.get("problem_id")
-    if not problem_id:
-        problem_id = request.args.get("problem_id", type=int)
-    problem = get_problem(problem_id) if problem_id else None
-
-    latest_submission_id = state.get("latest_submission_id") or state.get("final_submission_id")
-    return render_template(
-        'agents/run.html',
-        user=user,
-        task_id=task_id,
-        problem=problem,
-        initial_state=state,
-        latest_submission_id=latest_submission_id,
+    return redirect(
+        url_for('problem_core.admin_agent_tasks', task_id=task_id),
     )
 
 
@@ -1068,6 +1055,13 @@ def admin_agent_tasks():
     page_end = min(total_pages, page + 8)
     page_numbers = list(range(page_start, page_end + 1))
 
+    open_task_id = str(request.args.get('task_id') or '').strip()
+    if (
+        not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', open_task_id)
+        or get_agent_run_by_task_id(open_task_id) is None
+    ):
+        open_task_id = ''
+
     return render_template(
         'admin/agent_tasks.html',
         user=user,
@@ -1075,6 +1069,7 @@ def admin_agent_tasks():
         current_page=page,
         total_pages=total_pages,
         page_numbers=page_numbers,
+        open_task_id=open_task_id,
     )
 
 
