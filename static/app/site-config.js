@@ -25,10 +25,6 @@
   const featureIcons = {
     ai_code_annotation: 'fa-highlighter',
     code_image_analysis: 'fa-image',
-    solution_agent: 'fa-terminal',
-    testdata_agent: 'fa-vials',
-    agent_summary: 'fa-compress-alt',
-    repository_query_summary: 'fa-search-plus',
     repository_structuring: 'fa-sitemap',
     repository_embedding: 'fa-vector-square',
   };
@@ -709,6 +705,7 @@
   async function loadMeta() {
     const data = await request('/meta');
     state.meta = {...state.meta, ...data};
+    $('[data-feature-count]').textContent = String(state.meta.features.length);
     initializeMetaControls();
   }
 

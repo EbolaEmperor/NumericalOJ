@@ -19,6 +19,8 @@ OPENCODE_GO_MODEL = "mimo-v2.5-pro"
 PI_PROVIDER_NAME = "agent-judge"
 PI_CONFIG_DIR = "/home/node/.pi/agent"
 PI_SESSION_DIR = "/home/node/.pi/agent/sessions"
+PI_WEB_SEARCH_MCP_EXTENSION = "/usr/local/share/numoj/pi_web_search_mcp.ts"
+WEB_SEARCH_MCP_NAME = "numoj_web_search"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_THINKING_COMPATIBILITY = True
@@ -40,6 +42,56 @@ SESSION_KEYS = {
 }
 CLAUDE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 ENDPOINT_THINKING_FORMATS = frozenset({"enable_thinking", "thinking_type", "none"})
+
+
+def _web_search_mcp_settings():
+    url = (os.environ.get("AJ_WEB_SEARCH_MCP_URL") or "").strip()
+    authorization = (
+        os.environ.get("AJ_WEB_SEARCH_MCP_AUTHORIZATION") or ""
+    ).strip()
+    if not url and not authorization:
+        return None
+    if not url or not authorization:
+        raise ValueError("Web Search MCP URL and Authorization must be configured together")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError as exc:
+        raise ValueError("Web Search MCP URL is invalid") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Web Search MCP URL must be an absolute HTTP URL")
+    try:
+        timeout_seconds = int(
+            os.environ.get("AJ_WEB_SEARCH_MCP_TIMEOUT_SECONDS") or 90
+        )
+    except ValueError as exc:
+        raise ValueError("Web Search MCP timeout is invalid") from exc
+    timeout_seconds = max(10, min(240, timeout_seconds))
+    return {
+        "url": url,
+        "timeout_seconds": timeout_seconds,
+        "timeout_ms": timeout_seconds * 1000,
+    }
+
+
+def _write_claude_mcp_config(runtime_root, settings):
+    config_dir = os.path.join(runtime_root, "mcp")
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, "claude-web-search.json")
+    config = {
+        "mcpServers": {
+            WEB_SEARCH_MCP_NAME: {
+                "type": "http",
+                "url": settings["url"],
+                "headers": {
+                    "Authorization": "${AJ_WEB_SEARCH_MCP_AUTHORIZATION}",
+                },
+                "timeout": settings["timeout_ms"],
+            },
+        },
+    }
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False)
+    return config_path
 
 
 def _pi_session_header_line(text):
@@ -66,7 +118,76 @@ def _prompt_from_env():
         except Exception as exc:
             print(f"failed to read AJ_PROMPT_FILE: {exc}", file=sys.stderr)
             return ""
+    if _bool_env("AJ_PROMPT_STDIN", False):
+        return sys.stdin.read()
     return os.environ.get("AJ_PROMPT") or ""
+
+
+def _runtime_root():
+    raw = (os.environ.get("AJ_RUNTIME_ROOT") or "").strip()
+    if not raw:
+        return ""
+    if not os.path.isabs(raw):
+        raise ValueError("AJ_RUNTIME_ROOT must be an absolute path")
+    root = os.path.normpath(raw)
+    workspace_raw = (os.environ.get("AJ_WORKSPACE") or "").strip()
+    if workspace_raw:
+        if not os.path.isabs(workspace_raw):
+            raise ValueError("AJ_WORKSPACE must be an absolute path")
+        workspace = os.path.normpath(workspace_raw)
+        if root != workspace and not root.startswith(workspace + os.sep):
+            raise ValueError("AJ_RUNTIME_ROOT must stay inside AJ_WORKSPACE")
+    return root
+
+
+def _runtime_path(relative_path, legacy_path):
+    root = _runtime_root()
+    return os.path.join(root, relative_path) if root else legacy_path
+
+
+def _enabled_skill_files(harness):
+    if not _bool_env("AJ_ENABLE_SKILLS", False):
+        return ()
+    runtime_root = _runtime_root()
+    if not runtime_root:
+        raise ValueError("AJ_ENABLE_SKILLS requires AJ_RUNTIME_ROOT")
+    relative_roots = {
+        "claude_code": os.path.join("home", ".claude", "skills"),
+        "codex": os.path.join("home", ".agents", "skills"),
+        "opencode": os.path.join("opencode", "config", "opencode", "skills"),
+        "pi": os.path.join("pi", "skills"),
+    }
+    skill_root = os.path.join(runtime_root, relative_roots[harness])
+    try:
+        names = sorted(os.listdir(skill_root))
+    except OSError as exc:
+        raise ValueError(f"materialized skill directory is unavailable: {exc}") from exc
+    skill_files = []
+    canonical_root = os.path.realpath(skill_root)
+    for name in names:
+        if name in {"", ".", ".."}:
+            continue
+        skill_dir = os.path.join(skill_root, name)
+        skill_file = os.path.join(skill_dir, "SKILL.md")
+        if os.path.islink(skill_dir) or os.path.islink(skill_file):
+            raise ValueError("materialized skill cannot be a symlink")
+        if not os.path.isdir(skill_dir) or not os.path.isfile(skill_file):
+            continue
+        canonical_file = os.path.realpath(skill_file)
+        if not canonical_file.startswith(canonical_root + os.sep):
+            raise ValueError("materialized skill escapes its runtime directory")
+        skill_files.append(skill_file)
+    if len(skill_files) != 1:
+        raise ValueError("exactly one materialized skill is required")
+    return tuple(skill_files)
+
+
+def _validated_skill_files(harness):
+    try:
+        return _enabled_skill_files(harness)
+    except ValueError as exc:
+        print(f"invalid Agent skill runtime: {exc}", file=sys.stderr)
+        return None
 
 
 def _run(args, env=None, input_text=None, stdout_session_only=False):
@@ -229,7 +350,8 @@ def _record_session(harness, proc, resume_session_id=None):
 
 def _write_codex_config(
         home, base_url, model, context_window_tokens=None,
-        max_output_tokens=None, thinking_compatibility=None):
+        max_output_tokens=None, thinking_compatibility=None,
+        web_search_mcp=None):
     os.makedirs(home, exist_ok=True)
     if context_window_tokens is None:
         context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
@@ -262,6 +384,18 @@ def _write_codex_config(
     ]
     if model:
         lines.insert(0, "model = " + json.dumps(CODEX_CONTEXT_METADATA_MODEL))
+    if web_search_mcp:
+        lines.extend([
+            "",
+            f"[mcp_servers.{WEB_SEARCH_MCP_NAME}]",
+            "url = " + json.dumps(web_search_mcp["url"]),
+            (
+                'env_http_headers = { Authorization = '
+                '"AJ_WEB_SEARCH_MCP_AUTHORIZATION" }'
+            ),
+            f"startup_timeout_sec = {web_search_mcp['timeout_seconds']}",
+            f"tool_timeout_sec = {web_search_mcp['timeout_seconds']}",
+        ])
     with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -549,6 +683,7 @@ def _run_codex(prompt):
             _endpoint_model_capabilities()
         )
         endpoint_thinking_format = _endpoint_thinking_format_env()
+        web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
         print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
         return 2
@@ -559,7 +694,14 @@ def _run_codex(prompt):
             file=sys.stderr,
         )
         return 2
-    home = "/workspace/.codex"
+    skill_files = _validated_skill_files("codex")
+    if skill_files is None:
+        return 2
+    try:
+        home = _runtime_path("codex", "/workspace/.codex")
+    except ValueError as exc:
+        print(f"invalid Agent runtime: {exc}", file=sys.stderr)
+        return 2
     if endpoint_thinking_format is None:
         relay = _CodexEndpointRelay(
             base_url, max_output_tokens, thinking_compatibility,
@@ -578,6 +720,7 @@ def _run_codex(prompt):
             context_window_tokens=context_window_tokens,
             max_output_tokens=max_output_tokens,
             thinking_compatibility=thinking_compatibility,
+            web_search_mcp=web_search_mcp,
         )
         env = os.environ.copy()
         env["CODEX_HOME"] = home
@@ -621,7 +764,8 @@ def _run_codex(prompt):
 def _opencode_config_content(
         base_url, api_key_env, model_id, audit_read_only=False,
         context_window_tokens=None, max_output_tokens=None,
-        thinking_compatibility=None, thinking_format=None):
+        thinking_compatibility=None, thinking_format=None,
+        web_search_mcp=None):
     if context_window_tokens is None:
         context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
     if max_output_tokens is None:
@@ -669,6 +813,18 @@ def _opencode_config_content(
             "grep": "allow",
             "external_directory": {"/evidence/**": "allow"},
         }
+    if web_search_mcp:
+        cfg["mcp"] = {
+            WEB_SEARCH_MCP_NAME: {
+                "type": "remote",
+                "url": web_search_mcp["url"],
+                "headers": {
+                    "Authorization": "{env:AJ_WEB_SEARCH_MCP_AUTHORIZATION}",
+                },
+                "oauth": False,
+                "timeout": web_search_mcp["timeout_ms"],
+            },
+        }
     return json.dumps(cfg, ensure_ascii=False)
 
 
@@ -686,13 +842,34 @@ def _run_opencode(prompt):
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()
         )
+        web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
         print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
         return 2
+    skill_files = _validated_skill_files("opencode")
+    if skill_files is None:
+        return 2
     audit_read_only = _audit_read_only_enabled()
-    home = "/tmp/aj_opencode_home"
+    try:
+        runtime_root = _runtime_root()
+    except ValueError as exc:
+        print(f"invalid Agent runtime: {exc}", file=sys.stderr)
+        return 2
+    if runtime_root:
+        opencode_root = os.path.join(runtime_root, "opencode")
+        home = os.path.join(opencode_root, "home")
+        xdg_directories = {
+            "XDG_CONFIG_HOME": os.path.join(opencode_root, "config"),
+            "XDG_DATA_HOME": os.path.join(opencode_root, "data"),
+            "XDG_STATE_HOME": os.path.join(opencode_root, "state"),
+            "XDG_CACHE_HOME": os.path.join(opencode_root, "cache"),
+        }
+    else:
+        home = "/tmp/aj_opencode_home"
+        xdg_directories = {}
     env = os.environ.copy()
     env["HOME"] = home
+    env.update(xdg_directories)
     env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(
         base_url, "OPENCODE_API_KEY", model_id,
         audit_read_only=audit_read_only,
@@ -700,6 +877,7 @@ def _run_opencode(prompt):
         max_output_tokens=max_output_tokens,
         thinking_compatibility=thinking_compatibility,
         thinking_format=os.environ.get("AJ_THINKING_FORMAT"),
+        web_search_mcp=web_search_mcp,
     )
     env["OPENCODE_API_KEY"] = api_key
     # OpenCode 默认把单次输出再截到 32K；端点池中的管理员配置才是这里的
@@ -713,7 +891,8 @@ def _run_opencode(prompt):
             "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
             "OPENCODE_DISABLE_MODELS_FETCH": "true",
         })
-    os.makedirs(home, exist_ok=True)
+    for directory in (home, *xdg_directories.values()):
+        os.makedirs(directory, exist_ok=True)
     if audit_read_only:
         args = [
             "opencode", "--pure", "run",
@@ -891,8 +1070,18 @@ def _run_pi(prompt):
             _endpoint_model_capabilities()
         )
         endpoint_thinking_format = _endpoint_thinking_format_env()
+        web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
         print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
+        return 2
+    skill_files = _validated_skill_files("pi")
+    if skill_files is None:
+        return 2
+    try:
+        config_dir = _runtime_path("pi/agent", PI_CONFIG_DIR)
+        session_dir = _runtime_path("pi/agent/sessions", PI_SESSION_DIR)
+    except ValueError as exc:
+        print(f"invalid Agent runtime: {exc}", file=sys.stderr)
         return 2
     thinking_format = str(
         os.environ.get("AJ_PI_THINKING_FORMAT")
@@ -934,19 +1123,19 @@ def _run_pi(prompt):
             return 2
     try:
         _write_pi_models_config(
-            PI_CONFIG_DIR, provider_base_url, model,
+            config_dir, provider_base_url, model,
             context_window_tokens=context_window_tokens,
             max_output_tokens=max_output_tokens,
             thinking_compatibility=thinking_compatibility,
             thinking_format=thinking_format,
             protocol=protocol,
         )
-        os.makedirs(PI_SESSION_DIR, exist_ok=True)
+        os.makedirs(session_dir, exist_ok=True)
         env = os.environ.copy()
         env.update({
             "PI_API_KEY": api_key,
-            "PI_CODING_AGENT_DIR": PI_CONFIG_DIR,
-            "PI_CODING_AGENT_SESSION_DIR": PI_SESSION_DIR,
+            "PI_CODING_AGENT_DIR": config_dir,
+            "PI_CODING_AGENT_SESSION_DIR": session_dir,
             "PI_OFFLINE": "1",
             "PI_TELEMETRY": "0",
             "PI_SKIP_VERSION_CHECK": "1",
@@ -964,6 +1153,14 @@ def _run_pi(prompt):
             "--no-themes",
             "--no-context-files",
         ]
+        if web_search_mcp:
+            # Pi 没有原生 MCP 配置；只显式加载镜像内受信任的协议适配扩展，
+            # 不扫描工作区或用户目录中的其他 extension。
+            args.extend(["--extension", PI_WEB_SEARCH_MCP_EXTENSION])
+        if skill_files:
+            # Pi 在 --no-skills 下仍可以用 --skill 显式加载单个受信任
+            # skill，避免扫描镜像内或其他目录的隐式 skill。
+            args.extend(["--skill", skill_files[0]])
         if _audit_read_only_enabled():
             # Pi 自身不提供沙箱；质量门禁容器另有只读根文件系统、只读 evidence
             # 挂载与无 capabilities 约束，这里再把内建工具缩到纯读取集合。
@@ -1001,6 +1198,7 @@ def _run_claude_code(prompt):
             _endpoint_model_capabilities()
         )
         endpoint_thinking_format = _endpoint_thinking_format_env()
+        web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
         print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
         return 2
@@ -1011,7 +1209,31 @@ def _run_claude_code(prompt):
             file=sys.stderr,
         )
         return 2
+    skill_files = _validated_skill_files("claude_code")
+    if skill_files is None:
+        return 2
+    try:
+        runtime_root = _runtime_root()
+    except ValueError as exc:
+        print(f"invalid Agent runtime: {exc}", file=sys.stderr)
+        return 2
     env = os.environ.copy()
+    if runtime_root:
+        home = os.path.join(runtime_root, "home")
+        os.makedirs(home, exist_ok=True)
+        env["HOME"] = home
+    if web_search_mcp:
+        mcp_runtime_root = runtime_root or "/workspace/.aj-mcp-runtime"
+        try:
+            mcp_config_path = _write_claude_mcp_config(
+                mcp_runtime_root,
+                web_search_mcp,
+            )
+        except OSError as exc:
+            print(f"failed to write Claude MCP config: {exc}", file=sys.stderr)
+            return 2
+    else:
+        mcp_config_path = ""
     env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_window_tokens)
     env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_output_tokens)
     # Claude Code 自身会把 custom model 的请求静默压到 128K，并在 streaming
@@ -1057,6 +1279,8 @@ def _run_claude_code(prompt):
         args.extend(["--resume", resume_session_id])
         if (os.environ.get("AJ_FORK_SESSION") or "1").strip().lower() not in {"0", "false", "no", "off"}:
             args.append("--fork-session")
+    if mcp_config_path:
+        args.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
     cli_model = model
     if (
         cli_model

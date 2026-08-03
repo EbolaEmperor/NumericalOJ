@@ -32,6 +32,30 @@ def test_import_testdata_uses_restricted_extraction_and_replaces_stale_files(
     assert not (destination / 'stale.in').exists()
 
 
+def test_parse_testdata_zip_stages_rows_without_writing_database(
+        monkeypatch, tmp_path):
+    archive = tmp_path / 'testdata.zip'
+    with zipfile.ZipFile(archive, 'w') as zf:
+        zf.writestr('1.in', '4\n')
+        zf.writestr('1.out', '16\n')
+
+    monkeypatch.setattr(
+        testdata_services,
+        'get_db_connection',
+        lambda: pytest.fail('staging 解析不得连接数据库'),
+    )
+
+    result = testdata_services.parse_testdata_zip(
+        archive,
+        tmp_path / 'staged',
+    )
+
+    assert result == {
+        'count': 1,
+        'testdata': [{'input': '4', 'output': '16'}],
+    }
+
+
 def test_import_testdata_rejects_traversal_without_leaving_partial_output(tmp_path):
     archive = tmp_path / 'unsafe.zip'
     with zipfile.ZipFile(archive, 'w') as zf:
@@ -156,3 +180,131 @@ def test_update_problem_testdata_rolls_back_on_failure(monkeypatch):
     assert connection.rollback_count == 1
     assert connection.closed is True
     assert connection.cursor_instance.execute_count == 1
+
+
+class _StateCursor:
+    def __init__(self, *, row=None):
+        self.row = row
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql, params):
+        self.calls.append((sql, params))
+
+    def fetchone(self):
+        return self.row
+
+
+class _StateConnection:
+    def __init__(self, cursor):
+        self.cursor_instance = cursor
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_instance
+
+    def commit(self):
+        self.commit_count += 1
+
+    def rollback(self):
+        self.rollback_count += 1
+
+    def close(self):
+        self.closed = True
+
+
+def test_get_problem_testdata_state_preserves_nullable_raw_values(monkeypatch):
+    cursor = _StateCursor(row={"testdata": None, "max_score": None})
+    connection = _StateConnection(cursor)
+    monkeypatch.setattr(
+        testdata_services,
+        "get_db_connection",
+        lambda: connection,
+    )
+
+    result = testdata_services.get_problem_testdata_state(7)
+
+    assert result == {"testdata": None, "max_score": None}
+    assert cursor.calls[0][1] == (7,)
+    assert connection.closed is True
+
+
+def test_publish_staged_testdata_locks_compares_and_publishes(monkeypatch):
+    cursor = _StateCursor(row={"testdata": "old", "max_score": 1})
+    connection = _StateConnection(cursor)
+    monkeypatch.setattr(
+        testdata_services,
+        "get_db_connection",
+        lambda: connection,
+    )
+
+    published = testdata_services.publish_staged_testdata(
+        7,
+        before_state={"testdata": "old", "max_score": 1},
+        testdata=[
+            {"input": "1", "output": "2"},
+            {"input": "3", "output": "4"},
+        ],
+    )
+
+    assert published is True
+    assert len(cursor.calls) == 2
+    select_sql, select_params = cursor.calls[0]
+    assert "FOR UPDATE" in select_sql
+    assert select_params == (7,)
+    update_sql, update_params = cursor.calls[1]
+    assert "UPDATE problems SET testdata=%s, max_score=%s" in update_sql
+    assert update_params[1:] == (2, 7)
+    assert update_params[0] == (
+        '[{"input": "1", "output": "2"}, '
+        '{"input": "3", "output": "4"}]'
+    )
+    assert connection.commit_count == 1
+    assert connection.rollback_count == 0
+    assert connection.closed is True
+
+
+def test_publish_staged_testdata_rejects_changed_live_state_without_update(
+        monkeypatch):
+    cursor = _StateCursor(row={"testdata": "admin-new", "max_score": 8})
+    connection = _StateConnection(cursor)
+    monkeypatch.setattr(
+        testdata_services,
+        "get_db_connection",
+        lambda: connection,
+    )
+
+    published = testdata_services.publish_staged_testdata(
+        7,
+        before_state={"testdata": "old", "max_score": 1},
+        testdata=[{"input": "1", "output": "2"}],
+    )
+
+    assert published is False
+    assert len(cursor.calls) == 1
+    assert "FOR UPDATE" in cursor.calls[0][0]
+    assert connection.commit_count == 0
+    assert connection.rollback_count == 1
+    assert connection.closed is True
+
+
+def test_publish_staged_testdata_rejects_incomplete_before_state(monkeypatch):
+    monkeypatch.setattr(
+        testdata_services,
+        "get_db_connection",
+        lambda: pytest.fail('参数无效时不应连接数据库'),
+    )
+
+    with pytest.raises(ValueError, match="before_state"):
+        testdata_services.publish_staged_testdata(
+            7,
+            before_state={"testdata": "old"},
+            testdata=[{"input": "1", "output": "2"}],
+        )

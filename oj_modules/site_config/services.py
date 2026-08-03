@@ -42,22 +42,6 @@ FEATURE_SPECS = {
         "label": "代码图片分析",
         "accepted_categories": ("vision", "omni"),
     },
-    "solution_agent": {
-        "label": "解题 Agent",
-        "accepted_categories": ("text", "omni"),
-    },
-    "testdata_agent": {
-        "label": "造数据 Agent",
-        "accepted_categories": ("text", "omni"),
-    },
-    "agent_summary": {
-        "label": "Agent 摘要",
-        "accepted_categories": ("text", "omni"),
-    },
-    "repository_query_summary": {
-        "label": "仓库检索摘要",
-        "accepted_categories": ("text", "omni"),
-    },
     "repository_structuring": {
         "label": "仓库结构化",
         "accepted_categories": ("text", "omni"),

@@ -170,9 +170,13 @@ def test_meta_has_exact_confirmation_and_feature_machine_values():
     assert embedding["allowed_categories"] == ["embedding"]
     assert embedding["lockable"] is True
     labels = {feature["key"]: feature["label"] for feature in meta["features"]}
+    assert set(labels) == {
+        "ai_code_annotation",
+        "code_image_analysis",
+        "repository_structuring",
+        "repository_embedding",
+    }
     assert labels["ai_code_annotation"] == "AI 代码标注"
-    assert labels["testdata_agent"] == "造数据 Agent"
-    assert labels["repository_query_summary"] == "仓库检索摘要"
     assert labels["repository_structuring"] == "仓库结构化"
     assert labels["repository_embedding"] == "Embedding"
 

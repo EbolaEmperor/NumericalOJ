@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import json
-import math
 import os
-import re
 
 import requests
 import pymysql
@@ -12,6 +10,10 @@ import pymysql
 from celery.exceptions import SoftTimeLimitExceeded
 
 from oj_modules.judging import core
+from oj_modules.judging.programming import (
+    build_programming_source,
+    compare_float_strings,
+)
 
 from oj_modules.ai.grading import evaluate_program_output_image_with_ai
 from oj_modules.ai.client import resolve_problem_llm_endpoint_snapshot
@@ -245,31 +247,6 @@ def has_submission_lock(submission_id):
     return submission_locks.has_submission_lock(submission_id)
 
 
-def compare_float_strings(str1, str2, tolerance=1e-5):
-    split_pattern = r'[\s,]+'
-
-    try:
-        list1 = [float(x) for x in re.split(split_pattern, str1.strip()) if x]
-        list2 = [float(x) for x in re.split(split_pattern, str2.strip()) if x]
-    except ValueError:
-        return str1 == str2
-
-    if len(list1) != len(list2):
-        return False
-
-    for a, b in zip(list1, list2):
-        if math.isnan(a) or math.isnan(b):
-            return False
-        if a == 0 and b == 0:
-            continue
-        max_val = max(abs(a), abs(b))
-        abs_error = abs(a - b)
-        relative_error = abs_error / max_val
-        if relative_error > tolerance and abs_error > tolerance:
-            return False
-    return True
-
-
 def bump_complete_cnt_for_user_classes(user, problem_id):
     classes = get_user_classes(user['id'])
     conn = get_db_connection()
@@ -345,12 +322,6 @@ def register_evaluate_submission_task(celery_app):
 
             problem_id = submission['problem_id']
             raw_submission_code = submission['code'] or ''
-            code = raw_submission_code
-            # 安全：用户代码若混入评测包裹标记串，会截断禁用函数检查的扫描区间从而绕过过滤。
-            # 包裹前先剥离这些标记串，使标记不可被用户伪造。
-            for _marker in ("here_is_user_code_fuck_fuck_fuck_hahaha", "user_code_end_fuck_hahaha_fuck"):
-                if _marker in code:
-                    code = code.replace(_marker, "")
             problem = get_problem(problem_id)
             programming_grading_mode = _normalize_programming_grading_mode(problem)
             image_grading_endpoint = None
@@ -395,66 +366,13 @@ def register_evaluate_submission_task(celery_app):
             finally:
                 conn.close()
 
-            if lang == 'matlab':
-                if test_code and "%%user_code_here" in test_code:
-                    wrapped_user_code = (
-                        "%here_is_user_code_fuck_fuck_fuck_hahaha\n"
-                        + code
-                        + "\n%user_code_end_fuck_hahaha_fuck\n"
-                    )
-                    final_code = test_code.replace("%%user_code_here", wrapped_user_code)
-                else:
-                    final_code = (
-                        "%here_is_user_code_fuck_fuck_fuck_hahaha\n"
-                        + code
-                        + "\n%user_code_end_fuck_hahaha_fuck\n"
-                    )
-
-            elif lang == 'c':
-                if test_code and "%%user_code_here" in test_code:
-                    wrapped_user_code = (
-                        "/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
-                        + code
-                        + "\n/*user_code_end_fuck_hahaha_fuck*/\n"
-                    )
-                    final_code = test_code.replace("%%user_code_here", wrapped_user_code)
-                else:
-                    final_code = (
-                        "/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
-                        + code
-                        + "\n/*user_code_end_fuck_hahaha_fuck*/\n"
-                    )
-
-            elif lang == 'cpp':
-                if test_code and "%%user_code_here" in test_code:
-                    wrapped_user_code = (
-                        "/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
-                        + code
-                        + "\n/*user_code_end_fuck_hahaha_fuck*/\n"
-                    )
-                    final_code = test_code.replace("%%user_code_here", wrapped_user_code)
-                else:
-                    final_code = (
-                        "/*here_is_user_code_fuck_fuck_fuck_hahaha*/\n"
-                        + code
-                        + "\n/*user_code_end_fuck_hahaha_fuck*/\n"
-                    )
-
-            elif lang in ['python', 'py']:
-                if test_code and "%%user_code_here" in test_code:
-                    wrapped_user_code = (
-                        "#here_is_user_code_fuck_fuck_fuck_hahaha\n"
-                        + code
-                        + "\n#user_code_end_fuck_hahaha_fuck\n"
-                    )
-                    final_code = test_code.replace("%%user_code_here", wrapped_user_code)
-                else:
-                    final_code = (
-                        "#here_is_user_code_fuck_fuck_fuck_hahaha\n"
-                        + code
-                        + "\n#user_code_end_fuck_hahaha_fuck\n"
-                    )
-            else:
+            try:
+                final_code = build_programming_source(
+                    lang,
+                    raw_submission_code,
+                    test_code,
+                )
+            except ValueError:
                 update_submission_status(submission_id, 'Error')
                 return
 

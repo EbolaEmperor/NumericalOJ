@@ -40,6 +40,19 @@ def test_lite_agent_judge_uses_same_claude_pin_and_unpinned_pi():
     assert 'npm install -g --ignore-scripts' in lite
 
 
+def test_lite_agent_judge_contains_every_selectable_harness():
+    full = _dockerfile('docker/agent_judge/Dockerfile')
+    lite = _dockerfile('docker/agent_judge-lite/Dockerfile')
+    for build_arg, package in (
+        ('CLAUDE_CODE_VERSION', '@anthropic-ai/claude-code'),
+        ('CODEX_CLI_VERSION', '@openai/codex'),
+        ('OPENCODE_VERSION', 'opencode-ai'),
+    ):
+        pattern = re.compile(rf'^ARG {build_arg}=(\S+)$', re.MULTILINE)
+        assert pattern.search(lite).group(1) == pattern.search(full).group(1)
+        assert f'{package}@${{{build_arg}}}' in lite
+
+
 def test_production_docker_bases_follow_the_selected_runtime_policy():
     judger = _dockerfile('docker/judger/Dockerfile')
     agent = _dockerfile('docker/agent_judge/Dockerfile')
@@ -72,3 +85,23 @@ def test_agent_ai_sdk_pins_support_the_node_24_base():
 
     assert 'ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=2.0.51' in dockerfile
     assert 'ARG AI_SDK_ANTHROPIC_VERSION=3.0.85' in dockerfile
+
+
+def test_agent_images_bundle_the_trusted_pi_web_search_mcp_extension():
+    full = _dockerfile('docker/agent_judge/Dockerfile')
+    lite = _dockerfile('docker/agent_judge-lite/Dockerfile')
+    extension = (ROOT / 'docker/agent_judge/pi_web_search_mcp.ts').read_text(
+        encoding='utf-8'
+    )
+
+    assert (
+        'COPY pi_web_search_mcp.ts '
+        '/usr/local/share/numoj/pi_web_search_mcp.ts'
+    ) in full
+    assert (
+        'COPY agent_judge/pi_web_search_mcp.ts '
+        '/usr/local/share/numoj/pi_web_search_mcp.ts'
+    ) in lite
+    assert 'pi.registerTool({' in extension
+    assert 'name: "web_search"' in extension
+    assert 'AJ_WEB_SEARCH_MCP_AUTHORIZATION' in extension

@@ -1,0 +1,587 @@
+from pathlib import Path
+
+import pytest
+
+from oj_modules.tasks.agent import generate_testdata as data_task
+from oj_modules.tasks.agent import solve as solve_task
+from oj_modules.tasks.agent.harness_runtime import HarnessRunResult
+
+
+class _FakeCelery:
+    def __init__(self):
+        self.tasks = {}
+
+    def task(self, **_kwargs):
+        return lambda function: function
+
+
+class _FakeTaskSelf:
+    class request:
+        id = "testdata-harness-task"
+
+
+_PROBLEM = {
+    "id": 5,
+    "type": 1,
+    "title": "造数据题",
+    "lang": "python",
+    "test_code": "# checker begin\n%%user_code_here\n# checker end\n",
+    "forbidden_func": "",
+    "time_limit_ms": 2000,
+    "programming_grading_mode": 1,
+}
+_ENDPOINT = {
+    "id": 8,
+    "protocol": "openai",
+    "category": "text",
+    "base_url": "https://model.example/v1",
+    "api_key": "secret",
+    "model": "model-a",
+    "thinking_enabled": False,
+    "thinking_format": "none",
+}
+_BEFORE_STATE = {"testdata": "old-testdata", "max_score": 1}
+_ZIP_RELATIVE_PATH = "agent-output/testdata.zip"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../answer.py",
+        "/tmp/answer.py",
+        ".hidden.py",
+        "nested\\answer.py",
+        "bad\x00name.py",
+        "a" * 253 + ".py",
+    ],
+)
+def test_standard_solution_filename_rejects_unsafe_name(filename):
+    with pytest.raises(ValueError, match="文件名无效"):
+        data_task._safe_standard_solution_filename(filename, ".py")
+
+
+def test_standard_solution_filename_accepts_basename_and_has_language_fallback():
+    assert data_task._safe_standard_solution_filename(
+        "official answer.py", ".py",
+    ) == "official answer.py"
+    assert data_task._safe_standard_solution_filename("", ".m") == (
+        "standard_solution.m"
+    )
+
+
+def test_testdata_prompt_names_solution_and_fixed_staged_zip():
+    prompt = data_task.build_testdata_agent_prompt(
+        problem_id=5,
+        problem_title="造数据题",
+        test_point_count=4,
+        standard_solution_path="/workspace/task-input/official answer.py",
+        interactor_path="/workspace/task-input/problem_interactor.py",
+        time_limit_ms=2000,
+        data_requirement="覆盖零和最大值",
+    )
+
+    assert "numoj-user skill" in prompt
+    assert "/workspace/task-input/official answer.py" in prompt
+    assert "/workspace/task-input/problem_interactor.py" in prompt
+    assert "/workspace/agent-output/testdata.zip" in prompt
+    assert "2000 ms" in prompt
+    assert "唯一的 `%%user_code_here`" in prompt
+    assert "正解文件的完整源码" in prompt
+    assert "覆盖零和最大值" in prompt
+
+
+def _patch_common(monkeypatch, tmp_path, *, problem=None):
+    events = []
+    monkeypatch.setattr(data_task, "AGENT_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        data_task,
+        "get_user_by_username",
+        lambda _username: {"id": 3, "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        data_task,
+        "get_problem",
+        lambda _problem_id: dict(problem or _PROBLEM),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "get_problem_testdata_state",
+        lambda _problem_id: dict(_BEFORE_STATE),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: dict(_ENDPOINT),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "_push_agent_event",
+        lambda _state, message, **kwargs: events.append((message, kwargs)),
+    )
+    return events
+
+
+def _invoke_task(*, point_count=2, standard_filename="official answer.py"):
+    task = data_task.register_agent_generate_testdata_task(_FakeCelery())
+    return task(
+        _FakeTaskSelf(),
+        5,
+        "admin",
+        point_count,
+        "print(1)",
+        "覆盖零和最大值",
+        standard_filename,
+        "codex",
+        8,
+        "session-cookie",
+        "numoj_session",
+    )
+
+
+def _successful_harness_result(payload=b"staged-zip"):
+    return HarnessRunResult(
+        returncode=0,
+        timed_out=False,
+        stdout="",
+        stderr="",
+        artifacts={_ZIP_RELATIVE_PATH: payload},
+    )
+
+
+def _accepted_validation(count):
+    return {
+        "success": True,
+        "status": "Accepted",
+        "score": count,
+        "test_points": [
+            {"test_index": index, "status": "Accepted"}
+            for index in range(1, count + 1)
+        ],
+        "message": f"标准程序通过全部 {count} 个测试点",
+    }
+
+
+def test_testdata_task_exports_parses_validates_then_publishes(
+        monkeypatch, tmp_path):
+    events = _patch_common(monkeypatch, tmp_path)
+    payload = b"host-owned-staged-zip"
+    rows = [
+        {"input": "0", "output": "0"},
+        {"input": "9", "output": "81"},
+    ]
+    calls = []
+    harness_calls = []
+
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **kwargs: (
+            harness_calls.append(kwargs)
+            or _successful_harness_result(payload)
+        ),
+    )
+
+    def fake_parse(zip_path, extract_dir):
+        calls.append("parse")
+        archive = Path(zip_path)
+        assert archive.read_bytes() == payload
+        assert archive.stat().st_mode & 0o777 == 0o600
+        assert Path(extract_dir).parent == archive.parent
+        return {"count": 2, "testdata": rows}
+
+    def fake_validate(problem, standard_solution_source, testdata, *, task_id):
+        calls.append("validate")
+        assert problem == _PROBLEM
+        assert standard_solution_source == "print(1)"
+        assert testdata is rows
+        assert task_id == "testdata-harness-task"
+        return _accepted_validation(2)
+
+    def fake_publish(problem_id, *, before_state, testdata):
+        calls.append("publish")
+        assert problem_id == 5
+        assert before_state == _BEFORE_STATE
+        assert testdata is rows
+        return True
+
+    monkeypatch.setattr(data_task, "parse_testdata_zip", fake_parse)
+    monkeypatch.setattr(data_task, "validate_staged_testdata", fake_validate)
+    monkeypatch.setattr(data_task, "publish_staged_testdata", fake_publish)
+
+    result = _invoke_task()
+
+    assert result == {
+        "success": True,
+        "message": "测试数据已验证并一次性发布，共 2 个测试点",
+        "task_id": "testdata-harness-task",
+        "test_point_count": 2,
+    }
+    assert calls == ["parse", "validate", "publish"]
+    assert len(harness_calls) == 1
+    harness_call = harness_calls[0]
+    assert harness_call["task_kind"] == "testdata"
+    assert harness_call["session_cookie"] == "session-cookie"
+    assert harness_call["session_cookie_name"] == "numoj_session"
+    assert harness_call["workspace_files"] == {
+        "task-input/official answer.py": "print(1)",
+        "task-input/problem_interactor.py": _PROBLEM["test_code"],
+    }
+    assert harness_call["artifact_files"] == {
+        _ZIP_RELATIVE_PATH: data_task._STAGED_ZIP_MAX_BYTES,
+    }
+    assert "/workspace/task-input/official answer.py" in harness_call["prompt"]
+    assert "/workspace/task-input/problem_interactor.py" in harness_call["prompt"]
+    assert "/workspace/agent-output/testdata.zip" in harness_call["prompt"]
+    assert "唯一的 `%%user_code_here`" in harness_call["prompt"]
+    assert "正解文件的完整源码" in harness_call["prompt"]
+    assert "2000 ms" in harness_call["prompt"]
+    assert events[-1][1] == {
+        "level": "success",
+        "status": "Completed",
+        "event_type": "staged_publish_completed",
+        "details": {"test_point_count": 2},
+    }
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_testdata_task_rejects_wrong_point_count_before_validation_or_publish(
+        monkeypatch, tmp_path):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **_kwargs: _successful_harness_result(),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "parse_testdata_zip",
+        lambda *_args, **_kwargs: {
+            "count": 1,
+            "testdata": [{"input": "0", "output": "0"}],
+        },
+    )
+    monkeypatch.setattr(
+        data_task,
+        "validate_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("数量不符时不得执行正解验证"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("数量不符时不得发布"),
+    )
+
+    result = _invoke_task(point_count=2)
+
+    assert result["success"] is False
+    assert "要求 2 个测试点，实际生成 1 个" in result["message"]
+
+
+def test_testdata_task_does_not_publish_failed_standard_solution_validation(
+        monkeypatch, tmp_path):
+    _patch_common(monkeypatch, tmp_path)
+    rows = [
+        {"input": "0", "output": "0"},
+        {"input": "9", "output": "wrong"},
+    ]
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **_kwargs: _successful_harness_result(),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "parse_testdata_zip",
+        lambda *_args, **_kwargs: {"count": 2, "testdata": rows},
+    )
+    monkeypatch.setattr(
+        data_task,
+        "validate_staged_testdata",
+        lambda *_args, **_kwargs: {
+            "success": False,
+            "status": "Unaccepted",
+            "score": 1,
+            "message": "标准程序有 1 个测试点未通过",
+        },
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("验证失败时不得发布"),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert "标准程序有 1 个测试点未通过" in result["message"]
+    assert "Unaccepted" in result["message"]
+
+
+def test_testdata_task_reports_publish_cas_conflict(monkeypatch, tmp_path):
+    events = _patch_common(monkeypatch, tmp_path)
+    rows = [
+        {"input": "0", "output": "0"},
+        {"input": "9", "output": "81"},
+    ]
+    publish_calls = []
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **_kwargs: _successful_harness_result(),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "parse_testdata_zip",
+        lambda *_args, **_kwargs: {"count": 2, "testdata": rows},
+    )
+    monkeypatch.setattr(
+        data_task,
+        "validate_staged_testdata",
+        lambda *_args, **_kwargs: _accepted_validation(2),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda problem_id, **kwargs: (
+            publish_calls.append((problem_id, kwargs)) or False
+        ),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert "其他管理员修改" in result["message"]
+    assert publish_calls == [(5, {
+        "before_state": _BEFORE_STATE,
+        "testdata": rows,
+    })]
+    assert events[-1][1]["event_type"] == "staged_publish_conflict"
+    assert events[-1][1]["status"] == "Failed"
+
+
+def test_testdata_task_harness_exception_never_parses_validates_or_publishes(
+        monkeypatch, tmp_path):
+    _patch_common(monkeypatch, tmp_path)
+
+    def fail_harness(**_kwargs):
+        raise RuntimeError("容器异常退出")
+
+    monkeypatch.setattr(data_task, "run_agent_harness", fail_harness)
+    monkeypatch.setattr(
+        data_task,
+        "parse_testdata_zip",
+        lambda *_args, **_kwargs: pytest.fail("harness 异常时不得解析"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "validate_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("harness 异常时不得验证"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("harness 异常时不得发布"),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert "容器异常退出" in result["message"]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "timed_out", "message"),
+    [
+        (23, False, "harness 异常退出（23）"),
+        (-9, True, "harness 超时"),
+    ],
+)
+def test_testdata_task_nonzero_harness_result_never_publishes(
+        monkeypatch, tmp_path, returncode, timed_out, message):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **_kwargs: HarnessRunResult(
+            returncode=returncode,
+            timed_out=timed_out,
+            stdout="",
+            stderr="boom",
+            artifacts={_ZIP_RELATIVE_PATH: b"untrusted"},
+        ),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "parse_testdata_zip",
+        lambda *_args, **_kwargs: pytest.fail("非零退出时不得解析产物"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "validate_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("非零退出时不得验证"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("非零退出时不得发布"),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert message in result["message"]
+
+
+@pytest.mark.parametrize("grading_mode", [2, 3])
+def test_testdata_task_only_allows_standard_test_point_grading_mode(
+        monkeypatch, tmp_path, grading_mode):
+    problem = dict(_PROBLEM, programming_grading_mode=grading_mode)
+    _patch_common(monkeypatch, tmp_path, problem=problem)
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **_kwargs: pytest.fail("非 mode 1 不得启动 harness"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "validate_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("非 mode 1 不得验证"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("非 mode 1 不得发布"),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert "仅支持标准测试点评分模式" in result["message"]
+
+
+def _patch_harness_solution_task(monkeypatch, *, submissions):
+    events = []
+    reads = iter(submissions)
+    monkeypatch.setattr(
+        solve_task,
+        "_push_agent_event",
+        lambda _state, message, **kwargs: events.append((message, kwargs)),
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "get_user_by_username",
+        lambda _username: {"id": 3, "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "get_problem",
+        lambda _problem_id: {"id": 5, "type": 1, "title": "快照题"},
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "get_submissions_by_user_and_problem",
+        lambda *_args: next(reads),
+    )
+    return events
+
+
+def test_solution_task_uses_selected_endpoint_and_exact_prompt(monkeypatch):
+    _patch_harness_solution_task(monkeypatch, submissions=[[]])
+    resolutions = []
+    runs = []
+    endpoint = {**_ENDPOINT, "id": 31, "model": "selected-model"}
+    monkeypatch.setattr(
+        solve_task,
+        "resolve_launch_endpoint",
+        lambda harness, endpoint_id, **kwargs: (
+            resolutions.append((harness, endpoint_id, kwargs)) or endpoint
+        ),
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "run_agent_harness",
+        lambda **kwargs: (
+            runs.append(kwargs)
+            or HarnessRunResult(0, False, "", "")
+        ),
+    )
+
+    task = solve_task.register_agent_solve_problem_task(_FakeCelery())
+    result = task(
+        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+        "numoj_session",
+    )
+
+    assert result["success"] is False
+    assert resolutions == [("codex", 31, {"include_secret": True})]
+    assert runs[0]["harness"] == "codex"
+    assert runs[0]["session_cookie"] == "session-cookie"
+    assert runs[0]["session_cookie_name"] == "numoj_session"
+    assert runs[0]["prompt"] == (
+        "请帮我用 numoj-user skill 读取问题：快照题，并解决这个问题。"
+        "本地充分测试，确认无误后提交。如果没有通过就继续尝试，直到通过为止。"
+    )
+
+
+def test_solution_task_rejects_unavailable_selected_endpoint(monkeypatch):
+    events = _patch_harness_solution_task(monkeypatch, submissions=[])
+    runs = []
+    monkeypatch.setattr(
+        solve_task,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("所选 LLM 节点已删除")
+        ),
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "run_agent_harness",
+        lambda **kwargs: runs.append(kwargs),
+    )
+
+    task = solve_task.register_agent_solve_problem_task(_FakeCelery())
+    result = task(
+        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+    )
+
+    assert result["success"] is False
+    assert "已删除" in result["message"]
+    assert runs == []
+    assert events[-1][1]["status"] == "Failed"
+
+
+def test_solution_task_succeeds_only_for_relay_created_accepted_submission(
+    monkeypatch,
+):
+    _patch_harness_solution_task(
+        monkeypatch,
+        submissions=[[
+            {"id": 76, "status": "Accepted", "score": 10},
+            {"id": 77, "status": "Accepted", "score": 10},
+        ]],
+    )
+    endpoint = {**_ENDPOINT, "id": 31, "model": "selected-model"}
+    monkeypatch.setattr(
+        solve_task,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: endpoint,
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "run_agent_harness",
+        lambda **_kwargs: HarnessRunResult(
+            0,
+            False,
+            "",
+            "",
+            created_submission_ids=(77,),
+        ),
+    )
+
+    task = solve_task.register_agent_solve_problem_task(_FakeCelery())
+    result = task(
+        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+    )
+
+    assert result["success"] is True
+    assert result["final_submission_id"] == 77

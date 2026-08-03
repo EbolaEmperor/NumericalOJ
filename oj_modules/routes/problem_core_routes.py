@@ -4,11 +4,13 @@
 import os
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from uuid import uuid4
 
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
@@ -37,6 +39,18 @@ from oj_modules.classroom.dashboard import (
     visible_classes_for_user_cached,
 )
 from oj_modules.problems.agent_runs import decorate_agent_run_summaries
+from oj_modules.problems.agent_launch import (
+    AgentLaunchValidationError,
+    harness_options,
+    list_launch_endpoints_by_harness,
+    normalize_agent_task_kind,
+    normalize_launch_harness,
+    resolve_launch_endpoint,
+)
+from oj_modules.problems.agent_preferences import (
+    get_agent_launch_preference,
+    save_agent_launch_preference,
+)
 from oj_modules.problems.catalog import get_homeworks, get_user_classes_cached
 from oj_modules.problems.context import (
     build_problem_detail_context,
@@ -62,6 +76,54 @@ _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
 _get_agent_run_snapshot = None
 _subscribe_agent_run_events = None
+_AGENT_STANDARD_SOLUTION_MAX_BYTES = 2 * 1024 * 1024
+_AGENT_TESTDATA_REQUEST_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _parse_agent_test_point_count(value):
+    if type(value) is int:
+        count = value
+    elif type(value) is str and re.fullmatch(r"[1-9][0-9]*", value):
+        count = int(value)
+    else:
+        raise ValueError("测试点数量无效")
+    if count < 1 or count > 5000:
+        raise ValueError("测试点数量需在 1-5000 之间")
+    return count
+
+
+def _read_agent_standard_solution(upload):
+    raw_filename = str(getattr(upload, 'filename', '') or '').strip()
+    if not raw_filename:
+        raise ValueError('请选择标准程序文件')
+
+    basename = raw_filename.replace('\\', '/').rsplit('/', 1)[-1]
+    safe_filename = secure_filename(basename)
+    suffix = secure_filename(os.path.splitext(basename)[1].lstrip('.')).lower()
+    if suffix and '.' not in safe_filename:
+        safe_filename = f'standard_solution.{suffix}'
+    if not safe_filename:
+        safe_filename = 'standard_solution.txt'
+    if len(safe_filename.encode('utf-8')) > 128:
+        raise ValueError('标准程序文件名过长')
+
+    try:
+        payload = upload.stream.read(_AGENT_STANDARD_SOLUTION_MAX_BYTES + 1)
+    except OSError as exc:
+        raise ValueError('无法读取标准程序文件') from exc
+    if len(payload) > _AGENT_STANDARD_SOLUTION_MAX_BYTES:
+        raise ValueError('标准程序文件不能超过 2 MiB')
+    if not payload:
+        raise ValueError('标准程序文件不能为空')
+    try:
+        source = payload.decode('utf-8-sig')
+    except UnicodeDecodeError as exc:
+        raise ValueError('标准程序文件必须是 UTF-8 文本') from exc
+    if '\x00' in source:
+        raise ValueError('标准程序文件不能包含 NUL 字符')
+    if not source.strip():
+        raise ValueError('标准程序文件不能为空')
+    return source, safe_filename
 
 
 def init_problem_core_module(
@@ -104,8 +166,6 @@ def _build_agent_state_from_async_result(task_id):
         "task_id": task_id,
         "status": "Pending",
         "message": "任务排队中",
-        "round": 0,
-        "max_rounds": 0,
         "latest_submission_id": None,
         "final_submission_id": None,
         "attempts": [],
@@ -129,20 +189,42 @@ def _build_agent_state_from_async_result(task_id):
         state["status"] = "Completed" if result_data.get("success") else "Failed"
         state["message"] = result_data.get("message") or "任务已结束"
         state["final_submission_id"] = result_data.get("final_submission_id")
-        state["latest_submission_id"] = result_data.get("final_submission_id")
+        state["latest_submission_id"] = (
+            result_data.get("latest_submission_id")
+            or result_data.get("final_submission_id")
+        )
         state["attempts"] = result_data.get("attempts") or []
         return state
 
     return state
 
 
+def _overlay_agent_celery_terminal(task_id, state):
+    if _is_agent_state_finished(state):
+        return state
+    celery_state = _build_agent_state_from_async_result(task_id)
+    if not _is_agent_state_finished(celery_state):
+        return state
+    merged = dict(state)
+    for key in (
+        "status",
+        "message",
+        "final_submission_id",
+        "latest_submission_id",
+        "attempts",
+        "celery_state",
+    ):
+        merged[key] = celery_state.get(key)
+    return merged
+
+
 def _get_agent_run_state(task_id):
     state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
-        return state
+        return _overlay_agent_celery_terminal(task_id, state)
     state = get_agent_run_by_task_id(task_id)
     if isinstance(state, dict):
-        return state
+        return _overlay_agent_celery_terminal(task_id, state)
     return _build_agent_state_from_async_result(task_id)
 
 
@@ -291,6 +373,63 @@ def problem_detail(problem_id):
     return render_template('problems/detail.html', **context)
 
 
+@problem_core_bp.route('/admin/agent_launch_options', methods=['GET'])
+def admin_agent_launch_options():
+    """返回本次启动可选项和当前管理员在此类任务中的上次选择。"""
+
+    user = current_user()
+    if not user or int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        task_kind = normalize_agent_task_kind(request.args.get('task_kind'))
+        endpoints_by_harness = list_launch_endpoints_by_harness()
+        preference = get_agent_launch_preference(user['id']) or {}
+    except AgentLaunchValidationError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        logger.exception('读取 Agent 启动选项失败')
+        return jsonify(success=False, message='无法读取 Agent 启动选项'), 500
+
+    # 偏好引用的节点被删除或协议被修改后，只在响应中回退，不把无效值回写数据库。
+    preferred_harness = str(preference.get('harness') or '')
+    preferred_endpoint_id = preference.get('endpoint_id')
+    valid_preference = any(
+        int(item.get('id') or 0) == int(preferred_endpoint_id or 0)
+        for item in endpoints_by_harness.get(preferred_harness, [])
+    )
+    if not valid_preference:
+        fallback_harness = next(
+            (
+                item['value']
+                for item in harness_options()
+                if endpoints_by_harness.get(item['value'])
+            ),
+            '',
+        )
+        fallback_endpoints = endpoints_by_harness.get(fallback_harness, [])
+        preference = {
+            'harness': fallback_harness,
+            'endpoint_id': (
+                int(fallback_endpoints[0]['id']) if fallback_endpoints else None
+            ),
+        }
+    else:
+        preference = {
+            'harness': preferred_harness,
+            'endpoint_id': int(preferred_endpoint_id),
+        }
+
+    response = jsonify(
+        success=True,
+        task_kind=task_kind,
+        harnesses=harness_options(),
+        endpoints_by_harness=endpoints_by_harness,
+        preference=preference,
+    )
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
 @problem_core_bp.route('/admin/agent_solve_problem/<int:problem_id>', methods=['POST'])
 def admin_agent_solve_problem(problem_id):
     user = current_user()
@@ -306,9 +445,27 @@ def admin_agent_solve_problem(problem_id):
         return jsonify(success=False, message='Agent 任务未初始化'), 500
 
     payload = request.get_json(silent=True) or {}
-    extra_prompt = str(payload.get('extra_prompt') or '').strip()
-    if len(extra_prompt) > 4000:
-        extra_prompt = extra_prompt[:4000]
+    if not isinstance(payload, dict):
+        return jsonify(success=False, message='请求参数格式无效'), 400
+    try:
+        harness = normalize_launch_harness(payload.get('harness'))
+        endpoint = resolve_launch_endpoint(
+            harness,
+            payload.get('endpoint_id'),
+            include_secret=False,
+        )
+        endpoint_id = int(endpoint['id'])
+        save_agent_launch_preference(user['id'], harness, endpoint_id)
+    except AgentLaunchValidationError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        logger.exception('保存解题 Agent 启动选择失败')
+        return jsonify(success=False, message='无法保存 Agent 启动选择'), 500
+
+    cookie_name = str(current_app.config.get('SESSION_COOKIE_NAME') or 'session')
+    session_cookie = str(request.cookies.get(cookie_name) or '')
+    if not session_cookie:
+        return jsonify(success=False, message='当前登录身份不可用于 Agent'), 401
 
     task_id = uuid4().hex
     pending_state = {
@@ -316,11 +473,12 @@ def admin_agent_solve_problem(problem_id):
         "problem_id": int(problem.get("id") or problem_id),
         "problem_title": problem.get("title"),
         "requested_by": user.get("username"),
-        "extra_prompt": extra_prompt,
+        "task_kind": "solve",
+        "harness": harness,
+        "endpoint_id": endpoint_id,
+        "endpoint_model": endpoint.get("model"),
         "status": "Pending",
         "message": "任务排队中",
-        "round": 0,
-        "max_rounds": 0,
         "best_score": 0,
         "latest_submission_id": None,
         "final_submission_id": None,
@@ -335,10 +493,21 @@ def admin_agent_solve_problem(problem_id):
     upsert_agent_run_snapshot(pending_state)
 
     try:
-        _agent_solve_problem_task.apply_async(args=(problem_id, user['username'], extra_prompt), task_id=task_id)
-    except Exception as e:
+        _agent_solve_problem_task.apply_async(
+            args=(
+                problem_id,
+                user['username'],
+                harness,
+                endpoint_id,
+                session_cookie,
+                cookie_name,
+            ),
+            task_id=task_id,
+        )
+    except Exception:
+        logger.exception('解题 Agent 任务入队失败')
         pending_state["status"] = "Failed"
-        pending_state["message"] = f"任务入队失败：{e}"
+        pending_state["message"] = "任务入队失败，请检查 Celery agent 队列"
         pending_state["events"].append({
             "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
             "level": "error",
@@ -367,23 +536,69 @@ def admin_agent_generate_testdata(problem_id):
         return jsonify(success=False, message='题目不存在'), 404
     if int(problem.get('type') or 1) != 1:
         return jsonify(success=False, message='仅支持编程题'), 400
+    programming_mode = int(problem.get('programming_grading_mode') or 1)
+    if programming_mode == 3:
+        return jsonify(success=False, message='Promptly 评分题不支持造数据 Agent'), 400
+    if programming_mode != 1:
+        return jsonify(success=False, message='造数据 Agent 仅支持标准测试点评分模式'), 400
     if _agent_generate_testdata_task is None:
         return jsonify(success=False, message='数据生成 Agent 任务未初始化'), 500
 
-    payload = request.get_json(silent=True) or {}
-    standard_code = str(payload.get('standard_code') or '').strip()
-    if not standard_code:
-        return jsonify(success=False, message='标准程序不能为空'), 400
+    if request.mimetype != 'multipart/form-data':
+        return jsonify(success=False, message='请使用 multipart/form-data 上传标准程序'), 415
+
+    # Flask 3.1 支持按请求收紧上限。必须在首次解析 form/files 前设置，避免
+    # 超大 multipart 先被完整落盘，再在读取文件内容时才发现超过 2 MiB。
+    request.max_content_length = _AGENT_TESTDATA_REQUEST_MAX_BYTES
+    if (
+        request.content_length is not None
+        and request.content_length > _AGENT_TESTDATA_REQUEST_MAX_BYTES
+    ):
+        return jsonify(success=False, message='造数据 Agent 上传内容不能超过 3 MiB'), 413
+    try:
+        payload = request.form
+        standard_solution = request.files.get('standard_solution')
+    except RequestEntityTooLarge:
+        return jsonify(success=False, message='造数据 Agent 上传内容不能超过 3 MiB'), 413
+    if standard_solution is None:
+        return jsonify(success=False, message='请选择标准程序文件'), 400
+    try:
+        standard_code, standard_filename = _read_agent_standard_solution(
+            standard_solution,
+        )
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+
     data_requirement = str(payload.get('data_requirement') or '').strip()
     if len(data_requirement) > 4000:
-        data_requirement = data_requirement[:4000]
+        return jsonify(success=False, message='造数据要求不能超过 4000 个字符'), 400
 
     try:
-        test_point_count = int(payload.get('test_point_count'))
+        test_point_count = _parse_agent_test_point_count(
+            payload.get('test_point_count'),
+        )
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+
+    try:
+        harness = normalize_launch_harness(payload.get('harness'))
+        endpoint = resolve_launch_endpoint(
+            harness,
+            payload.get('endpoint_id'),
+            include_secret=False,
+        )
+        endpoint_id = int(endpoint['id'])
+        save_agent_launch_preference(user['id'], harness, endpoint_id)
+    except AgentLaunchValidationError as exc:
+        return jsonify(success=False, message=str(exc)), 400
     except Exception:
-        return jsonify(success=False, message='测试点数量无效'), 400
-    if test_point_count < 1 or test_point_count > 5000:
-        return jsonify(success=False, message='测试点数量需在 1-5000 之间'), 400
+        logger.exception('保存造数据 Agent 启动选择失败')
+        return jsonify(success=False, message='无法保存 Agent 启动选择'), 500
+
+    cookie_name = str(current_app.config.get('SESSION_COOKIE_NAME') or 'session')
+    session_cookie = str(request.cookies.get(cookie_name) or '')
+    if not session_cookie:
+        return jsonify(success=False, message='当前登录身份不可用于 Agent'), 401
 
     task_id = uuid4().hex
     pending_state = {
@@ -391,10 +606,12 @@ def admin_agent_generate_testdata(problem_id):
         "problem_id": int(problem.get("id") or problem_id),
         "problem_title": problem.get("title"),
         "requested_by": user.get("username"),
+        "task_kind": "testdata",
+        "harness": harness,
+        "endpoint_id": endpoint_id,
+        "endpoint_model": endpoint.get("model"),
         "status": "Pending",
         "message": "数据生成 Agent 任务排队中",
-        "round": 0,
-        "max_rounds": 0,
         "best_score": 0,
         "latest_submission_id": None,
         "final_submission_id": None,
@@ -414,12 +631,24 @@ def admin_agent_generate_testdata(problem_id):
 
     try:
         _agent_generate_testdata_task.apply_async(
-            args=(problem_id, user['username'], test_point_count, standard_code, data_requirement),
+            args=(
+                problem_id,
+                user['username'],
+                test_point_count,
+                standard_code,
+                data_requirement,
+                standard_filename,
+                harness,
+                endpoint_id,
+                session_cookie,
+                cookie_name,
+            ),
             task_id=task_id,
         )
-    except Exception as e:
+    except Exception:
+        logger.exception('造数据 Agent 任务入队失败')
         pending_state["status"] = "Failed"
-        pending_state["message"] = f"任务入队失败：{e}"
+        pending_state["message"] = "任务入队失败，请检查 Celery agent 队列"
         pending_state["events"].append({
             "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
             "level": "error",
@@ -475,8 +704,6 @@ def admin_agent_run_status(task_id):
         "task_id": task_id,
         "status": "Pending",
         "message": "任务排队中",
-        "round": 0,
-        "max_rounds": 0,
         "latest_submission_id": None,
         "final_submission_id": None,
         "attempts": [],
@@ -497,8 +724,6 @@ def admin_agent_run_stream(task_id):
         "task_id": task_id,
         "status": "Pending",
         "message": "任务排队中",
-        "round": 0,
-        "max_rounds": 0,
         "latest_submission_id": None,
         "final_submission_id": None,
         "attempts": [],
@@ -525,16 +750,18 @@ def admin_agent_run_stream(task_id):
         if pubsub is None:
             last_marker = (
                 first_payload.get("status"),
-                first_payload.get("round"),
+                first_payload.get("message"),
                 first_payload.get("latest_submission_id"),
+                len(first_payload.get("events") or []),
                 first_payload.get("updated_at"),
             )
             while True:
                 snapshot = _get_agent_run_state(task_id) or first_payload
                 marker = (
                     snapshot.get("status"),
-                    snapshot.get("round"),
+                    snapshot.get("message"),
                     snapshot.get("latest_submission_id"),
+                    len(snapshot.get("events") or []),
                     snapshot.get("updated_at"),
                 )
                 if marker != last_marker:

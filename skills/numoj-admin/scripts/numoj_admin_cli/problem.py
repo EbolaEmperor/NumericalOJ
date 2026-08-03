@@ -635,7 +635,6 @@ def necessary_agent_stream_event_payload(event: Any) -> Any:
         "message",
         "error",
         "best_score",
-        "rounds_run",
         "created_at",
         "updated_at",
         "completed_at",
@@ -643,7 +642,7 @@ def necessary_agent_stream_event_payload(event: Any) -> Any:
         if key in event and event.get(key) not in (None, ""):
             necessary[key] = event[key]
 
-    for key in ("events", "logs", "rounds", "submissions", "messages"):
+    for key in ("events", "logs", "submissions", "messages"):
         value = event.get(key)
         if isinstance(value, list):
             necessary[f"{key}_count"] = len(value)
@@ -681,19 +680,32 @@ def problem_agent_tasks(args: argparse.Namespace) -> None:
 
 def problem_agent_solve(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    payload = {"extra_prompt": read_text_value(args.extra_prompt)}
+    payload = {
+        "harness": args.harness,
+        "endpoint_id": args.endpoint_id,
+    }
     resp = client.request("POST", f"/admin/agent_solve_problem/{args.problem_id}", json=payload)
     print_or_save_response(resp)
 
 
 def problem_agent_generate_data(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    payload = {
+    data = {
+        "harness": args.harness,
+        "endpoint_id": args.endpoint_id,
         "test_point_count": args.count,
-        "standard_code": read_text_value(args.standard_code),
         "data_requirement": read_text_value(args.data_requirement),
     }
-    resp = client.request("POST", f"/admin/agent_generate_testdata/{args.problem_id}", json=payload)
+    files = {"standard_solution": require_file(args.standard_solution)}
+    try:
+        resp = client.request(
+            "POST",
+            f"/admin/agent_generate_testdata/{args.problem_id}",
+            data=data,
+            files=files,
+        )
+    finally:
+        close_files(files)
     print_or_save_response(resp)
 
 
@@ -895,12 +907,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.set_defaults(func=problem_agent_tasks)
     pa = add_cli_parser(ps, "agent-solve", "Start an AI agent task to solve a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID for the agent to solve.")
-    pa.add_argument("--extra-prompt", default="", help="Additional instruction text to pass to the problem-solving agent.")
+    pa.add_argument("--harness", required=True, choices=("claude_code", "codex", "opencode", "pi"), help="CLI harness to run.")
+    pa.add_argument("--endpoint-id", type=int, required=True, help="Global LLM endpoint ID selected for this run.")
     pa.set_defaults(func=problem_agent_solve)
     pa = add_cli_parser(ps, "agent-generate-data", "Start an AI agent task to generate test data for a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID for which test data should be generated.")
+    pa.add_argument("--harness", required=True, choices=("claude_code", "codex", "opencode", "pi"), help="CLI harness to run.")
+    pa.add_argument("--endpoint-id", type=int, required=True, help="Global LLM endpoint ID selected for this run.")
     pa.add_argument("--count", type=int, required=True, help="Number of test cases or data files to request from the agent.")
-    pa.add_argument("--standard-code", required=True, help="Reference solution code text, or @file to read it from a file.")
+    pa.add_argument("--standard-solution", required=True, help="Path to the UTF-8 reference solution file.")
     pa.add_argument("--data-requirement", default="", help="Additional natural-language requirements for generated test data.")
     pa.set_defaults(func=problem_agent_generate_data)
     pa = add_cli_parser(ps, "scores", "Fetch score records for one problem.")

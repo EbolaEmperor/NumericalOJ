@@ -5,6 +5,10 @@
 {% block head %}
   {{ super() }}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
+  {% if user and user.is_admin == 1 and problem.type == 1 %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-agent-launch.css') }}">
+  {% endif %}
 {% endblock %}
 {% block content_container_class %}container problem-detail-content-shell mt-4{% endblock %}
 
@@ -63,6 +67,7 @@
           </div>
           {% if user and user.is_admin == 1 %}
           <div class="problem-admin-actions mt-2">
+            {% if problem.type == 1 %}
             <button
               type="button"
               class="btn btn-outline-primary"
@@ -72,10 +77,11 @@
               data-bs-target="#agentSolveModal">
               <i class="fas fa-robot me-1"></i> 解题
             </button>
-            {% if problem.type == 1 %}
+            {% if programming_mode == 1 %}
             <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#agentGenerateDataModal">
               <i class="fas fa-robot me-1"></i> 造数据
             </button>
+            {% endif %}
             {% endif %}
             <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
               <i class="fas fa-pencil-alt me-1"></i> 编辑
@@ -323,86 +329,179 @@
 </div>
 
 {% if user and user.is_admin == 1 %}
-<div class="modal fade" id="agentSolveModal" tabindex="-1" aria-labelledby="agentSolveModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
+{% if problem.type == 1 %}
+{% macro agent_launch_picker(prefix, kind, label) -%}
+<div class="agent-launch-field">
+  <label class="agent-launch-field-label" id="{{ prefix }}Label" for="{{ prefix }}Trigger">{{ label }}</label>
+  <div class="rk-choice agent-launch-choice" data-agent-choice="{{ kind }}">
+    <input type="hidden" id="{{ prefix }}Value" data-agent-choice-input value="">
+    <button type="button"
+            class="rk-choice-trigger"
+            id="{{ prefix }}Trigger"
+            role="combobox"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            aria-controls="{{ prefix }}Menu"
+            aria-labelledby="{{ prefix }}Label {{ prefix }}Selection">
+      <span class="rk-choice-trigger-main">
+        <i class="fas fa-circle-notch" data-rk-choice-icon aria-hidden="true"></i>
+        <span class="agent-launch-trigger-copy">
+          <span id="{{ prefix }}Selection" data-rk-choice-label>正在加载…</span>
+          <span class="agent-launch-trigger-meta" data-agent-choice-selected-meta hidden></span>
+        </span>
+      </span>
+      <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
+    </button>
+    <div class="rk-choice-menu"
+         id="{{ prefix }}Menu"
+         role="listbox"
+         aria-labelledby="{{ prefix }}Trigger"
+         hidden></div>
+  </div>
+</div>
+{%- endmacro %}
+
+{% set agent_options_url = request.script_root ~ '/admin/agent_launch_options' %}
+<div class="modal fade agent-launch-modal"
+     id="agentSolveModal"
+     tabindex="-1"
+     aria-labelledby="agentSolveModalLabel"
+     aria-hidden="true"
+     data-agent-launch-modal
+     data-task-kind="solve"
+     data-options-url="{{ agent_options_url }}"
+     data-submit-url="{{ url_for('problem_core.admin_agent_solve_problem', problem_id=problem.id) }}">
+  <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="agentSolveModalLabel">
-          <i class="fas fa-robot me-2"></i>解题 Agent
-        </h5>
+        <div class="agent-launch-heading">
+          <span class="agent-launch-heading-icon"><i class="fas fa-terminal" aria-hidden="true"></i></span>
+          <div>
+            <p class="agent-launch-eyebrow">NUMOJ-USER SKILL</p>
+            <h5 class="modal-title" id="agentSolveModalLabel">解题 Agent</h5>
+          </div>
+        </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
       </div>
       <div class="modal-body">
-        <div class="mb-0">
-          <label for="agentSolveExtraPrompt" class="form-label">额外提示词</label>
-          <textarea
-            class="form-control"
-            id="agentSolveExtraPrompt"
-            rows="6"
-            placeholder="例如：优先使用双指针；注意边界 n=1；尽量给出 O(n log n) 做法。"></textarea>
-          <div class="form-text">可选。会原样传给解题 Agent 作为补充约束（最长 4000 字）。</div>
+        <p class="agent-launch-description">使用 <strong>numoj-user skill</strong> 读取题目，本地测试并持续提交，直到通过。</p>
+        <div class="agent-launch-selector-grid">
+          {{ agent_launch_picker('agentSolveHarness', 'harness', 'Harness') }}
+          {{ agent_launch_picker('agentSolveEndpoint', 'endpoint', 'LLM 节点') }}
         </div>
+        <div class="agent-launch-feedback"
+             data-agent-launch-feedback
+             role="status"
+             aria-live="polite"
+             aria-atomic="true"
+             hidden></div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-        <button type="button" class="btn btn-outline-primary" id="btnStartAgentSolve">
-          <i class="fas fa-play me-2"></i>启动 Agent
+        <button type="button" class="btn btn-primary" id="btnStartAgentSolve" data-agent-launch-submit disabled>
+          <i class="fas fa-play me-2"></i>启动解题
         </button>
       </div>
     </div>
   </div>
 </div>
-{% if problem.type == 1 and programming_mode != 3 %}
-<div class="modal fade" id="agentGenerateDataModal" tabindex="-1" aria-labelledby="agentGenerateDataModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
+
+{% if programming_mode == 1 %}
+<div class="modal fade agent-launch-modal"
+     id="agentGenerateDataModal"
+     tabindex="-1"
+     aria-labelledby="agentGenerateDataModalLabel"
+     aria-hidden="true"
+     data-agent-launch-modal
+     data-task-kind="testdata"
+     data-options-url="{{ agent_options_url }}"
+     data-submit-url="{{ url_for('problem_core.admin_agent_generate_testdata', problem_id=problem.id) }}">
+  <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="agentGenerateDataModalLabel">
-          <i class="fas fa-database me-2"></i>数据生成 Agent
-        </h5>
+        <div class="agent-launch-heading">
+          <span class="agent-launch-heading-icon"><i class="fas fa-database" aria-hidden="true"></i></span>
+          <div>
+            <p class="agent-launch-eyebrow">NUMOJ-USER SKILL</p>
+            <h5 class="modal-title" id="agentGenerateDataModalLabel">造数据 Agent</h5>
+          </div>
+        </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
       </div>
       <div class="modal-body">
-        <div class="mb-3">
-          <label for="agentTestPointCount" class="form-label">测试点数量</label>
-          <input
-            type="number"
-            min="1"
-            max="5000"
-            step="1"
-            class="form-control"
-            id="agentTestPointCount"
-            value="{{ problem.max_score or 10 }}">
-          <div class="form-text">Agent 需要生成 `1.in/1.out ... n.in/n.out`。</div>
+        <p class="agent-launch-description">使用 <strong>numoj-user skill</strong> 读取本题并在隔离工作区生成候选测试数据。</p>
+        <div class="agent-launch-selector-grid">
+          {{ agent_launch_picker('agentDataHarness', 'harness', 'Harness') }}
+          {{ agent_launch_picker('agentDataEndpoint', 'endpoint', 'LLM 节点') }}
         </div>
-        <div class="mb-3">
-          <label for="agentDataRequirement" class="form-label">数据生成要求</label>
-          <textarea
-            class="form-control"
-            id="agentDataRequirement"
-            rows="4"
-            placeholder="例如：覆盖边界值、随机大数据、特殊构造等"></textarea>
-          <div class="form-text">可选。会原样传给 Agent 作为额外约束。</div>
-        </div>
-        <div class="mb-0">
-          <label for="agentStandardCode" class="form-label">标准程序</label>
-          <textarea
-            class="form-control font-monospace"
-            id="agentStandardCode"
-            rows="14"
-            placeholder="请粘贴标准程序">{{ initial_code or '' }}</textarea>
-          <div class="form-text">将用于替换交互程序中的 `%%user_code_here`。</div>
+        <div class="agent-launch-feedback"
+             data-agent-launch-feedback
+             role="status"
+             aria-live="polite"
+             aria-atomic="true"
+             hidden></div>
+
+        <div class="agent-launch-divider" aria-hidden="true"></div>
+        <div class="agent-launch-data-grid">
+          <div class="agent-launch-field agent-launch-count-field">
+            <label class="agent-launch-field-label" for="agentTestPointCount">测试点数量</label>
+            <input type="number"
+                   min="1"
+                   max="5000"
+                   step="1"
+                   class="form-control"
+                   id="agentTestPointCount"
+                   value="{{ problem.max_score or 10 }}">
+            <div class="form-text">生成 1.in/1.out 至 n.in/n.out。</div>
+          </div>
+          <div class="agent-launch-field">
+            <label class="agent-launch-field-label" for="agentDataRequirement">测试点要求</label>
+            <textarea class="form-control"
+                      id="agentDataRequirement"
+                      rows="3"
+                      maxlength="4000"
+                      placeholder="例如：覆盖边界值、随机大数据与特殊构造"></textarea>
+            <div class="form-text">可选，最长 4000 字。</div>
+          </div>
+          <div class="agent-launch-field agent-launch-solution-field">
+            <label class="agent-launch-field-label" id="agentStandardSolutionLabel" for="agentStandardSolution">正解</label>
+            <div class="agent-launch-file" data-agent-solution-picker>
+              <input type="file"
+                     class="visually-hidden"
+                     id="agentStandardSolution"
+                     name="standard_solution"
+                     data-agent-solution-file
+                     aria-labelledby="agentStandardSolutionLabel agentSolutionFileTitle"
+                     aria-describedby="agentSolutionFileHelp"
+                     required>
+              <label class="agent-launch-file-trigger" for="agentStandardSolution">
+                <span class="agent-launch-file-icon" aria-hidden="true">
+                  <i class="fas fa-file-code"></i>
+                </span>
+                <span class="agent-launch-file-copy">
+                  <span class="agent-launch-file-title" id="agentSolutionFileTitle">选择正解文件</span>
+                  <span class="agent-launch-file-name"
+                        data-agent-solution-file-name
+                        aria-live="polite"
+                        aria-atomic="true">尚未选择文件</span>
+                </span>
+                <span class="agent-launch-file-action" data-agent-solution-file-action>选择文件</span>
+              </label>
+            </div>
+            <div class="form-text" id="agentSolutionFileHelp">上传单个源代码文件，用于生成输出并逐点验证。</div>
+          </div>
         </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-        <button type="button" class="btn btn-outline-primary" id="btnStartAgentGenerateData">
-          <i class="fas fa-play me-2"></i>启动 Agent
+        <button type="button" class="btn btn-primary" id="btnStartAgentGenerateData" data-agent-launch-submit disabled>
+          <i class="fas fa-play me-2"></i>启动造数据
         </button>
       </div>
     </div>
   </div>
 </div>
+{% endif %}
 {% endif %}
 <!-- 上传数据模态框 & 重测进度模态框：保持不变 -->
 <div class="modal fade" id="uploadDataModal" tabindex="-1" aria-labelledby="uploadDataModalLabel" aria-hidden="true">
@@ -777,128 +876,6 @@
     var progressBar = document.getElementById("rejudgeProgressBar");
     var progressDetail = document.getElementById("rejudgeProgressDetail");
 
-    document.getElementById('btnStartAgentSolve')?.addEventListener('click', function() {
-      var extraPromptEl = document.getElementById('agentSolveExtraPrompt');
-      var extraPrompt = (extraPromptEl && extraPromptEl.value) ? extraPromptEl.value.trim() : '';
-      if (extraPrompt.length > 4000) {
-        alert('额外提示词最长 4000 字');
-        return;
-      }
-
-      const btn = this;
-      const originalHtml = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = MathCurveLoader.markup('启动中…', 'xs');
-
-      fetch("{{ url_for('problem_core.admin_agent_solve_problem', problem_id=problem.id) }}", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          extra_prompt: extraPrompt
-        })
-      })
-        .then(res => res.json())
-        .then(data => {
-          btn.disabled = false;
-          btn.innerHTML = originalHtml;
-          if (!data.success) {
-            alert("启动失败：" + (data.message || "未知错误"));
-            return;
-          }
-          var solveModalEl = document.getElementById('agentSolveModal');
-          if (solveModalEl) {
-            var solveModal = bootstrap.Modal.getInstance(solveModalEl);
-            if (solveModal) solveModal.hide();
-          }
-          if (data.view_url) {
-            window.location.href = data.view_url;
-            return;
-          }
-          alert("Agent 任务已启动，Task ID: " + data.task_id);
-        })
-        .catch(() => {
-          btn.disabled = false;
-          btn.innerHTML = originalHtml;
-          alert("请求失败，请稍后再试");
-        });
-    });
-
-    var solveModalEl = document.getElementById('agentSolveModal');
-    if (solveModalEl) {
-      solveModalEl.addEventListener('show.bs.modal', function() {
-        var extraPromptEl = document.getElementById('agentSolveExtraPrompt');
-        if (extraPromptEl && !extraPromptEl.value) {
-          extraPromptEl.value = '';
-        }
-      });
-    }
-
-    document.getElementById('btnStartAgentGenerateData')?.addEventListener('click', function() {
-      var countEl = document.getElementById('agentTestPointCount');
-      var requirementEl = document.getElementById('agentDataRequirement');
-      var codeEl = document.getElementById('agentStandardCode');
-      var count = parseInt((countEl && countEl.value) || '0', 10);
-      var dataRequirement = (requirementEl && requirementEl.value) ? requirementEl.value : '';
-      var standardCode = (codeEl && codeEl.value) ? codeEl.value : '';
-
-      if (!Number.isInteger(count) || count < 1 || count > 5000) {
-        alert('测试点数量需在 1-5000 之间');
-        return;
-      }
-      if (!standardCode.trim()) {
-        alert('标准程序不能为空');
-        return;
-      }
-
-      var btn = this;
-      var originalHtml = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = MathCurveLoader.markup('启动中…', 'xs');
-
-      fetch("{{ url_for('problem_core.admin_agent_generate_testdata', problem_id=problem.id) }}", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          test_point_count: count,
-          data_requirement: dataRequirement,
-          standard_code: standardCode
-        })
-      })
-        .then(res => res.json())
-        .then(data => {
-          btn.disabled = false;
-          btn.innerHTML = originalHtml;
-          if (!data.success) {
-            alert("启动失败：" + (data.message || "未知错误"));
-            return;
-          }
-          if (data.view_url) {
-            window.location.href = data.view_url;
-            return;
-          }
-          alert("任务已启动，Task ID: " + data.task_id);
-        })
-        .catch(() => {
-          btn.disabled = false;
-          btn.innerHTML = originalHtml;
-          alert("请求失败，请稍后再试");
-        });
-    });
-
-    var dataModalEl = document.getElementById('agentGenerateDataModal');
-    if (dataModalEl) {
-      dataModalEl.addEventListener('show.bs.modal', function() {
-        var codeEl = document.getElementById('agentStandardCode');
-        if (!codeEl) return;
-        if (typeof editor !== 'undefined' && editor && typeof editor.getValue === 'function') {
-          var currentCode = editor.getValue();
-          if (currentCode && currentCode.trim()) {
-            codeEl.value = currentCode;
-          }
-        }
-      });
-    }
-
     document.getElementById('btnRejudge')?.addEventListener('click', function() {
       if (!confirm("确认要重测本题的所有提交吗？")) return;
 
@@ -1031,6 +1008,10 @@
 
 {% block scripts %}
   {{ super() }}
+  {% if user and user.is_admin == 1 and problem.type == 1 %}
+  <script src="{{ url_for('static', filename='app/choice-picker.js') }}"></script>
+  <script src="{{ url_for('static', filename='app/problem-agent-launch.js') }}"></script>
+  {% endif %}
   {# 标准编程题由上方 Monaco 组件加载语义客户端；其余分支在这里补齐一次。 #}
   {% if problem.type != 1 or (problem.programming_grading_mode or 1)|int == 3 %}
   <script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>

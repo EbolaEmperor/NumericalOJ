@@ -83,12 +83,12 @@ def test_config_imports_code_defaults_without_private_env(tmp_path):
         expression=(
             "(config.MYSQL_USERNAME, config.ENV_FILE_LOADED, "
             "type(config.RANKING_BATCH_CLONE_TIMEOUT).__name__, "
-            "config.AGENT_MEMORY_ENABLED)"
+            "config.SESSION_COOKIE_SECURE)"
         ),
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "('oj', False, 'int', True)"
+    assert result.stdout.strip() == "('oj', False, 'int', False)"
 
 
 def test_logging_code_defaults_are_strictly_typed(tmp_path):
@@ -139,7 +139,7 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
         (
             'MYSQL_USERNAME="production-user"',
             f"MYSQL_PASSWORD={json.dumps(password)}",
-            "AGENT_MEMORY_ENABLED=false",
+            "SESSION_COOKIE_SECURE=true",
             "AGENT_REPOSITORY_KNN_SCORE_THRESHOLD=0.25",
             'CSRF_TRUSTED_ORIGINS=["https://oj.example","https://admin.example"]',
             'CUSTOM_PRODUCTION_SETTING=["kept-local"]',
@@ -152,7 +152,7 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
         env_source=env_source,
         expression=(
             "(config.MYSQL_USERNAME, config.MYSQL_PASSWORD, "
-            "config.AGENT_MEMORY_ENABLED, "
+            "config.SESSION_COOKIE_SECURE, "
             "config.AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, "
             "config.CSRF_TRUSTED_ORIGINS, "
             "hasattr(config, 'CUSTOM_PRODUCTION_SETTING'), "
@@ -167,7 +167,7 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
     assert values == (
         "production-user",
         password,
-        False,
+        True,
         0.25,
         ["https://oj.example", "https://admin.example"],
         False,
@@ -177,7 +177,7 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
             {
                 "MYSQL_USERNAME",
                 "MYSQL_PASSWORD",
-                "AGENT_MEMORY_ENABLED",
+                "SESSION_COOKIE_SECURE",
                 "AGENT_REPOSITORY_KNN_SCORE_THRESHOLD",
                 "CSRF_TRUSTED_ORIGINS",
                 "CONTENT_SECURITY_POLICY",
@@ -190,20 +190,20 @@ def test_env_overrides_are_typed_and_special_characters_are_literal(tmp_path):
 def test_process_environment_has_priority_over_env_file(tmp_path):
     result = _run_config_import(
         tmp_path,
-        env_source='MYSQL_USERNAME="file-user"\nAGENT_MEMORY_ENABLED=true\n',
+        env_source='MYSQL_USERNAME="file-user"\nSESSION_COOKIE_SECURE=false\n',
         process_overrides={
             "MYSQL_USERNAME": "process-user",
             "MYSQL_PASSWORD": "true",
-            "AGENT_MEMORY_ENABLED": "false",
+            "SESSION_COOKIE_SECURE": "true",
         },
         expression=(
             "(config.MYSQL_USERNAME, config.MYSQL_PASSWORD, "
-            "config.AGENT_MEMORY_ENABLED)"
+            "config.SESSION_COOKIE_SECURE)"
         ),
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "('process-user', 'true', False)"
+    assert result.stdout.strip() == "('process-user', 'true', True)"
 
 
 def test_logging_process_environment_has_priority_over_env_file(tmp_path):
@@ -255,8 +255,8 @@ def test_env_str_list_rejects_non_string_arrays(monkeypatch, raw_value):
     ("env_source", "error_fragment", "secret_fragment"),
     (
         (
-            "AGENT_MEMORY_ENABLED=not-a-bool-secret\n",
-            "AGENT_MEMORY_ENABLED",
+            "SESSION_COOKIE_SECURE=not-a-bool-secret\n",
+            "SESSION_COOKIE_SECURE",
             "not-a-bool-secret",
         ),
         (
