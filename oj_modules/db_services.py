@@ -434,11 +434,11 @@ def upsert_agent_run_snapshot(state):
                 """
                 INSERT INTO agent_task_runs (
                     task_id, problem_id, problem_title, requested_by, status, message,
-                    rounds_run, max_rounds, best_score, final_submission_id, latest_submission_id,
+                    best_score, final_submission_id, latest_submission_id,
                     attempts_json, events_json
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s,
+                    %s, %s, %s,
                     %s, %s
                 )
                 ON DUPLICATE KEY UPDATE
@@ -447,8 +447,6 @@ def upsert_agent_run_snapshot(state):
                     requested_by=VALUES(requested_by),
                     status=VALUES(status),
                     message=VALUES(message),
-                    rounds_run=VALUES(rounds_run),
-                    max_rounds=VALUES(max_rounds),
                     best_score=VALUES(best_score),
                     final_submission_id=VALUES(final_submission_id),
                     latest_submission_id=VALUES(latest_submission_id),
@@ -462,8 +460,6 @@ def upsert_agent_run_snapshot(state):
                     state.get("requested_by"),
                     str(state.get("status") or "Pending")[:32],
                     state.get("message"),
-                    _safe_int(state.get("round"), 0),
-                    _safe_int(state.get("max_rounds"), 0),
                     best_score,
                     state.get("final_submission_id"),
                     state.get("latest_submission_id"),
@@ -486,7 +482,7 @@ def get_agent_run_by_task_id(task_id):
             cursor.execute(
                 """
                 SELECT task_id, problem_id, problem_title, requested_by, status, message,
-                       rounds_run, max_rounds, best_score, final_submission_id, latest_submission_id,
+                       best_score, final_submission_id, latest_submission_id,
                        attempts_json, events_json, created_at, updated_at
                 FROM agent_task_runs
                 WHERE task_id=%s
@@ -510,8 +506,6 @@ def get_agent_run_by_task_id(task_id):
         "requested_by": row.get("requested_by"),
         "status": row.get("status"),
         "message": row.get("message"),
-        "round": _safe_int(row.get("rounds_run"), 0),
-        "max_rounds": _safe_int(row.get("max_rounds"), 0),
         "best_score": _safe_int(row.get("best_score"), 0),
         "final_submission_id": row.get("final_submission_id"),
         "latest_submission_id": row.get("latest_submission_id"),
@@ -534,7 +528,7 @@ def get_agent_runs_paginated(page=1, per_page=20):
             cursor.execute(
                 """
                 SELECT task_id, problem_id, problem_title, requested_by, status, message,
-                       rounds_run, max_rounds, best_score, final_submission_id,
+                       best_score, final_submission_id,
                        created_at, updated_at
                 FROM agent_task_runs
                 ORDER BY id DESC

@@ -77,7 +77,7 @@ def test_upsert_non_dict_is_noop():
 
 def test_upsert_basic_insert_and_json_serialization():
     """正常插入：attempts/events 以 JSON 文本落库，标量字段正确。"""
-    attempts = [{'round': 1, 'summary': {'score': 40}}]
+    attempts = [{'submission_id': 1, 'summary': {'score': 40}}]
     events = [{'type': 'start'}, {'type': 'compile'}]
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-basic',
@@ -86,8 +86,6 @@ def test_upsert_basic_insert_and_json_serialization():
         'requested_by': 'admin',
         'status': 'running',
         'message': '进行中',
-        'round': 2,
-        'max_rounds': 5,
         'best_score': 0,
         'final_submission_id': 11,
         'latest_submission_id': 12,
@@ -101,8 +99,8 @@ def test_upsert_basic_insert_and_json_serialization():
     assert row['problem_title'] == '示例题目'
     assert row['requested_by'] == 'admin'
     assert row['status'] == 'running'
-    assert row['rounds_run'] == 2
-    assert row['max_rounds'] == 5
+    assert 'rounds_run' not in row
+    assert 'max_rounds' not in row
     assert row['final_submission_id'] == 11
     assert row['latest_submission_id'] == 12
 
@@ -184,7 +182,7 @@ def test_upsert_status_default_pending_when_missing():
 # ---------------------------------------------------------------------------
 def test_get_by_task_id_roundtrip():
     """写入后能读回，attempts/events 解析为 Python 对象，标量字段映射正确。"""
-    attempts = [{'round': 1, 'summary': {'score': 70}}]
+    attempts = [{'submission_id': 1, 'summary': {'score': 70}}]
     events = [{'type': 'done'}]
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-read',
@@ -193,8 +191,6 @@ def test_get_by_task_id_roundtrip():
         'requested_by': 'admin',
         'status': 'completed',
         'message': '完成',
-        'round': 4,
-        'max_rounds': 6,
         'best_score': 0,
         'attempts': attempts,
         'events': events,
@@ -207,8 +203,8 @@ def test_get_by_task_id_roundtrip():
     assert got['problem_title'] == '读回题'
     assert got['requested_by'] == 'admin'
     assert got['status'] == 'completed'
-    assert got['round'] == 4
-    assert got['max_rounds'] == 6
+    assert 'round' not in got
+    assert 'max_rounds' not in got
     # best_score 由 attempts 推断（70 > 0）
     assert got['best_score'] == 70
     assert got['attempts'] == attempts

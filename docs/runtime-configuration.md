@@ -50,20 +50,16 @@ LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启
 | `LATEX_OCR_MAX_IMAGES_PER_REQUEST` | int | `20` |
 | `LATEX_OCR_STREAM_EMIT_INTERVAL` | float | `0.6` |
 | `LATEX_OCR_STREAM_EMIT_MIN_DELTA` | int | `60` |
-| `AGENT_MAX_ROUNDS` | int | `32` |
-| `AGENT_SUBMIT_LIMIT` | int | `8` |
-| `AGENT_MEMORY_ENABLED` | bool | `true` |
-| `AGENT_CONTEXT_MAX_CHARS` | int | `480000` |
-| `AGENT_CONTEXT_KEEP_ROUNDS` | int | `50` |
-| `AGENT_MEMORY_MAX_PATTERNS` | int | `24` |
-| `AGENT_MEMORY_MAX_NOTES` | int | `24` |
-| `AGENT_MEMORY_MAX_DO_NOT_REPEAT` | int | `24` |
 | `AGENT_REPOSITORY_KNN_TOP_K` | int | `5` |
 | `AGENT_REPOSITORY_KNN_SCORE_THRESHOLD` | float | `0.08` |
-| `AGENT_CONTEXT_SUMMARY_TIMEOUT` | int | `120` |
-| `AGENT_CONTEXT_SUMMARY_INPUT_MAX_CHARS` | int | `480000` |
-| `AGENT_CONTEXT_SUMMARY_OUTPUT_MAX_CHARS` | int | `48000` |
+| `AGENT_WORKSPACE_ROOT` | string | `tmp/agent_workspaces` |
+| `AGENT_CONTAINER_SITE_URL` | string | `http://host.docker.internal:2025` |
 | `MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS` | int | `90` |
+
+解题与造数据任务启动时会读取全站 WebSearch MCP 的 URL 和 Authorization，
+并注入管理员在弹窗中选择的 Harness。Codex、Claude Code 和 OpenCode 使用各自的
+远程 MCP 配置；Pi 通过镜像内受信任扩展注册同一个 `web_search` 工具。凭证只通过
+容器环境变量传递，生成到任务工作区的配置文件仅引用变量名。
 
 ## 代码仓库与向量索引
 

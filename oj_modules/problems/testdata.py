@@ -132,7 +132,35 @@ def update_problem_testdata(problem_id, testdata):
         conn.close()
 
 
-def import_testdata_zip(problem_id, zip_path, extract_dir):
+def get_problem_testdata_state(problem_id):
+    """读取可用于乐观并发控制的测试数据原始状态。"""
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT testdata, max_score FROM problems WHERE id=%s",
+                (problem_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "testdata": row.get("testdata"),
+                "max_score": row.get("max_score"),
+            }
+    finally:
+        conn.close()
+
+
+def parse_testdata_zip(zip_path, extract_dir):
+    """安全解压并解析测试数据 ZIP，但不修改题目或其他数据库状态。
+
+    ``extract_dir`` 必须是调用方为本次操作独占的临时目录。函数会先删除该目录
+    中可能残留的文件；解析失败时也会清理已解压的部分内容。返回值可以先交给
+    判题器验证，验证通过后再由 :func:`publish_staged_testdata` 原子发布。
+    """
+
     # 调用方为每次导入提供专用临时目录；先清理崩溃遗留，避免旧 .in/.out 混入新包。
     shutil.rmtree(extract_dir, ignore_errors=True)
     policy = ZipExtractionPolicy(
@@ -164,7 +192,6 @@ def import_testdata_zip(problem_id, zip_path, extract_dir):
         raise TestdataValidationError(messages.get(exc.reason, 'ZIP 解压失败。')) from exc
     try:
         testdata = load_testdata_from_extracted_dir(extract_dir)
-        update_problem_testdata(problem_id, testdata)
     except Exception:
         shutil.rmtree(extract_dir, ignore_errors=True)
         raise
@@ -172,3 +199,56 @@ def import_testdata_zip(problem_id, zip_path, extract_dir):
         "count": len(testdata),
         "testdata": testdata,
     }
+
+
+def publish_staged_testdata(problem_id, *, before_state, testdata):
+    """仅在题目仍处于 ``before_state`` 时原子发布已验证的测试数据。
+
+    读取旧值、比较和更新都在同一数据库事务及行锁内完成，因此失败只会返回
+    ``False``，不会先暴露新数据再尝试回滚。``before_state`` 应直接来自
+    :func:`get_problem_testdata_state`，保留数据库中的原始可空值。
+    """
+
+    if not isinstance(before_state, dict) or not {
+        "testdata", "max_score",
+    }.issubset(before_state):
+        raise ValueError("before_state 缺少测试数据原始状态")
+    if not isinstance(testdata, list) or not testdata:
+        raise TestdataValidationError("测试数据为空。")
+
+    replacement_testdata = json.dumps(testdata, ensure_ascii=False)
+    replacement_max_score = len(testdata)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT testdata, max_score FROM problems WHERE id=%s FOR UPDATE",
+                (problem_id,),
+            )
+            current = cursor.fetchone()
+            if (
+                not current
+                or current.get("testdata") != before_state.get("testdata")
+                or current.get("max_score") != before_state.get("max_score")
+            ):
+                conn.rollback()
+                return False
+            cursor.execute(
+                "UPDATE problems SET testdata=%s, max_score=%s WHERE id=%s",
+                (replacement_testdata, replacement_max_score, problem_id),
+            )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def import_testdata_zip(problem_id, zip_path, extract_dir):
+    """兼容管理员直接上传：安全解析后立即更新题目测试数据。"""
+
+    result = parse_testdata_zip(zip_path, extract_dir)
+    update_problem_testdata(problem_id, result["testdata"])
+    return result

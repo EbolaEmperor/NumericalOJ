@@ -26,7 +26,6 @@ def test_problem_title_and_agent_run_display_helpers_preserve_contract():
         "problem_id": 17,
         "problem_title": " ",
         "status": "",
-        "rounds_run": "3",
         "best_score": "92",
     }]
     assert decorate_agent_run_summaries(runs) is runs
@@ -34,11 +33,9 @@ def test_problem_title_and_agent_run_display_helpers_preserve_contract():
         "problem_id": 17,
         "problem_title": " ",
         "status": "",
-        "rounds_run": "3",
         "best_score": "92",
         "display_problem_title": "Problem 17",
         "display_status": "Pending",
-        "display_rounds": "3",
         "display_best_score": 92,
     }]
 

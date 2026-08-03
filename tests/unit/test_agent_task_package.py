@@ -22,9 +22,7 @@ def test_agent_package_preserves_public_task_contract():
         agent.register_agent_generate_testdata_task
         is register_agent_generate_testdata_task
     )
-    assert str(inspect.signature(register_agent_solve_problem_task)) == (
-        "(celery_app, evaluate_submission_task)"
-    )
+    assert str(inspect.signature(register_agent_solve_problem_task)) == "(celery_app)"
     assert str(inspect.signature(register_agent_generate_testdata_task)) == (
-        "(celery_app, evaluate_submission_task)"
+        "(celery_app)"
     )

@@ -391,6 +391,7 @@ def test_codex_audit_mode_uses_read_only_sandbox_without_bypass(monkeypatch):
             "context_window_tokens": 1_000_000,
             "max_output_tokens": 384_000,
             "thinking_compatibility": True,
+            "web_search_mcp": None,
         },
     )]
     assert relay_events == [
@@ -438,6 +439,94 @@ def test_codex_config_reserves_output_and_controls_reasoning_summary(
     ) in config
     assert f'model_reasoning_summary = "{expected_summary}"' in config
     assert "model_max_output_tokens" not in config
+
+
+def test_codex_and_opencode_configs_reference_web_search_secret_from_env(tmp_path):
+    module = _load_run_harness()
+    settings = {
+        "url": "https://search.example/mcp",
+        "timeout_seconds": 37,
+        "timeout_ms": 37_000,
+    }
+
+    module._write_codex_config(
+        str(tmp_path),
+        "https://model.example/v1",
+        "generic-model",
+        web_search_mcp=settings,
+    )
+    codex_config = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "[mcp_servers.numoj_web_search]" in codex_config
+    assert 'url = "https://search.example/mcp"' in codex_config
+    assert (
+        'env_http_headers = { Authorization = '
+        '"AJ_WEB_SEARCH_MCP_AUTHORIZATION" }'
+    ) in codex_config
+    assert "tool_timeout_sec = 37" in codex_config
+
+    opencode_config = json.loads(module._opencode_config_content(
+        "https://model.example/v1",
+        "OPENCODE_API_KEY",
+        "generic-model",
+        web_search_mcp=settings,
+    ))
+    assert opencode_config["mcp"] == {
+        "numoj_web_search": {
+            "type": "remote",
+            "url": "https://search.example/mcp",
+            "headers": {
+                "Authorization": "{env:AJ_WEB_SEARCH_MCP_AUTHORIZATION}",
+            },
+            "oauth": False,
+            "timeout": 37_000,
+        },
+    }
+
+
+def test_claude_uses_strict_runtime_mcp_config_without_persisting_secret(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    calls = []
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("AJ_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("AJ_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("ANTHROPIC_MODEL", "generic-model")
+    monkeypatch.setenv("AJ_WEB_SEARCH_MCP_URL", "https://search.example/mcp")
+    monkeypatch.setenv(
+        "AJ_WEB_SEARCH_MCP_AUTHORIZATION",
+        "Bearer must-not-be-written",
+    )
+    monkeypatch.setenv("AJ_WEB_SEARCH_MCP_TIMEOUT_SECONDS", "41")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda args, **kwargs: calls.append((list(args), kwargs))
+        or SimpleNamespace(returncode=0, stdout="{}", stderr=""),
+    )
+    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
+
+    assert module._run_claude_code("solve") == 0
+
+    args, kwargs = calls[0]
+    assert "--strict-mcp-config" in args
+    config_path = Path(args[args.index("--mcp-config") + 1])
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config == {
+        "mcpServers": {
+            "numoj_web_search": {
+                "type": "http",
+                "url": "https://search.example/mcp",
+                "headers": {
+                    "Authorization": "${AJ_WEB_SEARCH_MCP_AUTHORIZATION}",
+                },
+                "timeout": 41_000,
+            },
+        },
+    }
+    assert "must-not-be-written" not in config_path.read_text(encoding="utf-8")
+    assert kwargs["env"]["AJ_WEB_SEARCH_MCP_AUTHORIZATION"] == (
+        "Bearer must-not-be-written"
+    )
 
 
 def test_codex_relay_injects_output_limit_strips_thinking_and_streams_response():
@@ -820,6 +909,38 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
     }
     assert recorded[0][0] == "pi"
     assert recorded[0][2] == resume_id
+
+
+def test_pi_explicitly_loads_only_the_trusted_web_search_mcp_extension(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    calls = []
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
+    monkeypatch.setenv("OPENAI_MODEL", "generic-model")
+    monkeypatch.setenv("AJ_WEB_SEARCH_MCP_URL", "https://search.example/mcp")
+    monkeypatch.setenv("AJ_WEB_SEARCH_MCP_AUTHORIZATION", "Bearer search-secret")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda args, **kwargs: calls.append((list(args), kwargs))
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
+
+    assert module._run_pi("solve") == 0
+
+    args, kwargs = calls[0]
+    assert "--no-extensions" in args
+    assert args[args.index("--extension") + 1] == (
+        module.PI_WEB_SEARCH_MCP_EXTENSION
+    )
+    assert kwargs["env"]["AJ_WEB_SEARCH_MCP_AUTHORIZATION"] == (
+        "Bearer search-secret"
+    )
 
 
 @pytest.mark.parametrize(

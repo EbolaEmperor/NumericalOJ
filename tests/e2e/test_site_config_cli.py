@@ -103,10 +103,6 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
     assert set(feature_specs) == {
         "ai_code_annotation",
         "code_image_analysis",
-        "solution_agent",
-        "testdata_agent",
-        "agent_summary",
-        "repository_query_summary",
         "repository_structuring",
         "repository_embedding",
     }
@@ -373,8 +369,6 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
             if key == "repository_embedding"
             else vision_endpoint_id
             if key == "code_image_analysis"
-            else omni_endpoint_id
-            if key == "solution_agent"
             else text_endpoint_id
         )
         for key in feature_specs

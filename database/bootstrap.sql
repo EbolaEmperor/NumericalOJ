@@ -462,8 +462,6 @@ CREATE TABLE `agent_task_runs` (
   `requested_by` varchar(50) DEFAULT NULL,
   `status` varchar(32) NOT NULL DEFAULT 'Pending',
   `message` text,
-  `rounds_run` int NOT NULL DEFAULT '0',
-  `max_rounds` int NOT NULL DEFAULT '0',
   `best_score` int NOT NULL DEFAULT '0',
   `final_submission_id` int DEFAULT NULL,
   `latest_submission_id` int DEFAULT NULL,
@@ -517,6 +515,26 @@ CREATE TABLE `users` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `username` (`username`)
 ) ENGINE=InnoDB AUTO_INCREMENT=186 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_launch_preferences`
+--
+
+DROP TABLE IF EXISTS `agent_launch_preferences`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_launch_preferences` (
+  `user_id` int NOT NULL,
+  `harness` varchar(32) NOT NULL,
+  `endpoint_id` bigint NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`),
+  KEY `idx_agent_launch_preferences_endpoint` (`endpoint_id`),
+  CONSTRAINT `fk_agent_launch_preferences_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_agent_launch_preferences_harness` CHECK (`harness` IN ('claude_code','codex','opencode','pi'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --

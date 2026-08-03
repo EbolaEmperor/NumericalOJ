@@ -3,8 +3,13 @@
 
 from __future__ import annotations
 
+from email import policy
+from email.parser import BytesParser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -224,6 +229,187 @@ def test_every_cli_command_has_help(script, paths):
         )
         assert completed.returncode == 0, f"{' '.join(cmd)}\n{completed.stderr}"
         assert "usage:" in completed.stdout
+
+
+@pytest.mark.e2e
+def test_admin_problem_agent_help_only_exposes_current_launch_contract():
+    """Agent CLI 只暴露 Harness 启动参数，不再接受旧自建循环参数。"""
+
+    help_by_command = {}
+    for command in ("agent-solve", "agent-generate-data"):
+        completed = subprocess.run(
+            [sys.executable, str(ADMIN_CLI), "problem", command, "--help"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        help_by_command[command] = completed.stdout
+
+    for help_text in help_by_command.values():
+        assert "--harness {claude_code,codex,opencode,pi}" in help_text
+        assert "--endpoint-id" in help_text
+        assert "--extra-prompt" not in help_text
+        assert "--standard-code" not in help_text
+        assert "--max-rounds" not in help_text
+        assert "--summary-endpoint-id" not in help_text
+
+    solve_help = help_by_command["agent-solve"]
+    assert "--count" not in solve_help
+    assert "--data-requirement" not in solve_help
+    assert "--standard-solution" not in solve_help
+
+    generate_help = help_by_command["agent-generate-data"]
+    assert "--count" in generate_help
+    assert "--data-requirement" in generate_help
+    assert "--standard-solution" in generate_help
+
+
+@pytest.mark.e2e
+def test_admin_problem_agent_commands_send_current_launch_contract(tmp_path):
+    """真实 CLI 子进程必须按当前 Agent 路由契约发送两类启动请求。"""
+
+    requests = []
+
+    class CaptureHandler(BaseHTTPRequestHandler):
+        def log_message(self, _format, *args):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length)
+            requests.append({
+                "path": self.path,
+                "content_type": self.headers.get("Content-Type") or "",
+                "cookie": self.headers.get("Cookie") or "",
+                "body": body,
+            })
+            payload = json.dumps({
+                "success": True,
+                "task_id": f"agent-task-{len(requests)}",
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CaptureHandler)
+    except OSError as exc:
+        pytest.skip(f"当前环境不能监听 loopback：{exc}")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    config_path = tmp_path / "numoj-admin.json"
+    config_path.write_text(
+        json.dumps({
+            "base_url": f"http://127.0.0.1:{server.server_port}",
+            "cookies": {"session": "agent-cli-e2e-session"},
+        }),
+        encoding="utf-8",
+    )
+    standard_solution = tmp_path / "reference.py"
+    standard_source = "print('reference answer')\n"
+    standard_solution.write_text(standard_source, encoding="utf-8")
+
+    def run_agent_command(*args):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ADMIN_CLI),
+                "--config",
+                str(config_path),
+                *args,
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return json.loads(completed.stdout)
+
+    try:
+        solve = run_agent_command(
+            "problem",
+            "agent-solve",
+            "19",
+            "--harness",
+            "codex",
+            "--endpoint-id",
+            "41",
+        )
+        generate = run_agent_command(
+            "problem",
+            "agent-generate-data",
+            "19",
+            "--harness",
+            "pi",
+            "--endpoint-id",
+            "42",
+            "--count",
+            "7",
+            "--data-requirement",
+            "覆盖边界与压力场景",
+            "--standard-solution",
+            str(standard_solution),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert solve == {"success": True, "task_id": "agent-task-1"}
+    assert generate == {"success": True, "task_id": "agent-task-2"}
+    assert len(requests) == 2
+
+    solve_request = requests[0]
+    assert solve_request["path"] == "/admin/agent_solve_problem/19"
+    assert solve_request["content_type"].startswith("application/json")
+    assert json.loads(solve_request["body"]) == {
+        "harness": "codex",
+        "endpoint_id": 41,
+    }
+
+    generate_request = requests[1]
+    assert generate_request["path"] == "/admin/agent_generate_testdata/19"
+    assert generate_request["content_type"].startswith("multipart/form-data;")
+    message = BytesParser(policy=policy.default).parsebytes(
+        (
+            f"Content-Type: {generate_request['content_type']}\r\n"
+            "MIME-Version: 1.0\r\n\r\n"
+        ).encode("ascii")
+        + generate_request["body"]
+    )
+    fields = {}
+    files = {}
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        filename = part.get_filename()
+        value = part.get_payload(decode=True) or b""
+        if filename is None:
+            fields[name] = value.decode("utf-8")
+        else:
+            files[name] = {"filename": filename, "content": value}
+
+    assert fields == {
+        "harness": "pi",
+        "endpoint_id": "42",
+        "test_point_count": "7",
+        "data_requirement": "覆盖边界与压力场景",
+    }
+    assert files == {
+        "standard_solution": {
+            "filename": "reference.py",
+            "content": standard_source.encode("utf-8"),
+        },
+    }
+    assert "session=agent-cli-e2e-session" in solve_request["cookie"]
+    assert "session=agent-cli-e2e-session" in generate_request["cookie"]
 
 
 @pytest.mark.e2e

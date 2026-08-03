@@ -112,6 +112,7 @@ RUN npm install -g --ignore-scripts \
 # report 上报命令
 COPY report /usr/local/bin/report
 COPY run_harness /usr/local/bin/run_harness
+COPY pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
 RUN chmod +x /usr/local/bin/report /usr/local/bin/run_harness
 
 WORKDIR /workspace

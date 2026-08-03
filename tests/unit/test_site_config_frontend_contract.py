@@ -23,6 +23,7 @@ def _css_rule(source, selector):
 
 def test_site_config_has_exactly_three_internal_pages():
     template = _read(TEMPLATE)
+    script = _read(SCRIPT)
 
     assert template.count("data-config-tab=") == 3
     assert 'data-config-tab="endpoints"' in template
@@ -31,6 +32,15 @@ def test_site_config_has_exactly_three_internal_pages():
     assert "LLM 端点" in template
     assert "功能配置" in template
     assert "其他配置" in template
+    assert "data-feature-count" in template
+    assert "state.meta.features.length" in script
+    for removed_feature in (
+        "solution_agent",
+        "testdata_agent",
+        "agent_summary",
+        "repository_query_summary",
+    ):
+        assert removed_feature not in script
     assert ".env" not in template
 
 

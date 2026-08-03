@@ -240,6 +240,113 @@ def test_repository_upload_sends_current_structure_version_as_form_data(monkeypa
     capsys.readouterr()
 
 
+def test_problem_agent_solve_sends_explicit_harness_and_endpoint_as_json(
+    monkeypatch,
+    capsys,
+):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setattr(cli.problem, "client_from_args", lambda _args: fake_client)
+
+    cli.problem_agent_solve(Namespace(
+        problem_id=9,
+        harness="claude_code",
+        endpoint_id=12,
+    ))
+
+    method, path, kwargs = fake_client.requests[-1]
+    assert (method, path) == ("POST", "/admin/agent_solve_problem/9")
+    assert kwargs == {
+        "json": {
+            "harness": "claude_code",
+            "endpoint_id": 12,
+        },
+    }
+    capsys.readouterr()
+
+
+def test_problem_agent_generate_data_uploads_standard_solution_as_multipart(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setattr(cli.problem, "client_from_args", lambda _args: fake_client)
+    source = tmp_path / "answer.py"
+    source.write_text("print(1)\n", encoding="utf-8")
+
+    cli.problem_agent_generate_data(Namespace(
+        problem_id=9,
+        harness="codex",
+        endpoint_id=12,
+        count=4,
+        standard_solution=str(source),
+        data_requirement="覆盖边界",
+    ))
+
+    method, path, kwargs = fake_client.requests[-1]
+    assert (method, path) == (
+        "POST",
+        "/admin/agent_generate_testdata/9",
+    )
+    assert kwargs["data"] == {
+        "harness": "codex",
+        "endpoint_id": 12,
+        "test_point_count": 4,
+        "data_requirement": "覆盖边界",
+    }
+    assert "json" not in kwargs
+    assert kwargs["files"]["standard_solution"][0] == "answer.py"
+    assert kwargs["files"]["standard_solution"][1].closed
+    capsys.readouterr()
+
+
+def test_problem_agent_commands_require_new_harness_contract_and_reject_old_flags(
+    capsys,
+):
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+
+    solve = parser.parse_args([
+        "problem", "agent-solve", "9",
+        "--harness", "opencode", "--endpoint-id", "12",
+    ])
+    assert solve.harness == "opencode"
+    assert solve.endpoint_id == 12
+    assert not hasattr(solve, "extra_prompt")
+
+    generate = parser.parse_args([
+        "problem", "agent-generate-data", "9",
+        "--harness", "pi", "--endpoint-id", "13", "--count", "4",
+        "--standard-solution", "answer.py",
+        "--data-requirement", "覆盖边界",
+    ])
+    assert generate.harness == "pi"
+    assert generate.endpoint_id == 13
+    assert generate.standard_solution == "answer.py"
+    assert not hasattr(generate, "standard_code")
+
+    old_commands = (
+        [
+            "problem", "agent-solve", "9",
+            "--harness", "codex", "--endpoint-id", "12",
+            "--extra-prompt", "旧补充提示",
+        ],
+        [
+            "problem", "agent-generate-data", "9",
+            "--harness", "codex", "--endpoint-id", "12", "--count", "4",
+            "--standard-solution", "answer.py",
+            "--standard-code", "print(1)",
+        ],
+    )
+    for argv in old_commands:
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args(argv)
+        assert exc_info.value.code != 0
+    capsys.readouterr()
+
+
 def test_repository_delete_confirms_once_with_server_token(monkeypatch, capsys):
     cli = _load_numoj_admin_cli_module()
     client = _SequenceClient([
@@ -1888,8 +1995,15 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["problem", "agent-run", "task-1"],
         ["problem", "agent-run-stream", "task-1"],
         ["problem", "agent-tasks"],
-        ["problem", "agent-solve", "1"],
-        ["problem", "agent-generate-data", "1", "--count", "1", "--standard-code", "disp(1)"],
+        [
+            "problem", "agent-solve", "1", "--harness", "codex",
+            "--endpoint-id", "1",
+        ],
+        [
+            "problem", "agent-generate-data", "1", "--harness", "codex",
+            "--endpoint-id", "1", "--count", "1", "--standard-solution",
+            str(fixture_file),
+        ],
         ["problem", "scores", "1"],
         ["homework", "list"],
         ["homework", "add", "--class-en", "C1", "--ddl", "2026-01-01T00:00", "--problem-id", "1"],

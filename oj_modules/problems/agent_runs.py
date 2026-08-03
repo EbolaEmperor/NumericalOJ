@@ -9,7 +9,6 @@ def decorate_agent_run_summaries(runs):
             or f"Problem {run.get('problem_id') or '-'}"
         )
         run["display_status"] = str(run.get("status") or "Pending")
-        run["display_rounds"] = f"{int(run.get('rounds_run') or 0)}"
         run["display_best_score"] = int(run.get("best_score") or 0)
     return runs
 

@@ -1,4 +1,4 @@
-# 打榜赛 Agent-as-Judge 轻量评测镜像：预装 Claude Code、Pi CLI + 常用工具链。
+# 打榜赛 Agent-as-Judge 轻量评测镜像：预装四种 Harness CLI + 常用工具链。
 # 构建（上下文必须是 docker/，这样可复用 agent_judge/report 与 run_harness）：
 #   docker build -f docker/agent_judge-lite/Dockerfile -t numericaloj-agent-judge-lite:latest docker
 FROM node:24-bookworm-slim
@@ -47,8 +47,13 @@ RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple ||
 RUN pip3 install --no-cache-dir --break-system-packages \
         openai anthropic dashscope google-genai httpx tenacity python-dotenv
 
-# 轻量版安装 Claude Code 与 Pi，不安装 Codex / opencode。
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+# 轻量版缩减的是系统工具链，不缩减启动弹窗提供的 Harness 集合。
+ARG CODEX_CLI_VERSION=0.144.5
+ARG OPENCODE_VERSION=1.18.3
+RUN npm install -g \
+        @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+        @openai/codex@${CODEX_CLI_VERSION} \
+        opencode-ai@${OPENCODE_VERSION} \
         --registry=https://registry.npmmirror.com
 RUN npm install -g --ignore-scripts \
         @earendil-works/pi-coding-agent \
@@ -57,6 +62,7 @@ RUN npm install -g --ignore-scripts \
 # report / run_harness 与原版镜像复用同一份脚本。
 COPY agent_judge/report /usr/local/bin/report
 COPY agent_judge/run_harness /usr/local/bin/run_harness
+COPY agent_judge/pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
 RUN chmod +x /usr/local/bin/report /usr/local/bin/run_harness
 
 WORKDIR /workspace
