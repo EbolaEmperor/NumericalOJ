@@ -57,6 +57,7 @@ def build_testdata_agent_prompt(
     *,
     problem_id,
     problem_title,
+    problem_language="",
     test_point_count,
     standard_solution_path,
     interactor_path="/workspace/task-input/problem_interactor.txt",
@@ -71,18 +72,29 @@ def build_testdata_agent_prompt(
     )
     limit_ms = int(time_limit_ms)
     limit_seconds = limit_ms / 1000.0
+    language = str(problem_language or "").strip().lower()
+    if language == "matlab":
+        test_method = (
+            "将 i.in 重命名为 input.txt，放在完整代码同目录下，运行完整代码，"
+            "然后将输出的 output.txt 与 i.out 进行逐字节比较"
+        )
+    else:
+        test_method = (
+            "将 i.in 作为完整源码的标准输入流，运行后将标准输出流与 i.out "
+            "进行逐字节比较"
+        )
     return (
         f"请使用 numoj-user skill 读取问题：{problem_title}（题号 {int(problem_id)}），"
         f"为这个问题生成 {int(test_point_count)} 个有强度、高质量的测试点。\n"
         f"这是正解程序：{standard_solution_path}\n"
         f"这是题目给的交互程序：{interactor_path}\n"
-        f"每个测试点的时间限制是 {limit_ms} ms（{limit_seconds:g} 秒）。"
-        "生成的测试点必须让合并后的正解在该限制内稳定完成。\n"
+        f"每个测试点的时间限制是 {limit_ms} ms（{limit_seconds:g} 秒）。\n"
         "本地验证时，请先复制交互程序，再将其中唯一的 `%%user_code_here` 占位符整体替换为正解文件的完整源码。"
         "如果交互程序为空，则直接运行正解文件。\n"
-        f"特别地，我希望测试点满足如下要求：{requirement_text}\n\n"
-        "请在本地充分检查输入格式、边界覆盖，并实际运行该正解生成或核对每个输出。"
-        "将测试点以 1.in/1.out 至 n.in/n.out 的形式直接放在 ZIP 根目录，最终 ZIP 必须保存到："
+        f"对于第 i 个测试点，测试方式是：{test_method}。\n\n"
+        "特别地，我希望测试点满足如下要求："
+        f"{requirement_text}\n\n"
+        "请将测试点以 1.in/1.out 至 n.in/n.out 的形式直接放在 ZIP 根目录，最终 ZIP 必须保存到："
         f"{_STAGED_ZIP_CONTAINER_PATH}\n"
         "再次强调：请确保你的测试点有足够的强度，并确保正解能在规定时间内通过全部测试。"
     )
@@ -278,6 +290,7 @@ def register_agent_generate_testdata_task(celery_app):
         prompt = build_testdata_agent_prompt(
             problem_id=problem_id,
             problem_title=title,
+            problem_language=problem.get("lang"),
             test_point_count=point_count,
             standard_solution_path=container_solution_path,
             interactor_path=container_interactor_path,

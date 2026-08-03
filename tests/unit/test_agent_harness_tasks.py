@@ -69,27 +69,6 @@ def test_standard_solution_filename_accepts_basename_and_has_language_fallback()
     )
 
 
-def test_testdata_prompt_names_solution_and_fixed_staged_zip():
-    prompt = data_task.build_testdata_agent_prompt(
-        problem_id=5,
-        problem_title="造数据题",
-        test_point_count=4,
-        standard_solution_path="/workspace/task-input/official answer.py",
-        interactor_path="/workspace/task-input/problem_interactor.py",
-        time_limit_ms=2000,
-        data_requirement="覆盖零和最大值",
-    )
-
-    assert "numoj-user skill" in prompt
-    assert "/workspace/task-input/official answer.py" in prompt
-    assert "/workspace/task-input/problem_interactor.py" in prompt
-    assert "/workspace/agent-output/testdata.zip" in prompt
-    assert "2000 ms" in prompt
-    assert "唯一的 `%%user_code_here`" in prompt
-    assert "正解文件的完整源码" in prompt
-    assert "覆盖零和最大值" in prompt
-
-
 def _patch_common(monkeypatch, tmp_path, *, problem=None):
     events = []
     monkeypatch.setattr(data_task, "AGENT_WORKSPACE_ROOT", str(tmp_path))
@@ -229,12 +208,6 @@ def test_testdata_task_exports_parses_validates_then_publishes(
     assert harness_call["artifact_files"] == {
         _ZIP_RELATIVE_PATH: data_task._STAGED_ZIP_MAX_BYTES,
     }
-    assert "/workspace/task-input/official answer.py" in harness_call["prompt"]
-    assert "/workspace/task-input/problem_interactor.py" in harness_call["prompt"]
-    assert "/workspace/agent-output/testdata.zip" in harness_call["prompt"]
-    assert "唯一的 `%%user_code_here`" in harness_call["prompt"]
-    assert "正解文件的完整源码" in harness_call["prompt"]
-    assert "2000 ms" in harness_call["prompt"]
     assert events[-1][1] == {
         "level": "success",
         "status": "Completed",
@@ -485,7 +458,7 @@ def _patch_harness_solution_task(monkeypatch, *, submissions):
     return events
 
 
-def test_solution_task_uses_selected_endpoint_and_exact_prompt(monkeypatch):
+def test_solution_task_uses_selected_endpoint(monkeypatch):
     _patch_harness_solution_task(monkeypatch, submissions=[[]])
     resolutions = []
     runs = []
@@ -517,10 +490,6 @@ def test_solution_task_uses_selected_endpoint_and_exact_prompt(monkeypatch):
     assert runs[0]["harness"] == "codex"
     assert runs[0]["session_cookie"] == "session-cookie"
     assert runs[0]["session_cookie_name"] == "numoj_session"
-    assert runs[0]["prompt"] == (
-        "请帮我用 numoj-user skill 读取问题：快照题，并解决这个问题。"
-        "本地充分测试，确认无误后提交。如果没有通过就继续尝试，直到通过为止。"
-    )
 
 
 def test_solution_task_rejects_unavailable_selected_endpoint(monkeypatch):

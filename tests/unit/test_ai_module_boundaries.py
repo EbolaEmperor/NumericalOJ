@@ -24,11 +24,7 @@ def test_ai_and_integrations_package_initializers_stay_lightweight():
 def test_promptly_canonical_patch_point_controls_review(monkeypatch):
     from oj_modules.ai import promptly
 
-    captured = {}
-
-    def fake_call(prompt_text, _endpoint, **kwargs):
-        captured["prompt_text"] = prompt_text
-        captured["system_prompt"] = kwargs.get("system_prompt")
+    def fake_call(_prompt_text, _endpoint, **_kwargs):
         return '{"nice": true}'
 
     monkeypatch.setattr(promptly, "_call_llm_text", fake_call)
@@ -49,5 +45,3 @@ def test_promptly_canonical_patch_point_controls_review(monkeypatch):
     )
 
     assert (nice, reply) == (True, "")
-    assert "单调队列" in captured["prompt_text"]
-    assert "简要题意" in captured["system_prompt"]

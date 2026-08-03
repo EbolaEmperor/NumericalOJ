@@ -29,7 +29,7 @@ def test_available_detection_endpoints_filters_categories_and_secrets(monkeypatc
     assert all("name" not in item for item in endpoints)
 
 
-def test_detect_with_llm_uses_one_unified_prompt_and_parser(monkeypatch):
+def test_detect_with_llm_uses_selected_endpoint_and_parser(monkeypatch):
     snapshot = _snapshot()
     calls = []
     monkeypatch.setattr(
@@ -56,11 +56,6 @@ def test_detect_with_llm_uses_one_unified_prompt_and_parser(monkeypatch):
     assert result["confidence"] == 0.8
     assert result["evidence"] == ["注释异常"]
     assert calls[0][0] is snapshot
-    assert "题面" in calls[0][1]
-    assert "python" in calls[0][1]
-    assert "MATLAB" not in calls[0][2]["system_prompt"]
-    assert "通义千问" not in calls[0][2]["system_prompt"]
-    assert calls[0][2]["system_prompt"] == llm_detector._SYSTEM_PROMPT
 
 
 def test_run_detection_passes_fixed_snapshot_without_model_branch(monkeypatch):

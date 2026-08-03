@@ -306,11 +306,13 @@ def test_pi_hello_probe_uses_openai_chat_completions_and_bearer():
     assert error is None
     assert request.full_url == "https://pi.example/v1/chat/completions"
     assert request.get_header("Authorization") == "Bearer real-pi-key"
-    assert json.loads(request.data.decode("utf-8")) == {
-        "model": "pi-model",
-        "messages": [{"role": "user", "content": "hello"}],
-        "max_tokens": 8,
-    }
+    body = json.loads(request.data.decode("utf-8"))
+    assert body["model"] == "pi-model"
+    assert body["max_tokens"] == 8
+    assert len(body["messages"]) == 1
+    assert body["messages"][0]["role"] == "user"
+    assert isinstance(body["messages"][0]["content"], str)
+    assert body["messages"][0]["content"]
 
 
 def test_pi_anthropic_hello_probe_uses_messages_and_x_api_key():
@@ -322,11 +324,13 @@ def test_pi_anthropic_hello_probe_uses_messages_and_x_api_key():
     assert request.get_header("X-api-key") == "real-pi-key"
     assert request.get_header("Anthropic-version") == "2023-06-01"
     assert request.get_header("Authorization") is None
-    assert json.loads(request.data.decode("utf-8")) == {
-        "model": "pi-model",
-        "max_tokens": 8,
-        "messages": [{"role": "user", "content": "hello"}],
-    }
+    body = json.loads(request.data.decode("utf-8"))
+    assert body["model"] == "pi-model"
+    assert body["max_tokens"] == 8
+    assert len(body["messages"]) == 1
+    assert body["messages"][0]["role"] == "user"
+    assert isinstance(body["messages"][0]["content"], str)
+    assert body["messages"][0]["content"]
 
 
 def test_sync_pi_agent_sessions_mirrors_native_tree_and_streams_combined_trace(

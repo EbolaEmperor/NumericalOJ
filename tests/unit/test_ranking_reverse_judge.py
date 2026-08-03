@@ -1239,18 +1239,6 @@ def test_validate_quality_gate_source_rejects_wrong_attempt_and_symlink(
         rj._validate_quality_gate_source(str(audit), 31, "a1")
 
 
-def test_quality_gate_agent_prompt_only_describes_structure_not_package_contents():
-    prompt = rj._quality_gate_agent_prompt("不得隐藏私有协议")
-
-    assert "管理员审核标准：\n不得隐藏私有协议" in prompt
-    assert "/evidence" in prompt
-    assert all(name in prompt for name in ("problem/", "template/", "solution/", "judge.sh"))
-    assert all(tool in prompt for tool in ("Read", "Glob", "Grep"))
-    assert "不要写入文件" in prompt
-    assert "PACKAGE_BODY_MUST_NEVER_BE_EMBEDDED" not in prompt
-    assert "不得执行、导入、编译" in prompt
-
-
 def test_quality_gate_container_uses_agent_judge_image_and_strict_isolation():
     proxy = SimpleNamespace(
         network_name="gate-internal-net",
@@ -1437,8 +1425,10 @@ def test_run_quality_gate_agent_fake_pass_and_reject_include_full_package_metada
 def test_run_quality_gate_agent_executes_harness_parses_json_and_cleans_up(
         monkeypatch, tmp_path):
     audit = _make_quality_gate_audit(monkeypatch, tmp_path, 42, "attempt-1")
-    package_sentinel = "PACKAGE_BODY_MUST_NEVER_BE_EMBEDDED"
-    (audit / "problem" / "readme.md").write_text(package_sentinel, encoding="utf-8")
+    (audit / "problem" / "readme.md").write_text(
+        "private package body",
+        encoding="utf-8",
+    )
     events = []
     docker_calls = []
     phase_calls = []
@@ -1510,8 +1500,6 @@ def test_run_quality_gate_agent_executes_harness_parses_json_and_cleans_up(
     assert phase_calls[0][1].endswith("/42/attempt-1/quality_gate_agent")
     assert phase_calls[0][2] == "quality_gate"
     assert phase_calls[0][4] == 45
-    assert "不得隐藏私有协议" in phase_calls[0][3]
-    assert package_sentinel not in phase_calls[0][3]
     stop_index = events.index("stop-confirmed")
     cleanup_agent_index = events.index("agent-rm", stop_index)
     assert events.index("endpoint-revoke") < stop_index

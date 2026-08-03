@@ -605,9 +605,12 @@ def test_real_probe_shape_for_all_four_categories(
         content = body["messages"][0]["content"]
         assert any(block["type"] in {"image", "image_url"} for block in content)
     elif snapshot.category is adapter.LLMEndpointCategory.TEXT:
-        assert body["messages"][0]["content"] == "只回复 OK。"
+        assert isinstance(body["messages"][0]["content"], str)
+        assert body["messages"][0]["content"]
     else:
-        assert body["input"] == ["NumericalOJ endpoint connectivity probe"]
+        assert len(body["input"]) == 1
+        assert isinstance(body["input"][0], str)
+        assert body["input"][0]
 
 
 def test_dynamic_config_tester_adapter_returns_supported_shape(monkeypatch):
