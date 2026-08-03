@@ -100,6 +100,37 @@ def test_llm_endpoint_two_phase_save_masks_secret_and_consumes_grant():
     )
 
 
+def test_llm_endpoints_allow_the_same_model_on_distinct_connections():
+    admin = get_user_by_username("admin")
+    first = create_endpoint(
+        admin["id"],
+        model="shared-provider-model",
+        base_url="https://region-a.example.test/v1",
+    )
+    second = create_endpoint(
+        admin["id"],
+        model="shared-provider-model",
+        base_url="https://region-b.example.test/v1",
+    )
+
+    assert first["id"] != second["id"]
+    assert first["model"] == second["model"] == "shared-provider-model"
+    assert services.get_llm_endpoint(first["id"])["base_url"].endswith(
+        "region-a.example.test/v1"
+    )
+    assert services.get_llm_endpoint(second["id"])["base_url"].endswith(
+        "region-b.example.test/v1"
+    )
+
+    services.set_feature_binding(
+        "ai_code_annotation", first["id"], user_id=admin["id"]
+    )
+    rebound = services.set_feature_binding(
+        "ai_code_annotation", second["id"], user_id=admin["id"]
+    )
+    assert rebound["endpoint_id"] == second["id"]
+
+
 def test_endpoint_lock_blocks_testing_and_only_locker_can_unlock():
     admin = get_user_by_username("admin")
     endpoint = create_endpoint(admin["id"])

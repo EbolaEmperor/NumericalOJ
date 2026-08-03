@@ -291,7 +291,7 @@
       var option = document.createElement('option');
       option.value = String(endpoint.id);
       option.textContent = (endpoint.model || ('端点 #' + endpoint.id)) +
-        '（' + protocolLabel(endpoint.protocol) + '）';
+        '（节点 #' + endpoint.id + ' / ' + protocolLabel(endpoint.protocol) + '）';
       editGlobalEndpoint.appendChild(option);
     });
     editGlobalEndpoint.value = selectedId == null ? '' : String(selectedId);

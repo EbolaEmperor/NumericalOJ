@@ -191,9 +191,10 @@ def test_dynamic_site_config_schema_is_fully_declared():
     assert "name" not in endpoints.columns
     assert endpoints.columns["model"].lower() == "varchar(255) not null"
     assert "uq_llm_endpoint_name" not in endpoints.indexes
+    assert "uq_llm_endpoint_model" not in endpoints.indexes
     assert (
-        endpoints.indexes["uq_llm_endpoint_model"].lower()
-        == "unique key `uq_llm_endpoint_model` (`model`)"
+        endpoints.indexes["idx_llm_endpoint_model"].lower()
+        == "key `idx_llm_endpoint_model` (`model`)"
     )
 
     grants = specs["dynamic_config_test_grants"]

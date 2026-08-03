@@ -10,22 +10,39 @@ import pytest
 from scripts import migrate_llm_endpoint_model_identity as migration
 
 
+_PRIMARY_INDEX = migration.IndexDefinition(
+    unique=True,
+    columns=("id",),
+    sub_parts=(None,),
+)
+_UNIQUE_MODEL_INDEX = migration.IndexDefinition(
+    unique=True,
+    columns=("model",),
+    sub_parts=(None,),
+)
+_LOOKUP_MODEL_INDEX = migration.IndexDefinition(
+    unique=False,
+    columns=("model",),
+    sub_parts=(None,),
+)
+_UNIQUE_NAME_INDEX = migration.IndexDefinition(
+    unique=True,
+    columns=("name",),
+    sub_parts=(None,),
+)
+
+
 class _FakeCursor:
     def __init__(
         self,
         *,
         table_exists=True,
-        has_name=True,
+        has_name=False,
         model_nullable=False,
-        name_nullable=False,
+        model_index="lookup",
         empty_models=None,
         duplicate_models=None,
-        empty_names=None,
-        duplicate_names=None,
-        oversized_models=None,
-        nullable_name_conflicts=None,
-        nullable_name_has_null=False,
-        wrong_model_index=False,
+        unexpected_model_unique_index=None,
         fail_once_when=None,
     ):
         self.table_exists = table_exists
@@ -41,47 +58,40 @@ class _FakeCursor:
             self.columns["name"] = {
                 "Field": "name",
                 "Type": "varchar(120)",
-                "Null": "YES" if name_nullable else "NO",
+                "Null": "NO",
             }
-        self.indexes = {
-            "PRIMARY": migration.IndexDefinition(
-                unique=True,
-                columns=("id",),
-                sub_parts=(None,),
-            ),
-        }
+
+        self.indexes = {"PRIMARY": _PRIMARY_INDEX}
         if has_name:
             self.indexes[migration.LEGACY_NAME_INDEX_NAME] = (
-                migration.IndexDefinition(
-                    unique=True,
-                    columns=("name",),
-                    sub_parts=(None,),
-                )
+                _UNIQUE_NAME_INDEX
             )
-        if wrong_model_index:
-            self.indexes[migration.MODEL_INDEX_NAME] = (
-                migration.IndexDefinition(
-                    unique=False,
-                    columns=("model",),
-                    sub_parts=(None,),
-                )
+        if model_index in {"unique", "both"}:
+            self.indexes[migration.MODEL_INDEX_NAME] = _UNIQUE_MODEL_INDEX
+        if model_index in {"lookup", "both"}:
+            self.indexes[migration.MODEL_LOOKUP_INDEX_NAME] = (
+                _LOOKUP_MODEL_INDEX
             )
-        elif not has_name:
-            self.indexes[migration.MODEL_INDEX_NAME] = (
-                migration.IndexDefinition(
-                    unique=True,
-                    columns=("model",),
-                    sub_parts=(None,),
-                )
+        if model_index == "wrong_unique":
+            self.indexes[migration.MODEL_INDEX_NAME] = _LOOKUP_MODEL_INDEX
+        elif model_index == "wrong_lookup":
+            self.indexes[migration.MODEL_LOOKUP_INDEX_NAME] = (
+                _UNIQUE_MODEL_INDEX
             )
+        elif model_index not in {
+            "none",
+            "unique",
+            "lookup",
+            "both",
+            "wrong_unique",
+            "wrong_lookup",
+        }:
+            raise ValueError(f"未知 model_index 测试状态：{model_index}")
+        if unexpected_model_unique_index:
+            self.indexes[unexpected_model_unique_index] = _UNIQUE_MODEL_INDEX
 
         self.empty_models = list(empty_models or [])
         self.duplicate_models = list(duplicate_models or [])
-        self.empty_names = list(empty_names or [])
-        self.duplicate_names = list(duplicate_names or [])
-        self.oversized_models = list(oversized_models or [])
-        self.nullable_name_conflicts = list(nullable_name_conflicts or [])
-        self.nullable_name_has_null = nullable_name_has_null
         self.fail_once_when = fail_once_when
         self.calls = []
         self._fetchone_result = None
@@ -133,20 +143,6 @@ class _FakeCursor:
             self._fetchall_result = self.empty_models
         elif "GROUP BY model HAVING COUNT(*) > 1" in normalized:
             self._fetchall_result = self.duplicate_models
-        elif "WHERE name IS NULL OR TRIM(name) = ''" in normalized:
-            self._fetchall_result = self.empty_names
-        elif "GROUP BY name HAVING COUNT(*) > 1" in normalized:
-            self._fetchall_result = self.duplicate_names
-        elif "WHERE CHAR_LENGTH(model) > %s" in normalized:
-            self._fetchall_result = self.oversized_models
-        elif "WHERE name IS NOT NULL AND name <> model" in normalized:
-            self._fetchall_result = self.nullable_name_conflicts
-        elif normalized == (
-            "SELECT id FROM llm_endpoints WHERE name IS NULL LIMIT 1"
-        ):
-            self._fetchone_result = (
-                {"id": 1} if self.nullable_name_has_null else None
-            )
         elif normalized == (
             "ALTER TABLE llm_endpoints "
             "MODIFY COLUMN model varchar(255) NOT NULL"
@@ -154,54 +150,52 @@ class _FakeCursor:
             self.columns["model"]["Null"] = "NO"
         elif normalized == (
             "ALTER TABLE llm_endpoints "
-            "ADD UNIQUE KEY uq_llm_endpoint_model (model)"
-        ):
-            self.indexes[migration.MODEL_INDEX_NAME] = (
-                migration.IndexDefinition(True, ("model",), (None,))
-            )
-        elif normalized == (
-            "ALTER TABLE llm_endpoints DROP INDEX uq_llm_endpoint_name"
+            "DROP INDEX uq_llm_endpoint_name"
         ):
             self.indexes.pop(migration.LEGACY_NAME_INDEX_NAME, None)
-        elif normalized == (
-            "ALTER TABLE llm_endpoints DROP COLUMN name"
-        ):
+        elif normalized == "ALTER TABLE llm_endpoints DROP COLUMN name":
             self.columns.pop("name", None)
             for name in list(self.indexes):
                 if "name" in self.indexes[name].columns:
                     self.indexes.pop(name)
         elif normalized == (
             "ALTER TABLE llm_endpoints "
-            "ADD COLUMN name varchar(120) NULL AFTER id"
-        ):
-            self.columns["name"] = {
-                "Field": "name",
-                "Type": "varchar(120)",
-                "Null": "YES",
-            }
-            self.nullable_name_has_null = True
-        elif normalized in {
-            "UPDATE llm_endpoints SET name = model",
-            "UPDATE llm_endpoints SET name = model WHERE name IS NULL",
-        }:
-            self.nullable_name_has_null = False
-            self.empty_names = []
-        elif normalized == (
-            "ALTER TABLE llm_endpoints "
-            "MODIFY COLUMN name varchar(120) NOT NULL"
-        ):
-            self.columns["name"]["Null"] = "NO"
-        elif normalized == (
-            "ALTER TABLE llm_endpoints "
-            "ADD UNIQUE KEY uq_llm_endpoint_name (name)"
-        ):
-            self.indexes[migration.LEGACY_NAME_INDEX_NAME] = (
-                migration.IndexDefinition(True, ("name",), (None,))
-            )
-        elif normalized == (
-            "ALTER TABLE llm_endpoints DROP INDEX uq_llm_endpoint_model"
+            "DROP INDEX uq_llm_endpoint_model, "
+            "ADD KEY idx_llm_endpoint_model (model)"
         ):
             self.indexes.pop(migration.MODEL_INDEX_NAME, None)
+            self.indexes[migration.MODEL_LOOKUP_INDEX_NAME] = (
+                _LOOKUP_MODEL_INDEX
+            )
+        elif normalized == (
+            "ALTER TABLE llm_endpoints "
+            "DROP INDEX uq_llm_endpoint_model"
+        ):
+            self.indexes.pop(migration.MODEL_INDEX_NAME, None)
+        elif normalized == (
+            "ALTER TABLE llm_endpoints "
+            "ADD KEY idx_llm_endpoint_model (model)"
+        ):
+            self.indexes[migration.MODEL_LOOKUP_INDEX_NAME] = (
+                _LOOKUP_MODEL_INDEX
+            )
+        elif normalized == (
+            "ALTER TABLE llm_endpoints "
+            "DROP INDEX idx_llm_endpoint_model, "
+            "ADD UNIQUE KEY uq_llm_endpoint_model (model)"
+        ):
+            self.indexes.pop(migration.MODEL_LOOKUP_INDEX_NAME, None)
+            self.indexes[migration.MODEL_INDEX_NAME] = _UNIQUE_MODEL_INDEX
+        elif normalized == (
+            "ALTER TABLE llm_endpoints "
+            "ADD UNIQUE KEY uq_llm_endpoint_model (model)"
+        ):
+            self.indexes[migration.MODEL_INDEX_NAME] = _UNIQUE_MODEL_INDEX
+        elif normalized == (
+            "ALTER TABLE llm_endpoints "
+            "DROP INDEX idx_llm_endpoint_model"
+        ):
+            self.indexes.pop(migration.MODEL_LOOKUP_INDEX_NAME, None)
 
     def fetchone(self):
         result = self._fetchone_result
@@ -238,27 +232,65 @@ def _sqls(plan):
     return [" ".join(operation.sql.split()) for operation in plan]
 
 
-def test_forward_plan_adds_model_uniqueness_before_dropping_name():
-    cursor = _FakeCursor()
+def _duplicate_models():
+    return [{
+        "model": "qwen",
+        "endpoint_count": 2,
+        "endpoint_ids": "7,8",
+    }]
 
-    sqls = _sqls(migration.build_forward_plan(cursor))
 
-    assert sqls == [
+def test_forward_plan_replaces_unique_model_index_with_lookup_index():
+    cursor = _FakeCursor(model_index="unique")
+
+    assert _sqls(migration.build_forward_plan(cursor)) == [
         "ALTER TABLE llm_endpoints "
-        "ADD UNIQUE KEY uq_llm_endpoint_model (model)",
-        "ALTER TABLE llm_endpoints DROP INDEX uq_llm_endpoint_name",
-        "ALTER TABLE llm_endpoints DROP COLUMN name",
+        "DROP INDEX uq_llm_endpoint_model, "
+        "ADD KEY idx_llm_endpoint_model (model)",
     ]
 
 
-def test_forward_plan_is_noop_for_current_schema():
-    cursor = _FakeCursor(has_name=False)
+def test_forward_apply_accepts_duplicate_models_in_legacy_name_schema():
+    cursor = _FakeCursor(
+        has_name=True,
+        model_index="none",
+        duplicate_models=_duplicate_models(),
+    )
+    connection = _FakeConnection(cursor)
+
+    plan = migration.migrate(connection, apply=True)
+
+    assert _sqls(plan) == [
+        "ALTER TABLE llm_endpoints DROP INDEX uq_llm_endpoint_name",
+        "ALTER TABLE llm_endpoints DROP COLUMN name",
+        "ALTER TABLE llm_endpoints ADD KEY idx_llm_endpoint_model (model)",
+    ]
+    assert "name" not in cursor.columns
+    assert migration.LEGACY_NAME_INDEX_NAME not in cursor.indexes
+    assert cursor.indexes[migration.MODEL_LOOKUP_INDEX_NAME] == (
+        _LOOKUP_MODEL_INDEX
+    )
+    assert not any(
+        "GROUP BY model HAVING COUNT(*) > 1" in sql
+        for sql, _params in cursor.calls
+    )
+
+
+def test_forward_plan_is_noop_for_target_schema_even_with_duplicates():
+    cursor = _FakeCursor(
+        model_index="lookup",
+        duplicate_models=_duplicate_models(),
+    )
 
     assert migration.build_forward_plan(cursor) == []
+    assert not any(
+        "GROUP BY model HAVING COUNT(*) > 1" in sql
+        for sql, _params in cursor.calls
+    )
 
 
 def test_forward_plan_is_noop_before_fresh_database_bootstrap():
-    cursor = _FakeCursor(table_exists=False)
+    cursor = _FakeCursor(table_exists=False, model_index="none")
 
     assert migration.build_forward_plan(cursor) == []
 
@@ -299,20 +331,21 @@ def test_connect_treats_an_absent_database_as_a_fresh_install(monkeypatch):
             {"empty_models": [{"id": 7, "model": ""}]},
             "存在空 model",
         ),
+        ({"model_index": "wrong_unique"}, "定义与预期不一致"),
+        ({"model_index": "wrong_lookup"}, "定义与预期不一致"),
         (
             {
-                "duplicate_models": [{
-                    "model": "qwen",
-                    "endpoint_count": 2,
-                    "endpoint_ids": "7,8",
-                }],
+                "model_index": "lookup",
+                "unexpected_model_unique_index": "uq_custom_model",
             },
-            "存在重复 model",
+            "非标准唯一索引",
         ),
-        ({"wrong_model_index": True}, "定义与预期不一致"),
     ],
 )
-def test_forward_plan_fails_closed_on_unsafe_data_or_schema(kwargs, message):
+def test_forward_plan_fails_closed_on_unsafe_data_or_model_indexes(
+    kwargs,
+    message,
+):
     cursor = _FakeCursor(**kwargs)
 
     with pytest.raises(migration.MigrationBlockedError, match=message):
@@ -320,7 +353,7 @@ def test_forward_plan_fails_closed_on_unsafe_data_or_schema(kwargs, message):
 
 
 def test_default_migrate_is_read_only_but_holds_advisory_lock():
-    cursor = _FakeCursor()
+    cursor = _FakeCursor(model_index="unique")
     connection = _FakeConnection(cursor)
 
     plan = migration.migrate(connection)
@@ -331,49 +364,50 @@ def test_default_migrate_is_read_only_but_holds_advisory_lock():
     assert "SELECT GET_LOCK(%s, %s) AS locked" in executed_sql
     assert "SELECT RELEASE_LOCK(%s)" in executed_sql
     assert connection.rollbacks == 1
+    assert migration.MODEL_INDEX_NAME in cursor.indexes
+    assert migration.MODEL_LOOKUP_INDEX_NAME not in cursor.indexes
 
 
 def test_forward_apply_is_idempotent_and_resumes_after_partial_ddl():
     cursor = _FakeCursor(
-        fail_once_when="DROP INDEX uq_llm_endpoint_name",
+        has_name=True,
+        model_index="none",
+        duplicate_models=_duplicate_models(),
+        fail_once_when="ADD KEY idx_llm_endpoint_model",
     )
     connection = _FakeConnection(cursor)
 
     with pytest.raises(RuntimeError, match="模拟 DDL 中断"):
         migration.migrate(connection, apply=True)
 
-    assert migration.MODEL_INDEX_NAME in cursor.indexes
-    assert "name" in cursor.columns
+    assert "name" not in cursor.columns
+    assert migration.LEGACY_NAME_INDEX_NAME not in cursor.indexes
+    assert migration.MODEL_LOOKUP_INDEX_NAME not in cursor.indexes
 
     resumed = migration.migrate(connection, apply=True)
     repeated = migration.migrate(connection, apply=True)
 
     assert _sqls(resumed) == [
-        "ALTER TABLE llm_endpoints DROP INDEX uq_llm_endpoint_name",
-        "ALTER TABLE llm_endpoints DROP COLUMN name",
+        "ALTER TABLE llm_endpoints ADD KEY idx_llm_endpoint_model (model)",
     ]
     assert repeated == []
-    assert "name" not in cursor.columns
+    assert cursor.indexes[migration.MODEL_LOOKUP_INDEX_NAME] == (
+        _LOOKUP_MODEL_INDEX
+    )
 
 
-def test_rollback_recreates_name_from_model_then_removes_model_uniqueness():
-    cursor = _FakeCursor(has_name=False)
+def test_rollback_replaces_lookup_index_with_unique_model_index():
+    cursor = _FakeCursor(model_index="lookup")
 
-    sqls = _sqls(migration.build_rollback_plan(cursor))
-
-    assert sqls == [
-        "ALTER TABLE llm_endpoints ADD COLUMN name varchar(120) NULL AFTER id",
-        "UPDATE llm_endpoints SET name = model",
+    assert _sqls(migration.build_rollback_plan(cursor)) == [
         "ALTER TABLE llm_endpoints "
-        "MODIFY COLUMN name varchar(120) NOT NULL",
-        "ALTER TABLE llm_endpoints "
-        "ADD UNIQUE KEY uq_llm_endpoint_name (name)",
-        "ALTER TABLE llm_endpoints DROP INDEX uq_llm_endpoint_model",
+        "DROP INDEX idx_llm_endpoint_model, "
+        "ADD UNIQUE KEY uq_llm_endpoint_model (model)",
     ]
 
 
 def test_rollback_apply_is_idempotent():
-    cursor = _FakeCursor(has_name=False)
+    cursor = _FakeCursor(model_index="lookup")
     connection = _FakeConnection(cursor)
 
     first = migration.migrate(connection, apply=True, rollback=True)
@@ -381,47 +415,29 @@ def test_rollback_apply_is_idempotent():
 
     assert first
     assert second == []
-    assert "name" in cursor.columns
-    assert migration.LEGACY_NAME_INDEX_NAME in cursor.indexes
-    assert migration.MODEL_INDEX_NAME not in cursor.indexes
+    assert cursor.indexes[migration.MODEL_INDEX_NAME] == (
+        _UNIQUE_MODEL_INDEX
+    )
+    assert migration.MODEL_LOOKUP_INDEX_NAME not in cursor.indexes
+    assert "name" not in cursor.columns
 
 
-def test_rollback_resumes_after_only_nullable_name_was_added():
+def test_rollback_blocks_duplicate_models_before_executing_ddl():
     cursor = _FakeCursor(
-        has_name=True,
-        name_nullable=True,
-        nullable_name_has_null=True,
+        model_index="lookup",
+        duplicate_models=_duplicate_models(),
     )
-    cursor.indexes.pop(migration.LEGACY_NAME_INDEX_NAME)
-    cursor.indexes[migration.MODEL_INDEX_NAME] = (
-        migration.IndexDefinition(True, ("model",), (None,))
-    )
-
-    sqls = _sqls(migration.build_rollback_plan(cursor))
-
-    assert sqls[0] == (
-        "UPDATE llm_endpoints SET name = model WHERE name IS NULL"
-    )
-    assert sqls[-1] == (
-        "ALTER TABLE llm_endpoints DROP INDEX uq_llm_endpoint_model"
-    )
-
-
-def test_rollback_blocks_model_that_cannot_fit_legacy_name():
-    cursor = _FakeCursor(
-        has_name=False,
-        oversized_models=[{
-            "id": 9,
-            "model": "x" * 121,
-            "model_length": 121,
-        }],
-    )
+    connection = _FakeConnection(cursor)
 
     with pytest.raises(
         migration.MigrationBlockedError,
-        match="超过旧 name",
+        match="无法恢复旧的唯一约束",
     ):
-        migration.build_rollback_plan(cursor)
+        migration.migrate(connection, apply=True, rollback=True)
+
+    assert not any(sql.startswith("ALTER TABLE") for sql, _ in cursor.calls)
+    assert migration.MODEL_LOOKUP_INDEX_NAME in cursor.indexes
+    assert migration.MODEL_INDEX_NAME not in cursor.indexes
 
 
 def test_cli_help_imports_from_an_arbitrary_working_directory(tmp_path):
@@ -445,7 +461,17 @@ def test_cli_help_imports_from_an_arbitrary_working_directory(tmp_path):
     assert "--confirm-backup-verified" in result.stdout
 
 
-def test_cli_apply_requires_both_safety_confirmations(tmp_path):
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--apply"],
+        ["--apply", "--confirm-app-writers-stopped"],
+        ["--apply", "--confirm-backup-verified"],
+        ["--rollback", "--apply", "--confirm-app-writers-stopped"],
+        ["--rollback", "--apply", "--confirm-backup-verified"],
+    ],
+)
+def test_cli_apply_requires_both_safety_confirmations(tmp_path, arguments):
     script = (
         Path(__file__).resolve().parents[2]
         / "scripts"
@@ -453,7 +479,7 @@ def test_cli_apply_requires_both_safety_confirmations(tmp_path):
     )
 
     result = subprocess.run(
-        [sys.executable, str(script), "--apply"],
+        [sys.executable, str(script), *arguments],
         cwd=tmp_path,
         capture_output=True,
         text=True,

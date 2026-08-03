@@ -285,6 +285,29 @@ def test_endpoint_model_is_the_only_display_name():
     assert "label: endpoint.model" in script
 
 
+def test_duplicate_models_are_disambiguated_by_stable_endpoint_id():
+    script = _read(SCRIPT)
+    problem_select = _read(PROBLEM_ENDPOINT_SELECT)
+    detection_template = _read(AI_DETECTION_TEMPLATE)
+    ranking_script = _read(RANKING_ENDPOINTS_SCRIPT)
+
+    assert "节点 #${Number(endpoint.id)}" in script
+    assert "meta: `节点 #${endpoint.id}" in script
+    assert "节点 #{{ endpoint.id }}" in problem_select
+    assert "节点 #{{ endpoint.id }}" in detection_template
+    assert "'（节点 #' + endpoint.id" in ranking_script
+
+
+def test_endpoint_protection_actions_name_the_stable_endpoint_id():
+    script = _read(SCRIPT)
+
+    assert script.count("escapeHtml(identity)") == 4
+    assert "toast(`“${endpointIdentity(endpoint)}”连接正常`)" in script
+    assert "`加锁 · ${endpointIdentity(item)}`" in script
+    assert "`解锁 · ${endpointIdentity(item)}`" in script
+    assert "textContent = endpointIdentity(endpoint)" in script
+
+
 def test_endpoint_thinking_wire_format_is_derived_from_protocol():
     template = _read(TEMPLATE)
     script = _read(SCRIPT)

@@ -250,7 +250,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
     assert updated_text["thinking_enabled"] is True
     assert updated_text["thinking_format"] == "thinking_type"
 
-    duplicate = admin_json(
+    same_model_endpoint = admin_json(
         "site-config",
         "llm",
         "create",
@@ -267,10 +267,16 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         "--model",
         anthropic_model,
         "--no-thinking",
-        check=False,
-    )
-    assert duplicate["http_status"] == 409
-    assert len(_db_rows("SELECT id FROM llm_endpoints WHERE model=%s", (anthropic_model,))) == 1
+    )["endpoint"]
+    same_model_endpoint_id = int(same_model_endpoint["id"])
+    assert same_model_endpoint["model"] == anthropic_model
+    assert same_model_endpoint_id != text_endpoint_id
+    assert len(
+        _db_rows(
+            "SELECT id FROM llm_endpoints WHERE model=%s",
+            (anthropic_model,),
+        )
+    ) == 2
 
     omni_model = f"e2e-omni-{unique_suffix}"
     omni_endpoint = admin_json(
@@ -346,6 +352,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
     }
     assert {int(item["id"]) for item in endpoint_list} == {
         text_endpoint_id,
+        same_model_endpoint_id,
         omni_endpoint_id,
         vision_endpoint_id,
         embedding_endpoint_id,
@@ -718,6 +725,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
     # 允许直接删除被引用端点：绑定保留悬空 ID，由管理员自行清理。
     for endpoint_id in (
         text_endpoint_id,
+        same_model_endpoint_id,
         omni_endpoint_id,
         vision_endpoint_id,
         embedding_endpoint_id,

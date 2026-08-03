@@ -1573,7 +1573,7 @@ CREATE TABLE `llm_endpoints` (
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_llm_endpoint_model` (`model`),
+  KEY `idx_llm_endpoint_model` (`model`),
   KEY `idx_llm_endpoint_category` (`category`),
   KEY `idx_llm_endpoint_test_status` (`test_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

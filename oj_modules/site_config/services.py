@@ -17,8 +17,6 @@ import time
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
-import pymysql
-
 from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.security.credentials import verify_password
 
@@ -549,11 +547,6 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                 (datetime.utcnow(), grant["id"]),
             )
         conn.commit()
-    except pymysql.err.IntegrityError as exc:
-        conn.rollback()
-        if exc.args and int(exc.args[0]) == 1062:
-            raise DynamicConfigConflictError("模型名称已存在") from exc
-        raise
     except Exception:
         conn.rollback()
         raise
