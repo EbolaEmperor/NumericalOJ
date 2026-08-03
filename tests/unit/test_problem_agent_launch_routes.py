@@ -88,6 +88,7 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
     task = _Task()
     snapshots = []
     saved = []
+    url_calls = []
     monkeypatch.setattr(routes, "_agent_solve_problem_task", task)
     monkeypatch.setattr(
         routes,
@@ -111,7 +112,14 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
         lambda *args: saved.append(args),
     )
     monkeypatch.setattr(routes, "upsert_agent_run_snapshot", snapshots.append)
-    monkeypatch.setattr(routes, "url_for", lambda *_args, **kwargs: f"/run/{kwargs['task_id']}")
+    monkeypatch.setattr(
+        routes,
+        "url_for",
+        lambda endpoint, **kwargs: (
+            url_calls.append((endpoint, kwargs))
+            or f"/admin/agent_tasks?task_id={kwargs['task_id']}"
+        ),
+    )
 
     app = _app("numoj_session")
     with app.test_request_context(
@@ -124,6 +132,8 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
 
     payload = response.get_json()
     assert payload["success"] is True
+    assert payload["view_url"].startswith("/admin/agent_tasks?task_id=")
+    assert url_calls[-1][0] == "problem_core.admin_agent_tasks"
     assert saved == [(7, "codex", 12)]
     assert len(task.calls) == 1
     assert task.calls[0]["args"] == (
@@ -165,6 +175,7 @@ def test_solve_launch_rejects_non_object_json(monkeypatch):
 
 def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
     task = _Task()
+    url_calls = []
     monkeypatch.setattr(routes, "_agent_generate_testdata_task", task)
     monkeypatch.setattr(
         routes,
@@ -181,7 +192,14 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
     )
     monkeypatch.setattr(routes, "save_agent_launch_preference", lambda *_args: None)
     monkeypatch.setattr(routes, "upsert_agent_run_snapshot", lambda _state: None)
-    monkeypatch.setattr(routes, "url_for", lambda *_args, **kwargs: f"/run/{kwargs['task_id']}")
+    monkeypatch.setattr(
+        routes,
+        "url_for",
+        lambda endpoint, **kwargs: (
+            url_calls.append((endpoint, kwargs))
+            or f"/admin/agent_tasks?task_id={kwargs['task_id']}"
+        ),
+    )
 
     app = _app()
     with app.test_request_context(
@@ -202,7 +220,10 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
     ):
         response = routes.admin_agent_generate_testdata(9)
 
-    assert response.get_json()["success"] is True
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["view_url"].startswith("/admin/agent_tasks?task_id=")
+    assert url_calls[-1][0] == "problem_core.admin_agent_tasks"
     assert task.calls[0]["args"] == (
         9,
         "admin",
@@ -215,6 +236,69 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
         "signed-session-value",
         "session",
     )
+
+
+def test_legacy_agent_run_page_redirects_to_task_list_modal(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    calls = []
+    monkeypatch.setattr(
+        routes,
+        "url_for",
+        lambda endpoint, **kwargs: (
+            calls.append((endpoint, kwargs))
+            or f"/admin/agent_tasks?task_id={kwargs['task_id']}"
+        ),
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run/task-1"):
+        response = routes.admin_agent_run("task-1")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith(
+        "/admin/agent_tasks?task_id=task-1"
+    )
+    assert calls == [
+        ("problem_core.admin_agent_tasks", {"task_id": "task-1"})
+    ]
+
+
+def test_agent_task_list_only_auto_opens_an_existing_task(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_runs_paginated",
+        lambda **_kwargs: ([], 1),
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_run_by_task_id",
+        lambda task_id: {"task_id": task_id} if task_id == "task-1" else None,
+    )
+    rendered = []
+    monkeypatch.setattr(
+        routes,
+        "render_template",
+        lambda template, **context: rendered.append((template, context)) or "ok",
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_tasks?task_id=task-1"):
+        assert routes.admin_agent_tasks() == "ok"
+    assert rendered[-1][0] == "admin/agent_tasks.html"
+    assert rendered[-1][1]["open_task_id"] == "task-1"
+
+    with app.test_request_context("/admin/agent_tasks?task_id=missing"):
+        assert routes.admin_agent_tasks() == "ok"
+    assert rendered[-1][1]["open_task_id"] == ""
 
 
 @pytest.mark.parametrize("invalid_count", [True, False, 1.0, "1.0", " 1", "01"])

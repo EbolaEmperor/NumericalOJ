@@ -1,12 +1,21 @@
 {% extends "layouts/site.html" %}
 {% block title %}Agent 任务 - {{ super() }}{% endblock %}
+{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
+{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="mb-0"><i class="fas fa-robot me-2"></i>Agent 任务</h4>
-</div>
+<header class="agent-task-page-head mb-3">
+  <div>
+    <div class="agent-task-page-kicker">EXECUTION DESK</div>
+    <h4 class="mb-1"><i class="fas fa-robot me-2" aria-hidden="true"></i>Agent 任务</h4>
+    <p class="mb-0 text-muted">集中查看解题与造数据任务的运行状态和执行轨迹。</p>
+  </div>
+</header>
 
-<div class="card">
+<div class="card agent-task-table-card">
   <div class="table-responsive">
     <table class="table table-hover mb-0 align-middle text-center">
       <thead class="table-light">
@@ -38,9 +47,14 @@
               </td>
               <td>{{ run.display_best_score }}</td>
               <td>
-                <a href="{{ url_for('problem_core.admin_agent_run', task_id=run.task_id) }}"
-                   class="btn btn-sm btn-outline-secondary">
-                  详情
+                <a href="{{ url_for('problem_core.admin_agent_tasks', page=current_page, task_id=run.task_id) }}"
+                   class="btn btn-sm btn-outline-secondary agent-task-detail-btn"
+                   data-agent-task-detail
+                   data-task-id="{{ run.task_id }}"
+                   data-problem-title="{{ run.display_problem_title }}"
+                   aria-haspopup="dialog"
+                   aria-controls="agentTaskDetailModal">
+                  <i class="fas fa-wave-square me-1" aria-hidden="true"></i>详情
                 </a>
               </td>
             </tr>
@@ -72,4 +86,31 @@
   </ul>
 </nav>
 {% endif %}
+
+{% include 'agents/run_detail_modal.html' %}
+
+<style>
+  .agent-task-page-head {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    padding: .25rem 0 .35rem;
+  }
+  .agent-task-page-kicker {
+    margin-bottom: .3rem;
+    color: #8a7048;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .14em;
+  }
+  .agent-task-table-card {
+    overflow: hidden;
+    border-color: #e4e1da;
+    box-shadow: 0 12px 32px rgba(41, 37, 31, .045);
+  }
+  .agent-task-detail-btn {
+    min-width: 5.2rem;
+  }
+</style>
 {% endblock %}
