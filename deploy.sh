@@ -696,10 +696,6 @@ rm -f -- "$ARC_CURRENT_SET_TEMP"
 ln -s "$arc_candidate_target" "$ARC_CURRENT_SET_TEMP"
 mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"
 rm -f -- "$ARC_RESULT_FILE"
-"$CANDIDATE_PYTHON" scripts/migrate_llm_endpoint_model_identity.py \
-  --apply \
-  --confirm-app-writers-stopped \
-  --confirm-backup-verified
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 "$CANDIDATE_PYTHON" scripts/repository_storage_admin.py \
   cleanup-expired-uploads --apply --confirm-expired-staging-delete

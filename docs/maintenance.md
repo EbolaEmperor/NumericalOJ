@@ -150,35 +150,15 @@ DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
 6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
 
-### LLM 端点 ID 身份迁移
+### LLM 端点身份
 
 `llm_endpoints.id` 是端点的唯一身份；`model` 只是发给供应商的模型标识，
 允许同一模型通过不同 Base URL、账号、区域、协议或思考配置建立多个端点。
 `llm_endpoints` 不保留独立 `name`，新安装由 `database/bootstrap.sql` 为 `model`
 创建普通索引 `idx_llm_endpoint_model`，不创建唯一约束。
-
-已有数据库由 `scripts/migrate_llm_endpoint_model_identity.py` 收缩旧 `name`
-结构，并将 `uq_llm_endpoint_model` 替换为普通索引。脚本默认只读检查，
-前向迁移只拒绝空 model、非预期字段类型和无法安全识别的索引，不拒绝重复
-model。`deploy.sh` 只会在回滚点验证成功且 Web/Celery 全部停止后执行：
-
-```bash
-python3 scripts/migrate_llm_endpoint_model_identity.py
-python3 scripts/migrate_llm_endpoint_model_identity.py \
-  --apply --confirm-app-writers-stopped --confirm-backup-verified
-```
-
-需要向上一版代码回滚结构时，保持全部写入者停止并使用同一份已验证备份，先检查再执行：
-
-```bash
-python3 scripts/migrate_llm_endpoint_model_identity.py --rollback
-python3 scripts/migrate_llm_endpoint_model_identity.py \
-  --rollback --apply \
-  --confirm-app-writers-stopped --confirm-backup-verified
-```
-
-结构回滚会恢复 `model` 唯一索引。如果新版本已产生重复 model，脚本会在
-任何 DDL 前 fail-closed；此时应恢复部署前数据库回滚点，或先由人工合并/改名冲突端点。
+历史 `name` 字段和 `model` 唯一约束的一次性生产迁移已完成，相关脚本不再属于
+持续部署流程。后续若再改变端点约束，仍必须按本节上方的数据库变更流程新建显式迁移；
+不得依赖 `init_db_schema.py` 删除历史索引。
 
 ### 仓库存储运维
 
