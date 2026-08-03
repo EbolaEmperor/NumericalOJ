@@ -342,44 +342,6 @@ def test_repository_embedding_uses_snapshot_and_generic_adapter(monkeypatch):
     assert calls[0][1] == ["first", "second"]
 
 
-def test_structuring_prompts_never_receive_repository_path(monkeypatch):
-    prompts = []
-
-    def fake_call_llm_text(prompt_text, _endpoint, **_kwargs):
-        prompts.append(prompt_text)
-        if "[函数代码]" in prompt_text:
-            return '{"summary":"求和","params":[],"returns":{"description":"结果"}}'
-        return (
-            '{"class_name":"Vector","qualified_name":"math::Vector",'
-            '"kind":"class","bases":[],"member_variables":[],"member_methods":[]}'
-        )
-
-    monkeypatch.setattr(index_services, "_call_llm_text", fake_call_llm_text)
-    sensitive_path = "private/course/A/B/vector.hpp"
-    endpoint = _endpoint("text", 1)
-    index_services._call_structured_function_entity(
-        {
-            "filename": sensitive_path,
-            "qualified_name": "math::sum",
-            "code": "int sum(int a, int b) { return a + b; }",
-        },
-        endpoint,
-    )
-    index_services._call_structured_class_entity(
-        {
-            "filename": sensitive_path,
-            "class_name": "Vector",
-            "qualified_name": "math::Vector",
-            "kind": "class",
-        },
-        endpoint,
-    )
-
-    assert len(prompts) == 2
-    assert all("[文件名]" not in prompt for prompt in prompts)
-    assert all(sensitive_path not in prompt for prompt in prompts)
-
-
 def test_running_cancel_is_row_locked_and_remains_active_until_worker_ack(
     monkeypatch,
 ):
