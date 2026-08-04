@@ -30,23 +30,18 @@ HARNESS_MACROS = (
 HARNESS_LOGOS = ROOT / "static" / "app" / "ranking" / "harness-logos"
 
 
-def test_shared_endpoint_modal_distinguishes_primary_and_quality_gate_pools():
-    assert "poolKind:config.poolKind || 'primary'" in TEMPLATE
-    assert "poolKind:'primary'" in TEMPLATE
-    assert "poolKind:'quality_gate'" in TEMPLATE
-    assert (
-        "harness === 'opencode' && (!manager || manager.poolKind === 'primary')"
-        in TEMPLATE
-    )
+def test_shared_endpoint_modal_uses_one_endpoint_interface_for_all_harnesses():
+    assert "usesFixedOpenCodeEndpoint" not in TEMPLATE
+    assert "h !== 'opencode'" not in TEMPLATE
+    assert "if (h === 'opencode') editSourceMode.value = 'custom'" not in TEMPLATE
+    assert "var canCopy = editIndex === null;" in TEMPLATE
 
 
-def test_quality_gate_opencode_keeps_and_displays_configured_api_url():
-    assert "endpointText(manager, e)" in TEMPLATE
-    assert (
-        "base_url: usesFixedOpenCodeEndpoint(activeManager, h) ? '' : "
-        "(editBaseUrl.value || '').trim()"
-        in TEMPLATE
-    )
+def test_all_harnesses_keep_and_display_configured_api_url_and_model():
+    assert "endpointText(e)" in TEMPLATE
+    assert "base_url: (editBaseUrl.value || '').trim()" in TEMPLATE
+    assert "editModel.setCustomValidity('请填写模型')" in TEMPLATE
+    assert 'id="ajeEditModel" required' in TEMPLATE
     assert "function inferProtocol(harness, protocol)" in TEMPLATE
     assert "editProtocol.disabled = sourceMode === 'global' || h !== 'pi'" in TEMPLATE
     assert "h === 'codex' || h === 'opencode'" in TEMPLATE
@@ -80,8 +75,6 @@ def test_endpoint_modal_roundtrips_model_capabilities_without_model_special_case
 
     assert "最大输出不能超过上下文窗口" in TEMPLATE
     assert "Thinking 兼容" in TEMPLATE
-    assert "PI_DEEPSEEK" not in TEMPLATE
-    assert "deepseek-v4" not in TEMPLATE.lower()
 
 
 def test_endpoint_cards_keep_model_capabilities_in_edit_modal_only():

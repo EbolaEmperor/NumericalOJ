@@ -180,7 +180,6 @@ ADMIN_EXTRA_COMMAND_PATHS = [
     ["ranking", "upload-script"],
     ["ranking", "clear-script"],
     ["ranking", "reset-limit"],
-    ["ranking", "save-config"],
     ["ranking", "save-rules"],
     ["ranking", "save-endpoints"],
     ["ranking", "save-endpoint"],

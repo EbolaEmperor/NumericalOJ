@@ -27,7 +27,7 @@ from tests.e2e.live_ai import (
 
 _IMAGE_ENV = "NUMOJ_PI_AGENT_JUDGE_IMAGE"
 _API_KEY = "pi-e2e-token"
-_MODEL = DEEPSEEK_MODEL
+_FAKE_MODEL = "generic-model"
 _TOOL_OUTPUT = "PI_TOOL_RESULT_OK"
 _FINAL_OUTPUT = "PI_FINAL_OK"
 _RESUMED_OUTPUT = "PI_RESUMED_OK"
@@ -42,6 +42,22 @@ pytestmark = [
         reason=f"需要通过 {_IMAGE_ENV} 指定已构建的 Agent Judge lite 镜像",
     ),
 ]
+
+
+def _request_uses_only_standard_roles(request: dict[str, Any]) -> bool:
+    messages = request.get("messages")
+    return (
+        isinstance(messages, list)
+        and any(
+            isinstance(message, dict) and message.get("role") == "system"
+            for message in messages
+        )
+        and all(
+            not isinstance(message, dict)
+            or message.get("role") in {"system", "user", "assistant", "tool"}
+            for message in messages
+        )
+    )
 
 
 class _PiChatCompletionsHandler(BaseHTTPRequestHandler):
@@ -79,13 +95,14 @@ class _PiChatCompletionsHandler(BaseHTTPRequestHandler):
         if (
             self.path != "/v1/chat/completions"
             or self.headers.get("Authorization") != f"Bearer {_API_KEY}"
-            or request.get("model") != _MODEL
+            or request.get("model") != _FAKE_MODEL
             or request.get("stream") is not True
             or request.get("max_tokens") != 384000
             or request.get("thinking") not in (None, {"type": "disabled"})
             or "reasoning_effort" in request
             or "max_completion_tokens" in request
             or "store" in request
+            or not _request_uses_only_standard_roles(request)
         ):
             self.send_error(401)
             return
@@ -96,7 +113,7 @@ class _PiChatCompletionsHandler(BaseHTTPRequestHandler):
         common = {
             "object": "chat.completion.chunk",
             "created": 1,
-            "model": _MODEL,
+            "model": _FAKE_MODEL,
         }
         if request_index == 1:
             self._reply_sse([
@@ -155,11 +172,12 @@ class _PiLengthFinalizeHandler(_PiChatCompletionsHandler):
         if (
             self.path != "/v1/chat/completions"
             or self.headers.get("Authorization") != f"Bearer {_API_KEY}"
-            or request.get("model") != _MODEL
+            or request.get("model") != _FAKE_MODEL
             or request.get("stream") is not True
             or request.get("max_tokens") != 384000
             or "max_completion_tokens" in request
             or "store" in request
+            or not _request_uses_only_standard_roles(request)
         ):
             self.send_error(401)
             return
@@ -187,7 +205,7 @@ class _PiLengthFinalizeHandler(_PiChatCompletionsHandler):
         common = {
             "object": "chat.completion.chunk",
             "created": 1,
-            "model": _MODEL,
+            "model": _FAKE_MODEL,
         }
         if request_index == 1:
             # Pi 的 JSON 模式在 length 时可能仍退出 0。worker 必须读取
@@ -388,10 +406,10 @@ def _docker_exec_pi(
         "AJ_PROMPT": prompt,
         "AJ_WORKSPACE": "/workspace",
         "AJ_SESSION_STATE": "/workspace/.aj_session_state.json",
-        "AJ_PI_THINKING_FORMAT": "deepseek",
-        "OPENAI_BASE_URL": base_url,
-        "OPENAI_API_KEY": _API_KEY,
-        "OPENAI_MODEL": _MODEL,
+        "AJ_ENDPOINT_PROTOCOL": "openai",
+        "AJ_ENDPOINT_BASE_URL": base_url,
+        "AJ_ENDPOINT_API_KEY": _API_KEY,
+        "AJ_ENDPOINT_MODEL": _FAKE_MODEL,
     }
     if session_id:
         env["AJ_RESUME_SESSION_ID"] = session_id
@@ -424,6 +442,48 @@ def _session_entries(trace_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+def test_pi_lite_image_openai_endpoint_uses_standard_roles(
+        tmp_path: Path):
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI 不可用")
+    image = os.environ[_IMAGE_ENV]
+    _PiChatCompletionsHandler.requests = []
+    server = ThreadingHTTPServer(("0.0.0.0", 0), _PiChatCompletionsHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace.chmod(0o777)
+    base_url = f"http://host.docker.internal:{server.server_address[1]}/v1"
+    try:
+        proc = _run([
+            "docker", "run", "--rm", "--user", "node",
+            "--add-host", "host.docker.internal:host-gateway",
+            "-v", f"{workspace}:/workspace",
+            "-w", "/workspace",
+            "-e", "AJ_HARNESS=pi",
+            "-e", "AJ_EFFORT=off",
+            "-e", "AJ_PROMPT=Call the bash tool once, then finish.",
+            "-e", "AJ_WORKSPACE=/workspace",
+            "-e", "AJ_ENDPOINT_PROTOCOL=openai",
+            "-e", f"AJ_ENDPOINT_BASE_URL={base_url}",
+            "-e", f"AJ_ENDPOINT_API_KEY={_API_KEY}",
+            "-e", f"AJ_ENDPOINT_MODEL={_FAKE_MODEL}",
+            image, "run_harness",
+        ], timeout=120, check=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+
+    assert proc.returncode == 0, proc.stderr
+    assert len(_PiChatCompletionsHandler.requests) == 2
+    assert all(
+        _request_uses_only_standard_roles(request)
+        for request in _PiChatCompletionsHandler.requests
+    )
+
+
 def test_claude_lite_image_honors_one_million_context_and_384k_output_contract():
     if shutil.which("docker") is None:
         pytest.skip("Docker CLI 不可用")
@@ -447,13 +507,13 @@ def test_claude_lite_image_honors_one_million_context_and_384k_output_contract()
             "-e", "AJ_HARNESS=claude_code",
             "-e", "AJ_AUDIT_READ_ONLY=1",
             "-e", "AJ_PROMPT=Reply with the supplied deterministic response.",
-            "-e", "AJ_CONTEXT_WINDOW_TOKENS=1000000",
-            "-e", "AJ_MAX_OUTPUT_TOKENS=384000",
-            "-e", "AJ_THINKING_COMPATIBILITY=1",
-            "-e", f"ANTHROPIC_BASE_URL={base_url}",
-            "-e", f"ANTHROPIC_API_KEY={_API_KEY}",
-            "-e", f"ANTHROPIC_AUTH_TOKEN={_API_KEY}",
-            "-e", "ANTHROPIC_MODEL=custom-probe",
+            "-e", "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS=1000000",
+            "-e", "AJ_ENDPOINT_MAX_OUTPUT_TOKENS=384000",
+            "-e", "AJ_ENDPOINT_THINKING_ENABLED=1",
+            "-e", "AJ_ENDPOINT_PROTOCOL=anthropic",
+            "-e", f"AJ_ENDPOINT_BASE_URL={base_url}",
+            "-e", f"AJ_ENDPOINT_API_KEY={_API_KEY}",
+            "-e", "AJ_ENDPOINT_MODEL=custom-probe",
             image,
             "run_harness",
         ], timeout=180)
@@ -696,7 +756,7 @@ def test_pi_reverse_agent_length_auto_finalizes_same_native_session(
         "harness": reverse_tasks.HARNESS_PI,
         "base_url": f"http://127.0.0.1:{server.server_address[1]}/v1",
         "api_key": _API_KEY,
-        "model": _MODEL,
+        "model": _FAKE_MODEL,
         "concurrency_limit": 1,
     }
     attempt_id = f"pi-length-{uuid.uuid4().hex}"
@@ -853,7 +913,7 @@ def test_pi_reverse_agent_completes_with_real_deepseek_v4_flash(
         "harness": reverse_tasks.HARNESS_PI,
         "base_url": DEEPSEEK_OPENAI_BASE_URL,
         "api_key": api_key,
-        "model": _MODEL,
+        "model": DEEPSEEK_MODEL,
         "concurrency_limit": 1,
     }
     result = reverse_tasks._run_agent(

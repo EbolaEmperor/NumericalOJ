@@ -142,7 +142,7 @@ def test_pi_reverse_container_env_uses_attempt_proxy_and_openai_contract():
         rj.HARNESS_PI,
         "http://host.docker.internal:43123/v1",
         "attempt-token",
-        "deepseek-v4-flash",
+        "generic-model",
         "unused.jsonl",
         include_prompt=False,
         endpoint={
@@ -159,15 +159,15 @@ def test_pi_reverse_container_env_uses_attempt_proxy_and_openai_contract():
 
     assert env["AJ_HARNESS"] == rj.HARNESS_PI
     assert env["AJ_ENDPOINT_PROTOCOL"] == "openai"
-    assert env["OPENAI_BASE_URL"] == "http://host.docker.internal:43123/v1"
-    assert env["OPENAI_API_KEY"] == "attempt-token"
-    assert env["OPENAI_MODEL"] == "deepseek-v4-flash"
-    assert env["AJ_CONTEXT_WINDOW_TOKENS"] == "131072"
-    assert env["AJ_MAX_OUTPUT_TOKENS"] == "16384"
-    assert env["AJ_THINKING_COMPATIBILITY"] == "0"
+    assert env["AJ_ENDPOINT_BASE_URL"] == "http://host.docker.internal:43123/v1"
+    assert env["AJ_ENDPOINT_API_KEY"] == "attempt-token"
+    assert env["AJ_ENDPOINT_MODEL"] == "generic-model"
+    assert env["AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS"] == "131072"
+    assert env["AJ_ENDPOINT_MAX_OUTPUT_TOKENS"] == "16384"
+    assert env["AJ_ENDPOINT_THINKING_ENABLED"] == "0"
     assert env["AJ_ENDPOINT_THINKING_FORMAT"] == ""
-    assert env["AJ_THINKING_FORMAT"] == "generic"
-    assert env["AJ_PI_THINKING_FORMAT"] == "generic"
+    assert "AJ_THINKING_FORMAT" not in env
+    assert "AJ_PI_THINKING_FORMAT" not in env
     assert "AJ_PROMPT" not in env
 
 
@@ -176,12 +176,12 @@ def test_pi_reverse_container_env_marks_anthropic_protocol():
         rj.HARNESS_PI,
         "http://host.docker.internal:43123/anthropic",
         "attempt-token",
-        "mimo-v2.5-pro",
+        "generic-model",
         "unused.jsonl",
         include_prompt=False,
         endpoint={
             "protocol": "anthropic",
-            "base_url": "https://api.xiaomimimo.com/anthropic",
+            "base_url": "https://model.example/anthropic",
             "context_window_tokens": 131_072,
             "max_output_tokens": 16_384,
             "thinking_compatibility": True,
@@ -196,26 +196,12 @@ def test_pi_reverse_container_env_marks_anthropic_protocol():
 
     assert env["AJ_ENDPOINT_PROTOCOL"] == "anthropic"
     assert env["AJ_ENDPOINT_THINKING_FORMAT"] == "thinking_type"
-    assert env["ANTHROPIC_BASE_URL"] == "http://host.docker.internal:43123/anthropic"
-    assert env["ANTHROPIC_API_KEY"] == "attempt-token"
-    assert env["ANTHROPIC_MODEL"] == "mimo-v2.5-pro"
+    assert env["AJ_ENDPOINT_BASE_URL"] == "http://host.docker.internal:43123/anthropic"
+    assert env["AJ_ENDPOINT_API_KEY"] == "attempt-token"
+    assert env["AJ_ENDPOINT_MODEL"] == "generic-model"
 
 
-@pytest.mark.parametrize(("base_url", "expected"), [
-    ("https://api.deepseek.com/v1", "deepseek"),
-    ("https://gateway.deepseek.com/v1", "deepseek"),
-    ("https://deepseek.com/v1", "deepseek"),
-    ("http://api.deepseek.com/v1", "generic"),
-    ("https://evil-deepseek.com/v1", "generic"),
-    ("https://deepseek.com.attacker.example/v1", "generic"),
-    ("https://model.example/v1", "generic"),
-])
-def test_thinking_wire_profile_uses_exact_canonical_endpoint_origin(
-        base_url, expected):
-    assert aj._thinking_wire_profile(base_url) == expected
-
-
-def test_pi_reverse_proxy_keeps_original_deepseek_profile_without_exposing_origin():
+def test_pi_reverse_proxy_does_not_derive_vendor_profile_from_origin():
     args = rj._agent_env_args(
         rj.HARNESS_PI,
         "http://host.docker.internal:43123/v1",
@@ -230,14 +216,14 @@ def test_pi_reverse_proxy_keeps_original_deepseek_profile_without_exposing_origi
     )
     rendered = json.dumps(args)
 
-    assert "AJ_THINKING_FORMAT=deepseek" in args
-    assert "AJ_PI_THINKING_FORMAT=deepseek" in args
+    assert all("AJ_THINKING_FORMAT=" not in item for item in args)
+    assert all("AJ_PI_THINKING_FORMAT=" not in item for item in args)
     assert "api.deepseek.com" not in rendered
     assert "real-key-must-not-enter-container" not in rendered
     assert "attempt-token" in rendered
 
 
-def test_copied_global_endpoint_does_not_use_vendor_url_wire_profile():
+def test_copied_global_endpoint_uses_only_explicit_protocol_capabilities():
     args = rj._agent_env_args(
         rj.HARNESS_PI,
         "http://host.docker.internal:43123/v1",
@@ -254,8 +240,8 @@ def test_copied_global_endpoint_does_not_use_vendor_url_wire_profile():
     )
 
     assert "AJ_ENDPOINT_THINKING_FORMAT=enable_thinking" in args
-    assert "AJ_THINKING_FORMAT=generic" in args
-    assert "AJ_PI_THINKING_FORMAT=generic" in args
+    assert all("AJ_THINKING_FORMAT=" not in item for item in args)
+    assert all("AJ_PI_THINKING_FORMAT=" not in item for item in args)
 
 
 def test_pi_reverse_run_never_injects_real_api_key_into_agent_container(
@@ -292,9 +278,9 @@ def test_pi_reverse_run_never_injects_real_api_key_into_agent_container(
     serialized = "\0".join(docker_run)
     assert "real-pi-key" not in serialized
     assert "AJ_HARNESS=pi" in docker_run
-    assert "OPENAI_BASE_URL=http://host.docker.internal:43123/v1" in docker_run
-    assert "OPENAI_API_KEY=attempt-token" in docker_run
-    assert "OPENAI_MODEL=pi-model" in docker_run
+    assert "AJ_ENDPOINT_BASE_URL=http://host.docker.internal:43123/v1" in docker_run
+    assert "AJ_ENDPOINT_API_KEY=attempt-token" in docker_run
+    assert "AJ_ENDPOINT_MODEL=pi-model" in docker_run
     assert proxy_calls == [
         ("https://pi.example/v1", "real-pi-key", rj.HARNESS_PI, "openai"),
     ]

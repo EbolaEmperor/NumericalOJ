@@ -887,9 +887,11 @@ def _endpoint_payload(ep):
     payload = {
         'id': ep['id'],
         'harness': ep.get('harness') or HARNESS_CLAUDE_CODE,
+        'protocol': ep.get('protocol'),
         'base_url': ep.get('base_url') or '',
         'api_key': ep.get('api_key') or '',
         'model': ep.get('model') or '',
+        'thinking_format': ep.get('thinking_format'),
         'concurrency_limit': max(1, int(ep.get('concurrency_limit') or 1)),
     }
     payload.update(normalize_endpoint_model_capabilities(ep))

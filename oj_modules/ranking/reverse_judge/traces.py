@@ -748,6 +748,28 @@ def _pi_tool_result_message(message, line_no):
     }
 
 
+def _pi_model_error_message(message, line_no):
+    error_text = str(message.get('errorMessage') or '').strip()
+    stop_reason = str(message.get('stopReason') or '').strip().lower()
+    if not error_text and stop_reason not in {'error', 'aborted'}:
+        return None
+    if not error_text:
+        error_text = f'模型调用以 stopReason={stop_reason} 结束'
+    meta = ' / '.join(filter(None, (
+        str(message.get('provider') or '').strip(),
+        str(message.get('model') or '').strip(),
+    )))
+    return {
+        'kind': 'tool_result',
+        'title': '模型调用失败',
+        'text': _truncate_pi_tool_result(error_text),
+        'meta': meta,
+        'format': 'text',
+        'is_error': True,
+        'line': line_no,
+    }
+
+
 def _pi_event_messages(event, line_no):
     """把 Pi session v3 的完成态 message entry 投影为共享轨迹消息。"""
     # JSON mode 的 message_start/message_update/message_end 与 token delta 不是
@@ -765,31 +787,33 @@ def _pi_event_messages(event, line_no):
         return []
 
     content = message.get('content')
-    if not isinstance(content, list):
-        return []
     meta = message.get('model') or message.get('provider') or event.get('timestamp') or ''
     messages = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        item_type = str(item.get('type') or '').strip().lower().replace('_', '').replace('-', '')
-        if item_type == 'text' and isinstance(item.get('text'), str):
-            text = item['text'].strip()
-            if text:
-                messages.append(_trace_message(
-                    'assistant', 'AI 回复', text, meta, line_no,
-                ))
-        elif item_type == 'thinking' and isinstance(item.get('thinking'), str):
-            thinking = _thinking_text({
-                'type': 'thinking',
-                'thinking': item.get('thinking'),
-            })
-            if thinking:
-                messages.append(_trace_message(
-                    'thinking', '思考片段', thinking, meta, line_no,
-                ))
-        elif item_type == 'toolcall':
-            messages.append(_pi_tool_call_message(item, line_no))
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get('type') or '').strip().lower().replace('_', '').replace('-', '')
+            if item_type == 'text' and isinstance(item.get('text'), str):
+                text = item['text'].strip()
+                if text:
+                    messages.append(_trace_message(
+                        'assistant', 'AI 回复', text, meta, line_no,
+                    ))
+            elif item_type == 'thinking' and isinstance(item.get('thinking'), str):
+                thinking = _thinking_text({
+                    'type': 'thinking',
+                    'thinking': item.get('thinking'),
+                })
+                if thinking:
+                    messages.append(_trace_message(
+                        'thinking', '思考片段', thinking, meta, line_no,
+                    ))
+            elif item_type == 'toolcall':
+                messages.append(_pi_tool_call_message(item, line_no))
+    error = _pi_model_error_message(message, line_no)
+    if error:
+        messages.append(error)
     return messages
 
 

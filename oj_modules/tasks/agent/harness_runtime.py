@@ -323,16 +323,6 @@ def _runtime_env(endpoint, harness, task_kind, *, web_search_settings=None):
     model = str(endpoint.get("model") or "").strip()
     thinking_enabled = bool(endpoint.get("thinking_enabled"))
     thinking_format = str(endpoint.get("thinking_format") or "none").strip().lower()
-    try:
-        endpoint_hostname = str(urlsplit(base_url).hostname or "").lower().rstrip(".")
-    except ValueError:
-        endpoint_hostname = ""
-    harness_thinking_format = (
-        "deepseek"
-        if endpoint_hostname == "deepseek.com"
-        or endpoint_hostname.endswith(".deepseek.com")
-        else "generic"
-    )
     skill_name = skill_for_agent_task(task_kind)
 
     env = {
@@ -349,51 +339,19 @@ def _runtime_env(endpoint, harness, task_kind, *, web_search_settings=None):
         "DISABLE_ERROR_REPORTING": "1",
         "AJ_HARNESS": harness,
         "AJ_ENDPOINT_PROTOCOL": protocol,
-        "AJ_CONTEXT_WINDOW_TOKENS": str(_AGENT_CONTEXT_WINDOW_TOKENS),
-        "AJ_MAX_OUTPUT_TOKENS": str(_AGENT_MAX_OUTPUT_TOKENS),
-        "AJ_THINKING_COMPATIBILITY": "1" if thinking_enabled else "0",
+        "AJ_ENDPOINT_BASE_URL": base_url,
+        "AJ_ENDPOINT_API_KEY": api_key,
+        "AJ_ENDPOINT_MODEL": model,
+        "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS": str(_AGENT_CONTEXT_WINDOW_TOKENS),
+        "AJ_ENDPOINT_MAX_OUTPUT_TOKENS": str(_AGENT_MAX_OUTPUT_TOKENS),
+        "AJ_ENDPOINT_THINKING_ENABLED": "1" if thinking_enabled else "0",
         "AJ_ENDPOINT_THINKING_FORMAT": thinking_format,
-        "AJ_THINKING_FORMAT": harness_thinking_format,
         "AJ_ENABLE_SKILLS": "1",
         "AJ_RUNTIME_ROOT": "/workspace/.runtime",
         "AJ_PROMPT_STDIN": "1",
         "AJ_WORKSPACE": "/workspace",
         _SKILL_CONFIG_ENV[skill_name]: _IDENTITY_CONFIG_PATH,
     }
-    if harness == "claude_code":
-        env.update({
-            "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_AUTH_TOKEN": api_key,
-            "ANTHROPIC_API_KEY": api_key,
-            "ANTHROPIC_MODEL": model,
-        })
-    elif harness == "codex":
-        env.update({
-            "OPENAI_BASE_URL": base_url,
-            "OPENAI_API_KEY": api_key,
-            "OPENAI_MODEL": model,
-        })
-    elif harness == "opencode":
-        env.update({
-            "OPENCODE_BASE_URL": base_url,
-            "OPENCODE_API_KEY": api_key,
-            "OPENCODE_MODEL": model,
-        })
-    elif protocol == "anthropic":
-        env.update({
-            "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_AUTH_TOKEN": api_key,
-            "ANTHROPIC_API_KEY": api_key,
-            "ANTHROPIC_MODEL": model,
-        })
-    else:
-        env.update({
-            "OPENAI_BASE_URL": base_url,
-            "OPENAI_API_KEY": api_key,
-            "OPENAI_MODEL": model,
-        })
-    if harness == "pi":
-        env["AJ_PI_THINKING_FORMAT"] = harness_thinking_format
     env.update(_web_search_mcp_env(web_search_settings))
     return env
 

@@ -223,7 +223,12 @@ Create and configure a ranking competition:
 ```bash
 python3 scripts/numoj_admin.py ranking create --title "第 1 周打榜赛" --max-score 100
 python3 scripts/numoj_admin.py ranking save-rules <competition_id> @rules.json
-python3 scripts/numoj_admin.py ranking save-config <competition_id> --agent-base-url https://api.example.com --model qwen3
+python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
+  --harness codex \
+  --protocol openai \
+  --agent-base-url https://llm.example.com/v1 \
+  --api-key-env LLM_API_KEY \
+  --model example-model
 ```
 
 Create or edit a reverse-judge ranking competition and configure the AI answering endpoint:
@@ -235,6 +240,7 @@ python3 scripts/numoj_admin.py ranking edit <competition_id> \
   --agent-timeout 600
 python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
   --harness pi \
+  --protocol openai \
   --agent-base-url https://llm.example.com/v1 \
   --api-key-env LLM_API_KEY \
   --env-file agent-secrets.env \
@@ -247,10 +253,11 @@ python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
 
 Endpoint model metadata defaults to a 1,000,000-token context window, 384,000
 maximum output tokens, and thinking compatibility enabled. The single-endpoint
-commands accept `--context-window-tokens`, `--max-output-tokens`, and
+commands accept `--protocol`, `--context-window-tokens`, `--max-output-tokens`, and
 `--thinking-compatibility` / `--no-thinking-compatibility`. For endpoint-pool
 JSON passed to `save-endpoints` or `save-quality-gate-endpoints`, use the fields
-`context_window_tokens`, `max_output_tokens`, and `thinking_compatibility` on
+`protocol`, `context_window_tokens`, `max_output_tokens`,
+`thinking_compatibility`, and `thinking_format` on
 each endpoint object. New endpoints receive the server defaults when these
 fields are omitted; updates that carry an existing endpoint `id` retain that
 endpoint's current values when the fields are omitted.

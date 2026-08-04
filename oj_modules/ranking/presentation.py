@@ -43,6 +43,7 @@ def masked_agent_endpoints(endpoints):
             "base_url": endpoint.get("base_url") or "",
             "model": endpoint.get("model") or "",
             **normalize_endpoint_model_capabilities(endpoint),
+            "thinking_format": endpoint.get("thinking_format") or "none",
             "concurrency_limit": int(endpoint.get("concurrency_limit") or 1),
             "status": endpoint.get("status") or "enabled",
             "enabled": endpoint.get("enabled"),

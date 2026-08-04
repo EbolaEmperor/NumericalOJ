@@ -117,7 +117,6 @@ def _competition(**overrides):
         'max_score': 100,
         'is_active': 1,
         'submission_method': 'zip',
-        'agent_judge_api_key': None,
         'created_at': '2026-07-29 00:00:00',
     }
     competition.update(overrides)
