@@ -290,13 +290,16 @@ def test_paginated_row_shape():
         'requested_by': 'admin',
         'status': 'completed',
         'best_score': 42,
+        'latest_submission_id': 77,
     })
     rows, _ = db.get_agent_runs_paginated(page=1, per_page=20)
     assert len(rows) == 1
     row = rows[0]
     for key in ('task_id', 'problem_id', 'problem_title', 'requested_by',
-                'status', 'best_score', 'created_at', 'updated_at'):
+                'status', 'best_score', 'latest_submission_id',
+                'problem_max_score', 'created_at', 'updated_at'):
         assert key in row
     assert 'attempts_json' not in row
     assert row['problem_id'] == 9
     assert row['best_score'] == 42
+    assert row['latest_submission_id'] == 77

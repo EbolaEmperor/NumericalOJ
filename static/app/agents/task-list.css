@@ -1,0 +1,23 @@
+.agent-task-page-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  padding: 0.25rem 0 0.35rem;
+}
+
+.agent-task-page-kicker {
+  margin-bottom: 0.3rem;
+  color: #8a7048;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.agent-task-records {
+  min-width: 0;
+}
+
+.agent-task-records .agent-task-detail-btn {
+  text-decoration: none;
+}

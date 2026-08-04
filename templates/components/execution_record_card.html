@@ -1,0 +1,40 @@
+{# 提交、Agent 任务等执行记录共用的卡片骨架；业务内容通过四个具名 slot 注入。 #}
+{% macro render_execution_record_card(
+    status_class,
+    status_label,
+    progress_value,
+    progress_label,
+    data_username='',
+    submission_id=none,
+    task_id=''
+) %}
+  <article class="aj-sub {{ status_class }}"
+           data-execution-record-card
+           {% if data_username %}data-username="{{ data_username }}"{% endif %}
+           {% if submission_id is not none %}data-submission-id="{{ submission_id }}"{% endif %}
+           {% if task_id %}data-agent-task-id="{{ task_id }}"{% endif %}>
+    <div class="aj-sub-r1">
+      <div class="aj-sub-idu">
+        {{ caller('identity') }}
+        <span class="aj-st {{ status_class }}"><span class="d"></span>{{ status_label }}</span>
+      </div>
+      <div class="aj-sub-scoreline">
+        {% if progress_value is not none %}
+          <span class="aj-bar"
+                role="progressbar"
+                aria-label="{{ progress_label }}"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="{{ progress_value }}">
+            <i style="--submission-score: {{ progress_value }}%"></i>
+          </span>
+        {% endif %}
+        <span class="aj-sub-score">{{ caller('score') }}</span>
+      </div>
+    </div>
+    <div class="aj-sub-r2">
+      <div class="aj-sub-meta">{{ caller('meta') }}</div>
+      <div class="aj-acts">{{ caller('actions') }}</div>
+    </div>
+  </article>
+{% endmacro %}

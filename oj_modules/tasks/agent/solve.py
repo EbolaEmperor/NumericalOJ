@@ -26,11 +26,25 @@ from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
 
 
 SOLUTION_AGENT_PROMPT = (
-    "请帮我用 numoj-user skill 读取问题：{problem_title}，并解决这个问题。"
+    "请帮我用 numoj-user skill 读取题号 {problem_id} 的问题：{problem_title}，并解决这个问题。"
+    "请使用 `problem detail {problem_id}` 读取题目，并始终使用该题号提交。"
     "本地充分测试，确认无误后提交。如果没有通过就继续尝试，直到通过为止。"
 )
 
-__all__ = ["SOLUTION_AGENT_PROMPT", "register_agent_solve_problem_task"]
+__all__ = [
+    "SOLUTION_AGENT_PROMPT",
+    "build_solution_agent_prompt",
+    "register_agent_solve_problem_task",
+]
+
+
+def build_solution_agent_prompt(*, problem_id, problem_title):
+    """用任务已解析的全站题号构造解题指令。"""
+
+    return SOLUTION_AGENT_PROMPT.format(
+        problem_id=int(problem_id),
+        problem_title=str(problem_title or ""),
+    )
 
 
 def _created_submissions(username, problem_id, created_ids):
@@ -162,7 +176,10 @@ def register_agent_solve_problem_task(celery_app):
                 endpoint=endpoint,
                 session_cookie=session_cookie,
                 session_cookie_name=session_cookie_name,
-                prompt=SOLUTION_AGENT_PROMPT.format(problem_title=title),
+                prompt=build_solution_agent_prompt(
+                    problem_id=problem_id,
+                    problem_title=title,
+                ),
                 trace_callback=lambda: _publish_agent_trace(state),
                 reset_trace=False,
             )

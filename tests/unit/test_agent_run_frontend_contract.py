@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from jinja2 import Environment, nodes
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -8,15 +10,52 @@ def _read(relative_path):
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _called_template_macros(relative_path):
+    parsed = Environment().parse(_read(relative_path))
+    return {
+        node.node.name
+        for node in parsed.find_all(nodes.Call)
+        if isinstance(node.node, nodes.Name)
+    }
+
+
+def test_agent_tasks_and_ranking_submissions_share_one_card_shell():
+    shared = _read("templates/components/execution_record_card.html")
+    ranking = _read("templates/ranking/components/submission_card.html")
+    agent = _read("templates/agents/task_card.html")
+    task_list = _read("templates/admin/agent_tasks.html")
+
+    assert "data-execution-record-card" in shared
+    assert "render_execution_record_card" in _called_template_macros(
+        "templates/ranking/components/submission_card.html"
+    )
+    assert "render_execution_record_card" in _called_template_macros(
+        "templates/agents/task_card.html"
+    )
+    assert "app/ranking/content-v2.css" in task_list
+    assert "ranking-v2-detail" in task_list
+    assert "<table" not in task_list
+
+
+def test_agent_task_card_links_the_latest_submission_and_preserves_detail_hook():
+    card = _read("templates/agents/task_card.html")
+
+    assert "run.latest_submission_id" in card
+    assert "submission.submission_detail" in card
+    assert "data-agent-task-detail" in card
+    assert 'data-task-id="{{ task_id }}"' in card
+
+
 def test_agent_run_detail_is_a_shared_trace_modal_on_the_task_list():
     task_list = _read("templates/admin/agent_tasks.html")
+    task_card = _read("templates/agents/task_card.html")
     modal = _read("templates/agents/run_detail_modal.html")
     controller = _read("static/app/agents/run-detail-modal.js")
     styles = _read("static/app/agents/run-detail-modal.css")
 
     assert not (ROOT / "templates/agents/run.html").exists()
     assert task_list.count("{% include 'agents/run_detail_modal.html' %}") == 1
-    assert "data-agent-task-detail" in task_list
+    assert "data-agent-task-detail" in task_card
     assert "problem_core.admin_agent_tasks" in task_list
 
     shared_trace = "{% include 'components/agents/execution_trace_assets.html' %}"

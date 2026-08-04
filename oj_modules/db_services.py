@@ -522,11 +522,13 @@ def get_agent_runs_paginated(page=1, per_page=20):
             offset = (max(1, int(page)) - 1) * int(per_page)
             cursor.execute(
                 """
-                SELECT task_id, problem_id, problem_title, requested_by, status, message,
-                       best_score, final_submission_id,
-                       created_at, updated_at
-                FROM agent_task_runs
-                ORDER BY id DESC
+                SELECT r.task_id, r.problem_id, r.problem_title, r.requested_by,
+                       r.status, r.message, r.best_score, r.final_submission_id,
+                       r.latest_submission_id, p.max_score AS problem_max_score,
+                       r.created_at, r.updated_at
+                FROM agent_task_runs AS r
+                LEFT JOIN problems AS p ON p.id = r.problem_id
+                ORDER BY r.id DESC
                 LIMIT %s OFFSET %s
                 """,
                 (int(per_page), int(offset)),
