@@ -11,6 +11,7 @@ from oj_modules.tasks.homework_admin_tasks import (
 from oj_modules.tasks.rejudge_tasks import register_rejudge_task
 from oj_modules.tasks.promptly_tasks import register_promptly_generate_submission_task
 from oj_modules.tasks.agent.registry import (
+    build_agent_run_terminator,
     get_agent_run_snapshot,
     init_agent_progress_cache,
     register_agent_generate_testdata_task,
@@ -91,4 +92,5 @@ __all__ = [
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",
+    "build_agent_run_terminator",
 ]

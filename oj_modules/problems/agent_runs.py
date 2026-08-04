@@ -20,12 +20,23 @@ from oj_modules.site_config.services import get_llm_endpoint
 _TASK_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
 
-def agent_run_trace_dir(task_id):
-    """返回服务端生成的任务级受信任轨迹目录。"""
-
+def normalize_agent_task_id(task_id):
     normalized = str(task_id or "").strip()
     if not _TASK_ID_RE.fullmatch(normalized):
         raise ValueError("Agent task_id 无效")
+    return normalized
+
+
+def agent_run_container_name(task_id):
+    """返回普通 Agent harness 的确定性 Docker 容器名。"""
+
+    return f"numoj-agent-{normalize_agent_task_id(task_id)}"
+
+
+def agent_run_trace_dir(task_id):
+    """返回服务端生成的任务级受信任轨迹目录。"""
+
+    normalized = normalize_agent_task_id(task_id)
     root = (Path(AGENT_WORKSPACE_ROOT).expanduser().resolve() / "traces").resolve()
     target = (root / normalized).resolve()
     if target.parent != root:
@@ -124,6 +135,8 @@ def decorate_agent_run_summaries(runs):
 
 
 __all__ = [
+    "normalize_agent_task_id",
+    "agent_run_container_name",
     "agent_run_trace_dir",
     "build_agent_execution_trace",
     "decorate_agent_run_summaries",

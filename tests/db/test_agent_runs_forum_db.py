@@ -164,6 +164,50 @@ def test_upsert_on_duplicate_key_update():
     assert row['message'] == 'second'
 
 
+def test_canceled_snapshot_is_sticky_against_late_worker_upsert():
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-cancel-sticky',
+        'status': 'Running',
+        'message': '执行中',
+        'best_score': 10,
+    })
+
+    state, changed = db.cancel_agent_run_snapshot('tk-cancel-sticky')
+
+    assert changed is True
+    assert state['status'] == 'Canceled'
+    assert state['message'] == '任务已由管理员终止'
+
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-cancel-sticky',
+        'status': 'Failed',
+        'message': '迟到 worker 的失败结果',
+        'best_score': 99,
+    })
+    row = _fetch_raw('tk-cancel-sticky')
+    assert row['status'] == 'Canceled'
+    assert row['message'] == '任务已由管理员终止'
+    assert row['best_score'] == 10
+
+    state, changed = db.cancel_agent_run_snapshot('tk-cancel-sticky')
+    assert changed is False
+    assert state['status'] == 'Canceled'
+
+
+def test_cancel_snapshot_only_transitions_active_task():
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-already-finished',
+        'status': 'Completed',
+        'message': '已完成',
+    })
+
+    state, changed = db.cancel_agent_run_snapshot('tk-already-finished')
+
+    assert changed is False
+    assert state['status'] == 'Completed'
+    assert db.is_agent_run_canceled('tk-already-finished') is False
+
+
 def test_upsert_status_default_pending_when_missing():
     """缺省 status 时落库为 'Pending'。"""
     db.upsert_agent_run_snapshot({'task_id': 'tk-default-status'})
@@ -290,13 +334,16 @@ def test_paginated_row_shape():
         'requested_by': 'admin',
         'status': 'completed',
         'best_score': 42,
+        'latest_submission_id': 77,
     })
     rows, _ = db.get_agent_runs_paginated(page=1, per_page=20)
     assert len(rows) == 1
     row = rows[0]
     for key in ('task_id', 'problem_id', 'problem_title', 'requested_by',
-                'status', 'best_score', 'created_at', 'updated_at'):
+                'status', 'best_score', 'latest_submission_id',
+                'problem_max_score', 'created_at', 'updated_at'):
         assert key in row
     assert 'attempts_json' not in row
     assert row['problem_id'] == 9
     assert row['best_score'] == 42
+    assert row['latest_submission_id'] == 77

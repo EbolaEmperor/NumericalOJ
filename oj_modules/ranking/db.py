@@ -122,8 +122,7 @@ def get_competition(competition_id):
                        elo_max_matches, elo_match_interval_seconds, elo_initial_burst,
                        elo_max_pairs_per_round, elo_running,
                        scoring_script_timeout_seconds,
-                       agent_judge_base_url, agent_judge_api_key,
-                       agent_judge_model, agent_judge_timeout_seconds,
+                       agent_judge_timeout_seconds,
                        reverse_judge_finalize_timeout_seconds,
                        reverse_quality_gate_enabled, reverse_quality_gate_prompt,
                        agent_judge_orchestration_mode,
@@ -244,9 +243,6 @@ def get_ranking_navigation_state(competition_id, username=None):
                                 COALESCE(CAST(c.elo_max_pairs_per_round AS CHAR), ''),
                                 COALESCE(CAST(c.elo_running AS CHAR), ''),
                                 COALESCE(CAST(c.scoring_script_timeout_seconds AS CHAR), ''),
-                                COALESCE(c.agent_judge_base_url, ''),
-                                COALESCE(c.agent_judge_api_key, ''),
-                                COALESCE(c.agent_judge_model, ''),
                                 COALESCE(CAST(c.agent_judge_timeout_seconds AS CHAR), ''),
                                 COALESCE(CAST(c.reverse_judge_finalize_timeout_seconds AS CHAR), ''),
                                 COALESCE(CAST(c.reverse_quality_gate_enabled AS CHAR), ''),
@@ -728,8 +724,7 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         elo_max_matches=None, elo_match_interval_seconds=None,
                         elo_initial_burst=None, elo_max_pairs_per_round=None,
                         scoring_script_timeout_seconds=None,
-                        agent_judge_base_url=None, agent_judge_api_key=None,
-                        agent_judge_model=None, agent_judge_timeout_seconds=None,
+                        agent_judge_timeout_seconds=None,
                         reverse_judge_finalize_timeout_seconds=None,
                         reverse_quality_gate_enabled=None,
                         reverse_quality_gate_prompt=None,
@@ -786,15 +781,6 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if scoring_script_timeout_seconds is not None:
         fields.append("scoring_script_timeout_seconds = %s")
         params.append(int(scoring_script_timeout_seconds))
-    if agent_judge_base_url is not None:
-        fields.append("agent_judge_base_url = %s")
-        params.append((str(agent_judge_base_url).strip() or None))
-    if agent_judge_api_key is not None:
-        fields.append("agent_judge_api_key = %s")
-        params.append((str(agent_judge_api_key).strip() or None))
-    if agent_judge_model is not None:
-        fields.append("agent_judge_model = %s")
-        params.append((str(agent_judge_model).strip() or None))
     if agent_judge_timeout_seconds is not None:
         fields.append("agent_judge_timeout_seconds = %s")
         params.append(int(agent_judge_timeout_seconds))

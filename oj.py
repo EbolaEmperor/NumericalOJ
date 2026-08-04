@@ -63,6 +63,7 @@ from oj_modules.infrastructure.redis import (
 )
 from oj_modules.api.registry import API_BLUEPRINTS
 from oj_modules.tasks.registry import (
+    build_agent_run_terminator,
     get_agent_run_snapshot,
     init_agent_progress_cache,
     build_homework_task_operations,
@@ -289,9 +290,9 @@ celery.conf.task_routes = {
     'oj.ranking_agent_judge_paused_probe': {'queue': 'judge'},
     'oj.ranking_reverse_judge': {'queue': 'judge'},
 }
-# 任务执行完才 ack：worker 崩溃/被硬超时 SIGKILL 时，消息不会丢失而是重新投递。
-# 配合各任务的 Redis 幂等锁，重投不会导致重复评测；reject_on_worker_lost 让「worker 丢失」
-# 的任务被重新入队而非静默丢弃。（各任务 wall-clock 上限远小于 broker 可见性超时，安全。）
+# 任务执行完才 ack：worker 崩溃或被 SIGKILL 时，消息不会静默丢失。
+# 常规任务依靠各自的幂等边界；不限时的普通 Agent 队列固定单 worker、单预取，
+# 并在任务入口以 MySQL 终态短路 broker visibility 恢复出的重复消息。
 celery.conf.task_acks_late = True
 celery.conf.task_reject_on_worker_lost = True
 evaluate_submission = register_evaluate_submission_task(celery)
@@ -312,6 +313,7 @@ export_codes_with_plagiarism_check, mark_homework_plagiarism = (
 promptly_generate_submission = register_promptly_generate_submission_task(celery, evaluate_submission)
 agent_solve_problem = register_agent_solve_problem_task(celery)
 agent_generate_testdata = register_agent_generate_testdata_task(celery)
+terminate_agent_run = build_agent_run_terminator(celery)
 build_repository_index = register_repository_index_build_task(celery)
 detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions = register_ai_detection_tasks(celery)
 evaluate_ranking_submission = register_ranking_evaluate_task(celery)
@@ -364,6 +366,7 @@ init_problem_core_module(
     agent_generate_testdata,
     get_agent_run_snapshot,
     subscribe_agent_run_events,
+    terminate_agent_run,
 )
 # 初始化代码仓库结构化整理模块（依赖 Celery 任务）
 init_repository_index_module(build_repository_index)

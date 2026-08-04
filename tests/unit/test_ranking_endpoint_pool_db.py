@@ -61,7 +61,7 @@ def _endpoint_row(endpoint_id, pool_kind):
         'harness': 'codex',
         'base_url': f'https://{pool_kind}.example/v1',
         'api_key': f'{pool_kind}-key',
-        'model': 'gpt-test',
+        'model': 'generic-model',
         'context_window_tokens': 128_000,
         'max_output_tokens': 16_000,
         'thinking_compatibility': 0,
@@ -459,57 +459,36 @@ def test_quality_gate_configuration_and_pool_share_one_transaction(monkeypatch):
     assert 'thinking_compatibility' in locked_endpoint_select
 
 
-@pytest.mark.parametrize("endpoint, message", [
-    ({
-        "harness": "opencode",
-        "base_url": "",
+@pytest.mark.parametrize(
+    "pool_kind",
+    [endpoint_db.ENDPOINT_POOL_PRIMARY, endpoint_db.ENDPOINT_POOL_QUALITY_GATE],
+)
+@pytest.mark.parametrize("harness", endpoint_db.ALLOWED_AGENT_HARNESSES)
+@pytest.mark.parametrize(
+    ("missing_field", "message"),
+    [("base_url", "URL"), ("api_key", "API Key"), ("model", "模型")],
+)
+def test_every_harness_and_pool_requires_the_same_endpoint_fields(
+        pool_kind, harness, missing_field, message):
+    endpoint = {
+        "harness": harness,
+        "base_url": "https://model.example/v1",
         "api_key": "secret",
-        "model": "gate-model",
-    }, "URL"),
-    ({
-        "harness": "claude_code",
-        "base_url": "https://quality.example/anthropic",
-        "api_key": "secret",
-        "model": "",
-    }, "模型"),
-])
-def test_quality_gate_pool_requires_explicit_url_and_model(endpoint, message):
+        "model": "generic-model",
+    }
+    if harness == endpoint_db.HARNESS_PI:
+        endpoint["protocol"] = endpoint_db.ENDPOINT_PROTOCOL_OPENAI
+    endpoint[missing_field] = ""
+
     with pytest.raises(ValueError, match=message):
         endpoint_db._normalize_endpoint_items(
-            endpoint_db.ENDPOINT_POOL_QUALITY_GATE,
-            [endpoint],
-            [],
+            pool_kind, [endpoint], [],
         )
-
-
-def test_primary_opencode_pool_keeps_legacy_default_url_and_model():
-    normalized = endpoint_db._normalize_endpoint_items(
-        endpoint_db.ENDPOINT_POOL_PRIMARY,
-        [{"harness": "opencode", "api_key": "secret"}],
-        [],
-    )
-
-    assert normalized[0]["base_url"] == endpoint_db.DEFAULT_OPENCODE_GO_BASE_URL
-    assert normalized[0]["model"] == endpoint_db.DEFAULT_OPENCODE_GO_MODEL
 
 
 @pytest.mark.parametrize("value", ["pi", "pi-agent", "pi_agent", " PI-Agent "])
 def test_pi_harness_aliases_normalize_to_canonical_value(value):
     assert endpoint_db.normalize_agent_harness(value) == endpoint_db.HARNESS_PI
-
-
-def test_pi_endpoint_requires_explicit_model():
-    with pytest.raises(ValueError, match='Pi 端点模型不能为空'):
-        endpoint_db._normalize_endpoint_items(
-            endpoint_db.ENDPOINT_POOL_PRIMARY,
-            [{
-                'harness': 'pi',
-                'protocol': 'openai',
-                'base_url': 'https://pi.example/v1',
-                'api_key': 'secret',
-            }],
-            [],
-        )
 
 
 def test_new_pi_endpoint_requires_explicit_protocol():
@@ -520,7 +499,7 @@ def test_new_pi_endpoint_requires_explicit_protocol():
                 'harness': 'pi',
                 'base_url': 'https://pi.example/v1',
                 'api_key': 'secret',
-                'model': 'mimo-v2.5-pro',
+                'model': 'generic-model',
             }],
             [],
         )
@@ -604,7 +583,7 @@ def test_global_endpoint_copy_uses_server_secret_and_protocol(monkeypatch):
             'protocol': 'anthropic',
             'base_url': 'https://global.example/anthropic',
             'api_key': 'server-only-secret',
-            'model': 'mimo-v2.5-pro',
+            'model': 'global-model',
             'thinking_enabled': True,
             'thinking_format': 'thinking_type',
         },
@@ -623,10 +602,46 @@ def test_global_endpoint_copy_uses_server_secret_and_protocol(monkeypatch):
     assert normalized[0]['protocol'] == 'anthropic'
     assert normalized[0]['base_url'] == 'https://global.example/anthropic'
     assert normalized[0]['api_key'] == 'server-only-secret'
-    assert normalized[0]['model'] == 'mimo-v2.5-pro'
+    assert normalized[0]['model'] == 'global-model'
     assert normalized[0]['thinking_compatibility'] is True
     assert normalized[0]['thinking_format'] == 'thinking_type'
     assert 'global_endpoint_id' not in normalized[0]
+
+
+def test_opencode_copies_the_same_global_openai_endpoint_contract(monkeypatch):
+    monkeypatch.setattr(
+        endpoint_db,
+        '_get_global_endpoint_for_copy',
+        lambda endpoint_id: {
+            'id': endpoint_id,
+            'category': 'omni',
+            'protocol': 'openai',
+            'base_url': 'https://global.example/v1',
+            'api_key': 'server-only-secret',
+            'model': 'global-model',
+            'thinking_enabled': False,
+            'thinking_format': 'none',
+        },
+    )
+
+    normalized = endpoint_db._normalize_endpoint_items(
+        endpoint_db.ENDPOINT_POOL_PRIMARY,
+        [{
+            'harness': 'opencode',
+            'global_endpoint_id': 24,
+            'base_url': 'https://forged.example/v1',
+            'api_key': 'forged-key',
+            'model': 'forged-model',
+        }],
+        [],
+    )
+
+    assert normalized[0]['protocol'] == 'openai'
+    assert normalized[0]['base_url'] == 'https://global.example/v1'
+    assert normalized[0]['api_key'] == 'server-only-secret'
+    assert normalized[0]['model'] == 'global-model'
+    assert normalized[0]['thinking_compatibility'] is False
+    assert normalized[0]['thinking_format'] == 'none'
 
 
 def test_editing_copied_endpoint_preserves_frozen_thinking_format(monkeypatch):
@@ -684,13 +699,52 @@ def test_editing_copied_endpoint_rejects_protocol_incompatible_frozen_thinking()
         )
 
 
-def test_legacy_endpoint_row_keeps_null_thinking_format():
+def test_legacy_endpoint_row_gets_protocol_default_thinking_format():
     endpoint = endpoint_db._endpoint_row({
         **_endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY),
         'thinking_format': None,
     })
 
-    assert endpoint['thinking_format'] is None
+    assert endpoint['thinking_format'] == 'none'
+
+
+def test_custom_endpoint_accepts_complete_protocol_level_thinking_contract():
+    normalized = endpoint_db._normalize_endpoint_items(
+        endpoint_db.ENDPOINT_POOL_PRIMARY,
+        [{
+            'harness': 'pi',
+            'protocol': 'anthropic',
+            'base_url': 'https://custom.example/anthropic',
+            'api_key': 'temporary-key',
+            'model': 'generic-model',
+            'thinking_compatibility': True,
+            'thinking_format': 'thinking_type',
+        }],
+        [],
+    )
+
+    assert normalized[0]['protocol'] == 'anthropic'
+    assert normalized[0]['thinking_compatibility'] is True
+    assert normalized[0]['thinking_format'] == 'thinking_type'
+
+
+@pytest.mark.parametrize('thinking_format', ['vendor_mode', 'enable_thinking'])
+def test_custom_anthropic_endpoint_rejects_invalid_thinking_format(
+        thinking_format):
+    with pytest.raises(ValueError, match='思考参数格式|Anthropic'):
+        endpoint_db._normalize_endpoint_items(
+            endpoint_db.ENDPOINT_POOL_PRIMARY,
+            [{
+                'harness': 'pi',
+                'protocol': 'anthropic',
+                'base_url': 'https://custom.example/anthropic',
+                'api_key': 'temporary-key',
+                'model': 'generic-model',
+                'thinking_compatibility': True,
+                'thinking_format': thinking_format,
+            }],
+            [],
+        )
 
 
 def test_global_endpoint_copy_rejects_incompatible_harness(monkeypatch):
@@ -740,9 +794,9 @@ def test_global_endpoint_candidates_filter_protocol_category_and_secrets():
 
     assert [item['id'] for item in pi] == [1, 2]
     assert [item['id'] for item in codex] == [2]
-    assert opencode == []
-    assert all('api_key' not in item for item in pi + codex)
-    assert all('name' not in item for item in pi + codex)
+    assert [item['id'] for item in opencode] == [2]
+    assert all('api_key' not in item for item in pi + codex + opencode)
+    assert all('name' not in item for item in pi + codex + opencode)
 
 
 @pytest.mark.parametrize("value", [None, "", "unknown-agent"])
@@ -962,7 +1016,7 @@ def test_list_user_submissions_selects_current_attempt_and_returns_labeled_rows(
         'id': 31,
         'judge_attempt_id': 'attempt-2',
         'agent_endpoint_harness': 'codex',
-        'agent_endpoint_model': 'deepseek-v4-flash',
+        'agent_endpoint_model': 'generic-model',
     }
     cursor = _FakeCursor(rows=[row])
     conn = _FakeConnection(cursor)
@@ -976,7 +1030,7 @@ def test_list_user_submissions_selects_current_attempt_and_returns_labeled_rows(
     assert "ep.pool_kind = 'primary'" in normalized_sql
     assert params == (17, 'alice')
     assert rows[0]['judge_attempt_id'] == 'attempt-2'
-    assert rows[0]['agent_endpoint_label'] == 'Codex (deepseek-v4-flash)'
+    assert rows[0]['agent_endpoint_label'] == 'Codex (generic-model)'
     assert conn.closed is True
 
 
@@ -986,7 +1040,7 @@ def test_list_all_submissions_paginated_search_selects_current_attempt(
         'id': 32,
         'judge_attempt_id': 'attempt-3',
         'agent_endpoint_harness': 'codex',
-        'agent_endpoint_model': 'deepseek-v4-flash',
+        'agent_endpoint_model': 'generic-model',
     }
     cursor = _FakeCursor(rows=[row], one_values=[{'total': 3}])
     conn = _FakeConnection(cursor)
@@ -1005,6 +1059,6 @@ def test_list_all_submissions_paginated_search_selects_current_attempt(
     assert count_params == (17, '%alice%')
     assert select_params == (17, '%alice%', 2, 2)
     assert rows[0]['judge_attempt_id'] == 'attempt-3'
-    assert rows[0]['agent_endpoint_label'] == 'Codex (deepseek-v4-flash)'
+    assert rows[0]['agent_endpoint_label'] == 'Codex (generic-model)'
     assert (page, total) == (2, 3)
     assert conn.closed is True

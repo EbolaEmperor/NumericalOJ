@@ -52,6 +52,32 @@
   gap: .65rem;
   margin-left: 1rem;
 }
+.agent-task-cancel-button {
+  display: inline-flex;
+  align-items: center;
+  gap: .42rem;
+  border: 1px solid #d9aaa3;
+  border-radius: 999px;
+  padding: .42rem .72rem;
+  background: #fff9f7;
+  color: var(--err);
+  font-size: .78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.agent-task-cancel-button:hover,
+.agent-task-cancel-button:focus-visible,
+.agent-task-cancel-button.is-confirming {
+  border-color: var(--err);
+  background: var(--err);
+  color: #fff;
+}
+.agent-task-cancel-button.is-busy {
+  opacity: .68;
+}
+.agent-task-cancel-button[hidden] {
+  display: none;
+}
 .agent-task-final-link {
   display: inline-flex;
   align-items: center;

@@ -34,12 +34,10 @@ ALLOWED_ENDPOINT_PROTOCOLS = (
     ENDPOINT_PROTOCOL_OPENAI,
     ENDPOINT_PROTOCOL_ANTHROPIC,
 )
-DEFAULT_OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
-DEFAULT_OPENCODE_GO_MODEL = 'mimo-v2.5-pro'
 DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_ENDPOINT_THINKING_COMPATIBILITY = True
-COPIED_ENDPOINT_THINKING_FORMATS = frozenset((
+ENDPOINT_THINKING_FORMATS = frozenset((
     'enable_thinking',
     'thinking_type',
     'none',
@@ -132,8 +130,6 @@ def list_global_endpoints_for_agent_harness(harness, endpoints=None):
     """返回可复制到指定 harness 的全局候选，且绝不包含密钥。"""
 
     harness = normalize_agent_harness(harness)
-    if harness == HARNESS_OPENCODE:
-        return []
     if endpoints is None:
         from oj_modules.site_config.services import list_llm_endpoints
 
@@ -279,6 +275,43 @@ def normalize_endpoint_model_capabilities(payload, existing_endpoint=None):
     }
 
 
+def default_endpoint_thinking_format(protocol, thinking_compatibility):
+    """只按协议与显式能力开关生成统一 wire contract。"""
+
+    if not thinking_compatibility:
+        return 'none'
+    if protocol == ENDPOINT_PROTOCOL_ANTHROPIC:
+        return 'thinking_type'
+    return 'enable_thinking'
+
+
+def normalize_endpoint_thinking_format(
+        value, *, protocol, thinking_compatibility, field_provided=False):
+    """归一化协议级思考字段，不读取 URL、厂商或模型名。"""
+
+    normalized = str(value or '').strip().lower()
+    if not normalized:
+        return default_endpoint_thinking_format(
+            protocol,
+            thinking_compatibility,
+        )
+    if normalized not in ENDPOINT_THINKING_FORMATS:
+        if field_provided:
+            raise ValueError(
+                '思考参数格式必须是 enable_thinking、thinking_type 或 none'
+            )
+        return default_endpoint_thinking_format(
+            protocol,
+            thinking_compatibility,
+        )
+    if (
+        protocol == ENDPOINT_PROTOCOL_ANTHROPIC
+        and normalized == 'enable_thinking'
+    ):
+        raise ValueError('Anthropic 端点不能使用 enable_thinking 思考格式')
+    return normalized
+
+
 def _normalize_endpoint_pool_kind(value):
     pool_kind = str(value or '').strip().lower()
     return pool_kind if pool_kind in ENDPOINT_POOL_KINDS else ENDPOINT_POOL_PRIMARY
@@ -291,16 +324,24 @@ def _endpoint_row(row):
     )
     raw_protocol = str(row.get('protocol') or '').strip().lower() or None
     harness = normalize_agent_harness(row.get('harness'))
-    thinking_format = str(row.get('thinking_format') or '').strip().lower() or None
-    if thinking_format not in COPIED_ENDPOINT_THINKING_FORMATS:
-        thinking_format = None
+    effective_protocol = infer_agent_endpoint_protocol(harness, raw_protocol)
+    thinking_compatibility = bool(int(
+        row.get('thinking_compatibility')
+        if row.get('thinking_compatibility') is not None
+        else DEFAULT_ENDPOINT_THINKING_COMPATIBILITY
+    ))
+    thinking_format = normalize_endpoint_thinking_format(
+        row.get('thinking_format'),
+        protocol=effective_protocol,
+        thinking_compatibility=thinking_compatibility,
+    )
     return {
         'id': int(row['id']),
         'competition_id': int(row.get('competition_id') or 0),
         'pool_kind': _normalize_endpoint_pool_kind(row.get('pool_kind')),
         'harness': harness,
         'protocol': raw_protocol,
-        'effective_protocol': infer_agent_endpoint_protocol(harness, raw_protocol),
+        'effective_protocol': effective_protocol,
         'base_url': row['base_url'] or '',
         'api_key': row['api_key'] or '',
         'model': (row.get('model') or ''),
@@ -310,13 +351,7 @@ def _endpoint_row(row):
         'max_output_tokens': int(
             row.get('max_output_tokens') or DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS
         ),
-        'thinking_compatibility': bool(int(
-            row.get('thinking_compatibility')
-            if row.get('thinking_compatibility') is not None
-            else DEFAULT_ENDPOINT_THINKING_COMPATIBILITY
-        )),
-        # NULL 表示旧的独立端点，继续使用原有 harness 兼容行为；非 NULL
-        # 只由全局端点复制产生，完整冻结当时的请求参数格式。
+        'thinking_compatibility': thinking_compatibility,
         'thinking_format': thinking_format,
         'concurrency_limit': int(row['concurrency_limit'] or 1),
         'status': status,
@@ -475,8 +510,6 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
         if source_endpoint_id not in (None, '', 'null'):
             if eid in existing:
                 raise ValueError('只能在新建独立端点时从全局端点复制')
-            if harness == HARNESS_OPENCODE:
-                raise ValueError('opencode 端点不能从全局端点复制')
             try:
                 source_endpoint_id = int(source_endpoint_id)
             except (TypeError, ValueError) as exc:
@@ -502,13 +535,11 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
             harness=harness,
             existing_endpoint=existing_endpoint,
         )
+        effective_protocol = infer_agent_endpoint_protocol(harness, protocol)
 
         base_url = str(
             source_endpoint.get('base_url') if source_endpoint else it.get('base_url') or ''
         ).strip()
-        if (pool_kind == ENDPOINT_POOL_PRIMARY
-                and harness == HARNESS_OPENCODE and not base_url):
-            base_url = DEFAULT_OPENCODE_GO_BASE_URL
         if not base_url:
             raise ValueError('端点 URL 不能为空')
         if not (base_url.startswith('http://') or base_url.startswith('https://')):
@@ -532,13 +563,8 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
             str(source_endpoint.get('model') if source_endpoint else it.get('model') or '').strip()
             or None
         )
-        if (pool_kind == ENDPOINT_POOL_PRIMARY
-                and harness == HARNESS_OPENCODE and not model):
-            model = DEFAULT_OPENCODE_GO_MODEL
-        if harness == HARNESS_PI and not model:
-            raise ValueError('Pi 端点模型不能为空')
-        if pool_kind == ENDPOINT_POOL_QUALITY_GATE and not model:
-            raise ValueError('质量门禁端点模型不能为空')
+        if not model:
+            raise ValueError('端点模型不能为空')
         if model and len(model) > 128:
             raise ValueError('模型名过长（不超过 128 字）')
         capability_payload = dict(it)
@@ -551,24 +577,20 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
             capability_payload, existing_endpoint,
         )
         if source_endpoint is not None:
-            thinking_format = str(
-                source_endpoint.get('thinking_format') or 'none'
-            ).strip().lower()
-            if thinking_format not in COPIED_ENDPOINT_THINKING_FORMATS:
-                raise ValueError('全局端点的思考参数格式无效')
+            raw_thinking_format = source_endpoint.get('thinking_format')
+            format_was_provided = True
+        elif 'thinking_format' in it:
+            raw_thinking_format = it.get('thinking_format')
+            format_was_provided = True
         else:
-            # 自定义独立端点沿用原有布尔兼容开关；编辑从全局复制而来的
-            # 独立副本时保留已冻结的格式，不再读取全局端点。
-            thinking_format = existing_endpoint.get('thinking_format')
-            if thinking_format not in COPIED_ENDPOINT_THINKING_FORMATS:
-                thinking_format = None
-        # 独立副本允许编辑 harness / protocol，但冻结的思考 wire format 也必须
-        # 继续与编辑后的协议兼容；否则错误会被拖到容器运行期才暴露。
-        if (
-            protocol == ENDPOINT_PROTOCOL_ANTHROPIC
-            and thinking_format == 'enable_thinking'
-        ):
-            raise ValueError('Anthropic 端点不能使用 enable_thinking 思考格式')
+            raw_thinking_format = existing_endpoint.get('thinking_format')
+            format_was_provided = False
+        thinking_format = normalize_endpoint_thinking_format(
+            raw_thinking_format,
+            protocol=effective_protocol,
+            thinking_compatibility=model_options['thinking_compatibility'],
+            field_provided=format_was_provided,
+        )
         try:
             climit = int(it.get('concurrency_limit'))
         except (TypeError, ValueError):
@@ -587,7 +609,7 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
         normalized.append({'id': eid if eid in existing else None,
                            'pool_kind': pool_kind,
                            'harness': harness, 'protocol': protocol,
-                           'effective_protocol': infer_agent_endpoint_protocol(harness, protocol),
+                           'effective_protocol': effective_protocol,
                            'base_url': base_url, 'api_key': api_key, 'model': model,
                            **model_options,
                            'thinking_format': thinking_format,
@@ -660,6 +682,7 @@ def _save_endpoints(competition_id, pool_kind, items):
 
     items 中每项：{id?, harness, protocol?, global_endpoint_id?, base_url, api_key,
     model, context_window_tokens?, max_output_tokens?, thinking_compatibility?,
+    thinking_format?,
     concurrency_limit, status|enabled}。
     api_key 留空且带已存在的 id → 沿用旧 key（前端编辑器不回显明文）；
     api_key 留空且无对应 id → 报错（新端点必须填 key）。返回归一化后的列表。"""

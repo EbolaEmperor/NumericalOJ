@@ -28,7 +28,7 @@ supervisord -c deploy/supervisor/web.conf
 supervisord -c deploy/supervisor/celery.conf
 # 等价的队列边界：
 celery -A oj.celery worker -Q celery -c 16
-celery -A oj.celery worker -Q agent -c 1
+celery -A oj.celery worker -Q agent -c 1 --prefetch-multiplier=1
 celery -A oj.celery worker -Q judge -c 16
 ```
 

@@ -992,6 +992,7 @@ def test_admin_single_endpoint_cli_sends_model_metadata_and_accepts_pi(
     default_args = parser.parse_args([
         "ranking", "save-endpoint", "3",
         "--harness", "pi",
+        "--protocol", "openai",
         "--agent-base-url", "https://api.example.com/v1",
         "--api-key", "endpoint-secret",
         "--model", "custom-model",
@@ -1000,6 +1001,7 @@ def test_admin_single_endpoint_cli_sends_model_metadata_and_accepts_pi(
     explicit_args = parser.parse_args([
         "ranking", "save-endpoint", "3",
         "--harness", "pi",
+        "--protocol", "anthropic",
         "--agent-base-url", "https://api.example.com/v1",
         "--api-key", "endpoint-secret",
         "--model", "custom-model",
@@ -1012,17 +1014,22 @@ def test_admin_single_endpoint_cli_sends_model_metadata_and_accepts_pi(
 
     default_endpoint = fake_client.requests[0][2]["json"]["endpoints"][0]
     assert default_endpoint["harness"] == "pi"
+    assert default_endpoint["protocol"] == "openai"
     assert default_endpoint["context_window_tokens"] == 1_000_000
     assert default_endpoint["max_output_tokens"] == 384_000
     assert default_endpoint["thinking_compatibility"] is True
+    assert default_endpoint["thinking_format"] == "enable_thinking"
     explicit_endpoint = fake_client.requests[1][2]["json"]["endpoints"][0]
+    assert explicit_endpoint["protocol"] == "anthropic"
     assert explicit_endpoint["context_window_tokens"] == 262_144
     assert explicit_endpoint["max_output_tokens"] == 65_536
     assert explicit_endpoint["thinking_compatibility"] is False
+    assert explicit_endpoint["thinking_format"] == "none"
 
     quality_args = parser.parse_args([
         "ranking", "save-quality-gate-endpoint", "3",
         "--harness", "pi",
+        "--protocol", "openai",
         "--agent-base-url", "https://api.example.com/v1",
         "--api-key", "quality-secret",
         "--model", "quality-model",
@@ -1031,6 +1038,7 @@ def test_admin_single_endpoint_cli_sends_model_metadata_and_accepts_pi(
         "--no-thinking-compatibility",
     ])
     assert quality_args.harness == "pi"
+    assert quality_args.protocol == "openai"
     assert quality_args.context_window_tokens == 524_288
     assert quality_args.max_output_tokens == 131_072
     assert quality_args.thinking_compatibility is False
@@ -1125,12 +1133,14 @@ def test_admin_quality_gate_commands_reuse_file_and_env_secret_inputs(monkeypatc
     assert fake_client.requests[2][2]["json"]["endpoints"] == [
         {
             "harness": "claude_code",
+            "protocol": "anthropic",
             "base_url": "http://single-quality.local",
             "api_key": "secret-from-env",
             "model": "single-quality-model",
             "context_window_tokens": 1_000_000,
             "max_output_tokens": 384_000,
             "thinking_compatibility": True,
+            "thinking_format": "thinking_type",
             "concurrency_limit": 1,
             "status": "paused",
         }
@@ -2099,13 +2109,12 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["ranking", "upload-script", "1", str(fixture_file)],
         ["ranking", "clear-script", "1"],
         ["ranking", "reset-limit", "1"],
-        ["ranking", "save-config", "1", "--model", "qwen"],
         ["ranking", "save-rules", "1", '[{"name":"rule"}]'],
         ["ranking", "save-endpoints", "1", '[{"url":"http://model"}]'],
-        ["ranking", "save-endpoint", "1", "--agent-base-url", "http://model", "--api-key", "key", "--model", "qwen"],
+        ["ranking", "save-endpoint", "1", "--agent-base-url", "http://model", "--api-key", "key", "--model", "generic-model"],
         ["ranking", "save-quality-gate", "1", "--disabled", "--prompt", "审核提示"],
         ["ranking", "save-quality-gate-endpoints", "1", "[]"],
-        ["ranking", "save-quality-gate-endpoint", "1", "--agent-base-url", "http://quality", "--api-key", "key", "--model", "qwen"],
+        ["ranking", "save-quality-gate-endpoint", "1", "--agent-base-url", "http://quality", "--api-key", "key", "--model", "generic-model"],
         ["ranking", "batch-probe", "1", "--classes", "C1", "--template", "https://git/{username}"],
         ["ranking", "batch-status", "1", "job-1"],
         ["ranking", "batch-create", "1", "--template", "https://git/{username}", "--usernames", "alice"],

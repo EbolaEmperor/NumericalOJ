@@ -18,6 +18,8 @@
   var scoreEl = modalEl.querySelector('[data-agent-task-score]');
   var attemptsEl = modalEl.querySelector('[data-agent-task-attempts]');
   var liveEl = modalEl.querySelector('[data-agent-task-live]');
+  var cancelButtonEl = modalEl.querySelector('[data-agent-task-cancel]');
+  var cancelLabelEl = modalEl.querySelector('[data-agent-task-cancel-label]');
   var finalLinkEl = modalEl.querySelector('[data-agent-task-final-link]');
   var finalLabelEl = modalEl.querySelector('[data-agent-task-final-label]');
   var renderer = window.AgentExecutionTrace.create({
@@ -28,7 +30,10 @@
   var source = null;
   var pollingTimer = null;
   var currentTaskId = '';
+  var currentStatus = '';
   var liveGeneration = 0;
+  var cancelConfirmTimer = null;
+  var cancelPending = false;
 
   var STATUS = {
     pending: {label: '等待中', className: 'is-pending'},
@@ -59,6 +64,43 @@
     var key = statusKey(state && state.status);
     return key === 'completed' || key === 'failed' || key === 'canceled' || key === 'cancelled';
   }
+
+  function resetCancelAction(hidden) {
+    if (cancelConfirmTimer) {
+      clearTimeout(cancelConfirmTimer);
+      cancelConfirmTimer = null;
+    }
+    cancelPending = false;
+    cancelButtonEl.disabled = false;
+    cancelButtonEl.dataset.confirming = '0';
+    cancelButtonEl.classList.remove('is-confirming', 'is-busy');
+    cancelLabelEl.textContent = '终止';
+    cancelButtonEl.hidden = hidden;
+  }
+
+  function canCancelStatus(status) {
+    var key = statusKey(status);
+    return key === 'pending' || key === 'running';
+  }
+
+  function syncCancelAction(status) {
+    if (!canCancelStatus(status)) {
+      resetCancelAction(true);
+      return;
+    }
+    cancelButtonEl.hidden = false;
+  }
+
+  // CANCEL_RESPONSE_HELPER_START
+  function parseCancelResponse(response, payload) {
+    if (!response.ok || !payload || !payload.success || !payload.state) {
+      var error = new Error((payload && payload.message) || '终止任务失败（HTTP ' + response.status + '）');
+      error.agentState = payload && payload.state;
+      throw error;
+    }
+    return payload.state;
+  }
+  // CANCEL_RESPONSE_HELPER_END
 
   function setLiveState(label, className) {
     if (!liveEl) return;
@@ -132,12 +174,14 @@
       || !isCurrentRun(expectedTaskId, generation)
     ) return;
     var key = statusKey(state.status);
+    currentStatus = key;
     var display = STATUS[key] || {label: String(state.status || '状态未知'), className: 'is-pending'};
     statusEl.textContent = display.label;
     statusEl.className = 'agent-task-status-pill ' + display.className;
     messageEl.textContent = String(state.message || '任务执行中');
     scoreEl.textContent = String(Number(state.best_score || 0));
     attemptsEl.textContent = String(Array.isArray(state.attempts) ? state.attempts.length : 0);
+    syncCancelAction(state.status);
     if (state.problem_title) {
       metaEl.textContent = String(state.problem_title) + ' · Task ' + expectedTaskId;
     }
@@ -241,10 +285,6 @@
       activeSource.close();
       if (source === activeSource) source = null;
     });
-    activeSource.addEventListener('timeout', function (event) {
-      if (!isCurrentRun(taskId, generation, activeSource)) return;
-      parseStreamState(event, taskId, generation);
-    });
     activeSource.addEventListener('error', function () {
       if (!isCurrentRun(taskId, generation, activeSource)) return;
       if (activeSource.readyState === EventSource.CLOSED) {
@@ -258,6 +298,8 @@
   }
 
   function resetView(taskId, problemTitle) {
+    currentStatus = '';
+    resetCancelAction(true);
     renderer.reset(traceRoot);
     statusEl.textContent = '等待中';
     statusEl.className = 'agent-task-status-pill is-pending';
@@ -301,10 +343,60 @@
     openTask(button.getAttribute('data-task-id'), button.getAttribute('data-problem-title'));
   });
 
+  cancelButtonEl.addEventListener('click', function () {
+    if (!currentTaskId || cancelPending || cancelButtonEl.hidden) return;
+    if (cancelButtonEl.dataset.confirming !== '1') {
+      cancelButtonEl.dataset.confirming = '1';
+      cancelButtonEl.classList.add('is-confirming');
+      cancelLabelEl.textContent = '再次点击确认';
+      cancelConfirmTimer = setTimeout(function () {
+        if (!cancelPending && !cancelButtonEl.hidden) resetCancelAction(false);
+      }, 3000);
+      return;
+    }
+
+    if (cancelConfirmTimer) clearTimeout(cancelConfirmTimer);
+    cancelConfirmTimer = null;
+    cancelPending = true;
+    cancelButtonEl.disabled = true;
+    cancelButtonEl.classList.remove('is-confirming');
+    cancelButtonEl.classList.add('is-busy');
+    cancelLabelEl.textContent = '正在终止…';
+
+    var taskId = currentTaskId;
+    var generation = liveGeneration;
+    fetch(taskUrl(modalEl.dataset.cancelUrlTemplate, taskId), {
+      method: 'POST',
+      headers: {'Accept': 'application/json'},
+      credentials: 'same-origin'
+    }).then(function (response) {
+      return response.json().catch(function () { return null; }).then(function (payload) {
+        return parseCancelResponse(response, payload);
+      });
+    }).then(function (state) {
+      if (!isCurrentRun(taskId, generation)) return;
+      applyState(state, taskId, generation);
+      if (isFinished(state)) stopLiveUpdates();
+    }).catch(function (error) {
+      if (!isCurrentRun(taskId, generation)) return;
+      var state = error && error.agentState;
+      if (state) {
+        applyState(state, taskId, generation);
+        if (isFinished(state)) stopLiveUpdates();
+      }
+      resetCancelAction(!canCancelStatus(currentStatus));
+      messageEl.textContent = error.message || '终止任务失败';
+      var finished = state && isFinished(state);
+      setLiveState(finished ? '任务已结束' : '终止失败', finished ? 'is-ended' : '');
+    });
+  });
+
   modalEl.addEventListener('hidden.bs.modal', function () {
     liveGeneration += 1;
     stopLiveUpdates();
     currentTaskId = '';
+    currentStatus = '';
+    resetCancelAction(true);
     renderer.reset(traceRoot);
     updateLocation('');
   });

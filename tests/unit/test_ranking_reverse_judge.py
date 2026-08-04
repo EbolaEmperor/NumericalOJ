@@ -169,7 +169,7 @@ def test_resolve_selected_endpoint_rejects_paused_endpoint(monkeypatch):
         "harness": "claude_code",
         "base_url": "https://example.test/anthropic",
         "api_key": "sk-test",
-        "model": "mimo-v2.5-pro",
+        "model": "generic-model",
         "concurrency_limit": 1,
         "status": "paused",
     }])
@@ -185,18 +185,20 @@ def test_resolve_selected_endpoint_returns_only_selected_enabled_endpoint(monkey
         {
             "id": 16,
             "harness": "claude_code",
-            "base_url": "https://qwen.example/anthropic",
-            "api_key": "sk-qwen",
-            "model": "qwen3.7-plus",
+            "base_url": "https://model-a.example/anthropic",
+            "api_key": "secret-a",
+            "model": "model-a",
             "concurrency_limit": 4,
             "status": "enabled",
         },
         {
             "id": 17,
-            "harness": "claude_code",
-            "base_url": "https://mimo.example/anthropic",
-            "api_key": "sk-mimo",
-            "model": "mimo-v2.5-pro",
+            "harness": "pi",
+            "protocol": "anthropic",
+            "base_url": "https://model-b.example/anthropic",
+            "api_key": "secret-b",
+            "model": "model-b",
+            "thinking_format": "thinking_type",
             "concurrency_limit": 2,
             "status": "enabled",
         },
@@ -207,10 +209,12 @@ def test_resolve_selected_endpoint_returns_only_selected_enabled_endpoint(monkey
     assert message == ""
     assert endpoint == {
         "id": 17,
-        "harness": "claude_code",
-        "base_url": "https://mimo.example/anthropic",
-        "api_key": "sk-mimo",
-        "model": "mimo-v2.5-pro",
+        "harness": "pi",
+        "protocol": "anthropic",
+        "base_url": "https://model-b.example/anthropic",
+        "api_key": "secret-b",
+        "model": "model-b",
+        "thinking_format": "thinking_type",
         "concurrency_limit": 2,
         "context_window_tokens": 1_000_000,
         "max_output_tokens": 384_000,
@@ -754,6 +758,78 @@ def test_collect_pi_session_trace_renders_completed_semantic_events_only(tmp_pat
     assert opaque_payload in raw_text
 
 
+def test_collect_pi_trace_projects_terminal_model_error(tmp_path):
+    trace = tmp_path / "trace"
+    sessions = trace / ".pi" / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    events = [
+        {
+            "type": "session",
+            "version": 3,
+            "id": "session-error",
+            "cwd": "/workspace",
+        },
+        {
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "provider": "agent-judge",
+                "model": "doubao-seed-evolving",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": (
+                    "400: invalid messages.role developer; "
+                    "supported roles are system, assistant, user and tool"
+                ),
+            },
+        },
+    ]
+    (sessions / "reverse_solve_combined.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = rjdb._collect_trace_messages(str(trace))
+
+    assert _without_trace_identity(messages) == [{
+        "kind": "tool_result",
+        "title": "模型调用失败",
+        "text": (
+            "400: invalid messages.role developer; "
+            "supported roles are system, assistant, user and tool"
+        ),
+        "meta": "agent-judge / doubao-seed-evolving",
+        "format": "text",
+        "is_error": True,
+        "line": 2,
+    }]
+    assert messages[0]["source"] == "pi"
+
+
+def test_collect_pi_trace_projects_aborted_model_call_without_error_text(tmp_path):
+    trace = tmp_path / "trace"
+    sessions = trace / ".pi" / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "reverse_solve_combined.jsonl").write_text(
+        json.dumps({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [],
+                "stopReason": "aborted",
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    messages = rjdb._collect_trace_messages(str(trace))
+
+    assert len(messages) == 1
+    assert messages[0]["title"] == "模型调用失败"
+    assert messages[0]["text"] == "模型调用以 stopReason=aborted 结束"
+    assert messages[0]["is_error"] is True
+
+
 def test_collect_pi_trace_discovers_native_nested_session_and_bounds_tool_results(
         tmp_path):
     trace = tmp_path / "trace"
@@ -1123,9 +1199,11 @@ def test_quality_endpoint_payloads_uses_independent_enabled_pool_and_exclusions(
         "id": 1,
         "pool_kind": "quality_gate",
         "harness": rj.HARNESS_CLAUDE_CODE,
+        "protocol": None,
         "base_url": "https://gate-1.example/v1",
         "api_key": "secret-1",
         "model": "model-1",
+        "thinking_format": None,
         "concurrency_limit": 1,
         "context_window_tokens": 1_000_000,
         "max_output_tokens": 384_000,
@@ -1320,7 +1398,7 @@ def test_quality_gate_container_uses_agent_judge_image_and_strict_isolation():
 
     args = rj._quality_gate_container_args(
         "gate-container", "/srv/audit", proxy,
-        rj.HARNESS_CODEX, "deepseek-v4-flash",
+        rj.HARNESS_CODEX, "generic-model",
         endpoint={
             "context_window_tokens": 131_072,
             "max_output_tokens": 16_384,
@@ -1339,9 +1417,9 @@ def test_quality_gate_container_uses_agent_judge_image_and_strict_isolation():
     assert ["--cap-drop", "ALL"] == args[args.index("--cap-drop"):args.index("--cap-drop") + 2]
     assert "type=bind,source=/srv/audit,target=/evidence,readonly" in args
     assert "AJ_AUDIT_READ_ONLY=1" in args
-    assert "AJ_CONTEXT_WINDOW_TOKENS=131072" in args
-    assert "AJ_MAX_OUTPUT_TOKENS=16384" in args
-    assert "AJ_THINKING_COMPATIBILITY=0" in args
+    assert "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS=131072" in args
+    assert "AJ_ENDPOINT_MAX_OUTPUT_TOKENS=16384" in args
+    assert "AJ_ENDPOINT_THINKING_ENABLED=0" in args
     assert "AJ_RESULT_FILE=" not in rendered
     assert "attempt-only-proxy-token" in rendered
     assert "REAL_ENDPOINT_API_KEY" not in rendered

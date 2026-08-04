@@ -117,6 +117,16 @@
     if (normalized === 'openai' || normalized === 'anthropic') return normalized;
     return harness === 'claude_code' ? 'anthropic' : 'openai';
   }
+  function normalizeThinkingFormat(value, protocol, thinkingCompatibility){
+    var normalized = String(value == null ? '' : value).trim().toLowerCase();
+    var allowed = ['enable_thinking', 'thinking_type', 'none'];
+    if (allowed.includes(normalized) &&
+        !(protocol === 'anthropic' && normalized === 'enable_thinking')) {
+      return normalized;
+    }
+    if (!thinkingCompatibility) return 'none';
+    return protocol === 'anthropic' ? 'thinking_type' : 'enable_thinking';
+  }
   function protocolLabel(protocol){
     return protocol === 'anthropic' ? 'Anthropic' : 'OpenAI';
   }
@@ -133,6 +143,10 @@
                 e.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
               thinking_compatibility: normalizeThinkingCompatibility(
                 e.thinking_compatibility),
+              thinking_format: normalizeThinkingFormat(
+                e.thinking_format,
+                e.effective_protocol || inferProtocol(e.harness || 'claude_code', e.protocol),
+                normalizeThinkingCompatibility(e.thinking_compatibility)),
               concurrency_limit: e.concurrency_limit || 1,
               status: normalizeStatus(e), enabled: normalizeStatus(e) === 'enabled',
               has_key: !!e.has_key, api_key: ''};
@@ -147,6 +161,7 @@
       context_window_tokens:DEFAULT_CONTEXT_WINDOW_TOKENS,
       max_output_tokens:DEFAULT_MAX_OUTPUT_TOKENS,
       thinking_compatibility:DEFAULT_THINKING_COMPATIBILITY,
+      thinking_format:'thinking_type',
       concurrency_limit:1, status:'enabled', enabled:true, has_key:false, api_key:''};
   }
   function harnessLabel(h){
@@ -204,11 +219,7 @@
     if ((e.model || '').trim()) return e.model;
     return '';
   }
-  function usesFixedOpenCodeEndpoint(manager, harness){
-    return harness === 'opencode' && (!manager || manager.poolKind === 'primary');
-  }
-  function endpointText(manager, e){
-    if (usesFixedOpenCodeEndpoint(manager, e.harness)) return '';
+  function endpointText(e){
     return (e.base_url || '').trim() || '未填写 Base URL';
   }
   function keyText(e){
@@ -228,6 +239,10 @@
         max_output_tokens:normalizeTokenCount(
           e.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
         thinking_compatibility:normalizeThinkingCompatibility(e.thinking_compatibility),
+        thinking_format:normalizeThinkingFormat(
+          e.thinking_format,
+          e.effective_protocol || inferProtocol(e.harness || 'claude_code', e.protocol),
+          normalizeThinkingCompatibility(e.thinking_compatibility)),
         concurrency_limit:parseInt(e.concurrency_limit)||1,
         status:normalizeStatus(e), enabled:isEnabled(e)};
     });
@@ -247,6 +262,10 @@
         max_output_tokens:normalizeTokenCount(
           e.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
         thinking_compatibility:normalizeThinkingCompatibility(e.thinking_compatibility),
+        thinking_format:normalizeThinkingFormat(
+          e.thinking_format,
+          e.effective_protocol || inferProtocol(e.harness || 'claude_code', e.protocol),
+          normalizeThinkingCompatibility(e.thinking_compatibility)),
         concurrency_limit:parseInt(e.concurrency_limit, 10) || 1,
         status:normalizeStatus(e)
       };
@@ -292,7 +311,7 @@
         '</div>' +
         '<div class="aje-card-main">' +
           '<div class="aje-model" title="' + esc(modelText(e)) + '">' + esc(modelText(e)) + '</div>' +
-          '<div class="aje-url" title="' + esc(endpointText(manager, e)) + '">' + esc(endpointText(manager, e)) + '</div>' +
+          '<div class="aje-url" title="' + esc(endpointText(e)) + '">' + esc(endpointText(e)) + '</div>' +
         '</div>' +
         '<div class="aje-card-meta">' +
           '<span class="aje-chip"><i class="fas fa-link"></i>' + esc(protocolLabel(inferProtocol(harness, e.protocol))) + '</span>' +
@@ -338,15 +357,14 @@
   }
   function applySourceMode(){
     var h = editHarness.value || 'claude_code';
-    var fixedOpenCode = usesFixedOpenCodeEndpoint(activeManager, h);
-    var canCopy = editIndex === null && h !== 'opencode';
+    var canCopy = editIndex === null;
     var sourceMode = canCopy && editSourceMode.value === 'global' ? 'global' : 'custom';
     setChoiceValue(sourceModePickerCtrl, editSourceMode, sourceMode);
     editSourceModeWrap.style.display = editIndex === null ? '' : 'none';
     setChoiceOptionDisabled(editSourceMode, 'global', !canCopy);
     editGlobalEndpointWrap.style.display = sourceMode === 'global' ? '' : 'none';
     var custom = sourceMode === 'custom';
-    editBaseUrlWrap.style.display = custom && !fixedOpenCode ? '' : 'none';
+    editBaseUrlWrap.style.display = custom ? '' : 'none';
     editApiKeyWrap.style.display = custom ? '' : 'none';
     editModelWrap.style.display = custom ? '' : 'none';
     var candidate = sourceMode === 'global' ? selectedGlobalCandidate() : null;
@@ -381,7 +399,6 @@
     }
     var selectedGlobalId = editGlobalEndpoint.value || '';
     populateGlobalEndpointOptions(h, selectedGlobalId);
-    if (h === 'opencode') setChoiceValue(sourceModePickerCtrl, editSourceMode, 'custom');
     var protocol = editProtocol.value || inferProtocol(h, null);
     editBaseUrlLabel.textContent = protocol === 'anthropic' ?
       'Base URL（Anthropic 兼容）' : 'Base URL（OpenAI 兼容）';
@@ -481,7 +498,6 @@
       hint:document.getElementById(config.hintId),
       countLabel:document.getElementById(config.countId),
       totalValue:document.getElementById(config.totalId),
-      poolKind:config.poolKind || 'primary',
       endpointName:config.endpointName || '端点',
       saveUrl:config.saveUrl,
       eps:fromServer(config.endpoints),
@@ -524,12 +540,13 @@
       return;
     }
     var h = editHarness.value || 'claude_code';
-    var sourceMode = (editIndex === null && h !== 'opencode' && editSourceMode.value === 'global') ? 'global' : 'custom';
+    var sourceMode = (editIndex === null && editSourceMode.value === 'global') ? 'global' : 'custom';
     var globalCandidate = sourceMode === 'global' ? selectedGlobalCandidate() : null;
     editGlobalEndpoint.setCustomValidity('');
     editProtocol.setCustomValidity('');
     editBaseUrl.setCustomValidity('');
     editApiKey.setCustomValidity('');
+    editModel.setCustomValidity('');
     if (sourceMode === 'global' && !globalCandidate) {
       editGlobalEndpoint.setCustomValidity('请选择要复制的全局端点');
       editGlobalEndpoint.reportValidity();
@@ -540,7 +557,7 @@
       editProtocol.reportValidity();
       return;
     }
-    if (sourceMode === 'custom' && !usesFixedOpenCodeEndpoint(activeManager, h) && !(editBaseUrl.value || '').trim()) {
+    if (sourceMode === 'custom' && !(editBaseUrl.value || '').trim()) {
       editBaseUrl.setCustomValidity('请填写 Base URL');
       editBaseUrl.reportValidity();
       return;
@@ -551,22 +568,35 @@
       editApiKey.reportValidity();
       return;
     }
+    var model = globalCandidate ? (globalCandidate.model || '') : (editModel.value || '').trim();
+    if (!model) {
+      editModel.setCustomValidity('请填写模型');
+      editModel.reportValidity();
+      return;
+    }
     var st = normalizeStatus({status: (statusPickerCtrl ? statusPickerCtrl.value() : editStatus.value) || 'enabled'});
     var protocol = globalCandidate ? globalCandidate.protocol : editProtocol.value;
     if (old.id && !editProtocol.dataset.changed && !editProtocol.dataset.originalRaw) {
       protocol = null;
     }
+    var thinkingCompatibility = globalCandidate ?
+      !!globalCandidate.thinking_enabled : !!editThinkingCompatibility.checked;
+    var effectiveProtocol = inferProtocol(h, protocol);
     var next = {
       id: old.id || null,
       harness: h,
       protocol: protocol || null,
-      effective_protocol: inferProtocol(h, protocol),
+      effective_protocol: effectiveProtocol,
       global_endpoint_id: globalCandidate ? parseInt(globalCandidate.id, 10) : null,
-      base_url: usesFixedOpenCodeEndpoint(activeManager, h) ? '' : (editBaseUrl.value || '').trim(),
-      model: globalCandidate ? (globalCandidate.model || '') : (editModel.value || '').trim(),
+      base_url: (editBaseUrl.value || '').trim(),
+      model: model,
       context_window_tokens: contextWindowTokens,
       max_output_tokens: maxOutputTokens,
-      thinking_compatibility: globalCandidate ? !!globalCandidate.thinking_enabled : !!editThinkingCompatibility.checked,
+      thinking_compatibility: thinkingCompatibility,
+      thinking_format: normalizeThinkingFormat(
+        globalCandidate ? globalCandidate.thinking_format : null,
+        effectiveProtocol,
+        thinkingCompatibility),
       concurrency_limit: Math.max(1, parseInt(editConcurrency.value, 10) || 1),
       status: st,
       enabled: st === 'enabled',
@@ -598,6 +628,7 @@
   });
   editBaseUrl.addEventListener('input', function(){ editBaseUrl.setCustomValidity(''); });
   editApiKey.addEventListener('input', function(){ editApiKey.setCustomValidity(''); });
+  editModel.addEventListener('input', function(){ editModel.setCustomValidity(''); });
   editDelete.addEventListener('click', function(){
     if (!activeManager || editIndex === null) return;
     activeManager.eps.splice(editIndex, 1);
@@ -625,7 +656,6 @@
     rootId:'agentJudgeConfigCard', source:'primary-endpoints',
     editorId:'ajeEditor', addId:'ajeAddBtn', saveId:'ajeSaveBtn', hintId:'ajeHint',
     countId:'ajeCountLabel', totalId:'ajeTotalValue', endpointName:'端点',
-    poolKind:'primary',
     endpoints:window.__AJ_ENDPOINTS__, saveUrl:window.__SAVE_AJ_ENDPOINTS_URL__,
     readEndpoints:function(data){ return data.endpoints || []; },
     dirtyState:function(manager){
@@ -676,7 +706,6 @@
     rootId:'qualityGateConfigCard', source:'quality-gate',
     editorId:'qgeEditor', addId:'qgeAddBtn', saveId:'qgeSaveBtn', hintId:'qgeHint',
     countId:'qgeCountLabel', totalId:'qgeTotalValue', endpointName:'质量门禁端点',
-    poolKind:'quality_gate',
     endpoints:window.__QUALITY_GATE_ENDPOINTS__, saveUrl:window.__SAVE_QUALITY_GATE_URL__,
     readEndpoints:function(data){ return data.quality_gate_endpoints || data.endpoints || []; },
     dirtyState:function(manager){
