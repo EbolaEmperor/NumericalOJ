@@ -6,6 +6,8 @@ TEMPLATE = ROOT / "templates/problems/detail.html"
 SCRIPT = ROOT / "static/app/problem-agent-launch.js"
 STYLESHEET = ROOT / "static/app/problem-agent-launch.css"
 CHOICE_PICKER = ROOT / "static/app/choice-picker.js"
+CHOICE_STYLESHEET = ROOT / "static/app/choice-picker.css"
+SITE_LAYOUT = ROOT / "templates/layouts/site.html"
 
 
 def _read(path):
@@ -36,22 +38,24 @@ def test_agent_launch_assets_and_harness_branding_are_wired_once():
     template = _read(TEMPLATE)
     script = _read(SCRIPT)
     stylesheet = _read(STYLESHEET)
+    choice_stylesheet = _read(CHOICE_STYLESHEET)
+    site_layout = _read(SITE_LAYOUT)
 
     for asset in (
         "app/ranking/harness-logos.css",
         "app/problem-agent-launch.css",
-        "app/choice-picker.js",
         "app/problem-agent-launch.js",
     ):
         assert asset in template
-    assert template.index("app/choice-picker.js") < template.index(
-        "app/problem-agent-launch.js"
-    )
+    assert site_layout.count("app/choice-picker.css") == 1
+    assert site_layout.count("app/choice-picker.js") == 1
+    assert "app/choice-picker.js" not in template
     for harness in ("claude_code", "codex", "opencode", "pi"):
         assert harness in script
     assert "harness-logo--" in script
     assert ".agent-launch-modal" in stylesheet
-    assert ".agent-launch-choice .rk-choice-trigger:focus-visible" in stylesheet
+    assert ".rk-choice-trigger:focus-visible" in choice_stylesheet
+    assert ".agent-launch-choice .rk-choice-trigger" not in stylesheet
 
 
 def test_agent_launch_loads_task_specific_options_and_restores_preference():
@@ -199,6 +203,7 @@ def test_only_standard_testpoint_mode_shows_testdata_agent():
 def test_feedback_precedes_testdata_form_and_mobile_controls_are_touch_safe():
     template = _read(TEMPLATE)
     stylesheet = _read(STYLESHEET)
+    choice_stylesheet = _read(CHOICE_STYLESHEET)
 
     data_modal = template.index('id="agentGenerateDataModal"')
     selector_grid = template.index('class="agent-launch-selector-grid"', data_modal)
@@ -210,6 +215,8 @@ def test_feedback_precedes_testdata_form_and_mobile_controls_are_touch_safe():
     assert "position: sticky" in stylesheet
     assert ".agent-launch-field .form-control" in mobile_styles
     assert "font-size: 16px" in mobile_styles
-    assert ".agent-launch-choice .rk-choice-option" in mobile_styles
     assert ".agent-launch-modal .modal-footer .btn" in mobile_styles
     assert "min-height: 44px" in mobile_styles
+    choice_mobile = choice_stylesheet.split("@media (max-width: 575.98px)", 1)[1]
+    assert ".rk-choice-option" in choice_mobile
+    assert "min-height: 44px" in choice_mobile

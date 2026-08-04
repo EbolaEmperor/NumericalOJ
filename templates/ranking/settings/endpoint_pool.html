@@ -1,4 +1,5 @@
       {% from 'ranking/components/harness_logo.html' import harness_logo, harness_logo_class %}
+      {% from 'components/choice_picker.html' import choice_picker, simple_choice %}
       <!-- Agent 评测模型端点池（多个 url+key，各带并发上限） -->
       <div class="card mb-3 agent-judge-only" id="agentJudgeConfigCard"
            data-ranking-dirty-managed data-ranking-dirty="false"
@@ -225,28 +226,46 @@
                     </div>
                   </div>
                 </label>
-                <label class="aje-modal-field" id="ajeEditSourceModeWrap">
+                <div class="aje-modal-field" id="ajeEditSourceModeWrap">
                   <span>创建方式</span>
-                  <select class="form-select" id="ajeEditSourceMode">
-                    <option value="custom">自定义</option>
-                    <option value="global">从全局端点复制</option>
-                  </select>
-                </label>
-                <label class="aje-modal-field" id="ajeEditProtocolWrap">
+                  {{ simple_choice(
+                    field_id='ajeEditSourceMode',
+                    field_name='',
+                    options=[
+                      {'value': 'custom', 'label': '自定义'},
+                      {'value': 'global', 'label': '从全局端点复制'}
+                    ],
+                    selected_value='custom',
+                    placeholder_label=none,
+                    default_icon='fa-pen',
+                    aria_label='创建方式'
+                  ) }}
+                </div>
+                <div class="aje-modal-field" id="ajeEditProtocolWrap">
                   <span>协议</span>
-                  <select class="form-select" id="ajeEditProtocol">
-                    <option value="">请选择协议</option>
-                    <option value="openai">OpenAI 兼容</option>
-                    <option value="anthropic">Anthropic 兼容</option>
-                  </select>
-                </label>
-                <label class="aje-modal-field full" id="ajeEditGlobalEndpointWrap" style="display:none;">
+                  {{ simple_choice(
+                    field_id='ajeEditProtocol',
+                    field_name='',
+                    options=[
+                      {'value': 'openai', 'label': 'OpenAI 兼容'},
+                      {'value': 'anthropic', 'label': 'Anthropic 兼容'}
+                    ],
+                    selected_value='',
+                    placeholder_label='请选择协议',
+                    default_icon='fa-code',
+                    aria_label='协议'
+                  ) }}
+                </div>
+                <div class="aje-modal-field full" id="ajeEditGlobalEndpointWrap" style="display:none;">
                   <span>全局端点</span>
-                  <select class="form-select" id="ajeEditGlobalEndpoint">
-                    <option value="">请选择全局端点</option>
-                  </select>
+                  {{ choice_picker(
+                    field_id='ajeEditGlobalEndpoint',
+                    selected_label='请选择全局端点',
+                    selected_icon='fa-project-diagram',
+                    aria_label='全局端点'
+                  ) }}
                   <small class="text-muted">保存时由后端复制 URL、API Key、model 与思考设置；之后与全局端点完全独立。</small>
-                </label>
+                </div>
                 <label class="aje-modal-field">
                   <span>并发上限</span>
                   <input type="number" id="ajeEditConcurrency" min="1" max="64" step="1">

@@ -6,6 +6,7 @@ TEMPLATE = ROOT / "templates/admin/site_config.html"
 SCRIPT = ROOT / "static/app/site-config.js"
 STYLESHEET = ROOT / "static/app/site-config.css"
 CHOICE_PICKER = ROOT / "static/app/choice-picker.js"
+CHOICE_PICKER_TEMPLATE = ROOT / "templates/components/choice_picker.html"
 PROBLEM_ENDPOINT_SELECT = ROOT / "templates/problems/components/llm_endpoint_select.html"
 AI_DETECTION_TEMPLATE = ROOT / "templates/admin/ai_detection.html"
 RANKING_ENDPOINTS_SCRIPT = ROOT / "static/app/ranking/endpoints.js"
@@ -174,8 +175,11 @@ def test_site_config_choice_pickers_are_custom_and_accessible():
         )
 
     assert "data-feature-choice" in script
-    assert "data-choice-value" in script
-    assert "window.ChoicePicker.create" in script
+    assert "window.ChoicePicker.configure" in script
+    assert "function configureChoice" not in script
+    assert "function choiceOptionMarkup" not in script
+    assert "app/choice-picker.js" not in template
+    assert "data-choice-value" in picker
     for contract in (
         "setAttribute('role', 'combobox')",
         "setAttribute('aria-haspopup', 'listbox')",
@@ -287,15 +291,60 @@ def test_endpoint_model_is_the_only_display_name():
 
 def test_duplicate_models_are_disambiguated_by_stable_endpoint_id():
     script = _read(SCRIPT)
+    picker_template = _read(CHOICE_PICKER_TEMPLATE)
     problem_select = _read(PROBLEM_ENDPOINT_SELECT)
     detection_template = _read(AI_DETECTION_TEMPLATE)
     ranking_script = _read(RANKING_ENDPOINTS_SCRIPT)
 
     assert "节点 #${Number(endpoint.id)}" in script
     assert "meta: `节点 #${endpoint.id}" in script
-    assert "节点 #{{ endpoint.id }}" in problem_select
-    assert "节点 #{{ endpoint.id }}" in detection_template
-    assert "'（节点 #' + endpoint.id" in ranking_script
+    assert "endpoint_choice(" in problem_select
+    assert "endpoint_choice(" in detection_template
+    assert "'节点 #' ~ endpoint.id" in picker_template
+    assert "meta:'节点 #' + endpoint.id" in ranking_script
+
+
+def test_ai_detection_uses_shared_choice_pickers_in_each_view():
+    template = _read(AI_DETECTION_TEMPLATE)
+    lowered = template.lower()
+
+    assert '<select' not in lowered
+    assert '<option' not in lowered
+    assert 'selectedoptions' not in lowered
+    assert template.count("endpoint_choice(") == 3
+    assert template.count("simple_choice(") == 2
+
+    dashboard = template[
+        template.index('<div class="filter-card') : template.index(
+            '{# ---- Summary Cards', template.index('<div class="filter-card')
+        )
+    ]
+    assert "'f_endpoint'" in dashboard
+    assert "'f_class'" in dashboard
+    assert "'f_problem'" in dashboard
+
+    problem_view = template[
+        template.index("{% if view == 'problem' %}") : template.index(
+            "{% elif view == 'student' %}"
+        )
+    ]
+    student_view = template[
+        template.index("{% elif view == 'student' %}") : template.index(
+            "{% else %}\n{# ============================================================ Dashboard"
+        )
+    ]
+    for detail_view, action in (
+        (problem_view, 'onclick="runBatchDetection('),
+        (student_view, "onclick='runUserDetection("),
+    ):
+        assert 'class="detection-action-bar mb-3"' in detail_view
+        assert "endpoint_choice(" in detail_view
+        assert action in detail_view
+
+    assert "function _getEndpointLabel()" in template
+    assert "closest('[data-rk-choice]')" in template
+    assert "querySelector('[data-rk-choice-label]')" in template
+    assert "const endpointName = _getEndpointLabel();" in template
 
 
 def test_endpoint_protection_actions_name_the_stable_endpoint_id():

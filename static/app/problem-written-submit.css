@@ -1,0 +1,271 @@
+.problem-written-submit-form {
+  --written-ink: var(--numoj-ink, #18181b);
+  --written-ink-2: var(--numoj-ink-2, #3f3f46);
+  --written-ink-3: var(--numoj-ink-3, #71717a);
+  --written-ink-4: var(--numoj-ink-4, #a1a1aa);
+  --written-line: var(--numoj-line, #e4e4e7);
+  --written-line-soft: var(--numoj-line-soft, #f4f4f5);
+  --written-brand: var(--numoj-brand, #ea580c);
+  --written-brand-hover: var(--numoj-brand-hover, #c2410c);
+  --written-brand-ink: var(--numoj-brand-ink, #9a3412);
+  --written-brand-soft: var(--numoj-brand-soft, #fff7ed);
+  --written-danger: var(--numoj-danger, #dc2626);
+  --written-danger-soft: var(--numoj-danger-soft, #fef2f2);
+  --written-mono: var(--numoj-mono, "SFMono-Regular", Consolas, monospace);
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 18px clamp(16px, 2.4vw, 26px) 24px;
+  background: #f8f8f7;
+}
+
+.problem-written-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--written-line);
+}
+
+.problem-written-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.problem-written-quota {
+  padding: 5px 8px;
+  border: 1px solid var(--written-line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--written-ink-3);
+  font-family: var(--written-mono);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.problem-written-quota strong {
+  color: var(--written-ink);
+  font-weight: 700;
+}
+
+.problem-written-quota.is-low,
+.problem-written-quota.is-low strong {
+  border-color: #fecaca;
+  color: var(--written-danger);
+}
+
+.problem-detail-page .problem-written-actions .btn {
+  min-height: 34px;
+  margin: 0;
+  padding: 7px 11px;
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  box-shadow: none;
+}
+
+.problem-detail-page .problem-written-actions .problem-written-submit-button {
+  border-color: var(--written-brand);
+  background: var(--written-brand);
+  color: #fff;
+}
+
+.problem-detail-page .problem-written-actions .problem-written-submit-button:hover:not(:disabled) {
+  border-color: var(--written-brand-hover);
+  background: var(--written-brand-hover);
+  color: #fff;
+}
+
+.problem-detail-page .problem-written-actions .problem-written-submit-button:focus-visible {
+  border-color: var(--written-brand);
+  box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.15);
+}
+
+.problem-detail-page .problem-written-actions .problem-written-submit-button:disabled {
+  border-color: var(--written-line);
+  background: var(--written-line-soft);
+  color: var(--written-ink-4);
+  opacity: 1;
+}
+
+.problem-detail-page .problem-written-actions .problem-written-cleanup-button {
+  border-color: var(--written-line);
+  background: #fff;
+  color: var(--written-ink-3);
+}
+
+.problem-detail-page .problem-written-actions .problem-written-cleanup-button:hover {
+  border-color: #fecaca;
+  background: var(--written-danger-soft);
+  color: var(--written-danger);
+}
+
+.problem-written-submit-form .problem-written-upload-card {
+  margin: 0;
+  overflow: visible;
+  border: 1px solid var(--written-line);
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(24, 24, 27, 0.045);
+}
+
+.problem-written-upload-card .card-body {
+  padding: 12px;
+}
+
+.problem-written-file-picker {
+  position: relative;
+}
+
+.problem-written-dropzone {
+  display: grid;
+  min-height: 178px;
+  place-items: center;
+  padding: 24px;
+  border: 1px dashed #c7c7cc;
+  border-radius: 9px;
+  background: #fafafa;
+  color: var(--written-ink-2);
+  cursor: pointer;
+  text-align: center;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.problem-written-dropzone:hover,
+.problem-written-dropzone.is-dragover {
+  border-color: var(--written-brand);
+  background: var(--written-brand-soft);
+  box-shadow: inset 0 0 0 1px rgba(234, 88, 12, 0.08);
+}
+
+.problem-written-dropzone.is-dragover {
+  transform: translateY(-1px);
+}
+
+.problem-written-file-input:focus-visible + .problem-written-dropzone {
+  border-color: var(--written-brand);
+  outline: 0;
+  box-shadow: 0 0 0 4px rgba(234, 88, 12, 0.12);
+}
+
+.problem-written-dropzone.has-file {
+  border-color: #fb923c;
+  background: var(--written-brand-soft);
+}
+
+.problem-written-dropzone-icon {
+  display: inline-grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  margin-bottom: 10px;
+  border: 1px solid var(--written-line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--written-ink-3);
+  font-size: 16px;
+  box-shadow: 0 3px 10px rgba(24, 24, 27, 0.05);
+}
+
+.problem-written-dropzone.has-file .problem-written-dropzone-icon,
+.problem-written-dropzone.is-dragover .problem-written-dropzone-icon {
+  border-color: #fed7aa;
+  color: var(--written-brand-ink);
+}
+
+.problem-written-dropzone-copy {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+  justify-items: center;
+  gap: 5px;
+}
+
+.problem-written-dropzone-copy strong {
+  color: var(--written-ink);
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1.3;
+}
+
+.problem-written-dropzone-copy small {
+  max-width: min(360px, 100%);
+  overflow: hidden;
+  color: var(--written-ink-4);
+  font-family: var(--written-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.problem-written-dropzone.has-file .problem-written-dropzone-copy small {
+  color: var(--written-brand-ink);
+  letter-spacing: 0;
+}
+
+.problem-written-format-note {
+  margin: 9px 2px 0;
+  color: var(--written-ink-4);
+  font-size: 9.5px;
+  line-height: 1.55;
+}
+
+.problem-written-note {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--written-line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--written-ink-3) !important;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+@media (min-width: 992px) {
+  .problem-written-submit-form {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-color: var(--written-line) transparent;
+  }
+}
+
+@media (max-width: 575.98px) {
+  .problem-written-submit-form {
+    gap: 12px;
+    padding: 14px 14px 18px;
+  }
+
+  .problem-written-toolbar {
+    align-items: stretch;
+  }
+
+  .problem-written-actions {
+    justify-content: stretch;
+  }
+
+  .problem-written-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .problem-written-quota {
+    width: 100%;
+    text-align: center;
+  }
+
+  .problem-written-dropzone {
+    min-height: 150px;
+    padding: 20px;
+  }
+}

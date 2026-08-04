@@ -200,6 +200,20 @@ def test_class_membership_and_registration_share_the_custom_logo_picker():
     assert "logo_seed" not in CLASS_MANAGER_MODAL
 
 
+def test_class_manager_picker_opens_downward_without_modal_clipping():
+    overflow_rule = LAYOUT_CSS.split(
+        ".numoj-class-modal .modal-content,", 1
+    )[1].split("}", 1)[0]
+    menu_rule = LAYOUT_CSS.split(
+        ".numoj-class-modal .numoj-class-select-menu", 1
+    )[1].split("}", 1)[0]
+
+    assert ".numoj-class-modal .modal-body" in overflow_rule
+    assert "overflow: visible;" in overflow_rule
+    assert "top: calc(100% + 6px);" in menu_rule
+    assert "bottom: auto;" in menu_rule
+
+
 def test_auth_pages_share_the_ui_v2_card_and_homepage_logo_contract():
     assert '{% extends "layouts/site.html" %}' in AUTH_BASE
     assert "filename='app/auth.css'" in AUTH_BASE

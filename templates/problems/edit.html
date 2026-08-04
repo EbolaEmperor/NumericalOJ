@@ -1,5 +1,6 @@
 {% extends "layouts/site.html" %}
 {% from "problems/components/llm_endpoint_select.html" import endpoint_select %}
+{% from "components/choice_picker.html" import simple_choice %}
 {% block title %}编辑题目 - {{ super() }}{% endblock %}
 {% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
 {% block content %}
@@ -14,6 +15,27 @@
 <form id="editProblemForm" method="POST" action="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}">
   {% set endpoint_bindings = llm_endpoint_bindings|default(problem.llm_endpoint_bindings, true)|default({}, true) %}
   {% set endpoint_candidates = llm_endpoint_candidates|default({}, true) %}
+  {% set problem_type_options = [
+    {'value': '1', 'label': '编程题'},
+    {'value': '2', 'label': '书面作业'}
+  ] %}
+  {% set language_options = [
+    {'value': 'matlab', 'label': 'MATLAB'},
+    {'value': 'c', 'label': 'C'},
+    {'value': 'cpp', 'label': 'C++'},
+    {'value': 'python', 'label': 'Python'}
+  ] %}
+  {% set programming_mode_options = [
+    {'value': '1', 'label': '传统交互'},
+    {'value': '2', 'label': '批改图片'},
+    {'value': '3', 'label': 'Promptly'}
+  ] %}
+  {% set written_mode_options = [
+    {'value': '1', 'label': 'OCR + 文本批改'},
+    {'value': '2', 'label': '直接批改图片'},
+    {'value': '3', 'label': 'tex 文本批改'},
+    {'value': '4', 'label': '纯人工批改'}
+  ] %}
   {% if problem.type == 1 %}
   <!-- 同行：语言 + 时限 + 提交限制 -->
   <div class="row mb-3">
@@ -23,14 +45,17 @@
     </div>
 
     <div class="col-md-2">
-      <label for="langSelect" class="form-label"><i class="fas fa-language me-2"></i> 语言</label>
-      <select class="form-select" id="langSelect" name="lang">
-        {% set plang = (problem.lang or 'matlab') | lower %}
-        <option value="matlab" {% if plang == 'matlab' %}selected{% endif %}>MATLAB</option>
-        <option value="c" {% if plang == 'c' %}selected{% endif %}>C</option>
-        <option value="cpp" {% if plang == 'cpp' %}selected{% endif %}>C++</option>
-        <option value="python" {% if plang == 'python' %}selected{% endif %}>Python</option>
-      </select>
+      <label for="langSelectTrigger" class="form-label"><i class="fas fa-language me-2"></i> 语言</label>
+      {% set plang = (problem.lang or 'matlab') | lower %}
+      {{ simple_choice(
+        'langSelect',
+        'lang',
+        language_options,
+        plang,
+        placeholder_label=none,
+        default_icon='fa-code',
+        aria_label='语言'
+      ) }}
     </div>
 
     {% set tl_ms = (problem.time_limit_ms or 2000) %}
@@ -48,12 +73,16 @@
   {% set programming_mode = (problem.programming_grading_mode or 1) %}
   <div class="row g-3 mb-3">
     <div class="col-md-4">
-      <label for="programmingGradingModeSelect" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
-      <select class="form-select" id="programmingGradingModeSelect" name="programming_grading_mode" onchange="_toggleProgrammingImageFields(this.value)">
-        <option value="1" {% if programming_mode == 1 %}selected{% endif %}>传统交互</option>
-        <option value="2" {% if programming_mode == 2 %}selected{% endif %}>批改图片</option>
-        <option value="3" {% if programming_mode == 3 %}selected{% endif %}>Promptly</option>
-      </select>
+      <label for="programmingGradingModeSelectTrigger" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
+      {{ simple_choice(
+        'programmingGradingModeSelect',
+        'programming_grading_mode',
+        programming_mode_options,
+        programming_mode,
+        placeholder_label=none,
+        default_icon='fa-sliders',
+        aria_label='编程题批改模式'
+      ) }}
     </div>
     <div class="col-md-4" id="programmingOutputFilenameField">
       <label for="programmingOutputFilenameInput" class="form-label"><i class="fas fa-image me-2"></i> 输出文件名</label>
@@ -151,14 +180,17 @@
       <input type="text" class="form-control" id="titleInput" name="title" required value="{{ problem.title }}">
     </div>
     <div class="col-md-3">
-      <label for="writtenGradingModeSelect" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
+      <label for="writtenGradingModeSelectTrigger" class="form-label"><i class="fas fa-sliders me-2"></i> 批改模式</label>
       {% set written_mode = (problem.written_grading_mode or 1) %}
-      <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode" onchange="_toggleAiGradingFields(this.value)">
-        <option value="1" {% if written_mode == 1 %}selected{% endif %}>OCR + 文本批改</option>
-        <option value="2" {% if written_mode == 2 %}selected{% endif %}>直接批改图片</option>
-        <option value="3" {% if written_mode == 3 %}selected{% endif %}>tex 文本批改</option>
-        <option value="4" {% if written_mode == 4 %}selected{% endif %}>纯人工批改</option>
-      </select>
+      {{ simple_choice(
+        'writtenGradingModeSelect',
+        'written_grading_mode',
+        written_mode_options,
+        written_mode,
+        placeholder_label=none,
+        default_icon='fa-sliders',
+        aria_label='书面作业批改模式'
+      ) }}
     </div>
     {% set sub_limit = (problem.submission_limit or 10) %}
     <div class="col-md-3">
@@ -248,11 +280,17 @@
 
   <!-- 题目类型（不可修改）-->
   <div class="mb-3">
-    <label for="problemType" class="form-label"><i class="fas fa-question-circle me-2"></i> 题目类型</label>
-    <select class="form-select" id="problemType" name="problem_type" disabled>
-      <option value="1" {% if problem.type == 1 %}selected{% endif %}>编程题</option>
-      <option value="2" {% if problem.type == 2 %}selected{% endif %}>书面作业</option>
-    </select>
+    <label for="problemTypeTrigger" class="form-label"><i class="fas fa-question-circle me-2"></i> 题目类型</label>
+    {{ simple_choice(
+      'problemType',
+      'problem_type',
+      problem_type_options,
+      problem.type,
+      placeholder_label=none,
+      default_icon='fa-question',
+      disabled=true,
+      aria_label='题目类型'
+    ) }}
     <small class="text-muted">题目类型一旦创建后无法修改。</small>
   </div>
 
@@ -281,12 +319,12 @@
     if (outputField) outputField.style.display = isImageMode ? '' : 'none';
     if (outputEndpointField) outputEndpointField.style.display = isImageMode ? '' : 'none';
     if (promptlyEndpointFields) promptlyEndpointFields.style.display = isPromptlyMode ? '' : 'none';
-    const outputEndpointSelect = document.getElementById('programmingOutputImageEndpointSelect');
-    const reviewEndpointSelect = document.getElementById('promptlyReviewEndpointSelect');
-    const codeEndpointSelect = document.getElementById('promptlyCodeGenerationEndpointSelect');
-    if (outputEndpointSelect) outputEndpointSelect.disabled = !isImageMode;
-    if (reviewEndpointSelect) reviewEndpointSelect.disabled = !isPromptlyMode;
-    if (codeEndpointSelect) codeEndpointSelect.disabled = !isPromptlyMode;
+    const outputEndpointInput = document.getElementById('programmingOutputImageEndpointSelect');
+    const reviewEndpointInput = document.getElementById('promptlyReviewEndpointSelect');
+    const codeEndpointInput = document.getElementById('promptlyCodeGenerationEndpointSelect');
+    if (outputEndpointInput) window.ChoicePicker.setDisabled(outputEndpointInput, !isImageMode);
+    if (reviewEndpointInput) window.ChoicePicker.setDisabled(reviewEndpointInput, !isPromptlyMode);
+    if (codeEndpointInput) window.ChoicePicker.setDisabled(codeEndpointInput, !isPromptlyMode);
     if (promptField) promptField.style.display = isImageMode ? '' : 'none';
     if (promptlyField) promptlyField.style.display = isPromptlyMode ? '' : 'none';
     if (promptLabel && promptInput) {
@@ -405,12 +443,12 @@
     if (ocrField) ocrField.style.display = mode === '1' ? '' : 'none';
     if (textField) textField.style.display = (mode === '1' || mode === '3') ? '' : 'none';
     if (imageField) imageField.style.display = mode === '2' ? '' : 'none';
-    const ocrSelect = document.getElementById('writtenOcrEndpointSelect');
-    const textSelect = document.getElementById('writtenTextGradingEndpointSelect');
-    const imageSelect = document.getElementById('writtenDirectImageEndpointSelect');
-    if (ocrSelect) ocrSelect.disabled = mode !== '1';
-    if (textSelect) textSelect.disabled = !(mode === '1' || mode === '3');
-    if (imageSelect) imageSelect.disabled = mode !== '2';
+    const ocrInput = document.getElementById('writtenOcrEndpointSelect');
+    const textInput = document.getElementById('writtenTextGradingEndpointSelect');
+    const imageInput = document.getElementById('writtenDirectImageEndpointSelect');
+    if (ocrInput) window.ChoicePicker.setDisabled(ocrInput, mode !== '1');
+    if (textInput) window.ChoicePicker.setDisabled(textInput, !(mode === '1' || mode === '3'));
+    if (imageInput) window.ChoicePicker.setDisabled(imageInput, mode !== '2');
     if (promptField) promptField.style.display = hide ? 'none' : '';
   }
 
@@ -418,11 +456,17 @@
     const programmingModeSelect = document.getElementById('programmingGradingModeSelect');
     if (programmingModeSelect) {
       _toggleProgrammingImageFields(programmingModeSelect.value);
+      programmingModeSelect.addEventListener('change', function() {
+        _toggleProgrammingImageFields(this.value);
+      });
     }
 
     const writtenModeSelect = document.getElementById('writtenGradingModeSelect');
     if (writtenModeSelect) {
       _toggleAiGradingFields(writtenModeSelect.value);
+      writtenModeSelect.addEventListener('change', function() {
+        _toggleAiGradingFields(this.value);
+      });
     }
   });
 

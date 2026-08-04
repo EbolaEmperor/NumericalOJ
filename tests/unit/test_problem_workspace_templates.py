@@ -102,6 +102,30 @@ def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
     )
 
 
+def test_written_problem_upload_keeps_the_file_contract_with_drag_drop_ui():
+    repo = Path(__file__).resolve().parents[2]
+    detail = (repo / "templates/problems/detail.html").read_text()
+    stylesheet = (repo / "static/app/problem-written-submit.css").read_text()
+    script = (repo / "static/app/problem-written-submit.js").read_text()
+
+    file_input = detail.split("data-written-file-input", 1)[0].rsplit("<input", 1)[1]
+    assert 'id="file"' in file_input
+    assert 'name="file"' in file_input
+    assert 'accept=".zip"' in file_input
+    assert 'accept=".pdf"' in file_input
+    assert "required" in file_input
+
+    assert detail.count("app/problem-written-submit.css") == 1
+    assert detail.count("app/problem-written-submit.js") == 1
+    assert "data-written-dropzone" in detail
+    assert "problem-written-submit-button" in detail
+    assert "border: 1px dashed" in stylesheet
+    assert "padding: 18px clamp(16px, 2.4vw, 26px) 24px;" in stylesheet
+    for event_name in ("dragenter", "dragover", "dragleave", "drop"):
+        assert f"addEventListener('{event_name}'" in script
+    assert "input.dispatchEvent(new Event('change'" in script
+
+
 def test_failed_homework_cross_is_geometrically_centered_in_status_circle():
     repo = Path(__file__).resolve().parents[2]
     desktop_list = (repo / "templates/problems/desktop/list.html").read_text()

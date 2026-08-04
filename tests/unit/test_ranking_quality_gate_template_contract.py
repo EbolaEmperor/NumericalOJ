@@ -48,7 +48,11 @@ def test_quality_gate_opencode_keeps_and_displays_configured_api_url():
         in TEMPLATE
     )
     assert "function inferProtocol(harness, protocol)" in TEMPLATE
-    assert "editProtocol.disabled = sourceMode === 'global' || h !== 'pi'" in TEMPLATE
+    assert (
+        "setChoiceDisabled(protocolPickerCtrl, editProtocol, "
+        "sourceMode === 'global' || h !== 'pi')"
+        in TEMPLATE
+    )
     assert "h === 'codex' || h === 'opencode'" in TEMPLATE
 
 

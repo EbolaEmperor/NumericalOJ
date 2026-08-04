@@ -29,6 +29,9 @@
   var harnessPickerCtrl = null;
   var statusPickerCtrl = null;
   var orchPickerCtrl = null;
+  var sourceModePickerCtrl = null;
+  var protocolPickerCtrl = null;
+  var globalEndpointPickerCtrl = null;
   var DEFAULT_CONTEXT_WINDOW_TOKENS = 1000000;
   var DEFAULT_MAX_OUTPUT_TOKENS = 384000;
   var DEFAULT_THINKING_COMPATIBILITY = true;
@@ -170,6 +173,33 @@
       notifyOnInit: true
     });
   }
+  function createStandardChoice(input){
+    if (!input) return null;
+    return window.ChoicePicker.create({
+      input:input,
+      picker:input.id + 'Picker',
+      trigger:input.id + 'Trigger',
+      menu:input.id + 'Menu',
+      label:document.querySelector('#' + input.id + 'Picker [data-rk-choice-label]'),
+      icon:document.querySelector('#' + input.id + 'Picker [data-rk-choice-icon]')
+    });
+  }
+  function setChoiceValue(controller, input, value){
+    if (controller) controller.setValue(value == null ? '' : String(value), false);
+    else if (input) input.value = value == null ? '' : String(value);
+  }
+  function setChoiceDisabled(controller, input, disabled){
+    if (controller) controller.setDisabled(!!disabled);
+    else if (input) input.disabled = !!disabled;
+  }
+  function setChoiceOptionDisabled(input, value, disabled){
+    var menu = document.getElementById(input.id + 'Menu');
+    var option = menu && menu.querySelector('[data-choice-value="' + value + '"]');
+    if (!option) return;
+    option.disabled = !!disabled;
+    option.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    option.setAttribute('data-choice-disabled', disabled ? 'true' : 'false');
+  }
   function modelText(e){
     if ((e.model || '').trim()) return e.model;
     return '';
@@ -282,22 +312,22 @@
     return Array.isArray(rows) ? rows : [];
   }
   function populateGlobalEndpointOptions(harness, selectedId){
-    while (editGlobalEndpoint.options.length) editGlobalEndpoint.remove(0);
-    var blank = document.createElement('option');
-    blank.value = '';
-    blank.textContent = '请选择全局端点';
-    editGlobalEndpoint.appendChild(blank);
-    candidatesForHarness(harness).forEach(function(endpoint){
-      var option = document.createElement('option');
-      option.value = String(endpoint.id);
-      option.textContent = (endpoint.model || ('端点 #' + endpoint.id)) +
-        '（节点 #' + endpoint.id + ' / ' + protocolLabel(endpoint.protocol) + '）';
-      editGlobalEndpoint.appendChild(option);
+    var candidates = candidatesForHarness(harness);
+    var selected = selectedId == null ? '' : String(selectedId);
+    if (!candidates.some(function(endpoint){ return String(endpoint.id) === selected; })) selected = '';
+    var entries = [{value:'', label:'请选择全局端点', icon:'fa-minus-circle'}];
+    candidates.forEach(function(endpoint){
+      entries.push({
+        value:String(endpoint.id),
+        label:endpoint.model || ('端点 #' + endpoint.id),
+        meta:'节点 #' + endpoint.id + ' · ' + protocolLabel(endpoint.protocol) +
+          ' · ' + (endpoint.category || 'text'),
+        icon:endpoint.category === 'omni' ? 'fa-layer-group' : 'fa-font'
+      });
     });
-    editGlobalEndpoint.value = selectedId == null ? '' : String(selectedId);
-    if (editGlobalEndpoint.value !== String(selectedId == null ? '' : selectedId)) {
-      editGlobalEndpoint.value = '';
-    }
+    globalEndpointPickerCtrl = window.ChoicePicker.configure(
+      'ajeEditGlobalEndpointPicker', entries, selected
+    );
   }
   function selectedGlobalCandidate(){
     var id = parseInt(editGlobalEndpoint.value, 10);
@@ -311,9 +341,9 @@
     var fixedOpenCode = usesFixedOpenCodeEndpoint(activeManager, h);
     var canCopy = editIndex === null && h !== 'opencode';
     var sourceMode = canCopy && editSourceMode.value === 'global' ? 'global' : 'custom';
-    editSourceMode.value = sourceMode;
+    setChoiceValue(sourceModePickerCtrl, editSourceMode, sourceMode);
     editSourceModeWrap.style.display = editIndex === null ? '' : 'none';
-    editSourceMode.querySelector('option[value="global"]').disabled = !canCopy;
+    setChoiceOptionDisabled(editSourceMode, 'global', !canCopy);
     editGlobalEndpointWrap.style.display = sourceMode === 'global' ? '' : 'none';
     var custom = sourceMode === 'custom';
     editBaseUrlWrap.style.display = custom && !fixedOpenCode ? '' : 'none';
@@ -324,10 +354,12 @@
       editBaseUrl.value = candidate.base_url || '';
       editModel.value = candidate.model || '';
       editThinkingCompatibility.checked = !!candidate.thinking_enabled;
-      editProtocol.value = candidate.protocol || '';
+      setChoiceValue(protocolPickerCtrl, editProtocol, candidate.protocol || '');
     }
-    editProtocol.disabled = sourceMode === 'global' || h !== 'pi';
-    if (sourceMode === 'global' && !candidate) editProtocol.value = '';
+    setChoiceDisabled(protocolPickerCtrl, editProtocol, sourceMode === 'global' || h !== 'pi');
+    if (sourceMode === 'global' && !candidate) {
+      setChoiceValue(protocolPickerCtrl, editProtocol, '');
+    }
     editApiKey.placeholder = sourceMode === 'global' ?
       '由后端安全复制' : (editApiKey.dataset.customPlaceholder || '请输入 API Key');
   }
@@ -339,17 +371,17 @@
     var fixedProtocol = h === 'claude_code' ? 'anthropic' :
       ((h === 'codex' || h === 'opencode') ? 'openai' : '');
     if (fixedProtocol) {
-      editProtocol.value = fixedProtocol;
+      setChoiceValue(protocolPickerCtrl, editProtocol, fixedProtocol);
       if (harnessChanged) editProtocol.dataset.changed = 'true';
     } else if (harnessChanged && editIndex === null) {
-      editProtocol.value = '';
+      setChoiceValue(protocolPickerCtrl, editProtocol, '');
     } else if (harnessChanged) {
-      editProtocol.value = inferProtocol(h, null);
+      setChoiceValue(protocolPickerCtrl, editProtocol, inferProtocol(h, null));
       editProtocol.dataset.changed = 'true';
     }
     var selectedGlobalId = editGlobalEndpoint.value || '';
     populateGlobalEndpointOptions(h, selectedGlobalId);
-    if (h === 'opencode') editSourceMode.value = 'custom';
+    if (h === 'opencode') setChoiceValue(sourceModePickerCtrl, editSourceMode, 'custom');
     var protocol = editProtocol.value || inferProtocol(h, null);
     editBaseUrlLabel.textContent = protocol === 'anthropic' ?
       'Base URL（Anthropic 兼容）' : 'Base URL（OpenAI 兼容）';
@@ -364,8 +396,14 @@
     document.getElementById('ajeEditModalLabel').textContent =
       (editIndex === null ? '添加' : '编辑') + manager.endpointName;
     editHarness.value = e.harness || 'claude_code';
-    editSourceMode.value = (!e.id && e.global_endpoint_id) ? 'global' : 'custom';
-    editProtocol.value = e.protocol || e.effective_protocol || inferProtocol(e.harness || 'claude_code', null);
+    setChoiceValue(
+      sourceModePickerCtrl, editSourceMode,
+      (!e.id && e.global_endpoint_id) ? 'global' : 'custom'
+    );
+    setChoiceValue(
+      protocolPickerCtrl, editProtocol,
+      e.protocol || e.effective_protocol || inferProtocol(e.harness || 'claude_code', null)
+    );
     editProtocol.dataset.originalRaw = e.protocol || '';
     editProtocol.dataset.changed = 'false';
     editProtocol.dataset.harness = e.harness || 'claude_code';
@@ -566,6 +604,9 @@
     renderManager(activeManager);
     if (modal) modal.hide();
   });
+  sourceModePickerCtrl = createStandardChoice(editSourceMode);
+  protocolPickerCtrl = createStandardChoice(editProtocol);
+  globalEndpointPickerCtrl = createStandardChoice(editGlobalEndpoint);
   harnessPickerCtrl = createChoicePicker({
     inputId:'ajeEditHarness', pickerId:'ajeHarnessPicker', triggerId:'ajeHarnessTrigger',
     menuId:'ajeHarnessMenu', labelId:'ajeHarnessLabel', iconId:'ajeHarnessIcon',
