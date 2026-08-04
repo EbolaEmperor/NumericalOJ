@@ -238,35 +238,6 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
     )
 
 
-def test_legacy_agent_run_page_redirects_to_task_list_modal(monkeypatch):
-    monkeypatch.setattr(
-        routes,
-        "current_user",
-        lambda: {"id": 7, "username": "admin", "is_admin": 1},
-    )
-    calls = []
-    monkeypatch.setattr(
-        routes,
-        "url_for",
-        lambda endpoint, **kwargs: (
-            calls.append((endpoint, kwargs))
-            or f"/admin/agent_tasks?task_id={kwargs['task_id']}"
-        ),
-    )
-
-    app = _app()
-    with app.test_request_context("/admin/agent_run/task-1"):
-        response = routes.admin_agent_run("task-1")
-
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith(
-        "/admin/agent_tasks?task_id=task-1"
-    )
-    assert calls == [
-        ("problem_core.admin_agent_tasks", {"task_id": "task-1"})
-    ]
-
-
 def test_agent_task_list_only_auto_opens_an_existing_task(monkeypatch):
     monkeypatch.setattr(
         routes,
@@ -299,6 +270,87 @@ def test_agent_task_list_only_auto_opens_an_existing_task(monkeypatch):
     with app.test_request_context("/admin/agent_tasks?task_id=missing"):
         assert routes.admin_agent_tasks() == "ok"
     assert rendered[-1][1]["open_task_id"] == ""
+
+
+def test_legacy_agent_run_page_route_is_removed():
+    app = _app()
+    app.register_blueprint(routes.problem_core_bp)
+    rules = {rule.rule for rule in app.url_map.iter_rules()}
+
+    assert "/admin/agent_run/<task_id>" not in rules
+    assert "/admin/agent_run_status/<task_id>" in rules
+    assert "/admin/agent_run_stream/<task_id>" in rules
+
+
+def test_agent_run_stream_subscribes_before_rechecking_terminal_state(monkeypatch):
+    order = []
+    states = iter([
+        {"task_id": "task-1", "status": "Completed"},
+    ])
+
+    def get_state(_task_id):
+        order.append("read")
+        return next(states)
+
+    class PubSub:
+        closed = False
+
+        def get_message(self, **_kwargs):
+            raise AssertionError("订阅后的终态重读不应再等待消息")
+
+        def close(self):
+            self.closed = True
+
+    pubsub = PubSub()
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", get_state)
+    monkeypatch.setattr(
+        routes,
+        "_subscribe_agent_run_events",
+        lambda _task_id: order.append("subscribe") or pubsub,
+    )
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/task-1"):
+        body = routes.admin_agent_run_stream("task-1").get_data(as_text=True)
+
+    assert order == ["subscribe", "read"]
+    assert "event: done" in body
+    assert pubsub.closed is True
+
+
+def test_agent_run_stream_rechecks_state_when_pubsub_has_no_message(monkeypatch):
+    states = iter([
+        {"task_id": "task-2", "status": "Running"},
+        {"task_id": "task-2", "status": "Completed"},
+    ])
+
+    class PubSub:
+        def get_message(self, **_kwargs):
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _task_id: next(states))
+    monkeypatch.setattr(routes, "_subscribe_agent_run_events", lambda _task_id: PubSub())
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/task-2"):
+        body = routes.admin_agent_run_stream("task-2").get_data(as_text=True)
+
+    assert "event: done" in body
 
 
 @pytest.mark.parametrize("invalid_count", [True, False, 1.0, "1.0", " 1", "01"])

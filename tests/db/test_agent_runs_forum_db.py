@@ -2,7 +2,7 @@
 """Task 25 — agent_task_runs 数据层单测（§1c）。
 
 覆盖：
-- upsert_agent_run_snapshot：需要非空 task_id；attempts/events 序列化为 JSON；
+- upsert_agent_run_snapshot：需要非空 task_id；attempts 序列化为 JSON；
   best_score = max(state.best_score, _best_score_from_attempts(attempts))；
   INSERT...ON DUPLICATE KEY UPDATE（同一 task_id 覆盖更新）。
 - get_agent_run_by_task_id：坏 JSON → []；datetime 格式化为 'YYYY-MM-DD HH:MM:SS'；
@@ -31,15 +31,14 @@ def _fetch_raw(task_id):
         conn.close()
 
 
-def _set_raw_json(task_id, attempts_json=None, events_json=None):
+def _set_raw_json(task_id, attempts_json=None):
     """直接写坏 JSON 文本，用于测试解析容错。"""
     conn = db.get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE agent_task_runs SET attempts_json=%s, events_json=%s "
-                "WHERE task_id=%s",
-                (attempts_json, events_json, task_id),
+                "UPDATE agent_task_runs SET attempts_json=%s WHERE task_id=%s",
+                (attempts_json, task_id),
             )
         conn.commit()
     finally:
@@ -76,9 +75,8 @@ def test_upsert_non_dict_is_noop():
 
 
 def test_upsert_basic_insert_and_json_serialization():
-    """正常插入：attempts/events 以 JSON 文本落库，标量字段正确。"""
+    """正常插入：attempts 以 JSON 文本落库，标量字段正确。"""
     attempts = [{'submission_id': 1, 'summary': {'score': 40}}]
-    events = [{'type': 'start'}, {'type': 'compile'}]
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-basic',
         'problem_id': 7,
@@ -90,7 +88,6 @@ def test_upsert_basic_insert_and_json_serialization():
         'final_submission_id': 11,
         'latest_submission_id': 12,
         'attempts': attempts,
-        'events': events,
     })
 
     row = _fetch_raw('tk-basic')
@@ -105,7 +102,6 @@ def test_upsert_basic_insert_and_json_serialization():
     assert row['latest_submission_id'] == 12
 
     assert json.loads(row['attempts_json']) == attempts
-    assert json.loads(row['events_json']) == events
 
 
 def test_upsert_best_score_is_max_of_state_and_attempts():
@@ -135,17 +131,15 @@ def test_upsert_best_score_uses_state_when_higher():
     assert row['best_score'] == 90
 
 
-def test_upsert_non_list_attempts_events_default_empty():
-    """attempts/events 非 list 时落库为 '[]'，best_score 退化为 state.best_score。"""
+def test_upsert_non_list_attempts_defaults_empty():
+    """attempts 非 list 时落库为 '[]'，best_score 退化为 state.best_score。"""
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-bad-types',
         'best_score': 5,
         'attempts': {'not': 'a list'},
-        'events': 'nope',
     })
     row = _fetch_raw('tk-bad-types')
     assert json.loads(row['attempts_json']) == []
-    assert json.loads(row['events_json']) == []
     assert row['best_score'] == 5
 
 
@@ -181,9 +175,8 @@ def test_upsert_status_default_pending_when_missing():
 # get_agent_run_by_task_id
 # ---------------------------------------------------------------------------
 def test_get_by_task_id_roundtrip():
-    """写入后能读回，attempts/events 解析为 Python 对象，标量字段映射正确。"""
+    """写入后能读回，attempts 解析为 Python 对象，标量字段映射正确。"""
     attempts = [{'submission_id': 1, 'summary': {'score': 70}}]
-    events = [{'type': 'done'}]
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-read',
         'problem_id': 3,
@@ -193,7 +186,6 @@ def test_get_by_task_id_roundtrip():
         'message': '完成',
         'best_score': 0,
         'attempts': attempts,
-        'events': events,
     })
 
     got = db.get_agent_run_by_task_id('tk-read')
@@ -208,7 +200,7 @@ def test_get_by_task_id_roundtrip():
     # best_score 由 attempts 推断（70 > 0）
     assert got['best_score'] == 70
     assert got['attempts'] == attempts
-    assert got['events'] == events
+    assert 'events' not in got
 
 
 def test_get_by_task_id_missing_returns_none():
@@ -219,28 +211,25 @@ def test_get_by_task_id_missing_returns_none():
 
 
 def test_get_by_task_id_bad_json_defaults_to_empty_list():
-    """attempts_json/events_json 为坏 JSON 时解析为 []。"""
+    """attempts_json 为坏 JSON 时解析为 []。"""
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-badjson',
         'attempts': [{'summary': {'score': 1}}],
-        'events': [{'type': 'x'}],
     })
     # 直接把库里 JSON 文本改坏
-    _set_raw_json('tk-badjson', attempts_json='{not json', events_json='also bad}')
+    _set_raw_json('tk-badjson', attempts_json='{not json')
 
     got = db.get_agent_run_by_task_id('tk-badjson')
     assert got['attempts'] == []
-    assert got['events'] == []
 
 
 def test_get_by_task_id_null_json_defaults_to_empty_list():
-    """attempts_json/events_json 为 NULL/空字符串时解析为 []。"""
+    """attempts_json 为 NULL 时解析为 []。"""
     db.upsert_agent_run_snapshot({'task_id': 'tk-nulljson'})
-    _set_raw_json('tk-nulljson', attempts_json=None, events_json='')
+    _set_raw_json('tk-nulljson', attempts_json=None)
 
     got = db.get_agent_run_by_task_id('tk-nulljson')
     assert got['attempts'] == []
-    assert got['events'] == []
 
 
 def test_get_by_task_id_datetime_format():
@@ -293,7 +282,7 @@ def test_paginated_order_by_id_desc():
 
 
 def test_paginated_row_shape():
-    """分页行包含列表页所需字段（不含 attempts_json/events_json）。"""
+    """分页行包含列表页所需字段（不含 attempts_json）。"""
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-shape',
         'problem_id': 9,
@@ -309,6 +298,5 @@ def test_paginated_row_shape():
                 'status', 'best_score', 'created_at', 'updated_at'):
         assert key in row
     assert 'attempts_json' not in row
-    assert 'events_json' not in row
     assert row['problem_id'] == 9
     assert row['best_score'] == 42

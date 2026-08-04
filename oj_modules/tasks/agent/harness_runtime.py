@@ -15,6 +15,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 from config import (
@@ -33,7 +34,16 @@ from oj_modules.problems.agent_launch import (
     skill_for_agent_task,
 )
 from oj_modules.site_config.services import get_web_search_settings
+from oj_modules.tasks.agent.traces import (
+    AGENT_TRACE_SYNC_INTERVAL_SECONDS,
+    AgentTraceRecorder,
+    ensure_agent_trace_dir,
+    prepare_agent_trace_dir,
+)
+
+
 _CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024
+_TRACE_STDOUT_LINE_MAX_BYTES = 256 * 1024
 _AGENT_CONTEXT_WINDOW_TOKENS = 128_000
 _AGENT_MAX_OUTPUT_TOKENS = 16_384
 _IDENTITY_CONFIG_PATH = "/workspace/.numoj-agent/identity.json"
@@ -157,7 +167,18 @@ def _read_workspace_artifacts(workspace, artifact_files):
     return result
 
 
-def _tail_reader(stream, chunks, size_state, key, limit):
+def _tail_reader(
+    stream,
+    chunks,
+    size_state,
+    key,
+    limit,
+    *,
+    line_callback=None,
+):
+    pending = bytearray()
+    stream_offset = 0
+    discarding_oversized_line = False
     try:
         while True:
             block = stream.read(65536)
@@ -172,11 +193,51 @@ def _tail_reader(stream, chunks, size_state, key, limit):
                 else:
                     chunks[0] = chunks[0][overflow:]
                     size_state[key] -= overflow
+            if callable(line_callback):
+                if discarding_oversized_line:
+                    boundary = block.find(b"\n")
+                    if boundary < 0:
+                        stream_offset += len(block)
+                        continue
+                    stream_offset += boundary + 1
+                    block = block[boundary + 1:]
+                    discarding_oversized_line = False
+                pending.extend(block)
+                while True:
+                    boundary = pending.find(b"\n")
+                    if boundary < 0:
+                        break
+                    raw_line = bytes(pending[:boundary])
+                    del pending[:boundary + 1]
+                    if len(raw_line) <= _TRACE_STDOUT_LINE_MAX_BYTES:
+                        try:
+                            line_callback(raw_line, stream_offset)
+                        except Exception:
+                            pass
+                    stream_offset += boundary + 1
+                if len(pending) > _TRACE_STDOUT_LINE_MAX_BYTES:
+                    stream_offset += len(pending)
+                    pending.clear()
+                    discarding_oversized_line = True
+        if pending and callable(line_callback):
+            try:
+                line_callback(bytes(pending), stream_offset)
+            except Exception:
+                pass
     finally:
         stream.close()
 
 
-def _run_with_bounded_output(args, prompt, *, timeout, process_env=None):
+def _run_with_bounded_output(
+    args,
+    prompt,
+    *,
+    timeout,
+    process_env=None,
+    stdout_line_callback=None,
+    on_tick=None,
+    tick_interval=AGENT_TRACE_SYNC_INTERVAL_SECONDS,
+):
     proc = subprocess.Popen(
         args,
         stdin=subprocess.PIPE,
@@ -191,6 +252,7 @@ def _run_with_bounded_output(args, prompt, *, timeout, process_env=None):
         threading.Thread(
             target=_tail_reader,
             args=(proc.stdout, stdout_chunks, sizes, "stdout", _CAPTURE_LIMIT_BYTES),
+            kwargs={"line_callback": stdout_line_callback},
             daemon=True,
         ),
         threading.Thread(
@@ -211,13 +273,31 @@ def _run_with_bounded_output(args, prompt, *, timeout, process_env=None):
                 proc.stdin.close()
             except Exception:
                 pass
-        try:
-            returncode = proc.wait(timeout=max(1, int(timeout)))
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            proc.kill()
-            returncode = proc.wait()
+        timeout_seconds = max(1, int(timeout))
+        deadline = time.monotonic() + timeout_seconds
+        last_tick = time.monotonic()
+        timed_out = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                proc.kill()
+                returncode = proc.wait()
+                break
+            try:
+                returncode = proc.wait(timeout=min(0.25, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                now = time.monotonic()
+                if (
+                    callable(on_tick)
+                    and now - last_tick >= max(0.5, float(tick_interval))
+                ):
+                    try:
+                        on_tick(final=False)
+                    except Exception:
+                        pass
+                    last_tick = now
     except BaseException:
         try:
             proc.kill()
@@ -228,6 +308,11 @@ def _run_with_bounded_output(args, prompt, *, timeout, process_env=None):
     finally:
         for thread in threads:
             thread.join(timeout=10)
+        if callable(on_tick):
+            try:
+                on_tick(final=True)
+            except Exception:
+                pass
     return HarnessRunResult(
         returncode=int(returncode),
         timed_out=timed_out,
@@ -455,6 +540,8 @@ def run_agent_harness(
     session_cookie_name="session",
     workspace_files=None,
     artifact_files=None,
+    trace_callback=None,
+    reset_trace=True,
 ):
     """运行一次 harness；任务结束后凭证和整个工作区都会被删除。"""
 
@@ -465,6 +552,11 @@ def run_agent_harness(
     workspace_root.mkdir(parents=True, exist_ok=True)
     safe_task_id = re.sub(r"[^a-zA-Z0-9_.-]", "-", str(task_id or "")) or "unknown"
     container_name = _container_name_for_task_id(task_id)
+    trace_dir = (
+        prepare_agent_trace_dir(task_id)
+        if reset_trace
+        else ensure_agent_trace_dir(task_id)
+    )
 
     with tempfile.TemporaryDirectory(
         prefix=f"{task_kind}-{safe_task_id}-",
@@ -531,12 +623,36 @@ def run_agent_harness(
             )
             docker_process_env = os.environ.copy()
             docker_process_env.update(env)
+            trace_recorder = AgentTraceRecorder(
+                workspace=workspace,
+                trace_dir=trace_dir,
+                harness=harness,
+                secrets=(
+                    session_cookie,
+                    endpoint.get("api_key"),
+                    (web_search_settings or {}).get("authorization"),
+                ),
+            )
+
+            def sync_trace(*, final=False):
+                changed = trace_recorder.sync()
+                if (changed or final) and callable(trace_callback):
+                    try:
+                        trace_callback()
+                    except Exception:
+                        # 轨迹缓存不可用不能中止已运行的 Agent；终态仍会走任务状态
+                        # 的规范持久化链路。
+                        pass
+
             try:
                 result = _run_with_bounded_output(
                     docker_args,
                     prompt,
                     timeout=max(1, int(AGENT_JUDGE_DEFAULT_TIMEOUT)),
                     process_env=docker_process_env,
+                    stdout_line_callback=trace_recorder.ingest_stdout_line,
+                    on_tick=sync_trace,
+                    tick_interval=AGENT_TRACE_SYNC_INTERVAL_SECONDS,
                 )
             finally:
                 # docker 客户端被 Celery soft timeout 中断时，--rm 不一定来得及执行。

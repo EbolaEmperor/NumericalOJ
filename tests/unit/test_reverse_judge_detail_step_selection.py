@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[2]
 MODAL = (ROOT / "templates" / "ranking" / "modals" / "reverse_judge_detail.html").read_text(
     encoding="utf-8",
 )
-TRACE_RENDERER = (ROOT / "templates" / "ranking" / "scripts" / "execution_trace.html").read_text(
+TRACE_RENDERER = (ROOT / "static" / "app" / "agents" / "execution-trace.js").read_text(
+    encoding="utf-8",
+)
+TRACE_STYLES = (ROOT / "static" / "app" / "agents" / "execution-trace.css").read_text(
     encoding="utf-8",
 )
 
@@ -156,11 +159,11 @@ def test_running_agent_answer_shows_random_thinking_loader_before_raw_json():
         "data-agent-trace-raw"
     )
     assert "if (mode && empty) empty.hidden = true" in TRACE_RENDERER
-    assert "--math-curve-size:2.7rem" in TRACE_RENDERER
-    assert "padding:.9rem 0 .55rem" in TRACE_RENDERER
+    assert "--math-curve-size:2.7rem" in TRACE_STYLES
+    assert "padding:.9rem 0 .55rem" in TRACE_STYLES
     assert "<span>.</span><span>.</span><span>.</span>" in TRACE_RENDERER
-    assert "@keyframes agent-trace-thinking-dot" in TRACE_RENDERER
-    assert "prefers-reduced-motion: reduce" in TRACE_RENDERER
+    assert "@keyframes agent-trace-thinking-dot" in TRACE_STYLES
+    assert "prefers-reduced-motion: reduce" in TRACE_STYLES
 
 
 def test_reverse_detail_keeps_event_source_reconnectable_before_terminal_state():

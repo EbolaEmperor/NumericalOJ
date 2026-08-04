@@ -141,7 +141,8 @@ def test_opencode_uses_workspace_runtime_home_and_xdg(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
 
     assert module._run_opencode("solve") == 0
-    _args, env = calls[0]
+    args, env = calls[0]
+    assert args[args.index("--format") + 1] == "json"
     assert env["HOME"] == str(runtime_root / "opencode/home")
     assert env["XDG_CONFIG_HOME"] == str(runtime_root / "opencode/config")
     assert env["XDG_DATA_HOME"] == str(runtime_root / "opencode/data")

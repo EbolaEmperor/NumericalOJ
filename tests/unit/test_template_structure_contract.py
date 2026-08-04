@@ -12,7 +12,11 @@ TEMPLATES = ROOT / "templates"
 
 
 def _environment():
-    return Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
+    environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
+    environment.globals["url_for"] = lambda endpoint, **values: (
+        f"/{endpoint}/{values.get('filename', '')}"
+    )
+    return environment
 
 
 def _template_names(environment):

@@ -466,7 +466,6 @@ CREATE TABLE `agent_task_runs` (
   `final_submission_id` int DEFAULT NULL,
   `latest_submission_id` int DEFAULT NULL,
   `attempts_json` longtext,
-  `events_json` longtext,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
