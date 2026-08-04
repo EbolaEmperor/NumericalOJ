@@ -28,6 +28,37 @@ def _load_run_harness():
     return module
 
 
+def _set_endpoint(
+        monkeypatch, *, protocol="openai", model="generic-model",
+        base_url=None, api_key="temporary-token"):
+    monkeypatch.setenv("AJ_ENDPOINT_PROTOCOL", protocol)
+    monkeypatch.setenv(
+        "AJ_ENDPOINT_BASE_URL",
+        base_url or (
+            "https://model.example/anthropic"
+            if protocol == "anthropic" else "https://model.example/v1"
+        ),
+    )
+    monkeypatch.setenv("AJ_ENDPOINT_API_KEY", api_key)
+    monkeypatch.setenv("AJ_ENDPOINT_MODEL", model)
+
+
+def _set_anthropic_endpoint(monkeypatch, module, model="generic-model"):
+    _set_endpoint(monkeypatch, protocol="anthropic", model=model)
+
+    class FakeRelay:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            return "http://127.0.0.1:43123"
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(module, "_ClaudeEndpointRelay", FakeRelay)
+
+
 def test_run_relays_first_line_before_child_exits(monkeypatch, tmp_path):
     module = _load_run_harness()
     first_line = threading.Event()
@@ -74,7 +105,7 @@ def test_claude_audit_mode_is_bare_safe_and_read_tools_only(monkeypatch):
     module = _load_run_harness()
     calls = []
     monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "1")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-flash")
+    _set_anthropic_endpoint(monkeypatch, module)
     monkeypatch.setenv("AJ_RESUME_SESSION_ID", "11111111-1111-1111-1111-111111111111")
     monkeypatch.setattr(
         module, "_run",
@@ -96,7 +127,7 @@ def test_claude_audit_mode_is_bare_safe_and_read_tools_only(monkeypatch):
     assert args[args.index("--allowed-tools") + 1] == "Read,Glob,Grep"
     assert args[args.index("--add-dir") + 1] == "/evidence"
     assert args[args.index("--output-format") + 1] == "json"
-    assert args[args.index("--model") + 1] == "deepseek-v4-flash[1m]"
+    assert args[args.index("--model") + 1] == "generic-model[1m]"
     assert args[-1] == "audit prompt"
     assert "--dangerously-skip-permissions" not in args
     assert "--resume" not in args
@@ -120,6 +151,7 @@ def test_claude_effort_argument_is_normalized_and_allowlisted(
         monkeypatch, configured, expected):
     module = _load_run_harness()
     calls = []
+    _set_anthropic_endpoint(monkeypatch, module)
     monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "0")
     monkeypatch.setenv("AJ_EFFORT", configured)
     monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
@@ -143,9 +175,10 @@ def test_claude_effort_argument_is_normalized_and_allowlisted(
 def test_claude_endpoint_capabilities_can_disable_thinking(monkeypatch):
     module = _load_run_harness()
     calls = []
-    monkeypatch.setenv("AJ_CONTEXT_WINDOW_TOKENS", "131072")
-    monkeypatch.setenv("AJ_MAX_OUTPUT_TOKENS", "16384")
-    monkeypatch.setenv("AJ_THINKING_COMPATIBILITY", "false")
+    _set_anthropic_endpoint(monkeypatch, module)
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "131072")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "16384")
+    monkeypatch.setenv("AJ_ENDPOINT_THINKING_ENABLED", "false")
     monkeypatch.setenv("AJ_EFFORT", "high")
     monkeypatch.setattr(
         module, "_run",
@@ -171,15 +204,19 @@ def test_claude_relay_only_overrides_main_streaming_messages_request():
         "/v1/messages?beta=true",
         json.dumps({"stream": True, "max_tokens": 128_000}).encode("utf-8"),
         384_000,
+        upstream_model="configured-model",
     ))
     internal = json.loads(module._rewrite_claude_request_body(
         "/v1/messages",
         json.dumps({"stream": False, "max_tokens": 8}).encode("utf-8"),
         384_000,
+        upstream_model="configured-model",
     ))
 
     assert streaming["max_tokens"] == 384_000
     assert internal["max_tokens"] == 8
+    assert streaming["model"] == "configured-model"
+    assert internal["model"] == "configured-model"
 
 
 @pytest.mark.parametrize(
@@ -215,26 +252,31 @@ def test_claude_messages_rewrite_uses_frozen_thinking_format(
 
 
 @pytest.mark.parametrize(
-    ("thinking_format", "enabled", "expected"),
+    ("path", "thinking_format", "enabled", "expected"),
     [
-        ("enable_thinking", True, {"enable_thinking": True}),
-        ("enable_thinking", False, {}),
-        ("thinking_type", True, {"enable_thinking": True}),
-        ("none", False, {}),
+        ("/v1/chat/completions", "enable_thinking", True,
+         {"enable_thinking": True}),
+        ("/v1/responses", "enable_thinking", True,
+         {"enable_thinking": True}),
+        ("/v1/chat/completions", "enable_thinking", False, {}),
+        ("/v1/responses", "thinking_type", True,
+         {"enable_thinking": True}),
+        ("/v1/chat/completions", "none", False, {}),
     ],
 )
-def test_openai_chat_completions_rewrite_uses_frozen_thinking_format(
-        thinking_format, enabled, expected):
+def test_codex_openai_requests_use_endpoint_thinking_format(
+        path, thinking_format, enabled, expected):
     module = _load_run_harness()
+    message_field = "input" if path.endswith("/responses") else "messages"
     raw = {
         "model": "local-metadata-model",
-        "messages": [{"role": "user", "content": "hello"}],
+        message_field: [{"role": "user", "content": "hello"}],
         "thinking": {"type": "stale"},
         "enable_thinking": True,
     }
 
     rewritten = json.loads(module._rewrite_codex_request_body(
-        "/v1/chat/completions",
+        path,
         json.dumps(raw).encode("utf-8"),
         16_384,
         enabled,
@@ -251,6 +293,37 @@ def test_openai_chat_completions_rewrite_uses_frozen_thinking_format(
 
 
 @pytest.mark.parametrize(
+    ("path", "message_field"),
+    [
+        ("/v1/responses", "input"),
+        ("/v1/chat/completions", "messages"),
+    ],
+)
+def test_codex_relay_downgrades_developer_to_standard_system_role(
+        path, message_field):
+    module = _load_run_harness()
+    payload = {
+        message_field: [
+            {"role": "developer", "content": "system policy"},
+            {"role": "user", "content": "solve"},
+            {"role": "assistant", "content": "working"},
+            {"role": "tool", "content": "result"},
+        ],
+    }
+
+    rewritten = json.loads(module._rewrite_codex_request_body(
+        path,
+        json.dumps(payload).encode("utf-8"),
+        16_384,
+        True,
+    ))
+
+    assert [
+        message["role"] for message in rewritten[message_field]
+    ] == ["system", "user", "assistant", "tool"]
+
+
+@pytest.mark.parametrize(
     ("protocol", "path", "thinking_format", "enabled", "expected"),
     [
         ("openai", "/v1/chat/completions", "enable_thinking", True,
@@ -264,7 +337,7 @@ def test_openai_chat_completions_rewrite_uses_frozen_thinking_format(
 def test_pi_dual_protocol_relay_rewrites_real_request_shape(
         protocol, path, thinking_format, enabled, expected):
     module = _load_run_harness()
-    relay = module._PiEndpointRelay(
+    relay = module._EndpointThinkingRelay(
         "https://upstream.example/v1",
         protocol,
         thinking_format,
@@ -290,14 +363,13 @@ def test_claude_run_uses_local_relay_and_stops_it(monkeypatch):
     module = _load_run_harness()
     events = []
     calls = []
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://model.example/anthropic")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "custom-model")
-    monkeypatch.setenv("AJ_CONTEXT_WINDOW_TOKENS", "1000000")
-    monkeypatch.setenv("AJ_MAX_OUTPUT_TOKENS", "384000")
+    _set_endpoint(monkeypatch, protocol="anthropic", model="custom-model")
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "1000000")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "384000")
 
     class FakeRelay:
-        def __init__(self, base_url, max_output_tokens):
-            events.append(("init", base_url, max_output_tokens))
+        def __init__(self, base_url, max_output_tokens, **kwargs):
+            events.append(("init", base_url, max_output_tokens, kwargs))
 
         def start(self):
             events.append(("start",))
@@ -318,7 +390,12 @@ def test_claude_run_uses_local_relay_and_stops_it(monkeypatch):
     assert module._run_claude_code("solve") == 0
 
     assert events == [
-        ("init", "https://model.example/anthropic", 384_000),
+        (
+            "init",
+            "https://model.example/anthropic",
+            384_000,
+            {"upstream_model": "custom-model"},
+        ),
         ("start",),
         ("stop",),
     ]
@@ -329,8 +406,9 @@ def test_claude_run_uses_local_relay_and_stops_it(monkeypatch):
 
 def test_claude_adapter_rejects_context_above_supported_contract(monkeypatch):
     module = _load_run_harness()
-    monkeypatch.setenv("AJ_CONTEXT_WINDOW_TOKENS", "1000001")
-    monkeypatch.setenv("AJ_MAX_OUTPUT_TOKENS", "384000")
+    _set_anthropic_endpoint(monkeypatch, module)
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "1000001")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "384000")
     monkeypatch.setattr(
         module,
         "_run",
@@ -346,9 +424,10 @@ def test_codex_audit_mode_uses_read_only_sandbox_without_bypass(monkeypatch):
     configs = []
     relay_events = []
     monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "true")
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://quality-model-proxy:18080/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "deepseek-v4-flash")
+    _set_endpoint(
+        monkeypatch,
+        base_url="http://quality-model-proxy:18080/v1",
+    )
     monkeypatch.setenv("AJ_RESUME_SESSION_ID", "22222222-2222-2222-2222-222222222222")
     monkeypatch.setattr(
         module, "_write_codex_config",
@@ -386,7 +465,7 @@ def test_codex_audit_mode_uses_read_only_sandbox_without_bypass(monkeypatch):
     args, env, input_text = calls[0]
     assert configs == [(
         "/workspace/.codex", "http://127.0.0.1:43123",
-        "deepseek-v4-flash",
+        "generic-model",
         {
             "context_window_tokens": 1_000_000,
             "max_output_tokens": 384_000,
@@ -397,7 +476,7 @@ def test_codex_audit_mode_uses_read_only_sandbox_without_bypass(monkeypatch):
     assert relay_events == [
         (
             "init", "http://quality-model-proxy:18080/v1", 384_000, True,
-            "deepseek-v4-flash",
+            "generic-model",
         ),
         ("start",),
         ("stop",),
@@ -411,7 +490,7 @@ def test_codex_audit_mode_uses_read_only_sandbox_without_bypass(monkeypatch):
     assert args[-1] == "-"
     assert input_text == "audit prompt"
     assert env["CODEX_HOME"] == "/workspace/.codex"
-    assert env["AJ_OPENAI_API_KEY"] == "temporary-token"
+    assert env["AJ_ENDPOINT_API_KEY"] == "temporary-token"
 
 
 @pytest.mark.parametrize(
@@ -430,7 +509,7 @@ def test_codex_config_reserves_output_and_controls_reasoning_summary(
     )
 
     config = (tmp_path / "config.toml").read_text(encoding="utf-8")
-    assert f'model = "{module.CODEX_CONTEXT_METADATA_MODEL}"' in config
+    assert 'model = "generic-model"' in config
     assert "model_context_window = 131072" in config
     assert "model_auto_compact_token_limit = 114688" in config
     assert (
@@ -466,7 +545,7 @@ def test_codex_and_opencode_configs_reference_web_search_secret_from_env(tmp_pat
 
     opencode_config = json.loads(module._opencode_config_content(
         "https://model.example/v1",
-        "OPENCODE_API_KEY",
+        "AJ_ENDPOINT_API_KEY",
         "generic-model",
         web_search_mcp=settings,
     ))
@@ -488,9 +567,9 @@ def test_claude_uses_strict_runtime_mcp_config_without_persisting_secret(
     module = _load_run_harness()
     calls = []
     runtime_root = tmp_path / "runtime"
+    _set_anthropic_endpoint(monkeypatch, module)
     monkeypatch.setenv("AJ_WORKSPACE", str(tmp_path))
     monkeypatch.setenv("AJ_RUNTIME_ROOT", str(runtime_root))
-    monkeypatch.setenv("ANTHROPIC_MODEL", "generic-model")
     monkeypatch.setenv("AJ_WEB_SEARCH_MCP_URL", "https://search.example/mcp")
     monkeypatch.setenv(
         "AJ_WEB_SEARCH_MCP_AUTHORIZATION",
@@ -566,7 +645,7 @@ def test_codex_relay_injects_output_limit_strips_thinking_and_streams_response()
         request = urllib.request.Request(
             relay_url + "/responses?stream=true",
             data=json.dumps({
-                "model": module.CODEX_CONTEXT_METADATA_MODEL,
+                "model": "generic-model",
                 "reasoning": {"effort": "high"},
                 "input": [
                     {"type": "reasoning", "id": "hidden"},
@@ -689,9 +768,10 @@ def test_opencode_audit_mode_denies_all_except_evidence_read_tools(monkeypatch):
     module = _load_run_harness()
     calls = []
     monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "on")
-    monkeypatch.setenv("OPENCODE_BASE_URL", "http://quality-model-proxy:18080/v1")
-    monkeypatch.setenv("OPENCODE_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENCODE_MODEL", "deepseek-v4-flash")
+    _set_endpoint(
+        monkeypatch,
+        base_url="http://quality-model-proxy:18080/v1",
+    )
     monkeypatch.setenv("AJ_RESUME_SESSION_ID", "33333333-3333-3333-3333-333333333333")
     monkeypatch.setattr(module.os, "makedirs", lambda *_args, **_kwargs: None)
 
@@ -719,12 +799,12 @@ def test_opencode_audit_mode_denies_all_except_evidence_read_tools(monkeypatch):
         "grep": "allow",
         "external_directory": {"/evidence/**": "allow"},
     }
-    assert env["OPENCODE_API_KEY"] == "temporary-token"
+    assert env["AJ_ENDPOINT_API_KEY"] == "temporary-token"
     assert env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] == "384000"
-    model = config["provider"]["aj-go"]["models"]["deepseek-v4-flash"]
+    model = config["provider"][module.OPENCODE_PROVIDER_ID]["models"]["generic-model"]
     assert model["limit"] == {"context": 1_000_000, "output": 384_000}
     assert model["reasoning"] is True
-    assert model["interleaved"] is False
+    assert "interleaved" not in model
     assert all(env[name] == "true" for name in (
         "OPENCODE_DISABLE_DEFAULT_PLUGINS",
         "OPENCODE_DISABLE_CLAUDE_CODE",
@@ -738,45 +818,109 @@ def test_opencode_model_capabilities_are_model_agnostic_and_can_disable_thinking
     module = _load_run_harness()
 
     config = json.loads(module._opencode_config_content(
-        "https://model.example/v1", "OPENCODE_API_KEY", "generic-model",
+        "https://model.example/v1", "AJ_ENDPOINT_API_KEY", "generic-model",
         context_window_tokens=131_072,
         max_output_tokens=16_384,
         thinking_compatibility=False,
     ))
 
-    model = config["provider"]["aj-go"]["models"]["generic-model"]
+    model = config["provider"][module.OPENCODE_PROVIDER_ID]["models"]["generic-model"]
     assert model["limit"] == {"context": 131_072, "output": 16_384}
     assert model["reasoning"] is False
-    assert model["interleaved"] is False
+    assert "interleaved" not in model
 
 
-def test_opencode_deepseek_profile_enables_reasoning_content_interleave():
+def test_opencode_consumes_same_endpoint_thinking_contract(monkeypatch):
     module = _load_run_harness()
+    events = []
+    calls = []
+    _set_endpoint(monkeypatch)
+    monkeypatch.setenv("AJ_ENDPOINT_THINKING_FORMAT", "enable_thinking")
+    monkeypatch.setenv("AJ_ENDPOINT_THINKING_ENABLED", "true")
+    monkeypatch.setattr(module.os, "makedirs", lambda *_args, **_kwargs: None)
 
-    config = json.loads(module._opencode_config_content(
-        "https://api.deepseek.com/v1", "OPENCODE_API_KEY", "model",
-        thinking_compatibility=True,
-        thinking_format="deepseek",
-    ))
+    class FakeRelay:
+        def __init__(self, base_url, protocol, thinking_format, thinking_enabled):
+            events.append((
+                "init", base_url, protocol, thinking_format, thinking_enabled,
+            ))
 
-    model = config["provider"]["aj-go"]["models"]["model"]
-    assert model["reasoning"] is True
-    assert model["interleaved"] == {"field": "reasoning_content"}
+        def start(self):
+            events.append(("start",))
+            return "http://127.0.0.1:45678"
+
+        def stop(self):
+            events.append(("stop",))
+
+    def run(args, env=None, input_text=None):
+        calls.append((list(args), dict(env or {}), input_text))
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(module, "_EndpointThinkingRelay", FakeRelay)
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
+
+    assert module._run_opencode("solve") == 0
+
+    assert events == [
+        ("init", "https://model.example/v1", "openai", "enable_thinking", True),
+        ("start",),
+        ("stop",),
+    ]
+    config = json.loads(calls[0][1]["OPENCODE_CONFIG_CONTENT"])
+    provider = config["provider"][module.OPENCODE_PROVIDER_ID]
+    assert provider["options"]["baseURL"] == "http://127.0.0.1:45678"
 
 
 @pytest.mark.parametrize(
-    "runner_name", ["_run_claude_code", "_run_codex", "_run_opencode", "_run_pi"],
+    ("runner_name", "protocol"),
+    [
+        (
+            "_run_claude_code",
+            "anthropic",
+        ),
+        (
+            "_run_codex",
+            "openai",
+        ),
+        (
+            "_run_opencode",
+            "openai",
+        ),
+        (
+            "_run_pi",
+            "openai",
+        ),
+    ],
 )
-def test_all_harnesses_reject_invalid_endpoint_capabilities(
-        monkeypatch, runner_name):
+@pytest.mark.parametrize("missing_name", [
+    "AJ_ENDPOINT_BASE_URL", "AJ_ENDPOINT_API_KEY", "AJ_ENDPOINT_MODEL",
+])
+def test_all_harnesses_require_a_complete_endpoint(
+        monkeypatch, runner_name, protocol, missing_name):
     module = _load_run_harness()
-    monkeypatch.setenv("ANTHROPIC_MODEL", "generic-model")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "generic-model")
-    monkeypatch.setenv("OPENCODE_API_KEY", "temporary-token")
-    monkeypatch.setenv("AJ_CONTEXT_WINDOW_TOKENS", "8192")
-    monkeypatch.setenv("AJ_MAX_OUTPUT_TOKENS", "16384")
+    _set_endpoint(monkeypatch, protocol=protocol)
+    monkeypatch.delenv(missing_name, raising=False)
+    monkeypatch.setattr(
+        module, "_run",
+        lambda *_args, **_kwargs: pytest.fail("端点配置不完整时不得启动 harness"),
+    )
+
+    assert getattr(module, runner_name)("solve") == 2
+
+
+@pytest.mark.parametrize(("runner_name", "protocol"), [
+    ("_run_claude_code", "anthropic"),
+    ("_run_codex", "openai"),
+    ("_run_opencode", "openai"),
+    ("_run_pi", "openai"),
+])
+def test_all_harnesses_reject_invalid_endpoint_capabilities(
+        monkeypatch, runner_name, protocol):
+    module = _load_run_harness()
+    _set_endpoint(monkeypatch, protocol=protocol)
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "8192")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "16384")
     monkeypatch.setattr(
         module, "_run",
         lambda *_args, **_kwargs: pytest.fail("能力配置非法时不得启动 harness"),
@@ -785,19 +929,18 @@ def test_all_harnesses_reject_invalid_endpoint_capabilities(
     assert getattr(module, runner_name)("solve") == 2
 
 
-@pytest.mark.parametrize(
-    "runner_name", ["_run_claude_code", "_run_codex", "_run_opencode", "_run_pi"],
-)
+@pytest.mark.parametrize(("runner_name", "protocol"), [
+    ("_run_claude_code", "anthropic"),
+    ("_run_codex", "openai"),
+    ("_run_opencode", "openai"),
+    ("_run_pi", "openai"),
+])
 def test_all_harnesses_reject_context_above_one_million(
-        monkeypatch, runner_name):
+        monkeypatch, runner_name, protocol):
     module = _load_run_harness()
-    monkeypatch.setenv("ANTHROPIC_MODEL", "generic-model")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "generic-model")
-    monkeypatch.setenv("OPENCODE_API_KEY", "temporary-token")
-    monkeypatch.setenv("AJ_CONTEXT_WINDOW_TOKENS", "1000001")
-    monkeypatch.setenv("AJ_MAX_OUTPUT_TOKENS", "384000")
+    _set_endpoint(monkeypatch, protocol=protocol)
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "1000001")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "384000")
     monkeypatch.setattr(
         module, "_run",
         lambda *_args, **_kwargs: pytest.fail("超过 1M 时不得启动 harness"),
@@ -816,15 +959,16 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
     resume_id = "44444444-4444-4444-4444-444444444444"
     monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://answer-model-proxy:18080/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "custom-reasoning-model")
+    _set_endpoint(
+        monkeypatch,
+        model="custom-reasoning-model",
+        base_url="http://answer-model-proxy:18080/v1",
+    )
     monkeypatch.setenv("AJ_RESUME_SESSION_ID", resume_id)
     monkeypatch.setenv("AJ_PHASE", "reverse_solve")
-    monkeypatch.setenv("AJ_CONTEXT_WINDOW_TOKENS", "1000000")
-    monkeypatch.setenv("AJ_MAX_OUTPUT_TOKENS", "384000")
-    monkeypatch.setenv("AJ_THINKING_COMPATIBILITY", "true")
-    monkeypatch.setenv("AJ_PI_THINKING_FORMAT", "deepseek")
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "1000000")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "384000")
+    monkeypatch.setenv("AJ_ENDPOINT_THINKING_ENABLED", "true")
 
     def run(args, env=None, input_text=None, stdout_session_only=False):
         calls.append((
@@ -868,7 +1012,7 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
         assert flag in args
     assert "--thinking" not in args
     assert "--tools" not in args
-    assert env["PI_API_KEY"] == "temporary-token"
+    assert env["AJ_ENDPOINT_API_KEY"] == "temporary-token"
     assert env["PI_CODING_AGENT_DIR"] == str(config_dir)
     assert env["PI_CODING_AGENT_SESSION_DIR"] == str(session_dir)
     assert env["PI_OFFLINE"] == "1"
@@ -879,10 +1023,11 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
     assert provider == {
         "baseUrl": "http://answer-model-proxy:18080/v1",
         "api": "openai-completions",
-        "apiKey": "$PI_API_KEY",
+        "apiKey": "$AJ_ENDPOINT_API_KEY",
         "authHeader": True,
         "compat": {
             "supportsStore": False,
+            "supportsDeveloperRole": False,
             "maxTokensField": "max_tokens",
         },
         "models": [{
@@ -892,19 +1037,6 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
             "input": ["text"],
             "contextWindow": 1_000_000,
             "maxTokens": 384_000,
-            "thinkingLevelMap": {
-                "minimal": None,
-                "low": None,
-                "medium": None,
-                "high": "high",
-                "max": "max",
-            },
-            "compat": {
-                "supportsStore": False,
-                "supportsDeveloperRole": False,
-                "requiresReasoningContentOnAssistantMessages": True,
-                "thinkingFormat": "deepseek",
-            },
         }],
     }
     assert recorded[0][0] == "pi"
@@ -918,9 +1050,7 @@ def test_pi_explicitly_loads_only_the_trusted_web_search_mcp_extension(
     calls = []
     monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "generic-model")
+    _set_endpoint(monkeypatch)
     monkeypatch.setenv("AJ_WEB_SEARCH_MCP_URL", "https://search.example/mcp")
     monkeypatch.setenv("AJ_WEB_SEARCH_MCP_AUTHORIZATION", "Bearer search-secret")
     monkeypatch.setattr(
@@ -957,12 +1087,14 @@ def test_pi_thinking_compatible_endpoint_controls_reverse_phase_thinking(
     calls = []
     monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://answer-model-proxy:18080/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "custom-reasoning-model")
+    _set_endpoint(
+        monkeypatch,
+        model="custom-reasoning-model",
+        base_url="http://answer-model-proxy:18080/v1",
+    )
     monkeypatch.setenv("AJ_PHASE", phase)
     monkeypatch.setenv("AJ_EFFORT", effort)
-    monkeypatch.setenv("AJ_THINKING_COMPATIBILITY", "true")
+    monkeypatch.setenv("AJ_ENDPOINT_THINKING_ENABLED", "true")
 
     def run(args, _env=None, **_kwargs):
         calls.append(list(args))
@@ -1005,7 +1137,7 @@ def test_pi_anthropic_provider_config_uses_messages_without_openai_compat(tmp_pa
     module._write_pi_models_config(
         str(config_dir),
         "http://answer-model-proxy:18080/anthropic",
-        "mimo-v2.5-pro",
+        "generic-model",
         thinking_compatibility=True,
         protocol="anthropic",
     )
@@ -1013,7 +1145,7 @@ def test_pi_anthropic_provider_config_uses_messages_without_openai_compat(tmp_pa
     config = json.loads((config_dir / "models.json").read_text(encoding="utf-8"))
     provider = config["providers"]["agent-judge"]
     assert provider["api"] == "anthropic-messages"
-    assert provider["apiKey"] == "$PI_API_KEY"
+    assert provider["apiKey"] == "$AJ_ENDPOINT_API_KEY"
     assert provider["baseUrl"] == "http://answer-model-proxy:18080/anthropic"
     assert "authHeader" not in provider
     assert "compat" not in provider
@@ -1026,12 +1158,12 @@ def test_run_pi_anthropic_protocol_reads_anthropic_environment(monkeypatch, tmp_
     monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
     monkeypatch.setenv("AJ_ENDPOINT_PROTOCOL", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://answer-model-proxy:18080/anthropic")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "temporary-token")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "mimo-v2.5-pro")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://must-not-use.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "must-not-use")
-    monkeypatch.setenv("OPENAI_MODEL", "must-not-use")
+    _set_endpoint(
+        monkeypatch,
+        protocol="anthropic",
+        model="generic-model",
+        base_url="http://answer-model-proxy:18080/anthropic",
+    )
     monkeypatch.setattr(
         module,
         "_run",
@@ -1045,8 +1177,8 @@ def test_run_pi_anthropic_protocol_reads_anthropic_environment(monkeypatch, tmp_
     assert module._run_pi("solve") == 0
 
     args, env = calls[0]
-    assert args[args.index("--model") + 1] == "mimo-v2.5-pro"
-    assert env["PI_API_KEY"] == "temporary-token"
+    assert args[args.index("--model") + 1] == "generic-model"
+    assert env["AJ_ENDPOINT_API_KEY"] == "temporary-token"
     provider = json.loads(
         (config_dir / "models.json").read_text(encoding="utf-8")
     )["providers"]["agent-judge"]
@@ -1054,14 +1186,13 @@ def test_run_pi_anthropic_protocol_reads_anthropic_environment(monkeypatch, tmp_
     assert "must-not-use" not in json.dumps(provider)
 
 
-def test_pi_generic_thinking_omits_deepseek_wire_fields(tmp_path):
+def test_pi_thinking_config_is_model_agnostic(tmp_path):
     module = _load_run_harness()
     config_dir = tmp_path / "pi-agent"
 
     module._write_pi_models_config(
         str(config_dir), "https://model.example/v1", "generic-model",
         thinking_compatibility=True,
-        thinking_format="generic",
     )
 
     config = json.loads((config_dir / "models.json").read_text(encoding="utf-8"))
@@ -1079,9 +1210,7 @@ def test_pi_audit_mode_uses_only_read_tools_and_never_resumes(
     calls = []
     monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "generic-model")
+    _set_endpoint(monkeypatch)
     monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "1")
     monkeypatch.setenv(
         "AJ_RESUME_SESSION_ID", "44444444-4444-4444-4444-444444444444",
@@ -1111,12 +1240,10 @@ def test_pi_disabled_thinking_compatibility_omits_thinking_cli_flag(
     calls = []
     monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "generic-model")
+    _set_endpoint(monkeypatch)
     monkeypatch.setenv("AJ_PHASE", "reverse_finalize")
     monkeypatch.setenv("AJ_EFFORT", "max")
-    monkeypatch.setenv("AJ_THINKING_COMPATIBILITY", "false")
+    monkeypatch.setenv("AJ_ENDPOINT_THINKING_ENABLED", "false")
     monkeypatch.setattr(
         module, "_run",
         lambda args, **_kwargs: calls.append(list(args)) or SimpleNamespace(
@@ -1129,26 +1256,26 @@ def test_pi_disabled_thinking_compatibility_omits_thinking_cli_flag(
     assert "--thinking" not in calls[0]
     config = json.loads((config_dir / "models.json").read_text(encoding="utf-8"))
     model = config["providers"]["agent-judge"]["models"][0]
+    provider = config["providers"]["agent-judge"]
     assert model["contextWindow"] == 1_000_000
     assert model["maxTokens"] == 384_000
     assert "reasoning" not in model
     assert "thinkingLevelMap" not in model
     assert "compat" not in model
+    assert provider["compat"]["supportsDeveloperRole"] is False
 
 
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("AJ_CONTEXT_WINDOW_TOKENS", "0"),
-        ("AJ_MAX_OUTPUT_TOKENS", "not-a-number"),
-        ("AJ_THINKING_COMPATIBILITY", "maybe"),
+        ("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "0"),
+        ("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "not-a-number"),
+        ("AJ_ENDPOINT_THINKING_ENABLED", "maybe"),
     ],
 )
 def test_pi_rejects_invalid_endpoint_capability_env(monkeypatch, name, value):
     module = _load_run_harness()
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "secret")
-    monkeypatch.setenv("OPENAI_MODEL", "model")
+    _set_endpoint(monkeypatch, model="model", api_key="secret")
     monkeypatch.setenv(name, value)
     monkeypatch.setattr(
         module,
@@ -1161,11 +1288,9 @@ def test_pi_rejects_invalid_endpoint_capability_env(monkeypatch, name, value):
 
 def test_pi_rejects_output_limit_larger_than_context(monkeypatch):
     module = _load_run_harness()
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "secret")
-    monkeypatch.setenv("OPENAI_MODEL", "model")
-    monkeypatch.setenv("AJ_CONTEXT_WINDOW_TOKENS", "8192")
-    monkeypatch.setenv("AJ_MAX_OUTPUT_TOKENS", "16384")
+    _set_endpoint(monkeypatch, model="model", api_key="secret")
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "8192")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "16384")
     monkeypatch.setattr(
         module,
         "_run",
@@ -1176,15 +1301,13 @@ def test_pi_rejects_output_limit_larger_than_context(monkeypatch):
 
 
 @pytest.mark.parametrize("missing_name", [
-    "OPENAI_BASE_URL",
-    "OPENAI_API_KEY",
-    "OPENAI_MODEL",
+    "AJ_ENDPOINT_BASE_URL",
+    "AJ_ENDPOINT_API_KEY",
+    "AJ_ENDPOINT_MODEL",
 ])
 def test_pi_requires_complete_openai_endpoint(monkeypatch, missing_name):
     module = _load_run_harness()
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "secret")
-    monkeypatch.setenv("OPENAI_MODEL", "model")
+    _set_endpoint(monkeypatch, model="model", api_key="secret")
     monkeypatch.delenv(missing_name)
     monkeypatch.setattr(
         module,

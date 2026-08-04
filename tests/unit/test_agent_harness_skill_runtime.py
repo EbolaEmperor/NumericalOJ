@@ -51,6 +51,17 @@ def _enable_runtime(monkeypatch, tmp_path, harness):
     return runtime_root, skill_file
 
 
+def _set_endpoint(monkeypatch, protocol="openai"):
+    monkeypatch.setenv("AJ_ENDPOINT_PROTOCOL", protocol)
+    monkeypatch.setenv(
+        "AJ_ENDPOINT_BASE_URL",
+        "https://model.example/anthropic"
+        if protocol == "anthropic" else "https://model.example/v1",
+    )
+    monkeypatch.setenv("AJ_ENDPOINT_API_KEY", "temporary-token")
+    monkeypatch.setenv("AJ_ENDPOINT_MODEL", "model")
+
+
 def test_prompt_file_has_priority_over_stdin_and_environment(monkeypatch, tmp_path):
     module = _load_run_harness()
     prompt_file = tmp_path / "prompt.txt"
@@ -90,9 +101,7 @@ def test_codex_uses_workspace_runtime_as_codex_home(monkeypatch, tmp_path):
     )
     calls = []
     configs = []
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "model")
+    _set_endpoint(monkeypatch)
 
     class FakeRelay:
         def __init__(self, *_args, **_kwargs):
@@ -130,7 +139,7 @@ def test_opencode_uses_workspace_runtime_home_and_xdg(monkeypatch, tmp_path):
         monkeypatch, tmp_path, "opencode",
     )
     calls = []
-    monkeypatch.setenv("OPENCODE_API_KEY", "temporary-token")
+    _set_endpoint(monkeypatch)
     monkeypatch.setattr(
         module, "_run",
         lambda args, env=None, **_kwargs: (
@@ -154,9 +163,7 @@ def test_pi_explicitly_loads_only_materialized_skill(monkeypatch, tmp_path):
     module = _load_run_harness()
     runtime_root, skill_file = _enable_runtime(monkeypatch, tmp_path, "pi")
     calls = []
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "temporary-token")
-    monkeypatch.setenv("OPENAI_MODEL", "model")
+    _set_endpoint(monkeypatch)
     monkeypatch.setattr(
         module, "_run",
         lambda args, env=None, **_kwargs: (
@@ -186,8 +193,19 @@ def test_claude_discovers_skill_from_workspace_runtime_home(monkeypatch, tmp_pat
         monkeypatch, tmp_path, "claude_code",
     )
     calls = []
-    monkeypatch.setenv("ANTHROPIC_MODEL", "model")
-    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    _set_endpoint(monkeypatch, "anthropic")
+
+    class FakeRelay:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            return "http://127.0.0.1:43123"
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(module, "_ClaudeEndpointRelay", FakeRelay)
     monkeypatch.setattr(
         module, "_run",
         lambda args, env=None, **_kwargs: (
@@ -209,7 +227,7 @@ def test_enabled_skills_fail_closed_when_projection_is_missing(
     monkeypatch.setenv("AJ_ENABLE_SKILLS", "1")
     monkeypatch.setenv("AJ_RUNTIME_ROOT", str(runtime_root))
     monkeypatch.setenv("AJ_WORKSPACE", str(tmp_path))
-    monkeypatch.setenv("ANTHROPIC_MODEL", "model")
+    _set_endpoint(monkeypatch, "anthropic")
     monkeypatch.setattr(
         module, "_run",
         lambda *_args, **_kwargs: pytest.fail("缺少 skill 时不得启动 harness"),
@@ -222,7 +240,7 @@ def test_runtime_root_must_stay_inside_workspace(monkeypatch, tmp_path):
     module = _load_run_harness()
     monkeypatch.setenv("AJ_RUNTIME_ROOT", str(tmp_path / "outside"))
     monkeypatch.setenv("AJ_WORKSPACE", str(tmp_path / "workspace"))
-    monkeypatch.setenv("ANTHROPIC_MODEL", "model")
+    _set_endpoint(monkeypatch, "anthropic")
     monkeypatch.setattr(
         module, "_run",
         lambda *_args, **_kwargs: pytest.fail("运行时越界时不得启动 harness"),

@@ -131,7 +131,6 @@ Agent-as-Judge 高级通信和压缩包边界：
 | `AGENT_JUDGE_HELLO_TIMEOUT_SECONDS` | float | `8.0` |
 | `AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS` | float | `1.0` |
 | `AGENT_JUDGE_PAUSED_PROBE_INTERVAL_SECONDS` | int | `3600` |
-| `AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS` | float | `30.0` |
 
 ## 上传、批量打榜与反向评测
 

@@ -15,7 +15,6 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from urllib.parse import urlsplit
 
 try:
     from celery.exceptions import MaxRetriesExceededError, Retry
@@ -38,8 +37,6 @@ from oj_modules.ranking.db import (
     submission_dir, update_submission_result_for_attempt,
 )
 from oj_modules.ranking.agent_judge.db import (
-    DEFAULT_OPENCODE_GO_BASE_URL, DEFAULT_OPENCODE_GO_MODEL,
-    ENDPOINT_POOL_QUALITY_GATE,
     ENDPOINT_STATUS_PAUSED,
     HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE, HARNESS_PI,
     agent_judge_trace_dir, agent_judge_trace_id,
@@ -106,12 +103,6 @@ PAUSED_PROBE_OWNER_TTL_SECONDS = max(300, PAUSED_PROBE_INTERVAL_SECONDS * 2)
 PAUSED_PROBE_OWNER_KEY = 'ranking:agent_judge:paused_probe_owner'
 PAUSED_PROBE_SEED_LOCK_KEY = 'ranking:agent_judge:paused_probe_seed_lock'
 PAUSED_PROBE_RUN_LOCK_KEY = 'ranking:agent_judge:paused_probe_run_lock'
-OPENCODE_GO_HELLO_MODEL = 'opencode-go/deepseek-v4-flash'
-OPENCODE_HELLO_TIMEOUT_SECONDS = max(
-    JUDGE_HELLO_TIMEOUT_SECONDS,
-    float(_config_value('AGENT_JUDGE_OPENCODE_HELLO_TIMEOUT_SECONDS', 30.0)),
-)
-
 _judge_rds = None
 _judge_blocking_rds = None
 _TERMINAL_STATUSES = {'Accepted', 'Error'}
@@ -396,9 +387,11 @@ def _resolve_endpoints(competition_id, competition=None):
         resolved.append({
             'id': endpoint['id'],
             'harness': endpoint.get('harness') or HARNESS_CLAUDE_CODE,
+            'protocol': endpoint.get('protocol'),
             'base_url': endpoint['base_url'],
             'api_key': endpoint['api_key'],
             'model': endpoint.get('model') or '',
+            'thinking_format': endpoint.get('thinking_format'),
             **normalize_endpoint_model_capabilities(endpoint),
             'concurrency_limit': max(
                 1, int(endpoint.get('concurrency_limit') or 1),
@@ -498,87 +491,7 @@ def _hello_probe_request(endpoint):
     return urllib.request.Request(url, data=body, headers=headers, method='POST'), None
 
 
-def _opencode_probe_config_content():
-    return json.dumps({
-        '$schema': 'https://opencode.ai/config.json',
-        'model': OPENCODE_GO_HELLO_MODEL,
-        'small_model': OPENCODE_GO_HELLO_MODEL,
-        'enabled_providers': ['opencode-go'],
-        'provider': {
-            'opencode-go': {
-                'options': {
-                    'apiKey': '{env:OPENCODE_API_KEY}',
-                },
-            },
-        },
-    }, ensure_ascii=False)
-
-
-def _probe_opencode_once(endpoint):
-    api_key = str(endpoint.get('api_key') or '').strip()
-    if not api_key:
-        return False, 'OpenCode Go API Key 为空'
-    container_name = 'aj_opencode_probe_%s_%s' % (
-        str(endpoint.get('id') or 'x').replace('-', '_'),
-        secrets.token_hex(4),
-    )
-    try:
-        env = os.environ.copy()
-        env['OPENCODE_API_KEY'] = api_key
-        env['OPENCODE_CONFIG_CONTENT'] = _opencode_probe_config_content()
-        r = subprocess.run(
-            [
-                'docker', 'run', '--rm', '--name', container_name,
-                '--security-opt', 'no-new-privileges',
-                '--cap-drop', 'ALL',
-                '--pids-limit', '128',
-                '--memory', '512m',
-                '--cpus', '1',
-                '--read-only',
-                '--tmpfs', '/tmp:rw,nosuid,size=128m',
-                # 探针只用容器内 tmpfs 和环境变量注入配置；不挂载 OJ 代码、提交目录或 Docker socket。
-                '-e', 'OPENCODE_API_KEY',
-                '-e', 'OPENCODE_CONFIG_CONTENT',
-                '-e', 'HOME=/tmp/opencode_home',
-                '-e', 'XDG_CONFIG_HOME=/tmp/opencode_config',
-                '-e', 'XDG_DATA_HOME=/tmp/opencode_data',
-                '-e', 'XDG_STATE_HOME=/tmp/opencode_state',
-                '-e', 'XDG_CACHE_HOME=/tmp/opencode_cache',
-                JUDGE_IMAGE,
-                'bash', '-lc',
-                'mkdir -p /tmp/opencode_work /tmp/opencode_home /tmp/opencode_config '
-                '/tmp/opencode_data /tmp/opencode_state /tmp/opencode_cache && '
-                f'cd /tmp/opencode_work && opencode run --model {OPENCODE_GO_HELLO_MODEL} hello',
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=OPENCODE_HELLO_TIMEOUT_SECONDS,
-        )
-        if r.returncode == 0:
-            return True, 'ok'
-        msg = (r.stderr or r.stdout or f'opencode exited {r.returncode}').strip()
-        return False, msg[:200]
-    except subprocess.TimeoutExpired:
-        try:
-            subprocess.run(['docker', 'rm', '-f', container_name],
-                           capture_output=True, text=True, timeout=10)
-        except Exception:
-            pass
-        return False, 'opencode hello 超时'
-    except FileNotFoundError:
-        return False, 'Docker CLI 不存在'
-    except Exception as e:
-        return False, str(e)[:200]
-
-
 def _probe_endpoint_once(endpoint):
-    harness = str(endpoint.get('harness') or HARNESS_CLAUDE_CODE).strip().lower()
-    # 主评测池的 OpenCode Go 保持既有 CLI 探针；质量门禁调用的是管理员配置的
-    # OpenAI-compatible 端点，探活（含 paused 恢复）必须命中同一 URL / model。
-    if (harness == HARNESS_OPENCODE
-            and endpoint.get('pool_kind') != ENDPOINT_POOL_QUALITY_GATE):
-        return _probe_opencode_once(endpoint)
     req, err = _hello_probe_request(endpoint)
     if err:
         return False, err
@@ -875,33 +788,13 @@ def _prepare_workspace(submission, competition, rules, attempt_id=None):
     return ws, result_name
 
 
-def _resolve_harness_config(competition, endpoint=None):
+def _resolve_harness_config(endpoint):
     ep = endpoint or {}
     harness = ep.get('harness') or HARNESS_CLAUDE_CODE
-    base_url = ep.get('base_url') or competition.get('agent_judge_base_url') or ''
-    api_key = ep.get('api_key') or competition.get('agent_judge_api_key') or ''
-    model = ep.get('model') or competition.get('agent_judge_model') or ''
-    if harness == HARNESS_OPENCODE:
-        base_url = base_url or DEFAULT_OPENCODE_GO_BASE_URL
-        model = model or DEFAULT_OPENCODE_GO_MODEL
+    base_url = ep.get('base_url') or ''
+    api_key = ep.get('api_key') or ''
+    model = ep.get('model') or ''
     return harness, base_url, api_key, model
-
-
-def _thinking_wire_profile(base_url):
-    """从规范端点 origin 推导无凭证的 reasoning wire profile。"""
-    scheme = ''
-    try:
-        parsed_source = urlsplit(str(base_url or '').strip())
-        scheme = str(parsed_source.scheme or '').lower()
-        hostname = str(parsed_source.hostname or '').lower().rstrip('.')
-    except ValueError:
-        hostname = ''
-    if (
-        scheme == 'https'
-        and (hostname == 'deepseek.com' or hostname.endswith('.deepseek.com'))
-    ):
-        return 'deepseek'
-    return 'generic'
 
 
 def _agent_env_args(
@@ -916,15 +809,6 @@ def _agent_env_args(
     ).strip().lower()
     if copied_thinking_format not in {'enable_thinking', 'thinking_type', 'none'}:
         copied_thinking_format = ''
-    source_base_url = str((endpoint or {}).get('base_url') or base_url or '').strip()
-    # 新复制端点只采用管理员冻结的通用协议字段；不再按厂商 URL 做适配。
-    # 只有 thinking_format 为 NULL 的旧独立端点沿用历史 wire profile 推断，
-    # 避免改变既有比赛的运行行为。
-    thinking_format = (
-        'generic'
-        if copied_thinking_format
-        else _thinking_wire_profile(source_base_url)
-    )
     args = [
         '-e', 'IS_SANDBOX=1',
         # 关闭 claude 的非必要外联（遥测/自动更新/错误上报），否则在受限容器内会卡住
@@ -934,32 +818,22 @@ def _agent_env_args(
         '-e', 'DISABLE_ERROR_REPORTING=1',
         '-e', f'AJ_HARNESS={harness}',
         '-e', f'AJ_ENDPOINT_PROTOCOL={protocol}',
+        '-e', f'AJ_ENDPOINT_BASE_URL={base_url}',
+        '-e', f'AJ_ENDPOINT_API_KEY={api_key}',
+        '-e', f'AJ_ENDPOINT_MODEL={model}',
         '-e', (
-            'AJ_CONTEXT_WINDOW_TOKENS='
+            'AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS='
             f"{capabilities['context_window_tokens']}"
         ),
-        '-e', f"AJ_MAX_OUTPUT_TOKENS={capabilities['max_output_tokens']}",
+        '-e', f"AJ_ENDPOINT_MAX_OUTPUT_TOKENS={capabilities['max_output_tokens']}",
         '-e', (
-            'AJ_THINKING_COMPATIBILITY='
+            'AJ_ENDPOINT_THINKING_ENABLED='
             f"{1 if capabilities['thinking_compatibility'] else 0}"
         ),
         '-e', f'AJ_ENDPOINT_THINKING_FORMAT={copied_thinking_format}',
-        '-e', f'AJ_THINKING_FORMAT={thinking_format}',
         '-e', f'AJ_RESULT_FILE=/workspace/{result_name}',
         '-e', 'AJ_SESSION_STATE=/workspace/.aj_session_state.json',
-        '-e', f'ANTHROPIC_BASE_URL={base_url}',
-        '-e', f'ANTHROPIC_AUTH_TOKEN={api_key}',
-        '-e', f'ANTHROPIC_API_KEY={api_key}',
-        '-e', f'ANTHROPIC_MODEL={model}',
-        '-e', f'OPENAI_BASE_URL={base_url}',
-        '-e', f'OPENAI_API_KEY={api_key}',
-        '-e', f'OPENAI_MODEL={model}',
-        '-e', f'OPENCODE_BASE_URL={base_url}',
-        '-e', f'OPENCODE_API_KEY={api_key}',
-        '-e', f'OPENCODE_MODEL={model}',
     ]
-    if harness == HARNESS_PI:
-        args.extend(['-e', f'AJ_PI_THINKING_FORMAT={thinking_format}'])
     if include_prompt:
         args.extend(['-e', 'AJ_PROMPT'])
     return args
@@ -1003,8 +877,8 @@ _TRACE_RESULT_FILE_RE = re.compile(
     r'result_[0-9a-fA-F]{32}\.jsonl(?:\.rule_\d+\.jsonl)?', re.I,
 )
 _TRACE_ENV_SECRET_RE = re.compile(
-    r'((?:ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|'
-    r'OPENCODE_API_KEY)\s*[=:]\s*)[^\s"\'<>]+',
+    r'((?:AJ_ENDPOINT_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|'
+    r'OPENAI_API_KEY|OPENCODE_API_KEY)\s*[=:]\s*)[^\s"\'<>]+',
     re.I,
 )
 _TRACE_LOG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024
@@ -1862,8 +1736,8 @@ def _run_container_and_tail(submission_id, ws, result_name, competition, rules, 
     返回 (timed_out, container_ok)。可被集成测试整体 monkeypatch。
     轨迹经脱敏后写入 attempt 隔离的受信任目录，不再把含凭据风险的原始会话目录
     复制回选手 workspace。endpoint：本次使用的模型端点
-    （harness/base_url/api_key/model）；为空时回退到比赛单端点字段。"""
-    harness, base_url, api_key, model = _resolve_harness_config(competition, endpoint)
+    （harness/base_url/api_key/model）。"""
+    harness, base_url, api_key, model = _resolve_harness_config(endpoint)
     trace_dir = trace_dir or os.path.join(ws, 'agent_trace')
     os.makedirs(trace_dir, exist_ok=True)
     prompt = aj.build_prompt(competition.get('title'), result_name)
@@ -1968,7 +1842,7 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
     后端只在前置依赖 effective=pass 时调用 Agent；失败、跳过、错误都会直接把后继规则
     标为 skipped。每个 Agent 阶段只采纳当前 rule_id 的 report，避免模型提前上报未来规则。
     """
-    harness, base_url, api_key, model = _resolve_harness_config(competition, endpoint)
+    harness, base_url, api_key, model = _resolve_harness_config(endpoint)
     trace_dir = trace_dir or os.path.join(ws, 'agent_trace')
     os.makedirs(trace_dir, exist_ok=True)
     container_name = _agent_judge_container_name(submission_id, attempt_id)
@@ -2273,7 +2147,7 @@ def register_ranking_agent_judge_task(celery_app):
         if _fake_agent_judge_enabled():
             return _finish_fake_agent_judge(sid, attempt_id, competition)
 
-        # 选端点：优先端点池，回退比赛单端点；都没有则判 Error（避免无限重排）。
+        # 端点池是唯一模型配置入口；未配置则判 Error（避免无限重排）。
         endpoints = _resolve_endpoints(competition['id'], competition)
         if not endpoints:
             _write_error_for_attempt(sid, attempt_id, '未配置 Agent 评测端点（请在比赛设置里添加模型端点）')

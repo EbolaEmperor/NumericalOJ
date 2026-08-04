@@ -285,25 +285,34 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
             [
                 {
                     "harness": "codex",
+                    "protocol": "openai",
                     "base_url": "http://127.0.0.1:9",
                     "api_key": "local-only",
                     "model": "fake",
+                    "thinking_compatibility": True,
+                    "thinking_format": "enable_thinking",
                     "concurrency_limit": 1,
                     "enabled": True,
                 },
                 {
                     "harness": "codex",
+                    "protocol": "openai",
                     "base_url": "http://127.0.0.1:10",
                     "api_key": "paused-local-only",
                     "model": "fake-paused",
+                    "thinking_compatibility": False,
+                    "thinking_format": "none",
                     "concurrency_limit": 2,
                     "status": "paused",
                 },
                 {
                     "harness": "codex",
+                    "protocol": "openai",
                     "base_url": "http://127.0.0.1:11",
                     "api_key": "disabled-local-only",
                     "model": "fake-disabled",
+                    "thinking_compatibility": True,
+                    "thinking_format": "enable_thinking",
                     "concurrency_limit": 4,
                     "status": "disabled",
                 }
@@ -319,20 +328,11 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
     assert endpoints_saved["disabled"] == 1
     assert endpoints_saved["total_concurrency"] == 1
     assert [e["status"] for e in endpoints_saved["endpoints"]] == ["enabled", "paused", "disabled"]
+    assert [e["protocol"] for e in endpoints_saved["endpoints"]] == ["openai"] * 3
+    assert [e["thinking_format"] for e in endpoints_saved["endpoints"]] == [
+        "enable_thinking", "none", "enable_thinking",
+    ]
     assert all("api_key" not in e for e in endpoints_saved["endpoints"])
-    assert cli.admin_json(
-        "ranking",
-        "save-config",
-        str(ranking_id),
-        "--agent-base-url",
-        "http://127.0.0.1:9",
-        "--api-key",
-        "local-only",
-        "--model",
-        "fake",
-        "--timeout-seconds",
-        "60",
-    )["success"] is True
     admin_detail = cli.admin_json("ranking", "detail", str(ranking_id), "--tab", "edit")
     assert admin_detail["success"] is True
     assert admin_detail["aj_endpoints"]

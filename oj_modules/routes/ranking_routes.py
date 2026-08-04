@@ -905,7 +905,6 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
     matches_mine = False
 
     judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
-    agent_judge_api_key_set = bool((comp.get('agent_judge_api_key') or '').strip())
     aj_endpoints = []
     quality_gate_endpoints = []
     agent_global_endpoint_candidates = {}
@@ -1042,7 +1041,6 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
         'matches_mine': matches_mine,
         'matches_per_page': MATCHES_PER_PAGE,
         'judge_rules': judge_rules,
-        'agent_judge_api_key_set': agent_judge_api_key_set,
         'aj_endpoints': aj_endpoints,
         'quality_gate_endpoints': quality_gate_endpoints,
         'agent_global_endpoint_candidates': agent_global_endpoint_candidates,
@@ -2089,16 +2087,10 @@ def ranking_edit(competition_id):
         SCORING_SCRIPT_TIMEOUT_RANGE[0], SCORING_SCRIPT_TIMEOUT_RANGE[1],
     )
 
-    # Agent 评测配置：base_url / model 直接保存；api_key 留空表示不变；timeout 范围 60~7200
-    aj_base_url = request.form.get('agent_judge_base_url')
-    aj_model = request.form.get('agent_judge_model')
+    # Agent 评测的模型配置只由端点池管理；这里仅保存比赛级运行参数。
     aj_timeout_raw = request.form.get('agent_judge_timeout_seconds')
     finalize_timeout_raw = request.form.get('reverse_judge_finalize_timeout_seconds')
-    aj_api_key_raw = request.form.get('agent_judge_api_key')
     aj_orchestration_raw = request.form.get('agent_judge_orchestration_mode')
-    aj_api_key = None
-    if aj_api_key_raw is not None and str(aj_api_key_raw).strip() != '':
-        aj_api_key = str(aj_api_key_raw).strip()
     aj_timeout = None
     if aj_timeout_raw is not None and str(aj_timeout_raw).strip() != '':
         try:
@@ -2153,9 +2145,6 @@ def ranking_edit(competition_id):
         elo_initial_burst=elo_initial_burst,
         elo_max_pairs_per_round=elo_max_pairs_per_round,
         scoring_script_timeout_seconds=script_timeout,
-        agent_judge_base_url=(aj_base_url if aj_base_url is not None else None),
-        agent_judge_model=(aj_model if aj_model is not None else None),
-        agent_judge_api_key=aj_api_key,
         agent_judge_timeout_seconds=aj_timeout,
         reverse_judge_finalize_timeout_seconds=finalize_timeout,
         agent_judge_orchestration_mode=(
@@ -2243,59 +2232,6 @@ def ranking_save_judge_rules(competition_id):
         pass
     return jsonify({'success': True, 'count': len(normalized),
                     'max_score': _aj_max_score(normalized)})
-
-
-# ---------- 管理员：Agent 评测模型配置（专用端点，仅改 agent_judge_* 字段） ----------
-
-@ranking_bp.route('/<int:competition_id>/agent_judge/config', methods=['POST'])
-def ranking_save_agent_config(competition_id):
-    """仅更新 Agent 评测的 base_url / api_key / model / 整体超时；
-    不触碰标题、摘要、描述、上线状态等其它字段（避免被部分表单清空）。"""
-    user, resp = _require_admin()
-    if resp is not None:
-        return resp
-    comp = get_competition(competition_id)
-    if not comp:
-        flash('比赛不存在', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-    base_url = request.form.get('agent_judge_base_url')
-    model = request.form.get('agent_judge_model')
-    api_key_raw = request.form.get('agent_judge_api_key')
-    timeout_raw = request.form.get('agent_judge_timeout_seconds')
-    finalize_timeout_raw = request.form.get('reverse_judge_finalize_timeout_seconds')
-    orchestration_raw = request.form.get('agent_judge_orchestration_mode')
-    api_key = None
-    if api_key_raw is not None and str(api_key_raw).strip() != '':
-        api_key = str(api_key_raw).strip()
-    timeout = None
-    if timeout_raw is not None and str(timeout_raw).strip() != '':
-        try:
-            timeout = int(_clamp(int(timeout_raw), 60, 7200))
-        except (TypeError, ValueError):
-            timeout = None
-    finalize_timeout = None
-    if finalize_timeout_raw is not None and str(finalize_timeout_raw).strip() != '':
-        try:
-            finalize_timeout = int(_clamp(
-                int(finalize_timeout_raw),
-                REVERSE_FINALIZE_TIMEOUT_RANGE[0],
-                REVERSE_FINALIZE_TIMEOUT_RANGE[1],
-            ))
-        except (TypeError, ValueError):
-            finalize_timeout = None
-    update_competition(
-        competition_id,
-        agent_judge_base_url=(base_url if base_url is not None else None),
-        agent_judge_model=(model if model is not None else None),
-        agent_judge_api_key=api_key,
-        agent_judge_timeout_seconds=timeout,
-        reverse_judge_finalize_timeout_seconds=finalize_timeout,
-        agent_judge_orchestration_mode=(
-            _normalize_aj_orchestration(orchestration_raw)
-            if orchestration_raw is not None else None
-        ),
-    )
-    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='edit'))
 
 
 @ranking_bp.route('/<int:competition_id>/agent_judge/endpoints', methods=['POST'])
@@ -2574,10 +2510,6 @@ def ranking_judge_stream(competition_id, submission_id):
     trace_sensitive_values = []
     trace_redaction_ready = True
     try:
-        comp = get_competition(competition_id) or {}
-        trace_sensitive_values.extend([
-            comp.get('agent_judge_api_key'), comp.get('agent_judge_base_url'),
-        ])
         for endpoint in list_agent_judge_endpoints(competition_id, enabled_only=False):
             trace_sensitive_values.extend([
                 endpoint.get('api_key'), endpoint.get('base_url'),

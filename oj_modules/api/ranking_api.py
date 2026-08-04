@@ -105,7 +105,12 @@ def _safe_competition(comp, include_admin=False):
         for key in _PUBLIC_COMPETITION_FIELDS
         if key in comp
     }
-    out.pop("agent_judge_api_key", None)
+    for field in (
+        "agent_judge_base_url",
+        "agent_judge_api_key",
+        "agent_judge_model",
+    ):
+        out.pop(field, None)
     if not include_admin:
         # 防御性过滤：即便未来公共字段扩展，也不向参赛者暴露审核标准。
         out.pop("reverse_quality_gate_prompt", None)
@@ -116,8 +121,6 @@ def _safe_competition(comp, include_admin=False):
         out["agent_judge_orchestration_mode"] = _normalize_aj_orchestration(
             out.get("agent_judge_orchestration_mode")
         )
-    if include_admin:
-        out["agent_judge_api_key_set"] = bool((comp.get("agent_judge_api_key") or "").strip())
     return out
 
 
