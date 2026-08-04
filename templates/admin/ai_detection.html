@@ -1,4 +1,5 @@
 {% extends "layouts/site.html" %}
+{% from "components/choice_picker.html" import simple_choice, endpoint_choice %}
 
 {% block title %}AI 代码检测 - Numerical OJ{% endblock %}
 
@@ -20,30 +21,41 @@
   #previewTable th, #previewTable td { font-size: 0.88em; }
   .filter-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 1.25rem 1.5rem; }
   .stat-card { border-radius: 8px; }
+  .detection-action-bar {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .9rem 1rem;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    background: #f8f9fa;
+  }
+  .detection-endpoint-field { width: min(100%, 420px); }
+  .detection-endpoint-field .form-label { margin-bottom: .35rem; }
+  @media (max-width: 575.98px) {
+    .detection-action-bar { align-items: stretch; flex-direction: column; }
+    .detection-action-bar .btn { align-self: flex-end; }
+  }
 </style>
-
-<div class="card mb-3">
-  <div class="card-body py-3">
-    <label for="f_endpoint" class="form-label form-label-sm mb-1">本次检测端点</label>
-    <select id="f_endpoint" class="form-select form-select-sm" required>
-      <option value="">— 每次运行前请选择全局端点 —</option>
-      {% for endpoint in ai_detection_endpoints or [] %}
-        <option value="{{ endpoint.id }}">
-          {{ endpoint.model }}（节点 #{{ endpoint.id }} / {{ endpoint.protocol }} / {{ endpoint.category }}）
-        </option>
-      {% endfor %}
-    </select>
-    <div class="form-text">仅显示纯文本或全模态端点；该选择只用于本次新任务。</div>
-  </div>
-</div>
 
 {% if view == 'problem' %}
 {# ============================================================ Per-Problem View ============ #}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="mb-3">
   <h5>
     <a href="{{ url_for('ai_detection.dashboard') }}" class="text-decoration-none">&laquo; AI 检测</a>
     / {{ strip_tags(problem.title) }}
   </h5>
+</div>
+<div class="detection-action-bar mb-3">
+  <div class="detection-endpoint-field">
+    <label class="form-label form-label-sm">本次检测端点</label>
+    {{ endpoint_choice(
+      'f_endpoint', '', ai_detection_endpoints or [],
+      placeholder_label='选择检测端点', required=true,
+      aria_label='本次 AI 检测端点'
+    ) }}
+  </div>
   <button class="btn btn-outline-primary btn-sm" onclick="runBatchDetection({{ problem.id }})">
     <i class="fas fa-sync-alt me-1"></i> 批量检测（代表性提交）
   </button>
@@ -113,11 +125,21 @@
 
 {% elif view == 'student' %}
 {# ============================================================ Per-Student View ============ #}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="mb-3">
   <h5>
     <a href="{{ url_for('ai_detection.dashboard') }}" class="text-decoration-none">&laquo; AI 检测</a>
     / 学生: {{ target_username }}
   </h5>
+</div>
+<div class="detection-action-bar mb-3">
+  <div class="detection-endpoint-field">
+    <label class="form-label form-label-sm">本次检测端点</label>
+    {{ endpoint_choice(
+      'f_endpoint', '', ai_detection_endpoints or [],
+      placeholder_label='选择检测端点', required=true,
+      aria_label='本次 AI 检测端点'
+    ) }}
+  </div>
   <button class="btn btn-outline-primary btn-sm" onclick='runUserDetection({{ target_username|tojson }})'>
     <i class="fas fa-sync-alt me-1"></i> 检测未分析提交
   </button>
@@ -161,6 +183,20 @@
 {# ============================================================ Dashboard Overview ============ #}
 <h5 class="mb-3"><i class="fas fa-shield-alt me-2"></i>AI 代码检测</h5>
 
+{% set filter_choices = namespace(classes=[], problems=[]) %}
+{% for cls in classes %}
+  {% set filter_choices.classes = filter_choices.classes + [{
+    'value': cls.class_en,
+    'label': cls.class_cn or cls.class_en
+  }] %}
+{% endfor %}
+{% for p in problems %}
+  {% set filter_choices.problems = filter_choices.problems + [{
+    'value': p.id,
+    'label': p.id ~ '. ' ~ strip_tags(p.title)
+  }] %}
+{% endfor %}
+
 {# ---- Filter Card ---- #}
 <div class="filter-card mb-4">
   <h6 class="mb-3"><i class="fas fa-filter me-1"></i> 筛选并检测</h6>
@@ -168,12 +204,11 @@
 
     <div class="col-md-3">
       <label class="form-label form-label-sm">班级</label>
-      <select id="f_class" class="form-select form-select-sm">
-        <option value="">— 所有班级 —</option>
-        {% for cls in classes %}
-          <option value="{{ cls.class_en }}">{{ cls.class_cn or cls.class_en }}</option>
-        {% endfor %}
-      </select>
+      {{ simple_choice(
+        'f_class', '', filter_choices.classes,
+        placeholder_label='所有班级', default_icon='fa-users',
+        aria_label='筛选班级'
+      ) }}
     </div>
 
     <div class="col-md-3">
@@ -183,12 +218,11 @@
 
     <div class="col-md-3">
       <label class="form-label form-label-sm">题目</label>
-      <select id="f_problem" class="form-select form-select-sm">
-        <option value="">— 所有题目 —</option>
-        {% for p in problems %}
-          <option value="{{ p.id }}">{{ p.id }}. {{ strip_tags(p.title) }}</option>
-        {% endfor %}
-      </select>
+      {{ simple_choice(
+        'f_problem', '', filter_choices.problems,
+        placeholder_label='所有题目', default_icon='fa-list-ol',
+        aria_label='筛选题目'
+      ) }}
     </div>
 
     <div class="col-md-3">
@@ -203,6 +237,15 @@
         <span class="input-group-text">—</span>
         <input id="f_score_max" type="number" class="form-control" placeholder="最高" min="0">
       </div>
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label form-label-sm">检测端点</label>
+      {{ endpoint_choice(
+        'f_endpoint', '', ai_detection_endpoints or [],
+        placeholder_label='选择检测端点', required=true,
+        aria_label='本次 AI 检测端点'
+      ) }}
     </div>
 
     <div class="col-md-3 d-flex align-items-end">
@@ -366,6 +409,13 @@ function _getEndpointId() {
   return document.getElementById('f_endpoint')?.value || '';
 }
 
+function _getEndpointLabel() {
+  const input = document.getElementById('f_endpoint');
+  return input?.closest('[data-rk-choice]')
+    ?.querySelector('[data-rk-choice-label]')
+    ?.textContent?.trim() || '';
+}
+
 function _requireEndpointId() {
   const endpointId = _getEndpointId();
   if (!endpointId) alert('请先选择本次 AI 检测使用的全局端点');
@@ -443,7 +493,7 @@ function startDetection() {
   const endpointId = _requireEndpointId();
   if (!endpointId) return;
   const total = btn.textContent.match(/\d+/)?.[0] || '?';
-  const endpointName = document.getElementById('f_endpoint')?.selectedOptions[0]?.text || '';
+  const endpointName = _getEndpointLabel();
   if (!confirm(`确认使用「${endpointName}」对这 ${total} 条提交记录运行 AI 检测？`)) return;
   btn.disabled = true;
 

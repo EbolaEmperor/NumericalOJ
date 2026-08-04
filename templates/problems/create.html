@@ -1,5 +1,6 @@
 {% extends "layouts/site.html" %}
 {% from "problems/components/llm_endpoint_select.html" import endpoint_select %}
+{% from "components/choice_picker.html" import simple_choice %}
 {% block title %}添加题目 - {{ super() }}{% endblock %}
 {% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
 {% block content %}
@@ -14,6 +15,27 @@
 <form id="addProblemForm" method="POST" action="{{ url_for('admin_problem.add_problem') }}">
   {% set endpoint_bindings = llm_endpoint_bindings|default({}, true) %}
   {% set endpoint_candidates = llm_endpoint_candidates|default({}, true) %}
+  {% set problem_type_options = [
+    {'value': '1', 'label': '编程题'},
+    {'value': '2', 'label': '书面作业'}
+  ] %}
+  {% set language_options = [
+    {'value': 'matlab', 'label': 'MATLAB'},
+    {'value': 'c', 'label': 'C'},
+    {'value': 'cpp', 'label': 'C++'},
+    {'value': 'python', 'label': 'Python'}
+  ] %}
+  {% set programming_mode_options = [
+    {'value': '1', 'label': '传统交互'},
+    {'value': '2', 'label': '批改图片'},
+    {'value': '3', 'label': 'Promptly'}
+  ] %}
+  {% set written_mode_options = [
+    {'value': '1', 'label': 'OCR + 文本批改'},
+    {'value': '2', 'label': '直接批改图片'},
+    {'value': '3', 'label': 'tex 文本批改'},
+    {'value': '4', 'label': '纯人工批改'}
+  ] %}
   
   <!-- 第一行：标题、类型、语言 -->
   <div class="row mb-3">
@@ -23,26 +45,35 @@
     </div>
     <!-- 题目类型 -->
     <div class="col-md-3">
-      <label for="problemTypeSelect" class="form-label">
+      <label for="problemTypeSelectTrigger" class="form-label">
         <i class="fas fa-question me-2"></i> 题目类型
       </label>
-      <select class="form-select" id="problemTypeSelect" name="type" required>
-        <option value="1" selected>编程题</option>
-        <option value="2">书面作业</option>
-      </select>
+      {{ simple_choice(
+        'problemTypeSelect',
+        'type',
+        problem_type_options,
+        '1',
+        placeholder_label=none,
+        default_icon='fa-question',
+        required=true,
+        aria_label='题目类型'
+      ) }}
     </div>
 
     <!-- 题目语言（仅编程题显示） -->
     <div class="col-md-3" id="langField">
-      <label for="langSelect" class="form-label">
+      <label for="langSelectTrigger" class="form-label">
         <i class="fas fa-language me-2"></i> 语言
       </label>
-      <select class="form-select" id="langSelect" name="lang">
-        <option value="matlab" selected>MATLAB</option>
-        <option value="c">C</option>
-        <option value="cpp">C++</option>
-        <option value="python">Python</option>
-      </select>
+      {{ simple_choice(
+        'langSelect',
+        'lang',
+        language_options,
+        'matlab',
+        placeholder_label=none,
+        default_icon='fa-code',
+        aria_label='语言'
+      ) }}
     </div>
   </div>
 
@@ -68,14 +99,18 @@
   <div id="programmingGradingFields" class="mb-3">
     <div class="row g-3">
       <div class="col-md-6">
-        <label for="programmingGradingModeSelect" class="form-label">
+        <label for="programmingGradingModeSelectTrigger" class="form-label">
           <i class="fas fa-sliders me-2"></i> 批改模式
         </label>
-        <select class="form-select" id="programmingGradingModeSelect" name="programming_grading_mode" onchange="_toggleProgrammingImageFields(this.value)">
-          <option value="1" selected>传统交互</option>
-          <option value="2">批改图片</option>
-          <option value="3">Promptly</option>
-        </select>
+        {{ simple_choice(
+          'programmingGradingModeSelect',
+          'programming_grading_mode',
+          programming_mode_options,
+          '1',
+          placeholder_label=none,
+          default_icon='fa-sliders',
+          aria_label='编程题批改模式'
+        ) }}
       </div>
       <div class="col-md-6 d-none" id="programmingOutputFilenameField">
         <label for="programmingOutputFilenameInput" class="form-label">
@@ -176,15 +211,18 @@
     <p>书面作业：学生将通过提交文件来完成作业，老师需要人工批改。</p>
     <div class="row g-3">
       <div class="col-md-6">
-        <label for="writtenGradingModeSelect" class="form-label">
+        <label for="writtenGradingModeSelectTrigger" class="form-label">
           <i class="fas fa-sliders me-2"></i> 批改模式
         </label>
-        <select class="form-select" id="writtenGradingModeSelect" name="written_grading_mode" onchange="_toggleAiGradingFields(this.value)">
-          <option value="1" selected>OCR + 文本批改</option>
-          <option value="2">直接批改图片</option>
-          <option value="3">tex 文本批改</option>
-          <option value="4">纯人工批改</option>
-        </select>
+        {{ simple_choice(
+          'writtenGradingModeSelect',
+          'written_grading_mode',
+          written_mode_options,
+          '1',
+          placeholder_label=none,
+          default_icon='fa-sliders',
+          aria_label='书面作业批改模式'
+        ) }}
       </div>
       <div class="col-md-6" id="writtenOcrEndpointField">
         {{ endpoint_select(
@@ -231,9 +269,12 @@
           document.getElementById('writtenOcrEndpointField').style.display = mode === '1' ? '' : 'none';
           document.getElementById('writtenTextGradingEndpointField').style.display = (mode === '1' || mode === '3') ? '' : 'none';
           document.getElementById('writtenDirectImageEndpointField').style.display = mode === '2' ? '' : 'none';
-          document.getElementById('writtenOcrEndpointSelect').disabled = !(isWrittenType && mode === '1');
-          document.getElementById('writtenTextGradingEndpointSelect').disabled = !(isWrittenType && (mode === '1' || mode === '3'));
-          document.getElementById('writtenDirectImageEndpointSelect').disabled = !(isWrittenType && mode === '2');
+          const ocrInput = document.getElementById('writtenOcrEndpointSelect');
+          const textInput = document.getElementById('writtenTextGradingEndpointSelect');
+          const imageInput = document.getElementById('writtenDirectImageEndpointSelect');
+          window.ChoicePicker.setDisabled(ocrInput, !(isWrittenType && mode === '1'));
+          window.ChoicePicker.setDisabled(textInput, !(isWrittenType && (mode === '1' || mode === '3')));
+          window.ChoicePicker.setDisabled(imageInput, !(isWrittenType && mode === '2'));
           document.getElementById('writtenGradingPromptField').style.display = hide ? 'none' : '';
         }
 
@@ -248,9 +289,12 @@
           document.getElementById('programmingOutputFilenameField').classList.toggle('d-none', !isImageMode);
           document.getElementById('programmingOutputImageEndpointField').classList.toggle('d-none', !isImageMode);
           document.getElementById('promptlyEndpointFields').classList.toggle('d-none', !isPromptlyMode);
-          document.getElementById('programmingOutputImageEndpointSelect').disabled = !(isProgrammingType && isImageMode);
-          document.getElementById('promptlyReviewEndpointSelect').disabled = !(isProgrammingType && isPromptlyMode);
-          document.getElementById('promptlyCodeGenerationEndpointSelect').disabled = !(isProgrammingType && isPromptlyMode);
+          const outputEndpointInput = document.getElementById('programmingOutputImageEndpointSelect');
+          const reviewEndpointInput = document.getElementById('promptlyReviewEndpointSelect');
+          const codeEndpointInput = document.getElementById('promptlyCodeGenerationEndpointSelect');
+          window.ChoicePicker.setDisabled(outputEndpointInput, !(isProgrammingType && isImageMode));
+          window.ChoicePicker.setDisabled(reviewEndpointInput, !(isProgrammingType && isPromptlyMode));
+          window.ChoicePicker.setDisabled(codeEndpointInput, !(isProgrammingType && isPromptlyMode));
           promptField.classList.toggle('d-none', !isImageMode);
           if (promptlyField) promptlyField.classList.toggle('d-none', !isPromptlyMode);
           if (isPromptlyMode) {
@@ -422,9 +466,16 @@
     _toggleProgrammingImageFields(document.getElementById('programmingGradingModeSelect').value);
     _toggleAiGradingFields(document.getElementById('writtenGradingModeSelect').value);
   }
-  // 立即执行一次，确保初始可见性正确
-  syncVisibility();
-  problemTypeSelect.addEventListener('change', syncVisibility);
+  document.addEventListener('DOMContentLoaded', function() {
+    syncVisibility();
+    problemTypeSelect.addEventListener('change', syncVisibility);
+    document.getElementById('programmingGradingModeSelect').addEventListener('change', function() {
+      _toggleProgrammingImageFields(this.value);
+    });
+    document.getElementById('writtenGradingModeSelect').addEventListener('change', function() {
+      _toggleAiGradingFields(this.value);
+    });
+  });
 
 </script>
 {% endblock %}

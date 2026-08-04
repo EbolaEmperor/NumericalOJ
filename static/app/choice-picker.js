@@ -30,6 +30,62 @@
       option.getAttribute('data-choice-disabled') === 'true';
   }
 
+  function optionsTemplate(input) {
+    if (!input || !input.id) return null;
+    return Array.prototype.slice.call(
+      document.querySelectorAll('template[data-choice-options-for]')
+    ).find(function (template) {
+      return template.getAttribute('data-choice-options-for') === input.id;
+    }) || null;
+  }
+
+  function hydrateStaticOptions(input, menu) {
+    var template = optionsTemplate(input);
+    if (!template) return;
+    menu.replaceChildren(template.content.cloneNode(true));
+  }
+
+  function optionElement(entry) {
+    entry = entry || {};
+    var icon = String(entry.icon || 'fa-circle');
+    var option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'rk-choice-option' + (entry.missing ? ' is-missing' : '');
+    option.setAttribute('data-choice-value', entry.value == null ? '' : String(entry.value));
+    option.setAttribute('data-choice-label', String(entry.label || ''));
+    option.setAttribute('data-choice-icon', icon);
+    if (entry.disabled) {
+      option.setAttribute('aria-disabled', 'true');
+      option.setAttribute('data-choice-disabled', 'true');
+    }
+
+    var main = document.createElement('span');
+    main.className = 'rk-choice-option-main';
+    var iconElement = document.createElement('i');
+    iconElement.className = icon.indexOf(' ') >= 0 ? icon : 'fas ' + icon;
+    iconElement.setAttribute('aria-hidden', 'true');
+    var copy = document.createElement('span');
+    var name = document.createElement('span');
+    name.className = 'rk-choice-option-name';
+    name.textContent = String(entry.label || '');
+    copy.appendChild(name);
+    if (entry.meta) {
+      var meta = document.createElement('span');
+      meta.className = 'rk-choice-option-meta';
+      meta.textContent = String(entry.meta);
+      copy.appendChild(meta);
+    }
+    main.appendChild(iconElement);
+    main.appendChild(copy);
+
+    var check = document.createElement('i');
+    check.className = 'fas fa-check rk-choice-option-check';
+    check.setAttribute('aria-hidden', 'true');
+    option.appendChild(main);
+    option.appendChild(check);
+    return option;
+  }
+
   function create(config) {
     config = config || {};
     var picker = element(config.picker);
@@ -41,8 +97,11 @@
     if (!picker || !input || !trigger || !menu) return null;
     if (picker.__choicePickerController) return picker.__choicePickerController;
 
+    hydrateStaticOptions(input, menu);
+
     var activeIndex = -1;
-    var disabled = config.disabled === true || trigger.disabled === true;
+    var disabled = config.disabled === true || trigger.disabled === true || input.disabled === true;
+    var required = input.getAttribute('data-choice-required') === 'true';
     var typeahead = '';
     var typeaheadTimer = null;
 
@@ -195,9 +254,14 @@
       },
       setDisabled: function (value) {
         disabled = value === true;
+        input.disabled = disabled;
         trigger.disabled = disabled;
         picker.classList.toggle('is-disabled', disabled);
         picker.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+        if (disabled) {
+          picker.classList.remove('is-invalid');
+          trigger.removeAttribute('aria-invalid');
+        }
         if (disabled) controller.setOpen(false);
       },
       setValue: function (value, notify) {
@@ -213,6 +277,10 @@
           return;
         }
         input.value = selected.getAttribute('data-choice-value') || '';
+        if (input.value || !required) {
+          picker.classList.remove('is-invalid');
+          trigger.removeAttribute('aria-invalid');
+        }
         if (label) label.textContent = optionLabel(selected);
         if (icon) {
           var selectedIcon = selected.getAttribute('data-choice-icon') || 'fa-circle';
@@ -233,9 +301,10 @@
         }
       },
       refresh: function () {
+        hydrateStaticOptions(input, menu);
         prepareOptions();
         controller.setValue(input.value, false);
-        controller.setDisabled(disabled);
+        controller.setDisabled(input.disabled || disabled);
       }
     };
 
@@ -246,6 +315,7 @@
       else openWithIndex(selectedIndex() >= 0 ? selectedIndex() : boundaryIndex(false));
     });
     trigger.addEventListener('keydown', handleNavigation);
+    input.addEventListener('focus', function () { trigger.focus(); });
     menu.addEventListener('mousemove', function (event) {
       var choice = event.target.closest('[data-choice-value]');
       if (!choice || !menu.contains(choice) || isOptionDisabled(choice)) return;
@@ -258,15 +328,82 @@
       controller.setOpen(false);
       trigger.focus();
     });
-    input.addEventListener('change', function () { controller.setValue(input.value, false); });
+    input.addEventListener('change', function () {
+      controller.setValue(input.value, false);
+      if (input.getAttribute('data-choice-submit') === 'true') {
+        var submitForm = input.form || input.closest('form');
+        if (submitForm) {
+          if (typeof submitForm.requestSubmit === 'function') submitForm.requestSubmit();
+          else submitForm.submit();
+        }
+      }
+    });
+    input.addEventListener('invalid', function (event) {
+      event.preventDefault();
+      picker.classList.add('is-invalid');
+      trigger.setAttribute('aria-invalid', 'true');
+      controller.setOpen(false);
+      trigger.focus();
+    });
+
+    var form = input.form || input.closest('form');
+    if (form && required) {
+      form.addEventListener('submit', function (event) {
+        if (input.disabled || input.value) return;
+        event.preventDefault();
+        picker.classList.add('is-invalid');
+        trigger.setAttribute('aria-invalid', 'true');
+        controller.setOpen(false);
+        trigger.focus();
+      });
+    }
+    if (form) {
+      form.addEventListener('reset', function () {
+        global.requestAnimationFrame(function () { controller.refresh(); });
+      });
+    }
 
     picker.__choicePickerController = controller;
+    input.__choicePickerController = controller;
     controllers.push(controller);
     prepareOptions();
     controller.setDisabled(disabled);
     controller.setValue(input.value, config.notifyOnInit === true);
     controller.setOpen(false);
     return controller;
+  }
+
+  function configure(picker, entries, value, settings) {
+    picker = element(picker);
+    settings = settings || {};
+    if (!picker) return null;
+    var input = settings.input ? element(settings.input) :
+      element(picker.getAttribute('data-rk-choice-input')) || picker.querySelector('input');
+    var menu = settings.menu ? element(settings.menu) : picker.querySelector('.rk-choice-menu');
+    if (!input || !menu) return null;
+    menu.replaceChildren.apply(menu, (entries || []).map(optionElement));
+    var controller = picker.__choicePickerController || create({
+      picker: picker,
+      input: input,
+      trigger: settings.trigger || picker.querySelector('.rk-choice-trigger'),
+      menu: menu,
+      label: settings.label || picker.querySelector('[data-rk-choice-label]'),
+      icon: settings.icon || picker.querySelector('[data-rk-choice-icon]')
+    });
+    if (!controller) return null;
+    controller.refresh();
+    controller.setValue(value == null ? '' : String(value), false);
+    controller.setDisabled(settings.disabled === true);
+    return controller;
+  }
+
+  function setDisabled(target, value) {
+    target = element(target);
+    if (!target) return;
+    var controller = target.__choicePickerController ||
+      target.closest('.rk-choice')?.__choicePickerController;
+    if (controller) controller.setDisabled(value === true);
+    else target.disabled = value === true;
   }
 
   function init(root) {
@@ -291,5 +428,11 @@
   });
   document.addEventListener('DOMContentLoaded', function () { init(document); });
 
-  global.ChoicePicker = Object.freeze({create: create, init: init, closeAll: closeOthers});
+  global.ChoicePicker = Object.freeze({
+    create: create,
+    init: init,
+    configure: configure,
+    setDisabled: setDisabled,
+    closeAll: closeOthers
+  });
 })(window);

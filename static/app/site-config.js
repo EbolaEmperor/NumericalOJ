@@ -105,54 +105,6 @@
     return Boolean(currentUserId && Number(item.locked_by_user_id) === currentUserId);
   }
 
-  function choiceOptionMarkup(entry) {
-    const classes = ['rk-choice-option'];
-    if (entry.missing) classes.push('is-missing');
-    const meta = entry.meta
-      ? `<span class="rk-choice-option-meta">${escapeHtml(entry.meta)}</span>`
-      : '';
-    return `
-      <button type="button"
-              class="${classes.join(' ')}"
-              role="option"
-              aria-selected="false"
-              data-choice-value="${escapeHtml(entry.value)}"
-              data-choice-label="${escapeHtml(entry.label)}"
-              data-choice-icon="${escapeHtml(entry.icon || 'fa-circle')}">
-        <span class="rk-choice-option-main">
-          <i class="fas ${escapeHtml(entry.icon || 'fa-circle')}" aria-hidden="true"></i>
-          <span>
-            <span class="rk-choice-option-name">${escapeHtml(entry.label)}</span>
-            ${meta}
-          </span>
-        </span>
-        <i class="fas fa-check rk-choice-option-check" aria-hidden="true"></i>
-      </button>`;
-  }
-
-  function configureChoice(picker, entries, value, {disabled = false} = {}) {
-    if (!picker || !window.ChoicePicker) return null;
-    const input = $('input[type="hidden"]', picker);
-    const menu = $('.rk-choice-menu', picker);
-    menu.innerHTML = entries.map(choiceOptionMarkup).join('');
-    let controller = picker.__choicePickerController;
-    if (!controller) {
-      controller = window.ChoicePicker.create({
-        picker,
-        input,
-        trigger: $('.rk-choice-trigger', picker),
-        menu,
-        label: $('[data-rk-choice-label]', picker),
-        icon: $('[data-rk-choice-icon]', picker),
-      });
-    }
-    if (!controller) return null;
-    controller.refresh();
-    controller.setValue(value == null ? '' : String(value), false);
-    controller.setDisabled(disabled);
-    return controller;
-  }
-
   function enumEntries(items, fallback, labels, icons) {
     return values(items, fallback).map((value) => ({
       value,
@@ -174,12 +126,12 @@
 
   function initializeMetaControls() {
     const form = $('[data-endpoint-form]');
-    configureChoice(
+    window.ChoicePicker.configure(
       endpointChoice('protocol'),
       enumEntries(state.meta.protocols, ['openai', 'anthropic'], protocolLabels, protocolIcons),
       form.elements.protocol.value || 'openai',
     );
-    configureChoice(
+    window.ChoicePicker.configure(
       endpointChoice('category'),
       enumEntries(state.meta.categories, ['omni', 'text', 'vision', 'embedding'], categoryLabels, categoryIcons),
       form.elements.category.value || 'text',
@@ -338,7 +290,7 @@
     state.bindings.forEach((binding) => {
       const card = $(`[data-feature-key="${CSS.escape(binding.feature_key)}"]`, grid);
       if (!card) return;
-      const controller = configureChoice(
+      const controller = window.ChoicePicker.configure(
         $('[data-feature-choice]', card),
         featureOptions(binding),
         binding.endpoint_id == null ? '' : String(binding.endpoint_id),

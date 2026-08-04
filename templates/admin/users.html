@@ -1,4 +1,5 @@
 {% extends "layouts/site.html" %}
+{% from "components/choice_picker.html" import simple_choice %}
 {% block title %}用户管理 - {{ super() }}{% endblock %}
 {% block content %}
 <h2><i class="fas fa-users me-2"></i> 用户管理</h2>
@@ -15,15 +16,17 @@
              data-1p-ignore data-lpignore="true" data-bwignore>
     </div>
     <div class="col-md-4">
-      <select name="class" class="form-select">
-        <option value="">全部班级</option>
-        {% for c in classes %}
-          <option value="{{ c.class_en }}" 
-            {% if search_class == c.class_en %}selected{% endif %}>
-            {{ c.class_cn }}
-          </option>
-        {% endfor %}
-      </select>
+      {{ simple_choice(
+        'userClassFilter',
+        'class',
+        classes,
+        search_class,
+        placeholder_label='全部班级',
+        value_key='class_en',
+        label_key='class_cn',
+        default_icon='fa-users',
+        aria_label='筛选班级'
+      ) }}
     </div>
     <div class="col-md-4">
       <button type="submit" class="btn btn-outline-primary"><i class="fas fa-search me-2"></i>搜索</button>
@@ -181,13 +184,19 @@
         <div class="modal-body">
           <input type="hidden" name="user_id" id="addUserClassUserId">
           <div class="mb-3">
-            <label class="form-label">选择班级</label>
-            <select name="class_en" id="addUserClassSelect" class="form-control" required>
-              <option value="">请选择</option>
-              {% for c in classes %}
-                <option value="{{ c.class_en }}">{{ c.class_cn }}</option>
-              {% endfor %}
-            </select>
+            <label for="addUserClassSelectTrigger" class="form-label">选择班级</label>
+            {{ simple_choice(
+              'addUserClassSelect',
+              'class_en',
+              classes,
+              '',
+              placeholder_label='请选择',
+              value_key='class_en',
+              label_key='class_cn',
+              default_icon='fa-users',
+              required=true,
+              aria_label='选择班级'
+            ) }}
           </div>
         </div>
         <div class="modal-footer">
@@ -367,8 +376,13 @@
     document.getElementById('addUserClassUserId').value = userId;
 
     const select = document.getElementById('addUserClassSelect');
-    // 恢复所有选项（除了占位空值）
-    Array.from(select.options).forEach(opt => opt.disabled = (opt.value === ''));
+    const picker = select.closest('[data-rk-choice]');
+    const options = Array.from(picker.querySelectorAll('[data-choice-value]'));
+    options.forEach(option => {
+      const unavailable = option.dataset.choiceValue === '';
+      option.toggleAttribute('data-choice-disabled', unavailable);
+      option.setAttribute('aria-disabled', unavailable ? 'true' : 'false');
+    });
 
     const row = document.getElementById('userRow-' + userId);
     const owned = new Set();
@@ -376,11 +390,14 @@
       owned.add(b.getAttribute('data-class-en'));
     });
     owned.forEach(en => {
-      const opt = Array.from(select.options).find(o => o.value === en);
-      if (opt) opt.disabled = true;
+      const option = options.find(item => item.dataset.choiceValue === en);
+      if (!option) return;
+      option.setAttribute('data-choice-disabled', 'true');
+      option.setAttribute('aria-disabled', 'true');
     });
 
     select.value = '';
+    select.dispatchEvent(new Event('change', {bubbles: true}));
     new bootstrap.Modal(document.getElementById('addUserClassModal')).show();
   };
 
@@ -392,13 +409,6 @@
       .then(r => r.json())
       .then(data => {
         if (data.success) {
-          // 把新班级加入到成员关系下拉框。
-          document.querySelectorAll('#addUserClassSelect').forEach(function(sel) {
-            const opt = document.createElement('option');
-            opt.value = data.class_en;
-            opt.text  = data.class_cn;
-            sel.appendChild(opt);
-          });
           bootstrap.Modal.getInstance(document.getElementById('addClassModal')).hide();
           this.reset();
           location.replace(location.href);

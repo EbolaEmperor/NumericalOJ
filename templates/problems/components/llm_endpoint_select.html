@@ -1,26 +1,17 @@
+{% from "components/choice_picker.html" import endpoint_choice %}
+
 {% macro endpoint_select(field_name, field_id, label, candidates, bindings, help_text='') -%}
   {% set selected_id = bindings.get(field_name) if bindings else none %}
-  {% set state = namespace(found=false) %}
-  <label for="{{ field_id }}" class="form-label">
+  <label for="{{ field_id }}Trigger" class="form-label">
     <i class="fas fa-plug me-2"></i> {{ label }}
   </label>
-  <select class="form-select" id="{{ field_id }}" name="{{ field_name }}">
-    <option value="">未配置</option>
-    {% for endpoint in candidates or [] %}
-      {% if selected_id is not none and (endpoint.id|string) == (selected_id|string) %}
-        {% set state.found = true %}
-      {% endif %}
-      <option
-        value="{{ endpoint.id }}"
-        {% if selected_id is not none and (endpoint.id|string) == (selected_id|string) %}selected{% endif %}>
-        {{ endpoint.model }}（节点 #{{ endpoint.id }} / {{ endpoint.protocol }} / {{ endpoint.category }}）
-      </option>
-    {% endfor %}
-    {% if selected_id is not none and not state.found %}
-      <option value="{{ selected_id }}" selected class="text-danger">
-        端点已删除（ID: {{ selected_id }}）
-      </option>
-    {% endif %}
-  </select>
+  {{ endpoint_choice(
+    field_id,
+    field_name,
+    candidates,
+    selected_id,
+    placeholder_label='未配置',
+    aria_label=label
+  ) }}
   {% if help_text %}<div class="form-text">{{ help_text }}</div>{% endif %}
 {%- endmacro %}

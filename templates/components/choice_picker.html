@@ -1,0 +1,127 @@
+{% macro choice_option(value, label, selected=false, icon='fa-circle', meta='', missing=false, disabled=false) -%}
+<button type="button"
+        class="rk-choice-option{% if selected %} active{% endif %}{% if missing %} is-missing{% endif %}"
+        role="option"
+        aria-selected="{{ 'true' if selected else 'false' }}"
+        {% if disabled %}aria-disabled="true" data-choice-disabled="true"{% endif %}
+        data-choice-value="{{ value }}"
+        data-choice-label="{{ label }}"
+        data-choice-icon="{{ icon }}">
+  <span class="rk-choice-option-main">
+    <i class="{% if ' ' in icon %}{{ icon }}{% else %}fas {{ icon }}{% endif %}" aria-hidden="true"></i>
+    <span>
+      <span class="rk-choice-option-name">{{ label }}</span>
+      {% if meta %}<span class="rk-choice-option-meta">{{ meta }}</span>{% endif %}
+    </span>
+  </span>
+  <i class="fas fa-check rk-choice-option-check" aria-hidden="true"></i>
+</button>
+{%- endmacro %}
+
+{% macro choice_picker(field_id, field_name='', value='', selected_label='', selected_icon='fa-circle', picker_class='', disabled=false, required=false, auto_submit=false, aria_label='') -%}
+{% set trigger_id = field_id ~ 'Trigger' %}
+{% set menu_id = field_id ~ 'Menu' %}
+<div class="rk-choice{% if picker_class %} {{ picker_class }}{% endif %}"
+     id="{{ field_id }}Picker"
+     data-rk-choice
+     data-rk-choice-input="{{ field_id }}">
+  <input type="text"
+         class="rk-choice-value"
+         id="{{ field_id }}"
+         {% if field_name %}name="{{ field_name }}"{% endif %}
+         value="{{ value }}"
+         tabindex="-1"
+         autocomplete="off"
+         aria-hidden="true"
+         {% if required %}required{% endif %}
+         {% if disabled %}disabled{% endif %}
+         {% if required %}data-choice-required="true"{% endif %}
+         {% if auto_submit %}data-choice-submit="true"{% endif %}>
+  <button type="button"
+          class="rk-choice-trigger"
+          id="{{ trigger_id }}"
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          aria-controls="{{ menu_id }}"
+          {% if aria_label %}aria-label="{{ aria_label }}"{% endif %}
+          {% if required %}aria-required="true"{% endif %}
+          {% if disabled %}disabled{% endif %}>
+    <span class="rk-choice-trigger-main">
+      <i class="{% if ' ' in selected_icon %}{{ selected_icon }}{% else %}fas {{ selected_icon }}{% endif %}"
+         data-rk-choice-icon
+         aria-hidden="true"></i>
+      <span data-rk-choice-label>{{ selected_label }}</span>
+    </span>
+    <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
+  </button>
+  <div class="rk-choice-menu"
+       id="{{ menu_id }}"
+       role="listbox"
+       aria-labelledby="{{ trigger_id }}"></div>
+</div>
+{%- endmacro %}
+
+{% macro simple_choice(field_id, field_name, options, selected_value='', placeholder_label='请选择', placeholder_value='', value_key='value', label_key='label', default_icon='fa-circle', icon_key='', picker_class='', disabled=false, required=false, auto_submit=false, aria_label='') -%}
+{% set selected_text = '' if selected_value is none else selected_value|string %}
+{% set state = namespace(label=placeholder_label, icon=default_icon) %}
+{% for option in options or [] %}
+  {% if option[value_key]|string == selected_text %}
+    {% set state.label = option[label_key] %}
+    {% if icon_key and option[icon_key] %}{% set state.icon = option[icon_key] %}{% endif %}
+  {% endif %}
+{% endfor %}
+{{ choice_picker(field_id, field_name, selected_text, state.label, state.icon, picker_class, disabled, required, auto_submit, aria_label) }}
+<template data-choice-options-for="{{ field_id }}">
+  {% if placeholder_label is not none %}
+    {{ choice_option(placeholder_value, placeholder_label, selected_text == placeholder_value|string, default_icon) }}
+  {% endif %}
+  {% for option in options or [] %}
+    {% set option_icon = option[icon_key] if icon_key and option[icon_key] else default_icon %}
+    {{ choice_option(option[value_key], option[label_key], option[value_key]|string == selected_text, option_icon) }}
+  {% endfor %}
+</template>
+{%- endmacro %}
+
+{% macro endpoint_choice(field_id, field_name, endpoints, selected_value='', placeholder_label='未配置', placeholder_value='', picker_class='', disabled=false, required=false, aria_label='LLM 节点') -%}
+{% set selected_text = '' if selected_value is none else selected_value|string %}
+{% set icons = {'text': 'fa-font', 'vision': 'fa-eye', 'omni': 'fa-layer-group', 'embedding': 'fa-vector-square'} %}
+{% set state = namespace(label=placeholder_label, icon='fa-minus-circle', found=false) %}
+{% for endpoint in endpoints or [] %}
+  {% if endpoint.id|string == selected_text %}
+    {% set state.label = endpoint.model %}
+    {% set state.icon = icons.get(endpoint.category, 'fa-circle') %}
+    {% set state.found = true %}
+  {% endif %}
+{% endfor %}
+{% if selected_text and not state.found %}
+  {% set state.label = '端点已删除（ID: ' ~ selected_text ~ '）' %}
+  {% set state.icon = 'fa-exclamation-triangle' %}
+{% endif %}
+{{ choice_picker(field_id, field_name, selected_text, state.label, state.icon, picker_class, disabled, required, false, aria_label) }}
+<template data-choice-options-for="{{ field_id }}">
+  {% if placeholder_label is not none %}
+    {{ choice_option(placeholder_value, placeholder_label, not selected_text, 'fa-minus-circle') }}
+  {% endif %}
+  {% for endpoint in endpoints or [] %}
+    {% set endpoint_icon = icons.get(endpoint.category, 'fa-circle') %}
+    {{ choice_option(
+      endpoint.id,
+      endpoint.model,
+      endpoint.id|string == selected_text,
+      endpoint_icon,
+      '节点 #' ~ endpoint.id ~ ' · ' ~ endpoint.protocol ~ ' · ' ~ endpoint.category
+    ) }}
+  {% endfor %}
+  {% if selected_text and not state.found %}
+    {{ choice_option(
+      selected_text,
+      state.label,
+      true,
+      'fa-exclamation-triangle',
+      '节点 #' ~ selected_text ~ ' · 当前不可用',
+      true
+    ) }}
+  {% endif %}
+</template>
+{%- endmacro %}

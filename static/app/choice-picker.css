@@ -1,0 +1,209 @@
+.rk-choice {
+  --choice-ink: var(--cfg-ink, var(--numoj-ink, #18181b));
+  --choice-ink-2: var(--cfg-ink-2, var(--numoj-ink-2, #3f3f46));
+  --choice-ink-3: var(--cfg-ink-3, var(--numoj-ink-3, #71717a));
+  --choice-ink-4: var(--cfg-ink-4, var(--numoj-ink-4, #a1a1aa));
+  --choice-line: var(--cfg-line, var(--numoj-line, #e4e4e7));
+  --choice-soft: var(--cfg-line-soft, var(--numoj-line-soft, #f4f4f5));
+  --choice-brand: var(--cfg-orange, var(--numoj-brand, #ea580c));
+  --choice-brand-ink: var(--cfg-orange-ink, var(--numoj-brand-ink, #9a3412));
+  --choice-brand-soft: var(--cfg-orange-soft, var(--numoj-brand-soft, #fff7ed));
+  --choice-success: var(--cfg-green, var(--numoj-success, #16845b));
+  --choice-danger: var(--cfg-red, var(--numoj-danger, #b91c1c));
+  --choice-mono: var(--cfg-mono, var(--numoj-mono, "SFMono-Regular", Consolas, monospace));
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.rk-choice-value {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+.rk-choice-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid #b9c1cb;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--choice-ink);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: left;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.rk-choice-trigger:hover:not(:disabled),
+.rk-choice.open .rk-choice-trigger {
+  border-color: #687484;
+  background: #fbfcfd;
+}
+
+.rk-choice-trigger:focus-visible,
+.rk-choice-option:focus-visible {
+  outline: 2px solid rgba(234, 88, 12, 0.28);
+  outline-offset: 1px;
+}
+
+.rk-choice.is-invalid .rk-choice-trigger {
+  border-color: var(--choice-danger);
+  box-shadow: 0 0 0 2px rgba(185, 28, 28, 0.08);
+}
+
+.rk-choice-trigger-main,
+.rk-choice-option-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.rk-choice-trigger-main > i,
+.rk-choice-option-main > i {
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  align-items: center;
+  justify-content: center;
+  color: var(--choice-ink-3);
+  font-size: 9px;
+}
+
+.rk-choice-trigger-main > span,
+.rk-choice [data-rk-choice-label] {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rk-choice-caret {
+  flex: 0 0 auto;
+  color: var(--choice-ink-4);
+  font-size: 8px;
+  transition: transform 120ms ease;
+}
+
+.rk-choice.open .rk-choice-caret {
+  transform: rotate(180deg);
+}
+
+.rk-choice-menu {
+  position: absolute;
+  z-index: 1085;
+  top: calc(100% + 5px);
+  right: 0;
+  left: 0;
+  display: none;
+  max-height: min(270px, 48vh);
+  margin: 0;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid #b9c1cb;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(24, 24, 27, 0.12);
+}
+
+.rk-choice.open .rk-choice-menu {
+  display: block;
+}
+
+.rk-choice.is-disabled .rk-choice-trigger {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.rk-choice-option {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--choice-ink-2);
+  font: inherit;
+  text-align: left;
+}
+
+.rk-choice-option:hover,
+.rk-choice-option.is-active,
+.rk-choice-option:focus-visible {
+  background: var(--choice-soft);
+  color: var(--choice-ink);
+}
+
+.rk-choice-option.active {
+  background: var(--choice-brand-soft);
+  color: var(--choice-brand-ink);
+}
+
+.rk-choice-option.is-missing {
+  color: var(--choice-danger);
+}
+
+.rk-choice-option-main > span {
+  min-width: 0;
+}
+
+.rk-choice-option-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rk-choice-option-meta {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--choice-ink-4);
+  font: 8.5px/1.25 var(--choice-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rk-choice-option-check {
+  flex: 0 0 auto;
+  color: var(--choice-success);
+  font-size: 9px;
+  opacity: 0;
+}
+
+.rk-choice-option.active .rk-choice-option-check {
+  opacity: 1;
+}
+
+@media (max-width: 575.98px) {
+  .rk-choice-trigger,
+  .rk-choice-option {
+    min-height: 44px;
+  }
+}

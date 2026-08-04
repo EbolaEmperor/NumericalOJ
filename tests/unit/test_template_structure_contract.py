@@ -118,7 +118,9 @@ def test_ranking_detail_dispatches_each_tab_to_a_bounded_partial():
         assert panel.count(include) == 1
 
     assert "<script>" not in detail
-    assert detail.count("filename='app/choice-picker.js'") == 1
+    site = (TEMPLATES / "layouts" / "site.html").read_text(encoding="utf-8")
+    assert detail.count("filename='app/choice-picker.js'") == 0
+    assert site.count("filename='app/choice-picker.js'") == 1
     assert detail.count("filename='app/ranking/topology.js'") == 1
     assert detail.count("{% include 'ranking/modals/media_preview.html' %}") == 1
 

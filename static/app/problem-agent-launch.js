@@ -77,48 +77,6 @@
     ].filter(Boolean).join(' · ');
   }
 
-  function clearElement(element) {
-    while (element && element.firstChild) element.removeChild(element.firstChild);
-  }
-
-  function optionElement(option) {
-    var button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'rk-choice-option';
-    button.setAttribute('data-choice-value', option.value);
-    button.setAttribute('data-choice-label', option.label);
-    button.setAttribute('data-choice-icon', option.iconClass);
-
-    var main = document.createElement('span');
-    main.className = 'rk-choice-option-main';
-
-    var icon = document.createElement('i');
-    icon.className = option.iconClass;
-    icon.setAttribute('aria-hidden', 'true');
-    main.appendChild(icon);
-
-    var copy = document.createElement('span');
-    copy.className = 'agent-launch-option-copy';
-    var name = document.createElement('span');
-    name.className = 'agent-launch-option-name';
-    name.textContent = option.label;
-    copy.appendChild(name);
-    if (option.meta) {
-      var meta = document.createElement('span');
-      meta.className = 'agent-launch-option-meta';
-      meta.textContent = option.meta;
-      copy.appendChild(meta);
-    }
-    main.appendChild(copy);
-    button.appendChild(main);
-
-    var check = document.createElement('i');
-    check.className = 'fas fa-check rk-choice-option-check';
-    check.setAttribute('aria-hidden', 'true');
-    button.appendChild(check);
-    return button;
-  }
-
   function requestJson(url, options) {
     return global.fetch(url, options).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (payload) {
@@ -162,7 +120,6 @@
       self.renderEndpoints(value, '');
     });
     this.endpointPicker = this.createPicker(this.endpointChoice, function () {
-      self.updateEndpointMeta();
       self.updateReadyState();
       if (self.selectedEndpoint()) self.setFeedback('', '');
     });
@@ -204,19 +161,12 @@
 
   AgentLauncher.prototype.setChoicePlaceholder = function (choice, picker, label, iconClass, disabled) {
     var parts = this.choiceParts(choice);
-    if (parts.menu) clearElement(parts.menu);
-    if (parts.input) parts.input.value = '';
-    if (picker) {
-      picker.refresh();
-      picker.setDisabled(disabled === true);
+    if (choice && global.ChoicePicker) {
+      picker = global.ChoicePicker.configure(choice, [], '', {disabled: disabled === true});
     }
+    if (parts.input) parts.input.value = '';
     if (parts.label) parts.label.textContent = label;
     if (parts.icon) parts.icon.className = iconClass;
-    var meta = choice && choice.querySelector('[data-agent-choice-selected-meta]');
-    if (meta) {
-      meta.textContent = '';
-      meta.hidden = true;
-    }
   };
 
   AgentLauncher.prototype.setLoadingState = function () {
@@ -284,17 +234,18 @@
   };
 
   AgentLauncher.prototype.renderLoadedOptions = function (preference) {
-    var parts = this.choiceParts(this.harnessChoice);
-    clearElement(parts.menu);
-    this.harnesses.forEach(function (harness) {
-      parts.menu.appendChild(optionElement({
-        value: harness.value,
-        label: harness.label,
-        iconClass: harnessLogoClass(harness.value),
-        meta: ''
-      }));
-    });
-    if (this.harnessPicker) this.harnessPicker.refresh();
+    this.harnessPicker = global.ChoicePicker.configure(
+      this.harnessChoice,
+      this.harnesses.map(function (harness) {
+        return {
+          value: harness.value,
+          label: harness.label,
+          icon: harnessLogoClass(harness.value)
+        };
+      }),
+      '',
+      {disabled: false}
+    );
 
     if (!this.harnesses.length) {
       this.finishLoadError('当前没有可用的 Harness。');
@@ -319,18 +270,6 @@
 
   AgentLauncher.prototype.renderEndpoints = function (harness, preferredId) {
     var endpoints = this.endpointsFor(harness);
-    var parts = this.choiceParts(this.endpointChoice);
-    clearElement(parts.menu);
-    endpoints.forEach(function (endpoint) {
-      parts.menu.appendChild(optionElement({
-        value: endpoint.id,
-        label: endpoint.model,
-        iconClass: 'fas fa-microchip',
-        meta: endpointMeta(endpoint)
-      }));
-    });
-    if (parts.input) parts.input.value = '';
-    if (this.endpointPicker) this.endpointPicker.refresh();
 
     if (!endpoints.length) {
       this.setChoicePlaceholder(
@@ -346,9 +285,19 @@
     }
 
     var selected = endpoints.find(function (endpoint) { return endpoint.id === asText(preferredId); }) || endpoints[0];
-    this.endpointPicker.setDisabled(false);
-    this.endpointPicker.setValue(selected.id, false);
-    this.updateEndpointMeta();
+    this.endpointPicker = global.ChoicePicker.configure(
+      this.endpointChoice,
+      endpoints.map(function (endpoint) {
+        return {
+          value: endpoint.id,
+          label: endpoint.model,
+          icon: 'fa-microchip',
+          meta: endpointMeta(endpoint)
+        };
+      }),
+      selected.id,
+      {disabled: false}
+    );
     this.setFeedback('', '');
     this.updateReadyState();
   };
@@ -381,14 +330,6 @@
     var harness = this.selectedHarness();
     var endpointId = this.endpointPicker ? asText(this.endpointPicker.value()) : '';
     return this.endpointsFor(harness).find(function (endpoint) { return endpoint.id === endpointId; }) || null;
-  };
-
-  AgentLauncher.prototype.updateEndpointMeta = function () {
-    var meta = this.endpointChoice && this.endpointChoice.querySelector('[data-agent-choice-selected-meta]');
-    if (!meta) return;
-    var endpoint = this.selectedEndpoint();
-    meta.textContent = endpoint ? endpointMeta(endpoint) : '';
-    meta.hidden = !endpoint;
   };
 
   AgentLauncher.prototype.updateReadyState = function () {

@@ -6,7 +6,6 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/settings.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
-<script src="{{ url_for('static', filename='app/choice-picker.js') }}"></script>
 <script src="{{ url_for('static', filename='app/ranking/topology.js') }}"></script>
 {% endblock %}
 
@@ -80,50 +79,6 @@
       <span>比赛功能</span>
     </button>
   </header>
-
-<style>
-  .rk-choice { position:relative; width:100%; }
-  .rk-choice-trigger {
-    width:100%; min-height:38px; display:flex; align-items:center; justify-content:space-between; gap:.62rem;
-    border:1px solid #b9c1cb; border-radius:8px; background:#fff; color:#1f2329;
-    padding:.45rem .58rem; font-size:.86rem; line-height:1.2; cursor:pointer;
-    transition:border-color .15s ease, background-color .15s ease;
-  }
-  .rk-choice-trigger:hover,
-  .rk-choice.open .rk-choice-trigger { border-color:#687484; background:#fbfcfd; }
-  .rk-choice-trigger-main { display:inline-flex; align-items:center; gap:.46rem; min-width:0; }
-  .rk-choice-trigger-main i {
-    width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center;
-    color:#69727d; text-align:center; flex:none; font-size:.82rem; line-height:1;
-  }
-  .rk-choice-trigger-main span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
-  .rk-choice-caret { color:#69727d; font-size:.76rem; transition:transform .15s ease; flex:none; }
-  .rk-choice.open .rk-choice-caret { transform:rotate(180deg); }
-  .rk-choice-menu {
-    position:absolute; z-index:1060; top:calc(100% + 6px); left:0; right:0; display:none;
-    margin:0; padding:.28rem; list-style:none; border:1px solid #b9c1cb; border-radius:8px; background:#fff;
-  }
-  .rk-choice.open .rk-choice-menu { display:block; }
-  .rk-choice-option {
-    display:flex; align-items:center; justify-content:space-between; gap:.65rem; width:100%;
-    border:0; border-radius:6px; background:transparent; color:#1f2329;
-    padding:.5rem .55rem; text-align:left; cursor:pointer;
-  }
-  .rk-choice-option:hover,
-  .rk-choice-option.active { background:#f3f5f7; }
-  .rk-choice-option-main { display:flex; align-items:center; gap:.48rem; min-width:0; }
-  .rk-choice-option-main i {
-    width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center;
-    color:#69727d; text-align:center; flex:none; font-size:.82rem; line-height:1;
-  }
-  .rk-choice-option-name { display:block; color:#1f2329; font-size:.86rem; font-weight:650; line-height:1.15; }
-  .rk-choice-option-check { color:#1f7a4d; opacity:0; flex:none; }
-  .rk-choice-option.active .rk-choice-option-check { opacity:1; }
-  .rk-choice-sm .rk-choice-trigger { min-height:34px; padding:.34rem .52rem; font-size:.82rem; }
-  .rk-choice-sm .rk-choice-option { padding:.44rem .5rem; }
-  .rk-choice-sm .rk-choice-option-name,
-  .rk-choice-sm .rk-choice-trigger-main span { font-size:.82rem; }
-</style>
 
   <div class="ranking-workspace">
     <aside class="ranking-function-rail"

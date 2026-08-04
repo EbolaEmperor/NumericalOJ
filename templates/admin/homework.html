@@ -1,4 +1,5 @@
 {% extends "layouts/site.html" %}
+{% from "components/choice_picker.html" import simple_choice %}
 {% block title %}作业管理 - {{ super() }}{% endblock %}
 {% block head %}
 {{ super() }}
@@ -215,18 +216,21 @@
     <div class="card-body">
       <form method="GET" action="{{ url_for('homework.admin_homework') }}" class="row g-3 align-items-center">
         <div class="col-auto">
-          <label class="form-label">选择班级：</label>
+          <label for="homeworkClassPickerTrigger" class="form-label">选择班级：</label>
         </div>
-        <div class="col-auto">
-          <select name="sclass" class="form-select" onchange="this.form.submit()">
-            <option value="">请选择</option>
-            {% for cls in classes %}
-            <option value="{{ cls.class_en }}" 
-              {% if cls.class_en == selected_class %}selected{% endif %}>
-              {{ cls.class_cn }}
-            </option>
-            {% endfor %}
-          </select>
+        <div class="col-auto" style="min-width: 220px;">
+          {{ simple_choice(
+            'homeworkClassPicker',
+            'sclass',
+            classes,
+            selected_class,
+            placeholder_label='请选择',
+            value_key='class_en',
+            label_key='class_cn',
+            default_icon='fa-users',
+            auto_submit=true,
+            aria_label='选择班级'
+          ) }}
         </div>
       </form>
     </div>

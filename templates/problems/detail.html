@@ -5,6 +5,9 @@
 {% block head %}
   {{ super() }}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
+  {% if problem.type == 2 %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-written-submit.css') }}">
+  {% endif %}
   {% if user and user.is_admin == 1 and problem.type == 1 %}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-agent-launch.css') }}">
@@ -245,35 +248,45 @@
       </form>
     {% elif problem.type == 2 %}
       {% set written_mode = (problem.written_grading_mode or 1)|int %}
-      <form method="POST" action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4 problem-submit-form">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <label for="file" class="form-label mb-0"><i class="fas fa-file-alt me-2"></i> 上传文件</label>
-          <div>
+      <form method="POST" action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" enctype="multipart/form-data" class="mb-4 problem-submit-form problem-written-submit-form">
+        <div class="problem-written-toolbar">
+          <div class="problem-written-actions">
             {% if user.is_admin == 1 %}
-            <button type="removeInvalid" class="btn btn-outline-danger"><i class="fas fa-trash me-2"></i> 移除无效提交</button>
+            <button type="removeInvalid" class="btn btn-outline-danger problem-written-cleanup-button"><i class="fas fa-trash me-2"></i> 移除无效提交</button>
             {% endif %}
             {% if user.is_admin != 1 %}
               {% if remaining_submissions is not none %}
                 {% set sub_limit = problem.submission_limit or 10 %}
-                <span class="{% if remaining_submissions <= 2 %}text-danger{% else %}text-muted{% endif %} me-2">
+                <span class="problem-written-quota{% if remaining_submissions <= 2 %} is-low{% endif %}">
                   剩余提交次数: <strong>{{ remaining_submissions }}</strong>/{{ sub_limit }}
                 </span>
               {% endif %}
-              <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
+              <button type="submit" class="btn btn-outline-primary problem-written-submit-button" {% if not can_submit %}disabled{% endif %}>
                 <i class="fas fa-upload me-2"></i> {% if can_submit %}上传作业{% else %}已达上限{% endif %}
               </button>
             {% else %}
-              <button type="submit" class="btn btn-outline-primary">
+              <button type="submit" class="btn btn-outline-primary problem-written-submit-button">
                 <i class="fas fa-upload me-2"></i> 上传作业
               </button>
             {% endif %}
           </div>
         </div>
 
-        <div class="card">
+        <div class="card problem-written-upload-card">
           <div class="card-body">
-            <input class="form-control" type="file" id="file" name="file" {% if written_mode == 3 %}accept=".zip"{% else %}accept=".pdf"{% endif %} required>
-            <div class="form-text">
+            <div class="problem-written-file-picker" data-written-file-picker data-file-kind="{{ 'ZIP' if written_mode == 3 else 'PDF' }}">
+              <input class="visually-hidden problem-written-file-input" type="file" id="file" name="file" {% if written_mode == 3 %}accept=".zip"{% else %}accept=".pdf"{% endif %} required data-written-file-input>
+              <label class="problem-written-dropzone" for="file" data-written-dropzone>
+                <span class="problem-written-dropzone-icon" aria-hidden="true">
+                  <i class="fas {{ 'fa-file-archive' if written_mode == 3 else 'fa-file-pdf' }}"></i>
+                </span>
+                <span class="problem-written-dropzone-copy">
+                  <strong>上传文件</strong>
+                  <small data-written-file-name aria-live="polite">{{ 'ZIP' if written_mode == 3 else 'PDF' }}</small>
+                </span>
+              </label>
+            </div>
+            <div class="form-text problem-written-format-note">
               {% if written_mode == 3 %}
                 请上传 zip 文件，压缩包内必须包含 main.tex 及其依赖文件。
               {% else %}
@@ -283,9 +296,9 @@
           </div>
         </div>
         {% if written_mode == 4 %}
-        <p class="text-muted"><i class="fas fa-info-circle me-1"></i> 纯人工批改：重新提交将覆盖上一次提交，等待老师批改。</p>
+        <p class="text-muted problem-written-note"><i class="fas fa-info-circle me-1"></i> 纯人工批改：重新提交将覆盖上一次提交，等待老师批改。</p>
         {% else %}
-        <p class="text-muted">提示：书面作业可多次提交，以历史最高分计入成绩。</p>
+        <p class="text-muted problem-written-note">提示：书面作业可多次提交，以历史最高分计入成绩。</p>
         {% endif %}
       </form>
     {% endif %}
@@ -345,10 +358,7 @@
             aria-labelledby="{{ prefix }}Label {{ prefix }}Selection">
       <span class="rk-choice-trigger-main">
         <i class="fas fa-circle-notch" data-rk-choice-icon aria-hidden="true"></i>
-        <span class="agent-launch-trigger-copy">
-          <span id="{{ prefix }}Selection" data-rk-choice-label>正在加载…</span>
-          <span class="agent-launch-trigger-meta" data-agent-choice-selected-meta hidden></span>
-        </span>
+        <span id="{{ prefix }}Selection" data-rk-choice-label>正在加载…</span>
       </span>
       <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
     </button>
@@ -812,6 +822,9 @@
 {% include 'components/editor/monaco.html' %}
 <script defer src="{{ url_for('static', filename='app/problem-editor.js') }}"></script>
 {% endif %}
+{% if problem.type == 2 %}
+<script src="{{ url_for('static', filename='app/problem-written-submit.js') }}"></script>
+{% endif %}
 
 <script>
 (function() {
@@ -1000,7 +1013,6 @@
 {% block scripts %}
   {{ super() }}
   {% if user and user.is_admin == 1 and problem.type == 1 %}
-  <script src="{{ url_for('static', filename='app/choice-picker.js') }}"></script>
   <script src="{{ url_for('static', filename='app/problem-agent-launch.js') }}"></script>
   {% endif %}
   {# 标准编程题由上方 Monaco 组件加载语义客户端；其余分支在这里补齐一次。 #}

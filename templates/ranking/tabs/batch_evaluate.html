@@ -113,27 +113,24 @@
                 <div class="bm-node">
                   <div class="rk-choice" data-rk-choice
                        data-rk-choice-input="bmAgentEndpointId">
-                    <button type="button" class="rk-choice-trigger bm-picker-trigger"
+                    <button type="button" class="rk-choice-trigger"
                             aria-haspopup="listbox" aria-expanded="false">
-                      <span class="bm-picker-icon">
+                      <span class="rk-choice-trigger-main">
                         {% if bm_ep.default %}
                           <i class="{{ harness_logo_class(bm_ep.default_harness) }}" data-rk-choice-icon aria-hidden="true"></i>
                         {% else %}
                           <i class="fas fa-robot" data-rk-choice-icon aria-hidden="true"></i>
                         {% endif %}
-                      </span>
-                      <span class="bm-picker-current">
-                        <strong data-rk-choice-label>
+                        <span data-rk-choice-label>
                           {% if bm_ep.default %}
                             {% for ep in aj_endpoints %}{% if ep.id|string == bm_ep.default %}{{ bm_endpoint_label(ep) }}{% endif %}{% endfor %}
                           {% else %}无可用节点{% endif %}
-                        </strong>
-                        <small>AI JUDGE NODE</small>
+                        </span>
                       </span>
-                      <i class="fas fa-chevron-down bm-picker-caret rk-choice-caret"
+                      <i class="fas fa-chevron-down rk-choice-caret"
                          aria-hidden="true"></i>
                     </button>
-                    <div class="rk-choice-menu bm-node-menu"
+                    <div class="rk-choice-menu"
                          role="listbox" aria-label="AI 节点">
                       {% for ep in aj_endpoints %}
                         {% if (ep.status or '') == 'enabled' %}

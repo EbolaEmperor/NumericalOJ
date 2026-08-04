@@ -987,28 +987,6 @@
   pointer-events: none;
 }
 
-/* Fragment 中沿用 choice picker；选择器限制在详情页，避免影响全站。 */
-.ranking-detail-v2 .rk-choice {
-  position: relative;
-  width: 100%;
-}
-
-.ranking-detail-v2 .rk-choice-trigger {
-  display: flex;
-  width: 100%;
-  min-height: 38px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.62rem;
-  padding: 0.45rem 0.58rem;
-  border: 1px solid #b9c1cb;
-  border-radius: 8px;
-  background: #fff;
-  color: #1f2329;
-  font-size: 0.86rem;
-  line-height: 1.2;
-}
-
 @media (max-width: 1180px) {
   .ranking-detail-v2 {
     --ranking-v2-rail: 198px;
