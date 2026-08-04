@@ -39,6 +39,14 @@ services:
         condition: service_healthy
     environment:
       NUMOJ_TEST_ENV: "1"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DB: myojdb_test
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ci_root_password
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "15"
     volumes:
       - ../../test-results:/app/test-results
     command: ["bash", "tests/ci/run-ci.sh"]

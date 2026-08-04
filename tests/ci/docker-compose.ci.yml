@@ -34,6 +34,14 @@ services:
         condition: service_healthy
     environment:
       NUMOJ_TEST_ENV: "1"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DB: myojdb_test
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ci_root_password
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "15"
       # 不再覆盖 JUDGER_RUN_ROOT：判题运行目录用内置默认 <OJ_ROOT>/judger（容器内 /app/judger），
       # 不在 tmp 下；submission_output_image 端点通过 judger_core.run_dir_for 解析同一目录。
       # judger_core 在 import 时读取 MKLROOT；指向下面挂入的宿主 oneAPI MKL

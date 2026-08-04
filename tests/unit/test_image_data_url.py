@@ -3,7 +3,7 @@
 
 重点回归：图片题输出可能是 BMP（或 GIF 等）。视觉模型对 BMP 支持不稳，
 因此发送前必须就地无损转成 PNG；而 PNG/JPEG/WEBP 这类“视觉安全”格式保持原样。
-导入 AI 转写模块依赖 config（CI 用 tests/ci/config.ci.py 提供）。
+导入 AI 转写模块依赖 tracked config.py；CI 网络拓扑由环境变量注入。
 """
 import base64
 import io

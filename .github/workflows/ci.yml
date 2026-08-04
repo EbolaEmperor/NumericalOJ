@@ -121,6 +121,7 @@ jobs:
       REDIS_PORT: '6379'
       REDIS_DB: '15'
       JUDGER_DOCKER_IMAGE: numericaloj-judger-lite:latest
+      AGENT_JUDGE_DOCKER_IMAGE: numericaloj-agent-judge-lite:latest
       NUMOJ_PI_AGENT_JUDGE_IMAGE: numericaloj-agent-judge-lite:latest
     steps:
       - uses: actions/checkout@v5
