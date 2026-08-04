@@ -125,3 +125,19 @@ def test_resolve_public_launch_endpoint_requires_configured_api_key(monkeypatch)
         agent_launch.resolve_launch_endpoint(
             "codex", 3, include_secret=False,
         )
+
+
+def test_endpoint_token_pricing_requires_all_three_prices():
+    endpoint = _endpoint(4, protocol="openai")
+    assert agent_launch.token_pricing_from_endpoint(endpoint) is None
+
+    endpoint.update({
+        "input_price_per_million": "2.00",
+        "cached_input_price_per_million": "0.20",
+        "output_price_per_million": "8.00",
+    })
+    assert agent_launch.token_pricing_from_endpoint(endpoint) == {
+        "input_price_per_million": "2.00",
+        "cached_input_price_per_million": "0.20",
+        "output_price_per_million": "8.00",
+    }

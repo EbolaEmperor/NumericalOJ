@@ -71,8 +71,6 @@ celery -A oj.celery worker -Q judge -c 16
 
 Redis 客户端统一由 `oj_modules/infrastructure/redis.py` 创建。普通命令的 `REDIS_SOCKET_TIMEOUT_SECONDS` 与 `REDIS_CONNECT_TIMEOUT_SECONDS` 默认 3 秒；Pub/Sub 使用独立的 `REDIS_BLOCKING_SOCKET_TIMEOUT_SECONDS`，默认 30 秒。业务模块不得自行构造 `Redis` / `StrictRedis`。
 
-`TESTDATA_TEXT_MAX_TOTAL_BYTES` 是 `.env` 中可选的非敏感整数，默认 64 MiB，限制一次测试数据导入实际读入内存的 `.in/.out` 文本总量；修改后需要重启 Web 进程。
-
 ## 数据库结构与迁移能力
 
 `database/bootstrap.sql` 是当前新安装结构与开发种子基线，`scripts/init_db_schema.py` 会：

@@ -50,6 +50,9 @@ def _llm_args(**overrides):
         "env_file": None,
         "model": "example-model",
         "thinking_enabled": True,
+        "input_price_per_million": None,
+        "cached_input_price_per_million": None,
+        "output_price_per_million": None,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -114,6 +117,38 @@ def test_llm_protocol_update_preserves_thinking_with_new_wire_format(monkeypatch
     assert tested["thinking_format"] == "thinking_type"
     assert saved["thinking_enabled"] is True
     assert saved["thinking_format"] == "thinking_type"
+    capsys.readouterr()
+
+
+def test_llm_update_sends_optional_token_prices_through_test_and_save(monkeypatch, capsys):
+    cli = _load_cli()
+    client = _Client(
+        _Response({"success": True, "test": {"passed": True}, "test_token": "token"}),
+        _Response({"success": True, "endpoint": {"id": 7}}),
+    )
+    monkeypatch.setattr(cli.site_config.common, "client_from_args", lambda _args: client)
+    args = _llm_args(
+        endpoint_id=7,
+        protocol=None,
+        category=None,
+        endpoint_base_url=None,
+        api_key=None,
+        model=None,
+        thinking_enabled=None,
+        input_price_per_million="1",
+        cached_input_price_per_million="0.02",
+        output_price_per_million="2",
+    )
+
+    cli.site_config.llm_update(args)
+
+    expected = {
+        "input_price_per_million": "1",
+        "cached_input_price_per_million": "0.02",
+        "output_price_per_million": "2",
+    }
+    assert client.requests[0][2]["json"] == {"endpoint_id": 7, **expected}
+    assert client.requests[1][2]["json"] == {"test_token": "token", **expected}
     capsys.readouterr()
 
 

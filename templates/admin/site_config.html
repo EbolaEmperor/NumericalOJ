@@ -352,6 +352,21 @@
               <input name="thinking_enabled" type="hidden" value="false">
               <input name="thinking_format" type="hidden" value="none">
             </label>
+
+            <div class="site-config-price-row">
+              <label>
+                <span>输入单价（RMB / 1M Token）</span>
+                <input name="input_price_per_million" type="number" min="0" step="any" inputmode="decimal">
+              </label>
+              <label>
+                <span>输入缓存命中单价（RMB / 1M Token）</span>
+                <input name="cached_input_price_per_million" type="number" min="0" step="any" inputmode="decimal">
+              </label>
+              <label>
+                <span>输出单价（RMB / 1M Token）</span>
+                <input name="output_price_per_million" type="number" min="0" step="any" inputmode="decimal">
+              </label>
+            </div>
           </div>
           <div class="site-config-test-result"
                data-endpoint-test-result

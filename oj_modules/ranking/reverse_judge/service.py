@@ -12,6 +12,7 @@ from oj_modules.ranking.reverse_judge.db import (
     list_reverse_judge_steps,
 )
 from oj_modules.ranking.reverse_judge.traces import (
+    collect_agent_token_usage,
     collect_agent_trace_files,
     collect_agent_trace_messages,
 )
@@ -65,6 +66,7 @@ def build_reverse_judge_snapshot(submission_id):
             'error_message': row.get('error_message') or '',
             'trace_files': collect_agent_trace_files(row.get('trace_dir')),
             'trace_messages': collect_agent_trace_messages(row.get('trace_dir')),
+            'token_usage': collect_agent_token_usage(row.get('trace_dir')),
             'started_at': str(row.get('started_at') or ''),
             'finished_at': str(row.get('finished_at') or ''),
         }

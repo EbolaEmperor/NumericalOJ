@@ -137,11 +137,6 @@ Agent-as-Judge 高级通信和压缩包边界：
 
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
-| `TESTDATA_ZIP_MAX_MEMBERS` | int | `4096` |
-| `TESTDATA_ZIP_MAX_FILE_BYTES` | int | `134217728` |
-| `TESTDATA_ZIP_MAX_TOTAL_BYTES` | int | `268435456` |
-| `TESTDATA_ZIP_MAX_COMPRESSION_RATIO` | float | `500.0` |
-| `TESTDATA_TEXT_MAX_TOTAL_BYTES` | int | `67108864` |
 | `RANKING_BATCH_LSREMOTE_TIMEOUT` | int | `20` |
 | `RANKING_BATCH_CLONE_TIMEOUT` | int | `180` |
 | `RANKING_BATCH_PROBE_CONCURRENCY` | int | `12` |

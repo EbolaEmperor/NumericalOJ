@@ -24,8 +24,9 @@ mkdir -p \
   test-results judger tmp uploads ranking_uploads user_libraries library \
   logs/supervisor logs/services
 
-# CI 不读取生产私有 .env：Compose 镜像使用 config.ci.py，GitHub runner 使用受控环境
-# 变量覆盖 tracked config.py。真实 AI 链路默认 skip；不要把生产密钥挂进 CI。
+# CI 镜像的 .dockerignore 禁止复制本地 .env。单元测试读取 tracked config.py 的
+# 代码默认值；DB/E2E 在各自 pytest 进程启动前切换到自包含 config.ci.py。
+# 真实 AI 链路默认 skip；不要把生产密钥挂进 CI。
 export OJ_LIVE_AI=0
 echo ">>> CI 使用占位符 AI 配置，AI live 测试将 skip (OJ_LIVE_AI=0)"
 
@@ -48,11 +49,18 @@ fi
 declare -a NAMES
 declare -a RESULTS
 overall=0
+production_config="$(mktemp)"
+cp config.py "$production_config"
+trap 'rm -f "$production_config"' EXIT
 
 echo "=================== NumericalOJ CI 开始 ==================="
 for mod in "${MODULES[@]}"; do
   [ -e "$mod" ] || { echo "跳过(不存在): $mod"; continue; }
   safe=$(echo "$mod" | tr '/.' '__')
+  case "$mod" in
+    tests/unit*) cp "$production_config" config.py ;;
+    *) cp tests/ci/config.ci.py config.py ;;
+  esac
   echo ""
   echo "------- 运行模块: $mod -------"
   python3 -m pytest "$mod" -v --timeout=180 \

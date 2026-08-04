@@ -36,14 +36,13 @@ from oj_modules.problems.agent_launch import (
 from oj_modules.site_config.services import get_web_search_settings
 from oj_modules.tasks.agent.traces import (
     AGENT_TRACE_SYNC_INTERVAL_SECONDS,
-    AgentTraceRecorder,
     ensure_agent_trace_dir,
     prepare_agent_trace_dir,
+    sync_agent_trace,
 )
 
 
 _CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024
-_TRACE_STDOUT_LINE_MAX_BYTES = 256 * 1024
 _AGENT_CONTEXT_WINDOW_TOKENS = 128_000
 _AGENT_MAX_OUTPUT_TOKENS = 16_384
 _IDENTITY_CONFIG_PATH = "/workspace/.numoj-agent/identity.json"
@@ -110,15 +109,13 @@ def _write_workspace_file(workspace, relative_path, content, *, mode=0o600):
 
 
 def _read_workspace_artifacts(workspace, artifact_files):
-    """容器已停止后，安全读取少量显式声明的任务产物。"""
+    """容器已停止后，安全读取显式声明的任务产物。"""
 
     root = Path(workspace).resolve()
     result = {}
-    for relative_path, max_bytes in (artifact_files or {}).items():
+    for relative_path in artifact_files or ():
         relative = Path(str(relative_path or ""))
         _safe_workspace_path(root, relative)
-        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
-            raise ValueError("Agent 产物大小上限无效")
 
         current = root
         for part in relative.parts[:-1]:
@@ -137,9 +134,6 @@ def _read_workspace_artifacts(workspace, artifact_files):
             raise ValueError(f"Agent 没有生成预期产物：{relative_path}") from exc
         if stat.S_ISLNK(target_stat.st_mode) or not stat.S_ISREG(target_stat.st_mode):
             raise ValueError(f"Agent 产物必须是普通文件：{relative_path}")
-        if target_stat.st_size > max_bytes:
-            raise ValueError(f"Agent 产物超过大小限制：{relative_path}")
-
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(target, flags)
         try:
@@ -151,18 +145,14 @@ def _read_workspace_artifacts(workspace, artifact_files):
             ):
                 raise ValueError(f"Agent 产物读取时发生变化：{relative_path}")
             chunks = []
-            remaining = max_bytes + 1
-            while remaining > 0:
-                chunk = os.read(fd, min(1024 * 1024, remaining))
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
                 if not chunk:
                     break
                 chunks.append(chunk)
-                remaining -= len(chunk)
             payload = b"".join(chunks)
         finally:
             os.close(fd)
-        if len(payload) > max_bytes:
-            raise ValueError(f"Agent 产物超过大小限制：{relative_path}")
         result[str(relative)] = payload
     return result
 
@@ -174,16 +164,20 @@ def _tail_reader(
     key,
     limit,
     *,
-    line_callback=None,
+    mirror_stream=None,
 ):
-    pending = bytearray()
-    stream_offset = 0
-    discarding_oversized_line = False
     try:
         while True:
             block = stream.read(65536)
             if not block:
                 break
+            if mirror_stream is not None:
+                try:
+                    mirror_stream.write(block)
+                except OSError:
+                    # 轨迹落盘失败不能阻断 stdout drain，否则 harness 可能因
+                    # pipe 写满而卡死；任务结果仍保留有界尾部。
+                    mirror_stream = None
             chunks.append(block)
             size_state[key] += len(block)
             while chunks and size_state[key] > limit:
@@ -193,37 +187,6 @@ def _tail_reader(
                 else:
                     chunks[0] = chunks[0][overflow:]
                     size_state[key] -= overflow
-            if callable(line_callback):
-                if discarding_oversized_line:
-                    boundary = block.find(b"\n")
-                    if boundary < 0:
-                        stream_offset += len(block)
-                        continue
-                    stream_offset += boundary + 1
-                    block = block[boundary + 1:]
-                    discarding_oversized_line = False
-                pending.extend(block)
-                while True:
-                    boundary = pending.find(b"\n")
-                    if boundary < 0:
-                        break
-                    raw_line = bytes(pending[:boundary])
-                    del pending[:boundary + 1]
-                    if len(raw_line) <= _TRACE_STDOUT_LINE_MAX_BYTES:
-                        try:
-                            line_callback(raw_line, stream_offset)
-                        except Exception:
-                            pass
-                    stream_offset += boundary + 1
-                if len(pending) > _TRACE_STDOUT_LINE_MAX_BYTES:
-                    stream_offset += len(pending)
-                    pending.clear()
-                    discarding_oversized_line = True
-        if pending and callable(line_callback):
-            try:
-                line_callback(bytes(pending), stream_offset)
-            except Exception:
-                pass
     finally:
         stream.close()
 
@@ -234,17 +197,26 @@ def _run_with_bounded_output(
     *,
     timeout,
     process_env=None,
-    stdout_line_callback=None,
+    stdout_capture_path=None,
     on_tick=None,
     tick_interval=AGENT_TRACE_SYNC_INTERVAL_SECONDS,
 ):
-    proc = subprocess.Popen(
-        args,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=process_env,
+    stdout_mirror = (
+        open(stdout_capture_path, "wb", buffering=0)
+        if stdout_capture_path else None
     )
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=process_env,
+        )
+    except BaseException:
+        if stdout_mirror is not None:
+            stdout_mirror.close()
+        raise
     stdout_chunks = deque()
     stderr_chunks = deque()
     sizes = {"stdout": 0, "stderr": 0}
@@ -252,7 +224,7 @@ def _run_with_bounded_output(
         threading.Thread(
             target=_tail_reader,
             args=(proc.stdout, stdout_chunks, sizes, "stdout", _CAPTURE_LIMIT_BYTES),
-            kwargs={"line_callback": stdout_line_callback},
+            kwargs={"mirror_stream": stdout_mirror},
             daemon=True,
         ),
         threading.Thread(
@@ -275,7 +247,9 @@ def _run_with_bounded_output(
                 pass
         timeout_seconds = max(1, int(timeout))
         deadline = time.monotonic() + timeout_seconds
-        last_tick = time.monotonic()
+        # 与 Reverse Judge 一致：进入执行循环后立即做第一次同步，后续再按
+        # 固定间隔同步，避免前端必须空等完整的 tick 周期。
+        last_tick = 0.0
         timed_out = False
         while True:
             remaining = deadline - time.monotonic()
@@ -307,12 +281,14 @@ def _run_with_bounded_output(
         raise
     finally:
         for thread in threads:
-            thread.join(timeout=10)
+            thread.join()
         if callable(on_tick):
             try:
                 on_tick(final=True)
             except Exception:
                 pass
+        if stdout_mirror is not None:
+            stdout_mirror.close()
     return HarnessRunResult(
         returncode=int(returncode),
         timed_out=timed_out,
@@ -433,8 +409,7 @@ def _docker_args(*, container_name, workspace, env):
     args = [
         "docker",
         "run",
-        "--rm",
-        "-i",
+        "--detach",
         "--name",
         container_name,
         "--read-only",
@@ -463,18 +438,41 @@ def _docker_args(*, container_name, workspace, env):
     # 避免 LLM API Key 出现在宿主进程参数和常规进程清单中。
     for key in env:
         args.extend(["--env", key])
-    # 客户端或 worker 被杀后，容器仍须自行在有限时间内退出，让 --rm 回收其
-    # Session/API Key。内层略早于宿主 timeout，给正常清理预留 10 秒。
-    inner_timeout = max(1, int(AGENT_JUDGE_DEFAULT_TIMEOUT) - 10)
     args.extend([
         str(AGENT_JUDGE_DOCKER_IMAGE),
+        "bash",
+        "-lc",
+        "tail -f /dev/null",
+    ])
+    return args
+
+
+def _docker_exec_args(container_name):
+    inner_timeout = max(1, int(AGENT_JUDGE_DEFAULT_TIMEOUT) - 10)
+    return [
+        "docker",
+        "exec",
+        "-i",
+        container_name,
         "timeout",
         "-k",
         "10s",
         f"{inner_timeout}s",
         "/usr/local/bin/run_harness",
-    ])
-    return args
+    ]
+
+
+def _docker_process_env(container_env):
+    """构造 Docker CLI 环境，同时保留宿主的 context 配置位置。"""
+
+    process_env = os.environ.copy()
+    host_home = str(process_env.get("HOME") or "").strip()
+    if not str(process_env.get("DOCKER_CONFIG") or "").strip() and host_home:
+        # `docker run --env HOME` 仍需从此环境读取容器值，但 Docker CLI 自身
+        # 必须继续从宿主 ~/.docker 读取 Colima/Desktop context。
+        process_env["DOCKER_CONFIG"] = str(Path(host_home) / ".docker")
+    process_env.update(container_env)
+    return process_env
 
 
 def _sanitize_output(result, *, secrets):
@@ -621,22 +619,26 @@ def run_agent_harness(
                 workspace=workspace,
                 env=env,
             )
-            docker_process_env = os.environ.copy()
-            docker_process_env.update(env)
-            trace_recorder = AgentTraceRecorder(
-                workspace=workspace,
-                trace_dir=trace_dir,
-                harness=harness,
-                secrets=(
-                    session_cookie,
-                    endpoint.get("api_key"),
-                    (web_search_settings or {}).get("authorization"),
-                ),
+            docker_process_env = _docker_process_env(env)
+            stdout_trace_path = _safe_workspace_path(
+                workspace,
+                ".runtime/tmp/agent-harness.stdout",
+            )
+            trace_secrets = (
+                session_cookie,
+                endpoint.get("api_key"),
+                (web_search_settings or {}).get("authorization"),
             )
 
             def sync_trace(*, final=False):
-                changed = trace_recorder.sync()
-                if (changed or final) and callable(trace_callback):
+                sync_agent_trace(
+                    container_name,
+                    trace_dir,
+                    harness,
+                    stdout_trace_path,
+                    secrets=trace_secrets,
+                )
+                if callable(trace_callback):
                     try:
                         trace_callback()
                     except Exception:
@@ -645,18 +647,32 @@ def run_agent_harness(
                         pass
 
             try:
-                result = _run_with_bounded_output(
+                subprocess.run(
                     docker_args,
+                    check=True,
+                    capture_output=True,
+                    env=docker_process_env,
+                    timeout=120,
+                )
+                sync_trace()
+                result = _run_with_bounded_output(
+                    _docker_exec_args(container_name),
                     prompt,
                     timeout=max(1, int(AGENT_JUDGE_DEFAULT_TIMEOUT)),
                     process_env=docker_process_env,
-                    stdout_line_callback=trace_recorder.ingest_stdout_line,
+                    stdout_capture_path=stdout_trace_path,
                     on_tick=sync_trace,
                     tick_interval=AGENT_TRACE_SYNC_INTERVAL_SECONDS,
                 )
+                sync_trace()
             finally:
-                # docker 客户端被 Celery soft timeout 中断时，--rm 不一定来得及执行。
-                _remove_agent_container(container_name)
+                try:
+                    _remove_agent_container(container_name)
+                finally:
+                    try:
+                        stdout_trace_path.unlink()
+                    except FileNotFoundError:
+                        pass
             artifacts = _read_workspace_artifacts(workspace, artifact_files)
             result = HarnessRunResult(
                 returncode=result.returncode,
@@ -668,11 +684,7 @@ def run_agent_harness(
             )
             return _sanitize_output(
                 result,
-                secrets=(
-                    session_cookie,
-                    endpoint.get("api_key"),
-                    (web_search_settings or {}).get("authorization"),
-                ),
+                secrets=trace_secrets,
             )
 
 

@@ -97,6 +97,10 @@ def test_build_judge_snapshot_includes_shared_trace_payload(monkeypatch, tmp_pat
         db, "collect_agent_trace_messages",
         lambda path: seen.append(("messages", path)) or [{"kind": "assistant", "text": "ok"}],
     )
+    monkeypatch.setattr(
+        db, "collect_agent_token_usage",
+        lambda path: seen.append(("usage", path)) or {"input_total_tokens": 12},
+    )
 
     snapshot = db.build_judge_snapshot(9)
 
@@ -108,8 +112,13 @@ def test_build_judge_snapshot_includes_shared_trace_payload(monkeypatch, tmp_pat
         "stderr": "",
         "trace_files": [{"path": "trace.jsonl"}],
         "trace_messages": [{"kind": "assistant", "text": "ok"}],
+        "token_usage": {"input_total_tokens": 12},
     }
-    assert seen == [("files", str(expected_dir)), ("messages", str(expected_dir))]
+    assert seen == [
+        ("files", str(expected_dir)),
+        ("messages", str(expected_dir)),
+        ("usage", str(expected_dir)),
+    ]
     assert "trace_dir" not in snapshot["execution_trace"]
 
 

@@ -1,6 +1,5 @@
 import json
 import io
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +10,6 @@ from oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages
 from oj_modules.tasks.agent import harness_runtime as runtime
 from oj_modules.tasks.agent import identity_relay
 from oj_modules.tasks.agent import traces as agent_traces
-from oj_modules.tasks.agent.traces import AgentTraceRecorder
 
 
 def _endpoint(protocol="openai"):
@@ -72,6 +70,24 @@ def test_docker_args_use_colima_compatible_user_only_on_darwin(
         env=env,
     )
     assert linux_args[linux_args.index("--user") + 1] == "1001:1002"
+
+
+def test_docker_process_env_keeps_host_docker_config_when_container_overrides_home(
+    monkeypatch,
+):
+    monkeypatch.setenv("HOME", "/Users/host-user")
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setenv("DOCKER_CONTEXT", "colima")
+
+    process_env = runtime._docker_process_env({
+        "HOME": "/workspace/.runtime/home",
+        "OPENAI_API_KEY": "secret",
+    })
+
+    assert process_env["HOME"] == "/workspace/.runtime/home"
+    assert process_env["DOCKER_CONFIG"] == "/Users/host-user/.docker"
+    assert process_env["DOCKER_CONTEXT"] == "colima"
+    assert process_env["OPENAI_API_KEY"] == "secret"
 
 
 def test_container_name_is_stable_and_keeps_the_full_safe_task_id():
@@ -178,6 +194,7 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         },
     )
     observed = {}
+    lifecycle = []
 
     class FakeRelayContext:
         def __enter__(self):
@@ -201,11 +218,13 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         *,
         timeout,
         process_env=None,
-        stdout_line_callback=None,
+        stdout_capture_path=None,
         on_tick=None,
         tick_interval=None,
     ):
-        volume = args[args.index("--volume") + 1]
+        lifecycle.append("exec")
+        create_args = observed["create_args"]
+        volume = create_args[create_args.index("--volume") + 1]
         workspace = Path(volume.split(":/workspace:rw", 1)[0])
         identity_path = workspace / ".numoj-agent/identity.json"
         observed.update(
@@ -216,9 +235,10 @@ def test_run_materializes_current_skill_and_ephemeral_session(
             identity=json.loads(identity_path.read_text(encoding="utf-8")),
             identity_mode=identity_path.stat().st_mode & 0o777,
             skill=(workspace / skill_path).read_text(encoding="utf-8"),
-            stdout_line_callback=stdout_line_callback,
+            stdout_capture_path=stdout_capture_path,
             tick_interval=tick_interval,
         )
+        Path(stdout_capture_path).write_text("temporary stdout", encoding="utf-8")
         if harness == "claude_code":
             source = (
                 workspace
@@ -253,14 +273,48 @@ def test_run_materializes_current_skill_and_ephemeral_session(
 
     cleanups = []
     monkeypatch.setattr(runtime, "_run_with_bounded_output", fake_run)
+
+    def fake_sync(
+        _container_name,
+        trace_dir,
+        selected_harness,
+        _stdout_path,
+        *,
+        secrets=(),
+    ):
+        lifecycle.append("sync")
+        observed["trace_secrets"] = secrets
+        trace_dir = Path(trace_dir)
+        create_args = observed["create_args"]
+        volume = create_args[create_args.index("--volume") + 1]
+        workspace = Path(volume.split(":/workspace:rw", 1)[0])
+        if selected_harness == "claude_code":
+            source = workspace / ".runtime/home/.claude/projects/-workspace/session.jsonl"
+            destination = trace_dir / ".claude/projects/-workspace/reverse_solve_combined.jsonl"
+        else:
+            source = workspace / ".runtime/pi/agent/sessions/session.jsonl"
+            destination = trace_dir / ".pi/agent/sessions/reverse_solve_combined.jsonl"
+        if not source.is_file():
+            return False
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+        return True
+
+    monkeypatch.setattr(runtime, "sync_agent_trace", fake_sync)
+
+    def fake_subprocess_run(args, **_kwargs):
+        if list(args[:2]) == ["docker", "run"]:
+            lifecycle.append("create")
+            observed["create_args"] = list(args)
+        elif list(args[:3]) == ["docker", "rm", "-f"]:
+            lifecycle.append("remove")
+            cleanups.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
     monkeypatch.setattr(
         runtime.subprocess,
         "run",
-        lambda args, **_kwargs: cleanups.append(list(args)) or SimpleNamespace(
-            returncode=0,
-            stdout="",
-            stderr="",
-        ),
+        fake_subprocess_run,
     )
 
     trace_updates = []
@@ -278,6 +332,11 @@ def test_run_materializes_current_skill_and_ephemeral_session(
     )
 
     assert result.returncode == 0
+    assert observed["trace_secrets"] == (
+        "session-cookie",
+        "model-secret",
+        "Bearer search-secret",
+    )
     assert result.created_submission_ids == (81, 82)
     assert observed["prompt"] == "请完成任务"
     assert observed["identity"] == {
@@ -294,13 +353,13 @@ def test_run_materializes_current_skill_and_ephemeral_session(
     assert observed["identity_mode"] == 0o600
     assert "name: numoj-" in observed["skill"]
     config_env_name, config_env_value = config_env.split("=", 1)
-    assert config_env_name in observed["args"]
+    assert config_env_name in observed["create_args"]
     assert observed["process_env"][config_env_name] == config_env_value
     assert observed["process_env"].get("OPENAI_API_KEY") == "model-secret" or (
         observed["process_env"].get("ANTHROPIC_API_KEY") == "model-secret"
     )
-    assert "model-secret" not in " ".join(observed["args"])
-    assert "session-cookie" not in " ".join(observed["args"])
+    assert "model-secret" not in " ".join(observed["create_args"])
+    assert "session-cookie" not in " ".join(observed["create_args"])
     assert observed["process_env"]["AJ_WEB_SEARCH_MCP_URL"] == (
         "https://search.example/mcp"
     )
@@ -309,21 +368,27 @@ def test_run_materializes_current_skill_and_ephemeral_session(
     )
     assert "search-secret" not in " ".join(observed["args"])
     assert "session-cookie" not in json.dumps(observed["identity"])
-    container_name = observed["args"][observed["args"].index("--name") + 1]
+    container_name = observed["create_args"][
+        observed["create_args"].index("--name") + 1
+    ]
     assert container_name == "numoj-agent-task-1"
+    assert observed["create_args"][-4:] == [
+        str(runtime.AGENT_JUDGE_DOCKER_IMAGE), "bash", "-lc", "tail -f /dev/null",
+    ]
+    assert observed["args"][:4] == ["docker", "exec", "-i", container_name]
     assert cleanups == [
         ["docker", "rm", "-f", container_name],
         ["docker", "rm", "-f", container_name],
     ]
     assert observed["tick_interval"] == runtime.AGENT_TRACE_SYNC_INTERVAL_SECONDS
-    assert trace_updates == ["updated", "updated"]
+    assert trace_updates == ["updated", "updated", "updated", "updated"]
+    assert lifecycle == [
+        "remove", "create", "sync", "exec", "sync", "sync", "sync", "remove",
+    ]
     trace_dir = workspace_root / "traces/task-1"
     messages = collect_agent_trace_messages(trace_dir)
-    assert [item["text"] for item in messages] == ["已完成 [已脱敏]"]
-    assert "model-secret" not in "".join(
-        path.read_text(encoding="utf-8")
-        for path in trace_dir.rglob("*.jsonl")
-    )
+    assert [item["text"] for item in messages] == ["已完成 model-secret"]
+    assert not (trace_dir / ".agent_harness.stdout.tmp").exists()
     assert workspace_root.exists()
     assert [item.name for item in workspace_root.iterdir()] == ["traces"]
 
@@ -335,233 +400,108 @@ def test_workspace_file_path_cannot_escape(tmp_path):
         runtime._safe_workspace_path(tmp_path, "/absolute")
 
 
+
 @pytest.mark.parametrize(
-    ("harness", "event"),
+    ("harness", "expected_destination"),
     [
-        (
-            "codex",
-            {"type": "agent_message", "message": "Codex model-secret"},
-        ),
-        (
-            "opencode",
-            {
-                "type": "text",
-                "part": {"type": "text", "text": "OpenCode model-secret"},
-            },
-        ),
+        ("codex", "codex_reverse_solve.jsonl"),
+        ("opencode", "opencode_agent_judge.jsonl"),
     ],
 )
-def test_stdout_json_trace_is_live_parseable_and_redacted(
+def test_stdout_agents_reuse_reverse_stdout_sync(
+    monkeypatch,
     tmp_path,
     harness,
-    event,
+    expected_destination,
 ):
-    workspace = tmp_path / "workspace"
-    trace_dir = tmp_path / "trusted-trace"
-    workspace.mkdir()
-    trace_dir.mkdir()
-    recorder = AgentTraceRecorder(
-        workspace=workspace,
-        trace_dir=trace_dir,
-        harness=harness,
-        secrets=("model-secret",),
+    calls = []
+    source = tmp_path / "stdout.jsonl"
+    source.write_text('{"type":"agent_message","message":"live"}\n')
+    monkeypatch.setattr(
+        agent_traces,
+        "sync_stdout_jsonl",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
     )
 
-    recorder.ingest_stdout_line(
-        json.dumps(event, ensure_ascii=False).encode("utf-8"),
-        offset=37,
-    )
-
-    assert recorder.sync() is True
-    assert recorder.sync() is False
-    messages = collect_agent_trace_messages(trace_dir)
-    assert len(messages) == 1
-    assert "[已脱敏]" in messages[0]["text"]
-    assert "model-secret" not in "".join(
-        path.read_text(encoding="utf-8")
-        for path in trace_dir.rglob("*.jsonl")
-    )
-
-
-def test_claude_trace_stably_merges_top_level_sessions_and_ignores_subagents(
-    tmp_path,
-):
-    workspace = tmp_path / "workspace"
-    trace_dir = tmp_path / "trusted-trace"
-    sessions = workspace / ".runtime/home/.claude/projects/-workspace"
-    sessions.mkdir(parents=True)
-    trace_dir.mkdir()
-
-    def event(text, event_uuid):
-        return json.dumps({
-            "type": "assistant",
-            "uuid": event_uuid,
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": text}],
-            },
-        }, ensure_ascii=False)
-
-    first = sessions / "a-main.jsonl"
-    second = sessions / "z-main.jsonl"
-    first.write_text(event("主会话 A model-secret", "uuid-a") + "\n", encoding="utf-8")
-    second.write_text(event("主会话 Z", "uuid-z") + "\n", encoding="utf-8")
-    subagent = sessions / "a-main/subagents/agent-1.jsonl"
-    subagent.parent.mkdir(parents=True)
-    subagent.write_text(event("不得出现的 subagent", "uuid-sub") + "\n", encoding="utf-8")
-    os.utime(first, (200, 200))
-    os.utime(second, (100, 100))
-    os.utime(subagent, (300, 300))
-
-    recorder = AgentTraceRecorder(
-        workspace=workspace,
-        trace_dir=trace_dir,
-        harness="claude_code",
-        secrets=("model-secret",),
-    )
-    assert recorder.sync() is True
-    initial = collect_agent_trace_messages(trace_dir)
-    assert [item["text"] for item in initial] == [
-        "主会话 A [已脱敏]",
-        "主会话 Z",
+    assert agent_traces.sync_agent_trace(
+        "container", tmp_path / "trace", harness, source,
+    ) is True
+    assert calls == [
+        (
+            (source, str(tmp_path / "trace"), expected_destination),
+            {"secrets": ()},
+        ),
     ]
-    initial_sources = [item["source"] for item in initial]
-
-    with open(second, "a", encoding="utf-8") as stream:
-        stream.write(event("主会话 Z 的后续", "uuid-z-2") + "\n")
-    os.utime(first, (100, 100))
-    os.utime(second, (400, 400))
-
-    assert recorder.sync() is True
-    updated = collect_agent_trace_messages(trace_dir)
-    assert [item["text"] for item in updated] == [
-        "主会话 A [已脱敏]",
-        "主会话 Z",
-        "主会话 Z 的后续",
-    ]
-    assert [item["source"] for item in updated[:2]] == initial_sources
-    assert all("subagent" not in item["text"] for item in updated)
 
 
-def test_pi_trace_stably_merges_all_valid_sessions_without_mtime_switching(
-    tmp_path,
-):
-    workspace = tmp_path / "workspace"
-    trace_dir = tmp_path / "trusted-trace"
-    sessions = workspace / ".runtime/pi/agent/sessions"
-    first = sessions / "2026/a/session.jsonl"
-    second = sessions / "2027/b/session.jsonl"
-    invalid = sessions / "2028/invalid.jsonl"
-    first.parent.mkdir(parents=True)
-    second.parent.mkdir(parents=True)
-    invalid.parent.mkdir(parents=True)
-    trace_dir.mkdir()
+def test_shared_stdout_sync_keeps_more_than_4096_events(tmp_path):
+    source = tmp_path / "stdout.jsonl"
+    secret = "trace-secret"
+    payload = (
+        b'{"type":"agent_message","message":"live trace-secret"}\n' * 4100
+    )
+    source.write_bytes(payload)
+    trace_dir = tmp_path / "trace"
 
-    def message(text):
-        return json.dumps({
-            "type": "message",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": text}],
+    assert agent_traces.sync_agent_trace(
+        "container", trace_dir, "codex", source, secrets=(secret,),
+    ) is True
+    rendered = (trace_dir / "codex_reverse_solve.jsonl").read_bytes()
+    assert rendered.count(b'"type":"agent_message"') == 4100
+    assert secret.encode() not in rendered
+    assert b"[REDACTED]" in rendered
+
+
+def test_native_agents_reuse_reverse_container_sync(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        agent_traces,
+        "sync_claude_project_jsonl",
+        lambda *args, **kwargs: calls.append(("claude", args, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        agent_traces,
+        "sync_pi_agent_sessions",
+        lambda *args, **kwargs: calls.append(("pi", args, kwargs)) or True,
+    )
+    trace_dir = tmp_path / "trace"
+
+    assert agent_traces.sync_agent_trace(
+        "container", trace_dir, "claude_code", tmp_path / "stdout",
+    ) is True
+    assert agent_traces.sync_agent_trace(
+        "container", trace_dir, "pi", tmp_path / "stdout",
+    ) is True
+
+    assert calls == [
+        (
+            "claude",
+            ("container", str(trace_dir)),
+            {
+                "container_project_dir": (
+                    "/workspace/.runtime/home/.claude/projects/-workspace"
+                ),
+                "secrets": (),
             },
-        }, ensure_ascii=False)
-
-    header = json.dumps({"type": "session", "version": 3})
-    first.write_text(header + "\n" + message("Pi A") + "\n", encoding="utf-8")
-    second.write_text(header + "\n" + message("Pi B") + "\n", encoding="utf-8")
-    invalid.write_text(
-        json.dumps({"type": "session", "version": 2})
-        + "\n"
-        + message("无效 session")
-        + "\n",
-        encoding="utf-8",
-    )
-    os.utime(first, (300, 300))
-    os.utime(second, (100, 100))
-
-    recorder = AgentTraceRecorder(
-        workspace=workspace,
-        trace_dir=trace_dir,
-        harness="pi",
-    )
-    assert recorder.sync() is True
-    initial = collect_agent_trace_messages(trace_dir)
-    assert [item["text"] for item in initial] == ["Pi A", "Pi B"]
-    second_source = initial[1]["source"]
-    second_offset = initial[1]["offset"]
-
-    with open(first, "a", encoding="utf-8") as stream:
-        stream.write(message("Pi A 后续") + "\n")
-    os.utime(first, (500, 500))
-    os.utime(second, (200, 200))
-
-    assert recorder.sync() is True
-    updated = collect_agent_trace_messages(trace_dir)
-    assert [item["text"] for item in updated] == ["Pi A", "Pi A 后续", "Pi B"]
-    assert updated[-1]["source"] == second_source
-    assert updated[-1]["offset"] == second_offset
-    assert all("无效 session" not in item["text"] for item in updated)
+        ),
+        (
+            "pi",
+            ("container", str(trace_dir)),
+            {
+                "container_session_dir": "/workspace/.runtime/pi/agent/sessions",
+                "runtime_user": "",
+                "secrets": (),
+            },
+        ),
+    ]
 
 
-def test_pi_truncated_tail_keeps_single_safe_v3_header_and_latest_message(
+def test_bounded_runner_publishes_periodic_and_final_trace_ticks(
     monkeypatch,
     tmp_path,
 ):
-    workspace = tmp_path / "workspace"
-    trace_dir = tmp_path / "trusted-trace"
-    source = workspace / ".runtime/pi/agent/sessions/session.jsonl"
-    source.parent.mkdir(parents=True)
-    trace_dir.mkdir()
-
-    header = json.dumps({
-        "type": "session",
-        "version": 3,
-        "credential": "model-secret",
-    })
-    filler = json.dumps({
-        "type": "message",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "x" * 2048}],
-        },
-    })
-    latest = json.dumps({
-        "type": "message",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "保留下来的末条消息"}],
-        },
-    }, ensure_ascii=False)
-    source.write_text(
-        header + "\n" + filler + "\n" + latest + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(agent_traces, "_TRACE_SOURCE_MAX_BYTES", 512)
-
-    recorder = AgentTraceRecorder(
-        workspace=workspace,
-        trace_dir=trace_dir,
-        harness="pi",
-        secrets=("model-secret",),
-    )
-    assert recorder.sync() is True
-
-    combined = trace_dir / ".pi/agent/sessions/reverse_solve_combined.jsonl"
-    rows = [
-        json.loads(line)
-        for line in combined.read_text(encoding="utf-8").splitlines()
-    ]
-    assert rows[0] == {"type": "session", "version": 3}
-    assert sum(row.get("type") == "session" for row in rows) == 1
-    assert "model-secret" not in combined.read_text(encoding="utf-8")
-    assert [item["text"] for item in collect_agent_trace_messages(trace_dir)] == [
-        "保留下来的末条消息",
-    ]
-
-
-def test_bounded_runner_publishes_periodic_and_final_trace_ticks(monkeypatch):
     ticks = []
-    lines = []
+    stdout_path = tmp_path / "stdout.jsonl"
 
     class FakeProcess:
         def __init__(self):
@@ -593,38 +533,34 @@ def test_bounded_runner_publishes_periodic_and_final_trace_ticks(monkeypatch):
         ["docker"],
         "prompt",
         timeout=10,
-        stdout_line_callback=lambda line, offset: lines.append((line, offset)),
+        stdout_capture_path=stdout_path,
         on_tick=lambda *, final=False: ticks.append(final),
         tick_interval=0.5,
     )
 
     assert result.returncode == 0
-    assert lines == [
-        (b'{"type":"one"}', 0),
-        (b'{"type":"two"}', 15),
-    ]
+    assert stdout_path.read_bytes() == b'{"type":"one"}\n{"type":"two"}\n'
     assert ticks[-1] is True
     assert False in ticks
 
 
-def test_stdout_line_callback_discards_oversized_unterminated_line():
-    oversized = b"x" * (runtime._TRACE_STDOUT_LINE_MAX_BYTES * 4)
-    valid = b'{"type":"agent_message","message":"ok"}'
+def test_stdout_mirror_is_complete_while_result_capture_stays_bounded():
+    output = b"x" * (runtime._CAPTURE_LIMIT_BYTES + 1024)
     chunks = runtime.deque()
     sizes = {"stdout": 0}
-    observed = []
+    mirror = io.BytesIO()
 
     runtime._tail_reader(
-        io.BytesIO(oversized + b"\n" + valid + b"\n"),
+        io.BytesIO(output),
         chunks,
         sizes,
         "stdout",
         runtime._CAPTURE_LIMIT_BYTES,
-        line_callback=lambda line, offset: observed.append((line, offset)),
+        mirror_stream=mirror,
     )
 
-    assert observed == [(valid, len(oversized) + 1)]
-    assert sizes["stdout"] <= runtime._CAPTURE_LIMIT_BYTES
+    assert mirror.getvalue() == output
+    assert sizes["stdout"] == runtime._CAPTURE_LIMIT_BYTES
 
 
 def test_container_cleanup_failure_is_not_silently_ignored(monkeypatch):

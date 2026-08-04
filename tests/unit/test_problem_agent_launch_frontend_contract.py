@@ -123,17 +123,24 @@ def test_agent_launch_uses_inline_feedback_instead_of_browser_alerts():
     assert "is-success" in script
     assert "alert(" not in script
     assert "confirm(" not in script
-    assert "测试点数量需在 1–5000 之间" in script
+    assert "测试点数量必须是正整数" in script
     assert "请选择正解文件" in script
 
 
-def test_agent_launch_copy_identifies_each_skill_and_keeps_data_fields():
+def test_agent_launch_keeps_only_functional_copy_and_data_fields():
     template = _read(TEMPLATE)
 
-    assert "NUMOJ-USER SKILL" in template
-    assert "<strong>numoj-user skill</strong>" in template
-    assert "NUMOJ-ADMIN SKILL" not in template
-    assert "<strong>numoj-admin skill</strong>" not in template
+    assert "PROBLEM AGENT" in template
+    assert "TESTDATA AGENT" in template
+    for explanatory_copy in (
+        "NUMOJ-USER SKILL",
+        "numoj-user skill",
+        "生成 1.in/1.out 至 n.in/n.out。",
+        "可选，最长 4000 字。",
+        "上传单个源代码文件，用于生成输出并逐点验证。",
+        "例如：覆盖边界值、随机大数据与特殊构造",
+    ):
+        assert explanatory_copy not in template
     assert "解题 Agent" in template
     assert "造数据 Agent" in template
     assert "测试点要求" in template
@@ -144,6 +151,9 @@ def test_agent_launch_copy_identifies_each_skill_and_keeps_data_fields():
         "agentStandardSolution",
     ):
         assert f'id="{field_id}"' in template
+    assert 'max="5000"' not in template
+    assert 'maxlength="4000"' not in template
+    assert "requirement.length > 4000" not in _read(SCRIPT)
 
 
 def test_testdata_solution_uses_accessible_custom_file_picker():
@@ -161,7 +171,7 @@ def test_testdata_solution_uses_accessible_custom_file_picker():
     assert "data-agent-solution-file" in field
     assert 'for="agentStandardSolution"' in field
     assert 'aria-labelledby="agentStandardSolutionLabel agentSolutionFileTitle"' in field
-    assert 'aria-describedby="agentSolutionFileHelp"' in field
+    assert "aria-describedby" not in field
     assert 'aria-live="polite"' in field
     assert "tabindex" not in field
     assert "file.name" in script

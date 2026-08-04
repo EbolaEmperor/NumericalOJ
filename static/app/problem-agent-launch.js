@@ -451,13 +451,9 @@
     var solutionFile = this.selectedSolutionFile();
     var count = Number(countInput && countInput.value);
     var requirement = requirementInput ? requirementInput.value : '';
-    if (!Number.isInteger(count) || count < 1 || count > 5000) {
+    if (!Number.isInteger(count) || count < 1) {
       if (countInput) countInput.focus();
-      throw new Error('测试点数量需在 1–5000 之间。');
-    }
-    if (requirement.length > 4000) {
-      if (requirementInput) requirementInput.focus();
-      throw new Error('测试点要求最长 4000 字。');
+      throw new Error('测试点数量必须是正整数。');
     }
     if (!solutionFile) {
       if (this.solutionFileInput) this.solutionFileInput.focus();

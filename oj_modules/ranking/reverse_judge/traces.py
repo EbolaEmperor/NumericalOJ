@@ -4,6 +4,7 @@
 
 import json
 import os
+from decimal import Decimal, InvalidOperation
 
 from oj_modules.ranking.agent_judge.rules import render_md_math
 
@@ -594,6 +595,8 @@ def _codex_event_messages(event, line_no):
     typ = str(event.get('type') or '').strip()
     item = event.get('item') if isinstance(event.get('item'), dict) else {}
     item_type = str(item.get('type') or '').strip()
+    part = event.get('part') if isinstance(event.get('part'), dict) else {}
+    part_type = str(part.get('type') or '').strip().lower().replace('-', '_')
     messages = []
 
     if typ == 'error' or item_type == 'error' or typ in {'turn.failed', 'turn.error'}:
@@ -606,10 +609,46 @@ def _codex_event_messages(event, line_no):
             messages.append(_trace_message('assistant', 'AI 回复', text, event.get('model') or typ, line_no))
         return messages
 
-    if typ in {'agent_reasoning', 'reasoning'}:
-        text = _codex_text(event.get('message') or event.get('text') or event.get('content') or event.get('summary'))
+    if (typ in {'agent_reasoning', 'reasoning', 'thinking'}
+            or part_type in {'thinking', 'reasoning'}):
+        text = _codex_text(
+            event.get('message') or event.get('text') or event.get('content')
+            or event.get('summary') or part
+        )
         if text:
-            messages.append(_trace_message('thinking', '思考片段', text, event.get('model') or typ, line_no))
+            messages.append(_trace_message(
+                'thinking', '思考片段', text,
+                event.get('model') or part.get('model')
+                or ('opencode' if part else typ), line_no,
+            ))
+        return messages
+
+    # OpenCode 的 JSON stream 使用顶层 type + part；在公共解析层直接兼容，
+    # 避免任一调用方为了展示而重写、截断原始 journal。
+    if typ in {'text', 'message'} or part_type in {'text', 'message'}:
+        text = _codex_text(part or event)
+        if text:
+            messages.append(_trace_message(
+                'assistant', 'AI 回复', text,
+                event.get('model') or part.get('model') or 'opencode', line_no,
+            ))
+        return messages
+
+    if 'tool' in typ.lower() or part_type == 'tool':
+        state = part.get('state') if isinstance(part.get('state'), dict) else {}
+        tool_item = {
+            'type': 'tool_call',
+            'name': (
+                part.get('tool') or part.get('name')
+                or event.get('tool') or event.get('name') or '工具'
+            ),
+            'input': (
+                state.get('input')
+                if isinstance(state.get('input'), dict)
+                else part.get('input')
+            ),
+        }
+        messages.append(_codex_tool_message(event, tool_item, line_no))
         return messages
 
     if item_type == 'message' and str(item.get('role') or '').lower() == 'assistant':
@@ -904,6 +943,199 @@ def _collect_trace_messages(trace_dir):
     return []
 
 
+def _nonnegative_token_count(value):
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _usage_record(source, event):
+    """把四种 harness 的单次模型调用归一化为同一 token 口径。"""
+
+    event_type = str(event.get('type') or '').strip().lower().replace('-', '_')
+    message = event.get('message') if isinstance(event.get('message'), dict) else {}
+
+    if source == 'claude_code':
+        if event_type != 'assistant':
+            return None
+        usage = message.get('usage') if isinstance(message.get('usage'), dict) else None
+        if usage is None:
+            return None
+        message_id = str(message.get('id') or '').strip()
+        event_uuid = str(event.get('uuid') or '').strip()
+        return {
+            'key': ('claude', message_id or event_uuid) if message_id or event_uuid else None,
+            'input_uncached_tokens': _nonnegative_token_count(usage.get('input_tokens')),
+            'input_cached_tokens': _nonnegative_token_count(
+                usage.get('cache_read_input_tokens')
+            ),
+            'input_cache_write_tokens': _nonnegative_token_count(
+                usage.get('cache_creation_input_tokens')
+            ),
+            'output_tokens': _nonnegative_token_count(usage.get('output_tokens')),
+            'reasoning_output_tokens': 0,
+        }
+
+    if source == 'pi':
+        role = str(message.get('role') or '').strip().lower()
+        usage = message.get('usage') if isinstance(message.get('usage'), dict) else None
+        if event_type != 'message' or role != 'assistant' or usage is None:
+            return None
+        event_id = str(event.get('id') or '').strip()
+        response_id = str(message.get('responseId') or '').strip()
+        return {
+            'key': ('pi', event_id or response_id) if event_id or response_id else None,
+            'input_uncached_tokens': _nonnegative_token_count(usage.get('input')),
+            'input_cached_tokens': _nonnegative_token_count(usage.get('cacheRead')),
+            'input_cache_write_tokens': _nonnegative_token_count(usage.get('cacheWrite')),
+            'output_tokens': _nonnegative_token_count(usage.get('output')),
+            'reasoning_output_tokens': _nonnegative_token_count(usage.get('reasoning')),
+        }
+
+    if event_type == 'turn.completed':
+        usage = event.get('usage') if isinstance(event.get('usage'), dict) else None
+        if usage is None:
+            return None
+        input_total = _nonnegative_token_count(usage.get('input_tokens'))
+        cached = min(
+            input_total,
+            _nonnegative_token_count(usage.get('cached_input_tokens')),
+        )
+        event_id = str(event.get('turn_id') or event.get('id') or '').strip()
+        return {
+            'key': ('codex', event_id) if event_id else None,
+            'input_uncached_tokens': input_total - cached,
+            'input_cached_tokens': cached,
+            'input_cache_write_tokens': 0,
+            'output_tokens': _nonnegative_token_count(usage.get('output_tokens')),
+            'reasoning_output_tokens': _nonnegative_token_count(
+                usage.get('reasoning_output_tokens')
+            ),
+        }
+
+    if event_type == 'step_finish':
+        part = event.get('part') if isinstance(event.get('part'), dict) else {}
+        tokens = part.get('tokens') if isinstance(part.get('tokens'), dict) else None
+        if tokens is None and isinstance(event.get('tokens'), dict):
+            tokens = event['tokens']
+        if tokens is None:
+            return None
+        cache = tokens.get('cache') if isinstance(tokens.get('cache'), dict) else {}
+        reasoning = _nonnegative_token_count(tokens.get('reasoning'))
+        part_id = str(part.get('id') or event.get('id') or '').strip()
+        return {
+            'key': ('opencode', part_id) if part_id else None,
+            'input_uncached_tokens': _nonnegative_token_count(tokens.get('input')),
+            'input_cached_tokens': _nonnegative_token_count(cache.get('read')),
+            'input_cache_write_tokens': _nonnegative_token_count(cache.get('write')),
+            'output_tokens': _nonnegative_token_count(tokens.get('output')) + reasoning,
+            'reasoning_output_tokens': reasoning,
+        }
+    return None
+
+
+def _collect_usage_from_jsonl(path, source):
+    if not path:
+        return None
+    totals = {
+        'request_count': 0,
+        'input_uncached_tokens': 0,
+        'input_cached_tokens': 0,
+        'input_cache_write_tokens': 0,
+        'input_total_tokens': 0,
+        'output_tokens': 0,
+        'reasoning_output_tokens': 0,
+    }
+    seen = set()
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as stream:
+            for raw in stream:
+                try:
+                    event = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                record = _usage_record(source, event)
+                if record is None:
+                    continue
+                key = record.pop('key')
+                if key is not None:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                totals['request_count'] += 1
+                for field in (
+                    'input_uncached_tokens',
+                    'input_cached_tokens',
+                    'input_cache_write_tokens',
+                    'output_tokens',
+                    'reasoning_output_tokens',
+                ):
+                    totals[field] += record[field]
+    except OSError:
+        return None
+    if totals['request_count'] == 0:
+        return None
+    totals['input_total_tokens'] = (
+        totals['input_uncached_tokens']
+        + totals['input_cached_tokens']
+        + totals['input_cache_write_tokens']
+    )
+    totals['source'] = source
+    return totals
+
+
+def collect_agent_token_usage(trace_dir):
+    claude_path = _latest_claude_jsonl(trace_dir)
+    if claude_path:
+        return _collect_usage_from_jsonl(claude_path, 'claude_code')
+    pi_path = _latest_pi_jsonl(trace_dir)
+    if pi_path:
+        return _collect_usage_from_jsonl(pi_path, 'pi')
+    codex_path = _latest_codex_jsonl(trace_dir)
+    if codex_path:
+        source = (
+            'opencode'
+            if 'opencode' in os.path.basename(codex_path).lower()
+            else 'codex'
+        )
+        return _collect_usage_from_jsonl(codex_path, source)
+    return None
+
+
+def calculate_agent_token_cost_rmb(usage, pricing):
+    if not isinstance(usage, dict) or not isinstance(pricing, dict):
+        return None
+    fields = (
+        'input_price_per_million',
+        'cached_input_price_per_million',
+        'output_price_per_million',
+    )
+    try:
+        prices = [Decimal(str(pricing.get(field))) for field in fields]
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if any(not price.is_finite() or price < 0 for price in prices):
+        return None
+    uncached_input = (
+        _nonnegative_token_count(usage.get('input_uncached_tokens'))
+        + _nonnegative_token_count(usage.get('input_cache_write_tokens'))
+    )
+    cached_input = _nonnegative_token_count(usage.get('input_cached_tokens'))
+    output = _nonnegative_token_count(usage.get('output_tokens'))
+    cost = (
+        Decimal(uncached_input) * prices[0]
+        + Decimal(cached_input) * prices[1]
+        + Decimal(output) * prices[2]
+    ) / Decimal(1_000_000)
+    return format(cost.normalize(), 'f') if cost else '0'
+
+
 def collect_agent_trace_files(trace_dir):
     return _collect_trace_files(trace_dir)
 
@@ -915,4 +1147,6 @@ def collect_agent_trace_messages(trace_dir):
 __all__ = [
     "collect_agent_trace_files",
     "collect_agent_trace_messages",
+    "collect_agent_token_usage",
+    "calculate_agent_token_cost_rmb",
 ]

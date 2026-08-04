@@ -3,9 +3,10 @@
 
 import json
 import os
+import re
 import shutil
+import zipfile
 
-import config as _cfg
 from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.shared.archive import (
     ArchiveExtractionError,
@@ -18,90 +19,44 @@ class TestdataValidationError(Exception):
     pass
 
 
-TESTDATA_ZIP_MAX_MEMBERS = max(
-    2, int(getattr(_cfg, 'TESTDATA_ZIP_MAX_MEMBERS', 4096)),
-)
-TESTDATA_ZIP_MAX_FILE_BYTES = max(
-    1024 * 1024,
-    int(getattr(_cfg, 'TESTDATA_ZIP_MAX_FILE_BYTES', 128 * 1024 * 1024)),
-)
-TESTDATA_ZIP_MAX_TOTAL_BYTES = max(
-    TESTDATA_ZIP_MAX_FILE_BYTES,
-    int(getattr(_cfg, 'TESTDATA_ZIP_MAX_TOTAL_BYTES', 256 * 1024 * 1024)),
-)
-TESTDATA_ZIP_MAX_COMPRESSION_RATIO = max(
-    10.0,
-    float(getattr(_cfg, 'TESTDATA_ZIP_MAX_COMPRESSION_RATIO', 500.0)),
-)
-TESTDATA_TEXT_MAX_TOTAL_BYTES = max(
-    1,
-    int(getattr(_cfg, 'TESTDATA_TEXT_MAX_TOTAL_BYTES', 64 * 1024 * 1024)),
-)
+_TESTDATA_FILENAME = re.compile(r"^([1-9][0-9]*)\.(in|out)$")
 
 
-def _numeric_name_sort_key(filename):
-    stem = os.path.splitext(str(filename or ""))[0]
-    try:
-        return (0, int(stem))
-    except Exception:
-        return (1, stem)
-
-
-def load_testdata_from_extracted_dir(extract_dir, *, max_total_text_bytes=None):
+def load_testdata_from_extracted_dir(extract_dir):
     if not os.path.isdir(extract_dir):
         raise TestdataValidationError("解压目录不存在。")
 
-    text_size_limit = (
-        TESTDATA_TEXT_MAX_TOTAL_BYTES
-        if max_total_text_bytes is None
-        else max(1, int(max_total_text_bytes))
-    )
-
-    in_files = sorted(
-        [f for f in os.listdir(extract_dir) if str(f).endswith('.in')],
-        key=_numeric_name_sort_key,
-    )
-    out_files = sorted(
-        [f for f in os.listdir(extract_dir) if str(f).endswith('.out')],
-        key=_numeric_name_sort_key,
-    )
-
-    if len(in_files) != len(out_files):
-        raise TestdataValidationError("输入文件和输出文件数量不匹配。")
-    if not in_files:
-        raise TestdataValidationError("ZIP 中未找到任何 .in/.out 测试数据文件。")
-
-    paired_paths = []
-    total_text_bytes = 0
-    # 先按磁盘上的实际文件大小完成全量预检，再读取任何文本。这样超限包不会在
-    # Python 字符串、strip() 与 JSON 序列化阶段产生数倍内存放大。
-    for in_file, out_file in zip(in_files, out_files):
-        base_in = os.path.splitext(in_file)[0]
-        base_out = os.path.splitext(out_file)[0]
-        if base_in != base_out:
-            raise TestdataValidationError(f"输入文件 {in_file} 与输出文件 {out_file} 名称不匹配。")
-
-        in_path = os.path.join(extract_dir, in_file)
-        out_path = os.path.join(extract_dir, out_file)
-        try:
-            total_text_bytes += os.path.getsize(in_path)
-            total_text_bytes += os.path.getsize(out_path)
-        except OSError as exc:
-            raise TestdataValidationError(f"无法读取测试数据文件大小：{exc}") from exc
-        if total_text_bytes > text_size_limit:
+    pairs = {}
+    for entry in os.scandir(extract_dir):
+        if not entry.is_file(follow_symlinks=False):
             raise TestdataValidationError(
-                "测试数据 .in/.out 文本总大小超过限制"
-                f"（上限 {text_size_limit} 字节）。"
+                "ZIP 根目录只能包含 1.in/1.out 至 n.in/n.out 文件。"
             )
-        paired_paths.append((in_path, out_path))
+        matched = _TESTDATA_FILENAME.fullmatch(entry.name)
+        if not matched:
+            raise TestdataValidationError(
+                "ZIP 根目录只能包含 1.in/1.out 至 n.in/n.out 文件。"
+            )
+        index = int(matched.group(1))
+        pairs.setdefault(index, {})[matched.group(2)] = entry.path
+
+    if not pairs:
+        raise TestdataValidationError("ZIP 中未找到任何 .in/.out 测试数据文件。")
+    expected_indexes = set(range(1, max(pairs) + 1))
+    if set(pairs) != expected_indexes or any(
+        set(files) != {"in", "out"} for files in pairs.values()
+    ):
+        raise TestdataValidationError(
+            "测试数据必须从 1.in/1.out 开始连续编号且成对出现。"
+        )
 
     testdata = []
-    for in_path, out_path in paired_paths:
+    for index in sorted(pairs):
         try:
-            with open(in_path, 'r', encoding='utf-8') as f_in:
-                input_data = f_in.read().strip()
-            with open(out_path, 'r', encoding='utf-8') as f_out:
-                output_data = f_out.read().strip()
+            with open(pairs[index]["in"], 'r', encoding='utf-8') as f_in:
+                input_data = f_in.read()
+            with open(pairs[index]["out"], 'r', encoding='utf-8') as f_out:
+                output_data = f_out.read()
         except UnicodeDecodeError as e:
             raise TestdataValidationError(f"文件编码错误（需 UTF-8）：{e}") from e
 
@@ -164,22 +119,18 @@ def parse_testdata_zip(zip_path, extract_dir):
     # 调用方为每次导入提供专用临时目录；先清理崩溃遗留，避免旧 .in/.out 混入新包。
     shutil.rmtree(extract_dir, ignore_errors=True)
     policy = ZipExtractionPolicy(
-        max_members=TESTDATA_ZIP_MAX_MEMBERS,
-        max_file_bytes=TESTDATA_ZIP_MAX_FILE_BYTES,
-        max_total_bytes=TESTDATA_ZIP_MAX_TOTAL_BYTES,
-        max_compression_ratio=TESTDATA_ZIP_MAX_COMPRESSION_RATIO,
-        require_non_empty=True,
+        max_members=None,
+        max_file_bytes=None,
+        max_total_bytes=None,
+        max_compression_ratio=None,
         cleanup_on_error=True,
     )
     try:
         extract_zip(zip_path, extract_dir, policy=policy)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        raise TestdataValidationError("文件不是有效的 ZIP 压缩包。") from exc
     except ArchiveExtractionError as exc:
         messages = {
-            'empty_archive': 'ZIP 压缩包为空。',
-            'too_many_members': 'ZIP 文件数量超过限制。',
-            'file_too_large': 'ZIP 中单个测试数据文件超过大小限制。',
-            'total_too_large': 'ZIP 解压后总大小超过限制。',
-            'compression_ratio': 'ZIP 包含异常压缩比文件。',
             'absolute_path': 'ZIP 包含绝对路径。',
             'path_traversal': 'ZIP 包含目录穿越路径。',
             'outside_destination': 'ZIP 包含越界路径。',

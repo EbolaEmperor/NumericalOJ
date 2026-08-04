@@ -52,6 +52,26 @@ def test_agent_run_modal_consumes_only_the_canonical_execution_trace():
     assert "agent-task-events" not in controller
 
 
+def test_agent_run_modal_displays_usage_and_only_reveals_configured_cost():
+    modal = _read("templates/agents/run_detail_modal.html")
+    controller = _read("static/app/agents/run-detail-modal.js")
+
+    assert modal.index("data-agent-task-input") < modal.index("BEST SCORE")
+    assert modal.index("data-agent-task-input") < modal.index("data-agent-task-cached")
+    assert modal.index("data-agent-task-cached") < modal.index("data-agent-task-output")
+    assert modal.index("data-agent-task-output") < modal.index("BEST SCORE")
+    assert "data-agent-task-updated" not in modal
+    assert "data-agent-task-updated" not in controller
+    assert 'data-agent-task-cost-fact hidden' in modal
+    assert "trace.token_usage" in controller
+    assert "cachedEl.textContent = cachedPercent.toFixed(2) + '%'" in controller
+    assert "tokens < 10000" in controller
+    assert "tokens / 1000" in controller
+    assert "tokens / 1000000" in controller
+    assert "value >= 1 ? value.toFixed(2) : value.toPrecision(2)" in controller
+    assert "costFactEl.hidden = !hasCost" in controller
+
+
 def test_agent_run_modal_only_links_a_terminal_final_submission():
     modal = _read("templates/agents/run_detail_modal.html")
     controller = _read("static/app/agents/run-detail-modal.js")

@@ -26,7 +26,7 @@ def test_import_testdata_uses_restricted_extraction_and_replaces_stale_files(
 
     assert result == {
         'count': 1,
-        'testdata': [{'input': '1 2', 'output': '3'}],
+        'testdata': [{'input': '1 2\n', 'output': '3\n'}],
     }
     assert saved == [(7, result['testdata'])]
     assert not (destination / 'stale.in').exists()
@@ -52,7 +52,7 @@ def test_parse_testdata_zip_stages_rows_without_writing_database(
 
     assert result == {
         'count': 1,
-        'testdata': [{'input': '4', 'output': '16'}],
+        'testdata': [{'input': '4\n', 'output': '16\n'}],
     }
 
 
@@ -70,61 +70,47 @@ def test_import_testdata_rejects_traversal_without_leaving_partial_output(tmp_pa
     assert not (tmp_path / 'escape.out').exists()
 
 
-def test_import_testdata_rejects_declared_total_over_policy(monkeypatch, tmp_path):
-    archive = tmp_path / 'large.zip'
-    with zipfile.ZipFile(archive, 'w') as zf:
-        zf.writestr('1.in', b'1234')
-        zf.writestr('1.out', b'5678')
-
-    monkeypatch.setattr(testdata_services, 'TESTDATA_ZIP_MAX_FILE_BYTES', 8)
-    monkeypatch.setattr(testdata_services, 'TESTDATA_ZIP_MAX_TOTAL_BYTES', 7)
-
-    with pytest.raises(testdata_services.TestdataValidationError, match='总大小'):
-        testdata_services.import_testdata_zip(7, archive, tmp_path / 'out')
-
-
-def test_import_testdata_enforces_configured_text_total_limit(monkeypatch, tmp_path):
-    archive = tmp_path / 'text-large.zip'
-    with zipfile.ZipFile(archive, 'w') as zf:
-        zf.writestr('1.in', b'1234')
-        zf.writestr('1.out', b'5678')
-
-    destination = tmp_path / 'out'
-    monkeypatch.setattr(testdata_services, 'TESTDATA_TEXT_MAX_TOTAL_BYTES', 7)
+def test_import_testdata_accepts_highly_compressible_large_text(
+        monkeypatch, tmp_path):
+    archive = tmp_path / 'compressible.zip'
+    repeated = 'A' * 2_000_000
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('1.in', repeated + '\n')
+        zf.writestr('1.out', repeated + '!\n')
+    saved = []
     monkeypatch.setattr(
         testdata_services,
         'update_problem_testdata',
-        lambda *_args, **_kwargs: pytest.fail('文本超限时不应更新数据库'),
+        lambda problem_id, rows: saved.append((problem_id, rows)),
     )
 
-    with pytest.raises(
-        testdata_services.TestdataValidationError,
-        match=r'\.in/\.out 文本总大小超过限制（上限 7 字节）',
-    ):
-        testdata_services.import_testdata_zip(7, archive, destination)
+    result = testdata_services.import_testdata_zip(
+        7, archive, tmp_path / 'out',
+    )
 
-    assert not destination.exists()
+    assert result['count'] == 1
+    assert result['testdata'][0]['input'] == repeated + '\n'
+    assert result['testdata'][0]['output'] == repeated + '!\n'
+    assert saved == [(7, result['testdata'])]
 
 
-def test_text_size_limit_is_checked_before_reading_any_file(monkeypatch, tmp_path):
-    destination = tmp_path / 'extracted'
-    destination.mkdir()
-    (destination / '1.in').write_bytes(b'1234')
-    (destination / '1.out').write_bytes(b'5678')
+@pytest.mark.parametrize(
+    'members',
+    [
+        {'case.in': '1', 'case.out': '1'},
+        {'1.in': '1', '1.out': '1', 'README.txt': 'extra'},
+        {'1.in': '1', '1.out': '1', '3.in': '3', '3.out': '3'},
+        {'nested/1.in': '1', 'nested/1.out': '1'},
+    ],
+)
+def test_import_testdata_only_accepts_contiguous_root_pairs(tmp_path, members):
+    archive = tmp_path / 'invalid-format.zip'
+    with zipfile.ZipFile(archive, 'w') as zf:
+        for name, content in members.items():
+            zf.writestr(name, content)
 
-    def _unexpected_open(*_args, **_kwargs):
-        pytest.fail('超限时不应读取任何测试数据文本')
-
-    monkeypatch.setattr(testdata_services, 'open', _unexpected_open, raising=False)
-
-    with pytest.raises(
-        testdata_services.TestdataValidationError,
-        match=r'\.in/\.out 文本总大小超过限制（上限 7 字节）',
-    ):
-        testdata_services.load_testdata_from_extracted_dir(
-            destination,
-            max_total_text_bytes=7,
-        )
+    with pytest.raises(testdata_services.TestdataValidationError):
+        testdata_services.parse_testdata_zip(archive, tmp_path / 'out')
 
 
 class _FailingCursor:

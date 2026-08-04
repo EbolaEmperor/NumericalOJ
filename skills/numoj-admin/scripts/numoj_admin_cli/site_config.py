@@ -162,6 +162,18 @@ def _add_llm_candidate_args(parser: argparse.ArgumentParser, *, required: bool) 
         required=required,
     )
     parser.add_argument("--model", required=required, help="Provider model identifier.")
+    parser.add_argument(
+        "--input-price-per-million",
+        help="RMB price per 1M uncached input tokens.",
+    )
+    parser.add_argument(
+        "--cached-input-price-per-million",
+        help="RMB price per 1M cached input tokens.",
+    )
+    parser.add_argument(
+        "--output-price-per-million",
+        help="RMB price per 1M output tokens.",
+    )
     _add_thinking_args(parser)
 
 
@@ -186,6 +198,9 @@ def _llm_payload(
         ("category", "category"),
         ("endpoint_base_url", "base_url"),
         ("model", "model"),
+        ("input_price_per_million", "input_price_per_million"),
+        ("cached_input_price_per_million", "cached_input_price_per_million"),
+        ("output_price_per_million", "output_price_per_million"),
     ):
         value = getattr(args, arg_name, None)
         if value is not None:

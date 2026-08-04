@@ -29,6 +29,11 @@ _TASK_SKILLS = {
     AGENT_TASK_TESTDATA: "numoj-user",
 }
 _CHAT_ENDPOINT_CATEGORIES = frozenset({"omni", "text"})
+_TOKEN_PRICE_FIELDS = (
+    "input_price_per_million",
+    "cached_input_price_per_million",
+    "output_price_per_million",
+)
 
 
 class AgentLaunchValidationError(ValueError):
@@ -110,6 +115,18 @@ def _public_launch_endpoint(endpoint):
     }
 
 
+def token_pricing_from_endpoint(endpoint):
+    """读取节点完整的人民币 Token 单价。"""
+
+    values = {}
+    for field in _TOKEN_PRICE_FIELDS:
+        raw = (endpoint or {}).get(field)
+        values[field] = "" if raw is None else str(raw).strip()
+    if not all(values.values()):
+        return None
+    return values
+
+
 def list_launch_endpoints_by_harness():
     """列出各 harness 可用节点；响应不含 URL 和密钥。"""
 
@@ -158,4 +175,5 @@ __all__ = [
     "normalize_launch_harness",
     "resolve_launch_endpoint",
     "skill_for_agent_task",
+    "token_pricing_from_endpoint",
 ]
