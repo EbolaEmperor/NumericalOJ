@@ -285,6 +285,84 @@ def test_legacy_agent_run_page_route_is_removed():
     assert "/admin/agent_run/<task_id>" not in rules
     assert "/admin/agent_run_status/<task_id>" in rules
     assert "/admin/agent_run_stream/<task_id>" in rules
+    assert "/admin/agent_run_cancel/<task_id>" in rules
+
+
+def test_agent_run_cancel_returns_published_terminal_state(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    calls = []
+    monkeypatch.setattr(
+        routes,
+        "_terminate_agent_run",
+        lambda task_id: calls.append(task_id) or {
+            "exists": True,
+            "changed": True,
+            "canceled": True,
+            "errors": [],
+            "state": {
+                "task_id": task_id,
+                "status": "Canceled",
+                "message": "任务已由管理员终止",
+            },
+        },
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_run_cancel/task-1",
+        method="POST",
+    ):
+        response = routes.admin_agent_run_cancel("task-1")
+
+    assert calls == ["task-1"]
+    assert response.get_json() == {
+        "success": True,
+        "message": "任务已终止",
+        "state": {
+            "task_id": "task-1",
+            "status": "Canceled",
+            "message": "任务已由管理员终止",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_status"),
+    [
+        ({"exists": False, "canceled": False}, 404),
+        ({
+            "exists": True,
+            "changed": False,
+            "canceled": False,
+            "state": {"status": "Completed"},
+        }, 409),
+    ],
+)
+def test_agent_run_cancel_rejects_missing_or_finished_task(
+    monkeypatch,
+    result,
+    expected_status,
+):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_terminate_agent_run", lambda _task_id: result)
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_run_cancel/task-1",
+        method="POST",
+    ):
+        response, status = routes.admin_agent_run_cancel("task-1")
+
+    assert status == expected_status
+    assert response.get_json()["success"] is False
 
 
 def test_agent_run_stream_subscribes_before_rechecking_terminal_state(monkeypatch):
@@ -356,6 +434,45 @@ def test_agent_run_stream_rechecks_state_when_pubsub_has_no_message(monkeypatch)
         body = routes.admin_agent_run_stream("task-2").get_data(as_text=True)
 
     assert "event: done" in body
+
+
+def test_agent_run_stream_stays_open_past_the_previous_one_hour_cutoff(
+    monkeypatch,
+):
+    states = iter([
+        {"task_id": "task-long", "status": "Running"},
+        {"task_id": "task-long", "status": "Running"},
+        {"task_id": "task-long", "status": "Completed"},
+    ])
+
+    class PubSub:
+        def get_message(self, **_kwargs):
+            return None
+
+        def close(self):
+            pass
+
+    clock = iter([0.0, 3601.0])
+    monkeypatch.setattr(
+        routes,
+        "time",
+        SimpleNamespace(time=lambda: next(clock), sleep=lambda _seconds: None),
+    )
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _task_id: next(states))
+    monkeypatch.setattr(routes, "_subscribe_agent_run_events", lambda _task_id: PubSub())
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/task-long"):
+        body = routes.admin_agent_run_stream("task-long").get_data(as_text=True)
+
+    assert "event: done" in body
+    assert "event: timeout" not in body
 
 
 @pytest.mark.parametrize("invalid_count", [True, False, 1.0, "1.0", " 1", "01"])
@@ -546,6 +663,7 @@ def test_agent_run_state_overlays_celery_terminal_on_stale_snapshot(
         "attempts": [],
     }
     monkeypatch.setattr(routes, "_get_agent_run_snapshot", lambda _task_id: snapshot)
+    monkeypatch.setattr(routes, "get_agent_run_by_task_id", lambda _task_id: None)
     monkeypatch.setattr(
         routes,
         "_agent_solve_problem_task",
@@ -565,3 +683,100 @@ def test_agent_run_state_overlays_celery_terminal_on_stale_snapshot(
     if celery_state == "SUCCESS":
         assert state["final_submission_id"] == 91
         assert state["latest_submission_id"] == 92
+
+
+def test_agent_run_state_never_overlays_canceled_with_celery_failure(monkeypatch):
+    snapshot = {
+        "task_id": "task-canceled",
+        "status": "Canceled",
+        "message": "任务已由管理员终止",
+        "attempts": [],
+    }
+    monkeypatch.setattr(routes, "_get_agent_run_snapshot", lambda _task_id: snapshot)
+    monkeypatch.setattr(
+        routes,
+        "_agent_solve_problem_task",
+        SimpleNamespace(
+            AsyncResult=lambda _task_id: SimpleNamespace(
+                state="FAILURE",
+                result=RuntimeError("worker terminated"),
+            ),
+        ),
+    )
+
+    state = routes._get_agent_run_state("task-canceled")
+
+    assert state["status"] == "Canceled"
+    assert state["message"] == "任务已由管理员终止"
+
+
+def test_agent_run_state_prefers_persisted_cancel_over_stale_running_cache(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_snapshot",
+        lambda _task_id: {
+            "task_id": "task-canceled",
+            "status": "Running",
+            "message": "旧缓存仍在运行",
+            "harness": "codex",
+            "attempts": [],
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_run_by_task_id",
+        lambda _task_id: {
+            "task_id": "task-canceled",
+            "status": "Canceled",
+            "message": "任务已由管理员终止",
+            "attempts": [],
+        },
+    )
+
+    state = routes._get_agent_run_state("task-canceled")
+
+    assert state["status"] == "Canceled"
+    assert state["message"] == "任务已由管理员终止"
+    assert state["harness"] == "codex"
+
+
+def test_agent_run_state_prefers_persisted_completion_over_stale_cache_and_celery(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_snapshot",
+        lambda _task_id: {
+            "task_id": "task-completed",
+            "status": "Running",
+            "message": "旧缓存仍在发布",
+            "attempts": [],
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_run_by_task_id",
+        lambda _task_id: {
+            "task_id": "task-completed",
+            "status": "Completed",
+            "message": "测试数据已发布",
+            "attempts": [],
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "_agent_solve_problem_task",
+        SimpleNamespace(
+            AsyncResult=lambda _task_id: SimpleNamespace(
+                state="FAILURE",
+                result=RuntimeError("worker died after commit"),
+            ),
+        ),
+    )
+
+    state = routes._get_agent_run_state("task-completed")
+
+    assert state["status"] == "Completed"
+    assert state["message"] == "测试数据已发布"

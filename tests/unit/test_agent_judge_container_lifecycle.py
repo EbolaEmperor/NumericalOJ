@@ -56,24 +56,28 @@ def test_resolve_endpoints_preserves_model_capabilities(monkeypatch):
     monkeypatch.setattr(m, "list_agent_judge_endpoints", lambda *_args, **_kwargs: [{
         "id": 9,
         "harness": m.HARNESS_CODEX,
+        "protocol": "openai",
         "base_url": "https://model.example/v1",
         "api_key": "temporary-token",
         "model": "generic-model",
         "context_window_tokens": 131_072,
         "max_output_tokens": 16_384,
         "thinking_compatibility": False,
+        "thinking_format": "none",
         "concurrency_limit": 3,
     }])
 
     assert m._resolve_endpoints(7) == [{
         "id": 9,
         "harness": m.HARNESS_CODEX,
+        "protocol": "openai",
         "base_url": "https://model.example/v1",
         "api_key": "temporary-token",
         "model": "generic-model",
         "context_window_tokens": 131_072,
         "max_output_tokens": 16_384,
         "thinking_compatibility": False,
+        "thinking_format": "none",
         "concurrency_limit": 3,
     }]
 
@@ -85,9 +89,14 @@ def _run(monkeypatch, running_seq, timeout_s, endpoint=None):
     monkeypatch.setattr(m, "_attempt_still_current", lambda *_a, **_k: True)
     ws = tempfile.mkdtemp(prefix="ajws_")
     os.makedirs(os.path.join(ws, "submission"), exist_ok=True)
-    competition = {
-        "title": "t", "description": "d",
-        "agent_judge_base_url": "http://x", "agent_judge_api_key": "k", "agent_judge_model": "mdl",
+    competition = {"title": "t", "description": "d"}
+    endpoint = endpoint or {
+        "harness": "codex",
+        "protocol": "openai",
+        "base_url": "https://model.example/v1",
+        "api_key": "temporary-token",
+        "model": "generic-model",
+        "thinking_format": "none",
     }
     timed_out, ok = m._run_container_and_tail(
         submission_id=5, ws=ws, result_name="result_x.jsonl",
@@ -125,9 +134,9 @@ def test_normal_agent_container_receives_selected_endpoint_capabilities(monkeypa
     )
 
     run_call = next(c for c in fake.calls if len(c) > 1 and c[1] == "run")
-    assert "AJ_CONTEXT_WINDOW_TOKENS=131072" in run_call
-    assert "AJ_MAX_OUTPUT_TOKENS=16384" in run_call
-    assert "AJ_THINKING_COMPATIBILITY=0" in run_call
+    assert "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS=131072" in run_call
+    assert "AJ_ENDPOINT_MAX_OUTPUT_TOKENS=16384" in run_call
+    assert "AJ_ENDPOINT_THINKING_ENABLED=0" in run_call
 
 
 def test_normal_exit_does_not_copy_raw_claude_state(monkeypatch):
@@ -292,9 +301,9 @@ def test_topological_orchestration_skips_blocked_rule(monkeypatch):
         call for call in fake_subprocess.calls
         if len(call) > 1 and call[1] == "run"
     )
-    assert "AJ_CONTEXT_WINDOW_TOKENS=131072" in run_call
-    assert "AJ_MAX_OUTPUT_TOKENS=16384" in run_call
-    assert "AJ_THINKING_COMPATIBILITY=0" in run_call
+    assert "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS=131072" in run_call
+    assert "AJ_ENDPOINT_MAX_OUTPUT_TOKENS=16384" in run_call
+    assert "AJ_ENDPOINT_THINKING_ENABLED=0" in run_call
     # setup、每次真正执行的 resume、finally 都同步；依赖跳过的 rule_2 不伪造轨迹。
     assert trace_sessions == [
         "11111111-1111-1111-1111-111111111111",
@@ -407,45 +416,7 @@ def test_hello_probe_request_uses_exact_endpoint_config():
     assert json.loads(req.data.decode("utf-8"))["model"] == "configured-claude"
 
 
-def test_probe_opencode_uses_cli_with_cheapest_go_model(monkeypatch):
-    calls = {}
-
-    class Result:
-        returncode = 0
-        stdout = "hello"
-        stderr = ""
-
-    def fake_run(args, **kwargs):
-        calls["args"] = list(args)
-        calls["env"] = dict(kwargs["env"])
-        calls["config"] = json.loads(calls["env"]["OPENCODE_CONFIG_CONTENT"])
-        return Result()
-
-    monkeypatch.setattr(m.subprocess, "run", fake_run)
-    ok, msg = m._probe_endpoint_once({
-        "harness": m.HARNESS_OPENCODE,
-        "base_url": "",
-        "api_key": "go-key",
-        "model": "",
-    })
-    assert ok is True and msg == "ok"
-    assert calls["args"][0:2] == ["docker", "run"]
-    assert "--rm" in calls["args"]
-    assert "--read-only" in calls["args"]
-    assert "--cap-drop" in calls["args"] and "ALL" in calls["args"]
-    assert "-v" not in calls["args"]
-    assert m.JUDGE_IMAGE in calls["args"]
-    assert calls["args"][-1] == (
-        "mkdir -p /tmp/opencode_work /tmp/opencode_home /tmp/opencode_config "
-        "/tmp/opencode_data /tmp/opencode_state /tmp/opencode_cache && "
-        "cd /tmp/opencode_work && opencode run --model %s hello"
-    ) % m.OPENCODE_GO_HELLO_MODEL
-    assert calls["env"]["OPENCODE_API_KEY"] == "go-key"
-    assert calls["config"]["model"] == m.OPENCODE_GO_HELLO_MODEL
-    assert calls["config"]["enabled_providers"] == ["opencode-go"]
-
-
-def test_quality_gate_opencode_probe_uses_configured_url_and_model(monkeypatch):
+def test_opencode_probe_uses_configured_url_and_model(monkeypatch):
     requests = []
 
     class Response:
@@ -465,16 +436,7 @@ def test_quality_gate_opencode_probe_uses_configured_url_and_model(monkeypatch):
         return Response()
 
     monkeypatch.setattr(m.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(
-        m.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("质量门禁不得使用固定 OpenCode CLI 探针")
-        ),
-    )
-
     ok, msg = m._probe_endpoint_once({
-        "pool_kind": m.ENDPOINT_POOL_QUALITY_GATE,
         "harness": m.HARNESS_OPENCODE,
         "base_url": "https://gate.example/custom/v1",
         "api_key": "gate-key",
@@ -490,7 +452,7 @@ def test_quality_gate_opencode_probe_uses_configured_url_and_model(monkeypatch):
     assert timeout == m.JUDGE_HELLO_TIMEOUT_SECONDS
 
 
-def test_paused_quality_gate_opencode_recovery_reuses_configured_endpoint(monkeypatch):
+def test_paused_opencode_recovery_reuses_configured_endpoint(monkeypatch):
     requested_urls = []
     requested_models = []
 
@@ -515,7 +477,7 @@ def test_paused_quality_gate_opencode_recovery_reuses_configured_endpoint(monkey
     monkeypatch.setattr(m.time, "sleep", lambda *_args, **_kwargs: None)
     endpoint = {
         "id": 41,
-        "pool_kind": m.ENDPOINT_POOL_QUALITY_GATE,
+        "pool_kind": "quality_gate",
         "harness": m.HARNESS_OPENCODE,
         "base_url": "https://recovery.example/api/v1",
         "api_key": "recovery-key",
@@ -533,10 +495,10 @@ def test_paused_quality_gate_opencode_recovery_reuses_configured_endpoint(monkey
     assert requested_models == ["recovery-model"] * m.PAUSED_PROBE_ATTEMPTS
 
 
-def test_probe_opencode_missing_key_fails_without_cli(monkeypatch):
+def test_probe_opencode_missing_key_fails_without_request(monkeypatch):
     called = []
-    monkeypatch.setattr(m.subprocess, "run", lambda *_a, **_k: called.append(True))
-    ok, msg = m._probe_opencode_once({
+    monkeypatch.setattr(m.urllib.request, "urlopen", lambda *_a, **_k: called.append(True))
+    ok, msg = m._probe_endpoint_once({
         "harness": m.HARNESS_OPENCODE,
         "base_url": "",
         "api_key": "",

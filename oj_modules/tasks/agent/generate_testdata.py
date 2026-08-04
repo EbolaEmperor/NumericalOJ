@@ -26,6 +26,9 @@ from oj_modules.tasks.agent.shared import (
     _format_local_time,
     _publish_agent_trace,
     _update_agent_state,
+    agent_run_is_canceled,
+    canceled_agent_task_result,
+    existing_agent_terminal_result,
 )
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
 
@@ -143,8 +146,6 @@ def register_agent_generate_testdata_task(celery_app):
     @celery_app.task(
         bind=True,
         name=AGENT_GENERATE_TESTDATA_TASK_NAME,
-        time_limit=3600,
-        soft_time_limit=3480,
     )
     def agent_generate_testdata(
         self,
@@ -162,6 +163,9 @@ def register_agent_generate_testdata_task(celery_app):
         task_id = str(
             getattr(getattr(self, "request", None), "id", None) or ""
         ).strip() or f"unknown-{int(time.time())}"
+        terminal_result = existing_agent_terminal_result(task_id)
+        if terminal_result is not None:
+            return terminal_result
         try:
             point_count = int(test_point_count)
         except (TypeError, ValueError):
@@ -284,6 +288,8 @@ def register_agent_generate_testdata_task(celery_app):
             time_limit_ms=time_limit_ms,
             data_requirement=requirement,
         )
+        if agent_run_is_canceled(task_id):
+            return canceled_agent_task_result(task_id)
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
@@ -301,9 +307,12 @@ def register_agent_generate_testdata_task(celery_app):
                 },
                 artifact_files=(_STAGED_ZIP_RELATIVE_PATH,),
                 trace_callback=lambda: _publish_agent_trace(state),
+                cancel_check=lambda: agent_run_is_canceled(task_id),
                 reset_trace=False,
             )
         except Exception as exc:
+            if agent_run_is_canceled(task_id):
+                return canceled_agent_task_result(task_id)
             message = f"造数据 harness 运行失败：{str(exc)[:800]}"
             _update_agent_state(
                 state,
@@ -313,6 +322,9 @@ def register_agent_generate_testdata_task(celery_app):
                 harness_status="error",
             )
             return {"success": False, "message": message, "task_id": task_id}
+
+        if agent_run_is_canceled(task_id):
+            return canceled_agent_task_result(task_id)
 
         if run_result.timed_out or run_result.returncode != 0:
             message = f"造数据 Agent 未完成：{_harness_failure_reason(run_result)}"
@@ -370,6 +382,12 @@ def register_agent_generate_testdata_task(celery_app):
             _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
 
+        if agent_run_is_canceled(task_id):
+            return canceled_agent_task_result(task_id)
+
+        completion_message = (
+            f"测试数据格式检查通过并已发布，共 {point_count} 个测试点"
+        )
         _update_agent_state(
             state,
             "候选测试数据格式检查通过，正在发布",
@@ -381,12 +399,16 @@ def register_agent_generate_testdata_task(celery_app):
                 problem_id,
                 before_state=before_testdata_state,
                 testdata=parsed["testdata"],
+                agent_task_id=task_id,
+                agent_completion_message=completion_message,
             )
         except Exception as exc:
             message = f"测试数据发布失败：{str(exc)[:800]}"
             _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
         if not published:
+            if agent_run_is_canceled(task_id):
+                return canceled_agent_task_result(task_id)
             message = "题目测试数据已被其他管理员修改，本次产物未发布"
             _update_agent_state(
                 state,
@@ -396,7 +418,7 @@ def register_agent_generate_testdata_task(celery_app):
             )
             return {"success": False, "message": message, "task_id": task_id}
 
-        message = f"测试数据格式检查通过并已发布，共 {point_count} 个测试点"
+        message = completion_message
         _update_agent_state(
             state,
             message,

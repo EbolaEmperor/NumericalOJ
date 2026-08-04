@@ -21,7 +21,6 @@ from urllib.parse import urlsplit, urlunsplit
 from config import (
     AGENT_CONTAINER_SITE_URL,
     AGENT_JUDGE_CPU_LIMIT,
-    AGENT_JUDGE_DEFAULT_TIMEOUT,
     AGENT_JUDGE_DOCKER_IMAGE,
     AGENT_JUDGE_MEM_LIMIT,
     AGENT_JUDGE_PIDS_LIMIT,
@@ -33,6 +32,7 @@ from oj_modules.problems.agent_launch import (
     normalize_launch_harness,
     skill_for_agent_task,
 )
+from oj_modules.problems.agent_runs import agent_run_container_name
 from oj_modules.site_config.services import get_web_search_settings
 from oj_modules.tasks.agent.traces import (
     AGENT_TRACE_SYNC_INTERVAL_SECONDS,
@@ -195,11 +195,12 @@ def _run_with_bounded_output(
     args,
     prompt,
     *,
-    timeout,
     process_env=None,
     stdout_capture_path=None,
     on_tick=None,
     tick_interval=AGENT_TRACE_SYNC_INTERVAL_SECONDS,
+    cancel_check=None,
+    cancel_check_interval=1.0,
 ):
     stdout_mirror = (
         open(stdout_capture_path, "wb", buffering=0)
@@ -245,24 +246,37 @@ def _run_with_bounded_output(
                 proc.stdin.close()
             except Exception:
                 pass
-        timeout_seconds = max(1, int(timeout))
-        deadline = time.monotonic() + timeout_seconds
         # 与 Reverse Judge 一致：进入执行循环后立即做第一次同步，后续再按
         # 固定间隔同步，避免前端必须空等完整的 tick 周期。
         last_tick = 0.0
-        timed_out = False
+        last_cancel_check = None
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                proc.kill()
-                returncode = proc.wait()
-                break
             try:
-                returncode = proc.wait(timeout=min(0.25, remaining))
+                returncode = proc.wait(timeout=0.25)
                 break
             except subprocess.TimeoutExpired:
                 now = time.monotonic()
+                if (
+                    callable(cancel_check)
+                    and (
+                        last_cancel_check is None
+                        or now - last_cancel_check
+                        >= max(0.5, float(cancel_check_interval))
+                    )
+                ):
+                    last_cancel_check = now
+                    try:
+                        canceled = bool(cancel_check())
+                    except Exception:
+                        canceled = False
+                    if canceled:
+                        proc.terminate()
+                        try:
+                            returncode = proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            returncode = proc.wait()
+                        break
                 if (
                     callable(on_tick)
                     and now - last_tick >= max(0.5, float(tick_interval))
@@ -291,7 +305,7 @@ def _run_with_bounded_output(
             stdout_mirror.close()
     return HarnessRunResult(
         returncode=int(returncode),
-        timed_out=timed_out,
+        timed_out=False,
         stdout=b"".join(stdout_chunks).decode("utf-8", "replace"),
         stderr=b"".join(stderr_chunks).decode("utf-8", "replace"),
     )
@@ -323,16 +337,6 @@ def _runtime_env(endpoint, harness, task_kind, *, web_search_settings=None):
     model = str(endpoint.get("model") or "").strip()
     thinking_enabled = bool(endpoint.get("thinking_enabled"))
     thinking_format = str(endpoint.get("thinking_format") or "none").strip().lower()
-    try:
-        endpoint_hostname = str(urlsplit(base_url).hostname or "").lower().rstrip(".")
-    except ValueError:
-        endpoint_hostname = ""
-    harness_thinking_format = (
-        "deepseek"
-        if endpoint_hostname == "deepseek.com"
-        or endpoint_hostname.endswith(".deepseek.com")
-        else "generic"
-    )
     skill_name = skill_for_agent_task(task_kind)
 
     env = {
@@ -349,51 +353,20 @@ def _runtime_env(endpoint, harness, task_kind, *, web_search_settings=None):
         "DISABLE_ERROR_REPORTING": "1",
         "AJ_HARNESS": harness,
         "AJ_ENDPOINT_PROTOCOL": protocol,
-        "AJ_CONTEXT_WINDOW_TOKENS": str(_AGENT_CONTEXT_WINDOW_TOKENS),
-        "AJ_MAX_OUTPUT_TOKENS": str(_AGENT_MAX_OUTPUT_TOKENS),
-        "AJ_THINKING_COMPATIBILITY": "1" if thinking_enabled else "0",
+        "AJ_ENDPOINT_BASE_URL": base_url,
+        "AJ_ENDPOINT_API_KEY": api_key,
+        "AJ_ENDPOINT_MODEL": model,
+        "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS": str(_AGENT_CONTEXT_WINDOW_TOKENS),
+        "AJ_ENDPOINT_MAX_OUTPUT_TOKENS": str(_AGENT_MAX_OUTPUT_TOKENS),
+        "AJ_ENDPOINT_THINKING_ENABLED": "1" if thinking_enabled else "0",
         "AJ_ENDPOINT_THINKING_FORMAT": thinking_format,
-        "AJ_THINKING_FORMAT": harness_thinking_format,
         "AJ_ENABLE_SKILLS": "1",
+        "AJ_TASK_SCOPE": "problem_agent",
         "AJ_RUNTIME_ROOT": "/workspace/.runtime",
         "AJ_PROMPT_STDIN": "1",
         "AJ_WORKSPACE": "/workspace",
         _SKILL_CONFIG_ENV[skill_name]: _IDENTITY_CONFIG_PATH,
     }
-    if harness == "claude_code":
-        env.update({
-            "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_AUTH_TOKEN": api_key,
-            "ANTHROPIC_API_KEY": api_key,
-            "ANTHROPIC_MODEL": model,
-        })
-    elif harness == "codex":
-        env.update({
-            "OPENAI_BASE_URL": base_url,
-            "OPENAI_API_KEY": api_key,
-            "OPENAI_MODEL": model,
-        })
-    elif harness == "opencode":
-        env.update({
-            "OPENCODE_BASE_URL": base_url,
-            "OPENCODE_API_KEY": api_key,
-            "OPENCODE_MODEL": model,
-        })
-    elif protocol == "anthropic":
-        env.update({
-            "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_AUTH_TOKEN": api_key,
-            "ANTHROPIC_API_KEY": api_key,
-            "ANTHROPIC_MODEL": model,
-        })
-    else:
-        env.update({
-            "OPENAI_BASE_URL": base_url,
-            "OPENAI_API_KEY": api_key,
-            "OPENAI_MODEL": model,
-        })
-    if harness == "pi":
-        env["AJ_PI_THINKING_FORMAT"] = harness_thinking_format
     env.update(_web_search_mcp_env(web_search_settings))
     return env
 
@@ -448,16 +421,11 @@ def _docker_args(*, container_name, workspace, env):
 
 
 def _docker_exec_args(container_name):
-    inner_timeout = max(1, int(AGENT_JUDGE_DEFAULT_TIMEOUT) - 10)
     return [
         "docker",
         "exec",
         "-i",
         container_name,
-        "timeout",
-        "-k",
-        "10s",
-        f"{inner_timeout}s",
         "/usr/local/bin/run_harness",
     ]
 
@@ -519,10 +487,7 @@ def _remove_agent_container(container_name):
 
 
 def _container_name_for_task_id(task_id):
-    safe_task_id = re.sub(
-        r"[^a-zA-Z0-9_.-]", "-", str(task_id or ""),
-    ) or "unknown"
-    return f"numoj-agent-{safe_task_id}"
+    return agent_run_container_name(task_id)
 
 
 def run_agent_harness(
@@ -539,12 +504,25 @@ def run_agent_harness(
     workspace_files=None,
     artifact_files=None,
     trace_callback=None,
+    cancel_check=None,
     reset_trace=True,
 ):
     """运行一次 harness；任务结束后凭证和整个工作区都会被删除。"""
 
     task_kind = normalize_agent_task_kind(task_kind)
     harness = normalize_launch_harness(harness)
+    if callable(cancel_check):
+        try:
+            canceled_before_start = bool(cancel_check())
+        except Exception:
+            canceled_before_start = False
+        if canceled_before_start:
+            return HarnessRunResult(
+                returncode=-15,
+                timed_out=False,
+                stdout="",
+                stderr="Agent task canceled before harness startup",
+            )
     skill_name = skill_for_agent_task(task_kind)
     workspace_root = Path(AGENT_WORKSPACE_ROOT).expanduser().resolve()
     workspace_root.mkdir(parents=True, exist_ok=True)
@@ -658,11 +636,11 @@ def run_agent_harness(
                 result = _run_with_bounded_output(
                     _docker_exec_args(container_name),
                     prompt,
-                    timeout=max(1, int(AGENT_JUDGE_DEFAULT_TIMEOUT)),
                     process_env=docker_process_env,
                     stdout_capture_path=stdout_trace_path,
                     on_tick=sync_trace,
                     tick_interval=AGENT_TRACE_SYNC_INTERVAL_SECONDS,
+                    cancel_check=cancel_check,
                 )
                 sync_trace()
             finally:

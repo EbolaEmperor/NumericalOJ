@@ -98,17 +98,17 @@ def test_clear_results(client):
     assert ajdb.list_judge_results(sid) == []
 
 
-def test_agent_judge_endpoints_store_harness_and_opencode_defaults(client):
+def test_agent_judge_endpoints_store_one_contract_for_all_harnesses(client):
     cid = _make_comp()
     ajdb.save_agent_judge_endpoints(cid, [
         {'harness': 'codex', 'base_url': 'https://gw/openai/v1', 'api_key': 'k1',
-         'model': 'gpt-5.4', 'context_window_tokens': 200000,
+         'model': 'model-a', 'context_window_tokens': 200000,
          'max_output_tokens': 50000, 'thinking_compatibility': False,
          'concurrency_limit': 3, 'enabled': True},
-        {'harness': 'opencode', 'base_url': '', 'api_key': 'k2',
-         'model': '', 'concurrency_limit': 2, 'enabled': True},
+        {'harness': 'opencode', 'base_url': 'https://open.example/v1', 'api_key': 'k2',
+         'model': 'open-model', 'concurrency_limit': 2, 'enabled': True},
         {'harness': 'codex', 'base_url': 'https://paused/v1', 'api_key': 'k3',
-         'model': 'gpt-5.4', 'concurrency_limit': 4, 'status': 'paused', 'enabled': True},
+         'model': 'model-c', 'concurrency_limit': 4, 'status': 'paused', 'enabled': True},
     ])
     eps = ajdb.list_agent_judge_endpoints(cid)
     assert eps[0]['harness'] == 'codex'
@@ -117,8 +117,8 @@ def test_agent_judge_endpoints_store_harness_and_opencode_defaults(client):
     assert eps[0]['max_output_tokens'] == 50000
     assert eps[0]['thinking_compatibility'] is False
     assert eps[1]['harness'] == 'opencode'
-    assert eps[1]['base_url'] == ajdb.DEFAULT_OPENCODE_GO_BASE_URL
-    assert eps[1]['model'] == ajdb.DEFAULT_OPENCODE_GO_MODEL
+    assert eps[1]['base_url'] == 'https://open.example/v1'
+    assert eps[1]['model'] == 'open-model'
     assert eps[1]['context_window_tokens'] == 1_000_000
     assert eps[1]['max_output_tokens'] == 384_000
     assert eps[1]['thinking_compatibility'] is True
@@ -133,9 +133,9 @@ def test_agent_judge_endpoint_status_transitions_respect_manual_disabled(client)
     cid = _make_comp()
     ajdb.save_agent_judge_endpoints(cid, [
         {'harness': 'codex', 'base_url': 'https://enabled/v1', 'api_key': 'k1',
-         'model': 'gpt-5.4', 'concurrency_limit': 1, 'status': 'enabled'},
+         'model': 'model-a', 'concurrency_limit': 1, 'status': 'enabled'},
         {'harness': 'codex', 'base_url': 'https://disabled/v1', 'api_key': 'k2',
-         'model': 'gpt-5.4', 'concurrency_limit': 1, 'status': 'disabled'},
+         'model': 'model-b', 'concurrency_limit': 1, 'status': 'disabled'},
     ])
     eps = ajdb.list_agent_judge_endpoints(cid)
     enabled_id, disabled_id = eps[0]['id'], eps[1]['id']

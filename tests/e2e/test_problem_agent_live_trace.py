@@ -109,7 +109,6 @@ def test_problem_agent_lite_container_publishes_parseable_live_trace(
         ),
     )
     monkeypatch.setattr(runtime, "AGENT_JUDGE_DOCKER_IMAGE", _AGENT_IMAGE)
-    monkeypatch.setattr(runtime, "AGENT_JUDGE_DEFAULT_TIMEOUT", 300)
     monkeypatch.setattr(runtime, "AGENT_TRACE_SYNC_INTERVAL_SECONDS", 0.25)
     monkeypatch.setattr(runtime, "get_web_search_settings", lambda **_kwargs: None)
     monkeypatch.setattr(

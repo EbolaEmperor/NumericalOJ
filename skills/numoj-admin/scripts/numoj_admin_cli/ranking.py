@@ -39,7 +39,6 @@ def _necessary_competition(
         "is_active",
         "participant_count",
         "submission_count",
-        "agent_judge_api_key_set",
         "agent_judge_timeout_seconds",
         "reverse_judge_finalize_timeout_seconds",
         "agent_judge_orchestration_mode",
@@ -520,27 +519,6 @@ def ranking_reset_limit(args: argparse.Namespace) -> None:
     print_or_save_response(resp)
 
 
-def ranking_config(args: argparse.Namespace) -> None:
-    client = client_from_args(args)
-    data: Dict[str, str] = {}
-    if args.base_url_value is not None:
-        data["agent_judge_base_url"] = args.base_url_value
-    if args.model is not None:
-        data["agent_judge_model"] = args.model
-    if args.api_key is not None:
-        data["agent_judge_api_key"] = read_text_value(args.api_key)
-    if getattr(args, "api_key_env", None) is not None:
-        data["agent_judge_api_key"] = _read_env_secret(args.api_key_env, getattr(args, "env_file", None))
-    if args.timeout_seconds is not None:
-        data["agent_judge_timeout_seconds"] = str(args.timeout_seconds)
-    if args.reverse_finalize_timeout is not None:
-        data["reverse_judge_finalize_timeout_seconds"] = str(args.reverse_finalize_timeout)
-    if args.orchestration_mode is not None:
-        data["agent_judge_orchestration_mode"] = args.orchestration_mode
-    resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/config", data=data)
-    print_redirect_response(resp)
-
-
 def ranking_rules(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     rules = parse_json_value(args.rules)
@@ -594,10 +572,43 @@ def _endpoint_api_key_from_args(args: argparse.Namespace) -> str:
     raise CliError("Endpoint API key is required. Use --api-key, --api-key @file, or --api-key-env NAME.")
 
 
+def _endpoint_protocol_from_args(args: argparse.Namespace) -> str:
+    """解析统一端点协议；只按 harness 能力校验，不读取模型名或 URL。"""
+
+    harness = str(getattr(args, "harness", "claude_code") or "claude_code")
+    protocol = str(getattr(args, "protocol", None) or "").strip().lower()
+    allowed = {
+        "claude_code": {"anthropic"},
+        "codex": {"openai"},
+        "opencode": {"openai"},
+        "pi": {"openai", "anthropic"},
+    }
+    if not protocol:
+        if harness == "pi":
+            raise CliError("Pi endpoint requires --protocol openai or --protocol anthropic.")
+        protocol = "anthropic" if harness == "claude_code" else "openai"
+    if protocol not in allowed.get(harness, set()):
+        raise CliError(f"Harness {harness} does not support the {protocol} protocol.")
+    return protocol
+
+
+def _endpoint_thinking_format(protocol: str, thinking_compatibility: bool) -> str:
+    if not thinking_compatibility:
+        return "none"
+    return "thinking_type" if protocol == "anthropic" else "enable_thinking"
+
+
 def ranking_save_endpoint(args: argparse.Namespace) -> None:
     client = client_from_args(args)
+    protocol = _endpoint_protocol_from_args(args)
+    thinking_compatibility = getattr(
+        args,
+        "thinking_compatibility",
+        DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+    )
     endpoint = {
         "harness": args.harness,
+        "protocol": protocol,
         "base_url": args.base_url_value,
         "api_key": _endpoint_api_key_from_args(args),
         "model": args.model,
@@ -611,10 +622,10 @@ def ranking_save_endpoint(args: argparse.Namespace) -> None:
             "max_output_tokens",
             DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
         ),
-        "thinking_compatibility": getattr(
-            args,
-            "thinking_compatibility",
-            DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+        "thinking_compatibility": thinking_compatibility,
+        "thinking_format": _endpoint_thinking_format(
+            protocol,
+            thinking_compatibility,
         ),
         "concurrency_limit": args.concurrency_limit,
         "status": args.status,
@@ -647,7 +658,7 @@ def ranking_save_quality_gate(args: argparse.Namespace) -> None:
 
 
 def _require_quality_gate_endpoint_urls(endpoints: List[Any]) -> List[Dict[str, Any]]:
-    """质量门禁始终直连配置的模型 API，不能沿用主池 OpenCode 的固定端点。"""
+    """质量门禁端点必须显式提供可连接的模型 API 地址。"""
     validated: List[Dict[str, Any]] = []
     for index, endpoint in enumerate(endpoints, start=1):
         if not isinstance(endpoint, dict):
@@ -681,8 +692,15 @@ def ranking_save_quality_gate_endpoints(args: argparse.Namespace) -> None:
 
 
 def ranking_save_quality_gate_endpoint(args: argparse.Namespace) -> None:
+    protocol = _endpoint_protocol_from_args(args)
+    thinking_compatibility = getattr(
+        args,
+        "thinking_compatibility",
+        DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+    )
     endpoint = _require_quality_gate_endpoint_urls([{
         "harness": args.harness,
+        "protocol": protocol,
         "base_url": args.base_url_value,
         "api_key": _endpoint_api_key_from_args(args),
         "model": args.model,
@@ -696,10 +714,10 @@ def ranking_save_quality_gate_endpoint(args: argparse.Namespace) -> None:
             "max_output_tokens",
             DEFAULT_ENDPOINT_MAX_OUTPUT_TOKENS,
         ),
-        "thinking_compatibility": getattr(
-            args,
-            "thinking_compatibility",
-            DEFAULT_ENDPOINT_THINKING_COMPATIBILITY,
+        "thinking_compatibility": thinking_compatibility,
+        "thinking_format": _endpoint_thinking_format(
+            protocol,
+            thinking_compatibility,
         ),
         "concurrency_limit": args.concurrency_limit,
         "status": args.status,
@@ -1089,18 +1107,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = add_cli_parser(rs, "reset-limit", "Reset submission limits for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID whose submission limits should be reset.")
     pa.set_defaults(func=ranking_reset_limit)
-    pa = add_cli_parser(rs, "save-config", "Save single-model AI-judge fallback configuration for a ranking competition.")
-    pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
-    pa.add_argument("--agent-base-url", dest="base_url_value", help="Base URL for the AI-judge model API.")
-    key_group = pa.add_mutually_exclusive_group()
-    key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")
-    key_group.add_argument("--api-key-env", help="Environment variable name holding the API key.")
-    pa.add_argument("--env-file", help="Optional .env file used with --api-key-env.")
-    pa.add_argument("--model", help="Model identifier used by the AI judge.")
-    pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
-    pa.add_argument("--reverse-finalize-timeout", type=int, help="Reverse-judge forced-finalization timeout in seconds.")
-    pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="AI-judge orchestration mode.")
-    pa.set_defaults(func=ranking_config)
     pa = add_cli_parser(rs, "save-rules", "Save Agent-as-Judge grading rules for a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
     pa.add_argument("rules", help="JSON array of rule objects, or @file to read it from a file.")
@@ -1111,7 +1117,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "endpoints",
         help=(
             "JSON array of endpoint objects; each may include api_key or api_key_env, "
-            "context_window_tokens, max_output_tokens, thinking_compatibility, "
+            "protocol, context_window_tokens, max_output_tokens, "
+            "thinking_compatibility, thinking_format, "
             "status=enabled|paused|disabled, or legacy enabled=true/false. Missing model "
             "metadata defaults to 1000000, 384000, and true on the server."
         ),
@@ -1124,6 +1131,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = add_cli_parser(rs, "save-endpoint", "Replace the AI-judge endpoint pool with one endpoint.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
     pa.add_argument("--harness", choices=["claude_code", "codex", "opencode", "pi"], default="claude_code", help="Agent harness used by the endpoint.")
+    pa.add_argument("--protocol", choices=["openai", "anthropic"], help="Upstream endpoint protocol; required for Pi.")
     pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the AI-judge model API.")
     key_group = pa.add_mutually_exclusive_group(required=True)
     key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")
@@ -1166,7 +1174,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "endpoints",
         help=(
             "JSON array of quality endpoint objects, or @file; api_key_env, "
-            "context_window_tokens, max_output_tokens, thinking_compatibility, and "
+            "protocol, context_window_tokens, max_output_tokens, "
+            "thinking_compatibility, thinking_format, and "
             "status=enabled|paused|disabled are supported. Missing model metadata defaults "
             "to 1000000, 384000, and true on the server."
         ),
@@ -1180,6 +1189,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     pa.add_argument("competition_id", type=int, help="Reverse-judge competition ID to configure.")
     pa.add_argument("--harness", choices=["claude_code", "codex", "opencode", "pi"], default="claude_code", help="Agent harness used by the quality endpoint.")
+    pa.add_argument("--protocol", choices=["openai", "anthropic"], help="Upstream endpoint protocol; required for Pi.")
     pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the quality-review model API.")
     key_group = pa.add_mutually_exclusive_group(required=True)
     key_group.add_argument("--api-key", help="API key text, or @file to read it from a file.")

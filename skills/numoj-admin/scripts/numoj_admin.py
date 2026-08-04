@@ -160,7 +160,6 @@ ranking_upload_reference = ranking.ranking_upload_reference
 ranking_upload_script = ranking.ranking_upload_script
 ranking_clear_script = ranking.ranking_clear_script
 ranking_reset_limit = ranking.ranking_reset_limit
-ranking_config = ranking.ranking_config
 ranking_rules = ranking.ranking_rules
 ranking_endpoints = ranking.ranking_endpoints
 ranking_save_quality_gate = ranking.ranking_save_quality_gate

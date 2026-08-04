@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Dispatch Agent-as-Judge runs to the selected CLI harness."""
+import hashlib
 import json
 from collections import deque
 import http.server
@@ -14,23 +15,24 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
-OPENCODE_GO_MODEL = "mimo-v2.5-pro"
+OPENCODE_PROVIDER_ID = "agent-judge"
 PI_PROVIDER_NAME = "agent-judge"
 PI_CONFIG_DIR = "/home/node/.pi/agent"
 PI_SESSION_DIR = "/home/node/.pi/agent/sessions"
 PI_WEB_SEARCH_MCP_EXTENSION = "/usr/local/share/numoj/pi_web_search_mcp.ts"
 WEB_SEARCH_MCP_NAME = "numoj_web_search"
+PI_SESSION_SCAN_ENTRY_LIMIT = 256
+PI_SESSION_HEADER_MAX_BYTES = 64 * 1024
+PI_SESSION_EVENT_MAX_BYTES = 16 * 1024 * 1024
+PI_SESSION_TAIL_MAX_BYTES = PI_SESSION_EVENT_MAX_BYTES + 1024 * 1024
+PI_OUTPUT_LIMIT_CONTINUATION_PROMPT = (
+    "继续完成当前任务，沿用已有工作与工具结果推进，完成最初要求后再结束。"
+)
+PROBLEM_AGENT_TASK_SCOPE = "problem_agent"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_THINKING_COMPATIBILITY = True
 MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
-# Codex 0.144.5 会把未知模型的 context override 静默夹到 272K。该固定版本
-# 内置的 gpt-5.4 元数据允许 1M；只借用其本地容量元数据，发往端点的模型名
-# 仍由 localhost relay 改回管理员配置值。
-CODEX_CONTEXT_METADATA_MODEL = "gpt-5.4"
-CODEX_MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
-CLAUDE_MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
 CLAUDE_AUTO_COMPACT_MIN_TOKENS = 100_000
 PI_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
 UUID_RE = re.compile(
@@ -348,6 +350,131 @@ def _record_session(harness, proc, resume_session_id=None):
     return session_id
 
 
+def _normalize_pi_session_id(value):
+    normalized = str(value or "").strip().lower()
+    return normalized if UUID_RE.fullmatch(normalized) else ""
+
+
+def _pi_session_candidates(session_root, expected_session_id):
+    """在 Pi 的受限 session 树内查找与当前 UUID 对应的原生 JSONL。"""
+
+    expected_session_id = _normalize_pi_session_id(expected_session_id)
+    if not expected_session_id:
+        return []
+    pending = [(session_root, 0)]
+    candidates = []
+    scanned = 0
+    while pending and scanned < PI_SESSION_SCAN_ENTRY_LIMIT:
+        current, depth = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                scanned += 1
+                if scanned > PI_SESSION_SCAN_ENTRY_LIMIT:
+                    break
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth < 2:
+                            pending.append((entry.path, depth + 1))
+                        continue
+                    if (
+                        not entry.name.endswith(".jsonl")
+                        or expected_session_id not in entry.name.lower()
+                        or not entry.is_file(follow_symlinks=False)
+                    ):
+                        continue
+                    candidates.append((
+                        entry.stat(follow_symlinks=False).st_mtime_ns,
+                        entry.path,
+                    ))
+                except OSError:
+                    continue
+    return [path for _mtime, path in sorted(candidates, reverse=True)]
+
+
+def _latest_pi_terminal_state(session_root, expected_session_id):
+    """读取指定 Pi 会话最末 assistant 的两种原生终止原因。"""
+
+    expected_session_id = _normalize_pi_session_id(expected_session_id)
+    if not expected_session_id or not os.path.isdir(session_root):
+        return None
+    for path in _pi_session_candidates(session_root, expected_session_id):
+        try:
+            with open(path, "rb") as stream:
+                header_line = stream.readline(PI_SESSION_HEADER_MAX_BYTES + 1)
+                if len(header_line) > PI_SESSION_HEADER_MAX_BYTES:
+                    continue
+                try:
+                    header = json.loads(header_line.decode("utf-8", "replace"))
+                except Exception:
+                    continue
+                if (
+                    not isinstance(header, dict)
+                    or header.get("type") != "session"
+                    or _normalize_pi_session_id(header.get("id"))
+                    != expected_session_id
+                ):
+                    continue
+
+                file_size = os.fstat(stream.fileno()).st_size
+                tail_start = max(0, file_size - PI_SESSION_TAIL_MAX_BYTES)
+                stream.seek(tail_start)
+                payload = stream.read(PI_SESSION_TAIL_MAX_BYTES)
+                if tail_start:
+                    first_newline = payload.find(b"\n")
+                    if first_newline < 0:
+                        continue
+                    payload = payload[first_newline + 1:]
+
+                for raw_line in reversed(payload.splitlines()):
+                    if not raw_line or len(raw_line) > PI_SESSION_EVENT_MAX_BYTES:
+                        continue
+                    try:
+                        event = json.loads(raw_line.decode("utf-8", "replace"))
+                    except Exception:
+                        continue
+                    if not isinstance(event, dict) or event.get("type") != "message":
+                        continue
+                    message = event.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    if str(message.get("role") or "").strip().lower() != "assistant":
+                        continue
+                    return {
+                        "stop_reason": str(
+                            message.get("stopReason") or ""
+                        ).strip().lower(),
+                        "raw_stop_reason": str(
+                            message.get("rawStopReason") or ""
+                        ).strip().lower(),
+                        "event_digest": hashlib.sha256(raw_line).hexdigest(),
+                    }
+        except OSError:
+            continue
+    return None
+
+
+def _pi_hit_output_limit(terminal_state):
+    state = terminal_state if isinstance(terminal_state, dict) else {}
+    return (
+        state.get("stop_reason") == "length"
+        or state.get("raw_stop_reason") == "max_tokens"
+    )
+
+
+def _pi_terminal_advanced(previous, current):
+    if not isinstance(current, dict):
+        return False
+    if not isinstance(previous, dict):
+        return True
+    previous_digest = str(previous.get("event_digest") or "")
+    current_digest = str(current.get("event_digest") or "")
+    return bool(current_digest and current_digest != previous_digest)
+
+
 def _write_codex_config(
         home, base_url, model, context_window_tokens=None,
         max_output_tokens=None, thinking_compatibility=None,
@@ -380,10 +507,11 @@ def _write_codex_config(
         "[model_providers.aj_openai]",
         'name = "Agent Judge OpenAI Compatible"',
         "base_url = " + json.dumps(base_url),
-        'env_key = "AJ_OPENAI_API_KEY"',
+        'env_key = "AJ_ENDPOINT_API_KEY"',
+        'wire_api = "chat"',
     ]
     if model:
-        lines.insert(0, "model = " + json.dumps(CODEX_CONTEXT_METADATA_MODEL))
+        lines.insert(0, "model = " + json.dumps(model))
     if web_search_mcp:
         lines.extend([
             "",
@@ -400,6 +528,18 @@ def _write_codex_config(
         f.write("\n".join(lines) + "\n")
 
 
+def _downgrade_openai_developer_roles(items):
+    """兼容端点统一只接收传统的 system/user/assistant/tool 角色。"""
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if (
+            isinstance(item, dict)
+            and str(item.get("role") or "").strip().lower() == "developer"
+        ):
+            item["role"] = "system"
+
+
 def _rewrite_codex_request_body(
         path, raw_body, max_output_tokens, thinking_compatibility,
         upstream_model=None, endpoint_thinking_format=None):
@@ -411,6 +551,7 @@ def _rewrite_codex_request_body(
         return raw_body
     normalized_path = str(path or "").split("?", 1)[0].rstrip("/")
     if normalized_path.endswith("/responses"):
+        _downgrade_openai_developer_roles(payload.get("input"))
         payload["max_output_tokens"] = int(max_output_tokens)
         if upstream_model:
             payload["model"] = str(upstream_model)
@@ -424,7 +565,14 @@ def _rewrite_codex_request_body(
                         and str(item.get("type") or "").lower() == "reasoning"
                     )
                 ]
+        _apply_endpoint_thinking_fields(
+            payload,
+            protocol="openai",
+            thinking_format=endpoint_thinking_format,
+            thinking_enabled=thinking_compatibility,
+        )
     elif normalized_path.endswith("/chat/completions"):
+        _downgrade_openai_developer_roles(payload.get("messages"))
         payload["max_tokens"] = int(max_output_tokens)
         if upstream_model:
             payload["model"] = str(upstream_model)
@@ -445,7 +593,7 @@ def _rewrite_codex_request_body(
 
 def _rewrite_claude_request_body(
         path, raw_body, max_output_tokens, endpoint_thinking_format=None,
-        thinking_enabled=True):
+        thinking_enabled=True, upstream_model=None):
     """只改写 Claude Code 主流式 messages 请求，不抬高内部小请求额度。"""
     try:
         payload = json.loads(raw_body.decode("utf-8"))
@@ -457,6 +605,8 @@ def _rewrite_claude_request_body(
     if normalized_path.endswith("/messages") and payload.get("stream") is True:
         payload["max_tokens"] = int(max_output_tokens)
     if normalized_path.endswith("/messages"):
+        if upstream_model:
+            payload["model"] = str(upstream_model)
         _apply_endpoint_thinking_fields(
             payload,
             protocol="anthropic",
@@ -488,6 +638,13 @@ def _apply_endpoint_thinking_fields(
     # 旧副本可能把 thinking_type 与 OpenAI 协议组合；按当前通用协议契约
     # 收敛成 enable_thinking，而不是继续发送厂商私有的 thinking.type。
     payload["enable_thinking"] = True
+
+
+def _open_endpoint_request(opener, request):
+    task_scope = str(os.environ.get("AJ_TASK_SCOPE") or "").strip().lower()
+    if task_scope == PROBLEM_AGENT_TASK_SCOPE:
+        return opener.open(request)
+    return opener.open(request, timeout=300)
 
 
 class _CodexEndpointRelay:
@@ -560,7 +717,7 @@ class _CodexEndpointRelay:
                 )
                 try:
                     opener = urllib.request.build_opener(relay._RejectRedirects())
-                    response = opener.open(request, timeout=300)
+                    response = _open_endpoint_request(opener, request)
                 except urllib.error.HTTPError as exc:
                     if 300 <= int(exc.code) < 400:
                         exc.close()
@@ -616,11 +773,12 @@ class _ClaudeEndpointRelay(_CodexEndpointRelay):
 
     def __init__(
             self, base_url, max_output_tokens, endpoint_thinking_format=None,
-            thinking_enabled=True):
+            thinking_enabled=True, upstream_model=None):
         super().__init__(
             base_url,
             max_output_tokens=max_output_tokens,
             thinking_compatibility=thinking_enabled,
+            upstream_model=upstream_model,
             endpoint_thinking_format=endpoint_thinking_format,
         )
 
@@ -629,11 +787,12 @@ class _ClaudeEndpointRelay(_CodexEndpointRelay):
             path, body, self.max_output_tokens,
             self.endpoint_thinking_format,
             self.thinking_compatibility,
+            self.upstream_model,
         )
 
 
-class _PiEndpointRelay(_CodexEndpointRelay):
-    """只为 Pi 注入独立端点的协议级思考字段。"""
+class _EndpointThinkingRelay(_CodexEndpointRelay):
+    """为任意 harness 注入统一端点契约中的协议级思考字段。"""
 
     def __init__(self, base_url, protocol, endpoint_thinking_format, thinking_enabled):
         super().__init__(
@@ -670,29 +829,31 @@ def _audit_read_only_enabled():
     }
 
 
+def _endpoint_settings(allowed_protocols):
+    """读取四套 harness 共用的唯一端点接口。"""
+
+    protocol = (os.environ.get("AJ_ENDPOINT_PROTOCOL") or "").strip().lower()
+    base_url = (os.environ.get("AJ_ENDPOINT_BASE_URL") or "").strip()
+    api_key = (os.environ.get("AJ_ENDPOINT_API_KEY") or "").strip()
+    model = (os.environ.get("AJ_ENDPOINT_MODEL") or "").strip()
+    if protocol not in allowed_protocols:
+        raise ValueError("endpoint protocol is not supported by the selected harness")
+    if not base_url or not api_key or not model:
+        raise ValueError("endpoint Base URL, API Key, and model are required")
+    return protocol, base_url, api_key, model
+
+
 def _run_codex(prompt):
-    base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
-    api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    model = (os.environ.get("OPENAI_MODEL") or "").strip()
     resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
-    if not base_url or not api_key:
-        print("codex harness requires OPENAI_BASE_URL and OPENAI_API_KEY", file=sys.stderr)
-        return 2
     try:
+        _protocol, base_url, api_key, model = _endpoint_settings({"openai"})
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()
         )
         endpoint_thinking_format = _endpoint_thinking_format_env()
         web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
-        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
-        return 2
-    if context_window_tokens > CODEX_MAX_CONTEXT_WINDOW_TOKENS:
-        print(
-            "invalid endpoint model capabilities: Codex 0.144.5 supports at most "
-            f"{CODEX_MAX_CONTEXT_WINDOW_TOKENS} context tokens",
-            file=sys.stderr,
-        )
+        print(f"invalid endpoint configuration: {exc}", file=sys.stderr)
         return 2
     skill_files = _validated_skill_files("codex")
     if skill_files is None:
@@ -724,7 +885,6 @@ def _run_codex(prompt):
         )
         env = os.environ.copy()
         env["CODEX_HOME"] = home
-        env["AJ_OPENAI_API_KEY"] = api_key
         audit_read_only = _audit_read_only_enabled()
         if resume_session_id and not audit_read_only:
             args = [
@@ -764,42 +924,31 @@ def _run_codex(prompt):
 def _opencode_config_content(
         base_url, api_key_env, model_id, audit_read_only=False,
         context_window_tokens=None, max_output_tokens=None,
-        thinking_compatibility=None, thinking_format=None,
-        web_search_mcp=None):
+        thinking_compatibility=None, web_search_mcp=None):
     if context_window_tokens is None:
         context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
     if max_output_tokens is None:
         max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
     if thinking_compatibility is None:
         thinking_compatibility = DEFAULT_THINKING_COMPATIBILITY
-    thinking_format = str(thinking_format or "generic").strip().lower()
-    if thinking_format not in {"generic", "deepseek"}:
-        raise ValueError("unsupported OpenCode thinking format")
     cfg = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
-            "aj-go": {
+            OPENCODE_PROVIDER_ID: {
                 "npm": "@ai-sdk/openai-compatible",
-                "name": "OpenCode Go",
+                "name": "Agent endpoint",
                 "options": {
                     "baseURL": base_url,
                     "apiKey": "{env:%s}" % api_key_env,
                 },
                 "models": {
                     model_id: {
-                        "name": "OpenCode Go %s" % model_id,
+                        "name": model_id,
                         "reasoning": bool(thinking_compatibility),
                         "limit": {
                             "context": int(context_window_tokens),
                             "output": int(max_output_tokens),
                         },
-                        "interleaved": (
-                            {"field": "reasoning_content"}
-                            if (
-                                thinking_compatibility
-                                and thinking_format == "deepseek"
-                            ) else False
-                        ),
                     },
                 },
             },
@@ -829,23 +978,18 @@ def _opencode_config_content(
 
 
 def _run_opencode(prompt):
-    api_key = (os.environ.get("OPENCODE_API_KEY") or "").strip()
     resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
-    if not api_key:
-        print("opencode harness requires OPENCODE_API_KEY", file=sys.stderr)
-        return 2
-    base_url = (os.environ.get("OPENCODE_BASE_URL") or "").strip() or OPENCODE_GO_BASE_URL
-    model = (os.environ.get("OPENCODE_MODEL") or "").strip() or OPENCODE_GO_MODEL
-    model_id = model.split("/", 1)[1] if model.startswith("opencode-go/") else model
-    model_id = model_id.split("/", 1)[1] if model_id.startswith("aj-go/") else model_id
     try:
+        _protocol, base_url, api_key, model = _endpoint_settings({"openai"})
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()
         )
+        endpoint_thinking_format = _endpoint_thinking_format_env()
         web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
-        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
+        print(f"invalid endpoint configuration: {exc}", file=sys.stderr)
         return 2
+    model_id = model
     skill_files = _validated_skill_files("opencode")
     if skill_files is None:
         return 2
@@ -867,52 +1011,68 @@ def _run_opencode(prompt):
     else:
         home = "/tmp/aj_opencode_home"
         xdg_directories = {}
-    env = os.environ.copy()
-    env["HOME"] = home
-    env.update(xdg_directories)
-    env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(
-        base_url, "OPENCODE_API_KEY", model_id,
-        audit_read_only=audit_read_only,
-        context_window_tokens=context_window_tokens,
-        max_output_tokens=max_output_tokens,
-        thinking_compatibility=thinking_compatibility,
-        thinking_format=os.environ.get("AJ_THINKING_FORMAT"),
-        web_search_mcp=web_search_mcp,
-    )
-    env["OPENCODE_API_KEY"] = api_key
-    # OpenCode 默认把单次输出再截到 32K；端点池中的管理员配置才是这里的
-    # 唯一上限，因此同步覆盖该运行时保护值。
-    env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] = str(max_output_tokens)
-    if audit_read_only:
-        env.update({
-            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
-            "OPENCODE_DISABLE_CLAUDE_CODE": "true",
-            "OPENCODE_DISABLE_AUTOUPDATE": "true",
-            "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
-            "OPENCODE_DISABLE_MODELS_FETCH": "true",
-        })
-    for directory in (home, *xdg_directories.values()):
-        os.makedirs(directory, exist_ok=True)
-    if audit_read_only:
-        args = [
-            "opencode", "--pure", "run",
-            "--format", "json",
-            "--model", "aj-go/%s" % model_id,
-        ]
-        resume_session_id = ""
-    else:
-        args = [
-            "opencode", "run",
-            "--format", "json",
-            "--dangerously-skip-permissions",
-            "--model", "aj-go/%s" % model_id,
-        ]
-    if resume_session_id and not audit_read_only:
-        args.extend(["--session", resume_session_id])
-    args.append(prompt)
-    proc = _run(args, env)
-    _record_session("opencode", proc, resume_session_id)
-    return proc.returncode
+    relay = None
+    provider_base_url = base_url
+    if endpoint_thinking_format is not None:
+        relay = _EndpointThinkingRelay(
+            base_url,
+            "openai",
+            endpoint_thinking_format,
+            thinking_compatibility,
+        )
+        try:
+            provider_base_url = relay.start()
+        except Exception as exc:
+            print(f"failed to start OpenCode endpoint relay: {exc}", file=sys.stderr)
+            return 2
+    try:
+        env = os.environ.copy()
+        env["HOME"] = home
+        env.update(xdg_directories)
+        env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(
+            provider_base_url, "AJ_ENDPOINT_API_KEY", model_id,
+            audit_read_only=audit_read_only,
+            context_window_tokens=context_window_tokens,
+            max_output_tokens=max_output_tokens,
+            thinking_compatibility=thinking_compatibility,
+            web_search_mcp=web_search_mcp,
+        )
+        # OpenCode 默认把单次输出再截到 32K；端点池中的管理员配置才是这里的
+        # 唯一上限，因此同步覆盖该运行时保护值。
+        env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] = str(max_output_tokens)
+        if audit_read_only:
+            env.update({
+                "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+                "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+                "OPENCODE_DISABLE_AUTOUPDATE": "true",
+                "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
+                "OPENCODE_DISABLE_MODELS_FETCH": "true",
+            })
+        for directory in (home, *xdg_directories.values()):
+            os.makedirs(directory, exist_ok=True)
+        if audit_read_only:
+            args = [
+                "opencode", "--pure", "run",
+                "--format", "json",
+                "--model", "%s/%s" % (OPENCODE_PROVIDER_ID, model_id),
+            ]
+            resume_session_id = ""
+        else:
+            args = [
+                "opencode", "run",
+                "--format", "json",
+                "--dangerously-skip-permissions",
+                "--model", "%s/%s" % (OPENCODE_PROVIDER_ID, model_id),
+            ]
+        if resume_session_id and not audit_read_only:
+            args.extend(["--session", resume_session_id])
+        args.append(prompt)
+        proc = _run(args, env)
+        _record_session("opencode", proc, resume_session_id)
+        return proc.returncode
+    finally:
+        if relay is not None:
+            relay.stop()
 
 
 def _positive_int_env(name, default):
@@ -950,31 +1110,32 @@ def _endpoint_thinking_format_env():
 
 def _endpoint_model_capabilities():
     context_window_tokens = _positive_int_env(
-        "AJ_CONTEXT_WINDOW_TOKENS", DEFAULT_CONTEXT_WINDOW_TOKENS,
+        "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", DEFAULT_CONTEXT_WINDOW_TOKENS,
     )
     max_output_tokens = _positive_int_env(
-        "AJ_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS,
+        "AJ_ENDPOINT_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS,
     )
     if context_window_tokens > MAX_CONTEXT_WINDOW_TOKENS:
         raise ValueError(
-            "AJ_CONTEXT_WINDOW_TOKENS cannot exceed "
+            "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS cannot exceed "
             f"{MAX_CONTEXT_WINDOW_TOKENS}"
         )
     if max_output_tokens > context_window_tokens:
         raise ValueError(
-            "AJ_MAX_OUTPUT_TOKENS cannot exceed AJ_CONTEXT_WINDOW_TOKENS"
+            "AJ_ENDPOINT_MAX_OUTPUT_TOKENS cannot exceed "
+            "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS"
         )
     return (
         context_window_tokens,
         max_output_tokens,
-        _bool_env("AJ_THINKING_COMPATIBILITY", DEFAULT_THINKING_COMPATIBILITY),
+        _bool_env("AJ_ENDPOINT_THINKING_ENABLED", DEFAULT_THINKING_COMPATIBILITY),
     )
 
 
 def _write_pi_models_config(
         config_dir, base_url, model, context_window_tokens=None,
         max_output_tokens=None, thinking_compatibility=None,
-        thinking_format=None, protocol="openai"):
+        protocol="openai"):
     os.makedirs(config_dir, exist_ok=True)
     if context_window_tokens is None:
         context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
@@ -982,9 +1143,6 @@ def _write_pi_models_config(
         max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
     if thinking_compatibility is None:
         thinking_compatibility = DEFAULT_THINKING_COMPATIBILITY
-    thinking_format = str(thinking_format or "generic").strip().lower()
-    if thinking_format not in {"generic", "deepseek"}:
-        raise ValueError("unsupported Pi thinking format")
     model_config = {
         "id": model,
         "name": model,
@@ -992,26 +1150,10 @@ def _write_pi_models_config(
         "maxTokens": int(max_output_tokens),
     }
     if thinking_compatibility:
-        # 自定义端点可能经一次性代理隐藏真实 provider。thinking 开关只控制
-        # 是否启用推理；wire profile 由宿主根据原始端点 URL 推导，绝不按模型名猜测。
         model_config.update({
             "reasoning": True,
             "input": ["text"],
         })
-        if thinking_format == "deepseek":
-            model_config["thinkingLevelMap"] = {
-                "minimal": None,
-                "low": None,
-                "medium": None,
-                "high": "high",
-                "max": "max",
-            }
-            model_config["compat"] = {
-                "supportsStore": False,
-                "supportsDeveloperRole": False,
-                "requiresReasoningContentOnAssistantMessages": True,
-                "thinkingFormat": "deepseek",
-            }
     protocol = str(protocol or "openai").strip().lower()
     if protocol not in {"openai", "anthropic"}:
         raise ValueError("unsupported Pi endpoint protocol")
@@ -1021,7 +1163,7 @@ def _write_pi_models_config(
             "anthropic-messages" if protocol == "anthropic"
             else "openai-completions"
         ),
-        "apiKey": "$PI_API_KEY",
+        "apiKey": "$AJ_ENDPOINT_API_KEY",
         "models": [model_config],
     }
     if protocol == "openai":
@@ -1029,6 +1171,7 @@ def _write_pi_models_config(
             "authHeader": True,
             "compat": {
                 "supportsStore": False,
+                "supportsDeveloperRole": False,
                 "maxTokensField": "max_tokens",
             },
         })
@@ -1042,38 +1185,18 @@ def _write_pi_models_config(
 
 
 def _run_pi(prompt):
-    protocol = (os.environ.get("AJ_ENDPOINT_PROTOCOL") or "openai").strip().lower()
-    if protocol == "anthropic":
-        base_url = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip()
-        api_key = (
-            os.environ.get("ANTHROPIC_API_KEY")
-            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-            or ""
-        ).strip()
-        model = (os.environ.get("ANTHROPIC_MODEL") or "").strip()
-    else:
-        base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
-        api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-        model = (os.environ.get("OPENAI_MODEL") or "").strip()
     resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
-    if protocol not in {"openai", "anthropic"}:
-        print("pi harness received an unsupported endpoint protocol", file=sys.stderr)
-        return 2
-    if not base_url or not api_key or not model:
-        print(
-            "pi harness requires endpoint Base URL, API Key, and model",
-            file=sys.stderr,
-        )
-        return 2
-
     try:
+        protocol, base_url, api_key, model = _endpoint_settings(
+            {"openai", "anthropic"},
+        )
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()
         )
         endpoint_thinking_format = _endpoint_thinking_format_env()
         web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
-        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
+        print(f"invalid endpoint configuration: {exc}", file=sys.stderr)
         return 2
     skill_files = _validated_skill_files("pi")
     if skill_files is None:
@@ -1084,34 +1207,10 @@ def _run_pi(prompt):
     except ValueError as exc:
         print(f"invalid Agent runtime: {exc}", file=sys.stderr)
         return 2
-    thinking_format = str(
-        os.environ.get("AJ_PI_THINKING_FORMAT")
-        or os.environ.get("AJ_THINKING_FORMAT")
-        or ""
-    ).strip().lower()
-    if not thinking_format:
-        scheme = ""
-        try:
-            parsed_base_url = urllib.parse.urlsplit(base_url)
-            scheme = str(parsed_base_url.scheme or "").lower()
-            hostname = str(parsed_base_url.hostname or "").lower().rstrip(".")
-        except ValueError:
-            hostname = ""
-        thinking_format = (
-            "deepseek"
-            if (
-                scheme == "https"
-                and (
-                    hostname == "deepseek.com"
-                    or hostname.endswith(".deepseek.com")
-                )
-            )
-            else "generic"
-        )
     relay = None
     provider_base_url = base_url
     if endpoint_thinking_format is not None:
-        relay = _PiEndpointRelay(
+        relay = _EndpointThinkingRelay(
             base_url,
             protocol,
             endpoint_thinking_format,
@@ -1128,13 +1227,11 @@ def _run_pi(prompt):
             context_window_tokens=context_window_tokens,
             max_output_tokens=max_output_tokens,
             thinking_compatibility=thinking_compatibility,
-            thinking_format=thinking_format,
             protocol=protocol,
         )
         os.makedirs(session_dir, exist_ok=True)
         env = os.environ.copy()
         env.update({
-            "PI_API_KEY": api_key,
             "PI_CODING_AGENT_DIR": config_dir,
             "PI_CODING_AGENT_SESSION_DIR": session_dir,
             "PI_OFFLINE": "1",
@@ -1142,7 +1239,8 @@ def _run_pi(prompt):
             "PI_SKIP_VERSION_CHECK": "1",
         })
         phase = str(os.environ.get("AJ_PHASE") or "").strip().lower()
-        args = [
+        audit_read_only = _audit_read_only_enabled()
+        base_args = [
             "pi",
             "--mode", "json",
             "--provider", PI_PROVIDER_NAME,
@@ -1157,58 +1255,102 @@ def _run_pi(prompt):
         if web_search_mcp:
             # Pi 没有原生 MCP 配置；只显式加载镜像内受信任的协议适配扩展，
             # 不扫描工作区或用户目录中的其他 extension。
-            args.extend(["--extension", PI_WEB_SEARCH_MCP_EXTENSION])
+            base_args.extend(["--extension", PI_WEB_SEARCH_MCP_EXTENSION])
         if skill_files:
             # Pi 在 --no-skills 下仍可以用 --skill 显式加载单个受信任
             # skill，避免扫描镜像内或其他目录的隐式 skill。
-            args.extend(["--skill", skill_files[0]])
-        if _audit_read_only_enabled():
+            base_args.extend(["--skill", skill_files[0]])
+        if audit_read_only:
             # Pi 自身不提供沙箱；质量门禁容器另有只读根文件系统、只读 evidence
             # 挂载与无 capabilities 约束，这里再把内建工具缩到纯读取集合。
-            args.extend(["--tools", "read,grep,find,ls"])
+            base_args.extend(["--tools", "read,grep,find,ls"])
             resume_session_id = ""
         if thinking_compatibility:
             effort = str(os.environ.get("AJ_EFFORT") or "").strip().lower()
-            # length/timeout 后的恢复轮只负责把已有工作形成交付物；显式关闭 thinking，
-            # 防止第二轮再次把全部输出额度消耗在 reasoning 而没有写文件。
+            # Reverse Judge 的收尾轮只负责把已有工作形成交付物；显式关闭
+            # thinking。普通 Agent 因输出截断产生的续跑轮在循环内做同样处理。
             if phase == "reverse_finalize":
-                args.extend(["--thinking", "off"])
+                base_args.extend(["--thinking", "off"])
             elif effort in PI_THINKING_LEVELS:
-                args.extend(["--thinking", effort])
-        if resume_session_id:
-            args.extend(["--session", resume_session_id])
-        args.append(prompt)
-        proc = _run(
-            args,
-            env=env,
-            stdout_session_only=phase in {"reverse_solve", "reverse_finalize"},
+                base_args.extend(["--thinking", effort])
+
+        current_prompt = prompt
+        current_session_id = resume_session_id
+        task_scope = str(os.environ.get("AJ_TASK_SCOPE") or "").strip().lower()
+        auto_resume_output_limit = (
+            task_scope == PROBLEM_AGENT_TASK_SCOPE
+            and not phase
+            and not audit_read_only
         )
-        _record_session("pi", proc, resume_session_id)
-        return proc.returncode
+        continuing_after_output_limit = False
+        previous_terminal_state = None
+        while True:
+            args = list(base_args)
+            if continuing_after_output_limit and thinking_compatibility:
+                if "--thinking" in args:
+                    args[args.index("--thinking") + 1] = "off"
+                else:
+                    args.extend(["--thinking", "off"])
+            if current_session_id:
+                args.extend(["--session", current_session_id])
+            args.append(current_prompt)
+            proc = _run(
+                args,
+                env=env,
+                stdout_session_only=phase in {"reverse_solve", "reverse_finalize"},
+            )
+            recorded_session_id = _record_session(
+                "pi", proc, current_session_id,
+            )
+            if proc.returncode != 0 or not auto_resume_output_limit:
+                return proc.returncode
+            if (
+                current_session_id
+                and recorded_session_id
+                and recorded_session_id != current_session_id
+            ):
+                print("Pi resumed into an unexpected native session", file=sys.stderr)
+                return 2
+            session_id = current_session_id or recorded_session_id
+            terminal_state = _latest_pi_terminal_state(session_dir, session_id)
+            if (
+                continuing_after_output_limit
+                and not _pi_terminal_advanced(
+                    previous_terminal_state,
+                    terminal_state,
+                )
+            ):
+                print(
+                    "Pi output-limit continuation produced no new assistant event",
+                    file=sys.stderr,
+                )
+                return 2
+            if not _pi_hit_output_limit(terminal_state):
+                return proc.returncode
+            if not session_id:
+                print("Pi output limit reached without a resumable session", file=sys.stderr)
+                return 2
+            current_session_id = session_id
+            current_prompt = PI_OUTPUT_LIMIT_CONTINUATION_PROMPT
+            continuing_after_output_limit = True
+            previous_terminal_state = terminal_state
     finally:
         if relay is not None:
             relay.stop()
 
 
 def _run_claude_code(prompt):
-    model = (os.environ.get("ANTHROPIC_MODEL") or "").strip()
     resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     audit_read_only = _audit_read_only_enabled()
     try:
+        _protocol, base_url, api_key, model = _endpoint_settings({"anthropic"})
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()
         )
         endpoint_thinking_format = _endpoint_thinking_format_env()
         web_search_mcp = _web_search_mcp_settings()
     except ValueError as exc:
-        print(f"invalid endpoint model capabilities: {exc}", file=sys.stderr)
-        return 2
-    if context_window_tokens > CLAUDE_MAX_CONTEXT_WINDOW_TOKENS:
-        print(
-            "invalid endpoint model capabilities: this Claude Code adapter "
-            f"supports at most {CLAUDE_MAX_CONTEXT_WINDOW_TOKENS} context tokens",
-            file=sys.stderr,
-        )
+        print(f"invalid endpoint configuration: {exc}", file=sys.stderr)
         return 2
     skill_files = _validated_skill_files("claude_code")
     if skill_files is None:
@@ -1219,6 +1361,8 @@ def _run_claude_code(prompt):
         print(f"invalid Agent runtime: {exc}", file=sys.stderr)
         return 2
     env = os.environ.copy()
+    env["ANTHROPIC_AUTH_TOKEN"] = api_key
+    env["ANTHROPIC_API_KEY"] = api_key
     if runtime_root:
         home = os.path.join(runtime_root, "home")
         os.makedirs(home, exist_ok=True)
@@ -1285,10 +1429,11 @@ def _run_claude_code(prompt):
     cli_model = model
     if (
         cli_model
-        and context_window_tokens == CLAUDE_MAX_CONTEXT_WINDOW_TOKENS
+        and context_window_tokens == MAX_CONTEXT_WINDOW_TOKENS
         and not cli_model.endswith("[1m]")
     ):
-        # Claude Code 官方 1M 标记适用于任意模型名，发往上游前会自动剥离。
+        # Claude Code 官方 1M 标记适用于任意模型名；它只作用于本地 CLI，
+        # localhost relay 会把上游请求中的 model 恢复为管理员配置的原值。
         cli_model += "[1m]"
     if cli_model:
         args.extend(["--model", cli_model])
@@ -1300,22 +1445,25 @@ def _run_claude_code(prompt):
         args.extend(["--effort", effort])
     args.append(prompt)
     relay = None
-    base_url = str(env.get("ANTHROPIC_BASE_URL") or "").strip()
-    if base_url:
-        if endpoint_thinking_format is None:
-            relay = _ClaudeEndpointRelay(base_url, max_output_tokens)
-        else:
-            relay = _ClaudeEndpointRelay(
-                base_url,
-                max_output_tokens,
-                endpoint_thinking_format=endpoint_thinking_format,
-                thinking_enabled=thinking_compatibility,
-            )
-        try:
-            env["ANTHROPIC_BASE_URL"] = relay.start()
-        except Exception as exc:
-            print(f"failed to start Claude endpoint relay: {exc}", file=sys.stderr)
-            return 2
+    if endpoint_thinking_format is None:
+        relay = _ClaudeEndpointRelay(
+            base_url,
+            max_output_tokens,
+            upstream_model=model,
+        )
+    else:
+        relay = _ClaudeEndpointRelay(
+            base_url,
+            max_output_tokens,
+            endpoint_thinking_format=endpoint_thinking_format,
+            thinking_enabled=thinking_compatibility,
+            upstream_model=model,
+        )
+    try:
+        env["ANTHROPIC_BASE_URL"] = relay.start()
+    except Exception as exc:
+        print(f"failed to start Claude endpoint relay: {exc}", file=sys.stderr)
+        return 2
     try:
         proc = _run(args, env=env)
         _record_session("claude_code", proc, resume_session_id)
