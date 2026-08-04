@@ -106,7 +106,7 @@ def test_numoj_admin_page_like_commands_use_json_api_without_output(monkeypatch)
         (cli.problem_submit_page, Namespace(problem_id=42), "/api/problems/42/submit-context"),
         (cli.problem_create_form, Namespace(), "/api/admin/problems/create-form"),
         (cli.problem_edit_form, Namespace(problem_id=42), "/api/admin/problems/42/edit-form"),
-        (cli.problem_agent_run_page, Namespace(task_id="task-1"), "/admin/agent_run_status/task-1"),
+        (cli.problem_agent_run, Namespace(task_id="task-1"), "/admin/agent_run_status/task-1"),
         (cli.problem_agent_tasks, Namespace(), "/api/admin/agent-tasks"),
         (cli.forum_list, Namespace(), "/api/forum"),
         (cli.forum_thread, Namespace(thread_id=7), "/api/forum/threads/7"),
@@ -345,6 +345,30 @@ def test_problem_agent_commands_require_new_harness_contract_and_reject_old_flag
             parser.parse_args(argv)
         assert exc_info.value.code != 0
     capsys.readouterr()
+
+
+def test_problem_agent_stream_summary_uses_canonical_execution_trace():
+    cli = _load_numoj_admin_cli_module()
+
+    summary = cli.problem.necessary_agent_stream_event_payload({
+        "task_id": "task-1",
+        "status": "Running",
+        "execution_trace": {
+            "trace_id": "trace-1",
+            "status": "running",
+            "trace_messages": [{"text": "one"}, {"text": "two"}],
+            "trace_files": [{"path": "codex_agent_judge.jsonl"}],
+        },
+        "events": [{"message": "旧自建轨迹"}],
+    })
+
+    assert summary["execution_trace"] == {
+        "trace_id": "trace-1",
+        "status": "running",
+        "trace_messages_count": 2,
+        "trace_files_count": 1,
+    }
+    assert "events_count" not in summary
 
 
 def test_repository_delete_confirms_once_with_server_token(monkeypatch, capsys):

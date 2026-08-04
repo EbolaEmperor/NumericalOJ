@@ -903,6 +903,7 @@ def _run_opencode(prompt):
     else:
         args = [
             "opencode", "run",
+            "--format", "json",
             "--dangerously-skip-permissions",
             "--model", "aj-go/%s" % model_id,
         ]

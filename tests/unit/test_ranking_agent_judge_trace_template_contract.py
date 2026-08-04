@@ -17,9 +17,18 @@ JUDGE_MODAL = (
 REVERSE_MODAL = (
     ROOT / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
 ).read_text(encoding="utf-8")
-TRACE_RENDERER = (
-    ROOT / "templates" / "ranking" / "scripts" / "execution_trace.html"
+AGENT_TASK_MODAL = (
+    ROOT / "templates" / "agents" / "run_detail_modal.html"
 ).read_text(encoding="utf-8")
+TRACE_ASSETS = (
+    ROOT / "templates" / "components" / "agents" / "execution_trace_assets.html"
+).read_text(encoding="utf-8")
+TRACE_RENDERER = (ROOT / "static" / "app" / "agents" / "execution-trace.js").read_text(
+    encoding="utf-8",
+)
+TRACE_STYLES = (ROOT / "static" / "app" / "agents" / "execution-trace.css").read_text(
+    encoding="utf-8",
+)
 SUB_CARD = (
     ROOT / "templates" / "ranking" / "components" / "submission_card.html"
 ).read_text(encoding="utf-8")
@@ -42,9 +51,13 @@ def test_shared_agent_judge_modal_adds_trace_tab_to_the_right_of_detail():
 
 
 def test_reverse_and_agent_judge_use_one_shared_trace_renderer():
-    trace_include = "{% include 'ranking/scripts/execution_trace.html' %}"
+    trace_include = "{% include 'components/agents/execution_trace_assets.html' %}"
     assert trace_include in REVERSE_MODAL
     assert trace_include in JUDGE_MODAL
+    assert trace_include in AGENT_TASK_MODAL
+    assert "app/agents/execution-trace.css" in TRACE_ASSETS
+    assert "app/agents/execution-trace.js" in TRACE_ASSETS
+    assert not (ROOT / "templates" / "ranking" / "scripts" / "execution_trace.html").exists()
     assert "{% include 'ranking/modals/judge_detail.html' %}" in RANKING
     assert "{% include 'ranking/modals/reverse_judge_detail.html' %}" in RANKING
     assert "keyPrefix:'reverse-judge', showThinkingLoader:true" in REVERSE_MODAL
@@ -98,9 +111,9 @@ def test_shared_renderer_supports_escaped_pi_tool_results():
     assert "if (message.kind === 'tool_result') return 'tool_result';" in TRACE_RENDERER
     assert "if (kind === 'tool_result') return 'fa-square-check';" in TRACE_RENDERER
     assert "kind === 'tool_result' ? '工具结果'" in TRACE_RENDERER
-    assert ".rj-msg.tool-result" in TRACE_RENDERER
-    assert ".rj-tool-result-summary" in TRACE_RENDERER
-    assert ".rj-tool-result-text" in TRACE_RENDERER
+    assert ".rj-msg.tool-result" in TRACE_STYLES
+    assert ".rj-tool-result-summary" in TRACE_STYLES
+    assert ".rj-tool-result-text" in TRACE_STYLES
     assert "message.is_error ? ' error' : ''" in TRACE_RENDERER
     # tool_result 只走纯文本转义；Markdown HTML 入口仍仅限服务端已清洗的回复/思考。
     assert (

@@ -421,7 +421,6 @@ def upsert_agent_run_snapshot(state):
 
     ensure_agent_runs_table()
     attempts = state.get("attempts") if isinstance(state.get("attempts"), list) else []
-    events = state.get("events") if isinstance(state.get("events"), list) else []
     best_score = max(
         _safe_int(state.get("best_score"), 0),
         _best_score_from_attempts(attempts),
@@ -435,11 +434,11 @@ def upsert_agent_run_snapshot(state):
                 INSERT INTO agent_task_runs (
                     task_id, problem_id, problem_title, requested_by, status, message,
                     best_score, final_submission_id, latest_submission_id,
-                    attempts_json, events_json
+                    attempts_json
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s,
-                    %s, %s
+                    %s
                 )
                 ON DUPLICATE KEY UPDATE
                     problem_id=VALUES(problem_id),
@@ -450,8 +449,7 @@ def upsert_agent_run_snapshot(state):
                     best_score=VALUES(best_score),
                     final_submission_id=VALUES(final_submission_id),
                     latest_submission_id=VALUES(latest_submission_id),
-                    attempts_json=VALUES(attempts_json),
-                    events_json=VALUES(events_json)
+                    attempts_json=VALUES(attempts_json)
                 """,
                 (
                     task_id,
@@ -464,7 +462,6 @@ def upsert_agent_run_snapshot(state):
                     state.get("final_submission_id"),
                     state.get("latest_submission_id"),
                     _to_json_text(attempts, []),
-                    _to_json_text(events, []),
                 ),
             )
         conn.commit()
@@ -483,7 +480,7 @@ def get_agent_run_by_task_id(task_id):
                 """
                 SELECT task_id, problem_id, problem_title, requested_by, status, message,
                        best_score, final_submission_id, latest_submission_id,
-                       attempts_json, events_json, created_at, updated_at
+                       attempts_json, created_at, updated_at
                 FROM agent_task_runs
                 WHERE task_id=%s
                 LIMIT 1
@@ -498,7 +495,6 @@ def get_agent_run_by_task_id(task_id):
         return None
 
     attempts = _parse_json_text(row.get("attempts_json"), [])
-    events = _parse_json_text(row.get("events_json"), [])
     return {
         "task_id": row.get("task_id"),
         "problem_id": row.get("problem_id"),
@@ -510,7 +506,6 @@ def get_agent_run_by_task_id(task_id):
         "final_submission_id": row.get("final_submission_id"),
         "latest_submission_id": row.get("latest_submission_id"),
         "attempts": attempts if isinstance(attempts, list) else [],
-        "events": events if isinstance(events, list) else [],
         "created_at": _format_datetime_value(row.get("created_at")),
         "updated_at": _format_datetime_value(row.get("updated_at")),
     }

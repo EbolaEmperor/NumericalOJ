@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -70,7 +71,7 @@ def test_standard_solution_filename_accepts_basename_and_has_language_fallback()
 
 
 def _patch_common(monkeypatch, tmp_path, *, problem=None):
-    events = []
+    snapshots = []
     monkeypatch.setattr(data_task, "AGENT_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setattr(
         data_task,
@@ -92,12 +93,17 @@ def _patch_common(monkeypatch, tmp_path, *, problem=None):
         "resolve_launch_endpoint",
         lambda *_args, **_kwargs: dict(_ENDPOINT),
     )
-    monkeypatch.setattr(
-        data_task,
-        "_push_agent_event",
-        lambda _state, message, **kwargs: events.append((message, kwargs)),
-    )
-    return events
+    monkeypatch.setattr(data_task, "prepare_agent_trace_dir", lambda _task_id: None)
+    monkeypatch.setattr(data_task, "_publish_agent_trace", lambda _state: None)
+
+    def update_state(state, message=None, **updates):
+        state.update(updates)
+        if message is not None:
+            state["message"] = message
+        snapshots.append(deepcopy(state))
+
+    monkeypatch.setattr(data_task, "_update_agent_state", update_state)
+    return snapshots
 
 
 def _invoke_task(*, point_count=2, standard_filename="official answer.py"):
@@ -142,7 +148,7 @@ def _accepted_validation(count):
 
 def test_testdata_task_exports_parses_validates_then_publishes(
         monkeypatch, tmp_path):
-    events = _patch_common(monkeypatch, tmp_path)
+    snapshots = _patch_common(monkeypatch, tmp_path)
     payload = b"host-owned-staged-zip"
     rows = [
         {"input": "0", "output": "0"},
@@ -208,12 +214,10 @@ def test_testdata_task_exports_parses_validates_then_publishes(
     assert harness_call["artifact_files"] == {
         _ZIP_RELATIVE_PATH: data_task._STAGED_ZIP_MAX_BYTES,
     }
-    assert events[-1][1] == {
-        "level": "success",
-        "status": "Completed",
-        "event_type": "staged_publish_completed",
-        "details": {"test_point_count": 2},
-    }
+    assert snapshots[-1]["status"] == "Completed"
+    assert snapshots[-1]["stage"] == "finished"
+    assert snapshots[-1]["test_point_count"] == 2
+    assert "events" not in snapshots[-1]
     assert list(tmp_path.iterdir()) == []
 
 
@@ -291,7 +295,7 @@ def test_testdata_task_does_not_publish_failed_standard_solution_validation(
 
 
 def test_testdata_task_reports_publish_cas_conflict(monkeypatch, tmp_path):
-    events = _patch_common(monkeypatch, tmp_path)
+    snapshots = _patch_common(monkeypatch, tmp_path)
     rows = [
         {"input": "0", "output": "0"},
         {"input": "9", "output": "81"},
@@ -328,8 +332,9 @@ def test_testdata_task_reports_publish_cas_conflict(monkeypatch, tmp_path):
         "before_state": _BEFORE_STATE,
         "testdata": rows,
     })]
-    assert events[-1][1]["event_type"] == "staged_publish_conflict"
-    assert events[-1][1]["status"] == "Failed"
+    assert snapshots[-1]["status"] == "Failed"
+    assert snapshots[-1]["stage"] == "finished"
+    assert "events" not in snapshots[-1]
 
 
 def test_testdata_task_harness_exception_never_parses_validates_or_publishes(
@@ -433,13 +438,18 @@ def test_testdata_task_only_allows_standard_test_point_grading_mode(
 
 
 def _patch_harness_solution_task(monkeypatch, *, submissions):
-    events = []
+    snapshots = []
     reads = iter(submissions)
-    monkeypatch.setattr(
-        solve_task,
-        "_push_agent_event",
-        lambda _state, message, **kwargs: events.append((message, kwargs)),
-    )
+    monkeypatch.setattr(solve_task, "prepare_agent_trace_dir", lambda _task_id: None)
+    monkeypatch.setattr(solve_task, "_publish_agent_trace", lambda _state: None)
+
+    def update_state(state, message=None, **updates):
+        state.update(updates)
+        if message is not None:
+            state["message"] = message
+        snapshots.append(deepcopy(state))
+
+    monkeypatch.setattr(solve_task, "_update_agent_state", update_state)
     monkeypatch.setattr(
         solve_task,
         "get_user_by_username",
@@ -455,7 +465,7 @@ def _patch_harness_solution_task(monkeypatch, *, submissions):
         "get_submissions_by_user_and_problem",
         lambda *_args: next(reads),
     )
-    return events
+    return snapshots
 
 
 def test_solution_task_uses_selected_endpoint(monkeypatch):
@@ -493,7 +503,7 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
 
 
 def test_solution_task_rejects_unavailable_selected_endpoint(monkeypatch):
-    events = _patch_harness_solution_task(monkeypatch, submissions=[])
+    snapshots = _patch_harness_solution_task(monkeypatch, submissions=[])
     runs = []
     monkeypatch.setattr(
         solve_task,
@@ -516,7 +526,9 @@ def test_solution_task_rejects_unavailable_selected_endpoint(monkeypatch):
     assert result["success"] is False
     assert "已删除" in result["message"]
     assert runs == []
-    assert events[-1][1]["status"] == "Failed"
+    assert snapshots[-1]["status"] == "Failed"
+    assert snapshots[-1]["stage"] == "finished"
+    assert "events" not in snapshots[-1]
 
 
 def test_solution_task_succeeds_only_for_relay_created_accepted_submission(

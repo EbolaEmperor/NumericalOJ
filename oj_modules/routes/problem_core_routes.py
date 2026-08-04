@@ -38,7 +38,10 @@ from oj_modules.classroom.dashboard import (
     select_visible_class,
     visible_classes_for_user_cached,
 )
-from oj_modules.problems.agent_runs import decorate_agent_run_summaries
+from oj_modules.problems.agent_runs import (
+    decorate_agent_run_summaries,
+    hydrate_agent_run_snapshot,
+)
 from oj_modules.problems.agent_launch import (
     AgentLaunchValidationError,
     harness_options,
@@ -169,7 +172,6 @@ def _build_agent_state_from_async_result(task_id):
         "latest_submission_id": None,
         "final_submission_id": None,
         "attempts": [],
-        "events": [],
         "updated_at": now,
         "celery_state": celery_state,
     }
@@ -221,11 +223,17 @@ def _overlay_agent_celery_terminal(task_id, state):
 def _get_agent_run_state(task_id):
     state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
-        return _overlay_agent_celery_terminal(task_id, state)
+        return hydrate_agent_run_snapshot(
+            _overlay_agent_celery_terminal(task_id, state),
+        )
     state = get_agent_run_by_task_id(task_id)
     if isinstance(state, dict):
-        return _overlay_agent_celery_terminal(task_id, state)
-    return _build_agent_state_from_async_result(task_id)
+        return hydrate_agent_run_snapshot(
+            _overlay_agent_celery_terminal(task_id, state),
+        )
+    return hydrate_agent_run_snapshot(
+        _build_agent_state_from_async_result(task_id),
+    )
 
 
 def _submission_limit_redirect(problem_id, submission_limit):
@@ -483,12 +491,6 @@ def admin_agent_solve_problem(problem_id):
         "latest_submission_id": None,
         "final_submission_id": None,
         "attempts": [],
-        "events": [{
-            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
-            "level": "info",
-            "message": "任务已创建，等待执行",
-            "event_type": "created",
-        }],
     }
     upsert_agent_run_snapshot(pending_state)
 
@@ -508,12 +510,6 @@ def admin_agent_solve_problem(problem_id):
         logger.exception('解题 Agent 任务入队失败')
         pending_state["status"] = "Failed"
         pending_state["message"] = "任务入队失败，请检查 Celery agent 队列"
-        pending_state["events"].append({
-            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
-            "level": "error",
-            "message": pending_state["message"],
-            "event_type": "enqueue_error",
-        })
         upsert_agent_run_snapshot(pending_state)
         return jsonify(success=False, message=pending_state["message"]), 500
 
@@ -616,16 +612,6 @@ def admin_agent_generate_testdata(problem_id):
         "latest_submission_id": None,
         "final_submission_id": None,
         "attempts": [],
-        "events": [{
-            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
-            "level": "info",
-            "message": "数据生成 Agent 任务已创建，等待执行",
-            "event_type": "created",
-            "details": {
-                "test_point_count": test_point_count,
-                "has_data_requirement": bool(data_requirement),
-            },
-        }],
     }
     upsert_agent_run_snapshot(pending_state)
 
@@ -649,12 +635,6 @@ def admin_agent_generate_testdata(problem_id):
         logger.exception('造数据 Agent 任务入队失败')
         pending_state["status"] = "Failed"
         pending_state["message"] = "任务入队失败，请检查 Celery agent 队列"
-        pending_state["events"].append({
-            "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
-            "level": "error",
-            "message": pending_state["message"],
-            "event_type": "enqueue_error",
-        })
         upsert_agent_run_snapshot(pending_state)
         return jsonify(success=False, message=pending_state["message"]), 500
 
@@ -666,19 +646,6 @@ def admin_agent_generate_testdata(problem_id):
     )
 
 
-@problem_core_bp.route('/admin/agent_run/<task_id>', methods=['GET'])
-def admin_agent_run(task_id):
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-    if user.get('is_admin') != 1:
-        flash('无权限访问该页面', 'danger')
-        return redirect(url_for('problem_core.problem_list'))
-    return redirect(
-        url_for('problem_core.admin_agent_tasks', task_id=task_id),
-    )
-
-
 @problem_core_bp.route('/admin/agent_run_status/<task_id>', methods=['GET'])
 def admin_agent_run_status(task_id):
     user = current_user()
@@ -687,15 +654,16 @@ def admin_agent_run_status(task_id):
     if user.get('is_admin') != 1:
         return jsonify(success=False, message='无权限'), 403
 
-    state = _get_agent_run_state(task_id) or {
-        "task_id": task_id,
-        "status": "Pending",
-        "message": "任务排队中",
-        "latest_submission_id": None,
-        "final_submission_id": None,
-        "attempts": [],
-        "events": [],
-    }
+    state = _get_agent_run_state(task_id)
+    if state is None:
+        state = hydrate_agent_run_snapshot({
+            "task_id": task_id,
+            "status": "Pending",
+            "message": "任务排队中",
+            "latest_submission_id": None,
+            "final_submission_id": None,
+            "attempts": [],
+        })
     return jsonify(success=True, state=state)
 
 
@@ -707,71 +675,92 @@ def admin_agent_run_stream(task_id):
     if user.get('is_admin') != 1:
         return jsonify({'error': 'Access denied'}), 403
 
-    initial_state = _get_agent_run_state(task_id) or {
+    fallback_state = {
         "task_id": task_id,
         "status": "Pending",
         "message": "任务排队中",
         "latest_submission_id": None,
         "final_submission_id": None,
         "attempts": [],
-        "events": [],
     }
 
     def _encode_sse(event_name, payload):
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+    def _snapshot_marker(snapshot):
+        trace = snapshot.get("execution_trace") or {}
+        messages = trace.get("trace_messages") or []
+        files = trace.get("trace_files") or []
+        last_message = messages[-1] if messages else {}
+        return (
+            snapshot.get("status"),
+            snapshot.get("message"),
+            snapshot.get("latest_submission_id"),
+            snapshot.get("updated_at"),
+            trace.get("trace_id"),
+            len(messages),
+            last_message.get("source"),
+            last_message.get("offset"),
+            last_message.get("event_index"),
+            tuple(
+                (item.get("path"), item.get("size"))
+                for item in files if isinstance(item, dict)
+            ),
+        )
+
     @stream_with_context
     def generate():
-        first_payload = initial_state
-        yield _encode_sse("status", first_payload)
-        if _is_agent_state_finished(first_payload):
-            yield _encode_sse("done", first_payload)
-            return
-
         start_ts = time.time()
         pubsub = (
             _subscribe_agent_run_events(task_id)
             if _subscribe_agent_run_events is not None
             else None
         )
-        if pubsub is None:
-            last_marker = (
-                first_payload.get("status"),
-                first_payload.get("message"),
-                first_payload.get("latest_submission_id"),
-                len(first_payload.get("events") or []),
-                first_payload.get("updated_at"),
-            )
-            while True:
-                snapshot = _get_agent_run_state(task_id) or first_payload
-                marker = (
-                    snapshot.get("status"),
-                    snapshot.get("message"),
-                    snapshot.get("latest_submission_id"),
-                    len(snapshot.get("events") or []),
-                    snapshot.get("updated_at"),
-                )
-                if marker != last_marker:
-                    yield _encode_sse("status", snapshot)
-                    last_marker = marker
-                if _is_agent_state_finished(snapshot):
-                    yield _encode_sse("done", snapshot)
-                    return
-                if time.time() - start_ts > 3600:
-                    yield _encode_sse("timeout", snapshot)
-                    return
-                time.sleep(1.0)
-
         try:
+            # 必须先订阅再重读快照，避免终态 publish 落在“初始读取 → 订阅”
+            # 的窗口内而永久丢失。即使已有 Pub/Sub，空闲时也定期回读，作为
+            # Redis 断线或单条消息丢失时的收敛保障。
+            first_payload = _get_agent_run_state(task_id) or (
+                hydrate_agent_run_snapshot(fallback_state)
+            )
+            yield _encode_sse("status", first_payload)
+            if _is_agent_state_finished(first_payload):
+                yield _encode_sse("done", first_payload)
+                return
+            last_marker = _snapshot_marker(first_payload)
+
+            if pubsub is None:
+                while True:
+                    snapshot = _get_agent_run_state(task_id) or first_payload
+                    current_marker = _snapshot_marker(snapshot)
+                    if current_marker != last_marker:
+                        yield _encode_sse("status", snapshot)
+                        last_marker = current_marker
+                    if _is_agent_state_finished(snapshot):
+                        yield _encode_sse("done", snapshot)
+                        return
+                    if time.time() - start_ts > 3600:
+                        yield _encode_sse("timeout", snapshot)
+                        return
+                    time.sleep(1.0)
+
             while True:
                 msg = pubsub.get_message(timeout=15.0)
                 now = time.time()
                 if now - start_ts > 3600:
-                    latest = _get_agent_run_state(task_id) or initial_state
+                    latest = _get_agent_run_state(task_id) or first_payload
                     yield _encode_sse("timeout", latest)
                     return
 
                 if not msg:
+                    snapshot = _get_agent_run_state(task_id) or first_payload
+                    current_marker = _snapshot_marker(snapshot)
+                    if current_marker != last_marker:
+                        yield _encode_sse("status", snapshot)
+                        last_marker = current_marker
+                    if _is_agent_state_finished(snapshot):
+                        yield _encode_sse("done", snapshot)
+                        return
                     yield ": keepalive\n\n"
                     continue
 
@@ -788,15 +777,18 @@ def admin_agent_run_stream(task_id):
                 if not isinstance(snapshot, dict):
                     continue
 
+                snapshot = hydrate_agent_run_snapshot(snapshot)
                 yield _encode_sse("status", snapshot)
+                last_marker = _snapshot_marker(snapshot)
                 if _is_agent_state_finished(snapshot):
                     yield _encode_sse("done", snapshot)
                     return
         finally:
-            try:
-                pubsub.close()
-            except Exception:
-                pass
+            if pubsub is not None:
+                try:
+                    pubsub.close()
+                except Exception:
+                    pass
 
     return Response(
         generate(),

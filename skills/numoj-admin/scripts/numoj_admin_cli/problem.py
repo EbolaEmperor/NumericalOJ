@@ -611,7 +611,7 @@ def problem_agent_run_status(args: argparse.Namespace) -> None:
     print_or_save_response(resp)
 
 
-def problem_agent_run_page(args: argparse.Namespace) -> None:
+def problem_agent_run(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request("GET", f"/admin/agent_run_status/{args.task_id}")
     print_or_save_response(resp, allow_redirect=False)
@@ -642,10 +642,24 @@ def necessary_agent_stream_event_payload(event: Any) -> Any:
         if key in event and event.get(key) not in (None, ""):
             necessary[key] = event[key]
 
-    for key in ("events", "logs", "submissions", "messages"):
+    for key in ("logs", "submissions", "messages"):
         value = event.get(key)
         if isinstance(value, list):
             necessary[f"{key}_count"] = len(value)
+
+    execution_trace = event.get("execution_trace")
+    if isinstance(execution_trace, dict):
+        trace_summary: Dict[str, Any] = {}
+        for key in ("trace_id", "status", "error_message"):
+            if execution_trace.get(key) not in (None, ""):
+                trace_summary[key] = execution_trace[key]
+        trace_messages = execution_trace.get("trace_messages")
+        trace_files = execution_trace.get("trace_files")
+        if isinstance(trace_messages, list):
+            trace_summary["trace_messages_count"] = len(trace_messages)
+        if isinstance(trace_files, list):
+            trace_summary["trace_files_count"] = len(trace_files)
+        necessary["execution_trace"] = trace_summary
 
     for key in ("result", "progress"):
         value = event.get(key)
@@ -897,7 +911,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.set_defaults(func=problem_agent_run_status)
     pa = add_cli_parser(ps, "agent-run", "Fetch JSON status for an agent task run.")
     pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
-    pa.set_defaults(func=problem_agent_run_page)
+    pa.set_defaults(func=problem_agent_run)
     pa = add_cli_parser(ps, "agent-run-stream", "Fetch recent stream lines for an agent task run.")
     pa.add_argument("task_id", help="Agent task ID returned by an agent command.")
     pa.add_argument("--max-lines", type=int, default=20, help="Maximum number of stream lines to print.")

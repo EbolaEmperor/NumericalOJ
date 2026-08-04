@@ -10,6 +10,7 @@ from oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
 )
+from oj_modules.problems.agent_runs import hydrate_agent_run_snapshot
 
 
 AGENT_SOLVE_TASK_NAME = "oj.agent.solve_problem"
@@ -105,12 +106,24 @@ def _format_local_time(ts=None):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts or time.time()))
 
 
-def _safe_json_copy(value, default=None):
-    fallback = {} if default is None else default
+def _publish_agent_snapshot(state):
+    """把磁盘上的规范 JSONL 实时投影进 Redis/SSE 快照。"""
+
+    if not isinstance(state, dict):
+        return
+    task_id = str(state.get("task_id") or "").strip()
+    if not task_id:
+        return
+    client = _ensure_agent_progress_redis()
+    if client is None:
+        return
+    snapshot = hydrate_agent_run_snapshot(state)
+    payload = json.dumps(snapshot, ensure_ascii=False)
     try:
-        return json.loads(json.dumps(value, ensure_ascii=False))
+        client.setex(_agent_progress_key(task_id), _AGENT_PROGRESS_TTL_SECONDS, payload)
+        client.publish(_agent_progress_channel(task_id), payload)
     except Exception:
-        return fallback
+        pass
 
 
 def _persist_agent_state(state):
@@ -136,53 +149,33 @@ def _persist_agent_state(state):
         current_best = 0
     state["best_score"] = max(best_score, current_best)
 
-    client = _ensure_agent_progress_redis()
     task_id = str(state.get("task_id") or "").strip()
     if not task_id:
         return
 
+    state.pop("events", None)
+    state.pop("execution_trace", None)
     state["updated_at"] = _format_local_time()
     upsert_agent_run_snapshot(state)
-
-    if client is None:
-        return
-    payload = json.dumps(state, ensure_ascii=False)
-    try:
-        client.setex(_agent_progress_key(task_id), _AGENT_PROGRESS_TTL_SECONDS, payload)
-        client.publish(_agent_progress_channel(task_id), payload)
-    except Exception:
-        pass
+    _publish_agent_snapshot(state)
 
 
-def _push_agent_event(
-    state,
-    event_message,
-    level="info",
-    event_type=None,
-    details=None,
-    **updates,
-):
+def _update_agent_state(state, message=None, **updates):
+    """更新业务状态；运行轨迹只来自 harness 的真实 JSONL。"""
+
     if not isinstance(state, dict):
         return
     for key, value in updates.items():
         state[key] = value
-
-    state["message"] = updates.get("message", event_message)
-    events = state.get("events") or []
-    event_item = {
-        "time": _format_local_time(),
-        "level": level,
-        "message": str(event_message or "").strip(),
-    }
-    if event_type:
-        event_item["event_type"] = str(event_type)
-    if details is not None:
-        event_item["details"] = _safe_json_copy(details, default={})
-    events.append(event_item)
-    if len(events) > 120:
-        events = events[-120:]
-    state["events"] = events
+    if message is not None:
+        state["message"] = str(message or "").strip()
     _persist_agent_state(state)
+
+
+def _publish_agent_trace(state):
+    """轨迹 tick 只发布 Redis/SSE，不以约 2 秒频率写数据库。"""
+
+    _publish_agent_snapshot(state)
 
 
 __all__ = [

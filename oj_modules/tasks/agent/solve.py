@@ -19,8 +19,10 @@ from oj_modules.tasks.agent.harness_runtime import run_agent_harness
 from oj_modules.tasks.agent.shared import (
     AGENT_SOLVE_TASK_NAME,
     _format_local_time,
-    _push_agent_event,
+    _publish_agent_trace,
+    _update_agent_state,
 )
+from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
 
 
 SOLUTION_AGENT_PROMPT = (
@@ -98,29 +100,31 @@ def register_agent_solve_problem_task(celery_app):
             "latest_submission_id": None,
             "final_submission_id": None,
             "attempts": [],
-            "events": [],
+            "stage": "starting",
+            "harness_status": "pending",
             "updated_at": _format_local_time(),
         }
-        _push_agent_event(state, "解题 Agent 任务已启动")
+        prepare_agent_trace_dir(task_id)
+        _update_agent_state(state)
 
         user = get_user_by_username(requested_by)
         if not user or int(user.get("is_admin") or 0) != 1:
             message = "无权限执行解题 Agent"
-            _push_agent_event(state, message, level="error", status="Failed")
+            _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
 
         problem = get_problem(problem_id)
         if not problem:
             message = "题目不存在"
-            _push_agent_event(state, message, level="error", status="Failed")
+            _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
         if int(problem.get("type") or 1) != 1:
             message = "仅支持编程题"
-            _push_agent_event(state, message, level="error", status="Failed")
+            _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
         if not str(session_cookie or "").strip():
             message = "Agent 任务身份已失效"
-            _push_agent_event(state, message, level="error", status="Failed")
+            _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
 
         try:
@@ -131,7 +135,7 @@ def register_agent_solve_problem_task(celery_app):
             )
         except Exception as exc:
             message = str(exc) or "所选 LLM 节点不可用"
-            _push_agent_event(state, message, level="error", status="Failed")
+            _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
 
         title = str(problem.get("title") or f"题目 {problem_id}")
@@ -141,10 +145,11 @@ def register_agent_solve_problem_task(celery_app):
             "endpoint_id": int(endpoint["id"]),
             "endpoint_model": str(endpoint.get("model") or ""),
         })
-        _push_agent_event(
+        _update_agent_state(
             state,
             f"正在用 {harness} / {endpoint.get('model')} 解题",
-            event_type="harness_started",
+            stage="running_harness",
+            harness_status="running",
         )
 
         try:
@@ -158,10 +163,18 @@ def register_agent_solve_problem_task(celery_app):
                 session_cookie=session_cookie,
                 session_cookie_name=session_cookie_name,
                 prompt=SOLUTION_AGENT_PROMPT.format(problem_title=title),
+                trace_callback=lambda: _publish_agent_trace(state),
+                reset_trace=False,
             )
         except Exception as exc:
             message = f"解题 harness 启动失败：{str(exc)[:800]}"
-            _push_agent_event(state, message, level="error", status="Failed")
+            _update_agent_state(
+                state,
+                message,
+                status="Failed",
+                stage="finished",
+                harness_status="error",
+            )
             return {"success": False, "message": message, "task_id": task_id}
 
         # 只认身份代理亲自转发创建的 submission，避免并发的人工提交被误判为
@@ -183,12 +196,16 @@ def register_agent_solve_problem_task(celery_app):
         if accepted is not None:
             final_id = int(accepted.get("id") or 0)
             message = "解题 Agent 已提交并通过"
-            _push_agent_event(
+            _update_agent_state(
                 state,
                 message,
-                level="success",
                 status="Completed",
-                event_type="accepted",
+                stage="finished",
+                harness_status=(
+                    "error"
+                    if run_result.timed_out or run_result.returncode != 0
+                    else "completed"
+                ),
                 final_submission_id=final_id,
             )
             return {
@@ -208,11 +225,16 @@ def register_agent_solve_problem_task(celery_app):
                 message += f"：{detail}"
         else:
             message = "解题 harness 已结束，但没有产生通过的提交"
-        _push_agent_event(
+        _update_agent_state(
             state,
             message,
-            level="warning",
             status="Failed",
+            stage="finished",
+            harness_status=(
+                "timeout"
+                if run_result.timed_out
+                else "error" if run_result.returncode != 0 else "completed"
+            ),
             final_submission_id=latest_id,
         )
         return {
