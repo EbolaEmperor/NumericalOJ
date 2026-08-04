@@ -4,9 +4,12 @@
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/content-v2.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/agents/task-list.css') }}">
 {% endblock %}
 
 {% block content %}
+{% from 'agents/task_card.html' import render_agent_task_card %}
 <header class="agent-task-page-head mb-3">
   <div>
     <div class="agent-task-page-kicker">EXECUTION DESK</div>
@@ -15,102 +18,50 @@
   </div>
 </header>
 
-<div class="card agent-task-table-card">
-  <div class="table-responsive">
-    <table class="table table-hover mb-0 align-middle text-center">
-      <thead class="table-light">
-        <tr>
-          <th class="text-center"><i class="fas fa-file-alt me-2 text-muted"></i>题目名称</th>
-          <th class="text-center"><i class="fas fa-signal me-2 text-muted"></i>运行结果</th>
-          <th class="text-center"><i class="fas fa-trophy me-2 text-muted"></i>最高得分</th>
-          <th class="text-center"><i class="fas fa-eye me-2 text-muted"></i>详情</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% if agent_runs and agent_runs|length > 0 %}
-          {% for run in agent_runs %}
-            {% set st = (run.display_status or '')|lower %}
-            <tr>
-              <td>
-                <div class="fw-semibold">{{ run.display_problem_title }}</div>
-              </td>
-              <td>
-                {% if st == 'completed' %}
-                  <span class="badge bg-success">Accepted</span>
-                {% elif st == 'failed' %}
-                  <span class="badge bg-danger">Unaccepted</span>
-                {% elif st == 'running' %}
-                  <span class="badge bg-primary">Running</span>
-                {% else %}
-                  <span class="badge bg-secondary">{{ run.display_status }}</span>
-                {% endif %}
-              </td>
-              <td>{{ run.display_best_score }}</td>
-              <td>
-                <a href="{{ url_for('problem_core.admin_agent_tasks', page=current_page, task_id=run.task_id) }}"
-                   class="btn btn-sm btn-outline-secondary agent-task-detail-btn"
-                   data-agent-task-detail
-                   data-task-id="{{ run.task_id }}"
-                   data-problem-title="{{ run.display_problem_title }}"
-                   aria-haspopup="dialog"
-                   aria-controls="agentTaskDetailModal">
-                  <i class="fas fa-wave-square me-1" aria-hidden="true"></i>详情
-                </a>
-              </td>
-            </tr>
-          {% endfor %}
-        {% else %}
-          <tr>
-            <td colspan="4" class="text-center text-muted py-4">暂无 Agent 任务记录</td>
-          </tr>
-        {% endif %}
-      </tbody>
-    </table>
+<section class="ranking-v2-detail agent-task-records" aria-label="Agent 任务列表">
+  <div class="aj-subs" data-agent-task-list>
+    {% if agent_runs and agent_runs|length > 0 %}
+      {% for run in agent_runs %}
+        {{ render_agent_task_card(run, current_page) }}
+      {% endfor %}
+    {% else %}
+      <div class="aj-subs-empty">
+        <i class="fas fa-inbox" aria-hidden="true"></i>
+        <span>暂无 Agent 任务记录</span>
+      </div>
+    {% endif %}
   </div>
-</div>
 
-{% if total_pages > 1 %}
-<nav class="mt-3">
-  <ul class="pagination justify-content-center mb-0">
-    <li class="page-item {% if current_page <= 1 %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=current_page-1) }}">上一页</a>
-    </li>
-    {% for p in page_numbers %}
-      <li class="page-item {% if p == current_page %}active{% endif %}">
-        <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=p) }}">{{ p }}</a>
-      </li>
-    {% endfor %}
-    <li class="page-item {% if current_page >= total_pages %}disabled{% endif %}">
-      <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=current_page+1) }}">下一页</a>
-    </li>
-  </ul>
-</nav>
-{% endif %}
+  {% if total_pages > 1 %}
+  <nav class="ranking-v2-pagination submissions-pagination" aria-label="分页">
+    <ul class="pagination justify-content-center mb-0">
+      {% if current_page > 1 %}
+        <li class="page-item">
+          <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=current_page-1) }}" aria-label="上一页">
+            <i class="fas fa-arrow-left" aria-hidden="true"></i><span>上一页</span>
+          </a>
+        </li>
+      {% endif %}
+      {% for p in page_numbers %}
+        <li class="page-item {% if p == current_page %}active{% endif %}">
+          <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=p) }}">{{ p }}</a>
+        </li>
+      {% endfor %}
+      {% if current_page < total_pages %}
+        <li class="page-item">
+          <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=current_page+1) }}" aria-label="下一页">
+            <span>下一页</span><i class="fas fa-arrow-right" aria-hidden="true"></i>
+          </a>
+        </li>
+      {% endif %}
+    </ul>
+  </nav>
+  {% endif %}
+</section>
 
 {% include 'agents/run_detail_modal.html' %}
+{% endblock %}
 
-<style>
-  .agent-task-page-head {
-    display: flex;
-    align-items: end;
-    justify-content: space-between;
-    padding: .25rem 0 .35rem;
-  }
-  .agent-task-page-kicker {
-    margin-bottom: .3rem;
-    color: #8a7048;
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-    font-size: .7rem;
-    font-weight: 700;
-    letter-spacing: .14em;
-  }
-  .agent-task-table-card {
-    overflow: hidden;
-    border-color: #e4e1da;
-    box-shadow: 0 12px 32px rgba(41, 37, 31, .045);
-  }
-  .agent-task-detail-btn {
-    min-width: 5.2rem;
-  }
-</style>
+{% block scripts %}
+<script src="{{ url_for('static', filename='app/agents/task-list.js') }}"></script>
 {% endblock %}

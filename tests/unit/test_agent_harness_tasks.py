@@ -1,5 +1,6 @@
 from copy import deepcopy
 from pathlib import Path
+from string import Formatter
 
 import pytest
 
@@ -43,6 +44,18 @@ _ENDPOINT = {
 }
 _BEFORE_STATE = {"testdata": "old-testdata", "max_score": 1}
 _ZIP_RELATIVE_PATH = "agent-output/testdata.zip"
+
+
+def test_solution_prompt_template_requires_authoritative_problem_identity():
+    fields = {
+        field_name
+        for _, field_name, _, _ in Formatter().parse(
+            solve_task.SOLUTION_AGENT_PROMPT,
+        )
+        if field_name
+    }
+
+    assert {"problem_id", "problem_title"} <= fields
 
 
 @pytest.mark.parametrize(
@@ -383,7 +396,15 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
     _patch_harness_solution_task(monkeypatch, submissions=[[]])
     resolutions = []
     runs = []
+    prompt_requests = []
     endpoint = {**_ENDPOINT, "id": 31, "model": "selected-model"}
+    monkeypatch.setattr(
+        solve_task,
+        "build_solution_agent_prompt",
+        lambda **kwargs: (
+            prompt_requests.append(kwargs) or "rendered-solution-prompt"
+        ),
+    )
     monkeypatch.setattr(
         solve_task,
         "resolve_launch_endpoint",
@@ -409,8 +430,14 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
     assert result["success"] is False
     assert resolutions == [("codex", 31, {"include_secret": True})]
     assert runs[0]["harness"] == "codex"
+    assert runs[0]["problem_id"] == 5
     assert runs[0]["session_cookie"] == "session-cookie"
     assert runs[0]["session_cookie_name"] == "numoj_session"
+    assert runs[0]["prompt"] == "rendered-solution-prompt"
+    assert prompt_requests == [{
+        "problem_id": 5,
+        "problem_title": "快照题",
+    }]
 
 
 def test_solution_task_rejects_unavailable_selected_endpoint(monkeypatch):
