@@ -78,6 +78,9 @@ _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
 _get_agent_run_snapshot = None
 _subscribe_agent_run_events = None
+_terminate_agent_run = None
+
+
 def _parse_agent_test_point_count(value):
     if type(value) is int:
         count = value
@@ -130,8 +133,13 @@ def init_problem_core_module(
     agent_generate_testdata_task=None,
     get_agent_run_snapshot=None,
     subscribe_agent_run_events=None,
+    terminate_agent_run=None,
 ):
-    global _evaluate_submission_task, _promptly_generate_submission_task, _transcribe_written_homework_task, _agent_solve_problem_task, _agent_generate_testdata_task, _get_agent_run_snapshot, _subscribe_agent_run_events
+    global _evaluate_submission_task, _promptly_generate_submission_task
+    global _transcribe_written_homework_task
+    global _agent_solve_problem_task, _agent_generate_testdata_task
+    global _get_agent_run_snapshot, _subscribe_agent_run_events
+    global _terminate_agent_run
     _evaluate_submission_task = evaluate_submission_task
     _promptly_generate_submission_task = promptly_generate_submission_task
     _transcribe_written_homework_task = transcribe_written_homework_task
@@ -139,6 +147,7 @@ def init_problem_core_module(
     _agent_generate_testdata_task = agent_generate_testdata_task
     _get_agent_run_snapshot = get_agent_run_snapshot
     _subscribe_agent_run_events = subscribe_agent_run_events
+    _terminate_agent_run = terminate_agent_run
 
 
 def _is_agent_state_finished(state):
@@ -216,6 +225,18 @@ def _overlay_agent_celery_terminal(task_id, state):
 def _get_agent_run_state(task_id):
     state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
+        if not _is_agent_state_finished(state):
+            try:
+                persisted = get_agent_run_by_task_id(task_id)
+            except Exception:
+                persisted = None
+                logger.warning(
+                    '读取 Agent 任务持久终止状态失败',
+                    extra={'task_id': task_id},
+                    exc_info=True,
+                )
+            if _is_agent_state_finished(persisted):
+                state = {**state, **persisted}
         return hydrate_agent_run_snapshot(
             _overlay_agent_celery_terminal(task_id, state),
         )
@@ -646,6 +667,51 @@ def admin_agent_run_status(task_id):
     return jsonify(success=True, state=state)
 
 
+@problem_core_bp.route('/admin/agent_run_cancel/<task_id>', methods=['POST'])
+def admin_agent_run_cancel(task_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if user.get('is_admin') != 1:
+        return jsonify(success=False, message='无权限'), 403
+    if _terminate_agent_run is None:
+        return jsonify(success=False, message='Agent 终止操作未初始化'), 500
+
+    try:
+        result = _terminate_agent_run(task_id)
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        logger.exception('终止 Agent 任务失败', extra={'task_id': task_id})
+        return jsonify(success=False, message='终止 Agent 任务失败'), 500
+
+    if not result.get('exists'):
+        return jsonify(success=False, message='Agent 任务不存在'), 404
+
+    state = result.get('state')
+    if not result.get('canceled'):
+        return jsonify(
+            success=False,
+            message='Agent 任务已经结束，无法终止',
+            state=state,
+        ), 409
+
+    errors = [str(item) for item in result.get('errors') or [] if str(item)]
+    if errors:
+        return jsonify(
+            success=False,
+            message='任务已标记为终止，但运行时清理失败',
+            state=state,
+            errors=errors,
+        ), 500
+
+    return jsonify(
+        success=True,
+        message=('任务已终止' if result.get('changed') else '任务已经终止'),
+        state=state,
+    )
+
+
 @problem_core_bp.route('/admin/agent_run_stream/<task_id>', methods=['GET'])
 def admin_agent_run_stream(task_id):
     user = current_user()
@@ -694,7 +760,6 @@ def admin_agent_run_stream(task_id):
 
     @stream_with_context
     def generate():
-        start_ts = time.time()
         pubsub = (
             _subscribe_agent_run_events(task_id)
             if _subscribe_agent_run_events is not None
@@ -723,19 +788,10 @@ def admin_agent_run_stream(task_id):
                     if _is_agent_state_finished(snapshot):
                         yield _encode_sse("done", snapshot)
                         return
-                    if time.time() - start_ts > 3600:
-                        yield _encode_sse("timeout", snapshot)
-                        return
                     time.sleep(1.0)
 
             while True:
                 msg = pubsub.get_message(timeout=15.0)
-                now = time.time()
-                if now - start_ts > 3600:
-                    latest = _get_agent_run_state(task_id) or first_payload
-                    yield _encode_sse("timeout", latest)
-                    return
-
                 if not msg:
                     snapshot = _get_agent_run_state(task_id) or first_payload
                     current_marker = _snapshot_marker(snapshot)

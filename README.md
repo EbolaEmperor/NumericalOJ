@@ -167,7 +167,7 @@ supervisord -c deploy/supervisor/local-dev.conf
 ```bash
 python oj.py
 celery -A oj.celery worker -Q celery
-celery -A oj.celery worker -Q agent -c 1
+celery -A oj.celery worker -Q agent -c 1 --prefetch-multiplier=1
 celery -A oj.celery worker -Q judge -c 2
 ```
 

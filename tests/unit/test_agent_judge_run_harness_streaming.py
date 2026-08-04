@@ -43,6 +43,33 @@ def _set_endpoint(
     monkeypatch.setenv("AJ_ENDPOINT_MODEL", model)
 
 
+def _write_pi_terminal_message(session_dir, session_id, **terminal_fields):
+    session_path = session_dir / "--workspace--" / f"native_{session_id}.jsonl"
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    if not session_path.exists():
+        session_path.write_text(
+            json.dumps({
+                "type": "session",
+                "version": 3,
+                "id": session_id,
+                "cwd": "/workspace",
+            }) + "\n",
+            encoding="utf-8",
+        )
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "state"}],
+        **terminal_fields,
+    }
+    with session_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "type": "message",
+            "id": f"assistant-{session_path.stat().st_size}",
+            "message": message,
+        }) + "\n")
+    return session_path
+
+
 def _set_anthropic_endpoint(monkeypatch, module, model="generic-model"):
     _set_endpoint(monkeypatch, protocol="anthropic", model=model)
 
@@ -57,6 +84,36 @@ def _set_anthropic_endpoint(monkeypatch, module, model="generic-model"):
             pass
 
     monkeypatch.setattr(module, "_ClaudeEndpointRelay", FakeRelay)
+
+
+@pytest.mark.parametrize(
+    ("task_scope", "expected_kwargs"),
+    [
+        ("problem_agent", {}),
+        ("", {"timeout": 300}),
+    ],
+)
+def test_endpoint_relay_only_removes_request_timeout_for_ordinary_agent(
+    monkeypatch,
+    task_scope,
+    expected_kwargs,
+):
+    module = _load_run_harness()
+    calls = []
+
+    class Opener:
+        def open(self, request, **kwargs):
+            calls.append((request, kwargs))
+            return "response"
+
+    if task_scope:
+        monkeypatch.setenv("AJ_TASK_SCOPE", task_scope)
+    else:
+        monkeypatch.delenv("AJ_TASK_SCOPE", raising=False)
+    request = object()
+
+    assert module._open_endpoint_request(Opener(), request) == "response"
+    assert calls == [(request, expected_kwargs)]
 
 
 def test_run_relays_first_line_before_child_exits(monkeypatch, tmp_path):
@@ -1041,6 +1098,201 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
     }
     assert recorded[0][0] == "pi"
     assert recorded[0][2] == resume_id
+
+
+@pytest.mark.parametrize(
+    "terminal_fields",
+    [
+        {"stopReason": "length"},
+        {"stopReason": "error", "rawStopReason": "max_tokens"},
+    ],
+)
+def test_pi_ordinary_agent_auto_resumes_output_limit_in_same_native_session(
+    monkeypatch,
+    tmp_path,
+    terminal_fields,
+):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    session_dir = config_dir / "sessions"
+    session_id = "44444444-4444-4444-4444-444444444444"
+    calls = []
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
+    monkeypatch.delenv("AJ_PHASE", raising=False)
+    monkeypatch.delenv("AJ_AUDIT_READ_ONLY", raising=False)
+    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
+    monkeypatch.setenv("AJ_TASK_SCOPE", "problem_agent")
+    _set_endpoint(monkeypatch)
+
+    def run(args, **_kwargs):
+        calls.append(list(args))
+        if len(calls) == 1:
+            _write_pi_terminal_message(
+                session_dir,
+                session_id,
+                **terminal_fields,
+            )
+        else:
+            _write_pi_terminal_message(
+                session_dir,
+                session_id,
+                stopReason="stop",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(
+        module,
+        "_record_session",
+        lambda *_args, **_kwargs: session_id,
+    )
+
+    assert module._run_pi("solve") == 0
+
+    assert len(calls) == 2
+    assert "--session" not in calls[0]
+    assert calls[1][calls[1].index("--session") + 1] == session_id
+    assert calls[1][calls[1].index("--thinking") + 1] == "off"
+
+
+def test_pi_output_limit_continuation_fails_when_native_session_does_not_advance(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    session_dir = config_dir / "sessions"
+    session_id = "44444444-4444-4444-4444-444444444444"
+    calls = []
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
+    monkeypatch.delenv("AJ_PHASE", raising=False)
+    monkeypatch.delenv("AJ_AUDIT_READ_ONLY", raising=False)
+    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
+    monkeypatch.setenv("AJ_TASK_SCOPE", "problem_agent")
+    _set_endpoint(monkeypatch)
+
+    def run(args, **_kwargs):
+        calls.append(list(args))
+        if len(calls) == 1:
+            _write_pi_terminal_message(
+                session_dir,
+                session_id,
+                stopReason="length",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(
+        module,
+        "_record_session",
+        lambda *_args, **_kwargs: session_id,
+    )
+
+    assert module._run_pi("solve") == 2
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("stop_reason", "raw_stop_reason"),
+    [("error", "upstream_error"), ("stop", "stop")],
+)
+def test_pi_ordinary_agent_does_not_resume_normal_or_error(
+    monkeypatch,
+    tmp_path,
+    stop_reason,
+    raw_stop_reason,
+):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    session_dir = config_dir / "sessions"
+    session_id = "44444444-4444-4444-4444-444444444444"
+    calls = []
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
+    monkeypatch.delenv("AJ_PHASE", raising=False)
+    monkeypatch.delenv("AJ_AUDIT_READ_ONLY", raising=False)
+    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
+    monkeypatch.setenv("AJ_TASK_SCOPE", "problem_agent")
+    _set_endpoint(monkeypatch)
+    _write_pi_terminal_message(
+        session_dir,
+        session_id,
+        stopReason=stop_reason,
+        rawStopReason=raw_stop_reason,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda args, **_kwargs: (
+            calls.append(list(args))
+            or SimpleNamespace(returncode=0, stdout="", stderr="")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_record_session",
+        lambda *_args, **_kwargs: session_id,
+    )
+
+    assert module._run_pi("solve") == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("phase", "audit_read_only", "problem_agent_scope"),
+    [
+        ("reverse_solve", False, True),
+        ("", True, True),
+        ("", False, False),
+    ],
+)
+def test_pi_nonordinary_or_unscoped_runs_do_not_auto_resume_output_limit(
+    monkeypatch,
+    tmp_path,
+    phase,
+    audit_read_only,
+    problem_agent_scope,
+):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    session_dir = config_dir / "sessions"
+    session_id = "44444444-4444-4444-4444-444444444444"
+    calls = []
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
+    if phase:
+        monkeypatch.setenv("AJ_PHASE", phase)
+    else:
+        monkeypatch.delenv("AJ_PHASE", raising=False)
+    if audit_read_only:
+        monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "1")
+    else:
+        monkeypatch.delenv("AJ_AUDIT_READ_ONLY", raising=False)
+    if problem_agent_scope:
+        monkeypatch.setenv("AJ_TASK_SCOPE", "problem_agent")
+    else:
+        monkeypatch.delenv("AJ_TASK_SCOPE", raising=False)
+    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
+    _set_endpoint(monkeypatch)
+    _write_pi_terminal_message(session_dir, session_id, stopReason="length")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda args, **_kwargs: (
+            calls.append(list(args))
+            or SimpleNamespace(returncode=0, stdout="", stderr="")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_record_session",
+        lambda *_args, **_kwargs: session_id,
+    )
+
+    assert module._run_pi("solve") == 0
+    assert len(calls) == 1
 
 
 def test_pi_explicitly_loads_only_the_trusted_web_search_mcp_extension(

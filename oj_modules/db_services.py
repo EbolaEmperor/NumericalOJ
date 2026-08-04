@@ -441,15 +441,51 @@ def upsert_agent_run_snapshot(state):
                     %s
                 )
                 ON DUPLICATE KEY UPDATE
-                    problem_id=VALUES(problem_id),
-                    problem_title=VALUES(problem_title),
-                    requested_by=VALUES(requested_by),
-                    status=VALUES(status),
-                    message=VALUES(message),
-                    best_score=VALUES(best_score),
-                    final_submission_id=VALUES(final_submission_id),
-                    latest_submission_id=VALUES(latest_submission_id),
-                    attempts_json=VALUES(attempts_json)
+                    problem_id=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        problem_id,
+                        VALUES(problem_id)
+                    ),
+                    problem_title=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        problem_title,
+                        VALUES(problem_title)
+                    ),
+                    requested_by=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        requested_by,
+                        VALUES(requested_by)
+                    ),
+                    status=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        status,
+                        VALUES(status)
+                    ),
+                    message=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        message,
+                        VALUES(message)
+                    ),
+                    best_score=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        best_score,
+                        VALUES(best_score)
+                    ),
+                    final_submission_id=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        final_submission_id,
+                        VALUES(final_submission_id)
+                    ),
+                    latest_submission_id=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        latest_submission_id,
+                        VALUES(latest_submission_id)
+                    ),
+                    attempts_json=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        attempts_json,
+                        VALUES(attempts_json)
+                    )
                 """,
                 (
                     task_id,
@@ -464,9 +500,101 @@ def upsert_agent_run_snapshot(state):
                     _to_json_text(attempts, []),
                 ),
             )
+            cursor.execute(
+                "SELECT status, message FROM agent_task_runs WHERE task_id=%s LIMIT 1",
+                (task_id,),
+            )
+            persisted = cursor.fetchone() or {}
+        conn.commit()
+        return {
+            "status": persisted.get("status"),
+            "message": persisted.get("message"),
+        }
+    finally:
+        conn.close()
+
+
+def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
+    """原子终止 Pending/Running 任务，并返回 ``(当前快照, 是否新终止)``。"""
+
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return None, False
+
+    ensure_agent_runs_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE agent_task_runs
+                SET status='Canceled', message=%s
+                WHERE task_id=%s
+                  AND LOWER(status) IN ('pending', 'running')
+                """,
+                (str(message or "任务已由管理员终止")[:1000], normalized_task_id),
+            )
+            changed = cursor.rowcount > 0
+            cursor.execute(
+                """
+                SELECT task_id, problem_id, problem_title, requested_by, status,
+                       message, best_score, final_submission_id,
+                       latest_submission_id, attempts_json, created_at, updated_at
+                FROM agent_task_runs
+                WHERE task_id=%s
+                LIMIT 1
+                """,
+                (normalized_task_id,),
+            )
+            row = cursor.fetchone()
         conn.commit()
     finally:
         conn.close()
+
+    return (_agent_run_from_row(row) if row else None), changed
+
+
+def is_agent_run_canceled(task_id):
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return False
+    ensure_agent_runs_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1 AS canceled
+                FROM agent_task_runs
+                WHERE task_id=%s
+                  AND LOWER(status) IN ('canceled', 'cancelled')
+                LIMIT 1
+                """,
+                (normalized_task_id,),
+            )
+            return cursor.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _agent_run_from_row(row):
+    if not row:
+        return None
+    attempts = _parse_json_text(row.get("attempts_json"), [])
+    return {
+        "task_id": row.get("task_id"),
+        "problem_id": row.get("problem_id"),
+        "problem_title": row.get("problem_title"),
+        "requested_by": row.get("requested_by"),
+        "status": row.get("status"),
+        "message": row.get("message"),
+        "best_score": _safe_int(row.get("best_score"), 0),
+        "final_submission_id": row.get("final_submission_id"),
+        "latest_submission_id": row.get("latest_submission_id"),
+        "attempts": attempts if isinstance(attempts, list) else [],
+        "created_at": _format_datetime_value(row.get("created_at")),
+        "updated_at": _format_datetime_value(row.get("updated_at")),
+    }
 
 
 def get_agent_run_by_task_id(task_id):
@@ -491,24 +619,7 @@ def get_agent_run_by_task_id(task_id):
     finally:
         conn.close()
 
-    if not row:
-        return None
-
-    attempts = _parse_json_text(row.get("attempts_json"), [])
-    return {
-        "task_id": row.get("task_id"),
-        "problem_id": row.get("problem_id"),
-        "problem_title": row.get("problem_title"),
-        "requested_by": row.get("requested_by"),
-        "status": row.get("status"),
-        "message": row.get("message"),
-        "best_score": _safe_int(row.get("best_score"), 0),
-        "final_submission_id": row.get("final_submission_id"),
-        "latest_submission_id": row.get("latest_submission_id"),
-        "attempts": attempts if isinstance(attempts, list) else [],
-        "created_at": _format_datetime_value(row.get("created_at")),
-        "updated_at": _format_datetime_value(row.get("updated_at")),
-    }
+    return _agent_run_from_row(row)
 
 
 def get_agent_runs_paginated(page=1, per_page=20):

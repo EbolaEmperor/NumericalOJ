@@ -17,6 +17,37 @@ class _FakeCelery:
         return lambda function: function
 
 
+@pytest.mark.parametrize(
+    ("register", "task_name"),
+    [
+        (
+            solve_task.register_agent_solve_problem_task,
+            solve_task.AGENT_SOLVE_TASK_NAME,
+        ),
+        (
+            data_task.register_agent_generate_testdata_task,
+            data_task.AGENT_GENERATE_TESTDATA_TASK_NAME,
+        ),
+    ],
+)
+def test_ordinary_agent_celery_tasks_have_no_total_runtime_limit(
+    register,
+    task_name,
+):
+    options = []
+
+    class RecordingCelery:
+        tasks = {}
+
+        def task(self, **kwargs):
+            options.append(kwargs)
+            return lambda function: function
+
+    register(RecordingCelery())
+
+    assert options == [{"bind": True, "name": task_name}]
+
+
 class _FakeTaskSelf:
     class request:
         id = "testdata-harness-task"
@@ -85,6 +116,12 @@ def test_standard_solution_filename_accepts_basename_and_has_language_fallback()
 
 def _patch_common(monkeypatch, tmp_path, *, problem=None):
     snapshots = []
+    monkeypatch.setattr(
+        data_task,
+        "existing_agent_terminal_result",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(data_task, "agent_run_is_canceled", lambda _task_id: False)
     monkeypatch.setattr(data_task, "AGENT_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setattr(
         data_task,
@@ -146,6 +183,65 @@ def _successful_harness_result(payload=b"staged-zip"):
     )
 
 
+def test_testdata_redelivery_exits_before_creating_workspace(monkeypatch):
+    monkeypatch.setattr(
+        data_task,
+        "existing_agent_terminal_result",
+        lambda task_id: {
+            "success": False,
+            "canceled": True,
+            "message": "任务已由管理员终止",
+            "task_id": task_id,
+        },
+    )
+    monkeypatch.setattr(
+        data_task,
+        "prepare_agent_trace_dir",
+        lambda _task_id: pytest.fail("已终止任务不得重新创建工作目录"),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert result["canceled"] is True
+
+
+def test_testdata_cancellation_after_parse_prevents_publish(monkeypatch, tmp_path):
+    _patch_common(monkeypatch, tmp_path)
+    cancellation_checks = iter([False, False, True])
+    monkeypatch.setattr(
+        data_task,
+        "agent_run_is_canceled",
+        lambda _task_id: next(cancellation_checks),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **_kwargs: _successful_harness_result(),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "parse_testdata_zip",
+        lambda *_args, **_kwargs: {
+            "count": 2,
+            "testdata": [
+                {"input": "0", "output": "0"},
+                {"input": "1", "output": "1"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("终止后不得发布测试数据"),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert result["canceled"] is True
+
+
 def test_testdata_task_exports_parses_then_publishes(
         monkeypatch, tmp_path):
     snapshots = _patch_common(monkeypatch, tmp_path)
@@ -174,11 +270,22 @@ def test_testdata_task_exports_parses_then_publishes(
         assert Path(extract_dir).parent == archive.parent
         return {"count": 2, "testdata": rows}
 
-    def fake_publish(problem_id, *, before_state, testdata):
+    def fake_publish(
+        problem_id,
+        *,
+        before_state,
+        testdata,
+        agent_task_id,
+        agent_completion_message,
+    ):
         calls.append("publish")
         assert problem_id == 5
         assert before_state == _BEFORE_STATE
         assert testdata is rows
+        assert agent_task_id == "testdata-harness-task"
+        assert agent_completion_message == (
+            "测试数据格式检查通过并已发布，共 2 个测试点"
+        )
         return True
 
     monkeypatch.setattr(data_task, "parse_testdata_zip", fake_parse)
@@ -203,6 +310,7 @@ def test_testdata_task_exports_parses_then_publishes(
         "task-input/problem_interactor.py": _PROBLEM["test_code"],
     }
     assert harness_call["artifact_files"] == (_ZIP_RELATIVE_PATH,)
+    assert callable(harness_call["cancel_check"])
     assert snapshots[-1]["status"] == "Completed"
     assert snapshots[-1]["stage"] == "finished"
     assert snapshots[-1]["test_point_count"] == 2
@@ -270,6 +378,10 @@ def test_testdata_task_reports_publish_cas_conflict(monkeypatch, tmp_path):
     assert publish_calls == [(5, {
         "before_state": _BEFORE_STATE,
         "testdata": rows,
+        "agent_task_id": "testdata-harness-task",
+        "agent_completion_message": (
+            "测试数据格式检查通过并已发布，共 2 个测试点"
+        ),
     })]
     assert snapshots[-1]["status"] == "Failed"
     assert snapshots[-1]["stage"] == "finished"
@@ -364,6 +476,12 @@ def test_testdata_task_only_allows_standard_test_point_grading_mode(
 def _patch_harness_solution_task(monkeypatch, *, submissions):
     snapshots = []
     reads = iter(submissions)
+    monkeypatch.setattr(
+        solve_task,
+        "existing_agent_terminal_result",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(solve_task, "agent_run_is_canceled", lambda _task_id: False)
     monkeypatch.setattr(solve_task, "prepare_agent_trace_dir", lambda _task_id: None)
     monkeypatch.setattr(solve_task, "_publish_agent_trace", lambda _state: None)
 
@@ -390,6 +508,32 @@ def _patch_harness_solution_task(monkeypatch, *, submissions):
         lambda *_args: next(reads),
     )
     return snapshots
+
+
+def test_solution_redelivery_exits_before_creating_workspace(monkeypatch):
+    monkeypatch.setattr(
+        solve_task,
+        "existing_agent_terminal_result",
+        lambda task_id: {
+            "success": False,
+            "canceled": True,
+            "message": "任务已由管理员终止",
+            "task_id": task_id,
+        },
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "prepare_agent_trace_dir",
+        lambda _task_id: pytest.fail("已终止任务不得重新创建工作目录"),
+    )
+    task = solve_task.register_agent_solve_problem_task(_FakeCelery())
+
+    result = task(
+        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+    )
+
+    assert result["success"] is False
+    assert result["canceled"] is True
 
 
 def test_solution_task_uses_selected_endpoint(monkeypatch):
@@ -433,6 +577,7 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
     assert runs[0]["problem_id"] == 5
     assert runs[0]["session_cookie"] == "session-cookie"
     assert runs[0]["session_cookie_name"] == "numoj_session"
+    assert callable(runs[0]["cancel_check"])
     assert runs[0]["prompt"] == "rendered-solution-prompt"
     assert prompt_requests == [{
         "problem_id": 5,

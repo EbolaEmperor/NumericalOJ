@@ -6,6 +6,7 @@ from importlib import import_module
 __all__ = [
     "AGENT_GENERATE_TESTDATA_TASK_NAME",
     "AGENT_SOLVE_TASK_NAME",
+    "build_agent_run_terminator",
     "get_agent_run_snapshot",
     "init_agent_progress_cache",
     "register_agent_generate_testdata_task",
@@ -16,6 +17,7 @@ __all__ = [
 _REGISTRY_EXPORTS = {
     "AGENT_GENERATE_TESTDATA_TASK_NAME": "AGENT_GENERATE_TESTDATA_TASK_NAME",
     "AGENT_SOLVE_TASK_NAME": "AGENT_SOLVE_TASK_NAME",
+    "build_agent_run_terminator": "build_agent_run_terminator",
     "get_agent_run_snapshot": "get_agent_run_snapshot",
     "init_agent_progress_cache": "init_agent_progress_cache",
     "register_agent_generate_testdata_task": "register_agent_generate_testdata_task",

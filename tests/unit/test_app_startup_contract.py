@@ -220,6 +220,17 @@ def test_local_development_supervisor_also_uses_project_local_logs():
     assert '/tmp/' not in '\n'.join(logfile_lines)
 
 
+def test_agent_workers_use_one_slot_and_one_prefetched_message():
+    for filename in ('celery.conf', 'local-dev.conf'):
+        parser = configparser.RawConfigParser()
+        parser.read(
+            ROOT / 'deploy' / 'supervisor' / filename,
+            encoding='utf-8',
+        )
+        command = parser.get('program:celery_agent', 'command')
+        assert '-Q agent -c 1 --prefetch-multiplier=1' in command
+
+
 def test_business_processes_preserve_container_readable_file_modes():
     expected_programs = {
         'web.conf': ('program:web',),

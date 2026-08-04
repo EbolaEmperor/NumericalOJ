@@ -11,6 +11,7 @@
      data-initial-task-id="{{ open_task_id|default('', true) }}"
      data-status-url-template="{{ url_for('problem_core.admin_agent_run_status', task_id='__TASK_ID__') }}"
      data-stream-url-template="{{ url_for('problem_core.admin_agent_run_stream', task_id='__TASK_ID__') }}"
+     data-cancel-url-template="{{ url_for('problem_core.admin_agent_run_cancel', task_id='__TASK_ID__') }}"
      data-submission-url-template="{{ url_for('submission.submission_detail', submission_id=0) }}">
   <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content agent-task-modal-content">
@@ -23,6 +24,13 @@
           <div class="agent-task-modal-meta" data-agent-task-meta>正在读取任务信息…</div>
         </div>
         <div class="agent-task-modal-actions">
+          <button type="button"
+                  class="btn btn-sm agent-task-cancel-button"
+                  data-agent-task-cancel
+                  hidden>
+            <i class="fas fa-stop-circle" aria-hidden="true"></i>
+            <span data-agent-task-cancel-label>终止</span>
+          </button>
           <a class="btn btn-sm agent-task-final-link"
              href="#"
              target="_blank"

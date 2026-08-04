@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Dispatch Agent-as-Judge runs to the selected CLI harness."""
+import hashlib
 import json
 from collections import deque
 import http.server
@@ -20,6 +21,14 @@ PI_CONFIG_DIR = "/home/node/.pi/agent"
 PI_SESSION_DIR = "/home/node/.pi/agent/sessions"
 PI_WEB_SEARCH_MCP_EXTENSION = "/usr/local/share/numoj/pi_web_search_mcp.ts"
 WEB_SEARCH_MCP_NAME = "numoj_web_search"
+PI_SESSION_SCAN_ENTRY_LIMIT = 256
+PI_SESSION_HEADER_MAX_BYTES = 64 * 1024
+PI_SESSION_EVENT_MAX_BYTES = 16 * 1024 * 1024
+PI_SESSION_TAIL_MAX_BYTES = PI_SESSION_EVENT_MAX_BYTES + 1024 * 1024
+PI_OUTPUT_LIMIT_CONTINUATION_PROMPT = (
+    "继续完成当前任务，沿用已有工作与工具结果推进，完成最初要求后再结束。"
+)
+PROBLEM_AGENT_TASK_SCOPE = "problem_agent"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_THINKING_COMPATIBILITY = True
@@ -341,6 +350,131 @@ def _record_session(harness, proc, resume_session_id=None):
     return session_id
 
 
+def _normalize_pi_session_id(value):
+    normalized = str(value or "").strip().lower()
+    return normalized if UUID_RE.fullmatch(normalized) else ""
+
+
+def _pi_session_candidates(session_root, expected_session_id):
+    """在 Pi 的受限 session 树内查找与当前 UUID 对应的原生 JSONL。"""
+
+    expected_session_id = _normalize_pi_session_id(expected_session_id)
+    if not expected_session_id:
+        return []
+    pending = [(session_root, 0)]
+    candidates = []
+    scanned = 0
+    while pending and scanned < PI_SESSION_SCAN_ENTRY_LIMIT:
+        current, depth = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                scanned += 1
+                if scanned > PI_SESSION_SCAN_ENTRY_LIMIT:
+                    break
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth < 2:
+                            pending.append((entry.path, depth + 1))
+                        continue
+                    if (
+                        not entry.name.endswith(".jsonl")
+                        or expected_session_id not in entry.name.lower()
+                        or not entry.is_file(follow_symlinks=False)
+                    ):
+                        continue
+                    candidates.append((
+                        entry.stat(follow_symlinks=False).st_mtime_ns,
+                        entry.path,
+                    ))
+                except OSError:
+                    continue
+    return [path for _mtime, path in sorted(candidates, reverse=True)]
+
+
+def _latest_pi_terminal_state(session_root, expected_session_id):
+    """读取指定 Pi 会话最末 assistant 的两种原生终止原因。"""
+
+    expected_session_id = _normalize_pi_session_id(expected_session_id)
+    if not expected_session_id or not os.path.isdir(session_root):
+        return None
+    for path in _pi_session_candidates(session_root, expected_session_id):
+        try:
+            with open(path, "rb") as stream:
+                header_line = stream.readline(PI_SESSION_HEADER_MAX_BYTES + 1)
+                if len(header_line) > PI_SESSION_HEADER_MAX_BYTES:
+                    continue
+                try:
+                    header = json.loads(header_line.decode("utf-8", "replace"))
+                except Exception:
+                    continue
+                if (
+                    not isinstance(header, dict)
+                    or header.get("type") != "session"
+                    or _normalize_pi_session_id(header.get("id"))
+                    != expected_session_id
+                ):
+                    continue
+
+                file_size = os.fstat(stream.fileno()).st_size
+                tail_start = max(0, file_size - PI_SESSION_TAIL_MAX_BYTES)
+                stream.seek(tail_start)
+                payload = stream.read(PI_SESSION_TAIL_MAX_BYTES)
+                if tail_start:
+                    first_newline = payload.find(b"\n")
+                    if first_newline < 0:
+                        continue
+                    payload = payload[first_newline + 1:]
+
+                for raw_line in reversed(payload.splitlines()):
+                    if not raw_line or len(raw_line) > PI_SESSION_EVENT_MAX_BYTES:
+                        continue
+                    try:
+                        event = json.loads(raw_line.decode("utf-8", "replace"))
+                    except Exception:
+                        continue
+                    if not isinstance(event, dict) or event.get("type") != "message":
+                        continue
+                    message = event.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    if str(message.get("role") or "").strip().lower() != "assistant":
+                        continue
+                    return {
+                        "stop_reason": str(
+                            message.get("stopReason") or ""
+                        ).strip().lower(),
+                        "raw_stop_reason": str(
+                            message.get("rawStopReason") or ""
+                        ).strip().lower(),
+                        "event_digest": hashlib.sha256(raw_line).hexdigest(),
+                    }
+        except OSError:
+            continue
+    return None
+
+
+def _pi_hit_output_limit(terminal_state):
+    state = terminal_state if isinstance(terminal_state, dict) else {}
+    return (
+        state.get("stop_reason") == "length"
+        or state.get("raw_stop_reason") == "max_tokens"
+    )
+
+
+def _pi_terminal_advanced(previous, current):
+    if not isinstance(current, dict):
+        return False
+    if not isinstance(previous, dict):
+        return True
+    previous_digest = str(previous.get("event_digest") or "")
+    current_digest = str(current.get("event_digest") or "")
+    return bool(current_digest and current_digest != previous_digest)
+
+
 def _write_codex_config(
         home, base_url, model, context_window_tokens=None,
         max_output_tokens=None, thinking_compatibility=None,
@@ -506,6 +640,13 @@ def _apply_endpoint_thinking_fields(
     payload["enable_thinking"] = True
 
 
+def _open_endpoint_request(opener, request):
+    task_scope = str(os.environ.get("AJ_TASK_SCOPE") or "").strip().lower()
+    if task_scope == PROBLEM_AGENT_TASK_SCOPE:
+        return opener.open(request)
+    return opener.open(request, timeout=300)
+
+
 class _CodexEndpointRelay:
     """为 Codex 补齐上游未暴露的输出上限与 thinking 兼容开关。"""
 
@@ -576,7 +717,7 @@ class _CodexEndpointRelay:
                 )
                 try:
                     opener = urllib.request.build_opener(relay._RejectRedirects())
-                    response = opener.open(request, timeout=300)
+                    response = _open_endpoint_request(opener, request)
                 except urllib.error.HTTPError as exc:
                     if 300 <= int(exc.code) < 400:
                         exc.close()
@@ -1098,7 +1239,8 @@ def _run_pi(prompt):
             "PI_SKIP_VERSION_CHECK": "1",
         })
         phase = str(os.environ.get("AJ_PHASE") or "").strip().lower()
-        args = [
+        audit_read_only = _audit_read_only_enabled()
+        base_args = [
             "pi",
             "--mode", "json",
             "--provider", PI_PROVIDER_NAME,
@@ -1113,34 +1255,85 @@ def _run_pi(prompt):
         if web_search_mcp:
             # Pi 没有原生 MCP 配置；只显式加载镜像内受信任的协议适配扩展，
             # 不扫描工作区或用户目录中的其他 extension。
-            args.extend(["--extension", PI_WEB_SEARCH_MCP_EXTENSION])
+            base_args.extend(["--extension", PI_WEB_SEARCH_MCP_EXTENSION])
         if skill_files:
             # Pi 在 --no-skills 下仍可以用 --skill 显式加载单个受信任
             # skill，避免扫描镜像内或其他目录的隐式 skill。
-            args.extend(["--skill", skill_files[0]])
-        if _audit_read_only_enabled():
+            base_args.extend(["--skill", skill_files[0]])
+        if audit_read_only:
             # Pi 自身不提供沙箱；质量门禁容器另有只读根文件系统、只读 evidence
             # 挂载与无 capabilities 约束，这里再把内建工具缩到纯读取集合。
-            args.extend(["--tools", "read,grep,find,ls"])
+            base_args.extend(["--tools", "read,grep,find,ls"])
             resume_session_id = ""
         if thinking_compatibility:
             effort = str(os.environ.get("AJ_EFFORT") or "").strip().lower()
-            # length/timeout 后的恢复轮只负责把已有工作形成交付物；显式关闭 thinking，
-            # 防止第二轮再次把全部输出额度消耗在 reasoning 而没有写文件。
+            # Reverse Judge 的收尾轮只负责把已有工作形成交付物；显式关闭
+            # thinking。普通 Agent 因输出截断产生的续跑轮在循环内做同样处理。
             if phase == "reverse_finalize":
-                args.extend(["--thinking", "off"])
+                base_args.extend(["--thinking", "off"])
             elif effort in PI_THINKING_LEVELS:
-                args.extend(["--thinking", effort])
-        if resume_session_id:
-            args.extend(["--session", resume_session_id])
-        args.append(prompt)
-        proc = _run(
-            args,
-            env=env,
-            stdout_session_only=phase in {"reverse_solve", "reverse_finalize"},
+                base_args.extend(["--thinking", effort])
+
+        current_prompt = prompt
+        current_session_id = resume_session_id
+        task_scope = str(os.environ.get("AJ_TASK_SCOPE") or "").strip().lower()
+        auto_resume_output_limit = (
+            task_scope == PROBLEM_AGENT_TASK_SCOPE
+            and not phase
+            and not audit_read_only
         )
-        _record_session("pi", proc, resume_session_id)
-        return proc.returncode
+        continuing_after_output_limit = False
+        previous_terminal_state = None
+        while True:
+            args = list(base_args)
+            if continuing_after_output_limit and thinking_compatibility:
+                if "--thinking" in args:
+                    args[args.index("--thinking") + 1] = "off"
+                else:
+                    args.extend(["--thinking", "off"])
+            if current_session_id:
+                args.extend(["--session", current_session_id])
+            args.append(current_prompt)
+            proc = _run(
+                args,
+                env=env,
+                stdout_session_only=phase in {"reverse_solve", "reverse_finalize"},
+            )
+            recorded_session_id = _record_session(
+                "pi", proc, current_session_id,
+            )
+            if proc.returncode != 0 or not auto_resume_output_limit:
+                return proc.returncode
+            if (
+                current_session_id
+                and recorded_session_id
+                and recorded_session_id != current_session_id
+            ):
+                print("Pi resumed into an unexpected native session", file=sys.stderr)
+                return 2
+            session_id = current_session_id or recorded_session_id
+            terminal_state = _latest_pi_terminal_state(session_dir, session_id)
+            if (
+                continuing_after_output_limit
+                and not _pi_terminal_advanced(
+                    previous_terminal_state,
+                    terminal_state,
+                )
+            ):
+                print(
+                    "Pi output-limit continuation produced no new assistant event",
+                    file=sys.stderr,
+                )
+                return 2
+            if not _pi_hit_output_limit(terminal_state):
+                return proc.returncode
+            if not session_id:
+                print("Pi output limit reached without a resumable session", file=sys.stderr)
+                return 2
+            current_session_id = session_id
+            current_prompt = PI_OUTPUT_LIMIT_CONTINUATION_PROMPT
+            continuing_after_output_limit = True
+            previous_terminal_state = terminal_state
     finally:
         if relay is not None:
             relay.stop()
