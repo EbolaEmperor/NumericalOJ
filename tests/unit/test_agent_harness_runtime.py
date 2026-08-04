@@ -90,12 +90,24 @@ def test_docker_process_env_keeps_host_docker_config_when_container_overrides_ho
     assert process_env["AJ_ENDPOINT_API_KEY"] == "secret"
 
 
-def test_container_name_is_stable_and_keeps_the_full_safe_task_id():
-    task_id = "a" * 80 + ":retry"
-
-    assert runtime._container_name_for_task_id(task_id) == (
-        "numoj-agent-" + "a" * 80 + "-retry"
+def test_container_name_uses_the_shared_validated_task_id_contract():
+    assert runtime._container_name_for_task_id("task-123") == (
+        "numoj-agent-task-123"
     )
+    with pytest.raises(ValueError, match="task_id"):
+        runtime._container_name_for_task_id("task:123")
+
+
+def test_docker_exec_has_no_agent_wall_clock_timeout_wrapper():
+    args = runtime._docker_exec_args("numoj-agent-task")
+
+    assert args == [
+        "docker",
+        "exec",
+        "-i",
+        "numoj-agent-task",
+        "/usr/local/bin/run_harness",
+    ]
 
 
 def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
@@ -105,6 +117,7 @@ def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
     assert env["TMPDIR"].startswith("/workspace/")
     assert env["XDG_CACHE_HOME"].startswith("/workspace/")
     assert env["AJ_RUNTIME_ROOT"] == "/workspace/.runtime"
+    assert env["AJ_TASK_SCOPE"] == "problem_agent"
     assert env["NUMOJ_USER_CONFIG"] == "/workspace/.numoj-agent/identity.json"
     assert "NUMOJ_CLI_CONFIG" not in env
     assert env["AJ_ENDPOINT_PROTOCOL"] == "openai"
@@ -162,6 +175,30 @@ def test_runtime_env_does_not_derive_harness_settings_from_endpoint_url():
 
     assert "AJ_THINKING_FORMAT" not in env
     assert "AJ_PI_THINKING_FORMAT" not in env
+
+
+def test_run_exits_before_workspace_creation_when_already_canceled(
+    monkeypatch,
+    tmp_path,
+):
+    workspace_root = tmp_path / "agent-workspaces"
+    monkeypatch.setattr(runtime, "AGENT_WORKSPACE_ROOT", str(workspace_root))
+
+    result = runtime.run_agent_harness(
+        task_id="task-canceled",
+        task_kind="solve",
+        problem_id=17,
+        requested_by="admin",
+        harness="codex",
+        endpoint=_endpoint(),
+        session_cookie="session-cookie",
+        prompt="prompt",
+        cancel_check=lambda: True,
+    )
+
+    assert result.returncode == -15
+    assert result.timed_out is False
+    assert not workspace_root.exists()
 
 
 @pytest.mark.parametrize(
@@ -224,11 +261,11 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         args,
         prompt,
         *,
-        timeout,
         process_env=None,
         stdout_capture_path=None,
         on_tick=None,
         tick_interval=None,
+        cancel_check=None,
     ):
         lifecycle.append("exec")
         create_args = observed["create_args"]
@@ -238,13 +275,13 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         observed.update(
             args=list(args),
             prompt=prompt,
-            timeout=timeout,
             process_env=dict(process_env or {}),
             identity=json.loads(identity_path.read_text(encoding="utf-8")),
             identity_mode=identity_path.stat().st_mode & 0o777,
             skill=(workspace / skill_path).read_text(encoding="utf-8"),
             stdout_capture_path=stdout_capture_path,
             tick_interval=tick_interval,
+            cancel_check=cancel_check,
         )
         Path(stdout_capture_path).write_text("temporary stdout", encoding="utf-8")
         if harness == "claude_code":
@@ -540,7 +577,6 @@ def test_bounded_runner_publishes_periodic_and_final_trace_ticks(
     result = runtime._run_with_bounded_output(
         ["docker"],
         "prompt",
-        timeout=10,
         stdout_capture_path=stdout_path,
         on_tick=lambda *, final=False: ticks.append(final),
         tick_interval=0.5,
@@ -550,6 +586,44 @@ def test_bounded_runner_publishes_periodic_and_final_trace_ticks(
     assert stdout_path.read_bytes() == b'{"type":"one"}\n{"type":"two"}\n'
     assert ticks[-1] is True
     assert False in ticks
+
+
+def test_bounded_runner_stops_docker_exec_when_task_is_canceled(monkeypatch):
+    checks = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.terminated = False
+            self.killed = False
+
+        def wait(self, timeout=None):
+            if self.terminated:
+                return -15
+            raise runtime.subprocess.TimeoutExpired("docker", timeout)
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    result = runtime._run_with_bounded_output(
+        ["docker"],
+        "prompt",
+        cancel_check=lambda: checks.append("checked") or True,
+    )
+
+    assert checks == ["checked"]
+    assert process.terminated is True
+    assert process.killed is False
+    assert result.returncode == -15
+    assert result.timed_out is False
 
 
 def test_stdout_mirror_is_complete_while_result_capture_stays_bounded():

@@ -152,12 +152,24 @@ def parse_testdata_zip(zip_path, extract_dir):
     }
 
 
-def publish_staged_testdata(problem_id, *, before_state, testdata):
+def publish_staged_testdata(
+    problem_id,
+    *,
+    before_state,
+    testdata,
+    agent_task_id=None,
+    agent_completion_message=None,
+):
     """仅在题目仍处于 ``before_state`` 时原子发布已验证的测试数据。
 
     读取旧值、比较和更新都在同一数据库事务及行锁内完成，因此失败只会返回
     ``False``，不会先暴露新数据再尝试回滚。``before_state`` 应直接来自
     :func:`get_problem_testdata_state`，保留数据库中的原始可空值。
+
+    普通造数据 Agent 传入 ``agent_task_id`` 时，会先锁定任务快照，只允许
+    Pending/Running 任务发布，并在同一事务内把任务切换为 Completed。这样管理
+    员终止与测试数据发布具有明确的先后顺序：先取得任务锁的一方生效，不会出现
+    数据已经发布、详情却最终显示已终止的分裂状态。
     """
 
     if not isinstance(before_state, dict) or not {
@@ -169,9 +181,31 @@ def publish_staged_testdata(problem_id, *, before_state, testdata):
 
     replacement_testdata = json.dumps(testdata, ensure_ascii=False)
     replacement_max_score = len(testdata)
+    normalized_agent_task_id = str(agent_task_id or "").strip()
+    completion_message = str(
+        agent_completion_message or "测试数据已由 Agent 生成并发布"
+    )[:1000]
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            if normalized_agent_task_id:
+                cursor.execute(
+                    """
+                    SELECT status
+                    FROM agent_task_runs
+                    WHERE task_id=%s
+                    FOR UPDATE
+                    """,
+                    (normalized_agent_task_id,),
+                )
+                agent_run = cursor.fetchone()
+                if (
+                    not agent_run
+                    or str(agent_run.get("status") or "").strip().lower()
+                    not in {"pending", "running"}
+                ):
+                    conn.rollback()
+                    return False
             cursor.execute(
                 "SELECT testdata, max_score FROM problems WHERE id=%s FOR UPDATE",
                 (problem_id,),
@@ -188,6 +222,19 @@ def publish_staged_testdata(problem_id, *, before_state, testdata):
                 "UPDATE problems SET testdata=%s, max_score=%s WHERE id=%s",
                 (replacement_testdata, replacement_max_score, problem_id),
             )
+            if normalized_agent_task_id:
+                cursor.execute(
+                    """
+                    UPDATE agent_task_runs
+                    SET status='Completed', message=%s
+                    WHERE task_id=%s
+                      AND LOWER(status) IN ('pending', 'running')
+                    """,
+                    (completion_message, normalized_agent_task_id),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return False
         conn.commit()
         return True
     except Exception:

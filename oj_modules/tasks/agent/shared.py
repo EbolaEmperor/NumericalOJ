@@ -5,7 +5,12 @@ import json
 import time
 
 from config import SUBMISSION_SNAPSHOT_TTL_SECONDS
-from oj_modules.db_services import upsert_agent_run_snapshot
+from oj_modules.db_services import (
+    cancel_agent_run_snapshot,
+    get_agent_run_by_task_id,
+    is_agent_run_canceled,
+    upsert_agent_run_snapshot,
+)
 from oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
@@ -18,6 +23,20 @@ AGENT_GENERATE_TESTDATA_TASK_NAME = "oj.agent.generate_testdata"
 _agent_progress_rds = None
 _agent_progress_blocking_rds = None
 _AGENT_PROGRESS_TTL_SECONDS = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
+_PUBLISH_ACTIVE_SNAPSHOT_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 1 then
+    return 0
+end
+redis.call('SETEX', KEYS[2], ARGV[1], ARGV[2])
+redis.call('PUBLISH', KEYS[3], ARGV[2])
+return 1
+"""
+_PUBLISH_CANCELED_SNAPSHOT_SCRIPT = """
+redis.call('SETEX', KEYS[1], ARGV[1], ARGV[2])
+redis.call('SETEX', KEYS[2], ARGV[1], ARGV[3])
+redis.call('PUBLISH', KEYS[3], ARGV[3])
+return 1
+"""
 
 
 def _clamp_int(value, default, min_value=None, max_value=None):
@@ -72,6 +91,10 @@ def _agent_progress_channel(task_id):
     return f"agent_run_events:{task_id}"
 
 
+def _agent_cancel_key(task_id):
+    return f"agent_run_cancel:{task_id}"
+
+
 def get_agent_run_snapshot(task_id):
     if not task_id:
         return None
@@ -120,8 +143,68 @@ def _publish_agent_snapshot(state):
     snapshot = hydrate_agent_run_snapshot(state)
     payload = json.dumps(snapshot, ensure_ascii=False)
     try:
-        client.setex(_agent_progress_key(task_id), _AGENT_PROGRESS_TTL_SECONDS, payload)
-        client.publish(_agent_progress_channel(task_id), payload)
+        eval_command = getattr(client, "eval", None)
+        if callable(eval_command):
+            eval_command(
+                _PUBLISH_ACTIVE_SNAPSHOT_SCRIPT,
+                3,
+                _agent_cancel_key(task_id),
+                _agent_progress_key(task_id),
+                _agent_progress_channel(task_id),
+                _AGENT_PROGRESS_TTL_SECONDS,
+                payload,
+            )
+        else:
+            client.setex(
+                _agent_progress_key(task_id),
+                _AGENT_PROGRESS_TTL_SECONDS,
+                payload,
+            )
+            client.publish(_agent_progress_channel(task_id), payload)
+    except Exception:
+        pass
+
+
+def _publish_canceled_agent_snapshot(state):
+    if not isinstance(state, dict):
+        return
+    task_id = str(state.get("task_id") or "").strip()
+    if not task_id:
+        return
+    client = _ensure_agent_progress_redis()
+    if client is None:
+        return
+    snapshot = hydrate_agent_run_snapshot(state)
+    payload = json.dumps(snapshot, ensure_ascii=False)
+    marker = json.dumps({
+        "status": "Canceled",
+        "message": str(snapshot.get("message") or "任务已由管理员终止"),
+    }, ensure_ascii=False)
+    try:
+        eval_command = getattr(client, "eval", None)
+        if callable(eval_command):
+            eval_command(
+                _PUBLISH_CANCELED_SNAPSHOT_SCRIPT,
+                3,
+                _agent_cancel_key(task_id),
+                _agent_progress_key(task_id),
+                _agent_progress_channel(task_id),
+                _AGENT_PROGRESS_TTL_SECONDS,
+                marker,
+                payload,
+            )
+        else:
+            client.setex(
+                _agent_cancel_key(task_id),
+                _AGENT_PROGRESS_TTL_SECONDS,
+                marker,
+            )
+            client.setex(
+                _agent_progress_key(task_id),
+                _AGENT_PROGRESS_TTL_SECONDS,
+                payload,
+            )
+            client.publish(_agent_progress_channel(task_id), payload)
     except Exception:
         pass
 
@@ -156,7 +239,18 @@ def _persist_agent_state(state):
     state.pop("events", None)
     state.pop("execution_trace", None)
     state["updated_at"] = _format_local_time()
-    upsert_agent_run_snapshot(state)
+    persisted = upsert_agent_run_snapshot(state)
+    if (
+        isinstance(persisted, dict)
+        and str(persisted.get("status") or "").strip().lower()
+        in {"canceled", "cancelled"}
+    ):
+        state["status"] = persisted.get("status") or "Canceled"
+        state["message"] = (
+            persisted.get("message") or "任务已由管理员终止"
+        )
+        state["stage"] = "finished"
+        state["harness_status"] = "canceled"
     _publish_agent_snapshot(state)
 
 
@@ -178,10 +272,84 @@ def _publish_agent_trace(state):
     _publish_agent_snapshot(state)
 
 
+def agent_run_is_canceled(task_id):
+    """以 MySQL 持久态为准，阻止撤销消息重投后再次执行任务。"""
+
+    return is_agent_run_canceled(task_id)
+
+
+def canceled_agent_task_result(task_id):
+    return {
+        "success": False,
+        "canceled": True,
+        "message": "任务已由管理员终止",
+        "task_id": str(task_id or ""),
+    }
+
+
+def existing_agent_terminal_result(task_id):
+    """为 broker 恢复出的重复消息返回已有终态，避免再次启动 harness。"""
+
+    state = get_agent_run_by_task_id(task_id)
+    if not isinstance(state, dict):
+        return None
+    status = str(state.get("status") or "").strip().lower()
+    if status not in {"completed", "failed", "canceled", "cancelled"}:
+        return None
+    if status in {"canceled", "cancelled"}:
+        return canceled_agent_task_result(task_id)
+    return {
+        "success": status == "completed",
+        "message": str(state.get("message") or "任务已结束"),
+        "task_id": str(task_id or ""),
+        "final_submission_id": state.get("final_submission_id"),
+        "latest_submission_id": state.get("latest_submission_id"),
+        "attempts": state.get("attempts") or [],
+    }
+
+
+def cancel_agent_run(task_id, message="任务已由管理员终止"):
+    """先持久化终止标记，再将终态原子发布到 Redis/SSE。"""
+
+    persisted, changed = cancel_agent_run_snapshot(task_id, message)
+    if not isinstance(persisted, dict):
+        return {
+            "exists": False,
+            "changed": False,
+            "canceled": False,
+            "state": None,
+        }
+
+    cached = get_agent_run_snapshot(task_id)
+    state = dict(cached) if isinstance(cached, dict) else {}
+    state.update(persisted)
+    normalized_status = str(state.get("status") or "").strip().lower()
+    canceled = normalized_status in {"canceled", "cancelled"}
+    if canceled:
+        state["status"] = "Canceled"
+        state["message"] = str(
+            persisted.get("message") or message or "任务已由管理员终止"
+        )
+        state["stage"] = "finished"
+        state["harness_status"] = "canceled"
+        _publish_canceled_agent_snapshot(state)
+
+    return {
+        "exists": True,
+        "changed": bool(changed),
+        "canceled": canceled,
+        "state": hydrate_agent_run_snapshot(state),
+    }
+
+
 __all__ = [
     "AGENT_SOLVE_TASK_NAME",
     "AGENT_GENERATE_TESTDATA_TASK_NAME",
     "init_agent_progress_cache",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",
+    "agent_run_is_canceled",
+    "canceled_agent_task_result",
+    "existing_agent_terminal_result",
+    "cancel_agent_run",
 ]

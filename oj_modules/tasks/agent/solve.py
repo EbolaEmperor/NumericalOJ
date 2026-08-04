@@ -21,6 +21,9 @@ from oj_modules.tasks.agent.shared import (
     _format_local_time,
     _publish_agent_trace,
     _update_agent_state,
+    agent_run_is_canceled,
+    canceled_agent_task_result,
+    existing_agent_terminal_result,
 )
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
 
@@ -85,8 +88,6 @@ def register_agent_solve_problem_task(celery_app):
     @celery_app.task(
         bind=True,
         name=AGENT_SOLVE_TASK_NAME,
-        time_limit=3600,
-        soft_time_limit=3480,
     )
     def agent_solve_problem(
         self,
@@ -100,6 +101,9 @@ def register_agent_solve_problem_task(celery_app):
         task_id = str(
             getattr(getattr(self, "request", None), "id", None) or ""
         ).strip() or f"unknown-{int(time.time())}"
+        terminal_result = existing_agent_terminal_result(task_id)
+        if terminal_result is not None:
+            return terminal_result
         state = {
             "task_id": task_id,
             "problem_id": int(problem_id),
@@ -166,6 +170,8 @@ def register_agent_solve_problem_task(celery_app):
             harness_status="running",
         )
 
+        if agent_run_is_canceled(task_id):
+            return canceled_agent_task_result(task_id)
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
@@ -181,9 +187,12 @@ def register_agent_solve_problem_task(celery_app):
                     problem_title=title,
                 ),
                 trace_callback=lambda: _publish_agent_trace(state),
+                cancel_check=lambda: agent_run_is_canceled(task_id),
                 reset_trace=False,
             )
         except Exception as exc:
+            if agent_run_is_canceled(task_id):
+                return canceled_agent_task_result(task_id)
             message = f"解题 harness 启动失败：{str(exc)[:800]}"
             _update_agent_state(
                 state,
@@ -193,6 +202,9 @@ def register_agent_solve_problem_task(celery_app):
                 harness_status="error",
             )
             return {"success": False, "message": message, "task_id": task_id}
+
+        if agent_run_is_canceled(task_id):
+            return canceled_agent_task_result(task_id)
 
         # 只认身份代理亲自转发创建的 submission，避免并发的人工提交被误判为
         # 本次 Agent 产物。

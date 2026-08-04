@@ -164,6 +164,50 @@ def test_upsert_on_duplicate_key_update():
     assert row['message'] == 'second'
 
 
+def test_canceled_snapshot_is_sticky_against_late_worker_upsert():
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-cancel-sticky',
+        'status': 'Running',
+        'message': '执行中',
+        'best_score': 10,
+    })
+
+    state, changed = db.cancel_agent_run_snapshot('tk-cancel-sticky')
+
+    assert changed is True
+    assert state['status'] == 'Canceled'
+    assert state['message'] == '任务已由管理员终止'
+
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-cancel-sticky',
+        'status': 'Failed',
+        'message': '迟到 worker 的失败结果',
+        'best_score': 99,
+    })
+    row = _fetch_raw('tk-cancel-sticky')
+    assert row['status'] == 'Canceled'
+    assert row['message'] == '任务已由管理员终止'
+    assert row['best_score'] == 10
+
+    state, changed = db.cancel_agent_run_snapshot('tk-cancel-sticky')
+    assert changed is False
+    assert state['status'] == 'Canceled'
+
+
+def test_cancel_snapshot_only_transitions_active_task():
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-already-finished',
+        'status': 'Completed',
+        'message': '已完成',
+    })
+
+    state, changed = db.cancel_agent_run_snapshot('tk-already-finished')
+
+    assert changed is False
+    assert state['status'] == 'Completed'
+    assert db.is_agent_run_canceled('tk-already-finished') is False
+
+
 def test_upsert_status_default_pending_when_missing():
     """缺省 status 时落库为 'Pending'。"""
     db.upsert_agent_run_snapshot({'task_id': 'tk-default-status'})

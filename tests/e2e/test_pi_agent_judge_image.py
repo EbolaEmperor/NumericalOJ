@@ -484,6 +484,61 @@ def test_pi_lite_image_openai_endpoint_uses_standard_roles(
     )
 
 
+def test_pi_lite_image_problem_agent_auto_resumes_output_limit(
+        tmp_path: Path):
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI 不可用")
+    image = os.environ[_IMAGE_ENV]
+    _PiLengthFinalizeHandler.requests = []
+    server = ThreadingHTTPServer(("0.0.0.0", 0), _PiLengthFinalizeHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace.chmod(0o777)
+    base_url = f"http://host.docker.internal:{server.server_address[1]}/v1"
+    try:
+        proc = _run([
+            "docker", "run", "--rm",
+            "--add-host", "host.docker.internal:host-gateway",
+            "-v", f"{workspace}:/workspace",
+            "-w", "/workspace",
+            "-e", "AJ_HARNESS=pi",
+            "-e", "AJ_TASK_SCOPE=problem_agent",
+            "-e", "AJ_EFFORT=high",
+            "-e", "AJ_PROMPT=Finish the task and create the requested artifact.",
+            "-e", "AJ_WORKSPACE=/workspace",
+            "-e", "AJ_ENDPOINT_PROTOCOL=openai",
+            "-e", f"AJ_ENDPOINT_BASE_URL={base_url}",
+            "-e", f"AJ_ENDPOINT_API_KEY={_API_KEY}",
+            "-e", f"AJ_ENDPOINT_MODEL={_FAKE_MODEL}",
+            image, "run_harness",
+        ], timeout=120, check=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+
+    assert proc.returncode == 0, proc.stderr
+    answer_path = workspace / "answer.txt"
+    assert answer_path.is_file(), json.dumps({
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+        "requests": _PiLengthFinalizeHandler.requests,
+    }, ensure_ascii=False, indent=2)
+    assert answer_path.read_text(encoding="utf-8") == (
+        _FINALIZED_ANSWER + "\n"
+    )
+    requests = _PiLengthFinalizeHandler.requests
+    assert len(requests) == 3
+    assert requests[0].get("reasoning_effort") == "high"
+    assert all("reasoning_effort" not in request for request in requests[1:])
+    assert sum(
+        message.get("role") == "user"
+        for message in requests[1]["messages"]
+    ) >= 2
+
+
 def test_claude_lite_image_honors_one_million_context_and_384k_output_contract():
     if shutil.which("docker") is None:
         pytest.skip("Docker CLI 不可用")

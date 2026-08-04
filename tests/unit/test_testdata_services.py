@@ -257,6 +257,76 @@ def test_publish_staged_testdata_locks_compares_and_publishes(monkeypatch):
     assert connection.closed is True
 
 
+def test_agent_publish_locks_run_before_problem_and_completes_atomically(
+    monkeypatch,
+):
+    class AgentPublishCursor(_StateCursor):
+        def __init__(self):
+            super().__init__()
+            self.rows = iter([
+                {"status": "Running"},
+                {"testdata": "old", "max_score": 1},
+            ])
+            self.rowcount = 0
+
+        def execute(self, sql, params):
+            super().execute(sql, params)
+            self.rowcount = 1 if "UPDATE agent_task_runs" in sql else 0
+
+        def fetchone(self):
+            return next(self.rows)
+
+    cursor = AgentPublishCursor()
+    connection = _StateConnection(cursor)
+    monkeypatch.setattr(
+        testdata_services,
+        "get_db_connection",
+        lambda: connection,
+    )
+
+    published = testdata_services.publish_staged_testdata(
+        7,
+        before_state={"testdata": "old", "max_score": 1},
+        testdata=[{"input": "1", "output": "2"}],
+        agent_task_id="task-7",
+        agent_completion_message="已发布",
+    )
+
+    assert published is True
+    assert "FROM agent_task_runs" in cursor.calls[0][0]
+    assert "FOR UPDATE" in cursor.calls[0][0]
+    assert cursor.calls[0][1] == ("task-7",)
+    assert "FROM problems" in cursor.calls[1][0]
+    assert "UPDATE problems" in cursor.calls[2][0]
+    assert "UPDATE agent_task_runs" in cursor.calls[3][0]
+    assert cursor.calls[3][1] == ("已发布", "task-7")
+    assert connection.commit_count == 1
+    assert connection.rollback_count == 0
+
+
+def test_agent_publish_stops_when_cancel_wins_task_lock(monkeypatch):
+    cursor = _StateCursor(row={"status": "Canceled"})
+    connection = _StateConnection(cursor)
+    monkeypatch.setattr(
+        testdata_services,
+        "get_db_connection",
+        lambda: connection,
+    )
+
+    published = testdata_services.publish_staged_testdata(
+        7,
+        before_state={"testdata": "old", "max_score": 1},
+        testdata=[{"input": "1", "output": "2"}],
+        agent_task_id="task-7",
+    )
+
+    assert published is False
+    assert len(cursor.calls) == 1
+    assert "FROM agent_task_runs" in cursor.calls[0][0]
+    assert connection.commit_count == 0
+    assert connection.rollback_count == 1
+
+
 def test_publish_staged_testdata_rejects_changed_live_state_without_update(
         monkeypatch):
     cursor = _StateCursor(row={"testdata": "admin-new", "max_score": 8})

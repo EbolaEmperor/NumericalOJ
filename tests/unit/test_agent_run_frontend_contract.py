@@ -1,6 +1,10 @@
+import json
 from pathlib import Path
+import shutil
+import subprocess
 
 from jinja2 import Environment, nodes
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,7 +75,7 @@ def test_agent_run_detail_is_a_shared_trace_modal_on_the_task_list():
     assert "data-agent-task-trace" in modal
     assert "activeSource.addEventListener('status'" in controller
     assert "activeSource.addEventListener('done'" in controller
-    assert "activeSource.addEventListener('timeout'" in controller
+    assert "activeSource.addEventListener('timeout'" not in controller
     assert "startPolling(taskId, generation)" in controller
     assert "generation !== liveGeneration" in controller
     assert "source === activeSource" in controller
@@ -120,6 +124,63 @@ def test_agent_run_modal_only_links_a_terminal_final_submission():
     assert "var finalUrl = finished ? submissionUrl(finalId) : '';" in controller
     assert "latest_submission_id" not in controller
     assert "agentSubmissionFrame" not in modal + controller
+
+
+def test_agent_run_modal_cancels_active_tasks_with_inline_confirmation():
+    modal = _read("templates/agents/run_detail_modal.html")
+    controller = _read("static/app/agents/run-detail-modal.js")
+    styles = _read("static/app/agents/run-detail-modal.css")
+
+    assert "data-cancel-url-template" in modal
+    assert "data-agent-task-cancel" in modal
+    assert "return key === 'pending' || key === 'running'" in controller
+    assert "cancelButtonEl.dataset.confirming = '1'" in controller
+    assert "再次点击确认" in controller
+    assert "method: 'POST'" in controller
+    assert "applyState(state, taskId, generation)" in controller
+    assert "error.agentState = payload && payload.state" in controller
+    assert "window.confirm" not in controller
+    assert ".agent-task-cancel-button" in styles
+
+
+def test_agent_run_modal_preserves_terminal_state_from_failed_cancel_response():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable")
+    controller = _read("static/app/agents/run-detail-modal.js")
+    helper = controller.split("// CANCEL_RESPONSE_HELPER_START", 1)[1].split(
+        "// CANCEL_RESPONSE_HELPER_END",
+        1,
+    )[0]
+    script = helper + r"""
+try {
+  parseCancelResponse(
+    {ok: false, status: 500},
+    {
+      success: false,
+      message: '任务已标记为终止，但运行时清理失败',
+      state: {status: 'Canceled', task_id: 'task-1'}
+    }
+  );
+} catch (error) {
+  process.stdout.write(JSON.stringify({
+    message: error.message,
+    state: error.agentState
+  }));
+}
+"""
+
+    result = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "message": "任务已标记为终止，但运行时清理失败",
+        "state": {"status": "Canceled", "task_id": "task-1"},
+    }
 
 
 def test_agent_task_list_does_not_render_react_rounds():
