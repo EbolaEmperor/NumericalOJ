@@ -99,8 +99,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 | `Dockerfile` | 基于 `python:3.12-slim-bookworm` 构建测试镜像：安装 `gcc/g++/build-essential`、`octave`、`coreutils`、`default-mysql-client`、`ca-certificates` 和 Python 依赖，并校验 Python/pip 基线。镜像不会复制本地 `.env`。 |
 | `docker-compose.local.yml` | 推荐的本地/非生产 CI compose 文件；编排独立 `mysql`、`redis`、`test`，不挂载生产路径。 |
 | `docker-compose.ci.yml` | 历史主机专用 compose 文件，包含宿主 MKL 挂载；日常 CI 优先使用 `docker-compose.local.yml`，且任何 compose 文件都不能在 `why-server` / host `computing` 上运行。 |
-| `config.ci.py` | 自包含 CI 启动配置。MySQL/Redis 指向 compose 服务名 `mysql`/`redis`，使用 `myojdb_test` / Redis DB 15；LLM、邮件和搜索配置由测试数据库及 fixture 提供，外部网络调用通常 mock 或 skip。 |
-| `run-ci.sh` | 在容器或 GitHub runner 上逐模块顺序跑 pytest（默认 unit -> db -> CLI e2e，也可传入模块路径），逐模块打印结果并写 JUnit XML；任一模块失败则整体非零退出。 |
+| `run-ci.sh` | 在容器或 GitHub runner 上逐模块顺序跑 pytest（默认 unit -> db -> CLI e2e，也可传入模块路径），始终读取 tracked `config.py`，由调用方通过环境变量注入网络拓扑；逐模块打印结果并写 JUnit XML，任一模块失败则整体非零退出。 |
 | `INSTALL-DOCKER.md` | Docker 安装记录和排错参考；不要把 `why-server` / `computing` 作为 CI 运行目标。 |
 
 构建上下文排除项在仓库根的 `.dockerignore`，用于减少 Docker build 上下文。
@@ -111,7 +110,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 
 - 禁止在 `why-server` / host `computing` 上运行任何 CI/test 命令、compose 命令、pytest 命令或测试容器。
 - CI 只能使用本地或非生产服务器上的一次性 MySQL/Redis；不得连接生产 MySQL/Redis。
-- DB/E2E 运行配置必须来自 `tests/ci/config.ci.py` 或等价的隔离测试配置；不得读取、挂载或复制生产 `.env`。纯单元测试保留 tracked `config.py`，只校验其中的代码默认值与解析契约。
+- DB/E2E 运行配置由 GitHub Actions 或测试 Compose 显式注入环境变量；不得读取、挂载或复制生产 `.env`，也不得改写 tracked `config.py`。
 - 不得删除或绕过 `NUMOJ_TEST_ENV=1`、专用测试库、非零 Redis DB、主机和路径的 fail-closed 校验。
 - `down -v` 会删除测试数据卷；只允许对明确的测试 compose project 使用。
 - 如果无法证明当前主机、目录、数据库和 Redis 都不是生产环境，停止运行并先确认。

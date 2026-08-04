@@ -24,8 +24,8 @@ mkdir -p \
   test-results judger tmp uploads ranking_uploads user_libraries library \
   logs/supervisor logs/services
 
-# CI 镜像的 .dockerignore 禁止复制本地 .env。单元测试读取 tracked config.py 的
-# 代码默认值；DB/E2E 在各自 pytest 进程启动前切换到自包含 config.ci.py。
+# CI 镜像的 .dockerignore 禁止复制本地 .env。GitHub Actions 与 Compose 分别
+# 通过环境变量注入各自网络拓扑，所有模块始终读取同一份 tracked config.py。
 # 真实 AI 链路默认 skip；不要把生产密钥挂进 CI。
 export OJ_LIVE_AI=0
 echo ">>> CI 使用占位符 AI 配置，AI live 测试将 skip (OJ_LIVE_AI=0)"
@@ -49,17 +49,16 @@ fi
 declare -a NAMES
 declare -a RESULTS
 overall=0
-production_config="$(mktemp)"
-cp config.py "$production_config"
-trap 'rm -f "$production_config"' EXIT
 
 echo "=================== NumericalOJ CI 开始 ==================="
 for mod in "${MODULES[@]}"; do
   [ -e "$mod" ] || { echo "跳过(不存在): $mod"; continue; }
   safe=$(echo "$mod" | tr '/.' '__')
   case "$mod" in
-    tests/unit*) cp "$production_config" config.py ;;
-    *) cp tests/ci/config.ci.py config.py ;;
+    tests/e2e*)
+      export JUDGER_DOCKER_IMAGE="${JUDGER_DOCKER_IMAGE:-numericaloj-judger-lite:latest}"
+      export AGENT_JUDGE_DOCKER_IMAGE="${AGENT_JUDGE_DOCKER_IMAGE:-numericaloj-agent-judge-lite:latest}"
+      ;;
   esac
   echo ""
   echo "------- 运行模块: $mod -------"

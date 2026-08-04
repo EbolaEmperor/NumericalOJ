@@ -113,7 +113,7 @@ NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 NUMOJ_REVERSE_LIVE_API_KEY='...' python -m pytest 
 
 生产健康检查不属于测试矩阵，也不得嵌入 `deploy.sh`。部署完成后，运维人员可以在生产主机人工执行只读的 `curl -f http://127.0.0.1:2025/health/live` 与 `curl -f http://127.0.0.1:2025/health/ready`；前者只证明 Web 可响应，后者还检查 MySQL 与 Redis。它们不能替代发布前测试。
 
-DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性测试服务时才能执行；配置来源可以是显式环境变量、测试 `.env`，或测试镜像构建时由 `tests/ci/config.ci.py` 提供的隔离配置，不得为测试手工改写受版本控制的生产配置桥接层。安全门同时要求：
+DB/E2E 命令只有在 `config.py` 加载后的有效配置明确指向一次性测试服务时才能执行；配置来源可以是显式环境变量或测试 `.env`，不得为测试手工改写受版本控制的生产配置桥接层。GitHub Actions 与测试 Compose 均通过显式环境变量注入各自网络拓扑。安全门同时要求：
 
 - `NUMOJ_TEST_ENV=1`；
 - MySQL 库名为 `*_test`、`test_*` 或含 `_test_`，且绝不能是 `myojdb`；
