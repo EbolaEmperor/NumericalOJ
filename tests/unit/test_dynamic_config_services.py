@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import pytest
+from decimal import Decimal
 
 from oj_modules.site_config import services
 
@@ -73,6 +74,48 @@ def test_embedding_normalization_clears_thinking():
 
     assert normalized["thinking_enabled"] is False
     assert normalized["thinking_format"] == "none"
+
+
+def test_llm_prices_are_optional_but_atomic_and_decimal_safe():
+    blank = services.normalize_llm_endpoint_payload(llm_payload())
+    assert blank["input_price_per_million"] is None
+    assert blank["cached_input_price_per_million"] is None
+    assert blank["output_price_per_million"] is None
+
+    priced = services.normalize_llm_endpoint_payload(llm_payload(
+        input_price_per_million="2.50",
+        cached_input_price_per_million="0.25",
+        output_price_per_million="8.125",
+    ))
+    assert priced["input_price_per_million"] == "2.50"
+    assert priced["cached_input_price_per_million"] == "0.25"
+    assert priced["output_price_per_million"] == "8.125"
+
+    free = services.normalize_llm_endpoint_payload(llm_payload(
+        input_price_per_million=0,
+        cached_input_price_per_million=0,
+        output_price_per_million=0,
+    ))
+    assert free["input_price_per_million"] == "0"
+
+    with pytest.raises(services.DynamicConfigValidationError, match="全部填写"):
+        services.normalize_llm_endpoint_payload(llm_payload(
+            input_price_per_million="2.5",
+        ))
+    with pytest.raises(services.DynamicConfigValidationError, match="非负数字"):
+        services.normalize_llm_endpoint_payload(llm_payload(
+            input_price_per_million="-1",
+            cached_input_price_per_million="0.2",
+            output_price_per_million="8",
+        ))
+
+    public = services._public_endpoint({
+        **llm_payload(),
+        "input_price_per_million": Decimal("2.50000000"),
+        "cached_input_price_per_million": Decimal("0.25000000"),
+        "output_price_per_million": Decimal("8.12500000"),
+    })
+    assert public["input_price_per_million"] == "2.50000000"
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ import pytest
 
 import oj_modules.tasks.ranking.reverse_judge as rj
 import oj_modules.tasks.ranking.agent_judge as aj
+from oj_modules.ranking.reverse_judge import trace_sync
 
 
 _SESSION_ID = "12345678-1234-1234-1234-123456789abc"
@@ -349,7 +350,7 @@ def test_sync_pi_agent_sessions_mirrors_native_tree_and_streams_combined_trace(
     }
 
     monkeypatch.setattr(
-        rj,
+        trace_sync,
         "_list_pi_session_files",
         lambda container_name, **kwargs: (
             listed_runtime_users.append(kwargs.get("runtime_user")) or [
@@ -380,9 +381,9 @@ def test_sync_pi_agent_sessions_mirrors_native_tree_and_streams_combined_trace(
         os.utime(destination, ns=(mtime_ns, mtime_ns))
         return True
 
-    monkeypatch.setattr(rj, "_copy_pi_session_file", fake_copy)
+    monkeypatch.setattr(trace_sync, "_copy_pi_session_file", fake_copy)
 
-    assert rj._sync_pi_agent_sessions(
+    assert trace_sync.sync_pi_agent_sessions(
         "pi-container", str(trace_dir), runtime_user="501:20",
     ) is True
 
@@ -403,7 +404,10 @@ def test_sync_pi_agent_sessions_mirrors_native_tree_and_streams_combined_trace(
 def test_copy_pi_session_file_streams_docker_stdout_to_atomic_temp(
         monkeypatch, tmp_path):
     destination = tmp_path / "trace" / "native.jsonl"
-    payload = b'{"type":"session","version":3}\n' + b"x" * (256 * 1024)
+    payload = (
+        b'{"type":"session","version":3,"token":"pi-secret"}\n'
+        + b"x" * (256 * 1024)
+    )
     calls = []
 
     def fake_run(args, **kwargs):
@@ -413,14 +417,18 @@ def test_copy_pi_session_file_streams_docker_stdout_to_atomic_temp(
 
     monkeypatch.setattr(rj.subprocess, "run", fake_run)
 
-    assert rj._copy_pi_session_file(
+    assert trace_sync._copy_pi_session_file(
         "pi-container",
         f"--workspace--/native_{_SESSION_ID}.jsonl",
         str(destination),
-        1_000_000_000,
+        mtime_ns=1_000_000_000,
         runtime_user="501:20",
+        secrets=("pi-secret",),
     )
-    assert destination.read_bytes() == payload
+    rendered = destination.read_bytes()
+    assert b"pi-secret" not in rendered
+    assert b"[REDACTED]" in rendered
+    assert rendered.endswith(b"x" * (256 * 1024))
     assert not destination.with_suffix(".jsonl.tmp").exists()
     args, kwargs = calls[0]
     assert args[:6] == [
@@ -429,7 +437,7 @@ def test_copy_pi_session_file_streams_docker_stdout_to_atomic_temp(
     assert args[-2:] == [
         "--",
         (
-            f"{rj._PI_CONTAINER_SESSION_ROOT}/--workspace--/"
+            f"{trace_sync.PI_SESSION_DIR}/--workspace--/"
             f"native_{_SESSION_ID}.jsonl"
         ),
     ]
@@ -459,7 +467,7 @@ def test_harness_capture_reader_keeps_bounded_head_and_tail(tmp_path):
     "nested/control\n.jsonl",
 ])
 def test_pi_session_sync_rejects_unsafe_relative_paths(value):
-    assert rj._safe_pi_session_relative_path(value) == ""
+    assert trace_sync._safe_pi_session_relative_path(value) == ""
 
 
 def test_resolve_pi_resume_session_uses_json_header_without_treating_stdout_as_trace(

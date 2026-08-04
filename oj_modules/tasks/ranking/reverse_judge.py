@@ -14,7 +14,6 @@ import shutil
 import socket
 import stat
 import subprocess
-import tempfile
 import threading
 import time
 import urllib.error
@@ -60,6 +59,11 @@ from oj_modules.ranking.reverse_judge.db import (
     update_reverse_judge_step_for_attempt,
 )
 from oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
+from oj_modules.ranking.reverse_judge.trace_sync import (
+    sync_claude_project_jsonl as _shared_sync_claude_project_jsonl,
+    sync_pi_agent_sessions as _shared_sync_pi_agent_sessions,
+    sync_stdout_jsonl,
+)
 from oj_modules.tasks.ranking.agent_judge import (
     HARNESS_CLAUDE_CODE,
     JUDGE_CPU_LIMIT,
@@ -1507,75 +1511,13 @@ def _copy_tree_from_container(container_name, src, dest):
     return False
 
 
-def _claude_project_jsonl_dest(trace_dir, filename):
-    return os.path.join(trace_dir, '.claude', 'projects', '-workspace', filename)
-
-
-def _sync_claude_project_jsonl(container_name, trace_dir):
-    """同步 Claude Code 的 workspace 会话 JSONL，并生成第二阶段合并轨迹。
-
-    超时后 resume 可能产生新的会话文件；前端需要把这些 JSONL 视为同一个
-    “AI 作答”阶段，因此这里按 mtime 合并成稳定的 reverse_solve_combined.jsonl。
-    """
-    os.makedirs(trace_dir, exist_ok=True)
-    find_cmd = (
-        "python3 - <<'PY'\n"
-        "import json, os\n"
-        "base='/home/node/.claude/projects/-workspace'\n"
-        "try:\n"
-        "    items=[os.path.join(base,n) for n in os.listdir(base) if n.endswith('.jsonl')]\n"
-        "except Exception:\n"
-        "    items=[]\n"
-        "items=[p for p in items if os.path.isfile(p)]\n"
-        "items.sort(key=lambda p: os.path.getmtime(p))\n"
-        "print(json.dumps(items, ensure_ascii=False))\n"
-        "PY"
+def _sync_claude_project_jsonl(container_name, trace_dir, secrets=()):
+    return _shared_sync_claude_project_jsonl(
+        container_name, trace_dir, secrets=secrets,
     )
-    try:
-        located = subprocess.run(
-            ['docker', 'exec', container_name, 'bash', '-lc', find_cmd],
-            capture_output=True, text=True, timeout=8,
-        )
-        remote_paths = json.loads((located.stdout or '[]').strip() or '[]')
-    except Exception:
-        return False
-    if not isinstance(remote_paths, list):
-        return False
-    remote_paths = [str(p).strip() for p in remote_paths if str(p).strip().endswith('.jsonl')]
-    if not remote_paths:
-        return False
-    combined_chunks = []
-    try:
-        for remote_path in remote_paths:
-            data = subprocess.run(
-                ['docker', 'exec', container_name, 'cat', remote_path],
-                capture_output=True, timeout=12,
-            )
-            if data.returncode != 0:
-                continue
-            payload = data.stdout or b''
-            dest = _claude_project_jsonl_dest(trace_dir, os.path.basename(remote_path))
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            tmp = dest + '.tmp'
-            with open(tmp, 'wb') as f:
-                f.write(payload)
-            os.replace(tmp, dest)
-            if payload:
-                combined_chunks.append(payload.rstrip(b'\n'))
-        if not combined_chunks:
-            return False
-        combined = b'\n'.join(combined_chunks) + b'\n'
-        combined_dest = _claude_project_jsonl_dest(trace_dir, 'reverse_solve_combined.jsonl')
-        tmp = combined_dest + '.tmp'
-        with open(tmp, 'wb') as f:
-            f.write(combined)
-        os.replace(tmp, combined_dest)
-        return True
-    except Exception:
-        return False
 
 
-def _sync_codex_stdout_trace(template_dir, trace_dir):
+def _sync_codex_stdout_trace(template_dir, trace_dir, secrets=()):
     # 宿主侧捕获文件已改写到 trace_dir（见 _exec_reverse_harness_phase），
     # 因此 codex 的 stdout.jsonl 也从 trace_dir 取。保留 template_dir 仅作
     # 兼容回退：旧 attempt 仍可能在容器挂载点留有同名文件。
@@ -1584,237 +1526,29 @@ def _sync_codex_stdout_trace(template_dir, trace_dir):
         src = os.path.join(template_dir, '.aj_reverse_solve.stdout.tmp')
     if not os.path.isfile(src):
         return False
-    dest = os.path.join(trace_dir, 'codex_reverse_solve.jsonl')
-    try:
-        os.makedirs(trace_dir, exist_ok=True)
-        tmp = dest + '.tmp'
-        shutil.copyfile(src, tmp)
-        os.replace(tmp, dest)
-        return True
-    except Exception:
-        return False
+    return sync_stdout_jsonl(
+        src, trace_dir, 'codex_reverse_solve.jsonl', secrets=secrets,
+    )
 
 
 def _pi_trace_session_root(trace_dir):
     return os.path.join(trace_dir, '.pi', 'agent', 'sessions')
 
 
-def _list_pi_session_files(container_name, runtime_user='node'):
-    """列出 Pi 生成的普通 session JSONL。"""
-    list_cmd = (
-        "python3 - <<'PY'\n"
-        "import json, os, stat\n"
-        f"base={_PI_CONTAINER_SESSION_ROOT!r}\n"
-        "try:\n"
-        "    for root, dirs, names in os.walk(base, followlinks=False):\n"
-        "        dirs[:]=[name for name in dirs "
-        "if not os.path.islink(os.path.join(root, name))]\n"
-        "        for name in names:\n"
-        "            if not name.endswith('.jsonl'):\n"
-        "                continue\n"
-        "            path=os.path.join(root, name)\n"
-        "            try:\n"
-        "                info=os.lstat(path)\n"
-        "            except OSError:\n"
-        "                continue\n"
-        "            if not stat.S_ISREG(info.st_mode):\n"
-        "                continue\n"
-        "            print(json.dumps({\n"
-        "                'relative_path': os.path.relpath(path, base),\n"
-        "                'mtime_ns': info.st_mtime_ns,\n"
-        "            }, ensure_ascii=False), flush=True)\n"
-        "except Exception:\n"
-        "    pass\n"
-        "PY"
-    )
-    # stdout 先落匿名临时文件：既保留 8 秒硬超时，也不让 subprocess 在
-    # TimeoutExpired.output 或 CompletedProcess.stdout 中积累无界清单。
-    with tempfile.TemporaryFile(mode='w+b') as listing:
-        try:
-            located = subprocess.run(
-                [
-                    'docker', 'exec', '--user', runtime_user, container_name,
-                    'bash', '-lc', list_cmd,
-                ],
-                stdout=listing,
-                stderr=subprocess.DEVNULL,
-                timeout=8,
-            )
-            if located.returncode != 0:
-                return
-            listing.seek(0)
-            for raw_line in listing:
-                # Linux 单一路径远低于 64 KiB；异常超长元数据直接忽略。
-                if len(raw_line) > 64 * 1024:
-                    continue
-                try:
-                    item = json.loads(raw_line.decode('utf-8', 'replace'))
-                except Exception:
-                    continue
-                if isinstance(item, dict):
-                    yield item
-        except Exception:
-            return
-
-
-def _safe_pi_session_relative_path(value):
-    relative_path = str(value or '').strip().replace('\\', '/')
-    parts = relative_path.split('/')
-    if (
-        not relative_path
-        or relative_path.startswith('/')
-        or not relative_path.endswith('.jsonl')
-        or any(part in {'', '.', '..'} for part in parts)
-        or any(ord(ch) < 32 or ord(ch) == 127 for ch in relative_path)
-    ):
-        return ''
-    return relative_path
-
-
-def _copy_pi_session_file(
-        container_name, relative_path, destination, mtime_ns=None,
-        runtime_user='node'):
-    tmp_path = destination + '.tmp'
-    try:
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
-        remote_path = (
-            _PI_CONTAINER_SESSION_ROOT.rstrip('/')
-            + '/'
-            + relative_path
-        )
-        with open(tmp_path, 'wb') as stream:
-            copied = subprocess.run(
-                [
-                    'docker', 'exec', '--user', runtime_user, container_name,
-                    'cat', '--', remote_path,
-                ],
-                stdout=stream,
-                stderr=subprocess.DEVNULL,
-                timeout=12,
-            )
-        if copied.returncode != 0:
-            os.remove(tmp_path)
-            return False
-        os.replace(tmp_path, destination)
-        try:
-            normalized_mtime = int(mtime_ns)
-            if normalized_mtime >= 0:
-                os.utime(
-                    destination,
-                    ns=(normalized_mtime, normalized_mtime),
-                )
-        except (TypeError, ValueError, OSError):
-            pass
-        return True
-    except Exception:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        return False
-
-
-def _iter_pi_session_paths(session_root):
-    """逐项遍历本地镜像树，不构造全量文件列表。"""
-    pending_dirs = [session_root]
-    while pending_dirs:
-        current = pending_dirs.pop()
-        try:
-            entries = os.scandir(current)
-        except OSError:
-            continue
-        with entries:
-            for entry in entries:
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        pending_dirs.append(entry.path)
-                    elif (
-                        entry.name.endswith('.jsonl')
-                        and entry.name != _PI_COMBINED_TRACE_NAME
-                        and entry.is_file(follow_symlinks=False)
-                    ):
-                        yield entry.path
-                except OSError:
-                    continue
-
-
-def _combine_pi_session_jsonl(trace_dir):
-    """流式合并 Pi 原生 session，同时保留原始目录树不变。"""
-    session_root = _pi_trace_session_root(trace_dir)
-    if not os.path.isdir(session_root):
-        return False
-    combined_path = os.path.join(session_root, _PI_COMBINED_TRACE_NAME)
-    tmp_path = combined_path + '.tmp'
-    wrote_any = False
-    last_byte = b''
-    try:
-        with open(tmp_path, 'wb') as combined:
-            for path in _iter_pi_session_paths(session_root):
-                try:
-                    if wrote_any and last_byte != b'\n':
-                        combined.write(b'\n')
-                    with open(path, 'rb') as source:
-                        while True:
-                            chunk = source.read(64 * 1024)
-                            if not chunk:
-                                break
-                            combined.write(chunk)
-                            last_byte = chunk[-1:]
-                    wrote_any = True
-                except OSError:
-                    continue
-            if wrote_any and last_byte != b'\n':
-                combined.write(b'\n')
-        if not wrote_any:
-            os.remove(tmp_path)
-            return False
-        os.replace(tmp_path, combined_path)
-        return True
-    except Exception:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        return False
-
 
 def _sync_pi_agent_sessions(
-        container_name, trace_dir, runtime_user='node'):
-    """复制 Pi session，并生成供快照解析的稳定合并 JSONL。"""
-    session_root = _pi_trace_session_root(trace_dir)
-    copied_any = False
-    for item in _list_pi_session_files(
-            container_name, runtime_user=runtime_user):
-        if not isinstance(item, dict):
-            continue
-        relative_path = _safe_pi_session_relative_path(
-            item.get('relative_path'),
-        )
-        if not relative_path:
-            continue
-        destination = os.path.realpath(os.path.join(
-            session_root, *relative_path.split('/'),
-        ))
-        normalized_root = os.path.realpath(session_root)
-        if not destination.startswith(normalized_root + os.sep):
-            continue
-        if _copy_pi_session_file(
-            container_name,
-            relative_path,
-            destination,
-            item.get('mtime_ns'),
-            runtime_user=runtime_user,
-        ):
-            copied_any = True
-    if not copied_any:
-        return False
-    _combine_pi_session_jsonl(trace_dir)
-    return True
+        container_name, trace_dir, runtime_user='node', secrets=()):
+    return _shared_sync_pi_agent_sessions(
+        container_name,
+        trace_dir,
+        runtime_user=runtime_user,
+        secrets=secrets,
+    )
 
 
 def _dump_harness_trace(
         container_name, trace_dir, template_dir, harness,
-        runtime_user='node'):
+        runtime_user='node', secrets=()):
     os.makedirs(trace_dir, exist_ok=True)
     harness = str(harness or HARNESS_CLAUDE_CODE).strip().lower()
     if harness == HARNESS_CODEX:
@@ -1829,11 +1563,12 @@ def _dump_harness_trace(
     elif harness == HARNESS_PI:
         _sync_pi_agent_sessions(
             container_name, trace_dir, runtime_user=runtime_user,
+            secrets=secrets,
         )
         sources = []
         dest_name = ''
     else:
-        _sync_claude_project_jsonl(container_name, trace_dir)
+        _sync_claude_project_jsonl(container_name, trace_dir, secrets)
         sources = []
         dest_name = ''
     for src, _expected in sources:
@@ -2430,6 +2165,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         model, 'reverse_unused.jsonl', include_prompt=False, endpoint=endpoint,
     ) + [JUDGE_IMAGE, 'bash', '-lc', 'tail -f /dev/null']
     runtime_user = 'node'
+    trace_secrets = (api_key, endpoint_proxy.token)
     try:
         subprocess.run(docker_args, check=True, capture_output=True, text=True, timeout=120)
         _exec_container_apt_setup(container_name, timeout_s=120)
@@ -2441,12 +2177,17 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
         def sync_trace():
             nonlocal trace_registered
             if harness == HARNESS_CLAUDE_CODE:
-                _sync_claude_project_jsonl(container_name, trace_dir)
+                _sync_claude_project_jsonl(
+                    container_name, trace_dir, trace_secrets,
+                )
             elif harness == HARNESS_CODEX:
-                _sync_codex_stdout_trace(template_dir, trace_dir)
+                _sync_codex_stdout_trace(
+                    template_dir, trace_dir, trace_secrets,
+                )
             elif harness == HARNESS_PI:
                 _sync_pi_agent_sessions(
                     container_name, trace_dir, runtime_user=runtime_user,
+                    secrets=trace_secrets,
                 )
             if not trace_registered:
                 update_reverse_judge_step_for_attempt(
@@ -2691,7 +2432,7 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
             try:
                 _dump_harness_trace(
                     container_name, trace_dir, template_dir, harness,
-                    runtime_user=runtime_user,
+                    runtime_user=runtime_user, secrets=trace_secrets,
                 )
             finally:
                 try:

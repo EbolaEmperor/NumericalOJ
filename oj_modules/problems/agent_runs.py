@@ -7,10 +7,14 @@ from pathlib import Path
 import re
 
 from config import AGENT_WORKSPACE_ROOT
+from oj_modules.problems.agent_launch import token_pricing_from_endpoint
 from oj_modules.ranking.reverse_judge.traces import (
+    calculate_agent_token_cost_rmb,
+    collect_agent_token_usage,
     collect_agent_trace_files,
     collect_agent_trace_messages,
 )
+from oj_modules.site_config.services import get_llm_endpoint
 
 
 _TASK_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -42,6 +46,22 @@ def _execution_trace_status(status):
     return "pending"
 
 
+def _current_token_pricing(state):
+    """按任务使用的节点 ID 读取当前人民币价格。"""
+
+    try:
+        endpoint_id = int(state.get("endpoint_id"))
+    except (TypeError, ValueError):
+        return None
+    if endpoint_id <= 0:
+        return None
+    try:
+        endpoint = get_llm_endpoint(endpoint_id, include_secret=False)
+    except Exception:
+        return None
+    return token_pricing_from_endpoint(endpoint)
+
+
 def build_agent_execution_trace(state):
     """按 Reverse Judge 的公共 JSONL 解析契约构造执行轨迹。"""
 
@@ -52,6 +72,15 @@ def build_agent_execution_trace(state):
     except ValueError:
         trace_dir = None
     status = _execution_trace_status(state.get("status"))
+    token_usage = collect_agent_token_usage(trace_dir)
+    if token_usage is not None:
+        token_usage = dict(token_usage)
+        cost_rmb = calculate_agent_token_cost_rmb(
+            token_usage,
+            _current_token_pricing(state),
+        )
+        if cost_rmb is not None:
+            token_usage["cost_rmb"] = cost_rmb
     return {
         "trace_id": (
             hashlib.sha256(task_id.encode("utf-8", "replace")).hexdigest()[:16]
@@ -66,6 +95,7 @@ def build_agent_execution_trace(state):
         "stderr": "",
         "trace_files": collect_agent_trace_files(trace_dir),
         "trace_messages": collect_agent_trace_messages(trace_dir),
+        "token_usage": token_usage,
     }
 
 
@@ -76,6 +106,7 @@ def hydrate_agent_run_snapshot(state):
         return state
     snapshot = dict(state)
     snapshot.pop("events", None)
+    snapshot.pop("token_pricing", None)
     snapshot["execution_trace"] = build_agent_execution_trace(snapshot)
     return snapshot
 

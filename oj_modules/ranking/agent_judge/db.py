@@ -11,6 +11,7 @@ from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.ranking.db import get_ranking_submission, submission_dir
 from oj_modules.ranking.agent_judge import rules as aj
 from oj_modules.ranking.reverse_judge.traces import (
+    collect_agent_token_usage,
     collect_agent_trace_files,
     collect_agent_trace_messages,
 )
@@ -1068,6 +1069,7 @@ def _build_execution_trace_payload(submission):
         'stderr': '',
         'trace_files': collect_agent_trace_files(trace_dir),
         'trace_messages': collect_agent_trace_messages(trace_dir),
+        'token_usage': collect_agent_token_usage(trace_dir),
     }
 
 

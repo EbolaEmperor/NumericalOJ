@@ -131,6 +131,21 @@ def test_llm_endpoints_allow_the_same_model_on_distinct_connections():
     assert rebound["endpoint_id"] == second["id"]
 
 
+def test_llm_endpoint_token_prices_round_trip_as_optional_decimals():
+    admin = get_user_by_username("admin")
+    endpoint = create_endpoint(
+        admin["id"],
+        model="priced-model",
+        input_price_per_million="2.5",
+        cached_input_price_per_million="0.25",
+        output_price_per_million="8.125",
+    )
+
+    assert endpoint["input_price_per_million"] == "2.50000000"
+    assert endpoint["cached_input_price_per_million"] == "0.25000000"
+    assert endpoint["output_price_per_million"] == "8.12500000"
+
+
 def test_endpoint_lock_blocks_testing_and_only_locker_can_unlock():
     admin = get_user_by_username("admin")
     endpoint = create_endpoint(admin["id"])

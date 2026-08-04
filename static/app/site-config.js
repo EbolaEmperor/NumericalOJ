@@ -358,6 +358,9 @@
       model: form.elements.model.value.trim(),
       thinking_enabled: form.elements.thinking_enabled.value === 'true',
       thinking_format: form.elements.thinking_format.value,
+      input_price_per_million: form.elements.input_price_per_million.value.trim(),
+      cached_input_price_per_million: form.elements.cached_input_price_per_million.value.trim(),
+      output_price_per_million: form.elements.output_price_per_million.value.trim(),
     };
   }
 
@@ -408,6 +411,9 @@
     form.elements.base_url.value = endpoint?.base_url || '';
     form.elements.api_key.value = '';
     form.elements.model.value = endpoint?.model || '';
+    form.elements.input_price_per_million.value = endpoint?.input_price_per_million ?? '';
+    form.elements.cached_input_price_per_million.value = endpoint?.cached_input_price_per_million ?? '';
+    form.elements.output_price_per_million.value = endpoint?.output_price_per_million ?? '';
     updateThinkingControls(false);
     setThinking(Boolean(endpoint?.thinking_enabled));
     invalidateEndpointTest();

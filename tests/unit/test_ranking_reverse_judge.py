@@ -9,6 +9,7 @@ import pytest
 import oj_modules.ranking.reverse_judge.db as reverse_db
 import oj_modules.ranking.reverse_judge.traces as rjdb
 import oj_modules.tasks.ranking.reverse_judge as rj
+from oj_modules.ranking.reverse_judge import trace_sync
 
 
 def _without_trace_identity(messages):
@@ -244,6 +245,46 @@ def test_collect_trace_files_prefers_single_claude_project_jsonl(tmp_path):
     assert len(files) == 1
     assert files[0]["path"].replace("\\", "/") == ".claude/projects/-workspace/session.jsonl"
     assert '{"type":"assistant"}' in files[0]["content"]
+
+
+def test_shared_claude_sync_copies_and_combines_container_sessions(
+        monkeypatch, tmp_path):
+    remote_paths = [
+        "/workspace/sessions/first.jsonl",
+        "/workspace/sessions/second.jsonl",
+    ]
+    payloads = {
+        remote_paths[0]: (
+            b'{"type":"assistant","uuid":"first","token":"top-secret"}\n'
+        ),
+        remote_paths[1]: b'{"type":"assistant","uuid":"second"}\n',
+    }
+
+    def fake_run(args, **_kwargs):
+        if args[3] == "bash":
+            return rj.subprocess.CompletedProcess(
+                args, 0, stdout=json.dumps(remote_paths), stderr="",
+            )
+        return rj.subprocess.CompletedProcess(
+            args, 0, stdout=payloads[args[-1]], stderr=b"",
+        )
+
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
+
+    assert trace_sync.sync_claude_project_jsonl(
+        "container",
+        str(tmp_path),
+        container_project_dir="/workspace/sessions",
+        secrets=("top-secret",),
+    ) is True
+    project = tmp_path / ".claude/projects/-workspace"
+    first = (project / "first.jsonl").read_bytes()
+    assert b"top-secret" not in first
+    assert b"[REDACTED]" in first
+    assert (project / "second.jsonl").read_bytes() == payloads[remote_paths[1]]
+    assert (project / "reverse_solve_combined.jsonl").read_bytes() == (
+        first + payloads[remote_paths[1]]
+    )
 
 
 def test_historical_three_step_snapshot_is_projected_to_canonical_four_step_order(monkeypatch):
@@ -544,6 +585,36 @@ def test_collect_codex_trace_messages_extracts_reply_reasoning_and_tool(tmp_path
             "meta": "item.completed",
             "line": 5,
         },
+    ]
+
+
+def test_collect_shared_trace_messages_understands_raw_opencode_stream(tmp_path):
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    events = [
+        {"type": "reasoning", "part": {"type": "reasoning", "text": "先分析。"}},
+        {"type": "text", "part": {"type": "text", "text": "开始实现。"}},
+        {
+            "type": "tool",
+            "part": {
+                "type": "tool",
+                "tool": "shell",
+                "state": {"input": {"command": "python3 solve.py"}},
+            },
+        },
+    ]
+    (trace / "opencode_agent_judge.jsonl").write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False) for event in events),
+        encoding="utf-8",
+    )
+
+    messages = rjdb._collect_trace_messages(str(trace))
+
+    assert [message["kind"] for message in messages] == [
+        "thinking", "assistant", "tool",
+    ]
+    assert [message["text"] for message in messages] == [
+        "先分析。", "开始实现。", "命令：python3 solve.py",
     ]
 
 

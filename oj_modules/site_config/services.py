@@ -15,6 +15,7 @@ import json
 import secrets
 import time
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
 from oj_modules.infrastructure.mysql import get_db_connection
@@ -30,6 +31,11 @@ EMBEDDING_UNLOCK_CONFIRMATION = UNLOCK_CONFIRMATION
 LLM_PROTOCOLS = ("openai", "anthropic")
 LLM_CATEGORIES = ("omni", "text", "vision", "embedding")
 THINKING_FORMATS = ("enable_thinking", "thinking_type", "none")
+LLM_PRICE_FIELDS = (
+    "input_price_per_million",
+    "cached_input_price_per_million",
+    "output_price_per_million",
+)
 
 FEATURE_SPECS = {
     "ai_code_annotation": {
@@ -157,6 +163,8 @@ def _normalize_http_url(value, field):
 def _json_value(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return format(value, "f")
     return value
 
 
@@ -180,6 +188,30 @@ def _token_hash(token):
 
 def _secret_is_omitted(value):
     return value is None or not str(value).strip() or str(value).strip() == MASKED_SECRET
+
+
+def _normalize_llm_prices(payload, existing):
+    values = []
+    for field in LLM_PRICE_FIELDS:
+        raw = payload.get(field, existing.get(field))
+        text = "" if raw is None else str(raw).strip()
+        if not text:
+            values.append(None)
+            continue
+        try:
+            price = Decimal(text)
+        except (InvalidOperation, ValueError):
+            raise DynamicConfigValidationError("Token 单价必须是非负数字") from None
+        if not price.is_finite() or price < 0:
+            raise DynamicConfigValidationError("Token 单价必须是非负数字")
+        if price >= Decimal("1000000000000"):
+            raise DynamicConfigValidationError("Token 单价超出数据库可存储范围")
+        values.append(format(price, "f"))
+
+    configured = sum(value is not None for value in values)
+    if configured not in (0, len(LLM_PRICE_FIELDS)):
+        raise DynamicConfigValidationError("三个 Token 单价必须全部填写或全部留空")
+    return dict(zip(LLM_PRICE_FIELDS, values))
 
 
 def normalize_llm_endpoint_payload(payload, *, existing=None):
@@ -234,6 +266,8 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
     elif protocol == "anthropic":
         requested_format = "thinking_type"
 
+    prices = _normalize_llm_prices(payload, existing)
+
     return {
         "protocol": protocol,
         "category": category,
@@ -249,6 +283,7 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
         ),
         "thinking_enabled": thinking_enabled,
         "thinking_format": requested_format,
+        **prices,
     }
 
 
@@ -261,6 +296,10 @@ def _endpoint_candidate_from_row(row):
         "model": row["model"],
         "thinking_enabled": bool(row.get("thinking_enabled")),
         "thinking_format": row.get("thinking_format") or "none",
+        **{
+            field: _json_value(row.get(field))
+            for field in LLM_PRICE_FIELDS
+        },
     }
 
 
@@ -514,6 +553,9 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                 candidate["protocol"], candidate["category"], candidate["base_url"],
                 candidate["api_key"], candidate["model"],
                 int(candidate["thinking_enabled"]), candidate["thinking_format"],
+                candidate["input_price_per_million"],
+                candidate["cached_input_price_per_million"],
+                candidate["output_price_per_million"],
                 grant.get("test_message"), grant.get("test_latency_ms"), tested_at, user_id,
             )
             if endpoint_id is None:
@@ -521,10 +563,13 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                     """
                     INSERT INTO llm_endpoints
                         (protocol, category, base_url, api_key, model,
-                         thinking_enabled, thinking_format, test_status, test_message,
+                         thinking_enabled, thinking_format,
+                         input_price_per_million, cached_input_price_per_million,
+                         output_price_per_million, test_status, test_message,
                          test_latency_ms, tested_at, tested_by_user_id,
                          created_by_user_id, updated_by_user_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'passed', %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            'passed', %s, %s, %s, %s, %s, %s)
                     """,
                     values + (user_id, user_id),
                 )
@@ -535,6 +580,9 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                     UPDATE llm_endpoints
                     SET protocol=%s, category=%s, base_url=%s, api_key=%s,
                         model=%s, thinking_enabled=%s, thinking_format=%s,
+                        input_price_per_million=%s,
+                        cached_input_price_per_million=%s,
+                        output_price_per_million=%s,
                         test_status='passed', test_message=%s, test_latency_ms=%s,
                         tested_at=%s, tested_by_user_id=%s,
                         revision=revision+1, updated_by_user_id=%s

@@ -18,11 +18,16 @@ import pytest
 
 from oj_modules.ranking.reverse_judge import traces as reverse_db
 from oj_modules.tasks.ranking import reverse_judge as reverse_tasks
+from tests.e2e.live_ai import (
+    DEEPSEEK_MODEL,
+    DEEPSEEK_OPENAI_BASE_URL,
+    read_deepseek_api_key,
+)
 
 
 _IMAGE_ENV = "NUMOJ_PI_AGENT_JUDGE_IMAGE"
 _API_KEY = "pi-e2e-token"
-_MODEL = "deepseek-v4-flash"
+_MODEL = DEEPSEEK_MODEL
 _TOOL_OUTPUT = "PI_TOOL_RESULT_OK"
 _FINAL_OUTPUT = "PI_FINAL_OK"
 _RESUMED_OUTPUT = "PI_RESUMED_OK"
@@ -802,12 +807,10 @@ def test_pi_reverse_agent_completes_with_real_deepseek_v4_flash(
     except (OSError, subprocess.SubprocessError):
         pytest.skip(f"本地不存在 Agent Judge 镜像 {image}")
 
-    api_key = str(os.environ.get("NUMOJ_PI_LIVE_API_KEY") or "").strip()
-    if not api_key:
-        pytest.skip("未通过 NUMOJ_PI_LIVE_API_KEY 提供真实测试密钥")
+    api_key = read_deepseek_api_key()
     # Key 只保存在此测试的局部变量中；阻止 Flask/Celery、Docker 和 Agent 子进程
     # 从环境继承真实凭证。_run_agent 只把它交给宿主的一次性转发代理。
-    monkeypatch.setenv("NUMOJ_PI_LIVE_API_KEY", "")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
     monkeypatch.setenv("API_KEY", "")
 
     expected_answer = f"NUMOJ_PI_LIVE_OK_{uuid.uuid4().hex}"
@@ -848,7 +851,7 @@ def test_pi_reverse_agent_completes_with_real_deepseek_v4_flash(
     endpoint = {
         "id": 5619,
         "harness": reverse_tasks.HARNESS_PI,
-        "base_url": "https://api.deepseek.com/v1",
+        "base_url": DEEPSEEK_OPENAI_BASE_URL,
         "api_key": api_key,
         "model": _MODEL,
         "concurrency_limit": 1,

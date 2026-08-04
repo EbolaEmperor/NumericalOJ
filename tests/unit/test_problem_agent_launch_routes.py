@@ -104,6 +104,9 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
             "model": "selected-model",
             "protocol": "openai",
             "category": "text",
+            "input_price_per_million": "2.00",
+            "cached_input_price_per_million": "0.20",
+            "output_price_per_million": "8.00",
         },
     )
     monkeypatch.setattr(
@@ -145,6 +148,7 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
         "numoj_session",
     )
     assert snapshots[0]["harness"] == "codex"
+    assert "token_pricing" not in snapshots[0]
     assert "signed-session-value" not in str(snapshots)
 
 
@@ -175,6 +179,7 @@ def test_solve_launch_rejects_non_object_json(monkeypatch):
 
 def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
     task = _Task()
+    requirement = "x" * 4001
     url_calls = []
     monkeypatch.setattr(routes, "_agent_generate_testdata_task", task)
     monkeypatch.setattr(
@@ -209,7 +214,7 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
             "harness": "pi",
             "endpoint_id": "18",
             "test_point_count": "4",
-            "data_requirement": "覆盖边界",
+            "data_requirement": requirement,
             "standard_solution": (
                 io.BytesIO("print(1)\n".encode()),
                 "正解.py",
@@ -229,7 +234,7 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
         "admin",
         4,
         "print(1)\n",
-        "覆盖边界",
+        requirement,
         "standard_solution.py",
         "pi",
         18,
@@ -388,38 +393,8 @@ def test_testdata_launch_rejects_non_strict_test_point_count(
     assert response.get_json()["message"] == "测试点数量无效"
 
 
-def test_testdata_launch_rejects_oversized_requirement_without_truncating(
-    monkeypatch,
-):
-    monkeypatch.setattr(routes, "_agent_generate_testdata_task", _Task())
-    monkeypatch.setattr(
-        routes,
-        "current_user",
-        lambda: {"id": 7, "username": "admin", "is_admin": 1},
-    )
-    monkeypatch.setattr(
-        routes,
-        "get_problem",
-        lambda _pid: {"id": 9, "title": "题", "type": 1},
-    )
-
-    app = _app()
-    with app.test_request_context(
-        "/admin/agent_generate_testdata/9",
-        method="POST",
-        data={
-            "harness": "pi",
-            "endpoint_id": "18",
-            "test_point_count": "4",
-            "data_requirement": "x" * 4001,
-            "standard_solution": (io.BytesIO(b"print(1)\n"), "answer.py"),
-        },
-        content_type="multipart/form-data",
-    ):
-        response, status = routes.admin_agent_generate_testdata(9)
-
-    assert status == 400
-    assert "4000" in response.get_json()["message"]
+def test_testdata_launch_accepts_any_positive_test_point_count():
+    assert routes._parse_agent_test_point_count("5001") == 5001
 
 
 def test_testdata_launch_rejects_promptly_grading_problem(monkeypatch):
@@ -525,68 +500,15 @@ def test_testdata_launch_rejects_invalid_standard_solution_file(
     assert expected_message in response.get_json()["message"]
 
 
-def test_testdata_launch_bounds_standard_solution_file_read(monkeypatch):
-    monkeypatch.setattr(routes, "_AGENT_STANDARD_SOLUTION_MAX_BYTES", 4)
-    monkeypatch.setattr(routes, "_agent_generate_testdata_task", _Task())
-    monkeypatch.setattr(
-        routes,
-        "current_user",
-        lambda: {"id": 7, "username": "admin", "is_admin": 1},
-    )
-    monkeypatch.setattr(
-        routes,
-        "get_problem",
-        lambda _pid: {"id": 9, "title": "题", "type": 1},
-    )
+def test_testdata_launch_reads_large_standard_solution_without_size_cap():
+    payload = b"#" * (2 * 1024 * 1024 + 1)
+    source, filename = routes._read_agent_standard_solution(SimpleNamespace(
+        filename="answer.py",
+        stream=io.BytesIO(payload),
+    ))
 
-    app = _app()
-    with app.test_request_context(
-        "/admin/agent_generate_testdata/9",
-        method="POST",
-        data={
-            "harness": "pi",
-            "endpoint_id": "18",
-            "test_point_count": "4",
-            "standard_solution": (io.BytesIO(b"12345"), "answer.py"),
-        },
-        content_type="multipart/form-data",
-    ):
-        response, status = routes.admin_agent_generate_testdata(9)
-
-    assert status == 400
-    assert "2 MiB" in response.get_json()["message"]
-
-
-def test_testdata_launch_rejects_oversized_multipart_before_parsing(monkeypatch):
-    monkeypatch.setattr(routes, "_AGENT_TESTDATA_REQUEST_MAX_BYTES", 256)
-    monkeypatch.setattr(routes, "_agent_generate_testdata_task", _Task())
-    monkeypatch.setattr(
-        routes,
-        "current_user",
-        lambda: {"id": 7, "username": "admin", "is_admin": 1},
-    )
-    monkeypatch.setattr(
-        routes,
-        "get_problem",
-        lambda _pid: {"id": 9, "title": "题", "type": 1},
-    )
-
-    app = _app()
-    with app.test_request_context(
-        "/admin/agent_generate_testdata/9",
-        method="POST",
-        data={
-            "harness": "pi",
-            "endpoint_id": "18",
-            "test_point_count": "4",
-            "standard_solution": (io.BytesIO(b"x" * 512), "answer.py"),
-        },
-        content_type="multipart/form-data",
-    ):
-        response, status = routes.admin_agent_generate_testdata(9)
-
-    assert status == 413
-    assert "3 MiB" in response.get_json()["message"]
+    assert source.encode() == payload
+    assert filename == "answer.py"
 
 
 @pytest.mark.parametrize(

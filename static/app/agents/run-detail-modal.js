@@ -10,9 +10,13 @@
   var metaEl = modalEl.querySelector('[data-agent-task-meta]');
   var statusEl = modalEl.querySelector('[data-agent-task-status]');
   var messageEl = modalEl.querySelector('[data-agent-task-message]');
+  var inputEl = modalEl.querySelector('[data-agent-task-input]');
+  var cachedEl = modalEl.querySelector('[data-agent-task-cached]');
+  var outputEl = modalEl.querySelector('[data-agent-task-output]');
+  var costEl = modalEl.querySelector('[data-agent-task-cost]');
+  var costFactEl = modalEl.querySelector('[data-agent-task-cost-fact]');
   var scoreEl = modalEl.querySelector('[data-agent-task-score]');
   var attemptsEl = modalEl.querySelector('[data-agent-task-attempts]');
-  var updatedEl = modalEl.querySelector('[data-agent-task-updated]');
   var liveEl = modalEl.querySelector('[data-agent-task-live]');
   var finalLinkEl = modalEl.querySelector('[data-agent-task-final-link]');
   var finalLabelEl = modalEl.querySelector('[data-agent-task-final-label]');
@@ -77,6 +81,51 @@
     return !activeSource || source === activeSource;
   }
 
+  function formatMeasuredValue(value) {
+    if (!Number.isFinite(value) || value < 0) return '—';
+    if (value === 0) return '0.00';
+    return value >= 1 ? value.toFixed(2) : value.toPrecision(2);
+  }
+
+  function formatTokenCount(tokens) {
+    if (!Number.isFinite(tokens) || tokens < 0) return '—';
+    if (tokens < 10000) return formatMeasuredValue(tokens / 1000) + ' K';
+    return formatMeasuredValue(tokens / 1000000) + ' M';
+  }
+
+  function renderTokenUsage(trace) {
+    var usage = trace && trace.token_usage && typeof trace.token_usage === 'object'
+      ? trace.token_usage
+      : null;
+    if (!usage) {
+      inputEl.textContent = '—';
+      cachedEl.textContent = '—';
+      outputEl.textContent = '—';
+      costEl.textContent = '—';
+      costFactEl.hidden = true;
+      return;
+    }
+    var inputTokens = Number(usage.input_total_tokens);
+    var cachedTokens = Number(usage.input_cached_tokens);
+    var outputTokens = Number(usage.output_tokens);
+    var cachedPercent = inputTokens > 0 && cachedTokens >= 0
+      ? Math.min(100, cachedTokens / inputTokens * 100)
+      : 0;
+    inputEl.textContent = formatTokenCount(inputTokens);
+    cachedEl.textContent = cachedPercent.toFixed(2) + '%';
+    outputEl.textContent = formatTokenCount(outputTokens);
+
+    var hasCost = usage.cost_rmb !== null
+      && usage.cost_rmb !== undefined
+      && usage.cost_rmb !== ''
+      && Number.isFinite(Number(usage.cost_rmb))
+      && Number(usage.cost_rmb) >= 0;
+    costFactEl.hidden = !hasCost;
+    costEl.textContent = hasCost
+      ? formatMeasuredValue(Number(usage.cost_rmb)) + ' RMB'
+      : '—';
+  }
+
   function applyState(state, expectedTaskId, generation) {
     if (
       !state || typeof state !== 'object'
@@ -89,7 +138,6 @@
     messageEl.textContent = String(state.message || '任务执行中');
     scoreEl.textContent = String(Number(state.best_score || 0));
     attemptsEl.textContent = String(Array.isArray(state.attempts) ? state.attempts.length : 0);
-    updatedEl.textContent = String(state.updated_at || state.created_at || '—');
     if (state.problem_title) {
       metaEl.textContent = String(state.problem_title) + ' · Task ' + expectedTaskId;
     }
@@ -97,6 +145,7 @@
     var trace = state.execution_trace && typeof state.execution_trace === 'object'
       ? state.execution_trace
       : {};
+    renderTokenUsage(trace);
     renderer.render(traceRoot, trace, {
       scope: expectedTaskId,
       source: String(trace.trace_id || expectedTaskId),
@@ -214,8 +263,12 @@
     statusEl.className = 'agent-task-status-pill is-pending';
     messageEl.textContent = '正在连接任务状态…';
     scoreEl.textContent = '0';
+    inputEl.textContent = '—';
+    cachedEl.textContent = '—';
+    outputEl.textContent = '—';
+    costEl.textContent = '—';
+    costFactEl.hidden = true;
     attemptsEl.textContent = '0';
-    updatedEl.textContent = '—';
     metaEl.textContent = (problemTitle ? problemTitle + ' · ' : '') + 'Task ' + taskId;
     finalLinkEl.hidden = true;
     finalLinkEl.removeAttribute('href');

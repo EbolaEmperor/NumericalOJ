@@ -864,6 +864,13 @@
   grid-column: 1 / -1;
 }
 
+.site-config-price-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .site-config-form-grid label > span,
 .site-config-field > span {
   color: var(--cfg-ink-3);
@@ -1463,6 +1470,10 @@
 
   .site-config-form-grid,
   .site-config-form-grid.is-endpoint {
+    grid-template-columns: 1fr;
+  }
+
+  .site-config-price-row {
     grid-template-columns: 1fr;
   }
 

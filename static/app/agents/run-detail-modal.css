@@ -153,8 +153,8 @@
   font-size: .83rem;
   font-weight: 700;
 }
-.agent-task-run-updated {
-  min-width: 10.8rem;
+.agent-task-run-token-input {
+  min-width: 6.4rem;
 }
 .agent-task-trace-heading {
   display: flex;
@@ -228,9 +228,6 @@
   .agent-task-run-fact:first-child {
     border-left: 0;
     padding-left: 0;
-  }
-  .agent-task-run-updated {
-    display: none;
   }
   .agent-task-status-message {
     white-space: normal;

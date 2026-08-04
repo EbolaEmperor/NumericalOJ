@@ -10,7 +10,6 @@ from datetime import datetime
 from uuid import uuid4
 
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
-from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
@@ -79,10 +78,6 @@ _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
 _get_agent_run_snapshot = None
 _subscribe_agent_run_events = None
-_AGENT_STANDARD_SOLUTION_MAX_BYTES = 2 * 1024 * 1024
-_AGENT_TESTDATA_REQUEST_MAX_BYTES = 3 * 1024 * 1024
-
-
 def _parse_agent_test_point_count(value):
     if type(value) is int:
         count = value
@@ -90,8 +85,8 @@ def _parse_agent_test_point_count(value):
         count = int(value)
     else:
         raise ValueError("测试点数量无效")
-    if count < 1 or count > 5000:
-        raise ValueError("测试点数量需在 1-5000 之间")
+    if count < 1:
+        raise ValueError("测试点数量必须是正整数")
     return count
 
 
@@ -107,15 +102,13 @@ def _read_agent_standard_solution(upload):
         safe_filename = f'standard_solution.{suffix}'
     if not safe_filename:
         safe_filename = 'standard_solution.txt'
-    if len(safe_filename.encode('utf-8')) > 128:
-        raise ValueError('标准程序文件名过长')
+    if len(safe_filename.encode('utf-8')) > 240:
+        safe_filename = f"standard_solution.{suffix or 'txt'}"
 
     try:
-        payload = upload.stream.read(_AGENT_STANDARD_SOLUTION_MAX_BYTES + 1)
+        payload = upload.stream.read()
     except OSError as exc:
         raise ValueError('无法读取标准程序文件') from exc
-    if len(payload) > _AGENT_STANDARD_SOLUTION_MAX_BYTES:
-        raise ValueError('标准程序文件不能超过 2 MiB')
     if not payload:
         raise ValueError('标准程序文件不能为空')
     try:
@@ -543,19 +536,8 @@ def admin_agent_generate_testdata(problem_id):
     if request.mimetype != 'multipart/form-data':
         return jsonify(success=False, message='请使用 multipart/form-data 上传标准程序'), 415
 
-    # Flask 3.1 支持按请求收紧上限。必须在首次解析 form/files 前设置，避免
-    # 超大 multipart 先被完整落盘，再在读取文件内容时才发现超过 2 MiB。
-    request.max_content_length = _AGENT_TESTDATA_REQUEST_MAX_BYTES
-    if (
-        request.content_length is not None
-        and request.content_length > _AGENT_TESTDATA_REQUEST_MAX_BYTES
-    ):
-        return jsonify(success=False, message='造数据 Agent 上传内容不能超过 3 MiB'), 413
-    try:
-        payload = request.form
-        standard_solution = request.files.get('standard_solution')
-    except RequestEntityTooLarge:
-        return jsonify(success=False, message='造数据 Agent 上传内容不能超过 3 MiB'), 413
+    payload = request.form
+    standard_solution = request.files.get('standard_solution')
     if standard_solution is None:
         return jsonify(success=False, message='请选择标准程序文件'), 400
     try:
@@ -566,9 +548,6 @@ def admin_agent_generate_testdata(problem_id):
         return jsonify(success=False, message=str(exc)), 400
 
     data_requirement = str(payload.get('data_requirement') or '').strip()
-    if len(data_requirement) > 4000:
-        return jsonify(success=False, message='造数据要求不能超过 4000 个字符'), 400
-
     try:
         test_point_count = _parse_agent_test_point_count(
             payload.get('test_point_count'),
@@ -691,6 +670,7 @@ def admin_agent_run_stream(task_id):
         trace = snapshot.get("execution_trace") or {}
         messages = trace.get("trace_messages") or []
         files = trace.get("trace_files") or []
+        usage = trace.get("token_usage") or {}
         last_message = messages[-1] if messages else {}
         return (
             snapshot.get("status"),
@@ -702,6 +682,10 @@ def admin_agent_run_stream(task_id):
             last_message.get("source"),
             last_message.get("offset"),
             last_message.get("event_index"),
+            usage.get("request_count"),
+            usage.get("input_total_tokens"),
+            usage.get("output_tokens"),
+            usage.get("cost_rmb"),
             tuple(
                 (item.get("path"), item.get("size"))
                 for item in files if isinstance(item, dict)

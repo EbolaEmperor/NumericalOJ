@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""使用所选 CLI harness 与 numoj-user skill 生成并验证测试数据。"""
+"""使用所选 CLI harness 与 numoj-user skill 生成测试数据。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from oj_modules.problems.agent_launch import (
     resolve_launch_endpoint,
 )
 from oj_modules.problems.testdata import (
-    TESTDATA_TEXT_MAX_TOTAL_BYTES,
-    TESTDATA_ZIP_MAX_TOTAL_BYTES,
     get_problem_testdata_state,
     parse_testdata_zip,
     publish_staged_testdata,
@@ -25,12 +23,10 @@ from oj_modules.problems.testdata import (
 from oj_modules.tasks.agent.harness_runtime import run_agent_harness
 from oj_modules.tasks.agent.shared import (
     AGENT_GENERATE_TESTDATA_TASK_NAME,
-    _clamp_int,
     _format_local_time,
     _publish_agent_trace,
     _update_agent_state,
 )
-from oj_modules.tasks.agent.testdata_validation import validate_staged_testdata
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
 
 
@@ -45,12 +41,6 @@ _LANGUAGE_SUFFIXES = {
 }
 _STAGED_ZIP_RELATIVE_PATH = "agent-output/testdata.zip"
 _STAGED_ZIP_CONTAINER_PATH = f"/workspace/{_STAGED_ZIP_RELATIVE_PATH}"
-# ZIP 只允许承载受 TESTDATA_TEXT_MAX_TOTAL_BYTES 限制的文本测试点；额外空间
-# 留给 ZIP 目录和压缩开销，同时不得突破通用解压总量上限。
-_STAGED_ZIP_MAX_BYTES = min(
-    TESTDATA_ZIP_MAX_TOTAL_BYTES,
-    TESTDATA_TEXT_MAX_TOTAL_BYTES + 8 * 1024 * 1024,
-)
 
 __all__ = ["build_testdata_agent_prompt", "register_agent_generate_testdata_task"]
 
@@ -145,12 +135,6 @@ def _harness_failure_reason(run_result):
     return "harness 未生成预期的测试数据 ZIP"
 
 
-def _validation_failure_message(validation):
-    message = str((validation or {}).get("message") or "标准程序未通过候选测试数据")
-    status = str((validation or {}).get("status") or "Unaccepted")
-    return f"候选测试数据未发布：{message}（{status}）"
-
-
 def register_agent_generate_testdata_task(celery_app):
     existing = celery_app.tasks.get(AGENT_GENERATE_TESTDATA_TASK_NAME)
     if existing:
@@ -178,12 +162,10 @@ def register_agent_generate_testdata_task(celery_app):
         task_id = str(
             getattr(getattr(self, "request", None), "id", None) or ""
         ).strip() or f"unknown-{int(time.time())}"
-        point_count = _clamp_int(
-            test_point_count,
-            10,
-            min_value=1,
-            max_value=5000,
-        )
+        try:
+            point_count = int(test_point_count)
+        except (TypeError, ValueError):
+            point_count = 0
         standard_program = str(standard_code or "")
         requirement = str(data_requirement or "").strip()
         state = {
@@ -230,8 +212,8 @@ def register_agent_generate_testdata_task(celery_app):
             message = "标准程序不能为空"
             _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
-        if len(requirement) > 4000:
-            message = "造数据要求不能超过 4000 个字符"
+        if point_count < 1:
+            message = "测试点数量必须是正整数"
             _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
         if not str(session_cookie or "").strip():
@@ -317,9 +299,7 @@ def register_agent_generate_testdata_task(celery_app):
                     relative_solution_path: standard_program,
                     relative_interactor_path: str(problem.get("test_code") or ""),
                 },
-                artifact_files={
-                    _STAGED_ZIP_RELATIVE_PATH: _STAGED_ZIP_MAX_BYTES,
-                },
+                artifact_files=(_STAGED_ZIP_RELATIVE_PATH,),
                 trace_callback=lambda: _publish_agent_trace(state),
                 reset_trace=False,
             )
@@ -392,47 +372,9 @@ def register_agent_generate_testdata_task(celery_app):
 
         _update_agent_state(
             state,
-            "候选 ZIP 已安全解析，正在用上传的正解逐点验证",
-            stage="validating",
-            test_point_count=point_count,
-        )
-        try:
-            validation = validate_staged_testdata(
-                problem,
-                standard_program,
-                parsed["testdata"],
-                task_id=task_id,
-            )
-        except Exception as exc:
-            message = f"候选测试数据判题失败：{str(exc)[:800]}"
-            _update_agent_state(state, message, status="Failed", stage="finished")
-            return {"success": False, "message": message, "task_id": task_id}
-
-        state["best_score"] = int(validation.get("score") or 0)
-        if not validation.get("success"):
-            message = _validation_failure_message(validation)
-            _update_agent_state(
-                state,
-                message,
-                status="Failed",
-                stage="finished",
-                validation={
-                    "status": validation.get("status"),
-                    "score": validation.get("score"),
-                    "test_point_count": point_count,
-                },
-            )
-            return {"success": False, "message": message, "task_id": task_id}
-
-        _update_agent_state(
-            state,
-            "候选测试数据已通过正解验证，正在发布",
+            "候选测试数据格式检查通过，正在发布",
             stage="publishing",
-            validation={
-                "status": validation.get("status"),
-                "score": validation.get("score"),
-                "test_point_count": point_count,
-            },
+            test_point_count=point_count,
         )
         try:
             published = publish_staged_testdata(
@@ -441,11 +383,11 @@ def register_agent_generate_testdata_task(celery_app):
                 testdata=parsed["testdata"],
             )
         except Exception as exc:
-            message = f"已验证测试数据发布失败：{str(exc)[:800]}"
+            message = f"测试数据发布失败：{str(exc)[:800]}"
             _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
         if not published:
-            message = "题目测试数据已被其他管理员修改，本次已验证产物未发布"
+            message = "题目测试数据已被其他管理员修改，本次产物未发布"
             _update_agent_state(
                 state,
                 message,
@@ -454,7 +396,7 @@ def register_agent_generate_testdata_task(celery_app):
             )
             return {"success": False, "message": message, "task_id": task_id}
 
-        message = f"测试数据已验证并一次性发布，共 {point_count} 个测试点"
+        message = f"测试数据格式检查通过并已发布，共 {point_count} 个测试点"
         _update_agent_state(
             state,
             message,

@@ -36,6 +36,12 @@ from tests.e2e.conftest import (
     ranking_id_from_create,
     write_zip,
 )
+from tests.e2e.live_ai import (
+    DEEPSEEK_ANTHROPIC_BASE_URL,
+    DEEPSEEK_MODEL,
+    DEEPSEEK_OPENAI_BASE_URL,
+    read_deepseek_api_key,
+)
 from tests.environment_guard import (
     DockerTestTarget,
     UnsafeDockerDaemonError,
@@ -50,7 +56,7 @@ pytestmark = [
     pytest.mark.timeout(3600),
 ]
 
-_MODEL = "deepseek-v4-flash"
+_MODEL = DEEPSEEK_MODEL
 _CONTEXT_WINDOW_TOKENS = 1_000_000
 _MAX_OUTPUT_TOKENS = 384_000
 _PASSWORD = "pw123456"
@@ -143,9 +149,7 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
     """启动不含任何 fake 接缝的本地 Web/Celery 服务。"""
     _assert_disposable_environment()
     _assert_port_free()
-    secret = str(os.environ.get("NUMOJ_REVERSE_LIVE_API_KEY") or "").strip()
-    if not secret:
-        _fail("必须通过 NUMOJ_REVERSE_LIVE_API_KEY 提供真实测试密钥")
+    secret = read_deepseek_api_key()
     import config
     if shutil.which("docker") is None:
         _fail("真实反向评测 E2E 需要本地 Docker CLI")
@@ -192,6 +196,7 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
         # 凭证只能由管理员 CLI 从独立测试密钥文件写入一次性测试数据库。Web、Celery、
         # Playwright 和 Agent 容器都不得从进程环境继承真实 Key。
         "NUMOJ_REVERSE_LIVE_API_KEY": "",
+        "DEEPSEEK_API_KEY": "",
         "API_KEY": "",
     })
     web_log_path = tmp_path / "reverse-live-web.log"
@@ -319,8 +324,8 @@ def _configure_live_endpoints(
     )
     env_file.chmod(0o600)
     answer_payload = [
-        _endpoint("claude_code", "https://api.deepseek.com/anthropic"),
-        _endpoint("pi", "https://api.deepseek.com/v1"),
+        _endpoint("claude_code", DEEPSEEK_ANTHROPIC_BASE_URL),
+        _endpoint("pi", DEEPSEEK_OPENAI_BASE_URL),
     ]
     try:
         saved = cli.admin_json(
@@ -344,7 +349,7 @@ def _configure_live_endpoints(
             "save-quality-gate-endpoints",
             str(competition_id),
             json.dumps(
-                [_endpoint("pi", "https://api.deepseek.com/v1")],
+                [_endpoint("pi", DEEPSEEK_OPENAI_BASE_URL)],
                 ensure_ascii=False,
             ),
             "--env-file",
@@ -1071,7 +1076,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """真实创建题目、双 harness 作答，并点击验证全部用户结果入口。"""
-    secret = str(os.environ.get("NUMOJ_REVERSE_LIVE_API_KEY") or "").strip()
+    secret = read_deepseek_api_key()
     cli = CliRunner(live_numoj_server.base_url, tmp_path)
     suffix = uuid4().hex[:12]
     username = f"reverse_live_{suffix}"
@@ -1097,6 +1102,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
 
         # 端点写入一次性数据库后立即从后续浏览器/子进程环境移除真实 Key。
         monkeypatch.setenv("NUMOJ_REVERSE_LIVE_API_KEY", "")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "")
         monkeypatch.setenv("API_KEY", "")
         try:
             from playwright.sync_api import Error as PlaywrightError

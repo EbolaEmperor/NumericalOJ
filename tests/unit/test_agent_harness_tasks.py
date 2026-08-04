@@ -133,20 +133,7 @@ def _successful_harness_result(payload=b"staged-zip"):
     )
 
 
-def _accepted_validation(count):
-    return {
-        "success": True,
-        "status": "Accepted",
-        "score": count,
-        "test_points": [
-            {"test_index": index, "status": "Accepted"}
-            for index in range(1, count + 1)
-        ],
-        "message": f"标准程序通过全部 {count} 个测试点",
-    }
-
-
-def test_testdata_task_exports_parses_validates_then_publishes(
+def test_testdata_task_exports_parses_then_publishes(
         monkeypatch, tmp_path):
     snapshots = _patch_common(monkeypatch, tmp_path)
     payload = b"host-owned-staged-zip"
@@ -174,14 +161,6 @@ def test_testdata_task_exports_parses_validates_then_publishes(
         assert Path(extract_dir).parent == archive.parent
         return {"count": 2, "testdata": rows}
 
-    def fake_validate(problem, standard_solution_source, testdata, *, task_id):
-        calls.append("validate")
-        assert problem == _PROBLEM
-        assert standard_solution_source == "print(1)"
-        assert testdata is rows
-        assert task_id == "testdata-harness-task"
-        return _accepted_validation(2)
-
     def fake_publish(problem_id, *, before_state, testdata):
         calls.append("publish")
         assert problem_id == 5
@@ -190,18 +169,17 @@ def test_testdata_task_exports_parses_validates_then_publishes(
         return True
 
     monkeypatch.setattr(data_task, "parse_testdata_zip", fake_parse)
-    monkeypatch.setattr(data_task, "validate_staged_testdata", fake_validate)
     monkeypatch.setattr(data_task, "publish_staged_testdata", fake_publish)
 
     result = _invoke_task()
 
     assert result == {
         "success": True,
-        "message": "测试数据已验证并一次性发布，共 2 个测试点",
+        "message": "测试数据格式检查通过并已发布，共 2 个测试点",
         "task_id": "testdata-harness-task",
         "test_point_count": 2,
     }
-    assert calls == ["parse", "validate", "publish"]
+    assert calls == ["parse", "publish"]
     assert len(harness_calls) == 1
     harness_call = harness_calls[0]
     assert harness_call["task_kind"] == "testdata"
@@ -211,9 +189,7 @@ def test_testdata_task_exports_parses_validates_then_publishes(
         "task-input/official answer.py": "print(1)",
         "task-input/problem_interactor.py": _PROBLEM["test_code"],
     }
-    assert harness_call["artifact_files"] == {
-        _ZIP_RELATIVE_PATH: data_task._STAGED_ZIP_MAX_BYTES,
-    }
+    assert harness_call["artifact_files"] == (_ZIP_RELATIVE_PATH,)
     assert snapshots[-1]["status"] == "Completed"
     assert snapshots[-1]["stage"] == "finished"
     assert snapshots[-1]["test_point_count"] == 2
@@ -221,7 +197,7 @@ def test_testdata_task_exports_parses_validates_then_publishes(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_testdata_task_rejects_wrong_point_count_before_validation_or_publish(
+def test_testdata_task_rejects_wrong_point_count_before_publish(
         monkeypatch, tmp_path):
     _patch_common(monkeypatch, tmp_path)
     monkeypatch.setattr(
@@ -239,11 +215,6 @@ def test_testdata_task_rejects_wrong_point_count_before_validation_or_publish(
     )
     monkeypatch.setattr(
         data_task,
-        "validate_staged_testdata",
-        lambda *_args, **_kwargs: pytest.fail("数量不符时不得执行正解验证"),
-    )
-    monkeypatch.setattr(
-        data_task,
         "publish_staged_testdata",
         lambda *_args, **_kwargs: pytest.fail("数量不符时不得发布"),
     )
@@ -252,46 +223,6 @@ def test_testdata_task_rejects_wrong_point_count_before_validation_or_publish(
 
     assert result["success"] is False
     assert "要求 2 个测试点，实际生成 1 个" in result["message"]
-
-
-def test_testdata_task_does_not_publish_failed_standard_solution_validation(
-        monkeypatch, tmp_path):
-    _patch_common(monkeypatch, tmp_path)
-    rows = [
-        {"input": "0", "output": "0"},
-        {"input": "9", "output": "wrong"},
-    ]
-    monkeypatch.setattr(
-        data_task,
-        "run_agent_harness",
-        lambda **_kwargs: _successful_harness_result(),
-    )
-    monkeypatch.setattr(
-        data_task,
-        "parse_testdata_zip",
-        lambda *_args, **_kwargs: {"count": 2, "testdata": rows},
-    )
-    monkeypatch.setattr(
-        data_task,
-        "validate_staged_testdata",
-        lambda *_args, **_kwargs: {
-            "success": False,
-            "status": "Unaccepted",
-            "score": 1,
-            "message": "标准程序有 1 个测试点未通过",
-        },
-    )
-    monkeypatch.setattr(
-        data_task,
-        "publish_staged_testdata",
-        lambda *_args, **_kwargs: pytest.fail("验证失败时不得发布"),
-    )
-
-    result = _invoke_task()
-
-    assert result["success"] is False
-    assert "标准程序有 1 个测试点未通过" in result["message"]
-    assert "Unaccepted" in result["message"]
 
 
 def test_testdata_task_reports_publish_cas_conflict(monkeypatch, tmp_path):
@@ -310,11 +241,6 @@ def test_testdata_task_reports_publish_cas_conflict(monkeypatch, tmp_path):
         data_task,
         "parse_testdata_zip",
         lambda *_args, **_kwargs: {"count": 2, "testdata": rows},
-    )
-    monkeypatch.setattr(
-        data_task,
-        "validate_staged_testdata",
-        lambda *_args, **_kwargs: _accepted_validation(2),
     )
     monkeypatch.setattr(
         data_task,
@@ -337,7 +263,7 @@ def test_testdata_task_reports_publish_cas_conflict(monkeypatch, tmp_path):
     assert "events" not in snapshots[-1]
 
 
-def test_testdata_task_harness_exception_never_parses_validates_or_publishes(
+def test_testdata_task_harness_exception_never_parses_or_publishes(
         monkeypatch, tmp_path):
     _patch_common(monkeypatch, tmp_path)
 
@@ -349,11 +275,6 @@ def test_testdata_task_harness_exception_never_parses_validates_or_publishes(
         data_task,
         "parse_testdata_zip",
         lambda *_args, **_kwargs: pytest.fail("harness 异常时不得解析"),
-    )
-    monkeypatch.setattr(
-        data_task,
-        "validate_staged_testdata",
-        lambda *_args, **_kwargs: pytest.fail("harness 异常时不得验证"),
     )
     monkeypatch.setattr(
         data_task,
@@ -395,11 +316,6 @@ def test_testdata_task_nonzero_harness_result_never_publishes(
     )
     monkeypatch.setattr(
         data_task,
-        "validate_staged_testdata",
-        lambda *_args, **_kwargs: pytest.fail("非零退出时不得验证"),
-    )
-    monkeypatch.setattr(
-        data_task,
         "publish_staged_testdata",
         lambda *_args, **_kwargs: pytest.fail("非零退出时不得发布"),
     )
@@ -419,11 +335,6 @@ def test_testdata_task_only_allows_standard_test_point_grading_mode(
         data_task,
         "run_agent_harness",
         lambda **_kwargs: pytest.fail("非 mode 1 不得启动 harness"),
-    )
-    monkeypatch.setattr(
-        data_task,
-        "validate_staged_testdata",
-        lambda *_args, **_kwargs: pytest.fail("非 mode 1 不得验证"),
     )
     monkeypatch.setattr(
         data_task,

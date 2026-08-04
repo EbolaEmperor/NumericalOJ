@@ -102,7 +102,10 @@ python3 scripts/numoj_admin.py site-config llm create \
 
 python3 scripts/numoj_admin.py site-config llm update <endpoint_id> \
   --model example-model-v2 \
-  --api-key @llm-api-key.txt
+  --api-key @llm-api-key.txt \
+  --input-price-per-million 1 \
+  --cached-input-price-per-million 0.02 \
+  --output-price-per-million 2
 ```
 
 Bind a feature, then lock and unlock the repository Embedding binding. Read the

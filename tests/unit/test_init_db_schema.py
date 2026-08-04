@@ -188,6 +188,12 @@ def test_dynamic_site_config_schema_is_fully_declared():
     assert endpoints.columns["thinking_format"].lower() == (
         "varchar(32) not null default 'none'"
     )
+    for price_field in (
+        "input_price_per_million",
+        "cached_input_price_per_million",
+        "output_price_per_million",
+    ):
+        assert endpoints.columns[price_field].lower() == "decimal(20,8) default null"
     assert "name" not in endpoints.columns
     assert endpoints.columns["model"].lower() == "varchar(255) not null"
     assert "uq_llm_endpoint_name" not in endpoints.indexes
