@@ -208,6 +208,18 @@ def test_dynamic_site_config_schema_is_fully_declared():
     assert "uq_dynamic_config_test_token" in grants.indexes
 
 
+
+def test_agent_task_run_schema_declares_endpoint_snapshot():
+    from scripts import init_db_schema
+
+    agent_runs = init_db_schema._load_schema_specs()["agent_task_runs"]
+    assert agent_runs.columns["harness"].lower() == "varchar(32) default null"
+    assert agent_runs.columns["endpoint_id"].lower() == "bigint default null"
+    assert agent_runs.columns["endpoint_model"].lower() == (
+        "varchar(255) default null"
+    )
+
+
 def test_empty_database_dry_run_plans_full_schema_without_connecting_to_it(monkeypatch):
     from scripts import init_db_schema
 

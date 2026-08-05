@@ -82,6 +82,9 @@ def test_upsert_basic_insert_and_json_serialization():
         'problem_id': 7,
         'problem_title': '示例题目',
         'requested_by': 'admin',
+        'harness': 'pi',
+        'endpoint_id': 21,
+        'endpoint_model': 'deepseek-v4-flash',
         'status': 'running',
         'message': '进行中',
         'best_score': 0,
@@ -95,6 +98,9 @@ def test_upsert_basic_insert_and_json_serialization():
     assert row['problem_id'] == 7
     assert row['problem_title'] == '示例题目'
     assert row['requested_by'] == 'admin'
+    assert row['harness'] == 'pi'
+    assert row['endpoint_id'] == 21
+    assert row['endpoint_model'] == 'deepseek-v4-flash'
     assert row['status'] == 'running'
     assert 'rounds_run' not in row
     assert 'max_rounds' not in row
@@ -164,12 +170,37 @@ def test_upsert_on_duplicate_key_update():
     assert row['message'] == 'second'
 
 
+def test_upsert_keeps_endpoint_snapshot_when_worker_state_omits_model():
+    """worker 启动时的首次状态不带 model，不应清空路由已写入的节点快照。"""
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-endpoint-snapshot',
+        'harness': 'pi',
+        'endpoint_id': 21,
+        'endpoint_model': 'deepseek-v4-flash',
+        'status': 'Pending',
+    })
+    db.upsert_agent_run_snapshot({
+        'task_id': 'tk-endpoint-snapshot',
+        'harness': 'pi',
+        'endpoint_id': 21,
+        'status': 'Running',
+    })
+
+    row = _fetch_raw('tk-endpoint-snapshot')
+    assert row['harness'] == 'pi'
+    assert row['endpoint_id'] == 21
+    assert row['endpoint_model'] == 'deepseek-v4-flash'
+
+
 def test_canceled_snapshot_is_sticky_against_late_worker_upsert():
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-cancel-sticky',
         'status': 'Running',
         'message': '执行中',
         'best_score': 10,
+        'harness': 'pi',
+        'endpoint_id': 21,
+        'endpoint_model': 'deepseek-v4-flash',
     })
 
     state, changed = db.cancel_agent_run_snapshot('tk-cancel-sticky')
@@ -183,11 +214,17 @@ def test_canceled_snapshot_is_sticky_against_late_worker_upsert():
         'status': 'Failed',
         'message': '迟到 worker 的失败结果',
         'best_score': 99,
+        'harness': 'claude_code',
+        'endpoint_id': 22,
+        'endpoint_model': 'other-model',
     })
     row = _fetch_raw('tk-cancel-sticky')
     assert row['status'] == 'Canceled'
     assert row['message'] == '任务已由管理员终止'
     assert row['best_score'] == 10
+    assert row['harness'] == 'pi'
+    assert row['endpoint_id'] == 21
+    assert row['endpoint_model'] == 'deepseek-v4-flash'
 
     state, changed = db.cancel_agent_run_snapshot('tk-cancel-sticky')
     assert changed is False
@@ -226,6 +263,9 @@ def test_get_by_task_id_roundtrip():
         'problem_id': 3,
         'problem_title': '读回题',
         'requested_by': 'admin',
+        'harness': 'claude_code',
+        'endpoint_id': 34,
+        'endpoint_model': 'deepseek-v4-flash',
         'status': 'completed',
         'message': '完成',
         'best_score': 0,
@@ -238,6 +278,9 @@ def test_get_by_task_id_roundtrip():
     assert got['problem_id'] == 3
     assert got['problem_title'] == '读回题'
     assert got['requested_by'] == 'admin'
+    assert got['harness'] == 'claude_code'
+    assert got['endpoint_id'] == 34
+    assert got['endpoint_model'] == 'deepseek-v4-flash'
     assert got['status'] == 'completed'
     assert 'round' not in got
     assert 'max_rounds' not in got
@@ -332,6 +375,9 @@ def test_paginated_row_shape():
         'problem_id': 9,
         'problem_title': '形状题',
         'requested_by': 'admin',
+        'harness': 'pi',
+        'endpoint_id': 45,
+        'endpoint_model': 'deepseek-v4-flash',
         'status': 'completed',
         'best_score': 42,
         'latest_submission_id': 77,
@@ -340,10 +386,14 @@ def test_paginated_row_shape():
     assert len(rows) == 1
     row = rows[0]
     for key in ('task_id', 'problem_id', 'problem_title', 'requested_by',
+                'harness', 'endpoint_id', 'endpoint_model',
                 'status', 'best_score', 'latest_submission_id',
                 'problem_max_score', 'created_at', 'updated_at'):
         assert key in row
     assert 'attempts_json' not in row
     assert row['problem_id'] == 9
+    assert row['harness'] == 'pi'
+    assert row['endpoint_id'] == 45
+    assert row['endpoint_model'] == 'deepseek-v4-flash'
     assert row['best_score'] == 42
     assert row['latest_submission_id'] == 77

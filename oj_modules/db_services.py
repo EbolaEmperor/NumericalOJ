@@ -432,11 +432,13 @@ def upsert_agent_run_snapshot(state):
             cursor.execute(
                 """
                 INSERT INTO agent_task_runs (
-                    task_id, problem_id, problem_title, requested_by, status, message,
+                    task_id, problem_id, problem_title, requested_by,
+                    harness, endpoint_id, endpoint_model, status, message,
                     best_score, final_submission_id, latest_submission_id,
                     attempts_json
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
                     %s, %s, %s,
                     %s
                 )
@@ -455,6 +457,21 @@ def upsert_agent_run_snapshot(state):
                         LOWER(status) IN ('canceled', 'cancelled'),
                         requested_by,
                         VALUES(requested_by)
+                    ),
+                    harness=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        harness,
+                        COALESCE(NULLIF(VALUES(harness), ''), harness)
+                    ),
+                    endpoint_id=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        endpoint_id,
+                        COALESCE(VALUES(endpoint_id), endpoint_id)
+                    ),
+                    endpoint_model=IF(
+                        LOWER(status) IN ('canceled', 'cancelled'),
+                        endpoint_model,
+                        COALESCE(NULLIF(VALUES(endpoint_model), ''), endpoint_model)
                     ),
                     status=IF(
                         LOWER(status) IN ('canceled', 'cancelled'),
@@ -492,6 +509,9 @@ def upsert_agent_run_snapshot(state):
                     state.get("problem_id"),
                     str(state.get("problem_title") or "")[:255] if state.get("problem_title") is not None else None,
                     state.get("requested_by"),
+                    str(state.get("harness") or "")[:32] if state.get("harness") is not None else None,
+                    state.get("endpoint_id"),
+                    str(state.get("endpoint_model") or "")[:255] if state.get("endpoint_model") is not None else None,
                     str(state.get("status") or "Pending")[:32],
                     state.get("message"),
                     best_score,
@@ -537,8 +557,9 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
             changed = cursor.rowcount > 0
             cursor.execute(
                 """
-                SELECT task_id, problem_id, problem_title, requested_by, status,
-                       message, best_score, final_submission_id,
+                SELECT task_id, problem_id, problem_title, requested_by,
+                       harness, endpoint_id, endpoint_model, status, message,
+                       best_score, final_submission_id,
                        latest_submission_id, attempts_json, created_at, updated_at
                 FROM agent_task_runs
                 WHERE task_id=%s
@@ -586,6 +607,9 @@ def _agent_run_from_row(row):
         "problem_id": row.get("problem_id"),
         "problem_title": row.get("problem_title"),
         "requested_by": row.get("requested_by"),
+        "harness": row.get("harness"),
+        "endpoint_id": row.get("endpoint_id"),
+        "endpoint_model": row.get("endpoint_model"),
         "status": row.get("status"),
         "message": row.get("message"),
         "best_score": _safe_int(row.get("best_score"), 0),
@@ -606,7 +630,8 @@ def get_agent_run_by_task_id(task_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT task_id, problem_id, problem_title, requested_by, status, message,
+                SELECT task_id, problem_id, problem_title, requested_by,
+                       harness, endpoint_id, endpoint_model, status, message,
                        best_score, final_submission_id, latest_submission_id,
                        attempts_json, created_at, updated_at
                 FROM agent_task_runs
@@ -634,6 +659,7 @@ def get_agent_runs_paginated(page=1, per_page=20):
             cursor.execute(
                 """
                 SELECT r.task_id, r.problem_id, r.problem_title, r.requested_by,
+                       r.harness, r.endpoint_id, r.endpoint_model,
                        r.status, r.message, r.best_score, r.final_submission_id,
                        r.latest_submission_id, p.max_score AS problem_max_score,
                        r.created_at, r.updated_at
