@@ -1,3 +1,4 @@
+{% from 'ranking/components/harness_logo.html' import harness_logo %}
 {% from 'components/execution_record_card.html' import render_execution_record_card %}
 
 {% macro render_agent_task_card(run, current_page) %}
@@ -9,6 +10,7 @@
   {% set raw_progress = (score * 100 / max_score) if max_score else none %}
   {% set progress = (100 if raw_progress > 100 else (0 if raw_progress < 0 else raw_progress|round(1))) if raw_progress is not none else none %}
   {% set task_id = run.task_id or '' %}
+  {% set harness_label = {'claude_code': 'Claude Code', 'codex': 'Codex', 'opencode': 'OpenCode', 'pi': 'Pi'}.get(run.harness, run.harness or 'Harness 未记录') %}
 
   {% call(slot) render_execution_record_card(
       status_class,
@@ -20,8 +22,8 @@
     {% if slot == 'identity' %}
       <span class="aj-sub-user">
         <span class="numoj-avatar aj-sub-ava"
-              data-avatar-seed="{{ run.display_problem_title }}"
-              data-avatar-label="{{ run.display_problem_title }}"></span>
+              data-avatar-seed="{{ run.requested_by or 'numericaloj' }}"
+              data-avatar-label="{{ run.requested_by or '未知用户' }}"></span>
         <span class="aj-sub-uname" title="{{ run.display_problem_title }}">{{ run.display_problem_title }}</span>
       </span>
       <span class="aj-sub-id">#{{ run.problem_id or '-' }}</span>
@@ -32,8 +34,9 @@
       <span class="aj-card-meta" title="任务发起人：{{ run.requested_by }}">
         <i class="fas fa-user" aria-hidden="true"></i><span>{{ run.requested_by }}</span>
       </span>
-      <span class="aj-card-meta" title="任务 ID：{{ task_id }}">
-        <i class="fas fa-fingerprint" aria-hidden="true"></i><span>{{ task_id[:8] }}</span>
+      <span class="aj-card-meta" title="Harness：{{ harness_label }}；LLM 节点：{{ run.endpoint_model or '未记录' }}">
+        {% if run.harness %}{{ harness_logo(run.harness) }}{% else %}<i class="fas fa-microchip" aria-hidden="true"></i>{% endif %}
+        <span>{{ harness_label }} · {{ run.endpoint_model or '节点未记录' }}</span>
       </span>
       {% if run.latest_submission_id %}
         <a class="aj-file"

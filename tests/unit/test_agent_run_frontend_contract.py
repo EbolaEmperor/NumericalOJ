@@ -43,9 +43,19 @@ def test_agent_tasks_and_ranking_submissions_share_one_card_shell():
 
 def test_agent_task_card_links_the_latest_submission_and_preserves_detail_hook():
     card = _read("templates/agents/task_card.html")
+    task_list = _read("templates/admin/agent_tasks.html")
+    navigation = _read("templates/components/layout/navigation.html")
 
     assert "run.latest_submission_id" in card
     assert "submission.submission_detail" in card
+    assert "harness_logo(run.harness)" in card
+    assert "run.endpoint_model" in card
+    assert "app/ranking/harness-logos.css" in task_list
+    assert "fa-fingerprint" not in card
+    assert "task_id[:8]" not in card
+    assert 'data-avatar-seed="{{ run.requested_by or \'numericaloj\' }}"' in card
+    assert 'data-avatar-seed="{{ user.username }}"' in navigation
+    assert 'data-avatar-seed="{{ run.display_problem_title }}"' not in card
     assert "data-agent-task-detail" in card
     assert 'data-task-id="{{ task_id }}"' in card
 
