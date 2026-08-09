@@ -641,7 +641,9 @@ def _agent_state_with_loaded_session_token_usage(state):
                 current_task_id,
             )
         except Exception:
-            # 用量展示不能阻断状态接口；失败时仍返回当前任务的规范统计。
+            # 用量展示不能阻断状态接口。历史读取失败时，只在数据层仍能确认
+            # 请求 task 是会话当前轮次的情况下保留其实时统计；否则 fail
+            # closed，避免已被 retry supersede 的旧轮次重新计入成本。
             logger.warning(
                 '读取 Agent 会话历史用量失败',
                 extra={
@@ -649,6 +651,30 @@ def _agent_state_with_loaded_session_token_usage(state):
                     'task_id': current_task_id,
                 },
                 exc_info=True,
+            )
+            current_task_visible = False
+            try:
+                owning_session = get_agent_session_by_task_id(current_task_id)
+                current_task_visible = bool(
+                    isinstance(owning_session, dict)
+                    and str(owning_session.get('session_id') or '').strip()
+                    == session_id
+                    and str(
+                        owning_session.get('current_task_id') or ''
+                    ).strip() == current_task_id
+                )
+            except Exception:
+                logger.warning(
+                    '确认 Agent 会话当前轮次失败',
+                    extra={
+                        'session_id': session_id,
+                        'task_id': current_task_id,
+                    },
+                    exc_info=True,
+                )
+            historical_usages = _AgentHistoricalTokenUsages(
+                (),
+                current_task_visible=current_task_visible,
             )
     return _agent_state_with_session_token_usage(state, historical_usages)
 
