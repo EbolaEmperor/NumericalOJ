@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +22,7 @@ from oj_modules.tasks.ranking import reverse_judge as reverse_tasks
 from tests.e2e.live_ai import (
     DEEPSEEK_MODEL,
     DEEPSEEK_OPENAI_BASE_URL,
+    ROOT,
     read_deepseek_api_key,
 )
 
@@ -42,6 +44,19 @@ pytestmark = [
         reason=f"需要通过 {_IMAGE_ENV} 指定已构建的 Agent Judge lite 镜像",
     ),
 ]
+
+
+@pytest.fixture
+def docker_shared_tmp_path() -> Path:
+    # Colima 只可靠共享仓库所在的 /Users 路径；pytest 默认使用的
+    # /private/var/folders 无法保证容器原子 rename 能双向同步。
+    temp_root = ROOT / "tmp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="numoj-pi-agent-judge-e2e-",
+        dir=str(temp_root),
+    ) as path:
+        yield Path(path)
 
 
 def _request_uses_only_standard_roles(request: dict[str, Any]) -> bool:
@@ -589,7 +604,8 @@ def test_claude_lite_image_honors_one_million_context_and_384k_output_contract()
 
 
 def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
-        tmp_path: Path):
+        docker_shared_tmp_path: Path):
+    tmp_path = docker_shared_tmp_path
     if shutil.which("docker") is None:
         pytest.skip("Docker CLI 不可用")
     image = os.environ[_IMAGE_ENV]
@@ -613,7 +629,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     # bind mount 两端的 UID 在 Linux CI 与 macOS/Colima 上都可能不同；
-    # 一次性测试目录及状态文件由宿主预先放开，避免任一端事后 chmod/chown。
+    # 一次性测试目录及状态文件由宿主预先放开。
     workspace.chmod(0o777)
     state_path = workspace / ".aj_session_state.json"
     state_journal_path = workspace / ".aj_session_state.jsonl"
@@ -634,6 +650,12 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
             "-v", f"{workspace}:/workspace",
             "-w", "/workspace",
             image, "bash", "-lc", "tail -f /dev/null",
+        ])
+        # Docker Desktop 可能仍把宿主的 0777 目录投影成 root:root 0755；
+        # 只在测试容器内重新放开 workspace，供 node 原子创建状态临时文件。
+        _run([
+            "docker", "exec", container_name,
+            "chmod", "0777", "/workspace",
         ])
         _run([
             "docker", "exec", container_name, "bash", "-lc",

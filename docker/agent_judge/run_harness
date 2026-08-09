@@ -386,6 +386,15 @@ def _resume_session_id_from_env(harness):
 def _write_session_event(state_path, event):
     payload = json.dumps(event, ensure_ascii=False).encode("utf-8")
 
+    destination_mode = None
+    try:
+        destination_stat = os.stat(state_path, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISREG(destination_stat.st_mode):
+            destination_mode = stat.S_IMODE(destination_stat.st_mode)
+
     def write_all(fd, data):
         offset = 0
         while offset < len(data):
@@ -402,6 +411,10 @@ def _write_session_event(state_path, event):
     fd = os.open(temporary_path, flags, 0o600)
     try:
         write_all(fd, payload)
+        # bind mount 两端可能使用不同 UID；调用方预先放开的状态文件在
+        # 原子替换后仍须保持原权限。首次创建则继续使用私有的 0600。
+        if destination_mode is not None:
+            os.fchmod(fd, destination_mode)
     finally:
         os.close(fd)
     try:
