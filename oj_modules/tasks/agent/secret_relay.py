@@ -137,6 +137,79 @@ class AgentSecretRelayCleanupError(AgentSecretRelayError):
     """外部服务密钥代理关闭状态未知。"""
 
 
+class _RelayConnectionMixin:
+    """让 relay 能在 HTTPConnection 懒连接完成时立即取得底层 socket。"""
+
+    def connect(self):
+        super().connect()
+        handle = getattr(self, "_relay_interrupt_handle", None)
+        if handle is not None and not handle.remember_socket(self.sock):
+            raise OSError("secret relay is closing")
+
+
+class _RelayHTTPConnection(_RelayConnectionMixin, http.client.HTTPConnection):
+    pass
+
+
+class _RelayHTTPSConnection(_RelayConnectionMixin, http.client.HTTPSConnection):
+    pass
+
+
+class _InterruptibleHTTPConnection:
+    """先 shutdown 底层 socket，再关闭可能仍被 HTTPResponse 引用的连接。"""
+
+    def __init__(self, connection):
+        self.connection = connection
+        self._lock = threading.Lock()
+        self._socket = None
+        self._closed = False
+        connection._relay_interrupt_handle = self
+
+    @staticmethod
+    def _shutdown_socket(upstream_socket):
+        if upstream_socket is None:
+            return
+        try:
+            upstream_socket.shutdown(socket.SHUT_RDWR)
+        except (OSError, ValueError):
+            pass
+
+    def remember_socket(self, upstream_socket=None):
+        current_socket = (
+            upstream_socket
+            if upstream_socket is not None
+            else getattr(self.connection, "sock", None)
+        )
+        with self._lock:
+            if not self._closed:
+                if current_socket is not None:
+                    self._socket = current_socket
+                return True
+        # close() 可能发生在 HTTPConnection 的懒连接建立之前。连接一旦
+        # 出现就立即中断，不能让已进入 closing 的 relay 再发送请求头。
+        self._shutdown_socket(current_socket)
+        try:
+            self.connection.close()
+        except Exception:
+            pass
+        return False
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            upstream_socket = self._socket or getattr(
+                self.connection,
+                "sock",
+                None,
+            )
+        # socket.makefile() 可能仍被 HTTPResponse.read1() 持有。仅调用
+        # HTTPConnection.close() 不能可靠唤醒另一个线程里的阻塞读取。
+        self._shutdown_socket(upstream_socket)
+        self.connection.close()
+
+
 def _validate_header_value(value, label):
     normalized = str(value or "").strip()
     if (
@@ -160,9 +233,9 @@ class _FrozenUpstream:
 
     def open_connection(self):
         connection_type = (
-            http.client.HTTPSConnection
+            _RelayHTTPSConnection
             if self.scheme == "https"
-            else http.client.HTTPConnection
+            else _RelayHTTPConnection
         )
         return connection_type(
             self.host,
@@ -551,6 +624,12 @@ class _AgentSecretRelay:
             self._request_count += 1
             return True
 
+    def _forwarding_snapshot(self):
+        """原子复制请求注入与响应脱敏所需的同一组凭据。"""
+
+        with self._state_lock:
+            return dict(self.upstream_headers), tuple(self.secret_values)
+
     def _reserve_request_body(self, length):
         requested = int(length)
         with self._state_lock:
@@ -609,6 +688,7 @@ class _AgentSecretRelay:
             def _proxy(self):
                 response = None
                 connection = None
+                connection_handle = None
                 connection_registered = False
                 reserved_body_bytes = 0
                 response_started = False
@@ -638,9 +718,12 @@ class _AgentSecretRelay:
                         method,
                         _MAX_REQUEST_BYTES[relay.mode],
                     )
+                    upstream_headers, secret_values = (
+                        relay._forwarding_snapshot()
+                    )
                     headers = _forward_headers(
                         self.headers,
-                        relay.upstream_headers,
+                        upstream_headers,
                         relay.mode,
                     )
                     if not relay._reserve_request_body(content_length):
@@ -650,9 +733,11 @@ class _AgentSecretRelay:
                     if content_length and (body is None or len(body) != content_length):
                         raise _RequestRejected(400, "incomplete request")
                     connection = relay.upstream.open_connection()
-                    # 上游 connection 在 request/connect 之前登记；close() 能
-                    # 中断等待响应的 socket，并会等待对应 handler 真正退出。
-                    if not self.server.register_upstream(connection):
+                    connection_handle = _InterruptibleHTTPConnection(connection)
+                    # handle 在 request/connect 之前登记，并在懒连接建立后保存
+                    # 原始 socket；即使 getresponse() 转移 socket 所有权，close()
+                    # 仍能 shutdown 它并唤醒阻塞的 SSE/read1。
+                    if not self.server.register_upstream(connection_handle):
                         return
                     connection_registered = True
                     try:
@@ -662,6 +747,8 @@ class _AgentSecretRelay:
                             body=body,
                             headers=headers,
                         )
+                        if not connection_handle.remember_socket():
+                            return
                         response = connection.getresponse()
                     except Exception as exc:
                         raise _RequestRejected(502, "upstream unavailable") from exc
@@ -673,7 +760,7 @@ class _AgentSecretRelay:
                     self.send_response(status)
                     for name, value in _response_headers(
                         response.headers,
-                        relay.secret_values,
+                        secret_values,
                     ):
                         self.send_header(name, value)
                     # 脱敏可能改变长度，因此不转发 Content-Length；HTTP/1.0
@@ -683,7 +770,7 @@ class _AgentSecretRelay:
                     self.end_headers()
                     response_started = True
                     transferred = 0
-                    redactor = _StreamingRedactor(relay.secret_values)
+                    redactor = _StreamingRedactor(secret_values)
                     while True:
                         chunk = _read_response_chunk(response)
                         if not chunk:
@@ -718,8 +805,13 @@ class _AgentSecretRelay:
                         except Exception:
                             pass
                     if connection_registered:
-                        self.server.unregister_upstream(connection)
-                    if connection is not None:
+                        self.server.unregister_upstream(connection_handle)
+                    if connection_handle is not None:
+                        try:
+                            connection_handle.close()
+                        except Exception:
+                            pass
+                    elif connection is not None:
                         try:
                             connection.close()
                         except Exception:
