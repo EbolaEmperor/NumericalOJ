@@ -209,6 +209,12 @@ def test_agent_detail_supports_resume_stop_and_live_state_without_interruption()
     assert "body.append('expected_task_id', expectedTaskId);" in controller
     assert "payload.replaced_task_id || options.expectedTaskId" in controller
     assert "removeTurnByTaskId" in controller
+    message_row_start = template.index('class="agent-user-message-row"')
+    retry_index = template.index('class="agent-message-retry"', message_row_start)
+    bubble_index = template.index('class="agent-user-bubble', message_row_start)
+    assert retry_index < bubble_index
+    assert "messageRow.append(createRetryButton(taskId), bubble);" in controller
+    assert "messageRow.append(bubble, createRetryButton(taskId));" not in controller
     assert ".agent-message-retry" in styles
     retry_rule = _css_rule(styles, ".agent-message-retry {")
     assert "width: 24px;" in retry_rule
@@ -319,9 +325,32 @@ def test_agent_detail_only_consumes_server_html_for_rich_trace_kinds():
     assert "setServerHtml(element, conclusion.html)" in controller
 
 
+def test_agent_thinking_markdown_uses_compact_paragraph_spacing():
+    styles = _read("static/app/agents/conversation.css")
+
+    markdown_rule = _css_rule(
+        styles,
+        ".agent-trace-event--thinking .agent-trace-copy.numoj-markdown {",
+    )
+    paragraph_rule = _css_rule(
+        styles,
+        ".agent-trace-event--thinking .agent-trace-copy > p {",
+    )
+    last_paragraph_rule = _css_rule(
+        styles,
+        ".agent-trace-event--thinking .agent-trace-copy > p:last-child {",
+    )
+
+    assert "white-space: normal;" in markdown_rule
+    assert "margin: 0 0 .45em;" in paragraph_rule
+    assert "margin-bottom: 0;" in last_paragraph_rule
+
+
 def test_agent_workspace_preview_covers_required_formats_and_safe_downloads():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
+    styles = _read("static/app/agents/conversation.css")
+    editor_runtime = _read("static/app/code-editor-runtime.js")
 
     assert "problem_core.admin_agent_workspace_tree" in template
     assert "problem_core.admin_agent_workspace_file" in template
@@ -340,6 +369,22 @@ def test_agent_workspace_preview_covers_required_formats_and_safe_downloads():
     assert "documentId: function (model)" in controller
     assert "readOnly: true" in controller
     assert "domReadOnly: true" in controller
+
+    render_code = controller.split("async function renderCode", 1)[1].split(
+        "function imageViewer", 1
+    )[0]
+    assert "fontSize: 12.5," in render_code
+    assert "lineHeight: 20," in render_code
+
+    conclusion_rule = _css_rule(styles, ".agent-conclusion {")
+    assert "font-size: 12.5px;" in conclusion_rule
+    block_code_rule = _css_rule(
+        styles,
+        ".agent-session .numoj-markdown pre code {",
+    )
+    assert "font-size: inherit;" in block_code_rule
+    assert "fontSize: 14," in editor_runtime
+    assert "lineHeight: 22," in editor_runtime
 
 
 def test_agent_frontend_javascript_has_valid_syntax():

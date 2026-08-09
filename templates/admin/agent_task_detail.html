@@ -177,9 +177,6 @@
                    data-agent-task-id="{{ turn.task_id }}">
             <section class="agent-user-message">
               <div class="agent-user-message-row">
-                <div class="agent-user-bubble numoj-markdown" data-numoj-markdown>
-                  {{ turn.user_message_html|safe }}
-                </div>
                 {% if can_retry and loop.last and turn.task_id == current_task_id %}
                   <button class="agent-message-retry" type="button"
                           data-agent-retry-last
@@ -189,6 +186,9 @@
                     <i class="fas fa-redo-alt" aria-hidden="true"></i>
                   </button>
                 {% endif %}
+                <div class="agent-user-bubble numoj-markdown" data-numoj-markdown>
+                  {{ turn.user_message_html|safe }}
+                </div>
               </div>
               {% if turn.attachments %}
                 <div class="agent-message-attachments">

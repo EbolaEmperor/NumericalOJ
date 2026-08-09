@@ -308,6 +308,15 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert "filename='app/editor-semantic-tokens.js'" in monaco_component
     assert "filename='app/code-editor-runtime.js'" in monaco_component
     assert "runtime.prepareMonaco(monaco)" in editor
+    assert "const PROBLEM_EDITOR_FONT_SIZE = 12.5;" in editor
+    assert "const PROBLEM_EDITOR_LINE_HEIGHT = 20;" in editor
+    assert "fontSize: PROBLEM_EDITOR_FONT_SIZE" in editor
+    assert "lineHeight: PROBLEM_EDITOR_LINE_HEIGHT" in editor
+    assert "style.fontSize = PROBLEM_EDITOR_FONT_SIZE + 'px'" in editor
+    assert "style.lineHeight = PROBLEM_EDITOR_LINE_HEIGHT + 'px'" in editor
+    assert 'font: 12.5px/20px "SFMono-Regular", Consolas, monospace;' in detail
+    assert "fontSize: 14," in editor_runtime
+    assert "lineHeight: 22," in editor_runtime
     assert "monaco.prepareTextMateHighlighting()" in editor_runtime
     assert 'return "dark-plus"' in editor_runtime
     assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
