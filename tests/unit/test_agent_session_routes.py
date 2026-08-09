@@ -947,6 +947,63 @@ def test_incremental_harness_trace_is_not_resume_filtered(harness):
     assert state["execution_trace"]["trace_messages"] == current
 
 
+@pytest.mark.parametrize(
+    ("status", "stored", "messages", "expected"),
+    [
+        (
+            "Completed",
+            "解题 Agent 已提交并通过",
+            [{"kind": "assistant", "text": "代码已经提交，并通过全部测试。"}],
+            "代码已经提交，并通过全部测试。",
+        ),
+        (
+            "Completed",
+            "测试数据格式检查通过并已发布，共 12 个测试点",
+            [],
+            "测试数据格式检查通过并已发布，共 12 个测试点",
+        ),
+        (
+            "Failed",
+            "测试数据发布失败",
+            [{"kind": "assistant", "text": "候选数据已经生成。"}],
+            "测试数据发布失败",
+        ),
+    ],
+)
+def test_agent_turn_conclusion_uses_trace_only_for_completed_output(
+    monkeypatch,
+    status,
+    stored,
+    messages,
+    expected,
+):
+    monkeypatch.setattr(
+        routes,
+        "hydrate_agent_run_snapshot",
+        lambda state: {
+            **state,
+            "execution_trace": {"trace_messages": messages},
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: f"<p>{text}</p>",
+    )
+
+    turn = routes._decorate_agent_turns([{
+        "task_id": "turn-conclusion",
+        "turn_index": 1,
+        "harness": "codex",
+        "status": status,
+        "user_message": "完成任务",
+        "conclusion": stored,
+    }])[0]
+
+    assert turn["conclusion"] == expected
+    assert turn["conclusion_html"] == f"<p>{expected}</p>"
+
+
 def test_detail_get_marks_another_admin_session_read_only(monkeypatch):
     _patch_admin(monkeypatch)
     agent_session = _session()

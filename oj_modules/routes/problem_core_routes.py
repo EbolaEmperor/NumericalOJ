@@ -238,6 +238,16 @@ def _agent_trace_conclusion(execution_trace):
     return ''
 
 
+def _agent_display_conclusion(status, stored_conclusion, execution_trace):
+    """Completed 展示真实末条回复，其它终态优先保留业务原因。"""
+
+    stored = str(stored_conclusion or '').strip()
+    traced = _agent_trace_conclusion(execution_trace)
+    if str(status or '').strip().lower() == 'completed' and traced:
+        return traced
+    return stored or traced
+
+
 _AGENT_RICH_TRACE_KINDS = frozenset({'assistant', 'thinking', 'reasoning'})
 _AGENT_CUMULATIVE_TRACE_HARNESSES = frozenset({'claude_code', 'pi'})
 _AGENT_TRACE_STABLE_MESSAGE_FIELDS = (
@@ -375,14 +385,20 @@ def _decorate_agent_state_markdown(raw_state):
     # 同样不信任任务快照中自带的 *_html，只根据规范纯文本重新生成。
     state.pop('conclusion_html', None)
     state.pop('final_response_html', None)
-    conclusion = str(
+    stored_conclusion = str(
         state.get('conclusion')
         or state.get('final_response')
         or trace.get('conclusion')
         or trace.get('final_response')
-        or _agent_trace_conclusion(trace)
         or ''
     ).strip()
+    # Completed 的 conclude 以规范轨迹中最后一条 assistant 输出为准。
+    # 业务状态文案只在没有真实输出时兜底；失败/取消仍保留明确原因。
+    conclusion = _agent_display_conclusion(
+        state.get('status'),
+        stored_conclusion,
+        trace,
+    )
     if conclusion:
         state['conclusion'] = conclusion
         state['conclusion_html'] = str(render_rich_markdown(conclusion))
@@ -423,8 +439,12 @@ def _decorate_agent_turns(turns):
         snapshot = _decorate_agent_state_markdown(hydrated)
         trace = snapshot.get('execution_trace') or {}
         conclusion = str(turn.get('conclusion') or '').strip()
-        if not conclusion and agent_status_is_terminal(turn.get('status')):
-            conclusion = _agent_trace_conclusion(trace)
+        if agent_status_is_terminal(turn.get('status')):
+            conclusion = _agent_display_conclusion(
+                turn.get('status'),
+                conclusion,
+                trace,
+            )
         turn['execution_trace'] = trace
         turn['user_message_html'] = render_rich_markdown(turn.get('user_message'))
         turn['conclusion'] = conclusion

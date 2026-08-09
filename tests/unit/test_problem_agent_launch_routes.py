@@ -892,11 +892,35 @@ def test_agent_state_markdown_is_rebuilt_only_for_rich_trace_text(monkeypatch):
     assert messages[2]["html"] == "<safe>推理</safe>"
     assert "html" not in messages[3]
     assert "html" not in messages[4]
-    assert state["conclusion_html"] == "<safe>**最终结论**</safe>"
+    assert state["conclusion"] == "**回答**"
+    assert state["conclusion_html"] == "<safe>**回答**</safe>"
     assert "conclusion_html" not in state["execution_trace"]
     assert raw["conclusion_html"] == "<script>unsafe()</script>"
     assert raw["execution_trace"]["trace_messages"][0]["html"] == "<b>伪造</b>"
-    assert rendered == ["**回答**", "$x$", "推理", "**最终结论**"]
+    assert rendered == ["**回答**", "$x$", "推理", "**回答**"]
+
+
+def test_failed_agent_state_keeps_failure_reason_over_trace_conclusion(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: f"<safe>{text}</safe>",
+    )
+
+    state = routes._decorate_agent_state_markdown({
+        "status": "Failed",
+        "conclusion": "测试数据发布失败",
+        "execution_trace": {
+            "trace_messages": [
+                {"kind": "assistant", "text": "候选数据已经生成。"},
+            ],
+        },
+    })
+
+    assert state["conclusion"] == "测试数据发布失败"
+    assert state["conclusion_html"] == "<safe>测试数据发布失败</safe>"
 
 
 def test_agent_run_status_returns_server_rendered_markdown(monkeypatch):
