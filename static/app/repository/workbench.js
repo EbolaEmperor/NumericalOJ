@@ -3169,8 +3169,20 @@
       score_threshold: 0.05,
     }).then(function (payload) {
       var hits = payload.hits || [];
-      elements.semanticMeta.textContent =
-        '检索模型 ' + (payload.embedding_model || 'unknown') + ' · 命中 ' + hits.length + ' 条';
+      var embeddingModel = String(payload.embedding_model || 'unknown');
+      var modelIcon = document.createElement('i');
+      modelIcon.className = window.NumojModelFamily
+        ? window.NumojModelFamily.iconClass(embeddingModel)
+        : 'fas fa-microchip';
+      modelIcon.setAttribute('aria-hidden', 'true');
+      var modelName = document.createElement('span');
+      modelName.textContent = embeddingModel;
+      elements.semanticMeta.replaceChildren(
+        document.createTextNode('检索模型 '),
+        modelIcon,
+        modelName,
+        document.createTextNode(' · 命中 ' + hits.length + ' 条')
+      );
       elements.semanticList.innerHTML = hits.length
         ? hits.map(function (hit, index) {
             return (

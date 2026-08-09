@@ -55,6 +55,21 @@ def _patch_admin(monkeypatch):
     monkeypatch.setattr(routes, "current_user", lambda: dict(ADMIN))
 
 
+def _patch_frozen_endpoint(monkeypatch, *, revision=3):
+    calls = []
+
+    def resolve(harness, endpoint_id, *, include_secret):
+        calls.append((harness, endpoint_id, include_secret))
+        return {
+            "id": int(endpoint_id),
+            "revision": revision,
+            "model": "gpt-test",
+        }
+
+    monkeypatch.setattr(routes, "resolve_launch_endpoint", resolve)
+    return calls
+
+
 def test_task_id_query_redirects_historical_turn_to_owning_session(monkeypatch):
     _patch_admin(monkeypatch)
     monkeypatch.setattr(
@@ -279,6 +294,7 @@ def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
     access_role,
 ):
     _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
     task = _Task()
     monkeypatch.setattr(routes, "_agent_run_turn_task", task)
     monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
@@ -366,6 +382,7 @@ def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
 
 def test_resume_race_rejects_before_attachments_become_public(monkeypatch):
     _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
     monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
     monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-racing"))
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session())
@@ -397,6 +414,160 @@ def test_resume_race_rejects_before_attachments_become_public(monkeypatch):
 
     assert status == 409
     assert response.get_json()["message"] == "上一轮 Agent 任务尚未结束"
+
+
+def test_resume_rejects_changed_frozen_endpoint_before_claiming_turn(monkeypatch):
+    _patch_admin(monkeypatch)
+    endpoint_calls = _patch_frozen_endpoint(monkeypatch, revision=4)
+    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session())
+    monkeypatch.setattr(
+        routes,
+        "uuid4",
+        lambda: pytest.fail("节点版本校验失败时不得生成新轮次 ID"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "begin_agent_session_turn",
+        lambda *_args, **_kwargs: pytest.fail("节点版本校验失败时不得 claim 轮次"),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={"message": "继续"},
+        content_type="multipart/form-data",
+    ):
+        response, status = routes.admin_agent_task_detail("session-1")
+
+    payload = response.get_json()
+    assert status == 409
+    assert payload == {
+        "success": False,
+        "message": "该 Agent 会话使用的 LLM 节点配置已变化，请新建会话",
+    }
+    assert endpoint_calls == [("codex", 12, False)]
+
+
+def test_resume_attachment_failure_returns_canonical_detail_url(monkeypatch):
+    _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
+    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session())
+    monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
+    monkeypatch.setattr(
+        routes,
+        "begin_agent_session_turn",
+        lambda *_args, **_kwargs: {
+            "turn_index": 2,
+            "task_kind": "custom",
+            "access_role": "admin",
+            "harness": "codex",
+            "endpoint_id": 12,
+            "native_session_id": "native-session-1",
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "save_agent_attachments",
+        lambda *_args: (_ for _ in ()).throw(ValueError("附件过大")),
+    )
+    monkeypatch.setattr(routes, "remove_agent_attachments", lambda *_args: 0)
+    failures = []
+    monkeypatch.setattr(
+        routes,
+        "_mark_agent_dispatch_failed",
+        lambda *args: failures.append(args) or str(args[-1]),
+    )
+    monkeypatch.setattr(
+        routes,
+        "url_for",
+        lambda endpoint, **kwargs: (
+            f"/admin/agent_tasks/{kwargs['session_id']}"
+            if endpoint == "problem_core.admin_agent_task_detail"
+            else "/unexpected"
+        ),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={"message": "继续", "attachments": (io.BytesIO(b"x"), "large.bin")},
+        content_type="multipart/form-data",
+        environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
+    ):
+        response, status = routes.admin_agent_task_detail("session-1")
+
+    assert status == 400
+    assert response.get_json() == {
+        "success": False,
+        "message": "附件过大",
+        "detail_url": "/admin/agent_tasks/session-1",
+    }
+    assert failures[0][0:2] == ("session-1", "turn-2")
+    assert failures[0][-1] == "附件保存失败：附件过大"
+
+
+def test_resume_enqueue_failure_returns_canonical_detail_url(monkeypatch):
+    class FailingTask:
+        def apply_async(self, **_kwargs):
+            raise RuntimeError("broker unavailable")
+
+    _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
+    monkeypatch.setattr(routes, "_agent_run_turn_task", FailingTask())
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session())
+    monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
+    monkeypatch.setattr(
+        routes,
+        "begin_agent_session_turn",
+        lambda *_args, **_kwargs: {
+            "turn_index": 2,
+            "task_kind": "custom",
+            "access_role": "admin",
+            "harness": "codex",
+            "endpoint_id": 12,
+            "native_session_id": "native-session-1",
+        },
+    )
+    monkeypatch.setattr(routes, "save_agent_attachments", lambda *_args: [])
+    monkeypatch.setattr(routes, "set_agent_turn_attachments", lambda *_args: True)
+    monkeypatch.setattr(routes, "upsert_agent_run_snapshot", lambda _state: None)
+    failures = []
+    monkeypatch.setattr(
+        routes,
+        "_mark_agent_dispatch_failed",
+        lambda *args: failures.append(args) or str(args[-1]),
+    )
+    monkeypatch.setattr(
+        routes,
+        "url_for",
+        lambda endpoint, **kwargs: (
+            f"/admin/agent_tasks/{kwargs['session_id']}"
+            if endpoint == "problem_core.admin_agent_task_detail"
+            else "/unexpected"
+        ),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={"message": "继续"},
+        content_type="multipart/form-data",
+        environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
+    ):
+        response, status = routes.admin_agent_task_detail("session-1")
+
+    assert status == 500
+    assert response.get_json() == {
+        "success": False,
+        "message": "任务入队失败，请检查 Celery agent 队列",
+        "detail_url": "/admin/agent_tasks/session-1",
+    }
+    assert failures[0][0:2] == ("session-1", "turn-2")
 
 
 def test_cleanup_failed_session_is_blocked_before_accepting_attachments(

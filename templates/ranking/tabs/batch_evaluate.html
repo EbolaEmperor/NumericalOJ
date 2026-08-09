@@ -1,4 +1,5 @@
     {% from 'ranking/components/harness_logo.html' import harness_logo, harness_logo_class %}
+    {% from 'components/model_logo.html' import model_logo %}
     {# ========== 批量评测（管理员 · Agent 评测 / 反向评测） ========== #}
     {% if tab == 'batch_eval' and is_admin and is_ai_judge %}
       {% macro bm_class_logo(c, class_name='bm-class-logo') -%}
@@ -28,11 +29,12 @@
           {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else ('Pi' if _h == 'pi' else _h))) -%}
           {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
         {%- endmacro %}
-        {% set bm_ep = namespace(default='', default_harness='claude_code') %}
+        {% set bm_ep = namespace(default='', default_harness='claude_code', default_model='') %}
         {% for ep in aj_endpoints %}
           {% if (ep.status or '') == 'enabled' and not bm_ep.default %}
             {% set bm_ep.default = ep.id|string %}
             {% set bm_ep.default_harness = ep.harness or 'claude_code' %}
+            {% set bm_ep.default_model = ep.model or '' %}
           {% endif %}
         {% endfor %}
       {% endif %}
@@ -118,6 +120,7 @@
                       <span class="rk-choice-trigger-main">
                         {% if bm_ep.default %}
                           <i class="{{ harness_logo_class(bm_ep.default_harness) }}" data-rk-choice-icon aria-hidden="true"></i>
+                          {{ model_logo(bm_ep.default_model, 'bm-endpoint-model-logo') }}
                         {% else %}
                           <i class="fas fa-robot" data-rk-choice-icon aria-hidden="true"></i>
                         {% endif %}
@@ -140,9 +143,11 @@
                                 aria-selected="{% if ep.id|string == bm_ep.default %}true{% else %}false{% endif %}"
                                 data-choice-value="{{ ep.id }}"
                                 data-choice-label="{{ bm_endpoint_label(ep) }}"
-                                data-choice-icon="{{ harness_logo_class(ep.harness) }}">
+                                data-choice-icon="{{ harness_logo_class(ep.harness) }}"
+                                data-endpoint-model="{{ ep.model or '' }}">
                           <span class="rk-choice-option-main">
                             {{ harness_logo(ep.harness) }}
+                            {{ model_logo(ep.model or '') }}
                             <span class="rk-choice-option-name">{{ bm_endpoint_label(ep) }}</span>
                           </span>
                           <i class="fas fa-check rk-choice-option-check"></i>
@@ -290,6 +295,27 @@
         var codesEl = $('bmClassCodes');
         var currentLogo = $('bmClassCurrentLogo');
         var endpointEl = $('bmAgentEndpointId');
+
+        function syncEndpointModelLogo() {
+          if (!endpointEl) return;
+          var picker = endpointEl.closest('.bm-node') || wrap;
+          var icon = picker.querySelector('.rk-choice-trigger .bm-endpoint-model-logo');
+          if (!icon) return;
+          var selected = Array.prototype.slice.call(
+            picker.querySelectorAll('.rk-choice-option[data-choice-value]')
+          ).find(function (option) {
+            return option.getAttribute('data-choice-value') === endpointEl.value;
+          });
+          var model = selected ? selected.getAttribute('data-endpoint-model') || '' : '';
+          var helper = window.NumojModelFamily;
+          var iconClass = helper && typeof helper.iconClass === 'function'
+            ? helper.iconClass(model)
+            : 'fas fa-microchip';
+          icon.className = 'bm-endpoint-model-logo ' + (iconClass || 'fas fa-microchip');
+          icon.setAttribute('data-model-name', model);
+        }
+        if (endpointEl) endpointEl.addEventListener('change', syncEndpointModelLogo);
+        syncEndpointModelLogo();
 
         function clsChecks() {
           return Array.prototype.slice.call(wrap.querySelectorAll('.bm-cls-cb'));

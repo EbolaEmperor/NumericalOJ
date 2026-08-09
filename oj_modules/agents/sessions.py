@@ -414,23 +414,17 @@ def sync_agent_session_state_in_transaction(cursor, state):
     current = cursor.fetchone()
     if not current:
         return False
-    # 取消链先持久化 agent_task_runs，再投影会话。worker 可能恰好在
-    # 两个事务之间恢复执行，因此这里必须在行锁内让取消/清理失败保持
-    # sticky，避免迟到的 Running 快照把会话重新打开。CleanupFailed
+    # 已提交的 Completed/Failed 以及取消、清理失败都必须保持 sticky，
+    # 避免 late-ack 或异常收束的迟到快照重开或改写会话。CleanupFailed
     # 仍允许从 Canceled 升级，以表达 revoke 或容器清理失败。
     current_status = str(current.get("status") or "").strip().lower()
     incoming_status = status.strip().lower()
     if (
-        current_status in {"cleanupfailed", "cleanup_failed"}
+        current_status
+        in {"completed", "failed", "cleanupfailed", "cleanup_failed"}
         or (
             current_status in {"canceled", "cancelled"}
-            and incoming_status
-            not in {
-                "canceled",
-                "cancelled",
-                "cleanupfailed",
-                "cleanup_failed",
-            }
+            and incoming_status not in {"cleanupfailed", "cleanup_failed"}
         )
     ):
         return False

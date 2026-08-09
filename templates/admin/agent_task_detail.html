@@ -13,6 +13,7 @@
 
 {% block content %}
 {% from 'ranking/components/harness_logo.html' import harness_logo %}
+{% from 'components/model_logo.html' import model_logo %}
 {% set session_id = agent_session.session_id %}
 {% set current_task_id = agent_session.current_task_id|default('', true) %}
 {% set state_status = current_state.status|default(agent_session.status|default('completed', true), true)|lower %}
@@ -245,7 +246,8 @@
         <div class="agent-resume-footer">
           <div class="agent-resume-runtime">
             <span>{{ harness_logo(agent_session.harness) }}{{ harness_name }}</span>
-            <span><i class="fas fa-microchip" aria-hidden="true"></i>{{ agent_session.endpoint_model|default(agent_session.model|default('模型节点', true), true) }}</span>
+            {% set composer_model = agent_session.endpoint_model|default(agent_session.model|default('模型节点', true), true) %}
+            <span>{{ model_logo(composer_model) }}{{ composer_model }}</span>
           </div>
           <div class="agent-resume-actions">
             <input id="agentResumeAttachments" class="visually-hidden" type="file"
@@ -283,7 +285,7 @@
         <span data-agent-file-name>文件预览</span>
       </div>
       <div class="agent-file-actions">
-        <a href="#" data-agent-file-download title="下载文件" aria-label="下载文件">
+        <a href="#" download data-agent-file-download title="下载文件" aria-label="下载文件">
           <i class="fas fa-download" aria-hidden="true"></i>
         </a>
         <button type="button" data-agent-file-close title="关闭预览" aria-label="关闭文件预览">

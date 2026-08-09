@@ -180,6 +180,47 @@ def test_persisted_cancellation_overrides_late_worker_snapshot(monkeypatch):
     assert published["harness_status"] == "canceled"
 
 
+@pytest.mark.parametrize(
+    ("persisted_status", "expected_harness_status"),
+    [
+        ("Completed", "completed"),
+        ("Failed", "error"),
+        ("CleanupFailed", "cleanup_failed"),
+    ],
+)
+def test_persisted_terminal_overrides_late_conflicting_snapshot(
+    monkeypatch,
+    persisted_status,
+    expected_harness_status,
+):
+    redis = _FakeRedis()
+    monkeypatch.setattr(shared, "_agent_progress_rds", redis)
+    monkeypatch.setattr(
+        shared,
+        "upsert_agent_run_snapshot",
+        lambda _state: {
+            "status": persisted_status,
+            "message": "已经提交的终态",
+        },
+    )
+    monkeypatch.setattr(shared, "hydrate_agent_run_snapshot", lambda state: state)
+    state = {
+        "task_id": "task-terminal",
+        "status": "Running",
+        "message": "仍在执行",
+        "attempts": [],
+    }
+
+    shared._update_agent_state(state, "迟到的失败", status="Failed")
+
+    assert state["status"] == persisted_status
+    assert state["message"] == "已经提交的终态"
+    assert state["stage"] == "finished"
+    assert state["harness_status"] == expected_harness_status
+    published = json.loads(redis.values[-1][2])
+    assert published["status"] == persisted_status
+
+
 def test_session_projection_failure_does_not_mask_legacy_state_or_publish(
         monkeypatch):
     redis = _FakeRedis()

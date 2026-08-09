@@ -154,6 +154,16 @@
   }
   initTimeoutControls();
   function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+  function modelIconClass(model){
+    var helper = window.NumojModelFamily;
+    if (helper && typeof helper.iconClass === 'function') {
+      return helper.iconClass(model) || 'fas fa-microchip';
+    }
+    return 'fas fa-microchip';
+  }
+  function modelIconHtml(model){
+    return '<i class="' + esc(modelIconClass(model)) + '" aria-hidden="true"></i>';
+  }
   function defaultEndpoint(){
     return {id:null, harness:'claude_code', protocol:'anthropic',
       effective_protocol:'anthropic', global_endpoint_id:null,
@@ -303,6 +313,7 @@
     var h = '';
     manager.eps.forEach(function(e, i){
       var harness = e.harness || 'claude_code';
+      var model = modelText(e);
       var st = normalizeStatus(e);
       h += '<div class="aje-card' + statusClass(st) + '" data-i="' + i + '">' +
         '<div class="aje-card-top">' +
@@ -310,7 +321,7 @@
           '<span class="aje-state">' + statusLabel(st) + '</span>' +
         '</div>' +
         '<div class="aje-card-main">' +
-          '<div class="aje-model" title="' + esc(modelText(e)) + '">' + esc(modelText(e)) + '</div>' +
+          '<div class="aje-model" title="' + esc(model) + '">' + modelIconHtml(model) + ' ' + esc(model) + '</div>' +
           '<div class="aje-url" title="' + esc(endpointText(e)) + '">' + esc(endpointText(e)) + '</div>' +
         '</div>' +
         '<div class="aje-card-meta">' +
@@ -341,7 +352,8 @@
         label:endpoint.model || ('端点 #' + endpoint.id),
         meta:'节点 #' + endpoint.id + ' · ' + protocolLabel(endpoint.protocol) +
           ' · ' + (endpoint.category || 'text'),
-        icon:endpoint.category === 'omni' ? 'fa-layer-group' : 'fa-font'
+        icon:'fa-microchip',
+        model:endpoint.model || ''
       });
     });
     globalEndpointPickerCtrl = window.ChoicePicker.configure(

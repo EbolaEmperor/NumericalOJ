@@ -70,6 +70,7 @@ from oj_modules.problems.agent_launch import (
     normalize_agent_task_kind,
     normalize_launch_harness,
     resolve_launch_endpoint,
+    validate_launch_endpoint_revision,
 )
 from oj_modules.problems.agent_preferences import (
     get_agent_launch_preference,
@@ -2038,6 +2039,18 @@ def admin_agent_task_detail(session_id):
                 message='上一轮未建立可恢复的原生会话，无法继续；请新建 Agent 会话',
             ), 409
         try:
+            frozen_endpoint = resolve_launch_endpoint(
+                agent_session.get('harness'),
+                agent_session.get('endpoint_id'),
+                include_secret=False,
+            )
+            validate_launch_endpoint_revision(
+                frozen_endpoint,
+                agent_session.get('endpoint_revision'),
+            )
+        except AgentLaunchValidationError as exc:
+            return jsonify(success=False, message=str(exc)), 409
+        try:
             message = _agent_message_from_request()
             cookie_name, session_cookie = _agent_session_cookie()
         except ValueError as exc:
@@ -2085,7 +2098,14 @@ def admin_agent_task_detail(session_id):
                 pending_state,
                 f'附件保存失败：{str(exc)}',
             )
-            return jsonify(success=False, message=str(exc)), 400
+            return jsonify(
+                success=False,
+                message=str(exc),
+                detail_url=url_for(
+                    'problem_core.admin_agent_task_detail',
+                    session_id=session_id,
+                ),
+            ), 400
         except Exception:
             remove_agent_attachments(session_id, attachments)
             logger.exception(
@@ -2098,7 +2118,14 @@ def admin_agent_task_detail(session_id):
                 pending_state,
                 '附件保存失败，请重新发送消息',
             )
-            return jsonify(success=False, message=failure_message), 500
+            return jsonify(
+                success=False,
+                message=failure_message,
+                detail_url=url_for(
+                    'problem_core.admin_agent_task_detail',
+                    session_id=session_id,
+                ),
+            ), 500
         try:
             upsert_agent_run_snapshot(pending_state)
             _agent_run_turn_task.apply_async(
@@ -2127,7 +2154,14 @@ def admin_agent_task_detail(session_id):
                 pending_state,
                 '任务入队失败，请检查 Celery agent 队列',
             )
-            return jsonify(success=False, message=failure_message), 500
+            return jsonify(
+                success=False,
+                message=failure_message,
+                detail_url=url_for(
+                    'problem_core.admin_agent_task_detail',
+                    session_id=session_id,
+                ),
+            ), 500
 
         return jsonify(
             success=True,

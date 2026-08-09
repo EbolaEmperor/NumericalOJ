@@ -215,6 +215,32 @@ def test_late_worker_state_cannot_reopen_canceled_session(
     assert connection.closed is True
 
 
+@pytest.mark.parametrize(
+    ("sticky_status", "incoming_status"),
+    [("Completed", "Failed"), ("Failed", "Running")],
+)
+def test_late_worker_state_cannot_replace_committed_terminal_session(
+    monkeypatch,
+    sticky_status,
+    incoming_status,
+):
+    connection = _ScriptedConnection(one_values=[{"status": sticky_status}])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    changed = sessions.sync_agent_session_state({
+        "session_id": "session-terminal",
+        "task_id": "turn-current",
+        "status": incoming_status,
+        "message": "迟到的冲突快照",
+    })
+
+    assert changed is False
+    assert len(connection.cursor_instance.calls) == 1
+    assert "FOR UPDATE" in connection.cursor_instance.calls[0][0]
+    assert connection.commits == 0
+    assert connection.closed is True
+
+
 def test_cleanup_failure_can_escalate_a_canceled_session(monkeypatch):
     connection = _ScriptedConnection(one_values=[{"status": "Canceled"}])
     monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)

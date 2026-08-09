@@ -1,4 +1,4 @@
-{% macro choice_option(value, label, selected=false, icon='fa-circle', meta='', missing=false, disabled=false) -%}
+{% macro choice_option(value, label, selected=false, icon='fa-circle', meta='', missing=false, disabled=false, model_name='') -%}
 <button type="button"
         class="rk-choice-option{% if selected %} active{% endif %}{% if missing %} is-missing{% endif %}"
         role="option"
@@ -6,9 +6,12 @@
         {% if disabled %}aria-disabled="true" data-choice-disabled="true"{% endif %}
         data-choice-value="{{ value }}"
         data-choice-label="{{ label }}"
-        data-choice-icon="{{ icon }}">
+        data-choice-icon="{{ icon }}"
+        {% if model_name %}data-choice-model="{{ model_name }}"{% endif %}>
   <span class="rk-choice-option-main">
-    <i class="{% if ' ' in icon %}{{ icon }}{% else %}fas {{ icon }}{% endif %}" aria-hidden="true"></i>
+    <i class="{% if ' ' in icon %}{{ icon }}{% else %}fas {{ icon }}{% endif %}"
+       {% if model_name %}data-model-family-logo data-model-name="{{ model_name }}"{% endif %}
+       aria-hidden="true"></i>
     <span>
       <span class="rk-choice-option-name">{{ label }}</span>
       {% if meta %}<span class="rk-choice-option-meta">{{ meta }}</span>{% endif %}
@@ -18,7 +21,7 @@
 </button>
 {%- endmacro %}
 
-{% macro choice_picker(field_id, field_name='', value='', selected_label='', selected_icon='fa-circle', picker_class='', disabled=false, required=false, auto_submit=false, aria_label='') -%}
+{% macro choice_picker(field_id, field_name='', value='', selected_label='', selected_icon='fa-circle', picker_class='', disabled=false, required=false, auto_submit=false, aria_label='', selected_model_name='') -%}
 {% set trigger_id = field_id ~ 'Trigger' %}
 {% set menu_id = field_id ~ 'Menu' %}
 <div class="rk-choice{% if picker_class %} {{ picker_class }}{% endif %}"
@@ -50,6 +53,7 @@
     <span class="rk-choice-trigger-main">
       <i class="{% if ' ' in selected_icon %}{{ selected_icon }}{% else %}fas {{ selected_icon }}{% endif %}"
          data-rk-choice-icon
+         {% if selected_model_name %}data-model-family-logo data-model-name="{{ selected_model_name }}"{% endif %}
          aria-hidden="true"></i>
       <span data-rk-choice-label>{{ selected_label }}</span>
     </span>
@@ -85,12 +89,12 @@
 
 {% macro endpoint_choice(field_id, field_name, endpoints, selected_value='', placeholder_label='未配置', placeholder_value='', picker_class='', disabled=false, required=false, aria_label='LLM 节点') -%}
 {% set selected_text = '' if selected_value is none else selected_value|string %}
-{% set icons = {'text': 'fa-font', 'vision': 'fa-eye', 'omni': 'fa-layer-group', 'embedding': 'fa-vector-square'} %}
-{% set state = namespace(label=placeholder_label, icon='fa-minus-circle', found=false) %}
+{% set state = namespace(label=placeholder_label, icon='fa-minus-circle', model='', found=false) %}
 {% for endpoint in endpoints or [] %}
   {% if endpoint.id|string == selected_text %}
     {% set state.label = endpoint.model %}
-    {% set state.icon = icons.get(endpoint.category, 'fa-circle') %}
+    {% set state.icon = 'fa-microchip' %}
+    {% set state.model = endpoint.model %}
     {% set state.found = true %}
   {% endif %}
 {% endfor %}
@@ -98,19 +102,19 @@
   {% set state.label = '端点已删除（ID: ' ~ selected_text ~ '）' %}
   {% set state.icon = 'fa-exclamation-triangle' %}
 {% endif %}
-{{ choice_picker(field_id, field_name, selected_text, state.label, state.icon, picker_class, disabled, required, false, aria_label) }}
+{{ choice_picker(field_id, field_name, selected_text, state.label, state.icon, picker_class, disabled, required, false, aria_label, state.model) }}
 <template data-choice-options-for="{{ field_id }}">
   {% if placeholder_label is not none %}
     {{ choice_option(placeholder_value, placeholder_label, not selected_text, 'fa-minus-circle') }}
   {% endif %}
   {% for endpoint in endpoints or [] %}
-    {% set endpoint_icon = icons.get(endpoint.category, 'fa-circle') %}
     {{ choice_option(
       endpoint.id,
       endpoint.model,
       endpoint.id|string == selected_text,
-      endpoint_icon,
-      '节点 #' ~ endpoint.id ~ ' · ' ~ endpoint.protocol ~ ' · ' ~ endpoint.category
+      'fa-microchip',
+      '节点 #' ~ endpoint.id ~ ' · ' ~ endpoint.protocol ~ ' · ' ~ endpoint.category,
+      model_name=endpoint.model
     ) }}
   {% endfor %}
   {% if selected_text and not state.found %}

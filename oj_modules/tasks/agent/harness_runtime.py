@@ -670,7 +670,11 @@ def _runtime_env(
     env = {
         "IS_SANDBOX": "1",
         "HOME": "/workspace/.runtime/home",
+        # 容器只有 /workspace 可写；把各类临时目录变量统一收敛到会话
+        # workspace，避免工具把可恢复状态写进容器自身的 /tmp。
         "TMPDIR": "/workspace/.runtime/tmp",
+        "TMP": "/workspace/.runtime/tmp",
+        "TEMP": "/workspace/.runtime/tmp",
         "XDG_CACHE_HOME": "/workspace/.runtime/xdg-cache",
         "XDG_CONFIG_HOME": "/workspace/.runtime/xdg-config",
         "XDG_DATA_HOME": "/workspace/.runtime/xdg-data",
@@ -712,6 +716,7 @@ def _docker_args(*, container_name, workspace, env):
         container_user = "0:0"
     else:
         container_user = f"{os.getuid()}:{os.getgid()}"
+    workspace_path = Path(workspace).resolve()
     args = [
         "docker",
         "run",
@@ -736,7 +741,7 @@ def _docker_args(*, container_name, workspace, env):
         "--add-host",
         "host.docker.internal:host-gateway",
         "--volume",
-        f"{Path(workspace).resolve()}:/workspace:rw",
+        f"{workspace_path}:/workspace:rw",
         "--workdir",
         "/workspace",
     ]

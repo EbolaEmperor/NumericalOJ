@@ -33,7 +33,7 @@
 }
 
 .agent-session.has-file {
-  grid-template-columns: minmax(340px, 4.5fr) 5px minmax(340px, 4.5fr) 5px minmax(190px, 1fr);
+  grid-template-columns: minmax(300px, 4.5fr) 5px minmax(300px, 4.5fr) 5px minmax(190px, 1fr);
 }
 
 .agent-conversation-pane {
@@ -1288,6 +1288,12 @@
   }
 
   .agent-session-header-side { grid-column: 2; }
+}
+
+@media (min-width: 992px) {
+  .agent-session.has-file .agent-session-header-side {
+    display: none;
+  }
 }
 
 @media (max-width: 991.98px) {

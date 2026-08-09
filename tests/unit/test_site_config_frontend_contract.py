@@ -285,8 +285,10 @@ def test_endpoint_model_is_the_only_display_name():
     assert "endpoint.name" not in external_displays
     assert "{{ endpoint.name }}" not in external_displays
     assert '<input name="model" required' in template
-    assert "${escapeHtml(endpoint.model)}</h3>" in script
+    assert "modelIconClass(endpoint.model)" in script
+    assert "${escapeHtml(endpoint.model)}</span></h3>" in script
     assert "label: endpoint.model" in script
+    assert "model: endpoint.model" in script
 
 
 def test_duplicate_models_are_disambiguated_by_stable_endpoint_id():

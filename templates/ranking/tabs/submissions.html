@@ -354,6 +354,15 @@
             if (status === 'Error') return 'err';
             return 'muted';
           }
+          function modelMarkup(model) {
+            if (!model) return '—';
+            var helper = window.NumojModelFamily;
+            var iconClass = helper && typeof helper.iconClass === 'function'
+              ? helper.iconClass(model)
+              : 'fas fa-microchip';
+            return '<i class="' + esc(iconClass || 'fas fa-microchip') +
+              '" aria-hidden="true"></i> <span>' + esc(model) + '</span>';
+          }
           function updateSummary() {
             var count = state.selected.size;
             var total = state.rows.length;
@@ -383,7 +392,7 @@
                 '<div class="rk-bulk-cell rk-user">' + esc(row.username || '') + '</div>' +
                 '<div class="rk-bulk-pill ' + statusClass(row.status) + '">' + esc(label) + '</div>' +
                 '<div class="rk-bulk-cell rk-score">' + esc(scoreText(row)) + '</div>' +
-                '<div class="rk-bulk-cell rk-model">' + esc(row.base_model || '—') + '</div>' +
+                '<div class="rk-bulk-cell rk-model">' + modelMarkup(row.base_model) + '</div>' +
                 '<div class="rk-bulk-cell rk-time">' + esc(row.created_at || '') + '</div>' +
                 '</div>';
             }).join('');

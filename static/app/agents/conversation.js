@@ -615,6 +615,7 @@
           item.appendChild(preview);
           var download = createElement('a');
           download.href = downloadFileUrl(path);
+          download.download = name;
           download.title = '下载 ' + name;
           download.innerHTML = '<i class="fas fa-download" aria-hidden="true"></i>';
           item.appendChild(download);
@@ -742,7 +743,11 @@
       }).then(function (response) {
         return response.json().catch(function () { return {}; }).then(function (payload) {
           if (!response.ok || !payload || payload.success === false) {
-            throw new Error(asText(payload && payload.message) || '发送失败（HTTP ' + response.status + '）');
+            var error = new Error(
+              asText(payload && payload.message) || '发送失败（HTTP ' + response.status + '）'
+            );
+            error.detailUrl = asText(payload && payload.detail_url).trim();
+            throw error;
           }
           return payload;
         });
@@ -774,6 +779,10 @@
         scrollToLatest('smooth');
       }).catch(function (error) {
         setResumePending(false);
+        if (error && error.detailUrl) {
+          global.location.assign(error.detailUrl);
+          return;
+        }
         setResumeFeedback(error && error.message ? error.message : '发送失败，请稍后重试。', true);
       });
     });
@@ -1308,8 +1317,9 @@
   function openFile(path) {
     path = asText(path).trim();
     if (!path || !filePane || !fileSurface) return;
+    var wasFilePaneHidden = filePane.hidden;
     if (
-      filePane.hidden
+      wasFilePaneHidden
       && global.HTMLElement
       && document.activeElement instanceof global.HTMLElement
     ) {
@@ -1329,7 +1339,7 @@
     }
     if (fileDownload) fileDownload.href = downloadFileUrl(path);
     fileSurface.replaceChildren(mathLoader('正在读取文件', 'sm'));
-    initializeFileLayout();
+    if (wasFilePaneHidden) initializeFileLayout();
     if (mobileFilePreview()) {
       var closeButton = root.querySelector('[data-agent-file-close]');
       if (closeButton) global.requestAnimationFrame(function () { closeButton.focus(); });

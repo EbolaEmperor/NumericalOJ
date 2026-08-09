@@ -131,7 +131,9 @@ def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
     env = _runtime_env(_endpoint(), "codex", "solve")
 
     assert env["HOME"].startswith("/workspace/")
-    assert env["TMPDIR"].startswith("/workspace/")
+    assert env["TMPDIR"] == "/workspace/.runtime/tmp"
+    assert env["TMP"] == "/workspace/.runtime/tmp"
+    assert env["TEMP"] == "/workspace/.runtime/tmp"
     assert env["XDG_CACHE_HOME"].startswith("/workspace/")
     assert env["AJ_RUNTIME_ROOT"] == "/workspace/.runtime"
     assert env["AJ_TASK_SCOPE"] == "problem_agent"
