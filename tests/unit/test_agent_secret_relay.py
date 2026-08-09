@@ -1,5 +1,8 @@
 import io
+import http.client
 from email.message import Message
+import socket
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -470,6 +473,24 @@ def test_total_inflight_request_body_budget_is_bounded():
     assert instance._reserve_request_body(1) is True
 
 
+def test_forwarding_snapshot_keeps_injection_and_redaction_credentials_together():
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+    )
+
+    upstream_headers, secret_values = instance._forwarding_snapshot()
+    instance._forget_credentials()
+
+    assert upstream_headers == {
+        "Authorization": "Bearer long-lived-model-key",
+    }
+    assert b"long-lived-model-key" in secret_values
+    assert instance.upstream_headers == {}
+    assert instance.secret_values == ()
+
+
 def test_close_reports_cleanup_error_when_a_handler_does_not_exit():
     instance = relay._AgentSecretRelay(
         upstream_base_url="https://llm.example/v1",
@@ -521,6 +542,199 @@ def test_close_reports_cleanup_error_when_a_handler_does_not_exit():
     assert instance.temporary_secret == ""
 
 
+def test_interruptible_connection_shutdowns_saved_socket_before_close():
+    events = []
+
+    class FakeUpstreamSocket:
+        def shutdown(self, how):
+            events.append(("shutdown", how))
+
+    class FakeConnection:
+        def __init__(self):
+            self.sock = FakeUpstreamSocket()
+
+        def close(self):
+            events.append(("close", None))
+
+    connection = FakeConnection()
+    handle = relay._InterruptibleHTTPConnection(connection)
+
+    assert handle.remember_socket() is True
+    # HTTPConnection.getresponse() 对 close-delimited 响应可能清空 sock，
+    # 但 HTTPResponse.fp 仍持有同一个文件描述符。
+    connection.sock = None
+    handle.close()
+    handle.close()
+
+    assert events == [
+        ("shutdown", socket.SHUT_RDWR),
+        ("close", None),
+    ]
+
+
+def test_interruptible_connection_aborts_socket_created_after_close():
+    events = []
+
+    class FakeUpstreamSocket:
+        def shutdown(self, how):
+            events.append(("shutdown", how))
+            raise OSError("already interrupted")
+
+    class FakeConnection:
+        sock = None
+
+        def close(self):
+            events.append(("close", None))
+
+    connection = FakeConnection()
+    handle = relay._InterruptibleHTTPConnection(connection)
+
+    handle.close()
+    late_socket = FakeUpstreamSocket()
+    connection.sock = late_socket
+
+    assert handle.remember_socket(late_socket) is False
+    assert events == [
+        ("close", None),
+        ("shutdown", socket.SHUT_RDWR),
+        ("close", None),
+    ]
+
+
+def test_lazy_connection_is_aborted_before_request_can_resume():
+    events = []
+
+    class FakeUpstreamSocket:
+        def shutdown(self, how):
+            events.append(("shutdown", how))
+
+    class LazyConnectionBase:
+        sock = None
+
+        def connect(self):
+            self.sock = FakeUpstreamSocket()
+            events.append(("connected", None))
+
+        def close(self):
+            events.append(("close", None))
+
+    class LazyConnection(relay._RelayConnectionMixin, LazyConnectionBase):
+        pass
+
+    connection = LazyConnection()
+    handle = relay._InterruptibleHTTPConnection(connection)
+    handle.close()
+
+    with pytest.raises(OSError, match="relay is closing"):
+        connection.connect()
+
+    assert events == [
+        ("close", None),
+        ("connected", None),
+        ("shutdown", socket.SHUT_RDWR),
+        ("close", None),
+    ]
+
+
+def test_close_interrupts_a_handler_blocked_on_streaming_upstream(monkeypatch):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(5)
+    upstream_port = listener.getsockname()[1]
+    release_upstream = threading.Event()
+    upstream_done = threading.Event()
+
+    def serve_upstream():
+        accepted = None
+        try:
+            accepted, _address = listener.accept()
+            request = bytearray()
+            while b"\r\n\r\n" not in request:
+                chunk = accepted.recv(4096)
+                if not chunk:
+                    return
+                request.extend(chunk)
+            accepted.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"Connection: keep-alive\r\n\r\n"
+            )
+            release_upstream.wait(timeout=5)
+        finally:
+            if accepted is not None:
+                accepted.close()
+            listener.close()
+            upstream_done.set()
+
+    upstream_thread = threading.Thread(target=serve_upstream, daemon=True)
+    upstream_thread.start()
+
+    read_started = threading.Event()
+    original_read_chunk = relay._read_response_chunk
+
+    def observed_read_chunk(response, size=64 * 1024):
+        read_started.set()
+        return original_read_chunk(response, size)
+
+    monkeypatch.setattr(relay, "_relay_bind_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(relay, "_read_response_chunk", observed_read_chunk)
+    instance = relay._AgentSecretRelay(
+        upstream_base_url=f"http://127.0.0.1:{upstream_port}/mcp",
+        mode="mcp",
+        real_credential="Bearer long-lived-search-key",
+    )
+    instance.start()
+    relay_port = instance.server.server_address[1]
+    client_done = threading.Event()
+
+    def call_relay():
+        connection = http.client.HTTPConnection(
+            "127.0.0.1",
+            relay_port,
+            timeout=5,
+        )
+        try:
+            connection.request(
+                "POST",
+                "/mcp",
+                body=b"{}",
+                headers={
+                    "Authorization": f"Bearer {instance.temporary_secret}",
+                    "Content-Type": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            try:
+                response.read()
+            except (OSError, http.client.HTTPException):
+                pass
+        except (OSError, http.client.HTTPException):
+            pass
+        finally:
+            connection.close()
+            client_done.set()
+
+    client_thread = threading.Thread(target=call_relay, daemon=True)
+    client_thread.start()
+    try:
+        assert read_started.wait(timeout=2)
+        instance.close()
+        assert client_done.wait(timeout=2)
+        assert not instance.server._pending_handlers
+    finally:
+        release_upstream.set()
+        upstream_done.wait(timeout=2)
+        if not instance._closed:
+            instance.close()
+        client_thread.join(timeout=2)
+        upstream_thread.join(timeout=2)
+        assert not client_thread.is_alive()
+        assert not upstream_thread.is_alive()
+
+
 class _FakeSocket:
     def __init__(self, payload):
         self.input = io.BytesIO(payload)
@@ -540,7 +754,7 @@ class _FakeServer:
 
     def register_upstream(self, response):
         try:
-            response.registered = True
+            getattr(response, "connection", response).registered = True
         except Exception:
             pass
         self.upstreams.append(response)
