@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from oj_modules import db_services
 from oj_modules.agents import sessions as agent_sessions
 from oj_modules.tasks.agent import shared
 
@@ -16,6 +17,65 @@ class _FakeRedis:
 
     def publish(self, channel, payload):
         self.messages.append((channel, payload))
+
+
+def test_cancel_snapshot_keeps_owning_session_id(monkeypatch):
+    class Cursor:
+        rowcount = 1
+
+        def __init__(self):
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params):
+            self.calls.append((" ".join(query.split()), params))
+
+        def fetchone(self):
+            return {
+                "task_id": "turn-2",
+                "session_id": "session-1",
+                "status": "Canceled",
+                "message": "任务已由管理员终止",
+                "attempts_json": "[]",
+            }
+
+    class Connection:
+        def __init__(self):
+            self.cursor_instance = Cursor()
+            self.commits = 0
+            self.closed = False
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def commit(self):
+            self.commits += 1
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(
+        db_services,
+        "get_db_connection",
+        lambda: connection,
+    )
+
+    state, changed = db_services.cancel_agent_run_snapshot("turn-2")
+
+    assert changed is True
+    assert state["session_id"] == "session-1"
+    select_query, select_params = connection.cursor_instance.calls[1]
+    assert "LEFT JOIN agent_session_turns AS t ON t.task_id=r.task_id" in select_query
+    assert "WHERE r.task_id=%s" in select_query
+    assert select_params == ("turn-2",)
+    assert connection.commits == 1
+    assert connection.closed is True
 
 
 def test_agent_state_persists_core_and_publishes_real_trace_snapshot(monkeypatch):
@@ -147,6 +207,7 @@ def test_cancel_agent_run_publishes_terminal_snapshot_and_marker(monkeypatch):
         "cancel_agent_run_snapshot",
         lambda _task_id, _message: ({
             "task_id": "task-3",
+            "session_id": "session-3",
             "status": "Canceled",
             "message": "任务已由管理员终止",
             "attempts": [],
@@ -164,6 +225,7 @@ def test_cancel_agent_run_publishes_terminal_snapshot_and_marker(monkeypatch):
     assert result["exists"] is True
     assert result["changed"] is True
     assert result["canceled"] is True
+    assert result["state"]["session_id"] == "session-3"
     assert result["state"]["harness"] == "pi"
     assert redis.values[-2][0] == "agent_run_cancel:task-3"
     assert redis.values[-1][0] == "agent_run:task-3"

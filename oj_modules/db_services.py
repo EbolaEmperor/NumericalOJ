@@ -572,12 +572,15 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
             changed = cursor.rowcount > 0
             cursor.execute(
                 """
-                SELECT task_id, problem_id, problem_title, requested_by,
-                       harness, endpoint_id, endpoint_model, status, message,
-                       best_score, final_submission_id,
-                       latest_submission_id, attempts_json, created_at, updated_at
-                FROM agent_task_runs
-                WHERE task_id=%s
+                SELECT r.task_id, t.session_id, r.problem_id,
+                       r.problem_title, r.requested_by, r.harness,
+                       r.endpoint_id, r.endpoint_model, r.status, r.message,
+                       r.best_score, r.final_submission_id,
+                       r.latest_submission_id, r.attempts_json,
+                       r.created_at, r.updated_at
+                FROM agent_task_runs AS r
+                LEFT JOIN agent_session_turns AS t ON t.task_id=r.task_id
+                WHERE r.task_id=%s
                 LIMIT 1
                 """,
                 (normalized_task_id,),
@@ -619,6 +622,7 @@ def _agent_run_from_row(row):
     attempts = _parse_json_text(row.get("attempts_json"), [])
     return {
         "task_id": row.get("task_id"),
+        "session_id": row.get("session_id"),
         "problem_id": row.get("problem_id"),
         "problem_title": row.get("problem_title"),
         "requested_by": row.get("requested_by"),
@@ -645,12 +649,15 @@ def get_agent_run_by_task_id(task_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT task_id, problem_id, problem_title, requested_by,
-                       harness, endpoint_id, endpoint_model, status, message,
-                       best_score, final_submission_id, latest_submission_id,
-                       attempts_json, created_at, updated_at
-                FROM agent_task_runs
-                WHERE task_id=%s
+                SELECT r.task_id, t.session_id, r.problem_id,
+                       r.problem_title, r.requested_by, r.harness,
+                       r.endpoint_id, r.endpoint_model, r.status, r.message,
+                       r.best_score, r.final_submission_id,
+                       r.latest_submission_id, r.attempts_json,
+                       r.created_at, r.updated_at
+                FROM agent_task_runs AS r
+                LEFT JOIN agent_session_turns AS t ON t.task_id=r.task_id
+                WHERE r.task_id=%s
                 LIMIT 1
                 """,
                 (task_id,),

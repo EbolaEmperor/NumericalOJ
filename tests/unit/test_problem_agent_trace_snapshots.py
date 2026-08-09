@@ -137,3 +137,112 @@ def test_agent_snapshot_recalculates_cost_from_the_current_endpoint_prices(
 
     hydrated = agent_runs.hydrate_agent_run_snapshot(state)
     assert "token_pricing" not in hydrated
+
+
+def test_session_usage_treats_pi_resume_traces_as_cumulative_snapshots():
+    usage = agent_runs.aggregate_agent_session_token_usage([
+        ("turn-1", {
+            "source": "pi",
+            "request_count": 1,
+            "input_uncached_tokens": 100,
+            "input_cached_tokens": 50,
+            "input_cache_write_tokens": 0,
+            "input_total_tokens": 150,
+            "output_tokens": 20,
+            "reasoning_output_tokens": 5,
+            "cost_rmb": "0.20",
+        }),
+        # Pi resume 的第二轮轨迹再次包含 turn-1，不能与首轮相加。
+        ("turn-2", {
+            "source": "pi",
+            "request_count": 2,
+            "input_uncached_tokens": 160,
+            "input_cached_tokens": 80,
+            "input_cache_write_tokens": 10,
+            "input_total_tokens": 250,
+            "output_tokens": 35,
+            "reasoning_output_tokens": 9,
+            "cost_rmb": "0.35",
+        }),
+    ])
+
+    assert usage == {
+        "request_count": 2,
+        "input_uncached_tokens": 160,
+        "input_cached_tokens": 80,
+        "input_cache_write_tokens": 10,
+        "input_total_tokens": 250,
+        "output_tokens": 35,
+        "reasoning_output_tokens": 9,
+        "source": "session",
+        "sources": ["pi"],
+        "turn_count": 2,
+        "cost_complete": True,
+        "cost_rmb": "0.35",
+    }
+
+
+def test_session_usage_sums_incremental_tasks_and_overlays_duplicate_task_id():
+    usage = agent_runs.aggregate_agent_session_token_usage([
+        ("turn-1", {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 100,
+            "input_cached_tokens": 20,
+            "input_cache_write_tokens": 0,
+            "input_total_tokens": 999,  # 汇总必须从规范分量重算。
+            "output_tokens": 10,
+            "cost_rmb": "0.10",
+        }),
+        ("turn-2", {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 40,
+            "input_cached_tokens": 10,
+            "input_cache_write_tokens": 2,
+            "output_tokens": 5,
+            "cost_rmb": "0.05",
+        }),
+        # SSE current overlay 以同 task_id 的最新快照替换，不能再加一遍。
+        ("turn-2", {
+            "source": "codex",
+            "request_count": 2,
+            "input_uncached_tokens": 70,
+            "input_cached_tokens": 15,
+            "input_cache_write_tokens": 3,
+            "output_tokens": 8,
+            "cost_rmb": "0.08",
+        }),
+    ])
+
+    assert usage["request_count"] == 3
+    assert usage["input_uncached_tokens"] == 170
+    assert usage["input_cached_tokens"] == 35
+    assert usage["input_cache_write_tokens"] == 3
+    assert usage["input_total_tokens"] == 208
+    assert usage["output_tokens"] == 18
+    assert usage["turn_count"] == 2
+    assert usage["cost_rmb"] == "0.18"
+
+
+def test_session_usage_hides_partial_cost_when_any_metered_turn_is_unpriced():
+    usage = agent_runs.aggregate_agent_session_token_usage([
+        ("turn-1", {
+            "source": "opencode",
+            "request_count": 1,
+            "input_uncached_tokens": 100,
+            "output_tokens": 10,
+            "cost_rmb": "0.12",
+        }),
+        ("turn-2", {
+            "source": "opencode",
+            "request_count": 1,
+            "input_uncached_tokens": 50,
+            "output_tokens": 5,
+        }),
+    ])
+
+    assert usage["input_total_tokens"] == 150
+    assert usage["output_tokens"] == 15
+    assert usage["cost_complete"] is False
+    assert usage["cost_rmb"] is None

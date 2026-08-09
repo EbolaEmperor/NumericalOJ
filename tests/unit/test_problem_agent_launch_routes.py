@@ -406,8 +406,145 @@ def test_agent_run_cancel_returns_published_terminal_state(monkeypatch):
             "task_id": "task-1",
             "status": "Canceled",
             "message": "任务已由管理员终止",
+            "session_token_usage": None,
         },
     }
+
+
+def test_agent_run_cancel_returns_whole_session_token_usage(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        routes,
+        "_terminate_agent_run",
+        lambda _task_id: {
+            "exists": True,
+            "changed": True,
+            "canceled": True,
+            "errors": [],
+            "state": {
+                "task_id": "turn-2",
+                "session_id": "session-1",
+                "harness": "codex",
+                "status": "Canceled",
+                "message": "任务已由管理员终止",
+                "execution_trace": {"token_usage": {
+                    "source": "codex",
+                    "request_count": 1,
+                    "input_uncached_tokens": 60,
+                    "input_cached_tokens": 15,
+                    "input_cache_write_tokens": 0,
+                    "output_tokens": 8,
+                    "cost_rmb": "0.08",
+                }},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda session_id, task_id: [("turn-1", {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 100,
+            "input_cached_tokens": 20,
+            "input_cache_write_tokens": 5,
+            "output_tokens": 10,
+            "cost_rmb": "0.10",
+        })],
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_run_cancel/turn-2",
+        method="POST",
+    ):
+        response = routes.admin_agent_run_cancel("turn-2")
+
+    usage = response.get_json()["state"]["session_token_usage"]
+    assert usage["request_count"] == 2
+    assert usage["input_total_tokens"] == 200
+    assert usage["input_cached_tokens"] == 35
+    assert usage["output_tokens"] == 18
+    assert usage["cost_rmb"] == "0.18"
+
+
+@pytest.mark.parametrize("operation", ["status", "cancel"])
+def test_agent_status_and_cancel_project_pi_resume_trace_delta(
+    monkeypatch,
+    operation,
+):
+    previous = [
+        {"kind": "assistant", "title": "AI 回复", "text": "first"},
+        {"kind": "tool", "title": "运行命令", "text": "command"},
+    ]
+    current = [
+        {**previous[0], "line": 91, "offset": 9000, "html": "<b>伪造</b>"},
+        {**previous[1], "line": 92, "offset": 9100},
+        {"kind": "assistant", "title": "AI 回复", "text": "second"},
+    ]
+    token_usage = {"source": "pi", "request_count": 2}
+    state = {
+        "task_id": "turn-2",
+        "session_id": "session-1",
+        "harness": "pi",
+        "status": "Canceled" if operation == "cancel" else "Running",
+        "execution_trace": {
+            "trace_messages": current,
+            "token_usage": token_usage,
+        },
+    }
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda _sid, _tid: [],
+    )
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_previous_trace_messages",
+        lambda _sid, _tid, _harness: previous,
+    )
+    if operation == "status":
+        monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: state)
+    else:
+        monkeypatch.setattr(
+            routes,
+            "_terminate_agent_run",
+            lambda _tid: {
+                "exists": True,
+                "changed": True,
+                "canceled": True,
+                "errors": [],
+                "state": state,
+            },
+        )
+
+    app = _app()
+    path = f"/admin/agent_run_{operation}/turn-2"
+    with app.test_request_context(
+        path,
+        method="POST" if operation == "cancel" else "GET",
+    ):
+        response = (
+            routes.admin_agent_run_cancel("turn-2")
+            if operation == "cancel"
+            else routes.admin_agent_run_status("turn-2")
+        )
+
+    projected = response.get_json()["state"]
+    assert [
+        message["text"]
+        for message in projected["execution_trace"]["trace_messages"]
+    ] == ["second"]
+    assert projected["execution_trace"]["token_usage"] == token_usage
 
 
 @pytest.mark.parametrize(
@@ -484,6 +621,175 @@ def test_agent_run_stream_subscribes_before_rechecking_terminal_state(monkeypatc
 
     assert order == ["subscribe", "read"]
     assert "event: done" in body
+    assert pubsub.closed is True
+
+
+def test_agent_run_stream_includes_historical_and_current_session_usage(
+    monkeypatch,
+):
+    current = {
+        "task_id": "turn-2",
+        "session_id": "session-1",
+        "status": "Completed",
+        "execution_trace": {"token_usage": {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 60,
+            "input_cached_tokens": 15,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 8,
+            "cost_rmb": "0.08",
+        }},
+    }
+
+    class PubSub:
+        closed = False
+
+        def get_message(self, **_kwargs):
+            raise AssertionError("首个快照已经终止，不应继续等待")
+
+        def close(self):
+            self.closed = True
+
+    pubsub = PubSub()
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: current)
+    monkeypatch.setattr(routes, "_subscribe_agent_run_events", lambda _tid: pubsub)
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda session_id, task_id: [("turn-1", {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 100,
+            "input_cached_tokens": 20,
+            "input_cache_write_tokens": 5,
+            "output_tokens": 10,
+            "cost_rmb": "0.10",
+        })],
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/turn-2"):
+        body = routes.admin_agent_run_stream("turn-2").get_data(as_text=True)
+
+    status_data = next(
+        line.removeprefix("data: ")
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    )
+    state = json.loads(status_data)
+    usage = state["session_token_usage"]
+    assert usage["request_count"] == 2
+    assert usage["input_total_tokens"] == 200
+    assert usage["input_cached_tokens"] == 35
+    assert usage["output_tokens"] == 18
+    assert usage["cost_rmb"] == "0.18"
+    assert pubsub.closed is True
+
+
+def test_agent_run_stream_projects_only_new_pi_resume_messages(monkeypatch):
+    previous_messages = [
+        {
+            "kind": "tool",
+            "title": "运行命令",
+            "text": f"first-{index}",
+            "line": index,
+            "offset": index * 10,
+            "source": "pi-first",
+        }
+        for index in range(39)
+    ]
+    copied_prefix = [
+        {
+            **message,
+            "line": int(message["line"]) + 1000,
+            "offset": int(message["offset"]) + 200_000,
+            "source": "pi-resume",
+        }
+        for message in previous_messages
+    ]
+    full_resume_messages = copied_prefix + [
+        {"kind": "assistant", "title": "AI 回复", "text": f"new-{index}"}
+        for index in range(24)
+    ]
+    token_usage = {
+        "source": "pi",
+        "request_count": 2,
+        "input_uncached_tokens": 80,
+        "input_cached_tokens": 10,
+        "input_cache_write_tokens": 0,
+        "output_tokens": 12,
+    }
+    initial = {
+        "task_id": "turn-2",
+        "session_id": "session-1",
+        "harness": "pi",
+        "status": "Running",
+        "execution_trace": {
+            "trace_messages": copied_prefix,
+            "token_usage": token_usage,
+        },
+    }
+    completed = {
+        **initial,
+        "status": "Completed",
+        "execution_trace": {
+            "trace_messages": full_resume_messages,
+            "token_usage": token_usage,
+        },
+    }
+
+    class PubSub:
+        closed = False
+
+        def get_message(self, **_kwargs):
+            return {"type": "message", "data": json.dumps(completed)}
+
+        def close(self):
+            self.closed = True
+
+    pubsub = PubSub()
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: initial)
+    monkeypatch.setattr(routes, "_subscribe_agent_run_events", lambda _tid: pubsub)
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(routes, "render_rich_markdown", lambda text: f"<p>{text}</p>")
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda _sid, _tid: [],
+    )
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_previous_trace_messages",
+        lambda _sid, _tid, _harness: previous_messages,
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/turn-2"):
+        body = routes.admin_agent_run_stream("turn-2").get_data(as_text=True)
+
+    snapshots = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [
+        len(snapshot["execution_trace"]["trace_messages"])
+        for snapshot in snapshots
+    ] == [0, 24, 24]
+    assert snapshots[1]["execution_trace"]["trace_messages"][0]["text"] == "new-0"
+    assert snapshots[1]["execution_trace"]["token_usage"] == token_usage
+    assert snapshots[1]["session_token_usage"]["request_count"] == 2
     assert pubsub.closed is True
 
 

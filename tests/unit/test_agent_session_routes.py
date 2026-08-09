@@ -608,6 +608,174 @@ def test_detail_get_renders_new_conversation_page_with_workspace(monkeypatch):
     ]
 
 
+def test_detail_get_exposes_cumulative_session_usage_without_pi_resume_double_count(
+    monkeypatch,
+):
+    _patch_admin(monkeypatch)
+    agent_session = _session()
+    agent_session.update(current_task_id="turn-2", turn_count=2)
+    turns = [
+        {
+            "task_id": "turn-1",
+            "status": "Completed",
+            "execution_trace": {"token_usage": {
+                "source": "pi",
+                "request_count": 1,
+                "input_uncached_tokens": 100,
+                "input_cached_tokens": 20,
+                "input_cache_write_tokens": 0,
+                "output_tokens": 10,
+                "cost_rmb": "0.10",
+            }},
+        },
+        {"task_id": "turn-2", "status": "Running"},
+    ]
+    current_state = {
+        "task_id": "turn-2",
+        "session_id": "session-1",
+        "status": "Running",
+        # Pi 第二轮实时 trace 已包含首轮，不应与历史基线相加。
+        "execution_trace": {"token_usage": {
+            "source": "pi",
+            "request_count": 2,
+            "input_uncached_tokens": 180,
+            "input_cached_tokens": 50,
+            "input_cache_write_tokens": 5,
+            "output_tokens": 25,
+            "cost_rmb": "0.25",
+        }},
+    }
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: agent_session)
+    monkeypatch.setattr(routes, "get_agent_session_turns", lambda _sid: turns)
+    monkeypatch.setattr(routes, "_decorate_agent_turns", lambda values: values)
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: current_state)
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda _sid, _tid: [("turn-1", turns[0]["execution_trace"]["token_usage"])],
+    )
+    monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
+    rendered = []
+    monkeypatch.setattr(
+        routes,
+        "render_template",
+        lambda template, **context: rendered.append((template, context)) or "detail",
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_tasks/session-1"):
+        routes.admin_agent_task_detail("session-1")
+
+    usage = rendered[0][1]["current_state"]["session_token_usage"]
+    assert usage["request_count"] == 2
+    assert usage["input_total_tokens"] == 235
+    assert usage["input_cached_tokens"] == 50
+    assert usage["output_tokens"] == 25
+    assert usage["cost_rmb"] == "0.25"
+
+
+def test_ordered_pi_turns_render_only_each_resume_trace_delta_and_keep_nonempty_baseline(
+    monkeypatch,
+):
+    first_messages = [
+        {
+            "kind": "tool",
+            "title": "运行命令",
+            "text": f"command-{index}",
+            "line": index + 1,
+            "offset": index * 100,
+            "source": "pi-first",
+            "html": "<b>不可信</b>",
+        }
+        for index in range(39)
+    ]
+    copied_prefix = [
+        {
+            **message,
+            # resume 后日志位置和服务端 HTML 可以变化，但不影响语义 LCP。
+            "line": int(message["line"]) + 900,
+            "offset": int(message["offset"]) + 100_000,
+            "source": "pi-resume",
+            "html": "<i>仍不可信</i>",
+        }
+        for message in first_messages
+    ]
+    second_messages = copied_prefix + [
+        {
+            "kind": "assistant",
+            "title": "AI 回复",
+            "text": f"second-{index}",
+            "meta": "deepseek-v4-flash",
+        }
+        for index in range(24)
+    ]
+    fourth_messages = second_messages + [
+        {"kind": "assistant", "title": "AI 回复", "text": "fourth-0"},
+        {"kind": "assistant", "title": "AI 回复", "text": "fourth-1"},
+    ]
+    traces = {
+        "turn-1": first_messages,
+        "turn-2": second_messages,
+        # 入队/运行失败且没有 trace 时不能把第二轮完整轨迹 baseline 清空。
+        "turn-3": [],
+        "turn-4": fourth_messages,
+    }
+
+    def hydrate(state):
+        return {
+            **state,
+            "execution_trace": {
+                "trace_messages": traces[state["task_id"]],
+                "token_usage": {"source": "pi", "request_count": 4},
+            },
+        }
+
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", hydrate)
+    monkeypatch.setattr(routes, "render_rich_markdown", lambda text: f"<p>{text}</p>")
+    turns = routes._decorate_agent_turns([
+        {
+            "task_id": f"turn-{index}",
+            "turn_index": index,
+            "harness": "pi",
+            "status": "Completed" if index != 3 else "Failed",
+            "user_message": f"message-{index}",
+        }
+        for index in range(1, 5)
+    ])
+
+    deltas = [
+        turn["execution_trace"]["trace_messages"]
+        for turn in turns
+    ]
+    assert [len(messages) for messages in deltas] == [39, 24, 0, 2]
+    assert deltas[1][0]["text"] == "second-0"
+    assert deltas[3][0]["text"] == "fourth-0"
+    assert turns[1]["execution_trace"]["token_usage"] == {
+        "source": "pi",
+        "request_count": 4,
+    }
+
+
+@pytest.mark.parametrize("harness", ["codex", "opencode"])
+def test_incremental_harness_trace_is_not_resume_filtered(harness):
+    previous = [{"kind": "assistant", "text": "first"}]
+    current = previous + [{"kind": "assistant", "text": "second"}]
+    state = {
+        "harness": harness,
+        "execution_trace": {
+            "trace_messages": current,
+            "token_usage": {"source": harness, "request_count": 1},
+        },
+    }
+
+    assert routes._agent_state_with_trace_delta(
+        state,
+        previous,
+        harness,
+    ) is state
+    assert state["execution_trace"]["trace_messages"] == current
+
+
 def test_detail_get_marks_another_admin_session_read_only(monkeypatch):
     _patch_admin(monkeypatch)
     agent_session = _session()

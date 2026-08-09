@@ -10,7 +10,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import errno
+import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -43,6 +45,17 @@ MAX_WORKSPACE_TREE_DEPTH = 20
 MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
 MAX_ENTRY_NAME_BYTES = 255
 MAX_WORKSPACE_PATH_BYTES = 4096
+
+# 原生 harness 会话保存在 workspace 的私有 ``.runtime`` 中；续聊时其中的旧
+# 工具输出也会被再次同步。临时 relay 凭据因此必须按 Agent 会话保留脱敏候选，
+# 但该历史不能放进容器可见的 workspace，更不能无界增长。
+_REDACTION_HISTORY_FILENAME = ".trace-redaction-history.json"
+_REDACTION_HISTORY_LOCK_FILENAME = ".trace-redaction-history.lock"
+_REDACTION_HISTORY_VERSION = 1
+_MAX_REDACTION_HISTORY_ENTRIES = 4096
+_MAX_REDACTION_HISTORY_BYTES = 512 * 1024
+_MIN_REDACTION_CANDIDATE_BYTES = 8
+_MAX_REDACTION_CANDIDATE_BYTES = 4096
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _PRIVATE_EXACT_NAMES = frozenset(
@@ -755,6 +768,212 @@ def ensure_agent_workspace(session_id) -> Path:
     ):
         _check_workspace_quota_fd(workspace_fd)
         return _workspace_root() / "sessions" / safe_session_id / "workspace"
+
+
+def _harden_redaction_history_file(fd: int, *, label: str) -> None:
+    """验证宿主侧凭据历史文件，不跟随链接并始终收紧为 0600。"""
+
+    info = os.fstat(fd)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or int(info.st_uid) != os.geteuid()
+    ):
+        raise AgentWorkspaceSecurityError(f"{label} 必须是服务用户拥有的单链接普通文件")
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError as exc:
+            raise AgentWorkspaceSecurityError(
+                f"无法把 {label} 权限收紧为 0600"
+            ) from exc
+        if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+            raise AgentWorkspaceSecurityError(f"{label} 权限必须是 0600")
+
+
+@contextmanager
+def _lock_redaction_history(session_fd: int):
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(
+            _REDACTION_HISTORY_LOCK_FILENAME,
+            flags,
+            0o600,
+            dir_fd=session_fd,
+        )
+    except OSError as exc:
+        raise AgentWorkspaceSecurityError("无法安全打开 Agent 脱敏历史锁") from exc
+    try:
+        _harden_redaction_history_file(fd, label="Agent 脱敏历史锁")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _normalize_redaction_candidates(values: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or ():
+        if not isinstance(value, str):
+            raise AgentWorkspaceSecurityError("Agent 临时脱敏候选必须是字符串")
+        if not value:
+            continue
+        try:
+            encoded = value.encode("utf-8", "strict")
+        except UnicodeEncodeError as exc:
+            raise AgentWorkspaceSecurityError("Agent 临时脱敏候选编码无效") from exc
+        if (
+            len(encoded) < _MIN_REDACTION_CANDIDATE_BYTES
+            or len(encoded) > _MAX_REDACTION_CANDIDATE_BYTES
+            or any(
+                ord(character) < 0x20 or ord(character) == 0x7F
+                for character in value
+            )
+        ):
+            raise AgentWorkspaceSecurityError("Agent 临时脱敏候选格式无效")
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _read_redaction_history(session_fd: int) -> list[str]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(_REDACTION_HISTORY_FILENAME, flags, dir_fd=session_fd)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise AgentWorkspaceSecurityError("无法安全读取 Agent 脱敏历史") from exc
+    try:
+        _harden_redaction_history_file(fd, label="Agent 脱敏历史")
+        payload = bytearray()
+        while len(payload) <= _MAX_REDACTION_HISTORY_BYTES:
+            chunk = os.read(
+                fd,
+                min(64 * 1024, _MAX_REDACTION_HISTORY_BYTES + 1 - len(payload)),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > _MAX_REDACTION_HISTORY_BYTES:
+            raise AgentWorkspaceLimitError("Agent 脱敏历史超过大小上限")
+    finally:
+        os.close(fd)
+    try:
+        document = json.loads(payload.decode("utf-8", "strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AgentWorkspaceSecurityError("Agent 脱敏历史格式无效") from exc
+    if (
+        not isinstance(document, dict)
+        or document.get("version") != _REDACTION_HISTORY_VERSION
+        or not isinstance(document.get("candidates"), list)
+    ):
+        raise AgentWorkspaceSecurityError("Agent 脱敏历史格式无效")
+    candidates = _normalize_redaction_candidates(document["candidates"])
+    if (
+        len(candidates) != len(document["candidates"])
+        or len(candidates) > _MAX_REDACTION_HISTORY_ENTRIES
+    ):
+        raise AgentWorkspaceSecurityError("Agent 脱敏历史内容无效")
+    return candidates
+
+
+def _write_redaction_history(session_fd: int, candidates: list[str]) -> None:
+    if len(candidates) > _MAX_REDACTION_HISTORY_ENTRIES:
+        raise AgentWorkspaceLimitError("Agent 脱敏历史超过条目上限")
+    payload = json.dumps(
+        {
+            "version": _REDACTION_HISTORY_VERSION,
+            "candidates": candidates,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(payload) > _MAX_REDACTION_HISTORY_BYTES:
+        raise AgentWorkspaceLimitError("Agent 脱敏历史超过大小上限")
+
+    temporary_name = f".{_REDACTION_HISTORY_FILENAME}.{uuid.uuid4().hex}.tmp"
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = -1
+    temporary_exists = False
+    try:
+        fd = os.open(temporary_name, flags, 0o600, dir_fd=session_fd)
+        temporary_exists = True
+        _harden_redaction_history_file(fd, label="Agent 脱敏历史临时文件")
+        offset = 0
+        while offset < len(payload):
+            written = os.write(fd, payload[offset:])
+            if written <= 0:
+                raise AgentWorkspaceSecurityError("写入 Agent 脱敏历史失败")
+            offset += written
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(
+            temporary_name,
+            _REDACTION_HISTORY_FILENAME,
+            src_dir_fd=session_fd,
+            dst_dir_fd=session_fd,
+        )
+        temporary_exists = False
+        os.fsync(session_fd)
+    except OSError as exc:
+        raise AgentWorkspaceSecurityError("无法原子保存 Agent 脱敏历史") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temporary_exists:
+            try:
+                os.unlink(temporary_name, dir_fd=session_fd)
+            except FileNotFoundError:
+                pass
+
+
+def merge_agent_temporary_redaction_candidates(
+    session_id,
+    current_candidates: Iterable[str],
+) -> tuple[str, ...]:
+    """原子合并宿主侧临时凭据脱敏历史，并返回当前会话的全部候选。
+
+    文件位于 ``sessions/<id>/`` 而不是容器挂载的 ``workspace/`` 中。调用方
+    只能传入本轮短生命周期 relay 值；真实 Session、长期模型密钥和长期 MCP
+    凭据不得进入此持久历史。
+    """
+
+    normalized_current = _normalize_redaction_candidates(current_candidates)
+    with _open_session_directories(session_id) as (
+        _safe_session_id,
+        session_fd,
+        _workspace_fd,
+    ):
+        with _lock_redaction_history(session_fd):
+            historical = _read_redaction_history(session_fd)
+            merged = list(dict.fromkeys((*historical, *normalized_current)))
+            if len(merged) > _MAX_REDACTION_HISTORY_ENTRIES:
+                raise AgentWorkspaceLimitError("Agent 脱敏历史超过条目上限")
+            if merged != historical:
+                _write_redaction_history(session_fd, merged)
+            return tuple(merged)
 
 
 def _open_existing_directory_at(parent_fd: int, name: str, *, label: str) -> int:
@@ -1659,6 +1878,7 @@ __all__ = [
     "AgentWorkspaceUsage",
     "AgentAttachmentError",
     "ensure_agent_workspace",
+    "merge_agent_temporary_redaction_candidates",
     "check_agent_workspace_quota",
     "get_agent_workspace_usage",
     "write_agent_workspace_file",

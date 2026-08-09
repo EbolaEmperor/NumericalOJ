@@ -60,6 +60,7 @@ from oj_modules.classroom.dashboard import (
     visible_classes_for_user_cached,
 )
 from oj_modules.problems.agent_runs import (
+    aggregate_agent_session_token_usage,
     hydrate_agent_run_snapshot,
 )
 from oj_modules.problems.agent_launch import (
@@ -237,6 +238,21 @@ def _agent_trace_conclusion(execution_trace):
 
 
 _AGENT_RICH_TRACE_KINDS = frozenset({'assistant', 'thinking', 'reasoning'})
+_AGENT_CUMULATIVE_TRACE_HARNESSES = frozenset({'claude_code', 'pi'})
+_AGENT_TRACE_STABLE_MESSAGE_FIELDS = (
+    'kind',
+    'type',
+    'title',
+    'name',
+    'tool_name',
+    'text',
+    'content',
+    'input',
+    'output',
+    'meta',
+    'format',
+    'is_error',
+)
 
 
 def _agent_trace_text(message):
@@ -246,6 +262,82 @@ def _agent_trace_text(message):
     if value is None:
         value = message.get('content')
     return str(value or '')
+
+
+def _agent_trace_messages(trace):
+    if not isinstance(trace, dict):
+        return []
+    messages = trace.get('trace_messages') or []
+    return messages if isinstance(messages, list) else []
+
+
+def _agent_trace_harness(state, fallback=''):
+    if isinstance(state, dict):
+        harness = str(state.get('harness') or '').strip().lower()
+        if harness:
+            return harness
+        trace = state.get('execution_trace')
+        usage = trace.get('token_usage') if isinstance(trace, dict) else None
+        if isinstance(usage, dict):
+            source = str(usage.get('source') or '').strip().lower()
+            if source:
+                return source
+    return str(fallback or '').strip().lower()
+
+
+def _agent_trace_message_signature(message):
+    """返回不含 HTML 与日志位置的稳定展示消息签名。"""
+
+    if not isinstance(message, dict):
+        return ''
+    stable = {
+        field: message.get(field)
+        for field in _AGENT_TRACE_STABLE_MESSAGE_FIELDS
+        if field in message
+    }
+    return json.dumps(
+        stable,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+        default=str,
+    )
+
+
+def _agent_trace_common_prefix_length(previous_messages, current_messages):
+    limit = min(len(previous_messages), len(current_messages))
+    for index in range(limit):
+        if (
+            _agent_trace_message_signature(previous_messages[index])
+            != _agent_trace_message_signature(current_messages[index])
+        ):
+            return index
+    return limit
+
+
+def _agent_state_with_trace_delta(state, previous_messages=(), harness=''):
+    """只投影累计 resume 轨迹的本轮增量，不改变 token usage。"""
+
+    if not isinstance(state, dict):
+        return state
+    resolved_harness = _agent_trace_harness(state, harness)
+    if resolved_harness not in _AGENT_CUMULATIVE_TRACE_HARNESSES:
+        return state
+    raw_trace = state.get('execution_trace')
+    if not isinstance(raw_trace, dict):
+        return state
+    current_messages = _agent_trace_messages(raw_trace)
+    if not current_messages:
+        return state
+    prefix_length = _agent_trace_common_prefix_length(
+        list(previous_messages or ()),
+        current_messages,
+    )
+    projected = dict(state)
+    trace = dict(raw_trace)
+    trace['trace_messages'] = current_messages[prefix_length:]
+    projected['execution_trace'] = trace
+    return projected
 
 
 def _decorate_agent_state_markdown(raw_state):
@@ -300,15 +392,34 @@ def _decorate_agent_state_markdown(raw_state):
 
 def _decorate_agent_turns(turns):
     decorated = []
+    previous_full_trace_by_harness = {}
     for raw_turn in turns or []:
         turn = dict(raw_turn)
-        snapshot = _decorate_agent_state_markdown(
-            hydrate_agent_run_snapshot({
-                'task_id': turn.get('task_id'),
-                'status': turn.get('status'),
-                'message': turn.get('conclusion') or '',
-            })
+        hydrated = hydrate_agent_run_snapshot({
+            'task_id': turn.get('task_id'),
+            'harness': turn.get('harness'),
+            'endpoint_id': turn.get('endpoint_id'),
+            'endpoint_model': turn.get('endpoint_model'),
+            'status': turn.get('status'),
+            'message': turn.get('conclusion') or '',
+        })
+        harness = _agent_trace_harness(hydrated, turn.get('harness'))
+        full_messages = list(_agent_trace_messages(
+            hydrated.get('execution_trace') if isinstance(hydrated, dict) else None
+        ))
+        hydrated = _agent_state_with_trace_delta(
+            hydrated,
+            previous_full_trace_by_harness.get(harness, ()),
+            harness,
         )
+        # Pi / Claude Code 的空失败轮不代表原生会话历史被清空；下一轮仍需
+        # 以上一份非空完整轨迹为 baseline。
+        if (
+            harness in _AGENT_CUMULATIVE_TRACE_HARNESSES
+            and full_messages
+        ):
+            previous_full_trace_by_harness[harness] = full_messages
+        snapshot = _decorate_agent_state_markdown(hydrated)
         trace = snapshot.get('execution_trace') or {}
         conclusion = str(turn.get('conclusion') or '').strip()
         if not conclusion and agent_status_is_terminal(turn.get('status')):
@@ -319,6 +430,179 @@ def _decorate_agent_turns(turns):
         turn['conclusion_html'] = render_rich_markdown(conclusion)
         decorated.append(turn)
     return decorated
+
+
+def _agent_token_usage_from_state(state):
+    if not isinstance(state, dict):
+        return None
+    trace = state.get('execution_trace')
+    if not isinstance(trace, dict):
+        return None
+    usage = trace.get('token_usage')
+    return usage if isinstance(usage, dict) else None
+
+
+def _load_agent_historical_token_usages(session_id, current_task_id):
+    """为 SSE/状态响应一次性读取历史轮次的规范任务轨迹。"""
+
+    current_task_id = str(current_task_id or '').strip()
+    usages = []
+    for turn in get_agent_session_turns(session_id):
+        task_id = str(turn.get('task_id') or '').strip()
+        if not task_id or task_id == current_task_id:
+            continue
+        persisted = get_agent_run_by_task_id(task_id)
+        if not isinstance(persisted, dict):
+            # 入队前失败的轮次没有模型调用，也不会有 agent_task_run 快照。
+            continue
+        usage = _agent_token_usage_from_state(
+            hydrate_agent_run_snapshot(persisted)
+        )
+        if usage is not None:
+            usages.append((task_id, usage))
+    return usages
+
+
+def _load_agent_previous_trace_messages(session_id, current_task_id, harness):
+    """按轮次顺序读取当前轮之前最近一份非空完整 resume 轨迹。"""
+
+    current_task_id = str(current_task_id or '').strip()
+    harness = str(harness or '').strip().lower()
+    if harness not in _AGENT_CUMULATIVE_TRACE_HARNESSES:
+        return []
+    previous_messages = []
+    for turn in get_agent_session_turns(session_id):
+        task_id = str(turn.get('task_id') or '').strip()
+        if task_id == current_task_id:
+            break
+        if not task_id:
+            continue
+        turn_harness = str(turn.get('harness') or harness).strip().lower()
+        if turn_harness != harness:
+            continue
+        persisted = get_agent_run_by_task_id(task_id)
+        state = {
+            'task_id': task_id,
+            'harness': turn_harness,
+            'endpoint_id': turn.get('endpoint_id'),
+            'endpoint_model': turn.get('endpoint_model'),
+            'status': turn.get('status'),
+            'message': turn.get('conclusion') or '',
+        }
+        if isinstance(persisted, dict):
+            state.update(persisted)
+        hydrated = hydrate_agent_run_snapshot(state)
+        messages = _agent_trace_messages(
+            hydrated.get('execution_trace')
+            if isinstance(hydrated, dict) else None
+        )
+        if messages:
+            previous_messages = list(messages)
+    return previous_messages
+
+
+def _agent_trace_session_context(state, task_id=''):
+    """从状态或会话映射解析增量轨迹所需的 session / harness。"""
+
+    if not isinstance(state, dict):
+        return '', ''
+    resolved_task_id = str(task_id or state.get('task_id') or '').strip()
+    session_id = str(state.get('session_id') or '').strip()
+    harness = _agent_trace_harness(state)
+    if session_id and harness:
+        return session_id, harness
+    if not session_id and not harness:
+        return '', ''
+    if harness and harness not in _AGENT_CUMULATIVE_TRACE_HARNESSES:
+        return session_id, harness
+    if not resolved_task_id:
+        return session_id, harness
+    owning_session = get_agent_session_by_task_id(resolved_task_id)
+    if isinstance(owning_session, dict):
+        session_id = session_id or str(
+            owning_session.get('session_id') or ''
+        ).strip()
+        harness = harness or str(
+            owning_session.get('harness') or ''
+        ).strip().lower()
+    return session_id, harness
+
+
+def _agent_state_with_loaded_session_trace_delta(state):
+    """为状态/停止响应按会话历史投影本轮新增轨迹。"""
+
+    if not isinstance(state, dict):
+        return state
+    current_task_id = str(state.get('task_id') or '').strip()
+    try:
+        session_id, harness = _agent_trace_session_context(
+            state,
+            current_task_id,
+        )
+        previous_messages = (
+            _load_agent_previous_trace_messages(
+                session_id,
+                current_task_id,
+                harness,
+            )
+            if session_id else []
+        )
+    except Exception:
+        logger.warning(
+            '读取 Agent 会话历史轨迹失败',
+            extra={
+                'session_id': str(state.get('session_id') or ''),
+                'task_id': current_task_id,
+            },
+            exc_info=True,
+        )
+        return state
+    return _agent_state_with_trace_delta(state, previous_messages, harness)
+
+
+def _agent_state_with_session_token_usage(state, historical_usages=()):
+    """把历史基线与当前任务实时快照合成为会话级权威用量。"""
+
+    if not isinstance(state, dict):
+        return state
+    projected = dict(state)
+    task_usages = list(historical_usages or ())
+    current_usage = _agent_token_usage_from_state(projected)
+    current_task_id = str(projected.get('task_id') or '').strip()
+    if current_task_id and current_usage is not None:
+        # aggregate helper 按 task_id 最后写入覆盖，避免历史/current 重复计数。
+        task_usages.append((current_task_id, current_usage))
+    projected['session_token_usage'] = aggregate_agent_session_token_usage(
+        task_usages
+    )
+    return projected
+
+
+def _agent_state_with_loaded_session_token_usage(state):
+    """有可信 session_id 时补齐历史；普通旧任务保持当前任务统计。"""
+
+    if not isinstance(state, dict):
+        return state
+    session_id = str(state.get('session_id') or '').strip()
+    current_task_id = str(state.get('task_id') or '').strip()
+    historical_usages = ()
+    if session_id and current_task_id:
+        try:
+            historical_usages = _load_agent_historical_token_usages(
+                session_id,
+                current_task_id,
+            )
+        except Exception:
+            # 用量展示不能阻断状态接口；失败时仍返回当前任务的规范统计。
+            logger.warning(
+                '读取 Agent 会话历史用量失败',
+                extra={
+                    'session_id': session_id,
+                    'task_id': current_task_id,
+                },
+                exc_info=True,
+            )
+    return _agent_state_with_session_token_usage(state, historical_usages)
 
 
 def _pending_agent_run_state(session, task_id):
@@ -1035,6 +1319,8 @@ def admin_agent_run_status(task_id):
                 "attempts": [],
             })
         )
+    state = _agent_state_with_loaded_session_token_usage(state)
+    state = _agent_state_with_loaded_session_trace_delta(state)
     return jsonify(success=True, state=state)
 
 
@@ -1059,7 +1345,10 @@ def admin_agent_run_cancel(task_id):
     if not result.get('exists'):
         return jsonify(success=False, message='Agent 任务不存在'), 404
 
-    state = _agent_state_for_response(task_id, result.get('state'))
+    state = _agent_state_with_loaded_session_token_usage(
+        _agent_state_for_response(task_id, result.get('state'))
+    )
+    state = _agent_state_with_loaded_session_trace_delta(state)
     if not result.get('canceled'):
         return jsonify(
             success=False,
@@ -1108,6 +1397,7 @@ def admin_agent_run_stream(task_id):
         messages = trace.get("trace_messages") or []
         files = trace.get("trace_files") or []
         usage = trace.get("token_usage") or {}
+        session_usage = snapshot.get("session_token_usage") or {}
         last_message = messages[-1] if messages else {}
         return (
             snapshot.get("status"),
@@ -1121,8 +1411,14 @@ def admin_agent_run_stream(task_id):
             last_message.get("event_index"),
             usage.get("request_count"),
             usage.get("input_total_tokens"),
+            usage.get("input_cached_tokens"),
             usage.get("output_tokens"),
             usage.get("cost_rmb"),
+            session_usage.get("request_count"),
+            session_usage.get("input_total_tokens"),
+            session_usage.get("input_cached_tokens"),
+            session_usage.get("output_tokens"),
+            session_usage.get("cost_rmb"),
             tuple(
                 (item.get("path"), item.get("size"))
                 for item in files if isinstance(item, dict)
@@ -1131,6 +1427,87 @@ def admin_agent_run_stream(task_id):
 
     @stream_with_context
     def generate():
+        historical_usages = ()
+        loaded_session_id = ''
+        previous_trace_messages = ()
+        loaded_trace_session_id = ''
+        loaded_trace_harness = ''
+
+        def with_session_projection(snapshot):
+            nonlocal historical_usages, loaded_session_id
+            nonlocal previous_trace_messages
+            nonlocal loaded_trace_session_id, loaded_trace_harness
+            if not isinstance(snapshot, dict):
+                return snapshot
+            session_id = str(snapshot.get('session_id') or '').strip()
+            harness = _agent_trace_harness(snapshot)
+            if not session_id or not harness:
+                try:
+                    resolved_session_id, resolved_harness = (
+                        _agent_trace_session_context(snapshot, task_id)
+                    )
+                    session_id = session_id or resolved_session_id
+                    harness = harness or resolved_harness
+                except Exception:
+                    logger.warning(
+                        '读取 Agent SSE 会话轨迹上下文失败',
+                        extra={'task_id': task_id},
+                        exc_info=True,
+                    )
+            session_id = session_id or loaded_trace_session_id
+            harness = harness or loaded_trace_harness
+            if session_id and session_id != loaded_session_id:
+                try:
+                    historical_usages = _load_agent_historical_token_usages(
+                        session_id,
+                        task_id,
+                    )
+                except Exception:
+                    historical_usages = ()
+                    logger.warning(
+                        '读取 Agent SSE 会话历史用量失败',
+                        extra={
+                            'session_id': session_id,
+                            'task_id': task_id,
+                        },
+                        exc_info=True,
+                    )
+                loaded_session_id = session_id
+            trace_context_changed = (
+                session_id != loaded_trace_session_id
+                or harness != loaded_trace_harness
+            )
+            if session_id and trace_context_changed:
+                try:
+                    previous_trace_messages = (
+                        _load_agent_previous_trace_messages(
+                            session_id,
+                            task_id,
+                            harness,
+                        )
+                    )
+                except Exception:
+                    previous_trace_messages = ()
+                    logger.warning(
+                        '读取 Agent SSE 会话历史轨迹失败',
+                        extra={
+                            'session_id': session_id,
+                            'task_id': task_id,
+                        },
+                        exc_info=True,
+                    )
+                loaded_trace_session_id = session_id
+                loaded_trace_harness = harness
+            projected = _agent_state_with_session_token_usage(
+                snapshot,
+                historical_usages,
+            )
+            return _agent_state_with_trace_delta(
+                projected,
+                previous_trace_messages,
+                harness or loaded_trace_harness,
+            )
+
         pubsub = (
             _subscribe_agent_run_events(task_id)
             if _subscribe_agent_run_events is not None
@@ -1146,6 +1523,7 @@ def admin_agent_run_stream(task_id):
                     hydrate_agent_run_snapshot(fallback_state)
                 )
             )
+            first_payload = with_session_projection(first_payload)
             yield _encode_sse("status", first_payload)
             if _is_agent_state_finished(first_payload):
                 yield _encode_sse("done", first_payload)
@@ -1155,6 +1533,7 @@ def admin_agent_run_stream(task_id):
             if pubsub is None:
                 while True:
                     snapshot = _get_agent_run_state(task_id) or first_payload
+                    snapshot = with_session_projection(snapshot)
                     current_marker = _snapshot_marker(snapshot)
                     if current_marker != last_marker:
                         yield _encode_sse("status", snapshot)
@@ -1168,6 +1547,7 @@ def admin_agent_run_stream(task_id):
                 msg = pubsub.get_message(timeout=15.0)
                 if not msg:
                     snapshot = _get_agent_run_state(task_id) or first_payload
+                    snapshot = with_session_projection(snapshot)
                     current_marker = _snapshot_marker(snapshot)
                     if current_marker != last_marker:
                         yield _encode_sse("status", snapshot)
@@ -1195,6 +1575,7 @@ def admin_agent_run_stream(task_id):
                     task_id,
                     hydrate_agent_run_snapshot(snapshot)
                 )
+                snapshot = with_session_projection(snapshot)
                 yield _encode_sse("status", snapshot)
                 last_marker = _snapshot_marker(snapshot)
                 if _is_agent_state_finished(snapshot):
@@ -1776,6 +2157,12 @@ def admin_agent_task_detail(session_id):
         current_state,
         agent_session=agent_session,
     )
+    # 持久 run 快照带有 endpoint_id，能为每个历史轮次按规范价格重建成本；
+    # 不能直接拿用于展示的 turn 简版状态汇总，否则 priced 会话会被误判未定价。
+    current_state = dict(current_state)
+    current_state['session_id'] = session_id
+    current_state = _agent_state_with_loaded_session_token_usage(current_state)
+    current_state = _agent_state_with_loaded_session_trace_delta(current_state)
     try:
         workspace_tree = (
             []

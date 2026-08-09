@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hmac
 import http.server
 import ipaddress
@@ -891,6 +891,27 @@ class _NumOJIdentityRelay:
     def created_submission_ids(self):
         return self.policy.created_submission_ids()
 
+    @property
+    def temporary_secrets(self):
+        """返回可能被 CLI 输出的本轮凭据表示，供宿主统一脱敏。"""
+
+        base_url = str(self.container_base_url or "")
+        authorization = str(self.relay_authorization or "")
+        secret = str(self.relay_request_secret or "")
+        basic_payload = authorization.partition(" ")[2]
+        userinfo = f"{_RELAY_AUTH_USERNAME}:{secret}" if secret else ""
+        candidates = (
+            # URL 必须排在其中所含的 secret 前，避免只替换密码后仍把带
+            # userinfo 的代理地址保留在轨迹里。
+            base_url,
+            base_url.replace("/", r"\/") if base_url else "",
+            authorization,
+            basic_payload,
+            userinfo,
+            secret,
+        )
+        return tuple(dict.fromkeys(value for value in candidates if value))
+
     def close(self):
         if self._closed:
             return
@@ -914,8 +935,12 @@ class _NumOJIdentityRelay:
 class NumOJIdentityRelaySession:
     """调用方可读取代理地址及由该代理精确创建的提交编号。"""
 
-    base_url: str
-    _relay: _NumOJIdentityRelay
+    base_url: str = field(repr=False)
+    _relay: _NumOJIdentityRelay = field(repr=False)
+
+    @property
+    def temporary_secrets(self):
+        return self._relay.temporary_secrets
 
     @property
     def created_submission_ids(self):

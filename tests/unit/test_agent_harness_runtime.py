@@ -355,6 +355,11 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     monkeypatch.setattr(agent_workspace, "AGENT_WORKSPACE_ROOT", workspace_root)
     monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(workspace_root))
     monkeypatch.setattr(runtime, "AGENT_CONTAINER_SITE_URL", "http://localhost:2025")
+    previous_temporary_secret = "previous-turn-temporary-token"
+    assert agent_workspace.merge_agent_temporary_redaction_candidates(
+        "task-1",
+        (previous_temporary_secret,),
+    ) == (previous_temporary_secret,)
     monkeypatch.setattr(
         runtime,
         "get_web_search_settings",
@@ -365,12 +370,31 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     )
     observed = {}
     lifecycle = []
+    identity_temporary_secret = "identity-relay-temporary-token"
+    identity_userinfo = f"numoj-agent:{identity_temporary_secret}"
+    identity_base_url = (
+        f"http://{identity_userinfo}@host.docker.internal:43123"
+    )
+    identity_escaped_base_url = identity_base_url.replace("/", r"\/")
+    identity_basic_payload = (
+        "bnVtb2otYWdlbnQ6aWRlbnRpdHktcmVsYXktdGVtcG9yYXJ5LXRva2Vu"
+    )
+    identity_authorization = f"Basic {identity_basic_payload}"
+    identity_temporary_secrets = (
+        identity_base_url,
+        identity_escaped_base_url,
+        identity_authorization,
+        identity_basic_payload,
+        identity_userinfo,
+        identity_temporary_secret,
+    )
 
     class FakeRelayContext:
         def __enter__(self):
             return SimpleNamespace(
-                base_url="http://host.docker.internal:43123",
+                base_url=identity_base_url,
                 created_submission_ids=(81, 82),
+                temporary_secrets=identity_temporary_secrets,
             )
 
         def __exit__(self, *_args):
@@ -468,7 +492,13 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
                     "role": "assistant",
                     "content": [{
                         "type": "text",
-                        "text": f"已完成 {endpoint_temporary}",
+                        "text": (
+                            f"旧身份 {previous_temporary_secret}；"
+                            f"身份 {identity_base_url} "
+                            f"{identity_authorization} "
+                            f"{identity_temporary_secret}；"
+                            f"已完成 {endpoint_temporary}"
+                        ),
                     }],
                 },
             }, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -483,7 +513,13 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
                         "role": "assistant",
                         "content": [{
                             "type": "text",
-                            "text": f"已完成 {endpoint_temporary}",
+                            "text": (
+                                f"旧身份 {previous_temporary_secret}；"
+                                f"身份 {identity_base_url} "
+                                f"{identity_authorization} "
+                                f"{identity_temporary_secret}；"
+                                f"已完成 {endpoint_temporary}"
+                            ),
                         }],
                     },
                 }, ensure_ascii=False)
@@ -495,8 +531,15 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
         return runtime.HarnessRunResult(
             0,
             False,
-            f"ok model-secret {endpoint_temporary}",
-            f"Bearer search-secret {web_search_temporary}",
+            (
+                f"ok {previous_temporary_secret} "
+                f"{identity_base_url} {identity_authorization} "
+                f"{identity_temporary_secret} model-secret {endpoint_temporary}"
+            ),
+            (
+                f"{identity_escaped_base_url} {identity_userinfo} "
+                f"Bearer search-secret {web_search_temporary}"
+            ),
         )
 
     cleanups = []
@@ -569,16 +612,18 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     assert result.returncode == 0
     assert result.native_session_id == "11111111-1111-1111-1111-111111111111"
     assert observed["trace_secrets"] == (
+        previous_temporary_secret,
+        *identity_temporary_secrets,
+        endpoint_temporary,
+        web_search_temporary,
         "session-cookie",
         "model-secret",
         "Bearer search-secret",
-        endpoint_temporary,
-        web_search_temporary,
     )
     assert result.created_submission_ids == (81, 82)
     assert observed["prompt"] == "请完成任务"
     assert observed["identity"] == {
-        "base_url": "http://host.docker.internal:43123",
+        "base_url": identity_base_url,
         "username": "admin",
         "cookies": {"session": "relay-placeholder"},
             "agent_task": {
@@ -641,7 +686,12 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     ]
     trace_dir = workspace_root / "traces/task-1"
     messages = collect_agent_trace_messages(trace_dir)
-    assert [item["text"] for item in messages] == ["已完成 [REDACTED]"]
+    assert [item["text"] for item in messages] == [
+        (
+            "旧身份 [REDACTED]；身份 [REDACTED] [REDACTED] "
+            "[REDACTED]；已完成 [REDACTED]"
+        ),
+    ]
     assert not (trace_dir / ".agent_harness.stdout.tmp").exists()
     workspace = workspace_root / "sessions/task-1/workspace"
     assert workspace.is_dir()
@@ -656,8 +706,27 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     assert "search-secret" not in result.stdout + result.stderr
     assert endpoint_temporary not in result.stdout + result.stderr
     assert web_search_temporary not in result.stdout + result.stderr
+    assert previous_temporary_secret not in result.stdout + result.stderr
+    assert identity_base_url not in result.stdout + result.stderr
+    assert identity_escaped_base_url not in result.stdout + result.stderr
+    assert identity_authorization not in result.stdout + result.stderr
+    assert identity_basic_payload not in result.stdout + result.stderr
+    assert identity_userinfo not in result.stdout + result.stderr
+    assert identity_temporary_secret not in result.stdout + result.stderr
     assert not (workspace / ".numoj-agent/identity.json").exists()
     assert (workspace / ".aj_session_state.json").is_file()
+    redaction_history_path = (
+        workspace.parent / agent_workspace._REDACTION_HISTORY_FILENAME
+    )
+    assert redaction_history_path.stat().st_mode & 0o777 == 0o600
+    redaction_history = redaction_history_path.read_text(encoding="utf-8")
+    assert previous_temporary_secret in redaction_history
+    assert identity_temporary_secret in redaction_history
+    assert endpoint_temporary in redaction_history
+    assert web_search_temporary in redaction_history
+    assert "session-cookie" not in redaction_history
+    assert "model-secret" not in redaction_history
+    assert "search-secret" not in redaction_history
     assert sorted(item.name for item in workspace_root.iterdir()) == [
         "sessions",
         "traces",

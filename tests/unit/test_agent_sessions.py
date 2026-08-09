@@ -117,6 +117,56 @@ def test_cleanup_failed_is_nonterminal_and_blocks_resume(monkeypatch):
     assert connection.rollbacks == 1
 
 
+def test_unchanged_empty_turn_attachments_confirm_the_current_cas_row(monkeypatch):
+    """MySQL 的 changed-rows=0 不应把 [] -> [] 误报为换轮竞态。"""
+
+    connection = _ScriptedConnection(
+        one_values=[{"attachments_json": "[]"}],
+    )
+    connection.cursor_instance.rowcount = 0
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    assert sessions.set_agent_turn_attachments(
+        "session-empty",
+        "turn-empty",
+        [],
+    ) is True
+
+    calls = connection.cursor_instance.calls
+    assert len(calls) == 2
+    assert "UPDATE agent_session_turns AS t" in calls[0][0]
+    assert calls[0][1] == ("[]", "session-empty", "turn-empty", "turn-empty")
+    assert "SELECT t.attachments_json" in calls[1][0]
+    assert "s.current_task_id=%s AND LOWER(s.status)='pending'" in calls[1][0]
+    assert "FOR UPDATE" in calls[1][0]
+    assert calls[1][1] == ("session-empty", "turn-empty", "turn-empty")
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+    assert connection.closed is True
+
+
+def test_zero_row_attachment_update_still_rejects_a_lost_cas(monkeypatch):
+    connection = _ScriptedConnection(one_values=[None])
+    connection.cursor_instance.rowcount = 0
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="Agent 轮次附件状态已变化",
+    ):
+        sessions.set_agent_turn_attachments(
+            "session-racing",
+            "turn-racing",
+            [],
+        )
+
+    assert len(connection.cursor_instance.calls) == 2
+    assert "FOR UPDATE" in connection.cursor_instance.calls[1][0]
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+    assert connection.closed is True
+
+
 def test_late_old_turn_cannot_overwrite_the_current_turn(monkeypatch):
     connection = _ScriptedConnection(one_values=[None])
     monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)

@@ -409,6 +409,22 @@ def test_relay_secret_is_unique_and_existing_cli_sends_authorization():
     assert prepared.headers["Authorization"] == first.relay_authorization
     assert first.relay_request_secret not in prepared.headers["Authorization"]
 
+    first.container_base_url = base_url
+    basic_payload = first.relay_authorization.removeprefix("Basic ")
+    userinfo = f"numoj-agent:{first.relay_request_secret}"
+    assert first.temporary_secrets == (
+        base_url,
+        base_url.replace("/", r"\/"),
+        first.relay_authorization,
+        basic_payload,
+        userinfo,
+        first.relay_request_secret,
+    )
+    session = relay.NumOJIdentityRelaySession(base_url=base_url, _relay=first)
+    assert session.temporary_secrets == first.temporary_secrets
+    assert base_url not in repr(session)
+    assert first.relay_request_secret not in repr(session)
+
 
 def test_relay_authorization_gate_precedes_policy_and_body_read():
     instance = relay._NumOJIdentityRelay(
