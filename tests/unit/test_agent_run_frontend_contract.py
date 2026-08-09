@@ -12,6 +12,13 @@ def _read(relative_path):
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _css_rule(styles, selector):
+    start = styles.index(selector)
+    body_start = styles.index("{", start) + 1
+    body_end = styles.index("}", body_start)
+    return styles[body_start:body_end]
+
+
 def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
     template = _read("templates/admin/agent_tasks.html")
     controller = _read("static/app/agents/task-list.js")
@@ -63,6 +70,66 @@ def test_agent_detail_is_a_standalone_conversation_and_workspace_page():
     assert "agent-file-image-stage" in styles
 
 
+def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+    styles = _read("static/app/agents/conversation.css")
+
+    header_start = template.index('<header class="agent-session-header">')
+    header_end = template.index("</header>", header_start)
+    header = template[header_start:header_end]
+    assert "agent-session-runtime" not in header
+    assert "harness_logo(" not in header
+    assert "agent_session.endpoint_model" not in header
+    assert 'class="numoj-avatar agent-session-avatar"' in header
+    assert 'data-agent-session-avatar' in header
+    assert 'data-avatar-seed="{{ agent_session.requested_by }}"' in header
+    assert 'data-avatar-label="{{ agent_session.requested_by }}"' in header
+    assert 'aria-label="发起者：{{ agent_session.requested_by }}"' in header
+    for field in ("input", "cached", "output", "cost"):
+        assert f"data-agent-usage-{field}" in header
+    assert "会话累计 Token 用量" in header
+    assert "缓存输入占比" in header
+
+    composer_start = template.index('<footer class="agent-resume-dock">')
+    composer_end = template.index("</footer>", composer_start)
+    composer = template[composer_start:composer_end]
+    assert "harness_logo(agent_session.harness)" in composer
+    assert "agent_session.endpoint_model" in composer
+
+    assert "querySelectorAll('[data-agent-session-avatar]')" in controller
+    assert "identicon.paint(avatar, identicon.cellsForSeed(seed), label)" in controller
+    assert "function formatMeasuredValue(value)" in controller
+    assert "function formatTokenCount(tokens)" in controller
+    assert "function renderHeaderTokenUsage(usage)" in controller
+    assert "state.session_token_usage" in controller
+    assert "Number(usage.input_total_tokens)" in controller
+    assert "Number(usage.input_cached_tokens)" in controller
+    assert "Number(usage.output_tokens)" in controller
+    assert "usage.cost_rmb" in controller
+    assert "if (tokens < 10000)" in controller
+    assert "formatMeasuredValue(tokens / 1000) + ' K'" in controller
+    assert "formatMeasuredValue(tokens / 1000000) + ' M'" in controller
+    assert "Math.min(100, cachedTokens / inputTokens * 100)" in controller
+    assert "setUsageValue(usageCached, cachedPercent.toFixed(2) + '%');" in controller
+    assert "formatMeasuredValue(Number(usage.cost_rmb)) + ' RMB'" in controller
+    assert "renderHeaderTokenUsage(state.session_token_usage);" in controller
+    assert "renderHeaderTokenUsage(null);" not in controller
+    assert (
+        "renderHeaderTokenUsage(currentState && currentState.session_token_usage);"
+        in controller
+    )
+
+    assert "container-name: agent-conversation;" in styles
+    assert "@container agent-conversation" in styles
+    assert ".agent-session .agent-session-avatar" in styles
+    assert ".agent-session-usage-fact dd" in styles
+    assert "font-variant-numeric: tabular-nums;" in styles
+    assert ".agent-session-usage-fact--cost { display: none; }" not in styles
+    assert ".agent-session-usage-fact--cached { display: none; }" not in styles
+    assert ".agent-session-usage { display: none; }" not in styles
+
+
 def test_agent_detail_supports_resume_stop_and_live_state_without_interruption():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
@@ -99,6 +166,55 @@ def test_agent_detail_keeps_file_preview_and_workspace_accessible():
     assert "trapMobileFilePreviewFocus" in controller
     assert "statusChip.setAttribute('aria-label', item.label)" in controller
     assert "clip: rect(0, 0, 0, 0)" in styles
+
+
+def test_agent_markdown_code_stays_compact_and_scrollable_in_narrow_panes():
+    template = _read("templates/admin/agent_task_detail.html")
+    styles = _read("static/app/agents/conversation.css")
+
+    assert template.index("app/markdown-rendering.css") < template.index(
+        "app/agents/conversation.css"
+    )
+
+    frame_rule = _css_rule(
+        styles,
+        ".agent-session .numoj-markdown .codehilite {",
+    )
+    assert "max-width: 100%;" in frame_rule
+    assert "overflow: hidden;" in frame_rule
+    assert "border-radius: 6px;" in frame_rule
+
+    pre_rule = _css_rule(styles, ".agent-session .numoj-markdown pre {")
+    for declaration in (
+        "box-sizing: border-box;",
+        "max-width: 100%;",
+        "overflow-x: auto;",
+        "white-space: pre;",
+        "overflow-wrap: normal;",
+        "word-break: normal;",
+        "border-radius: 6px;",
+    ):
+        assert declaration in pre_rule
+
+    inline_code_rule = _css_rule(styles, ".agent-session .numoj-markdown code {")
+    assert "border-radius: 3px;" in inline_code_rule
+    assert "overflow-wrap: anywhere;" in inline_code_rule
+
+    copy_rule = _css_rule(
+        styles,
+        ".agent-session .numoj-markdown .numoj-code-copy {",
+    )
+    assert "width: 30px;" in copy_rule
+    assert "height: 30px;" in copy_rule
+    assert "border-radius: 5px;" in copy_rule
+    assert "box-shadow: none;" in copy_rule
+
+    assert "padding: 38px clamp(16px, 5%, 50px) 28px;" in styles
+    assert (
+        "padding: clamp(22px, 5%, 42px) clamp(18px, 7%, 42px) 42px;"
+        in styles
+    )
+    assert "padding-right: 44px;" in styles
 
 
 def test_agent_trace_prefers_server_normalized_titles():

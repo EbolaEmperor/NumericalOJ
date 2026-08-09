@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import hashlib
 from pathlib import Path
 import re
@@ -18,6 +19,16 @@ from oj_modules.site_config.services import get_llm_endpoint
 
 
 _TASK_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+_SESSION_USAGE_COUNTER_FIELDS = (
+    "request_count",
+    "input_uncached_tokens",
+    "input_cached_tokens",
+    "input_cache_write_tokens",
+    "input_total_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+)
+_CUMULATIVE_RESUME_USAGE_SOURCES = frozenset({"claude_code", "pi"})
 
 
 def normalize_agent_task_id(task_id):
@@ -116,6 +127,122 @@ def build_agent_execution_trace(state):
     }
 
 
+def _nonnegative_usage_counter(value):
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _nonnegative_usage_cost(value):
+    if value is None or isinstance(value, bool) or str(value).strip() == "":
+        return None
+    try:
+        cost = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not cost.is_finite() or cost < 0:
+        return None
+    return cost
+
+
+def _decimal_text(value):
+    if value == 0:
+        return "0"
+    return format(value.normalize(), "f")
+
+
+def aggregate_agent_session_token_usage(task_usages):
+    """按会话 resume 语义汇总唯一任务的 token 与成本。
+
+    Pi 与 Claude Code 在续聊轮次的轨迹中会再次包含父会话历史，因此它们的
+    ``token_usage`` 是累计快照：同一来源取各计数器最大值。Codex 与
+    OpenCode 的 stdout 轨迹是本轮增量，按唯一 ``task_id`` 相加。先用
+    ``task_id`` 去重可避免同一实时快照被历史与 current overlay 重复加入。
+
+    只有每个存在 token usage 的任务都带有合法 ``cost_rmb`` 时才返回总成本；
+    否则 ``cost_rmb`` 为 ``None``，避免把部分成本误报成整场会话成本。
+    """
+
+    unique_usages = {}
+    for item in task_usages or ():
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            continue
+        task_id = str(item[0] or "").strip()
+        usage = item[1]
+        if not task_id or not isinstance(usage, dict):
+            continue
+        # current overlay 应放在 iterable 后部，并以最后一个同 task 快照为准。
+        unique_usages[task_id] = usage
+    if not unique_usages:
+        return None
+
+    incremental_totals = {field: 0 for field in _SESSION_USAGE_COUNTER_FIELDS}
+    cumulative_totals_by_source = {}
+    incremental_cost = Decimal("0")
+    cumulative_cost_by_source = {}
+    cost_complete = True
+    sources = set()
+
+    for usage in unique_usages.values():
+        source = str(usage.get("source") or "unknown").strip().lower() or "unknown"
+        sources.add(source)
+        counters = {
+            field: _nonnegative_usage_counter(usage.get(field))
+            for field in _SESSION_USAGE_COUNTER_FIELDS
+        }
+        cost = _nonnegative_usage_cost(usage.get("cost_rmb"))
+        if cost is None:
+            cost_complete = False
+
+        if source in _CUMULATIVE_RESUME_USAGE_SOURCES:
+            source_totals = cumulative_totals_by_source.setdefault(
+                source,
+                {field: 0 for field in _SESSION_USAGE_COUNTER_FIELDS},
+            )
+            for field, value in counters.items():
+                source_totals[field] = max(source_totals[field], value)
+            if cost is not None:
+                cumulative_cost_by_source[source] = max(
+                    cumulative_cost_by_source.get(source, Decimal("0")),
+                    cost,
+                )
+            continue
+
+        for field, value in counters.items():
+            incremental_totals[field] += value
+        if cost is not None:
+            incremental_cost += cost
+
+    totals = dict(incremental_totals)
+    for source_totals in cumulative_totals_by_source.values():
+        for field, value in source_totals.items():
+            totals[field] += value
+    # 不独立信任累计快照里的 total：实时同步可能恰好落在不同事件边界，
+    # 由三个规范输入分量重算才能始终保持口径自洽。
+    totals["input_total_tokens"] = (
+        totals["input_uncached_tokens"]
+        + totals["input_cached_tokens"]
+        + totals["input_cache_write_tokens"]
+    )
+
+    total_cost = incremental_cost + sum(
+        cumulative_cost_by_source.values(),
+        start=Decimal("0"),
+    )
+    totals.update({
+        "source": "session",
+        "sources": sorted(sources),
+        "turn_count": len(unique_usages),
+        "cost_complete": cost_complete,
+        "cost_rmb": _decimal_text(total_cost) if cost_complete else None,
+    })
+    return totals
+
+
 def hydrate_agent_run_snapshot(state):
     """从磁盘规范 JSONL 重建轨迹；不读取或兼容旧 events。"""
 
@@ -141,6 +268,7 @@ def decorate_agent_run_summaries(runs):
 
 
 __all__ = [
+    "aggregate_agent_session_token_usage",
     "normalize_agent_task_id",
     "agent_run_container_name",
     "agent_run_trace_dir",

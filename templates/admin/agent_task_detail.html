@@ -128,18 +128,43 @@
           </span>
         </span>
       </div>
-      <div class="agent-session-runtime" aria-label="会话运行配置">
-        <span title="Harness">
-          {{ harness_logo(agent_session.harness) }}
-          {{ harness_name }}
-        </span>
-        <span title="模型节点"><i class="fas fa-microchip" aria-hidden="true"></i>{{ agent_session.endpoint_model|default(agent_session.model|default('模型节点', true), true) }}</span>
-        <span title="执行身份"><i class="fas {{ 'fa-user-shield' if access_role == 'admin' else 'fa-user' }}" aria-hidden="true"></i>{{ 'admin' if access_role == 'admin' else 'user' }}</span>
+      <div class="agent-session-header-side">
+        <dl class="agent-session-usage" aria-label="会话累计 Token 用量">
+          <div class="agent-session-usage-fact agent-session-usage-fact--input">
+            <dt><span aria-hidden="true">INPUT</span><span class="visually-hidden">输入 Token</span></dt>
+            <dd data-agent-usage-input>—</dd>
+          </div>
+          <div class="agent-session-usage-fact agent-session-usage-fact--cached">
+            <dt><span aria-hidden="true">CACHED</span><span class="visually-hidden">缓存输入占比</span></dt>
+            <dd data-agent-usage-cached>—</dd>
+          </div>
+          <div class="agent-session-usage-fact agent-session-usage-fact--output">
+            <dt><span aria-hidden="true">OUTPUT</span><span class="visually-hidden">输出 Token</span></dt>
+            <dd data-agent-usage-output>—</dd>
+          </div>
+          <div class="agent-session-usage-fact agent-session-usage-fact--cost">
+            <dt><span aria-hidden="true">COST</span><span class="visually-hidden">费用（人民币）</span></dt>
+            <dd data-agent-usage-cost>—</dd>
+          </div>
+        </dl>
+        <div class="agent-session-requester" role="group"
+             aria-label="发起者：{{ agent_session.requested_by }}"
+             title="发起者：{{ agent_session.requested_by }}">
+          <span class="numoj-avatar agent-session-avatar"
+                data-agent-session-avatar
+                data-avatar-seed="{{ agent_session.requested_by }}"
+                data-avatar-label="{{ agent_session.requested_by }}"
+                aria-hidden="true"></span>
+          <span class="agent-session-requester-copy">
+            <small>发起者</small>
+            <strong>{{ agent_session.requested_by }}</strong>
+          </span>
+        </div>
+        <button class="agent-workspace-mobile-toggle" type="button" data-agent-workspace-toggle
+                aria-label="打开 Workspace" aria-expanded="false">
+          <i class="fas fa-folder-tree" aria-hidden="true"></i>
+        </button>
       </div>
-      <button class="agent-workspace-mobile-toggle" type="button" data-agent-workspace-toggle
-              aria-label="打开 Workspace" aria-expanded="false">
-        <i class="fas fa-folder-tree" aria-hidden="true"></i>
-      </button>
     </header>
 
     <div class="agent-conversation-scroll" data-agent-conversation-scroll>

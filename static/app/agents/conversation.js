@@ -29,6 +29,10 @@
   var statusChip = root.querySelector('[data-agent-status-chip]');
   var statusLabel = root.querySelector('[data-agent-status-label]');
   var sessionTitle = root.querySelector('[data-agent-session-title]');
+  var usageInput = root.querySelector('[data-agent-usage-input]');
+  var usageCached = root.querySelector('[data-agent-usage-cached]');
+  var usageOutput = root.querySelector('[data-agent-usage-output]');
+  var usageCost = root.querySelector('[data-agent-usage-cost]');
   var resumeForm = root.querySelector('[data-agent-resume-form]');
   var resumeMessage = root.querySelector('[data-agent-resume-message]');
   var resumeFile = root.querySelector('[data-agent-resume-file]');
@@ -104,6 +108,62 @@
 
   function isFinishedState(state) {
     return !!state && !isRunningStatus(state.status);
+  }
+
+  function paintSessionAvatars() {
+    var identicon = global.NumojIdenticon;
+    if (!identicon) return;
+    root.querySelectorAll('[data-agent-session-avatar]').forEach(function (avatar) {
+      var seed = avatar.getAttribute('data-avatar-seed') || 'numericaloj';
+      var label = avatar.getAttribute('data-avatar-label') || seed;
+      identicon.paint(avatar, identicon.cellsForSeed(seed), label);
+    });
+  }
+
+  function formatMeasuredValue(value) {
+    if (!Number.isFinite(value) || value < 0) return '—';
+    if (value === 0) return '0.00';
+    return value >= 1 ? value.toFixed(2) : value.toPrecision(2);
+  }
+
+  function formatTokenCount(tokens) {
+    if (!Number.isFinite(tokens) || tokens < 0) return '—';
+    if (tokens < 10000) return formatMeasuredValue(tokens / 1000) + ' K';
+    return formatMeasuredValue(tokens / 1000000) + ' M';
+  }
+
+  function setUsageValue(element, value) {
+    if (element && element.textContent !== value) element.textContent = value;
+  }
+
+  function renderHeaderTokenUsage(usage) {
+    usage = usage && typeof usage === 'object' ? usage : null;
+    if (!usage) {
+      [usageInput, usageCached, usageOutput, usageCost].forEach(function (element) {
+        setUsageValue(element, '—');
+      });
+      return;
+    }
+
+    var inputTokens = Number(usage.input_total_tokens);
+    var cachedTokens = Number(usage.input_cached_tokens);
+    var outputTokens = Number(usage.output_tokens);
+    var cachedPercent = inputTokens > 0 && cachedTokens >= 0
+      ? Math.min(100, cachedTokens / inputTokens * 100)
+      : 0;
+    setUsageValue(usageInput, formatTokenCount(inputTokens));
+    setUsageValue(usageCached, cachedPercent.toFixed(2) + '%');
+    setUsageValue(usageOutput, formatTokenCount(outputTokens));
+
+    var hasCost = usage.cost_rmb !== null
+      && usage.cost_rmb !== undefined
+      && usage.cost_rmb !== ''
+      && Number.isFinite(Number(usage.cost_rmb))
+      && Number(usage.cost_rmb) >= 0;
+    setUsageValue(
+      usageCost,
+      hasCost ? formatMeasuredValue(Number(usage.cost_rmb)) + ' RMB' : '—'
+    );
   }
 
   function taskUrl(template, taskId) {
@@ -423,6 +483,7 @@
       sessionTitle.textContent = nextTitle;
       sessionTitle.title = nextTitle;
     }
+    renderHeaderTokenUsage(state.session_token_usage);
     var stateIsRunning = isRunningStatus(state.status);
     setRunning(stateIsRunning, state.status, state.native_session_id);
     if (liveTurn) liveTurn.hidden = false;
@@ -1481,6 +1542,8 @@
   bindResumeComposer();
   bindStopButton();
   bindWorkspaceAndFiles();
+  paintSessionAvatars();
+  renderHeaderTokenUsage(currentState && currentState.session_token_usage);
   enhanceMarkdown(root);
   var initialWorkspace = readJson('[data-agent-initial-workspace-json]', []);
   if (Array.isArray(initialWorkspace) && initialWorkspace.length) {

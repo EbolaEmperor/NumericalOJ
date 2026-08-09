@@ -46,6 +46,8 @@
   background:
     radial-gradient(circle at 50% -18%, #fff 0, transparent 28rem),
     var(--agent-paper);
+  container-name: agent-conversation;
+  container-type: inline-size;
 }
 
 .agent-session-header {
@@ -139,42 +141,114 @@
   color: var(--agent-danger);
 }
 
-.agent-session-runtime {
+.agent-session-header-side {
   display: flex;
   min-width: 0;
   align-items: center;
   justify-content: end;
-  gap: 5px;
+  gap: 9px;
 }
 
-.agent-session-runtime > span {
+.agent-session-usage {
   display: flex;
-  max-width: 155px;
   min-width: 0;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 7px;
-  border: 1px solid var(--agent-line);
-  border-radius: 7px;
-  background: #fbfaf7;
-  color: #6a655d;
-  font-size: 8.5px;
+  align-items: stretch;
+  margin: 0;
+}
+
+.agent-session-usage-fact {
+  display: grid;
+  min-width: 54px;
+  align-content: center;
+  gap: 3px;
+  margin: 0;
+  padding: 0 8px;
+  border-left: 1px solid var(--agent-line);
+}
+
+.agent-session-usage-fact:first-child {
+  border-left: 0;
+}
+
+.agent-session-usage-fact dt,
+.agent-session-usage-fact dd {
+  margin: 0;
   white-space: nowrap;
 }
 
-.agent-session-runtime > span > i {
-  width: 11px;
-  flex: 0 0 11px;
-  color: #8c8274;
-  font-size: 8px;
-  text-align: center;
+.agent-session-usage-fact dt {
+  color: #9a9286;
+  font: 650 6.5px/1 var(--agent-mono);
+  letter-spacing: 0.08em;
 }
 
-.agent-session-runtime > span > .harness-logo {
-  width: 11px;
-  min-width: 11px;
-  height: 11px;
-  flex-basis: 11px;
+.agent-session-usage-fact dd {
+  color: #4c4842;
+  font: 650 8.5px/1 var(--agent-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-session-usage-fact--cost {
+  min-width: 66px;
+}
+
+.agent-session-requester {
+  display: flex;
+  max-width: 150px;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding-left: 10px;
+  border-left: 1px solid var(--agent-line);
+}
+
+.agent-session .agent-session-avatar {
+  --avatar-cell: var(--agent-ink);
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  overflow: hidden;
+  padding: 2px;
+  border: 1px solid #d4d0c8;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 70%);
+  color: var(--avatar-cell);
+}
+
+.agent-session .agent-session-avatar > span {
+  background: transparent;
+}
+
+.agent-session .agent-session-avatar > span.is-filled {
+  background: var(--avatar-cell);
+}
+
+.agent-session-requester-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.agent-session-requester-copy small,
+.agent-session-requester-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-session-requester-copy small {
+  color: #9a9286;
+  font: 550 7px/1 var(--agent-mono);
+}
+
+.agent-session-requester-copy strong {
+  color: #4c4842;
+  font-size: 9.5px;
+  font-weight: 650;
 }
 
 .agent-workspace-mobile-toggle { display: none; }
@@ -192,7 +266,7 @@
   width: min(100%, 790px);
   min-height: 100%;
   margin: 0 auto;
-  padding: 38px clamp(22px, 4vw, 50px) 28px;
+  padding: 38px clamp(16px, 5%, 50px) 28px;
 }
 
 .agent-turn {
@@ -272,6 +346,98 @@
   color: #252422;
   font-size: 12.5px;
   line-height: 1.72;
+}
+
+/*
+ * 对话与 Markdown 文件预览沿用题面代码块的紧凑节奏，但需要适应可拖到
+ * 280px 的分栏。滚动留在 pre 上，外框只负责裁出克制的圆角，长行不会被
+ * 会话面板的 overflow-x:hidden 截断。
+ */
+.agent-session .numoj-markdown {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.agent-session .numoj-markdown .codehilite {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.agent-session .numoj-markdown pre {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 1em;
+  padding: 0.72rem 0.9rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  border-radius: 6px;
+  font-family: var(--agent-mono);
+  line-height: 1.62;
+  tab-size: 4;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  scrollbar-color: #52525b transparent;
+  scrollbar-width: thin;
+}
+
+.agent-session .numoj-markdown > pre {
+  border: 0;
+  background: #18181b;
+  color: #f4f4f5;
+}
+
+.agent-session .numoj-markdown .codehilite pre {
+  margin: 0;
+}
+
+.agent-session .numoj-markdown code {
+  padding: 0.08em 0.3em;
+  border-radius: 3px;
+  background: #efece5;
+  color: #714326;
+  font-family: var(--agent-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.agent-session .numoj-markdown pre code {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  white-space: inherit;
+  overflow-wrap: inherit;
+  word-break: inherit;
+}
+
+.agent-session .numoj-markdown .codehilite.numoj-code-frame > pre,
+.agent-session .numoj-markdown pre.numoj-code-frame {
+  padding-right: 44px;
+}
+
+.agent-session .numoj-markdown .numoj-code-copy {
+  top: 6px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 5px;
+  box-shadow: none;
+}
+
+.agent-session .numoj-markdown .numoj-code-copy-icon {
+  font-size: 0.72rem;
 }
 
 .agent-turn-details {
@@ -798,7 +964,7 @@
 }
 
 .agent-file-markdown {
-  padding: clamp(22px, 5vw, 52px);
+  padding: clamp(22px, 5%, 42px) clamp(18px, 7%, 42px) 42px;
   overflow: auto;
   background: #fffefb;
   color: #282624;
@@ -1044,13 +1210,84 @@
   to { transform: rotate(360deg); }
 }
 
-@media (max-width: 1260px) {
-  .agent-session-runtime > span:nth-child(3) { display: none; }
+@media (max-width: 1080px) {
+  .agent-session-title h1 { max-width: 35vw; }
 }
 
-@media (max-width: 1080px) {
-  .agent-session-runtime > span:nth-child(2) { display: none; }
-  .agent-session-title h1 { max-width: 35vw; }
+@container agent-conversation (max-width: 700px) {
+  .agent-session-header {
+    gap: 7px;
+    padding-inline: 12px;
+  }
+
+  .agent-session-header-side { gap: 6px; }
+
+  .agent-session-usage-fact {
+    min-width: 45px;
+    padding-inline: 5px;
+  }
+
+  .agent-session-usage-fact--cost { min-width: 56px; }
+
+  .agent-session-requester {
+    max-width: 108px;
+    gap: 5px;
+    padding-left: 7px;
+  }
+
+  .agent-session-requester-copy small { display: none; }
+}
+
+@container agent-conversation (max-width: 620px) {
+  .agent-session-usage-fact {
+    min-width: 40px;
+    padding-inline: 4px;
+  }
+
+  .agent-session-usage-fact--cost { min-width: 50px; }
+
+  .agent-session-requester { max-width: 88px; }
+
+  .agent-session .agent-session-avatar {
+    width: 24px;
+    height: 24px;
+    flex-basis: 24px;
+  }
+}
+
+@container agent-conversation (max-width: 540px) {
+  .agent-session-header {
+    grid-template-columns: 30px minmax(30px, 1fr) auto;
+    gap: 5px;
+    padding-inline: 9px;
+  }
+
+  .agent-session-title { gap: 4px; }
+  .agent-status-chip { display: none; }
+
+  .agent-session-usage-fact {
+    min-width: 37px;
+    padding-inline: 3px;
+  }
+
+  .agent-session-usage-fact--cost { min-width: 47px; }
+
+  .agent-session-usage-fact dt {
+    font-size: 5.8px;
+    letter-spacing: 0.045em;
+  }
+
+  .agent-session-usage-fact dd { font-size: 7.8px; }
+}
+
+@container agent-conversation (max-width: 420px) {
+  .agent-session-title { display: none; }
+
+  .agent-session-header {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .agent-session-header-side { grid-column: 2; }
 }
 
 @media (max-width: 991.98px) {
@@ -1061,7 +1298,11 @@
 
   .agent-conversation-pane { width: 100%; }
   .agent-session-header { padding-right: 58px; }
-  .agent-session-runtime { display: none; }
+  .agent-session-header-side { gap: 5px; }
+  .agent-session-requester {
+    max-width: 112px;
+  }
+  .agent-session-requester-copy small { display: none; }
   .agent-workspace-mobile-toggle { display: grid; }
   .agent-session-title h1 { max-width: calc(100vw - 150px); }
   .agent-splitter { display: none !important; }
@@ -1123,6 +1364,19 @@
   .agent-resume-dock { padding: 8px 9px 11px; }
   .agent-resume-runtime > span:nth-child(2) { display: none; }
   .agent-resume-composer textarea { font-size: 16px; }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .agent-session .numoj-markdown .numoj-code-copy {
+    width: 42px;
+    height: 42px;
+    border-radius: 6px;
+  }
+
+  .agent-session .numoj-markdown .codehilite.numoj-code-frame > pre,
+  .agent-session .numoj-markdown pre.numoj-code-frame {
+    padding-right: 54px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import os
 from pathlib import Path
 import stat
@@ -77,6 +78,91 @@ def test_ensure_agent_workspace_rejects_symlinked_root(monkeypatch, tmp_path):
 
     with pytest.raises(workspace.AgentWorkspaceSecurityError):
         workspace.ensure_agent_workspace("session")
+
+
+def test_temporary_redaction_history_is_host_only_private_and_persistent(
+    workspace_root,
+):
+    first = workspace.merge_agent_temporary_redaction_candidates(
+        "session",
+        ("previous-temporary-token",),
+    )
+    second = workspace.merge_agent_temporary_redaction_candidates(
+        "session",
+        ("current-temporary-token", "previous-temporary-token"),
+    )
+
+    assert first == ("previous-temporary-token",)
+    assert second == (
+        "previous-temporary-token",
+        "current-temporary-token",
+    )
+    session_root = workspace_root / "sessions" / "session"
+    history_path = session_root / workspace._REDACTION_HISTORY_FILENAME
+    lock_path = session_root / workspace._REDACTION_HISTORY_LOCK_FILENAME
+    assert history_path.parent != session_root / "workspace"
+    assert _mode(history_path) == 0o600
+    assert _mode(lock_path) == 0o600
+    assert json.loads(history_path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "candidates": [
+            "previous-temporary-token",
+            "current-temporary-token",
+        ],
+    }
+    assert workspace.build_agent_workspace_tree("session") == []
+    assert not list(session_root.glob("*.tmp"))
+
+
+def test_temporary_redaction_history_rejects_symlink_without_touching_target(
+    workspace_root,
+    tmp_path,
+):
+    workspace.ensure_agent_workspace("session")
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep", encoding="utf-8")
+    history_path = (
+        workspace_root
+        / "sessions"
+        / "session"
+        / workspace._REDACTION_HISTORY_FILENAME
+    )
+    history_path.symlink_to(outside)
+
+    with pytest.raises(workspace.AgentWorkspaceSecurityError):
+        workspace.merge_agent_temporary_redaction_candidates(
+            "session",
+            ("current-temporary-token",),
+        )
+
+    assert history_path.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_temporary_redaction_history_overflow_preserves_previous_file(
+    workspace_root,
+    monkeypatch,
+):
+    workspace.merge_agent_temporary_redaction_candidates(
+        "session",
+        ("previous-temporary-token",),
+    )
+    history_path = (
+        workspace_root
+        / "sessions"
+        / "session"
+        / workspace._REDACTION_HISTORY_FILENAME
+    )
+    before = history_path.read_bytes()
+    monkeypatch.setattr(workspace, "_MAX_REDACTION_HISTORY_ENTRIES", 1)
+
+    with pytest.raises(workspace.AgentWorkspaceLimitError, match="条目上限"):
+        workspace.merge_agent_temporary_redaction_candidates(
+            "session",
+            ("current-temporary-token",),
+        )
+
+    assert history_path.read_bytes() == before
 
 
 def test_save_unicode_attachments_and_remove_only_listed_files(workspace_root):

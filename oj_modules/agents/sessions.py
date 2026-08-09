@@ -99,6 +99,9 @@ def _turn_from_row(row):
         "turn_index": int(row.get("turn_index") or 1),
         "user_message": str(row.get("user_message") or ""),
         "attachments": attachments if isinstance(attachments, list) else [],
+        "harness": row.get("harness"),
+        "endpoint_id": row.get("endpoint_id"),
+        "endpoint_model": row.get("endpoint_model"),
         "status": str(row.get("status") or "Pending"),
         "conclusion": str(row.get("conclusion") or ""),
         "created_at": _format_time(row.get("created_at")),
@@ -328,6 +331,7 @@ def set_agent_turn_attachments(session_id, task_id, attachments):
 
     session_id = normalize_agent_session_id(session_id)
     task_id = normalize_agent_session_id(task_id)
+    attachments_json = _json_text(attachments, [])
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -339,10 +343,31 @@ def set_agent_turn_attachments(session_id, task_id, attachments):
                 WHERE t.session_id=%s AND t.task_id=%s
                   AND s.current_task_id=%s AND LOWER(s.status)='pending'
                 """,
-                (_json_text(attachments, []), session_id, task_id, task_id),
+                (attachments_json, session_id, task_id, task_id),
             )
             if cursor.rowcount <= 0:
-                raise AgentSessionBusyError("Agent 轮次附件状态已变化")
+                # MySQL 默认返回“实际改变的行数”；当续聊没有附件时，
+                # begin_agent_session_turn 已写入 []，此处的 [] -> [] 会得到 0。
+                # 用相同 CAS 条件做当前读并加锁，同时核对附件值；既能
+                # 确认“命中但未改值”，也不会放行已被换轮或开始执行的会话。
+                cursor.execute(
+                    """
+                    SELECT t.attachments_json
+                    FROM agent_session_turns AS t
+                    JOIN agent_sessions AS s ON s.session_id=t.session_id
+                    WHERE t.session_id=%s AND t.task_id=%s
+                      AND s.current_task_id=%s AND LOWER(s.status)='pending'
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (session_id, task_id, task_id),
+                )
+                row = cursor.fetchone()
+                if (
+                    not row
+                    or str(row.get("attachments_json") or "") != attachments_json
+                ):
+                    raise AgentSessionBusyError("Agent 轮次附件状态已变化")
         conn.commit()
         return True
     except Exception:
@@ -585,11 +610,14 @@ def get_agent_session_turns(session_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT task_id, turn_index, user_message, attachments_json,
-                       status, conclusion, created_at, updated_at
-                FROM agent_session_turns
-                WHERE session_id=%s
-                ORDER BY turn_index ASC
+                SELECT t.task_id, t.turn_index, t.user_message,
+                       t.attachments_json, t.status, t.conclusion,
+                       r.harness, r.endpoint_id, r.endpoint_model,
+                       t.created_at, t.updated_at
+                FROM agent_session_turns AS t
+                LEFT JOIN agent_task_runs AS r ON r.task_id=t.task_id
+                WHERE t.session_id=%s
+                ORDER BY t.turn_index ASC
                 """,
                 (session_id,),
             )
@@ -598,7 +626,8 @@ def get_agent_session_turns(session_id):
                 return [_turn_from_row(row) for row in rows]
             cursor.execute(
                 """
-                SELECT task_id, problem_id, problem_title, status, message,
+                SELECT task_id, problem_id, problem_title, harness,
+                       endpoint_id, endpoint_model, status, message,
                        created_at, updated_at
                 FROM agent_task_runs
                 WHERE task_id=%s
@@ -621,6 +650,9 @@ def get_agent_session_turns(session_id):
         "turn_index": 1,
         "user_message": user_message,
         "attachments": [],
+        "harness": legacy.get("harness"),
+        "endpoint_id": legacy.get("endpoint_id"),
+        "endpoint_model": legacy.get("endpoint_model"),
         "status": str(legacy.get("status") or "Pending"),
         "conclusion": str(legacy.get("message") or ""),
         "created_at": _format_time(legacy.get("created_at")),

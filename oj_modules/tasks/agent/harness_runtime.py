@@ -779,11 +779,14 @@ def _docker_process_env(container_env):
 def _sanitize_output(result, *, secrets):
     stdout = result.stdout
     stderr = result.stderr
-    for secret in secrets:
-        value = str(secret or "")
-        if value:
-            stdout = stdout.replace(value, "[已脱敏]")
-            stderr = stderr.replace(value, "[已脱敏]")
+    values = {
+        str(secret or "")
+        for secret in secrets
+        if str(secret or "")
+    }
+    for value in sorted(values, key=len, reverse=True):
+        stdout = stdout.replace(value, "[已脱敏]")
+        stderr = stderr.replace(value, "[已脱敏]")
     return HarnessRunResult(
         returncode=result.returncode,
         timed_out=result.timed_out,
@@ -870,7 +873,10 @@ def run_agent_harness(
     skill_name = skill_for_agent_task(task_kind, access_role)
     normalized_session_id = str(session_id or task_id or "").strip()
     workspace = _ensure_stable_workspace(normalized_session_id)
-    from oj_modules.agents.workspace import check_agent_workspace_quota
+    from oj_modules.agents.workspace import (
+        check_agent_workspace_quota,
+        merge_agent_temporary_redaction_candidates,
+    )
 
     check_agent_workspace_quota(normalized_session_id)
     container_name = _container_name_for_task_id(task_id)
@@ -979,11 +985,27 @@ def run_agent_harness(
                     env=env,
                 )
                 docker_process_env = _docker_process_env(env)
+                identity_temporary_secrets = tuple(
+                    getattr(identity_relay, "temporary_secrets", ()) or (),
+                )
+                # 原生 resume 会保留并再次同步旧轮次 session 文件。这里只把
+                # 短生命周期 relay 候选写入容器不可见的宿主会话元数据；真实
+                # Session cookie 和长期 endpoint / MCP 凭据仍只驻留本轮内存。
+                temporary_trace_secrets = (
+                    *identity_temporary_secrets,
+                    *secret_relay.temporary_secrets,
+                )
+                historical_temporary_secrets = (
+                    merge_agent_temporary_redaction_candidates(
+                        normalized_session_id,
+                        temporary_trace_secrets,
+                    )
+                )
                 trace_secrets = (
+                    *historical_temporary_secrets,
                     session_cookie,
                     endpoint.get("api_key"),
                     (web_search_settings or {}).get("authorization"),
-                    *secret_relay.temporary_secrets,
                 )
 
                 def sync_trace(*, final=False):

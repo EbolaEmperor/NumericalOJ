@@ -11,6 +11,7 @@ from oj_modules.agents.sessions import (
     get_agent_session_by_task_id,
     get_agent_session_turns,
     get_agent_sessions_paginated,
+    set_agent_turn_attachments,
     sync_agent_session_state,
 )
 from oj_modules.db_services import upsert_agent_run_snapshot
@@ -115,3 +116,44 @@ def test_session_list_deduplicates_compatibility_run_snapshot():
     assert page == 1
     assert total_pages == 1
     assert [row["session_id"] for row in rows] == ["db-agent-list"]
+
+
+def test_empty_attachment_continuation_accepts_mysql_unchanged_rowcount():
+    create_agent_session(
+        session_id="db-agent-empty-attachments",
+        task_id="db-agent-empty-turn-1",
+        requested_by="admin",
+        harness="pi",
+        endpoint_id=23,
+        endpoint_revision=1,
+        endpoint_model="empty-attachment-model",
+        user_message="先完成第一轮",
+        attachments=[],
+        access_role="admin",
+    )
+    assert sync_agent_session_state({
+        "session_id": "db-agent-empty-attachments",
+        "task_id": "db-agent-empty-turn-1",
+        "status": "Completed",
+        "message": "首轮完成",
+        "native_session_id": "33333333-3333-4333-8333-333333333333",
+        "conclusion": "首轮结论",
+    }) is True
+
+    begin_agent_session_turn(
+        "db-agent-empty-attachments",
+        task_id="db-agent-empty-turn-2",
+        user_message="不带附件继续",
+        attachments=[],
+    )
+
+    # begin_agent_session_turn 已写入 JSON []；真实 MySQL 对下面的
+    # [] -> [] UPDATE 返回 affected_rows=0，但 CAS 目标仍然有效。
+    assert set_agent_turn_attachments(
+        "db-agent-empty-attachments",
+        "db-agent-empty-turn-2",
+        [],
+    ) is True
+    turns = get_agent_session_turns("db-agent-empty-attachments")
+    assert turns[-1]["task_id"] == "db-agent-empty-turn-2"
+    assert turns[-1]["attachments"] == []
