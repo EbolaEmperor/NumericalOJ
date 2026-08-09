@@ -141,3 +141,33 @@ def test_endpoint_token_pricing_requires_all_three_prices():
         "cached_input_price_per_million": "0.20",
         "output_price_per_million": "8.00",
     }
+
+
+def test_agent_session_freezes_llm_endpoint_revision():
+    endpoint = {"id": 8, "revision": 12}
+
+    assert agent_launch.validate_launch_endpoint_revision(endpoint, 12) is endpoint
+    with pytest.raises(
+        agent_launch.AgentLaunchValidationError,
+        match="配置已变化",
+    ):
+        agent_launch.validate_launch_endpoint_revision(endpoint, 11)
+    with pytest.raises(
+        agent_launch.AgentLaunchValidationError,
+        match="版本无效",
+    ):
+        agent_launch.validate_launch_endpoint_revision(endpoint, None)
+
+
+def test_custom_agent_skill_follows_role_and_problem_tasks_stay_user():
+    assert agent_launch.normalize_agent_task_kind("custom") == "custom"
+    assert agent_launch.skill_for_agent_task("custom", "user") == "numoj-user"
+    assert agent_launch.skill_for_agent_task("custom", "admin") == "numoj-admin"
+    assert agent_launch.skill_for_agent_task("solve", "user") == "numoj-user"
+    assert agent_launch.skill_for_agent_task("testdata", "user") == "numoj-user"
+
+    with pytest.raises(
+        agent_launch.AgentLaunchValidationError,
+        match="只能使用 user",
+    ):
+        agent_launch.normalize_agent_access_role("admin", task_kind="solve")

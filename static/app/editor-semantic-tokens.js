@@ -15,6 +15,7 @@
   var EDITOR_CONTEXTS = {
     repository: true,
     "problem-form": true,
+    "agent-workspace": true,
   };
   var RETRYABLE_BUSY_CODES = {
     legend_pending: true,
@@ -182,8 +183,8 @@
     ) {
       body.context = "repository";
       body.repository_entry_id = repositoryEntryId;
-    } else if (context === "problem-form" && documentId) {
-      body.context = "problem-form";
+    } else if (EDITOR_CONTEXTS[context] && context !== "repository" && documentId) {
+      body.context = context;
       body.document_id = documentId;
     } else if (Number.isInteger(problemId) && problemId > 0 && !context) {
       body.problem_id = problemId;

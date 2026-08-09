@@ -12,15 +12,21 @@ import time
 from config import AGENT_WORKSPACE_ROOT
 from oj_modules.db_services import get_problem, get_user_by_username
 from oj_modules.problems.agent_launch import (
+    AGENT_ACCESS_ROLE_USER,
     AGENT_TASK_TESTDATA,
     resolve_launch_endpoint,
+    validate_launch_endpoint_revision,
 )
 from oj_modules.problems.testdata import (
     get_problem_testdata_state,
     parse_testdata_zip,
     publish_staged_testdata,
 )
-from oj_modules.tasks.agent.harness_runtime import run_agent_harness
+from oj_modules.tasks.agent.harness_runtime import (
+    AgentHarnessCleanupError,
+    run_agent_harness,
+)
+from oj_modules.tasks.agent.conversation import extract_agent_conclusion
 from oj_modules.tasks.agent.shared import (
     AGENT_GENERATE_TESTDATA_TASK_NAME,
     _format_local_time,
@@ -31,6 +37,9 @@ from oj_modules.tasks.agent.shared import (
     existing_agent_terminal_result,
 )
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
+from oj_modules.tasks.agent.titles import (
+    generate_initial_agent_session_title,
+)
 
 
 _LANGUAGE_SUFFIXES = {
@@ -159,6 +168,7 @@ def register_agent_generate_testdata_task(celery_app):
         endpoint_id=None,
         session_cookie="",
         session_cookie_name="session",
+        endpoint_revision=None,
     ):
         task_id = str(
             getattr(getattr(self, "request", None), "id", None) or ""
@@ -174,10 +184,12 @@ def register_agent_generate_testdata_task(celery_app):
         requirement = str(data_requirement or "").strip()
         state = {
             "task_id": task_id,
+            "session_id": task_id,
             "problem_id": int(problem_id),
             "problem_title": "",
             "requested_by": requested_by,
             "task_kind": AGENT_TASK_TESTDATA,
+            "access_role": AGENT_ACCESS_ROLE_USER,
             "harness": str(harness or ""),
             "endpoint_id": endpoint_id,
             "status": "Running",
@@ -186,6 +198,9 @@ def register_agent_generate_testdata_task(celery_app):
             "latest_submission_id": None,
             "final_submission_id": None,
             "attempts": [],
+            "title": "",
+            "native_session_id": "",
+            "conclusion": "",
             "stage": "starting",
             "harness_status": "pending",
             "updated_at": _format_local_time(),
@@ -231,6 +246,8 @@ def register_agent_generate_testdata_task(celery_app):
                 endpoint_id,
                 include_secret=True,
             )
+            if endpoint_revision is not None:
+                validate_launch_endpoint_revision(endpoint, endpoint_revision)
         except Exception as exc:
             message = str(exc) or "所选 LLM 节点不可用"
             _update_agent_state(state, message, status="Failed", stage="finished")
@@ -288,12 +305,22 @@ def register_agent_generate_testdata_task(celery_app):
             time_limit_ms=time_limit_ms,
             data_requirement=requirement,
         )
+        session_title = generate_initial_agent_session_title(
+            task_id,
+            endpoint,
+            prompt,
+            fallback=f"造数据 {title}",
+        )
+        state["title"] = session_title
+        _update_agent_state(state)
         if agent_run_is_canceled(task_id):
             return canceled_agent_task_result(task_id)
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
+                session_id=task_id,
                 task_kind=AGENT_TASK_TESTDATA,
+                access_role=AGENT_ACCESS_ROLE_USER,
                 problem_id=int(problem_id),
                 requested_by=requested_by,
                 harness=harness,
@@ -310,9 +337,23 @@ def register_agent_generate_testdata_task(celery_app):
                 cancel_check=lambda: agent_run_is_canceled(task_id),
                 reset_trace=False,
             )
+        except AgentHarnessCleanupError as exc:
+            conclusion = extract_agent_conclusion(task_id)
+            state["conclusion"] = conclusion
+            message = str(exc)
+            _update_agent_state(
+                state,
+                message,
+                status="CleanupFailed",
+                stage="finished",
+                harness_status="cleanup_failed",
+            )
+            return {"success": False, "message": message, "task_id": task_id}
         except Exception as exc:
             if agent_run_is_canceled(task_id):
                 return canceled_agent_task_result(task_id)
+            conclusion = extract_agent_conclusion(task_id)
+            state["conclusion"] = conclusion
             message = f"造数据 harness 运行失败：{str(exc)[:800]}"
             _update_agent_state(
                 state,
@@ -326,6 +367,10 @@ def register_agent_generate_testdata_task(celery_app):
         if agent_run_is_canceled(task_id):
             return canceled_agent_task_result(task_id)
 
+        conclusion = extract_agent_conclusion(task_id)
+        state["native_session_id"] = str(run_result.native_session_id or "")
+        state["conclusion"] = conclusion
+
         if run_result.timed_out or run_result.returncode != 0:
             message = f"造数据 Agent 未完成：{_harness_failure_reason(run_result)}"
             _update_agent_state(
@@ -334,6 +379,20 @@ def register_agent_generate_testdata_task(celery_app):
                 status="Failed",
                 stage="finished",
                 harness_status=("timeout" if run_result.timed_out else "error"),
+                native_session_id=state["native_session_id"],
+                conclusion=conclusion or message,
+            )
+            return {"success": False, "message": message, "task_id": task_id}
+
+        if not state["native_session_id"]:
+            message = "造数据 Agent 未记录可恢复的原生会话，候选数据未发布"
+            _update_agent_state(
+                state,
+                message,
+                status="Failed",
+                stage="finished",
+                harness_status="error",
+                conclusion=conclusion or message,
             )
             return {"success": False, "message": message, "task_id": task_id}
 
@@ -346,6 +405,8 @@ def register_agent_generate_testdata_task(celery_app):
                 status="Failed",
                 stage="finished",
                 harness_status="completed",
+                native_session_id=state["native_session_id"],
+                conclusion=conclusion or message,
             )
             return {"success": False, "message": message, "task_id": task_id}
 
@@ -393,6 +454,8 @@ def register_agent_generate_testdata_task(celery_app):
             "候选测试数据格式检查通过，正在发布",
             stage="publishing",
             test_point_count=point_count,
+            native_session_id=state["native_session_id"],
+            conclusion=conclusion or completion_message,
         )
         try:
             published = publish_staged_testdata(
@@ -425,6 +488,8 @@ def register_agent_generate_testdata_task(celery_app):
             status="Completed",
             stage="finished",
             test_point_count=point_count,
+            native_session_id=state["native_session_id"],
+            conclusion=conclusion or message,
         )
         return {
             "success": True,

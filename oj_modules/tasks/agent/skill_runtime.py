@@ -205,6 +205,25 @@ def _safe_target(workspace, relative_path):
     return root, target
 
 
+def _clear_skill_runtime_root(skill_root):
+    """持久工作区每轮只允许当前受信任 skill，拒绝遗留隐式 skill。"""
+
+    root = Path(skill_root)
+    try:
+        root_stat = root.lstat()
+    except FileNotFoundError:
+        root.mkdir(parents=True, mode=0o700)
+        return
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise ValueError("Agent skill runtime 目录不安全")
+    for entry in root.iterdir():
+        entry_stat = entry.lstat()
+        if stat.S_ISDIR(entry_stat.st_mode) and not stat.S_ISLNK(entry_stat.st_mode):
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+
 def _ignored_source_entry(path):
     return (
         path.name in _IGNORED_DIRECTORY_NAMES
@@ -291,7 +310,7 @@ def materialize_skill(workspace, harness, source_skill):
 
     relative_target = _target_relative_path(harness, source_skill)
     _root, target = _safe_target(workspace, relative_target)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    _clear_skill_runtime_root(target.parent)
     staging = Path(
         tempfile.mkdtemp(prefix=f".{source_skill}-", dir=str(target.parent))
     )

@@ -135,9 +135,7 @@ def _app(monkeypatch, *, user=None, competition=None, state=None):
     active_user = user or {'username': 'student01', 'is_admin': 0}
     active_competition = competition or _competition()
     active_state = state or _state()
-    monkeypatch.setattr(
-        ranking_routes, 'get_user_by_username', lambda username: active_user,
-    )
+    monkeypatch.setattr(ranking_routes, 'current_user', lambda: active_user)
     monkeypatch.setattr(
         ranking_routes, 'get_competition', lambda competition_id: active_competition,
     )

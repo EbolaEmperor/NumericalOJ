@@ -1,5 +1,8 @@
 import json
 
+import pytest
+
+from oj_modules.agents import sessions as agent_sessions
 from oj_modules.tasks.agent import shared
 
 
@@ -94,6 +97,13 @@ def test_persisted_cancellation_overrides_late_worker_snapshot(monkeypatch):
         },
     )
     monkeypatch.setattr(shared, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        agent_sessions,
+        "sync_agent_session_state",
+        lambda _state: (_ for _ in ()).throw(
+            AssertionError("sticky Canceled 只能由清理控制器投影到会话"),
+        ),
+    )
     state = {
         "task_id": "task-canceled",
         "status": "Running",
@@ -108,6 +118,25 @@ def test_persisted_cancellation_overrides_late_worker_snapshot(monkeypatch):
     published = json.loads(redis.values[-1][2])
     assert published["status"] == "Canceled"
     assert published["harness_status"] == "canceled"
+
+
+def test_session_projection_failure_does_not_mask_legacy_state_or_publish(
+        monkeypatch):
+    redis = _FakeRedis()
+    monkeypatch.setattr(shared, "_agent_progress_rds", redis)
+    monkeypatch.setattr(shared, "upsert_agent_run_snapshot", lambda state: dict(state))
+    monkeypatch.setattr(shared, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        agent_sessions,
+        "sync_agent_session_state",
+        lambda _state: (_ for _ in ()).throw(RuntimeError("session db offline")),
+    )
+    state = {"task_id": "task-sync-failure", "status": "Running", "attempts": []}
+
+    shared._persist_agent_state(state)
+
+    assert state["status"] == "Running"
+    assert json.loads(redis.values[-1][2])["task_id"] == "task-sync-failure"
 
 
 def test_cancel_agent_run_publishes_terminal_snapshot_and_marker(monkeypatch):
@@ -143,6 +172,11 @@ def test_cancel_agent_run_publishes_terminal_snapshot_and_marker(monkeypatch):
 
 def test_existing_terminal_result_short_circuits_broker_redelivery(monkeypatch):
     monkeypatch.setattr(
+        agent_sessions,
+        "get_agent_session_by_task_id",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(
         shared,
         "get_agent_run_by_task_id",
         lambda _task_id: {
@@ -165,3 +199,72 @@ def test_existing_terminal_result_short_circuits_broker_redelivery(monkeypatch):
         "latest_submission_id": 92,
         "attempts": [{"submission_id": 91}],
     }
+
+
+@pytest.mark.parametrize("status", ["CleanupFailed", "cleanup_failed"])
+def test_cleanup_failed_result_short_circuits_broker_redelivery(
+    monkeypatch,
+    status,
+):
+    monkeypatch.setattr(
+        agent_sessions,
+        "get_agent_session_by_task_id",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(
+        shared,
+        "get_agent_run_by_task_id",
+        lambda _task_id: {
+            "task_id": "task-cleanup-failed",
+            "status": status,
+            "message": "容器清理状态未知",
+        },
+    )
+
+    result = shared.existing_agent_terminal_result("task-cleanup-failed")
+
+    assert result == {
+        "success": False,
+        "cleanup_failed": True,
+        "message": "容器清理状态未知",
+        "task_id": "task-cleanup-failed",
+    }
+
+
+def test_terminal_redelivery_repairs_current_session_before_short_circuit(
+    monkeypatch,
+):
+    projected = []
+    monkeypatch.setattr(
+        shared,
+        "get_agent_run_by_task_id",
+        lambda _task_id: {
+            "task_id": "turn-2",
+            "status": "Completed",
+            "message": "发布已完成",
+        },
+    )
+    monkeypatch.setattr(
+        agent_sessions,
+        "get_agent_session_by_task_id",
+        lambda _task_id: {
+            "session_id": "session-1",
+            "is_legacy": False,
+        },
+    )
+    monkeypatch.setattr(
+        agent_sessions,
+        "sync_agent_session_state",
+        lambda state: projected.append(dict(state)) or True,
+    )
+
+    result = shared.existing_agent_terminal_result("turn-2")
+
+    assert result["success"] is True
+    assert projected == [{
+        "task_id": "turn-2",
+        "session_id": "session-1",
+        "status": "Completed",
+        "message": "发布已完成",
+        "_preserve_conclusion": True,
+    }]

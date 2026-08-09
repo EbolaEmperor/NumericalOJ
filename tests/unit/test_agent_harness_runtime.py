@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from oj_modules.agents import workspace as agent_workspace
 from oj_modules.problems import agent_runs
 from oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages
 from oj_modules.tasks.agent import harness_runtime as runtime
 from oj_modules.tasks.agent import identity_relay
+from oj_modules.tasks.agent import secret_relay
 from oj_modules.tasks.agent import traces as agent_traces
 
 
@@ -25,8 +27,23 @@ def _endpoint(protocol="openai"):
     }
 
 
+_TEMP_ENDPOINT_BASE_URL = "http://host.docker.internal:43100/v1"
+_TEMP_ENDPOINT_API_KEY = "temporary-endpoint-token"
+
+
+def _runtime_env(endpoint, harness, task_kind, **kwargs):
+    return runtime._runtime_env(
+        endpoint,
+        harness,
+        task_kind,
+        endpoint_base_url=_TEMP_ENDPOINT_BASE_URL,
+        endpoint_api_key=_TEMP_ENDPOINT_API_KEY,
+        **kwargs,
+    )
+
+
 def test_docker_args_make_workspace_the_only_writable_filesystem(tmp_path):
-    env = runtime._runtime_env(_endpoint(), "codex", "solve")
+    env = _runtime_env(_endpoint(), "codex", "solve")
     args = runtime._docker_args(
         container_name="numoj-agent-test",
         workspace=tmp_path,
@@ -51,7 +68,7 @@ def test_docker_args_use_colima_compatible_user_only_on_darwin(
     monkeypatch,
     tmp_path,
 ):
-    env = runtime._runtime_env(_endpoint(), "codex", "solve")
+    env = _runtime_env(_endpoint(), "codex", "solve")
 
     monkeypatch.setattr(runtime.platform, "system", lambda: "Darwin")
     darwin_args = runtime._docker_args(
@@ -111,7 +128,7 @@ def test_docker_exec_has_no_agent_wall_clock_timeout_wrapper():
 
 
 def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
-    env = runtime._runtime_env(_endpoint(), "codex", "solve")
+    env = _runtime_env(_endpoint(), "codex", "solve")
 
     assert env["HOME"].startswith("/workspace/")
     assert env["TMPDIR"].startswith("/workspace/")
@@ -121,8 +138,9 @@ def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
     assert env["NUMOJ_USER_CONFIG"] == "/workspace/.numoj-agent/identity.json"
     assert "NUMOJ_CLI_CONFIG" not in env
     assert env["AJ_ENDPOINT_PROTOCOL"] == "openai"
-    assert env["AJ_ENDPOINT_BASE_URL"] == "http://host.docker.internal:9000/v1"
-    assert env["AJ_ENDPOINT_API_KEY"] == "model-secret"
+    assert env["AJ_ENDPOINT_BASE_URL"] == _TEMP_ENDPOINT_BASE_URL
+    assert env["AJ_ENDPOINT_API_KEY"] == _TEMP_ENDPOINT_API_KEY
+    assert "model-secret" not in env.values()
     assert env["AJ_ENDPOINT_MODEL"] == "model-a"
     assert "OPENAI_API_KEY" not in env
     assert "ANTHROPIC_API_KEY" not in env
@@ -133,28 +151,135 @@ def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
     assert env["AJ_ENDPOINT_THINKING_FORMAT"] == "enable_thinking"
     assert "AJ_THINKING_FORMAT" not in env
 
-    testdata_env = runtime._runtime_env(_endpoint(), "pi", "testdata")
+    testdata_env = _runtime_env(_endpoint(), "pi", "testdata")
     assert testdata_env["NUMOJ_USER_CONFIG"] == "/workspace/.numoj-agent/identity.json"
     assert "NUMOJ_CLI_CONFIG" not in testdata_env
     assert "AJ_PI_THINKING_FORMAT" not in testdata_env
 
 
-def test_runtime_env_injects_site_web_search_mcp_without_putting_secret_in_args(
+def test_custom_admin_runtime_uses_admin_skill_and_native_resume():
+    native_id = "22222222-2222-2222-2222-222222222222"
+    env = _runtime_env(
+        _endpoint(),
+        "codex",
+        "custom",
+        access_role="admin",
+        resume_session_id=native_id,
+    )
+
+    assert env["NUMOJ_CLI_CONFIG"] == "/workspace/.numoj-agent/identity.json"
+    assert "NUMOJ_USER_CONFIG" not in env
+    assert env["AJ_RESUME_SESSION_ID"] == native_id
+    assert env["AJ_FORK_SESSION"] == "0"
+
+
+def test_opencode_native_session_id_is_opaque_and_preserves_case(tmp_path):
+    native_id = "ses_MixedCase_19-Z"
+    env = _runtime_env(
+        _endpoint(),
+        "opencode",
+        "custom",
+        access_role="user",
+        resume_session_id=native_id,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".aj_session_state.json").write_text(
+        json.dumps({"harness": "opencode", "session_id": native_id}),
+        encoding="utf-8",
+    )
+
+    assert env["AJ_RESUME_SESSION_ID"] == native_id
+    assert runtime.normalize_native_session_id(native_id, "opencode") == native_id
+    assert runtime._read_native_session_id(workspace, "opencode") == native_id
+    with pytest.raises(ValueError, match="session_id"):
+        runtime.normalize_native_session_id(native_id, "codex")
+
+
+@pytest.mark.parametrize(
+    "native_id",
+    ["ses_", "ses_has.dot", "SES_wrong_prefix", "ses_" + "a" * 121],
+)
+def test_opencode_native_session_id_rejects_invalid_values(native_id):
+    with pytest.raises(ValueError, match="session_id"):
+        runtime.normalize_native_session_id(native_id, "opencode")
+
+
+def test_native_session_state_is_read_without_following_symlinks(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps({
+            "harness": "codex",
+            "session_id": "33333333-3333-3333-3333-333333333333",
+        }),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".aj_session_state.json").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="安全的普通文件"):
+        runtime._read_native_session_id(workspace, "codex")
+
+
+def test_identity_cleanup_never_traverses_workspace_parent_symlink(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    credential = outside / "identity.json"
+    credential.write_text("must-survive", encoding="utf-8")
+    (workspace / ".numoj-agent").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(runtime.AgentHarnessCleanupError, match="父目录不安全"):
+        runtime._remove_identity_config(
+            workspace,
+            ".numoj-agent/identity.json",
+        )
+
+    assert credential.read_text(encoding="utf-8") == "must-survive"
+
+
+def test_secret_relay_cleanup_failure_blocks_resumable_terminal_state(monkeypatch):
+    class CleanupFailureContext:
+        def __enter__(self):
+            return SimpleNamespace(endpoint_base_url="unused")
+
+        def __exit__(self, *_args):
+            raise secret_relay.AgentSecretRelayCleanupError(
+                "外部服务密钥代理未能彻底关闭"
+            )
+
+    monkeypatch.setattr(
+        secret_relay,
+        "run_agent_secret_relays",
+        lambda *_args, **_kwargs: CleanupFailureContext(),
+    )
+
+    with pytest.raises(
+        runtime.AgentHarnessCleanupError,
+        match="外部服务密钥代理未能彻底关闭",
+    ):
+        with runtime._secret_relay_context({}, None):
+            pass
+
+
+def test_runtime_env_injects_relayed_web_search_mcp_without_secret_in_args(
         tmp_path):
-    env = runtime._runtime_env(
+    env = _runtime_env(
         _endpoint(),
         "codex",
         "solve",
         web_search_settings={
             "base_url": "http://localhost:4123/mcp",
-            "authorization": "Bearer web-search-secret",
+            "authorization": "Bearer temporary-search",
         },
     )
 
     assert env["AJ_WEB_SEARCH_MCP_URL"] == (
         "http://host.docker.internal:4123/mcp"
     )
-    assert env["AJ_WEB_SEARCH_MCP_AUTHORIZATION"] == "Bearer web-search-secret"
+    assert env["AJ_WEB_SEARCH_MCP_AUTHORIZATION"] == "Bearer temporary-search"
     assert env["AJ_WEB_SEARCH_MCP_TIMEOUT_SECONDS"] == str(
         runtime.MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS
     )
@@ -171,7 +296,7 @@ def test_runtime_env_does_not_derive_harness_settings_from_endpoint_url():
     endpoint = _endpoint()
     endpoint["base_url"] = "https://api.deepseek.com/v1"
 
-    env = runtime._runtime_env(endpoint, "pi", "solve")
+    env = _runtime_env(endpoint, "pi", "solve")
 
     assert "AJ_THINKING_FORMAT" not in env
     assert "AJ_PI_THINKING_FORMAT" not in env
@@ -182,7 +307,7 @@ def test_run_exits_before_workspace_creation_when_already_canceled(
     tmp_path,
 ):
     workspace_root = tmp_path / "agent-workspaces"
-    monkeypatch.setattr(runtime, "AGENT_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.setattr(agent_workspace, "AGENT_WORKSPACE_ROOT", workspace_root)
 
     result = runtime.run_agent_harness(
         task_id="task-canceled",
@@ -218,7 +343,7 @@ def test_run_exits_before_workspace_creation_when_already_canceled(
         ),
     ],
 )
-def test_run_materializes_current_skill_and_ephemeral_session(
+def test_run_materializes_current_skill_and_persists_session_workspace(
     monkeypatch,
     tmp_path,
     task_kind,
@@ -227,7 +352,7 @@ def test_run_materializes_current_skill_and_ephemeral_session(
     config_env,
 ):
     workspace_root = tmp_path / "agent-workspaces"
-    monkeypatch.setattr(runtime, "AGENT_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.setattr(agent_workspace, "AGENT_WORKSPACE_ROOT", workspace_root)
     monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(workspace_root))
     monkeypatch.setattr(runtime, "AGENT_CONTAINER_SITE_URL", "http://localhost:2025")
     monkeypatch.setattr(
@@ -257,6 +382,42 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         lambda *_args, **_kwargs: FakeRelayContext(),
     )
 
+    endpoint_temporary = "endpoint-relay-temporary-token"
+    web_search_temporary = "search-relay-temporary-token"
+
+    class FakeSecretRelayContext:
+        def __enter__(self):
+            return SimpleNamespace(
+                endpoint_base_url=(
+                    "http://host.docker.internal:43124/v1"
+                ),
+                endpoint_api_key=endpoint_temporary,
+                web_search_base_url=(
+                    "http://host.docker.internal:43125/mcp"
+                ),
+                web_search_authorization=(
+                    f"Bearer {web_search_temporary}"
+                ),
+                temporary_secrets=(
+                    endpoint_temporary,
+                    web_search_temporary,
+                ),
+            )
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_secret_relays(endpoint, web_search_settings):
+        observed["relay_endpoint"] = dict(endpoint)
+        observed["relay_web_search"] = dict(web_search_settings)
+        return FakeSecretRelayContext()
+
+    monkeypatch.setattr(
+        secret_relay,
+        "run_agent_secret_relays",
+        fake_secret_relays,
+    )
+
     def fake_run(
         args,
         prompt,
@@ -266,6 +427,8 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         on_tick=None,
         tick_interval=None,
         cancel_check=None,
+        quota_check=None,
+        quota_check_interval=None,
     ):
         lifecycle.append("exec")
         create_args = observed["create_args"]
@@ -282,8 +445,17 @@ def test_run_materializes_current_skill_and_ephemeral_session(
             stdout_capture_path=stdout_capture_path,
             tick_interval=tick_interval,
             cancel_check=cancel_check,
+            quota_check=quota_check,
+            quota_check_interval=quota_check_interval,
         )
         Path(stdout_capture_path).write_text("temporary stdout", encoding="utf-8")
+        (workspace / ".aj_session_state.json").write_text(
+            json.dumps({
+                "harness": harness,
+                "session_id": "11111111-1111-1111-1111-111111111111",
+            }),
+            encoding="utf-8",
+        )
         if harness == "claude_code":
             source = (
                 workspace
@@ -294,7 +466,10 @@ def test_run_materializes_current_skill_and_ephemeral_session(
                 "type": "assistant",
                 "message": {
                     "role": "assistant",
-                    "content": [{"type": "text", "text": "已完成 model-secret"}],
+                    "content": [{
+                        "type": "text",
+                        "text": f"已完成 {endpoint_temporary}",
+                    }],
                 },
             }, ensure_ascii=False) + "\n", encoding="utf-8")
         else:
@@ -306,7 +481,10 @@ def test_run_materializes_current_skill_and_ephemeral_session(
                     "type": "message",
                     "message": {
                         "role": "assistant",
-                        "content": [{"type": "text", "text": "已完成 model-secret"}],
+                        "content": [{
+                            "type": "text",
+                            "text": f"已完成 {endpoint_temporary}",
+                        }],
                     },
                 }, ensure_ascii=False)
                 + "\n",
@@ -314,7 +492,12 @@ def test_run_materializes_current_skill_and_ephemeral_session(
             )
         on_tick(final=False)
         on_tick(final=True)
-        return runtime.HarnessRunResult(0, False, "ok", "")
+        return runtime.HarnessRunResult(
+            0,
+            False,
+            f"ok model-secret {endpoint_temporary}",
+            f"Bearer search-secret {web_search_temporary}",
+        )
 
     cleanups = []
     monkeypatch.setattr(runtime, "_run_with_bounded_output", fake_run)
@@ -342,7 +525,14 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         if not source.is_file():
             return False
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(source.read_bytes())
+        rendered = source.read_bytes()
+        for secret in secrets:
+            if secret:
+                rendered = rendered.replace(
+                    str(secret).encode("utf-8"),
+                    b"[REDACTED]",
+                )
+        destination.write_bytes(rendered)
         return True
 
     monkeypatch.setattr(runtime, "sync_agent_trace", fake_sync)
@@ -377,10 +567,13 @@ def test_run_materializes_current_skill_and_ephemeral_session(
     )
 
     assert result.returncode == 0
+    assert result.native_session_id == "11111111-1111-1111-1111-111111111111"
     assert observed["trace_secrets"] == (
         "session-cookie",
         "model-secret",
         "Bearer search-secret",
+        endpoint_temporary,
+        web_search_temporary,
     )
     assert result.created_submission_ids == (81, 82)
     assert observed["prompt"] == "请完成任务"
@@ -388,10 +581,12 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         "base_url": "http://host.docker.internal:43123",
         "username": "admin",
         "cookies": {"session": "relay-placeholder"},
-        "agent_task": {
-            "task_id": "task-1",
-            "task_kind": task_kind,
-            "problem_id": 17,
+            "agent_task": {
+                "task_id": "task-1",
+                "session_id": "task-1",
+                "task_kind": task_kind,
+                "access_role": "user",
+                "problem_id": 17,
             "skill": "numoj-user",
         },
     }
@@ -400,18 +595,28 @@ def test_run_materializes_current_skill_and_ephemeral_session(
     config_env_name, config_env_value = config_env.split("=", 1)
     assert config_env_name in observed["create_args"]
     assert observed["process_env"][config_env_name] == config_env_value
-    assert observed["process_env"]["AJ_ENDPOINT_API_KEY"] == "model-secret"
+    assert observed["process_env"]["AJ_ENDPOINT_API_KEY"] == endpoint_temporary
     assert "OPENAI_API_KEY" not in observed["process_env"]
     assert "ANTHROPIC_API_KEY" not in observed["process_env"]
     assert "model-secret" not in " ".join(observed["create_args"])
     assert "session-cookie" not in " ".join(observed["create_args"])
     assert observed["process_env"]["AJ_WEB_SEARCH_MCP_URL"] == (
-        "https://search.example/mcp"
+        "http://host.docker.internal:43125/mcp"
     )
     assert observed["process_env"]["AJ_WEB_SEARCH_MCP_AUTHORIZATION"] == (
-        "Bearer search-secret"
+        f"Bearer {web_search_temporary}"
+    )
+    assert all(
+        "model-secret" not in str(value)
+        and "search-secret" not in str(value)
+        for value in observed["process_env"].values()
     )
     assert "search-secret" not in " ".join(observed["args"])
+    docker_visible_args = " ".join(
+        observed["create_args"] + observed["args"]
+    )
+    assert "model-secret" not in docker_visible_args
+    assert "search-secret" not in docker_visible_args
     assert "session-cookie" not in json.dumps(observed["identity"])
     container_name = observed["create_args"][
         observed["create_args"].index("--name") + 1
@@ -426,16 +631,37 @@ def test_run_materializes_current_skill_and_ephemeral_session(
         ["docker", "rm", "-f", container_name],
     ]
     assert observed["tick_interval"] == runtime.AGENT_TRACE_SYNC_INTERVAL_SECONDS
+    assert callable(observed["quota_check"])
+    assert observed["quota_check_interval"] == (
+        runtime.AGENT_WORKSPACE_QUOTA_CHECK_INTERVAL_SECONDS
+    )
     assert trace_updates == ["updated", "updated", "updated", "updated"]
     assert lifecycle == [
         "remove", "create", "sync", "exec", "sync", "sync", "sync", "remove",
     ]
     trace_dir = workspace_root / "traces/task-1"
     messages = collect_agent_trace_messages(trace_dir)
-    assert [item["text"] for item in messages] == ["已完成 model-secret"]
+    assert [item["text"] for item in messages] == ["已完成 [REDACTED]"]
     assert not (trace_dir / ".agent_harness.stdout.tmp").exists()
-    assert workspace_root.exists()
-    assert [item.name for item in workspace_root.iterdir()] == ["traces"]
+    workspace = workspace_root / "sessions/task-1/workspace"
+    assert workspace.is_dir()
+    workspace_payload = b"\n".join(
+        path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    )
+    assert b"model-secret" not in workspace_payload
+    assert b"search-secret" not in workspace_payload
+    assert "model-secret" not in result.stdout + result.stderr
+    assert "search-secret" not in result.stdout + result.stderr
+    assert endpoint_temporary not in result.stdout + result.stderr
+    assert web_search_temporary not in result.stdout + result.stderr
+    assert not (workspace / ".numoj-agent/identity.json").exists()
+    assert (workspace / ".aj_session_state.json").is_file()
+    assert sorted(item.name for item in workspace_root.iterdir()) == [
+        "sessions",
+        "traces",
+    ]
 
 
 def test_workspace_file_path_cannot_escape(tmp_path):
@@ -626,7 +852,49 @@ def test_bounded_runner_stops_docker_exec_when_task_is_canceled(monkeypatch):
     assert result.timed_out is False
 
 
-def test_stdout_mirror_is_complete_while_result_capture_stays_bounded():
+def test_bounded_runner_propagates_quota_failure_and_kills_docker_exec(
+    monkeypatch,
+):
+    checks = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.killed = False
+
+        def wait(self, timeout=None):
+            if self.killed:
+                return -9
+            raise runtime.subprocess.TimeoutExpired("docker", timeout)
+
+        def kill(self):
+            self.killed = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def reject_quota():
+        checks.append("checked")
+        raise agent_workspace.AgentWorkspaceQuotaError("workspace quota exceeded")
+
+    with pytest.raises(
+        agent_workspace.AgentWorkspaceQuotaError,
+        match="quota exceeded",
+    ):
+        runtime._run_with_bounded_output(
+            ["docker"],
+            "prompt",
+            quota_check=reject_quota,
+            quota_check_interval=0.5,
+        )
+
+    assert checks == ["checked"]
+    assert process.killed is True
+
+
+def test_tail_reader_drains_mirror_while_result_capture_stays_bounded():
     output = b"x" * (runtime._CAPTURE_LIMIT_BYTES + 1024)
     chunks = runtime.deque()
     sizes = {"stdout": 0}
@@ -643,6 +911,54 @@ def test_stdout_mirror_is_complete_while_result_capture_stays_bounded():
 
     assert mirror.getvalue() == output
     assert sizes["stdout"] == runtime._CAPTURE_LIMIT_BYTES
+
+
+def test_stdout_mirror_publishes_a_bounded_record_aligned_tail(tmp_path):
+    destination = tmp_path / "stdout.jsonl"
+    records = [f'{{"n":{index}}}\n'.encode("ascii") for index in range(1, 5)]
+    mirror = runtime._BoundedStdoutMirror(destination, 17)
+
+    for record in records:
+        mirror.write(record)
+    assert mirror.publish() is True
+    mirror.close()
+
+    rendered = destination.read_bytes()
+    assert rendered == b"".join(records[-2:])
+    assert len(rendered) <= 17
+
+
+def test_bounded_runner_uses_bounded_stdout_mirror(monkeypatch, tmp_path):
+    destination = tmp_path / "stdout.jsonl"
+    records = [f'{{"n":{index}}}\n'.encode("ascii") for index in range(1, 5)]
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(b"".join(records))
+            self.stderr = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(runtime, "_STDOUT_MIRROR_LIMIT_BYTES", 17)
+
+    result = runtime._run_with_bounded_output(
+        ["docker"],
+        "prompt",
+        stdout_capture_path=destination,
+    )
+
+    assert result.returncode == 0
+    assert destination.read_bytes() == b"".join(records[-2:])
 
 
 def test_container_cleanup_failure_is_not_silently_ignored(monkeypatch):

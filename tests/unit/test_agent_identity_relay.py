@@ -1,6 +1,9 @@
 from email.message import Message
+import io
+from urllib.parse import urljoin
 
 import pytest
+import requests
 
 from oj_modules.tasks.agent import identity_relay as relay
 
@@ -101,6 +104,98 @@ def test_testdata_policy_is_read_only_and_uses_user_skill_routes():
         assert exc_info.value.status == 404
 
 
+@pytest.mark.parametrize("access_role", ["user", "admin"])
+def test_custom_policy_allows_same_origin_skill_routes_but_blocks_identity_and_agents(
+    access_role,
+):
+    policy = relay._IdentityRelayPolicy(
+        "custom",
+        None,
+        "http://127.0.0.1:2025",
+        access_role=access_role,
+    )
+
+    for method, path in (
+        ("GET", "/ask_ai_code_marks/7"),
+        ("GET", "/submission_status/9"),
+        ("GET", "/export_scores?class=C1"),
+        ("POST", "/api/repository/file"),
+        ("DELETE", "/api/repository/file/3"),
+    ):
+        assert policy.plan(method, path).target_url == (
+            "http://127.0.0.1:2025" + path
+        )
+
+    for method, path in (
+        ("POST", "/login"),
+        ("POST", "/logout"),
+        ("POST", "/send_code"),
+        ("POST", "/change_password"),
+        ("POST", "/admin/agent_tasks"),
+        ("POST", "/admin/agent_run_cancel/task-1"),
+        ("GET", "/api/admin/agent-tasks"),
+    ):
+        with pytest.raises(relay._RequestRejected) as exc_info:
+            policy.plan(method, path)
+        assert exc_info.value.status == 404
+
+    with pytest.raises(relay._RequestRejected) as exc_info:
+        policy.plan("POST", "/login/")
+    assert exc_info.value.status == 400
+
+
+def test_canonical_unicode_path_is_authorized_and_forwarded_in_one_representation():
+    policy = relay._IdentityRelayPolicy(
+        "custom",
+        None,
+        "http://127.0.0.1:2025",
+        access_role="admin",
+    )
+    raw_target = "/api/admin/ai-detection/student/%E5%BC%A0%E4%B8%89?detail=1"
+
+    plan = policy.plan("GET", raw_target)
+
+    assert plan.path == "/api/admin/ai-detection/student/张三"
+    assert plan.raw_target == raw_target
+    assert plan.target_url == "http://127.0.0.1:2025" + raw_target
+
+
+@pytest.mark.parametrize(
+    "raw_target",
+    [
+        "/%61dmin/agent_tasks",
+        "/admin/%61gent_tasks",
+        "/admin/%2561gent_tasks",
+        "/foo/%2Fadmin/agent_tasks",
+        "/foo/%5Cadmin/agent_tasks",
+        "/foo/%00admin/agent_tasks",
+        "/foo/%2E%2E/admin/agent_tasks",
+        "/foo/../admin/agent_tasks",
+        "/foo/./admin/agent_tasks",
+        "/foo//admin/agent_tasks",
+        "///admin/agent_tasks",
+        "/foo/",
+        "/foo\\admin/agent_tasks",
+        "/api/student/%e5%bc%a0",
+        "/api/student/%GG",
+        "/api/student/%E5%BC",
+        "/api/student/%E5%BC%A0%",
+    ],
+)
+def test_ambiguous_or_noncanonical_path_never_reaches_custom_policy(raw_target):
+    policy = relay._IdentityRelayPolicy(
+        "custom",
+        None,
+        "http://127.0.0.1:2025",
+        access_role="admin",
+    )
+
+    with pytest.raises(relay._RequestRejected) as exc_info:
+        policy.plan("POST", raw_target)
+
+    assert exc_info.value.status == 400
+
+
 def test_incoming_credentials_and_forwarding_claims_are_replaced():
     incoming = _headers(
         Cookie="session=workspace-placeholder; attacker=1",
@@ -127,6 +222,25 @@ def test_incoming_credentials_and_forwarding_claims_are_replaced():
         "cookie": "numoj_session=real-session-value",
     }
     assert "workspace-placeholder" not in repr(forwarded)
+
+
+def test_agent_identity_capability_replaces_forged_inbound_header():
+    incoming = _headers(
+        X_NumOJ_Agent_Identity="forged",
+        Cookie="session=forged",
+    )
+
+    forwarded = relay._upstream_headers(
+        incoming,
+        "session",
+        "real-session",
+        "signed-capability",
+    )
+
+    lowered = {name.lower(): value for name, value in forwarded.items()}
+    assert lowered["cookie"] == "session=real-session"
+    assert lowered[relay.AGENT_IDENTITY_HEADER.lower()] == "signed-capability"
+    assert "forged" not in repr(forwarded)
 
 
 def test_response_headers_never_return_session_updates_to_agent():
@@ -266,6 +380,122 @@ def test_relay_refuses_public_or_unresolved_linux_bind_address(monkeypatch):
         relay._relay_bind_host()
 
 
+def test_relay_secret_is_unique_and_existing_cli_sends_authorization():
+    first = relay._NumOJIdentityRelay(
+        "solve",
+        17,
+        "http://127.0.0.1:2025",
+        "session",
+        "real-session-one",
+    )
+    second = relay._NumOJIdentityRelay(
+        "solve",
+        17,
+        "http://127.0.0.1:2025",
+        "session",
+        "real-session-two",
+    )
+    assert first.relay_request_secret != second.relay_request_secret
+    assert len(first.relay_request_secret) >= 40
+
+    base_url = relay._relay_container_base_url(
+        43123,
+        first.relay_request_secret,
+    )
+    assert first.relay_request_secret in base_url
+    assert first.session_cookie not in base_url
+    request_url = urljoin(base_url + "/", "api/problems/17")
+    prepared = requests.Request("GET", request_url).prepare()
+    assert prepared.headers["Authorization"] == first.relay_authorization
+    assert first.relay_request_secret not in prepared.headers["Authorization"]
+
+
+def test_relay_authorization_gate_precedes_policy_and_body_read():
+    instance = relay._NumOJIdentityRelay(
+        "solve",
+        17,
+        "http://127.0.0.1:2025",
+        "session",
+        "real-session",
+    )
+    policy_calls = []
+    original_plan = instance.policy.plan
+
+    def counted_plan(method, raw_target):
+        policy_calls.append((method, raw_target))
+        return original_plan(method, raw_target)
+
+    instance.policy.plan = counted_plan
+
+    class FakeSocket:
+        def __init__(self, payload):
+            self.input = io.BytesIO(payload)
+            self.output = bytearray()
+
+        def makefile(self, mode, *_args, **_kwargs):
+            assert mode == "rb"
+            return self.input
+
+        def sendall(self, payload):
+            self.output.extend(payload)
+
+    class FakeServer:
+        pass
+
+    def send(authorization_values=()):
+        header_lines = b"".join(
+            b"Authorization: " + value.encode("ascii") + b"\r\n"
+            for value in authorization_values
+        )
+        request_socket = FakeSocket(
+            b"POST /submit/17 HTTP/1.0\r\n"
+            + header_lines
+            + b"\r\n",
+        )
+        instance._handler_class()(
+            request_socket,
+            ("127.0.0.1", 12345),
+            FakeServer(),
+        )
+        head, payload = bytes(request_socket.output).split(b"\r\n\r\n", 1)
+        status = int(head.splitlines()[0].split()[1])
+        return status, payload
+
+    assert send() == (404, b"not found")
+    assert send(("Basic wrong",)) == (404, b"not found")
+    assert send(("Basic one", "Basic two"))[0] == 400
+    assert policy_calls == []
+
+    status, payload = send((instance.relay_authorization,))
+    # 正确凭证通过 policy 后才因缺 Content-Length 被拒绝，证明身份门禁
+    # 位于 policy 和请求体读取之前。
+    assert status == 411
+    assert payload == b"content length required"
+    assert policy_calls == [("POST", "/submit/17")]
+    assert instance.relay_request_secret.encode() not in payload
+
+
+def test_relay_authorization_comparison_rejects_missing_wrong_and_duplicate():
+    expected = relay._relay_authorization("A" * 43)
+
+    assert relay._relay_request_authorized(_headers(), expected) is False
+    assert relay._relay_request_authorized(
+        _headers(Authorization="Basic wrong"),
+        expected,
+    ) is False
+    assert relay._relay_request_authorized(
+        _headers(Authorization=expected),
+        expected,
+    ) is True
+
+    duplicate = Message()
+    duplicate["Authorization"] = expected
+    duplicate["Authorization"] = expected
+    with pytest.raises(relay._RequestRejected) as exc_info:
+        relay._relay_request_authorized(duplicate, expected)
+    assert exc_info.value.status == 400
+
+
 def test_context_manager_always_closes_relay_without_creating_a_token(monkeypatch):
     calls = []
 
@@ -302,8 +532,36 @@ def test_context_manager_always_closes_relay_without_creating_a_token(monkeypatc
                 "http://host.docker.internal:2025",
                 "session",
                 "real-cookie",
+                "",
+                "user",
             ),
         ),
         ("start",),
         ("close",),
     ]
+
+
+def test_context_manager_classifies_relay_close_failure(monkeypatch):
+    class FakeRelay:
+        def __init__(self, *_args):
+            pass
+
+        def start(self):
+            return "http://host.docker.internal:43123"
+
+        def close(self):
+            raise RuntimeError("thread still alive")
+
+    monkeypatch.setattr(relay, "_NumOJIdentityRelay", FakeRelay)
+
+    with pytest.raises(relay.IdentityRelayCleanupError, match="清理失败"):
+        with relay.run_numoj_identity_relay(
+            "custom",
+            None,
+            "http://host.docker.internal:2025",
+            "session",
+            "real-cookie",
+            "admin",
+            "user",
+        ):
+            pass

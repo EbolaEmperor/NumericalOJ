@@ -15,6 +15,7 @@ from oj_modules.tasks.agent.registry import (
     get_agent_run_snapshot,
     init_agent_progress_cache,
     register_agent_generate_testdata_task,
+    register_agent_run_turn_task,
     register_agent_solve_problem_task,
     subscribe_agent_run_events,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "register_promptly_generate_submission_task",
     "register_agent_solve_problem_task",
     "register_agent_generate_testdata_task",
+    "register_agent_run_turn_task",
     "register_repository_index_build_task",
     "register_ai_detection_tasks",
     "register_ranking_evaluate_task",

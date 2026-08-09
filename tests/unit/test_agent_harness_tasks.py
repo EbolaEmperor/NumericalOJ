@@ -145,6 +145,16 @@ def _patch_common(monkeypatch, tmp_path, *, problem=None):
     )
     monkeypatch.setattr(data_task, "prepare_agent_trace_dir", lambda _task_id: None)
     monkeypatch.setattr(data_task, "_publish_agent_trace", lambda _state: None)
+    monkeypatch.setattr(
+        data_task,
+        "generate_initial_agent_session_title",
+        lambda *_args, **_kwargs: "生成测试数据",
+    )
+    monkeypatch.setattr(
+        data_task,
+        "extract_agent_conclusion",
+        lambda _task_id: "测试数据已经生成。",
+    )
 
     def update_state(state, message=None, **updates):
         state.update(updates)
@@ -180,6 +190,7 @@ def _successful_harness_result(payload=b"staged-zip"):
         stdout="",
         stderr="",
         artifacts={_ZIP_RELATIVE_PATH: payload},
+        native_session_id="11111111-1111-1111-1111-111111111111",
     )
 
 
@@ -314,6 +325,11 @@ def test_testdata_task_exports_parses_then_publishes(
     assert snapshots[-1]["status"] == "Completed"
     assert snapshots[-1]["stage"] == "finished"
     assert snapshots[-1]["test_point_count"] == 2
+    assert snapshots[-1]["title"] == "生成测试数据"
+    assert snapshots[-1]["native_session_id"] == (
+        "11111111-1111-1111-1111-111111111111"
+    )
+    assert snapshots[-1]["conclusion"] == "测试数据已经生成。"
     assert "events" not in snapshots[-1]
     assert list(tmp_path.iterdir()) == []
 
@@ -451,6 +467,38 @@ def test_testdata_task_nonzero_harness_result_never_publishes(
     assert message in result["message"]
 
 
+def test_testdata_task_never_publishes_without_native_session(
+        monkeypatch, tmp_path):
+    snapshots = _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        data_task,
+        "run_agent_harness",
+        lambda **_kwargs: HarnessRunResult(
+            returncode=0,
+            timed_out=False,
+            stdout="",
+            stderr="",
+            artifacts={_ZIP_RELATIVE_PATH: b"untrusted"},
+        ),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "parse_testdata_zip",
+        lambda *_args, **_kwargs: pytest.fail("无原生会话时不得解析产物"),
+    )
+    monkeypatch.setattr(
+        data_task,
+        "publish_staged_testdata",
+        lambda *_args, **_kwargs: pytest.fail("无原生会话时不得发布"),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert "未记录可恢复" in result["message"]
+    assert snapshots[-1]["status"] == "Failed"
+
+
 @pytest.mark.parametrize("grading_mode", [2, 3])
 def test_testdata_task_only_allows_standard_test_point_grading_mode(
         monkeypatch, tmp_path, grading_mode):
@@ -484,6 +532,16 @@ def _patch_harness_solution_task(monkeypatch, *, submissions):
     monkeypatch.setattr(solve_task, "agent_run_is_canceled", lambda _task_id: False)
     monkeypatch.setattr(solve_task, "prepare_agent_trace_dir", lambda _task_id: None)
     monkeypatch.setattr(solve_task, "_publish_agent_trace", lambda _state: None)
+    monkeypatch.setattr(
+        solve_task,
+        "generate_initial_agent_session_title",
+        lambda *_args, **_kwargs: "解决快照题",
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "extract_agent_conclusion",
+        lambda _task_id: "题目已经解决。",
+    )
 
     def update_state(state, message=None, **updates):
         state.update(updates)
@@ -574,6 +632,8 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
     assert result["success"] is False
     assert resolutions == [("codex", 31, {"include_secret": True})]
     assert runs[0]["harness"] == "codex"
+    assert runs[0]["session_id"] == "testdata-harness-task"
+    assert runs[0]["access_role"] == "user"
     assert runs[0]["problem_id"] == 5
     assert runs[0]["session_cookie"] == "session-cookie"
     assert runs[0]["session_cookie_name"] == "numoj_session"
@@ -639,6 +699,7 @@ def test_solution_task_succeeds_only_for_relay_created_accepted_submission(
             "",
             "",
             created_submission_ids=(77,),
+            native_session_id="77777777-7777-7777-7777-777777777777",
         ),
     )
 
@@ -649,3 +710,36 @@ def test_solution_task_succeeds_only_for_relay_created_accepted_submission(
 
     assert result["success"] is True
     assert result["final_submission_id"] == 77
+
+
+def test_solution_task_cannot_complete_without_native_session(monkeypatch):
+    snapshots = _patch_harness_solution_task(
+        monkeypatch,
+        submissions=[[{"id": 77, "status": "Accepted", "score": 10}]],
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: {**_ENDPOINT, "id": 31},
+    )
+    monkeypatch.setattr(
+        solve_task,
+        "run_agent_harness",
+        lambda **_kwargs: HarnessRunResult(
+            0,
+            False,
+            "",
+            "",
+            created_submission_ids=(77,),
+        ),
+    )
+
+    task = solve_task.register_agent_solve_problem_task(_FakeCelery())
+    result = task(
+        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+    )
+
+    assert result["success"] is False
+    assert "未记录可恢复" in result["message"]
+    assert snapshots[-1]["status"] == "Failed"
+    assert snapshots[-1]["final_submission_id"] == 77

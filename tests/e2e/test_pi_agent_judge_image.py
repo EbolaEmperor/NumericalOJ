@@ -843,17 +843,31 @@ def test_pi_reverse_agent_length_auto_finalizes_same_native_session(
         for line in journal_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    # 每个阶段先写 running 恢复点，再在 CLI 退出后追加带 returncode 的终态；
+    # 外部停止发生在两者之间时也能恢复同一个原生 session。
     assert [entry["phase"] for entry in journal] == [
         "reverse_solve",
+        "reverse_solve",
+        "reverse_finalize",
         "reverse_finalize",
     ]
-    session_id = journal[0]["session_id"]
+    assert [entry.get("running") for entry in journal] == [
+        True,
+        None,
+        True,
+        None,
+    ]
+    completed = [
+        entry for entry in journal
+        if entry.get("returncode") is not None
+    ]
+    session_id = completed[0]["session_id"]
     assert reverse_tasks._normalize_pi_session_id(session_id) == session_id
-    assert journal[0]["returncode"] == 0
-    assert journal[0]["resume_session_id"] == ""
-    assert journal[1]["session_id"] == session_id
-    assert journal[1]["resume_session_id"] == session_id
-    assert journal[1]["returncode"] == 0
+    assert completed[0]["returncode"] == 0
+    assert completed[0]["resume_session_id"] == ""
+    assert completed[1]["session_id"] == session_id
+    assert completed[1]["resume_session_id"] == session_id
+    assert completed[1]["returncode"] == 0
 
     trace_dir = Path(result["trace_dir"])
     entries = _session_entries(trace_dir)

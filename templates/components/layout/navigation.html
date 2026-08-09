@@ -59,7 +59,7 @@
       <a class="numoj-nav-item{% if request.blueprint == 'homework' %} active{% endif %}" href="{{ url_for('homework.admin_homework') }}" title="作业管理">
         {{ icon('admin-homework') }}<span class="numoj-nav-label">作业管理</span>
       </a>
-      <a class="numoj-nav-item{% if active_endpoint == 'problem_core.admin_agent_tasks' %} active{% endif %}" href="{{ url_for('problem_core.admin_agent_tasks') }}" title="Agent 任务">
+      <a class="numoj-nav-item{% if active_endpoint in ('problem_core.admin_agent_tasks', 'problem_core.admin_agent_task_detail') %} active{% endif %}" href="{{ url_for('problem_core.admin_agent_tasks') }}" title="Agent 任务">
         {{ icon('agent') }}<span class="numoj-nav-label">Agent 任务</span>
         <span class="numoj-nav-dot d-none" data-numoj-agent-active aria-label="存在运行中的 Agent 任务"></span>
       </a>

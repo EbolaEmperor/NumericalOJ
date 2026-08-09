@@ -525,6 +525,21 @@ def upsert_agent_run_snapshot(state):
                 (task_id,),
             )
             persisted = cursor.fetchone() or {}
+            if str(state.get("session_id") or "").strip():
+                # 通用会话与兼容 agent_task_runs 必须在同一事务进入同一状态；
+                # 否则 worker-lost 或最后一次瞬时写故障会留下永久 Running 会话。
+                from oj_modules.agents.sessions import (
+                    sync_agent_session_state_in_transaction,
+                )
+
+                session_state = dict(state)
+                session_state["status"] = (
+                    persisted.get("status") or session_state.get("status")
+                )
+                session_state["message"] = (
+                    persisted.get("message") or session_state.get("message")
+                )
+                sync_agent_session_state_in_transaction(cursor, session_state)
         conn.commit()
         return {
             "status": persisted.get("status"),
@@ -775,6 +790,7 @@ _RENAME_USER_OPTIONAL_COLUMNS = (
     ('final_exam_scores', 'student_id'),
     ('plagiarism_records', 'username'),
     ('agent_task_runs', 'requested_by'),
+    ('agent_sessions', 'requested_by'),
     ('ai_detection_results', 'username'),
     ('ranking_competitions', 'created_by'),
     ('ranking_submissions', 'username'),

@@ -40,6 +40,7 @@ _REQUEST_MAX_BYTES = LANGUAGE_SOURCE_MAX_BYTES * 6 + 16 * 1024
 _TOKENS_MAX_PER_WINDOW = 240
 _TOKENS_WINDOW_SECONDS = 60
 _MARKDOWN_SEMANTIC_CONTEXT = "markdown"
+_GENERIC_EDITOR_CONTEXTS = frozenset({"problem-form", "agent-workspace"})
 _GENERIC_EDITOR_DOCUMENT_ID_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z"
 )
@@ -282,7 +283,7 @@ def semantic_tokens():
         return jsonify(success=False, message="source 必须是字符串"), 400
     markdown_request = semantic_context == _MARKDOWN_SEMANTIC_CONTEXT
     repository_request = semantic_context == "repository"
-    generic_editor_request = semantic_context == "problem-form"
+    generic_editor_request = semantic_context in _GENERIC_EDITOR_CONTEXTS
     if markdown_request:
         markdown_language = _MARKDOWN_LANGUAGE_ALIASES.get(language)
         if (

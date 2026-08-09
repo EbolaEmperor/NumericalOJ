@@ -68,6 +68,7 @@ from oj_modules.tasks.registry import (
     init_agent_progress_cache,
     build_homework_task_operations,
     register_agent_generate_testdata_task,
+    register_agent_run_turn_task,
     register_repository_index_build_task,
     register_agent_solve_problem_task,
     register_evaluate_submission_task,
@@ -285,6 +286,7 @@ install_celery_observability(
 celery.conf.task_routes = {
     'oj.agent.solve_problem': {'queue': 'agent'},
     'oj.agent.generate_testdata': {'queue': 'agent'},
+    'oj.agent.run_turn': {'queue': 'agent'},
     'oj.promptly.generate_submission': {'queue': 'agent'},
     'oj.ranking_agent_judge': {'queue': 'judge'},
     'oj.ranking_agent_judge_paused_probe': {'queue': 'judge'},
@@ -313,6 +315,7 @@ export_codes_with_plagiarism_check, mark_homework_plagiarism = (
 promptly_generate_submission = register_promptly_generate_submission_task(celery, evaluate_submission)
 agent_solve_problem = register_agent_solve_problem_task(celery)
 agent_generate_testdata = register_agent_generate_testdata_task(celery)
+agent_run_turn = register_agent_run_turn_task(celery)
 terminate_agent_run = build_agent_run_terminator(celery)
 build_repository_index = register_repository_index_build_task(celery)
 detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions = register_ai_detection_tasks(celery)
@@ -364,6 +367,7 @@ init_problem_core_module(
     promptly_generate_submission,
     agent_solve_problem,
     agent_generate_testdata,
+    agent_run_turn,
     get_agent_run_snapshot,
     subscribe_agent_run_events,
     terminate_agent_run,

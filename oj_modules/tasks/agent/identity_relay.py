@@ -2,30 +2,48 @@
 # -*- coding: utf-8 -*-
 """短生命周期 NumOJ 身份转发代理。
 
-Agent 工作区只需要保存代理地址和一个无权限的固定 cookie 占位值。真实
-Flask Session 仅由宿主进程内存持有；代理在严格的任务路由白名单内剥离来访
-凭证并注入真实 Session，生命周期结束后立即关闭所有客户端与上游连接。
+Agent 工作区只保存带本轮高熵访问凭证的代理地址和一个无权限 cookie 占位值。
+真实 Flask Session 仅由宿主进程内存持有；代理先验证本轮请求凭证，再在严格
+任务路由边界内剥离来访凭证并注入真实 Session，结束后关闭所有连接。
 """
 
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hmac
 import http.server
 import ipaddress
 import platform
 import re
+import secrets
 import socket
 import subprocess
 import threading
+import unicodedata
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qsl,
+    quote,
+    unquote_to_bytes,
+    urljoin,
+    urlsplit,
+    urlunsplit,
+)
 
 from oj_modules.problems.agent_launch import (
+    AGENT_ACCESS_ROLE_USER,
+    AGENT_TASK_CUSTOM,
     AGENT_TASK_SOLVE,
     AGENT_TASK_TESTDATA,
+    normalize_agent_access_role,
     normalize_agent_task_kind,
+)
+from oj_modules.security.agent_identity import (
+    AGENT_IDENTITY_HEADER,
+    create_agent_identity_capability,
 )
 
 
@@ -36,6 +54,9 @@ _MAX_REQUEST_BYTES = 8 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _CLIENT_TIMEOUT_SECONDS = 30
 _UPSTREAM_TIMEOUT_SECONDS = 60
+_RELAY_AUTH_USERNAME = "numoj-agent"
+_RELAY_SECRET_BYTES = 32
+_CANONICAL_PATH_SAFE = "/!$&'()*+,-.:;=@_~"
 
 _HOP_BY_HOP_HEADERS = frozenset({
     "connection",
@@ -55,6 +76,7 @@ _INBOUND_CREDENTIAL_HEADERS = frozenset({
     "cookie",
     "proxy-authorization",
     "x-api-key",
+    AGENT_IDENTITY_HEADER.lower(),
 })
 _FORWARDING_HEADERS = frozenset({
     "forwarded",
@@ -77,10 +99,32 @@ _SUBMISSION_STREAM_RE = re.compile(
     r"/submission_status_stream/([1-9][0-9]*)\Z",
 )
 _SUBMISSION_API_DETAIL_RE = re.compile(r"/api/submissions/([1-9][0-9]*)\Z")
+_SUBMIT_RE = re.compile(r"/submit/([1-9][0-9]*)\Z")
+
+_CUSTOM_BLOCKED_EXACT_ROUTES = frozenset({
+    "/login",
+    "/logout",
+    "/register",
+    "/send_code",
+    "/forgot_password",
+    "/send_password_code",
+    "/change_password",
+})
+_CUSTOM_BLOCKED_ROUTE_PREFIXES = (
+    "/admin/agent_tasks",
+    "/admin/agent_solve_problem",
+    "/admin/agent_generate_testdata",
+    "/admin/agent_run_cancel",
+    "/api/admin/agent-tasks",
+)
 
 
 class IdentityRelayError(RuntimeError):
     """身份代理配置或运行失败。"""
+
+
+class IdentityRelayCleanupError(IdentityRelayError):
+    """身份代理关闭状态未知，Agent 会话不得恢复。"""
 
 
 def _relay_bind_host():
@@ -193,11 +237,72 @@ def _validate_identity(cookie_name, session_cookie):
     return name, value
 
 
+def _canonical_request_path(raw_path):
+    """返回唯一语义路径与唯一转发编码，拒绝代理/WSGI 解码歧义。"""
+
+    raw = str(raw_path or "")
+    if (
+        not raw.startswith("/")
+        or raw.startswith("//")
+        or "\\" in raw
+        or any(ord(char) < 0x20 or ord(char) > 0x7E for char in raw)
+    ):
+        raise _RequestRejected(400, "invalid request path")
+
+    index = 0
+    while index < len(raw):
+        if raw[index] != "%":
+            index += 1
+            continue
+        if index + 2 >= len(raw):
+            raise _RequestRejected(400, "invalid percent escape")
+        escaped = raw[index + 1:index + 3]
+        if not re.fullmatch(r"[0-9A-F]{2}", escaped):
+            raise _RequestRejected(400, "non-canonical percent escape")
+        # ASCII 通过 percent escape 表示会让 policy 与 WSGI 路由看到不同
+        # 字符；这同时拒绝 encoded slash/backslash/NUL/% 及重复编码。
+        if int(escaped, 16) < 0x80:
+            raise _RequestRejected(400, "ambiguous percent escape")
+        index += 3
+
+    try:
+        decoded = unquote_to_bytes(raw).decode("utf-8", "strict")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise _RequestRejected(400, "invalid UTF-8 request path") from exc
+    if (
+        not decoded.startswith("/")
+        or "\\" in decoded
+        or "%" in decoded
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded)
+        or unicodedata.normalize("NFC", decoded) != decoded
+    ):
+        raise _RequestRejected(400, "ambiguous decoded request path")
+    if decoded != "/":
+        segments = decoded.split("/")[1:]
+        if any(segment in {"", ".", ".."} for segment in segments):
+            raise _RequestRejected(400, "ambiguous request path segment")
+
+    canonical = quote(
+        decoded,
+        safe=_CANONICAL_PATH_SAFE,
+        encoding="utf-8",
+        errors="strict",
+    )
+    if canonical != raw:
+        raise _RequestRejected(400, "non-canonical request path")
+    return decoded, canonical
+
+
 def _request_parts(raw_target):
     target = str(raw_target or "")
     if not target or len(target.encode("utf-8")) > _MAX_REQUEST_TARGET_BYTES:
         raise _RequestRejected(414, "request target too long")
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in target):
+    if (
+        not target.startswith("/")
+        or target.startswith("//")
+        or "\\" in target
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in target)
+    ):
         raise _RequestRejected(400, "invalid request target")
     try:
         parts = urlsplit(target)
@@ -205,6 +310,7 @@ def _request_parts(raw_target):
         raise _RequestRejected(400, "invalid request target") from exc
     if parts.scheme or parts.netloc or parts.fragment or not parts.path.startswith("/"):
         raise _RequestRejected(400, "invalid request target")
+    path, canonical_path = _canonical_request_path(parts.path)
     try:
         query = parse_qsl(
             parts.query,
@@ -214,7 +320,10 @@ def _request_parts(raw_target):
         ) if parts.query else []
     except ValueError as exc:
         raise _RequestRejected(400, "invalid query string") from exc
-    return parts.path, query
+    canonical_target = canonical_path
+    if parts.query:
+        canonical_target += "?" + parts.query
+    return path, query, canonical_target
 
 
 def _single_header(headers, name):
@@ -228,6 +337,43 @@ def _single_header(headers, name):
     if len(values) > 1:
         raise _RequestRejected(400, f"multiple {name} headers")
     return str(values[0]) if values else ""
+
+
+def _relay_authorization(secret):
+    value = str(secret or "")
+    if not value:
+        raise IdentityRelayError("NumOJ 身份代理请求密钥无效")
+    try:
+        raw = f"{_RELAY_AUTH_USERNAME}:{value}".encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise IdentityRelayError("NumOJ 身份代理请求密钥无效") from exc
+    return "Basic " + base64.b64encode(raw).decode("ascii")
+
+
+def _relay_request_authorized(headers, expected_authorization):
+    provided = _single_header(headers, "Authorization").strip()
+    expected = str(expected_authorization or "")
+    return bool(
+        provided
+        and expected
+        and hmac.compare_digest(provided, expected)
+    )
+
+
+def _relay_container_base_url(port, secret):
+    try:
+        normalized_port = int(port)
+    except (TypeError, ValueError) as exc:
+        raise IdentityRelayError("NumOJ 身份代理端口无效") from exc
+    if not 1 <= normalized_port <= 65535:
+        raise IdentityRelayError("NumOJ 身份代理端口无效")
+    encoded_secret = quote(str(secret or ""), safe="")
+    if not encoded_secret:
+        raise IdentityRelayError("NumOJ 身份代理请求密钥无效")
+    return (
+        f"http://{_RELAY_AUTH_USERNAME}:{encoded_secret}@"
+        f"{_CONTAINER_HOST}:{normalized_port}"
+    )
 
 
 def _request_content_length(headers, method):
@@ -244,7 +390,12 @@ def _request_content_length(headers, method):
     return length
 
 
-def _upstream_headers(headers, cookie_name, session_cookie):
+def _upstream_headers(
+    headers,
+    cookie_name,
+    session_cookie,
+    agent_identity_capability="",
+):
     forwarded = {}
     for name, value in (headers.items() if headers is not None else ()):
         lowered = str(name).lower()
@@ -257,6 +408,8 @@ def _upstream_headers(headers, cookie_name, session_cookie):
             continue
         forwarded[str(name)] = str(value)
     forwarded["Cookie"] = f"{cookie_name}={session_cookie}"
+    if agent_identity_capability:
+        forwarded[AGENT_IDENTITY_HEADER] = str(agent_identity_capability)
     return forwarded
 
 
@@ -299,11 +452,24 @@ class _ForwardPlan:
 class _IdentityRelayPolicy:
     """任务路由白名单及本代理创建 submission 的状态机。"""
 
-    def __init__(self, task_kind, problem_id, upstream_url):
+    def __init__(
+        self,
+        task_kind,
+        problem_id,
+        upstream_url,
+        access_role=AGENT_ACCESS_ROLE_USER,
+    ):
         self.task_kind = normalize_agent_task_kind(task_kind)
-        if type(problem_id) is not int or problem_id <= 0:
-            raise IdentityRelayError("题号无效")
-        self.problem_id = problem_id
+        self.access_role = normalize_agent_access_role(
+            access_role,
+            task_kind=self.task_kind,
+        )
+        if self.task_kind == AGENT_TASK_CUSTOM:
+            self.problem_id = None
+        else:
+            if type(problem_id) is not int or problem_id <= 0:
+                raise IdentityRelayError("题号无效")
+            self.problem_id = problem_id
         self.upstream_url, self.upstream_origin = _normalize_site_url(upstream_url)
         self._submission_ids = set()
         self._lock = threading.Lock()
@@ -325,9 +491,22 @@ class _IdentityRelayPolicy:
         with self._lock:
             return tuple(sorted(self._submission_ids))
 
+    def _custom_route_allowed(self, method, path):
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+            return False
+        if any(
+            path == blocked or path.startswith(blocked + "/")
+            for blocked in _CUSTOM_BLOCKED_EXACT_ROUTES
+        ):
+            return False
+        return not any(
+            path == prefix or path.startswith(prefix + "/")
+            for prefix in _CUSTOM_BLOCKED_ROUTE_PREFIXES
+        )
+
     def plan(self, method, raw_target):
         normalized_method = str(method or "").upper()
-        path, query = _request_parts(raw_target)
+        path, query, canonical_target = _request_parts(raw_target)
         pid = self.problem_id
         allowed = False
         if self.task_kind == AGENT_TASK_SOLVE:
@@ -345,13 +524,15 @@ class _IdentityRelayPolicy:
                     f"/api/problems/{pid}",
                     "/me/classes",
                 }
+        elif self.task_kind == AGENT_TASK_CUSTOM:
+            allowed = self._custom_route_allowed(normalized_method, path)
         if not allowed:
             raise _RequestRejected(404, "not found")
         return _ForwardPlan(
             method=normalized_method,
-            raw_target=str(raw_target),
+            raw_target=canonical_target,
             path=path,
-            target_url=self.upstream_url + str(raw_target),
+            target_url=self.upstream_url + canonical_target,
         )
 
     def inspect_redirect(self, plan, status, headers):
@@ -383,9 +564,21 @@ class _IdentityRelayPolicy:
             or (parts.path or "").startswith("//")
         ):
             raise _RequestRejected(502, "cross-origin redirect refused")
-        rewritten = urlunsplit(("", "", parts.path or "/", parts.query, parts.fragment))
-        if plan.method == "POST" and plan.path == f"/submit/{self.problem_id}":
-            match = _SUBMISSION_LOCATION_RE.fullmatch(parts.path or "")
+        try:
+            redirect_path, canonical_redirect_path = _canonical_request_path(
+                parts.path or "/",
+            )
+        except _RequestRejected as exc:
+            raise _RequestRejected(502, "unsafe upstream redirect path") from exc
+        rewritten = urlunsplit(
+            ("", "", canonical_redirect_path, parts.query, parts.fragment),
+        )
+        submitted = _SUBMIT_RE.fullmatch(plan.path) if plan.method == "POST" else None
+        if submitted and (
+            self.task_kind == AGENT_TASK_CUSTOM
+            or int(submitted.group(1)) == self.problem_id
+        ):
+            match = _SUBMISSION_LOCATION_RE.fullmatch(redirect_path)
             if match:
                 submission_id = int(match.group(1))
                 if submission_id <= 9_223_372_036_854_775_807:
@@ -491,12 +684,38 @@ class _BoundedIdentityRelayServer(http.server.ThreadingHTTPServer):
 
 
 class _NumOJIdentityRelay:
-    def __init__(self, task_kind, problem_id, site_url, cookie_name, session_cookie):
+    def __init__(
+        self,
+        task_kind,
+        problem_id,
+        site_url,
+        cookie_name,
+        session_cookie,
+        requested_by="",
+        access_role=AGENT_ACCESS_ROLE_USER,
+    ):
         upstream_url, _upstream_origin = _normalize_site_url(site_url)
-        self.policy = _IdentityRelayPolicy(task_kind, problem_id, upstream_url)
+        self.policy = _IdentityRelayPolicy(
+            task_kind,
+            problem_id,
+            upstream_url,
+            access_role=access_role,
+        )
         self.cookie_name, self.session_cookie = _validate_identity(
             cookie_name,
             session_cookie,
+        )
+        self.agent_identity_capability = (
+            create_agent_identity_capability(requested_by, self.policy.access_role)
+            if str(requested_by or "").strip()
+            else ""
+        )
+        # 此密钥只通过本轮 identity config 中的 relay URL userinfo 交给目标
+        # 容器。现有 requests/curl 客户端会自动生成 Authorization header；
+        # 同 bridge 的其他容器无法仅凭端口借用真实 Flask Session。
+        self.relay_request_secret = secrets.token_urlsafe(_RELAY_SECRET_BYTES)
+        self.relay_authorization = _relay_authorization(
+            self.relay_request_secret,
         )
         self.server = None
         self.thread = None
@@ -532,6 +751,12 @@ class _NumOJIdentityRelay:
             def _proxy(self):
                 response = None
                 try:
+                    # 身份门禁必须先于路径 policy、请求体读取和任何上游 I/O。
+                    if not _relay_request_authorized(
+                        self.headers,
+                        relay.relay_authorization,
+                    ):
+                        raise _RequestRejected(404, "not found")
                     plan = relay.policy.plan(self.command, self.path)
                     transfer_encoding = _single_header(
                         self.headers,
@@ -550,6 +775,7 @@ class _NumOJIdentityRelay:
                         self.headers,
                         relay.cookie_name,
                         relay.session_cookie,
+                        relay.agent_identity_capability,
                     )
                     request_obj = urllib.request.Request(
                         plan.target_url,
@@ -623,13 +849,13 @@ class _NumOJIdentityRelay:
                 self._send_plain(405, "method not allowed")
 
             def do_PUT(self):
-                self._send_plain(405, "method not allowed")
+                self._proxy()
 
             def do_PATCH(self):
-                self._send_plain(405, "method not allowed")
+                self._proxy()
 
             def do_DELETE(self):
-                self._send_plain(405, "method not allowed")
+                self._proxy()
 
             def do_OPTIONS(self):
                 self._send_plain(405, "method not allowed")
@@ -654,7 +880,10 @@ class _NumOJIdentityRelay:
         )
         self.server = server
         self.thread = thread
-        self.container_base_url = f"http://{_CONTAINER_HOST}:{port}"
+        self.container_base_url = _relay_container_base_url(
+            port,
+            self.relay_request_secret,
+        )
         thread.start()
         return self.container_base_url
 
@@ -678,7 +907,7 @@ class _NumOJIdentityRelay:
             if thread is not None:
                 thread.join(timeout=5)
         if thread is not None and thread.is_alive():
-            raise IdentityRelayError("NumOJ 身份代理未能彻底关闭")
+            raise IdentityRelayCleanupError("NumOJ 身份代理未能彻底关闭")
 
 
 @dataclass(frozen=True, slots=True)
@@ -700,11 +929,13 @@ def run_numoj_identity_relay(
     site_url,
     cookie_name,
     session_cookie,
+    requested_by="",
+    access_role=AGENT_ACCESS_ROLE_USER,
 ):
     """启动任务级身份转发代理并返回容器可访问的 NumOJ base URL。
 
-    这里的“任务级”仅描述进程生命周期；接口不创建、签发或校验任何任务
-    token。调用方必须把真实 Session 留在宿主参数中，不能写入 Agent 工作区。
+    调用方必须把真实 Session 留在宿主参数中，不能写入 Agent 工作区。返回的
+    base URL 内只含短生命周期 relay 请求密钥，退出上下文后即失效。
     """
 
     relay = _NumOJIdentityRelay(
@@ -713,16 +944,24 @@ def run_numoj_identity_relay(
         site_url,
         cookie_name,
         session_cookie,
+        requested_by,
+        access_role,
     )
     base_url = relay.start()
     session = NumOJIdentityRelaySession(base_url=base_url, _relay=relay)
     try:
         yield session
     finally:
-        relay.close()
+        try:
+            relay.close()
+        except IdentityRelayCleanupError:
+            raise
+        except Exception as exc:
+            raise IdentityRelayCleanupError("NumOJ 身份代理清理失败") from exc
 
 
 __all__ = [
+    "IdentityRelayCleanupError",
     "IdentityRelayError",
     "NumOJIdentityRelaySession",
     "run_numoj_identity_relay",

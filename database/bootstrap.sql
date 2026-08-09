@@ -479,6 +479,71 @@ CREATE TABLE `agent_task_runs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
+--
+-- Table structure for table `agent_sessions`
+--
+
+DROP TABLE IF EXISTS `agent_sessions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_sessions` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `session_id` varchar(64) NOT NULL,
+  `current_task_id` varchar(64) NOT NULL,
+  `title` varchar(64) DEFAULT NULL,
+  `task_kind` varchar(32) NOT NULL DEFAULT 'custom',
+  `problem_id` int DEFAULT NULL,
+  `problem_title` varchar(255) DEFAULT NULL,
+  `requested_by` varchar(50) NOT NULL,
+  `access_role` varchar(16) NOT NULL DEFAULT 'user',
+  `harness` varchar(32) NOT NULL,
+  `endpoint_id` bigint NOT NULL,
+  `endpoint_revision` bigint NOT NULL DEFAULT '1',
+  `endpoint_model` varchar(255) NOT NULL,
+  `native_session_id` varchar(128) DEFAULT NULL,
+  `status` varchar(32) NOT NULL DEFAULT 'Pending',
+  `message` text,
+  `turn_count` int NOT NULL DEFAULT '1',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_agent_session_id` (`session_id`),
+  UNIQUE KEY `uniq_agent_session_current_task` (`current_task_id`),
+  KEY `idx_agent_sessions_status_updated` (`status`,`updated_at`),
+  KEY `idx_agent_sessions_user_updated` (`requested_by`,`updated_at`),
+  CONSTRAINT `chk_agent_sessions_access_role` CHECK (`access_role` IN ('user','admin')),
+  CONSTRAINT `chk_agent_sessions_endpoint_revision` CHECK (`endpoint_revision` > 0),
+  CONSTRAINT `chk_agent_sessions_turn_count` CHECK (`turn_count` > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_session_turns`
+--
+
+DROP TABLE IF EXISTS `agent_session_turns`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_session_turns` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `session_id` varchar(64) NOT NULL,
+  `task_id` varchar(64) NOT NULL,
+  `turn_index` int NOT NULL,
+  `user_message` longtext NOT NULL,
+  `attachments_json` longtext,
+  `status` varchar(32) NOT NULL DEFAULT 'Pending',
+  `conclusion` longtext,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_agent_turn_task` (`task_id`),
+  UNIQUE KEY `uniq_agent_session_turn` (`session_id`,`turn_index`),
+  KEY `idx_agent_turns_session_created` (`session_id`,`created_at`),
+  CONSTRAINT `fk_agent_turns_session` FOREIGN KEY (`session_id`) REFERENCES `agent_sessions` (`session_id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_agent_turn_index` CHECK (`turn_index` > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
 
 --
 -- Table structure for table `submission_limits`

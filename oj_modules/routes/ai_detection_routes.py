@@ -6,7 +6,7 @@ Admin routes for AI code detection dashboard.
 
 from decimal import Decimal
 
-from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 
 from oj_modules.ai_detection.task_tracker import (
     get_recent_tasks,
@@ -25,11 +25,11 @@ from oj_modules.db_services import (
     get_all_problems,
     get_filtered_submissions_for_detection,
     get_problem,
-    get_user_by_username,
 )
 from oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
 )
+from oj_modules.security.auth import current_user
 
 
 ai_detection_bp = Blueprint('ai_detection', __name__)
@@ -49,10 +49,7 @@ def init_ai_detection_module(detect_single, detect_batch, detect_user, detect_fi
 
 
 def _current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
+    return current_user()
 
 
 def _require_admin():

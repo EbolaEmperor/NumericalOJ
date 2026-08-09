@@ -8,6 +8,7 @@ import http.server
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -38,9 +39,13 @@ PI_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhig
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
+OPENCODE_SESSION_ID_RE = re.compile(r"ses_[A-Za-z0-9_-]{1,120}\Z")
+OPENCODE_SESSION_ID_SEARCH_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(ses_[A-Za-z0-9_-]{1,120})(?![A-Za-z0-9_-])"
+)
 SESSION_KEYS = {
     "session_id", "sessionId", "conversation_id", "conversationId",
-    "thread_id", "threadId",
+    "thread_id", "threadId", "sessionID", "session",
 }
 CLAUDE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 ENDPOINT_THINKING_FORMATS = frozenset({"enable_thinking", "thinking_type", "none"})
@@ -234,6 +239,11 @@ def _run(args, env=None, input_text=None, stdout_session_only=False):
                         discovered_session["id"] = (
                             _extract_session_id(session_header or chunk) or ""
                         )
+                        if discovered_session["id"]:
+                            _record_live_session(
+                                discovered_session["id"],
+                                env=run_env,
+                            )
                 _remember(chunks, key, chunk)
                 if key == "stdout" and stdout_session_only:
                     if not session_header or forwarded_session["done"]:
@@ -275,30 +285,50 @@ def _run(args, env=None, input_text=None, stdout_session_only=False):
     return completed
 
 
-def _walk_json_session_id(obj):
+def _session_id_from_text(value, harness=None):
+    raw = str(value or "")
+    normalized_harness = str(harness or "").strip().lower().replace("-", "_")
+    if normalized_harness in {"", "opencode"}:
+        candidate = raw.strip()
+        if OPENCODE_SESSION_ID_RE.fullmatch(candidate):
+            return candidate
+        match = OPENCODE_SESSION_ID_SEARCH_RE.search(raw)
+        if match:
+            return match.group(1)
+    if normalized_harness != "opencode":
+        match = UUID_RE.search(raw)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _walk_json_session_id(obj, harness=None):
     if isinstance(obj, dict):
         if (
             str(obj.get("type") or "").strip().lower() == "session"
             and isinstance(obj.get("id"), str)
-            and UUID_RE.search(obj["id"])
         ):
-            return UUID_RE.search(obj["id"]).group(0)
+            found = _session_id_from_text(obj["id"], harness)
+            if found:
+                return found
         for key, value in obj.items():
-            if key in SESSION_KEYS and isinstance(value, str) and UUID_RE.search(value):
-                return UUID_RE.search(value).group(0)
+            if key in SESSION_KEYS and isinstance(value, str):
+                found = _session_id_from_text(value, harness)
+                if found:
+                    return found
         for value in obj.values():
-            found = _walk_json_session_id(value)
+            found = _walk_json_session_id(value, harness)
             if found:
                 return found
     elif isinstance(obj, list):
         for item in obj:
-            found = _walk_json_session_id(item)
+            found = _walk_json_session_id(item, harness)
             if found:
                 return found
     return None
 
 
-def _extract_session_id(text):
+def _extract_session_id(text, harness=None):
     text = text or ""
     candidates = []
     stripped = text.strip()
@@ -307,29 +337,141 @@ def _extract_session_id(text):
         candidates.extend(line.strip() for line in stripped.splitlines() if line.strip())
     for candidate in candidates:
         try:
-            found = _walk_json_session_id(json.loads(candidate))
+            found = _walk_json_session_id(json.loads(candidate), harness)
             if found:
                 return found
         except Exception:
             pass
-    labeled = re.search(
-        r"(?:session[_ -]?id|thread[_ -]?id|conversation[_ -]?id)[^0-9a-fA-F]{0,16}("
-        + UUID_RE.pattern[2:-2] + r")",
-        text,
-        re.I,
-    )
-    if labeled:
-        return labeled.group(1)
+    normalized_harness = str(harness or "").strip().lower().replace("-", "_")
+    if normalized_harness != "opencode":
+        labeled = re.search(
+            r"(?:session[_ -]?id|thread[_ -]?id|conversation[_ -]?id)[^0-9a-fA-F]{0,16}("
+            + UUID_RE.pattern[2:-2] + r")",
+            text,
+            re.I,
+        )
+        if labeled:
+            return labeled.group(1)
+    if normalized_harness in {"", "opencode"}:
+        labeled = re.search(
+            r"(?:session[_ -]?id|thread[_ -]?id|conversation[_ -]?id)"
+            r"[^A-Za-z0-9_-]{0,16}"
+            r"(ses_[A-Za-z0-9_-]{1,120})(?![A-Za-z0-9_-])",
+            text,
+            re.I,
+        )
+        if labeled:
+            return labeled.group(1)
     return None
+
+
+def _normalize_session_id(value, harness):
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    normalized_harness = str(harness or "").strip().lower().replace("-", "_")
+    if normalized_harness == "opencode":
+        if not OPENCODE_SESSION_ID_RE.fullmatch(normalized):
+            raise ValueError("native OpenCode session id is invalid")
+        return normalized
+    if not UUID_RE.fullmatch(normalized):
+        raise ValueError("native session id must be a UUID")
+    return normalized.lower()
+
+
+def _resume_session_id_from_env(harness):
+    return _normalize_session_id(os.environ.get("AJ_RESUME_SESSION_ID"), harness)
+
+
+def _write_session_event(state_path, event):
+    payload = json.dumps(event, ensure_ascii=False).encode("utf-8")
+
+    def write_all(fd, data):
+        offset = 0
+        while offset < len(data):
+            offset += os.write(fd, data[offset:])
+
+    temporary_path = (
+        f"{state_path}.tmp.{os.getpid()}.{os.urandom(8).hex()}"
+    )
+    flags = (
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = os.open(temporary_path, flags, 0o600)
+    try:
+        write_all(fd, payload)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temporary_path, state_path)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+    history_flags = (
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    history_fd = os.open(state_path + "l", history_flags, 0o600)
+    try:
+        history_stat = os.fstat(history_fd)
+        if not stat.S_ISREG(history_stat.st_mode):
+            raise OSError("session history is not a regular file")
+        write_all(history_fd, payload + b"\n")
+    finally:
+        os.close(history_fd)
+
+
+def _record_live_session(session_id, *, env=None):
+    """CLI 一公布原生 ID 就落盘，让外部停止仍可恢复已建立的会话。"""
+
+    runtime_env = env or os.environ
+    harness = (runtime_env.get("AJ_HARNESS") or "").strip().lower().replace("-", "_")
+    if harness == "pi_agent":
+        harness = "pi"
+    try:
+        normalized_session_id = _normalize_session_id(session_id, harness)
+        resume_session_id = _normalize_session_id(
+            runtime_env.get("AJ_RESUME_SESSION_ID"),
+            harness,
+        )
+        if not normalized_session_id:
+            return
+        state_path = (
+            runtime_env.get("AJ_SESSION_STATE")
+            or "/workspace/.aj_session_state.json"
+        )
+        _write_session_event(state_path, {
+            "harness": harness,
+            "phase": runtime_env.get("AJ_PHASE") or "",
+            "session_id": normalized_session_id,
+            "resume_session_id": resume_session_id or "",
+            "returncode": None,
+            "running": True,
+        })
+    except Exception as exc:
+        # 状态旁路不能阻塞 stdout drain；正常结束时 _record_session 会重试。
+        print(f"failed to persist live AJ session state: {exc}", file=sys.stderr)
 
 
 def _record_session(harness, proc, resume_session_id=None):
     text = (getattr(proc, "stdout", "") or "") + "\n" + (getattr(proc, "stderr", "") or "")
-    session_id = (
-        getattr(proc, "aj_session_id", "")
-        or _extract_session_id(text)
-        or (resume_session_id or "")
-    )
+    try:
+        session_id = _normalize_session_id(
+            _extract_session_id(text, harness)
+            or getattr(proc, "aj_session_id", "")
+            or (resume_session_id or ""),
+            harness,
+        )
+        resume_session_id = _normalize_session_id(resume_session_id, harness)
+    except ValueError as exc:
+        print(f"failed to record AJ session state: {exc}", file=sys.stderr)
+        return ""
     if not session_id:
         return ""
     state_path = os.environ.get("AJ_SESSION_STATE") or "/workspace/.aj_session_state.json"
@@ -341,10 +483,7 @@ def _record_session(harness, proc, resume_session_id=None):
         "returncode": int(getattr(proc, "returncode", 0) or 0),
     }
     try:
-        with open(state_path, "w", encoding="utf-8") as f:
-            json.dump(event, f, ensure_ascii=False)
-        with open(state_path + "l", "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        _write_session_event(state_path, event)
     except Exception as exc:
         print(f"failed to write AJ session state: {exc}", file=sys.stderr)
     return session_id
@@ -844,8 +983,8 @@ def _endpoint_settings(allowed_protocols):
 
 
 def _run_codex(prompt):
-    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     try:
+        resume_session_id = _resume_session_id_from_env("codex")
         _protocol, base_url, api_key, model = _endpoint_settings({"openai"})
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()
@@ -978,8 +1117,8 @@ def _opencode_config_content(
 
 
 def _run_opencode(prompt):
-    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     try:
+        resume_session_id = _resume_session_id_from_env("opencode")
         _protocol, base_url, api_key, model = _endpoint_settings({"openai"})
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()
@@ -1185,8 +1324,8 @@ def _write_pi_models_config(
 
 
 def _run_pi(prompt):
-    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     try:
+        resume_session_id = _resume_session_id_from_env("pi")
         protocol, base_url, api_key, model = _endpoint_settings(
             {"openai", "anthropic"},
         )
@@ -1340,9 +1479,9 @@ def _run_pi(prompt):
 
 
 def _run_claude_code(prompt):
-    resume_session_id = (os.environ.get("AJ_RESUME_SESSION_ID") or "").strip()
     audit_read_only = _audit_read_only_enabled()
     try:
+        resume_session_id = _resume_session_id_from_env("claude_code")
         _protocol, base_url, api_key, model = _endpoint_settings({"anthropic"})
         context_window_tokens, max_output_tokens, thinking_compatibility = (
             _endpoint_model_capabilities()

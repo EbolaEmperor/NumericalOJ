@@ -829,7 +829,7 @@ def test_opencode_audit_mode_denies_all_except_evidence_read_tools(monkeypatch):
         monkeypatch,
         base_url="http://quality-model-proxy:18080/v1",
     )
-    monkeypatch.setenv("AJ_RESUME_SESSION_ID", "33333333-3333-3333-3333-333333333333")
+    monkeypatch.setenv("AJ_RESUME_SESSION_ID", "ses_AuditResume_333")
     monkeypatch.setattr(module.os, "makedirs", lambda *_args, **_kwargs: None)
 
     def run(args, env=None, input_text=None):
@@ -1596,6 +1596,48 @@ def test_pi_session_header_id_is_recorded_with_existing_minimal_schema(
     }
 
 
+def test_opencode_records_and_resumes_opaque_mixed_case_session_id(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    state_path = tmp_path / "session.json"
+    session_id = "ses_MixedCase_19-Z"
+    monkeypatch.setenv("AJ_SESSION_STATE", str(state_path))
+    monkeypatch.setenv("AJ_RESUME_SESSION_ID", session_id)
+    proc = SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps({
+            "type": "step_start",
+            "properties": {"sessionID": session_id},
+        }),
+        stderr="",
+    )
+
+    assert module._resume_session_id_from_env("opencode") == session_id
+    assert module._record_session("opencode", proc, session_id) == session_id
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {
+        "harness": "opencode",
+        "phase": "",
+        "session_id": session_id,
+        "resume_session_id": session_id,
+        "returncode": 0,
+    }
+    with pytest.raises(ValueError, match="UUID"):
+        module._resume_session_id_from_env("codex")
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    ["ses_", "ses_has.dot", "SES_wrong_prefix", "ses_" + "a" * 121],
+)
+def test_opencode_rejects_malformed_native_session_id(
+        monkeypatch, session_id):
+    module = _load_run_harness()
+    monkeypatch.setenv("AJ_RESUME_SESSION_ID", session_id)
+
+    with pytest.raises(ValueError, match="OpenCode"):
+        module._resume_session_id_from_env("opencode")
+
+
 def test_run_preserves_pi_session_id_when_header_falls_out_of_tail_capture(
         monkeypatch, tmp_path):
     module = _load_run_harness()
@@ -1612,12 +1654,68 @@ def test_run_preserves_pi_session_id_when_header_falls_out_of_tail_capture(
         os.environ,
         AJ_WORKSPACE=str(tmp_path),
         AJ_CAPTURE_MAX_CHARS="1024",
+        AJ_HARNESS="pi",
+        AJ_SESSION_STATE=str(tmp_path / "live-session.json"),
     )
 
     proc = module._run(command, env=env)
 
     assert session_id not in proc.stdout
     assert proc.aj_session_id == session_id
+    assert json.loads((tmp_path / "live-session.json").read_text(encoding="utf-8")) == {
+        "harness": "pi",
+        "phase": "",
+        "session_id": session_id,
+        "resume_session_id": "",
+        "returncode": None,
+        "running": True,
+    }
+
+
+def test_run_persists_native_session_before_child_finishes(monkeypatch, tmp_path):
+    module = _load_run_harness()
+    session_id = "88888888-8888-8888-8888-888888888888"
+    state_path = tmp_path / "live-session.json"
+    release = tmp_path / "release"
+    result = []
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import pathlib,time; "
+            f"print('{{\"type\":\"session\",\"version\":3,\"id\":\"{session_id}\"}}',flush=True); "
+            f"p=pathlib.Path({str(release)!r}); "
+            "exec(\"while not p.exists():\\n time.sleep(0.02)\")"
+        ),
+    ]
+    env = dict(
+        os.environ,
+        AJ_WORKSPACE=str(tmp_path),
+        AJ_HARNESS="pi",
+        AJ_SESSION_STATE=str(state_path),
+    )
+    worker = threading.Thread(
+        target=lambda: result.append(module._run(command, env=env)),
+        daemon=True,
+    )
+    worker.start()
+
+    try:
+        for _attempt in range(150):
+            if state_path.exists():
+                break
+            threading.Event().wait(0.02)
+
+        assert state_path.exists()
+        assert worker.is_alive()
+        assert json.loads(
+            state_path.read_text(encoding="utf-8")
+        )["session_id"] == session_id
+    finally:
+        release.write_text("go", encoding="utf-8")
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert result[0].returncode == 0
 
 
 def test_run_can_forward_only_pi_session_header_while_consuming_json_stream(

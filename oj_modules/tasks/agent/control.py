@@ -13,6 +13,46 @@ from oj_modules.problems.agent_runs import (
 from oj_modules.tasks.agent.shared import cancel_agent_run
 
 
+def _project_session_cleanup_status(
+    task_id,
+    status,
+    message,
+    *,
+    native_session_id="",
+):
+    from oj_modules.agents.sessions import (
+        get_agent_session_by_task_id,
+        sync_agent_session_state,
+    )
+
+    session = get_agent_session_by_task_id(task_id)
+    if not isinstance(session, dict) or session.get("is_legacy"):
+        return False
+    return sync_agent_session_state({
+        "task_id": task_id,
+        "session_id": session.get("session_id"),
+        "status": status,
+        "message": message,
+        "native_session_id": native_session_id,
+        "_preserve_conclusion": True,
+    })
+
+
+def _read_native_session_id_for_task(task_id):
+    """在容器移除后读取 CLI 已经原子落盘的恢复点。"""
+
+    from oj_modules.agents.sessions import get_agent_session_by_task_id
+    from oj_modules.tasks.agent.harness_runtime import read_agent_native_session_id
+
+    session = get_agent_session_by_task_id(task_id)
+    if not isinstance(session, dict) or session.get("is_legacy"):
+        return ""
+    return read_agent_native_session_id(
+        session.get("session_id"),
+        session.get("harness"),
+    )
+
+
 def _force_remove_agent_container(task_id):
     container_name = agent_run_container_name(task_id)
     last_error = ""
@@ -60,6 +100,47 @@ def build_agent_run_terminator(celery_app):
         container_error = _force_remove_agent_container(normalized_task_id)
         if container_error:
             errors.append(container_error)
+        native_session_id = ""
+        try:
+            native_session_id = _read_native_session_id_for_task(
+                normalized_task_id
+            )
+        except Exception as exc:
+            errors.append(f"读取 Agent 原生恢复点失败：{str(exc)[:500]}")
+        projection_status = "CleanupFailed" if errors else "Canceled"
+        projection_message = (
+            "；".join(errors)
+            if errors
+            else str(
+                (result.get("state") or {}).get("message")
+                or "任务已由管理员终止"
+            )
+        )
+        try:
+            _project_session_cleanup_status(
+                normalized_task_id,
+                projection_status,
+                projection_message,
+                native_session_id=native_session_id,
+            )
+        except Exception as exc:
+            errors.append(f"更新 Agent 会话清理状态失败：{str(exc)[:500]}")
+        if errors:
+            projection_status = "CleanupFailed"
+            projection_message = "；".join(errors)
+        state = dict(result.get("state") or {})
+        state.update(
+            status=projection_status,
+            message=projection_message,
+            stage="finished",
+            harness_status=(
+                "cleanup_failed"
+                if projection_status == "CleanupFailed"
+                else "canceled"
+            ),
+            native_session_id=native_session_id,
+        )
+        result["state"] = state
         result["errors"] = errors
         return result
 

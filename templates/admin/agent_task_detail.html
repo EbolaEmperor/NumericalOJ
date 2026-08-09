@@ -1,0 +1,320 @@
+{% extends "layouts/site.html" %}
+{% block title %}{{ agent_session.title|default('Agent 会话', true) }} - {{ super() }}{% endblock %}
+{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/agents/conversation.css') }}">
+{% endblock %}
+
+{% block content_container_class %}container-fluid agent-session-shell{% endblock %}
+
+{% block content %}
+{% from 'ranking/components/harness_logo.html' import harness_logo %}
+{% set session_id = agent_session.session_id %}
+{% set current_task_id = agent_session.current_task_id|default('', true) %}
+{% set state_status = current_state.status|default(agent_session.status|default('completed', true), true)|lower %}
+{% set is_running = state_status in ('pending', 'running') %}
+{% set has_resume_point = agent_session.native_session_id|default('', true)|trim %}
+{% set can_resume = can_resume|default(false) %}
+{% set is_blocked = (not can_resume) or state_status in ('cleanupfailed', 'cleanup_failed') or agent_session.is_legacy|default(false) or (not is_running and not has_resume_point) %}
+{% set access_role = agent_session.access_role|default('user', true) %}
+{% set harness_labels = {'claude_code': 'Claude Code', 'codex': 'Codex', 'opencode': 'OpenCode', 'pi': 'Pi'} %}
+{% set harness_name = agent_session.harness_label|default(harness_labels.get(agent_session.harness, agent_session.harness|default('Harness', true)), true) %}
+
+{% macro attachment_item(attachment, previewable=true) %}
+  {% set attachment_path = attachment.path|default(attachment.workspace_path|default('', true), true) %}
+  {% set attachment_name = attachment.name|default(attachment.filename|default(attachment_path, true), true) %}
+  <span class="agent-message-attachment">
+    <i class="fas fa-paperclip" aria-hidden="true"></i>
+    {% if previewable and attachment_path %}
+      <button type="button" data-agent-open-file="{{ attachment_path }}" title="预览 {{ attachment_name }}">
+        {{ attachment_name }}
+      </button>
+    {% else %}
+      <span>{{ attachment_name }}</span>
+    {% endif %}
+    {% if attachment.size %}<small>{{ attachment.size }}</small>{% endif %}
+    {% if attachment_path %}
+      <a href="{{ url_for('problem_core.admin_agent_workspace_file', session_id=session_id, path=attachment_path, download=1) }}"
+         title="下载 {{ attachment_name }}" aria-label="下载 {{ attachment_name }}">
+        <i class="fas fa-download" aria-hidden="true"></i>
+      </a>
+    {% endif %}
+  </span>
+{% endmacro %}
+
+{% macro trace_message(message) %}
+  {% set kind = message.kind|default(message.type|default('assistant', true), true)|lower %}
+  {% if kind in ('thinking', 'reasoning') %}
+    <section class="agent-trace-event agent-trace-event--thinking">
+      <span class="agent-trace-event-icon"><i class="fas fa-circle-notch" aria-hidden="true"></i></span>
+      <div>
+        <strong>思考</strong>
+        <div class="agent-trace-copy{% if message.html %} numoj-markdown{% endif %}"
+             {% if message.html %}data-numoj-markdown{% endif %}>
+          {% if message.html %}{{ message.html|safe }}{% else %}<pre>{{ message.text|default(message.content|default('', true), true) }}</pre>{% endif %}
+        </div>
+      </div>
+    </section>
+  {% elif kind in ('tool', 'tool_call') %}
+    <section class="agent-trace-event agent-trace-event--tool">
+      <span class="agent-trace-event-icon"><i class="fas fa-terminal" aria-hidden="true"></i></span>
+      <div>
+        <strong>{{ message.title|default(message.name|default(message.tool_name|default('工具调用', true), true), true) }}</strong>
+        <pre>{{ message.text|default(message.input|default(message.content|default('', true), true), true) }}</pre>
+      </div>
+    </section>
+  {% elif kind in ('tool_result', 'tool-result') %}
+    {% set result_error = message.is_error|default(false) %}
+    <section class="agent-trace-event agent-trace-event--{{ 'error' if result_error else 'result' }}">
+      <span class="agent-trace-event-icon"><i class="fas {{ 'fa-exclamation-triangle' if result_error else 'fa-check' }}" aria-hidden="true"></i></span>
+      <div>
+        <strong>{{ message.title|default('工具执行失败' if result_error else '工具结果', true) }}</strong>
+        <pre>{{ message.text|default(message.output|default(message.content|default('', true), true), true) }}</pre>
+      </div>
+    </section>
+  {% elif kind == 'subagent' %}
+    <section class="agent-trace-event agent-trace-event--subagent">
+      <span class="agent-trace-event-icon"><i class="fas fa-code-branch" aria-hidden="true"></i></span>
+      <div>
+        <strong>{{ message.title|default(message.name|default('子 Agent', true), true) }}</strong>
+        <pre>{{ message.text|default(message.content|default('', true), true) }}</pre>
+      </div>
+    </section>
+  {% else %}
+    <section class="agent-trace-event agent-trace-event--assistant">
+      <span class="agent-trace-event-icon"><i class="fas fa-comment-alt" aria-hidden="true"></i></span>
+      <div class="agent-trace-copy{% if message.html %} numoj-markdown{% endif %}"
+           {% if message.html %}data-numoj-markdown{% endif %}>
+        {% if message.html %}{{ message.html|safe }}{% else %}<pre>{{ message.text|default(message.content|default('', true), true) }}</pre>{% endif %}
+      </div>
+    </section>
+  {% endif %}
+{% endmacro %}
+
+<main class="agent-session"
+      data-agent-session
+      data-session-id="{{ session_id }}"
+      data-current-task-id="{{ current_task_id }}"
+      data-running="{{ 'true' if is_running else 'false' }}"
+      data-blocked="{{ 'true' if is_blocked else 'false' }}"
+      data-can-resume="{{ 'true' if can_resume else 'false' }}"
+      data-legacy="{{ 'true' if agent_session.is_legacy|default(false) else 'false' }}"
+      data-native-session-id="{{ has_resume_point }}"
+      data-status="{{ state_status }}"
+      data-resume-url="{{ url_for('problem_core.admin_agent_task_detail', session_id=session_id) }}"
+      data-workspace-tree-url="{{ url_for('problem_core.admin_agent_workspace_tree', session_id=session_id) }}"
+      data-workspace-file-url="{{ url_for('problem_core.admin_agent_workspace_file', session_id=session_id) }}"
+      data-status-url-template="{{ url_for('problem_core.admin_agent_run_status', task_id='__TASK_ID__') }}"
+      data-stream-url-template="{{ url_for('problem_core.admin_agent_run_stream', task_id='__TASK_ID__') }}"
+      data-cancel-url-template="{{ url_for('problem_core.admin_agent_run_cancel', task_id='__TASK_ID__') }}">
+
+  <section class="agent-conversation-pane" aria-label="Agent 会话">
+    <header class="agent-session-header">
+      <a class="agent-session-back" href="{{ url_for('problem_core.admin_agent_tasks') }}"
+         aria-label="返回 Agent 任务列表" title="返回会话列表">
+        <i class="fas fa-chevron-left" aria-hidden="true"></i>
+      </a>
+      <div class="agent-session-title">
+        <h1 data-agent-session-title>{{ agent_session.title|default('Agent 会话', true) }}</h1>
+        <span data-agent-status-chip class="agent-status-chip agent-status-chip--{{ state_status }}"
+              role="status" aria-live="polite"
+              aria-label="{{ {'pending': '等待中', 'running': '运行中', 'completed': '已完成', 'failed': '失败', 'canceled': '已停止', 'cancelled': '已停止', 'cleanupfailed': '清理失败，需管理员处理', 'cleanup_failed': '清理失败，需管理员处理'}.get(state_status, state_status) }}">
+          <i aria-hidden="true"></i><span data-agent-status-label>
+            {{ {'pending': '等待中', 'running': '运行中', 'completed': '已完成', 'failed': '失败', 'canceled': '已停止', 'cancelled': '已停止', 'cleanupfailed': '清理失败，需管理员处理', 'cleanup_failed': '清理失败，需管理员处理'}.get(state_status, state_status) }}
+          </span>
+        </span>
+      </div>
+      <div class="agent-session-runtime" aria-label="会话运行配置">
+        <span title="Harness">
+          {{ harness_logo(agent_session.harness) }}
+          {{ harness_name }}
+        </span>
+        <span title="模型节点"><i class="fas fa-microchip" aria-hidden="true"></i>{{ agent_session.endpoint_model|default(agent_session.model|default('模型节点', true), true) }}</span>
+        <span title="执行身份"><i class="fas {{ 'fa-user-shield' if access_role == 'admin' else 'fa-user' }}" aria-hidden="true"></i>{{ 'admin' if access_role == 'admin' else 'user' }}</span>
+      </div>
+      <button class="agent-workspace-mobile-toggle" type="button" data-agent-workspace-toggle
+              aria-label="打开 Workspace" aria-expanded="false">
+        <i class="fas fa-folder-tree" aria-hidden="true"></i>
+      </button>
+    </header>
+
+    <div class="agent-conversation-scroll" data-agent-conversation-scroll>
+      <div class="agent-conversation-feed" data-agent-turns>
+        {% for turn in turns|default([], true) %}
+          {% set detail_messages = turn.detail_messages|default(turn.messages|default(turn.execution_trace.trace_messages|default([], true), true), true) %}
+          <article class="agent-turn" data-agent-turn>
+            <section class="agent-user-message">
+              <div class="agent-user-bubble numoj-markdown" data-numoj-markdown>
+                {{ turn.user_message_html|safe }}
+              </div>
+              {% if turn.attachments %}
+                <div class="agent-message-attachments">
+                  {% for attachment in turn.attachments %}{{ attachment_item(attachment) }}{% endfor %}
+                </div>
+              {% endif %}
+            </section>
+
+            {% if not (is_running and turn.task_id == current_task_id) %}
+            <section class="agent-response">
+              {% if detail_messages %}
+                <details class="agent-turn-details">
+                  <summary>
+                    <span><i class="fas fa-chevron-right" aria-hidden="true"></i>工作详情</span>
+                    {% if turn.duration %}<small>{{ turn.duration }}</small>{% endif %}
+                  </summary>
+                  <div class="agent-turn-trace">
+                    {% for message in detail_messages %}{{ trace_message(message) }}{% endfor %}
+                  </div>
+                </details>
+              {% endif %}
+              <div class="agent-conclusion numoj-markdown" data-numoj-markdown>
+                {{ turn.conclusion_html|safe }}
+              </div>
+            </section>
+            {% endif %}
+          </article>
+        {% endfor %}
+
+        <article class="agent-turn agent-turn--live" data-agent-live-turn {% if not is_running %}hidden{% endif %}>
+          <section class="agent-response">
+            <details class="agent-turn-details" data-agent-live-details {% if is_running %}open{% endif %}>
+              <summary>
+                <span><i class="fas fa-chevron-right" aria-hidden="true"></i><span data-agent-live-summary>{{ 'Agent 正在工作' if is_running else '工作详情' }}</span></span>
+                <span class="agent-live-mark" data-agent-live-mark {% if not is_running %}hidden{% endif %}>
+                  <i aria-hidden="true"></i>LIVE
+                </span>
+              </summary>
+              <div class="agent-turn-trace" data-agent-live-trace>
+                {% if is_running %}
+                  <div class="agent-working-placeholder" data-agent-working-placeholder>
+                    <span class="math-curve-loader" data-math-curve-loader data-size="sm">
+                      <span class="math-curve-loader__label">Agent 正在工作</span>
+                    </span>
+                  </div>
+                {% endif %}
+              </div>
+            </details>
+            <div class="agent-conclusion numoj-markdown" data-numoj-markdown data-agent-live-conclusion hidden></div>
+          </section>
+        </article>
+      </div>
+    </div>
+
+    <footer class="agent-resume-dock">
+      <form class="agent-resume-composer{% if is_running %} is-running{% endif %}{% if is_blocked %} is-blocked{% endif %}"
+            method="post"
+            action="{{ url_for('problem_core.admin_agent_task_detail', session_id=session_id) }}"
+            enctype="multipart/form-data"
+            autocomplete="off"
+            data-agent-resume-form>
+        <label class="visually-hidden" for="agentResumeMessage">继续会话</label>
+        <textarea id="agentResumeMessage" name="message" rows="2"
+                  maxlength="100000" placeholder="继续这项任务…"
+                  {% if is_running or is_blocked %}disabled{% endif %}
+                  required data-agent-resume-message></textarea>
+        <div class="agent-resume-attachments" data-agent-resume-attachments hidden></div>
+        <div class="agent-resume-footer">
+          <div class="agent-resume-runtime">
+            <span>{{ harness_logo(agent_session.harness) }}{{ harness_name }}</span>
+            <span><i class="fas fa-microchip" aria-hidden="true"></i>{{ agent_session.endpoint_model|default(agent_session.model|default('模型节点', true), true) }}</span>
+          </div>
+          <div class="agent-resume-actions">
+            <input id="agentResumeAttachments" class="visually-hidden" type="file"
+                   name="attachments" multiple data-agent-resume-file {% if is_running or is_blocked %}disabled{% endif %}>
+            <label class="agent-resume-attach" for="agentResumeAttachments"
+                   title="添加附件" aria-label="添加附件">
+              <i class="fas fa-plus" aria-hidden="true"></i>
+            </label>
+            <button class="agent-stop-button" type="button" data-agent-stop
+                    {% if not is_running %}hidden{% endif %}>
+              <i class="fas fa-stop" aria-hidden="true"></i><span>停止</span>
+            </button>
+            <button class="agent-resume-send" type="submit" data-agent-resume-send
+                    aria-label="发送消息" title="发送"
+                    {% if is_running or is_blocked %}disabled{% endif %}>
+              <i class="fas fa-arrow-up" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+        <p class="agent-resume-feedback" data-agent-resume-feedback role="status"
+           aria-live="polite"{% if not is_blocked %} hidden{% endif %}>{% if is_blocked %}{{ '旧任务没有可恢复的 workspace，无法继续会话' if agent_session.is_legacy|default(false) else ('只有会话发起者可以继续发送消息' if not can_resume else ('身份配置清理失败，请管理员处理后再继续' if state_status in ('cleanupfailed', 'cleanup_failed') else '本轮未建立可恢复的原生会话，请新建 Agent 会话')) }}{% endif %}</p>
+      </form>
+    </footer>
+  </section>
+
+  <div class="agent-splitter agent-splitter--conversation" role="separator"
+       tabindex="0" aria-label="调整对话与文件预览宽度" aria-orientation="vertical"
+       aria-valuemin="20" aria-valuemax="70" aria-valuenow="45"
+       data-agent-splitter="conversation" hidden></div>
+
+  <section class="agent-file-pane" data-agent-file-pane hidden aria-label="文件预览">
+    <header class="agent-file-header">
+      <div>
+        <i class="fas fa-file" data-agent-file-icon aria-hidden="true"></i>
+        <span data-agent-file-name>文件预览</span>
+      </div>
+      <div class="agent-file-actions">
+        <a href="#" data-agent-file-download title="下载文件" aria-label="下载文件">
+          <i class="fas fa-download" aria-hidden="true"></i>
+        </a>
+        <button type="button" data-agent-file-close title="关闭预览" aria-label="关闭文件预览">
+          <i class="fas fa-times" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+    <div class="agent-file-surface" data-agent-file-surface>
+      <div class="agent-file-placeholder">
+        <span class="math-curve-loader" data-math-curve-loader data-size="sm">
+          <span class="math-curve-loader__label">正在读取文件</span>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <div class="agent-splitter agent-splitter--workspace" role="separator"
+       tabindex="0" aria-label="调整 Workspace 宽度" aria-orientation="vertical"
+       aria-valuemin="12" aria-valuemax="45" aria-valuenow="22"
+       data-agent-splitter="workspace"></div>
+
+  <aside class="agent-workspace-pane" data-agent-workspace aria-label="Workspace 文件">
+    <header class="agent-workspace-header">
+      <div>
+        <span>WORKSPACE</span>
+        <strong>文件</strong>
+      </div>
+      <div>
+        <span class="agent-workspace-sync" data-agent-workspace-sync title="Workspace 已同步">
+          <i class="fas fa-check" aria-hidden="true"></i>
+        </span>
+        <button type="button" data-agent-workspace-close aria-label="关闭 Workspace">
+          <i class="fas fa-times" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+    <div class="agent-workspace-tree" data-agent-workspace-tree
+         aria-label="Workspace 目录结构">
+      <div class="agent-workspace-loading">
+        <span class="math-curve-loader" data-math-curve-loader data-size="xs">
+          <span class="math-curve-loader__label">正在读取 Workspace</span>
+        </span>
+      </div>
+    </div>
+  </aside>
+
+  <script type="application/json" data-agent-current-state-json>{{ current_state|default({}, true)|tojson }}</script>
+  <script type="application/json" data-agent-initial-workspace-json>{{ workspace_tree|default([], true)|tojson }}</script>
+</main>
+
+{% include 'components/editor/monaco.html' %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
+<script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
+<script src="{{ url_for('static', filename='app/agents/conversation.js') }}"></script>
+{% endblock %}
