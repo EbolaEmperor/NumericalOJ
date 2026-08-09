@@ -136,11 +136,16 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
 def test_agent_detail_supports_resume_stop_and_live_state_without_interruption():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
+    styles = _read("static/app/agents/conversation.css")
 
     assert "data-agent-resume-form" in template
     assert "data-agent-resume-file" in template
     assert "data-agent-resume-send" in template
     assert "data-agent-stop" in template
+    assert "data-agent-retry-last" in template
+    assert "data-agent-expected-task-id" in template
+    assert 'aria-label="重试上一条消息"' in template
+    assert "fa-redo-alt" in template
     assert "data-status-url-template" in template
     assert "data-stream-url-template" in template
     assert "data-cancel-url-template" in template
@@ -156,6 +161,15 @@ def test_agent_detail_supports_resume_stop_and_live_state_without_interruption()
     assert "清理失败，需管理员处理" in template
     assert "data-can-resume" in template
     assert "|| !canResume" in controller
+    assert "body.append('retry_last', '1');" in controller
+    assert "body.append('expected_task_id', expectedTaskId);" in controller
+    assert "payload.replaced_task_id || options.expectedTaskId" in controller
+    assert "removeTurnByTaskId" in controller
+    assert ".agent-message-retry" in styles
+    retry_rule = _css_rule(styles, ".agent-message-retry {")
+    assert "width: 24px;" in retry_rule
+    assert "height: 24px;" in retry_rule
+    assert "background: transparent;" in retry_rule
 
 
 def test_agent_detail_keeps_file_preview_and_workspace_accessible():
@@ -244,7 +258,10 @@ def test_agent_detail_archives_each_live_response_before_starting_the_next_turn(
     assert "function archiveLiveResponse()" in controller
     assert "target.appendChild(historicalResponse(currentState))" in controller
     assert "target.dataset.agentResponseArchived = 'true'" in controller
-    assert "archiveLiveResponse();\n        appendOptimisticUserMessage(" in controller
+    dispatch_start = controller.index("function dispatchAgentTurn(options)")
+    archive_index = controller.index("archiveLiveResponse();", dispatch_start)
+    append_index = controller.index("appendOptimisticUserMessage(", archive_index)
+    assert archive_index < append_index
     assert "function resetLiveResponse()" in controller
     assert "details.append(summary, trace)" in controller
 

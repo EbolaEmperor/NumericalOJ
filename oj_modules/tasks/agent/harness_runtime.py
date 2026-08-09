@@ -845,6 +845,7 @@ def run_agent_harness(
     session_id=None,
     access_role=AGENT_ACCESS_ROLE_USER,
     resume_session_id="",
+    restore_runtime_checkpoint_id="",
     session_cookie_name="session",
     workspace_files=None,
     artifact_files=None,
@@ -878,13 +879,33 @@ def run_agent_harness(
     skill_name = skill_for_agent_task(task_kind, access_role)
     normalized_session_id = str(session_id or task_id or "").strip()
     workspace = _ensure_stable_workspace(normalized_session_id)
+    restore_runtime_checkpoint_id = str(
+        restore_runtime_checkpoint_id or ""
+    ).strip()
     from oj_modules.agents.workspace import (
         check_agent_workspace_quota,
         merge_agent_temporary_redaction_candidates,
     )
 
-    check_agent_workspace_quota(normalized_session_id)
     container_name = _container_name_for_task_id(task_id)
+    # late-ack 重投可能留下同 task_id 的旧容器。必须先确认它已经停止，
+    # 才能安全替换私有 runtime；否则旧进程会与 checkpoint 恢复并发写入。
+    _remove_agent_container(container_name)
+    if restore_runtime_checkpoint_id:
+        # “重试上一条消息”只回退 harness 的私有会话状态；普通 workspace
+        # 文件继续保留当前内容。checkpoint 位于 workspace 挂载之外，Agent
+        # 无法篡改，恢复也必须发生在新容器启动之前。
+        from oj_modules.agents.runtime_checkpoints import (
+            restore_agent_runtime_checkpoint,
+        )
+
+        restore_agent_runtime_checkpoint(
+            normalized_session_id,
+            restore_runtime_checkpoint_id,
+        )
+    # 重试应先丢弃被替代尝试可能写爆的 runtime，再按恢复后的真实目录
+    # 计算配额；普通 workspace 文件仍会参与检查且不会被回退。
+    check_agent_workspace_quota(normalized_session_id)
     trace_dir = (
         prepare_agent_trace_dir(task_id)
         if reset_trace
@@ -910,9 +931,6 @@ def run_agent_harness(
         trace_dir,
         ".agent_harness.stdout.tmp",
     )
-    # late-ack 重投时必须先清理由同一 task_id 留下的旧容器，再开放身份
-    # 转发端口，避免旧 Agent 与本次代理生命周期发生重叠。
-    _remove_agent_container(container_name)
     _clear_current_session_state(workspace)
     try:
         with _identity_relay_context(

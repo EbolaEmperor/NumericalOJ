@@ -124,17 +124,41 @@ def test_llm_prices_are_optional_but_atomic_and_decimal_safe():
         "api.example.test/v1",
         "ftp://api.example.test/v1",
         "https://user:password@api.example.test/v1",
-        "https://api.example.test/v1?tenant=1",
-        "https://api.example.test/v1#fragment",
-        "https://api.example.test/v1/chat/completions",
-        "https://api.example.test/v1/messages",
-        "https://api.example.test/v1/embeddings",
-        "https://api.example.test/v1/responses",
     ],
 )
-def test_llm_normalization_rejects_non_sdk_base_url(base_url):
+def test_llm_normalization_rejects_invalid_base_url(base_url):
     with pytest.raises(services.DynamicConfigValidationError):
         services.normalize_llm_endpoint_payload(llm_payload(base_url=base_url))
+
+
+def test_dynamic_base_urls_preserve_query_and_exact_path():
+    llm = services.normalize_llm_endpoint_payload(llm_payload(
+        base_url="https://api.example.test/v1/?api-version=2026-08-01",
+    ))
+    search = services.normalize_web_search_settings_payload({
+        "base_url": "https://search.example.test/mcp/?tenant=math",
+        "authorization": "Bearer search-secret",
+    })
+
+    assert llm["base_url"] == (
+        "https://api.example.test/v1/?api-version=2026-08-01"
+    )
+    assert search["base_url"] == (
+        "https://search.example.test/mcp/?tenant=math"
+    )
+
+
+def test_dynamic_urls_drop_fragments_and_accept_provider_specific_paths():
+    llm = services.normalize_llm_endpoint_payload(llm_payload(
+        base_url="https://api.example.test/tenant/messages#dashboard",
+    ))
+    search = services.normalize_web_search_settings_payload({
+        "base_url": "https://search.example.test/mcp/messages#docs",
+        "authorization": "Bearer search-secret",
+    })
+
+    assert llm["base_url"] == "https://api.example.test/tenant/messages"
+    assert search["base_url"] == "https://search.example.test/mcp/messages"
 
 
 def test_tester_normalization_masks_candidate_secrets():

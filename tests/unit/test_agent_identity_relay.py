@@ -65,15 +65,19 @@ def test_solve_policy_only_allows_current_problem_and_proxy_created_submissions(
         policy.plan("GET", "/api/submissions/92")
 
 
-def test_solve_policy_rejects_query_absolute_form_and_unlisted_methods():
+def test_solve_policy_allows_query_but_rejects_absolute_form_and_unlisted_methods():
     policy = relay._IdentityRelayPolicy("solve", 3, "https://oj.example.test")
 
+    assert policy.plan("GET", "/api/problems/3?extra=1").target_url == (
+        "https://oj.example.test/api/problems/3?extra=1"
+    )
+    assert policy.plan("POST", "/submit/3?next=/").target_url == (
+        "https://oj.example.test/submit/3?next=/"
+    )
     for method, target, expected_status in (
-        ("GET", "/api/problems/3?extra=1", 404),
         ("GET", "https://oj.example.test/api/problems/3", 400),
         ("GET", "//evil.example/api/problems/3", 400),
         ("DELETE", "/api/problems/3", 404),
-        ("POST", "/submit/3?next=/", 404),
         ("GET", "/api/problems/3#fragment", 400),
     ):
         with pytest.raises(relay._RequestRejected) as exc_info:
@@ -90,6 +94,9 @@ def test_testdata_policy_is_read_only_and_uses_user_skill_routes():
 
     assert policy.plan("GET", "/api/problems/8").path == "/api/problems/8"
     assert policy.plan("GET", "/me/classes").path == "/me/classes"
+    assert policy.plan("GET", "/api/problems/8?view=detail").target_url == (
+        "http://127.0.0.1:2025/api/problems/8?view=detail"
+    )
     for method, path in (
         ("GET", "/api/problems/8/submit-context"),
         ("GET", "/api/admin/users"),
@@ -160,11 +167,64 @@ def test_canonical_unicode_path_is_authorized_and_forwarded_in_one_representatio
     assert plan.target_url == "http://127.0.0.1:2025" + raw_target
 
 
+def test_safe_percent_escapes_are_normalized_before_authorization_and_forwarding():
+    policy = relay._IdentityRelayPolicy(
+        "custom",
+        None,
+        "http://127.0.0.1:2025",
+        access_role="admin",
+    )
+
+    plan = policy.plan(
+        "POST",
+        "/api/student/%e5%bc%a0/%7etenant?detail=1",
+    )
+
+    assert plan.path == "/api/student/张/~tenant"
+    assert plan.raw_target == "/api/student/%E5%BC%A0/~tenant?detail=1"
+    assert plan.target_url == (
+        "http://127.0.0.1:2025/api/student/%E5%BC%A0/~tenant?detail=1"
+    )
+
+
+def test_unicode_path_is_encoded_without_forcing_unicode_normalization():
+    policy = relay._IdentityRelayPolicy(
+        "custom",
+        None,
+        "http://127.0.0.1:2025",
+        access_role="admin",
+    )
+
+    plan = policy.plan("GET", "/api/student/数学/e\u0301")
+
+    assert plan.path == "/api/student/数学/e\u0301"
+    assert plan.raw_target == "/api/student/%E6%95%B0%E5%AD%A6/e%CC%81"
+
+
 @pytest.mark.parametrize(
     "raw_target",
     [
         "/%61dmin/agent_tasks",
         "/admin/%61gent_tasks",
+    ],
+)
+def test_encoded_blocked_path_cannot_bypass_custom_policy(raw_target):
+    policy = relay._IdentityRelayPolicy(
+        "custom",
+        None,
+        "http://127.0.0.1:2025",
+        access_role="admin",
+    )
+
+    with pytest.raises(relay._RequestRejected) as exc_info:
+        policy.plan("POST", raw_target)
+
+    assert exc_info.value.status == 404
+
+
+@pytest.mark.parametrize(
+    "raw_target",
+    [
         "/admin/%2561gent_tasks",
         "/foo/%2Fadmin/agent_tasks",
         "/foo/%5Cadmin/agent_tasks",
@@ -176,13 +236,12 @@ def test_canonical_unicode_path_is_authorized_and_forwarded_in_one_representatio
         "///admin/agent_tasks",
         "/foo/",
         "/foo\\admin/agent_tasks",
-        "/api/student/%e5%bc%a0",
         "/api/student/%GG",
         "/api/student/%E5%BC",
         "/api/student/%E5%BC%A0%",
     ],
 )
-def test_ambiguous_or_noncanonical_path_never_reaches_custom_policy(raw_target):
+def test_ambiguous_path_never_reaches_custom_policy(raw_target):
     policy = relay._IdentityRelayPolicy(
         "custom",
         None,

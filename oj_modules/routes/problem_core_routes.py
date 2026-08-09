@@ -34,6 +34,7 @@ from oj_modules.agents.sessions import (
     AgentSessionBusyError,
     AgentSessionNotFoundError,
     agent_status_is_terminal,
+    begin_agent_session_retry,
     begin_agent_session_turn,
     create_agent_session,
     get_agent_session,
@@ -41,11 +42,19 @@ from oj_modules.agents.sessions import (
     get_agent_session_turns,
     get_agent_sessions_paginated,
     mark_agent_turn_enqueue_failed,
+    mark_agent_turn_runtime_restore_failed,
     set_agent_turn_attachments,
     normalize_agent_access_role,
 )
+from oj_modules.agents.runtime_checkpoints import (
+    create_agent_runtime_checkpoint,
+    create_empty_agent_runtime_checkpoint,
+    remove_agent_runtime_checkpoint,
+    restore_agent_runtime_checkpoint,
+)
 from oj_modules.agents.workspace import (
     build_agent_workspace_tree,
+    clear_agent_session_state_file,
     ensure_agent_workspace,
     inspect_agent_workspace_file,
     open_agent_workspace_file,
@@ -463,14 +472,26 @@ def _agent_token_usage_from_state(state):
     return usage if isinstance(usage, dict) else None
 
 
+class _AgentHistoricalTokenUsages(list):
+    """历史用量及请求 task 是否仍位于当前可见会话分支。"""
+
+    def __init__(self, values=(), *, current_task_visible=True):
+        super().__init__(values)
+        self.current_task_visible = bool(current_task_visible)
+
+
 def _load_agent_historical_token_usages(session_id, current_task_id):
     """为 SSE/状态响应一次性读取历史轮次的规范任务轨迹。"""
 
     current_task_id = str(current_task_id or '').strip()
     usages = []
+    current_task_visible = False
     for turn in get_agent_session_turns(session_id):
         task_id = str(turn.get('task_id') or '').strip()
-        if not task_id or task_id == current_task_id:
+        if task_id == current_task_id:
+            current_task_visible = True
+            continue
+        if not task_id:
             continue
         persisted = get_agent_run_by_task_id(task_id)
         if not isinstance(persisted, dict):
@@ -481,7 +502,10 @@ def _load_agent_historical_token_usages(session_id, current_task_id):
         )
         if usage is not None:
             usages.append((task_id, usage))
-    return usages
+    return _AgentHistoricalTokenUsages(
+        usages,
+        current_task_visible=current_task_visible,
+    )
 
 
 def _load_agent_previous_trace_messages(session_id, current_task_id, harness):
@@ -587,10 +611,13 @@ def _agent_state_with_session_token_usage(state, historical_usages=()):
     if not isinstance(state, dict):
         return state
     projected = dict(state)
+    current_task_visible = bool(
+        getattr(historical_usages, 'current_task_visible', True)
+    )
     task_usages = list(historical_usages or ())
     current_usage = _agent_token_usage_from_state(projected)
     current_task_id = str(projected.get('task_id') or '').strip()
-    if current_task_id and current_usage is not None:
+    if current_task_visible and current_task_id and current_usage is not None:
         # aggregate helper 按 task_id 最后写入覆盖，避免历史/current 重复计数。
         task_usages.append((current_task_id, current_usage))
     projected['session_token_usage'] = aggregate_agent_session_token_usage(
@@ -668,6 +695,62 @@ def _mark_agent_dispatch_failed(session_id, task_id, pending_state, message):
             extra={'session_id': session_id, 'task_id': task_id},
         )
     return failure_message
+
+
+def _mark_agent_runtime_restore_failed(
+    session_id,
+    task_id,
+    pending_state,
+    message,
+):
+    """runtime 无法恢复时阻止后续消息混用不一致的 native 状态。"""
+
+    failure_message = str(message or 'Agent 运行时恢复失败')
+    failure_state = dict(pending_state or {})
+    failure_state.update(status='CleanupFailed', message=failure_message)
+    try:
+        if failure_state.get('task_id'):
+            upsert_agent_run_snapshot(failure_state)
+    except Exception:
+        logger.exception(
+            '更新 Agent runtime 恢复失败快照失败',
+            extra={'session_id': session_id, 'task_id': task_id},
+        )
+    try:
+        mark_agent_turn_runtime_restore_failed(
+            session_id,
+            task_id,
+            failure_message,
+        )
+    except Exception:
+        logger.exception(
+            '更新 Agent runtime 恢复失败状态失败',
+            extra={'session_id': session_id, 'task_id': task_id},
+        )
+    return failure_message
+
+
+def _remove_agent_runtime_checkpoint_best_effort(session_id, checkpoint_id):
+    checkpoint_id = str(checkpoint_id or '').strip()
+    if not checkpoint_id:
+        return
+    try:
+        remove_agent_runtime_checkpoint(
+            session_id,
+            checkpoint_id,
+            missing_ok=True,
+        )
+    except Exception:
+        # checkpoint 清理失败不能撤销已经提交的会话事务；保留不可见的
+        # 私有快照比误删当前恢复点更安全，后续可由维护任务回收。
+        logger.warning(
+            '清理未引用的 Agent runtime checkpoint 失败',
+            extra={
+                'session_id': str(session_id or ''),
+                'checkpoint_id': checkpoint_id,
+            },
+            exc_info=True,
+        )
 
 
 def init_problem_core_module(
@@ -1116,7 +1199,11 @@ def admin_agent_solve_problem(problem_id):
         "attempts": [],
     }
     upsert_agent_run_snapshot(pending_state)
+    runtime_checkpoint_id = ''
     try:
+        ensure_agent_workspace(task_id)
+        runtime_checkpoint_id = task_id
+        create_empty_agent_runtime_checkpoint(task_id, runtime_checkpoint_id)
         create_agent_session(
             session_id=task_id,
             task_id=task_id,
@@ -1133,8 +1220,14 @@ def admin_agent_solve_problem(problem_id):
             access_role="user",
             problem_id=int(problem.get("id") or problem_id),
             problem_title=problem.get("title"),
+            base_runtime_checkpoint_id=runtime_checkpoint_id,
+            base_native_session_id='',
         )
     except Exception:
+        _remove_agent_runtime_checkpoint_best_effort(
+            task_id,
+            runtime_checkpoint_id,
+        )
         logger.exception('创建解题 Agent 会话失败')
         pending_state["status"] = "Failed"
         pending_state["message"] = "无法创建 Agent 会话"
@@ -1255,8 +1348,12 @@ def admin_agent_generate_testdata(problem_id):
         "attempts": [],
     }
     upsert_agent_run_snapshot(pending_state)
+    runtime_checkpoint_id = ''
     try:
         requirement_summary = data_requirement or "请自行覆盖边界、典型与压力场景"
+        ensure_agent_workspace(task_id)
+        runtime_checkpoint_id = task_id
+        create_empty_agent_runtime_checkpoint(task_id, runtime_checkpoint_id)
         create_agent_session(
             session_id=task_id,
             task_id=task_id,
@@ -1273,8 +1370,14 @@ def admin_agent_generate_testdata(problem_id):
             access_role="user",
             problem_id=int(problem.get("id") or problem_id),
             problem_title=problem.get("title"),
+            base_runtime_checkpoint_id=runtime_checkpoint_id,
+            base_native_session_id='',
         )
     except Exception:
+        _remove_agent_runtime_checkpoint_best_effort(
+            task_id,
+            runtime_checkpoint_id,
+        )
         logger.exception('创建造数据 Agent 会话失败')
         pending_state["status"] = "Failed"
         pending_state["message"] = "无法创建 Agent 会话"
@@ -1880,9 +1983,15 @@ def admin_agent_tasks():
 
         session_id = uuid4().hex
         attachments = []
+        runtime_checkpoint_id = ''
         try:
             save_agent_launch_preference(user['id'], harness, endpoint_id)
             ensure_agent_workspace(session_id)
+            runtime_checkpoint_id = session_id
+            create_empty_agent_runtime_checkpoint(
+                session_id,
+                runtime_checkpoint_id,
+            )
             attachments = save_agent_attachments(
                 session_id,
                 session_id,
@@ -1900,12 +2009,22 @@ def admin_agent_tasks():
                 attachments=attachments,
                 task_kind='custom',
                 access_role=access_role,
+                base_runtime_checkpoint_id=runtime_checkpoint_id,
+                base_native_session_id='',
             )
         except (ValueError, OSError) as exc:
             remove_agent_attachments(session_id, attachments)
+            _remove_agent_runtime_checkpoint_best_effort(
+                session_id,
+                runtime_checkpoint_id,
+            )
             return jsonify(success=False, message=str(exc)), 400
         except Exception:
             remove_agent_attachments(session_id, attachments)
+            _remove_agent_runtime_checkpoint_best_effort(
+                session_id,
+                runtime_checkpoint_id,
+            )
             logger.exception('创建通用 Agent 会话失败')
             return jsonify(success=False, message='无法创建 Agent 会话'), 500
 
@@ -1924,6 +2043,7 @@ def admin_agent_tasks():
                     cookie_name,
                     '',
                     True,
+                    '',
                 ),
                 task_id=session_id,
             )
@@ -2053,7 +2173,20 @@ def admin_agent_task_detail(session_id):
             return jsonify(success=False, message='请使用 multipart/form-data'), 415
         if not agent_status_is_terminal(agent_session.get('status')):
             return jsonify(success=False, message='上一轮 Agent 任务尚未结束'), 409
-        if not str(agent_session.get('native_session_id') or '').strip():
+        retry_last = str(request.form.get('retry_last') or '').strip() == '1'
+        if retry_last and any(
+            str(getattr(upload, 'filename', '') or '').strip()
+            for _field, uploads in request.files.lists()
+            for upload in uploads
+        ):
+            return jsonify(
+                success=False,
+                message='重试会复用上一条消息的附件，不能同时上传新附件',
+            ), 400
+        if (
+            not retry_last
+            and not str(agent_session.get('native_session_id') or '').strip()
+        ):
             return jsonify(
                 success=False,
                 message='上一轮未建立可恢复的原生会话，无法继续；请新建 Agent 会话',
@@ -2071,81 +2204,175 @@ def admin_agent_task_detail(session_id):
         except AgentLaunchValidationError as exc:
             return jsonify(success=False, message=str(exc)), 409
         try:
-            message = _agent_message_from_request()
+            message = '' if retry_last else _agent_message_from_request()
             cookie_name, session_cookie = _agent_session_cookie()
         except ValueError as exc:
             return jsonify(success=False, message=str(exc)), 400
 
         task_id = uuid4().hex
+        created_checkpoint_id = ''
+        restore_checkpoint_id = ''
         try:
-            turn_claim = begin_agent_session_turn(
-                session_id,
-                task_id=task_id,
-                user_message=message,
-                attachments=[],
-            )
+            if retry_last:
+                # 旧部署产生的逻辑首轮没有保存空 runtime 基线。为它创建一个
+                # 明确的空 checkpoint；数据层只允许 turn_index=1 使用该兼容
+                # 入口，后续旧轮缺少基线时仍 fail closed。
+                created_checkpoint_id = task_id
+                create_empty_agent_runtime_checkpoint(
+                    session_id,
+                    created_checkpoint_id,
+                )
+                turn_claim = begin_agent_session_retry(
+                    session_id,
+                    task_id=task_id,
+                    expected_task_id=request.form.get('expected_task_id'),
+                    fallback_base_checkpoint_id=created_checkpoint_id,
+                )
+                message = str(turn_claim.get('user_message') or '').strip()
+                attachments = list(turn_claim.get('attachments') or [])
+                restore_checkpoint_id = str(
+                    turn_claim.get('base_runtime_checkpoint_id') or ''
+                ).strip()
+                if created_checkpoint_id != restore_checkpoint_id:
+                    _remove_agent_runtime_checkpoint_best_effort(
+                        session_id,
+                        created_checkpoint_id,
+                    )
+                    created_checkpoint_id = ''
+            else:
+                created_checkpoint_id = task_id
+                create_agent_runtime_checkpoint(
+                    session_id,
+                    created_checkpoint_id,
+                )
+                turn_claim = begin_agent_session_turn(
+                    session_id,
+                    task_id=task_id,
+                    user_message=message,
+                    attachments=[],
+                    base_runtime_checkpoint_id=created_checkpoint_id,
+                )
+                attachments = []
         except AgentSessionBusyError as exc:
+            _remove_agent_runtime_checkpoint_best_effort(
+                session_id,
+                created_checkpoint_id,
+            )
             return jsonify(success=False, message=str(exc)), 409
         except AgentSessionNotFoundError as exc:
+            _remove_agent_runtime_checkpoint_best_effort(
+                session_id,
+                created_checkpoint_id,
+            )
             return jsonify(success=False, message=str(exc)), 404
         except (ValueError, OSError) as exc:
+            _remove_agent_runtime_checkpoint_best_effort(
+                session_id,
+                created_checkpoint_id,
+            )
             return jsonify(success=False, message=str(exc)), 400
         except Exception:
+            _remove_agent_runtime_checkpoint_best_effort(
+                session_id,
+                created_checkpoint_id,
+            )
             logger.exception(
-                '创建 Agent 续聊轮次失败',
+                '创建 Agent 消息轮次失败',
                 extra={'session_id': session_id},
             )
-            return jsonify(success=False, message='无法创建 Agent 续聊轮次'), 500
+            return jsonify(success=False, message='无法创建 Agent 消息轮次'), 500
+
+        if not retry_last:
+            previous_checkpoint_id = str(
+                turn_claim.get('previous_base_runtime_checkpoint_id') or ''
+            ).strip()
+            if (
+                previous_checkpoint_id
+                and previous_checkpoint_id != created_checkpoint_id
+            ):
+                _remove_agent_runtime_checkpoint_best_effort(
+                    session_id,
+                    previous_checkpoint_id,
+                )
 
         # 只使用 begin_agent_session_turn 在行锁内返回的权威冻结值，避免
         # 并发终态投影后仍用请求开始时读到的旧 native session。
         frozen_session = {**agent_session, **turn_claim}
         turn_index = int(turn_claim["turn_index"])
         pending_state = _pending_agent_run_state(frozen_session, task_id)
-        attachments = []
-        try:
-            attachments = save_agent_attachments(
-                session_id,
-                task_id,
-                request.files.getlist('attachments'),
-            )
-            set_agent_turn_attachments(session_id, task_id, attachments)
-        except (ValueError, OSError) as exc:
-            remove_agent_attachments(session_id, attachments)
-            _mark_agent_dispatch_failed(
-                session_id,
-                task_id,
-                pending_state,
-                f'附件保存失败：{str(exc)}',
-            )
-            return jsonify(
-                success=False,
-                message=str(exc),
-                detail_url=url_for(
-                    'problem_core.admin_agent_task_detail',
-                    session_id=session_id,
-                ),
-            ), 400
-        except Exception:
-            remove_agent_attachments(session_id, attachments)
-            logger.exception(
-                '保存 Agent 续聊附件失败',
-                extra={'session_id': session_id, 'task_id': task_id},
-            )
-            failure_message = _mark_agent_dispatch_failed(
-                session_id,
-                task_id,
-                pending_state,
-                '附件保存失败，请重新发送消息',
-            )
-            return jsonify(
-                success=False,
-                message=failure_message,
-                detail_url=url_for(
-                    'problem_core.admin_agent_task_detail',
-                    session_id=session_id,
-                ),
-            ), 500
+        if retry_last:
+            try:
+                # DB claim 已把会话置为 Pending，因此同步恢复期间不会接受
+                # 其它消息；在任何可取消、可入队或 worker 前置失败点之前，
+                # 先让磁盘 runtime 与回退后的 native session 保持一致。
+                restore_agent_runtime_checkpoint(
+                    session_id,
+                    restore_checkpoint_id,
+                )
+                clear_agent_session_state_file(session_id)
+            except Exception:
+                logger.exception(
+                    '恢复 Agent 重试 runtime 失败',
+                    extra={'session_id': session_id, 'task_id': task_id},
+                )
+                failure_message = _mark_agent_runtime_restore_failed(
+                    session_id,
+                    task_id,
+                    pending_state,
+                    'Agent 运行时恢复失败，已阻止继续会话',
+                )
+                return jsonify(
+                    success=False,
+                    message=failure_message,
+                    detail_url=url_for(
+                        'problem_core.admin_agent_task_detail',
+                        session_id=session_id,
+                    ),
+                ), 500
+        if not retry_last:
+            try:
+                attachments = save_agent_attachments(
+                    session_id,
+                    task_id,
+                    request.files.getlist('attachments'),
+                )
+                set_agent_turn_attachments(session_id, task_id, attachments)
+            except (ValueError, OSError) as exc:
+                remove_agent_attachments(session_id, attachments)
+                _mark_agent_dispatch_failed(
+                    session_id,
+                    task_id,
+                    pending_state,
+                    f'附件保存失败：{str(exc)}',
+                )
+                return jsonify(
+                    success=False,
+                    message=str(exc),
+                    detail_url=url_for(
+                        'problem_core.admin_agent_task_detail',
+                        session_id=session_id,
+                    ),
+                ), 400
+            except Exception:
+                remove_agent_attachments(session_id, attachments)
+                logger.exception(
+                    '保存 Agent 续聊附件失败',
+                    extra={'session_id': session_id, 'task_id': task_id},
+                )
+                failure_message = _mark_agent_dispatch_failed(
+                    session_id,
+                    task_id,
+                    pending_state,
+                    '附件保存失败，请重新发送消息',
+                )
+                return jsonify(
+                    success=False,
+                    message=failure_message,
+                    detail_url=url_for(
+                        'problem_core.admin_agent_task_detail',
+                        session_id=session_id,
+                    ),
+                ), 500
         try:
             upsert_agent_run_snapshot(pending_state)
             _agent_run_turn_task.apply_async(
@@ -2160,6 +2387,7 @@ def admin_agent_task_detail(session_id):
                     cookie_name,
                     frozen_session.get('native_session_id') or '',
                     False,
+                    restore_checkpoint_id,
                 ),
                 task_id=task_id,
             )
@@ -2192,9 +2420,15 @@ def admin_agent_task_detail(session_id):
             user_message=message,
             user_message_html=render_rich_markdown(message),
             attachments=attachments,
+            replaced_task_id=(
+                str(turn_claim.get('replaced_task_id') or '').strip()
+                if retry_last
+                else ''
+            ),
         )
 
-    turns = _decorate_agent_turns(get_agent_session_turns(session_id))
+    raw_turns = get_agent_session_turns(session_id)
+    turns = _decorate_agent_turns(raw_turns)
     current_task_id = str(agent_session.get('current_task_id') or session_id)
     current_state = _get_agent_run_state(current_task_id) or (
         _agent_state_for_response(current_task_id, {
@@ -2225,6 +2459,31 @@ def admin_agent_task_detail(session_id):
         )
     except (ValueError, OSError):
         workspace_tree = []
+    owns_session = (
+        str(agent_session.get('requested_by') or '')
+        == str(user.get('username') or '')
+    )
+    latest_turn = raw_turns[-1] if raw_turns else {}
+    retry_has_baseline = bool(
+        str(latest_turn.get('base_runtime_checkpoint_id') or '').strip()
+    ) or (
+        int(latest_turn.get('turn_index') or 1) == 1
+        and not str(latest_turn.get('base_native_session_id') or '').strip()
+    )
+    can_retry = bool(
+        owns_session
+        and not agent_session.get('is_legacy')
+        and (
+            str(agent_session.get('task_kind') or '').strip().lower()
+            == 'custom'
+            or int(latest_turn.get('turn_index') or 1) > 1
+        )
+        and str(latest_turn.get('task_id') or '') == current_task_id
+        and retry_has_baseline
+    )
+    can_retry_now = bool(
+        can_retry and agent_status_is_terminal(agent_session.get('status'))
+    )
     response = current_app.make_response(render_template(
         'admin/agent_task_detail.html',
         user=user,
@@ -2232,10 +2491,9 @@ def admin_agent_task_detail(session_id):
         turns=turns,
         current_state=current_state,
         workspace_tree=workspace_tree,
-        can_resume=(
-            str(agent_session.get('requested_by') or '')
-            == str(user.get('username') or '')
-        ),
+        can_resume=owns_session,
+        can_retry=can_retry,
+        can_retry_now=can_retry_now,
     ))
     response.headers['Cache-Control'] = 'private, no-store'
     return response

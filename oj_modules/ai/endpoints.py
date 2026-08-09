@@ -54,12 +54,6 @@ _VISION_CATEGORIES = {
     LLMEndpointCategory.OMNI,
     LLMEndpointCategory.VISION,
 }
-_FULL_REQUEST_PATH_SUFFIXES = (
-    "/chat/completions",
-    "/v1/messages",
-    "/embeddings",
-    "/responses",
-)
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
 _PROBE_MAX_TOKENS = 64_000
@@ -118,13 +112,12 @@ def _normalize_base_url(value):
         raise LLMEndpointValidationError("Base URL 必须是完整的 HTTP(S) 地址。")
     if parts.username is not None or parts.password is not None:
         raise LLMEndpointValidationError("Base URL 不允许包含用户凭证。")
-    if parts.query or parts.fragment:
-        raise LLMEndpointValidationError("Base URL 不允许包含 Query 或 Fragment。")
     path = (parts.path or "").rstrip("/")
-    lowered_path = path.lower()
-    if any(lowered_path.endswith(suffix) for suffix in _FULL_REQUEST_PATH_SUFFIXES):
-        raise LLMEndpointValidationError("请填写 SDK Base URL，不要填写完整请求 URL。")
-    return urlunsplit((parts.scheme.lower(), parts.netloc, path, "", ""))
+    # Fragment 不会进入 HTTP 请求，规范化时直接丢弃即可。请求路径是否适合
+    # 某个兼容服务由节点连通性测试判断，不再凭后缀猜测并拒绝配置。
+    return urlunsplit(
+        (parts.scheme.lower(), parts.netloc, path, parts.query, "")
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,7 +355,13 @@ def _append_path(base_url, suffix):
     use_suffix = "/" + str(suffix or "").strip("/")
     if use_suffix.startswith("/v1/") and base_path.lower().endswith("/v1"):
         use_suffix = use_suffix[len("/v1"):]
-    return urlunsplit((parts.scheme, parts.netloc, base_path + use_suffix, "", ""))
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        base_path + use_suffix,
+        parts.query,
+        "",
+    ))
 
 
 def endpoint_request_url(endpoint, operation="chat"):

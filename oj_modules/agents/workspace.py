@@ -1857,6 +1857,37 @@ def remove_agent_attachments(session_id, attachments) -> int:
     return removed
 
 
+def clear_agent_session_state_file(session_id) -> bool:
+    """删除 harness 上一轮留下的原生 session 摘要，不跟随链接。"""
+
+    filename = ".aj_session_state.json"
+    with _open_session_directories(session_id) as (
+        _safe_id,
+        _session_fd,
+        workspace_fd,
+    ):
+        try:
+            info = os.stat(
+                filename,
+                dir_fd=workspace_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return False
+        if stat.S_ISDIR(info.st_mode):
+            raise AgentWorkspaceSecurityError(
+                "Agent 原生会话状态路径被目录占用"
+            )
+        try:
+            os.unlink(filename, dir_fd=workspace_fd)
+            os.fsync(workspace_fd)
+        except OSError as exc:
+            raise AgentWorkspaceSecurityError(
+                "无法清理 Agent 原生会话状态"
+            ) from exc
+        return True
+
+
 __all__ = [
     "AGENT_WORKSPACE_ROOT",
     "AGENT_WORKSPACE_MAX_BYTES",
@@ -1884,6 +1915,7 @@ __all__ = [
     "write_agent_workspace_file",
     "save_agent_attachments",
     "remove_agent_attachments",
+    "clear_agent_session_state_file",
     "build_agent_workspace_tree",
     "inspect_agent_workspace_file",
     "open_agent_workspace_file",

@@ -9,6 +9,7 @@
   var running = root.dataset.running === 'true';
   var legacySession = root.dataset.legacy === 'true';
   var canResume = root.dataset.canResume === 'true';
+  var retryAvailable = root.dataset.canRetry === 'true';
   var nativeSessionId = asText(root.dataset.nativeSessionId).trim();
   var liveGeneration = 0;
   var stream = null;
@@ -255,6 +256,18 @@
     resumeSend.disabled = running || blocked || resumePending || !resumeMessage.value.trim();
   }
 
+  function updateRetryState() {
+    var retryBlocked = legacySession || !canResume
+      || isBlockedStatus(currentState && currentState.status);
+    root.querySelectorAll('[data-agent-retry-last]').forEach(function (button) {
+      var expectedTaskId = asText(button.dataset.agentExpectedTaskId).trim();
+      var available = retryAvailable && expectedTaskId === currentTaskId
+        && !running && !retryBlocked;
+      button.hidden = !available;
+      button.disabled = !available || resumePending;
+    });
+  }
+
   function setRunning(value, stateStatus, nextNativeSessionId) {
     running = value === true;
     var discoveredNativeSessionId = asText(nextNativeSessionId).trim();
@@ -278,6 +291,7 @@
     if (liveMark) liveMark.hidden = !running;
     if (stateStatus) setStatus(stateStatus);
     updateSendState();
+    updateRetryState();
   }
 
   function traceMessages(state) {
@@ -588,15 +602,31 @@
     });
   }
 
-  function appendOptimisticUserMessage(message, files, messageHtml, savedAttachments) {
+  function createRetryButton(taskId) {
+    var button = createElement('button', 'agent-message-retry');
+    button.type = 'button';
+    button.dataset.agentRetryLast = '';
+    button.dataset.agentExpectedTaskId = asText(taskId).trim();
+    button.title = '重试';
+    button.setAttribute('aria-label', '重试上一条消息');
+    button.innerHTML = '<i class="fas fa-redo-alt" aria-hidden="true"></i>';
+    return button;
+  }
+
+  function appendOptimisticUserMessage(
+    message, files, messageHtml, savedAttachments, taskId
+  ) {
     if (!turnsRoot) return;
     var turn = createElement('article', 'agent-turn');
     turn.setAttribute('data-agent-turn', '');
+    turn.dataset.agentTaskId = asText(taskId).trim();
     var user = createElement('section', 'agent-user-message');
+    var messageRow = createElement('div', 'agent-user-message-row');
     var bubble = createElement('div', 'agent-user-bubble');
     if (messageHtml) setServerHtml(bubble, messageHtml);
     else bubble.textContent = message;
-    user.appendChild(bubble);
+    messageRow.append(bubble, createRetryButton(taskId));
+    user.appendChild(messageRow);
     var attachmentItems = Array.isArray(savedAttachments) && savedAttachments.length
       ? savedAttachments : files;
     if (attachmentItems.length) {
@@ -629,6 +659,7 @@
     turn.appendChild(user);
     if (liveTurn) turnsRoot.insertBefore(turn, liveTurn);
     else turnsRoot.appendChild(turn);
+    updateRetryState();
   }
 
   function renderResumeFiles() {
@@ -684,6 +715,85 @@
         : '<i class="fas fa-arrow-up" aria-hidden="true"></i>';
     }
     updateSendState();
+    updateRetryState();
+  }
+
+  function removeTurnByTaskId(taskId) {
+    if (!turnsRoot || !taskId) return;
+    Array.prototype.slice.call(turnsRoot.querySelectorAll('[data-agent-turn]'))
+      .forEach(function (turn) {
+        if (asText(turn.dataset.agentTaskId).trim() === taskId) turn.remove();
+      });
+  }
+
+  function dispatchAgentTurn(options) {
+    var retrying = options.retrying === true;
+    setResumeFeedback('', false);
+    setResumePending(true);
+    global.fetch(resumeForm.action, {
+      method: 'POST',
+      body: options.body,
+      headers: {'Accept': 'application/json'},
+      credentials: 'same-origin',
+      mathCurveLoader: false
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (payload) {
+        if (!response.ok || !payload || payload.success === false) {
+          var error = new Error(
+            asText(payload && payload.message) || '发送失败（HTTP ' + response.status + '）'
+          );
+          error.detailUrl = asText(payload && payload.detail_url).trim();
+          throw error;
+        }
+        return payload;
+      });
+    }).then(function (payload) {
+      if (payload.detail_url) {
+        global.location.assign(payload.detail_url);
+        return;
+      }
+      var taskId = asText(payload.task_id || payload.current_task_id).trim();
+      if (!taskId) {
+        global.location.reload();
+        return;
+      }
+      archiveLiveResponse();
+      if (retrying) {
+        removeTurnByTaskId(
+          asText(payload.replaced_task_id || options.expectedTaskId).trim()
+        );
+      }
+      retryAvailable = true;
+      root.dataset.canRetry = 'true';
+      appendOptimisticUserMessage(
+        asText(payload.user_message || options.message),
+        options.files || [],
+        payload.user_message_html,
+        payload.attachments,
+        taskId
+      );
+      if (!retrying) {
+        resumeMessage.value = '';
+        resumeFiles = [];
+        renderResumeFiles();
+        resizeResumeMessage();
+      }
+      setResumePending(false);
+      resetLiveResponse();
+      startStream(taskId);
+      if (payload.state) applyState(payload.state, taskId, liveGeneration);
+      scrollToLatest('smooth');
+    }).catch(function (error) {
+      setResumePending(false);
+      if (error && error.detailUrl) {
+        global.location.assign(error.detailUrl);
+        return;
+      }
+      setResumeFeedback(
+        error && error.message ? error.message : '发送失败，请稍后重试。',
+        true
+      );
+    });
   }
 
   function bindResumeComposer() {
@@ -732,62 +842,38 @@
       submittedFiles.forEach(function (file) {
         body.append(resumeFile.name, file, file.name);
       });
-      setResumeFeedback('', false);
-      setResumePending(true);
-      global.fetch(resumeForm.action, {
-        method: 'POST',
+      dispatchAgentTurn({
         body: body,
-        headers: {'Accept': 'application/json'},
-        credentials: 'same-origin',
-        mathCurveLoader: false
-      }).then(function (response) {
-        return response.json().catch(function () { return {}; }).then(function (payload) {
-          if (!response.ok || !payload || payload.success === false) {
-            var error = new Error(
-              asText(payload && payload.message) || '发送失败（HTTP ' + response.status + '）'
-            );
-            error.detailUrl = asText(payload && payload.detail_url).trim();
-            throw error;
-          }
-          return payload;
-        });
-      }).then(function (payload) {
-        if (payload.detail_url) {
-          global.location.assign(payload.detail_url);
-          return;
-        }
-        var taskId = asText(payload.task_id || payload.current_task_id);
-        if (!taskId) {
-          global.location.reload();
-          return;
-        }
-        archiveLiveResponse();
-        appendOptimisticUserMessage(
-          message,
-          submittedFiles,
-          payload.user_message_html,
-          payload.attachments
-        );
-        resumeMessage.value = '';
-        resumeFiles = [];
-        renderResumeFiles();
-        resizeResumeMessage();
-        setResumePending(false);
-        resetLiveResponse();
-        startStream(taskId);
-        if (payload.state) applyState(payload.state, taskId, liveGeneration);
-        scrollToLatest('smooth');
-      }).catch(function (error) {
-        setResumePending(false);
-        if (error && error.detailUrl) {
-          global.location.assign(error.detailUrl);
-          return;
-        }
-        setResumeFeedback(error && error.message ? error.message : '发送失败，请稍后重试。', true);
+        message: message,
+        files: submittedFiles,
+        retrying: false
       });
     });
     resizeResumeMessage();
     updateSendState();
+  }
+
+  function bindRetryButton() {
+    if (!turnsRoot || !resumeForm) return;
+    turnsRoot.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-agent-retry-last]');
+      if (!button || button.disabled || button.hidden || running || resumePending) return;
+      var expectedTaskId = asText(button.dataset.agentExpectedTaskId).trim();
+      if (!expectedTaskId || expectedTaskId !== currentTaskId) {
+        setResumeFeedback('会话状态已变化，请刷新后重试。', true);
+        return;
+      }
+      var body = new FormData();
+      body.append('retry_last', '1');
+      body.append('expected_task_id', expectedTaskId);
+      dispatchAgentTurn({
+        body: body,
+        message: '',
+        files: [],
+        retrying: true,
+        expectedTaskId: expectedTaskId
+      });
+    });
   }
 
   function bindStopButton() {
@@ -1550,6 +1636,7 @@
   }
 
   bindResumeComposer();
+  bindRetryButton();
   bindStopButton();
   bindWorkspaceAndFiles();
   paintSessionAvatars();

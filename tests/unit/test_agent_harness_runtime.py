@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from oj_modules.agents import workspace as agent_workspace
+from oj_modules.agents import runtime_checkpoints
 from oj_modules.problems import agent_runs
 from oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages
 from oj_modules.tasks.agent import harness_runtime as runtime
@@ -326,6 +327,66 @@ def test_run_exits_before_workspace_creation_when_already_canceled(
     assert result.returncode == -15
     assert result.timed_out is False
     assert not workspace_root.exists()
+
+
+def test_retry_restores_runtime_before_checking_workspace_quota(
+    monkeypatch,
+    tmp_path,
+):
+    lifecycle = []
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_stable_workspace",
+        lambda session_id: lifecycle.append(("workspace", session_id)) or tmp_path,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_remove_agent_container",
+        lambda name: lifecycle.append(("remove", name)),
+    )
+    monkeypatch.setattr(
+        runtime_checkpoints,
+        "restore_agent_runtime_checkpoint",
+        lambda session_id, checkpoint_id: lifecycle.append(
+            ("restore", session_id, checkpoint_id)
+        ),
+    )
+
+    class QuotaChecked(RuntimeError):
+        pass
+
+    def stop_after_quota(session_id):
+        lifecycle.append(("quota", session_id))
+        raise QuotaChecked
+
+    monkeypatch.setattr(
+        agent_workspace,
+        "check_agent_workspace_quota",
+        stop_after_quota,
+    )
+
+    with pytest.raises(QuotaChecked):
+        runtime.run_agent_harness(
+            task_id="task-retry",
+            session_id="session-retry",
+            task_kind="custom",
+            access_role="admin",
+            problem_id=None,
+            requested_by="admin",
+            harness="codex",
+            endpoint=_endpoint(),
+            session_cookie="session-cookie",
+            prompt="重试",
+            resume_session_id="",
+            restore_runtime_checkpoint_id="checkpoint-before-attempt",
+        )
+
+    assert lifecycle == [
+        ("workspace", "session-retry"),
+        ("remove", "numoj-agent-task-retry"),
+        ("restore", "session-retry", "checkpoint-before-attempt"),
+        ("quota", "session-retry"),
+    ]
 
 
 @pytest.mark.parametrize(

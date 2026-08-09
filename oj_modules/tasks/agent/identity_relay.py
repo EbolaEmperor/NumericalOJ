@@ -21,11 +21,9 @@ import secrets
 import socket
 import subprocess
 import threading
-import unicodedata
 import urllib.error
 import urllib.request
 from urllib.parse import (
-    parse_qsl,
     quote,
     unquote_to_bytes,
     urljoin,
@@ -237,15 +235,15 @@ def _validate_identity(cookie_name, session_cookie):
     return name, value
 
 
-def _canonical_request_path(raw_path):
-    """返回唯一语义路径与唯一转发编码，拒绝代理/WSGI 解码歧义。"""
+def _canonical_request_path(raw_path, *, allow_trailing_slash=False):
+    """返回唯一语义路径与规范转发编码，拒绝会改变授权边界的歧义。"""
 
     raw = str(raw_path or "")
     if (
         not raw.startswith("/")
         or raw.startswith("//")
         or "\\" in raw
-        or any(ord(char) < 0x20 or ord(char) > 0x7E for char in raw)
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in raw)
     ):
         raise _RequestRejected(400, "invalid request path")
 
@@ -257,11 +255,11 @@ def _canonical_request_path(raw_path):
         if index + 2 >= len(raw):
             raise _RequestRejected(400, "invalid percent escape")
         escaped = raw[index + 1:index + 3]
-        if not re.fullmatch(r"[0-9A-F]{2}", escaped):
-            raise _RequestRejected(400, "non-canonical percent escape")
-        # ASCII 通过 percent escape 表示会让 policy 与 WSGI 路由看到不同
-        # 字符；这同时拒绝 encoded slash/backslash/NUL/% 及重复编码。
-        if int(escaped, 16) < 0x80:
+        if not re.fullmatch(r"[0-9A-Fa-f]{2}", escaped):
+            raise _RequestRejected(400, "invalid percent escape")
+        # 这些字节会改变路径分段、制造二次解码或落入控制字符语义，必须
+        # 拒绝；其它合法 escape 统一解码后再生成唯一转发编码。
+        if int(escaped, 16) in {0x00, 0x25, 0x2F, 0x5C}:
             raise _RequestRejected(400, "ambiguous percent escape")
         index += 3
 
@@ -274,11 +272,12 @@ def _canonical_request_path(raw_path):
         or "\\" in decoded
         or "%" in decoded
         or any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded)
-        or unicodedata.normalize("NFC", decoded) != decoded
     ):
         raise _RequestRejected(400, "ambiguous decoded request path")
     if decoded != "/":
         segments = decoded.split("/")[1:]
+        if allow_trailing_slash and decoded.endswith("/"):
+            segments = segments[:-1]
         if any(segment in {"", ".", ".."} for segment in segments):
             raise _RequestRejected(400, "ambiguous request path segment")
 
@@ -288,12 +287,10 @@ def _canonical_request_path(raw_path):
         encoding="utf-8",
         errors="strict",
     )
-    if canonical != raw:
-        raise _RequestRejected(400, "non-canonical request path")
     return decoded, canonical
 
 
-def _request_parts(raw_target):
+def _request_parts(raw_target, *, allow_trailing_slash=False):
     target = str(raw_target or "")
     if not target or len(target.encode("utf-8")) > _MAX_REQUEST_TARGET_BYTES:
         raise _RequestRejected(414, "request target too long")
@@ -310,16 +307,13 @@ def _request_parts(raw_target):
         raise _RequestRejected(400, "invalid request target") from exc
     if parts.scheme or parts.netloc or parts.fragment or not parts.path.startswith("/"):
         raise _RequestRejected(400, "invalid request target")
-    path, canonical_path = _canonical_request_path(parts.path)
-    try:
-        query = parse_qsl(
-            parts.query,
-            keep_blank_values=True,
-            strict_parsing=True,
-            max_num_fields=8,
-        ) if parts.query else []
-    except ValueError as exc:
-        raise _RequestRejected(400, "invalid query string") from exc
+    path, canonical_path = _canonical_request_path(
+        parts.path,
+        allow_trailing_slash=allow_trailing_slash,
+    )
+    # Query 对身份路由只需区分“有/无”，模型代理则原样转发给固定上游。
+    # 不解析其键值可以兼容 provider 自定义语法，也避免人为限制参数数量。
+    query = parts.query
     canonical_target = canonical_path
     if parts.query:
         canonical_target += "?" + parts.query
@@ -506,20 +500,20 @@ class _IdentityRelayPolicy:
 
     def plan(self, method, raw_target):
         normalized_method = str(method or "").upper()
-        path, query, canonical_target = _request_parts(raw_target)
+        path, _query, canonical_target = _request_parts(raw_target)
         pid = self.problem_id
         allowed = False
         if self.task_kind == AGENT_TASK_SOLVE:
-            if normalized_method == "GET" and not query:
+            if normalized_method == "GET":
                 allowed = path in {
                     f"/api/problems/{pid}",
                     f"/api/problems/{pid}/submit-context",
                     "/me/classes",
                 } or self._created_submission_allowed(path)
-            elif normalized_method == "POST" and not query:
+            elif normalized_method == "POST":
                 allowed = path == f"/submit/{pid}"
         elif self.task_kind == AGENT_TASK_TESTDATA:
-            if normalized_method == "GET" and not query:
+            if normalized_method == "GET":
                 allowed = path in {
                     f"/api/problems/{pid}",
                     "/me/classes",
