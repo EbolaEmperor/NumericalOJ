@@ -569,6 +569,60 @@ def test_superseded_task_status_never_readds_discarded_usage(
     assert usage["cost_rmb"] == expected_cost
 
 
+@pytest.mark.parametrize(
+    ("task_id", "session_current_task_id", "expected_cost"),
+    [
+        ("turn-superseded", "turn-replacement", None),
+        ("turn-replacement", "turn-replacement", "0.2"),
+    ],
+)
+def test_historical_usage_failure_only_keeps_visible_current_task_usage(
+    monkeypatch,
+    task_id,
+    session_current_task_id,
+    expected_cost,
+):
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda _session_id, _task_id: (_ for _ in ()).throw(
+            RuntimeError("history unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_by_task_id",
+        lambda _task_id: {
+            "session_id": "session-1",
+            "current_task_id": session_current_task_id,
+        },
+    )
+    state = {
+        "task_id": task_id,
+        "session_id": "session-1",
+        "execution_trace": {"token_usage": {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 100,
+            "input_cached_tokens": 20,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 10,
+            "cost_rmb": "0.20",
+        }},
+    }
+
+    projected = routes._agent_state_with_loaded_session_token_usage(state)
+
+    usage = projected["session_token_usage"]
+    if expected_cost is None:
+        assert usage is None
+    else:
+        assert usage["request_count"] == 1
+        assert usage["input_total_tokens"] == 120
+        assert usage["output_tokens"] == 10
+        assert usage["cost_rmb"] == expected_cost
+
+
 @pytest.mark.parametrize("operation", ["status", "cancel"])
 def test_agent_status_and_cancel_project_pi_resume_trace_delta(
     monkeypatch,

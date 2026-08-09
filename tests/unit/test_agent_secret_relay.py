@@ -639,7 +639,11 @@ def test_lazy_connection_is_aborted_before_request_can_resume():
 def test_close_interrupts_a_handler_blocked_on_streaming_upstream(monkeypatch):
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 0))
+    try:
+        listener.bind(("127.0.0.1", 0))
+    except PermissionError:
+        listener.close()
+        pytest.skip("当前测试沙箱禁止绑定 loopback 端口")
     listener.listen(1)
     listener.settimeout(5)
     upstream_port = listener.getsockname()[1]
