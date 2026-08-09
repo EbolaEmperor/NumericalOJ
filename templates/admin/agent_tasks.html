@@ -47,7 +47,8 @@
 
       <div class="agent-composer-footer">
         <div class="agent-composer-controls" aria-label="任务运行设置">
-          <div class="agent-composer-choice" data-agent-harness-choice>
+          <div class="agent-composer-choice agent-composer-choice--harness"
+               data-agent-harness-choice>
             {{ choice_picker(
               'agentHarness', 'harness', preferred_harness,
               '选择 Harness', 'fa-terminal',
@@ -55,7 +56,8 @@
             ) }}
           </div>
 
-          <div class="agent-composer-choice" data-agent-endpoint-choice>
+          <div class="agent-composer-choice agent-composer-choice--endpoint"
+               data-agent-endpoint-choice>
             {{ choice_picker(
               'agentEndpoint', 'endpoint_id', preferred_endpoint,
               '选择模型节点', 'fa-microchip',
@@ -63,7 +65,7 @@
             ) }}
           </div>
 
-          <div class="agent-composer-choice">
+          <div class="agent-composer-choice agent-composer-choice--role">
             {{ choice_picker(
               'agentAccessRole', 'access_role', preferred_role,
               '以用户身份', 'fa-user',

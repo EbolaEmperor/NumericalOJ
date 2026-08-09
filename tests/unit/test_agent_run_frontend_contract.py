@@ -47,6 +47,50 @@ def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
     assert ".agent-history-row" in styles
 
 
+def test_agent_home_runtime_choices_are_compact_and_share_one_mobile_row():
+    template = _read("templates/admin/agent_tasks.html")
+    styles = _read("static/app/agents/task-list.css")
+
+    for modifier in ("harness", "endpoint", "role"):
+        assert f"agent-composer-choice--{modifier}" in template
+
+    assert ".agent-composer-choice--harness { width: 124px; }" in styles
+    assert ".agent-composer-choice--endpoint { width: 170px; }" in styles
+    assert ".agent-composer-choice--role { width: 126px; }" in styles
+
+    tablet = styles.split("@media (max-width: 900px)", 1)[1].split(
+        "@media (max-width: 575.98px)", 1
+    )[0]
+    assert "flex-wrap: wrap;" not in tablet
+    assert "flex: 1 1 30%;" not in tablet
+
+    compact = styles.split("@media (max-width: 640px)", 1)[1].split(
+        "@media (max-width: 575.98px)", 1
+    )[0]
+    assert (
+        "grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.3fr) "
+        "minmax(0, 0.95fr);"
+    ) in compact
+    assert "grid-column: 1 / -1; grid-row: 1;" not in compact
+    assert "max-width: calc(100vw - 32px);" in compact
+
+    endpoint_menu = _css_rule(
+        compact,
+        ".agent-choice--endpoint .rk-choice-menu {",
+    )
+    assert "left: 50%;" in endpoint_menu
+    assert "transform: translateX(-50%);" in endpoint_menu
+
+    role_menu = _css_rule(compact, ".agent-choice--role .rk-choice-menu {")
+    assert "right: 0;" in role_menu
+    assert "left: auto;" in role_menu
+
+    mobile = styles.split("@media (max-width: 575.98px)", 1)[1].split(
+        "@media (prefers-reduced-motion: reduce)", 1
+    )[0]
+    assert ".agent-choice .rk-choice-caret { display: none; }" in mobile
+
+
 def test_agent_detail_is_a_standalone_conversation_and_workspace_page():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
