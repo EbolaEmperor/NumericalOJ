@@ -610,6 +610,18 @@
   word-break: break-word;
 }
 
+.agent-trace-event--thinking .agent-trace-copy.numoj-markdown {
+  white-space: normal;
+}
+
+.agent-trace-event--thinking .agent-trace-copy > p {
+  margin: 0 0 .45em;
+}
+
+.agent-trace-event--thinking .agent-trace-copy > p:last-child {
+  margin-bottom: 0;
+}
+
 .agent-trace-event pre {
   max-height: 260px;
   padding: 7px 9px;

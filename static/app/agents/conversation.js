@@ -625,7 +625,7 @@
     var bubble = createElement('div', 'agent-user-bubble');
     if (messageHtml) setServerHtml(bubble, messageHtml);
     else bubble.textContent = message;
-    messageRow.append(bubble, createRetryButton(taskId));
+    messageRow.append(createRetryButton(taskId), bubble);
     user.appendChild(messageRow);
     var attachmentItems = Array.isArray(savedAttachments) && savedAttachments.length
       ? savedAttachments : files;
@@ -1196,6 +1196,8 @@
       domReadOnly: true,
       ariaLabel: path + '，只读文件预览',
       renderValidationDecorations: 'on',
+      fontSize: 12.5,
+      lineHeight: 20,
       wordWrap: 'off'
     }));
     ensureSemanticProvider(monaco, spec);

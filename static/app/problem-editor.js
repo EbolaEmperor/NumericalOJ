@@ -1,6 +1,9 @@
 (function () {
   'use strict';
 
+  const PROBLEM_EDITOR_FONT_SIZE = 12.5;
+  const PROBLEM_EDITOR_LINE_HEIGHT = 20;
+
   async function initializeProblemEditor() {
   const textarea = document.getElementById('codeEditor');
   if (!textarea) return;
@@ -67,7 +70,9 @@
           value: textarea.value,
           language: monacoLanguage,
           theme: editorTheme,
-          ariaLabel: '代码编辑器'
+          ariaLabel: '代码编辑器',
+          fontSize: PROBLEM_EDITOR_FONT_SIZE,
+          lineHeight: PROBLEM_EDITOR_LINE_HEIGHT
         })
       : {
       value: textarea.value,
@@ -77,8 +82,8 @@
       automaticLayout: true,
       ariaLabel: '代码编辑器',
       fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace',
-      fontSize: 14,
-      lineHeight: 22,
+      fontSize: PROBLEM_EDITOR_FONT_SIZE,
+      lineHeight: PROBLEM_EDITOR_LINE_HEIGHT,
       lineNumbersMinChars: 3,
       minimap: { enabled: false },
       padding: { top: 14, bottom: 14 },
@@ -120,9 +125,10 @@
       extraKeys: { Tab: 'indentMore', 'Shift-Tab': 'indentLess' }
     });
     codeMirrorHost.appendChild(instance.getWrapperElement());
-    instance.setSize(null, '300px');
     instance.getWrapperElement().style.fontFamily = 'monospace';
-    instance.getWrapperElement().style.fontSize = '14px';
+    instance.getWrapperElement().style.fontSize = PROBLEM_EDITOR_FONT_SIZE + 'px';
+    instance.getWrapperElement().style.lineHeight = PROBLEM_EDITOR_LINE_HEIGHT + 'px';
+    instance.setSize(null, '300px');
     return {
       getValue: () => instance.getValue(),
       setValue: value => instance.setValue(value),
