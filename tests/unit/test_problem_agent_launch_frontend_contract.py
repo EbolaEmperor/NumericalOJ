@@ -83,6 +83,7 @@ def test_agent_launch_disambiguates_duplicate_models_with_endpoint_id():
 
     assert "'节点 #' + endpoint.id" in script
     assert "meta: endpointMeta(endpoint)" in script
+    assert "model: endpoint.model" in script
 
 
 def test_agent_launch_payloads_include_harness_and_endpoint_without_secrets():

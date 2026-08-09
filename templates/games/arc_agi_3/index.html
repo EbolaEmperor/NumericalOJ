@@ -6,6 +6,7 @@
 {% endblock %}
 {% block content_container_class %}container-fluid p-0 arc-agi-page{% endblock %}
 {% block content %}
+{% from 'components/model_logo.html' import model_logo %}
 <div class="arc-hub">
   <header class="arc-hub-hero">
     <p class="arc-kicker">ARC-AGI-3 PUBLIC SET</p>
@@ -142,7 +143,7 @@
               <span class="arc-leaderboard-rank" aria-label="第 1 名">01</span>
               <span class="arc-leaderboard-model">
                 <span>ANTHROPIC</span>
-                <strong>Claude Opus 5</strong>
+                <strong>{{ model_logo('Claude Opus 5') }}Claude Opus 5</strong>
                 <small>High · 新纪录</small>
               </span>
               <span class="arc-leaderboard-score">
@@ -154,7 +155,7 @@
               <span class="arc-leaderboard-rank" aria-label="第 2 名">02</span>
               <span class="arc-leaderboard-model">
                 <span>OPENAI</span>
-                <strong>GPT-5.6 Sol</strong>
+                <strong>{{ model_logo('GPT-5.6 Sol') }}GPT-5.6 Sol</strong>
                 <small>Max</small>
               </span>
               <span class="arc-leaderboard-score">
@@ -166,7 +167,7 @@
               <span class="arc-leaderboard-rank" aria-label="第 3 名">03</span>
               <span class="arc-leaderboard-model">
                 <span>OPENAI</span>
-                <strong>GPT-5.6 Sol</strong>
+                <strong>{{ model_logo('GPT-5.6 Sol') }}GPT-5.6 Sol</strong>
                 <small>Extra High</small>
               </span>
               <span class="arc-leaderboard-score">
@@ -178,7 +179,7 @@
               <span class="arc-leaderboard-rank" aria-label="第 4 名">04</span>
               <span class="arc-leaderboard-model">
                 <span>OPENAI</span>
-                <strong>GPT-5.6 Sol</strong>
+                <strong>{{ model_logo('GPT-5.6 Sol') }}GPT-5.6 Sol</strong>
                 <small>High</small>
               </span>
               <span class="arc-leaderboard-score">
@@ -190,7 +191,7 @@
               <span class="arc-leaderboard-rank" aria-label="第 5 名">05</span>
               <span class="arc-leaderboard-model">
                 <span>ANTHROPIC</span>
-                <strong>Claude Opus 4.8</strong>
+                <strong>{{ model_logo('Claude Opus 4.8') }}Claude Opus 4.8</strong>
                 <small>High</small>
               </span>
               <span class="arc-leaderboard-score">
@@ -212,7 +213,7 @@
             <i class="fas fa-ranking-star" aria-hidden="true"></i>
           </a>
           <a href="https://arcprize.org/results/anthropic-claude-opus-5" target="_blank" rel="noopener noreferrer">
-            <span>Opus 5 评测结果</span>
+            <span>{{ model_logo('Opus 5') }} Opus 5 评测结果</span>
             <i class="fas fa-chart-line" aria-hidden="true"></i>
           </a>
           <a href="https://arcprize.org/arc-agi/3" target="_blank" rel="noopener noreferrer">

@@ -78,6 +78,252 @@ def test_generic_task_has_stable_celery_name_and_exact_signature():
     )
 
 
+def test_generic_outer_boundary_finalizes_trace_prepare_failure(monkeypatch):
+    snapshots = _patch_generic(monkeypatch, None)
+    monkeypatch.setattr(
+        generic,
+        "prepare_agent_trace_dir",
+        lambda _task_id: (_ for _ in ()).throw(OSError("trace disk offline")),
+    )
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self("trace-prepare-failed"),
+        "trace-session",
+        "admin",
+        "admin",
+        "pi",
+        8,
+        "session-cookie",
+        "执行任务",
+    )
+
+    assert result["success"] is False
+    assert "trace disk offline" in result["message"]
+    assert snapshots[-1]["status"] == "Failed"
+    assert snapshots[-1]["stage"] == "finished"
+    assert snapshots[-1]["session_id"] == "trace-session"
+
+
+def test_generic_outer_boundary_retries_failed_initial_state_write(monkeypatch):
+    updates = []
+    monkeypatch.setattr(
+        generic,
+        "existing_agent_terminal_result",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(generic, "prepare_agent_trace_dir", lambda _task_id: None)
+    monkeypatch.setattr(generic, "agent_run_is_canceled", lambda _task_id: False)
+
+    def update(state, message=None, **values):
+        updates.append((message, dict(values)))
+        if len(updates) == 1:
+            raise RuntimeError("transient mysql failure")
+        state.update(values)
+        if message is not None:
+            state["message"] = message
+
+    monkeypatch.setattr(generic, "_update_agent_state", update)
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self("initial-write-failed"),
+        "write-session",
+        "admin",
+        "admin",
+        "pi",
+        8,
+        "session-cookie",
+        "执行任务",
+    )
+
+    assert result["success"] is False
+    assert "transient mysql failure" in result["message"]
+    assert len(updates) == 2
+    assert updates[-1][1]["status"] == "Failed"
+
+
+def test_generic_outer_boundary_finalizes_user_lookup_failure(monkeypatch):
+    snapshots = _patch_generic(monkeypatch, None)
+    monkeypatch.setattr(
+        generic,
+        "get_user_by_username",
+        lambda _username: (_ for _ in ()).throw(RuntimeError("user db offline")),
+    )
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self("user-lookup-failed"),
+        "user-session",
+        "admin",
+        "admin",
+        "pi",
+        8,
+        "session-cookie",
+        "执行任务",
+    )
+
+    assert result["success"] is False
+    assert "user db offline" in result["message"]
+    assert snapshots[-1]["status"] == "Failed"
+
+
+def test_generic_outer_boundary_finalizes_title_generation_failure(monkeypatch):
+    task_id = "title-generation-failed"
+    session = {
+        "session_id": "title-session",
+        "current_task_id": task_id,
+        "title": "",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "admin",
+        "harness": "pi",
+        "endpoint_id": 8,
+        "endpoint_revision": 4,
+        "native_session_id": "",
+        "turn_count": 1,
+        "is_legacy": False,
+    }
+    snapshots = _patch_generic(monkeypatch, session)
+    monkeypatch.setattr(
+        generic,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: _endpoint(),
+    )
+    monkeypatch.setattr(
+        generic,
+        "generate_initial_agent_session_title",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("title llm offline")
+        ),
+    )
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self(task_id),
+        "title-session",
+        "admin",
+        "admin",
+        "pi",
+        8,
+        "session-cookie",
+        "执行任务",
+        generate_title=True,
+    )
+
+    assert result["success"] is False
+    assert "title llm offline" in result["message"]
+    assert snapshots[-1]["status"] == "Failed"
+
+
+def test_unhandled_failure_returns_existing_terminal_without_failed_write(
+        monkeypatch):
+    state = generic._initial_generic_state(
+        "already-completed",
+        session_id="terminal-session",
+        requested_by="admin",
+        access_role="admin",
+        harness="pi",
+        endpoint_id=8,
+    )
+    monkeypatch.setattr(
+        generic,
+        "existing_agent_terminal_result",
+        lambda _task_id: {
+            "success": True,
+            "message": "已经完成",
+            "task_id": "already-completed",
+        },
+    )
+    monkeypatch.setattr(
+        generic,
+        "_update_agent_state",
+        lambda *_args, **_kwargs: pytest.fail("已终态不得写入 Failed"),
+    )
+
+    result = generic._finalize_unhandled_generic_failure(
+        state,
+        RuntimeError("late exception"),
+    )
+
+    assert result["success"] is True
+    assert result["message"] == "已经完成"
+    assert result["session_id"] == "terminal-session"
+
+
+def test_unhandled_failure_returns_cancellation_without_failed_write(monkeypatch):
+    state = generic._initial_generic_state(
+        "already-canceled",
+        session_id="canceled-session",
+        requested_by="admin",
+        access_role="admin",
+        harness="pi",
+        endpoint_id=8,
+    )
+    monkeypatch.setattr(
+        generic,
+        "existing_agent_terminal_result",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(generic, "agent_run_is_canceled", lambda _task_id: True)
+    monkeypatch.setattr(
+        generic,
+        "_update_agent_state",
+        lambda *_args, **_kwargs: pytest.fail("取消态不得写入 Failed"),
+    )
+
+    result = generic._finalize_unhandled_generic_failure(
+        state,
+        RuntimeError("late exception"),
+    )
+
+    assert result["canceled"] is True
+    assert result["session_id"] == "canceled-session"
+
+
+def test_unhandled_failure_falls_back_to_direct_session_projection(monkeypatch):
+    from oj_modules.agents import sessions as agent_sessions
+
+    projected = []
+    state = generic._initial_generic_state(
+        "persistent-run-write-failure",
+        session_id="fallback-session",
+        requested_by="admin",
+        access_role="admin",
+        harness="pi",
+        endpoint_id=8,
+    )
+    monkeypatch.setattr(
+        generic,
+        "existing_agent_terminal_result",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(generic, "agent_run_is_canceled", lambda _task_id: False)
+    monkeypatch.setattr(
+        generic,
+        "_update_agent_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("run table offline")
+        ),
+    )
+    monkeypatch.setattr(
+        agent_sessions,
+        "sync_agent_session_state",
+        lambda value: projected.append(deepcopy(value)) or True,
+    )
+
+    result = generic._finalize_unhandled_generic_failure(
+        state,
+        RuntimeError("unexpected startup failure"),
+    )
+
+    assert result["success"] is False
+    assert projected[-1]["status"] == "Failed"
+    assert projected[-1]["session_id"] == "fallback-session"
+    assert projected[-1]["task_id"] == "persistent-run-write-failure"
+
+
 def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_session(
         monkeypatch):
     task_id = "custom-first-turn"

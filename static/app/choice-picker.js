@@ -43,17 +43,25 @@
     var template = optionsTemplate(input);
     if (!template) return;
     menu.replaceChildren(template.content.cloneNode(true));
+    if (global.NumojModelFamily) global.NumojModelFamily.paintAll(menu);
+  }
+
+  function modelIconClass(model, fallback) {
+    if (model && global.NumojModelFamily) return global.NumojModelFamily.iconClass(model);
+    return String(fallback || 'fa-microchip');
   }
 
   function optionElement(entry) {
     entry = entry || {};
-    var icon = String(entry.icon || 'fa-circle');
+    var model = String(entry.model || '').trim();
+    var icon = modelIconClass(model, entry.icon || 'fa-circle');
     var option = document.createElement('button');
     option.type = 'button';
     option.className = 'rk-choice-option' + (entry.missing ? ' is-missing' : '');
     option.setAttribute('data-choice-value', entry.value == null ? '' : String(entry.value));
     option.setAttribute('data-choice-label', String(entry.label || ''));
     option.setAttribute('data-choice-icon', icon);
+    if (model) option.setAttribute('data-choice-model', model);
     if (entry.disabled) {
       option.setAttribute('aria-disabled', 'true');
       option.setAttribute('data-choice-disabled', 'true');
@@ -63,6 +71,10 @@
     main.className = 'rk-choice-option-main';
     var iconElement = document.createElement('i');
     iconElement.className = icon.indexOf(' ') >= 0 ? icon : 'fas ' + icon;
+    if (model) {
+      iconElement.setAttribute('data-model-family-logo', '');
+      iconElement.setAttribute('data-model-name', model);
+    }
     iconElement.setAttribute('aria-hidden', 'true');
     var copy = document.createElement('span');
     var name = document.createElement('span');
@@ -283,9 +295,20 @@
         }
         if (label) label.textContent = optionLabel(selected);
         if (icon) {
-          var selectedIcon = selected.getAttribute('data-choice-icon') || 'fa-circle';
+          var selectedModel = selected.getAttribute('data-choice-model') || '';
+          var selectedIcon = modelIconClass(
+            selectedModel,
+            selected.getAttribute('data-choice-icon') || 'fa-circle'
+          );
           if (selectedIcon.indexOf(' ') >= 0) icon.className = selectedIcon;
           else icon.className = 'fas ' + selectedIcon;
+          if (selectedModel) {
+            icon.setAttribute('data-model-family-logo', '');
+            icon.setAttribute('data-model-name', selectedModel);
+          } else {
+            icon.removeAttribute('data-model-family-logo');
+            icon.removeAttribute('data-model-name');
+          }
         }
         choices.forEach(function (choice) {
           var active = choice === selected;

@@ -1,4 +1,5 @@
 {% from 'ranking/components/harness_logo.html' import harness_logo %}
+{% from 'components/model_logo.html' import model_logo %}
 {% from 'components/execution_record_card.html' import render_execution_record_card %}
 {# 提交卡片宏：被「我的历史提交」与「所有提交」复用。扁平化设计（无阴影/渐变）。
    参数：s=提交记录, competition, is_elo, is_agent_judge, max_score,
@@ -45,12 +46,13 @@
         {% if s.agent_endpoint_label %}
         <span class="aj-card-meta" title="AI 节点：{{ s.agent_endpoint_label }}">
           {{ harness_logo(s.agent_endpoint_harness) }}
+          {% if s.agent_endpoint_model %}{{ model_logo(s.agent_endpoint_model) }}{% endif %}
           <span>{{ s.agent_endpoint_label }}</span>
         </span>
         {% endif %}
         {% if s.base_model %}
         <span class="aj-card-meta" title="基座模型：{{ s.base_model }}">
-          <i class="fas fa-microchip" aria-hidden="true"></i>
+          {{ model_logo(s.base_model) }}
           <span>{{ s.base_model }}</span>
         </span>
         {% endif %}

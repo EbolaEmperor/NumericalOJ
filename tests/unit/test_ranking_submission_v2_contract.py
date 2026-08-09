@@ -44,7 +44,8 @@ def test_submission_model_is_plain_metadata_and_cards_keep_a_small_radius():
     stylesheet = _read(STYLESHEET)
 
     assert card.count('class="aj-card-meta"') == 2
-    assert 'class="fas fa-microchip"' in card
+    assert "model_logo(s.base_model)" in card
+    assert "model_logo(s.agent_endpoint_model)" in card
     assert ".ranking-v2-detail .aj-card-meta" in stylesheet
     assert re.search(
         r"\.ranking-v2-detail \.aj-sub \{[^}]*border-radius: 5px;",

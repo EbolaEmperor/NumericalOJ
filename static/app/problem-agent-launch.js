@@ -292,6 +292,7 @@
           value: endpoint.id,
           label: endpoint.model,
           icon: 'fa-microchip',
+          model: endpoint.model,
           meta: endpointMeta(endpoint)
         };
       }),

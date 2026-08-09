@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from functools import wraps
 import time
 
 from oj_modules.agents.sessions import (
@@ -38,6 +39,46 @@ from oj_modules.tasks.agent.titles import generate_initial_agent_session_title
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
 
 
+def _generic_task_id(task):
+    return str(
+        getattr(getattr(task, "request", None), "id", None) or ""
+    ).strip() or f"unknown-{int(time.time())}"
+
+
+def _initial_generic_state(
+    task_id,
+    *,
+    session_id,
+    requested_by,
+    access_role,
+    harness,
+    endpoint_id,
+):
+    return {
+        "task_id": task_id,
+        "session_id": str(session_id or ""),
+        "problem_id": None,
+        "problem_title": "通用 Agent",
+        "requested_by": requested_by,
+        "task_kind": AGENT_TASK_CUSTOM,
+        "access_role": str(access_role or ""),
+        "harness": str(harness or ""),
+        "endpoint_id": endpoint_id,
+        "status": "Running",
+        "message": "通用 Agent 启动中",
+        "best_score": 0,
+        "latest_submission_id": None,
+        "final_submission_id": None,
+        "attempts": [],
+        "title": "",
+        "native_session_id": "",
+        "conclusion": "",
+        "stage": "starting",
+        "harness_status": "pending",
+        "updated_at": _format_local_time(),
+    }
+
+
 def _generic_failure(
     state,
     message,
@@ -54,6 +95,9 @@ def _generic_failure(
         harness_status=harness_status,
         conclusion=str(conclusion or ""),
     )
+    local_terminal = _local_terminal_result(state)
+    if local_terminal is not None:
+        return _terminal_result_with_session(state) or local_terminal
     return {
         "success": False,
         "message": message,
@@ -63,6 +107,156 @@ def _generic_failure(
         "native_session_id": state.get("native_session_id") or "",
         "conclusion": str(conclusion or ""),
     }
+
+
+def _terminal_result_with_session(state):
+    try:
+        result = existing_agent_terminal_result(state.get("task_id"))
+    except Exception:
+        return None
+    if result is None:
+        return None
+    result = dict(result)
+    result["session_id"] = str(state.get("session_id") or "")
+    return result
+
+
+def _local_terminal_result(state):
+    status = str(state.get("status") or "").strip().lower()
+    task_id = str(state.get("task_id") or "")
+    session_id = str(state.get("session_id") or "")
+    if status in {"canceled", "cancelled"}:
+        result = canceled_agent_task_result(task_id)
+        result["session_id"] = session_id
+        return result
+    if status in {"cleanupfailed", "cleanup_failed"}:
+        return {
+            "success": False,
+            "cleanup_failed": True,
+            "message": str(
+                state.get("message")
+                or "Agent 运行时清理失败，需管理员处理"
+            ),
+            "task_id": task_id,
+            "session_id": session_id,
+        }
+    if status == "completed":
+        return {
+            "success": True,
+            "message": str(state.get("message") or "任务已结束"),
+            "task_id": task_id,
+            "session_id": session_id,
+            "title": str(state.get("title") or ""),
+            "native_session_id": str(state.get("native_session_id") or ""),
+            "conclusion": str(state.get("conclusion") or ""),
+        }
+    return None
+
+
+def _finalize_unhandled_generic_failure(state, exc):
+    """尽最大努力收束入口早期异常，同时尊重已经提交的终态。"""
+
+    terminal_result = _terminal_result_with_session(state)
+    if terminal_result is not None:
+        return terminal_result
+    local_terminal = _local_terminal_result(state)
+    if local_terminal is not None:
+        return local_terminal
+
+    task_id = str(state.get("task_id") or "")
+    try:
+        if agent_run_is_canceled(task_id):
+            result = canceled_agent_task_result(task_id)
+            result["session_id"] = str(state.get("session_id") or "")
+            return result
+    except Exception:
+        # DB 故障本身可能正是原始异常；后续失败写入仍会依赖持久层的
+        # sticky 终态约束，不能因为取消态探测失败而放弃收束。
+        pass
+
+    detail = str(exc).strip() or exc.__class__.__name__
+    message = f"通用 Agent worker 异常：{detail[:800]}"
+    for _attempt in range(2):
+        try:
+            result = _generic_failure(state, message)
+        except Exception:
+            continue
+        local_terminal = _local_terminal_result(state)
+        if local_terminal is not None:
+            return _terminal_result_with_session(state) or local_terminal
+        return result
+
+    # agent_task_runs 写入持续失败时，独立尝试以同一 CAS 契约收束会话和
+    # 当前轮次。session 投影会拒绝旧轮次、已终态、取消态和清理失败态。
+    state.update({
+        "status": "Failed",
+        "message": message,
+        "stage": "finished",
+        "harness_status": "error",
+        "conclusion": "",
+    })
+    try:
+        from oj_modules.agents.sessions import sync_agent_session_state
+
+        sync_agent_session_state(state)
+    except Exception:
+        pass
+    terminal_result = _terminal_result_with_session(state)
+    if terminal_result is not None:
+        return terminal_result
+    return {
+        "success": False,
+        "message": message,
+        "task_id": task_id,
+        "session_id": str(state.get("session_id") or ""),
+        "title": str(state.get("title") or ""),
+        "native_session_id": str(state.get("native_session_id") or ""),
+        "conclusion": "",
+    }
+
+
+def _conclude_unhandled_generic_failures(function):
+    @wraps(function)
+    def wrapped(
+        self,
+        session_id,
+        requested_by,
+        access_role,
+        harness,
+        endpoint_id,
+        session_cookie,
+        prompt,
+        session_cookie_name="session",
+        resume_session_id="",
+        generate_title=False,
+    ):
+        task_id = _generic_task_id(self)
+        state = _initial_generic_state(
+            task_id,
+            session_id=session_id,
+            requested_by=requested_by,
+            access_role=access_role,
+            harness=harness,
+            endpoint_id=endpoint_id,
+        )
+        try:
+            return function(
+                self,
+                session_id,
+                requested_by,
+                access_role,
+                harness,
+                endpoint_id,
+                session_cookie,
+                prompt,
+                session_cookie_name,
+                resume_session_id,
+                generate_title,
+            )
+        except Exception as exc:
+            return _finalize_unhandled_generic_failure(state, exc)
+
+    return wrapped
 
 
 def _validate_frozen_session(
@@ -119,6 +313,7 @@ def register_agent_run_turn_task(celery_app):
         return existing
 
     @celery_app.task(bind=True, name=AGENT_RUN_TURN_TASK_NAME)
+    @_conclude_unhandled_generic_failures
     def agent_run_turn(
         self,
         session_id,
@@ -132,37 +327,20 @@ def register_agent_run_turn_task(celery_app):
         resume_session_id="",
         generate_title=False,
     ):
-        task_id = str(
-            getattr(getattr(self, "request", None), "id", None) or ""
-        ).strip() or f"unknown-{int(time.time())}"
+        task_id = _generic_task_id(self)
         terminal_result = existing_agent_terminal_result(task_id)
         if terminal_result is not None:
             terminal_result["session_id"] = str(session_id or "")
             return terminal_result
 
-        state = {
-            "task_id": task_id,
-            "session_id": str(session_id or ""),
-            "problem_id": None,
-            "problem_title": "通用 Agent",
-            "requested_by": requested_by,
-            "task_kind": AGENT_TASK_CUSTOM,
-            "access_role": str(access_role or ""),
-            "harness": str(harness or ""),
-            "endpoint_id": endpoint_id,
-            "status": "Running",
-            "message": "通用 Agent 启动中",
-            "best_score": 0,
-            "latest_submission_id": None,
-            "final_submission_id": None,
-            "attempts": [],
-            "title": "",
-            "native_session_id": "",
-            "conclusion": "",
-            "stage": "starting",
-            "harness_status": "pending",
-            "updated_at": _format_local_time(),
-        }
+        state = _initial_generic_state(
+            task_id,
+            session_id=session_id,
+            requested_by=requested_by,
+            access_role=access_role,
+            harness=harness,
+            endpoint_id=endpoint_id,
+        )
         prepare_agent_trace_dir(task_id)
         _update_agent_state(state)
 

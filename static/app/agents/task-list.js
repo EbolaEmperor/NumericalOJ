@@ -26,13 +26,6 @@
     omni: '全模态',
     embedding: '向量'
   };
-  var CATEGORY_ICONS = {
-    text: 'fa-font',
-    vision: 'fa-eye',
-    omni: 'fa-layer-group',
-    embedding: 'fa-vector-square'
-  };
-
   function asText(value) {
     return value == null ? '' : String(value).trim();
   }
@@ -174,7 +167,8 @@
           return {
             value: endpoint.id,
             label: endpoint.model,
-            icon: CATEGORY_ICONS[endpoint.category] || 'fa-microchip',
+            icon: 'fa-microchip',
+            model: endpoint.model,
             meta: endpointMeta(endpoint)
           };
         }),

@@ -1,3 +1,5 @@
+{% from 'components/model_logo.html' import model_logo %}
+
 {# 申诉卡片宏：复用「所有提交」卡片的视觉（aj-sub / aj-st / aj-acts）。
    参数：a=申诉记录（含 submission 的 sub_score/sub_status/base_model）, competition #}
 {% macro render_appeal_card(a, competition) %}
@@ -25,7 +27,7 @@
     <div class="aj-sub-r2">
       <div class="aj-sub-meta">
         <span class="aj-time">{{ a.created_at }}</span>
-        {% if a.base_model %}<span class="aj-chip" title="基座模型">{{ a.base_model }}</span>{% endif %}
+        {% if a.base_model %}<span class="aj-chip" title="基座模型">{{ model_logo(a.base_model) }} <span>{{ a.base_model }}</span></span>{% endif %}
         <span class="aj-chip aj-appeal-reason" title="{{ a.reason }}"><i class="fas fa-comment-dots me-1 opacity-75"></i>{{ a.reason[:48] }}{% if a.reason|length > 48 %}…{% endif %}</span>
       </div>
       <div class="aj-acts">

@@ -429,6 +429,8 @@ def upsert_agent_run_snapshot(state):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # MySQL 按书写顺序计算 ON DUPLICATE KEY UPDATE；status 必须放在
+            # 最后，前面的列才能根据“写入前状态”判断终态是否已经提交。
             cursor.execute(
                 """
                 INSERT INTO agent_task_runs (
@@ -444,64 +446,100 @@ def upsert_agent_run_snapshot(state):
                 )
                 ON DUPLICATE KEY UPDATE
                     problem_id=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         problem_id,
                         VALUES(problem_id)
                     ),
                     problem_title=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         problem_title,
                         VALUES(problem_title)
                     ),
                     requested_by=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         requested_by,
                         VALUES(requested_by)
                     ),
                     harness=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         harness,
                         COALESCE(NULLIF(VALUES(harness), ''), harness)
                     ),
                     endpoint_id=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         endpoint_id,
                         COALESCE(VALUES(endpoint_id), endpoint_id)
                     ),
                     endpoint_model=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         endpoint_model,
                         COALESCE(NULLIF(VALUES(endpoint_model), ''), endpoint_model)
                     ),
-                    status=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
-                        status,
-                        VALUES(status)
-                    ),
                     message=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         message,
                         VALUES(message)
                     ),
                     best_score=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         best_score,
                         VALUES(best_score)
                     ),
                     final_submission_id=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         final_submission_id,
                         VALUES(final_submission_id)
                     ),
                     latest_submission_id=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         latest_submission_id,
                         VALUES(latest_submission_id)
                     ),
                     attempts_json=IF(
-                        LOWER(status) IN ('canceled', 'cancelled'),
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
                         attempts_json,
                         VALUES(attempts_json)
+                    ),
+                    status=IF(
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
+                        status,
+                        VALUES(status)
                     )
                 """,
                 (

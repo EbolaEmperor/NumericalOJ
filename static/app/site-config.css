@@ -539,12 +539,24 @@
 }
 
 .site-config-endpoint-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
   margin: 0;
-  overflow: hidden;
   color: var(--cfg-ink);
   font-size: 14px;
   font-weight: 700;
   line-height: 1.25;
+}
+
+.site-config-endpoint-title > i {
+  flex: 0 0 1em;
+}
+
+.site-config-endpoint-title > span {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

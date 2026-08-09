@@ -855,6 +855,9 @@ body.arc-help-liquid-open .modal-backdrop.show {
 }
 
 .arc-leaderboard-model > strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow-wrap: anywhere;
   font-size: 0.91rem;
   font-weight: 800;

@@ -231,6 +231,39 @@ def test_canceled_snapshot_is_sticky_against_late_worker_upsert():
     assert state['status'] == 'Canceled'
 
 
+@pytest.mark.parametrize('terminal_status', ['Completed', 'Failed', 'CleanupFailed'])
+def test_finished_snapshot_is_sticky_against_late_worker_upsert(terminal_status):
+    task_id = f'tk-terminal-sticky-{terminal_status.lower()}'
+    db.upsert_agent_run_snapshot({
+        'task_id': task_id,
+        'status': terminal_status,
+        'message': '已经提交的终态',
+        'problem_title': '已提交标题',
+        'harness': 'pi',
+        'endpoint_id': 21,
+    })
+
+    persisted = db.upsert_agent_run_snapshot({
+        'task_id': task_id,
+        'status': 'Failed' if terminal_status != 'Failed' else 'Running',
+        'message': '迟到的冲突状态',
+        'problem_title': '不应覆盖',
+        'harness': 'codex',
+        'endpoint_id': 22,
+    })
+
+    row = _fetch_raw(task_id)
+    assert row['status'] == terminal_status
+    assert row['message'] == '已经提交的终态'
+    assert row['problem_title'] == '已提交标题'
+    assert row['harness'] == 'pi'
+    assert row['endpoint_id'] == 21
+    assert persisted == {
+        'status': terminal_status,
+        'message': '已经提交的终态',
+    }
+
+
 def test_cancel_snapshot_only_transitions_active_task():
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-already-finished',

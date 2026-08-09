@@ -1,0 +1,135 @@
+.model-family-logo {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  min-width: 1em;
+  flex: 0 0 1em;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  filter: grayscale(1);
+  font-style: normal;
+  line-height: 1;
+  opacity: 0.76;
+  vertical-align: -0.14em;
+}
+
+.model-family-logo::before {
+  content: none !important;
+}
+
+.model-family-logo--openai {
+  background-image: url("model-family-logos/openai.svg");
+}
+
+.model-family-logo--claude {
+  background-image: url("model-family-logos/claude.svg");
+}
+
+.model-family-logo--gemini {
+  background-image: url("model-family-logos/gemini.svg");
+}
+
+.model-family-logo--grok {
+  background-image: url("model-family-logos/grok.svg");
+}
+
+.model-family-logo--qwen {
+  background-image: url("model-family-logos/qwen.svg");
+}
+
+.model-family-logo--doubao {
+  background-image: url("model-family-logos/doubao.svg");
+}
+
+.model-family-logo--deepseek {
+  background-image: url("model-family-logos/deepseek.svg");
+}
+
+.model-family-logo--minimax {
+  background-image: url("model-family-logos/minimax.svg");
+}
+
+.model-family-logo--glm {
+  background-image: url("model-family-logos/glm.svg");
+}
+
+.model-family-logo--kimi {
+  background-image: url("model-family-logos/kimi.svg");
+}
+
+.model-family-logo--gemma {
+  background-image: url("model-family-logos/gemma.svg");
+}
+
+.model-family-logo--nvidia {
+  background-image: url("model-family-logos/nvidia.svg");
+}
+
+.model-family-logo--llama {
+  background-image: url("model-family-logos/llama.svg");
+}
+
+.model-family-logo--mistral {
+  background-image: url("model-family-logos/mistral.svg");
+}
+
+.model-family-logo--cohere {
+  background-image: url("model-family-logos/cohere.svg");
+}
+
+.model-family-logo--microsoft {
+  background-image: url("model-family-logos/microsoft.svg");
+}
+
+.model-family-logo--amazon {
+  background-image: url("model-family-logos/amazon.svg");
+}
+
+.model-family-logo--baidu {
+  background-image: url("model-family-logos/baidu.svg");
+}
+
+.model-family-logo--hunyuan {
+  background-image: url("model-family-logos/hunyuan.svg");
+}
+
+.model-family-logo--baichuan {
+  background-image: url("model-family-logos/baichuan.svg");
+}
+
+.model-family-logo--yi {
+  background-image: url("model-family-logos/yi.svg");
+}
+
+.model-family-logo--ai21 {
+  background-image: url("model-family-logos/ai21.svg");
+}
+
+.model-family-logo--perplexity {
+  background-image: url("model-family-logos/perplexity.svg");
+}
+
+.model-family-logo--stepfun {
+  background-image: url("model-family-logos/stepfun.svg");
+}
+
+.model-family-logo--internlm {
+  background-image: url("model-family-logos/internlm.svg");
+}
+
+.model-family-logo--baai {
+  background-image: url("model-family-logos/baai.svg");
+}
+
+.model-family-logo--jina {
+  background-image: url("model-family-logos/jina.svg");
+}
+
+.model-family-logo--voyage {
+  background-image: url("model-family-logos/voyage.svg");
+}
+
+.model-family-logo--tii {
+  background-image: url("model-family-logos/tii.svg");
+}

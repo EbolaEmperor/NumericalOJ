@@ -29,6 +29,10 @@
     repository_embedding: 'fa-vector-square',
   };
 
+  const modelIconClass = (model) => window.NumojModelFamily
+    ? window.NumojModelFamily.iconClass(model)
+    : 'fas fa-microchip';
+
   const state = {
     meta: {
       protocols: ['openai', 'anthropic'],
@@ -166,7 +170,7 @@
           <div class="site-config-endpoint-top">
             <div>
               <span class="site-config-endpoint-number">节点 #${Number(endpoint.id)}</span>
-              <h3 class="site-config-endpoint-title" title="${escapeHtml(endpoint.model)}">${escapeHtml(endpoint.model)}</h3>
+              <h3 class="site-config-endpoint-title" title="${escapeHtml(endpoint.model)}"><i class="${modelIconClass(endpoint.model)}" aria-hidden="true"></i><span>${escapeHtml(endpoint.model)}</span></h3>
             </div>
             <div class="site-config-endpoint-chips">
               <span class="site-config-chip is-protocol">${escapeHtml(protocolLabels[endpoint.protocol] || endpoint.protocol)}</span>
@@ -277,7 +281,8 @@
         value: String(endpoint.id),
         label: endpoint.model,
         meta: `节点 #${endpoint.id} · ${protocolLabels[endpoint.protocol] || endpoint.protocol} · ${categoryLabels[endpoint.category] || endpoint.category}`,
-        icon: categoryIcons[endpoint.category] || 'fa-circle',
+        icon: 'fa-microchip',
+        model: endpoint.model,
       });
     });
     return options;

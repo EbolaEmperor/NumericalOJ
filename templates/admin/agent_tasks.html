@@ -13,6 +13,7 @@
 {% block content %}
 {% from 'components/choice_picker.html' import choice_picker, choice_option %}
 {% from 'ranking/components/harness_logo.html' import harness_logo %}
+{% from 'components/model_logo.html' import model_logo %}
 
 {% set preferred_harness = preference.harness|default('', true) %}
 {% set preferred_endpoint = preference.endpoint_id|default('', true)|string %}
@@ -24,7 +25,6 @@
     <div class="agent-home-heading">
       <span class="agent-home-kicker">NUMERICAL OJ · AGENT</span>
       <h1 id="agentHomeTitle">今天想让 Agent 做什么？</h1>
-      <p>描述目标、带上材料，然后把工作交给一个可以继续的会话。</p>
     </div>
 
     <form class="agent-composer"
@@ -70,8 +70,8 @@
               'agent-choice agent-choice--role', false, true, false, '选择执行身份'
             ) }}
             <template data-choice-options-for="agentAccessRole">
-              {{ choice_option('user', '以用户身份', preferred_role == 'user', 'fa-user', '注入 numoj-user 与用户访问令牌') }}
-              {{ choice_option('admin', '以管理员身份', preferred_role == 'admin', 'fa-user-shield', '注入 numoj-admin 与管理员访问令牌') }}
+              {{ choice_option('user', '以用户身份', preferred_role == 'user', 'fa-user') }}
+              {{ choice_option('admin', '以管理员身份', preferred_role == 'admin', 'fa-user-shield') }}
             </template>
           </div>
         </div>
@@ -142,7 +142,7 @@
             <span>{{ harness_name }}</span>
           </span>
           <span class="agent-history-runtime" title="模型节点：{{ endpoint_name }}">
-            <i class="fas fa-microchip" aria-hidden="true"></i>
+            {{ model_logo(endpoint_name) }}
             <span>{{ endpoint_name }}</span>
           </span>
           <i class="fas fa-chevron-right agent-history-arrow" aria-hidden="true"></i>

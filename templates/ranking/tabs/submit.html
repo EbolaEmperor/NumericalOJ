@@ -1,4 +1,5 @@
     {% from 'ranking/components/harness_logo.html' import harness_logo, harness_logo_class %}
+    {% from 'components/model_logo.html' import model_logo %}
     {# ========== 提交作品 ========== #}
     {% if tab == 'submit' %}
       {% set max_score = competition.max_score or 100 %}
@@ -35,12 +36,13 @@
           {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else ('Pi' if _h == 'pi' else _h))) -%}
           {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
         {%- endmacro %}
-        {% set rj_ep = namespace(default='', default_harness='claude_code', count=0) %}
+        {% set rj_ep = namespace(default='', default_harness='claude_code', default_model='', count=0) %}
         {% for ep in aj_endpoints %}
           {% if (ep.status or '') == 'enabled' %}
             {% if not rj_ep.default %}
               {% set rj_ep.default = ep.id|string %}
               {% set rj_ep.default_harness = ep.harness or 'claude_code' %}
+              {% set rj_ep.default_model = ep.model or '' %}
             {% endif %}
             {% set rj_ep.count = rj_ep.count + 1 %}
           {% endif %}
@@ -82,6 +84,7 @@
                 <span class="rk-choice-trigger-main">
                   {% if rj_ep.default %}
                     <i class="{{ harness_logo_class(rj_ep.default_harness) }}" data-rk-choice-icon aria-hidden="true"></i>
+                    {{ model_logo(rj_ep.default_model, 'rj-endpoint-model-logo') }}
                   {% else %}
                     <i class="fas fa-robot" data-rk-choice-icon aria-hidden="true"></i>
                   {% endif %}
@@ -101,9 +104,11 @@
                           aria-selected="{% if ep.id|string == rj_ep.default %}true{% else %}false{% endif %}"
                           data-choice-value="{{ ep.id }}"
                           data-choice-label="{{ rj_endpoint_label(ep) }}"
-                          data-choice-icon="{{ harness_logo_class(ep.harness) }}">
+                          data-choice-icon="{{ harness_logo_class(ep.harness) }}"
+                          data-endpoint-model="{{ ep.model or '' }}">
                     <span class="rk-choice-option-main">
                       {{ harness_logo(ep.harness) }}
+                      {{ model_logo(ep.model or '') }}
                       <span>
                         <span class="rk-choice-option-name">{{ rj_endpoint_label(ep) }}</span>
                       </span>
@@ -227,6 +232,27 @@
           var copyBtn = document.getElementById('gitsubCopy');
           var urlEl = document.getElementById('gitsubUrl');
           var endpointInput = document.getElementById('reverseAgentEndpointId');
+
+          function syncEndpointModelLogo(){
+            if (!endpointInput) return;
+            var picker = endpointInput.closest('.rj-node-switch') || tabRoot;
+            var icon = picker && picker.querySelector('.rk-choice-trigger .rj-endpoint-model-logo');
+            if (!icon) return;
+            var selected = Array.prototype.slice.call(
+              picker.querySelectorAll('.rk-choice-option[data-choice-value]')
+            ).find(function(option){
+              return option.getAttribute('data-choice-value') === endpointInput.value;
+            });
+            var model = selected ? selected.getAttribute('data-endpoint-model') || '' : '';
+            var helper = window.NumojModelFamily;
+            var iconClass = helper && typeof helper.iconClass === 'function'
+              ? helper.iconClass(model)
+              : 'fas fa-microchip';
+            icon.className = 'rj-endpoint-model-logo ' + (iconClass || 'fas fa-microchip');
+            icon.setAttribute('data-model-name', model);
+          }
+          if (endpointInput) endpointInput.addEventListener('change', syncEndpointModelLogo);
+          syncEndpointModelLogo();
 
           function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
           function fmtDate(iso){

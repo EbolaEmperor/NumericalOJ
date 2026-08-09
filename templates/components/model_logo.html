@@ -1,0 +1,6 @@
+{% macro model_logo(model_name, extra_class='') -%}
+  <i class="fas fa-microchip{% if extra_class %} {{ extra_class }}{% endif %}"
+     data-model-family-logo
+     data-model-name="{{ model_name or '' }}"
+     aria-hidden="true"></i>
+{%- endmacro %}

@@ -1185,6 +1185,16 @@
   text-align: center;
 }
 
+#repositorySemanticMeta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#repositorySemanticMeta > i {
+  flex: 0 0 1em;
+}
+
 .repository-outline-item,
 .repository-semantic-hit {
   display: grid;

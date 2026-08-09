@@ -1,4 +1,5 @@
     {% from 'ranking/components/harness_logo.html' import harness_logo %}
+    {% from 'components/model_logo.html' import model_logo %}
     {# ========== 排行榜 ========== #}
     {% if tab == 'leaderboard' %}
       {% set max_score = competition.max_score or 100 %}
@@ -52,11 +53,12 @@
                     <span class="lb-subs">
                       {{ row.submission_count }} SUBMISSIONS
                       {% if row.best_base_model %}
-                        · <span title="基座模型">{{ row.best_base_model }}</span>
+                        · <span title="基座模型">{{ model_logo(row.best_base_model) }} <span>{{ row.best_base_model }}</span></span>
                       {% endif %}
                       {% if row.best_agent_endpoint_label %}
                         · <span class="lb-harness" title="AI 节点：{{ row.best_agent_endpoint_label }}">
                           {{ harness_logo(row.best_agent_endpoint_harness) }}
+                          {% if row.best_agent_endpoint_model %}{{ model_logo(row.best_agent_endpoint_model) }}{% endif %}
                           <span>{{ row.best_agent_endpoint_label }}</span>
                         </span>
                       {% endif %}

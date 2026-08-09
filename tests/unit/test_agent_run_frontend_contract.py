@@ -128,6 +128,9 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert ".agent-session-usage-fact--cost { display: none; }" not in styles
     assert ".agent-session-usage-fact--cached { display: none; }" not in styles
     assert ".agent-session-usage { display: none; }" not in styles
+    desktop_preview = styles.split("@media (min-width: 992px)", 1)[1]
+    assert ".agent-session.has-file .agent-session-header-side" in desktop_preview
+    assert "display: none;" in desktop_preview
 
 
 def test_agent_detail_supports_resume_stop_and_live_state_without_interruption():
@@ -147,6 +150,8 @@ def test_agent_detail_supports_resume_stop_and_live_state_without_interruption()
     assert "startPolling(taskId, generation)" in controller
     assert "taskId !== currentTaskId || generation !== liveGeneration" in controller
     assert "resumeSend.disabled = running || blocked" in controller
+    assert "error.detailUrl = asText(payload && payload.detail_url).trim();" in controller
+    assert "global.location.assign(error.detailUrl);" in controller
     assert "cleanupfailed" in controller
     assert "清理失败，需管理员处理" in template
     assert "data-can-resume" in template
@@ -161,6 +166,9 @@ def test_agent_detail_keeps_file_preview_and_workspace_accessible():
     assert 'role="tree"' not in template
     assert "details.setAttribute('role', 'treeitem')" not in controller
     assert "filePane.setAttribute('aria-modal', 'true')" in controller
+    assert "var wasFilePaneHidden = filePane.hidden;" in controller
+    assert "if (wasFilePaneHidden) initializeFileLayout();" in controller
+    assert "minmax(300px, 4.5fr)" in styles
     assert "event.key === 'Escape'" in controller
     assert "filePreviewReturnFocus.focus()" in controller
     assert "trapMobileFilePreviewFocus" in controller
@@ -260,6 +268,8 @@ def test_agent_workspace_preview_covers_required_formats_and_safe_downloads():
     assert "download: 1" in controller
     assert "renderCode" in controller
     assert "preview_kind" in controller
+    assert 'download data-agent-file-download' in template
+    assert "download.download = name;" in controller
     assert "agent-file-markdown" in controller
     assert "agent-file-pdf" in controller
     assert "imageViewer" in controller

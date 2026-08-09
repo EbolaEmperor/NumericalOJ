@@ -24,6 +24,14 @@ AGENT_RUN_TURN_TASK_NAME = "oj.agent.run_turn"
 _agent_progress_rds = None
 _agent_progress_blocking_rds = None
 _AGENT_PROGRESS_TTL_SECONDS = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
+_STICKY_AGENT_RUN_STATUSES = frozenset({
+    "completed",
+    "failed",
+    "canceled",
+    "cancelled",
+    "cleanupfailed",
+    "cleanup_failed",
+})
 _PUBLISH_ACTIVE_SNAPSHOT_SCRIPT = """
 if redis.call('EXISTS', KEYS[1]) == 1 then
     return 0
@@ -241,19 +249,25 @@ def _persist_agent_state(state):
     state.pop("execution_trace", None)
     state["updated_at"] = _format_local_time()
     persisted = upsert_agent_run_snapshot(state)
-    sticky_canceled = False
-    if (
-        isinstance(persisted, dict)
-        and str(persisted.get("status") or "").strip().lower()
-        in {"canceled", "cancelled"}
-    ):
-        sticky_canceled = True
+    persisted_status = (
+        str(persisted.get("status") or "").strip().lower()
+        if isinstance(persisted, dict)
+        else ""
+    )
+    if persisted_status in _STICKY_AGENT_RUN_STATUSES:
         state["status"] = persisted.get("status") or "Canceled"
         state["message"] = (
-            persisted.get("message") or "任务已由管理员终止"
+            persisted.get("message") or state.get("message") or ""
         )
         state["stage"] = "finished"
-        state["harness_status"] = "canceled"
+        if persisted_status in {"canceled", "cancelled"}:
+            state["harness_status"] = "canceled"
+        elif persisted_status in {"cleanupfailed", "cleanup_failed"}:
+            state["harness_status"] = "cleanup_failed"
+        elif persisted_status == "completed":
+            state["harness_status"] = "completed"
+        else:
+            state["harness_status"] = "error"
     # 带 session_id 的状态已由 upsert_agent_run_snapshot 在同一 MySQL 事务
     # 原子投影；旧任务没有 session_id，继续只写兼容表。
     _publish_agent_snapshot(state)
