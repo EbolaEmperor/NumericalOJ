@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import threading
 from types import SimpleNamespace
@@ -1593,6 +1594,21 @@ def test_pi_session_header_id_is_recorded_with_existing_minimal_schema(
         "session_id": session_id,
         "resume_session_id": "",
         "returncode": 0,
+    }
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+
+
+def test_session_state_atomic_replace_preserves_existing_permissions(tmp_path):
+    module = _load_run_harness()
+    state_path = tmp_path / "session.json"
+    state_path.write_text("{}", encoding="utf-8")
+    state_path.chmod(0o666)
+
+    module._write_session_event(str(state_path), {"session_id": "session-id"})
+
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o666
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {
+        "session_id": "session-id",
     }
 
 
