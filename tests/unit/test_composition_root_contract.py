@@ -14,6 +14,7 @@ RESULT_PREFIX = "NUMOJ_COMPOSITION_ROOT_RESULT="
 
 EXPECTED_TASK_QUEUES = {
     "oj.agent.generate_testdata": "agent",
+    "oj.agent.run_turn": "agent",
     "oj.agent.solve_problem": "agent",
     "oj.ai_detection.detect_batch": "celery",
     "oj.ai_detection.detect_filtered": "celery",

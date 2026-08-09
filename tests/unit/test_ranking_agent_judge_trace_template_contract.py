@@ -17,9 +17,6 @@ JUDGE_MODAL = (
 REVERSE_MODAL = (
     ROOT / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
 ).read_text(encoding="utf-8")
-AGENT_TASK_MODAL = (
-    ROOT / "templates" / "agents" / "run_detail_modal.html"
-).read_text(encoding="utf-8")
 TRACE_ASSETS = (
     ROOT / "templates" / "components" / "agents" / "execution_trace_assets.html"
 ).read_text(encoding="utf-8")
@@ -54,7 +51,6 @@ def test_reverse_and_agent_judge_use_one_shared_trace_renderer():
     trace_include = "{% include 'components/agents/execution_trace_assets.html' %}"
     assert trace_include in REVERSE_MODAL
     assert trace_include in JUDGE_MODAL
-    assert trace_include in AGENT_TASK_MODAL
     assert "app/agents/execution-trace.css" in TRACE_ASSETS
     assert "app/agents/execution-trace.js" in TRACE_ASSETS
     assert not (ROOT / "templates" / "ranking" / "scripts" / "execution_trace.html").exists()

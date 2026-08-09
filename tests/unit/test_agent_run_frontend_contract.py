@@ -1,9 +1,7 @@
-import json
 from pathlib import Path
 import shutil
 import subprocess
 
-from jinja2 import Environment, nodes
 import pytest
 
 
@@ -14,187 +12,161 @@ def _read(relative_path):
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def _called_template_macros(relative_path):
-    parsed = Environment().parse(_read(relative_path))
-    return {
-        node.node.name
-        for node in parsed.find_all(nodes.Call)
-        if isinstance(node.node, nodes.Name)
-    }
+def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
+    template = _read("templates/admin/agent_tasks.html")
+    controller = _read("static/app/agents/task-list.js")
+    styles = _read("static/app/agents/task-list.css")
+
+    assert "data-agent-create-form" in template
+    assert 'enctype="multipart/form-data"' in template
+    for field in ("message", "attachments", "harness", "endpoint_id", "access_role"):
+        assert f"'{field}'" in template or f'name="{field}"' in template
+    assert "choice_picker(" in template
+    assert "data-agent-harnesses-json" in template
+    assert "data-agent-endpoints-json" in template
+    assert "data-agent-preference-json" in template
+    assert "data-agent-task-list" in template
+    assert "agent-history-row" in template
+    assert "harness_logo(session.harness)" in template
+    assert "session.endpoint_model" in template
+    assert "data-avatar-seed" in template
+    assert "agents/run_detail_modal.html" not in template
+    assert "ranking-v2-detail" not in template
+    assert "app/ranking/content-v2.css" not in template
+    assert "new FormData(form)" in controller
+    assert "payload.detail_url" in controller
+    assert ".numoj-content.container-fluid.agent-home-shell" in styles
+    assert ".agent-composer" in styles
+    assert ".agent-history-row" in styles
 
 
-def test_agent_tasks_and_ranking_submissions_share_one_card_shell():
-    shared = _read("templates/components/execution_record_card.html")
-    ranking = _read("templates/ranking/components/submission_card.html")
-    agent = _read("templates/agents/task_card.html")
-    task_list = _read("templates/admin/agent_tasks.html")
+def test_agent_detail_is_a_standalone_conversation_and_workspace_page():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+    styles = _read("static/app/agents/conversation.css")
 
-    assert "data-execution-record-card" in shared
-    assert "render_execution_record_card" in _called_template_macros(
-        "templates/ranking/components/submission_card.html"
-    )
-    assert "render_execution_record_card" in _called_template_macros(
-        "templates/agents/task_card.html"
-    )
-    assert "app/ranking/content-v2.css" in task_list
-    assert "ranking-v2-detail" in task_list
-    assert "<table" not in task_list
-
-
-def test_agent_task_card_links_the_latest_submission_and_preserves_detail_hook():
-    card = _read("templates/agents/task_card.html")
-    task_list = _read("templates/admin/agent_tasks.html")
-    navigation = _read("templates/components/layout/navigation.html")
-
-    assert "run.latest_submission_id" in card
-    assert "submission.submission_detail" in card
-    assert "harness_logo(run.harness)" in card
-    assert "run.endpoint_model" in card
-    assert "app/ranking/harness-logos.css" in task_list
-    assert "fa-fingerprint" not in card
-    assert "task_id[:8]" not in card
-    assert 'data-avatar-seed="{{ run.requested_by or \'numericaloj\' }}"' in card
-    assert 'data-avatar-seed="{{ user.username }}"' in navigation
-    assert 'data-avatar-seed="{{ run.display_problem_title }}"' not in card
-    assert "data-agent-task-detail" in card
-    assert 'data-task-id="{{ task_id }}"' in card
+    assert "data-agent-session" in template
+    assert "data-agent-conversation-scroll" in template
+    assert "data-agent-file-pane" in template
+    assert "data-agent-workspace" in template
+    assert 'data-agent-splitter="conversation"' in template
+    assert 'data-agent-splitter="workspace"' in template
+    assert 'role="separator"' in template
+    assert "components/editor/monaco.html" in template
+    assert "app/markdown-rendering.js" in template
+    assert "app/agents/conversation.js" in template
+    assert "components/agents/execution_trace_assets.html" not in template
+    assert "AgentExecutionTrace" not in controller
+    assert ".numoj-content.container-fluid.agent-session-shell" in styles
+    assert ".agent-session.has-file" in styles
+    assert "4.5fr" in styles
+    assert "agent-file-image-stage" in styles
 
 
-def test_agent_run_detail_is_a_shared_trace_modal_on_the_task_list():
-    task_list = _read("templates/admin/agent_tasks.html")
-    task_card = _read("templates/agents/task_card.html")
-    modal = _read("templates/agents/run_detail_modal.html")
-    controller = _read("static/app/agents/run-detail-modal.js")
-    styles = _read("static/app/agents/run-detail-modal.css")
+def test_agent_detail_supports_resume_stop_and_live_state_without_interruption():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
 
-    assert not (ROOT / "templates/agents/run.html").exists()
-    assert task_list.count("{% include 'agents/run_detail_modal.html' %}") == 1
-    assert "data-agent-task-detail" in task_card
-    assert "problem_core.admin_agent_tasks" in task_list
-
-    shared_trace = "{% include 'components/agents/execution_trace_assets.html' %}"
-    assert modal.count(shared_trace) == 1
-    assert "app/agents/run-detail-modal.css" in modal
-    assert "app/agents/run-detail-modal.js" in modal
-    assert len(modal.splitlines()) <= 100
-    assert "<style>" not in modal
-    assert "(function () {" not in modal
-    assert "window.AgentExecutionTrace.create" in controller
-    assert ".agent-task-modal-content" in styles
-    assert "data-agent-task-modal" in modal
-    assert "data-agent-task-trace" in modal
-    assert "activeSource.addEventListener('status'" in controller
-    assert "activeSource.addEventListener('done'" in controller
-    assert "activeSource.addEventListener('timeout'" not in controller
+    assert "data-agent-resume-form" in template
+    assert "data-agent-resume-file" in template
+    assert "data-agent-resume-send" in template
+    assert "data-agent-stop" in template
+    assert "data-status-url-template" in template
+    assert "data-stream-url-template" in template
+    assert "data-cancel-url-template" in template
+    assert "new global.EventSource" in controller
+    assert "addEventListener('status'" in controller
+    assert "addEventListener('done'" in controller
     assert "startPolling(taskId, generation)" in controller
-    assert "generation !== liveGeneration" in controller
-    assert "source === activeSource" in controller
+    assert "taskId !== currentTaskId || generation !== liveGeneration" in controller
+    assert "resumeSend.disabled = running || blocked" in controller
+    assert "cleanupfailed" in controller
+    assert "清理失败，需管理员处理" in template
+    assert "data-can-resume" in template
+    assert "|| !canResume" in controller
 
 
-def test_agent_run_modal_consumes_only_the_canonical_execution_trace():
-    controller = _read("static/app/agents/run-detail-modal.js")
+def test_agent_detail_keeps_file_preview_and_workspace_accessible():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+    styles = _read("static/app/agents/conversation.css")
 
-    assert "state.execution_trace" in controller
-    assert "renderer.render(traceRoot, trace" in controller
-    assert "scope: expectedTaskId" in controller
-    assert "source: String(trace.trace_id || expectedTaskId)" in controller
-    assert "state.events" not in controller
-    assert "function executionTrace(" not in controller
-    assert "function eventDetails(" not in controller
-    assert "function eventTitle(" not in controller
-    assert "agent-task-events" not in controller
-
-
-def test_agent_run_modal_displays_usage_and_only_reveals_configured_cost():
-    modal = _read("templates/agents/run_detail_modal.html")
-    controller = _read("static/app/agents/run-detail-modal.js")
-
-    assert modal.index("data-agent-task-input") < modal.index("BEST SCORE")
-    assert modal.index("data-agent-task-input") < modal.index("data-agent-task-cached")
-    assert modal.index("data-agent-task-cached") < modal.index("data-agent-task-output")
-    assert modal.index("data-agent-task-output") < modal.index("BEST SCORE")
-    assert "data-agent-task-updated" not in modal
-    assert "data-agent-task-updated" not in controller
-    assert 'data-agent-task-cost-fact hidden' in modal
-    assert "trace.token_usage" in controller
-    assert "cachedEl.textContent = cachedPercent.toFixed(2) + '%'" in controller
-    assert "tokens < 10000" in controller
-    assert "tokens / 1000" in controller
-    assert "tokens / 1000000" in controller
-    assert "value >= 1 ? value.toFixed(2) : value.toPrecision(2)" in controller
-    assert "costFactEl.hidden = !hasCost" in controller
+    assert 'role="tree"' not in template
+    assert "details.setAttribute('role', 'treeitem')" not in controller
+    assert "filePane.setAttribute('aria-modal', 'true')" in controller
+    assert "event.key === 'Escape'" in controller
+    assert "filePreviewReturnFocus.focus()" in controller
+    assert "trapMobileFilePreviewFocus" in controller
+    assert "statusChip.setAttribute('aria-label', item.label)" in controller
+    assert "clip: rect(0, 0, 0, 0)" in styles
 
 
-def test_agent_run_modal_only_links_a_terminal_final_submission():
-    modal = _read("templates/agents/run_detail_modal.html")
-    controller = _read("static/app/agents/run-detail-modal.js")
+def test_agent_trace_prefers_server_normalized_titles():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
 
-    assert "data-agent-task-final-link" in modal
-    assert "var finalId = Number(state.final_submission_id || 0);" in controller
-    assert "var finalUrl = finished ? submissionUrl(finalId) : '';" in controller
-    assert "latest_submission_id" not in controller
-    assert "agentSubmissionFrame" not in modal + controller
-
-
-def test_agent_run_modal_cancels_active_tasks_with_inline_confirmation():
-    modal = _read("templates/agents/run_detail_modal.html")
-    controller = _read("static/app/agents/run-detail-modal.js")
-    styles = _read("static/app/agents/run-detail-modal.css")
-
-    assert "data-cancel-url-template" in modal
-    assert "data-agent-task-cancel" in modal
-    assert "return key === 'pending' || key === 'running'" in controller
-    assert "cancelButtonEl.dataset.confirming = '1'" in controller
-    assert "再次点击确认" in controller
-    assert "method: 'POST'" in controller
-    assert "applyState(state, taskId, generation)" in controller
-    assert "error.agentState = payload && payload.state" in controller
-    assert "window.confirm" not in controller
-    assert ".agent-task-cancel-button" in styles
+    assert "message.title|default(message.name" in template
+    assert "message.title || message.name || message.tool_name" in controller
+    assert "message.title || message.name || '子 Agent'" in controller
+    assert "message.title|default('工具执行失败' if result_error else '工具结果'" in template
+    assert "message.is_error === true" in controller
+    assert "resultError ? 'error' : 'result'" in controller
+    assert "resultError ? '工具执行失败' : '工具结果'" in controller
 
 
-def test_agent_run_modal_preserves_terminal_state_from_failed_cancel_response():
+def test_agent_detail_archives_each_live_response_before_starting_the_next_turn():
+    controller = _read("static/app/agents/conversation.js")
+
+    assert "function archiveLiveResponse()" in controller
+    assert "target.appendChild(historicalResponse(currentState))" in controller
+    assert "target.dataset.agentResponseArchived = 'true'" in controller
+    assert "archiveLiveResponse();\n        appendOptimisticUserMessage(" in controller
+    assert "function resetLiveResponse()" in controller
+    assert "details.append(summary, trace)" in controller
+
+
+def test_agent_detail_only_consumes_server_html_for_rich_trace_kinds():
+    controller = _read("static/app/agents/conversation.js")
+
+    assert "function isRichTraceKind(kind)" in controller
+    assert "kind === 'assistant' || kind === 'thinking' || kind === 'reasoning'" in controller
+    assert "if (html && isRichTraceKind(kind))" in controller
+    assert "setServerHtml(element, conclusion.html)" in controller
+
+
+def test_agent_workspace_preview_covers_required_formats_and_safe_downloads():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+
+    assert "problem_core.admin_agent_workspace_tree" in template
+    assert "problem_core.admin_agent_workspace_file" in template
+    assert "raw: 1" in controller
+    assert "download: 1" in controller
+    assert "renderCode" in controller
+    assert "preview_kind" in controller
+    assert "agent-file-markdown" in controller
+    assert "agent-file-pdf" in controller
+    assert "imageViewer" in controller
+    assert "agent-file-text" in controller
+    assert "无法预览的文件格式" in controller
+    assert "context: 'agent-workspace'" in controller
+    assert "documentId: function (model)" in controller
+    assert "readOnly: true" in controller
+    assert "domReadOnly: true" in controller
+
+
+def test_agent_frontend_javascript_has_valid_syntax():
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is unavailable")
-    controller = _read("static/app/agents/run-detail-modal.js")
-    helper = controller.split("// CANCEL_RESPONSE_HELPER_START", 1)[1].split(
-        "// CANCEL_RESPONSE_HELPER_END",
-        1,
-    )[0]
-    script = helper + r"""
-try {
-  parseCancelResponse(
-    {ok: false, status: 500},
-    {
-      success: false,
-      message: '任务已标记为终止，但运行时清理失败',
-      state: {status: 'Canceled', task_id: 'task-1'}
-    }
-  );
-} catch (error) {
-  process.stdout.write(JSON.stringify({
-    message: error.message,
-    state: error.agentState
-  }));
-}
-"""
-
-    result = subprocess.run(
-        [node, "-e", script],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert json.loads(result.stdout) == {
-        "message": "任务已标记为终止，但运行时清理失败",
-        "state": {"status": "Canceled", "task_id": "task-1"},
-    }
-
-
-def test_agent_task_list_does_not_render_react_rounds():
-    template = _read("templates/admin/agent_tasks.html")
-
-    assert "运行轮数" not in template
-    assert "display_rounds" not in template
+    for relative_path in (
+        "static/app/agents/task-list.js",
+        "static/app/agents/conversation.js",
+        "static/app/code-editor-runtime.js",
+    ):
+        subprocess.run(
+            [node, "--check", str(ROOT / relative_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )

@@ -20,6 +20,7 @@ from oj_modules.problems.agent_runs import hydrate_agent_run_snapshot
 
 AGENT_SOLVE_TASK_NAME = "oj.agent.solve_problem"
 AGENT_GENERATE_TESTDATA_TASK_NAME = "oj.agent.generate_testdata"
+AGENT_RUN_TURN_TASK_NAME = "oj.agent.run_turn"
 _agent_progress_rds = None
 _agent_progress_blocking_rds = None
 _AGENT_PROGRESS_TTL_SECONDS = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
@@ -240,17 +241,21 @@ def _persist_agent_state(state):
     state.pop("execution_trace", None)
     state["updated_at"] = _format_local_time()
     persisted = upsert_agent_run_snapshot(state)
+    sticky_canceled = False
     if (
         isinstance(persisted, dict)
         and str(persisted.get("status") or "").strip().lower()
         in {"canceled", "cancelled"}
     ):
+        sticky_canceled = True
         state["status"] = persisted.get("status") or "Canceled"
         state["message"] = (
             persisted.get("message") or "任务已由管理员终止"
         )
         state["stage"] = "finished"
         state["harness_status"] = "canceled"
+    # 带 session_id 的状态已由 upsert_agent_run_snapshot 在同一 MySQL 事务
+    # 原子投影；旧任务没有 session_id，继续只写兼容表。
     _publish_agent_snapshot(state)
 
 
@@ -287,6 +292,26 @@ def canceled_agent_task_result(task_id):
     }
 
 
+def _repair_terminal_agent_session(task_id, state):
+    """late-ack 重投入口幂等修复已提交 run 与会话之间的历史崩溃窗口。"""
+
+    from oj_modules.agents.sessions import (
+        get_agent_session_by_task_id,
+        sync_agent_session_state,
+    )
+
+    session = get_agent_session_by_task_id(task_id)
+    if not isinstance(session, dict) or session.get("is_legacy"):
+        return False
+    return sync_agent_session_state({
+        "task_id": str(task_id or ""),
+        "session_id": session.get("session_id"),
+        "status": state.get("status"),
+        "message": state.get("message"),
+        "_preserve_conclusion": True,
+    })
+
+
 def existing_agent_terminal_result(task_id):
     """为 broker 恢复出的重复消息返回已有终态，避免再次启动 harness。"""
 
@@ -294,10 +319,27 @@ def existing_agent_terminal_result(task_id):
     if not isinstance(state, dict):
         return None
     status = str(state.get("status") or "").strip().lower()
-    if status not in {"completed", "failed", "canceled", "cancelled"}:
+    if status not in {
+        "completed",
+        "failed",
+        "canceled",
+        "cancelled",
+        "cleanupfailed",
+        "cleanup_failed",
+    }:
         return None
+    _repair_terminal_agent_session(task_id, state)
     if status in {"canceled", "cancelled"}:
         return canceled_agent_task_result(task_id)
+    if status in {"cleanupfailed", "cleanup_failed"}:
+        return {
+            "success": False,
+            "cleanup_failed": True,
+            "message": str(
+                state.get("message") or "Agent 运行时清理失败，需管理员处理"
+            ),
+            "task_id": str(task_id or ""),
+        }
     return {
         "success": status == "completed",
         "message": str(state.get("message") or "任务已结束"),
@@ -343,6 +385,7 @@ def cancel_agent_run(task_id, message="任务已由管理员终止"):
 
 
 __all__ = [
+    "AGENT_RUN_TURN_TASK_NAME",
     "AGENT_SOLVE_TASK_NAME",
     "AGENT_GENERATE_TESTDATA_TASK_NAME",
     "init_agent_progress_cache",

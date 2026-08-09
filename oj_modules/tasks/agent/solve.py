@@ -12,10 +12,16 @@ from oj_modules.db_services import (
     get_user_by_username,
 )
 from oj_modules.problems.agent_launch import (
+    AGENT_ACCESS_ROLE_USER,
     AGENT_TASK_SOLVE,
     resolve_launch_endpoint,
+    validate_launch_endpoint_revision,
 )
-from oj_modules.tasks.agent.harness_runtime import run_agent_harness
+from oj_modules.tasks.agent.conversation import extract_agent_conclusion
+from oj_modules.tasks.agent.harness_runtime import (
+    AgentHarnessCleanupError,
+    run_agent_harness,
+)
 from oj_modules.tasks.agent.shared import (
     AGENT_SOLVE_TASK_NAME,
     _format_local_time,
@@ -26,6 +32,9 @@ from oj_modules.tasks.agent.shared import (
     existing_agent_terminal_result,
 )
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
+from oj_modules.tasks.agent.titles import (
+    generate_initial_agent_session_title,
+)
 
 
 SOLUTION_AGENT_PROMPT = (
@@ -97,6 +106,7 @@ def register_agent_solve_problem_task(celery_app):
         endpoint_id=None,
         session_cookie="",
         session_cookie_name="session",
+        endpoint_revision=None,
     ):
         task_id = str(
             getattr(getattr(self, "request", None), "id", None) or ""
@@ -106,10 +116,12 @@ def register_agent_solve_problem_task(celery_app):
             return terminal_result
         state = {
             "task_id": task_id,
+            "session_id": task_id,
             "problem_id": int(problem_id),
             "problem_title": "",
             "requested_by": requested_by,
             "task_kind": AGENT_TASK_SOLVE,
+            "access_role": AGENT_ACCESS_ROLE_USER,
             "harness": str(harness or ""),
             "endpoint_id": endpoint_id,
             "status": "Running",
@@ -118,6 +130,9 @@ def register_agent_solve_problem_task(celery_app):
             "latest_submission_id": None,
             "final_submission_id": None,
             "attempts": [],
+            "title": "",
+            "native_session_id": "",
+            "conclusion": "",
             "stage": "starting",
             "harness_status": "pending",
             "updated_at": _format_local_time(),
@@ -151,14 +166,27 @@ def register_agent_solve_problem_task(celery_app):
                 endpoint_id,
                 include_secret=True,
             )
+            if endpoint_revision is not None:
+                validate_launch_endpoint_revision(endpoint, endpoint_revision)
         except Exception as exc:
             message = str(exc) or "所选 LLM 节点不可用"
             _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
 
         title = str(problem.get("title") or f"题目 {problem_id}")
+        agent_prompt = build_solution_agent_prompt(
+            problem_id=problem_id,
+            problem_title=title,
+        )
+        session_title = generate_initial_agent_session_title(
+            task_id,
+            endpoint,
+            agent_prompt,
+            fallback=f"解题 {title}",
+        )
         state.update({
             "problem_title": title,
+            "title": session_title,
             "harness": str(harness),
             "endpoint_id": int(endpoint["id"]),
             "endpoint_model": str(endpoint.get("model") or ""),
@@ -175,24 +203,37 @@ def register_agent_solve_problem_task(celery_app):
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
+                session_id=task_id,
                 task_kind=AGENT_TASK_SOLVE,
+                access_role=AGENT_ACCESS_ROLE_USER,
                 problem_id=int(problem_id),
                 requested_by=requested_by,
                 harness=harness,
                 endpoint=endpoint,
                 session_cookie=session_cookie,
                 session_cookie_name=session_cookie_name,
-                prompt=build_solution_agent_prompt(
-                    problem_id=problem_id,
-                    problem_title=title,
-                ),
+                prompt=agent_prompt,
                 trace_callback=lambda: _publish_agent_trace(state),
                 cancel_check=lambda: agent_run_is_canceled(task_id),
                 reset_trace=False,
             )
+        except AgentHarnessCleanupError as exc:
+            conclusion = extract_agent_conclusion(task_id)
+            state["conclusion"] = conclusion
+            message = str(exc)
+            _update_agent_state(
+                state,
+                message,
+                status="CleanupFailed",
+                stage="finished",
+                harness_status="cleanup_failed",
+            )
+            return {"success": False, "message": message, "task_id": task_id}
         except Exception as exc:
             if agent_run_is_canceled(task_id):
                 return canceled_agent_task_result(task_id)
+            conclusion = extract_agent_conclusion(task_id)
+            state["conclusion"] = conclusion
             message = f"解题 harness 启动失败：{str(exc)[:800]}"
             _update_agent_state(
                 state,
@@ -205,6 +246,10 @@ def register_agent_solve_problem_task(celery_app):
 
         if agent_run_is_canceled(task_id):
             return canceled_agent_task_result(task_id)
+
+        conclusion = extract_agent_conclusion(task_id)
+        state["native_session_id"] = str(run_result.native_session_id or "")
+        state["conclusion"] = conclusion
 
         # 只认身份代理亲自转发创建的 submission，避免并发的人工提交被误判为
         # 本次 Agent 产物。
@@ -222,6 +267,31 @@ def register_agent_solve_problem_task(celery_app):
         state["attempts"] = attempts
         state["latest_submission_id"] = latest_id
 
+        if not state["native_session_id"]:
+            message = "解题 Agent 未记录可恢复的原生会话"
+            if accepted is not None:
+                message += "；提交虽已通过，但本任务不能继续会话"
+            _update_agent_state(
+                state,
+                message,
+                status="Failed",
+                stage="finished",
+                harness_status="error",
+                final_submission_id=(
+                    int(accepted.get("id") or 0)
+                    if accepted is not None
+                    else latest_id
+                ),
+                conclusion=conclusion or message,
+            )
+            return {
+                "success": False,
+                "message": message,
+                "task_id": task_id,
+                "final_submission_id": state.get("final_submission_id"),
+                "attempts": attempts,
+            }
+
         if accepted is not None:
             final_id = int(accepted.get("id") or 0)
             message = "解题 Agent 已提交并通过"
@@ -236,6 +306,8 @@ def register_agent_solve_problem_task(celery_app):
                     else "completed"
                 ),
                 final_submission_id=final_id,
+                native_session_id=state["native_session_id"],
+                conclusion=conclusion or message,
             )
             return {
                 "success": True,
@@ -265,6 +337,8 @@ def register_agent_solve_problem_task(celery_app):
                 else "error" if run_result.returncode != 0 else "completed"
             ),
             final_submission_id=latest_id,
+            native_session_id=state["native_session_id"],
+            conclusion=conclusion or message,
         )
         return {
             "success": False,

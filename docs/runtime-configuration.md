@@ -53,13 +53,28 @@ LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启
 | `AGENT_REPOSITORY_KNN_TOP_K` | int | `5` |
 | `AGENT_REPOSITORY_KNN_SCORE_THRESHOLD` | float | `0.08` |
 | `AGENT_WORKSPACE_ROOT` | string | `tmp/agent_workspaces` |
+| `AGENT_WORKSPACE_MAX_BYTES` | int | `536870912` |
+| `AGENT_WORKSPACE_MAX_FILES` | int | `20000` |
+| `AGENT_WORKSPACE_MAX_ENTRIES` | int | `25000` |
+| `AGENT_WORKSPACE_MAX_DEPTH` | int | `64` |
+| `AGENT_WORKSPACE_MIN_FREE_BYTES` | int | `2147483648` |
+| `AGENT_WORKSPACE_QUOTA_CHECK_INTERVAL_SECONDS` | float | `2.0` |
 | `AGENT_CONTAINER_SITE_URL` | string | `http://host.docker.internal:2025` |
 | `MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS` | int | `90` |
 
-解题与造数据任务启动时会读取全站 WebSearch MCP 的 URL 和 Authorization，
+每个持久 Agent workspace 同时受总字节数、普通文件数、目录在内的总 entry 数和目录深度限制；任何一项超限都会
+阻止启动或终止正在运行的 Harness。附件与宿主注入文件也经过同一配额边界，
+并且所在文件系统始终保留 `AGENT_WORKSPACE_MIN_FREE_BYTES` 可用空间。无法安全统计
+工作区或无法确认可用空间时会拒绝继续，不会降级为无限额模式。符号链接、FIFO 与
+socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每个入口重复计算完整
+逻辑大小。扫描与只读文件服务不会跟随链接，无法安全预览的入口不会出现在 workspace
+文件树中。
+
+通用 Agent 任务（包括解题与造数据兼容入口）启动时会读取全站 WebSearch MCP 的 URL 和 Authorization，
 并注入管理员在弹窗中选择的 Harness。Codex、Claude Code 和 OpenCode 使用各自的
-远程 MCP 配置；Pi 通过镜像内受信任扩展注册同一个 `web_search` 工具。凭证只通过
-容器环境变量传递，生成到任务工作区的配置文件仅引用变量名。
+远程 MCP 配置；Pi 通过镜像内受信任扩展注册同一个 `web_search` 工具。模型 API Key
+与 WebSearch Authorization 只保存在本轮宿主 relay 的内存中；容器环境只获得相互
+隔离、随 relay 关闭立即失效的临时凭据，生成到任务工作区的配置文件仅引用变量名。
 
 ## 代码仓库与向量索引
 

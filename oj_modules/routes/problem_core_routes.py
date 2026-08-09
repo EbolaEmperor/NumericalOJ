@@ -8,8 +8,9 @@ import re
 import time
 from datetime import datetime
 from uuid import uuid4
+from urllib.parse import quote
 
-from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
+from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
@@ -19,7 +20,6 @@ from oj_modules.db_services import (
     can_submit,
     create_submission,
     get_agent_run_by_task_id,
-    get_agent_runs_paginated,
     get_db_connection,
     get_filtered_submissions_paginated,
     get_latest_written_submission,
@@ -30,6 +30,28 @@ from oj_modules.db_services import (
     overwrite_written_submission,
     upsert_agent_run_snapshot,
 )
+from oj_modules.agents.sessions import (
+    AgentSessionBusyError,
+    AgentSessionNotFoundError,
+    agent_status_is_terminal,
+    begin_agent_session_turn,
+    create_agent_session,
+    get_agent_session,
+    get_agent_session_by_task_id,
+    get_agent_session_turns,
+    get_agent_sessions_paginated,
+    mark_agent_turn_enqueue_failed,
+    set_agent_turn_attachments,
+    normalize_agent_access_role,
+)
+from oj_modules.agents.workspace import (
+    build_agent_workspace_tree,
+    ensure_agent_workspace,
+    inspect_agent_workspace_file,
+    open_agent_workspace_file,
+    remove_agent_attachments,
+    save_agent_attachments,
+)
 from oj_modules.security.auth import current_user
 from oj_modules.classroom.dashboard import (
     get_class_activity,
@@ -38,7 +60,6 @@ from oj_modules.classroom.dashboard import (
     visible_classes_for_user_cached,
 )
 from oj_modules.problems.agent_runs import (
-    decorate_agent_run_summaries,
     hydrate_agent_run_snapshot,
 )
 from oj_modules.problems.agent_launch import (
@@ -66,6 +87,7 @@ from oj_modules.submissions.written_artifacts import (
     WrittenSubmissionArtifactError,
     publish_manual_written_submission,
 )
+from oj_modules.shared.markdown import render_rich_markdown
 
 
 problem_core_bp = Blueprint('problem_core', __name__)
@@ -76,6 +98,7 @@ _promptly_generate_submission_task = None
 _transcribe_written_homework_task = None
 _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
+_agent_run_turn_task = None
 _get_agent_run_snapshot = None
 _subscribe_agent_run_events = None
 _terminate_agent_run = None
@@ -125,12 +148,230 @@ def _read_agent_standard_solution(upload):
     return source, safe_filename
 
 
+_AGENT_MESSAGE_MAX_CHARS = 100_000
+
+
+def _agent_session_cookie():
+    cookie_name = str(current_app.config.get('SESSION_COOKIE_NAME') or 'session')
+    session_cookie = str(request.cookies.get(cookie_name) or '')
+    if not session_cookie:
+        raise ValueError('当前登录身份不可用于 Agent')
+    return cookie_name, session_cookie
+
+
+def _agent_launch_page_options(user_id):
+    endpoints_by_harness = list_launch_endpoints_by_harness()
+    preference = get_agent_launch_preference(user_id) or {}
+    preferred_harness = str(preference.get('harness') or '')
+    try:
+        preferred_endpoint_id = int(preference.get('endpoint_id') or 0)
+    except (TypeError, ValueError):
+        preferred_endpoint_id = 0
+    valid = any(
+        int(item.get('id') or 0) == preferred_endpoint_id
+        for item in endpoints_by_harness.get(preferred_harness, [])
+    )
+    if not valid:
+        preferred_harness = next(
+            (
+                option['value']
+                for option in harness_options()
+                if endpoints_by_harness.get(option['value'])
+            ),
+            '',
+        )
+        candidates = endpoints_by_harness.get(preferred_harness, [])
+        preferred_endpoint_id = int(candidates[0]['id']) if candidates else 0
+    return {
+        'harnesses': harness_options(),
+        'endpoints_by_harness': endpoints_by_harness,
+        'preference': {
+            'harness': preferred_harness,
+            'endpoint_id': preferred_endpoint_id or None,
+        },
+    }
+
+
+def _agent_message_from_request():
+    message = str(request.form.get('message') or '').strip()
+    if not message:
+        raise ValueError('请输入任务内容')
+    if len(message) > _AGENT_MESSAGE_MAX_CHARS:
+        raise ValueError(f'任务内容不能超过 {_AGENT_MESSAGE_MAX_CHARS} 个字符')
+    return message
+
+
+def _agent_prompt_with_attachments(message, attachments):
+    entries = [
+        str(item.get('path') or '').strip()
+        for item in attachments or []
+        if isinstance(item, dict) and str(item.get('path') or '').strip()
+    ]
+    if not entries:
+        return str(message or '')
+    paths = '\n'.join(f'- /workspace/{path}' for path in entries)
+    return (
+        f"{str(message or '').strip()}\n\n"
+        "用户随本轮消息上传了以下附件，文件已经放入 workspace。"
+        "请在需要时直接读取：\n"
+        f"{paths}"
+    )
+
+
+def _agent_trace_conclusion(execution_trace):
+    messages = (
+        execution_trace.get('trace_messages')
+        if isinstance(execution_trace, dict)
+        else []
+    ) or []
+    for item in reversed(messages):
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get('kind') or item.get('type') or '').strip().lower()
+        text = item.get('text')
+        if text is None:
+            text = item.get('content')
+        if kind == 'assistant' and str(text or '').strip():
+            return str(text).strip()
+    return ''
+
+
+_AGENT_RICH_TRACE_KINDS = frozenset({'assistant', 'thinking', 'reasoning'})
+
+
+def _agent_trace_text(message):
+    if not isinstance(message, dict):
+        return ''
+    value = message.get('text')
+    if value is None:
+        value = message.get('content')
+    return str(value or '')
+
+
+def _decorate_agent_state_markdown(raw_state):
+    """只把受信任的服务端 Markdown HTML 投影到 Agent 展示状态。"""
+
+    if not isinstance(raw_state, dict):
+        return raw_state
+    state = dict(raw_state)
+    raw_trace = state.get('execution_trace')
+    has_trace = isinstance(raw_trace, dict)
+    trace = dict(raw_trace) if has_trace else {}
+    trace.pop('conclusion_html', None)
+    trace.pop('final_response_html', None)
+    raw_messages = trace.get('trace_messages') or []
+    messages = []
+    if isinstance(raw_messages, list):
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, dict):
+                continue
+            message = dict(raw_message)
+            # JSONL 由不可信 Agent 产生；任何随轨迹传入的 HTML 都不能直送浏览器。
+            message.pop('html', None)
+            kind = str(
+                message.get('kind') or message.get('type') or 'assistant'
+            ).strip().lower()
+            text = _agent_trace_text(message)
+            if kind in _AGENT_RICH_TRACE_KINDS and text:
+                message['html'] = str(render_rich_markdown(text))
+            messages.append(message)
+    if has_trace:
+        trace['trace_messages'] = messages
+        state['execution_trace'] = trace
+
+    # 同样不信任任务快照中自带的 *_html，只根据规范纯文本重新生成。
+    state.pop('conclusion_html', None)
+    state.pop('final_response_html', None)
+    conclusion = str(
+        state.get('conclusion')
+        or state.get('final_response')
+        or trace.get('conclusion')
+        or trace.get('final_response')
+        or _agent_trace_conclusion(trace)
+        or ''
+    ).strip()
+    if conclusion:
+        state['conclusion'] = conclusion
+        state['conclusion_html'] = str(render_rich_markdown(conclusion))
+        if state.get('final_response'):
+            state['final_response_html'] = state['conclusion_html']
+    return state
+
+
+def _decorate_agent_turns(turns):
+    decorated = []
+    for raw_turn in turns or []:
+        turn = dict(raw_turn)
+        snapshot = _decorate_agent_state_markdown(
+            hydrate_agent_run_snapshot({
+                'task_id': turn.get('task_id'),
+                'status': turn.get('status'),
+                'message': turn.get('conclusion') or '',
+            })
+        )
+        trace = snapshot.get('execution_trace') or {}
+        conclusion = str(turn.get('conclusion') or '').strip()
+        if not conclusion and agent_status_is_terminal(turn.get('status')):
+            conclusion = _agent_trace_conclusion(trace)
+        turn['execution_trace'] = trace
+        turn['user_message_html'] = render_rich_markdown(turn.get('user_message'))
+        turn['conclusion'] = conclusion
+        turn['conclusion_html'] = render_rich_markdown(conclusion)
+        decorated.append(turn)
+    return decorated
+
+
+def _pending_agent_run_state(session, task_id):
+    return {
+        'task_id': task_id,
+        'session_id': session['session_id'],
+        'problem_id': session.get('problem_id'),
+        'problem_title': session.get('problem_title'),
+        'requested_by': session.get('requested_by'),
+        'task_kind': session.get('task_kind') or 'custom',
+        'harness': session.get('harness'),
+        'endpoint_id': session.get('endpoint_id'),
+        'endpoint_model': session.get('endpoint_model'),
+        'status': 'Pending',
+        'message': '任务排队中',
+        'best_score': 0,
+        'latest_submission_id': None,
+        'final_submission_id': None,
+        'attempts': [],
+    }
+
+
+def _mark_agent_dispatch_failed(session_id, task_id, pending_state, message):
+    """尽力把“已建轮次但未入队”收束为可诊断的失败终态。"""
+
+    failure_message = str(message or '任务入队失败')
+    failure_state = dict(pending_state or {})
+    failure_state.update(status='Failed', message=failure_message)
+    try:
+        if failure_state.get('task_id'):
+            upsert_agent_run_snapshot(failure_state)
+    except Exception:
+        logger.exception(
+            '更新 Agent 调度失败快照失败',
+            extra={'session_id': session_id, 'task_id': task_id},
+        )
+    try:
+        mark_agent_turn_enqueue_failed(session_id, task_id, failure_message)
+    except Exception:
+        logger.exception(
+            '更新 Agent 会话调度失败状态失败',
+            extra={'session_id': session_id, 'task_id': task_id},
+        )
+    return failure_message
+
+
 def init_problem_core_module(
     evaluate_submission_task,
     transcribe_written_homework_task,
     promptly_generate_submission_task=None,
     agent_solve_problem_task=None,
     agent_generate_testdata_task=None,
+    agent_run_turn_task=None,
     get_agent_run_snapshot=None,
     subscribe_agent_run_events=None,
     terminate_agent_run=None,
@@ -138,6 +379,7 @@ def init_problem_core_module(
     global _evaluate_submission_task, _promptly_generate_submission_task
     global _transcribe_written_homework_task
     global _agent_solve_problem_task, _agent_generate_testdata_task
+    global _agent_run_turn_task
     global _get_agent_run_snapshot, _subscribe_agent_run_events
     global _terminate_agent_run
     _evaluate_submission_task = evaluate_submission_task
@@ -145,6 +387,7 @@ def init_problem_core_module(
     _transcribe_written_homework_task = transcribe_written_homework_task
     _agent_solve_problem_task = agent_solve_problem_task
     _agent_generate_testdata_task = agent_generate_testdata_task
+    _agent_run_turn_task = agent_run_turn_task
     _get_agent_run_snapshot = get_agent_run_snapshot
     _subscribe_agent_run_events = subscribe_agent_run_events
     _terminate_agent_run = terminate_agent_run
@@ -154,7 +397,14 @@ def _is_agent_state_finished(state):
     if not isinstance(state, dict):
         return False
     status = str(state.get("status") or "").strip().lower()
-    return status in ("completed", "failed", "canceled", "cancelled")
+    return status in (
+        "completed",
+        "failed",
+        "canceled",
+        "cancelled",
+        "cleanupfailed",
+        "cleanup_failed",
+    )
 
 
 def _build_agent_state_from_async_result(task_id):
@@ -222,6 +472,50 @@ def _overlay_agent_celery_terminal(task_id, state):
     return merged
 
 
+def _overlay_agent_session_cleanup_failure(task_id, raw_state, agent_session=None):
+    """让会话清理失败覆盖 agent_task_runs 中为撤销保留的 Canceled。"""
+
+    if not isinstance(raw_state, dict):
+        return raw_state
+    state = dict(raw_state)
+    state_status = str(state.get('status') or '').strip().lower()
+    if agent_session is None and state_status in {'canceled', 'cancelled'}:
+        try:
+            agent_session = get_agent_session_by_task_id(task_id)
+        except Exception:
+            # 状态接口仍可退回已持久化的 Canceled；详情页会使用已读取的会话
+            # 再覆盖一次，确保刷新后的交互边界保持 fail-closed。
+            agent_session = None
+    if not isinstance(agent_session, dict):
+        return state
+    session_status = str(agent_session.get('status') or '').strip().lower()
+    if (
+        session_status not in {'cleanupfailed', 'cleanup_failed'}
+        or str(agent_session.get('current_task_id') or '').strip() != str(task_id)
+    ):
+        return state
+    state.update(
+        status='CleanupFailed',
+        message=(
+            str(agent_session.get('message') or '').strip()
+            or '任务运行时清理失败，需管理员处理'
+        ),
+        stage='finished',
+        harness_status='cleanup_failed',
+    )
+    return state
+
+
+def _agent_state_for_response(task_id, raw_state, agent_session=None):
+    return _decorate_agent_state_markdown(
+        _overlay_agent_session_cleanup_failure(
+            task_id,
+            raw_state,
+            agent_session=agent_session,
+        )
+    )
+
+
 def _get_agent_run_state(task_id):
     state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
@@ -237,16 +531,25 @@ def _get_agent_run_state(task_id):
                 )
             if _is_agent_state_finished(persisted):
                 state = {**state, **persisted}
-        return hydrate_agent_run_snapshot(
-            _overlay_agent_celery_terminal(task_id, state),
+        return _agent_state_for_response(
+            task_id,
+            hydrate_agent_run_snapshot(
+                _overlay_agent_celery_terminal(task_id, state),
+            )
         )
     state = get_agent_run_by_task_id(task_id)
     if isinstance(state, dict):
-        return hydrate_agent_run_snapshot(
-            _overlay_agent_celery_terminal(task_id, state),
+        return _agent_state_for_response(
+            task_id,
+            hydrate_agent_run_snapshot(
+                _overlay_agent_celery_terminal(task_id, state),
+            )
         )
-    return hydrate_agent_run_snapshot(
-        _build_agent_state_from_async_result(task_id),
+    return _agent_state_for_response(
+        task_id,
+        hydrate_agent_run_snapshot(
+            _build_agent_state_from_async_result(task_id),
+        )
     )
 
 
@@ -492,6 +795,7 @@ def admin_agent_solve_problem(problem_id):
     task_id = uuid4().hex
     pending_state = {
         "task_id": task_id,
+        "session_id": task_id,
         "problem_id": int(problem.get("id") or problem_id),
         "problem_title": problem.get("title"),
         "requested_by": user.get("username"),
@@ -507,6 +811,30 @@ def admin_agent_solve_problem(problem_id):
         "attempts": [],
     }
     upsert_agent_run_snapshot(pending_state)
+    try:
+        create_agent_session(
+            session_id=task_id,
+            task_id=task_id,
+            requested_by=user['username'],
+            harness=harness,
+            endpoint_id=endpoint_id,
+            endpoint_revision=endpoint.get('revision'),
+            endpoint_model=endpoint.get("model"),
+            user_message=(
+                f"解决题目 #{int(problem.get('id') or problem_id)}："
+                f"{str(problem.get('title') or '').strip()}"
+            ),
+            task_kind="solve",
+            access_role="user",
+            problem_id=int(problem.get("id") or problem_id),
+            problem_title=problem.get("title"),
+        )
+    except Exception:
+        logger.exception('创建解题 Agent 会话失败')
+        pending_state["status"] = "Failed"
+        pending_state["message"] = "无法创建 Agent 会话"
+        upsert_agent_run_snapshot(pending_state)
+        return jsonify(success=False, message=pending_state["message"]), 500
 
     try:
         _agent_solve_problem_task.apply_async(
@@ -517,21 +845,28 @@ def admin_agent_solve_problem(problem_id):
                 endpoint_id,
                 session_cookie,
                 cookie_name,
+                endpoint.get('revision'),
             ),
             task_id=task_id,
         )
     except Exception:
         logger.exception('解题 Agent 任务入队失败')
-        pending_state["status"] = "Failed"
-        pending_state["message"] = "任务入队失败，请检查 Celery agent 队列"
-        upsert_agent_run_snapshot(pending_state)
-        return jsonify(success=False, message=pending_state["message"]), 500
+        failure_message = _mark_agent_dispatch_failed(
+            task_id,
+            task_id,
+            pending_state,
+            "任务入队失败，请检查 Celery agent 队列",
+        )
+        return jsonify(success=False, message=failure_message), 500
 
     return jsonify(
         success=True,
         message='Agent 任务已启动',
         task_id=task_id,
-        view_url=url_for('problem_core.admin_agent_tasks', task_id=task_id),
+        view_url=url_for(
+            'problem_core.admin_agent_task_detail',
+            session_id=task_id,
+        ),
     )
 
 
@@ -599,6 +934,7 @@ def admin_agent_generate_testdata(problem_id):
     task_id = uuid4().hex
     pending_state = {
         "task_id": task_id,
+        "session_id": task_id,
         "problem_id": int(problem.get("id") or problem_id),
         "problem_title": problem.get("title"),
         "requested_by": user.get("username"),
@@ -614,6 +950,31 @@ def admin_agent_generate_testdata(problem_id):
         "attempts": [],
     }
     upsert_agent_run_snapshot(pending_state)
+    try:
+        requirement_summary = data_requirement or "请自行覆盖边界、典型与压力场景"
+        create_agent_session(
+            session_id=task_id,
+            task_id=task_id,
+            requested_by=user['username'],
+            harness=harness,
+            endpoint_id=endpoint_id,
+            endpoint_revision=endpoint.get('revision'),
+            endpoint_model=endpoint.get("model"),
+            user_message=(
+                f"为题目 #{int(problem.get('id') or problem_id)} 生成 "
+                f"{test_point_count} 个测试点。\n\n{requirement_summary}"
+            ),
+            task_kind="testdata",
+            access_role="user",
+            problem_id=int(problem.get("id") or problem_id),
+            problem_title=problem.get("title"),
+        )
+    except Exception:
+        logger.exception('创建造数据 Agent 会话失败')
+        pending_state["status"] = "Failed"
+        pending_state["message"] = "无法创建 Agent 会话"
+        upsert_agent_run_snapshot(pending_state)
+        return jsonify(success=False, message=pending_state["message"]), 500
 
     try:
         _agent_generate_testdata_task.apply_async(
@@ -628,21 +989,28 @@ def admin_agent_generate_testdata(problem_id):
                 endpoint_id,
                 session_cookie,
                 cookie_name,
+                endpoint.get('revision'),
             ),
             task_id=task_id,
         )
     except Exception:
         logger.exception('造数据 Agent 任务入队失败')
-        pending_state["status"] = "Failed"
-        pending_state["message"] = "任务入队失败，请检查 Celery agent 队列"
-        upsert_agent_run_snapshot(pending_state)
-        return jsonify(success=False, message=pending_state["message"]), 500
+        failure_message = _mark_agent_dispatch_failed(
+            task_id,
+            task_id,
+            pending_state,
+            "任务入队失败，请检查 Celery agent 队列",
+        )
+        return jsonify(success=False, message=failure_message), 500
 
     return jsonify(
         success=True,
         message='数据生成 Agent 任务已启动',
         task_id=task_id,
-        view_url=url_for('problem_core.admin_agent_tasks', task_id=task_id),
+        view_url=url_for(
+            'problem_core.admin_agent_task_detail',
+            session_id=task_id,
+        ),
     )
 
 
@@ -656,14 +1024,17 @@ def admin_agent_run_status(task_id):
 
     state = _get_agent_run_state(task_id)
     if state is None:
-        state = hydrate_agent_run_snapshot({
-            "task_id": task_id,
-            "status": "Pending",
-            "message": "任务排队中",
-            "latest_submission_id": None,
-            "final_submission_id": None,
-            "attempts": [],
-        })
+        state = _agent_state_for_response(
+            task_id,
+            hydrate_agent_run_snapshot({
+                "task_id": task_id,
+                "status": "Pending",
+                "message": "任务排队中",
+                "latest_submission_id": None,
+                "final_submission_id": None,
+                "attempts": [],
+            })
+        )
     return jsonify(success=True, state=state)
 
 
@@ -688,7 +1059,7 @@ def admin_agent_run_cancel(task_id):
     if not result.get('exists'):
         return jsonify(success=False, message='Agent 任务不存在'), 404
 
-    state = result.get('state')
+    state = _agent_state_for_response(task_id, result.get('state'))
     if not result.get('canceled'):
         return jsonify(
             success=False,
@@ -770,7 +1141,10 @@ def admin_agent_run_stream(task_id):
             # 的窗口内而永久丢失。即使已有 Pub/Sub，空闲时也定期回读，作为
             # Redis 断线或单条消息丢失时的收敛保障。
             first_payload = _get_agent_run_state(task_id) or (
-                hydrate_agent_run_snapshot(fallback_state)
+                _agent_state_for_response(
+                    task_id,
+                    hydrate_agent_run_snapshot(fallback_state)
+                )
             )
             yield _encode_sse("status", first_payload)
             if _is_agent_state_finished(first_payload):
@@ -817,7 +1191,10 @@ def admin_agent_run_stream(task_id):
                 if not isinstance(snapshot, dict):
                     continue
 
-                snapshot = hydrate_agent_run_snapshot(snapshot)
+                snapshot = _agent_state_for_response(
+                    task_id,
+                    hydrate_agent_run_snapshot(snapshot)
+                )
                 yield _encode_sse("status", snapshot)
                 last_marker = _snapshot_marker(snapshot)
                 if _is_agent_state_finished(snapshot):
@@ -1069,7 +1446,7 @@ def submit_solution(problem_id):
     return render_template('problems/detail.html', **context)
 
 
-@problem_core_bp.route('/admin/agent_tasks')
+@problem_core_bp.route('/admin/agent_tasks', methods=['GET', 'POST'])
 def admin_agent_tasks():
     user = current_user()
     if not user:
@@ -1078,31 +1455,427 @@ def admin_agent_tasks():
         flash('无权限访问该页面', 'danger')
         return redirect(url_for('problem_core.problem_list'))
 
+    if request.method == 'POST':
+        if _agent_run_turn_task is None:
+            return jsonify(success=False, message='通用 Agent 任务未初始化'), 500
+        if request.mimetype != 'multipart/form-data':
+            return jsonify(success=False, message='请使用 multipart/form-data'), 415
+        try:
+            message = _agent_message_from_request()
+            access_role = normalize_agent_access_role(
+                request.form.get('access_role')
+            )
+            harness = normalize_launch_harness(request.form.get('harness'))
+            endpoint = resolve_launch_endpoint(
+                harness,
+                request.form.get('endpoint_id'),
+                include_secret=False,
+            )
+            endpoint_id = int(endpoint['id'])
+            cookie_name, session_cookie = _agent_session_cookie()
+        except (AgentLaunchValidationError, ValueError) as exc:
+            return jsonify(success=False, message=str(exc)), 400
+
+        session_id = uuid4().hex
+        attachments = []
+        try:
+            save_agent_launch_preference(user['id'], harness, endpoint_id)
+            ensure_agent_workspace(session_id)
+            attachments = save_agent_attachments(
+                session_id,
+                session_id,
+                request.files.getlist('attachments'),
+            )
+            agent_session = create_agent_session(
+                session_id=session_id,
+                task_id=session_id,
+                requested_by=user['username'],
+                harness=harness,
+                endpoint_id=endpoint_id,
+                endpoint_revision=endpoint.get('revision'),
+                endpoint_model=endpoint.get('model'),
+                user_message=message,
+                attachments=attachments,
+                task_kind='custom',
+                access_role=access_role,
+            )
+        except (ValueError, OSError) as exc:
+            remove_agent_attachments(session_id, attachments)
+            return jsonify(success=False, message=str(exc)), 400
+        except Exception:
+            remove_agent_attachments(session_id, attachments)
+            logger.exception('创建通用 Agent 会话失败')
+            return jsonify(success=False, message='无法创建 Agent 会话'), 500
+
+        pending_state = _pending_agent_run_state(agent_session, session_id)
+        try:
+            upsert_agent_run_snapshot(pending_state)
+            _agent_run_turn_task.apply_async(
+                args=(
+                    session_id,
+                    user['username'],
+                    access_role,
+                    harness,
+                    endpoint_id,
+                    session_cookie,
+                    _agent_prompt_with_attachments(message, attachments),
+                    cookie_name,
+                    '',
+                    True,
+                ),
+                task_id=session_id,
+            )
+        except Exception:
+            logger.exception('通用 Agent 首轮任务入队失败')
+            failure_message = _mark_agent_dispatch_failed(
+                session_id,
+                session_id,
+                pending_state,
+                '任务入队失败，请检查 Celery agent 队列',
+            )
+            return jsonify(success=False, message=failure_message), 500
+
+        detail_url = url_for(
+            'problem_core.admin_agent_task_detail',
+            session_id=session_id,
+        )
+        return jsonify(
+            success=True,
+            message='Agent 会话已创建',
+            session_id=session_id,
+            task_id=session_id,
+            detail_url=detail_url,
+            view_url=detail_url,
+        )
+
     page = max(1, request.args.get('page', 1, type=int))
     per_page = 20
-    runs, total_pages = get_agent_runs_paginated(page=page, per_page=per_page)
-    decorate_agent_run_summaries(runs)
+    sessions, page, total_pages = get_agent_sessions_paginated(
+        page=page,
+        per_page=per_page,
+    )
 
     page_start = max(1, page - 8)
     page_end = min(total_pages, page + 8)
     page_numbers = list(range(page_start, page_end + 1))
 
     open_task_id = str(request.args.get('task_id') or '').strip()
-    if (
-        not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', open_task_id)
-        or get_agent_run_by_task_id(open_task_id) is None
-    ):
-        open_task_id = ''
+    open_session = None
+    if re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', open_task_id):
+        open_session = (
+            get_agent_session_by_task_id(open_task_id)
+            or get_agent_session(open_task_id)
+        )
+    if open_session is not None:
+        return redirect(url_for(
+            'problem_core.admin_agent_task_detail',
+            session_id=open_session['session_id'],
+        ))
+
+    try:
+        launch_options = _agent_launch_page_options(user['id'])
+    except Exception:
+        logger.exception('读取通用 Agent 启动选项失败')
+        launch_options = {
+            'harnesses': harness_options(),
+            'endpoints_by_harness': {},
+            'preference': {'harness': '', 'endpoint_id': None},
+        }
 
     return render_template(
         'admin/agent_tasks.html',
         user=user,
-        agent_runs=runs,
+        agent_sessions=sessions,
         current_page=page,
         total_pages=total_pages,
         page_numbers=page_numbers,
-        open_task_id=open_task_id,
+        **launch_options,
     )
+
+
+@problem_core_bp.route(
+    '/admin/agent_tasks/<session_id>',
+    methods=['GET', 'POST'],
+)
+def admin_agent_task_detail(session_id):
+    user = current_user()
+    if not user:
+        if request.method == 'GET':
+            return redirect(url_for('auth.login'))
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        if request.method == 'GET':
+            flash('无权限访问该页面', 'danger')
+            return redirect(url_for('problem_core.problem_list'))
+        return jsonify(success=False, message='无权限'), 403
+
+    try:
+        agent_session = get_agent_session(session_id)
+        # agent_task_runs 会为每一轮保留兼容快照。只有命中 legacy fallback 时
+        # 才额外检查它是否其实属于一个新式多轮会话，避免规范 URL 每次多查表。
+        mapped_session = (
+            get_agent_session_by_task_id(session_id)
+            if agent_session and agent_session.get('is_legacy')
+            else None
+        )
+        if mapped_session and mapped_session.get('session_id') != session_id:
+            canonical_url = url_for(
+                'problem_core.admin_agent_task_detail',
+                session_id=mapped_session['session_id'],
+            )
+            if request.method == 'GET':
+                return redirect(canonical_url)
+            return jsonify(
+                success=False,
+                message='请在当前 Agent 会话中继续发送消息',
+                detail_url=canonical_url,
+            ), 409
+    except ValueError:
+        agent_session = None
+    if not agent_session:
+        if request.method == 'GET':
+            return '<h3>Agent 会话不存在</h3>', 404
+        return jsonify(success=False, message='Agent 会话不存在'), 404
+
+    if request.method == 'POST':
+        if agent_session.get('is_legacy'):
+            return jsonify(
+                success=False,
+                message='旧任务没有可恢复的 workspace，无法继续会话',
+            ), 409
+        if str(agent_session.get('requested_by') or '') != str(user.get('username') or ''):
+            return jsonify(success=False, message='只能继续自己发起的 Agent 会话'), 403
+        if _agent_run_turn_task is None:
+            return jsonify(success=False, message='通用 Agent 任务未初始化'), 500
+        if request.mimetype != 'multipart/form-data':
+            return jsonify(success=False, message='请使用 multipart/form-data'), 415
+        if not agent_status_is_terminal(agent_session.get('status')):
+            return jsonify(success=False, message='上一轮 Agent 任务尚未结束'), 409
+        if not str(agent_session.get('native_session_id') or '').strip():
+            return jsonify(
+                success=False,
+                message='上一轮未建立可恢复的原生会话，无法继续；请新建 Agent 会话',
+            ), 409
+        try:
+            message = _agent_message_from_request()
+            cookie_name, session_cookie = _agent_session_cookie()
+        except ValueError as exc:
+            return jsonify(success=False, message=str(exc)), 400
+
+        task_id = uuid4().hex
+        try:
+            turn_claim = begin_agent_session_turn(
+                session_id,
+                task_id=task_id,
+                user_message=message,
+                attachments=[],
+            )
+        except AgentSessionBusyError as exc:
+            return jsonify(success=False, message=str(exc)), 409
+        except AgentSessionNotFoundError as exc:
+            return jsonify(success=False, message=str(exc)), 404
+        except (ValueError, OSError) as exc:
+            return jsonify(success=False, message=str(exc)), 400
+        except Exception:
+            logger.exception(
+                '创建 Agent 续聊轮次失败',
+                extra={'session_id': session_id},
+            )
+            return jsonify(success=False, message='无法创建 Agent 续聊轮次'), 500
+
+        # 只使用 begin_agent_session_turn 在行锁内返回的权威冻结值，避免
+        # 并发终态投影后仍用请求开始时读到的旧 native session。
+        frozen_session = {**agent_session, **turn_claim}
+        turn_index = int(turn_claim["turn_index"])
+        pending_state = _pending_agent_run_state(frozen_session, task_id)
+        attachments = []
+        try:
+            attachments = save_agent_attachments(
+                session_id,
+                task_id,
+                request.files.getlist('attachments'),
+            )
+            set_agent_turn_attachments(session_id, task_id, attachments)
+        except (ValueError, OSError) as exc:
+            remove_agent_attachments(session_id, attachments)
+            _mark_agent_dispatch_failed(
+                session_id,
+                task_id,
+                pending_state,
+                f'附件保存失败：{str(exc)}',
+            )
+            return jsonify(success=False, message=str(exc)), 400
+        except Exception:
+            remove_agent_attachments(session_id, attachments)
+            logger.exception(
+                '保存 Agent 续聊附件失败',
+                extra={'session_id': session_id, 'task_id': task_id},
+            )
+            failure_message = _mark_agent_dispatch_failed(
+                session_id,
+                task_id,
+                pending_state,
+                '附件保存失败，请重新发送消息',
+            )
+            return jsonify(success=False, message=failure_message), 500
+        try:
+            upsert_agent_run_snapshot(pending_state)
+            _agent_run_turn_task.apply_async(
+                args=(
+                    session_id,
+                    user['username'],
+                    frozen_session.get('access_role') or 'user',
+                    frozen_session.get('harness'),
+                    int(frozen_session.get('endpoint_id')),
+                    session_cookie,
+                    _agent_prompt_with_attachments(message, attachments),
+                    cookie_name,
+                    frozen_session.get('native_session_id') or '',
+                    False,
+                ),
+                task_id=task_id,
+            )
+        except Exception:
+            logger.exception(
+                'Agent 续聊任务入队失败',
+                extra={'session_id': session_id, 'task_id': task_id},
+            )
+            failure_message = _mark_agent_dispatch_failed(
+                session_id,
+                task_id,
+                pending_state,
+                '任务入队失败，请检查 Celery agent 队列',
+            )
+            return jsonify(success=False, message=failure_message), 500
+
+        return jsonify(
+            success=True,
+            message='消息已发送',
+            session_id=session_id,
+            task_id=task_id,
+            turn_index=turn_index,
+            user_message=message,
+            user_message_html=render_rich_markdown(message),
+            attachments=attachments,
+        )
+
+    turns = _decorate_agent_turns(get_agent_session_turns(session_id))
+    current_task_id = str(agent_session.get('current_task_id') or session_id)
+    current_state = _get_agent_run_state(current_task_id) or (
+        _agent_state_for_response(current_task_id, {
+            'task_id': current_task_id,
+            'session_id': session_id,
+            'status': agent_session.get('status') or 'Pending',
+            'message': agent_session.get('message') or '任务排队中',
+            'native_session_id': agent_session.get('native_session_id') or '',
+            'execution_trace': {},
+        })
+    )
+    current_state = _agent_state_for_response(
+        current_task_id,
+        current_state,
+        agent_session=agent_session,
+    )
+    try:
+        workspace_tree = (
+            []
+            if agent_session.get('is_legacy')
+            else build_agent_workspace_tree(session_id)
+        )
+    except (ValueError, OSError):
+        workspace_tree = []
+    response = current_app.make_response(render_template(
+        'admin/agent_task_detail.html',
+        user=user,
+        agent_session=agent_session,
+        turns=turns,
+        current_state=current_state,
+        workspace_tree=workspace_tree,
+        can_resume=(
+            str(agent_session.get('requested_by') or '')
+            == str(user.get('username') or '')
+        ),
+    ))
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@problem_core_bp.get('/admin/agent_tasks/<session_id>/workspace')
+def admin_agent_workspace_tree(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        agent_session = get_agent_session(session_id)
+        if not agent_session:
+            return jsonify(success=False, message='Agent 会话不存在'), 404
+        if agent_session.get('is_legacy'):
+            return jsonify(success=True, tree=[], unavailable=True)
+        tree = build_agent_workspace_tree(session_id)
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except OSError:
+        logger.exception('读取 Agent workspace 目录失败')
+        return jsonify(success=False, message='无法读取 workspace'), 500
+    response = jsonify(success=True, tree=tree)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@problem_core_bp.get('/admin/agent_tasks/<session_id>/workspace/file')
+def admin_agent_workspace_file(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        agent_session = get_agent_session(session_id)
+        if not agent_session or agent_session.get('is_legacy'):
+            return jsonify(success=False, message='Agent workspace 不存在'), 404
+        relative_path = str(request.args.get('path') or '')
+        if request.args.get('raw') == '1' or request.args.get('download') == '1':
+            stream, metadata = open_agent_workspace_file(
+                session_id,
+                relative_path,
+            )
+            response = send_file(
+                stream,
+                mimetype=metadata.get('mime_type') or 'application/octet-stream',
+                as_attachment=request.args.get('download') == '1',
+                download_name=metadata.get('name') or 'download',
+                conditional=False,
+                etag=False,
+                max_age=0,
+            )
+            response.call_on_close(stream.close)
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Cache-Control'] = 'private, no-store'
+            if request.args.get('download') != '1':
+                response.headers['Content-Disposition'] = (
+                    "inline; filename*=UTF-8''"
+                    + quote(metadata.get('name') or 'preview', safe='')
+                )
+            return response
+
+        metadata = inspect_agent_workspace_file(session_id, relative_path)
+        if metadata.get('preview_kind') == 'markdown':
+            metadata['html'] = render_rich_markdown(metadata.get('content'))
+        response = jsonify(success=True, file=metadata)
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response
+    except FileNotFoundError:
+        return jsonify(success=False, message='文件不存在'), 404
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except OSError:
+        logger.exception(
+            '读取 Agent workspace 文件失败',
+            extra={'session_id': session_id},
+        )
+        return jsonify(success=False, message='无法读取文件'), 500
 
 
 @problem_core_bp.route('/my_submissions')

@@ -5,19 +5,38 @@ from functools import wraps
 from flask import g, jsonify, redirect, request, session, url_for
 
 from oj_modules.db_services import get_user_by_username
+from oj_modules.security.agent_identity import (
+    AGENT_IDENTITY_HEADER,
+    verify_agent_identity_capability,
+)
 
 
 def current_user():
     """返回当前登录用户的完整记录（含 is_admin 字段），未登录返回 None。"""
     username = session.get("username")
-    if getattr(g, "_numoj_current_username", object()) == username:
+    agent_capability = str(request.headers.get(AGENT_IDENTITY_HEADER) or "")
+    cache_key = (username, agent_capability)
+    if getattr(g, "_numoj_current_user_key", object()) == cache_key:
         return getattr(g, "_numoj_current_user", None)
     if not username:
-        g._numoj_current_username = None
+        g._numoj_current_user_key = cache_key
         g._numoj_current_user = None
         return None
     user = get_user_by_username(username)
-    g._numoj_current_username = username
+    access_role = verify_agent_identity_capability(
+        agent_capability,
+        session_username=username,
+    )
+    if access_role is False:
+        user = None
+    elif user and access_role == "user":
+        user = dict(user)
+        user["is_admin"] = 0
+        user["agent_access_role"] = "user"
+    elif user and access_role == "admin":
+        user = dict(user)
+        user["agent_access_role"] = "admin"
+    g._numoj_current_user_key = cache_key
     g._numoj_current_user = user
     return user
 

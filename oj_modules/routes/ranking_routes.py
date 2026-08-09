@@ -19,7 +19,7 @@ from datetime import datetime
 
 from flask import (
     Blueprint, Response, abort, current_app, flash, jsonify, redirect,
-    render_template, request, send_file, session, stream_with_context, url_for,
+    render_template, request, send_file, stream_with_context, url_for,
 )
 from werkzeug.utils import secure_filename
 
@@ -28,6 +28,7 @@ from oj_modules.db_services import (
     get_all_classes, get_user_by_username, get_users_in_classes,
 )
 from oj_modules.infrastructure.redis import create_optional_redis_client
+from oj_modules.security.auth import current_user
 from oj_modules.security.throttling import rate_limit_hit
 from oj_modules.ranking.db import (
     activate_elo_submission,
@@ -691,10 +692,7 @@ def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agen
 
 
 def _current_user():
-    username = session.get('username')
-    if not username:
-        return None
-    return get_user_by_username(username)
+    return current_user()
 
 
 def _require_user():

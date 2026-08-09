@@ -26,6 +26,16 @@ def test_terminator_persists_before_revoke_and_force_remove(monkeypatch):
         return SimpleNamespace(returncode=0, stdout=command[-1], stderr="")
 
     monkeypatch.setattr(control, "cancel_agent_run", cancel)
+    monkeypatch.setattr(
+        control,
+        "_project_session_cleanup_status",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        control,
+        "_read_native_session_id_for_task",
+        lambda _task_id: "",
+    )
     monkeypatch.setattr(control.subprocess, "run", run)
     terminate = control.build_agent_run_terminator(
         SimpleNamespace(control=CeleryControl()),
@@ -90,3 +100,116 @@ def test_terminator_validates_task_id_before_persisting_cancel(monkeypatch):
 
     with pytest.raises(ValueError, match="task_id"):
         terminate("../invalid")
+
+
+def test_terminator_projects_canceled_only_after_cleanup_succeeds(monkeypatch):
+    projected = []
+    monkeypatch.setattr(
+        control,
+        "cancel_agent_run",
+        lambda task_id: {
+            "exists": True,
+            "changed": True,
+            "canceled": True,
+            "state": {
+                "task_id": task_id,
+                "status": "Canceled",
+                "message": "任务已终止",
+            },
+        },
+    )
+    monkeypatch.setattr(control, "_force_remove_agent_container", lambda _task_id: None)
+    monkeypatch.setattr(
+        control,
+        "_read_native_session_id_for_task",
+        lambda _task_id: "",
+    )
+    monkeypatch.setattr(
+        control,
+        "_project_session_cleanup_status",
+        lambda *args, **kwargs: projected.append((args, kwargs)) or True,
+    )
+    celery_control = SimpleNamespace(revoke=lambda *_args, **_kwargs: None)
+
+    result = control.build_agent_run_terminator(
+        SimpleNamespace(control=celery_control),
+    )("cleanup-ok")
+
+    assert result["errors"] == []
+    assert projected == [(("cleanup-ok", "Canceled", "任务已终止"), {
+        "native_session_id": "",
+    })]
+
+
+def test_terminator_projects_cleanup_failed_when_revoke_is_uncertain(monkeypatch):
+    projected = []
+    monkeypatch.setattr(
+        control,
+        "cancel_agent_run",
+        lambda task_id: {
+            "exists": True,
+            "changed": True,
+            "canceled": True,
+            "state": {"task_id": task_id, "status": "Canceled"},
+        },
+    )
+    monkeypatch.setattr(control, "_force_remove_agent_container", lambda _task_id: None)
+    monkeypatch.setattr(
+        control,
+        "_read_native_session_id_for_task",
+        lambda _task_id: "",
+    )
+    monkeypatch.setattr(
+        control,
+        "_project_session_cleanup_status",
+        lambda *args, **kwargs: projected.append((args, kwargs)) or True,
+    )
+
+    def fail_revoke(*_args, **_kwargs):
+        raise RuntimeError("broker unavailable")
+
+    result = control.build_agent_run_terminator(
+        SimpleNamespace(control=SimpleNamespace(revoke=fail_revoke)),
+    )("cleanup-unknown")
+
+    assert len(result["errors"]) == 1
+    assert "broker unavailable" in result["errors"][0]
+    assert result["state"]["status"] == "CleanupFailed"
+    assert result["state"]["harness_status"] == "cleanup_failed"
+    assert projected[0][0][0:2] == ("cleanup-unknown", "CleanupFailed")
+    assert "broker unavailable" in projected[0][0][2]
+
+
+def test_terminator_preserves_live_native_session_for_resume(monkeypatch):
+    projected = []
+    monkeypatch.setattr(
+        control,
+        "cancel_agent_run",
+        lambda task_id: {
+            "exists": True,
+            "changed": True,
+            "canceled": True,
+            "state": {"task_id": task_id, "status": "Canceled"},
+        },
+    )
+    monkeypatch.setattr(control, "_force_remove_agent_container", lambda _task_id: None)
+    monkeypatch.setattr(
+        control,
+        "_read_native_session_id_for_task",
+        lambda _task_id: "native-live-123",
+    )
+    monkeypatch.setattr(
+        control,
+        "_project_session_cleanup_status",
+        lambda *args, **kwargs: projected.append((args, kwargs)) or True,
+    )
+
+    result = control.build_agent_run_terminator(
+        SimpleNamespace(control=SimpleNamespace(revoke=lambda *_args, **_kwargs: None)),
+    )("cancel-live")
+
+    assert result["errors"] == []
+    assert result["state"]["native_session_id"] == "native-live-123"
+    assert projected == [(("cancel-live", "Canceled", "任务已由管理员终止"), {
+        "native_session_id": "native-live-123",
+    })]

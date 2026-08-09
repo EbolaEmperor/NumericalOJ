@@ -30,6 +30,14 @@ def _pi_endpoint():
     }
 
 
+def _write_framed_trace_export(stream, entries, payloads=()):
+    manifest = json.dumps(entries, separators=(",", ":")).encode("utf-8")
+    stream.write(len(manifest).to_bytes(4, "big"))
+    stream.write(manifest)
+    for payload in payloads:
+        stream.write(payload)
+
+
 def _prepare_run_agent(
         monkeypatch, tmp_path, *, use_real_agent_env=False,
         subprocess_calls=None):
@@ -323,112 +331,216 @@ def test_pi_anthropic_hello_probe_uses_messages_and_x_api_key():
 def test_sync_pi_agent_sessions_mirrors_native_tree_and_streams_combined_trace(
         monkeypatch, tmp_path):
     trace_dir = tmp_path / "trace"
-    copied = []
-    listed_runtime_users = []
+    calls = []
     first_relative = f"--workspace--/one_{_SESSION_ID}.jsonl"
     second_relative = (
         "--workspace--/nested/"
         "two_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl"
     )
     payloads = {
-        first_relative: b'{"type":"session","id":"first"}\n',
-        second_relative: b'{"type":"message","id":"second"}\n',
+        first_relative: b'{"type":"session","id":"first","token":"pi-secret"}\n',
+        second_relative: b'{"type":"message","id":"second"}',
     }
 
-    monkeypatch.setattr(
-        trace_sync,
-        "_list_pi_session_files",
-        lambda container_name, **kwargs: (
-            listed_runtime_users.append(kwargs.get("runtime_user")) or [
-                {
-                    "relative_path": first_relative,
-                    "mtime_ns": 1_000_000_000,
-                    "size": len(payloads[first_relative]),
-                },
-                {
-                    "relative_path": second_relative,
-                    "mtime_ns": 2_000_000_000,
-                    "size": len(payloads[second_relative]),
-                },
-            ]
-        ),
-    )
+    entries = [
+        {
+            "relative_path": first_relative,
+            "mtime_ns": 1_000_000_000,
+            "size": len(payloads[first_relative]),
+        },
+        {
+            "relative_path": second_relative,
+            "mtime_ns": 2_000_000_000,
+            "size": len(payloads[second_relative]),
+        },
+    ]
 
-    def fake_copy(
-            container_name, relative_path, destination, mtime_ns,
-            **kwargs):
-        copied.append((
-            container_name, relative_path, destination, mtime_ns,
-            kwargs.get("runtime_user"),
-        ))
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
-        with open(destination, "wb") as stream:
-            stream.write(payloads[relative_path])
-        os.utime(destination, ns=(mtime_ns, mtime_ns))
-        return True
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        _write_framed_trace_export(
+            kwargs["stdout"],
+            entries,
+            [payloads[first_relative], payloads[second_relative]],
+        )
+        return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(trace_sync, "_copy_pi_session_file", fake_copy)
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
 
     assert trace_sync.sync_pi_agent_sessions(
-        "pi-container", str(trace_dir), runtime_user="501:20",
+        "pi-container",
+        str(trace_dir),
+        container_session_dir="/custom/pi/sessions",
+        runtime_user="501:20",
+        secrets=("pi-secret",),
     ) is True
 
     session_root = trace_dir / ".pi" / "agent" / "sessions"
     combined = session_root / "reverse_solve_combined.jsonl"
-    assert listed_runtime_users == ["501:20"]
-    assert [(item[0], item[1], item[3], item[4]) for item in copied] == [
-        ("pi-container", first_relative, 1_000_000_000, "501:20"),
-        ("pi-container", second_relative, 2_000_000_000, "501:20"),
-    ]
     assert combined.read_bytes() == (
-        b'{"type":"session","id":"first"}\n'
+        b'{"type":"session","id":"first","token":"[REDACTED]"}\n'
         b'{"type":"message","id":"second"}\n'
     )
-    assert (session_root / "--workspace--" / f"one_{_SESSION_ID}.jsonl").is_file()
-
-
-def test_copy_pi_session_file_streams_docker_stdout_to_atomic_temp(
-        monkeypatch, tmp_path):
-    destination = tmp_path / "trace" / "native.jsonl"
-    payload = (
-        b'{"type":"session","version":3,"token":"pi-secret"}\n'
-        + b"x" * (256 * 1024)
+    first = session_root / "--workspace--" / f"one_{_SESSION_ID}.jsonl"
+    second = (
+        session_root
+        / "--workspace--/nested/two_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl"
     )
+    assert first.stat().st_mtime_ns == 1_000_000_000
+    assert second.stat().st_mtime_ns == 2_000_000_000
+    assert b"pi-secret" not in first.read_bytes()
+    assert second.read_bytes() == payloads[second_relative]
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:7] == [
+        "docker", "exec", "--user", "501:20", "pi-container", "python3", "-c",
+    ]
+    assert "/custom/pi/sessions" in args[-1]
+    assert "follow_symlinks=False" in args[-1]
+    assert "O_NOFOLLOW" in args[-1]
+    assert "capture_output" not in kwargs
+    assert kwargs["stderr"] == rj.subprocess.DEVNULL
+
+
+def test_sync_pi_agent_sessions_omits_empty_runtime_user(monkeypatch, tmp_path):
+    payload = b'{"type":"session"}\n'
+    entries = [{
+        "relative_path": "--workspace--/session.jsonl",
+        "mtime_ns": 1,
+        "size": len(payload),
+    }]
     calls = []
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
-        kwargs["stdout"].write(payload)
+        _write_framed_trace_export(kwargs["stdout"], entries, [payload])
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(rj.subprocess, "run", fake_run)
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
 
-    assert trace_sync._copy_pi_session_file(
+    assert trace_sync.sync_pi_agent_sessions(
         "pi-container",
-        f"--workspace--/native_{_SESSION_ID}.jsonl",
-        str(destination),
-        mtime_ns=1_000_000_000,
-        runtime_user="501:20",
-        secrets=("pi-secret",),
-    )
-    rendered = destination.read_bytes()
-    assert b"pi-secret" not in rendered
-    assert b"[REDACTED]" in rendered
-    assert rendered.endswith(b"x" * (256 * 1024))
-    assert not destination.with_suffix(".jsonl.tmp").exists()
-    args, kwargs = calls[0]
-    assert args[:6] == [
-        "docker", "exec", "--user", "501:20", "pi-container", "cat",
-    ]
-    assert args[-2:] == [
-        "--",
+        str(tmp_path / "trace"),
+        container_session_dir="/workspace/custom-pi",
+        runtime_user="",
+    ) is True
+    assert calls[0][0][:3] == ["docker", "exec", "pi-container"]
+    assert "--user" not in calls[0][0]
+    assert "/workspace/custom-pi" in calls[0][0][-1]
+
+
+@pytest.mark.parametrize(
+    ("entries", "max_files", "max_file_bytes", "max_total_bytes"),
+    [
         (
-            f"{trace_sync.PI_SESSION_DIR}/--workspace--/"
-            f"native_{_SESSION_ID}.jsonl"
+            [
+                {"relative_path": "a.jsonl", "size": 1, "mtime_ns": 1},
+                {"relative_path": "b.jsonl", "size": 1, "mtime_ns": 2},
+            ],
+            1,
+            8,
+            8,
         ),
-    ]
-    assert "capture_output" not in kwargs
-    assert kwargs["stderr"] == rj.subprocess.DEVNULL
+        (
+            [{"relative_path": "large.jsonl", "size": 9, "mtime_ns": 1}],
+            4,
+            8,
+            16,
+        ),
+        (
+            [
+                {"relative_path": "a.jsonl", "size": 6, "mtime_ns": 1},
+                {"relative_path": "b.jsonl", "size": 6, "mtime_ns": 2},
+            ],
+            4,
+            8,
+            10,
+        ),
+    ],
+)
+def test_sync_pi_agent_sessions_rejects_manifest_resource_limit_violations(
+    monkeypatch,
+    tmp_path,
+    entries,
+    max_files,
+    max_file_bytes,
+    max_total_bytes,
+):
+    monkeypatch.setattr(trace_sync, "PI_TRACE_MAX_FILES", max_files)
+    monkeypatch.setattr(trace_sync, "PI_TRACE_MAX_FILE_BYTES", max_file_bytes)
+    monkeypatch.setattr(trace_sync, "PI_TRACE_MAX_TOTAL_BYTES", max_total_bytes)
+
+    def fake_run(args, **kwargs):
+        _write_framed_trace_export(kwargs["stdout"], entries)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
+
+    assert trace_sync.sync_pi_agent_sessions(
+        "pi-container",
+        str(tmp_path / "trace"),
+    ) is False
+    assert not (tmp_path / "trace/.pi").exists()
+
+
+def test_sync_pi_agent_sessions_counts_both_published_copies(
+    monkeypatch,
+    tmp_path,
+):
+    payload = b"x\n"
+    entries = [{
+        "relative_path": "session.jsonl",
+        "size": len(payload),
+        "mtime_ns": 1,
+    }]
+
+    def fake_run(args, **kwargs):
+        _write_framed_trace_export(kwargs["stdout"], entries, [payload])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
+    monkeypatch.setattr(trace_sync, "PI_TRACE_MAX_PUBLISHED_TOTAL_BYTES", 3)
+
+    assert trace_sync.sync_pi_agent_sessions(
+        "pi-container",
+        str(tmp_path / "trace"),
+    ) is False
+    session_root = tmp_path / "trace/.pi/agent/sessions"
+    assert list(session_root.rglob("*.jsonl")) == []
+
+
+def test_sync_pi_agent_sessions_keeps_previous_snapshot_on_truncated_export(
+    monkeypatch,
+    tmp_path,
+):
+    session_root = tmp_path / "trace/.pi/agent/sessions"
+    native = session_root / "--workspace--/session.jsonl"
+    native.parent.mkdir(parents=True)
+    combined = session_root / trace_sync.PI_COMBINED_TRACE_NAME
+    native.write_bytes(b"old-native\n")
+    combined.write_bytes(b"old-combined\n")
+    payload = b"new"
+    entries = [{
+        "relative_path": "--workspace--/session.jsonl",
+        "size": len(payload) + 1,
+        "mtime_ns": 2,
+    }]
+
+    def fake_run(args, **kwargs):
+        _write_framed_trace_export(kwargs["stdout"], entries, [payload])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
+
+    assert trace_sync.sync_pi_agent_sessions(
+        "pi-container",
+        str(tmp_path / "trace"),
+    ) is False
+    assert native.read_bytes() == b"old-native\n"
+    assert combined.read_bytes() == b"old-combined\n"
+    assert not any(
+        path.name.startswith((".session-", ".combined-"))
+        for path in session_root.rglob("*")
+    )
 
 
 def test_harness_capture_reader_keeps_bounded_head_and_tail(tmp_path):
@@ -449,8 +561,11 @@ def test_harness_capture_reader_keeps_bounded_head_and_tail(tmp_path):
     "/absolute.jsonl",
     "../escape.jsonl",
     "nested/../../escape.jsonl",
+    "nested\\escape.jsonl",
     "nested/not-json.txt",
     "nested/control\n.jsonl",
+    " reverse_solve.jsonl",
+    trace_sync.PI_COMBINED_TRACE_NAME,
 ])
 def test_pi_session_sync_rejects_unsafe_relative_paths(value):
     assert trace_sync._safe_pi_session_relative_path(value) == ""

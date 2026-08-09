@@ -15,6 +15,7 @@ import pytest
 
 from oj_modules.problems import agent_runs
 from oj_modules.problems.agent_runs import build_agent_execution_trace
+from oj_modules.agents import workspace as agent_workspace
 from oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages
 from oj_modules.tasks.agent import harness_runtime as runtime
 from oj_modules.tasks.agent import identity_relay
@@ -99,7 +100,7 @@ def test_problem_agent_lite_container_publishes_parseable_live_trace(
     container_name = runtime._container_name_for_task_id(task_id)
     live_snapshots: list[dict] = []
 
-    monkeypatch.setattr(runtime, "AGENT_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.setattr(agent_workspace, "AGENT_WORKSPACE_ROOT", workspace_root)
     monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(workspace_root))
     monkeypatch.setattr(
         agent_runs,

@@ -52,7 +52,13 @@ def _execution_trace_status(status):
         return "pending"
     if normalized == "completed":
         return "passed"
-    if normalized in {"failed", "canceled", "cancelled"}:
+    if normalized in {
+        "failed",
+        "canceled",
+        "cancelled",
+        "cleanupfailed",
+        "cleanup_failed",
+    }:
         return "error"
     return "pending"
 

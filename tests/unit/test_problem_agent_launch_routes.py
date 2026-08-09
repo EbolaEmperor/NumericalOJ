@@ -1,4 +1,5 @@
 import io
+import json
 from types import SimpleNamespace
 
 from flask import Flask
@@ -88,6 +89,7 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
     task = _Task()
     snapshots = []
     saved = []
+    sessions = []
     url_calls = []
     monkeypatch.setattr(routes, "_agent_solve_problem_task", task)
     monkeypatch.setattr(
@@ -101,6 +103,7 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
         "resolve_launch_endpoint",
         lambda harness, endpoint_id, **_kwargs: {
             "id": int(endpoint_id),
+            "revision": 6,
             "model": "selected-model",
             "protocol": "openai",
             "category": "text",
@@ -117,10 +120,15 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
     monkeypatch.setattr(routes, "upsert_agent_run_snapshot", snapshots.append)
     monkeypatch.setattr(
         routes,
+        "create_agent_session",
+        lambda **kwargs: sessions.append(kwargs),
+    )
+    monkeypatch.setattr(
+        routes,
         "url_for",
         lambda endpoint, **kwargs: (
             url_calls.append((endpoint, kwargs))
-            or f"/admin/agent_tasks?task_id={kwargs['task_id']}"
+            or f"/admin/agent_tasks/{kwargs['session_id']}"
         ),
     )
 
@@ -135,9 +143,26 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
 
     payload = response.get_json()
     assert payload["success"] is True
-    assert payload["view_url"].startswith("/admin/agent_tasks?task_id=")
-    assert url_calls[-1][0] == "problem_core.admin_agent_tasks"
+    assert payload["view_url"] == f"/admin/agent_tasks/{payload['task_id']}"
+    assert url_calls[-1] == (
+        "problem_core.admin_agent_task_detail",
+        {"session_id": payload["task_id"]},
+    )
     assert saved == [(7, "codex", 12)]
+    assert sessions == [{
+        "session_id": payload["task_id"],
+        "task_id": payload["task_id"],
+        "requested_by": "admin",
+        "harness": "codex",
+        "endpoint_id": 12,
+        "endpoint_revision": 6,
+        "endpoint_model": "selected-model",
+        "user_message": "解决题目 #9：题",
+        "task_kind": "solve",
+        "access_role": "user",
+        "problem_id": 9,
+        "problem_title": "题",
+    }]
     assert len(task.calls) == 1
     assert task.calls[0]["args"] == (
         9,
@@ -146,6 +171,7 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
         12,
         "signed-session-value",
         "numoj_session",
+        6,
     )
     assert snapshots[0]["harness"] == "codex"
     assert "token_pricing" not in snapshots[0]
@@ -180,6 +206,7 @@ def test_solve_launch_rejects_non_object_json(monkeypatch):
 def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
     task = _Task()
     requirement = "x" * 4001
+    sessions = []
     url_calls = []
     monkeypatch.setattr(routes, "_agent_generate_testdata_task", task)
     monkeypatch.setattr(
@@ -192,17 +219,23 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
         routes,
         "resolve_launch_endpoint",
         lambda _harness, endpoint_id, **_kwargs: {
-            "id": int(endpoint_id), "model": "selected-model",
+            "id": int(endpoint_id), "revision": 7,
+            "model": "selected-model",
         },
     )
     monkeypatch.setattr(routes, "save_agent_launch_preference", lambda *_args: None)
     monkeypatch.setattr(routes, "upsert_agent_run_snapshot", lambda _state: None)
     monkeypatch.setattr(
         routes,
+        "create_agent_session",
+        lambda **kwargs: sessions.append(kwargs),
+    )
+    monkeypatch.setattr(
+        routes,
         "url_for",
         lambda endpoint, **kwargs: (
             url_calls.append((endpoint, kwargs))
-            or f"/admin/agent_tasks?task_id={kwargs['task_id']}"
+            or f"/admin/agent_tasks/{kwargs['session_id']}"
         ),
     )
 
@@ -227,8 +260,25 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
 
     payload = response.get_json()
     assert payload["success"] is True
-    assert payload["view_url"].startswith("/admin/agent_tasks?task_id=")
-    assert url_calls[-1][0] == "problem_core.admin_agent_tasks"
+    assert payload["view_url"] == f"/admin/agent_tasks/{payload['task_id']}"
+    assert url_calls[-1] == (
+        "problem_core.admin_agent_task_detail",
+        {"session_id": payload["task_id"]},
+    )
+    assert sessions == [{
+        "session_id": payload["task_id"],
+        "task_id": payload["task_id"],
+        "requested_by": "admin",
+        "harness": "pi",
+        "endpoint_id": 18,
+        "endpoint_revision": 7,
+        "endpoint_model": "selected-model",
+        "user_message": f"为题目 #9 生成 4 个测试点。\n\n{requirement}",
+        "task_kind": "testdata",
+        "access_role": "user",
+        "problem_id": 9,
+        "problem_title": "题",
+    }]
     assert task.calls[0]["args"] == (
         9,
         "admin",
@@ -240,10 +290,11 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
         18,
         "signed-session-value",
         "session",
+        7,
     )
 
 
-def test_agent_task_list_only_auto_opens_an_existing_task(monkeypatch):
+def test_agent_task_list_redirects_existing_task_to_session_detail(monkeypatch):
     monkeypatch.setattr(
         routes,
         "current_user",
@@ -251,13 +302,38 @@ def test_agent_task_list_only_auto_opens_an_existing_task(monkeypatch):
     )
     monkeypatch.setattr(
         routes,
-        "get_agent_runs_paginated",
-        lambda **_kwargs: ([], 1),
+        "get_agent_sessions_paginated",
+        lambda **_kwargs: ([], 1, 1),
     )
     monkeypatch.setattr(
         routes,
-        "get_agent_run_by_task_id",
-        lambda task_id: {"task_id": task_id} if task_id == "task-1" else None,
+        "get_agent_session_by_task_id",
+        lambda task_id: (
+            {"session_id": "session-1"} if task_id == "task-1" else None
+        ),
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session",
+        lambda _session_id: None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "_agent_launch_page_options",
+        lambda _user_id: {
+            "harnesses": [],
+            "endpoints_by_harness": {},
+            "preference": {"harness": "", "endpoint_id": None},
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "url_for",
+        lambda endpoint, **kwargs: (
+            f"/admin/agent_tasks/{kwargs['session_id']}"
+            if endpoint == "problem_core.admin_agent_task_detail"
+            else "/unexpected"
+        ),
     )
     rendered = []
     monkeypatch.setattr(
@@ -268,13 +344,17 @@ def test_agent_task_list_only_auto_opens_an_existing_task(monkeypatch):
 
     app = _app()
     with app.test_request_context("/admin/agent_tasks?task_id=task-1"):
-        assert routes.admin_agent_tasks() == "ok"
-    assert rendered[-1][0] == "admin/agent_tasks.html"
-    assert rendered[-1][1]["open_task_id"] == "task-1"
+        response = routes.admin_agent_tasks()
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/admin/agent_tasks/session-1")
+    assert rendered == []
 
     with app.test_request_context("/admin/agent_tasks?task_id=missing"):
         assert routes.admin_agent_tasks() == "ok"
-    assert rendered[-1][1]["open_task_id"] == ""
+    assert rendered[-1][0] == "admin/agent_tasks.html"
+    assert rendered[-1][1]["agent_sessions"] == []
+    assert rendered[-1][1]["current_page"] == 1
+    assert rendered[-1][1]["total_pages"] == 1
 
 
 def test_legacy_agent_run_page_route_is_removed():
@@ -473,6 +553,170 @@ def test_agent_run_stream_stays_open_past_the_previous_one_hour_cutoff(
 
     assert "event: done" in body
     assert "event: timeout" not in body
+
+
+def test_agent_state_markdown_is_rebuilt_only_for_rich_trace_text(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: rendered.append(str(text)) or f"<safe>{text}</safe>",
+    )
+    raw = {
+        "status": "Completed",
+        "conclusion": "**最终结论**",
+        "conclusion_html": "<script>unsafe()</script>",
+        "execution_trace": {
+            "conclusion_html": "<img src=x onerror=unsafe()>",
+            "trace_messages": [
+                {"kind": "assistant", "text": "**回答**", "html": "<b>伪造</b>"},
+                {"kind": "thinking", "content": "$x$"},
+                {"kind": "reasoning", "text": "推理"},
+                {"kind": "tool", "input": "<b>命令</b>", "html": "<b>伪造</b>"},
+                {"kind": "tool_result", "output": "<b>结果</b>"},
+            ],
+        },
+    }
+
+    state = routes._decorate_agent_state_markdown(raw)
+    messages = state["execution_trace"]["trace_messages"]
+
+    assert messages[0]["html"] == "<safe>**回答**</safe>"
+    assert messages[1]["html"] == "<safe>$x$</safe>"
+    assert messages[2]["html"] == "<safe>推理</safe>"
+    assert "html" not in messages[3]
+    assert "html" not in messages[4]
+    assert state["conclusion_html"] == "<safe>**最终结论**</safe>"
+    assert "conclusion_html" not in state["execution_trace"]
+    assert raw["conclusion_html"] == "<script>unsafe()</script>"
+    assert raw["execution_trace"]["trace_messages"][0]["html"] == "<b>伪造</b>"
+    assert rendered == ["**回答**", "$x$", "推理", "**最终结论**"]
+
+
+def test_agent_run_status_returns_server_rendered_markdown(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_snapshot",
+        lambda _task_id: {
+            "task_id": "markdown-task",
+            "status": "Completed",
+            "execution_trace": {
+                "trace_messages": [
+                    {"kind": "assistant", "text": "结论含公式 $x^2$"},
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: f"<safe>{text}</safe>",
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_status/markdown-task"):
+        response = routes.admin_agent_run_status("markdown-task")
+
+    state = response.get_json()["state"]
+    message = state["execution_trace"]["trace_messages"][0]
+    assert message["html"] == "<safe>结论含公式 $x^2$</safe>"
+    assert state["conclusion_html"] == "<safe>结论含公式 $x^2$</safe>"
+
+
+def test_agent_run_state_overlays_session_cleanup_failure_on_sticky_cancel(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_snapshot",
+        lambda _task_id: {
+            "task_id": "cleanup-task",
+            "status": "Canceled",
+            "message": "任务已由管理员终止",
+            "execution_trace": {"trace_messages": []},
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_by_task_id",
+        lambda _task_id: {
+            "session_id": "session-1",
+            "current_task_id": "cleanup-task",
+            "status": "CleanupFailed",
+            "message": "容器状态未知",
+        },
+    )
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+
+    state = routes._get_agent_run_state("cleanup-task")
+
+    assert state["status"] == "CleanupFailed"
+    assert state["message"] == "容器状态未知"
+    assert state["harness_status"] == "cleanup_failed"
+
+
+def test_agent_run_stream_overlays_cleanup_failure_on_pubsub_snapshot(monkeypatch):
+    class PubSub:
+        def get_message(self, **_kwargs):
+            return {
+                "type": "message",
+                "data": json.dumps({
+                    "task_id": "cleanup-stream",
+                    "status": "Canceled",
+                    "message": "任务已由管理员终止",
+                    "execution_trace": {
+                        "trace_messages": [
+                            {"kind": "assistant", "text": "保留 **结论**"},
+                        ],
+                    },
+                }),
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_state",
+        lambda _task_id: {"task_id": "cleanup-stream", "status": "Running"},
+    )
+    monkeypatch.setattr(routes, "_subscribe_agent_run_events", lambda _task_id: PubSub())
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: f"<safe>{text}</safe>",
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_by_task_id",
+        lambda _task_id: {
+            "session_id": "session-1",
+            "current_task_id": "cleanup-stream",
+            "status": "CleanupFailed",
+            "message": "relay 未能关闭",
+        },
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/cleanup-stream"):
+        body = routes.admin_agent_run_stream("cleanup-stream").get_data(as_text=True)
+
+    assert '"status": "CleanupFailed"' in body
+    assert "relay 未能关闭" in body
+    assert "<safe>保留 **结论**</safe>" in body
+    assert "event: done" in body
 
 
 @pytest.mark.parametrize("invalid_count", [True, False, 1.0, "1.0", " 1", "01"])

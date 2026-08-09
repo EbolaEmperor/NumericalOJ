@@ -264,14 +264,23 @@ def test_shared_claude_sync_copies_and_combines_container_sessions(
         remote_paths[1]: b'{"type":"assistant","uuid":"second"}\n',
     }
 
-    def fake_run(args, **_kwargs):
-        if args[3] == "bash":
-            return rj.subprocess.CompletedProcess(
-                args, 0, stdout=json.dumps(remote_paths), stderr="",
-            )
-        return rj.subprocess.CompletedProcess(
-            args, 0, stdout=payloads[args[-1]], stderr=b"",
-        )
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        manifest = json.dumps(
+            [
+                {"name": path.rsplit("/", 1)[-1], "size": len(payloads[path])}
+                for path in remote_paths
+            ],
+            separators=(",", ":"),
+        ).encode("utf-8")
+        output = kwargs["stdout"]
+        output.write(len(manifest).to_bytes(4, "big"))
+        output.write(manifest)
+        for path in remote_paths:
+            output.write(payloads[path])
+        return rj.subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
 
@@ -289,6 +298,136 @@ def test_shared_claude_sync_copies_and_combines_container_sessions(
     assert (project / "reverse_solve_combined.jsonl").read_bytes() == (
         first + payloads[remote_paths[1]]
     )
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command[:5] == ["docker", "exec", "container", "python3", "-c"]
+    assert "capture_output" not in options
+    assert "follow_symlinks=False" in command[-1]
+    assert "O_NOFOLLOW" in command[-1]
+
+
+@pytest.mark.parametrize(
+    ("entries", "max_files", "max_file_bytes", "max_total_bytes"),
+    [
+        (
+            [{"name": "one.jsonl", "size": 1}, {"name": "two.jsonl", "size": 1}],
+            1,
+            8,
+            8,
+        ),
+        ([{"name": "large.jsonl", "size": 9}], 4, 8, 16),
+        (
+            [{"name": "one.jsonl", "size": 6}, {"name": "two.jsonl", "size": 6}],
+            4,
+            8,
+            10,
+        ),
+    ],
+)
+def test_shared_claude_sync_rejects_manifest_resource_limit_violations(
+    monkeypatch,
+    tmp_path,
+    entries,
+    max_files,
+    max_file_bytes,
+    max_total_bytes,
+):
+    monkeypatch.setattr(trace_sync, "CLAUDE_TRACE_MAX_FILES", max_files)
+    monkeypatch.setattr(
+        trace_sync,
+        "CLAUDE_TRACE_MAX_FILE_BYTES",
+        max_file_bytes,
+    )
+    monkeypatch.setattr(
+        trace_sync,
+        "CLAUDE_TRACE_MAX_TOTAL_BYTES",
+        max_total_bytes,
+    )
+
+    def fake_run(args, **kwargs):
+        manifest = json.dumps(entries, separators=(",", ":")).encode("utf-8")
+        kwargs["stdout"].write(len(manifest).to_bytes(4, "big"))
+        kwargs["stdout"].write(manifest)
+        return rj.subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
+
+    assert trace_sync.sync_claude_project_jsonl(
+        "container",
+        str(tmp_path),
+    ) is False
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_shared_stdout_sync_rejects_oversized_or_symlink_source(
+    monkeypatch,
+    tmp_path,
+):
+    source = tmp_path / "stdout.jsonl"
+    source.write_bytes(b"123456789")
+    destination_dir = tmp_path / "trace"
+    monkeypatch.setattr(trace_sync, "STDOUT_TRACE_MAX_BYTES", 8)
+
+    assert trace_sync.sync_stdout_jsonl(
+        source,
+        destination_dir,
+        "trace.jsonl",
+    ) is False
+    assert not (destination_dir / "trace.jsonl").exists()
+
+    source.write_bytes(b"safe\n")
+    symlink = tmp_path / "stdout-link.jsonl"
+    symlink.symlink_to(source)
+    assert trace_sync.sync_stdout_jsonl(
+        symlink,
+        destination_dir,
+        "trace.jsonl",
+    ) is False
+
+
+def test_shared_trace_sync_caps_redacted_output_and_cleans_temporaries(
+    monkeypatch,
+    tmp_path,
+):
+    payload = b"x\n"
+    manifest = json.dumps(
+        [{"name": "session.jsonl", "size": len(payload)}],
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    def fake_run(args, **kwargs):
+        kwargs["stdout"].write(len(manifest).to_bytes(4, "big"))
+        kwargs["stdout"].write(manifest)
+        kwargs["stdout"].write(payload)
+        return rj.subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        trace_sync,
+        "CLAUDE_TRACE_MAX_PUBLISHED_FILE_BYTES",
+        4,
+    )
+
+    assert trace_sync.sync_claude_project_jsonl(
+        "container",
+        str(tmp_path),
+        secrets=("x",),
+    ) is False
+    project = tmp_path / ".claude/projects/-workspace"
+    assert project.is_dir()
+    assert list(project.iterdir()) == []
+
+    source = tmp_path / "stdout.jsonl"
+    source.write_bytes(payload)
+    monkeypatch.setattr(trace_sync, "STDOUT_TRACE_MAX_PUBLISHED_BYTES", 4)
+    assert trace_sync.sync_stdout_jsonl(
+        source,
+        tmp_path / "stdout-trace",
+        "trace.jsonl",
+        secrets=("x",),
+    ) is False
+    assert not (tmp_path / "stdout-trace/trace.jsonl").exists()
+    assert not (tmp_path / "stdout-trace/trace.jsonl.tmp").exists()
 
 
 def test_historical_three_step_snapshot_is_projected_to_canonical_four_step_order(monkeypatch):

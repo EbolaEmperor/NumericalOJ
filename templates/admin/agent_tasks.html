@@ -1,66 +1,199 @@
 {% extends "layouts/site.html" %}
-{% block title %}Agent 任务 - {{ super() }}{% endblock %}
+{% block title %}Agent - {{ super() }}{% endblock %}
 {% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+
 {% block head %}
 {{ super() }}
-<link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/content-v2.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/agents/task-list.css') }}">
 {% endblock %}
 
+{% block content_container_class %}container-fluid agent-home-shell{% endblock %}
+
 {% block content %}
-{% from 'agents/task_card.html' import render_agent_task_card %}
-<header class="agent-task-page-head mb-3">
-  <div>
-    <div class="agent-task-page-kicker">EXECUTION DESK</div>
-    <h4 class="mb-1"><i class="fas fa-robot me-2" aria-hidden="true"></i>Agent 任务</h4>
-    <p class="mb-0 text-muted">集中查看解题与造数据任务的运行状态和执行轨迹。</p>
-  </div>
-</header>
+{% from 'components/choice_picker.html' import choice_picker, choice_option %}
+{% from 'ranking/components/harness_logo.html' import harness_logo %}
 
-<section class="ranking-v2-detail agent-task-records" aria-label="Agent 任务列表">
-  <div class="aj-subs" data-agent-task-list>
-    {% if agent_runs and agent_runs|length > 0 %}
-      {% for run in agent_runs %}
-        {{ render_agent_task_card(run, current_page) }}
-      {% endfor %}
-    {% else %}
-      <div class="aj-subs-empty">
-        <i class="fas fa-inbox" aria-hidden="true"></i>
-        <span>暂无 Agent 任务记录</span>
+{% set preferred_harness = preference.harness|default('', true) %}
+{% set preferred_endpoint = preference.endpoint_id|default('', true)|string %}
+{% set preferred_role = preference.access_role|default('user', true) %}
+{% set harness_labels = {'claude_code': 'Claude Code', 'codex': 'Codex', 'opencode': 'OpenCode', 'pi': 'Pi'} %}
+
+<main class="agent-home" data-agent-home>
+  <section class="agent-home-hero" aria-labelledby="agentHomeTitle">
+    <div class="agent-home-heading">
+      <span class="agent-home-kicker">NUMERICAL OJ · AGENT</span>
+      <h1 id="agentHomeTitle">今天想让 Agent 做什么？</h1>
+      <p>描述目标、带上材料，然后把工作交给一个可以继续的会话。</p>
+    </div>
+
+    <form class="agent-composer"
+          method="post"
+          action="{{ url_for('problem_core.admin_agent_tasks') }}"
+          enctype="multipart/form-data"
+          autocomplete="off"
+          data-agent-create-form>
+      <label class="visually-hidden" for="agentMessage">任务内容</label>
+      <textarea id="agentMessage"
+                name="message"
+                rows="4"
+                maxlength="100000"
+                placeholder="让 Agent 分析问题、编写代码或整理文件…"
+                required
+                data-agent-message></textarea>
+
+      <div class="agent-attachment-strip" data-agent-attachments hidden
+           aria-label="已选择的附件"></div>
+
+      <div class="agent-composer-footer">
+        <div class="agent-composer-controls" aria-label="任务运行设置">
+          <div class="agent-composer-choice" data-agent-harness-choice>
+            {{ choice_picker(
+              'agentHarness', 'harness', preferred_harness,
+              '选择 Harness', 'fa-terminal',
+              'agent-choice agent-choice--harness', false, true, false, '选择 Harness'
+            ) }}
+          </div>
+
+          <div class="agent-composer-choice" data-agent-endpoint-choice>
+            {{ choice_picker(
+              'agentEndpoint', 'endpoint_id', preferred_endpoint,
+              '选择模型节点', 'fa-microchip',
+              'agent-choice agent-choice--endpoint', false, true, false, '选择模型节点'
+            ) }}
+          </div>
+
+          <div class="agent-composer-choice">
+            {{ choice_picker(
+              'agentAccessRole', 'access_role', preferred_role,
+              '以用户身份', 'fa-user',
+              'agent-choice agent-choice--role', false, true, false, '选择执行身份'
+            ) }}
+            <template data-choice-options-for="agentAccessRole">
+              {{ choice_option('user', '以用户身份', preferred_role == 'user', 'fa-user', '注入 numoj-user 与用户访问令牌') }}
+              {{ choice_option('admin', '以管理员身份', preferred_role == 'admin', 'fa-user-shield', '注入 numoj-admin 与管理员访问令牌') }}
+            </template>
+          </div>
+        </div>
+
+        <div class="agent-composer-actions">
+          <input id="agentAttachments"
+                 class="visually-hidden"
+                 type="file"
+                 name="attachments"
+                 multiple
+                 data-agent-attachment-input>
+          <label class="agent-icon-button" for="agentAttachments"
+                 title="添加附件" aria-label="添加附件">
+            <i class="fas fa-plus" aria-hidden="true"></i>
+          </label>
+          <button class="agent-send-button" type="submit" data-agent-create-submit
+                  aria-label="创建 Agent 会话" title="创建会话">
+            <i class="fas fa-arrow-up" aria-hidden="true"></i>
+          </button>
+        </div>
       </div>
-    {% endif %}
-  </div>
 
-  {% if total_pages > 1 %}
-  <nav class="ranking-v2-pagination submissions-pagination" aria-label="分页">
-    <ul class="pagination justify-content-center mb-0">
-      {% if current_page > 1 %}
-        <li class="page-item">
-          <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=current_page-1) }}" aria-label="上一页">
-            <i class="fas fa-arrow-left" aria-hidden="true"></i><span>上一页</span>
-          </a>
-        </li>
-      {% endif %}
-      {% for p in page_numbers %}
-        <li class="page-item {% if p == current_page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=p) }}">{{ p }}</a>
-        </li>
+      <p class="agent-composer-feedback" data-agent-create-feedback role="status"
+         aria-live="polite" hidden></p>
+    </form>
+
+    <script type="application/json" data-agent-harnesses-json>{{ harnesses|default([], true)|tojson }}</script>
+    <script type="application/json" data-agent-endpoints-json>{{ endpoints_by_harness|default({}, true)|tojson }}</script>
+    <script type="application/json" data-agent-preference-json>{{ preference|default({}, true)|tojson }}</script>
+  </section>
+
+  <section class="agent-history" aria-labelledby="agentHistoryTitle">
+    <header class="agent-history-heading">
+      <div>
+        <span class="agent-history-kicker">RECENT WORK</span>
+        <h2 id="agentHistoryTitle">历史会话</h2>
+      </div>
+      <span>按最近更新排序</span>
+    </header>
+
+    <div class="agent-history-list" data-agent-task-list>
+      {% for session in agent_sessions|default([], true) %}
+        {% set session_id = session.session_id %}
+        {% set session_title = session.title|default('未命名任务', true) %}
+        {% set actor = session.requested_by|default(session.created_by|default('numericaloj', true), true) %}
+        {% set harness_name = session.harness_label|default(harness_labels.get(session.harness, session.harness|default('Harness', true)), true) %}
+        {% set endpoint_name = session.endpoint_model|default(session.model|default('模型节点', true), true) %}
+        {% set session_status = session.status|default('', true)|lower %}
+        <a class="agent-history-row"
+           href="{{ session.detail_url|default(url_for('problem_core.admin_agent_task_detail', session_id=session_id), true) }}"
+           aria-label="打开会话：{{ session_title }}">
+          <span class="numoj-avatar agent-history-avatar"
+                data-avatar-seed="{{ actor }}"
+                data-avatar-label="{{ actor }}"></span>
+          <span class="agent-history-main">
+            <strong title="{{ session_title }}">{{ session_title }}</strong>
+            <small>
+              <span>{{ actor }}</span>
+              {% if session.updated_at or session.created_at %}<time>{{ session.updated_at|default(session.created_at, true) }}</time>{% endif %}
+              {% if session_status in ('running', 'pending') %}
+                <span class="agent-history-live"><i aria-hidden="true"></i>运行中</span>
+              {% endif %}
+            </small>
+          </span>
+          <span class="agent-history-runtime agent-history-runtime--harness"
+                title="Harness：{{ harness_name }}">
+            {{ harness_logo(session.harness) }}
+            <span>{{ harness_name }}</span>
+          </span>
+          <span class="agent-history-runtime" title="模型节点：{{ endpoint_name }}">
+            <i class="fas fa-microchip" aria-hidden="true"></i>
+            <span>{{ endpoint_name }}</span>
+          </span>
+          <i class="fas fa-chevron-right agent-history-arrow" aria-hidden="true"></i>
+        </a>
+      {% else %}
+        <div class="agent-history-empty">
+          <span class="agent-history-empty-mark" aria-hidden="true">
+            <i class="fas fa-terminal"></i>
+          </span>
+          <strong>还没有会话</strong>
+          <p>从上面的输入框开始，Agent 的工作记录会留在这里。</p>
+        </div>
       {% endfor %}
-      {% if current_page < total_pages %}
-        <li class="page-item">
-          <a class="page-link" href="{{ url_for('problem_core.admin_agent_tasks', page=current_page+1) }}" aria-label="下一页">
-            <span>下一页</span><i class="fas fa-arrow-right" aria-hidden="true"></i>
-          </a>
-        </li>
-      {% endif %}
-    </ul>
-  </nav>
-  {% endif %}
-</section>
+    </div>
 
-{% include 'agents/run_detail_modal.html' %}
+    {% if pagination is defined and pagination %}
+      {% set history_total_pages = pagination.total_pages|default(1, true) %}
+      {% set history_current_page = pagination.current_page|default(1, true) %}
+      {% set history_page_numbers = pagination.page_numbers|default([], true) %}
+      {% set history_has_prev = pagination.has_prev|default(history_current_page > 1, true) %}
+      {% set history_has_next = pagination.has_next|default(history_current_page < history_total_pages, true) %}
+    {% else %}
+      {% set history_total_pages = total_pages|default(1, true) %}
+      {% set history_current_page = current_page|default(1, true) %}
+      {% set history_page_numbers = page_numbers|default([], true) %}
+      {% set history_has_prev = history_current_page > 1 %}
+      {% set history_has_next = history_current_page < history_total_pages %}
+    {% endif %}
+    {% if history_total_pages > 1 %}
+      <nav class="agent-history-pagination" aria-label="历史会话分页">
+        {% if history_has_prev %}
+          <a href="{{ url_for('problem_core.admin_agent_tasks', page=history_current_page - 1) }}"
+             aria-label="上一页"><i class="fas fa-arrow-left" aria-hidden="true"></i></a>
+        {% endif %}
+        {% for page_number in history_page_numbers %}
+          {% if page_number %}
+            <a href="{{ url_for('problem_core.admin_agent_tasks', page=page_number) }}"
+               class="{% if page_number == history_current_page %}is-current{% endif %}"
+               {% if page_number == history_current_page %}aria-current="page"{% endif %}>{{ page_number }}</a>
+          {% else %}
+            <span aria-hidden="true">…</span>
+          {% endif %}
+        {% endfor %}
+        {% if history_has_next %}
+          <a href="{{ url_for('problem_core.admin_agent_tasks', page=history_current_page + 1) }}"
+             aria-label="下一页"><i class="fas fa-arrow-right" aria-hidden="true"></i></a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  </section>
+</main>
 {% endblock %}
 
 {% block scripts %}
