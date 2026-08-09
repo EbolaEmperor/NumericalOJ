@@ -97,6 +97,401 @@ def test_only_one_continuation_can_claim_a_terminal_session(monkeypatch):
     assert loser.closed is True
 
 
+def test_create_session_persists_the_first_turn_runtime_base(monkeypatch):
+    connection = _ScriptedConnection()
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    sessions.create_agent_session(
+        session_id="session-with-base",
+        task_id="turn-with-base",
+        requested_by="admin",
+        harness="codex",
+        endpoint_id=7,
+        endpoint_revision=2,
+        endpoint_model="gpt-test",
+        user_message="从初始运行环境开始",
+        attachments=[{"name": "input.txt"}],
+        base_runtime_checkpoint_id="checkpoint-initial",
+        base_native_session_id="native-initial",
+    )
+
+    calls = connection.cursor_instance.calls
+    assert len(calls) == 2
+    query, params = calls[1]
+    assert "base_runtime_checkpoint_id" in query
+    assert "base_native_session_id" in query
+    assert params == (
+        "session-with-base",
+        "turn-with-base",
+        "从初始运行环境开始",
+        '[{"name": "input.txt"}]',
+        "checkpoint-initial",
+        "native-initial",
+    )
+    assert connection.commits == 1
+
+
+def test_continuation_freezes_runtime_base_and_locked_native_session(
+    monkeypatch,
+):
+    connection = _ScriptedConnection(one_values=[{
+        "status": "Completed",
+        "turn_count": 2,
+        "task_kind": "custom",
+        "problem_id": None,
+        "requested_by": "admin",
+        "access_role": "admin",
+        "harness": "codex",
+        "endpoint_id": 7,
+        "endpoint_revision": 2,
+        "endpoint_model": "gpt-test",
+        "native_session_id": "native-current",
+        "previous_base_runtime_checkpoint_id": "checkpoint-previous",
+    }])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    claim = sessions.begin_agent_session_turn(
+        "session-with-base",
+        task_id="turn-3",
+        user_message="继续完善",
+        attachments=[],
+        base_runtime_checkpoint_id="checkpoint-before-turn-3",
+        base_native_session_id="native-current",
+    )
+
+    assert claim["turn_index"] == 3
+    assert claim["native_session_id"] == "native-current"
+    assert claim["base_native_session_id"] == "native-current"
+    assert claim["base_runtime_checkpoint_id"] == "checkpoint-before-turn-3"
+    assert claim["previous_base_runtime_checkpoint_id"] == (
+        "checkpoint-previous"
+    )
+    insert_query, insert_params = connection.cursor_instance.calls[1]
+    assert "base_runtime_checkpoint_id" in insert_query
+    assert insert_params[-2:] == (
+        "checkpoint-before-turn-3",
+        "native-current",
+    )
+
+
+def test_continuation_rejects_a_stale_native_session_base(monkeypatch):
+    connection = _ScriptedConnection(one_values=[{
+        "status": "Completed",
+        "turn_count": 1,
+        "native_session_id": "native-authoritative",
+    }])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="原生会话基线已变化",
+    ):
+        sessions.begin_agent_session_turn(
+            "session-stale-base",
+            task_id="turn-2",
+            user_message="继续",
+            base_runtime_checkpoint_id="checkpoint-before-turn-2",
+            base_native_session_id="native-stale",
+        )
+
+    assert len(connection.cursor_instance.calls) == 1
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_retry_clones_current_turn_and_rolls_back_to_recorded_base(
+    monkeypatch,
+):
+    connection = _ScriptedConnection(one_values=[
+        {
+            "current_task_id": "turn-failed",
+            "status": "Failed",
+            "turn_count": 4,
+            "task_kind": "custom",
+            "problem_id": None,
+            "requested_by": "admin",
+            "access_role": "admin",
+            "harness": "codex",
+            "endpoint_id": 7,
+            "endpoint_revision": 2,
+            "endpoint_model": "gpt-test",
+            "native_session_id": "native-after-failure",
+        },
+        {
+            "task_id": "turn-failed",
+            "turn_index": 4,
+            "user_message": "请修复最后一个问题",
+            "attachments_json": '[{"name": "case.txt"}]',
+            "base_runtime_checkpoint_id": "checkpoint-before-failure",
+            "base_native_session_id": "native-before-failure",
+            "superseded_by_task_id": None,
+            "superseded_at": None,
+        },
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    claim = sessions.begin_agent_session_retry(
+        "session-retry",
+        "turn-retry",
+        "turn-failed",
+        "unused-fallback",
+    )
+
+    assert claim == {
+        "turn_index": 5,
+        "task_kind": "custom",
+        "problem_id": None,
+        "requested_by": "admin",
+        "access_role": "admin",
+        "harness": "codex",
+        "endpoint_id": 7,
+        "endpoint_revision": 2,
+        "endpoint_model": "gpt-test",
+        "native_session_id": "native-before-failure",
+        "user_message": "请修复最后一个问题",
+        "attachments": [{"name": "case.txt"}],
+        "base_runtime_checkpoint_id": "checkpoint-before-failure",
+        "previous_base_runtime_checkpoint_id": "checkpoint-before-failure",
+        "base_native_session_id": "native-before-failure",
+        "retry_of_task_id": "turn-failed",
+        "replaced_task_id": "turn-failed",
+    }
+    calls = connection.cursor_instance.calls
+    assert len(calls) == 5
+    assert "FROM agent_sessions" in calls[0][0]
+    assert "FOR UPDATE" in calls[0][0]
+    assert "FROM agent_session_turns" in calls[1][0]
+    assert "FOR UPDATE" in calls[1][0]
+    assert "SET superseded_by_task_id=%s" in calls[2][0]
+    assert calls[2][1] == (
+        "turn-retry",
+        "session-retry",
+        "turn-failed",
+    )
+    assert "retry_of_task_id" in calls[3][0]
+    assert calls[3][1] == (
+        "session-retry",
+        "turn-retry",
+        5,
+        "请修复最后一个问题",
+        '[{"name": "case.txt"}]',
+        "checkpoint-before-failure",
+        "native-before-failure",
+        "turn-failed",
+    )
+    assert "native_session_id=NULLIF(%s, '')" in calls[4][0]
+    assert calls[4][1] == (
+        "turn-retry",
+        "native-before-failure",
+        5,
+        "session-retry",
+        "turn-failed",
+    )
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+
+
+def test_retry_rejects_specialized_first_turn_before_superseding(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        {
+            "current_task_id": "solve-first",
+            "status": "Failed",
+            "turn_count": 1,
+            "task_kind": "solve",
+        },
+        {
+            "task_id": "solve-first",
+            "turn_index": 1,
+            "user_message": "解决题目",
+            "attachments_json": "[]",
+            "base_runtime_checkpoint_id": "checkpoint-before-solve",
+            "base_native_session_id": None,
+            "superseded_by_task_id": None,
+            "superseded_at": None,
+        },
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="首轮暂不支持重试",
+    ):
+        sessions.begin_agent_session_retry(
+            "solve-session",
+            "solve-retry",
+            "solve-first",
+            "unused-fallback",
+        )
+
+    assert len(connection.cursor_instance.calls) == 2
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_retry_allows_generic_followup_in_specialized_session(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        {
+            "current_task_id": "solve-followup",
+            "status": "Completed",
+            "turn_count": 2,
+            "task_kind": "solve",
+            "problem_id": 9,
+            "requested_by": "admin",
+            "access_role": "user",
+            "harness": "codex",
+            "endpoint_id": 7,
+            "endpoint_revision": 2,
+            "endpoint_model": "gpt-test",
+            "native_session_id": "native-after-followup",
+        },
+        {
+            "task_id": "solve-followup",
+            "turn_index": 2,
+            "user_message": "继续检查边界情况",
+            "attachments_json": "[]",
+            "base_runtime_checkpoint_id": "checkpoint-before-followup",
+            "base_native_session_id": "native-after-solve",
+            "superseded_by_task_id": None,
+            "superseded_at": None,
+        },
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    claim = sessions.begin_agent_session_retry(
+        "solve-session",
+        "solve-followup-retry",
+        "solve-followup",
+        "unused-fallback",
+    )
+
+    assert claim["task_kind"] == "solve"
+    assert claim["base_native_session_id"] == "native-after-solve"
+    assert claim["user_message"] == "继续检查边界情况"
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+
+
+def test_retry_legacy_first_turn_uses_fallback_and_empty_native(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        {
+            "current_task_id": "legacy-first",
+            "status": "Completed",
+            "turn_count": 1,
+        },
+        {
+            "task_id": "legacy-first",
+            "turn_index": 1,
+            "user_message": "重试首轮",
+            "attachments_json": "[]",
+            "base_runtime_checkpoint_id": None,
+            "base_native_session_id": None,
+            "superseded_by_task_id": None,
+            "superseded_at": None,
+        },
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    claim = sessions.begin_agent_session_retry(
+        "legacy-session",
+        "legacy-retry",
+        "legacy-first",
+        "checkpoint-initial-fallback",
+    )
+
+    assert claim["turn_index"] == 2
+    assert claim["base_runtime_checkpoint_id"] == (
+        "checkpoint-initial-fallback"
+    )
+    assert claim["base_native_session_id"] == ""
+    assert claim["native_session_id"] == ""
+    assert connection.cursor_instance.calls[4][1][1] == ""
+
+
+def test_retry_rejects_unknown_nonfirst_legacy_base(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        {
+            "current_task_id": "legacy-second",
+            "status": "Completed",
+            "turn_count": 2,
+        },
+        {
+            "task_id": "legacy-second",
+            "turn_index": 2,
+            "user_message": "重试第二轮",
+            "attachments_json": "[]",
+            "base_runtime_checkpoint_id": None,
+            "base_native_session_id": None,
+            "superseded_by_task_id": None,
+            "superseded_at": None,
+        },
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="缺少可恢复的运行时基线",
+    ):
+        sessions.begin_agent_session_retry(
+            "legacy-session",
+            "legacy-retry",
+            "legacy-second",
+            "checkpoint-fallback-must-not-be-used",
+        )
+
+    assert len(connection.cursor_instance.calls) == 2
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_retry_rejects_stale_expected_task_under_session_lock(monkeypatch):
+    connection = _ScriptedConnection(one_values=[{
+        "current_task_id": "turn-newer",
+        "status": "Completed",
+        "turn_count": 3,
+    }])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="当前轮次已变化",
+    ):
+        sessions.begin_agent_session_retry(
+            "session-racing-retry",
+            "turn-retry",
+            "turn-stale",
+            "checkpoint-fallback",
+        )
+
+    assert len(connection.cursor_instance.calls) == 1
+    assert "FOR UPDATE" in connection.cursor_instance.calls[0][0]
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_retry_rejects_cleanup_failed_session_before_reading_turn(monkeypatch):
+    connection = _ScriptedConnection(one_values=[{
+        "current_task_id": "turn-cleanup-failed",
+        "status": "CleanupFailed",
+        "turn_count": 2,
+    }])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="运行环境清理失败",
+    ):
+        sessions.begin_agent_session_retry(
+            "session-cleanup-failed",
+            "turn-retry",
+            "turn-cleanup-failed",
+            "checkpoint-fallback",
+        )
+
+    assert len(connection.cursor_instance.calls) == 1
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
 def test_cleanup_failed_is_nonterminal_and_blocks_resume(monkeypatch):
     connection = _ScriptedConnection(
         one_values=[{"status": "CleanupFailed", "turn_count": 3}],
@@ -357,3 +752,45 @@ def test_task_lookup_includes_historical_turns(monkeypatch):
     assert "LEFT JOIN agent_session_turns AS t" in query
     assert "s.current_task_id=%s OR t.task_id=%s" in query
     assert params == ("turn-1", "turn-1", "turn-1")
+
+
+def test_turn_query_hides_superseded_attempts_unless_explicitly_requested(
+    monkeypatch,
+):
+    turn_row = {
+        "task_id": "turn-retried",
+        "turn_index": 2,
+        "user_message": "原消息",
+        "attachments_json": "[]",
+        "base_runtime_checkpoint_id": "checkpoint-base",
+        "base_native_session_id": "native-base",
+        "retry_of_task_id": "turn-original",
+        "superseded_by_task_id": "turn-next-retry",
+        "superseded_at": "2026-08-10 12:00:00",
+        "status": "Failed",
+        "conclusion": "失败结论",
+        "harness": "codex",
+        "endpoint_id": 7,
+        "endpoint_model": "gpt-test",
+        "created_at": None,
+        "updated_at": None,
+    }
+    visible_connection = _ScriptedConnection(all_values=[[turn_row]])
+    historical_connection = _ScriptedConnection(all_values=[[turn_row]])
+    connections = iter([visible_connection, historical_connection])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: next(connections))
+
+    visible = sessions.get_agent_session_turns("session-retry")
+    historical = sessions.get_agent_session_turns(
+        "session-retry",
+        include_superseded=True,
+    )
+
+    assert visible[0]["retry_of_task_id"] == "turn-original"
+    assert visible[0]["superseded_by_task_id"] == "turn-next-retry"
+    assert visible[0]["superseded_at"] == "2026-08-10 12:00:00"
+    assert historical == visible
+    visible_query = visible_connection.cursor_instance.calls[0][0]
+    historical_query = historical_connection.cursor_instance.calls[0][0]
+    assert "AND t.superseded_at IS NULL" in visible_query
+    assert "AND t.superseded_at IS NULL" not in historical_query

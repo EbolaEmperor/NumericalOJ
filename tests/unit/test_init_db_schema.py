@@ -220,6 +220,29 @@ def test_agent_task_run_schema_declares_endpoint_snapshot():
     )
 
 
+def test_agent_session_turn_schema_declares_retry_lineage_and_runtime_base():
+    from scripts import init_db_schema
+
+    turns = init_db_schema._load_schema_specs()["agent_session_turns"]
+
+    assert turns.columns["base_runtime_checkpoint_id"].lower() == (
+        "varchar(64) default null"
+    )
+    assert turns.columns["base_native_session_id"].lower() == (
+        "varchar(128) default null"
+    )
+    assert turns.columns["retry_of_task_id"].lower() == (
+        "varchar(64) default null"
+    )
+    assert turns.columns["superseded_by_task_id"].lower() == (
+        "varchar(64) default null"
+    )
+    assert turns.columns["superseded_at"].lower() == "datetime default null"
+    assert "idx_agent_turns_session_visible" in turns.indexes
+    assert "idx_agent_turns_retry_of" in turns.indexes
+    assert "idx_agent_turns_superseded_by" in turns.indexes
+
+
 def test_empty_database_dry_run_plans_full_schema_without_connecting_to_it(monkeypatch):
     from scripts import init_db_schema
 

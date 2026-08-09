@@ -19,13 +19,7 @@ def _headers(**values):
     [
         "ftp://llm.example/v1",
         "https://user:secret@llm.example/v1",
-        "https://llm.example/v1?target=other",
-        "https://llm.example/v1?",
-        "https://llm.example/v1#fragment",
-        "https://llm.example/v1#",
-        "https://llm.example/v1/",
         "https://llm.example/v1/../admin",
-        "https://llm.example/v1/%61dmin",
         "https://llm.example/v1\\admin",
     ],
 )
@@ -36,14 +30,17 @@ def test_upstream_base_url_is_strictly_frozen(base_url):
 
 def test_upstream_keeps_fixed_origin_and_base_path():
     upstream = relay._normalize_upstream_base_url(
-        "https://LLM.example.test:8443/tenant/v1"
+        "https://LLM.example.test:8443/tenant/v1/"
+        "?api-version=2026-08-01#dashboard"
     )
 
     assert upstream.origin_url == "https://llm.example.test:8443"
     assert upstream.base_path == "/tenant/v1"
+    assert upstream.base_query == "api-version=2026-08-01"
     assert upstream.container_base_path == "/tenant/v1"
     assert upstream.target_url("/tenant/v1/chat/completions?stream=1") == (
-        "https://llm.example.test:8443/tenant/v1/chat/completions?stream=1"
+        "https://llm.example.test:8443/tenant/v1/chat/completions"
+        "?api-version=2026-08-01&stream=1"
     )
     assert relay._path_within_base("/tenant/v1", upstream.base_path)
     assert relay._path_within_base(
@@ -52,6 +49,44 @@ def test_upstream_keeps_fixed_origin_and_base_path():
     )
     assert not relay._path_within_base("/tenant/v10", upstream.base_path)
     assert not relay._path_within_base("/other", upstream.base_path)
+
+
+def test_upstream_normalizes_safe_percent_escapes():
+    upstream = relay._normalize_upstream_base_url(
+        "https://llm.example/v1/%61dmin/%7etenant",
+    )
+
+    assert upstream.base_path == "/v1/admin/~tenant"
+    assert upstream.container_base_path == "/v1/admin/~tenant"
+
+
+def test_mcp_upstream_preserves_exact_trailing_slash_and_safe_escapes():
+    instance = relay._AgentSecretRelay(
+        upstream_base_url=(
+            "https://search.example.test/mcp/acme%20search/"
+            "?tenant=math#dashboard"
+        ),
+        mode="mcp",
+        real_credential="Bearer search-secret",
+    )
+
+    assert instance.upstream.base_path == "/mcp/acme search/"
+    assert instance.upstream.base_query == "tenant=math"
+    assert instance.upstream.container_base_path == "/mcp/acme%20search/"
+    path, query, canonical_target = relay._request_parts(
+        "/mcp/acme%20search/?session=1",
+        allow_trailing_slash=True,
+    )
+    assert path == "/mcp/acme search/"
+    assert query == "session=1"
+    assert canonical_target == "/mcp/acme%20search/?session=1"
+    assert relay._route_allowed(
+        "mcp",
+        "POST",
+        path,
+        query,
+        instance.upstream.base_path,
+    )
 
 
 def test_real_credentials_must_have_unambiguous_ascii_header_encoding():
@@ -295,13 +330,58 @@ def test_protocol_route_whitelists_expose_only_inference_or_exact_mcp_endpoint()
     assert not relay._route_allowed(
         "openai", "DELETE", "/tenant/v1/responses", [], "/tenant/v1"
     )
+    assert relay._route_allowed(
+        "openai",
+        "POST",
+        "/tenant/v1/chat/completions",
+        [("beta", "true")],
+        "/tenant/v1",
+    )
     assert relay._route_allowed("mcp", "POST", "/mcp", [], "/mcp")
     assert relay._route_allowed("mcp", "DELETE", "/mcp", [], "/mcp")
     assert not relay._route_allowed(
         "mcp", "POST", "/mcp/admin", [], "/mcp"
     )
-    assert not relay._route_allowed(
+    assert relay._route_allowed(
         "mcp", "POST", "/mcp", [("target", "admin")], "/mcp"
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "/messages",
+        "/messages/count_tokens",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+    ],
+)
+def test_anthropic_message_routes_accept_provider_queries_without_expanding_path(
+        relative_path):
+    base_path = "/tenant/anthropic"
+    path = base_path + relative_path
+
+    assert relay._route_allowed(
+        "anthropic", "POST", path, [("beta", "true")], base_path,
+    )
+    for provider_query in (
+        [("beta", "false")],
+        [("beta", "true"), ("extra", "value")],
+        [("beta", "true"), ("beta", "true")],
+    ):
+        assert relay._route_allowed(
+            "anthropic", "POST", path, provider_query, base_path,
+        )
+
+    assert not relay._route_allowed(
+        "anthropic", "GET", path, [("beta", "true")], base_path,
+    )
+    assert not relay._route_allowed(
+        "anthropic",
+        "POST",
+        base_path + "/models",
+        [("beta", "true")],
+        base_path,
     )
 
 
@@ -531,7 +611,9 @@ def test_proxy_injects_real_key_into_frozen_upstream_and_scrubs_response(
 ):
     real_key = "long-lived-model-key"
     instance = relay._AgentSecretRelay(
-        upstream_base_url="https://llm.example/tenant/v1",
+        upstream_base_url=(
+            "https://llm.example/tenant/v1/?api-version=2026-08-01"
+        ),
         mode="openai",
         real_credential=real_key,
     )
@@ -587,7 +669,7 @@ def test_proxy_injects_real_key_into_frozen_upstream_and_scrubs_response(
     authorization = f"Bearer {instance.temporary_secret}".encode("ascii")
     status, head, payload = _send(
         instance,
-        b"POST /tenant/v1/chat/completions HTTP/1.0\r\n"
+        b"POST /tenant/v1/chat/completions?stream=1&vendor-flag HTTP/1.0\r\n"
         + b"Authorization: " + authorization + b"\r\n"
         + b"X-Api-Key: attacker-override\r\n"
         + b"Content-Type: application/json\r\n"
@@ -599,7 +681,7 @@ def test_proxy_injects_real_key_into_frozen_upstream_and_scrubs_response(
 
     status, head, payload = _send(
         instance,
-        b"POST /tenant/v1/chat/completions HTTP/1.0\r\n"
+        b"POST /tenant/v1/chat/completions?stream=1&vendor-flag HTTP/1.0\r\n"
         + b"Authorization: " + authorization + b"\r\n"
         + b"Content-Type: application/json\r\n"
         + b"X-HTTP-Method-Override: DELETE\r\n"
@@ -612,7 +694,10 @@ def test_proxy_injects_real_key_into_frozen_upstream_and_scrubs_response(
     assert status == 200
     assert captured == {
         "method": "POST",
-        "target": "/tenant/v1/chat/completions",
+        "target": (
+            "/tenant/v1/chat/completions"
+            "?api-version=2026-08-01&stream=1&vendor-flag"
+        ),
         "headers": {
             "content-type": "application/json",
             "accept-encoding": "identity",

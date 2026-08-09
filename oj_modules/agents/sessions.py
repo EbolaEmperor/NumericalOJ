@@ -66,6 +66,29 @@ def _format_time(value):
     return str(value)
 
 
+def _normalize_optional_identifier(
+    value,
+    *,
+    max_length,
+    label,
+    safe_id=False,
+):
+    normalized = str(value or "").strip()
+    if (
+        len(normalized) > max_length
+        or (
+            normalized
+            and safe_id
+            and (
+                not _ID_RE.fullmatch(normalized)
+                or normalized in {".", ".."}
+            )
+        )
+    ):
+        raise ValueError(f"{label} 无效")
+    return normalized
+
+
 def _session_from_row(row):
     if not row:
         return None
@@ -99,6 +122,17 @@ def _turn_from_row(row):
         "turn_index": int(row.get("turn_index") or 1),
         "user_message": str(row.get("user_message") or ""),
         "attachments": attachments if isinstance(attachments, list) else [],
+        "base_runtime_checkpoint_id": str(
+            row.get("base_runtime_checkpoint_id") or ""
+        ).strip(),
+        "base_native_session_id": str(
+            row.get("base_native_session_id") or ""
+        ).strip(),
+        "retry_of_task_id": str(row.get("retry_of_task_id") or "").strip(),
+        "superseded_by_task_id": str(
+            row.get("superseded_by_task_id") or ""
+        ).strip(),
+        "superseded_at": _format_time(row.get("superseded_at")),
         "harness": row.get("harness"),
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_model": row.get("endpoint_model"),
@@ -120,6 +154,8 @@ def create_agent_session(
     endpoint_model,
     user_message,
     attachments=None,
+    base_runtime_checkpoint_id="",
+    base_native_session_id="",
     task_kind="custom",
     access_role="user",
     problem_id=None,
@@ -140,6 +176,17 @@ def create_agent_session(
     message = str(user_message or "").strip()
     if not message:
         raise ValueError("Agent 消息不能为空")
+    base_runtime_checkpoint_id = _normalize_optional_identifier(
+        base_runtime_checkpoint_id,
+        max_length=64,
+        label="Agent 运行时 checkpoint_id",
+        safe_id=True,
+    )
+    base_native_session_id = _normalize_optional_identifier(
+        base_native_session_id,
+        max_length=128,
+        label="Agent 原生会话基线",
+    )
 
     session = {
         "session_id": session_id,
@@ -204,10 +251,19 @@ def create_agent_session(
                 """
                 INSERT INTO agent_session_turns (
                     session_id, task_id, turn_index, user_message,
-                    attachments_json, status
-                ) VALUES (%s, %s, 1, %s, %s, 'Pending')
+                    attachments_json, base_runtime_checkpoint_id,
+                    base_native_session_id, status
+                ) VALUES (%s, %s, 1, %s, %s, NULLIF(%s, ''),
+                          NULLIF(%s, ''), 'Pending')
                 """,
-                (session_id, task_id, message, _json_text(attachments, [])),
+                (
+                    session_id,
+                    task_id,
+                    message,
+                    _json_text(attachments, []),
+                    base_runtime_checkpoint_id,
+                    base_native_session_id,
+                ),
             )
         conn.commit()
     except Exception:
@@ -226,23 +282,42 @@ def begin_agent_session_turn(
     task_id,
     user_message,
     attachments=None,
+    base_runtime_checkpoint_id="",
+    base_native_session_id="",
 ):
     session_id = normalize_agent_session_id(session_id)
     task_id = normalize_agent_session_id(task_id)
     message = str(user_message or "").strip()
     if not message:
         raise ValueError("Agent 消息不能为空")
+    base_runtime_checkpoint_id = _normalize_optional_identifier(
+        base_runtime_checkpoint_id,
+        max_length=64,
+        label="Agent 运行时 checkpoint_id",
+        safe_id=True,
+    )
+    base_native_session_id = _normalize_optional_identifier(
+        base_native_session_id,
+        max_length=128,
+        label="Agent 原生会话基线",
+    )
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT status, turn_count, task_kind, problem_id,
-                       requested_by, access_role, harness, endpoint_id,
-                       endpoint_revision, endpoint_model, native_session_id
-                FROM agent_sessions
-                WHERE session_id=%s
+                SELECT s.status, s.turn_count, s.task_kind, s.problem_id,
+                       s.requested_by, s.access_role, s.harness, s.endpoint_id,
+                       s.endpoint_revision, s.endpoint_model,
+                       s.native_session_id,
+                       previous.base_runtime_checkpoint_id AS
+                           previous_base_runtime_checkpoint_id
+                FROM agent_sessions AS s
+                LEFT JOIN agent_session_turns AS previous
+                  ON previous.session_id=s.session_id
+                 AND previous.task_id=s.current_task_id
+                WHERE s.session_id=%s
                 LIMIT 1
                 FOR UPDATE
                 """,
@@ -253,13 +328,28 @@ def begin_agent_session_turn(
                 raise AgentSessionNotFoundError("Agent 会话不存在")
             if not agent_status_is_terminal(row.get("status")):
                 raise AgentSessionBusyError("上一轮 Agent 任务尚未结束")
+            frozen_native_session_id = str(
+                row.get("native_session_id") or ""
+            ).strip()
+            if (
+                base_native_session_id
+                and base_native_session_id != frozen_native_session_id
+            ):
+                raise AgentSessionBusyError(
+                    "Agent 原生会话基线已变化，请刷新后重试"
+                )
+            # 原生会话基线必须取自同一行锁内的权威值。参数仅用于让调用方
+            # 声明其创建 checkpoint 时看到的值，并协助检测过期请求。
+            base_native_session_id = frozen_native_session_id
             turn_index = max(1, int(row.get("turn_count") or 1)) + 1
             cursor.execute(
                 """
                 INSERT INTO agent_session_turns (
                     session_id, task_id, turn_index, user_message,
-                    attachments_json, status
-                ) VALUES (%s, %s, %s, %s, %s, 'Pending')
+                    attachments_json, base_runtime_checkpoint_id,
+                    base_native_session_id, status
+                ) VALUES (%s, %s, %s, %s, %s, NULLIF(%s, ''),
+                          NULLIF(%s, ''), 'Pending')
                 """,
                 (
                     session_id,
@@ -267,6 +357,8 @@ def begin_agent_session_turn(
                     turn_index,
                     message,
                     _json_text(attachments, []),
+                    base_runtime_checkpoint_id,
+                    base_native_session_id,
                 ),
             )
             cursor.execute(
@@ -294,7 +386,211 @@ def begin_agent_session_turn(
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_revision": row.get("endpoint_revision"),
         "endpoint_model": row.get("endpoint_model"),
-        "native_session_id": str(row.get("native_session_id") or "").strip(),
+        "native_session_id": base_native_session_id,
+        "user_message": message,
+        "attachments": attachments if isinstance(attachments, list) else [],
+        "base_runtime_checkpoint_id": base_runtime_checkpoint_id,
+        "previous_base_runtime_checkpoint_id": str(
+            row.get("previous_base_runtime_checkpoint_id") or ""
+        ).strip(),
+        "base_native_session_id": base_native_session_id,
+        "retry_of_task_id": "",
+        "replaced_task_id": "",
+    }
+
+
+def begin_agent_session_retry(
+    session_id,
+    task_id,
+    expected_task_id,
+    fallback_base_checkpoint_id="",
+):
+    """在当前终态轮次的执行基线上创建一次新的物理重试。"""
+
+    session_id = normalize_agent_session_id(session_id)
+    task_id = normalize_agent_session_id(task_id)
+    expected_task_id = normalize_agent_session_id(expected_task_id)
+    if task_id == expected_task_id:
+        raise ValueError("Agent 重试 task_id 不能与原轮次相同")
+    fallback_base_checkpoint_id = _normalize_optional_identifier(
+        fallback_base_checkpoint_id,
+        max_length=64,
+        label="Agent 运行时 checkpoint_id",
+        safe_id=True,
+    )
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT current_task_id, status, turn_count, task_kind,
+                       problem_id, requested_by, access_role, harness,
+                       endpoint_id, endpoint_revision, endpoint_model,
+                       native_session_id
+                FROM agent_sessions
+                WHERE session_id=%s
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise AgentSessionNotFoundError("Agent 会话不存在")
+            status = str(row.get("status") or "").strip().lower()
+            if status in {"cleanupfailed", "cleanup_failed"}:
+                raise AgentSessionBusyError(
+                    "Agent 运行环境清理失败，暂时不能重试"
+                )
+            if not agent_status_is_terminal(status):
+                raise AgentSessionBusyError("当前 Agent 任务尚未结束")
+            current_task_id = str(row.get("current_task_id") or "").strip()
+            if current_task_id != expected_task_id:
+                raise AgentSessionBusyError("Agent 当前轮次已变化，请刷新后重试")
+
+            cursor.execute(
+                """
+                SELECT task_id, turn_index, user_message, attachments_json,
+                       base_runtime_checkpoint_id, base_native_session_id,
+                       superseded_by_task_id, superseded_at
+                FROM agent_session_turns
+                WHERE session_id=%s AND task_id=%s
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (session_id, expected_task_id),
+            )
+            source = cursor.fetchone()
+            if not source:
+                raise AgentSessionNotFoundError("Agent 当前轮次不存在")
+            if (
+                source.get("superseded_at") is not None
+                or str(source.get("superseded_by_task_id") or "").strip()
+            ):
+                raise AgentSessionBusyError("Agent 当前轮次已被其它重试替代")
+
+            try:
+                base_runtime_checkpoint_id = _normalize_optional_identifier(
+                    source.get("base_runtime_checkpoint_id"),
+                    max_length=64,
+                    label="Agent 运行时 checkpoint_id",
+                    safe_id=True,
+                )
+                base_native_session_id = _normalize_optional_identifier(
+                    source.get("base_native_session_id"),
+                    max_length=128,
+                    label="Agent 原生会话基线",
+                )
+            except ValueError:
+                raise AgentSessionBusyError(
+                    "待重试轮次缺少可恢复的运行时基线"
+                ) from None
+            source_turn_index = max(1, int(source.get("turn_index") or 1))
+            if (
+                str(row.get("task_kind") or "custom").strip().lower()
+                in {"solve", "testdata"}
+                and source_turn_index == 1
+            ):
+                # 专用任务首轮由各自 worker 负责验收和发布，不能通过通用
+                # worker 重放；但它们之后的普通会话消息本来就走通用 worker，
+                # 应允许按相同的 runtime/native 基线重试。
+                raise AgentSessionBusyError(
+                    "解题或造数据 Agent 的首轮暂不支持重试"
+                )
+            if not base_runtime_checkpoint_id:
+                if source_turn_index != 1 or not fallback_base_checkpoint_id:
+                    raise AgentSessionBusyError(
+                        "待重试轮次缺少可恢复的运行时基线"
+                    )
+                # 旧 schema 创建的首轮没有记录执行前的 checkpoint；调用方
+                # 可为它提供初始 checkpoint，而原生会话基线必然为空。
+                base_runtime_checkpoint_id = fallback_base_checkpoint_id
+                base_native_session_id = ""
+
+            message = str(source.get("user_message") or "").strip()
+            if not message:
+                raise AgentSessionBusyError("待重试轮次缺少原始消息")
+            attachments = _json_value(source.get("attachments_json"), [])
+            if not isinstance(attachments, list):
+                attachments = []
+            turn_index = max(1, int(row.get("turn_count") or 1)) + 1
+
+            cursor.execute(
+                """
+                UPDATE agent_session_turns
+                SET superseded_by_task_id=%s,
+                    superseded_at=CURRENT_TIMESTAMP
+                WHERE session_id=%s AND task_id=%s
+                  AND superseded_at IS NULL
+                  AND superseded_by_task_id IS NULL
+                """,
+                (task_id, session_id, expected_task_id),
+            )
+            if cursor.rowcount != 1:
+                raise AgentSessionBusyError("Agent 当前轮次已被其它重试替代")
+            cursor.execute(
+                """
+                INSERT INTO agent_session_turns (
+                    session_id, task_id, turn_index, user_message,
+                    attachments_json, base_runtime_checkpoint_id,
+                    base_native_session_id, retry_of_task_id, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, NULLIF(%s, ''),
+                          %s, 'Pending')
+                """,
+                (
+                    session_id,
+                    task_id,
+                    turn_index,
+                    message,
+                    _json_text(attachments, []),
+                    base_runtime_checkpoint_id,
+                    base_native_session_id,
+                    expected_task_id,
+                ),
+            )
+            cursor.execute(
+                """
+                UPDATE agent_sessions
+                SET current_task_id=%s, status='Pending', message='任务排队中',
+                    native_session_id=NULLIF(%s, ''), turn_count=%s
+                WHERE session_id=%s AND current_task_id=%s
+                """,
+                (
+                    task_id,
+                    base_native_session_id,
+                    turn_index,
+                    session_id,
+                    expected_task_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise AgentSessionBusyError("Agent 当前轮次已变化，请刷新后重试")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {
+        "turn_index": turn_index,
+        "task_kind": str(row.get("task_kind") or "custom"),
+        "problem_id": row.get("problem_id"),
+        "requested_by": row.get("requested_by"),
+        "access_role": str(row.get("access_role") or "user"),
+        "harness": row.get("harness"),
+        "endpoint_id": row.get("endpoint_id"),
+        "endpoint_revision": row.get("endpoint_revision"),
+        "endpoint_model": row.get("endpoint_model"),
+        "native_session_id": base_native_session_id,
+        "user_message": message,
+        "attachments": attachments,
+        "base_runtime_checkpoint_id": base_runtime_checkpoint_id,
+        "previous_base_runtime_checkpoint_id": base_runtime_checkpoint_id,
+        "base_native_session_id": base_native_session_id,
+        "retry_of_task_id": expected_task_id,
+        "replaced_task_id": expected_task_id,
     }
 
 
@@ -317,6 +613,36 @@ def mark_agent_turn_enqueue_failed(session_id, task_id, message):
                 """
                 UPDATE agent_sessions
                 SET status='Failed', message=%s
+                WHERE session_id=%s AND current_task_id=%s
+                """,
+                (error, session_id, task_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_agent_turn_runtime_restore_failed(session_id, task_id, message):
+    """把无法确定 runtime 一致性的重试收束为不可续聊状态。"""
+
+    session_id = normalize_agent_session_id(session_id)
+    task_id = normalize_agent_session_id(task_id)
+    error = str(message or "Agent 运行时恢复失败")[:1000]
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE agent_session_turns
+                SET status='CleanupFailed', conclusion=%s
+                WHERE session_id=%s AND task_id=%s
+                """,
+                (error, session_id, task_id),
+            )
+            cursor.execute(
+                """
+                UPDATE agent_sessions
+                SET status='CleanupFailed', message=%s
                 WHERE session_id=%s AND current_task_id=%s
                 """,
                 (error, session_id, task_id),
@@ -597,20 +923,27 @@ def get_agent_session_by_task_id(task_id):
         conn.close()
 
 
-def get_agent_session_turns(session_id):
+def get_agent_session_turns(session_id, include_superseded=False):
     session_id = normalize_agent_session_id(session_id)
+    superseded_filter = (
+        "" if bool(include_superseded) else "AND t.superseded_at IS NULL"
+    )
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT t.task_id, t.turn_index, t.user_message,
-                       t.attachments_json, t.status, t.conclusion,
+                       t.attachments_json, t.base_runtime_checkpoint_id,
+                       t.base_native_session_id, t.retry_of_task_id,
+                       t.superseded_by_task_id, t.superseded_at,
+                       t.status, t.conclusion,
                        r.harness, r.endpoint_id, r.endpoint_model,
                        t.created_at, t.updated_at
                 FROM agent_session_turns AS t
                 LEFT JOIN agent_task_runs AS r ON r.task_id=t.task_id
                 WHERE t.session_id=%s
+                  {superseded_filter}
                 ORDER BY t.turn_index ASC
                 """,
                 (session_id,),
@@ -644,6 +977,11 @@ def get_agent_session_turns(session_id):
         "turn_index": 1,
         "user_message": user_message,
         "attachments": [],
+        "base_runtime_checkpoint_id": "",
+        "base_native_session_id": "",
+        "retry_of_task_id": "",
+        "superseded_by_task_id": "",
+        "superseded_at": None,
         "harness": legacy.get("harness"),
         "endpoint_id": legacy.get("endpoint_id"),
         "endpoint_model": legacy.get("endpoint_model"),
@@ -722,6 +1060,7 @@ __all__ = [
     "AgentSessionError",
     "AgentSessionNotFoundError",
     "agent_status_is_terminal",
+    "begin_agent_session_retry",
     "begin_agent_session_turn",
     "claim_agent_session_title_generation",
     "create_agent_session",
@@ -730,6 +1069,7 @@ __all__ = [
     "get_agent_session_turns",
     "get_agent_sessions_paginated",
     "mark_agent_turn_enqueue_failed",
+    "mark_agent_turn_runtime_restore_failed",
     "normalize_agent_access_role",
     "normalize_agent_session_id",
     "set_agent_turn_attachments",

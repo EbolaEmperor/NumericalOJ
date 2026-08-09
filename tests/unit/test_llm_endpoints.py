@@ -98,15 +98,9 @@ def test_endpoint_snapshot_is_immutable_normalized_and_secret_safe():
         "api.example.test/v1",
         "ftp://api.example.test/v1",
         "https://user:password@api.example.test/v1",
-        "https://api.example.test/v1?api-version=1",
-        "https://api.example.test/v1#fragment",
-        "https://api.example.test/v1/chat/completions",
-        "https://api.example.test/v1/messages",
-        "https://api.example.test/v1/embeddings",
-        "https://api.example.test/v1/responses",
     ],
 )
-def test_endpoint_rejects_non_sdk_base_urls(base_url):
+def test_endpoint_rejects_invalid_base_urls(base_url):
     with pytest.raises(adapter.LLMEndpointValidationError):
         endpoint(base_url=base_url)
 
@@ -148,6 +142,28 @@ def test_standard_url_joining():
     assert adapter.endpoint_request_url(embedding, "embedding") == (
         "https://llm.example.test/v1/embeddings"
     )
+
+
+def test_base_url_query_is_preserved_after_request_path_joining():
+    snapshot = endpoint(
+        base_url="https://api.example.test/tenant/v1/?api-version=2026-08-01"
+    )
+
+    assert snapshot.base_url == (
+        "https://api.example.test/tenant/v1?api-version=2026-08-01"
+    )
+    assert adapter.endpoint_request_url(snapshot) == (
+        "https://api.example.test/tenant/v1/chat/completions"
+        "?api-version=2026-08-01"
+    )
+
+
+def test_base_url_drops_fragment_without_guessing_provider_path_semantics():
+    snapshot = endpoint(
+        base_url="https://api.example.test/tenant/messages#dashboard"
+    )
+
+    assert snapshot.base_url == "https://api.example.test/tenant/messages"
 
 
 @pytest.mark.parametrize(

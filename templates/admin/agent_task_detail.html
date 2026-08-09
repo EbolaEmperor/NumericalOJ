@@ -103,6 +103,7 @@
       data-running="{{ 'true' if is_running else 'false' }}"
       data-blocked="{{ 'true' if is_blocked else 'false' }}"
       data-can-resume="{{ 'true' if can_resume else 'false' }}"
+      data-can-retry="{{ 'true' if can_retry else 'false' }}"
       data-legacy="{{ 'true' if agent_session.is_legacy|default(false) else 'false' }}"
       data-native-session-id="{{ has_resume_point }}"
       data-status="{{ state_status }}"
@@ -172,10 +173,22 @@
       <div class="agent-conversation-feed" data-agent-turns>
         {% for turn in turns|default([], true) %}
           {% set detail_messages = turn.detail_messages|default(turn.messages|default(turn.execution_trace.trace_messages|default([], true), true), true) %}
-          <article class="agent-turn" data-agent-turn>
+          <article class="agent-turn" data-agent-turn
+                   data-agent-task-id="{{ turn.task_id }}">
             <section class="agent-user-message">
-              <div class="agent-user-bubble numoj-markdown" data-numoj-markdown>
-                {{ turn.user_message_html|safe }}
+              <div class="agent-user-message-row">
+                <div class="agent-user-bubble numoj-markdown" data-numoj-markdown>
+                  {{ turn.user_message_html|safe }}
+                </div>
+                {% if can_retry and loop.last and turn.task_id == current_task_id %}
+                  <button class="agent-message-retry" type="button"
+                          data-agent-retry-last
+                          data-agent-expected-task-id="{{ turn.task_id }}"
+                          title="重试" aria-label="重试上一条消息"
+                          {% if not can_retry_now %}hidden disabled{% endif %}>
+                    <i class="fas fa-redo-alt" aria-hidden="true"></i>
+                  </button>
+                {% endif %}
               </div>
               {% if turn.attachments %}
                 <div class="agent-message-attachments">
@@ -268,7 +281,7 @@
           </div>
         </div>
         <p class="agent-resume-feedback" data-agent-resume-feedback role="status"
-           aria-live="polite"{% if not is_blocked %} hidden{% endif %}>{% if is_blocked %}{{ '旧任务没有可恢复的 workspace，无法继续会话' if agent_session.is_legacy|default(false) else ('只有会话发起者可以继续发送消息' if not can_resume else ('身份配置清理失败，请管理员处理后再继续' if state_status in ('cleanupfailed', 'cleanup_failed') else '本轮未建立可恢复的原生会话，请新建 Agent 会话')) }}{% endif %}</p>
+           aria-live="polite"{% if not is_blocked %} hidden{% endif %}>{% if is_blocked %}{{ '旧任务没有可恢复的 workspace，无法继续会话' if agent_session.is_legacy|default(false) else ('只有会话发起者可以继续发送消息' if not can_resume else ('身份配置清理失败，请管理员处理后再继续' if state_status in ('cleanupfailed', 'cleanup_failed') else ('本轮未建立可恢复的原生会话，可以重试上一条消息' if can_retry_now else '本轮未建立可恢复的原生会话，请新建 Agent 会话'))) }}{% endif %}</p>
       </form>
     </footer>
   </section>

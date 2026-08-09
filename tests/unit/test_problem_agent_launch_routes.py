@@ -22,6 +22,23 @@ def _app(cookie_name="session"):
     return app
 
 
+@pytest.fixture(autouse=True)
+def _patch_agent_runtime_checkpoint_io(monkeypatch):
+    """启动路由单测不触碰真实会话 workspace/checkpoint。"""
+
+    monkeypatch.setattr(routes, "ensure_agent_workspace", lambda _sid: None)
+    monkeypatch.setattr(
+        routes,
+        "create_empty_agent_runtime_checkpoint",
+        lambda _session_id, _checkpoint_id: None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "remove_agent_runtime_checkpoint",
+        lambda _session_id, _checkpoint_id, *, missing_ok=True: None,
+    )
+
+
 def test_launch_options_return_unified_user_preference_for_each_task_kind(
     monkeypatch,
 ):
@@ -162,6 +179,8 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
         "access_role": "user",
         "problem_id": 9,
         "problem_title": "题",
+        "base_runtime_checkpoint_id": payload["task_id"],
+        "base_native_session_id": "",
     }]
     assert len(task.calls) == 1
     assert task.calls[0]["args"] == (
@@ -278,6 +297,8 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
         "access_role": "user",
         "problem_id": 9,
         "problem_title": "题",
+        "base_runtime_checkpoint_id": payload["task_id"],
+        "base_native_session_id": "",
     }]
     assert task.calls[0]["args"] == (
         9,
@@ -470,6 +491,82 @@ def test_agent_run_cancel_returns_whole_session_token_usage(monkeypatch):
     assert usage["input_cached_tokens"] == 35
     assert usage["output_tokens"] == 18
     assert usage["cost_rmb"] == "0.18"
+
+
+@pytest.mark.parametrize(
+    ("source", "visible_values", "expected_input", "expected_requests"),
+    [
+        ("codex", (100, 40), 140, 2),
+        ("claude_code", (100, 160), 160, 2),
+    ],
+)
+def test_superseded_task_status_never_readds_discarded_usage(
+    monkeypatch,
+    source,
+    visible_values,
+    expected_input,
+    expected_requests,
+):
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_turns",
+        lambda _session_id: [
+            {"task_id": "turn-1"},
+            {"task_id": "turn-replacement"},
+        ],
+    )
+    visible_usages = {
+        "turn-1": {
+            "source": source,
+            "request_count": 1,
+            "input_uncached_tokens": visible_values[0],
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 10,
+            "cost_rmb": "0.10",
+        },
+        "turn-replacement": {
+            "source": source,
+            "request_count": 2 if source == "claude_code" else 1,
+            "input_uncached_tokens": visible_values[1],
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 20,
+            "cost_rmb": "0.20",
+        },
+    }
+    monkeypatch.setattr(
+        routes,
+        "get_agent_run_by_task_id",
+        lambda task_id: {
+            "task_id": task_id,
+            "execution_trace": {"token_usage": visible_usages[task_id]},
+        },
+    )
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+    superseded = {
+        "task_id": "turn-superseded",
+        "session_id": "session-1",
+        "execution_trace": {"token_usage": {
+            "source": source,
+            "request_count": 99,
+            "input_uncached_tokens": 999_999,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 99_999,
+            "cost_rmb": "999.00",
+        }},
+    }
+
+    projected = routes._agent_state_with_loaded_session_token_usage(
+        superseded
+    )
+
+    usage = projected["session_token_usage"]
+    assert usage["input_uncached_tokens"] == expected_input
+    assert usage["request_count"] == expected_requests
+    expected_cost = "0.2" if source == "claude_code" else "0.3"
+    assert usage["cost_rmb"] == expected_cost
 
 
 @pytest.mark.parametrize("operation", ["status", "cancel"])

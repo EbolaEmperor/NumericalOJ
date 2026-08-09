@@ -74,7 +74,8 @@ def test_generic_task_has_stable_celery_name_and_exact_signature():
     assert str(inspect.signature(task)) == (
         "(self, session_id, requested_by, access_role, harness, endpoint_id, "
         "session_cookie, prompt, session_cookie_name='session', "
-        "resume_session_id='', generate_title=False)"
+        "resume_session_id='', generate_title=False, "
+        "restore_runtime_checkpoint_id='')"
     )
 
 
@@ -533,6 +534,76 @@ def test_generic_resume_rejects_session_without_native_restore_point(monkeypatch
     assert result["success"] is False
     assert "未记录可恢复" in result["message"]
     assert snapshots[-1]["status"] == "Failed"
+
+
+def test_generic_retry_can_restore_first_turn_without_native_session(monkeypatch):
+    task_id = "first-turn-retry"
+    session = {
+        "session_id": "retry-session",
+        "current_task_id": task_id,
+        "title": "重试任务",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "admin",
+        "harness": "claude_code",
+        "endpoint_id": 8,
+        "endpoint_revision": 4,
+        "native_session_id": "",
+        # 物理尝试已经是第二轮，但 checkpoint 表示逻辑首轮的空会话基线。
+        "turn_count": 2,
+        "is_legacy": False,
+    }
+    _patch_generic(monkeypatch, session)
+    endpoint = {**_endpoint(), "protocol": "anthropic"}
+    monkeypatch.setattr(
+        generic,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: endpoint,
+    )
+    monkeypatch.setattr(
+        generic,
+        "extract_agent_conclusion",
+        lambda _task_id: "已经从空会话重新完成。",
+    )
+    harness_calls = []
+    monkeypatch.setattr(
+        generic,
+        "run_agent_harness",
+        lambda **kwargs: (
+            harness_calls.append(kwargs)
+            or HarnessRunResult(
+                0,
+                False,
+                "",
+                "",
+                native_session_id="11111111-1111-1111-1111-111111111111",
+            )
+        ),
+    )
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self(task_id),
+        "retry-session",
+        "admin",
+        "admin",
+        "claude_code",
+        8,
+        "session-cookie",
+        "重新执行首轮消息",
+        "session",
+        "",
+        False,
+        "empty-first-turn-checkpoint",
+    )
+
+    assert result["success"] is True
+    assert harness_calls[0]["resume_session_id"] == ""
+    assert (
+        harness_calls[0]["restore_runtime_checkpoint_id"]
+        == "empty-first-turn-checkpoint"
+    )
 
 
 def test_generic_cleanup_failure_stays_nonterminal(monkeypatch):

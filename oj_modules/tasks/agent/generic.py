@@ -229,6 +229,7 @@ def _conclude_unhandled_generic_failures(function):
         session_cookie_name="session",
         resume_session_id="",
         generate_title=False,
+        restore_runtime_checkpoint_id="",
     ):
         task_id = _generic_task_id(self)
         state = _initial_generic_state(
@@ -252,6 +253,7 @@ def _conclude_unhandled_generic_failures(function):
                 session_cookie_name,
                 resume_session_id,
                 generate_title,
+                restore_runtime_checkpoint_id,
             )
         except Exception as exc:
             return _finalize_unhandled_generic_failure(state, exc)
@@ -267,6 +269,7 @@ def _validate_frozen_session(
     harness,
     endpoint_id,
     resume_session_id,
+    allow_empty_resume=False,
 ):
     if not isinstance(session, dict) or session.get("is_legacy"):
         raise ValueError("Agent 会话不存在或不支持续聊")
@@ -302,7 +305,11 @@ def _validate_frozen_session(
     )
     if frozen_native_id != requested_native_id:
         raise ValueError("Agent 会话恢复点已变化，请刷新后重试")
-    if int(session.get("turn_count") or 1) > 1 and not frozen_native_id:
+    if (
+        int(session.get("turn_count") or 1) > 1
+        and not frozen_native_id
+        and not bool(allow_empty_resume)
+    ):
         raise ValueError("上一轮未记录可恢复的原生会话，无法继续")
     return session_task_kind
 
@@ -326,6 +333,7 @@ def register_agent_run_turn_task(celery_app):
         session_cookie_name="session",
         resume_session_id="",
         generate_title=False,
+        restore_runtime_checkpoint_id="",
     ):
         task_id = _generic_task_id(self)
         terminal_result = existing_agent_terminal_result(task_id)
@@ -378,6 +386,9 @@ def register_agent_run_turn_task(celery_app):
                 harness=normalized_harness,
                 endpoint_id=endpoint_id,
                 resume_session_id=normalized_resume_session_id,
+                allow_empty_resume=bool(
+                    str(restore_runtime_checkpoint_id or "").strip()
+                ),
             )
             normalized_role = normalize_agent_access_role(
                 normalized_role,
@@ -448,6 +459,9 @@ def register_agent_run_turn_task(celery_app):
                 session_cookie_name=session_cookie_name,
                 prompt=prompt,
                 resume_session_id=normalized_resume_session_id,
+                restore_runtime_checkpoint_id=(
+                    str(restore_runtime_checkpoint_id or "").strip()
+                ),
                 trace_callback=lambda: _publish_agent_trace(state),
                 cancel_check=lambda: agent_run_is_canceled(task_id),
                 reset_trace=False,

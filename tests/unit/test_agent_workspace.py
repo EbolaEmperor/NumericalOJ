@@ -315,6 +315,35 @@ def test_remove_agent_attachments_rejects_paths_outside_attachment_namespace(
     assert sentinel.read_text() == "keep"
 
 
+def test_clear_agent_session_state_file_removes_only_summary(workspace_root):
+    public = workspace.ensure_agent_workspace("session")
+    summary = public / ".aj_session_state.json"
+    runtime = public / ".runtime"
+    summary.write_text('{"session_id":"discarded"}')
+    runtime.mkdir()
+    (runtime / "keep.txt").write_text("restored runtime")
+
+    assert workspace.clear_agent_session_state_file("session") is True
+    assert not summary.exists()
+    assert (runtime / "keep.txt").read_text() == "restored runtime"
+    assert workspace.clear_agent_session_state_file("session") is False
+
+
+def test_clear_agent_session_state_file_unlinks_symlink_without_following(
+    workspace_root,
+    tmp_path,
+):
+    public = workspace.ensure_agent_workspace("session")
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep")
+    summary = public / ".aj_session_state.json"
+    summary.symlink_to(outside)
+
+    assert workspace.clear_agent_session_state_file("session") is True
+    assert not summary.exists()
+    assert outside.read_text() == "keep"
+
+
 def test_workspace_tree_is_recursive_and_hides_private_runtime_data(workspace_root):
     public = workspace.ensure_agent_workspace("session")
     (public / "src").mkdir()

@@ -70,6 +70,42 @@ def _patch_frozen_endpoint(monkeypatch, *, revision=3):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def _patch_runtime_checkpoints(monkeypatch):
+    """路由单测只验证编排；checkpoint 文件语义由独立单测覆盖。"""
+
+    monkeypatch.setattr(
+        routes,
+        "create_agent_runtime_checkpoint",
+        lambda _session_id, _checkpoint_id: None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "create_empty_agent_runtime_checkpoint",
+        lambda _session_id, _checkpoint_id: None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "remove_agent_runtime_checkpoint",
+        lambda _session_id, _checkpoint_id, *, missing_ok=True: None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "restore_agent_runtime_checkpoint",
+        lambda _session_id, _checkpoint_id: None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "clear_agent_session_state_file",
+        lambda _session_id: False,
+    )
+    monkeypatch.setattr(
+        routes,
+        "mark_agent_turn_runtime_restore_failed",
+        lambda _session_id, _task_id, _message: None,
+    )
+
+
 def test_task_id_query_redirects_historical_turn_to_owning_session(monkeypatch):
     _patch_admin(monkeypatch)
     monkeypatch.setattr(
@@ -201,6 +237,8 @@ def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
     assert create_calls[0]["access_role"] == "admin"
     assert create_calls[0]["endpoint_revision"] == 3
     assert create_calls[0]["attachments"] == attachments
+    assert create_calls[0]["base_runtime_checkpoint_id"] == "session-new"
+    assert create_calls[0]["base_native_session_id"] == ""
     assert task.calls == [{
         "task_id": "session-new",
         "args": (
@@ -219,6 +257,7 @@ def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
             "numoj_session",
             "",
             True,
+            "",
         ),
     }]
     assert snapshots[0]["session_id"] == "session-new"
@@ -257,10 +296,18 @@ def test_custom_creation_removes_published_attachments_when_db_create_fails(
         fail_session_create,
     )
     removed = []
+    removed_checkpoints = []
     monkeypatch.setattr(
         routes,
         "remove_agent_attachments",
         lambda session_id, items: removed.append((session_id, items)),
+    )
+    monkeypatch.setattr(
+        routes,
+        "remove_agent_runtime_checkpoint",
+        lambda session_id, checkpoint_id, *, missing_ok=True: (
+            removed_checkpoints.append((session_id, checkpoint_id, missing_ok))
+        ),
     )
 
     app = _app()
@@ -282,6 +329,7 @@ def test_custom_creation_removes_published_attachments_when_db_create_fails(
     assert status == 500
     assert response.get_json()["success"] is False
     assert removed == [("session-new", attachments)]
+    assert removed_checkpoints == [("session-new", "session-new", True)]
 
 
 @pytest.mark.parametrize(
@@ -310,6 +358,14 @@ def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
         lambda *_args: attachments,
     )
     begin_calls = []
+    removed_checkpoints = []
+    monkeypatch.setattr(
+        routes,
+        "remove_agent_runtime_checkpoint",
+        lambda session_id, checkpoint_id, *, missing_ok=True: (
+            removed_checkpoints.append((session_id, checkpoint_id, missing_ok))
+        ),
+    )
     monkeypatch.setattr(
         routes,
         "set_agent_turn_attachments",
@@ -327,6 +383,7 @@ def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
                 "harness": "codex",
                 "endpoint_id": 12,
                 "native_session_id": "native-session-authoritative",
+                "previous_base_runtime_checkpoint_id": "turn-1-base",
             }
         ),
     )
@@ -357,6 +414,7 @@ def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
         "task_id": "turn-2",
         "user_message": "继续，并核对新附件",
         "attachments": [],
+        "base_runtime_checkpoint_id": "turn-2",
     })]
     assert task.calls == [{
         "task_id": "turn-2",
@@ -376,8 +434,10 @@ def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
             "numoj_session",
             "native-session-authoritative",
             False,
+            "",
         ),
     }]
+    assert removed_checkpoints == [("session-1", "turn-1-base", True)]
 
 
 def test_resume_race_rejects_before_attachments_become_public(monkeypatch):
@@ -626,6 +686,308 @@ def test_session_without_native_resume_point_is_blocked_before_attachments(
     assert "未建立可恢复的原生会话" in response.get_json()["message"]
 
 
+def test_retry_legacy_first_turn_reuses_message_and_restores_empty_runtime(
+    monkeypatch,
+):
+    _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
+    task = _Task()
+    monkeypatch.setattr(routes, "_agent_run_turn_task", task)
+    monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
+    session = _session(status="Failed")
+    session["native_session_id"] = ""
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: dict(session))
+
+    checkpoint_calls = []
+    runtime_calls = []
+    monkeypatch.setattr(
+        routes,
+        "create_empty_agent_runtime_checkpoint",
+        lambda session_id, checkpoint_id: checkpoint_calls.append(
+            (session_id, checkpoint_id)
+        ),
+    )
+    monkeypatch.setattr(
+        routes,
+        "restore_agent_runtime_checkpoint",
+        lambda session_id, checkpoint_id: runtime_calls.append(
+            ("restore", session_id, checkpoint_id)
+        ),
+    )
+    monkeypatch.setattr(
+        routes,
+        "clear_agent_session_state_file",
+        lambda session_id: runtime_calls.append(("clear", session_id)),
+    )
+    retry_calls = []
+    attachments = [{
+        "name": "需求.md",
+        "path": "attachments/turn-1/需求.md",
+    }]
+    monkeypatch.setattr(
+        routes,
+        "begin_agent_session_retry",
+        lambda session_id, **kwargs: (
+            retry_calls.append((session_id, kwargs))
+            or {
+                "turn_index": 2,
+                "task_kind": "custom",
+                "access_role": "admin",
+                "harness": "codex",
+                "endpoint_id": 12,
+                "endpoint_revision": 3,
+                "endpoint_model": "gpt-test",
+                "native_session_id": "",
+                "user_message": "造一道数值积分题",
+                "attachments": attachments,
+                "base_runtime_checkpoint_id": "turn-2",
+                "base_native_session_id": "",
+                "retry_of_task_id": "turn-1",
+                "replaced_task_id": "turn-1",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        routes,
+        "save_agent_attachments",
+        lambda *_args: pytest.fail("重试必须复用旧附件，不得再次保存"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "set_agent_turn_attachments",
+        lambda *_args: pytest.fail("重试附件已在事务中复制，不得二次更新"),
+    )
+    monkeypatch.setattr(routes, "upsert_agent_run_snapshot", lambda _state: None)
+    monkeypatch.setattr(routes, "render_rich_markdown", lambda text: f"<p>{text}</p>")
+
+    app = _app("numoj_session")
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={"retry_last": "1", "expected_task_id": "turn-1"},
+        content_type="multipart/form-data",
+        environ_overrides={"HTTP_COOKIE": "numoj_session=signed-cookie"},
+    ):
+        response = routes.admin_agent_task_detail("session-1")
+
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["task_id"] == "turn-2"
+    assert payload["replaced_task_id"] == "turn-1"
+    assert payload["user_message"] == "造一道数值积分题"
+    assert payload["attachments"] == attachments
+    assert checkpoint_calls == [("session-1", "turn-2")]
+    assert runtime_calls == [
+        ("restore", "session-1", "turn-2"),
+        ("clear", "session-1"),
+    ]
+    assert retry_calls == [("session-1", {
+        "task_id": "turn-2",
+        "expected_task_id": "turn-1",
+        "fallback_base_checkpoint_id": "turn-2",
+    })]
+    assert task.calls == [{
+        "task_id": "turn-2",
+        "args": (
+            "session-1",
+            "admin",
+            "admin",
+            "codex",
+            12,
+            "signed-cookie",
+            (
+                "造一道数值积分题\n\n"
+                "用户随本轮消息上传了以下附件，文件已经放入 workspace。"
+                "请在需要时直接读取：\n"
+                "- /workspace/attachments/turn-1/需求.md"
+            ),
+            "numoj_session",
+            "",
+            False,
+            "turn-2",
+        ),
+    }]
+
+
+def test_retry_runtime_restore_failure_blocks_dispatch_and_future_resume(
+    monkeypatch,
+):
+    _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
+    task = _Task()
+    monkeypatch.setattr(routes, "_agent_run_turn_task", task)
+    monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session(status="Failed"))
+    monkeypatch.setattr(
+        routes,
+        "begin_agent_session_retry",
+        lambda *_args, **_kwargs: {
+            "turn_index": 2,
+            "task_kind": "custom",
+            "access_role": "admin",
+            "harness": "codex",
+            "endpoint_id": 12,
+            "endpoint_revision": 3,
+            "endpoint_model": "gpt-test",
+            "native_session_id": "native-before-turn-1",
+            "user_message": "重试这条消息",
+            "attachments": [],
+            "base_runtime_checkpoint_id": "checkpoint-before-turn-1",
+            "base_native_session_id": "native-before-turn-1",
+            "retry_of_task_id": "turn-1",
+            "replaced_task_id": "turn-1",
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "restore_agent_runtime_checkpoint",
+        lambda *_args: (_ for _ in ()).throw(OSError("checkpoint damaged")),
+    )
+    marked = []
+    monkeypatch.setattr(
+        routes,
+        "mark_agent_turn_runtime_restore_failed",
+        lambda session_id, task_id, message: marked.append(
+            (session_id, task_id, message)
+        ),
+    )
+    snapshots = []
+    monkeypatch.setattr(
+        routes,
+        "upsert_agent_run_snapshot",
+        lambda state: snapshots.append(dict(state)),
+    )
+    monkeypatch.setattr(
+        routes,
+        "url_for",
+        lambda _endpoint, **kwargs: f"/admin/agent_tasks/{kwargs['session_id']}",
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={"retry_last": "1", "expected_task_id": "turn-1"},
+        content_type="multipart/form-data",
+        environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
+    ):
+        response, status = routes.admin_agent_task_detail("session-1")
+
+    assert status == 500
+    assert response.get_json()["message"] == (
+        "Agent 运行时恢复失败，已阻止继续会话"
+    )
+    assert task.calls == []
+    assert snapshots[-1]["status"] == "CleanupFailed"
+    assert marked == [(
+        "session-1",
+        "turn-2",
+        "Agent 运行时恢复失败，已阻止继续会话",
+    )]
+
+
+def test_retry_rejects_new_attachments_before_creating_checkpoint(monkeypatch):
+    _patch_admin(monkeypatch)
+    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session())
+    monkeypatch.setattr(
+        routes,
+        "create_empty_agent_runtime_checkpoint",
+        lambda *_args: pytest.fail("带新附件的重试不得创建 checkpoint"),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={
+            "retry_last": "1",
+            "expected_task_id": "turn-1",
+            "attachments": (io.BytesIO(b"new"), "new.txt"),
+        },
+        content_type="multipart/form-data",
+        environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
+    ):
+        response, status = routes.admin_agent_task_detail("session-1")
+
+    assert status == 400, response.get_json()
+    assert "不能同时上传新附件" in response.get_json()["message"]
+
+
+@pytest.mark.parametrize("task_kind", ["solve", "testdata"])
+def test_specialized_first_turn_cannot_be_retried_as_a_generic_turn(
+    monkeypatch,
+    task_kind,
+):
+    _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
+    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session",
+        lambda _sid: _session(task_kind=task_kind, access_role="user"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "begin_agent_session_retry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AgentSessionBusyError("解题或造数据 Agent 的首轮暂不支持重试")
+        ),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={"retry_last": "1", "expected_task_id": "turn-1"},
+        content_type="multipart/form-data",
+        environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
+    ):
+        response, status = routes.admin_agent_task_detail("session-1")
+
+    assert status == 409
+    assert response.get_json()["message"] == (
+        "解题或造数据 Agent 的首轮暂不支持重试"
+    )
+
+
+def test_retry_race_removes_unreferenced_fallback_checkpoint(monkeypatch):
+    _patch_admin(monkeypatch)
+    _patch_frozen_endpoint(monkeypatch)
+    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
+    monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session())
+    monkeypatch.setattr(
+        routes,
+        "begin_agent_session_retry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AgentSessionBusyError("Agent 当前轮次已变化，请刷新后重试")
+        ),
+    )
+    removed = []
+    monkeypatch.setattr(
+        routes,
+        "remove_agent_runtime_checkpoint",
+        lambda session_id, checkpoint_id, *, missing_ok=True: removed.append(
+            (session_id, checkpoint_id, missing_ok)
+        ),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1",
+        method="POST",
+        data={"retry_last": "1", "expected_task_id": "turn-1"},
+        content_type="multipart/form-data",
+        environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
+    ):
+        response, status = routes.admin_agent_task_detail("session-1")
+
+    assert status == 409, response.get_json()
+    assert "已变化" in response.get_json()["message"]
+    assert removed == [("session-1", "turn-2", True)]
+
+
 def test_specialized_solve_launch_creates_a_resumable_user_session(monkeypatch):
     _patch_admin(monkeypatch)
     monkeypatch.setattr(routes, "_agent_solve_problem_task", _Task())
@@ -673,6 +1035,8 @@ def test_specialized_solve_launch_creates_a_resumable_user_session(monkeypatch):
     assert create_calls[0]["task_kind"] == "solve"
     assert create_calls[0]["access_role"] == "user"
     assert create_calls[0]["problem_id"] == 9
+    assert create_calls[0]["base_runtime_checkpoint_id"] == "solve-1"
+    assert create_calls[0]["base_native_session_id"] == ""
 
 
 def test_specialized_testdata_launch_creates_a_resumable_user_session(
@@ -736,6 +1100,8 @@ def test_specialized_testdata_launch_creates_a_resumable_user_session(
     assert create_calls[0]["task_kind"] == "testdata"
     assert create_calls[0]["access_role"] == "user"
     assert create_calls[0]["problem_id"] == 9
+    assert create_calls[0]["base_runtime_checkpoint_id"] == "testdata-1"
+    assert create_calls[0]["base_native_session_id"] == ""
 
 
 def test_detail_get_renders_new_conversation_page_with_workspace(monkeypatch):
@@ -774,9 +1140,50 @@ def test_detail_get_renders_new_conversation_page_with_workspace(monkeypatch):
     assert rendered[0][0] == "admin/agent_task_detail.html"
     assert rendered[0][1]["agent_session"] == agent_session
     assert rendered[0][1]["can_resume"] is True
+    assert rendered[0][1]["can_retry"] is True
+    assert rendered[0][1]["can_retry_now"] is True
     assert rendered[0][1]["workspace_tree"] == [
         {"name": "answer.py", "type": "file"},
     ]
+
+
+def test_detail_get_allows_retrying_specialized_generic_followup(monkeypatch):
+    _patch_admin(monkeypatch)
+    agent_session = _session(task_kind="solve")
+    agent_session.update(current_task_id="turn-2", turn_count=2)
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: agent_session)
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_turns",
+        lambda _sid: [{
+            "task_id": "turn-2",
+            "turn_index": 2,
+            "status": "Completed",
+            "base_runtime_checkpoint_id": "checkpoint-before-turn-2",
+            "base_native_session_id": "native-after-solve",
+        }],
+    )
+    monkeypatch.setattr(routes, "_decorate_agent_turns", lambda turns: turns)
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_state",
+        lambda _task_id: {"task_id": "turn-2", "status": "Completed"},
+    )
+    monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
+    rendered = []
+    monkeypatch.setattr(
+        routes,
+        "render_template",
+        lambda template, **context: rendered.append((template, context)) or "detail",
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_tasks/session-1"):
+        response = routes.admin_agent_task_detail("session-1")
+
+    assert response.get_data(as_text=True) == "detail"
+    assert rendered[0][1]["can_retry"] is True
+    assert rendered[0][1]["can_retry_now"] is True
 
 
 def test_detail_get_exposes_cumulative_session_usage_without_pi_resume_double_count(

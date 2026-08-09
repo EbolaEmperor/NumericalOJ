@@ -155,6 +155,7 @@ class _FrozenUpstream:
     port: int
     origin_url: str
     base_path: str
+    base_query: str
     container_base_path: str
 
     def open_connection(self):
@@ -169,11 +170,18 @@ class _FrozenUpstream:
             timeout=_UPSTREAM_TIMEOUT_SECONDS,
         )
 
+    def target_path(self, canonical_target):
+        parts = urlsplit(str(canonical_target or ""))
+        query = "&".join(
+            item for item in (self.base_query, parts.query) if item
+        )
+        return urlunsplit(("", "", parts.path, query, ""))
+
     def target_url(self, canonical_target):
-        return self.origin_url + str(canonical_target)
+        return self.origin_url + self.target_path(canonical_target)
 
 
-def _normalize_upstream_base_url(value):
+def _normalize_upstream_base_url(value, *, preserve_trailing_slash=False):
     raw = str(value or "").strip()
     if (
         not raw
@@ -190,13 +198,9 @@ def _normalize_upstream_base_url(value):
         or not parts.hostname
         or parts.username is not None
         or parts.password is not None
-        or "?" in raw
-        or "#" in raw
-        or parts.query
-        or parts.fragment
     ):
         raise AgentSecretRelayError(
-            "外部服务 Base URL 必须是无凭据、无 Query 的 HTTP(S) 地址"
+            "外部服务 Base URL 必须是无凭据的 HTTP(S) 地址"
         )
     try:
         port = parts.port
@@ -204,15 +208,15 @@ def _normalize_upstream_base_url(value):
         raise AgentSecretRelayError("外部服务 Base URL 端口无效") from exc
 
     raw_path = parts.path or "/"
+    if raw_path != "/" and not preserve_trailing_slash:
+        raw_path = raw_path.rstrip("/") or "/"
     try:
-        decoded_path, canonical_path = _canonical_request_path(raw_path)
+        decoded_path, canonical_path = _canonical_request_path(
+            raw_path,
+            allow_trailing_slash=preserve_trailing_slash,
+        )
     except _RequestRejected as exc:
         raise AgentSecretRelayError("外部服务 Base URL 路径无效") from exc
-    # 站点配置层已经去除尾斜杠；这里再次 fail closed，避免转发器和 SDK
-    # 对同一 base path 产生两种拼接语义。
-    if decoded_path != "/" and decoded_path.endswith("/"):
-        raise AgentSecretRelayError("外部服务 Base URL 不能以斜杠结尾")
-
     host = str(parts.hostname).lower().rstrip(".")
     if host == _CONTAINER_HOST:
         host = "127.0.0.1"
@@ -227,6 +231,7 @@ def _normalize_upstream_base_url(value):
         port=int(port or (443 if parts.scheme.lower() == "https" else 80)),
         origin_url=origin_url,
         base_path=decoded_path,
+        base_query=parts.query,
         container_base_path="" if canonical_path == "/" else canonical_path,
     )
 
@@ -247,13 +252,16 @@ def _relative_request_path(path, base_path):
 
 
 def _route_allowed(mode, method, path, query, base_path):
-    if query or method not in _ALLOWED_METHODS[mode]:
+    del query
+    if method not in _ALLOWED_METHODS[mode]:
         return False
     if mode == "mcp":
         # WebSearch 配置的是完整 Streamable HTTP MCP 端点；session 通过
         # MCP-Session-Id 传递，不能让 Agent 借此凭据访问相邻路径。
         return path == base_path
     relative = _relative_request_path(path, base_path)
+    # Query 只携带 provider 的版本、beta、路由等参数，不会改变已经冻结的
+    # origin、方法和请求路径，因此不再把它当作路由权限的一部分。
     return relative in _ALLOWED_RELATIVE_ROUTES[mode].get(method, ())
 
 
@@ -468,7 +476,10 @@ class _AgentSecretRelay:
         if normalized_mode not in {"openai", "anthropic", "mcp"}:
             raise AgentSecretRelayError("外部服务密钥代理模式无效")
         self.mode = normalized_mode
-        self.upstream = _normalize_upstream_base_url(upstream_base_url)
+        self.upstream = _normalize_upstream_base_url(
+            upstream_base_url,
+            preserve_trailing_slash=self.mode == "mcp",
+        )
         self.real_credential = _validate_header_value(
             real_credential,
             "外部服务长期凭据",
@@ -610,7 +621,10 @@ class _AgentSecretRelay:
                     method = str(self.command or "").upper()
                     if method not in _ALLOWED_METHODS[relay.mode]:
                         raise _RequestRejected(405, "method not allowed")
-                    path, query, canonical_target = _request_parts(self.path)
+                    path, query, canonical_target = _request_parts(
+                        self.path,
+                        allow_trailing_slash=relay.mode == "mcp",
+                    )
                     if not _route_allowed(
                         relay.mode,
                         method,
@@ -644,7 +658,7 @@ class _AgentSecretRelay:
                     try:
                         connection.request(
                             method,
-                            canonical_target,
+                            relay.upstream.target_path(canonical_target),
                             body=body,
                             headers=headers,
                         )

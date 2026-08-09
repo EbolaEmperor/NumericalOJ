@@ -531,6 +531,11 @@ CREATE TABLE `agent_session_turns` (
   `turn_index` int NOT NULL,
   `user_message` longtext NOT NULL,
   `attachments_json` longtext,
+  `base_runtime_checkpoint_id` varchar(64) DEFAULT NULL,
+  `base_native_session_id` varchar(128) DEFAULT NULL,
+  `retry_of_task_id` varchar(64) DEFAULT NULL,
+  `superseded_by_task_id` varchar(64) DEFAULT NULL,
+  `superseded_at` datetime DEFAULT NULL,
   `status` varchar(32) NOT NULL DEFAULT 'Pending',
   `conclusion` longtext,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -539,6 +544,9 @@ CREATE TABLE `agent_session_turns` (
   UNIQUE KEY `uniq_agent_turn_task` (`task_id`),
   UNIQUE KEY `uniq_agent_session_turn` (`session_id`,`turn_index`),
   KEY `idx_agent_turns_session_created` (`session_id`,`created_at`),
+  KEY `idx_agent_turns_session_visible` (`session_id`,`superseded_at`,`turn_index`),
+  KEY `idx_agent_turns_retry_of` (`retry_of_task_id`),
+  KEY `idx_agent_turns_superseded_by` (`superseded_by_task_id`),
   CONSTRAINT `fk_agent_turns_session` FOREIGN KEY (`session_id`) REFERENCES `agent_sessions` (`session_id`) ON DELETE CASCADE,
   CONSTRAINT `chk_agent_turn_index` CHECK (`turn_index` > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

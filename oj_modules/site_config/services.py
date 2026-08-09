@@ -142,22 +142,10 @@ def _normalize_http_url(value, field):
         raise DynamicConfigValidationError(f"{field} 端口无效") from exc
     if parsed.username is not None or parsed.password is not None:
         raise DynamicConfigValidationError(f"{field} 不能包含用户信息")
-    if parsed.query or parsed.fragment:
-        raise DynamicConfigValidationError(f"{field} 不能包含查询参数或片段")
-    request_path = (parsed.path or "").rstrip("/").lower()
-    if any(
-        request_path.endswith(suffix)
-        for suffix in (
-            "/chat/completions",
-            "/responses",
-            "/embeddings",
-            "/messages",
-        )
-    ):
-        raise DynamicConfigValidationError(
-            f"{field} 应填写 SDK Base URL，不能填写完整请求端点"
-        )
-    return cleaned.rstrip("/")
+    # Fragment 只影响浏览器端定位，不会发给 HTTP 服务；直接丢弃。不同
+    # provider（尤其 MCP）的合法 endpoint 路径和尾斜杠语义没有统一约定，
+    # 不在通用配置层猜测或改写；LLM SDK 前缀会在构造请求时自行规范化。
+    return parsed._replace(fragment="").geturl()
 
 
 def _json_value(value):
