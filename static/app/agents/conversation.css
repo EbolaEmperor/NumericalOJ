@@ -242,7 +242,7 @@
 
 .agent-session-requester-copy small {
   color: #9a9286;
-  font: 550 7px/1 var(--agent-mono);
+  font: 550 7px/1.35 var(--agent-mono);
 }
 
 .agent-session-requester-copy strong {

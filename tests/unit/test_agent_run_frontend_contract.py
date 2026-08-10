@@ -169,6 +169,10 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert ".agent-session .agent-session-avatar" in styles
     assert ".agent-session-usage-fact dd" in styles
     assert "font-variant-numeric: tabular-nums;" in styles
+    requester_label_rule = _css_rule(
+        styles, ".agent-session-requester-copy small {"
+    )
+    assert "font: 550 7px/1.35 var(--agent-mono);" in requester_label_rule
     assert ".agent-session-usage-fact--cost { display: none; }" not in styles
     assert ".agent-session-usage-fact--cached { display: none; }" not in styles
     assert ".agent-session-usage { display: none; }" not in styles
