@@ -7,35 +7,66 @@ from flask import g, jsonify, redirect, request, session, url_for
 from oj_modules.db_services import get_user_by_username
 from oj_modules.security.agent_identity import (
     AGENT_IDENTITY_HEADER,
-    verify_agent_identity_capability,
+    resolve_agent_identity_capability,
 )
+
+
+def _task_capability_matches_active_session(capability):
+    """任务能力只能用于其绑定且仍活动的 Agent 轮次。"""
+
+    if not capability or capability.get("version") != 2:
+        return False
+    # 延迟导入避免普通登录路径加载 Agent 会话模块；只有 relay 请求会查库。
+    from oj_modules.agents.sessions import get_agent_session
+
+    try:
+        agent_session = get_agent_session(capability.get("session_id"))
+    except Exception:
+        return False
+    if not agent_session:
+        return False
+    status = str(agent_session.get("status") or "").strip().lower()
+    return bool(
+        status not in {"completed", "failed", "canceled", "cancelled", "cleanupfailed", "cleanup_failed"}
+        and str(agent_session.get("current_task_id") or "") == capability.get("task_id")
+        and str(agent_session.get("requested_by") or "") == capability.get("username")
+        and str(agent_session.get("access_role") or "").lower() == capability.get("access_role")
+    )
 
 
 def current_user():
     """返回当前登录用户的完整记录（含 is_admin 字段），未登录返回 None。"""
-    username = session.get("username")
+    browser_username = str(session.get("username") or "").strip()
     agent_capability = str(request.headers.get(AGENT_IDENTITY_HEADER) or "")
-    cache_key = (username, agent_capability)
+    cache_key = (browser_username, agent_capability)
     if getattr(g, "_numoj_current_user_key", object()) == cache_key:
         return getattr(g, "_numoj_current_user", None)
-    if not username:
-        g._numoj_current_user_key = cache_key
-        g._numoj_current_user = None
-        return None
-    user = get_user_by_username(username)
-    access_role = verify_agent_identity_capability(
+    capability = resolve_agent_identity_capability(
         agent_capability,
-        session_username=username,
+        session_username=browser_username,
     )
-    if access_role is False:
+    if capability is False:
         user = None
-    elif user and access_role == "user":
+    elif capability and capability.get("version") == 2:
+        if not _task_capability_matches_active_session(capability):
+            user = None
+        else:
+            user = get_user_by_username(capability["username"])
+    elif browser_username:
+        user = get_user_by_username(browser_username)
+    else:
+        user = None
+    access_role = capability.get("access_role") if capability else None
+    if user and access_role == "user":
         user = dict(user)
         user["is_admin"] = 0
         user["agent_access_role"] = "user"
     elif user and access_role == "admin":
-        user = dict(user)
-        user["agent_access_role"] = "admin"
+        if int(user.get("is_admin") or 0) != 1:
+            user = None
+        else:
+            user = dict(user)
+            user["agent_access_role"] = "admin"
     g._numoj_current_user_key = cache_key
     g._numoj_current_user = user
     return user

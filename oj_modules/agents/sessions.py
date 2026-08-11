@@ -5,6 +5,31 @@ from __future__ import annotations
 import json
 import re
 
+from oj_modules.agents.messages import (
+    AgentSessionMessageConflictError,
+    AgentSessionMessageError,
+    AgentSessionMessageNotFoundError,
+    cancel_queued_agent_session_message,
+    claim_next_agent_session_message,
+    claim_next_agent_session_steer,
+    continue_agent_session_queue,
+    enqueue_agent_session_message,
+    finish_agent_session_message_delivery,
+    get_agent_session_message,
+    get_agent_session_queue_snapshot,
+    insert_turn_message_in_transaction,
+    list_agent_session_messages,
+    list_agent_session_queue_recovery_candidates,
+    mark_agent_session_message_broker_enqueued,
+    mark_agent_session_steers_unknown_for_task,
+    normalize_agent_message_id,
+    pause_agent_session_queue,
+    reorder_queued_agent_session_messages,
+    release_agent_session_message_dispatch_attempt,
+    set_agent_session_queue_paused,
+    sync_agent_message_state_in_transaction,
+    update_queued_agent_session_message,
+)
 from oj_modules.infrastructure.mysql import get_db_connection
 
 
@@ -109,6 +134,11 @@ def _session_from_row(row):
         "status": str(row.get("status") or "Pending"),
         "message": row.get("message"),
         "turn_count": max(1, int(row.get("turn_count") or 1)),
+        "queue_paused": bool(row.get("queue_paused")),
+        "queue_pause_reason": str(row.get("queue_pause_reason") or ""),
+        "fresh_native_session_pending": bool(
+            row.get("fresh_native_session_pending")
+        ),
         "created_at": _format_time(row.get("created_at")),
         "updated_at": _format_time(row.get("updated_at")),
         "is_legacy": bool(row.get("is_legacy")),
@@ -143,6 +173,34 @@ def _turn_from_row(row):
     }
 
 
+def _turn_message_response(
+    *,
+    session_id,
+    task_id,
+    created_by,
+    user_message,
+    attachments,
+):
+    """用事务内已知值构造新 turn 的 outbox 响应，避免提交后再读库。"""
+
+    return {
+        "message_id": task_id,
+        "session_id": session_id,
+        "created_by": str(created_by or ""),
+        "user_message": user_message,
+        "attachments": attachments if isinstance(attachments, list) else [],
+        "delivery_mode": "turn",
+        "status": "dispatching",
+        "target_task_id": task_id,
+        "final_task_id": task_id,
+        "queue_position": 0,
+        "error_message": "",
+        "delivered_at": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
 def create_agent_session(
     *,
     session_id,
@@ -156,6 +214,7 @@ def create_agent_session(
     attachments=None,
     base_runtime_checkpoint_id="",
     base_native_session_id="",
+    dispatch_payload=None,
     task_kind="custom",
     access_role="user",
     problem_id=None,
@@ -209,6 +268,9 @@ def create_agent_session(
         "status": "Pending",
         "message": "任务排队中",
         "turn_count": 1,
+        "queue_paused": False,
+        "queue_pause_reason": "",
+        "fresh_native_session_pending": False,
         "created_at": None,
         "updated_at": None,
         "is_legacy": False,
@@ -265,6 +327,16 @@ def create_agent_session(
                     base_native_session_id,
                 ),
             )
+            insert_turn_message_in_transaction(
+                cursor,
+                session_id=session_id,
+                task_id=task_id,
+                created_by=session["requested_by"],
+                user_message=message,
+                attachments=attachments,
+                dispatch_payload=dispatch_payload,
+                queue_position=1024,
+            )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -312,7 +384,14 @@ def begin_agent_session_turn(
                        s.endpoint_revision, s.endpoint_model,
                        s.native_session_id,
                        previous.base_runtime_checkpoint_id AS
-                           previous_base_runtime_checkpoint_id
+                           previous_base_runtime_checkpoint_id,
+                       EXISTS(
+                           SELECT 1
+                           FROM agent_session_messages AS queued_message
+                           WHERE queued_message.session_id=s.session_id
+                             AND queued_message.delivery_mode='queue'
+                             AND queued_message.status IN ('queued','dispatching')
+                       ) AS has_pending_queue
                 FROM agent_sessions AS s
                 LEFT JOIN agent_session_turns AS previous
                   ON previous.session_id=s.session_id
@@ -328,6 +407,8 @@ def begin_agent_session_turn(
                 raise AgentSessionNotFoundError("Agent 会话不存在")
             if not agent_status_is_terminal(row.get("status")):
                 raise AgentSessionBusyError("上一轮 Agent 任务尚未结束")
+            if bool(row.get("has_pending_queue")):
+                raise AgentSessionBusyError("会话已有排队消息，请等待队列依次执行")
             frozen_native_session_id = str(
                 row.get("native_session_id") or ""
             ).strip()
@@ -361,11 +442,20 @@ def begin_agent_session_turn(
                     base_native_session_id,
                 ),
             )
+            insert_turn_message_in_transaction(
+                cursor,
+                session_id=session_id,
+                task_id=task_id,
+                created_by=row.get("requested_by"),
+                user_message=message,
+                attachments=attachments,
+            )
             cursor.execute(
                 """
                 UPDATE agent_sessions
                 SET current_task_id=%s, status='Pending', message='任务排队中',
-                    turn_count=%s
+                    turn_count=%s, queue_paused=0, queue_pause_reason=NULL,
+                    fresh_native_session_pending=0
                 WHERE session_id=%s
                 """,
                 (task_id, turn_index, session_id),
@@ -396,6 +486,13 @@ def begin_agent_session_turn(
         "base_native_session_id": base_native_session_id,
         "retry_of_task_id": "",
         "replaced_task_id": "",
+        "agent_message": _turn_message_response(
+            session_id=session_id,
+            task_id=task_id,
+            created_by=row.get("requested_by"),
+            user_message=message,
+            attachments=attachments,
+        ),
     }
 
 
@@ -427,7 +524,14 @@ def begin_agent_session_retry(
                 SELECT current_task_id, status, turn_count, task_kind,
                        problem_id, requested_by, access_role, harness,
                        endpoint_id, endpoint_revision, endpoint_model,
-                       native_session_id
+                       native_session_id,
+                       EXISTS(
+                           SELECT 1
+                           FROM agent_session_messages AS queued_message
+                           WHERE queued_message.session_id=agent_sessions.session_id
+                             AND queued_message.delivery_mode='queue'
+                             AND queued_message.status IN ('queued','dispatching')
+                       ) AS has_pending_queue
                 FROM agent_sessions
                 WHERE session_id=%s
                 LIMIT 1
@@ -448,6 +552,8 @@ def begin_agent_session_retry(
             current_task_id = str(row.get("current_task_id") or "").strip()
             if current_task_id != expected_task_id:
                 raise AgentSessionBusyError("Agent 当前轮次已变化，请刷新后重试")
+            if bool(row.get("has_pending_queue")):
+                raise AgentSessionBusyError("会话已有排队消息，请等待队列依次执行")
 
             cursor.execute(
                 """
@@ -549,11 +655,23 @@ def begin_agent_session_retry(
                     expected_task_id,
                 ),
             )
+            # retry 也是一条可恢复的当前轮 outbox。它必须和 supersede
+            # lineage、新 turn 以及 current_task_id 在同一事务内提交；否则
+            # Web 在 broker 唤醒前崩溃会留下无法由恢复扫描重新投递的 Pending。
+            insert_turn_message_in_transaction(
+                cursor,
+                session_id=session_id,
+                task_id=task_id,
+                created_by=row.get("requested_by"),
+                user_message=message,
+                attachments=attachments,
+            )
             cursor.execute(
                 """
                 UPDATE agent_sessions
                 SET current_task_id=%s, status='Pending', message='任务排队中',
-                    native_session_id=NULLIF(%s, ''), turn_count=%s
+                    native_session_id=NULLIF(%s, ''), turn_count=%s,
+                    fresh_native_session_pending=0
                 WHERE session_id=%s AND current_task_id=%s
                 """,
                 (
@@ -591,6 +709,13 @@ def begin_agent_session_retry(
         "base_native_session_id": base_native_session_id,
         "retry_of_task_id": expected_task_id,
         "replaced_task_id": expected_task_id,
+        "agent_message": _turn_message_response(
+            session_id=session_id,
+            task_id=task_id,
+            created_by=row.get("requested_by"),
+            user_message=message,
+            attachments=attachments,
+        ),
     }
 
 
@@ -612,8 +737,19 @@ def mark_agent_turn_enqueue_failed(session_id, task_id, message):
             cursor.execute(
                 """
                 UPDATE agent_sessions
-                SET status='Failed', message=%s
+                SET status='Failed', message=%s,
+                    queue_paused=1, queue_pause_reason=%s
                 WHERE session_id=%s AND current_task_id=%s
+                """,
+                (error, error, session_id, task_id),
+            )
+            cursor.execute(
+                """
+                UPDATE agent_session_messages
+                SET status='failed', error_message=%s
+                WHERE session_id=%s AND final_task_id=%s
+                  AND delivery_mode IN ('turn','queue')
+                  AND status='dispatching'
                 """,
                 (error, session_id, task_id),
             )
@@ -642,8 +778,19 @@ def mark_agent_turn_runtime_restore_failed(session_id, task_id, message):
             cursor.execute(
                 """
                 UPDATE agent_sessions
-                SET status='CleanupFailed', message=%s
+                SET status='CleanupFailed', message=%s,
+                    queue_paused=1, queue_pause_reason=%s
                 WHERE session_id=%s AND current_task_id=%s
+                """,
+                (error, error, session_id, task_id),
+            )
+            cursor.execute(
+                """
+                UPDATE agent_session_messages
+                SET status='failed', error_message=%s
+                WHERE session_id=%s AND final_task_id=%s
+                  AND delivery_mode IN ('turn','queue')
+                  AND status='dispatching'
                 """,
                 (error, session_id, task_id),
             )
@@ -694,6 +841,15 @@ def set_agent_turn_attachments(session_id, task_id, attachments):
                     or str(row.get("attachments_json") or "") != attachments_json
                 ):
                     raise AgentSessionBusyError("Agent 轮次附件状态已变化")
+            cursor.execute(
+                """
+                UPDATE agent_session_messages
+                SET attachments_json=%s
+                WHERE session_id=%s AND final_task_id=%s
+                  AND delivery_mode='turn' AND status='dispatching'
+                """,
+                (attachments_json, session_id, task_id),
+            )
         conn.commit()
         return True
     except Exception:
@@ -754,12 +910,26 @@ def sync_agent_session_state_in_transaction(cursor, state):
         )
     ):
         return False
+    pause_queue = incoming_status in {
+        "failed",
+        "canceled",
+        "cancelled",
+        "cleanupfailed",
+        "cleanup_failed",
+    }
+    queue_pause_reason = message or "上一轮任务未正常完成"
     cursor.execute(
         """
         UPDATE agent_sessions
         SET status=%s, message=%s,
             title=COALESCE(NULLIF(%s, ''), title),
-            native_session_id=COALESCE(NULLIF(%s, ''), native_session_id)
+            native_session_id=COALESCE(NULLIF(%s, ''), native_session_id),
+            fresh_native_session_pending=CASE
+                WHEN %s <> '' THEN 0
+                ELSE fresh_native_session_pending
+            END,
+            queue_paused=CASE WHEN %s THEN 1 ELSE queue_paused END,
+            queue_pause_reason=CASE WHEN %s THEN %s ELSE queue_pause_reason END
         WHERE session_id=%s AND current_task_id=%s
         """,
         (
@@ -767,6 +937,10 @@ def sync_agent_session_state_in_transaction(cursor, state):
             message,
             title,
             native_session_id,
+            native_session_id,
+            1 if pause_queue else 0,
+            1 if pause_queue else 0,
+            queue_pause_reason,
             raw_session_id,
             raw_task_id,
         ),
@@ -788,6 +962,12 @@ def sync_agent_session_state_in_transaction(cursor, state):
             raw_session_id,
             raw_task_id,
         ),
+    )
+    sync_agent_message_state_in_transaction(
+        cursor,
+        task_id=raw_task_id,
+        status=status,
+        reason=message,
     )
     return True
 
@@ -864,6 +1044,8 @@ def get_agent_session(session_id):
                        problem_id, problem_title, requested_by, access_role,
                        harness, endpoint_id, endpoint_revision, endpoint_model,
                        native_session_id, status, message, turn_count,
+                       queue_paused, queue_pause_reason,
+                       fresh_native_session_pending,
                        created_at, updated_at, 0 AS is_legacy
                 FROM agent_sessions
                 WHERE session_id=%s
@@ -883,6 +1065,8 @@ def get_agent_session(session_id):
                        NULL AS endpoint_revision, endpoint_model,
                        NULL AS native_session_id,
                        status, message, 1 AS turn_count,
+                       0 AS queue_paused, NULL AS queue_pause_reason,
+                       0 AS fresh_native_session_pending,
                        created_at, updated_at, 1 AS is_legacy
                 FROM agent_task_runs
                 WHERE task_id=%s
@@ -907,7 +1091,10 @@ def get_agent_session_by_task_id(task_id):
                        s.access_role, s.harness, s.endpoint_id,
                        s.endpoint_revision, s.endpoint_model,
                        s.native_session_id, s.status,
-                       s.message, s.turn_count, s.created_at, s.updated_at,
+                       s.message, s.turn_count,
+                       s.queue_paused, s.queue_pause_reason,
+                       s.fresh_native_session_pending,
+                       s.created_at, s.updated_at,
                        0 AS is_legacy
                 FROM agent_sessions AS s
                 LEFT JOIN agent_session_turns AS t
@@ -1024,7 +1211,10 @@ def get_agent_sessions_paginated(page=1, per_page=20):
                            s.access_role, s.harness, s.endpoint_id,
                            s.endpoint_revision, s.endpoint_model,
                            s.native_session_id, s.status,
-                           s.message, s.turn_count, s.created_at, s.updated_at,
+                           s.message, s.turn_count,
+                           s.queue_paused, s.queue_pause_reason,
+                           s.fresh_native_session_pending,
+                           s.created_at, s.updated_at,
                            0 AS is_legacy
                     FROM agent_sessions AS s
                     UNION ALL
@@ -1036,6 +1226,8 @@ def get_agent_sessions_paginated(page=1, per_page=20):
                            NULL AS endpoint_revision, r.endpoint_model,
                            NULL AS native_session_id,
                            r.status, r.message, 1 AS turn_count,
+                           0 AS queue_paused, NULL AS queue_pause_reason,
+                           0 AS fresh_native_session_pending,
                            r.created_at, r.updated_at, 1 AS is_legacy
                     FROM agent_task_runs AS r
                     WHERE NOT EXISTS (
@@ -1056,24 +1248,45 @@ def get_agent_sessions_paginated(page=1, per_page=20):
 
 
 __all__ = [
+    "AgentSessionMessageConflictError",
+    "AgentSessionMessageError",
+    "AgentSessionMessageNotFoundError",
     "AgentSessionBusyError",
     "AgentSessionError",
     "AgentSessionNotFoundError",
     "agent_status_is_terminal",
     "begin_agent_session_retry",
     "begin_agent_session_turn",
+    "cancel_queued_agent_session_message",
+    "claim_next_agent_session_message",
+    "claim_next_agent_session_steer",
     "claim_agent_session_title_generation",
     "create_agent_session",
+    "continue_agent_session_queue",
+    "enqueue_agent_session_message",
+    "finish_agent_session_message_delivery",
+    "get_agent_session_message",
+    "get_agent_session_queue_snapshot",
     "get_agent_session",
     "get_agent_session_by_task_id",
     "get_agent_session_turns",
     "get_agent_sessions_paginated",
+    "list_agent_session_messages",
+    "list_agent_session_queue_recovery_candidates",
+    "mark_agent_session_message_broker_enqueued",
+    "mark_agent_session_steers_unknown_for_task",
     "mark_agent_turn_enqueue_failed",
     "mark_agent_turn_runtime_restore_failed",
     "normalize_agent_access_role",
+    "normalize_agent_message_id",
     "normalize_agent_session_id",
+    "pause_agent_session_queue",
+    "reorder_queued_agent_session_messages",
+    "release_agent_session_message_dispatch_attempt",
     "set_agent_turn_attachments",
+    "set_agent_session_queue_paused",
     "sync_agent_session_state",
     "sync_agent_session_state_in_transaction",
     "update_agent_session_title",
+    "update_queued_agent_session_message",
 ]

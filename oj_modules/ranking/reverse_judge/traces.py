@@ -13,7 +13,14 @@ _TRACE_MAX_FILES = 16
 _TRACE_MAX_FILE_BYTES = 64 * 1024
 _TRACE_MAX_TOTAL_BYTES = 256 * 1024
 _TRACE_JSONL_PARSE_MAX_BYTES = 2 * 1024 * 1024
+# 规范 observer 接受的单条 stdout 记录上限为 16 MiB。canonical reader
+# 必须覆盖“最大完整记录 + 尾随 usage/终态余量”，否则一个较大的最终
+# assistant 会因为尾读从行中间开始而整条消失。legacy CLI JSONL 继续沿用
+# 上面的 2 MiB 窗口。
+_CANONICAL_JSONL_TAIL_MAX_BYTES = 17 * 1024 * 1024
+_CANONICAL_EVENT_ID_MAX_CHARS = 512
 _TRACE_MAX_MESSAGES = 240
+_TRACE_ASSISTANT_MAX_CHARS = 64 * 1024
 _TRACE_THINKING_MAX_CHARS = 1200
 _TRACE_TOOL_MAX_CHARS = 1200
 _TRACE_TOOL_RESULT_MAX_CHARS = 1200
@@ -22,6 +29,18 @@ _TRACE_TEXT_EXTS = {
     '.json', '.jsonl', '.md', '.txt', '.log', '.toml', '.yaml', '.yml',
     '.xml', '.html', '.htm', '.csv',
 }
+_CANONICAL_TRACE_FILENAME = 'numoj_trace_v1.jsonl'
+
+
+def _canonical_trace_path(trace_dir):
+    trace_dir = str(trace_dir or '').strip()
+    if not trace_dir or not os.path.isdir(trace_dir):
+        return None
+    base = os.path.realpath(trace_dir)
+    path = os.path.realpath(os.path.join(base, _CANONICAL_TRACE_FILENAME))
+    if path != os.path.join(base, _CANONICAL_TRACE_FILENAME):
+        return None
+    return path if os.path.isfile(path) else None
 
 
 def _looks_text_file(path):
@@ -219,6 +238,10 @@ def _read_jsonl_tail(path, limit):
 
 
 def _collect_trace_files(trace_dir):
+    if _canonical_trace_path(trace_dir):
+        # 规范 journal 只用于服务端投影。它可能含工具输出，不把原始控制流
+        # 经 snapshot/SSE 再暴露一次。
+        return []
     claude_jsonl = _latest_claude_jsonl(trace_dir)
     if claude_jsonl:
         text, size, _read_bytes = _read_limited_text(claude_jsonl, _TRACE_MAX_TOTAL_BYTES)
@@ -506,6 +529,10 @@ def _tool_use_message(item):
 
 
 def _trace_message(kind, title, text, meta, line_no):
+    if kind == 'assistant':
+        text = _truncate_trace_text(text, _TRACE_ASSISTANT_MAX_CHARS)
+    elif kind == 'thinking':
+        text = _truncate_trace_text(text, _TRACE_THINKING_MAX_CHARS)
     msg = {
         'kind': kind,
         'title': title,
@@ -955,6 +982,9 @@ def _collect_pi_trace_messages(path):
 
 
 def _collect_trace_messages(trace_dir):
+    canonical_path = _canonical_trace_path(trace_dir)
+    if canonical_path:
+        return _collect_canonical_trace_messages(canonical_path)
     claude_path = _latest_claude_jsonl(trace_dir)
     if claude_path:
         return _collect_claude_trace_messages(claude_path)
@@ -965,6 +995,68 @@ def _collect_trace_messages(trace_dir):
     if codex_path:
         return _collect_codex_trace_messages(codex_path)
     return []
+
+
+def _collect_canonical_trace_messages(path):
+    messages = []
+    seen_event_ids = set()
+    try:
+        rows = _read_jsonl_tail(path, _CANONICAL_JSONL_TAIL_MAX_BYTES)
+    except OSError:
+        return []
+    for line_no, (_offset, raw) in enumerate(rows, 1):
+        try:
+            record = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(record, dict) or record.get('type') != 'numoj_trace':
+            continue
+        try:
+            if int(record.get('version')) != 1:
+                continue
+        except (TypeError, ValueError):
+            continue
+        event = record.get('event') if isinstance(record.get('event'), dict) else {}
+        kind = str(event.get('kind') or '').strip().lower()
+        if kind not in {'assistant', 'thinking', 'tool', 'tool_result', 'subagent'}:
+            continue
+        text_limit = (
+            _TRACE_THINKING_MAX_CHARS if kind == 'thinking'
+            else _TRACE_TOOL_RESULT_MAX_CHARS if kind == 'tool_result'
+            else _TRACE_TOOL_MAX_CHARS if kind in {'tool', 'subagent'}
+            else _TRACE_ASSISTANT_MAX_CHARS
+        )
+        text = _truncate_trace_text(event.get('text'), text_limit)
+        if not text:
+            continue
+        event_id = str(event.get('id') or '').strip()
+        if event_id and len(event_id) <= _CANONICAL_EVENT_ID_MAX_CHARS:
+            if event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event_id)
+        defaults = {
+            'assistant': 'AI 回复',
+            'thinking': '思考片段',
+            'tool': '调用工具',
+            'tool_result': '工具结果',
+            'subagent': '派出 subagent',
+        }
+        message = _trace_message(
+            kind,
+            str(event.get('title') or defaults[kind]),
+            text,
+            event.get('meta'),
+            line_no,
+        )
+        if bool(event.get('is_error')):
+            message['is_error'] = True
+        fmt = str(event.get('format') or '').strip().lower()
+        if fmt in {'json', 'text'}:
+            message['format'] = fmt
+        messages.append(message)
+        if len(messages) > _TRACE_MAX_MESSAGES:
+            messages = messages[-_TRACE_MAX_MESSAGES:]
+    return messages
 
 
 def _nonnegative_token_count(value):
@@ -1115,6 +1207,9 @@ def _collect_usage_from_jsonl(path, source):
 
 
 def collect_agent_token_usage(trace_dir):
+    canonical_path = _canonical_trace_path(trace_dir)
+    if canonical_path:
+        return _collect_canonical_token_usage(canonical_path)
     claude_path = _latest_claude_jsonl(trace_dir)
     if claude_path:
         return _collect_usage_from_jsonl(claude_path, 'claude_code')
@@ -1130,6 +1225,68 @@ def collect_agent_token_usage(trace_dir):
         )
         return _collect_usage_from_jsonl(codex_path, source)
     return None
+
+
+def _collect_canonical_token_usage(path):
+    totals = {
+        'request_count': 0,
+        'input_uncached_tokens': 0,
+        'input_cached_tokens': 0,
+        'input_cache_write_tokens': 0,
+        'input_total_tokens': 0,
+        'output_tokens': 0,
+        'reasoning_output_tokens': 0,
+    }
+    seen = set()
+    source = ''
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as stream:
+            for raw in stream:
+                try:
+                    record = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(record, dict) or record.get('type') != 'numoj_usage':
+                    continue
+                try:
+                    if int(record.get('version')) != 1:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                usage = record.get('usage') if isinstance(record.get('usage'), dict) else None
+                if usage is None:
+                    continue
+                record_id = str(record.get('id') or '').strip()
+                if record_id:
+                    if record_id in seen:
+                        continue
+                    seen.add(record_id)
+                totals['request_count'] += max(
+                    1, _nonnegative_token_count(usage.get('request_count')),
+                )
+                for field in (
+                    'input_uncached_tokens',
+                    'input_cached_tokens',
+                    'input_cache_write_tokens',
+                    'output_tokens',
+                    'reasoning_output_tokens',
+                ):
+                    totals[field] += _nonnegative_token_count(usage.get(field))
+                candidate_source = str(record.get('source') or '').strip().lower()
+                if candidate_source:
+                    source = candidate_source
+    except OSError:
+        return None
+    if totals['request_count'] == 0:
+        return None
+    totals['input_total_tokens'] = (
+        totals['input_uncached_tokens']
+        + totals['input_cached_tokens']
+        + totals['input_cache_write_tokens']
+    )
+    totals['source'] = source or 'canonical'
+    totals['incremental'] = True
+    return totals
 
 
 def calculate_agent_token_cost_rmb(usage, pricing):

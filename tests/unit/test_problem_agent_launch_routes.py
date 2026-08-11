@@ -12,7 +12,7 @@ class _Task:
     def __init__(self):
         self.calls = []
 
-    def apply_async(self, *, args, task_id):
+    def apply_async(self, *, args, task_id=None):
         self.calls.append({"args": args, "task_id": task_id})
 
 
@@ -37,6 +37,13 @@ def _patch_agent_runtime_checkpoint_io(monkeypatch):
         "remove_agent_runtime_checkpoint",
         lambda _session_id, _checkpoint_id, *, missing_ok=True: None,
     )
+
+
+@pytest.fixture(autouse=True)
+def _queue_dispatcher(monkeypatch):
+    task = _Task()
+    monkeypatch.setattr(routes, "_agent_queue_dispatch_task", task)
+    return task
 
 
 def test_launch_options_return_unified_user_preference_for_each_task_kind(
@@ -102,7 +109,10 @@ def test_launch_options_fall_back_when_remembered_endpoint_disappeared(monkeypat
     assert payload["preference"] == {"harness": "codex", "endpoint_id": 22}
 
 
-def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
+def test_solve_launch_persists_outbox_and_wakes_dispatcher(
+    monkeypatch,
+    _queue_dispatcher,
+):
     task = _Task()
     snapshots = []
     saved = []
@@ -182,16 +192,11 @@ def test_solve_launch_passes_selected_values_and_current_session(monkeypatch):
         "base_runtime_checkpoint_id": payload["task_id"],
         "base_native_session_id": "",
     }]
-    assert len(task.calls) == 1
-    assert task.calls[0]["args"] == (
-        9,
-        "admin",
-        "codex",
-        12,
-        "signed-session-value",
-        "numoj_session",
-        6,
-    )
+    assert task.calls == []
+    assert _queue_dispatcher.calls == [{
+        "args": (payload["task_id"],),
+        "task_id": None,
+    }]
     assert snapshots[0]["harness"] == "codex"
     assert "token_pricing" not in snapshots[0]
     assert "signed-session-value" not in str(snapshots)
@@ -222,7 +227,10 @@ def test_solve_launch_rejects_non_object_json(monkeypatch):
     assert response.get_json()["message"] == "请求参数格式无效"
 
 
-def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
+def test_testdata_launch_persists_skill_inputs_in_outbox(
+    monkeypatch,
+    _queue_dispatcher,
+):
     task = _Task()
     requirement = "x" * 4001
     sessions = []
@@ -299,20 +307,18 @@ def test_testdata_launch_passes_skill_inputs_after_agent_selection(monkeypatch):
         "problem_title": "题",
         "base_runtime_checkpoint_id": payload["task_id"],
         "base_native_session_id": "",
+        "dispatch_payload": {
+            "test_point_count": 4,
+            "standard_code": "print(1)\n",
+            "data_requirement": requirement,
+            "standard_filename": "standard_solution.py",
+        },
     }]
-    assert task.calls[0]["args"] == (
-        9,
-        "admin",
-        4,
-        "print(1)\n",
-        requirement,
-        "standard_solution.py",
-        "pi",
-        18,
-        "signed-session-value",
-        "session",
-        7,
-    )
+    assert task.calls == []
+    assert _queue_dispatcher.calls == [{
+        "args": (payload["task_id"],),
+        "task_id": None,
+    }]
 
 
 def test_agent_task_list_redirects_existing_task_to_session_detail(monkeypatch):

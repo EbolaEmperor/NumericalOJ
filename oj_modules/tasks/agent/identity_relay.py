@@ -220,13 +220,13 @@ def _normalize_site_url(site_url):
     return upstream_url, _origin(urlsplit(upstream_url))
 
 
-def _validate_identity(cookie_name, session_cookie):
+def _validate_identity(cookie_name, session_cookie, *, allow_empty=False):
     name = str(cookie_name or "").strip()
     value = str(session_cookie or "")
     if not _COOKIE_NAME_RE.fullmatch(name):
         raise IdentityRelayError("Session cookie 名称无效")
     if (
-        not value
+        (not value and not allow_empty)
         or len(value.encode("utf-8")) > 8192
         or any(not 0x21 <= ord(char) <= 0x7E for char in value)
         or any(char in value for char in '\",;\\')
@@ -401,7 +401,8 @@ def _upstream_headers(
         ):
             continue
         forwarded[str(name)] = str(value)
-    forwarded["Cookie"] = f"{cookie_name}={session_cookie}"
+    if session_cookie:
+        forwarded["Cookie"] = f"{cookie_name}={session_cookie}"
     if agent_identity_capability:
         forwarded[AGENT_IDENTITY_HEADER] = str(agent_identity_capability)
     return forwarded
@@ -687,6 +688,8 @@ class _NumOJIdentityRelay:
         session_cookie,
         requested_by="",
         access_role=AGENT_ACCESS_ROLE_USER,
+        session_id="",
+        task_id="",
     ):
         upstream_url, _upstream_origin = _normalize_site_url(site_url)
         self.policy = _IdentityRelayPolicy(
@@ -695,13 +698,25 @@ class _NumOJIdentityRelay:
             upstream_url,
             access_role=access_role,
         )
+        capability_username = str(requested_by or "").strip()
+        capability_session_id = str(session_id or "").strip()
+        capability_task_id = str(task_id or "").strip()
+        has_task_binding = bool(
+            capability_username and capability_session_id and capability_task_id
+        )
         self.cookie_name, self.session_cookie = _validate_identity(
             cookie_name,
             session_cookie,
+            allow_empty=has_task_binding,
         )
         self.agent_identity_capability = (
-            create_agent_identity_capability(requested_by, self.policy.access_role)
-            if str(requested_by or "").strip()
+            create_agent_identity_capability(
+                capability_username,
+                self.policy.access_role,
+                session_id=capability_session_id,
+                task_id=capability_task_id,
+            )
+            if capability_username
             else ""
         )
         # 此密钥只通过本轮 identity config 中的 relay URL userinfo 交给目标
@@ -950,6 +965,8 @@ def run_numoj_identity_relay(
     session_cookie,
     requested_by="",
     access_role=AGENT_ACCESS_ROLE_USER,
+    session_id="",
+    task_id="",
 ):
     """启动任务级身份转发代理并返回容器可访问的 NumOJ base URL。
 
@@ -957,7 +974,7 @@ def run_numoj_identity_relay(
     base URL 内只含短生命周期 relay 请求密钥，退出上下文后即失效。
     """
 
-    relay = _NumOJIdentityRelay(
+    relay_args = (
         task_kind,
         problem_id,
         site_url,
@@ -966,6 +983,14 @@ def run_numoj_identity_relay(
         requested_by,
         access_role,
     )
+    if str(session_id or "").strip() or str(task_id or "").strip():
+        relay = _NumOJIdentityRelay(
+            *relay_args,
+            session_id=session_id,
+            task_id=task_id,
+        )
+    else:
+        relay = _NumOJIdentityRelay(*relay_args)
     base_url = relay.start()
     session = NumOJIdentityRelaySession(base_url=base_url, _relay=relay)
     try:

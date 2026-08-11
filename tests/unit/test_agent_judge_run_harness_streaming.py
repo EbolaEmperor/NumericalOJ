@@ -4,12 +4,14 @@
 import importlib.machinery
 import importlib.util
 import http.server
+import io
 import json
 import os
 from pathlib import Path
 import stat
 import sys
 import threading
+import time
 from types import SimpleNamespace
 import urllib.error
 import urllib.request
@@ -575,6 +577,7 @@ def test_codex_config_reserves_output_and_controls_reasoning_summary(
         + ("true" if thinking_compatibility else "false")
     ) in config
     assert f'model_reasoning_summary = "{expected_summary}"' in config
+    assert 'wire_api = "responses"' in config
     assert "model_max_output_tokens" not in config
 
 
@@ -669,7 +672,17 @@ def test_claude_uses_strict_runtime_mcp_config_without_persisting_secret(
 def test_codex_relay_injects_output_limit_strips_thinking_and_streams_response():
     module = _load_run_harness()
     received = {}
-    response_body = b'data: {"type":"response.output_text.delta"}\n\ndata: [DONE]\n\n'
+    response_body = (
+        b'data: {"id":"chatcmpl-relay","object":"chat.completion.chunk",'
+        b'"choices":[{"index":0,"delta":{"role":"assistant",'
+        b'"content":"ok"},"finish_reason":null}]}\n\n'
+        b'data: {"id":"chatcmpl-relay","object":"chat.completion.chunk",'
+        b'"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+        b'"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,'
+        b'"prompt_tokens_details":{"cached_tokens":1},'
+        b'"completion_tokens_details":{"reasoning_tokens":1}}}\n\n'
+        b'data: [DONE]\n\n'
+    )
 
     class UpstreamHandler(http.server.BaseHTTPRequestHandler):
         def log_message(self, _format, *_args):
@@ -717,20 +730,163 @@ def test_codex_relay_injects_output_limit_strips_thinking_and_streams_response()
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=5) as response:
-            assert response.read() == response_body
+            relay_body = response.read().decode("utf-8")
     finally:
         relay.stop()
         upstream.shutdown()
         upstream.server_close()
         upstream_thread.join(timeout=2)
 
-    assert received["path"] == "/v1/responses?stream=true"
+    assert "response.output_item.added" in relay_body
+    assert "response.output_text.delta" in relay_body
+    assert "response.output_item.done" in relay_body
+    assert "response.completed" in relay_body
+    assert '"cached_tokens":1' in relay_body
+    assert '"reasoning_tokens":1' in relay_body
+    assert received["path"] == "/v1/chat/completions?stream=true"
     assert received["authorization"] == "Bearer temporary-token"
     assert received["body"] == {
         "model": "generic-model",
-        "input": [{"role": "user", "content": "solve"}],
-        "max_output_tokens": 384_000,
+        "messages": [{"role": "user", "content": "solve"}],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": 384_000,
     }
+
+
+def test_endpoint_relay_path_join_preserves_base_and_request_queries():
+    module = _load_run_harness()
+
+    assert module._relay_upstream_url(
+        "https://api.example.test/tenant/v1/?api-version=2026-08-01",
+        "/v1/responses?stream=true",
+    ) == (
+        "https://api.example.test/tenant/v1/responses"
+        "?api-version=2026-08-01&stream=true"
+    )
+    assert module._relay_upstream_url(
+        "https://api.example.test/anthropic?api-version=2026-08-01",
+        "/v1/messages",
+    ) == (
+        "https://api.example.test/anthropic/v1/messages"
+        "?api-version=2026-08-01"
+    )
+
+
+def test_codex_responses_bridge_preserves_tool_round_trip():
+    module = _load_run_harness()
+
+    converted = json.loads(module._codex_responses_request_to_chat(json.dumps({
+        "model": "generic-model",
+        "max_output_tokens": 123,
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "run"}]},
+            {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "shell",
+                "arguments": '{"command":"pwd"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": [{"type": "input_text", "text": "/workspace"}],
+            },
+        ],
+        "tools": [{
+            "type": "function",
+            "name": "shell",
+            "description": "run a command",
+            "parameters": {"type": "object"},
+            "strict": True,
+        }],
+        "tool_choice": {"type": "function", "name": "shell"},
+    }).encode("utf-8")))
+
+    assert converted["messages"] == [
+        {"role": "user", "content": "run"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "shell",
+                    "arguments": '{"command":"pwd"}',
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": '[{"type":"input_text","text":"/workspace"}]',
+        },
+    ]
+    assert converted["tools"] == [{
+        "type": "function",
+        "function": {
+            "name": "shell",
+            "description": "run a command",
+            "parameters": {"type": "object"},
+            "strict": True,
+        },
+    }]
+    assert converted["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "shell"},
+    }
+
+
+def test_codex_responses_bridge_explicitly_disables_freeform_apply_patch():
+    module = _load_run_harness()
+
+    converted = json.loads(module._codex_responses_request_to_chat(json.dumps({
+        "model": "generic-model",
+        "input": [{"role": "user", "content": "edit it"}],
+        "tools": [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "apply a patch",
+                "format": {"type": "grammar", "syntax": "lark"},
+            },
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "description": "delegate work",
+                "tools": [],
+            },
+            {"type": "web_search", "external_web_access": True},
+            {
+                "type": "function",
+                "name": "shell",
+                "description": "run shell",
+                "parameters": {"type": "object"},
+            },
+        ],
+    }).encode("utf-8")))
+
+    assert converted["messages"][0]["role"] == "system"
+    assert "apply_patch 工具不可用" in converted["messages"][0]["content"]
+    assert "namespace 工具不可用" in converted["messages"][0]["content"]
+    assert "web_search 工具不可用" in converted["messages"][0]["content"]
+    assert [item["function"]["name"] for item in converted["tools"]] == [
+        "shell",
+    ]
+
+    for item_type in ("custom_tool_call", "custom_tool_call_output"):
+        with pytest.raises(ValueError, match=item_type):
+            module._codex_responses_request_to_chat(json.dumps({
+                "model": "generic-model",
+                "input": [{
+                    "type": item_type,
+                    "call_id": "call-1",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch",
+                    "output": "Done!",
+                }],
+            }).encode("utf-8"))
 
 
 def test_codex_relay_refuses_redirect_without_forwarding_authorization():
@@ -803,6 +959,112 @@ def test_codex_relay_refuses_redirect_without_forwarding_authorization():
         "upstream_authorization": "Bearer must-not-follow-redirect",
         "redirect_hits": 0,
     }
+
+
+def test_codex_relay_does_not_turn_invalid_upstream_stream_into_success():
+    module = _load_run_harness()
+
+    class Upstream(http.server.BaseHTTPRequestHandler):
+        def log_message(self, _format, *_args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            if "case=json" in self.path:
+                body = b'{"error":{"message":"model unavailable"}}'
+                content_type = "application/json"
+                content_encoding = ""
+            elif "case=gzip" in self.path:
+                body = b"not-actually-decoded"
+                content_type = "text/event-stream"
+                content_encoding = "gzip"
+            elif "case=partial" in self.path:
+                body = (
+                    b'data: {"id":"chatcmpl-partial","choices":['
+                    b'{"index":0,"delta":{"content":"partial"},'
+                    b'"finish_reason":null}]}\n\n'
+                )
+                content_type = "text/event-stream"
+                content_encoding = ""
+            elif "case=length" in self.path:
+                body = (
+                    b'data: {"id":"chatcmpl-length","choices":['
+                    b'{"index":0,"delta":{"content":"partial"},'
+                    b'"finish_reason":"length"}]}\n\n'
+                    b'data: [DONE]\n\n'
+                )
+                content_type = "text/event-stream"
+                content_encoding = ""
+            else:
+                body = b'data: {"error":{"code":"quota","message":"quota exceeded"}}\n\n'
+                content_type = "text/event-stream"
+                content_encoding = ""
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            if content_encoding:
+                self.send_header("Content-Encoding", content_encoding)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    try:
+        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    except PermissionError:
+        pytest.skip("当前沙箱不允许绑定 localhost 端口")
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    relay = module._CodexEndpointRelay(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        max_output_tokens=16_384,
+        thinking_compatibility=True,
+        upstream_model="generic-model",
+    )
+    relay_url = relay.start()
+
+    def request(case):
+        return urllib.request.urlopen(urllib.request.Request(
+            relay_url + f"/responses?case={case}",
+            data=b'{"model":"generic-model","input":[]}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        ), timeout=5)
+
+    try:
+        with pytest.raises(urllib.error.HTTPError) as json_error:
+            request("json")
+        assert json_error.value.code == 502
+        assert b"model unavailable" in json_error.value.read()
+
+        with pytest.raises(urllib.error.HTTPError) as gzip_error:
+            request("gzip")
+        assert gzip_error.value.code == 502
+        assert "压缩 SSE" in gzip_error.value.read().decode("utf-8")
+
+        with request("sse-error") as response:
+            stream_error = response.read().decode("utf-8")
+        assert "response.failed" in stream_error
+        assert "quota exceeded" in stream_error
+        assert "response.completed" not in stream_error
+        assert '"sequence_number":0' in stream_error
+
+        with request("partial") as response:
+            partial_error = response.read().decode("utf-8")
+        assert "response.output_text.delta" in partial_error
+        assert "response.failed" in partial_error
+        assert "稳定终态前中断" in partial_error
+        assert "response.completed" not in partial_error
+
+        with request("length") as response:
+            length_error = response.read().decode("utf-8")
+        assert "response.failed" in length_error
+        assert "finish_reason=length" in length_error
+        assert "response.completed" not in length_error
+    finally:
+        relay.stop()
+        upstream.shutdown()
+        upstream.server_close()
+        upstream_thread.join(timeout=2)
 
 
 def test_codex_relay_preserves_thinking_when_compatible():
@@ -1807,3 +2069,1852 @@ def test_main_keeps_legacy_claude_fallback_for_empty_or_unknown_harness(
 
     assert module.main() == 0
     assert calls == ["solve"]
+
+
+class _InteractiveInput:
+    def __init__(self):
+        self.frames = []
+
+    def write(self, value):
+        self.frames.append(json.loads(value))
+
+    def flush(self):
+        return None
+
+    def close(self):
+        return None
+
+
+class _InteractiveProcess:
+    def __init__(self, args=("agent",)):
+        self.args = list(args)
+        self.stdin = _InteractiveInput()
+        self.terminated = False
+
+    def poll(self):
+        return None
+
+    def wait(self, timeout=None):
+        return 0
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.terminated = True
+
+
+class _Commands:
+    def __init__(self, *batches):
+        self.batches = list(batches)
+
+    def drain(self):
+        return self.batches.pop(0) if self.batches else []
+
+
+def _event_queue(*events):
+    import queue
+
+    result = queue.Queue()
+    for event in events:
+        result.put(event)
+    return result
+
+
+def test_pi_rpc_adapter_maps_steer_and_abort_with_real_ack(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["pi"])
+    session_id = "33333333-3333-3333-3333-333333333333"
+    events = _event_queue(
+        {
+            "type": "response",
+            "id": "__numoj-state__",
+            "command": "get_state",
+            "success": True,
+            "data": {"sessionId": session_id},
+        },
+        {"type": "response", "id": "__start__", "command": "prompt", "success": True},
+        {"type": "response", "id": "steer-1", "command": "prompt", "success": True},
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "id": "answer-1",
+                "content": [{"type": "text", "text": "完成"}],
+                "usage": {"input": 10, "cacheRead": 4, "output": 3},
+            },
+        },
+        {"type": "agent_end"},
+        {"type": "agent_settled"},
+        # Pi 0.82.1 abort() 等待 idle，因此真实顺序是 settled 后才 ack。
+        {"type": "response", "id": "stop-1", "command": "abort", "success": True},
+    )
+    monkeypatch.setattr(module, "_start_json_process", lambda *_args, **_kwargs: (proc, events))
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+    recorded = []
+    monkeypatch.setattr(
+        module,
+        "_record_live_session",
+        lambda value, **_kwargs: recorded.append(value),
+    )
+
+    completed = module._run_pi_interactive(
+        ["pi", "--mode", "json"],
+        {},
+        "开始",
+        _Commands([
+            {"type": "steer", "id": "steer-1", "message": "调整"},
+            {"type": "interrupt", "id": "stop-1"},
+        ]),
+        "",
+    )
+
+    assert completed.returncode == 0
+    assert completed.aj_session_id == session_id
+    assert recorded == [session_id]
+    assert [item["type"] for item in proc.stdin.frames] == [
+        "get_state", "prompt", "prompt", "abort",
+    ]
+    assert proc.stdin.frames[2]["streamingBehavior"] == "steer"
+    assert [
+        (item["id"], item["status"])
+        for item in emitted if item.get("type") == "numoj_control"
+    ] == [
+        ("__start__", "accepted"),
+        ("steer-1", "accepted"),
+        ("stop-1", "accepted"),
+    ]
+    assert any(
+        item.get("type") == "numoj_trace"
+        and item["event"]["kind"] == "assistant"
+        and item["event"]["text"] == "完成"
+        for item in emitted
+    )
+
+
+def test_pi_rpc_rejects_start_without_waiting_for_settled(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["pi"])
+    events = _event_queue(
+        {
+            "type": "response",
+            "id": "__numoj-state__",
+            "command": "get_state",
+            "success": True,
+            "data": {"sessionId": "33333333-3333-3333-3333-333333333333"},
+        },
+        {
+            "type": "response",
+            "id": "__start__",
+            "command": "prompt",
+            "success": False,
+            "error": "model unavailable",
+        },
+    )
+    monkeypatch.setattr(module, "_start_json_process", lambda *_args, **_kwargs: (proc, events))
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+
+    completed = module._run_pi_interactive(
+        ["pi", "--mode", "json"], {}, "开始", _Commands(), "",
+    )
+
+    assert completed.returncode == 2
+    assert [item["type"] for item in proc.stdin.frames] == ["get_state", "prompt"]
+    assert [
+        (item.get("id"), item.get("status"), item.get("error"))
+        for item in emitted if item.get("type") == "numoj_control"
+    ] == [("__start__", "rejected", "model unavailable")]
+
+
+def test_pi_rpc_output_limit_continues_without_retaining_intermediate_failure(
+        monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["pi"])
+    events = _event_queue(
+        {
+            "type": "response",
+            "id": "__numoj-state__",
+            "command": "get_state",
+            "success": True,
+            "data": {"sessionId": "33333333-3333-3333-3333-333333333333"},
+        },
+        {"type": "response", "id": "__start__", "command": "prompt", "success": True},
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "id": "limited-answer",
+                "content": [{"type": "text", "text": "尚未完成"}],
+                "stopReason": "error",
+                "rawStopReason": "max_tokens",
+            },
+        },
+        {"type": "agent_settled"},
+        {
+            "type": "response",
+            "id": "__numoj-cont-1",
+            "command": "prompt",
+            "success": True,
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "id": "final-answer",
+                "content": [{"type": "text", "text": "完成"}],
+                "stopReason": "stop",
+            },
+        },
+        {"type": "agent_settled"},
+    )
+    monkeypatch.setattr(module, "_start_json_process", lambda *_args, **_kwargs: (proc, events))
+    monkeypatch.setattr(module, "_emit_numoj", lambda _item: None)
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+
+    completed = module._run_pi_interactive(
+        ["pi", "--mode", "json"],
+        {"AJ_TASK_SCOPE": "problem_agent"},
+        "开始",
+        _Commands(),
+        "",
+    )
+
+    assert completed.returncode == 0
+    assert [item["type"] for item in proc.stdin.frames] == [
+        "get_state", "prompt", "prompt",
+    ]
+    assert proc.stdin.frames[-1]["id"] == "__numoj-cont-1"
+    assert proc.stdin.frames[-1]["message"] == module.PI_OUTPUT_LIMIT_CONTINUATION_PROMPT
+
+
+def test_codex_app_server_adapter_uses_expected_turn_for_steer(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["codex"])
+    thread_id = "11111111-1111-1111-1111-111111111111"
+    events = _event_queue(
+        {"id": "numoj-init", "result": {}},
+        {"id": "numoj-thread", "result": {"thread": {"id": thread_id}}},
+        {"id": "numoj-turn", "result": {"turn": {"id": "turn-1"}}},
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "turnId": "turn-1",
+                "tokenUsage": {
+                    "last": {
+                        "inputTokens": 10,
+                        "cachedInputTokens": 3,
+                        "outputTokens": 2,
+                        "reasoningOutputTokens": 1,
+                    },
+                    "total": {
+                        "inputTokens": 10,
+                        "cachedInputTokens": 3,
+                        "outputTokens": 2,
+                        "reasoningOutputTokens": 1,
+                    },
+                },
+            },
+        },
+        {
+            "method": "item/completed",
+            "params": {"item": {"type": "agentMessage", "text": "完成"}},
+        },
+        {
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "turn-1",
+                    "usage": {"inputTokens": 10, "cachedInputTokens": 3, "outputTokens": 2},
+                },
+            },
+        },
+        # app-server 允许终态通知先于控制 RPC response 抵达。
+        {"id": "numoj-command-steer-1", "result": {"turnId": "turn-1"}},
+    )
+    monkeypatch.setattr(module, "_start_json_process", lambda *_args, **_kwargs: (proc, events))
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_codex_interactive(
+        "开始",
+        _Commands([{"type": "steer", "id": "steer-1", "message": "调整"}]),
+        {},
+        "",
+        "model-a",
+    )
+
+    assert completed.returncode == 0
+    steer = next(
+        frame for frame in proc.stdin.frames
+        if frame.get("method") == "turn/steer"
+    )
+    assert steer["params"]["expectedTurnId"] == "turn-1"
+    assert steer["params"]["clientUserMessageId"] == "steer-1"
+    assert steer["params"]["input"][0]["text_elements"] == []
+    thread_start = next(
+        frame for frame in proc.stdin.frames
+        if frame.get("method") == "thread/start"
+    )
+    assert thread_start["params"]["sandbox"] == "danger-full-access"
+    turn_start = next(
+        frame for frame in proc.stdin.frames
+        if frame.get("method") == "turn/start"
+    )
+    assert turn_start["params"]["input"][0]["text_elements"] == []
+    assert any(
+        item.get("type") == "numoj_control"
+        and item.get("id") == "steer-1"
+        and item.get("status") == "accepted"
+        for item in emitted
+    )
+    usage = next(item for item in emitted if item.get("type") == "numoj_usage")
+    assert usage["usage"] == {
+        "input_uncached_tokens": 7,
+        "input_cached_tokens": 3,
+        "input_cache_write_tokens": 0,
+        "output_tokens": 2,
+        "reasoning_output_tokens": 1,
+    }
+
+
+def test_claude_stream_json_adapter_acks_steer_only_after_user_replay(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    steer_uuid = module._stable_control_uuid("steer-1", "")
+    events = _event_queue(
+        {"type": "system", "subtype": "init"},
+        {
+            "type": "user",
+            "uuid": steer_uuid,
+            "isReplay": True,
+            "message": {"role": "user", "content": "调整"},
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "id": "answer-1",
+                "content": [{"type": "text", "text": "完成"}],
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            },
+        },
+        {"type": "result", "session_id": "22222222-2222-2222-2222-222222222222"},
+    )
+    monkeypatch.setattr(module, "_start_json_process", lambda *_args, **_kwargs: (proc, events))
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands([{"type": "steer", "id": "steer-1", "message": "调整"}]),
+        "",
+    )
+
+    assert completed.returncode == 0
+    assert "--input-format" in completed.args
+    assert "--replay-user-messages" in completed.args
+    assert [frame["type"] for frame in proc.stdin.frames] == ["user", "user"]
+    assert all(frame["session_id"] == "default" for frame in proc.stdin.frames)
+    assert proc.stdin.frames[1]["uuid"] == steer_uuid
+    assert [
+        item["id"] for item in emitted
+        if item.get("type") == "numoj_control" and item.get("status") == "accepted"
+    ] == ["__start__", "steer-1"]
+
+
+def test_claude_stream_json_does_not_ack_steer_for_tool_result_user_event(
+        monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    steer_uuid = module._stable_control_uuid("steer-1", "")
+    events = _event_queue(
+        {"type": "system", "subtype": "init"},
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tool-1"}],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": steer_uuid,
+            "isReplay": True,
+            "message": {"role": "user", "content": "调整"},
+        },
+        {"type": "result", "session_id": "22222222-2222-2222-2222-222222222222"},
+    )
+    monkeypatch.setattr(
+        module, "_start_json_process", lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands([{"type": "steer", "id": "steer-1", "message": "调整"}]),
+        "",
+    )
+
+    assert completed.returncode == 0
+    accepted = [
+        item["id"] for item in emitted
+        if item.get("type") == "numoj_control"
+        and item.get("status") == "accepted"
+    ]
+    assert accepted == ["__start__", "steer-1"]
+
+
+def test_claude_stream_json_accepted_interrupt_returns_130(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    events = _event_queue(
+        {"type": "system", "subtype": "init"},
+        {
+            "type": "result",
+            "is_error": True,
+            "session_id": "22222222-2222-2222-2222-222222222222",
+        },
+        {
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "numoj-stop-1",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        module, "_start_json_process", lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands([{"type": "interrupt", "id": "stop-1"}]),
+        "",
+    )
+
+    assert completed.returncode == 130
+    interrupt = next(
+        frame for frame in proc.stdin.frames
+        if frame.get("type") == "control_request"
+    )
+    assert interrupt == {
+        "type": "control_request",
+        "request_id": "numoj-stop-1",
+        "request": {"subtype": "interrupt"},
+    }
+    assert any(
+        item.get("type") == "numoj_control"
+        and item.get("id") == "stop-1"
+        and item.get("status") == "accepted"
+        for item in emitted
+    )
+
+
+def test_claude_stream_json_emits_incremental_usage_per_assistant_message(
+        monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    first = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "id": "assistant-1",
+            "content": [{"type": "text", "text": "先调用工具"}],
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 2,
+                "output_tokens": 3,
+            },
+        },
+    }
+    events = _event_queue(
+        {"type": "system", "subtype": "init"},
+        first,
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "id": "assistant-2",
+                "content": [{"type": "text", "text": "最终完成"}],
+                "usage": {
+                    "input_tokens": 20,
+                    "cache_read_input_tokens": 4,
+                    "output_tokens": 5,
+                },
+            },
+        },
+        # CLI replay 可能重复同一 native message；journal reader 按 ID 去重。
+        first,
+        {
+            "type": "result",
+            "session_id": "22222222-2222-2222-2222-222222222222",
+            "usage": {"input_tokens": 999, "output_tokens": 999},
+        },
+    )
+    monkeypatch.setattr(
+        module, "_start_json_process", lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands(),
+        "",
+    )
+
+    assert completed.returncode == 0
+    usage = [item for item in emitted if item.get("type") == "numoj_usage"]
+    assert [item["id"] for item in usage] == [
+        "assistant-1", "assistant-2", "assistant-1",
+    ]
+    assert sum(item["usage"]["output_tokens"] for item in usage[:2]) == 8
+    assert all(item["usage"]["output_tokens"] != 999 for item in usage)
+
+
+def test_claude_result_usage_fallback_has_unique_id_per_result(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    steer_uuid = module._stable_control_uuid("steer-1", "")
+    session_id = "22222222-2222-2222-2222-222222222222"
+    events = _event_queue(
+        {"type": "system", "subtype": "init"},
+        {
+            "type": "result",
+            "session_id": session_id,
+            "usage": {"input_tokens": 4, "output_tokens": 1},
+        },
+        {
+            "type": "user",
+            "uuid": steer_uuid,
+            "isReplay": True,
+            "message": {"role": "user", "content": "调整"},
+        },
+        {
+            "type": "result",
+            "session_id": session_id,
+            "usage": {"input_tokens": 6, "output_tokens": 2},
+        },
+    )
+    monkeypatch.setattr(
+        module, "_start_json_process", lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands([{"type": "steer", "id": "steer-1", "message": "调整"}]),
+        "",
+    )
+
+    assert completed.returncode == 0
+    usage = [item for item in emitted if item.get("type") == "numoj_usage"]
+    assert [item["id"] for item in usage] == [
+        f"{session_id}:result:1",
+        f"{session_id}:result:2",
+    ]
+
+
+def test_opencode_v2_normalizer_keeps_text_tools_and_incremental_usage(monkeypatch):
+    module = _load_run_harness()
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    module._normalize_stream_event("opencode", {
+        "id": "evt-1",
+        "type": "session.next.text.ended",
+        "data": {"text": "完成"},
+    })
+    module._normalize_stream_event("opencode", {
+        "id": "evt-2",
+        "type": "session.next.tool.called",
+        "data": {"tool": "bash", "input": {"command": "pytest"}},
+    })
+    module._normalize_stream_event("opencode", {
+        "id": "evt-3",
+        "type": "session.next.step.ended",
+        "data": {
+            "assistantMessageID": "msg-a",
+            "tokens": {
+                "input": 12,
+                "output": 4,
+                "reasoning": 2,
+                "cache": {"read": 5, "write": 1},
+            },
+        },
+    })
+    module._normalize_stream_event("opencode", {
+        "id": "evt-4",
+        "type": "session.next.step.failed",
+        "data": {"error": {"message": "provider failed"}},
+    })
+
+    assert [
+        item["event"]["kind"]
+        for item in emitted if item.get("type") == "numoj_trace"
+    ] == ["assistant", "tool", "tool_result"]
+    failed = [
+        item["event"]
+        for item in emitted
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("is_error")
+    ]
+    assert failed[0]["title"] == "模型调用失败"
+    usage = next(item for item in emitted if item.get("type") == "numoj_usage")
+    assert usage["source"] == "opencode"
+    assert usage["usage"] == {
+        "input_uncached_tokens": 12,
+        "input_cached_tokens": 5,
+        "input_cache_write_tokens": 1,
+        "output_tokens": 6,
+        "reasoning_output_tokens": 2,
+    }
+
+
+def test_trace_emitter_bounds_large_tool_before_canonical_journal(
+        monkeypatch, tmp_path):
+    from oj_modules.tasks.agent import harness_runtime as runtime
+
+    module = _load_run_harness()
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    module._emit_trace(
+        "tool_result",
+        "x" * (32 * 1024),
+        title="工具结果",
+        event_id="tool-1:result",
+    )
+    module._emit_trace(
+        "assistant",
+        "最终完成",
+        event_id="assistant-final",
+    )
+    module._emit_usage(
+        "opencode",
+        {
+            "input_uncached_tokens": 3,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 2,
+            "reasoning_output_tokens": 0,
+        },
+        "usage-final",
+    )
+
+    tool_text = emitted[0]["event"]["text"]
+    assert len(tool_text) == module._TRACE_DETAIL_MAX_CHARS
+    assert tool_text.endswith("…")
+
+    # 缩小 journal 容量复现“首条工具结果先占满，最终回复/usage 丢失”。
+    # 经过 adapter 的 UI 上限裁剪后，三条记录都应保留下来。
+    journal = tmp_path / "canonical.jsonl"
+    observer = runtime._CanonicalJournalObserver(journal, max_bytes=8192)
+    for item in emitted:
+        observer.feed(
+            (json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8")
+        )
+    observer.close()
+    records = [
+        json.loads(line)
+        for line in journal.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["type"] for item in records] == [
+        "numoj_trace", "numoj_trace", "numoj_usage",
+    ]
+    assert records[1]["event"]["text"] == "最终完成"
+
+
+def test_opencode_v1_message_id_is_deterministic_and_sorts_before_native_ids():
+    module = _load_run_harness()
+    first = module._opencode_message_id("__start__", "task-1")
+
+    assert first == module._opencode_message_id("__start__", "task-1")
+    assert first != module._opencode_message_id("__start__", "task-2")
+    assert first.startswith("msg_000000000001")
+    assert len(first) == len("msg_") + 26
+    assert first < "msg_019abcdef001AbCdEfGhIjKlMn"
+
+
+def test_adapter_terminal_statuses_and_pi_settles_only_at_safe_boundary():
+    module = _load_run_harness()
+
+    assert module._stream_terminal_status("codex", {
+        "method": "turn/completed",
+        "params": {"turn": {"status": "failed"}},
+    }) == "failed"
+    assert module._stream_terminal_status("claude_code", {
+        "type": "result",
+        "is_error": True,
+    }) == "failed"
+    assert module._normalize_stream_event("pi", {"type": "agent_end"}) is False
+    assert module._normalize_stream_event("pi", {"type": "agent_settled"}) is True
+    assert module._pi_event_failure_status({
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "stopReason": "error",
+            "errorMessage": "provider failed",
+        },
+    }) == "failed"
+
+
+def test_opencode_v1_uses_prompt_async_streams_trace_and_accepts_steer(
+        monkeypatch):
+    module = _load_run_harness()
+    servers = []
+    prompt_payloads = []
+    active_assistant_created = threading.Event()
+
+    class Server:
+        def __init__(self, args):
+            self.args = list(args)
+            self.stdout = ()
+            self.stderr = ()
+            self.stopped = threading.Event()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.stopped.set()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.stopped.set()
+
+    def popen(args, **_kwargs):
+        server = Server(args)
+        servers.append(server)
+        return server
+
+    def frame(event):
+        return ("data: " + json.dumps(event) + "\n\n").encode()
+
+    class SSE:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield frame({"type": "server.connected", "properties": {}})
+            deadline = time.monotonic() + 2
+            while len(prompt_payloads) < 1 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(prompt_payloads) == 1
+            first_user = prompt_payloads[0]["messageID"]
+            yield frame({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_numoj_current",
+                    "status": {"type": "busy"},
+                },
+            })
+            # 先创建当前 assistant，再允许测试命令源提交 steer。这覆盖了
+            # 固定低 messageID 会排在 active assistant 之前、从而被 V1 loop
+            # 忽略的真实竞态。
+            yield frame({
+                "type": "message.updated",
+                "properties": {
+                    "sessionID": "ses_numoj_current",
+                    "info": {
+                        "id": "msg_019abcdef001assistant",
+                        "parentID": first_user,
+                        "role": "assistant",
+                    },
+                },
+            })
+            active_assistant_created.set()
+            deadline = time.monotonic() + 2
+            while len(prompt_payloads) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(prompt_payloads) == 2
+            assert "messageID" not in prompt_payloads[1]
+            # steer 已接受后，原轮 assistant 仍可能迟到上报 error；其
+            # parent 已在 steer baseline 中，不能污染新 prompt 的终态。
+            yield frame({
+                "type": "message.updated",
+                "properties": {
+                    "sessionID": "ses_numoj_current",
+                    "info": {
+                        "id": "msg_019abcdef001assistant",
+                        "parentID": first_user,
+                        "role": "assistant",
+                        "error": {"name": "OldStepError"},
+                    },
+                },
+            })
+            for index, text in enumerate(("第一段", "调整后完成"), start=1):
+                assistant_id = f"msg_019abcdef00{index}assistant"
+                if index == 2:
+                    yield frame({
+                        "type": "message.updated",
+                        "properties": {
+                            "sessionID": "ses_numoj_current",
+                            "info": {
+                                "id": assistant_id,
+                                "parentID": "msg_server_generated_steer",
+                                "role": "assistant",
+                            },
+                        },
+                    })
+                yield frame({
+                    "type": "message.part.updated",
+                    "properties": {
+                        "sessionID": "ses_numoj_current",
+                        "part": {
+                            "id": f"prt-text-{index}",
+                            "messageID": assistant_id,
+                            "type": "text",
+                            "text": text,
+                            "time": {"start": 1, "end": 2},
+                        },
+                    },
+                })
+                yield frame({
+                    "type": "message.part.updated",
+                    "properties": {
+                        "sessionID": "ses_numoj_current",
+                        "part": {
+                            "id": f"prt-step-{index}",
+                            "messageID": assistant_id,
+                            "type": "step-finish",
+                            "tokens": {
+                                "input": 3,
+                                "output": 2,
+                                "reasoning": 0,
+                                "cache": {"read": 1, "write": 0},
+                            },
+                        },
+                    },
+                })
+            yield frame({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_numoj_current",
+                    "status": {"type": "idle"},
+                },
+            })
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session" and method == "POST":
+            assert payload["model"] == {
+                "providerID": "agent-judge",
+                "id": "model-a",
+            }
+            assert payload["permission"][-1]["permission"] == "plan_exit"
+            return {"id": "ses_numoj_current"}
+        if path == "/session/ses_numoj_current/message" and method == "GET":
+            if not prompt_payloads:
+                return []
+            first_user = prompt_payloads[0]["messageID"]
+            return [
+                {"info": {"id": first_user, "role": "user"}, "parts": []},
+                {
+                    "info": {
+                        "id": "msg_019abcdef001assistant",
+                        "parentID": first_user,
+                        "role": "assistant",
+                    },
+                    "parts": [],
+                },
+            ]
+        if path == "/session/ses_numoj_current/prompt_async" and method == "POST":
+            prompt_payloads.append(dict(payload))
+            return None
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_args, **_kwargs: SSE())
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    class CommandsAfterAssistant:
+        sent = False
+
+        def drain(self):
+            if self.sent or not active_assistant_created.is_set():
+                return []
+            self.sent = True
+            return [{"type": "steer", "id": "steer-1", "message": "调整"}]
+
+    completed = module._run_opencode_interactive(
+        "第一轮",
+        CommandsAfterAssistant(),
+        {"AJ_TASK_ID": "task-turn-1"},
+        "",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 0
+    assert [item["parts"][0]["text"] for item in prompt_payloads] == [
+        "第一轮", "调整",
+    ]
+    assert prompt_payloads[0]["messageID"].startswith("msg_000000000001")
+    assert "messageID" not in prompt_payloads[1]
+    assert [
+        item["event"]["text"]
+        for item in emitted
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("kind") == "assistant"
+    ] == ["第一段", "调整后完成"]
+    assert len([item for item in emitted if item.get("type") == "numoj_usage"]) == 2
+    assert any(
+        item.get("type") == "numoj_control"
+        and item.get("id") == "steer-1"
+        and item.get("status") == "accepted"
+        for item in emitted
+    )
+
+
+def test_opencode_v1_resume_uses_server_generated_ordered_message_id(
+        monkeypatch):
+    module = _load_run_harness()
+    prompt_payloads = []
+    sse_attempts = []
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    def frame(event):
+        return ("data: " + json.dumps(event) + "\n\n").encode()
+
+    class SSE:
+        def __init__(self, attempt):
+            self.attempt = attempt
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield frame({"type": "server.connected", "properties": {}})
+            if self.attempt == 1:
+                return
+            deadline = time.monotonic() + 2
+            while not prompt_payloads and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert prompt_payloads
+            assert "messageID" not in prompt_payloads[0]
+            yield frame({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_existing",
+                    "status": {"type": "busy"},
+                },
+            })
+            yield frame({
+                "type": "message.updated",
+                "properties": {
+                    "sessionID": "ses_existing",
+                    "info": {
+                        "id": "msg_019abcdef100assistant",
+                        "parentID": "msg_019abcdef099serveruser",
+                        "role": "assistant",
+                    },
+                },
+            })
+            yield frame({
+                "type": "message.part.updated",
+                "properties": {
+                    "sessionID": "ses_existing",
+                    "part": {
+                        "id": "prt-resume-text",
+                        "messageID": "msg_019abcdef100assistant",
+                        "type": "text",
+                        "text": "续聊完成",
+                        "time": {"start": 1, "end": 2},
+                    },
+                },
+            })
+            yield frame({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_existing",
+                    "status": {"type": "idle"},
+                },
+            })
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session/ses_existing" and method == "GET":
+            return {"id": "ses_existing"}
+        if path == "/session/ses_existing/prompt_async" and method == "POST":
+            prompt_payloads.append(dict(payload))
+            return None
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: Server())
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (
+            sse_attempts.append(len(sse_attempts) + 1)
+            or SSE(sse_attempts[-1])
+        ),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_opencode_interactive(
+        "继续",
+        _Commands(),
+        {"AJ_TASK_ID": "task-turn-2"},
+        "ses_existing",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 0
+    assert sse_attempts == [1, 2]
+    assert "messageID" not in prompt_payloads[0]
+    assert any(
+        item.get("type") == "numoj_trace"
+        and item["event"].get("text") == "续聊完成"
+        for item in emitted
+    )
+
+
+@pytest.mark.parametrize(
+    ("assistant_error", "expected_returncode"),
+    [
+        (None, 0),
+        ({"name": "ProviderError", "data": {"message": "模型失败"}}, 2),
+    ],
+)
+def test_opencode_v1_reconciles_terminal_message_lost_during_sse_gap(
+        monkeypatch, assistant_error, expected_returncode):
+    module = _load_run_harness()
+    prompt_payloads = []
+    durable_messages = []
+    sse_attempts = []
+    servers = []
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+
+        def __init__(self):
+            self.stopped = threading.Event()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.stopped.set()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.stopped.set()
+
+    def frame(event):
+        return ("data: " + json.dumps(event) + "\n\n").encode()
+
+    class SSE:
+        def __init__(self, attempt):
+            self.attempt = attempt
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield frame({"type": "server.connected", "properties": {}})
+            if self.attempt == 1:
+                deadline = time.monotonic() + 2
+                while not prompt_payloads and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert prompt_payloads
+                user_id = "msg_server_generated_gap_user"
+                assistant_info = {
+                    "id": "msg_server_generated_gap_assistant",
+                    "parentID": user_id,
+                    "role": "assistant",
+                    "finish": "stop",
+                }
+                if assistant_error is not None:
+                    assistant_info["error"] = assistant_error
+                    assistant_info.pop("finish", None)
+                durable_messages.extend([
+                    {"info": {"id": user_id, "role": "user"}, "parts": []},
+                    {
+                        "info": assistant_info,
+                        "parts": [] if assistant_error is not None else [
+                            {
+                                "id": "prt-gap-text",
+                                "messageID": assistant_info["id"],
+                                "type": "text",
+                                "text": "断线期间完成",
+                            },
+                            {
+                                "id": "prt-gap-finish",
+                                "messageID": assistant_info["id"],
+                                "type": "step-finish",
+                                "tokens": {"input": 3, "output": 2},
+                            },
+                        ],
+                    },
+                ])
+                # terminal live events 正好落在 EOF 到重连之间，第二条流也
+                # 不回放；adapter 必须依赖 durable message/status 对账。
+                return
+            while not servers[0].stopped.wait(0.01):
+                pass
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session/ses_gap" and method == "GET":
+            return {"id": "ses_gap"}
+        if path == "/session/ses_gap/message" and method == "GET":
+            return list(durable_messages)
+        if path == "/session/status" and method == "GET":
+            # OpenCode 会从 status map 删除已经 idle 的 session。
+            return {}
+        if path == "/session/ses_gap/prompt_async" and method == "POST":
+            prompt_payloads.append(dict(payload))
+            return None
+        raise AssertionError((method, path, payload))
+
+    def popen(*_args, **_kwargs):
+        server = Server()
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (
+            sse_attempts.append(len(sse_attempts) + 1)
+            or SSE(sse_attempts[-1])
+        ),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_opencode_interactive(
+        "继续",
+        _Commands(),
+        {"AJ_TASK_ID": "task-gap"},
+        "ses_gap",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == expected_returncode
+    assert prompt_payloads
+    if assistant_error is None:
+        assert any(
+            item.get("type") == "numoj_trace"
+            and item["event"].get("text") == "断线期间完成"
+            for item in emitted
+        )
+    else:
+        assert any(
+            item.get("type") == "numoj_trace"
+            and item["event"].get("is_error") is True
+            for item in emitted
+        )
+
+
+def test_opencode_v1_bounds_persistent_sse_reconnect_failures(monkeypatch):
+    module = _load_run_harness()
+    prompt_sent = threading.Event()
+    attempts = []
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    class InitialSSE:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield b'data: {"type":"server.connected","properties":{}}\n\n'
+            assert prompt_sent.wait(2)
+
+    def urlopen(request, **_kwargs):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            return InitialSSE()
+        raise urllib.error.HTTPError(
+            request.full_url,
+            500,
+            "broken event stream",
+            {},
+            io.BytesIO(b"failed"),
+        )
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session/ses_reconnect" and method == "GET":
+            return {"id": "ses_reconnect"}
+        if path == "/session/ses_reconnect/message" and method == "GET":
+            return []
+        if path == "/session/ses_reconnect/prompt_async" and method == "POST":
+            prompt_sent.set()
+            return None
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Server())
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "OPENCODE_SSE_RECONNECT_FAILURE_SECONDS", 0.03)
+
+    completed = module._run_opencode_interactive(
+        "继续",
+        _Commands(),
+        {"AJ_TASK_ID": "task-reconnect"},
+        "ses_reconnect",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 2
+    assert len(attempts) >= 3
+
+
+@pytest.mark.parametrize("persist_user", [False, True])
+def test_opencode_v1_fails_if_accepted_prompt_never_creates_assistant(
+        monkeypatch, persist_user):
+    module = _load_run_harness()
+    prompt_sent = threading.Event()
+    durable_messages = [
+        {"info": {"id": "msg_baseline_user", "role": "user"}, "parts": []},
+        {
+            "info": {"id": "msg_baseline_assistant", "role": "assistant"},
+            "parts": [],
+        },
+    ]
+    attempts = []
+    servers = []
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+
+        def __init__(self):
+            self.stopped = threading.Event()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.stopped.set()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.stopped.set()
+
+    class SSE:
+        def __init__(self, attempt):
+            self.attempt = attempt
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield b'data: {"type":"server.connected","properties":{}}\n\n'
+            if self.attempt == 1:
+                assert prompt_sent.wait(2)
+                if not persist_user:
+                    # 新 prompt 后仍可能收到原轮 active assistant 的更新；
+                    # 其 parent 位于 baseline，不能冒充新 prompt 的回复。
+                    yield (
+                        b'data: {"type":"message.updated","properties":'
+                        b'{"sessionID":"ses_missing_assistant","info":'
+                        b'{"id":"msg_baseline_assistant","parentID":'
+                        b'"msg_baseline_user","role":"assistant"}}}\n\n'
+                    )
+                    yield (
+                        b'data: {"type":"session.status","properties":'
+                        b'{"sessionID":"ses_missing_assistant","status":'
+                        b'{"type":"idle"}}}\n\n'
+                    )
+                return
+            while not servers[0].stopped.wait(0.01):
+                pass
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session/ses_missing_assistant" and method == "GET":
+            return {"id": "ses_missing_assistant"}
+        if path == "/session/ses_missing_assistant/message" and method == "GET":
+            return list(durable_messages)
+        if path == "/session/status" and method == "GET":
+            return {}
+        if path == "/session/ses_missing_assistant/prompt_async" and method == "POST":
+            if persist_user:
+                durable_messages.append({
+                    "info": {"id": "msg_accepted_user", "role": "user"},
+                    "parts": [],
+                })
+            prompt_sent.set()
+            return None
+        raise AssertionError((method, path, payload))
+
+    def popen(*_args, **_kwargs):
+        server = Server()
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (
+            attempts.append(len(attempts) + 1)
+            or SSE(attempts[-1])
+        ),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "OPENCODE_PROMPT_PERSISTENCE_SECONDS", 0.04)
+    monkeypatch.setattr(module, "OPENCODE_DURABLE_RECONCILE_INTERVAL_SECONDS", 0.01)
+
+    completed = module._run_opencode_interactive(
+        "触发模型初始化失败",
+        _Commands(),
+        {"AJ_TASK_ID": "task-missing-assistant"},
+        "ses_missing_assistant",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 2
+    assert prompt_sent.is_set()
+
+
+def test_opencode_v1_reconciles_interrupt_without_assistant_after_sse_gap(
+        monkeypatch):
+    module = _load_run_harness()
+    durable_messages = []
+    abort_sent = threading.Event()
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    class SSE:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield b'data: {"type":"server.connected","properties":{}}\n\n'
+            assert abort_sent.wait(2)
+            # abort 后的 idle live event 落在断线窗口中。
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session/ses_abort_gap" and method == "GET":
+            return {"id": "ses_abort_gap"}
+        if path == "/session/ses_abort_gap/message" and method == "GET":
+            return list(durable_messages)
+        if path == "/session/status" and method == "GET":
+            return {}
+        if path == "/session/ses_abort_gap/prompt_async" and method == "POST":
+            durable_messages.append({
+                "info": {"id": "msg_abort_gap_user", "role": "user"},
+                "parts": [],
+            })
+            return None
+        if path == "/session/ses_abort_gap/abort" and method == "POST":
+            abort_sent.set()
+            return True
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Server())
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: SSE())
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+
+    completed = module._run_opencode_interactive(
+        "开始",
+        _Commands([{"type": "interrupt", "id": "stop-gap"}]),
+        {"AJ_TASK_ID": "task-abort-gap"},
+        "ses_abort_gap",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 130
+    assert abort_sent.is_set()
+
+
+def test_opencode_v1_waits_past_intermediate_step_and_recovers_compaction_error(
+        monkeypatch):
+    module = _load_run_harness()
+    prompt_sent = threading.Event()
+    durable_messages = []
+    session_busy = {"value": True}
+    servers = []
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+
+        def __init__(self):
+            self.stopped = threading.Event()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.stopped.set()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.stopped.set()
+
+    def frame(event):
+        return ("data: " + json.dumps(event) + "\n\n").encode()
+
+    class SSE:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield frame({"type": "server.connected", "properties": {}})
+            assert prompt_sent.wait(2)
+            user = {"info": {"id": "msg_compact_user", "role": "user"}, "parts": []}
+            intermediate_info = {
+                "id": "msg_compact_intermediate",
+                "parentID": "msg_compact_user",
+                "role": "assistant",
+                "finish": "tool-calls",
+            }
+            intermediate_parts = [{
+                "id": "prt-compact-intermediate",
+                "messageID": intermediate_info["id"],
+                "type": "step-finish",
+                "tokens": {"input": 4, "output": 1},
+            }]
+            durable_messages.extend([
+                user,
+                {"info": intermediate_info, "parts": intermediate_parts},
+            ])
+            yield frame({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_compaction",
+                    "status": {"type": "busy"},
+                },
+            })
+            yield frame({
+                "type": "session.error",
+                "properties": {
+                    "sessionID": "ses_compaction",
+                    "error": {
+                        "name": "ContextOverflowError",
+                        "data": {"message": "compacting"},
+                    },
+                },
+            })
+            # 给 durable poll 足够时间观察“中间 step 已完成但 session busy”。
+            time.sleep(module.OPENCODE_DURABLE_RECONCILE_INTERVAL_SECONDS + 0.2)
+            final_info = {
+                "id": "msg_compact_final",
+                "parentID": "msg_compact_user",
+                "role": "assistant",
+                "finish": "stop",
+            }
+            final_part = {
+                "id": "prt-compact-final",
+                "messageID": final_info["id"],
+                "type": "text",
+                "text": "压缩后最终完成",
+                "time": {"start": 2, "end": 3},
+            }
+            durable_messages.append({"info": final_info, "parts": [final_part]})
+            session_busy["value"] = False
+            yield frame({
+                "type": "message.updated",
+                "properties": {
+                    "sessionID": "ses_compaction",
+                    "info": final_info,
+                },
+            })
+            yield frame({
+                "type": "message.part.updated",
+                "properties": {
+                    "sessionID": "ses_compaction",
+                    "part": final_part,
+                },
+            })
+            yield frame({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_compaction",
+                    "status": {"type": "idle"},
+                },
+            })
+            while not servers[0].stopped.wait(0.01):
+                pass
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session/ses_compaction" and method == "GET":
+            return {"id": "ses_compaction"}
+        if path == "/session/ses_compaction/message" and method == "GET":
+            return list(durable_messages)
+        if path == "/session/status" and method == "GET":
+            return (
+                {"ses_compaction": {"type": "busy"}}
+                if session_busy["value"] else {}
+            )
+        if path == "/session/ses_compaction/prompt_async" and method == "POST":
+            prompt_sent.set()
+            return None
+        raise AssertionError((method, path, payload))
+
+    def popen(*_args, **_kwargs):
+        server = Server()
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: SSE())
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_opencode_interactive(
+        "需要工具的任务",
+        _Commands(),
+        {"AJ_TASK_ID": "task-compaction"},
+        "ses_compaction",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 0
+    assert any(
+        item.get("type") == "numoj_trace"
+        and item["event"].get("text") == "压缩后最终完成"
+        for item in emitted
+    )
+
+
+def test_opencode_rejected_steer_keeps_queued_terminal_events(monkeypatch):
+    module = _load_run_harness()
+    events_queued = threading.Event()
+    prompt_payloads = []
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+        stopped = threading.Event()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.stopped.set()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.stopped.set()
+
+    def frame(event):
+        return ("data: " + json.dumps(event) + "\n\n").encode()
+
+    class SSE:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield frame({"type": "server.connected", "properties": {}})
+            deadline = time.monotonic() + 2
+            while not prompt_payloads and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert prompt_payloads
+            assistant_id = "msg_final_before_rejected_steer"
+            yield frame({
+                "type": "message.updated",
+                "properties": {
+                    "sessionID": "ses_rejected_steer",
+                    "info": {
+                        "id": assistant_id,
+                        "parentID": "msg_current_user",
+                        "role": "assistant",
+                    },
+                },
+            })
+            yield frame({
+                "type": "message.part.updated",
+                "properties": {
+                    "sessionID": "ses_rejected_steer",
+                    "part": {
+                        "id": "prt-final",
+                        "messageID": assistant_id,
+                        "type": "text",
+                        "text": "原轮完成",
+                        "time": {"start": 1, "end": 2},
+                    },
+                },
+            })
+            yield frame({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_rejected_steer",
+                    "status": {"type": "idle"},
+                },
+            })
+            events_queued.set()
+            while not Server.stopped.wait(0.01):
+                pass
+
+    old_messages = [
+        {"info": {"id": "msg_old_user", "role": "user"}, "parts": []},
+        {"info": {"id": "msg_old_assistant", "role": "assistant"}, "parts": []},
+    ]
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session/ses_rejected_steer" and method == "GET":
+            return {"id": "ses_rejected_steer"}
+        if path == "/session/ses_rejected_steer/message" and method == "GET":
+            return old_messages
+        if path == "/session/status" and method == "GET":
+            return {"ses_rejected_steer": {"type": "busy"}}
+        if path == "/session/ses_rejected_steer/prompt_async" and method == "POST":
+            prompt_payloads.append(dict(payload))
+            if len(prompt_payloads) > 1:
+                raise urllib.error.HTTPError(
+                    "http://127.0.0.1/prompt_async",
+                    409,
+                    "session already idle",
+                    {},
+                    io.BytesIO(b"session already idle"),
+                )
+            return None
+        raise AssertionError((method, path, payload))
+
+    class CommandsAfterTerminalQueued:
+        sent = False
+
+        def drain(self):
+            if self.sent or not events_queued.is_set():
+                return []
+            self.sent = True
+            return [{"type": "steer", "id": "late-steer", "message": "迟到插话"}]
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: Server())
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: SSE())
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_opencode_interactive(
+        "继续原轮",
+        CommandsAfterTerminalQueued(),
+        {"AJ_TASK_ID": "task-rejected-steer"},
+        "ses_rejected_steer",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 0
+    assert any(
+        item.get("type") == "numoj_control"
+        and item.get("id") == "late-steer"
+        and item.get("status") == "rejected"
+        for item in emitted
+    )
+    assert any(
+        item.get("type") == "numoj_trace"
+        and item["event"].get("text") == "原轮完成"
+        for item in emitted
+    )
+
+
+def test_opencode_v1_abort_returns_interrupted(monkeypatch):
+    module = _load_run_harness()
+    prompt_sent = threading.Event()
+    abort_sent = threading.Event()
+
+    class Server:
+        args = ["opencode", "serve"]
+        stdout = ()
+        stderr = ()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    class SSE:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield b'data: {"type":"server.connected","properties":{}}\n\n'
+            assert prompt_sent.wait(2)
+            yield b'data: {"type":"session.status","properties":{"sessionID":"ses_numoj_current","status":{"type":"busy"}}}\n\n'
+            assert abort_sent.wait(2)
+            yield b'data: {"type":"session.status","properties":{"sessionID":"ses_numoj_current","status":{"type":"idle"}}}\n\n'
+
+    def http_request(_base_url, path, *, method="GET", payload=None, **_kwargs):
+        if path == "/session" and method == "POST":
+            return {"id": "ses_numoj_current"}
+        if path.endswith("/prompt_async") and method == "POST":
+            prompt_sent.set()
+            return None
+        if path.endswith("/abort") and method == "POST":
+            abort_sent.set()
+            return True
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: Server())
+    monkeypatch.setattr(module, "_free_loopback_port", lambda: 18888)
+    monkeypatch.setattr(module, "_wait_opencode_server", lambda *_args: None)
+    monkeypatch.setattr(module, "_http_request", http_request)
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_args, **_kwargs: SSE())
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_opencode_interactive(
+        "开始",
+        _Commands([{"type": "interrupt", "id": "stop-1"}]),
+        {"AJ_TASK_ID": "task-turn-1"},
+        "",
+        "model-a",
+        ["opencode"],
+    )
+
+    assert completed.returncode == 130
+    assert any(
+        item.get("type") == "numoj_control"
+        and item.get("id") == "stop-1"
+        and item.get("status") == "accepted"
+        for item in emitted
+    )

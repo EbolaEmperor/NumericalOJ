@@ -31,19 +31,29 @@ from oj_modules.db_services import (
     upsert_agent_run_snapshot,
 )
 from oj_modules.agents.sessions import (
+    AgentSessionMessageConflictError,
+    AgentSessionMessageNotFoundError,
     AgentSessionBusyError,
     AgentSessionNotFoundError,
     agent_status_is_terminal,
     begin_agent_session_retry,
     begin_agent_session_turn,
+    cancel_queued_agent_session_message,
     create_agent_session,
+    continue_agent_session_queue,
+    enqueue_agent_session_message,
     get_agent_session,
     get_agent_session_by_task_id,
+    get_agent_session_message,
     get_agent_session_turns,
+    get_agent_session_queue_snapshot,
     get_agent_sessions_paginated,
+    list_agent_session_messages,
     mark_agent_turn_enqueue_failed,
     mark_agent_turn_runtime_restore_failed,
-    set_agent_turn_attachments,
+    normalize_agent_message_id,
+    reorder_queued_agent_session_messages,
+    update_queued_agent_session_message,
     normalize_agent_access_role,
 )
 from oj_modules.agents.runtime_checkpoints import (
@@ -99,8 +109,6 @@ from oj_modules.submissions.written_artifacts import (
     publish_manual_written_submission,
 )
 from oj_modules.shared.markdown import render_rich_markdown
-
-
 problem_core_bp = Blueprint('problem_core', __name__)
 logger = logging.getLogger(__name__)
 
@@ -110,9 +118,14 @@ _transcribe_written_homework_task = None
 _agent_solve_problem_task = None
 _agent_generate_testdata_task = None
 _agent_run_turn_task = None
+_agent_queue_dispatch_task = None
 _get_agent_run_snapshot = None
 _subscribe_agent_run_events = None
 _terminate_agent_run = None
+read_agent_steer_capability = lambda _session_id, _harness: (
+    False,
+    '当前 Harness 的插话能力状态不可用',
+)
 
 
 def _parse_agent_test_point_count(value):
@@ -210,6 +223,26 @@ def _agent_message_from_request():
     if len(message) > _AGENT_MESSAGE_MAX_CHARS:
         raise ValueError(f'任务内容不能超过 {_AGENT_MESSAGE_MAX_CHARS} 个字符')
     return message
+
+
+def _agent_client_message_id(*, generate=True):
+    raw = str(request.form.get('message_id') or '').strip()
+    if raw:
+        return normalize_agent_message_id(raw)
+    return uuid4().hex if generate else ''
+
+
+def _agent_runtime_checkpoint_generation_id(message_id):
+    """为一次 HTTP 尝试分配只属于它的 runtime checkpoint 名称。
+
+    ``message_id`` 是客户端幂等键，两个相同请求可以在第一个事务提交前并发
+    到达。如果直接把它当 checkpoint 名称，后到请求会把先到请求创建的目录
+    误判为自己的失败产物并在补偿时删除。独立 generation 让每个请求只能
+    清理自己创建的 checkpoint；最终由 turn 事务保存的 ID 才是权威引用。
+    """
+
+    owner = normalize_agent_message_id(message_id)
+    return f"{owner[:31]}-{uuid4().hex}"
 
 
 def _agent_prompt_with_attachments(message, attachments):
@@ -340,11 +373,23 @@ def _agent_state_with_trace_delta(state, previous_messages=(), harness=''):
 
     if not isinstance(state, dict):
         return state
-    resolved_harness = _agent_trace_harness(state, harness)
-    if resolved_harness not in _AGENT_CUMULATIVE_TRACE_HARNESSES:
-        return state
     raw_trace = state.get('execution_trace')
     if not isinstance(raw_trace, dict):
+        return state
+    token_usage = raw_trace.get('token_usage')
+    # 规范 journal 已由 adapter 归一化成当前任务增量。即使来源仍是 Pi 或
+    # Claude Code，也不能再套用 legacy resume JSONL 的公共前缀裁剪，否则
+    # 两轮恰好以相同文本开头时会误删本轮的合法事件。
+    if (
+        raw_trace.get('incremental') is True
+        or (
+            isinstance(token_usage, dict)
+            and token_usage.get('incremental') is True
+        )
+    ):
+        return state
+    resolved_harness = _agent_trace_harness(state, harness)
+    if resolved_harness not in _AGENT_CUMULATIVE_TRACE_HARNESSES:
         return state
     current_messages = _agent_trace_messages(raw_trace)
     if not current_messages:
@@ -679,6 +724,60 @@ def _agent_state_with_loaded_session_token_usage(state):
     return _agent_state_with_session_token_usage(state, historical_usages)
 
 
+def _decorate_agent_session_message(message):
+    if not isinstance(message, dict):
+        return message
+    projected = dict(message)
+    projected['user_message_html'] = render_rich_markdown(
+        projected.get('user_message')
+    )
+    return projected
+
+
+def _agent_session_message_snapshot(agent_session, current_state=None):
+    """构造页面与会话 SSE 共用的 MySQL 权威消息快照。"""
+
+    session_id = str((agent_session or {}).get('session_id') or '').strip()
+    snapshot = get_agent_session_queue_snapshot(session_id)
+    messages = [
+        _decorate_agent_session_message(message)
+        for message in snapshot.get('messages') or []
+    ]
+    snapshot['messages'] = messages
+    snapshot['queued_messages'] = [
+        message for message in messages
+        if str(message.get('delivery_mode') or '').lower() == 'queue'
+    ]
+    snapshot['steer_messages'] = [
+        message for message in messages
+        if str(message.get('delivery_mode') or '').lower() == 'steer'
+    ]
+    current_task_id = str(snapshot.get('current_task_id') or '')
+    snapshot['active_message'] = next((
+        message for message in snapshot['queued_messages']
+        if str(message.get('final_task_id') or '') == current_task_id
+    ), None)
+    if (agent_session or {}).get('is_legacy'):
+        steer_supported = False
+        steer_reason = '旧任务不支持中途插话'
+    else:
+        try:
+            steer_supported, steer_reason = read_agent_steer_capability(
+                session_id,
+                agent_session.get('harness'),
+            )
+        except Exception:
+            steer_supported = False
+            steer_reason = '当前 Harness 的插话能力状态不可用'
+    snapshot['steer_supported'] = bool(steer_supported)
+    snapshot['steer_unavailable_reason'] = str(steer_reason or '')
+    if isinstance(current_state, dict):
+        snapshot['session_token_usage'] = current_state.get(
+            'session_token_usage'
+        )
+    return snapshot
+
+
 def _pending_agent_run_state(session, task_id):
     return {
         'task_id': task_id,
@@ -779,6 +878,20 @@ def _remove_agent_runtime_checkpoint_best_effort(session_id, checkpoint_id):
         )
 
 
+def _remove_agent_attachments_best_effort(session_id, attachments):
+    attachments = list(attachments or [])
+    if not attachments:
+        return
+    try:
+        remove_agent_attachments(session_id, attachments)
+    except Exception:
+        # 每批附件拥有独立 generation；补偿失败只会留下不可引用的孤儿批次，
+        # 不能覆盖原始业务错误或触碰其它请求已经提交的附件。
+        logger.warning(
+            '清理未引用的 Agent 附件批次失败',
+            extra={'session_id': str(session_id or '')},
+            exc_info=True,
+        )
 def init_problem_core_module(
     evaluate_submission_task,
     transcribe_written_homework_task,
@@ -789,22 +902,28 @@ def init_problem_core_module(
     get_agent_run_snapshot=None,
     subscribe_agent_run_events=None,
     terminate_agent_run=None,
+    agent_queue_dispatch_task=None,
+    agent_steer_capability_reader=None,
 ):
     global _evaluate_submission_task, _promptly_generate_submission_task
     global _transcribe_written_homework_task
     global _agent_solve_problem_task, _agent_generate_testdata_task
-    global _agent_run_turn_task
+    global _agent_run_turn_task, _agent_queue_dispatch_task
     global _get_agent_run_snapshot, _subscribe_agent_run_events
     global _terminate_agent_run
+    global read_agent_steer_capability
     _evaluate_submission_task = evaluate_submission_task
     _promptly_generate_submission_task = promptly_generate_submission_task
     _transcribe_written_homework_task = transcribe_written_homework_task
     _agent_solve_problem_task = agent_solve_problem_task
     _agent_generate_testdata_task = agent_generate_testdata_task
     _agent_run_turn_task = agent_run_turn_task
+    _agent_queue_dispatch_task = agent_queue_dispatch_task
     _get_agent_run_snapshot = get_agent_run_snapshot
     _subscribe_agent_run_events = subscribe_agent_run_events
     _terminate_agent_run = terminate_agent_run
+    if agent_steer_capability_reader is not None:
+        read_agent_steer_capability = agent_steer_capability_reader
 
 
 def _is_agent_state_finished(state):
@@ -1180,7 +1299,7 @@ def admin_agent_solve_problem(problem_id):
         return jsonify(success=False, message='题目不存在'), 404
     if int(problem.get('type') or 1) != 1:
         return jsonify(success=False, message='仅支持编程题'), 400
-    if _agent_solve_problem_task is None:
+    if _agent_solve_problem_task is None or _agent_queue_dispatch_task is None:
         return jsonify(success=False, message='Agent 任务未初始化'), 500
 
     payload = request.get_json(silent=True) or {}
@@ -1261,27 +1380,13 @@ def admin_agent_solve_problem(problem_id):
         return jsonify(success=False, message=pending_state["message"]), 500
 
     try:
-        _agent_solve_problem_task.apply_async(
-            args=(
-                problem_id,
-                user['username'],
-                harness,
-                endpoint_id,
-                session_cookie,
-                cookie_name,
-                endpoint.get('revision'),
-            ),
-            task_id=task_id,
-        )
+        _agent_queue_dispatch_task.apply_async(args=(task_id,))
     except Exception:
-        logger.exception('解题 Agent 任务入队失败')
-        failure_message = _mark_agent_dispatch_failed(
-            task_id,
-            task_id,
-            pending_state,
-            "任务入队失败，请检查 Celery agent 队列",
+        logger.warning(
+            '唤醒解题 Agent outbox 失败，等待周期恢复',
+            extra={'session_id': task_id, 'task_id': task_id},
+            exc_info=True,
         )
-        return jsonify(success=False, message=failure_message), 500
 
     return jsonify(
         success=True,
@@ -1310,7 +1415,7 @@ def admin_agent_generate_testdata(problem_id):
         return jsonify(success=False, message='Promptly 评分题不支持造数据 Agent'), 400
     if programming_mode != 1:
         return jsonify(success=False, message='造数据 Agent 仅支持标准测试点评分模式'), 400
-    if _agent_generate_testdata_task is None:
+    if _agent_generate_testdata_task is None or _agent_queue_dispatch_task is None:
         return jsonify(success=False, message='数据生成 Agent 任务未初始化'), 500
 
     if request.mimetype != 'multipart/form-data':
@@ -1398,6 +1503,12 @@ def admin_agent_generate_testdata(problem_id):
             problem_title=problem.get("title"),
             base_runtime_checkpoint_id=runtime_checkpoint_id,
             base_native_session_id='',
+            dispatch_payload={
+                'test_point_count': test_point_count,
+                'standard_code': standard_code,
+                'data_requirement': data_requirement,
+                'standard_filename': standard_filename,
+            },
         )
     except Exception:
         _remove_agent_runtime_checkpoint_best_effort(
@@ -1411,31 +1522,13 @@ def admin_agent_generate_testdata(problem_id):
         return jsonify(success=False, message=pending_state["message"]), 500
 
     try:
-        _agent_generate_testdata_task.apply_async(
-            args=(
-                problem_id,
-                user['username'],
-                test_point_count,
-                standard_code,
-                data_requirement,
-                standard_filename,
-                harness,
-                endpoint_id,
-                session_cookie,
-                cookie_name,
-                endpoint.get('revision'),
-            ),
-            task_id=task_id,
-        )
+        _agent_queue_dispatch_task.apply_async(args=(task_id,))
     except Exception:
-        logger.exception('造数据 Agent 任务入队失败')
-        failure_message = _mark_agent_dispatch_failed(
-            task_id,
-            task_id,
-            pending_state,
-            "任务入队失败，请检查 Celery agent 队列",
+        logger.warning(
+            '唤醒造数据 Agent outbox 失败，等待周期恢复',
+            extra={'session_id': task_id, 'task_id': task_id},
+            exc_info=True,
         )
-        return jsonify(success=False, message=failure_message), 500
 
     return jsonify(
         success=True,
@@ -1987,7 +2080,7 @@ def admin_agent_tasks():
         return redirect(url_for('problem_core.problem_list'))
 
     if request.method == 'POST':
-        if _agent_run_turn_task is None:
+        if _agent_run_turn_task is None or _agent_queue_dispatch_task is None:
             return jsonify(success=False, message='通用 Agent 任务未初始化'), 500
         if request.mimetype != 'multipart/form-data':
             return jsonify(success=False, message='请使用 multipart/form-data'), 415
@@ -2004,16 +2097,64 @@ def admin_agent_tasks():
             )
             endpoint_id = int(endpoint['id'])
             cookie_name, session_cookie = _agent_session_cookie()
+            session_id = _agent_client_message_id()
         except (AgentLaunchValidationError, ValueError) as exc:
             return jsonify(success=False, message=str(exc)), 400
 
-        session_id = uuid4().hex
+        try:
+            existing_message = (
+                get_agent_session_message(session_id)
+                if str(request.form.get('message_id') or '').strip()
+                else None
+            )
+        except Exception:
+            logger.exception('读取通用 Agent 首轮幂等键失败')
+            return jsonify(success=False, message='无法确认 Agent 会话状态'), 500
+        if existing_message is not None:
+            existing_session = get_agent_session(session_id)
+            if not existing_session or not (
+                str(existing_message.get('session_id') or '') == session_id
+                and str(existing_message.get('created_by') or '')
+                == str(user.get('username') or '')
+                and str(existing_message.get('user_message') or '') == message
+                and str(existing_session.get('harness') or '') == harness
+                and int(existing_session.get('endpoint_id') or 0) == endpoint_id
+                and str(existing_session.get('access_role') or '') == access_role
+            ):
+                return jsonify(
+                    success=False,
+                    message='Agent message_id 已被其它消息使用',
+                ), 409
+            try:
+                _agent_queue_dispatch_task.apply_async(args=(session_id,))
+            except Exception:
+                logger.warning(
+                    '重新唤醒通用 Agent 首轮 outbox 失败，等待周期恢复',
+                    extra={'session_id': session_id, 'task_id': session_id},
+                    exc_info=True,
+                )
+            detail_url = url_for(
+                'problem_core.admin_agent_task_detail',
+                session_id=session_id,
+            )
+            return jsonify(
+                success=True,
+                message='Agent 会话已创建',
+                session_id=session_id,
+                task_id=session_id,
+                detail_url=detail_url,
+                view_url=detail_url,
+                idempotent=True,
+            )
+
         attachments = []
         runtime_checkpoint_id = ''
         try:
             save_agent_launch_preference(user['id'], harness, endpoint_id)
             ensure_agent_workspace(session_id)
-            runtime_checkpoint_id = session_id
+            runtime_checkpoint_id = _agent_runtime_checkpoint_generation_id(
+                session_id
+            )
             create_empty_agent_runtime_checkpoint(
                 session_id,
                 runtime_checkpoint_id,
@@ -2057,31 +2198,20 @@ def admin_agent_tasks():
         pending_state = _pending_agent_run_state(agent_session, session_id)
         try:
             upsert_agent_run_snapshot(pending_state)
-            _agent_run_turn_task.apply_async(
-                args=(
-                    session_id,
-                    user['username'],
-                    access_role,
-                    harness,
-                    endpoint_id,
-                    session_cookie,
-                    _agent_prompt_with_attachments(message, attachments),
-                    cookie_name,
-                    '',
-                    True,
-                    '',
-                ),
-                task_id=session_id,
-            )
         except Exception:
-            logger.exception('通用 Agent 首轮任务入队失败')
-            failure_message = _mark_agent_dispatch_failed(
-                session_id,
-                session_id,
-                pending_state,
-                '任务入队失败，请检查 Celery agent 队列',
+            logger.warning(
+                '写入通用 Agent 首轮兼容快照失败，dispatcher 将重建',
+                extra={'session_id': session_id, 'task_id': session_id},
+                exc_info=True,
             )
-            return jsonify(success=False, message=failure_message), 500
+        try:
+            _agent_queue_dispatch_task.apply_async(args=(session_id,))
+        except Exception:
+            logger.warning(
+                '唤醒通用 Agent 首轮 outbox 失败，等待周期恢复',
+                extra={'session_id': session_id, 'task_id': session_id},
+                exc_info=True,
+            )
 
         detail_url = url_for(
             'problem_core.admin_agent_task_detail',
@@ -2193,13 +2323,230 @@ def admin_agent_task_detail(session_id):
             ), 409
         if str(agent_session.get('requested_by') or '') != str(user.get('username') or ''):
             return jsonify(success=False, message='只能继续自己发起的 Agent 会话'), 403
-        if _agent_run_turn_task is None:
+        if _agent_run_turn_task is None or _agent_queue_dispatch_task is None:
             return jsonify(success=False, message='通用 Agent 任务未初始化'), 500
         if request.mimetype != 'multipart/form-data':
             return jsonify(success=False, message='请使用 multipart/form-data'), 415
+        if str(agent_session.get('status') or '').strip().lower() in {
+            'cleanupfailed',
+            'cleanup_failed',
+        }:
+            return jsonify(
+                success=False,
+                message='上一轮 Agent 任务尚未结束：容器清理状态未知',
+            ), 409
+        default_delivery_mode = (
+            'turn'
+            if agent_status_is_terminal(agent_session.get('status'))
+            else 'queue'
+        )
+        retry_last = str(request.form.get('retry_last') or '').strip() == '1'
+        delivery_mode = str(
+            request.form.get('delivery_mode')
+            or ('turn' if retry_last else default_delivery_mode)
+        ).strip().lower()
+        if delivery_mode not in {'turn', 'queue', 'steer'}:
+            return jsonify(success=False, message='Agent 消息投递模式无效'), 400
+        if retry_last and delivery_mode != 'turn':
+            return jsonify(success=False, message='重试只能作为新的执行轮次发送'), 400
+
+        try:
+            message = '' if retry_last else _agent_message_from_request()
+            message_id = _agent_client_message_id(generate=False)
+            existing_message = (
+                get_agent_session_message(message_id)
+                if str(request.form.get('message_id') or '').strip()
+                else None
+            )
+        except ValueError as exc:
+            return jsonify(success=False, message=str(exc)), 400
+        except Exception:
+            logger.exception(
+                '读取 Agent 消息幂等键失败',
+                extra={'session_id': session_id},
+            )
+            return jsonify(success=False, message='无法确认 Agent 消息状态'), 500
+
+        if existing_message is not None:
+            existing_mode = str(existing_message.get('delivery_mode') or '')
+            explicit_mode = str(request.form.get('delivery_mode') or '').strip().lower()
+            existing_task_id = str(
+                existing_message.get('final_task_id') or message_id
+            )
+            existing_turn = {}
+            if existing_mode == 'turn':
+                existing_turn = next(
+                    (
+                        item for item in get_agent_session_turns(
+                            session_id,
+                            include_superseded=True,
+                        )
+                        if str(item.get('task_id') or '') == existing_task_id
+                    ),
+                    {},
+                )
+            same_request = bool(
+                str(existing_message.get('session_id') or '') == session_id
+                and str(existing_message.get('created_by') or '')
+                == str(user.get('username') or '')
+                and (not explicit_mode or explicit_mode == existing_mode)
+            )
+            if retry_last:
+                same_request = bool(
+                    same_request
+                    and existing_mode == 'turn'
+                    and str(existing_turn.get('retry_of_task_id') or '')
+                    == str(request.form.get('expected_task_id') or '').strip()
+                )
+                message = str(existing_message.get('user_message') or '').strip()
+            else:
+                same_request = bool(
+                    same_request
+                    and str(existing_message.get('user_message') or '') == message
+                )
+            if existing_mode == 'steer':
+                same_request = same_request and str(
+                    existing_message.get('target_task_id') or ''
+                ) == str(request.form.get('expected_task_id') or '').strip()
+            if not same_request:
+                return jsonify(
+                    success=False,
+                    message='Agent message_id 已被其它消息使用',
+                ), 409
+            if existing_mode in {'turn', 'queue'}:
+                try:
+                    _agent_queue_dispatch_task.apply_async(args=(session_id,))
+                except Exception:
+                    logger.warning(
+                        '重新唤醒 Agent outbox 失败，等待周期恢复',
+                        extra={
+                            'session_id': session_id,
+                            'message_id': message_id,
+                        },
+                        exc_info=True,
+                    )
+            if existing_mode in {'queue', 'steer'}:
+                refreshed_session = get_agent_session(session_id) or agent_session
+                return jsonify(
+                    success=True,
+                    message=('插话已接收' if existing_mode == 'steer' else '消息已加入队列'),
+                    delivery_mode=existing_mode,
+                    agent_message=_decorate_agent_session_message(existing_message),
+                    session_state=_agent_session_message_snapshot(refreshed_session),
+                    idempotent=True,
+                )
+            return jsonify(
+                success=True,
+                message='消息已发送',
+                delivery_mode='turn',
+                session_id=session_id,
+                task_id=existing_task_id,
+                turn_index=int(existing_turn.get('turn_index') or 1),
+                user_message=message,
+                user_message_html=render_rich_markdown(message),
+                attachments=existing_message.get('attachments') or [],
+                agent_message=_decorate_agent_session_message(existing_message),
+                replaced_task_id=str(
+                    existing_turn.get('retry_of_task_id') or ''
+                ),
+                idempotent=True,
+            )
+
+        if delivery_mode in {'queue', 'steer'}:
+            if _agent_queue_dispatch_task is None:
+                return jsonify(success=False, message='Agent 消息队列未初始化'), 500
+            expected_task_id = str(
+                request.form.get('expected_task_id') or ''
+            ).strip()
+            message_id = message_id or uuid4().hex
+            if delivery_mode == 'steer':
+                try:
+                    steer_supported, steer_reason = read_agent_steer_capability(
+                        session_id,
+                        agent_session.get('harness'),
+                    )
+                except Exception:
+                    steer_supported = False
+                    steer_reason = '当前 Harness 的插话能力状态不可用'
+                if not steer_supported:
+                    return jsonify(
+                        success=False,
+                        message=steer_reason or '当前 Harness 暂不支持中途插话',
+                    ), 409
+                if not expected_task_id:
+                    return jsonify(
+                        success=False,
+                        message='插话缺少当前任务标识，请刷新后重试',
+                    ), 409
+
+            attachments = []
+            try:
+                attachments = save_agent_attachments(
+                    session_id,
+                    message_id,
+                    request.files.getlist('attachments'),
+                )
+                agent_message = enqueue_agent_session_message(
+                    session_id,
+                    message_id=message_id,
+                    created_by=user['username'],
+                    user_message=message,
+                    attachments=attachments,
+                    delivery_mode=delivery_mode,
+                    target_task_id=(
+                        expected_task_id if delivery_mode == 'steer' else None
+                    ),
+                )
+            except AgentSessionMessageConflictError as exc:
+                remove_agent_attachments(session_id, attachments)
+                return jsonify(success=False, message=str(exc)), 409
+            except AgentSessionMessageNotFoundError as exc:
+                remove_agent_attachments(session_id, attachments)
+                return jsonify(success=False, message=str(exc)), 404
+            except (ValueError, OSError) as exc:
+                remove_agent_attachments(session_id, attachments)
+                return jsonify(success=False, message=str(exc)), 400
+            except Exception:
+                remove_agent_attachments(session_id, attachments)
+                logger.exception(
+                    '保存 Agent 排队消息失败',
+                    extra={
+                        'session_id': session_id,
+                        'message_id': message_id,
+                        'delivery_mode': delivery_mode,
+                    },
+                )
+                return jsonify(success=False, message='无法保存 Agent 消息'), 500
+
+            if delivery_mode == 'queue':
+                try:
+                    # 与当前执行任务使用同一 agent 队列：活动轮结束后此唤醒
+                    # 才会运行；若 broker 瞬时失败，周期恢复仍会扫描 MySQL。
+                    _agent_queue_dispatch_task.apply_async(args=(session_id,))
+                except Exception:
+                    logger.warning(
+                        '唤醒 Agent 会话队列失败，等待周期恢复',
+                        extra={
+                            'session_id': session_id,
+                            'message_id': message_id,
+                        },
+                        exc_info=True,
+                    )
+            refreshed_session = get_agent_session(session_id) or agent_session
+            session_state = _agent_session_message_snapshot(refreshed_session)
+            return jsonify(
+                success=True,
+                message=(
+                    '插话已接收' if delivery_mode == 'steer' else '消息已加入队列'
+                ),
+                delivery_mode=delivery_mode,
+                agent_message=_decorate_agent_session_message(agent_message),
+                session_state=session_state,
+            )
+
+        # stale 页面不能用 turn 绕过已经开始的任务；运行中主发送应走 queue。
         if not agent_status_is_terminal(agent_session.get('status')):
             return jsonify(success=False, message='上一轮 Agent 任务尚未结束'), 409
-        retry_last = str(request.form.get('retry_last') or '').strip() == '1'
         if retry_last and any(
             str(getattr(upload, 'filename', '') or '').strip()
             for _field, uploads in request.files.lists()
@@ -2231,11 +2578,12 @@ def admin_agent_task_detail(session_id):
             return jsonify(success=False, message=str(exc)), 409
         try:
             message = '' if retry_last else _agent_message_from_request()
-            cookie_name, session_cookie = _agent_session_cookie()
+            message_id = _agent_client_message_id()
         except ValueError as exc:
             return jsonify(success=False, message=str(exc)), 400
 
-        task_id = uuid4().hex
+        task_id = message_id
+        attachments = []
         created_checkpoint_id = ''
         restore_checkpoint_id = ''
         try:
@@ -2243,7 +2591,9 @@ def admin_agent_task_detail(session_id):
                 # 旧部署产生的逻辑首轮没有保存空 runtime 基线。为它创建一个
                 # 明确的空 checkpoint；数据层只允许 turn_index=1 使用该兼容
                 # 入口，后续旧轮缺少基线时仍 fail closed。
-                created_checkpoint_id = task_id
+                created_checkpoint_id = _agent_runtime_checkpoint_generation_id(
+                    task_id
+                )
                 create_empty_agent_runtime_checkpoint(
                     session_id,
                     created_checkpoint_id,
@@ -2266,38 +2616,51 @@ def admin_agent_task_detail(session_id):
                     )
                     created_checkpoint_id = ''
             else:
-                created_checkpoint_id = task_id
+                created_checkpoint_id = _agent_runtime_checkpoint_generation_id(
+                    task_id
+                )
                 create_agent_runtime_checkpoint(
                     session_id,
                     created_checkpoint_id,
+                )
+                # 先把整批附件原子发布到独立 generation，再在一个数据库事务
+                # 中创建 turn/outbox。恢复扫描因此永远看不到 attachments=[] 的
+                # 半成品消息；begin 失败时只补偿本请求自己的 generation。
+                attachments = save_agent_attachments(
+                    session_id,
+                    task_id,
+                    request.files.getlist('attachments'),
                 )
                 turn_claim = begin_agent_session_turn(
                     session_id,
                     task_id=task_id,
                     user_message=message,
-                    attachments=[],
+                    attachments=attachments,
                     base_runtime_checkpoint_id=created_checkpoint_id,
                 )
-                attachments = []
         except AgentSessionBusyError as exc:
+            _remove_agent_attachments_best_effort(session_id, attachments)
             _remove_agent_runtime_checkpoint_best_effort(
                 session_id,
                 created_checkpoint_id,
             )
             return jsonify(success=False, message=str(exc)), 409
         except AgentSessionNotFoundError as exc:
+            _remove_agent_attachments_best_effort(session_id, attachments)
             _remove_agent_runtime_checkpoint_best_effort(
                 session_id,
                 created_checkpoint_id,
             )
             return jsonify(success=False, message=str(exc)), 404
         except (ValueError, OSError) as exc:
+            _remove_agent_attachments_best_effort(session_id, attachments)
             _remove_agent_runtime_checkpoint_best_effort(
                 session_id,
                 created_checkpoint_id,
             )
             return jsonify(success=False, message=str(exc)), 400
         except Exception:
+            _remove_agent_attachments_best_effort(session_id, attachments)
             _remove_agent_runtime_checkpoint_best_effort(
                 session_id,
                 created_checkpoint_id,
@@ -2355,97 +2718,36 @@ def admin_agent_task_detail(session_id):
                         session_id=session_id,
                     ),
                 ), 500
-        if not retry_last:
-            try:
-                attachments = save_agent_attachments(
-                    session_id,
-                    task_id,
-                    request.files.getlist('attachments'),
-                )
-                set_agent_turn_attachments(session_id, task_id, attachments)
-            except (ValueError, OSError) as exc:
-                remove_agent_attachments(session_id, attachments)
-                _mark_agent_dispatch_failed(
-                    session_id,
-                    task_id,
-                    pending_state,
-                    f'附件保存失败：{str(exc)}',
-                )
-                return jsonify(
-                    success=False,
-                    message=str(exc),
-                    detail_url=url_for(
-                        'problem_core.admin_agent_task_detail',
-                        session_id=session_id,
-                    ),
-                ), 400
-            except Exception:
-                remove_agent_attachments(session_id, attachments)
-                logger.exception(
-                    '保存 Agent 续聊附件失败',
-                    extra={'session_id': session_id, 'task_id': task_id},
-                )
-                failure_message = _mark_agent_dispatch_failed(
-                    session_id,
-                    task_id,
-                    pending_state,
-                    '附件保存失败，请重新发送消息',
-                )
-                return jsonify(
-                    success=False,
-                    message=failure_message,
-                    detail_url=url_for(
-                        'problem_core.admin_agent_task_detail',
-                        session_id=session_id,
-                    ),
-                ), 500
         try:
             upsert_agent_run_snapshot(pending_state)
-            _agent_run_turn_task.apply_async(
-                args=(
-                    session_id,
-                    user['username'],
-                    frozen_session.get('access_role') or 'user',
-                    frozen_session.get('harness'),
-                    int(frozen_session.get('endpoint_id')),
-                    session_cookie,
-                    _agent_prompt_with_attachments(message, attachments),
-                    cookie_name,
-                    frozen_session.get('native_session_id') or '',
-                    False,
-                    restore_checkpoint_id,
-                ),
-                task_id=task_id,
-            )
         except Exception:
-            logger.exception(
-                'Agent 续聊任务入队失败',
+            logger.warning(
+                '写入 Agent 续聊兼容快照失败，dispatcher 将重建',
                 extra={'session_id': session_id, 'task_id': task_id},
+                exc_info=True,
             )
-            failure_message = _mark_agent_dispatch_failed(
-                session_id,
-                task_id,
-                pending_state,
-                '任务入队失败，请检查 Celery agent 队列',
+        try:
+            _agent_queue_dispatch_task.apply_async(args=(session_id,))
+        except Exception:
+            logger.warning(
+                '唤醒 Agent 续聊 outbox 失败，等待周期恢复',
+                extra={'session_id': session_id, 'task_id': task_id},
+                exc_info=True,
             )
-            return jsonify(
-                success=False,
-                message=failure_message,
-                detail_url=url_for(
-                    'problem_core.admin_agent_task_detail',
-                    session_id=session_id,
-                ),
-            ), 500
 
         return jsonify(
             success=True,
             message='消息已发送',
+            delivery_mode='turn',
             session_id=session_id,
             task_id=task_id,
             turn_index=turn_index,
             user_message=message,
             user_message_html=render_rich_markdown(message),
             attachments=attachments,
+            agent_message=_decorate_agent_session_message(
+                turn_claim.get('agent_message')
+            ),
             replaced_task_id=(
                 str(turn_claim.get('replaced_task_id') or '').strip()
                 if retry_last
@@ -2455,6 +2757,29 @@ def admin_agent_task_detail(session_id):
 
     raw_turns = get_agent_session_turns(session_id)
     turns = _decorate_agent_turns(raw_turns)
+    try:
+        steer_records = list_agent_session_messages(
+            session_id,
+            delivery_modes='steer',
+        )
+    except Exception:
+        steer_records = []
+        logger.warning(
+            '读取 Agent 历史插话失败',
+            extra={'session_id': session_id},
+            exc_info=True,
+        )
+    steers_by_task = {}
+    for record in steer_records:
+        target_task_id = str(record.get('target_task_id') or '')
+        steers_by_task.setdefault(target_task_id, []).append(
+            _decorate_agent_session_message(record)
+        )
+    for turn in turns:
+        turn['steer_messages'] = steers_by_task.get(
+            str(turn.get('task_id') or ''),
+            [],
+        )
     current_task_id = str(agent_session.get('current_task_id') or session_id)
     current_state = _get_agent_run_state(current_task_id) or (
         _agent_state_for_response(current_task_id, {
@@ -2477,6 +2802,29 @@ def admin_agent_task_detail(session_id):
     current_state['session_id'] = session_id
     current_state = _agent_state_with_loaded_session_token_usage(current_state)
     current_state = _agent_state_with_loaded_session_trace_delta(current_state)
+    try:
+        agent_message_state = _agent_session_message_snapshot(
+            agent_session,
+            current_state=current_state,
+        )
+    except Exception:
+        logger.warning(
+            '读取 Agent 会话消息快照失败',
+            extra={'session_id': session_id},
+            exc_info=True,
+        )
+        agent_message_state = {
+            'session_id': session_id,
+            'current_task_id': current_task_id,
+            'status': agent_session.get('status') or 'Pending',
+            'running': not agent_status_is_terminal(agent_session.get('status')),
+            'queue_paused': bool(agent_session.get('queue_paused')),
+            'queue_pause_reason': agent_session.get('queue_pause_reason') or '',
+            'messages': [],
+            'steer_supported': False,
+            'steer_unavailable_reason': '消息队列状态暂不可用',
+            'session_token_usage': current_state.get('session_token_usage'),
+        }
     try:
         workspace_tree = (
             []
@@ -2516,6 +2864,25 @@ def admin_agent_task_detail(session_id):
         agent_session=agent_session,
         turns=turns,
         current_state=current_state,
+        agent_message_state=agent_message_state,
+        agent_message_urls={
+            'state': f'/admin/agent_tasks/{quote(session_id, safe="")}/state',
+            'stream': f'/admin/agent_tasks/{quote(session_id, safe="")}/stream',
+            'update': (
+                f'/admin/agent_tasks/{quote(session_id, safe="")}'
+                '/messages/__MESSAGE_ID__/update'
+            ),
+            'delete': (
+                f'/admin/agent_tasks/{quote(session_id, safe="")}'
+                '/messages/__MESSAGE_ID__/delete'
+            ),
+            'reorder': (
+                f'/admin/agent_tasks/{quote(session_id, safe="")}/queue/reorder'
+            ),
+            'resume': (
+                f'/admin/agent_tasks/{quote(session_id, safe="")}/queue/resume'
+            ),
+        },
         workspace_tree=workspace_tree,
         can_resume=owns_session,
         can_retry=can_retry,
@@ -2523,6 +2890,318 @@ def admin_agent_task_detail(session_id):
     ))
     response.headers['Cache-Control'] = 'private, no-store'
     return response
+
+
+def _agent_message_route_session(session_id, user, *, require_owner=True):
+    try:
+        agent_session = get_agent_session(session_id)
+    except ValueError:
+        agent_session = None
+    if not agent_session or agent_session.get('is_legacy'):
+        raise AgentSessionMessageNotFoundError('Agent 会话不存在')
+    if require_owner and str(agent_session.get('requested_by') or '') != str(
+        (user or {}).get('username') or ''
+    ):
+        raise PermissionError('只能管理自己发起的 Agent 会话')
+    return agent_session
+
+
+def _agent_message_mutation_error(exc):
+    if isinstance(exc, PermissionError):
+        return jsonify(success=False, message=str(exc)), 403
+    if isinstance(exc, AgentSessionMessageNotFoundError):
+        return jsonify(success=False, message=str(exc)), 404
+    if isinstance(exc, AgentSessionMessageConflictError):
+        return jsonify(success=False, message=str(exc)), 409
+    if isinstance(exc, (ValueError, OSError)):
+        return jsonify(success=False, message=str(exc)), 400
+    raise exc
+
+
+@problem_core_bp.get('/admin/agent_tasks/<session_id>/state')
+def admin_agent_task_message_state(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        agent_session = _agent_message_route_session(
+            session_id,
+            user,
+            require_owner=False,
+        )
+        task_id = str(agent_session.get('current_task_id') or '')
+        current_state = _get_agent_run_state(task_id) or {}
+        current_state = dict(current_state)
+        current_state.setdefault('task_id', task_id)
+        current_state['session_id'] = session_id
+        current_state = _agent_state_with_loaded_session_token_usage(
+            current_state
+        )
+        state = _agent_session_message_snapshot(
+            agent_session,
+            current_state=current_state,
+        )
+    except Exception as exc:
+        try:
+            return _agent_message_mutation_error(exc)
+        except Exception:
+            logger.exception(
+                '读取 Agent 会话消息状态失败',
+                extra={'session_id': session_id},
+            )
+            return jsonify(success=False, message='无法读取消息队列'), 500
+    response = jsonify(success=True, state=state)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@problem_core_bp.get('/admin/agent_tasks/<session_id>/stream')
+def admin_agent_task_message_stream(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        _agent_message_route_session(session_id, user, require_owner=False)
+    except Exception as exc:
+        return _agent_message_mutation_error(exc)
+
+    @stream_with_context
+    def generate():
+        previous_payload = None
+        heartbeat_at = time.monotonic()
+        while True:
+            try:
+                current_session = get_agent_session(session_id)
+                if not current_session or current_session.get('is_legacy'):
+                    break
+                state = _agent_session_message_snapshot(current_session)
+                payload = json.dumps(state, ensure_ascii=False, sort_keys=True)
+            except GeneratorExit:
+                break
+            except Exception:
+                logger.warning(
+                    'Agent 会话消息流读取失败',
+                    extra={'session_id': session_id},
+                    exc_info=True,
+                )
+                break
+            if payload != previous_payload:
+                yield f"event: session\ndata: {payload}\n\n"
+                previous_payload = payload
+                heartbeat_at = time.monotonic()
+            elif time.monotonic() - heartbeat_at >= 15:
+                yield ': keep-alive\n\n'
+                heartbeat_at = time.monotonic()
+            time.sleep(1.0)
+
+    response = Response(generate(), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'private, no-cache, no-store'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
+
+
+@problem_core_bp.post(
+    '/admin/agent_tasks/<session_id>/messages/<message_id>/update'
+)
+def admin_agent_task_message_update(session_id, message_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    added_attachments = []
+    update_committed = False
+    try:
+        agent_session = _agent_message_route_session(session_id, user)
+        message = _agent_message_from_request()
+        records = list_agent_session_messages(
+            session_id,
+            delivery_modes='queue',
+            statuses='queued',
+        )
+        current = next((
+            item for item in records
+            if str(item.get('message_id') or '') == str(message_id)
+        ), None)
+        if not current:
+            raise AgentSessionMessageNotFoundError('Agent 排队消息不存在')
+        removed_paths = {
+            str(value or '').strip()
+            for value in request.form.getlist('remove_attachment')
+            if str(value or '').strip()
+        }
+        existing_attachments = current.get('attachments') or []
+        kept_attachments = [
+            item for item in existing_attachments
+            if str((item or {}).get('path') or '') not in removed_paths
+        ]
+        added_attachments = save_agent_attachments(
+            session_id,
+            message_id,
+            request.files.getlist('attachments'),
+        )
+        attachments = [*kept_attachments, *added_attachments]
+        removed_attachments = update_queued_agent_session_message(
+            session_id,
+            message_id,
+            user_message=message,
+            attachments=attachments,
+            expected_attachments=existing_attachments,
+        )
+        update_committed = True
+        _remove_agent_attachments_best_effort(
+            session_id,
+            removed_attachments,
+        )
+        updated = next(
+            item for item in list_agent_session_messages(
+                session_id,
+                delivery_modes='queue',
+                statuses='queued',
+            )
+            if str(item.get('message_id') or '') == str(message_id)
+        )
+        state = _agent_session_message_snapshot(agent_session)
+    except Exception as exc:
+        if added_attachments and not update_committed:
+            try:
+                remove_agent_attachments(session_id, added_attachments)
+            except OSError:
+                logger.warning(
+                    '回滚 Agent 排队附件失败',
+                    extra={
+                        'session_id': session_id,
+                        'message_id': message_id,
+                    },
+                    exc_info=True,
+                )
+        try:
+            return _agent_message_mutation_error(exc)
+        except Exception:
+            logger.exception(
+                '编辑 Agent 排队消息失败',
+                extra={'session_id': session_id, 'message_id': message_id},
+            )
+            return jsonify(success=False, message='无法编辑排队消息'), 500
+    return jsonify(
+        success=True,
+        agent_message=_decorate_agent_session_message(updated),
+        session_state=state,
+    )
+
+
+@problem_core_bp.post(
+    '/admin/agent_tasks/<session_id>/messages/<message_id>/delete'
+)
+def admin_agent_task_message_delete(session_id, message_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        agent_session = _agent_message_route_session(session_id, user)
+        current = next((
+            item for item in list_agent_session_messages(
+                session_id,
+                delivery_modes='queue',
+                statuses='queued',
+            )
+            if str(item.get('message_id') or '') == str(message_id)
+        ), None)
+        if not current:
+            raise AgentSessionMessageNotFoundError('Agent 排队消息不存在')
+        removed_attachments = cancel_queued_agent_session_message(
+            session_id,
+            message_id,
+            expected_attachments=current.get('attachments') or [],
+        )
+        _remove_agent_attachments_best_effort(
+            session_id,
+            removed_attachments,
+        )
+        state = _agent_session_message_snapshot(agent_session)
+    except Exception as exc:
+        try:
+            return _agent_message_mutation_error(exc)
+        except Exception:
+            logger.exception(
+                '删除 Agent 排队消息失败',
+                extra={'session_id': session_id, 'message_id': message_id},
+            )
+            return jsonify(success=False, message='无法删除排队消息'), 500
+    return jsonify(success=True, session_state=state)
+
+
+@problem_core_bp.post('/admin/agent_tasks/<session_id>/queue/reorder')
+def admin_agent_task_queue_reorder(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        agent_session = _agent_message_route_session(session_id, user)
+        if request.is_json:
+            body = request.get_json(silent=True) or {}
+            message_ids = body.get('message_ids') or []
+        else:
+            message_ids = request.form.getlist('message_ids')
+        reorder_queued_agent_session_messages(session_id, message_ids)
+        state = _agent_session_message_snapshot(agent_session)
+    except Exception as exc:
+        try:
+            return _agent_message_mutation_error(exc)
+        except Exception:
+            logger.exception(
+                '重排 Agent 消息队列失败',
+                extra={'session_id': session_id},
+            )
+            return jsonify(success=False, message='无法调整队列顺序'), 500
+    return jsonify(success=True, session_state=state)
+
+
+@problem_core_bp.post('/admin/agent_tasks/<session_id>/queue/resume')
+def admin_agent_task_queue_resume(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='无权限'), 403
+    try:
+        agent_session = _agent_message_route_session(session_id, user)
+        normalized_status = str(agent_session.get('status') or '').strip().lower()
+        if normalized_status in {'cleanupfailed', 'cleanup_failed'}:
+            raise AgentSessionMessageConflictError(
+                '上一轮 Agent 容器尚未完成清理，不能继续队列'
+            )
+        continue_agent_session_queue(session_id)
+        try:
+            if _agent_queue_dispatch_task is None:
+                raise RuntimeError('Agent 消息队列未初始化')
+            _agent_queue_dispatch_task.apply_async(args=(session_id,))
+        except Exception:
+            logger.warning(
+                '唤醒已继续的 Agent 消息队列失败，等待周期恢复',
+                extra={'session_id': session_id},
+                exc_info=True,
+            )
+        agent_session = get_agent_session(session_id) or agent_session
+        state = _agent_session_message_snapshot(agent_session)
+    except Exception as exc:
+        try:
+            return _agent_message_mutation_error(exc)
+        except Exception:
+            logger.exception(
+                '继续 Agent 消息队列失败',
+                extra={'session_id': session_id},
+            )
+            return jsonify(success=False, message='无法继续消息队列'), 500
+    return jsonify(success=True, session_state=state)
 
 
 @problem_core_bp.get('/admin/agent_tasks/<session_id>/workspace')

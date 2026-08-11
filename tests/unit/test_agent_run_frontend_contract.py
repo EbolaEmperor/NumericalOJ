@@ -2,6 +2,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
+from jinja2 import Environment
 import pytest
 
 
@@ -202,7 +203,7 @@ def test_agent_detail_supports_resume_stop_and_live_state_without_interruption()
     assert "addEventListener('done'" in controller
     assert "startPolling(taskId, generation)" in controller
     assert "taskId !== currentTaskId || generation !== liveGeneration" in controller
-    assert "resumeSend.disabled = running || blocked" in controller
+    assert "resumeSend.disabled = blocked || resumePending" in controller
     assert "error.detailUrl = asText(payload && payload.detail_url).trim();" in controller
     assert "global.location.assign(error.detailUrl);" in controller
     assert "cleanupfailed" in controller
@@ -224,6 +225,161 @@ def test_agent_detail_supports_resume_stop_and_live_state_without_interruption()
     assert "width: 24px;" in retry_rule
     assert "height: 24px;" in retry_rule
     assert "background: transparent;" in retry_rule
+
+
+def test_agent_detail_supports_durable_queue_and_soft_steering_controls():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+    styles = _read("static/app/agents/conversation.css")
+
+    for contract in (
+        "data-session-state-url",
+        "data-session-stream-url",
+        "data-queue-update-url-template",
+        "data-queue-delete-url-template",
+        "data-queue-reorder-url",
+        "data-queue-resume-url",
+        "data-agent-message-state-json",
+    ):
+        assert contract in template
+    assert "data-agent-queue-panel" in template
+    assert "data-agent-queue-list" in template
+    assert "data-agent-queue-resume" in template
+    assert 'name="delivery_mode" value="steer"' in template
+    assert "data-agent-resume-steer" in template
+    assert "中途插话：在当前动作结束后转向" in template
+    assert "{% if is_running or is_blocked %}disabled{% endif %}" not in template
+
+    assert "submitIntent = submitter === steerButton" in controller
+    assert "(running || queuePaused || queuedMessages(messageState).length) ? 'queue' : 'turn'" in controller
+    assert "body.set('delivery_mode', deliveryMode)" in controller
+    assert "body.set('expected_task_id', resumeExpectedTaskId)" in controller
+    assert "function renderMessageQueue(state)" in controller
+    assert "function renderSteerMessages(state)" in controller
+    assert "message.target_task_id || message.task_id" in controller
+    assert "=== currentTaskId" in controller
+    assert (
+        "turn.steer_messages and not (is_running and turn.task_id == current_task_id)"
+        in template
+    )
+    assert "function persistQueueOrder(messageIds)" in controller
+    assert "function queueEditor(item, message)" in controller
+    assert "body.append('remove_attachment', path)" in controller
+    assert '[data-delivery-status="queued"]' in controller
+    assert "source.dataset.deliveryStatus !== 'queued'" in controller
+    assert "new global.EventSource(endpoint)" in controller
+    assert "transitionToTask(taskId, state)" in controller
+    assert "actualMode === 'steer'" in controller
+    assert "插话已接收，将在当前动作结束后生效。" in controller
+
+    assert ".agent-message-queue" in styles
+    assert ".agent-queue-item" in styles
+    assert ".agent-resume-steer" in styles
+    assert ".agent-steer-message" in styles
+    assert ".agent-queue-mobile-move { display: grid; }" in styles
+
+
+def test_paused_queue_without_native_session_keeps_queue_controls_available():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+
+    # CleanupFailed、旧会话和非发起者仍是硬阻断；缺少 native session
+    # 只阻止普通空闲续聊，不得抵消后端从 fresh native 启动暂停队列的能力。
+    assert "var hardBlocked = !canResume || legacySession" in controller
+    assert (
+        "blocked = hardBlocked || (!running && !nativeSessionId && !queueMode);"
+        in controller
+    )
+    assert (
+        "queueResumeButton.disabled = hardBlocked || resumePending "
+        "|| queueMutationPending;"
+        in controller
+    )
+    queue_renderer = controller.split(
+        "function renderMessageQueue(state)", 1
+    )[1].split("];", 1)[0]
+    assert "hardBlocked," in queue_renderer
+    assert "queuePaused," in queue_renderer
+    assert "if (hardBlocked || !movable)" in controller
+    assert "not queue_paused and not has_queued_messages" in template
+    assert "is_hard_blocked or (not is_running and not has_resume_point" in template
+
+
+def test_agent_detail_renders_all_message_mutation_urls_from_mapping_keys():
+    template = _read("templates/admin/agent_task_detail.html")
+    start = template.index('<main class="agent-session"')
+    opening_tag = template[start:template.index(">", start) + 1]
+    environment = Environment(autoescape=True)
+    environment.globals["url_for"] = lambda endpoint, **_kwargs: f"/{endpoint}"
+    message_urls = {
+        "state": "/admin/agent_tasks/session-1/state",
+        "stream": "/admin/agent_tasks/session-1/stream",
+        "update": (
+            "/admin/agent_tasks/session-1/messages/__MESSAGE_ID__/update"
+        ),
+        "delete": (
+            "/admin/agent_tasks/session-1/messages/__MESSAGE_ID__/delete"
+        ),
+        "reorder": "/admin/agent_tasks/session-1/queue/reorder",
+        "resume": "/admin/agent_tasks/session-1/queue/resume",
+    }
+
+    rendered = environment.from_string(opening_tag).render(
+        session_id="session-1",
+        current_task_id="task-1",
+        is_running=True,
+        is_blocked=False,
+        can_resume=True,
+        can_retry=False,
+        agent_session={"is_legacy": False, "steer_unavailable_reason": ""},
+        has_resume_point="native-session-1",
+        state_status="running",
+        message_urls=message_urls,
+        queue_paused=False,
+        steer_supported=True,
+        message_state={"steer_unavailable_reason": ""},
+    )
+
+    expected_attributes = {
+        "data-session-state-url": message_urls["state"],
+        "data-session-stream-url": message_urls["stream"],
+        "data-queue-update-url-template": message_urls["update"],
+        "data-queue-delete-url-template": message_urls["delete"],
+        "data-queue-reorder-url": message_urls["reorder"],
+        "data-queue-resume-url": message_urls["resume"],
+    }
+    for attribute, expected in expected_attributes.items():
+        assert f'{attribute}="{expected}"' in rendered
+
+    for key in message_urls:
+        assert f"message_urls['{key}']" in opening_tag
+        assert f"message_urls.{key}" not in opening_tag
+
+
+def test_agent_detail_keeps_idempotency_and_task_transitions_bound_to_one_turn():
+    controller = _read("static/app/agents/conversation.js")
+
+    # 自动选择的 queue/turn 模式可能在请求重试前变化；同一草稿仍须复用首个
+    # message_id 与投递目标，收到成功响应后则必须释放幂等键。
+    assert "function newClientMessageId(prefix)" in controller
+    assert "resumeDeliveryMode = computedDeliveryMode;" in controller
+    assert "resumeExpectedTaskId = computedDeliveryMode === 'steer'" in controller
+    assert "var deliveryMode = resumeDeliveryMode || computedDeliveryMode;" in controller
+    dispatch_start = controller.index("function dispatchAgentTurn(options)")
+    optimistic_turn = controller.index("appendOptimisticUserMessage(", dispatch_start)
+    turn_pending_reset = controller.index(
+        "setResumePending(false, requestedMode)", optimistic_turn
+    )
+    assert "clearResumeComposer();" in controller[optimistic_turn:turn_pending_reset]
+    assert "function resetResumeAttempt()" in controller
+
+    # session SSE 先看到下一轮时，先确认旧轮终态；startStream 也要把
+    # currentState 绑定到新 task，避免极速连续轮次串用上一轮结论。
+    assert "taskTransitionProbePending = true;" in controller
+    assert "fetchState(previousTaskId, generation)" in controller
+    assert "if (previousTaskId !== taskId || !isRunningStatus" in controller
+    assert "task_id: taskId" in controller
+    assert "messagePollingDueAt" in controller
 
 
 def test_agent_detail_keeps_file_preview_and_workspace_accessible():

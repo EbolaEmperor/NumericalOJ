@@ -8,7 +8,10 @@ import pytest
 from oj_modules.agents import workspace as agent_workspace
 from oj_modules.agents import runtime_checkpoints
 from oj_modules.problems import agent_runs
-from oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages
+from oj_modules.ranking.reverse_judge.traces import (
+    collect_agent_token_usage,
+    collect_agent_trace_messages,
+)
 from oj_modules.tasks.agent import harness_runtime as runtime
 from oj_modules.tasks.agent import identity_relay
 from oj_modules.tasks.agent import secret_relay
@@ -982,6 +985,527 @@ def test_bounded_runner_stops_docker_exec_when_task_is_canceled(monkeypatch):
     assert process.killed is False
     assert result.returncode == -15
     assert result.timed_out is False
+
+
+def test_control_observer_reports_only_valid_numoj_acknowledgements():
+    observed = []
+    observer = runtime._ControlEventObserver(
+        lambda command_id, status, error: observed.append(
+            (command_id, status, error)
+        ),
+    )
+
+    observer.feed(b'{"type":"numoj_con')
+    observer.feed(
+        b'trol","id":"steer-1","status":"accepted"}\n'
+        b'{"type":"numoj_trace","version":1,"event":{}}\n'
+        b'{"type":"numoj_control","id":"bad","status":"sent"}\n'
+        b'{"type":"numoj_control","id":"stop-1","status":"rejected","error":"idle"}\n'
+    )
+
+    assert observed == [
+        ("steer-1", "accepted", ""),
+        ("stop-1", "rejected", "idle"),
+    ]
+
+
+def test_interactive_runner_keeps_stdin_open_and_forwards_control_ack(monkeypatch):
+    allow_stdout = __import__("threading").Event()
+    writes = []
+    callbacks = []
+
+    class Input:
+        closed = False
+
+        def write(self, payload):
+            assert not self.closed
+            writes.append(bytes(payload))
+
+        def flush(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class Output:
+        emitted = False
+
+        def read(self, _size):
+            if self.emitted:
+                return b""
+            assert allow_stdout.wait(2)
+            self.emitted = True
+            return (
+                b'{"type":"numoj_control","version":1,'
+                b'"id":"steer-1","status":"accepted"}\n'
+            )
+
+        def close(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = Input()
+            self.stdout = Output()
+            self.stderr = io.BytesIO()
+
+        def wait(self, timeout=None):
+            if len(writes) < 2:
+                raise runtime.subprocess.TimeoutExpired("docker", timeout)
+            allow_stdout.set()
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    queued = [[{
+        "id": "steer-1",
+        "type": "steer",
+        "message": "改为检查失败测试",
+        "target_task_id": "task-1",
+    }], []]
+
+    result = runtime._run_with_bounded_output(
+        ["docker"],
+        "先执行首轮",
+        control_source=lambda: queued.pop(0) if queued else (),
+        control_callback=lambda command_id, status, error="": callbacks.append(
+            (command_id, status, error)
+        ),
+        control_target_task_id="task-1",
+    )
+
+    assert result.returncode == 0
+    frames = [json.loads(item) for item in writes]
+    assert frames == [
+        {
+            "type": "start",
+            "id": "__start__",
+            "message": "先执行首轮",
+            "target_task_id": "task-1",
+        },
+        {
+            "type": "steer",
+            "id": "steer-1",
+            "message": "改为检查失败测试",
+            "target_task_id": "task-1",
+        },
+    ]
+    assert callbacks == [("steer-1", "accepted", "")]
+
+
+def test_interactive_runner_does_not_force_kill_after_interrupt_is_rejected(
+        monkeypatch):
+    import threading
+
+    interrupt_written = threading.Event()
+    callback_seen = threading.Event()
+    process_finished = threading.Event()
+    writes = []
+    callbacks = []
+
+    class Input:
+        def write(self, payload):
+            writes.append(bytes(payload))
+            frame = json.loads(payload)
+            if frame.get("type") == "interrupt":
+                interrupt_written.set()
+
+        def flush(self):
+            return None
+
+        def close(self):
+            return None
+
+    class Output:
+        emitted = False
+
+        def read(self, _size):
+            if not self.emitted:
+                assert interrupt_written.wait(1)
+                self.emitted = True
+                return (
+                    b'{"type":"numoj_control","version":1,'
+                    b'"id":"stop-1","status":"rejected","error":"idle"}\n'
+                )
+            assert process_finished.wait(1)
+            return b""
+
+        def close(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = Input()
+            self.stdout = Output()
+            self.stderr = io.BytesIO()
+            self.terminated = False
+            self.killed = False
+            self.after_ack_waits = 0
+
+        def wait(self, timeout=None):
+            if self.terminated:
+                process_finished.set()
+                return -15
+            if not interrupt_written.is_set():
+                raise runtime.subprocess.TimeoutExpired("docker", timeout)
+            assert callback_seen.wait(1)
+            self.after_ack_waits += 1
+            if self.after_ack_waits < 3:
+                raise runtime.subprocess.TimeoutExpired("docker", timeout)
+            process_finished.set()
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self.terminated = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monotonic = iter(float(index) for index in range(20))
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: next(monotonic))
+    queued = [[{"id": "stop-1", "type": "interrupt"}], []]
+
+    def on_control(command_id, status, error=""):
+        callbacks.append((command_id, status, error))
+        callback_seen.set()
+
+    result = runtime._run_with_bounded_output(
+        ["docker"],
+        "prompt",
+        control_source=lambda: queued.pop(0) if queued else (),
+        control_callback=on_control,
+        interrupt_grace_seconds=0.5,
+    )
+
+    assert result.returncode == 0
+    assert process.terminated is False
+    assert process.killed is False
+    assert callbacks == [("stop-1", "rejected", "idle")]
+
+
+def test_read_agent_steer_capability_marks_legacy_opencode_only(
+        monkeypatch, tmp_path):
+    workspace_root = tmp_path / "agent-workspaces"
+    monkeypatch.setattr(agent_workspace, "AGENT_WORKSPACE_ROOT", workspace_root)
+    workspace = workspace_root / "sessions/s-1/workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aj_session_state.json").write_text(json.dumps({
+        "harness": "opencode",
+        "session_id": "ses_legacy",
+    }), encoding="utf-8")
+
+    supported, reason = runtime.read_agent_steer_capability("s-1", "opencode")
+    assert supported is False
+    assert "兼容探测" in reason
+
+    (workspace / ".aj_session_state.json").write_text(json.dumps({
+        "harness": "opencode",
+        "session_id": "ses_current",
+        "interactive_supported": True,
+    }), encoding="utf-8")
+    assert runtime.read_agent_steer_capability("s-1", "opencode") == (True, "")
+
+
+def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path):
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    (trace_dir / "codex_reverse_solve.jsonl").write_text(
+        json.dumps({"type": "agent_message", "message": "legacy"}) + "\n",
+        encoding="utf-8",
+    )
+    records = [
+        {"type": "numoj_control", "version": 1, "id": "s1", "status": "accepted"},
+        {
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {
+                "kind": "thinking",
+                "title": "思考片段",
+                "text": "先检查边界",
+                "meta": "codex",
+            },
+        },
+        {
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {
+                "kind": "assistant",
+                "text": "已经完成",
+                "meta": "codex",
+            },
+        },
+        {
+            "type": "numoj_usage",
+            "version": 1,
+            "source": "codex",
+            "id": "turn-1",
+            "usage": {
+                "input_uncached_tokens": 90,
+                "input_cached_tokens": 10,
+                "input_cache_write_tokens": 0,
+                "output_tokens": 20,
+                "reasoning_output_tokens": 5,
+            },
+        },
+    ]
+    (trace_dir / agent_traces.CANONICAL_AGENT_TRACE_FILENAME).write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
+        encoding="utf-8",
+    )
+
+    messages = collect_agent_trace_messages(trace_dir)
+    usage = collect_agent_token_usage(trace_dir)
+
+    assert [(item["kind"], item["text"]) for item in messages] == [
+        ("thinking", "先检查边界"),
+        ("assistant", "已经完成"),
+    ]
+    assert usage == {
+        "request_count": 1,
+        "input_uncached_tokens": 90,
+        "input_cached_tokens": 10,
+        "input_cache_write_tokens": 0,
+        "input_total_tokens": 100,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 5,
+        "source": "codex",
+        "incremental": True,
+    }
+
+
+def test_canonical_reader_keeps_oversized_final_assistant_record(tmp_path):
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    # 控制字符会被 JSON 转义为 6 bytes，覆盖 producer 最大 assistant
+    # 字符预算接近规范单记录上限、后面仍跟随 usage 的尾读边界。
+    oversized_text = "最终回复：" + "\x01" * (2 * 1024 * 1024 + 257)
+    record = {
+        "type": "numoj_trace",
+        "version": 1,
+        "event": {
+            "kind": "assistant",
+            "text": oversized_text,
+            "meta": "codex",
+        },
+    }
+    trailing_usage = {
+        "type": "numoj_usage",
+        "version": 1,
+        "source": "codex",
+        "id": "usage-after-large-assistant",
+        "usage": {
+            "input_uncached_tokens": 1,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 1,
+            "reasoning_output_tokens": 0,
+            "padding": "u" * (512 * 1024),
+        },
+    }
+    (trace_dir / agent_traces.CANONICAL_AGENT_TRACE_FILENAME).write_text(
+        (
+            json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            + "\n"
+            + json.dumps(
+                trailing_usage,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ),
+        encoding="utf-8",
+    )
+
+    messages = collect_agent_trace_messages(trace_dir)
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "assistant"
+    assert messages[0]["text"].startswith("最终回复：")
+    assert messages[0]["text"].endswith("…")
+
+
+def test_canonical_reader_deduplicates_native_trace_and_usage_ids(tmp_path):
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    records = [
+        {
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {
+                "id": "assistant-1:text:0",
+                "kind": "assistant",
+                "text": "只展示一次",
+            },
+        },
+        {
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {
+                "id": "assistant-1:text:0",
+                "kind": "assistant",
+                "text": "只展示一次",
+            },
+        },
+        *[
+            {
+                "type": "numoj_usage",
+                "version": 1,
+                "source": "claude_code",
+                "id": record_id,
+                "usage": {
+                    "input_uncached_tokens": input_tokens,
+                    "input_cached_tokens": 0,
+                    "input_cache_write_tokens": 0,
+                    "output_tokens": output_tokens,
+                    "reasoning_output_tokens": 0,
+                },
+            }
+            for record_id, input_tokens, output_tokens in (
+                ("assistant-1", 10, 3),
+                ("assistant-2", 20, 5),
+                ("assistant-1", 10, 3),
+            )
+        ],
+    ]
+    (trace_dir / agent_traces.CANONICAL_AGENT_TRACE_FILENAME).write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
+        encoding="utf-8",
+    )
+
+    messages = collect_agent_trace_messages(trace_dir)
+    usage = collect_agent_token_usage(trace_dir)
+
+    assert [item["text"] for item in messages] == ["只展示一次"]
+    assert usage["request_count"] == 2
+    assert usage["input_total_tokens"] == 30
+    assert usage["output_tokens"] == 8
+
+
+def test_canonical_journal_keeps_early_usage_after_large_stdout_and_redacts(
+    tmp_path,
+):
+    source = tmp_path / "canonical.tmp"
+    secret = "temporary-secret"
+    observer = runtime._CanonicalJournalObserver(source, secrets=(secret,))
+    observer.feed(
+        (
+            json.dumps({
+                "type": "numoj_usage",
+                "version": 1,
+                "source": "pi",
+                "id": "early-request",
+                "usage": {
+                    "input_uncached_tokens": 11,
+                    "input_cached_tokens": 2,
+                    "input_cache_write_tokens": 0,
+                    "output_tokens": 3,
+                    "reasoning_output_tokens": 0,
+                },
+            })
+            + "\n"
+        ).encode("utf-8")
+    )
+    # 旧 stdout mirror 超过 8 MiB 后会裁掉头部；规范 observer 只追加
+    # NumOJ 事件，因此大量非协议输出不会删除已经记录的 usage。
+    observer.feed(b"x" * (runtime._STDOUT_MIRROR_LIMIT_BYTES + 1))
+    observer.feed(
+        b"\n"
+        + (
+            json.dumps({
+                "type": "numoj_control",
+                "version": 1,
+                "id": "not-in-trace",
+                "status": "accepted",
+            })
+            + "\n"
+            + json.dumps({
+                "type": "numoj_trace",
+                "version": 1,
+                "event": {
+                    "kind": "assistant",
+                    "text": f"done {secret}",
+                },
+            })
+            + "\n"
+        ).encode("utf-8")
+    )
+    observer.close()
+
+    trace_dir = tmp_path / "trace"
+    assert agent_traces.sync_agent_trace(
+        "container",
+        trace_dir,
+        "pi",
+        source,
+        canonical=True,
+    ) is True
+
+    rendered = (
+        trace_dir / agent_traces.CANONICAL_AGENT_TRACE_FILENAME
+    ).read_text(encoding="utf-8")
+    assert "not-in-trace" not in rendered
+    assert secret not in rendered
+    assert "[REDACTED]" in rendered
+    assert collect_agent_token_usage(trace_dir)["input_total_tokens"] == 13
+
+
+def test_canonical_journal_capacity_keeps_final_assistant_and_usage(tmp_path):
+    source = tmp_path / "canonical.tmp"
+    observer = runtime._CanonicalJournalObserver(source, max_bytes=4096)
+    for index in range(8):
+        observer.feed((json.dumps({
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {
+                "id": f"tool-{index}:result",
+                "kind": "tool_result",
+                "text": "x" * 900,
+            },
+        }) + "\n").encode("utf-8"))
+    observer.feed((json.dumps({
+        "type": "numoj_trace",
+        "version": 1,
+        "event": {
+            "id": "assistant-final",
+            "kind": "assistant",
+            "text": "最终交付",
+        },
+    }, ensure_ascii=False) + "\n").encode("utf-8"))
+    observer.feed((json.dumps({
+        "type": "numoj_usage",
+        "version": 1,
+        "source": "codex",
+        "id": "usage-final",
+        "usage": {
+            "input_uncached_tokens": 3,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 2,
+            "reasoning_output_tokens": 0,
+        },
+    }) + "\n").encode("utf-8"))
+    observer.close()
+
+    records = [
+        json.loads(line)
+        for line in source.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(
+        item.get("type") == "numoj_trace"
+        and item.get("event", {}).get("id") == "assistant-final"
+        for item in records
+    )
+    assert any(
+        item.get("type") == "numoj_usage"
+        and item.get("id") == "usage-final"
+        for item in records
+    )
+    assert source.stat().st_size <= 4096
 
 
 def test_bounded_runner_propagates_quota_failure_and_kills_docker_exec(
