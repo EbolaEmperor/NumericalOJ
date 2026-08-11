@@ -193,18 +193,40 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 生产发布由运维人员先在目标 checkout 执行 `git pull --ff-only`，再运行根目录的 `bash deploy.sh`。脚本不拉取代码，也不校验主机名、用户名、固定目录或 Git 状态；调用方负责确认当前版本。其原地部署顺序为：
 
 1. 取得覆盖主机共享 Supervisor、Docker 和备份状态的主机级锁。引导解释器必须是 Python 3.12；在安装依赖、构建镜像或连接数据库前，fail-closed 校验生产 `.env` 的加载状态、属主、文件类型、权限与必填配置。
-2. 在停服前核验 clangd 实际主版本至少为 17，并核验 `bwrap --version`。若没有合格 clangd，只允许在 Debian 上先模拟再通过 APT 安装版本化 `clangd-19` 仓库 candidate 的精确版本；不得替换或升级既有的旧版无后缀 `clangd`。应用运行时按 `clangd-20`、`clangd-19`、`clangd-18`、`clangd-17` 的顺序选择版本化可执行文件，最后才回退到版本合格的无后缀 `clangd`。模拟必须拒绝卸载、升级或降级既有依赖，以及 MySQL、Docker、Python 等宿主关键包的变更，安装后核验 dpkg 版本和 `clangd-19` 可执行文件。clangd 与 BasedPyright 必须在禁网、只读运行时加可写临时工作区的 Bubblewrap 沙箱内运行；缺少沙箱时失败关闭。随后重建非活动 venv，并准备 ARC-AGI-3 公开集和普通判题、Agent-as-Judge 候选镜像。普通判题候选镜像是官方 C/C++ 库集合的唯一事实源：部署必须分别读取镜像内 gcc/g++ 的真实 include search，把 `/usr/include`、GCC internal include、`/opt/mkl/include` 与 `/opt/library` 等头文件安全导出到 `.deploy/editor-toolchains/` 的非活动槽，解引用镜像内软链并拒绝导出结果中的软链、特殊文件、路径逃逸或异常体积；clangd 对 C/C++ 都禁用宿主默认 include search，只显式读取该槽位，再对 STL、Eigen、CBLAS、LAPACKE 与 MKL 做真实语义自检，同时核验 BasedPyright 与 Tree-sitter MATLAB。完整候选环境准备成功后才允许继续。ARC-AGI-3 已有缓存须逐文件校验哈希后直接复用；首次安装才从 ARC Prize 官方 API 下载，下载过程显示进度，初始化全部环境并生成预览。镜像构建输入未变化时可以复用稳定镜像；发生变化时必须证明本地稳定镜像和关键构建缓存可用，否则在停服前退出。具体指纹、缓存条件和基础镜像由 `deploy.sh`、Dockerfile 与契约测试维护，不在手册复制。
+2. 在停服前核验 clangd 实际主版本至少为 17，并核验 `bwrap --version`。若没有合格 clangd，只允许在 Debian 上先模拟再通过 APT 安装版本化 `clangd-19` 仓库 candidate 的精确版本；不得替换或升级既有的旧版无后缀 `clangd`。应用运行时按 `clangd-20`、`clangd-19`、`clangd-18`、`clangd-17` 的顺序选择版本化可执行文件，最后才回退到版本合格的无后缀 `clangd`。模拟必须拒绝卸载、升级或降级既有依赖，以及 MySQL、Docker、Python 等宿主关键包的变更，安装后核验 dpkg 版本和 `clangd-19` 可执行文件。clangd 与 BasedPyright 必须在禁网、只读运行时加可写临时工作区的 Bubblewrap 沙箱内运行；缺少沙箱时失败关闭。随后重建非活动 venv，并准备 ARC-AGI-3 公开集、VibeHub 受信基础候选镜像和普通判题、Agent-as-Judge 候选镜像。每次部署都必须访问 ARC Prize 官方匿名目录，校验恰好 25 个唯一游戏 ID，并把 25 份元数据和源码全部下载到 staging 后逐文件计算 SHA-256 与集合指纹；网络、鉴权、格式、数量或任一下载异常均失败关闭。只有新下载集合的完整内容指纹与逐文件复核通过的本地缓存一致时才能复用，否则原子发布并冻结新的完整集合；部署宿主不得导入或执行下载的 Python。VibeHub 基础镜像只构建到带 run-id 的候选标签并成功 `inspect`，停服前不得覆盖 stable。普通判题候选镜像是官方 C/C++ 库集合的唯一事实源：部署必须分别读取镜像内 gcc/g++ 的真实 include search，把 `/usr/include`、GCC internal include、`/opt/mkl/include` 与 `/opt/library` 等头文件安全导出到 `.deploy/editor-toolchains/` 的非活动槽，解引用镜像内软链并拒绝导出结果中的软链、特殊文件、路径逃逸或异常体积；clangd 对 C/C++ 都禁用宿主默认 include search，只显式读取该槽位，再对 STL、Eigen、CBLAS、LAPACKE 与 MKL 做真实语义自检，同时核验 BasedPyright 与 Tree-sitter MATLAB。完整候选环境准备成功后才允许继续。判题镜像构建输入未变化时可以复用稳定镜像；发生变化时必须证明本地稳定镜像和关键构建缓存可用，否则在停服前退出。具体指纹、缓存条件和基础镜像由 `deploy.sh`、Dockerfile 与契约测试维护，不在手册复制。
 3. 以 MySQL 服务端查询结果生成唯一备份计划，兼容矩阵只在 `deploy/backup/policy.py` 维护。兼容的本机 Oracle MySQL/Percona Server 使用固定版本 XtraBackup；无兼容映射时使用逻辑备份。XtraBackup 缺失或版本不匹配时，先通过交互式 `sudo` 与 Debian APT 供应固定版本；APT 动作必须先模拟、限制在审核后的包集合内，并拒绝连带改动 MySQL、Docker 等宿主关键服务。供应阶段的 sudo、APT、仓库、dpkg 或二进制校验失败可以把计划确定为逻辑备份。一旦供应成功，物理 plan 的 MySQL 身份、socket/datadir、本地 socket 认证、容量或后续执行条件验证失败都必须直接停止；计划冻结后不得因备份或 prepare 失败临时换策略。MySQL 认证复用严格加载的部署配置，并通过位于私有 plans 目录、权限 `0600` 的短期 option file 交给提权后的客户端；凭据值不得进入 plan、manifest、argv、环境或输出，option file 无论成功失败都必须删除。sudo 交互认证与凭据保活必须在停服前完成，停服后只能使用 `sudo -n`，凭据失效立即停止。
 4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
 5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
-6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，然后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行带独立前置检查的显式迁移和一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；先判断迁移、结构同步或其他写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
-7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功并执行留存清理。日志采集异常必须告警，但不能阻断健康的业务服务。
+6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，记录部署前 VibeHub stable 镜像 ID，再把已核验候选镜像切为 stable；之后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，把 Git 跟踪的两个内置规范包同步到 `uploads/vibehub` 的新不可变 release 并原子切换指针。此时必须保留上一代 release。随后执行带独立前置检查的显式迁移和一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换判题生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API，官方 Python 只会在隔离的 VibeHub 容器中执行。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；退出清理会恢复部署前的 VibeHub stable 标签，但数据库、运行环境或其它镜像仍须先判断写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
+7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功；标记成功之后才尝试清理旧 VibeHub 内置 release、历史备份，以及带 VibeHub 专用受管 label 的 dangling 旧版本镜像层。带稳定 latest/public/review tag 或仍被运行容器引用的镜像不会被 prune。任一清理失败只告警并保留旧产物供人工检查。日志采集异常必须告警，但不能阻断健康的业务服务。
 
-`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。脚本还会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
+`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。它还只管理 `uploads/vibehub/circle-cat/builtin` 与 `uploads/vibehub/arc-agi-3/builtin` 两个固定内置命名空间；不得触碰社区作品或用户版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
+
+VibeHub 候选基础镜像在停服前完成静态供应链核验：只读证明生产专属 Buildx builder 是
+`docker-container` driver、全部节点为 running，且逐节点容器使用 `NetworkMode=none`；再将
+`docker image save` 产物交给不提取路径、不导入模块、不运行镜像内容的转换器，逐一校验
+archive 路径、config ID、layer diff-id、blob 大小与 SHA-256，并原子发布到
+`.deploy/vibehub-base-oci/releases/<engine-id>/`。停服前不得切换 `current`，也不得以临时
+Dockerfile、候选容器或动态 probe 破坏生产禁测边界。回滚点成功且全部应用写入者停止后，
+stable tag 与 `.deploy/vibehub-base-oci/current` 才一起切到同一 engine ID；后续失败时退出
+清理同时恢复二者。部署成功后清理更旧 release，但始终保留 current 和上一代回滚现场。
+
+社区 VibeHub 作品及版本快照位于 Git 忽略的 `uploads/vibehub/`。数据库回滚点不会自动包含
+这些文件；运维必须用同一零写入窗口为该目录制作独立、可验证的快照，并把文件快照与数据库
+备份的 run-id 绑定。恢复时必须成对恢复，不能把新数据库与旧作品树（或反之）混用。
+每个 Web worker 会幂等启动存储 GC daemon，启动后立即扫描，之后默认每 15 分钟运行。
+每轮先取得全局 `storage_mutation_lock`，再以 `FOR UPDATE` 锁定全部社区容器作品与版本
+live-set，最后调用存储层的 inode 绑定退役快照回收和上传 staging 回收；数据库事务
+只用于保持该事实快照，通过 rollback 释放行锁，不会写入业务数据。超过 1 小时的 marker
+与受管 staging 因此会在没有后续用户写入时最终回收。同一轮还审计整个受管根，对
+install-before-commit 崩溃留下的 DB 未知 `vN`、clone 和无 DB 社区项目写入根级
+`.orphan-gc` marker，一小时后仍为同一 device/inode 才回收；同路径被新 inode 替换时必须
+重新开始宽限。内置作品、控制锁和 `.staging` 不进入项目孤儿删除面。任一轮完整性审计、DB 或文件系统
+操作失败都只告警并等待下一周期，不得终止 Web，也不得降级为未审计删除。
 
 部署专用 Python 辅助实现统一维护在 `deploy/`；日志、结构同步和停机恢复继续复用 `scripts/` 中的通用运维入口。`deploy.sh` 只做 Shell 流程编排，不允许 heredoc Python 或 `python -c`。数据库备份实现按兼容策略、APT、物理执行、路径安全、特权操作和状态编排分层；稳定入口是 `deploy/backup_database.py`，服务端兼容判断不得在 `policy.py` 之外复制。
 
-`.deploy/venvs/` 只使用两个轮换槽。数据库备份按物理产物、逻辑产物、计划与 manifest 分区；留存使用持久化单调 generation，而不是可能回拨的墙上时间，并始终保护本次 run。只有 Web/Celery 恢复且真实产物再次验证成功后，才保留最近 2 个成功部署回滚点；`pending`、`failed`、未知或旧格式产物永不自动删除。停服前失败可能留下候选 venv/镜像、日志目录、APT 或备份目录状态，但现有 Web/Celery 不会被停止；停服后失败则保持服务停止和现场。任何失败都不得触发机械回灌，应先判断 DDL 是否已提交，再选择向前修复或人工恢复。
+`.deploy/venvs/` 只使用两个轮换槽。数据库备份按物理产物、逻辑产物、计划与 manifest 分区；留存使用持久化单调 generation，而不是可能回拨的墙上时间，并始终保护本次 run。只有 Web/Celery 恢复且真实产物再次验证成功后，才保留最近 2 个成功部署回滚点并清理 VibeHub 旧内置 release；`pending`、`failed`、未知或旧格式产物永不自动删除。停服前失败可能留下候选 venv/镜像、日志目录、APT 或备份目录状态，但现有 Web/Celery 不会被停止；停服后失败则恢复部署前的 VibeHub stable 镜像标签，保留新旧内置 release，并让服务停止、现场留存。任何失败都不得触发机械回灌，应先判断 DDL 是否已提交，再选择向前修复或人工恢复。
 
 逻辑产物、计划和 manifest 只能由部署用户读取，物理产物只能由 root 读取。备份路径出现符号链接、属主、设备或 inode 漂移时必须 fail-closed；任何特权清理只能作用于身份已重新绑定并验证的受管备份根，禁止退化为对字符串路径直接执行 `sudo rm`。
 

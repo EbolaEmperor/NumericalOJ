@@ -1,0 +1,67 @@
+{% macro project_card(project, index=0, compact=false) -%}
+{% set status = project.review_status|default('approved', true) %}
+{% set cover_kind = project.cover_kind|default('code', true) %}
+<article
+  class="vibe-card vibe-card--{{ cover_kind }}{% if project.is_featured %} vibe-card--featured{% endif %}{% if compact %} vibe-card--compact{% endif %}"
+  data-vibe-card
+  data-vibe-title="{{ project.title }}"
+  data-vibe-author="{{ project.owner_username|default('Numerical OJ', true) }}"
+  data-vibe-tags="{{ project.tags|default([], true)|join(' ') }}"
+  data-vibe-kind="{{ project.project_kind|default('container', true) }}"
+  data-vibe-featured="{{ 'true' if project.is_featured else 'false' }}"
+  style="--vibe-order: {{ index }}"
+>
+  <a class="vibe-card-cover" href="{{ url_for('vibehub.detail', slug=project.slug) }}" aria-label="查看 {{ project.title }}">
+    {% if project.cover_url %}
+    <img src="{{ project.cover_url }}" alt="{{ project.title }} 封面" loading="lazy" data-vibe-cover-image>
+    {% else %}
+    <span class="vibe-cover-art" aria-hidden="true">
+      {% if cover_kind == 'cat' %}
+      <span class="vibe-cat-board">
+        {% for cell in range(19) %}<i class="{% if cell in (4, 6, 10, 15) %}is-wall{% elif cell == 9 %}is-cat{% endif %}"></i>{% endfor %}
+      </span>
+      {% elif cover_kind == 'arc' %}
+      <span class="vibe-arc-board">
+        {% for cell in range(36) %}<i class="arc-cell-{{ (cell * 7 + cell // 6) % 5 }}"></i>{% endfor %}
+      </span>
+      {% else %}
+      <span class="vibe-code-window">
+        <i></i><i></i><i></i><b></b><b></b><b></b>
+      </span>
+      {% endif %}
+    </span>
+    {% endif %}
+    <span class="vibe-card-index">{{ "%02d"|format(index + 1) }}</span>
+    {% if project.is_featured %}
+    <span class="vibe-featured-ribbon"><i class="fas fa-sparkles" aria-hidden="true"></i> 精品</span>
+    {% endif %}
+    <span class="vibe-card-play" aria-hidden="true"><i class="fas fa-arrow-up-right-from-square"></i></span>
+  </a>
+
+  <div class="vibe-card-body">
+    <div class="vibe-card-meta">
+      <span class="vibe-version">PUBLIC · v{{ project.public_version|default('1', true) }}</span>
+      {% if status in ('pending', 'pending_review') %}
+      <span class="vibe-status vibe-status--pending">审核中</span>
+      {% elif status == 'rejected' %}
+      <span class="vibe-status vibe-status--rejected">待修改</span>
+      {% elif status == 'draft' %}
+      <span class="vibe-status vibe-status--draft">草稿</span>
+      {% else %}
+      <span class="vibe-status vibe-status--published">已公开</span>
+      {% endif %}
+    </div>
+    <h2><a href="{{ url_for('vibehub.detail', slug=project.slug) }}">{{ project.title }}</a></h2>
+    <p>{{ project.summary|default('一个等待你进入体验的 Vibe Coding 作品。', true) }}</p>
+    <footer class="vibe-card-footer">
+      <span class="vibe-author">
+        <i aria-hidden="true">{{ (project.owner_username|default('N', true))[:1]|upper }}</i>
+        {{ project.owner_username|default('Numerical OJ', true) }}
+      </span>
+      <span class="vibe-card-tags">
+        {% for tag in project.tags|default([], true) %}<b>#{{ tag }}</b>{% endfor %}
+      </span>
+    </footer>
+  </div>
+</article>
+{%- endmacro %}

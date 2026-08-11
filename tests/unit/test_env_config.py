@@ -295,6 +295,21 @@ def test_invalid_env_fails_closed_without_echoing_values(
     assert secret_fragment not in result.stderr
 
 
+@pytest.mark.parametrize("interval", ("59", "86401"))
+def test_vibehub_storage_gc_interval_fails_closed_outside_range(
+    tmp_path,
+    interval,
+):
+    result = _run_config_import(
+        tmp_path,
+        process_overrides={"VIBEHUB_STORAGE_GC_INTERVAL_SECONDS": interval},
+    )
+
+    assert result.returncode != 0
+    assert "VIBEHUB_STORAGE_GC_INTERVAL_SECONDS" in result.stderr
+    assert "60–86400" in result.stderr
+
+
 def test_legacy_config_local_is_not_executed(tmp_path):
     result = _run_config_import(
         tmp_path,

@@ -109,7 +109,6 @@ def test_mathjax_is_an_explicit_page_level_capability():
 
     non_consumers = {
         "auth/login.html",
-        "games/circle_cat.html",
         "submissions/all.html",
     }
     for name in non_consumers:

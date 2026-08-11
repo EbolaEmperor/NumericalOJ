@@ -1795,4 +1795,80 @@ CREATE TABLE `circle_cat_games` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
+--
+-- Table structure for table `vibehub_projects`
+--
+
+DROP TABLE IF EXISTS `vibehub_projects`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `vibehub_projects` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `slug` varchar(63) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `owner_id` int NOT NULL,
+  `project_kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'container',
+  `latest_version_id` bigint unsigned DEFAULT NULL,
+  `public_version_id` bigint unsigned DEFAULT NULL,
+  `review_version_id` bigint unsigned DEFAULT NULL,
+  `last_reviewed_version_id` bigint unsigned DEFAULT NULL,
+  `featured_status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'none',
+  `is_featured` tinyint(1) NOT NULL DEFAULT '0',
+  `featured_requested_at` datetime DEFAULT NULL,
+  `featured_reviewed_at` datetime DEFAULT NULL,
+  `featured_reviewed_by_user_id` int DEFAULT NULL,
+  `featured_review_note` text,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_vibehub_projects_slug` (`slug`),
+  KEY `idx_vibehub_projects_owner_updated` (`owner_id`,`updated_at`),
+  KEY `idx_vibehub_projects_public_featured` (`public_version_id`,`is_featured`,`updated_at`),
+  KEY `idx_vibehub_projects_review` (`review_version_id`),
+  KEY `idx_vibehub_projects_last_reviewed` (`last_reviewed_version_id`),
+  KEY `idx_vibehub_projects_featured_review` (`featured_status`,`featured_requested_at`),
+  CONSTRAINT `fk_vibehub_projects_owner` FOREIGN KEY (`owner_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_vibehub_projects_featured_reviewer` FOREIGN KEY (`featured_reviewed_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_vibehub_projects_kind` CHECK (`project_kind` IN ('container')),
+  CONSTRAINT `chk_vibehub_projects_featured_status` CHECK (`featured_status` IN ('none','pending','approved','rejected'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `vibehub_versions`
+--
+
+DROP TABLE IF EXISTS `vibehub_versions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `vibehub_versions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `project_id` bigint unsigned NOT NULL,
+  `version_number` int unsigned NOT NULL,
+  `created_by_user_id` int NOT NULL,
+  `title` varchar(120) NOT NULL,
+  `summary` varchar(500) NOT NULL DEFAULT '',
+  `description` mediumtext,
+  `tags_json` text NOT NULL,
+  `cover_image` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
+  `package_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `package_size` bigint unsigned NOT NULL,
+  `manifest_json` text NOT NULL,
+  `review_status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'draft',
+  `review_requested_at` datetime DEFAULT NULL,
+  `reviewed_at` datetime DEFAULT NULL,
+  `reviewed_by_user_id` int DEFAULT NULL,
+  `review_note` text,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_vibehub_versions_project_number` (`project_id`,`version_number`),
+  KEY `idx_vibehub_versions_review` (`review_status`,`review_requested_at`),
+  KEY `idx_vibehub_versions_creator` (`created_by_user_id`,`created_at`),
+  CONSTRAINT `fk_vibehub_versions_project` FOREIGN KEY (`project_id`) REFERENCES `vibehub_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_vibehub_versions_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT,
+  CONSTRAINT `fk_vibehub_versions_reviewer` FOREIGN KEY (`reviewed_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_vibehub_versions_number` CHECK (`version_number` > 0),
+  CONSTRAINT `chk_vibehub_versions_review_status` CHECK (`review_status` IN ('draft','pending','approved','rejected'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
 -- Dump completed on 2025-08-20 11:12:51

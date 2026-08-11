@@ -131,6 +131,70 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `JUDGER_NUMERIC_BACKEND` | string/空 | 空 |
 | `JUDGER_ENABLE_MKL` | bool/空 | 空 |
 
+## VibeHub 离线作品容器
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `VIBEHUB_RUNTIME_ROOT` | string | `tmp/vibehub_runtime` | 权限为 0700 的跨 worker 状态与锁目录；不会挂入作品容器。 |
+| `VIBEHUB_ALLOWED_BASE_IMAGES` | string[] | `["numericaloj-vibehub-runtime:1"]` | 唯一允许出现在用户 Dockerfile 外部 `FROM` 中、且必须已在本机预置的镜像。 |
+| `VIBEHUB_OCI_RUNTIME` | string/空 | 空 | 开发环境可为空；`NUMOJ_ENVIRONMENT=production` 时强制为 `runsc`。 |
+| `VIBEHUB_BUILD_BUILDER` | string/空 | 空 | 开发环境为空时兼容本机 builder；生产必须是预置的 VibeHub 专属 Buildx builder 名称。 |
+| `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | `false` | 设为 `true` 时拒绝空 builder；生产强制为 `true`。 |
+| `VIBEHUB_BUILD_CACHE_MAX_BYTES` | int | `4294967296` | 专属 builder 的最大保留缓存，严格范围 256 MiB–100 GiB；构建后仅对该 builder 执行按量 prune。 |
+| `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
+| `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |
+| `VIBEHUB_REAPER_INTERVAL_SECONDS` | float | `15` | 后台过期回收间隔，必须小于 lease TTL。 |
+| `VIBEHUB_STORAGE_GC_INTERVAL_SECONDS` | float | `900` | 退役版本快照与过期上传暂存的后台回收周期，范围 60–86400 秒；Web worker 启动后会先立即执行一轮。 |
+| `VIBEHUB_REQUEST_TIMEOUT_SECONDS` | float | `15` | relay HTTP 端到端单请求总时限，范围 0.1–120 秒。 |
+| `VIBEHUB_REQUEST_MAX_BYTES` | int | `16777216` | 单请求体上限；硬上限 64 MiB。 |
+| `VIBEHUB_RESPONSE_MAX_BYTES` | int | `16777216` | 单响应体上限；硬上限 64 MiB。 |
+| `VIBEHUB_PROXY_TRANSPORT` | string | `docker-exec` | 只允许有界 `docker exec` relay；`auto` 是兼容别名，`host-uds` 被拒绝。 |
+| `VIBEHUB_BUILD_TIMEOUT_SECONDS` | float | `480` | 单次离线镜像构建时限，范围 1–540 秒；硬上限低于 Gunicorn 的 600 秒请求超时。 |
+| `VIBEHUB_BUILD_SLOT_TIMEOUT_SECONDS` | float | `5` | 等待宿主唯一构建槽的最长时间；范围 0–120 秒，超时返回 429。 |
+| `VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS` | float | `0.25` | 等待宿主 8 个代理槽之一的最长时间；范围 0–10 秒，超时返回 429。 |
+| `VIBEHUB_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS` | float | `0.1` | 等待宿主 4 个独立健康探测槽之一的最长时间；范围 0–5 秒，超时返回 429 且不延长 lease。 |
+| `VIBEHUB_MAX_ACTIVE_RUNTIMES` | int | `8` | 单台宿主同时运行的作品容器总上限，范围 1–64；容量满时新作品返回 429，已有同版本容器仍可共享。 |
+| `VIBEHUB_STORAGE_MUTATION_SLOTS` | int | `2` | 全宿主同时处理 VibeHub 持久变更的上限，严格范围 1–8；同一槽覆盖 DB 预检、multipart spool 和全局存储锁等待，跨 gthread/worker 共享。 |
+| `VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS` | float | `0.1` | 持久变更槽等待上限，范围 0–1 秒；容量满时快速返回 429 和 `Retry-After`。 |
+
+VibeHub 用户镜像通过 `--network none` 离线构建，运行时不发布端口，也不挂载任何宿主
+可写目录。`/run/vibehub` 是容器内 16 MiB 有界 tmpfs，宿主只通过受信基础镜像内的有界
+`docker exec` relay 访问 `app.sock`。根文件系统只读，普通作品限制为 20 GiB 完整镜像、
+4 GiB 内存和 2 CPU；精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
+跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
+TTL 回收旧容器。每个作品的 latest、public、review 通道分别使用稳定的受管镜像 tag，内容
+变化由 source digest 触发重建，旧运行容器继续绑定原 image ID；最后一个玩家离开并完成
+容器回收后，运行器会在同 tag 锁下确认没有其它 starting/ready 实例引用相同 image ID，随后
+精确删除该稳定 tag 并只 prune 带 VibeHub label 的 dangling image。运行容器使用 Docker `none`
+日志驱动，不会把不可信作品的 stdout/stderr 持久写入宿主日志；平台只记录受控的生命周期
+与代理元数据。运行容器总上限、构建槽、代理槽和健康探测槽都通过 runtime root 中的 `flock` 与
+原子 state 跨 worker 共享，不会因增加 Web worker 而成倍放大宿主资源占用。
+创建、上传、元数据编辑、发布申请和管理员发布审核共用同一组私有
+`flock` 持久变更槽。创建、上传和元数据编辑会在槽内先做作者或数量预检，再解析
+multipart/form 请求体；发布申请不需要请求体，管理员审核则在进入槽和解析决定前先验证
+管理员身份。所有路径最终都在业务事务中重新锁定并校验作者、状态与配额。
+存储 GC 始终按“全局 `storage_mutation_lock` → 数据库作品/版本
+`FOR UPDATE` live-set → 存储层 inode 绑定回收”的顺序执行。超过 1 小时的退役
+marker 不再依赖作者后续写入才删除；同一轮还会回收超过 1 小时的受管上传
+staging。安装快照后、DB commit 前崩溃所留的未提交 `vN`、clone 或完全无 DB 行的
+社区项目也会先写入根级严格 marker；只有同一 device/inode 连续超过 1 小时才会删除，
+内置作品、锁和上传 staging 均不会被当成项目孤儿。启动在单进程内幂等，生产保持
+单 worker；单轮 DB 或存储异常只记录日志并在
+下一周期重试，不会终止 Web 服务。
+作品能写入的 `/tmp` 与 `/run/vibehub` 都是内存与容器资源限制内的有界 tmpfs，不存在可借
+Unix socket 目录消耗宿主文件系统的 bind 窗口。生产构建只接受全部 node 都为 running、
+`docker-container` driver 且 builder 容器 `HostConfig.NetworkMode=none` 的专属 builder；已核验的
+daemon base image 通过本地受管 OCI layout named context 注入，不能访问 registry。构建成功后只
+清理受管 dangling image 和该专属 builder 的缓存，绝不执行全局 `docker builder prune`。
+生产 `deploy.sh` 会在停服前只读核验 builder 的 driver、全部节点状态及其容器
+`NetworkMode=none`，再把候选 daemon image 通过 `docker image save` 流式转换为标准 OCI
+layout；转换器不解包路径、不导入模块、不运行镜像内容，并复核 config ID、每层 diff-id、全部
+blob 的 SHA-256 与大小。候选 release 此时不会出现在 `current` 下；数据库回滚点成功后才与
+stable tag 一起切换 `current`，失败时两者一并恢复，成功后保留 current 和上一代 release。
+部署流程遵守生产禁测规则，不运行临时 Dockerfile、构建 probe 或候选容器；首次真实作品构建
+仍会重新核验同一 builder 与 OCI metadata，并在任何能力或完整性不匹配时失败关闭。
+完整作品接口见 `docs/vibehub-developer-guide.md`。
+
 Agent-as-Judge 高级通信和压缩包边界：
 
 | 配置项 | 类型 | 默认值 |

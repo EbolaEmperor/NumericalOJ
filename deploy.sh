@@ -11,6 +11,7 @@ CURRENT_EDITOR_TOOLCHAIN="$STATE_DIR/current-editor-toolchain"
 BACKUP_DIR="$STATE_DIR/backups"
 ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"
 ARC_CURRENT_SET="$ARC_DATA_ROOT/current"
+VIBEHUB_BASE_OCI_LAYOUT_ROOT="$STATE_DIR/vibehub-base-oci"
 LOCK_FILE='/tmp/noj_deploy.lock'
 WEB_CONFIG="$ROOT_DIR/deploy/supervisor/web.conf"
 CELERY_CONFIG="$ROOT_DIR/deploy/supervisor/celery.conf"
@@ -28,15 +29,25 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 DOCKER_BUILDER="${NUMOJ_DOCKER_BUILDER:-default}"
 JUDGER_STABLE='numericaloj-judger:latest'
 AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'
+VIBEHUB_RUNTIME_STABLE='numericaloj-vibehub-runtime:1'
 JUDGER_CANDIDATE="numericaloj-judger:deploy-$RUN_ID"
 AGENT_JUDGE_CANDIDATE="numericaloj-agent-judge:deploy-$RUN_ID"
+VIBEHUB_RUNTIME_CANDIDATE="numericaloj-vibehub-runtime:deploy-$RUN_ID"
 MANAGED_IMAGE_LABEL='org.numericaloj.deploy-managed=true'
+VIBEHUB_MANAGED_IMAGE_LABEL='com.numericaloj.vibehub.image=1'
 SOURCE_IMAGE_LABEL='org.numericaloj.source-sha256'
 phase='初始化'
 database_backup=''
 backup_plan="$BACKUP_DIR/plans/$RUN_ID.json"
 backup_manifest="$BACKUP_DIR/manifests/$RUN_ID.manifest.json"
 restart_started=0
+vibehub_runtime_previous_id=''
+vibehub_runtime_candidate_id=''
+vibehub_runtime_tag_switched=0
+vibehub_oci_previous_target=''
+vibehub_oci_candidate_release=''
+vibehub_oci_candidate_target=''
+vibehub_oci_current_switch_attempted=0
 sudo_keepalive_pid=''
 SUDO_KEEPALIVE_STOP="$STATE_DIR/.sudo-keepalive-$RUN_ID.stop"
 CURRENT_VENV_TEMP="$STATE_DIR/.current-venv-$RUN_ID"
@@ -147,7 +158,28 @@ cleanup() {
     "$CANDIDATE_SUPERVISORCTL" -c "$WEB_CONFIG" shutdown >/dev/null 2>&1 || true
     "$CANDIDATE_SUPERVISORCTL" -c "$CELERY_CONFIG" shutdown >/dev/null 2>&1 || true
   fi
+  if [[ "$exit_code" -ne 0 \
+      && "$vibehub_oci_current_switch_attempted" -eq 1 \
+      && -x "${BOOTSTRAP_PYTHON:-}" ]]; then
+    if ! "$BOOTSTRAP_PYTHON" -B deploy/vibehub_base_oci.py restore-current \
+        --output-root "$VIBEHUB_BASE_OCI_LAYOUT_ROOT" \
+        --candidate-current "$vibehub_oci_candidate_target" \
+        --previous-current "$vibehub_oci_previous_target"; then
+      printf '警告：无法恢复部署前 VibeHub OCI current 指针。\n' >&2
+    fi
+  fi
+  if [[ "$exit_code" -ne 0 && "$vibehub_runtime_tag_switched" -eq 1 ]]; then
+    if [[ -n "$vibehub_runtime_previous_id" ]]; then
+      if ! docker tag "$vibehub_runtime_previous_id" "$VIBEHUB_RUNTIME_STABLE"; then
+        printf '警告：无法恢复部署前 VibeHub 基础镜像：%s\n' \
+          "$vibehub_runtime_previous_id" >&2
+      fi
+    elif ! docker image rm "$VIBEHUB_RUNTIME_STABLE" >/dev/null 2>&1; then
+      printf '警告：无法移除本次部署新建的 VibeHub stable 标签。\n' >&2
+    fi
+  fi
   docker image rm "$JUDGER_CANDIDATE" "$AGENT_JUDGE_CANDIDATE" \
+    "$VIBEHUB_RUNTIME_CANDIDATE" \
     >/dev/null 2>&1 || true
   if [[ "$exit_code" -ne 0 ]]; then
     printf '部署失败（阶段：%s，退出码：%s）。\n' "$phase" "$exit_code" >&2
@@ -238,6 +270,28 @@ ENV_FILE="$ROOT_DIR/.env"
 }
 PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
   deploy/preflight.py validate-config "$ENV_FILE"
+PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+  deploy/preflight.py validate-vibehub-runtime
+VIBEHUB_BUILD_BUILDER="$(
+  PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+    deploy/preflight.py validate-vibehub-builder
+)"
+vibehub_oci_previous_target="$(
+  PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+    deploy/vibehub_base_oci.py current-target \
+      --output-root "$VIBEHUB_BASE_OCI_LAYOUT_ROOT" \
+      --allow-missing
+)"
+if [[ -n "$vibehub_oci_previous_target" ]]; then
+  vibehub_runtime_existing_id="$(
+    docker image inspect --format '{{.Id}}' "$VIBEHUB_RUNTIME_STABLE"
+  )"
+  PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+    deploy/vibehub_base_oci.py verify-release \
+      --release "$VIBEHUB_BASE_OCI_LAYOUT_ROOT/$vibehub_oci_previous_target" \
+      --expected-image-ref "$VIBEHUB_RUNTIME_STABLE" \
+      --expected-image-id "$vibehub_runtime_existing_id" >/dev/null
+fi
 
 phase='准备编辑器语言服务宿主运行时'
 PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
@@ -250,7 +304,8 @@ remove_stale_candidate_tags() {
 
   for reference in \
       'numericaloj-judger:deploy-*' \
-      'numericaloj-agent-judge:deploy-*'; do
+      'numericaloj-agent-judge:deploy-*' \
+      'numericaloj-vibehub-runtime:deploy-*'; do
     tags="$(
       docker image ls \
         --filter "label=$MANAGED_IMAGE_LABEL" \
@@ -431,6 +486,42 @@ rm -rf -- "$CANDIDATE_VENV"
 "$CANDIDATE_PYTHON" -m pip install \
   --disable-pip-version-check \
   --requirement requirements/production.txt
+
+phase='构建 VibeHub 受信基础候选镜像'
+DOCKER_BUILDKIT=1 docker build \
+  --label "$MANAGED_IMAGE_LABEL" \
+  --tag "$VIBEHUB_RUNTIME_CANDIDATE" \
+  docker/vibehub-runtime
+vibehub_runtime_candidate_id="$(
+  docker image inspect --format '{{.Id}}' "$VIBEHUB_RUNTIME_CANDIDATE"
+)"
+if [[ ! "$vibehub_runtime_candidate_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  printf 'VibeHub 基础候选镜像标识无效：%s\n' \
+    "$vibehub_runtime_candidate_id" >&2
+  exit 1
+fi
+
+phase='导出并核验 VibeHub 受信基础 OCI layout'
+vibehub_oci_candidate_release="$(
+  PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+    deploy/vibehub_base_oci.py export \
+      --image "$VIBEHUB_RUNTIME_CANDIDATE" \
+      --engine-image-ref "$VIBEHUB_RUNTIME_STABLE" \
+      --expected-image-id "$vibehub_runtime_candidate_id" \
+      --output-root "$VIBEHUB_BASE_OCI_LAYOUT_ROOT"
+)"
+if [[ "$vibehub_oci_candidate_release" \
+    != "$VIBEHUB_BASE_OCI_LAYOUT_ROOT/releases/${vibehub_runtime_candidate_id#sha256:}" ]]; then
+  printf 'VibeHub OCI 候选 release 路径无效：%s\n' \
+    "$vibehub_oci_candidate_release" >&2
+  exit 1
+fi
+vibehub_oci_candidate_target="releases/${vibehub_runtime_candidate_id#sha256:}"
+PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+  deploy/vibehub_base_oci.py verify-release \
+    --release "$vibehub_oci_candidate_release" \
+    --expected-image-ref "$VIBEHUB_RUNTIME_STABLE" \
+    --expected-image-id "$vibehub_runtime_candidate_id" >/dev/null
 
 phase='准备 ARC-AGI-3 公开游戏'
 "$CANDIDATE_PYTHON" -B deploy/prepare_arc_agi_3.py \
@@ -683,6 +774,31 @@ assert_sudo_keepalive '数据库备份'
   --manifest "$backup_manifest"
 database_backup="$backup_manifest"
 
+phase='切换 VibeHub 受信基础镜像'
+vibehub_runtime_previous_id="$(
+  docker image inspect --format '{{.Id}}' \
+    "$VIBEHUB_RUNTIME_STABLE" 2>/dev/null || true
+)"
+docker tag "$VIBEHUB_RUNTIME_CANDIDATE" "$VIBEHUB_RUNTIME_STABLE"
+vibehub_runtime_tag_switched=1
+if [[ "$(docker image inspect --format '{{.Id}}' "$VIBEHUB_RUNTIME_STABLE")" \
+    != "$vibehub_runtime_candidate_id" ]]; then
+  printf 'VibeHub stable 标签未指向本次候选镜像。\n' >&2
+  exit 1
+fi
+vibehub_oci_current_switch_attempted=1
+vibehub_oci_switched_target="$(
+  PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
+    deploy/vibehub_base_oci.py switch-current \
+      --output-root "$VIBEHUB_BASE_OCI_LAYOUT_ROOT" \
+      --release "$vibehub_oci_candidate_release" \
+      --expected-current "$vibehub_oci_previous_target"
+)"
+if [[ "$vibehub_oci_switched_target" != "$vibehub_oci_candidate_target" ]]; then
+  printf 'VibeHub OCI current 未指向本次候选 release。\n' >&2
+  exit 1
+fi
+
 phase='切换运行环境并更新数据库结构'
 assert_service_stopped 'Celery' celery
 assert_service_stopped 'Web' web
@@ -696,6 +812,15 @@ rm -f -- "$ARC_CURRENT_SET_TEMP"
 ln -s "$arc_candidate_target" "$ARC_CURRENT_SET_TEMP"
 mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"
 rm -f -- "$ARC_RESULT_FILE"
+
+phase='同步 VibeHub 内置作品'
+"$CANDIDATE_PYTHON" -B deploy/sync_vibehub_builtins.py \
+  --repository-root "$ROOT_DIR" \
+  --source-root "$ROOT_DIR/vibehub_examples" \
+  --upload-root "$ROOT_DIR/uploads/vibehub" \
+  --arc-set "$ARC_CURRENT_SET"
+
+phase='切换运行环境并更新数据库结构'
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 "$CANDIDATE_PYTHON" scripts/repository_storage_admin.py \
   cleanup-expired-uploads --apply --confirm-expired-staging-delete
@@ -801,6 +926,23 @@ phase='确认数据库回滚点状态'
   --manifest "$backup_manifest" \
   --plan "$backup_plan"
 restart_started=0
+
+phase='清理旧 VibeHub 内置作品'
+if ! "$CANDIDATE_PYTHON" -B deploy/sync_vibehub_builtins.py \
+    --upload-root "$ROOT_DIR/uploads/vibehub" \
+    --finalize-only; then
+  printf '警告：旧 VibeHub 内置 release 清理失败，已保留供人工检查。\n' >&2
+fi
+vibehub_oci_prune_args=(
+  --output-root "$VIBEHUB_BASE_OCI_LAYOUT_ROOT"
+)
+if [[ -n "$vibehub_oci_previous_target" ]]; then
+  vibehub_oci_prune_args+=(--keep-target "$vibehub_oci_previous_target")
+fi
+if ! "$CANDIDATE_PYTHON" -B deploy/vibehub_base_oci.py prune-releases \
+    "${vibehub_oci_prune_args[@]}" >/dev/null; then
+  printf '警告：旧 VibeHub 基础 OCI release 清理失败，已保留供人工检查。\n' >&2
+fi
 if ! "$CANDIDATE_PYTHON" -B deploy/backup_database.py prune \
     --backup-root "$BACKUP_DIR" \
     --keep-success 2 \
@@ -809,9 +951,13 @@ if ! "$CANDIDATE_PYTHON" -B deploy/backup_database.py prune \
 fi
 stop_sudo_keepalive
 
-phase='清理旧判题镜像'
+phase='清理旧受管镜像'
 if ! docker image prune --force --filter "label=$MANAGED_IMAGE_LABEL" >/dev/null; then
   printf '警告：旧的 NumericalOJ dangling 镜像清理失败，请稍后人工检查。\n' >&2
+fi
+if ! docker image prune --force \
+    --filter "label=$VIBEHUB_MANAGED_IMAGE_LABEL" >/dev/null; then
+  printf '警告：旧的 VibeHub dangling 镜像清理失败，请稍后人工检查。\n' >&2
 fi
 
 phase='完成'

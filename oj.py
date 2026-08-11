@@ -18,6 +18,16 @@ from oj_modules.observability import (
 )
 os.environ.setdefault('NUMOJ_SERVICE_NAME', 'web')
 configure_logging(level=getattr(_cfg, 'LOG_LEVEL', 'INFO'))
+from oj_modules.vibehub.runtime import (
+    ensure_vibehub_runtime_reaper,
+    register_runtime_manager_config,
+)
+from oj_modules.vibehub.maintenance import (
+    ensure_vibehub_storage_gc,
+    register_storage_gc_config,
+)
+register_runtime_manager_config(_cfg)
+register_storage_gc_config(_cfg)
 
 from oj_modules.db_services import (
     get_db_connection,
@@ -50,6 +60,7 @@ from oj_modules.routes.problem_core_routes import (
 from oj_modules.problems.catalog import invalidate_problem_list_cache_for_class
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
+from oj_modules.routes.vibehub_routes import vibehub_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.routes.health_routes import create_health_blueprint
 from oj_modules.routes.admin_dynamic_config_routes import admin_dynamic_config_bp
@@ -156,6 +167,12 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=bool(getattr(_cfg, 'SESSION_COOKIE_SECURE', False)),
+    VIBEHUB_STORAGE_MUTATION_SLOTS=getattr(
+        _cfg, 'VIBEHUB_STORAGE_MUTATION_SLOTS', 2,
+    ),
+    VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS=getattr(
+        _cfg, 'VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS', 0.1,
+    ),
 )
 install_flask_observability(
     app,
@@ -188,6 +205,7 @@ app.register_blueprint(editor_language_bp)
 app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
 app.register_blueprint(game_bp)
+app.register_blueprint(vibehub_bp)
 app.register_blueprint(ranking_bp)
 app.register_blueprint(admin_dynamic_config_bp)
 app.register_blueprint(create_health_blueprint(rds, get_db_connection))
@@ -484,6 +502,8 @@ if __name__ == '__main__':
     #   - debug 模式下 Werkzeug reloader 会让父子两个进程都跑 __main__，用
     #     WERKZEUG_RUN_MAIN 守卫，只在真正服务的子进程里跑一次。
     if (not app.debug) or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        ensure_vibehub_runtime_reaper()
+        ensure_vibehub_storage_gc()
         ensure_background_schedulers()
     # 在生产环境中，请先开放 2025 端口并在安全组、系统防火墙中放行。
     app.run(host='0.0.0.0', port=2025)

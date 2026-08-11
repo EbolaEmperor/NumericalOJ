@@ -13,6 +13,7 @@
 | `homework/` | 作业目标、查重、导出与进度状态 | Blueprint 和 Celery 注册 |
 | `problems/` | 题目配置、测试数据和题目展示规则 | 提交产物生命周期 |
 | `ranking/` | 打榜赛、ELO、Agent Judge、反向评测的领域与数据访问 | Celery task 装饰器 |
+| `vibehub/` | 作品版本、审核、受限包存储与按需容器运行时 | Blueprint 与导航展示 |
 | `submissions/` | 普通提交、书面作业、仓库快照与批改 | 判题容器原语 |
 | `editor/` | 语言服务、语义令牌、受管工具链 | 页面路由 |
 | `judging/` | 普通判题协议、Docker 沙箱、case runner | 排名赛业务规则 |

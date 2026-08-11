@@ -7,22 +7,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
-import inspect
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from typing import TextIO
 from urllib.parse import quote
 import uuid
 
-from arcengine import ARCBaseGame, ActionInput, FrameDataRaw, GameAction
-import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -38,26 +35,15 @@ _SLUG_PATTERN = re.compile(r"^[a-z0-9]{4}$")
 _VERSION_PATTERN = re.compile(r"^[0-9a-f]{8}$")
 _SET_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9-]{16,128}$")
-_PALETTE = np.asarray(
-    [
-        (255, 255, 255),
-        (204, 204, 204),
-        (153, 153, 153),
-        (102, 102, 102),
-        (51, 51, 51),
-        (0, 0, 0),
-        (229, 58, 163),
-        (255, 123, 204),
-        (249, 60, 49),
-        (30, 147, 255),
-        (136, 216, 241),
-        (255, 220, 0),
-        (255, 133, 27),
-        (146, 18, 49),
-        (79, 204, 48),
-        (163, 86, 214),
-    ],
-    dtype=np.uint8,
+_PALETTE = (
+    (255, 250, 240),
+    (43, 42, 37),
+    (212, 85, 56),
+    (228, 185, 67),
+    (71, 121, 139),
+    (65, 97, 75),
+    (126, 87, 157),
+    (204, 204, 204),
 )
 
 
@@ -140,28 +126,43 @@ def _get_content(
     maximum_bytes: int,
     accept: str,
 ) -> bytes:
+    if maximum_bytes <= 0:
+        raise ValueError("maximum_bytes 必须为正整数")
     response = session.get(
         f"{BASE_URL}{path}",
         headers={"Accept": accept},
         timeout=(10, 90),
         allow_redirects=False,
+        stream=True,
     )
-    response.raise_for_status()
-    if response.is_redirect or response.is_permanent_redirect:
-        raise ArcPublicSetError("ARC Prize API 返回了未预期的跳转。")
-    declared_size = response.headers.get("Content-Length")
-    if declared_size:
-        try:
-            if int(declared_size) > maximum_bytes:
+    try:
+        response.raise_for_status()
+        if response.is_redirect or response.is_permanent_redirect:
+            raise ArcPublicSetError("ARC Prize API 返回了未预期的跳转。")
+        declared_size = response.headers.get("Content-Length")
+        if declared_size:
+            try:
+                parsed_size = int(declared_size)
+                if parsed_size < 0 or parsed_size > maximum_bytes:
+                    raise ArcPublicSetError("ARC Prize API 响应超过安全大小限制。")
+            except ValueError as exc:
+                raise ArcPublicSetError(
+                    "ARC Prize API 返回了无效的 Content-Length。"
+                ) from exc
+
+        # ``stream=True`` 只阻止 requests 预先把响应整体载入内存；仍须按
+        # 解压后的 chunk 实际长度累计，才能同时约束无 Content-Length、
+        # 分块传输以及压缩响应。
+        content = bytearray()
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            if len(chunk) > maximum_bytes - len(content):
                 raise ArcPublicSetError("ARC Prize API 响应超过安全大小限制。")
-        except ValueError as exc:
-            raise ArcPublicSetError(
-                "ARC Prize API 返回了无效的 Content-Length。"
-            ) from exc
-    content = response.content
-    if len(content) > maximum_bytes:
-        raise ArcPublicSetError("ARC Prize API 响应超过安全大小限制。")
-    return content
+            content.extend(chunk)
+        return bytes(content)
+    finally:
+        response.close()
 
 
 def _get_json(session: requests.Session, path: str) -> object:
@@ -177,26 +178,25 @@ def _get_json(session: requests.Session, path: str) -> object:
         raise ArcPublicSetError("ARC Prize API 返回了无效 JSON。") from exc
 
 
-def _load_game_class(
-    source_path: Path,
-    slug: str,
-    version: str,
-) -> type[ARCBaseGame]:
-    module_spec = importlib.util.spec_from_file_location(
-        f"numoj_arc_prepare_{slug}_{version}",
-        source_path,
-    )
-    if module_spec is None or module_spec.loader is None:
-        raise ArcPublicSetError(f"无法加载公开游戏：{slug}-{version}")
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    game_class = getattr(module, slug[0].upper() + slug[1:], None)
-    if (
-        not isinstance(game_class, type)
-        or not issubclass(game_class, ARCBaseGame)
-    ):
-        raise ArcPublicSetError(f"公开游戏格式无效：{slug}-{version}")
-    return game_class
+def _write_fingerprint_preview(path: Path, source_digest: str) -> None:
+    """仅依据源码哈希生成目录缩略图，部署宿主绝不执行远端 Python。"""
+    seed = bytes.fromhex(source_digest)
+    tile = 24
+    margin = 32
+    image = Image.new("RGB", (256, 256), _PALETTE[1])
+    draw = ImageDraw.Draw(image)
+    for row in range(8):
+        for column in range(8):
+            value = seed[(row * 8 + column) % len(seed)]
+            color = _PALETTE[2 + value % (len(_PALETTE) - 2)]
+            left = margin + column * tile
+            top = margin + row * tile
+            draw.rectangle(
+                (left, top, left + tile - 3, top + tile - 3),
+                fill=color,
+            )
+    image.save(path, format="PNG", optimize=True)
+    path.chmod(0o600)
 
 
 def _input_details(actions: set[int]) -> tuple[str, str]:
@@ -227,23 +227,52 @@ def _validated_game_id(value: object) -> tuple[str, str, str]:
     return value, slug, version
 
 
-def _validate_cached_set(set_dir: Path, expected_count: int) -> dict:
-    if not set_dir.is_dir() or not _SET_ID_PATTERN.fullmatch(set_dir.name):
+def _games_fingerprint(games: list[dict]) -> str:
+    fingerprint_payload = json.dumps(
+        games,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return _sha256_bytes(fingerprint_payload)
+
+
+def _validate_cached_set(
+    set_dir: Path,
+    expected_count: int,
+    *,
+    expected_set_id: str | None = None,
+) -> dict:
+    directory_set_id = expected_set_id or set_dir.name
+    if (
+        set_dir.is_symlink()
+        or not set_dir.is_dir()
+        or not _SET_ID_PATTERN.fullmatch(directory_set_id)
+        or (expected_set_id is None and directory_set_id != set_dir.name)
+    ):
         raise ArcPublicSetError("ARC-AGI-3 缓存目录名称无效。")
     manifest_path = set_dir / "manifest.json"
+    if (
+        manifest_path.is_symlink()
+        or not manifest_path.is_file()
+        or manifest_path.stat().st_size > MAX_JSON_BYTES
+    ):
+        raise ArcPublicSetError("ARC-AGI-3 缓存清单无法读取。")
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ArcPublicSetError("ARC-AGI-3 缓存清单无法读取。") from exc
     if payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
         raise ArcPublicSetError("ARC-AGI-3 缓存清单版本不受支持。")
-    if payload.get("set_id") != set_dir.name:
+    if payload.get("set_id") != directory_set_id:
         raise ArcPublicSetError("ARC-AGI-3 缓存指纹不匹配。")
 
     games = payload.get("games")
     if not isinstance(games, list) or len(games) != expected_count:
         raise ArcPublicSetError("ARC-AGI-3 缓存游戏数量不完整。")
     seen_slugs = set()
+    expected_files = {Path("manifest.json")}
+    expected_directories = {Path("environments"), Path("previews")}
     for item in games:
         if not isinstance(item, dict):
             raise ArcPublicSetError("ARC-AGI-3 缓存游戏条目无效。")
@@ -259,8 +288,25 @@ def _validate_cached_set(set_dir: Path, expected_count: int) -> dict:
             set_dir / "environments" / slug / version / f"{slug}.py"
         )
         preview_path = set_dir / "previews" / f"{slug}.png"
-        if not source_path.is_file() or not preview_path.is_file():
+        if (
+            source_path.is_symlink()
+            or preview_path.is_symlink()
+            or not source_path.is_file()
+            or not preview_path.is_file()
+        ):
             raise ArcPublicSetError(f"ARC-AGI-3 缓存文件缺失：{full_id}")
+        expected_files.update(
+            {
+                source_path.relative_to(set_dir),
+                preview_path.relative_to(set_dir),
+            }
+        )
+        expected_directories.update(
+            {
+                Path("environments") / slug,
+                Path("environments") / slug / version,
+            }
+        )
         source_digest = item.get("source_sha256")
         preview_digest = item.get("preview_sha256")
         if (
@@ -277,56 +323,58 @@ def _validate_cached_set(set_dir: Path, expected_count: int) -> dict:
                 raise ArcPublicSetError(
                     f"ARC-AGI-3 缓存缺少 MIT 许可头：{full_id}"
                 )
+    if _games_fingerprint(games) != payload.get("set_id"):
+        raise ArcPublicSetError("ARC-AGI-3 缓存内容指纹不匹配。")
+    actual_files = set()
+    actual_directories = set()
+    for path in set_dir.rglob("*"):
+        relative = path.relative_to(set_dir)
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ArcPublicSetError(f"ARC-AGI-3 缓存不得包含符号链接：{relative}")
+        if stat.S_ISREG(metadata.st_mode):
+            actual_files.add(relative)
+        elif stat.S_ISDIR(metadata.st_mode):
+            actual_directories.add(relative)
+        else:
+            raise ArcPublicSetError(f"ARC-AGI-3 缓存包含特殊文件：{relative}")
+    if actual_files != expected_files or actual_directories != expected_directories:
+        raise ArcPublicSetError("ARC-AGI-3 缓存包含未声明或缺失的路径。")
     return payload
 
 
-def _is_within(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
-def _find_reusable_set(
-    data_root: Path,
+def _fetch_public_catalog(
+    session: requests.Session,
     expected_count: int,
-) -> Path | None:
-    sets_root = (data_root / "sets").resolve()
-    candidates = []
-    current_link = data_root / "current"
-    if current_link.is_symlink():
-        try:
-            current_target = current_link.resolve(strict=True)
-        except OSError:
-            current_target = None
-        if current_target is not None and _is_within(current_target, sets_root):
-            candidates.append(current_target)
+) -> tuple[str, ...]:
+    """每次部署都读取官方线上目录；异常时 fail-closed。"""
+    anonymous = _get_json(session, "/api/games/anonkey")
+    api_key = anonymous.get("api_key") if isinstance(anonymous, dict) else None
+    if not isinstance(api_key, str) or not _API_KEY_PATTERN.fullmatch(api_key):
+        raise ArcPublicSetError("ARC Prize API 未返回有效的匿名访问凭据。")
+    session.headers["X-Api-Key"] = api_key
 
-    if sets_root.is_dir():
-        other_sets = sorted(
-            (
-                path
-                for path in sets_root.iterdir()
-                if path.is_dir() and _SET_ID_PATTERN.fullmatch(path.name)
-            ),
-            key=lambda path: path.stat().st_mtime_ns,
-            reverse=True,
+    listed_games = _get_json(session, "/api/games")
+    if not isinstance(listed_games, list) or len(listed_games) != expected_count:
+        actual_count = len(listed_games) if isinstance(listed_games, list) else 0
+        raise ArcPublicSetError(
+            "ARC-AGI-3 公开集数量不符合预期："
+            f"预期 {expected_count}，实际 {actual_count}。"
         )
-        candidates.extend(other_sets)
-
-    seen = set()
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        try:
-            _validate_cached_set(resolved, expected_count)
-        except ArcPublicSetError:
-            continue
-        return resolved
-    return None
+    validated_ids = [
+        _validated_game_id(item.get("game_id"))
+        for item in listed_games
+        if isinstance(item, dict)
+    ]
+    game_ids = tuple(sorted(item[0] for item in validated_ids))
+    slugs = {item[1] for item in validated_ids}
+    if (
+        len(game_ids) != expected_count
+        or len(set(game_ids)) != expected_count
+        or len(slugs) != expected_count
+    ):
+        raise ArcPublicSetError("ARC Prize API 游戏目录包含无效或重复条目。")
+    return game_ids
 
 
 def _download_public_set(
@@ -334,34 +382,13 @@ def _download_public_set(
     expected_count: int,
     *,
     output: TextIO,
+    session: requests.Session | None = None,
+    game_ids: tuple[str, ...] | None = None,
 ) -> tuple[str, dict]:
-    session = _build_http_session()
+    owns_session = session is None
+    session = session or _build_http_session()
     try:
-        anonymous = _get_json(session, "/api/games/anonkey")
-        api_key = anonymous.get("api_key") if isinstance(anonymous, dict) else None
-        if not isinstance(api_key, str) or not _API_KEY_PATTERN.fullmatch(api_key):
-            raise ArcPublicSetError("ARC Prize API 未返回有效的匿名访问凭据。")
-        session.headers["X-Api-Key"] = api_key
-
-        listed_games = _get_json(session, "/api/games")
-        if (
-            not isinstance(listed_games, list)
-            or len(listed_games) != expected_count
-        ):
-            actual_count = (
-                len(listed_games) if isinstance(listed_games, list) else 0
-            )
-            raise ArcPublicSetError(
-                "ARC-AGI-3 公开集数量不符合预期："
-                f"预期 {expected_count}，实际 {actual_count}。"
-            )
-        game_ids = sorted(
-            _validated_game_id(item.get("game_id"))[0]
-            for item in listed_games
-            if isinstance(item, dict)
-        )
-        if len(game_ids) != expected_count or len(set(game_ids)) != expected_count:
-            raise ArcPublicSetError("ARC Prize API 游戏目录包含无效或重复条目。")
+        game_ids = game_ids or _fetch_public_catalog(session, expected_count)
 
         environments_root = staging_root / "environments"
         previews_root = staging_root / "previews"
@@ -403,38 +430,8 @@ def _download_public_set(
             source_path = environment_dir / f"{slug}.py"
             _write_private_bytes(source_path, source)
 
-            try:
-                game_class = _load_game_class(source_path, slug, version)
-                signature = inspect.signature(game_class)
-                kwargs = {"seed": 0} if "seed" in signature.parameters else {}
-                game = game_class(**kwargs)
-                frame_data = game.perform_action(
-                    ActionInput(id=GameAction.RESET),
-                    raw=True,
-                )
-            except ArcPublicSetError:
-                raise
-            except Exception as exc:
-                raise ArcPublicSetError(
-                    f"公开游戏初始化失败：{full_id}"
-                ) from exc
-            if not isinstance(frame_data, FrameDataRaw) or not frame_data.frame:
-                raise ArcPublicSetError(
-                    f"公开游戏没有生成有效初始画面：{full_id}"
-                )
-            frame = np.asarray(frame_data.frame[-1], dtype=np.int64)
-            if (
-                frame.ndim != 2
-                or frame.size == 0
-                or int(frame.min()) < 0
-                or int(frame.max()) >= len(_PALETTE)
-            ):
-                raise ArcPublicSetError(
-                    f"公开游戏初始画面颜色无效：{full_id}"
-                )
             preview_path = previews_root / f"{slug}.png"
-            Image.fromarray(_PALETTE[frame]).save(preview_path, format="PNG")
-            preview_path.chmod(0o600)
+            _write_fingerprint_preview(preview_path, _sha256_bytes(source))
 
             title = metadata.get("title")
             default_fps = metadata.get("default_fps")
@@ -450,7 +447,14 @@ def _download_public_set(
                 or not baseline_actions
             ):
                 raise ArcPublicSetError(f"公开游戏元数据字段无效：{full_id}")
-            actions = {int(action) for action in frame_data.available_actions}
+            declared_actions = metadata.get("available_actions")
+            actions = {
+                int(action)
+                for action in (declared_actions if isinstance(declared_actions, list) else [])
+                if not isinstance(action, bool) and isinstance(action, int) and 1 <= action <= 6
+            }
+            if not actions:
+                actions = {1, 2, 3, 4, 5, 6}
             input_kind, input_label = _input_details(actions)
             games.append(
                 {
@@ -469,16 +473,11 @@ def _download_public_set(
             )
             _show_progress(index, expected_count, full_id, output=output)
     finally:
-        session.headers.pop("X-Api-Key", None)
-        session.close()
+        if owns_session:
+            session.headers.pop("X-Api-Key", None)
+            session.close()
 
-    fingerprint_payload = json.dumps(
-        games,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    set_id = _sha256_bytes(fingerprint_payload)
+    set_id = _games_fingerprint(games)
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "set_id": set_id,
@@ -517,39 +516,58 @@ def prepare_public_set(
     sets_root = data_root / "sets"
     sets_root.mkdir(mode=0o700, exist_ok=True)
 
-    reusable = _find_reusable_set(data_root, expected_count)
-    if reusable is not None:
-        relative_target = f"sets/{reusable.name}"
-        _show_progress(
-            expected_count,
-            expected_count,
-            "本地缓存完整，跳过下载",
-            output=output,
-        )
-        _write_result(result_file, relative_target)
-        return relative_target
-
-    staging_root = Path(
-        tempfile.mkdtemp(prefix=".staging-", dir=data_root)
-    )
-    staging_root.chmod(0o700)
+    session = _build_http_session()
     try:
+        official_game_ids = _fetch_public_catalog(session, expected_count)
+        staging_root = Path(
+            tempfile.mkdtemp(prefix=".staging-", dir=data_root)
+        )
+        staging_root.chmod(0o700)
         set_id, _manifest = _download_public_set(
             staging_root,
             expected_count,
             output=output,
+            session=session,
+            game_ids=official_game_ids,
+        )
+        _validate_cached_set(
+            staging_root,
+            expected_count,
+            expected_set_id=set_id,
         )
         final_set = sets_root / set_id
         if final_set.exists():
-            _validate_cached_set(final_set, expected_count)
+            try:
+                _validate_cached_set(final_set, expected_count)
+            except ArcPublicSetError:
+                quarantine = sets_root / f".{set_id}.corrupt-{uuid.uuid4().hex}"
+                os.replace(final_set, quarantine)
+                try:
+                    os.replace(staging_root, final_set)
+                    _validate_cached_set(final_set, expected_count)
+                except Exception:
+                    if final_set.exists():
+                        shutil.rmtree(final_set, ignore_errors=True)
+                    os.replace(quarantine, final_set)
+                    raise
+                shutil.rmtree(quarantine)
+            else:
+                _show_progress(
+                    expected_count,
+                    expected_count,
+                    "线上内容哈希一致，复用本地完整缓存",
+                    output=output,
+                )
         else:
-            staging_root.rename(final_set)
+            os.replace(staging_root, final_set)
         _validate_cached_set(final_set, expected_count)
         relative_target = f"sets/{set_id}"
         _write_result(result_file, relative_target)
         return relative_target
     finally:
-        if staging_root.exists():
+        session.headers.pop("X-Api-Key", None)
+        session.close()
+        if "staging_root" in locals() and staging_root.exists():
             shutil.rmtree(staging_root)
 
 

@@ -1,0 +1,1234 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>围住小猫</title>
+  <style>
+    :root {
+      --paper: #f2eadc;
+      --paper-deep: #e8dcc9;
+      --sheet: #fffaf0;
+      --ink: #29251f;
+      --muted: #766d61;
+      --line: #d8c9b5;
+      --line-strong: #bca98f;
+      --orange: #c85d32;
+      --orange-dark: #93411f;
+      --green: #3e5f50;
+      --green-light: #698575;
+      --yellow: #d7a43d;
+      --cell-size: 50px;
+      --hex-gap: 3px;
+      --hex-w: var(--cell-size);
+      --hex-h: calc(var(--hex-w) * 1.154700538);
+      --hex-step-x: calc(var(--hex-w) + var(--hex-gap));
+      --hex-step-y: calc(var(--hex-step-x) * 0.866025404);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      overflow: hidden;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .game-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(244px, 318px);
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      background:
+        radial-gradient(circle at 16% 6%, rgba(255, 255, 255, 0.72), transparent 28rem),
+        var(--paper);
+    }
+
+    .board-stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      padding: clamp(18px, 3.5vw, 42px);
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .board-stage::before {
+      position: absolute;
+      z-index: -2;
+      inset: 0;
+      background:
+        linear-gradient(rgba(91, 70, 44, 0.04) 1px, transparent 1px) 0 0 / 100% 25px,
+        linear-gradient(90deg, rgba(91, 70, 44, 0.025) 1px, transparent 1px) 0 0 / 25px 100%;
+      content: "";
+    }
+
+    .board-stage::after {
+      position: absolute;
+      z-index: -1;
+      inset: clamp(14px, 2.4vw, 28px);
+      border: 1px solid var(--line);
+      box-shadow: inset 0 0 0 7px rgba(255, 250, 240, 0.22);
+      content: "";
+      pointer-events: none;
+    }
+
+    .board-frame {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .board-meta,
+    .board-caption {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 0 clamp(8px, 1.5vw, 18px);
+      color: #817666;
+      font: 700 9px/1.4 ui-monospace, "SFMono-Regular", Consolas, monospace;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .board-meta {
+      padding-bottom: 13px;
+    }
+
+    .board-caption {
+      padding-top: 13px;
+    }
+
+    .board-caption span:last-child {
+      color: var(--orange-dark);
+    }
+
+    .board-viewport {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .board-grid {
+      width: 100%;
+      filter: drop-shadow(0 18px 20px rgba(74, 51, 25, 0.13));
+    }
+
+    .board-grid.entering {
+      animation: board-arrive 520ms cubic-bezier(0.2, 0.76, 0.22, 1) both;
+    }
+
+    .board-row {
+      display: flex;
+      justify-content: flex-start;
+      width: auto;
+      gap: var(--hex-gap);
+    }
+
+    .board-row + .board-row {
+      margin-top: calc(var(--hex-step-y) - var(--hex-h));
+    }
+
+    .board-row.offset {
+      margin-left: calc(var(--hex-step-x) / 2);
+    }
+
+    .cell {
+      position: relative;
+      width: var(--hex-w);
+      height: var(--hex-h);
+      flex: 0 0 var(--hex-w);
+      padding: 0;
+      overflow: hidden;
+      border: 0;
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      background: rgba(255, 250, 240, 0.9);
+      box-shadow: inset 0 0 0 2px rgba(100, 73, 39, 0.12);
+      cursor: pointer;
+      transition: background 140ms ease, transform 140ms ease, filter 140ms ease;
+    }
+
+    .cell::before {
+      position: absolute;
+      inset: 3px;
+      clip-path: inherit;
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.52), transparent 55%);
+      content: "";
+      pointer-events: none;
+    }
+
+    .cell:hover:not(:disabled) {
+      z-index: 2;
+      background: #f5d89f;
+      filter: saturate(1.05);
+      transform: scale(0.92);
+    }
+
+    .cell:focus-visible {
+      z-index: 3;
+      outline: 3px solid var(--yellow);
+      outline-offset: 2px;
+    }
+
+    .cell:disabled {
+      cursor: default;
+    }
+
+    .cell.blocked {
+      background: var(--green);
+      box-shadow: inset 0 0 0 2px rgba(27, 49, 39, 0.23);
+    }
+
+    .cell.cat {
+      z-index: 2;
+      background: #f6d7ae;
+    }
+
+    .cell-inner {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+    }
+
+    .rock {
+      position: relative;
+      width: 54%;
+      height: 48%;
+      border: 1px solid rgba(22, 45, 34, 0.22);
+      border-radius: 47% 39% 53% 41%;
+      background: var(--green-light);
+      box-shadow: inset -4px -4px 0 rgba(29, 59, 44, 0.2), 0 3px 0 rgba(40, 70, 55, 0.26);
+      transform: rotate(-7deg);
+    }
+
+    .rock::after {
+      position: absolute;
+      top: 22%;
+      left: 20%;
+      width: 28%;
+      height: 17%;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.24);
+      content: "";
+      transform: rotate(-18deg);
+    }
+
+    .cat-figure {
+      position: relative;
+      width: 52%;
+      aspect-ratio: 1;
+      border: 1px solid rgba(111, 49, 24, 0.3);
+      border-radius: 46% 46% 43% 43%;
+      background: var(--orange);
+      box-shadow: inset 0 -5px 0 rgba(123, 49, 23, 0.16), 0 4px 0 rgba(127, 61, 31, 0.19);
+    }
+
+    .cat-figure::before,
+    .cat-figure::after {
+      position: absolute;
+      top: -22%;
+      width: 42%;
+      height: 45%;
+      background: var(--orange);
+      clip-path: polygon(50% 0, 100% 100%, 0 100%);
+      content: "";
+    }
+
+    .cat-figure::before {
+      left: -2%;
+      transform: rotate(-16deg);
+    }
+
+    .cat-figure::after {
+      right: -2%;
+      transform: rotate(16deg);
+    }
+
+    .cat-face {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+    }
+
+    .cat-face::before {
+      position: absolute;
+      top: 38%;
+      left: 22%;
+      width: 12%;
+      height: 14%;
+      border-radius: 50%;
+      background: var(--ink);
+      box-shadow: calc(var(--cell-size) * 0.15) 0 0 var(--ink);
+      content: "";
+    }
+
+    .cat-face::after {
+      position: absolute;
+      top: 60%;
+      left: 44%;
+      width: 15%;
+      height: 10%;
+      border-bottom: 2px solid #6e2e18;
+      border-radius: 0 0 50% 50%;
+      content: "";
+    }
+
+    .cell.just-blocked .rock {
+      animation: stone-drop 360ms cubic-bezier(0.16, 1.25, 0.35, 1) both;
+    }
+
+    .cell.cat-arriving .cat-figure {
+      animation: cat-hop 430ms cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
+    }
+
+    .game-shell.is-win .board-grid {
+      animation: win-breathe 720ms ease both;
+    }
+
+    .game-shell.is-lose .board-stage {
+      animation: escape-nudge 360ms ease both;
+    }
+
+    .control-panel {
+      display: flex;
+      min-width: 0;
+      min-height: 0;
+      flex-direction: column;
+      padding: clamp(24px, 4vw, 46px) clamp(20px, 3vw, 36px) clamp(20px, 3vw, 32px);
+      overflow-y: auto;
+      border-left: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent 34%),
+        rgba(255, 250, 240, 0.79);
+      box-shadow: -18px 0 40px rgba(81, 58, 31, 0.05);
+    }
+
+    .kicker {
+      margin: 0;
+      color: var(--orange-dark);
+      font: 700 10px/1.4 ui-monospace, "SFMono-Regular", Consolas, monospace;
+      letter-spacing: 0.15em;
+    }
+
+    .title {
+      margin: 10px 0 9px;
+      font-family: Georgia, "Songti SC", "STSong", serif;
+      font-size: clamp(38px, 5vw, 58px);
+      font-weight: 500;
+      letter-spacing: -0.07em;
+      line-height: 0.96;
+    }
+
+    .lede {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.85;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      margin-top: 28px;
+      border: 1px solid var(--line);
+      background: rgba(255, 250, 240, 0.54);
+    }
+
+    .stat {
+      display: grid;
+      gap: 4px;
+      padding: 14px 13px;
+    }
+
+    .stat + .stat {
+      border-left: 1px solid var(--line);
+    }
+
+    .stat span {
+      color: #8c806f;
+      font-size: 10px;
+    }
+
+    .stat strong {
+      overflow: hidden;
+      font: 700 20px/1.1 ui-monospace, "SFMono-Regular", Consolas, monospace;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status {
+      min-height: 62px;
+      margin: 17px 0;
+      padding: 13px 14px;
+      border-left: 3px solid var(--yellow);
+      background: #f8edd0;
+      color: #6c5530;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .status[data-state="win"] {
+      border-color: var(--green);
+      background: #e4ebdf;
+      color: #315143;
+    }
+
+    .status[data-state="lose"] {
+      border-color: var(--orange);
+      background: #f6e1d7;
+      color: #7b3d27;
+    }
+
+    .rules {
+      margin: auto 0 18px;
+      padding-top: 20px;
+      border-top: 1px dashed var(--line-strong);
+    }
+
+    .rules h2 {
+      margin: 0 0 8px;
+      color: var(--orange-dark);
+      font: 700 9px/1.4 ui-monospace, "SFMono-Regular", Consolas, monospace;
+      letter-spacing: 0.13em;
+    }
+
+    .rules p {
+      margin: 5px 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.62;
+    }
+
+    .isolation-note {
+      margin: 0 0 15px;
+      color: #8a7b68;
+      font-size: 10px;
+      line-height: 1.6;
+    }
+
+    .restart {
+      position: relative;
+      min-height: 48px;
+      padding: 0 18px;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      box-shadow: 5px 5px 0 var(--orange);
+      color: #fffaf0;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      transition: box-shadow 120ms ease, transform 120ms ease;
+    }
+
+    .restart:hover {
+      box-shadow: 2px 2px 0 var(--orange);
+      transform: translate(2px, 2px);
+    }
+
+    .restart:focus-visible {
+      outline: 3px solid var(--yellow);
+      outline-offset: 3px;
+    }
+
+    @keyframes board-arrive {
+      from { opacity: 0; transform: translateY(12px) scale(0.985); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes stone-drop {
+      0% { opacity: 0; transform: translateY(-65%) rotate(-18deg) scale(0.55); }
+      70% { opacity: 1; transform: translateY(7%) rotate(-4deg) scale(1.08); }
+      100% { opacity: 1; transform: translateY(0) rotate(-7deg) scale(1); }
+    }
+
+    @keyframes cat-hop {
+      0% { opacity: 0.35; transform: translateY(45%) scale(0.72); }
+      52% { opacity: 1; transform: translateY(-24%) scale(1.08, 0.94); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes win-breathe {
+      0%, 100% { filter: drop-shadow(0 18px 20px rgba(74, 51, 25, 0.13)); }
+      48% { filter: drop-shadow(0 20px 24px rgba(62, 95, 80, 0.36)); transform: scale(1.015); }
+    }
+
+    @keyframes escape-nudge {
+      0%, 100% { transform: translateX(0); }
+      30% { transform: translateX(-5px); }
+      65% { transform: translateX(4px); }
+    }
+
+    @media (max-width: 760px) {
+      .game-shell {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+
+      .board-stage {
+        padding: 16px 17px 12px;
+      }
+
+      .board-stage::after {
+        inset: 10px;
+      }
+
+      .board-meta,
+      .board-caption {
+        padding-right: 2px;
+        padding-left: 2px;
+        font-size: 8px;
+      }
+
+      .control-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(125px, auto);
+        gap: 10px 14px;
+        max-height: 39vh;
+        padding: 14px 17px 16px;
+        border-top: 1px solid var(--line);
+        border-left: 0;
+      }
+
+      .intro {
+        min-width: 0;
+      }
+
+      .title {
+        margin: 4px 0 0;
+        font-size: 29px;
+        letter-spacing: -0.05em;
+      }
+
+      .title br,
+      .lede,
+      .rules {
+        display: none;
+      }
+
+      .stats {
+        align-self: start;
+        margin: 0;
+      }
+
+      .stat {
+        padding: 9px 10px;
+      }
+
+      .stat strong {
+        font-size: 16px;
+      }
+
+      .status {
+        grid-column: 1 / -1;
+        min-height: 0;
+        margin: 0;
+        padding: 8px 11px;
+      }
+
+      .isolation-note {
+        align-self: center;
+        margin: 0;
+      }
+
+      .restart {
+        min-height: 42px;
+        box-shadow: 3px 3px 0 var(--orange);
+      }
+    }
+
+    @media (max-width: 430px) {
+      .board-caption span:first-child,
+      .isolation-note {
+        display: none;
+      }
+
+      .board-caption {
+        justify-content: flex-end;
+      }
+
+      .control-panel {
+        grid-template-columns: 1fr auto;
+      }
+
+      .restart {
+        min-width: 118px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="gameShell" class="game-shell">
+    <main class="board-stage">
+      <div class="board-frame">
+        <header class="board-meta">
+          <span id="modeLabel">桌面棋盘 · 11 × 11</span>
+          <span>Local session / no network</span>
+        </header>
+        <div id="boardViewport" class="board-viewport">
+          <div id="board" role="grid" aria-label="围住小猫六边形棋盘"></div>
+        </div>
+        <footer class="board-caption">
+          <span>落下一块石头，小猫随后移动一步</span>
+          <span id="routeHint">寻找最短出口</span>
+        </footer>
+      </div>
+    </main>
+
+    <aside class="control-panel" aria-label="游戏信息">
+      <div class="intro">
+        <p class="kicker">HEX STRATEGY / OFFLINE</p>
+        <h1 class="title">围住<br>小猫</h1>
+        <p class="lede">点击空白六边格放下障碍。小猫会在所有最短逃生路线中，优先走向分支最多的一步。</p>
+      </div>
+
+      <div class="stats" aria-label="本局统计">
+        <div class="stat"><span>回合</span><strong id="turnCount">0</strong></div>
+        <div class="stat"><span>状态</span><strong id="stateBadge">进行中</strong></div>
+      </div>
+
+      <p id="statusText" class="status" data-state="playing" role="status" aria-live="polite">先观察通往边缘的路线，再落下第一块石头。</p>
+
+      <section class="rules">
+        <h2>HOW TO PLAY</h2>
+        <p>· 桌面棋盘 11 × 11、5 个初始障碍；窄屏棋盘 9 × 9、4 个初始障碍。</p>
+        <p>· 小猫抵达边缘即逃脱；完全切断到边缘的路线即可获胜。</p>
+        <p>· 棋盘与猫的决策都在当前页面离线完成。</p>
+      </section>
+
+      <p class="isolation-note">隔离版不接入 OJ 排行榜，也不持久保存战绩；重开、刷新或容器回收后即开始新局。</p>
+      <button id="restart" class="restart" type="button">重新开始</button>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const DESKTOP_BOARD_SIZE = 11;
+      const MOBILE_BOARD_SIZE = 9;
+      const DESKTOP_INITIAL_BLOCKS = 5;
+      const MOBILE_INITIAL_BLOCKS = 4;
+      const MOBILE_BREAKPOINT = 760;
+      const EVEN_ROW_DIRS = Object.freeze([
+        [-1, -1], [-1, 0],
+        [0, -1], [0, 1],
+        [1, -1], [1, 0],
+      ]);
+      const ODD_ROW_DIRS = Object.freeze([
+        [-1, 0], [-1, 1],
+        [0, -1], [0, 1],
+        [1, 0], [1, 1],
+      ]);
+
+      function boardConfig(mode) {
+        if (mode === "mobile") {
+          return { mode: "mobile", size: MOBILE_BOARD_SIZE, initialBlocks: MOBILE_INITIAL_BLOCKS };
+        }
+        return { mode: "desktop", size: DESKTOP_BOARD_SIZE, initialBlocks: DESKTOP_INITIAL_BLOCKS };
+      }
+
+      function createEmptyBoard(size) {
+        return Array.from({ length: size }, function () {
+          return Array.from({ length: size }, function () { return "empty"; });
+        });
+      }
+
+      function inBounds(size, row, col) {
+        return row >= 0 && row < size && col >= 0 && col < size;
+      }
+
+      function isEdge(size, row, col) {
+        return row === 0 || col === 0 || row === size - 1 || col === size - 1;
+      }
+
+      function cellKey(row, col) {
+        return row + "," + col;
+      }
+
+      function getNeighbors(size, row, col) {
+        const directions = row % 2 === 0 ? EVEN_ROW_DIRS : ODD_ROW_DIRS;
+        return directions
+          .map(function (delta) {
+            return { row: row + delta[0], col: col + delta[1] };
+          })
+          .filter(function (cell) {
+            return inBounds(size, cell.row, cell.col);
+          });
+      }
+
+      function getOpenNeighbors(boardState, catPosition, size, row, col) {
+        return getNeighbors(size, row, col).filter(function (cell) {
+          return boardState[cell.row][cell.col] !== "blocked"
+            && !(cell.row === catPosition.row && cell.col === catPosition.col);
+        });
+      }
+
+      function reconstructPath(previous, target) {
+        const path = [target];
+        let cursor = target;
+        while (previous.has(cellKey(cursor.row, cursor.col))) {
+          cursor = previous.get(cellKey(cursor.row, cursor.col));
+          path.push(cursor);
+        }
+        path.reverse();
+        return path;
+      }
+
+      function findShortestPathToEdge(boardState, size, startRow, startCol) {
+        const queue = [{ row: startRow, col: startCol }];
+        const previous = new Map();
+        const visited = new Set([cellKey(startRow, startCol)]);
+        let cursor = 0;
+
+        while (cursor < queue.length) {
+          const current = queue[cursor];
+          cursor += 1;
+          if (!(current.row === startRow && current.col === startCol)
+              && isEdge(size, current.row, current.col)) {
+            return reconstructPath(previous, current);
+          }
+          getNeighbors(size, current.row, current.col).forEach(function (nextCell) {
+            const key = cellKey(nextCell.row, nextCell.col);
+            if (visited.has(key) || boardState[nextCell.row][nextCell.col] === "blocked") {
+              return;
+            }
+            visited.add(key);
+            previous.set(key, current);
+            queue.push(nextCell);
+          });
+        }
+        return null;
+      }
+
+      function estimateEdgeDistance(size, row, col) {
+        return Math.min(row, col, size - 1 - row, size - 1 - col);
+      }
+
+      function buildShortestPathDagStats(boardState, catPosition, size) {
+        const distances = Array.from({ length: size }, function () {
+          return Array(size).fill(Infinity);
+        });
+        const levels = [];
+        const queue = [{ row: catPosition.row, col: catPosition.col }];
+        distances[catPosition.row][catPosition.col] = 0;
+        let cursor = 0;
+        let minimumEdgeDistance = Infinity;
+
+        while (cursor < queue.length) {
+          const current = queue[cursor];
+          cursor += 1;
+          const currentDistance = distances[current.row][current.col];
+          if (currentDistance > minimumEdgeDistance) {
+            continue;
+          }
+          if (!(current.row === catPosition.row && current.col === catPosition.col)
+              && isEdge(size, current.row, current.col)) {
+            minimumEdgeDistance = Math.min(minimumEdgeDistance, currentDistance);
+          }
+          getNeighbors(size, current.row, current.col).forEach(function (nextCell) {
+            if (boardState[nextCell.row][nextCell.col] === "blocked") {
+              return;
+            }
+            const nextDistance = currentDistance + 1;
+            if (nextDistance >= distances[nextCell.row][nextCell.col]) {
+              return;
+            }
+            distances[nextCell.row][nextCell.col] = nextDistance;
+            queue.push(nextCell);
+          });
+        }
+
+        if (!Number.isFinite(minimumEdgeDistance)) {
+          return null;
+        }
+
+        for (let row = 0; row < size; row += 1) {
+          for (let col = 0; col < size; col += 1) {
+            const distance = distances[row][col];
+            if (!Number.isFinite(distance) || distance > minimumEdgeDistance) {
+              continue;
+            }
+            if (!levels[distance]) {
+              levels[distance] = [];
+            }
+            levels[distance].push({ row: row, col: col });
+          }
+        }
+
+        const pathCount = Array.from({ length: size }, function () {
+          return Array(size).fill(0);
+        });
+        (levels[minimumEdgeDistance] || []).forEach(function (cell) {
+          if (isEdge(size, cell.row, cell.col)) {
+            pathCount[cell.row][cell.col] = 1;
+          }
+        });
+        for (let level = minimumEdgeDistance - 1; level >= 0; level -= 1) {
+          (levels[level] || []).forEach(function (cell) {
+            let count = 0;
+            getNeighbors(size, cell.row, cell.col).forEach(function (nextCell) {
+              if (distances[nextCell.row][nextCell.col] === level + 1) {
+                count += pathCount[nextCell.row][nextCell.col];
+              }
+            });
+            pathCount[cell.row][cell.col] = count;
+          });
+        }
+        return {
+          dist: distances,
+          pathCount: pathCount,
+          minimumEdgeDistance: minimumEdgeDistance,
+        };
+      }
+
+      function compareSortKeys(left, right) {
+        if (!right) {
+          return -1;
+        }
+        for (let index = 0; index < left.length; index += 1) {
+          if (left[index] !== right[index]) {
+            return left[index] - right[index];
+          }
+        }
+        return 0;
+      }
+
+      function chooseMaxBranchShortestStep(boardState, catPosition, size, openNeighbors) {
+        if (!openNeighbors.length) {
+          return null;
+        }
+        const stats = buildShortestPathDagStats(boardState, catPosition, size);
+        if (!stats) {
+          return null;
+        }
+        let bestCandidate = null;
+        let bestSortKey = null;
+        openNeighbors.forEach(function (neighbor) {
+          const branchCount = stats.pathCount[neighbor.row][neighbor.col];
+          if (branchCount <= 0) {
+            return;
+          }
+          const sortKey = [
+            -branchCount,
+            estimateEdgeDistance(size, neighbor.row, neighbor.col),
+            neighbor.row,
+            neighbor.col,
+          ];
+          if (compareSortKeys(sortKey, bestSortKey) < 0) {
+            bestCandidate = { row: neighbor.row, col: neighbor.col };
+            bestSortKey = sortKey;
+          }
+        });
+        return bestCandidate;
+      }
+
+      function chooseFallbackMove(size, openNeighbors) {
+        if (!openNeighbors.length) {
+          return null;
+        }
+        return openNeighbors.slice().sort(function (left, right) {
+          return compareSortKeys(
+            [estimateEdgeDistance(size, left.row, left.col), left.row, left.col],
+            [estimateEdgeDistance(size, right.row, right.col), right.row, right.col],
+          );
+        })[0];
+      }
+
+      function isCatSealed(boardState, catPosition, size) {
+        return !findShortestPathToEdge(
+          boardState,
+          size,
+          catPosition.row,
+          catPosition.col,
+        );
+      }
+
+      function secureRandomInteger(maximum) {
+        const runtimeGlobal = typeof globalThis !== "undefined" ? globalThis : window;
+        if (runtimeGlobal.crypto && typeof runtimeGlobal.crypto.getRandomValues === "function") {
+          const range = 0x100000000;
+          const ceiling = Math.floor(range / maximum) * maximum;
+          const value = new Uint32Array(1);
+          do {
+            runtimeGlobal.crypto.getRandomValues(value);
+          } while (value[0] >= ceiling);
+          return value[0] % maximum;
+        }
+        return Math.floor(Math.random() * maximum);
+      }
+
+      function generateInitialState(mode, randomInteger) {
+        const config = boardConfig(mode);
+        const randomInt = typeof randomInteger === "function" ? randomInteger : secureRandomInteger;
+        while (true) {
+          const boardState = createEmptyBoard(config.size);
+          const catPosition = {
+            row: Math.floor(config.size / 2),
+            col: Math.floor(config.size / 2),
+          };
+          const initialBlocked = [];
+          const blockedKeys = new Set();
+          while (initialBlocked.length < config.initialBlocks) {
+            const row = randomInt(config.size);
+            const col = randomInt(config.size);
+            const key = cellKey(row, col);
+            if ((row === catPosition.row && col === catPosition.col) || blockedKeys.has(key)) {
+              continue;
+            }
+            blockedKeys.add(key);
+            boardState[row][col] = "blocked";
+            initialBlocked.push([row, col]);
+          }
+          const openNeighbors = getOpenNeighbors(
+            boardState,
+            catPosition,
+            config.size,
+            catPosition.row,
+            catPosition.col,
+          );
+          if (openNeighbors.length
+              && findShortestPathToEdge(boardState, config.size, catPosition.row, catPosition.col)) {
+            return {
+              mode: config.mode,
+              boardSize: config.size,
+              initialBlocks: config.initialBlocks,
+              board: boardState,
+              cat: catPosition,
+              initialBlocked: initialBlocked,
+            };
+          }
+        }
+      }
+
+      const runtimeGlobal = typeof globalThis !== "undefined" ? globalThis : window;
+      runtimeGlobal.CircleCatRules = Object.freeze({
+        DESKTOP_BOARD_SIZE: DESKTOP_BOARD_SIZE,
+        MOBILE_BOARD_SIZE: MOBILE_BOARD_SIZE,
+        DESKTOP_INITIAL_BLOCKS: DESKTOP_INITIAL_BLOCKS,
+        MOBILE_INITIAL_BLOCKS: MOBILE_INITIAL_BLOCKS,
+        EVEN_ROW_DIRS: EVEN_ROW_DIRS,
+        ODD_ROW_DIRS: ODD_ROW_DIRS,
+        boardConfig: boardConfig,
+        createEmptyBoard: createEmptyBoard,
+        getNeighbors: getNeighbors,
+        getOpenNeighbors: getOpenNeighbors,
+        findShortestPathToEdge: findShortestPathToEdge,
+        buildShortestPathDagStats: buildShortestPathDagStats,
+        chooseMaxBranchShortestStep: chooseMaxBranchShortestStep,
+        chooseFallbackMove: chooseFallbackMove,
+        isCatSealed: isCatSealed,
+        generateInitialState: generateInitialState,
+      });
+
+      if (typeof document === "undefined") {
+        return;
+      }
+
+      const rules = runtimeGlobal.CircleCatRules;
+      const gameShell = document.getElementById("gameShell");
+      const boardEl = document.getElementById("board");
+      const boardViewportEl = document.getElementById("boardViewport");
+      const turnCountEl = document.getElementById("turnCount");
+      const stateBadgeEl = document.getElementById("stateBadge");
+      const statusTextEl = document.getElementById("statusText");
+      const modeLabelEl = document.getElementById("modeLabel");
+      const routeHintEl = document.getElementById("routeHint");
+      const restartButton = document.getElementById("restart");
+      const SQRT3 = Math.sqrt(3);
+      const HEX_HEIGHT_RATIO = 2 / SQRT3;
+      const HEX_STEP_Y_RATIO = SQRT3 / 2;
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+      let board = [];
+      let cat = { row: 0, col: 0 };
+      let boardSize = DESKTOP_BOARD_SIZE;
+      let initialBlocks = DESKTOP_INITIAL_BLOCKS;
+      let turnCount = 0;
+      let gameState = "playing";
+      let mode = "desktop";
+      let lastBlockedKey = null;
+      let arrivingCatKey = null;
+      let moveTimer = null;
+      let resizeTimer = null;
+      let generation = 0;
+      let currentCellSize = 50;
+      let currentGap = 3;
+      let boardEntering = true;
+
+      function viewportMode() {
+        return window.innerWidth <= MOBILE_BREAKPOINT ? "mobile" : "desktop";
+      }
+
+      function updateStatus(message, state) {
+        statusTextEl.textContent = message;
+        statusTextEl.dataset.state = state || gameState;
+      }
+
+      function updateBadge(label) {
+        stateBadgeEl.textContent = label;
+      }
+
+      function clearMoveTimer() {
+        if (moveTimer !== null) {
+          window.clearTimeout(moveTimer);
+          moveTimer = null;
+        }
+      }
+
+      function updateBoardMetrics() {
+        turnCountEl.textContent = String(turnCount);
+        const width = Math.max(220, boardViewportEl.clientWidth - 8);
+        const height = Math.max(210, boardViewportEl.clientHeight - 8);
+        const gap = window.innerWidth < 520 ? 1 : 3;
+        const widthFit = (width - gap * (boardSize - 0.5)) / (boardSize + 0.5);
+        const verticalGap = gap * (boardSize - 1) * HEX_STEP_Y_RATIO;
+        const verticalCells = HEX_HEIGHT_RATIO + (boardSize - 1) * HEX_STEP_Y_RATIO;
+        const heightFit = (height - verticalGap) / verticalCells;
+        const minimum = boardSize >= 11 ? 20 : 23;
+        currentCellSize = Math.max(minimum, Math.floor(Math.min(widthFit, heightFit)));
+        currentGap = gap;
+        const boardPixelWidth = (boardSize + 0.5) * currentCellSize
+          + (boardSize - 0.5) * currentGap;
+        const boardPixelHeight = currentCellSize * HEX_HEIGHT_RATIO
+          + (boardSize - 1) * (currentCellSize + currentGap) * HEX_STEP_Y_RATIO;
+        document.documentElement.style.setProperty("--hex-gap", currentGap + "px");
+        document.documentElement.style.setProperty("--cell-size", currentCellSize + "px");
+        boardEl.style.width = Math.ceil(boardPixelWidth) + "px";
+        boardEl.style.height = Math.ceil(boardPixelHeight) + "px";
+        boardEl.style.setProperty("--board-size", String(boardSize));
+      }
+
+      function cellContents(blocked, isCatCell) {
+        if (blocked) {
+          return '<span class="cell-inner"><span class="rock"></span></span>';
+        }
+        if (isCatCell) {
+          return '<span class="cell-inner"><span class="cat-figure"><span class="cat-face"></span></span></span>';
+        }
+        return '<span class="cell-inner"></span>';
+      }
+
+      function render() {
+        updateBoardMetrics();
+        boardEl.innerHTML = "";
+        const grid = document.createElement("div");
+        grid.className = "board-grid";
+        if (boardEntering) {
+          grid.classList.add("entering");
+        }
+        grid.style.width = Math.ceil(
+          (boardSize + 0.5) * currentCellSize + (boardSize - 0.5) * currentGap,
+        ) + "px";
+        grid.setAttribute("role", "rowgroup");
+        for (let row = 0; row < boardSize; row += 1) {
+          const rowEl = document.createElement("div");
+          rowEl.className = "board-row" + (row % 2 === 1 ? " offset" : "");
+          rowEl.style.width = Math.ceil(
+            boardSize * currentCellSize + (boardSize - 1) * currentGap,
+          ) + "px";
+          rowEl.setAttribute("role", "row");
+          for (let col = 0; col < boardSize; col += 1) {
+            const blocked = board[row][col] === "blocked";
+            const isCatCell = row === cat.row && col === cat.col;
+            const key = cellKey(row, col);
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "cell";
+            button.setAttribute("role", "gridcell");
+            button.dataset.row = String(row);
+            button.dataset.col = String(col);
+            if (blocked) {
+              button.classList.add("blocked");
+            }
+            if (isCatCell) {
+              button.classList.add("cat");
+            }
+            if (key === lastBlockedKey) {
+              button.classList.add("just-blocked");
+            }
+            if (key === arrivingCatKey) {
+              button.classList.add("cat-arriving");
+            }
+            button.disabled = blocked || isCatCell || gameState !== "playing";
+            button.setAttribute(
+              "aria-label",
+              isCatCell
+                ? "小猫当前位置，第 " + (row + 1) + " 行第 " + (col + 1) + " 列"
+                : blocked
+                  ? "障碍物，第 " + (row + 1) + " 行第 " + (col + 1) + " 列"
+                  : "空格，第 " + (row + 1) + " 行第 " + (col + 1) + " 列",
+            );
+            button.innerHTML = cellContents(blocked, isCatCell);
+            rowEl.appendChild(button);
+          }
+          grid.appendChild(rowEl);
+        }
+        boardEl.appendChild(grid);
+        boardEntering = false;
+        lastBlockedKey = null;
+        arrivingCatKey = null;
+      }
+
+      function finishGame(state, message) {
+        gameState = state;
+        clearMoveTimer();
+        gameShell.classList.remove("is-win", "is-lose");
+        gameShell.classList.add(state === "win" ? "is-win" : "is-lose");
+        updateBadge(state === "win" ? "已围住" : "逃走了");
+        updateStatus(message, state);
+        routeHintEl.textContent = state === "win" ? "所有出口已封锁" : "小猫抵达边缘";
+        render();
+      }
+
+      function moveCat(activeGeneration) {
+        if (generation !== activeGeneration || gameState !== "moving") {
+          return;
+        }
+        const openNeighbors = rules.getOpenNeighbors(board, cat, boardSize, cat.row, cat.col);
+        if (!openNeighbors.length) {
+          finishGame("win", "小猫动不了了。你封住了所有相邻格。");
+          return;
+        }
+        const nextStep = rules.chooseMaxBranchShortestStep(
+          board,
+          cat,
+          boardSize,
+          openNeighbors,
+        ) || rules.chooseFallbackMove(boardSize, openNeighbors);
+        if (!nextStep) {
+          finishGame("win", "小猫找不到可以移动的格子。");
+          return;
+        }
+        cat = { row: nextStep.row, col: nextStep.col };
+        arrivingCatKey = cellKey(cat.row, cat.col);
+        if (isEdge(boardSize, cat.row, cat.col)) {
+          finishGame("lose", "小猫沿最短路线抵达边缘。换个方向再试一次吧。");
+          return;
+        }
+        if (rules.isCatSealed(board, cat, boardSize)) {
+          finishGame("win", "漂亮！小猫移动后，通往边缘的路线已经全部断开。");
+          return;
+        }
+        gameState = "playing";
+        updateBadge("进行中");
+        updateStatus("小猫选择了最短路线中分支最多的一步。继续封锁。", "playing");
+        routeHintEl.textContent = "继续压缩逃生分支";
+        render();
+      }
+
+      function handleBoardClick(event) {
+        const button = event.target.closest(".cell");
+        if (!button || button.disabled || gameState !== "playing") {
+          return;
+        }
+        const row = Number(button.dataset.row);
+        const col = Number(button.dataset.col);
+        if (!Number.isInteger(row) || !Number.isInteger(col)
+            || board[row][col] === "blocked"
+            || (row === cat.row && col === cat.col)) {
+          return;
+        }
+        board[row][col] = "blocked";
+        turnCount += 1;
+        lastBlockedKey = cellKey(row, col);
+        if (rules.isCatSealed(board, cat, boardSize)) {
+          finishGame("win", "漂亮！这块石头切断了最后一条逃生路线。");
+          return;
+        }
+        gameState = "moving";
+        updateBadge("思考中");
+        updateStatus("石头落下了，小猫正在比较所有最短逃生分支……", "playing");
+        routeHintEl.textContent = "计算最短路分支";
+        render();
+        const activeGeneration = generation;
+        const delay = reducedMotion.matches ? 1 : 230;
+        moveTimer = window.setTimeout(function () {
+          moveTimer = null;
+          moveCat(activeGeneration);
+        }, delay);
+      }
+
+      function setupBoard(reason) {
+        generation += 1;
+        clearMoveTimer();
+        mode = viewportMode();
+        const initial = rules.generateInitialState(mode);
+        board = initial.board;
+        cat = initial.cat;
+        boardSize = initial.boardSize;
+        initialBlocks = initial.initialBlocks;
+        turnCount = 0;
+        gameState = "playing";
+        lastBlockedKey = null;
+        arrivingCatKey = cellKey(cat.row, cat.col);
+        boardEntering = true;
+        gameShell.classList.remove("is-win", "is-lose");
+        updateBadge("进行中");
+        updateStatus(
+          reason === "resize"
+            ? "布局已切换，按新的棋盘规格开始一局。"
+            : "新棋盘已生成。先观察通往边缘的路线。",
+          "playing",
+        );
+        modeLabelEl.textContent = (mode === "mobile" ? "窄屏棋盘" : "桌面棋盘")
+          + " · " + boardSize + " × " + boardSize;
+        routeHintEl.textContent = "初始障碍 " + initialBlocks + " 块";
+        render();
+      }
+
+      boardEl.addEventListener("click", handleBoardClick);
+      restartButton.addEventListener("click", function () {
+        setupBoard("restart");
+      });
+      window.addEventListener("resize", function () {
+        if (resizeTimer !== null) {
+          window.clearTimeout(resizeTimer);
+        }
+        resizeTimer = window.setTimeout(function () {
+          resizeTimer = null;
+          if (viewportMode() !== mode) {
+            setupBoard("resize");
+            return;
+          }
+          render();
+        }, 120);
+      });
+
+      setupBoard("initial");
+    }());
+  </script>
+</body>
+</html>

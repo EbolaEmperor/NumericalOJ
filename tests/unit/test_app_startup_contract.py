@@ -75,6 +75,44 @@ def test_importing_oj_does_not_run_recovery_or_scheduling_jobs():
     assert actual == set()
 
 
+def test_vibehub_reaper_only_starts_inside_web_service_guard():
+    tree = _tree()
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _called_name(node) == 'ensure_vibehub_runtime_reaper'
+    ]
+    main_guard = next(
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.If)
+        and "__name__ == '__main__'" in ast.unparse(statement.test)
+    )
+
+    assert len(calls) == 1
+    assert main_guard.lineno <= calls[0].lineno <= main_guard.end_lineno
+
+
+def test_vibehub_storage_gc_only_starts_inside_web_service_guard():
+    tree = _tree()
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _called_name(node) == 'ensure_vibehub_storage_gc'
+    ]
+    main_guard = next(
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.If)
+        and "__name__ == '__main__'" in ast.unparse(statement.test)
+    )
+
+    assert len(calls) == 1
+    assert main_guard.lineno <= calls[0].lineno <= main_guard.end_lineno
+
+
 def test_production_web_uses_central_gunicorn_config_without_schema_side_effects():
     config = (ROOT / 'deploy' / 'supervisor' / 'web.conf').read_text(encoding='utf-8')
 
@@ -161,7 +199,9 @@ def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
     settings = runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
     calls = []
     fake_oj = types.ModuleType('oj')
-    fake_oj.ensure_background_schedulers = lambda: calls.append('ensure')
+    fake_oj.ensure_background_schedulers = lambda: calls.append('schedulers')
+    fake_oj.ensure_vibehub_runtime_reaper = lambda: calls.append('vibehub-reaper')
+    fake_oj.ensure_vibehub_storage_gc = lambda: calls.append('vibehub-storage-gc')
     monkeypatch.setitem(sys.modules, 'oj', fake_oj)
 
     logged = []
@@ -170,8 +210,10 @@ def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
     )
     settings['post_worker_init'](worker)
 
-    assert calls == ['ensure']
-    assert logged == ['Ensuring NumericalOJ background schedulers in the Web worker']
+    assert calls == ['vibehub-reaper', 'vibehub-storage-gc', 'schedulers']
+    assert logged == [
+        'Ensuring VibeHub reapers and NumericalOJ background schedulers in the Web worker'
+    ]
 
 
 def test_supervisors_keep_distinct_runtime_controls_and_project_local_logs():

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ARC-AGI-3 环境</title>
+  <style>
+    :root{--paper:#f1eadc;--sheet:#fffaf0;--ink:#24241f;--muted:#756d62;--line:#d3c7b5;--orange:#d45538;--yellow:#e4b943;--blue:#47798b;--green:#41614b}
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0}body{overflow:hidden;background:var(--paper);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",sans-serif}.shell{display:grid;height:100%;grid-template-columns:minmax(0,1fr)minmax(280px,360px)}
+    main{display:grid;min-width:0;grid-template-rows:auto minmax(0,1fr) auto;background:#20201c}.top{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 20px;border-bottom:1px solid #3f3e37;color:#eee8dc}.top a{color:#e7a578;font-size:12px;text-decoration:none}.top strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.top span{color:#8e887e;font:10px ui-monospace,monospace}.stage{position:relative;display:grid;min-height:0;place-items:center;padding:20px}canvas{width:min(72vh,72vw);height:min(72vh,72vw);max-width:100%;max-height:100%;background:#000;image-rendering:pixelated;box-shadow:0 0 0 1px #4d4b43,0 18px 55px #0008}.message{position:absolute;inset:auto 24px 24px;padding:12px;border:1px solid #5b554a;background:#2d2b25e8;color:#eee8dc;text-align:center}.message[hidden]{display:none}.foot{display:flex;justify-content:space-between;padding:11px 20px;border-top:1px solid #3f3e37;color:#aaa397;font-size:11px}
+    aside{display:flex;min-height:0;flex-direction:column;overflow:auto;padding:28px 25px;border-left:1px solid var(--line);background:var(--sheet)}.kicker{margin:0;color:#9a4425;font:700 10px ui-monospace,monospace;letter-spacing:.12em}h1{margin:9px 0 7px;font:500 31px Georgia,"Songti SC",serif}.lede{margin:0;color:var(--muted);font-size:11px;line-height:1.7}.stats{display:grid;grid-template-columns:repeat(3,1fr);margin:24px 0;border:1px solid var(--line)}.stats div{padding:12px 8px;text-align:center}.stats div+div{border-left:1px solid var(--line)}.stats small{display:block;color:var(--muted);font-size:9px}.stats b{display:block;margin-top:5px;font:700 16px ui-monospace,monospace}
+    .dpad{display:grid;width:190px;grid-template-columns:repeat(3,1fr);gap:6px;margin:0 auto 16px}.dpad button{aspect-ratio:1;border:1px solid var(--line);background:#f4ead8;color:var(--ink);font-size:18px;cursor:pointer}.dpad button:nth-child(1){grid-column:2}.dpad button:nth-child(2){grid-column:1}.dpad button:nth-child(3){grid-column:2;background:var(--ink);color:white;font-size:10px}.dpad button:disabled,.actions button:disabled{cursor:not-allowed;opacity:.3}.actions{display:grid;gap:7px;margin-top:auto}.actions button{min-height:42px;border:1px solid var(--ink);background:transparent;color:var(--ink);cursor:pointer}.actions button.primary{background:var(--ink);color:white}.hint{margin:12px 0 22px;color:var(--muted);font-size:10px;line-height:1.7;text-align:center}kbd{padding:2px 5px;border:1px solid var(--line);background:#eee3d1;font:9px ui-monospace,monospace}
+    @media(max-width:780px){body{overflow:auto}.shell{height:auto;min-height:100%;grid-template-columns:1fr;grid-template-rows:minmax(65vh,1fr) auto}.stage canvas{width:min(82vw,58vh);height:min(82vw,58vh)}aside{border-top:1px solid var(--line);border-left:0}.actions{margin-top:12px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <main>
+      <header class="top"><a href="./">← 全部环境</a><strong id="stageTitle">正在载入环境</strong><span id="fullId">ARC-AGI-3</span></header>
+      <section class="stage"><canvas id="board" width="64" height="64" aria-label="ARC 游戏画面"></canvas><div class="message" id="message">正在建立离线对局…</div></section>
+      <footer class="foot"><span id="status">载入中</span><span id="frameNotice"></span></footer>
+    </main>
+    <aside>
+      <p class="kicker">DISCOVER THE RULE</p><h1 id="title">ARC 环境</h1><p class="lede">规则不会以文字给出。观察每次操作前后的变化，逐步推断目标。</p>
+      <section class="stats"><div><small>完成关卡</small><b id="levels">0</b></div><div><small>目标</small><b id="wins">–</b></div><div><small>操作</small><b id="actions">0</b></div></section>
+      <div class="dpad"><button data-action="1" aria-label="向上">↑</button><button data-action="3" aria-label="向左">←</button><button data-action="5">ACT</button><button data-action="4" aria-label="向右">→</button><button data-action="2" aria-label="向下">↓</button></div>
+      <p class="hint"><kbd>WASD</kbd> / 方向键移动　<kbd>SPACE</kbd> 操作<br>支持点击的环境可以直接点击棋盘　<kbd>Z</kbd> 撤销</p>
+      <div class="actions"><button data-action="7">撤销一步</button><button id="reset">重置本关</button><button class="primary" id="restart">重新开始</button></div>
+    </aside>
+  </div>
+  <script>
+    (function(){"use strict";
+      var palette=["#fff","#ccc","#999","#666","#333","#000","#e53aa3","#ff7bcc","#f93c31","#1e93ff","#88d8f1","#ffdc00","#ff851b","#921231","#4fcc30","#a356d6"],params=new URLSearchParams(location.search),slug=params.get("game")||"",session="",busy=true,available=new Set(),lastFrame=null,sequence=0;
+      var canvas=document.getElementById("board"),ctx=canvas.getContext("2d",{alpha:false}),message=document.getElementById("message"),status=document.getElementById("status"),buttons=Array.from(document.querySelectorAll("[data-action]"));
+      function setMessage(text){message.textContent=text||"";message.hidden=!text}function controls(){buttons.forEach(function(b){var a=+b.dataset.action;b.disabled=busy||(a!==0&&!available.has(a))});document.getElementById("reset").disabled=busy||!session;document.getElementById("restart").disabled=busy}
+      async function json(url,options){var response=await fetch(url,Object.assign({headers:{Accept:"application/json","Content-Type":"application/json"}},options||{})),data=await response.json().catch(function(){return{}});if(!response.ok||data.success===false)throw new Error(data.message||"请求失败");return data}
+      function draw(frame){if(!Array.isArray(frame)||!frame.length)return;canvas.width=frame[0].length;canvas.height=frame.length;ctx.imageSmoothingEnabled=false;frame.forEach(function(row,y){row.forEach(function(value,x){ctx.fillStyle=palette[+value]||"#000";ctx.fillRect(x,y,1,1)})});lastFrame=frame}
+      function animate(frames,fps){var own=++sequence;if(!frames||!frames.length)return Promise.resolve();var delay=matchMedia("(prefers-reduced-motion: reduce)").matches?0:Math.max(16,Math.round(1000/Math.min(30,+fps||10)));return new Promise(function(resolve){var i=0;function next(){if(own!==sequence){resolve();return}draw(frames[i++]);if(i>=frames.length||!delay){if(!delay)draw(frames[frames.length-1]);resolve();return}setTimeout(function(){requestAnimationFrame(next)},delay)}next()})}
+      async function apply(game){await animate(game.frames,game.default_fps);available=new Set(game.available_actions||[]);document.getElementById("levels").textContent=game.levels_completed;document.getElementById("wins").textContent=game.win_levels;document.getElementById("actions").textContent=game.action_count;document.getElementById("frameNotice").textContent=game.skipped_frames?"动画压缩 "+game.skipped_frames+" 帧":"";var done=game.state==="WIN",over=game.state==="GAME_OVER";status.textContent=done?"环境已完成":over?"本轮结束":"探索中";setMessage(done?"你找到了这个环境的规则。":over?"本轮结束，调整策略再试一次。":"")}
+      async function start(){busy=true;controls();setMessage("正在建立离线对局…");try{var data=await json("./api/games/"+encodeURIComponent(slug)+"/start",{method:"POST",body:"{}"});session=data.session_id;await apply(data.game)}catch(error){setMessage(error.message);status.textContent="启动失败"}finally{busy=false;controls()}}
+      async function act(action,data){if(busy||!session||(action!==0&&!available.has(action)))return;busy=true;controls();setMessage("");try{var result=await json("./api/sessions/"+encodeURIComponent(session)+"/action",{method:"POST",body:JSON.stringify({action_id:action,data:data||{}})});await apply(result.game)}catch(error){setMessage(error.message)}finally{busy=false;controls()}}
+      buttons.forEach(function(button){button.addEventListener("click",function(){act(+button.dataset.action)})});document.getElementById("reset").addEventListener("click",function(){act(0)});document.getElementById("restart").addEventListener("click",start);
+      canvas.addEventListener("click",function(event){if(busy||!available.has(6)||!lastFrame)return;var box=canvas.getBoundingClientRect(),x=Math.max(0,Math.min(canvas.width-1,Math.floor((event.clientX-box.left)*canvas.width/box.width))),y=Math.max(0,Math.min(canvas.height-1,Math.floor((event.clientY-box.top)*canvas.height/box.height)));act(6,{x:x,y:y})});
+      document.addEventListener("keydown",function(event){if(event.repeat||busy||event.metaKey||event.ctrlKey||event.altKey)return;var key=event.key.toLowerCase(),map={arrowup:1,w:1,arrowdown:2,s:2,arrowleft:3,a:3,arrowright:4,d:4," ":5,z:7};if(map[key]&&available.has(map[key])){event.preventDefault();act(map[key])}});
+      if(!/^[a-z0-9]{4}$/.test(slug)){setMessage("环境标识无效");return}json("./api/catalog").then(function(data){var game=(data.games||[]).find(function(item){return item.slug===slug});if(!game)throw new Error("环境不存在");document.title=game.title+" · ARC-AGI-3";document.getElementById("title").textContent=game.title;document.getElementById("stageTitle").textContent=game.title;document.getElementById("fullId").textContent=game.full_id;start()}).catch(function(error){setMessage(error.message)});
+    }());
+  </script>
+</body>
+</html>

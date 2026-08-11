@@ -28,9 +28,17 @@ errorlog = "-"
 
 
 def post_worker_init(worker):
-    """应用装载完成后，幂等确保非破坏性的后台调度链存在。"""
+    """应用装载完成后，幂等确保回收器与非破坏性调度链存在。"""
     # oj:app 已在当前 worker 中导入；这里命中 sys.modules，不会再做一次完整应用导入。
-    from oj import ensure_background_schedulers
+    from oj import (
+        ensure_background_schedulers,
+        ensure_vibehub_runtime_reaper,
+        ensure_vibehub_storage_gc,
+    )
 
-    worker.log.info("Ensuring NumericalOJ background schedulers in the Web worker")
+    worker.log.info(
+        "Ensuring VibeHub reapers and NumericalOJ background schedulers in the Web worker"
+    )
+    ensure_vibehub_runtime_reaper()
+    ensure_vibehub_storage_gc()
     ensure_background_schedulers()
