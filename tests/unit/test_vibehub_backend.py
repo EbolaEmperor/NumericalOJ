@@ -267,7 +267,6 @@ def _project_row(**overrides):
         "slug": "demo-vibe",
         "owner_id": 7,
         "owner_username": "viber",
-        "project_kind": "container",
         "latest_version_id": 12,
         "public_version_id": 10,
         "review_version_id": 11,
@@ -425,6 +424,66 @@ class _Connection:
         self.closed = True
 
 
+def test_gallery_projects_selects_only_actor_visible_snapshots(monkeypatch):
+    public_row = _project_row(
+        slug="public-vibe",
+        owner_id=OUTSIDER["id"],
+    )
+    own_private_row = _project_row(
+        slug="own-private",
+        public_version_id=None,
+        public_version=None,
+        public_title=None,
+        review_version_id=12,
+        submitted_version=3,
+        review_title="latest",
+        review_review_status="pending",
+    )
+    user_connection = _Connection([])
+    user_connection.fake_cursor.fetchall = lambda: [public_row, own_private_row]
+    monkeypatch.setattr(services, "get_db_connection", lambda: user_connection)
+    by_slug = {
+        project["slug"]: project
+        for project in services.list_gallery_projects(USER)
+    }
+    assert PRIVATE_PUBLIC_PROJECT_FIELDS.isdisjoint(by_slug["public-vibe"])
+    own = by_slug["own-private"]
+    assert tuple(own[key] for key in (
+        "title", "is_mine", "is_pending", "can_edit", "can_approve",
+    )) == ("latest", True, True, True, False)
+    user_query, params = user_connection.fake_cursor.calls[0]
+    assert "p.owner_id = %s" in user_query and "rv.review_status = 'pending'" not in user_query
+    assert params == (USER["id"], USER["id"])
+
+    admin_connection = _Connection([])
+    admin_connection.fake_cursor.fetchall = lambda: [_project_row()]
+    monkeypatch.setattr(services, "get_db_connection", lambda: admin_connection)
+    pending = services.list_gallery_projects(ADMIN)[0]
+    assert (pending["title"], pending["is_pending"], pending["can_approve"]) == (
+        "submitted", True, True,
+    )
+    assert pending["play_url"].endswith("?channel=review")
+    assert "rv.review_status = 'pending'" in admin_connection.fake_cursor.calls[0][0]
+
+
+def test_atomic_latest_pointer_can_replace_the_pending_review():
+    cursor = _Cursor([])
+
+    review_version_id = services._point_latest_version(
+        cursor,
+        project_id=3,
+        version_id=13,
+        previous_review_id=11,
+        submit_for_review=True,
+    )
+
+    assert review_version_id == 13
+    assert [params for _sql, params in cursor.calls] == [(11,), (13,), (13, 13, 3)]
+    assert [needle in cursor.calls[index][0] for index, needle in enumerate((
+        "review_status = 'draft'", "review_status = 'pending'", "review_version_id = %s",
+    ))] == [True, True, True]
+
+
 def test_create_preflight_rejects_nonfeatured_limit_and_admin_skips_db(monkeypatch):
     connection = _Connection([{"nonfeatured_count": 2}])
     monkeypatch.setattr(services, "get_db_connection", lambda: connection)
@@ -450,7 +509,7 @@ def test_create_preflight_rejects_nonfeatured_limit_and_admin_skips_db(monkeypat
 
 def test_upload_preflight_checks_owner_and_version_cap_in_one_query(monkeypatch):
     connection = _Connection(
-        [{"owner_id": USER["id"], "project_kind": "container", "version_count": 1_000}]
+        [{"owner_id": USER["id"], "version_count": 1_000}]
     )
     monkeypatch.setattr(services, "get_db_connection", lambda: connection)
 
@@ -460,7 +519,6 @@ def test_upload_preflight_checks_owner_and_version_cap_in_one_query(monkeypatch)
     assert raised.value.code == "versions_quota_exceeded"
     assert connection.closed is True
     sql, params = connection.fake_cursor.calls[0]
-    assert "SELECT p.owner_id, p.project_kind" in sql
     assert "SELECT COUNT(*)" in sql
     assert "FROM vibehub_versions" in sql
     assert len(connection.fake_cursor.calls) == 1
@@ -469,7 +527,7 @@ def test_upload_preflight_checks_owner_and_version_cap_in_one_query(monkeypatch)
 
 def test_review_preflight_checks_owner_without_applying_version_cap(monkeypatch):
     connection = _Connection(
-        [{"owner_id": USER["id"], "project_kind": "container", "version_count": 1_000}]
+        [{"owner_id": USER["id"], "version_count": 1_000}]
     )
     monkeypatch.setattr(services, "get_db_connection", lambda: connection)
 
@@ -477,7 +535,6 @@ def test_review_preflight_checks_owner_without_applying_version_cap(monkeypatch)
 
     assert connection.closed is True
     sql, params = connection.fake_cursor.calls[0]
-    assert "SELECT owner_id, project_kind" in sql
     assert "vibehub_versions" not in sql
     assert "version_count" not in sql
     assert params == ("demo-vibe",)
@@ -495,7 +552,7 @@ def test_admin_preflight_is_db_free(monkeypatch):
         services.preflight_admin(USER)
 
 
-def test_public_service_merges_builtin_projects_but_mine_does_not(monkeypatch):
+def test_public_and_mine_lists_are_database_backed(monkeypatch):
     public_connection = _Connection([])
     mine_connection = _Connection([])
     connections = iter((public_connection, mine_connection))
@@ -504,16 +561,11 @@ def test_public_service_merges_builtin_projects_but_mine_does_not(monkeypatch):
     public = services.list_public_projects()
     mine = services.list_user_projects(USER)
 
-    assert [project["slug"] for project in public[:2]] == ["circle-cat", "arc-agi-3"]
-    assert all(project["project_kind"] == "builtin" for project in public[:2])
-    assert all(PRIVATE_PUBLIC_PROJECT_FIELDS.isdisjoint(project) for project in public)
+    assert public == []
     public_query = public_connection.fake_cursor.calls[0][0]
     assert "p.updated_at DESC" not in public_query
     assert "COALESCE(pv.reviewed_at, p.created_at) DESC" in public_query
     assert mine == []
-    builtin = services.get_project("circle-cat")
-    assert builtin["play_url"] == "/vibehub/circle-cat/play"
-    assert PRIVATE_PUBLIC_PROJECT_FIELDS.isdisjoint(builtin)
 
 
 def test_only_owner_gets_workflow_enrichment_on_explicit_public_detail(monkeypatch):
@@ -634,7 +686,6 @@ def test_admin_publish_restores_old_pointer_even_when_pointer_write_raises(
         "id": 3,
         "slug": "demo-vibe",
         "owner_id": 1,
-        "project_kind": "container",
         "latest_version_id": 12,
         "public_version_id": 10,
         "review_version_id": None,
@@ -670,7 +721,6 @@ def test_admin_cannot_publish_another_users_work_as_its_owner(tmp_path, monkeypa
         "id": 3,
         "slug": "demo-vibe",
         "owner_id": USER["id"],
-        "project_kind": "container",
         "latest_version_id": 12,
         "public_version_id": None,
         "review_version_id": None,
@@ -687,6 +737,31 @@ def test_admin_cannot_publish_another_users_work_as_its_owner(tmp_path, monkeypa
     assert connection.rolled_back is True
 
 
+def test_review_rejects_a_stale_confirmed_version_before_writing_public_pointer(
+    tmp_path,
+    monkeypatch,
+):
+    connection = _Connection([_project_row(), _version_row(11, 2, "pending")])
+    monkeypatch.setattr(services, "get_db_connection", lambda: connection)
+    monkeypatch.setattr(
+        storage,
+        "write_pointer",
+        lambda *_args, **_kwargs: pytest.fail("版本身份校验前不得写 public 指针"),
+    )
+
+    with pytest.raises(services.VibeHubError) as raised:
+        services.review_submission(
+            ADMIN,
+            "demo-vibe",
+            "approve",
+            expected_version=99,
+            upload_root=tmp_path,
+        )
+
+    assert raised.value.code == "review_stale"
+    assert connection.rolled_back is True
+
+
 def test_review_approval_publishes_the_submitted_version_not_newer_latest(
     tmp_path,
     monkeypatch,
@@ -695,7 +770,6 @@ def test_review_approval_publishes_the_submitted_version_not_newer_latest(
         "id": 3,
         "slug": "demo-vibe",
         "owner_id": 7,
-        "project_kind": "container",
         "latest_version_id": 12,
         "public_version_id": 10,
         "review_version_id": 11,
@@ -748,7 +822,6 @@ def test_review_rejection_response_does_not_expose_newer_unsubmitted_latest(
         "id": 3,
         "slug": "demo-vibe",
         "owner_id": 7,
-        "project_kind": "container",
         "latest_version_id": 12,
         "public_version_id": 10,
         "review_version_id": 11,
@@ -1104,6 +1177,7 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
     gate_entries = []
     current_actor = [USER]
     db_checks = []
+    automatic_reviews = []
 
     @contextmanager
     def checked_gate():
@@ -1122,11 +1196,13 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
     def assert_service(*_args, **_kwargs):
         assert active[0] is True
         db_checks.append("service-open-db")
+        if "submit_for_review" in _kwargs:
+            automatic_reviews.append(_kwargs["submit_for_review"])
         return {"id": 1}
 
     def assert_payload():
         assert active[0] is True
-        return {"decision": "approve"}
+        return {"decision": "approve", "submit_for_review": "true"}
 
     def assert_upload():
         assert active[0] is True
@@ -1181,6 +1257,7 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
     assert gate_entries == [True] * 5
     assert db_checks.count("preflight") == 4
     assert db_checks.count("service-open-db") == 5
+    assert automatic_reviews == [True, True, True]
     assert active[0] is False
 
 
@@ -1277,7 +1354,13 @@ def test_api_serves_the_tracked_developer_guide():
 
     assert response.status_code == 200
     assert response.mimetype == "text/markdown"
-    assert "# VibeHub 开发者手册" in response.get_data(as_text=True)
+    guide = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "vibehub-developer-guide.md"
+    ).read_bytes()
+    assert response.get_data() == guide
+    assert b"/api/vibehub/" not in guide
     assert response.headers["X-Content-Type-Options"] == "nosniff"
 
 

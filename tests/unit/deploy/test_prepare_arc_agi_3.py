@@ -57,7 +57,6 @@ def _source_bytes(index, variant="v1"):
 def _make_complete_cache(data_root, game_count=25, variant="v1"):
     staging = data_root / ".fixture-staging"
     (staging / "environments").mkdir(parents=True)
-    (staging / "previews").mkdir()
     games = []
     for index in range(game_count):
         slug = f"g{index:03d}"
@@ -67,11 +66,6 @@ def _make_complete_cache(data_root, game_count=25, variant="v1"):
         source_dir = staging / "environments" / slug / version
         source_dir.mkdir(parents=True)
         (source_dir / f"{slug}.py").write_bytes(source)
-        preview_path = staging / "previews" / f"{slug}.png"
-        prepare_arc_agi_3._write_fingerprint_preview(
-            preview_path,
-            _sha256(source),
-        )
         games.append(
             {
                 "slug": slug,
@@ -80,11 +74,7 @@ def _make_complete_cache(data_root, game_count=25, variant="v1"):
                 "title": f"Synthetic {index:03d}",
                 "default_fps": 30,
                 "level_count": 1,
-                "input_kind": "keyboard_click",
-                "input_label": "方向键 + 点击",
-                "available_actions": [1, 2, 3, 4, 5, 6],
                 "source_sha256": _sha256(source),
-                "preview_sha256": _sha256(preview_path.read_bytes()),
             }
         )
     set_id = prepare_arc_agi_3._games_fingerprint(games)
@@ -126,7 +116,6 @@ def _install_fake_online(monkeypatch, *, variant="v1", game_count=25):
             "title": f"Synthetic {index:03d}",
             "default_fps": 30,
             "baseline_actions": [1],
-            "available_actions": [1, 2, 3, 4, 5, 6],
         }
 
     def fake_source(_session, path, **_kwargs):
@@ -185,8 +174,14 @@ def test_same_game_ids_with_changed_source_publish_a_new_set(tmp_path, monkeypat
 
     assert target != f"sets/{cached.name}"
     published = data_root / target
-    prepare_arc_agi_3._validate_cached_set(published, 25)
+    manifest = prepare_arc_agi_3._validate_cached_set(published, 25)
     assert b"v2" in next((published / "environments").glob("*/*/*.py")).read_bytes()
+    assert not (published / "previews").exists()
+    assert all(
+        not {"available_actions", "input_kind", "input_label", "preview_sha256"}
+        .intersection(game)
+        for game in manifest["games"]
+    )
     assert len(source_requests) == 25
     assert cached.is_dir()
 
@@ -210,15 +205,20 @@ def test_deployer_never_imports_downloaded_game_source():
     source = Path(prepare_arc_agi_3.__file__).read_text(encoding="utf-8")
     assert "module_from_spec" not in source
     assert "exec_module" not in source
-    assert "_write_fingerprint_preview" in source
+    assert "_write_fingerprint_preview" not in source
+    assert "preview_sha256" not in source
+    assert "ImageDraw" not in source
+    assert "_input_details" not in source
+    assert "available_actions" not in source
+    assert "input_label" not in source
 
 
 def test_cache_validation_rejects_a_modified_game_file(tmp_path):
     data_root = tmp_path / "arc-agi-3"
     data_root.mkdir()
     set_root = _make_complete_cache(data_root)
-    preview = next((set_root / "previews").iterdir())
-    preview.write_bytes(b"modified")
+    source = next((set_root / "environments").glob("*/*/*.py"))
+    source.write_bytes(b"# MIT License\n# modified\n")
 
     with pytest.raises(
         prepare_arc_agi_3.ArcPublicSetError,

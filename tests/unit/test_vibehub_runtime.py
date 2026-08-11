@@ -152,6 +152,8 @@ class _FakeDocker:
         self.managed_image_prunes = 0
         self.build_cache_prunes = 0
         self.removed_image_references: list[tuple[str, str]] = []
+        self.data_volumes: dict[str, tuple[str, str]] = {}
+        self.data_write_checks: list[str] = []
 
     def inspect_image(self, reference):
         return runtime.ImageInfo(
@@ -179,6 +181,15 @@ class _FakeDocker:
         self.run_commands.append(args)
         name = args[args.index("--name") + 1]
         self.running.add(name)
+
+    def ensure_data_volume(self, name, *, scope, storage_key):
+        identity = (scope, storage_key)
+        previous = self.data_volumes.setdefault(name, identity)
+        if previous != identity:
+            raise runtime.VibeHubRuntimeError("volume identity mismatch")
+
+    def verify_data_writable(self, container_name):
+        self.data_write_checks.append(container_name)
 
     def remove_container(self, name):
         if name in self.running or name in self.orphans:
@@ -226,6 +237,13 @@ def _manager(monkeypatch, tmp_path, *, docker=None, clock=lambda: 100.0, **kwarg
     )
     monkeypatch.setattr(manager, "_wait_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(manager, "_probe_runtime_health", lambda *_args, **_kwargs: None)
+    acquire = manager.acquire
+
+    def acquire_test_project(*args, **acquire_kwargs):
+        acquire_kwargs.setdefault("storage_key", "project-1-public")
+        return acquire(*args, **acquire_kwargs)
+
+    monkeypatch.setattr(manager, "acquire", acquire_test_project)
     return manager
 
 
@@ -647,7 +665,7 @@ def test_dockerfile_allows_only_runtime_uid_chown_copy_flag(copy_line):
     ) == (runtime.DEFAULT_BASE_IMAGE,)
 
 
-def test_runtime_args_are_networkless_read_only_and_featured_resources_double(
+def test_runtime_args_are_networkless_writable_and_featured_resources_double(
     monkeypatch,
     short_tmp,
 ):
@@ -658,15 +676,17 @@ def test_runtime_args_are_networkless_read_only_and_featured_resources_double(
         runtime_id=runtime_id,
         image_id=_APP_ID,
         featured=False,
+        data_volume="numoj-vh-data-" + manager.scope + "-project-1-public",
     )
     featured = manager._container_args(
         runtime_id=runtime_id,
         image_id=_APP_ID,
         featured=True,
+        data_volume="numoj-vh-data-" + manager.scope + "-project-1-public",
     )
 
     for required in (
-        "--network", "none", "--read-only", "--cap-drop", "ALL",
+        "--network", "none", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges=true", "--user", "65532:65532",
         "--pull", "never", "--ipc", "none", "--runtime", "runsc",
     ):
@@ -682,6 +702,10 @@ def test_runtime_args_are_networkless_read_only_and_featured_resources_double(
     assert standard[standard.index("--pids-limit") + 1] == "256"
     assert featured[featured.index("--pids-limit") + 1] == "512"
     assert standard[standard.index("--log-driver") + 1] == "none"
+    assert "--read-only" not in standard
+    assert standard[standard.index("--storage-opt") + 1] == str(
+        "size=" + str(runtime.STANDARD_WRITABLE_BYTES)
+    )
     assert "--log-opt" not in standard
     tmpfs_mounts = [
         standard[index + 1]
@@ -693,7 +717,9 @@ def test_runtime_args_are_networkless_read_only_and_featured_resources_double(
         "/run/vibehub:rw,nosuid,nodev,noexec,"
         "size=16777216,mode=0770,uid=65532,gid=65532"
     ) in tmpfs_mounts
-    assert "--mount" not in standard
+    mount = standard[standard.index("--mount") + 1]
+    assert mount.endswith("-project-1-public,target=/data")
+    assert mount.startswith("type=volume,source=numoj-vh-data-")
     assert "--volume" not in standard
     assert "-v" not in standard
     assert not any(value in standard for value in ("-p", "--publish", "--privileged"))
@@ -706,6 +732,31 @@ def test_runtime_lease_exposes_only_container_internal_socket_path(monkeypatch, 
 
     assert lease.socket_path == Path("/run/vibehub/app.sock")
     assert not (short_tmp / "runtime" / "sessions").exists()
+
+
+def test_storage_key_is_database_identity_and_channel_bound(monkeypatch, short_tmp):
+    manager = _manager(monkeypatch, short_tmp)
+    for value in ("demo-public", "project-0-public", "project-1-review", "../x"):
+        with pytest.raises(runtime.VibeHubLeaseError, match="storage_key"):
+            manager.acquire(
+                "demo@v1", "numoj-vibehub:demo", storage_key=value,
+            )
+
+
+def test_data_volume_persists_after_container_recreation(monkeypatch, short_tmp):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+
+    first = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    first_mount = docker.run_commands[-1][docker.run_commands[-1].index("--mount") + 1]
+    assert manager.release(first.token) is True
+    second = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    second_mount = docker.run_commands[-1][docker.run_commands[-1].index("--mount") + 1]
+
+    assert first.container_name == second.container_name
+    assert first_mount == second_mount
+    assert len(docker.data_volumes) == 1
+    assert len(docker.data_write_checks) == 2
 
 
 def test_shared_leases_start_once_and_last_release_immediately_removes_container(
@@ -956,7 +1007,10 @@ def test_busy_health_probe_fails_new_start_fast_and_cleans_reservation(short_tmp
         assert ready.wait(2)
         began = time.monotonic()
         with pytest.raises(runtime.VibeHubCapacityError, match="并发已满"):
-            manager.acquire("demo@v1", "numoj-vibehub:demo")
+            manager.acquire(
+                "demo@v1", "numoj-vibehub:demo",
+                storage_key="project-1-public",
+            )
         assert time.monotonic() - began < 0.5
     finally:
         release.set()
@@ -1497,6 +1551,51 @@ def test_image_inspect_parses_and_fails_closed_on_volumes():
         runtime.DockerCLI(command_runner=malformed_runner).inspect_image("local/app:1")
 
 
+def test_data_volume_creation_is_labeled_and_existing_identity_is_verified():
+    scope = "a" * 16
+    name = f"numoj-vh-data-{scope}-project-42-public"
+    calls = []
+    payload = json.dumps({
+        "Name": name,
+        "Driver": "local",
+        "Scope": "local",
+        "Labels": {
+            runtime.MANAGED_DATA_VOLUME_LABEL: "1",
+            runtime.MANAGER_SCOPE_LABEL: scope,
+            runtime.DATA_STORAGE_KEY_LABEL: "project-42-public",
+        },
+        "Options": None,
+    })
+
+    def runner(command, *, timeout, env=None):
+        calls.append(list(command))
+        if command[:3] == ["docker", "volume", "create"]:
+            return runtime._CommandResult(0, name + "\n", "")
+        return runtime._CommandResult(0, payload, "")
+
+    docker = runtime.DockerCLI(command_runner=runner)
+    docker.ensure_data_volume(
+        name, scope=scope, storage_key="project-42-public",
+    )
+
+    create = calls[0]
+    assert {create[index + 1] for index, value in enumerate(create) if value == "--label"} == {
+        f"{runtime.MANAGED_DATA_VOLUME_LABEL}=1",
+        f"{runtime.MANAGER_SCOPE_LABEL}={scope}",
+        f"{runtime.DATA_STORAGE_KEY_LABEL}=project-42-public",
+    }
+    foreign = payload.replace(f'"{runtime.MANAGER_SCOPE_LABEL}": "{scope}", ', "")
+    def foreign_runner(command, **_kwargs):
+        if command[:3] == ["docker", "volume", "create"]:
+            return runtime._CommandResult(0, name + "\n", "")
+        return runtime._CommandResult(0, foreign, "")
+
+    with pytest.raises(runtime.VibeHubRuntimeError, match="身份"):
+        runtime.DockerCLI(command_runner=foreign_runner).ensure_data_volume(
+            name, scope=scope, storage_key="project-42-public",
+        )
+
+
 def test_build_rejects_inherited_base_volume_before_docker_build(tmp_path):
     package = _write_package(tmp_path / "package")
 
@@ -1530,7 +1629,10 @@ def test_cached_managed_image_with_volume_is_never_runnable(short_tmp):
         proxy_transport="docker-exec",
     )
     with pytest.raises(runtime.VibeHubImageError, match="VOLUME"):
-        manager.acquire("demo@v1", "numoj-vibehub:cached")
+        manager.acquire(
+            "demo@v1", "numoj-vibehub:cached",
+            storage_key="project-1-public",
+        )
 
 
 def test_project_image_tags_are_stable_per_live_channel():

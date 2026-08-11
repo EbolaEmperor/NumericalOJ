@@ -1799,49 +1799,6 @@ CREATE TABLE `site_web_search_settings` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `circle_cat_records`
---
-
-DROP TABLE IF EXISTS `circle_cat_records`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `circle_cat_records` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `username` varchar(255) NOT NULL,
-  `turn_count` int NOT NULL,
-  `is_win` tinyint(1) NOT NULL DEFAULT '0',
-  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_circle_cat_win_turn` (`is_win`,`turn_count`,`created_at`),
-  KEY `idx_circle_cat_user_win` (`username`,`is_win`,`turn_count`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `circle_cat_games`
---
-
-DROP TABLE IF EXISTS `circle_cat_games`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `circle_cat_games` (
-  `game_id` char(32) NOT NULL,
-  `username` varchar(255) DEFAULT NULL,
-  `mode` varchar(16) NOT NULL,
-  `board_size` int NOT NULL,
-  `initial_blocked_json` text NOT NULL,
-  `cat_row` int NOT NULL,
-  `cat_col` int NOT NULL,
-  `is_finished` tinyint(1) NOT NULL DEFAULT '0',
-  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `finished_at` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`game_id`),
-  KEY `idx_circle_cat_games_user_created` (`username`,`created_at`),
-  KEY `idx_circle_cat_games_finished` (`is_finished`,`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
 -- Table structure for table `vibehub_projects`
 --
 
@@ -1852,7 +1809,6 @@ CREATE TABLE `vibehub_projects` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `slug` varchar(63) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `owner_id` int NOT NULL,
-  `project_kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'container',
   `latest_version_id` bigint unsigned DEFAULT NULL,
   `public_version_id` bigint unsigned DEFAULT NULL,
   `review_version_id` bigint unsigned DEFAULT NULL,
@@ -1874,7 +1830,6 @@ CREATE TABLE `vibehub_projects` (
   KEY `idx_vibehub_projects_featured_review` (`featured_status`,`featured_requested_at`),
   CONSTRAINT `fk_vibehub_projects_owner` FOREIGN KEY (`owner_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_vibehub_projects_featured_reviewer` FOREIGN KEY (`featured_reviewed_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
-  CONSTRAINT `chk_vibehub_projects_kind` CHECK (`project_kind` IN ('container')),
   CONSTRAINT `chk_vibehub_projects_featured_status` CHECK (`featured_status` IN ('none','pending','approved','rejected'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

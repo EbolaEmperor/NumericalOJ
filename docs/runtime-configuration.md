@@ -157,10 +157,18 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `VIBEHUB_STORAGE_MUTATION_SLOTS` | int | `2` | 全宿主同时处理 VibeHub 持久变更的上限，严格范围 1–8；同一槽覆盖 DB 预检、multipart spool 和全局存储锁等待，跨 gthread/worker 共享。 |
 | `VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS` | float | `0.1` | 持久变更槽等待上限，范围 0–1 秒；容量满时快速返回 429 和 `Retry-After`。 |
 
-VibeHub 用户镜像通过 `--network none` 离线构建，运行时不发布端口，也不挂载任何宿主
-可写目录。`/run/vibehub` 是容器内 16 MiB 有界 tmpfs，宿主只通过受信基础镜像内的有界
-`docker exec` relay 访问 `app.sock`。根文件系统只读，普通作品限制为 20 GiB 完整镜像、
-4 GiB 内存和 2 CPU；精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
+VibeHub 用户镜像通过 `--network none` 离线构建，运行时不发布端口，也不允许作品选择
+宿主路径、Docker volume 或网络。容器根文件系统可写且随实例销毁；平台按数据库 project id
+与 `public/latest/review` 通道创建受管 local
+volume，唯一挂到 `/data`，`HOME=/data/home`，因此版本切换和容器重建后数据仍保留。普通/精品
+根层通过 `--storage-opt size` 请求 4/8 GiB 配额，但只有支持 per-container quota 的 storage
+driver 才会落实；Docker Desktop/containerd 等环境可能只接受参数而不执行。local volume driver
+没有可移植的 `/data` 硬配额，持久盘容量必须由 Docker/宿主运维监控与文件系统配额控制，应用层
+目录扫描不能作为对抗恶意作品的安全边界。
+
+`/run/vibehub` 是容器内 16 MiB 有界 tmpfs，宿主只通过受信基础镜像内的有界
+`docker exec` relay 访问 `app.sock`。普通作品另限制为 20 GiB 完整镜像、4 GiB 内存和 2 CPU；
+精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
 跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
 TTL 回收旧容器。每个作品的 latest、public、review 通道分别使用稳定的受管镜像 tag，内容
 变化由 source digest 触发重建，旧运行容器继续绑定原 image ID；最后一个玩家离开并完成
@@ -179,12 +187,13 @@ marker 不再依赖作者后续写入才删除；同一轮还会回收超过 1 �
 staging。安装快照后、DB commit 前崩溃所留的未提交 `vN`、clone 或完全无 DB 行的
 社区项目也会先写入根级严格 marker；只有同一 device/inode/ctime_ns 连续超过 1 小时才会
 删除，同路径目录被替换后即使文件系统复用了 inode，也会重新开始宽限。旧格式 marker 会先
-安全刷新为新身份格式，不会沿用旧时间删除目录。内置作品、锁和上传 staging 均不会被当成
+安全刷新为新身份格式，不会沿用旧时间删除目录。控制锁和上传 staging 不会被当成
 项目孤儿。启动在单进程内幂等，生产保持
 单 worker；单轮 DB 或存储异常只记录日志并在
 下一周期重试，不会终止 Web 服务。
-作品能写入的 `/tmp` 与 `/run/vibehub` 都是内存与容器资源限制内的有界 tmpfs，不存在可借
-Unix socket 目录消耗宿主文件系统的 bind 窗口。生产构建只接受全部 node 都为 running、
+作品的 `/tmp` 与 `/run/vibehub` 都是内存与容器资源限制内的有界 tmpfs，不存在可借 Unix socket
+目录消耗宿主文件系统的 bind 窗口；持久数据只进入平台命名并核验 label 的 local volume。
+生产构建只接受全部 node 都为 running、
 `docker-container` driver 且 builder 容器 `HostConfig.NetworkMode=none` 的专属 builder；已核验的
 daemon base image 通过本地受管 OCI layout named context 注入，不能访问 registry。构建成功后只
 清理受管 dangling image 和该专属 builder 的缓存，绝不执行全局 `docker builder prune`。

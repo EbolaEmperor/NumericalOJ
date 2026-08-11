@@ -936,8 +936,6 @@ _RENAME_USER_OPTIONAL_COLUMNS = (
     ('ranking_submissions', 'username'),
     ('ranking_appeals', 'username'),
     ('ranking_appeals', 'admin_username'),
-    ('circle_cat_records', 'username'),
-    ('circle_cat_games', 'username'),
 )
 
 

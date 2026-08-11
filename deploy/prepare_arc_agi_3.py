@@ -19,7 +19,6 @@ from typing import TextIO
 from urllib.parse import quote
 import uuid
 
-from PIL import Image, ImageDraw
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -35,18 +34,6 @@ _SLUG_PATTERN = re.compile(r"^[a-z0-9]{4}$")
 _VERSION_PATTERN = re.compile(r"^[0-9a-f]{8}$")
 _SET_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9-]{16,128}$")
-_PALETTE = (
-    (255, 250, 240),
-    (43, 42, 37),
-    (212, 85, 56),
-    (228, 185, 67),
-    (71, 121, 139),
-    (65, 97, 75),
-    (126, 87, 157),
-    (204, 204, 204),
-)
-
-
 class ArcPublicSetError(RuntimeError):
     """公开集无法安全准备。"""
 
@@ -178,44 +165,6 @@ def _get_json(session: requests.Session, path: str) -> object:
         raise ArcPublicSetError("ARC Prize API 返回了无效 JSON。") from exc
 
 
-def _write_fingerprint_preview(path: Path, source_digest: str) -> None:
-    """仅依据源码哈希生成目录缩略图，部署宿主绝不执行远端 Python。"""
-    seed = bytes.fromhex(source_digest)
-    tile = 24
-    margin = 32
-    image = Image.new("RGB", (256, 256), _PALETTE[1])
-    draw = ImageDraw.Draw(image)
-    for row in range(8):
-        for column in range(8):
-            value = seed[(row * 8 + column) % len(seed)]
-            color = _PALETTE[2 + value % (len(_PALETTE) - 2)]
-            left = margin + column * tile
-            top = margin + row * tile
-            draw.rectangle(
-                (left, top, left + tile - 3, top + tile - 3),
-                fill=color,
-            )
-    image.save(path, format="PNG", optimize=True)
-    path.chmod(0o600)
-
-
-def _input_details(actions: set[int]) -> tuple[str, str]:
-    has_direction = bool(actions.intersection({1, 2, 3, 4}))
-    has_action = 5 in actions
-    has_click = 6 in actions
-    if has_click and (has_direction or has_action):
-        if has_direction:
-            return "keyboard_click", "方向键 + 点击"
-        return "keyboard_click", "操作键 + 点击"
-    if has_click:
-        return "click", "点击"
-    if has_direction:
-        return "keyboard", "方向键"
-    if has_action:
-        return "keyboard", "操作键"
-    return "keyboard", "键盘"
-
-
 def _validated_game_id(value: object) -> tuple[str, str, str]:
     if not isinstance(value, str) or value.count("-") != 1:
         raise ArcPublicSetError("ARC Prize API 返回了无效游戏标识。")
@@ -248,7 +197,6 @@ def _validate_cached_set(
         set_dir.is_symlink()
         or not set_dir.is_dir()
         or not _SET_ID_PATTERN.fullmatch(directory_set_id)
-        or (expected_set_id is None and directory_set_id != set_dir.name)
     ):
         raise ArcPublicSetError("ARC-AGI-3 缓存目录名称无效。")
     manifest_path = set_dir / "manifest.json"
@@ -272,7 +220,7 @@ def _validate_cached_set(
         raise ArcPublicSetError("ARC-AGI-3 缓存游戏数量不完整。")
     seen_slugs = set()
     expected_files = {Path("manifest.json")}
-    expected_directories = {Path("environments"), Path("previews")}
+    expected_directories = {Path("environments")}
     for item in games:
         if not isinstance(item, dict):
             raise ArcPublicSetError("ARC-AGI-3 缓存游戏条目无效。")
@@ -287,20 +235,12 @@ def _validate_cached_set(
         source_path = (
             set_dir / "environments" / slug / version / f"{slug}.py"
         )
-        preview_path = set_dir / "previews" / f"{slug}.png"
         if (
             source_path.is_symlink()
-            or preview_path.is_symlink()
             or not source_path.is_file()
-            or not preview_path.is_file()
         ):
             raise ArcPublicSetError(f"ARC-AGI-3 缓存文件缺失：{full_id}")
-        expected_files.update(
-            {
-                source_path.relative_to(set_dir),
-                preview_path.relative_to(set_dir),
-            }
-        )
+        expected_files.add(source_path.relative_to(set_dir))
         expected_directories.update(
             {
                 Path("environments") / slug,
@@ -308,14 +248,10 @@ def _validate_cached_set(
             }
         )
         source_digest = item.get("source_sha256")
-        preview_digest = item.get("preview_sha256")
         if (
             not isinstance(source_digest, str)
             or not _SET_ID_PATTERN.fullmatch(source_digest)
             or _sha256_file(source_path) != source_digest
-            or not isinstance(preview_digest, str)
-            or not _SET_ID_PATTERN.fullmatch(preview_digest)
-            or _sha256_file(preview_path) != preview_digest
         ):
             raise ArcPublicSetError(f"ARC-AGI-3 缓存哈希不匹配：{full_id}")
         with source_path.open("rb") as handle:
@@ -384,16 +320,14 @@ def _download_public_set(
     output: TextIO,
     session: requests.Session | None = None,
     game_ids: tuple[str, ...] | None = None,
-) -> tuple[str, dict]:
+) -> str:
     owns_session = session is None
     session = session or _build_http_session()
     try:
         game_ids = game_ids or _fetch_public_catalog(session, expected_count)
 
         environments_root = staging_root / "environments"
-        previews_root = staging_root / "previews"
         environments_root.mkdir(mode=0o700)
-        previews_root.mkdir(mode=0o700)
         games = []
         total_source_bytes = 0
         _show_progress(0, expected_count, "准备下载", output=output)
@@ -430,9 +364,6 @@ def _download_public_set(
             source_path = environment_dir / f"{slug}.py"
             _write_private_bytes(source_path, source)
 
-            preview_path = previews_root / f"{slug}.png"
-            _write_fingerprint_preview(preview_path, _sha256_bytes(source))
-
             title = metadata.get("title")
             default_fps = metadata.get("default_fps")
             baseline_actions = metadata.get("baseline_actions")
@@ -447,15 +378,6 @@ def _download_public_set(
                 or not baseline_actions
             ):
                 raise ArcPublicSetError(f"公开游戏元数据字段无效：{full_id}")
-            declared_actions = metadata.get("available_actions")
-            actions = {
-                int(action)
-                for action in (declared_actions if isinstance(declared_actions, list) else [])
-                if not isinstance(action, bool) and isinstance(action, int) and 1 <= action <= 6
-            }
-            if not actions:
-                actions = {1, 2, 3, 4, 5, 6}
-            input_kind, input_label = _input_details(actions)
             games.append(
                 {
                     "slug": slug,
@@ -464,11 +386,7 @@ def _download_public_set(
                     "title": title,
                     "default_fps": default_fps,
                     "level_count": len(baseline_actions),
-                    "input_kind": input_kind,
-                    "input_label": input_label,
-                    "available_actions": sorted(actions),
                     "source_sha256": _sha256_bytes(source),
-                    "preview_sha256": _sha256_file(preview_path),
                 }
             )
             _show_progress(index, expected_count, full_id, output=output)
@@ -481,12 +399,10 @@ def _download_public_set(
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "set_id": set_id,
-        "source": BASE_URL,
-        "game_count": len(games),
         "games": games,
     }
     _write_private_json(staging_root / "manifest.json", manifest)
-    return set_id, manifest
+    return set_id
 
 
 def _write_result(result_file: Path, relative_target: str) -> None:
@@ -523,7 +439,7 @@ def prepare_public_set(
             tempfile.mkdtemp(prefix=".staging-", dir=data_root)
         )
         staging_root.chmod(0o700)
-        set_id, _manifest = _download_public_set(
+        set_id = _download_public_set(
             staging_root,
             expected_count,
             output=output,

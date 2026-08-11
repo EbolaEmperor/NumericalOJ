@@ -119,9 +119,9 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert script.index("phase='创建并验证数据库回滚点'") < arc_switch
     assert "--expected-count 25" in script
     assert 'ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"' in script
-    vibehub_sync = script.index("deploy/sync_vibehub_builtins.py")
-    assert arc_switch < vibehub_sync < script.index("scripts/init_db_schema.py")
-    assert '--source-root "$ROOT_DIR/vibehub_examples"' in script
+    schema_sync = script.index("scripts/init_db_schema.py")
+    vibehub_seed = script.index("deploy/seed_vibehub_examples.py")
+    assert arc_switch < schema_sync < vibehub_seed
     assert '--upload-root "$ROOT_DIR/uploads/vibehub"' in script
     assert '--arc-set "$ARC_CURRENT_SET"' in script
     assert "docker/vibehub-runtime" in script
@@ -134,15 +134,12 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         'docker tag "$VIBEHUB_RUNTIME_CANDIDATE" "$VIBEHUB_RUNTIME_STABLE"'
     )
     assert vibe_candidate_build < vibe_candidate_inspect < stop_phase
-    assert stop_phase < vibe_stable_switch < vibehub_sync
+    assert stop_phase < vibe_stable_switch < schema_sync < vibehub_seed
     assert '--tag numericaloj-vibehub-runtime:1' not in script
     assert (
         'docker tag "$vibehub_runtime_previous_id" '
         '"$VIBEHUB_RUNTIME_STABLE"' in script
     )
-    mark_success = script.index("deploy/backup_database.py mark-success")
-    builtin_finalize = script.index("--finalize-only")
-    assert mark_success < builtin_finalize
     assert (
         'EDITOR_TOOLCHAIN_ROOT="$STATE_DIR/editor-toolchains"' in script
     )
@@ -173,7 +170,6 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert script.index("phase='停止现有服务'") < script.index(
         "phase='创建并验证数据库回滚点'"
     ) < script.index("scripts/init_db_schema.py")
-    schema_sync = script.index("scripts/init_db_schema.py")
     expired_upload_cleanup = script.index(
         "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
     )

@@ -34,6 +34,7 @@ class _FakeCursor:
 
     def execute(self, query, params=()) -> None:
         normalized = " ".join(str(query).split())
+        assert "project_kind" not in normalized
         if "FROM vibehub_projects" in normalized:
             self.connection.events.append("projects-for-update")
             self.rows = self.connection.project_rows
@@ -277,22 +278,6 @@ def test_orphan_gc_audits_entire_root_before_deleting(tmp_path):
         )
 
     assert orphan.is_dir()
-
-
-def test_orphan_gc_excludes_builtin_project_roots(tmp_path):
-    builtin = tmp_path / "circle-cat" / "builtin" / "releases" / ("a" * 64)
-    builtin.mkdir(parents=True)
-    (builtin / "package.zip").write_bytes(b"builtin")
-
-    result = maintenance.run_storage_gc_once(
-        upload_root=tmp_path,
-        connection_factory=_empty_connection,
-        now=10_000,
-    )
-
-    assert result.crash_orphans.newly_marked == ()
-    assert result.crash_orphans.deleted_expired == ()
-    assert builtin.is_dir()
 
 
 def test_orphan_gc_rejects_non_numeric_marker_time_without_deleting(tmp_path):

@@ -1,0 +1,27 @@
+.model-family-logo {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  min-width: 1em;
+  flex: 0 0 1em;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  filter: grayscale(1);
+  font-style: normal;
+  line-height: 1;
+  opacity: 0.76;
+  vertical-align: -0.14em;
+}
+
+.model-family-logo::before {
+  content: none !important;
+}
+
+.model-family-logo--openai {
+  background-image: url("model-family-logos/openai.svg");
+}
+
+.model-family-logo--claude {
+  background-image: url("model-family-logos/claude.svg");
+}

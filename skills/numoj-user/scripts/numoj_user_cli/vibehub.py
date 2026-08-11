@@ -32,7 +32,6 @@ PROJECT_FIELDS = (
     "visibility",
     "cover_url",
     "tags",
-    "project_kind",
     "play_url",
     "created_at",
     "updated_at",
@@ -186,7 +185,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("-o", "--output", help="Save the Markdown guide to this file instead of printing it.")
     parser.set_defaults(func=developer_guide)
 
-    parser = common.add_cli_parser(commands, "list", "List publicly playable VibeHub projects, including built-in examples.")
+    parser = common.add_cli_parser(commands, "list", "List publicly playable VibeHub projects.")
     parser.add_argument("--limit", type=int, help="Maximum number of projects to return.")
     parser.set_defaults(func=project_list)
 

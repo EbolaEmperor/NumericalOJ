@@ -2,28 +2,204 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ARC-AGI-3 公开挑战</title>
-  <style>
-    :root{--paper:#f1eadc;--ink:#24241f;--muted:#756d62;--line:#d3c7b5;--red:#d45538;--yellow:#e4b943;--blue:#47798b;--green:#41614b}
-    *{box-sizing:border-box}html,body{min-height:100%;margin:0}body{background:linear-gradient(rgba(92,72,44,.035) 1px,transparent 1px),var(--paper);background-size:100% 26px;color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",sans-serif}
-    header{position:relative;display:flex;min-height:270px;align-items:end;justify-content:space-between;gap:30px;overflow:hidden;padding:45px clamp(24px,7vw,100px);border-bottom:1px solid var(--line);background:#252520;color:white}header:after{position:absolute;right:-80px;bottom:-160px;width:420px;height:420px;border:1px dashed #686155;border-radius:50%;content:""}
-    .kicker{margin:0;color:#e09a6d;font:700 10px ui-monospace,monospace;letter-spacing:.14em}.title{margin:8px 0 9px;font-family:Georgia,"Songti SC",serif;font-size:clamp(42px,7vw,78px);font-weight:500;letter-spacing:-.06em}.lede{max-width:690px;margin:0;color:#bbb3a7;font-size:12px;line-height:1.8}.mark{position:relative;z-index:2;display:grid;width:116px;grid-template-columns:repeat(4,1fr);gap:4px;transform:rotate(4deg)}.mark i{aspect-ratio:1}.mark i:nth-child(5n){background:var(--red)}.mark i:nth-child(5n+1){background:var(--yellow)}.mark i:nth-child(5n+2){background:var(--blue)}.mark i:nth-child(5n+3){background:var(--green)}.mark i:nth-child(5n+4){background:#eee8d9}
-    main{padding:42px clamp(20px,6vw,88px) 70px}.bar{display:flex;align-items:end;justify-content:space-between;gap:18px;margin-bottom:24px}.bar p{margin:0;color:#994423;font:700 9px ui-monospace,monospace;letter-spacing:.12em}.bar h2{margin:5px 0 0;font-family:Georgia,"Songti SC",serif;font-size:30px;font-weight:500}.bar span{padding:7px 9px;border:1px solid var(--line);color:var(--muted);font:700 9px ui-monospace,monospace}
-    #catalog{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.card{overflow:hidden;border:1px solid var(--line);background:#fffaf0;color:inherit;text-decoration:none;transition:transform .15s,box-shadow .15s}.card:hover{transform:translateY(-3px);box-shadow:5px 7px 0 rgba(93,70,40,.12)}.preview{position:relative;display:grid;aspect-ratio:1;place-items:center;background:#292924}.preview img{width:100%;height:100%;object-fit:cover}.fallback{display:grid;width:58%;grid-template-columns:repeat(6,1fr);gap:3px;padding:9px;border:1px solid #55544c}.fallback i{aspect-ratio:1}.fallback i:nth-child(4n){background:var(--red)}.fallback i:nth-child(4n+1){background:var(--yellow)}.fallback i:nth-child(4n+2){background:var(--blue)}.fallback i:nth-child(4n+3){background:var(--green)}.copy{padding:13px}.copy b{display:block;overflow:hidden;font-family:Georgia,"Songti SC",serif;font-size:15px;text-overflow:ellipsis;white-space:nowrap}.copy span{display:block;margin-top:5px;color:var(--muted);font-size:9px}
-    .empty{display:grid;min-height:280px;grid-column:1/-1;place-items:center;align-content:center;padding:35px;border:1px dashed #ad9b82;background:rgba(255,250,240,.55);text-align:center}.empty .grid{display:grid;width:70px;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:18px}.empty .grid i{aspect-ratio:1;border:1px solid var(--line)}.empty .grid i:nth-child(5){background:var(--red);border:0}.empty h2{margin:0;font:500 24px Georgia,"Songti SC",serif}.empty p{max-width:580px;margin:9px 0 0;color:var(--muted);font-size:11px;line-height:1.8}.empty code{color:#994423;font-family:ui-monospace,monospace}
-    @media(max-width:1100px){#catalog{grid-template-columns:repeat(4,1fr)}}@media(max-width:780px){header{min-height:300px;padding-top:70px}.mark{display:none}#catalog{grid-template-columns:repeat(2,1fr)}}@media(max-width:440px){#catalog{grid-template-columns:1fr}.bar{align-items:start;flex-direction:column}}
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ARC-AGI-3 - Numerical OJ</title>
+  <link rel="stylesheet" href="./vendor/bootstrap/bootstrap.min.css">
+  <link rel="stylesheet" href="./vendor/fontawesome/css/all.min.css">
+  <link rel="stylesheet" href="./vendor/model-family/model-family-logos.css">
+  <link rel="stylesheet" href="./arc-agi-3.css">
 </head>
 <body>
-  <header><div><p class="kicker">ARC-AGI-3 / OFFLINE SANDBOX</p><h1 class="title">探索未知规则</h1><p class="lede">25 个官方公开环境已固化在这个离线容器中。选择一个环境，在每次操作的反馈里发现目标与规律。</p></div><div class="mark" aria-hidden="true"></div></header>
-  <main><div class="bar"><div><p>PUBLIC ENVIRONMENTS</p><h2>环境目录</h2></div><span id="count">LOADING</span></div><section id="catalog" aria-live="polite"></section></main>
-  <script>
-    (function(){"use strict";var mark=document.querySelector(".mark");for(var m=0;m<16;m++)mark.appendChild(document.createElement("i"));var catalog=document.getElementById("catalog"),count=document.getElementById("count");
-      function fallback(){var box=document.createElement("div");box.className="fallback";for(var i=0;i<36;i++)box.appendChild(document.createElement("i"));return box}
-      function empty(){catalog.innerHTML="<div class=\"empty\"><span class=\"grid\"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><h2>公开环境未能载入</h2><p>离线包必须完整包含并校验 25 个环境；请联系管理员重新部署。</p></div>";count.textContent="UNAVAILABLE"}
-      fetch("./api/catalog",{headers:{Accept:"application/json"}}).then(function(r){if(!r.ok)throw new Error();return r.json()}).then(function(data){var games=data.games||[];if(games.length!==25){empty();return}count.textContent=games.length+" ENVIRONMENTS";games.forEach(function(game,index){var card=document.createElement("a");card.className="card";card.href="./game.html?game="+encodeURIComponent(game.slug);var preview=document.createElement("div");preview.className="preview";var img=document.createElement("img");img.alt=game.title+" 预览";img.src=game.preview_url;img.addEventListener("error",function(){img.remove();preview.appendChild(fallback())});preview.appendChild(img);var copy=document.createElement("div");copy.className="copy";var title=document.createElement("b");title.textContent=String(index+1).padStart(2,"0")+" · "+game.title;var meta=document.createElement("span");meta.textContent=game.level_count+" 个关卡 · "+game.input_label;copy.append(title,meta);card.append(preview,copy);catalog.appendChild(card)})}).catch(empty);
-    }());
-  </script>
+<div class="numoj-content arc-agi-page">
+<div class="arc-hub">
+  <header class="arc-hub-hero">
+    <p class="arc-kicker">ARC-AGI-3 PUBLIC SET</p>
+  </header>
+
+  <main
+    class="arc-catalog-deck"
+    data-arc-catalog
+    data-total-games="__TOTAL_GAMES__"
+    aria-label="ARC-AGI-3 公开游戏"
+  >
+    <button
+      type="button"
+      class="arc-page-button arc-page-button--previous"
+      data-arc-page-direction="-1"
+      aria-label="上一页游戏"
+      disabled
+    >
+      <span aria-hidden="true"><i class="fas fa-arrow-left"></i></span>
+    </button>
+
+    <div class="arc-catalog-scene">
+      <!-- ARC_CATALOG_PAGES -->
+      <span class="arc-page-flare" aria-hidden="true"></span>
+    </div>
+
+    <button
+      type="button"
+      class="arc-page-button arc-page-button--next"
+      data-arc-page-direction="1"
+      aria-label="下一页游戏"
+    >
+      <span aria-hidden="true"><i class="fas fa-arrow-right"></i></span>
+    </button>
+  </main>
+  <p id="arcPageAnnouncer" class="visually-hidden" aria-live="polite">
+    正在显示第 1 至 __FIRST_PAGE_END__ 个游戏
+  </p>
+
+  <footer class="arc-hub-footer">
+    <p>ARC-AGI-3 Public Set</p>
+    <span>ARC Prize Foundation · MIT</span>
+  </footer>
+</div>
+
+<button
+  type="button"
+  class="arc-help-trigger"
+  data-bs-toggle="modal"
+  data-bs-target="#arcHelpModal"
+  aria-label="了解 ARC-AGI-3"
+>
+  <span aria-hidden="true">?</span>
+</button>
+
+<div
+  class="modal fade arc-help-modal"
+  id="arcHelpModal"
+  tabindex="-1"
+  aria-labelledby="arcHelpModalTitle"
+  aria-hidden="true"
+>
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="arc-help-colorbar" aria-hidden="true">
+        <i></i><i></i><i></i><i></i>
+      </div>
+      <div class="modal-header">
+        <p class="arc-kicker">ABOUT THE BENCHMARK</p>
+        <button type="button" class="arc-help-close" data-bs-dismiss="modal" aria-label="关闭">
+          <i class="fas fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <h2 id="arcHelpModalTitle">ARC-AGI-3 是什么？</h2>
+        <p>
+          ARC-AGI-3 是一个交互式推理基准。它不会提供规则、操作说明或显式目标；
+          玩家需要在陌生环境中探索、试错，根据画面反馈建立假设，并把发现的规律迁移到后续关卡。
+        </p>
+        <p>
+          当前页面收录完整的 25 个公开演示环境；游戏源码和运行引擎均托管在本地，
+          游玩过程不依赖官方 API。
+        </p>
+
+        <section class="arc-leaderboard" aria-labelledby="arcLeaderboardTitle">
+          <header class="arc-leaderboard-header">
+            <p class="arc-kicker">VERIFIED · SEMI-PRIVATE</p>
+            <div class="arc-leaderboard-heading">
+              <h3 id="arcLeaderboardTitle">官方成绩 TOP 5</h3>
+              <span class="arc-leaderboard-status">
+                <i aria-hidden="true"></i>
+                OFFICIAL SNAPSHOT
+              </span>
+            </div>
+          </header>
+
+          <ol class="arc-leaderboard-list">
+            <li class="arc-leaderboard-entry arc-leaderboard-entry--record">
+              <span class="arc-leaderboard-rank" aria-label="第 1 名">01</span>
+              <span class="arc-leaderboard-model">
+                <span>ANTHROPIC</span>
+                <strong><i class="fas fa-microchip model-family-logo model-family-logo--claude" aria-hidden="true"></i>Claude Opus 5</strong>
+                <small>High · 新纪录</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>30.16</strong><small>%</small>
+              </span>
+              <span class="arc-leaderboard-meter" aria-hidden="true"><i></i></span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 2 名">02</span>
+              <span class="arc-leaderboard-model">
+                <span>OPENAI</span>
+                <strong><i class="fas fa-microchip model-family-logo model-family-logo--openai" aria-hidden="true"></i>GPT-5.6 Sol</strong>
+                <small>Max</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>7.78</strong><small>%</small>
+              </span>
+              <span class="arc-leaderboard-meter" aria-hidden="true"><i></i></span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 3 名">03</span>
+              <span class="arc-leaderboard-model">
+                <span>OPENAI</span>
+                <strong><i class="fas fa-microchip model-family-logo model-family-logo--openai" aria-hidden="true"></i>GPT-5.6 Sol</strong>
+                <small>Extra High</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>6.99</strong><small>%</small>
+              </span>
+              <span class="arc-leaderboard-meter" aria-hidden="true"><i></i></span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 4 名">04</span>
+              <span class="arc-leaderboard-model">
+                <span>OPENAI</span>
+                <strong><i class="fas fa-microchip model-family-logo model-family-logo--openai" aria-hidden="true"></i>GPT-5.6 Sol</strong>
+                <small>High</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>2.15</strong><small>%</small>
+              </span>
+              <span class="arc-leaderboard-meter" aria-hidden="true"><i></i></span>
+            </li>
+            <li class="arc-leaderboard-entry">
+              <span class="arc-leaderboard-rank" aria-label="第 5 名">05</span>
+              <span class="arc-leaderboard-model">
+                <span>ANTHROPIC</span>
+                <strong><i class="fas fa-microchip model-family-logo model-family-logo--claude" aria-hidden="true"></i>Claude Opus 4.8</strong>
+                <small>High</small>
+              </span>
+              <span class="arc-leaderboard-score">
+                <strong>1.52</strong><small>%</small>
+              </span>
+              <span class="arc-leaderboard-meter" aria-hidden="true"><i></i></span>
+            </li>
+          </ol>
+        </section>
+        <p class="arc-leaderboard-cutoff">
+          数据快照截至
+          <time datetime="2026-07-24T17:57:13Z">2026 年 7 月 24 日 17:57 UTC</time>
+          · ARC Prize Verified 半私有评测 · 不同推理档位独立计项
+        </p>
+
+        <div class="arc-help-links">
+          <a href="https://arcprize.org/leaderboard" target="_blank" rel="noopener noreferrer">
+            <span>官方 Verified 榜单</span>
+            <i class="fas fa-ranking-star" aria-hidden="true"></i>
+          </a>
+          <a href="https://arcprize.org/results/anthropic-claude-opus-5" target="_blank" rel="noopener noreferrer">
+            <span><i class="fas fa-microchip model-family-logo model-family-logo--claude" aria-hidden="true"></i> Opus 5 评测结果</span>
+            <i class="fas fa-chart-line" aria-hidden="true"></i>
+          </a>
+          <a href="https://arcprize.org/arc-agi/3" target="_blank" rel="noopener noreferrer">
+            <span>ARC-AGI-3 官网</span>
+            <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
+          </a>
+          <a href="https://github.com/arcprize/ARC-AGI" target="_blank" rel="noopener noreferrer">
+            <span>GitHub 项目</span>
+            <i class="fab fa-github" aria-hidden="true"></i>
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<script src="./vendor/bootstrap/bootstrap.bundle.min.js"></script>
+<script src="./arc-agi-3-catalog.js"></script>
 </body>
 </html>
