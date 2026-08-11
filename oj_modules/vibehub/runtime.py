@@ -925,16 +925,37 @@ class DockerCLI:
         if not self.build_builder:
             return
         result = self._run(
-            [
-                "docker", "buildx", "inspect", self.build_builder,
-                "--format", "{{json .}}",
-            ],
+            ["docker", "buildx", "ls", "--format", "json"],
             timeout=20,
         )
         if result.returncode != 0:
-            raise VibeHubImageError("VibeHub 专属 Docker builder 不存在或不可用")
+            detail = " ".join(result.stderr.split())[:300]
+            suffix = f"：{detail}" if detail else ""
+            raise VibeHubImageError(
+                f"VibeHub 专属 Docker builder 清单读取失败"
+                f"（退出码：{result.returncode}）{suffix}"
+            )
+        if result.stdout_truncated:
+            raise VibeHubImageError("VibeHub builder 清单输出被截断")
         try:
-            builder = json.loads(result.stdout.strip())
+            builders = [
+                json.loads(line)
+                for line in result.stdout.splitlines()
+                if line.strip()
+            ]
+            if any(not isinstance(item, dict) for item in builders):
+                raise TypeError("builder list item must be an object")
+            matches = [
+                item for item in builders
+                if item.get("Name") == self.build_builder
+            ]
+            if not matches:
+                raise VibeHubImageError(
+                    f"VibeHub 专属 Docker builder 未预置：{self.build_builder}"
+                )
+            if len(matches) != 1:
+                raise TypeError("duplicate builder names")
+            builder = matches[0]
             builder_name = builder["Name"]
             driver = builder["Driver"]
             raw_nodes = builder["Nodes"]
