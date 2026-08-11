@@ -77,10 +77,15 @@ def index():
 @vibehub_bp.get("/guide")
 def guide():
     guide_html, guide_toc_html = render_developer_guide()
-    return render_template(
-        "vibehub/guide.html", user=current_user(),
-        guide_html=guide_html, guide_toc_html=guide_toc_html,
+    response = make_response(
+        render_template(
+            "vibehub/guide.html", user=current_user(),
+            guide_html=guide_html, guide_toc_html=guide_toc_html,
+        )
     )
+    # 手册和目录都从 tracked Markdown 即时生成，刷新时必须重新验证内容。
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @vibehub_bp.get("/workspace")

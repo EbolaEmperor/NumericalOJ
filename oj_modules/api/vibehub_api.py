@@ -140,7 +140,7 @@ def developer_guide():
         as_attachment=False,
         download_name="vibehub-developer-guide.md",
         conditional=True,
-        max_age=300,
+        max_age=0,
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response

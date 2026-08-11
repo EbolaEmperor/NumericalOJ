@@ -10,6 +10,7 @@ from oj_modules.routes import vibehub_routes
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.vibehub_routes import vibehub_bp
 from oj_modules.security import auth as auth_module
+from oj_modules.vibehub import guide as guide_module
 from oj_modules.vibehub.guide import render_developer_guide
 from oj_modules.vibehub.storage import validate_manifest
 
@@ -453,16 +454,67 @@ def test_removed_workspace_and_detail_routes_redirect_to_gallery_or_play(monkeyp
 
 def test_developer_guide_renders_the_cli_markdown_with_generated_toc():
     template = _read("templates/vibehub/guide.html")
+    problem_template = _read("templates/problems/detail.html")
     markdown = _read("docs/vibehub-developer-guide.md")
     content_html, toc_html = render_developer_guide()
 
     assert all(token in template for token in (
         "guide_html|safe", "guide_toc_html|safe", "numoj-markdown",
+        "numoj-problem-code-rendering", "data-numoj-markdown",
+        "{% block mathjax %}", "components/layout/mathjax.html",
     ))
+    for asset in (
+        "app/editor-semantic-tokens.js",
+        "vendor/mermaid/mermaid.min.js",
+        "vendor/shiki-markdown/highlighter.js",
+        "app/markdown-rendering.js",
+    ):
+        assert asset in template
+        assert asset in problem_template
     assert all(token not in markdown for token in ("## API", "/api/vibehub/"))
     assert "## 使用 CLI 管理作品" in markdown
     assert "id=\"使用-cli-管理作品\"" in content_html
     assert "href=\"#使用-cli-管理作品\"" in toc_html
+
+
+def test_developer_guide_reloads_rich_markdown_and_generated_toc(
+    monkeypatch,
+    tmp_path,
+):
+    guide_path = tmp_path / "vibehub-developer-guide.md"
+    guide_path.write_text(
+        "# 临时手册\n\n"
+        "## 第一节\n\n"
+        "### 子节\n\n"
+        "#### 不进入目录\n\n"
+        r"公式 \(x_i^2 < y\)。" "\n\n"
+        "```python\n"
+        "def solve(x):\n"
+        "    return x + 1\n"
+        "```\n\n"
+        "<script>alert(1)</script>\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(guide_module, "DEVELOPER_GUIDE_PATH", guide_path)
+
+    content_html, toc_html = guide_module.render_developer_guide()
+
+    assert 'id="第一节"' in content_html
+    assert 'class="codehilite language-python"' in content_html
+    assert '<span class="' in content_html
+    assert r"\(x_i^2 &lt; y\)" in content_html
+    assert "<script" not in content_html.lower()
+    assert 'href="#第一节"' in toc_html
+    assert 'href="#子节"' in toc_html
+    assert "不进入目录" not in toc_html
+
+    guide_path.write_text("# 临时手册\n\n## 第二节\n", encoding="utf-8")
+    refreshed_html, refreshed_toc = guide_module.render_developer_guide()
+
+    assert 'id="第二节"' in refreshed_html
+    assert 'href="#第二节"' in refreshed_toc
+    assert "第一节" not in refreshed_html
+    assert "第一节" not in refreshed_toc
 
 
 def test_legacy_game_bookmarks_redirect_and_old_apis_are_gone():

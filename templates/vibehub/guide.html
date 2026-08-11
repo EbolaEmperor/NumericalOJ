@@ -1,5 +1,6 @@
 {% extends "layouts/site.html" %}
 {% block title %}VibeHub 开发者手册 - {{ super() }}{% endblock %}
+{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
@@ -15,9 +16,20 @@
     <aside class="vibe-guide-markdown-toc" aria-label="开发者手册目录">
       {{ guide_toc_html|safe }}
     </aside>
-    <article class="vibe-guide-markdown-body numoj-markdown numoj-problem-code-rendering">
+    <article
+      class="vibe-guide-markdown-body numoj-markdown numoj-problem-code-rendering"
+      data-numoj-markdown
+    >
       {{ guide_html|safe }}
     </article>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
+<script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
 {% endblock %}
