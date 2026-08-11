@@ -353,8 +353,7 @@ def convert_docker_archive(
                 if config_member is None or not config_member.isreg():
                     raise OCIExportError("Docker manifest 引用的 config 不存在")
                 config_raw = _read_tar_member(archive, config_member, MAX_CONFIG_BYTES)
-                if _sha256(config_raw) != engine_image_id:
-                    raise OCIExportError("Docker config hash 与 engine image ID 不匹配")
+                config_digest = _sha256(config_raw)
                 config = _json_no_duplicates(
                     config_raw, label="Docker image config", max_bytes=MAX_CONFIG_BYTES
                 )
@@ -386,9 +385,9 @@ def convert_docker_archive(
                 ):
                     raise OCIExportError("Docker config 缺少 OCI platform")
 
-                config_blob = blob_root / engine_image_id.removeprefix("sha256:")
+                config_blob = blob_root / config_digest.removeprefix("sha256:")
                 _write_bytes(config_blob, config_raw)
-                blob_sizes: dict[str, int] = {engine_image_id: len(config_raw)}
+                blob_sizes: dict[str, int] = {config_digest: len(config_raw)}
                 layer_descriptors = []
                 for layer_name, diff_id in zip(layer_names, diff_ids, strict=True):
                     member = members.get(layer_name)
@@ -408,7 +407,7 @@ def convert_docker_archive(
                     "mediaType": OCI_MANIFEST_MEDIA_TYPE,
                     "config": {
                         "mediaType": OCI_CONFIG_MEDIA_TYPE,
-                        "digest": engine_image_id,
+                        "digest": config_digest,
                         "size": len(config_raw),
                     },
                     "layers": layer_descriptors,
@@ -681,15 +680,21 @@ def verify_release(
         raise OCIExportError("OCI manifest config/layers 结构无效")
     config_descriptor = manifest.get("config")
     layers = manifest.get("layers")
+    config_digest = (
+        config_descriptor.get("digest")
+        if isinstance(config_descriptor, dict)
+        else None
+    )
     if (
         manifest.get("schemaVersion") != 2
         or not isinstance(config_descriptor, dict)
         or set(config_descriptor) != {"mediaType", "digest", "size"}
         or config_descriptor.get("mediaType") != OCI_CONFIG_MEDIA_TYPE
-        or config_descriptor.get("digest") != image_id
+        or not isinstance(config_digest, str)
+        or DIGEST_RE.fullmatch(config_digest) is None
         or isinstance(config_descriptor.get("size"), bool)
         or not isinstance(config_descriptor.get("size"), int)
-        or config_descriptor.get("size") != blobs.get(image_id)
+        or config_descriptor.get("size") != blobs.get(config_digest)
         or not isinstance(layers, list)
         or not 1 <= len(layers) <= MAX_LAYERS
     ):
@@ -712,13 +717,13 @@ def verify_release(
             raise OCIExportError("OCI manifest 含重复 layer")
         layer_digests.append(layer["digest"])
 
-    referenced_blobs = {manifest_digest, image_id, *layer_digests}
+    referenced_blobs = {manifest_digest, config_digest, *layer_digests}
     if set(blobs) != referenced_blobs:
         raise OCIExportError("OCI metadata blob 清单未精确覆盖 manifest")
 
     config = _json_no_duplicates(
         _read_file(
-            blob_root / image_id.removeprefix("sha256:"),
+            blob_root / config_digest.removeprefix("sha256:"),
             max_bytes=MAX_CONFIG_BYTES,
         ),
         label="OCI image config",
