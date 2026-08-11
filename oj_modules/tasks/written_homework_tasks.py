@@ -8,7 +8,7 @@ import uuid
 
 import pymysql
 
-from config import EVALUATE_SUBMISSION_LOCK_TTL_SECONDS
+from oj_modules.config import EVALUATE_SUBMISSION_LOCK_TTL_SECONDS
 from oj_modules.shared.archive import (
     ArchiveExtractionError,
     ZipExtractionPolicy,

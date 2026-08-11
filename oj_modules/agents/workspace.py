@@ -21,7 +21,7 @@ from typing import BinaryIO, Iterable, Mapping
 import unicodedata
 import uuid
 
-import config
+from oj_modules import config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

@@ -372,7 +372,7 @@ def judger_image_name() -> str:
     if env_value:
         return env_value
     try:
-        import config
+        from oj_modules import config
         return getattr(config, "JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
     except Exception:
         return "numericaloj-judger:latest"
@@ -396,7 +396,7 @@ def require_docker_judger_image() -> None:
 
 
 def _assert_disposable_environment() -> None:
-    import config
+    from oj_modules import config
 
     target = DestructiveTestTarget(
         test_env=os.environ.get("NUMOJ_TEST_ENV"),

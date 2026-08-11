@@ -25,7 +25,7 @@ import uuid
 
 from charset_normalizer import from_bytes
 
-import config
+from oj_modules import config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

@@ -7,7 +7,7 @@ import time
 
 from flask import session
 
-from config import SUBMISSION_SNAPSHOT_TTL_SECONDS
+from oj_modules.config import SUBMISSION_SNAPSHOT_TTL_SECONDS
 from oj_modules.ai.code_feedback import _normalize_ai_code_issues
 from oj_modules.forum.identity import (
     assert_identity_name_available,

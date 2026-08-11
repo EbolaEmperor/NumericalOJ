@@ -61,6 +61,30 @@ def test_validate_config_accepts_a_private_regular_file_and_cli_is_silent(
     assert captured.err == ""
 
 
+def test_vibehub_settings_use_validated_defaults_instead_of_required_env_keys():
+    assert not any(
+        name.startswith("VIBEHUB_") for name in preflight.REQUIRED_ENV_KEYS
+    )
+
+    preflight._validate_config_values(_config())
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"VIBEHUB_BUILD_BUILDER": ""}, "VIBEHUB_BUILD_BUILDER"),
+        ({"VIBEHUB_REQUIRE_DEDICATED_BUILDER": False}, "专属 Buildx builder"),
+        (
+            {"VIBEHUB_BASE_OCI_LAYOUT_ROOT": ".deploy/other-vibehub-oci"},
+            "必须指向项目内",
+        ),
+    ),
+)
+def test_vibehub_default_overrides_still_fail_closed(overrides, message):
+    with pytest.raises(preflight.PreflightError, match=message):
+        preflight._validate_config_values(_config(**overrides))
+
+
 def test_validate_config_rejects_a_symlink(tmp_path):
     target = _private_env(tmp_path)
     link = tmp_path / "linked.env"

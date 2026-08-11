@@ -3,7 +3,7 @@
 
 from flask import Blueprint
 
-from config import REPOSITORY_MAX_FILE_BYTES
+from oj_modules.config import REPOSITORY_MAX_FILE_BYTES
 from oj_modules.api.helpers import json_error, json_success, public_user
 from oj_modules.security.auth import current_user
 from oj_modules.repository.settings import (

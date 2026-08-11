@@ -3,7 +3,7 @@
 import json
 import os
 
-from config import AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT
+from oj_modules.config import AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT
 from oj_modules.ai.client import (
     _call_llm_text,
     _call_llm_vision,

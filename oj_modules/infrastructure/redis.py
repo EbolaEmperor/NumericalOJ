@@ -11,7 +11,7 @@ I/O；显式的 ``create_optional_redis_client`` 则为可降级场景集中执�
 from enum import Enum
 import math
 
-import config as _config
+from oj_modules import config as _config
 
 try:
     import redis as _redis

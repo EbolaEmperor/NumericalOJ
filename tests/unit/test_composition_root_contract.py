@@ -81,7 +81,7 @@ def test_real_oj_import_preserves_runtime_ports_and_task_topology():
         import inspect
         import json
 
-        import config
+        from oj_modules import config
         from oj_modules import db_services
         from oj_modules.infrastructure import mysql as mysql_infrastructure
         from oj_modules.infrastructure import redis as redis_infrastructure
