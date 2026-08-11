@@ -195,9 +195,9 @@ def render_game(game):
         "__GAME_FULL_ID__": game["full_id"],
         "__GAME_LEVEL_COUNT__": str(int(game["level_count"])),
         "__GAME_INPUT_LABEL__": html.escape(game["input_label"]),
-        "__CATALOG_URL__": "../../",
-        "__START_URL__": f"../../api/games/{game['slug']}/start",
-        "__ACTION_URL_TEMPLATE__": "../../api/sessions/SESSION_ID/action",
+        "__CATALOG_URL__": "../",
+        "__START_URL__": f"../api/games/{game['slug']}/start",
+        "__ACTION_URL_TEMPLATE__": "../api/sessions/SESSION_ID/action",
     }
     output = _template("game.html")
     for token, value in values.items():
@@ -206,7 +206,7 @@ def render_game(game):
 
 
 def render_not_found():
-    return _template("not-found.html").replace("__CATALOG_URL__", "../../")
+    return _template("not-found.html").replace("__CATALOG_URL__", "../")
 
 
 def load_game_class(spec):
