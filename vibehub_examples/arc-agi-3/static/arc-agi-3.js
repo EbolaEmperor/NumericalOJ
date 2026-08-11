@@ -174,8 +174,6 @@
       credentials: 'same-origin',
       headers: {
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
       },
     }, options || {}));
     const payload = await response.json().catch(function () {

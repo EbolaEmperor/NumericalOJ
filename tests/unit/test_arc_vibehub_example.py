@@ -163,14 +163,25 @@ def _clear_runtime_state():
     arc_app._catalog_cache = None
 
 
-def test_original_css_and_javascript_are_byte_identical_to_pre_vibehub_assets():
+def test_original_assets_only_adapt_transport_headers_for_opaque_origin():
     expected = {
         "arc-agi-3.css": "05d745dfdaee0208a6272f4d0ac17ebc67da37e18c98b76d071f5e08dad851d1",
-        "arc-agi-3.js": "8f611b984368a8b0bcfa5881420af612f18569a985b899dc9495bd9b208be190",
         "arc-agi-3-catalog.js": "6be82d1140f6e0993c12694a44a8f26dfb4e44b8259e79c2008f9570bb7d22f8",
     }
     for name, digest in expected.items():
         assert hashlib.sha256((STATIC / name).read_bytes()).hexdigest() == digest
+
+    javascript = (STATIC / "arc-agi-3.js").read_text()
+    assert "Content-Type" not in javascript and "X-Requested-With" not in javascript
+    historical = javascript.replace(
+        "        'Accept': 'application/json',\n",
+        "        'Accept': 'application/json',\n"
+        "        'Content-Type': 'application/json',\n"
+        "        'X-Requested-With': 'XMLHttpRequest',\n",
+    )
+    assert hashlib.sha256(historical.encode()).hexdigest() == (
+        "8f611b984368a8b0bcfa5881420af612f18569a985b899dc9495bd9b208be190"
+    )
     assert arc_app.Handler.extensions_map[".woff2"] == "font/woff2"
     assert not (STATIC / "vendor/model-family/model-family.js").exists()
 
