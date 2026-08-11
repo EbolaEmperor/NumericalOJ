@@ -92,6 +92,14 @@ def test_agent_home_runtime_choices_are_compact_and_share_one_mobile_row():
     assert ".agent-choice .rk-choice-caret { display: none; }" in mobile
 
 
+def test_agent_composers_do_not_highlight_the_container_on_text_focus():
+    home_styles = _read("static/app/agents/task-list.css")
+    detail_styles = _read("static/app/agents/conversation.css")
+
+    assert ".agent-composer:focus-within" not in home_styles
+    assert ".agent-resume-composer:focus-within" not in detail_styles
+
+
 def test_agent_detail_is_a_standalone_conversation_and_workspace_page():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
