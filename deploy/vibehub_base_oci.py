@@ -23,6 +23,7 @@ import tarfile
 import tempfile
 from typing import NamedTuple
 import uuid
+import zlib
 
 
 SCHEMA_VERSION = 1
@@ -259,23 +260,54 @@ def _stream_layer_blob(
         0o600,
     )
     digest = hashlib.sha256()
-    copied = 0
+    read_bytes = 0
+    written_bytes = 0
+    decompressor = None
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as target:
             while chunk := source.read(COPY_CHUNK_BYTES):
-                copied += len(chunk)
-                if copied > member.size:
+                read_bytes += len(chunk)
+                if read_bytes > member.size:
                     raise OCIExportError(f"Docker layer 长度不一致：{member.name}")
-                digest.update(chunk)
-                target.write(chunk)
+                if decompressor is None and read_bytes == len(chunk):
+                    decompressor = (
+                        zlib.decompressobj(16 + zlib.MAX_WBITS)
+                        if chunk.startswith(b"\x1f\x8b")
+                        else False
+                    )
+                try:
+                    output = decompressor.decompress(chunk) if decompressor else chunk
+                except zlib.error as exc:
+                    raise OCIExportError(
+                        f"Docker gzip layer 无法解压：{member.name}"
+                    ) from exc
+                written_bytes += len(output)
+                if written_bytes > MAX_MEMBER_BYTES:
+                    raise OCIExportError(f"Docker layer 解压后大小越界：{member.name}")
+                digest.update(output)
+                target.write(output)
+            if decompressor:
+                try:
+                    output = decompressor.flush()
+                except zlib.error as exc:
+                    raise OCIExportError(
+                        f"Docker gzip layer 无法解压：{member.name}"
+                    ) from exc
+                if not decompressor.eof or decompressor.unused_data:
+                    raise OCIExportError(f"Docker gzip layer 数据不完整：{member.name}")
+                written_bytes += len(output)
+                if written_bytes > MAX_MEMBER_BYTES:
+                    raise OCIExportError(f"Docker layer 解压后大小越界：{member.name}")
+                digest.update(output)
+                target.write(output)
             target.flush()
             os.fsync(target.fileno())
     finally:
         os.close(descriptor)
     actual_digest = "sha256:" + digest.hexdigest()
-    if copied != member.size or actual_digest != expected_digest:
+    if read_bytes != member.size or actual_digest != expected_digest:
         raise OCIExportError(f"Docker layer diff-id/hash 不匹配：{member.name}")
-    return copied
+    return written_bytes
 
 
 def convert_docker_archive(
