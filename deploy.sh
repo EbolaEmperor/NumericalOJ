@@ -271,10 +271,10 @@ ENV_FILE="$ROOT_DIR/.env"
 }
 PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
   deploy/preflight.py validate-config "$ENV_FILE"
-phase='校验 VibeHub 专属 builder'
+phase='准备并校验 VibeHub 专属 builder'
 VIBEHUB_BUILD_BUILDER="$(
   PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
-    deploy/preflight.py validate-vibehub-builder
+    deploy/preflight.py ensure-vibehub-builder
 )"
 vibehub_oci_previous_target="$(
   PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \

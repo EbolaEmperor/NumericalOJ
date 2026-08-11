@@ -406,7 +406,7 @@ def test_deploy_fails_closed_without_private_production_config():
     assert 'ENV_FILE="$ROOT_DIR/.env"' in script
     assert 'deploy/preflight.py validate-config "$ENV_FILE"' in script
     service_stop = script.index("phase='停止现有服务'")
-    builder_check = script.index("deploy/preflight.py validate-vibehub-builder")
+    builder_check = script.index("deploy/preflight.py ensure-vibehub-builder")
     assert builder_check < service_stop
     assert "docker run --rm" not in script
     assert 'getattr(config, "ENV_FILE_LOADED", False)' in preflight
@@ -422,7 +422,7 @@ def test_vibehub_base_oci_is_exported_before_stop_and_switched_with_tag():
     exporter = _read("deploy/vibehub_base_oci.py")
 
     config_check = script.index("deploy/preflight.py validate-config")
-    builder_check = script.index("deploy/preflight.py validate-vibehub-builder")
+    builder_check = script.index("deploy/preflight.py ensure-vibehub-builder")
     candidate_build = script.index("phase='构建 VibeHub 受信基础候选镜像'")
     oci_export = script.index("phase='导出并核验 VibeHub 受信基础 OCI layout'")
     service_stop = script.index("phase='停止现有服务'")
