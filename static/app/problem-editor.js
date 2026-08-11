@@ -11,7 +11,6 @@
   const editorHost = document.getElementById('monacoEditorContainer');
   const editorShell = document.getElementById('desktopEditorShell');
   const editorLoading = document.getElementById('monacoEditorLoading');
-  const codeMirrorHost = document.getElementById('codeMirrorContainer');
   const form = textarea.closest('form');
   const language = (editorHost?.dataset.language || 'matlab').toLowerCase();
   const runtime = window.NumOJCodeEditorRuntime;
@@ -28,7 +27,6 @@
           : 'octave'
       };
   const monacoLanguage = languageSpec.monacoLanguage;
-  const desktop = window.matchMedia('(min-width: 992px)').matches;
   let editorAdapter = null;
 
   function revealMonacoEditor(instance) {
@@ -52,7 +50,7 @@
 
   async function createMonacoAdapter() {
     const monaco = window.NumericalOJMonaco;
-    if (!desktop || !editorHost || !monaco?.editor || !monaco?.languages) return null;
+    if (!editorHost || !monaco?.editor || !monaco?.languages) return null;
 
     const editorTheme = runtime
       ? await runtime.prepareMonaco(monaco)
@@ -111,34 +109,8 @@
     };
   }
 
-  function createCodeMirrorAdapter() {
-    if (desktop || typeof window.CodeMirror === 'undefined' || !codeMirrorHost) return null;
-    const instance = window.CodeMirror.fromTextArea(textarea, {
-      mode: languageSpec.codeMirrorMode,
-      theme: 'eclipse',
-      lineNumbers: true,
-      lineWrapping: true,
-      indentUnit: 4,
-      tabSize: 4,
-      matchBrackets: true,
-      autofocus: true,
-      extraKeys: { Tab: 'indentMore', 'Shift-Tab': 'indentLess' }
-    });
-    codeMirrorHost.appendChild(instance.getWrapperElement());
-    instance.getWrapperElement().style.fontFamily = 'monospace';
-    instance.getWrapperElement().style.fontSize = PROBLEM_EDITOR_FONT_SIZE + 'px';
-    instance.getWrapperElement().style.lineHeight = PROBLEM_EDITOR_LINE_HEIGHT + 'px';
-    instance.setSize(null, '300px');
-    return {
-      getValue: () => instance.getValue(),
-      setValue: value => instance.setValue(value),
-      focus: () => instance.focus(),
-      layout: () => instance.refresh()
-    };
-  }
-
   try {
-    editorAdapter = await createMonacoAdapter() || createCodeMirrorAdapter();
+    editorAdapter = await createMonacoAdapter();
   } catch (error) {
     console.error('代码编辑器初始化失败，已降级到文本框。', error);
     editorHost?.setAttribute('hidden', '');
@@ -188,9 +160,7 @@
   });
   }
 
-  const editorReady = window.matchMedia('(min-width: 992px)').matches
-    ? window.NumOJMonacoReady
-    : window.NumOJCodeMirrorReady;
+  const editorReady = window.NumOJMonacoReady;
   (editorReady || Promise.resolve(null))
     .catch(() => null)
     .then(initializeProblemEditor);

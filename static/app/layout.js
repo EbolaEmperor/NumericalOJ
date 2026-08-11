@@ -4,13 +4,15 @@
   let accountToastTimer;
 
   function initUserAvatar() {
-    const avatar = document.querySelector('[data-numoj-user-avatar]');
+    const avatars = document.querySelectorAll('[data-numoj-user-avatar]');
     const identicon = window.NumojIdenticon;
-    if (!avatar || !identicon) return;
+    if (!avatars.length || !identicon) return;
 
-    const seed = avatar.dataset.avatarSeed || 'numericaloj';
-    const label = avatar.dataset.avatarLabel || seed;
-    identicon.paint(avatar, identicon.cellsForSeed(seed), label);
+    avatars.forEach((avatar) => {
+      const seed = avatar.dataset.avatarSeed || 'numericaloj';
+      const label = avatar.dataset.avatarLabel || seed;
+      identicon.paint(avatar, identicon.cellsForSeed(seed), label);
+    });
   }
 
   function showAccountToast(message) {
@@ -102,11 +104,15 @@
   }
 
   function initDesktopNavigationData() {
-    if (!window.matchMedia('(min-width: 992px)').matches) return;
-    const sidebar = document.querySelector('[data-numoj-sidebar]');
-    if (!sidebar?.dataset.navigationUrl) return;
+    const sidebars = document.querySelectorAll(
+      '[data-numoj-sidebar], [data-numoj-mobile-sidebar]'
+    );
+    const dataSource = Array.from(sidebars).find(
+      (sidebar) => sidebar.dataset.navigationUrl
+    );
+    if (!dataSource) return;
 
-    const url = new URL(sidebar.dataset.navigationUrl, window.location.origin);
+    const url = new URL(dataSource.dataset.navigationUrl, window.location.origin);
     const selectedClass = new URLSearchParams(window.location.search).get('class_en');
     if (selectedClass) url.searchParams.set('class_en', selectedClass);
 
@@ -116,14 +122,18 @@
         if (!data.success) return;
         const counts = data.counts || {};
         Object.entries(counts).forEach(([name, value]) => {
-          const target = sidebar.querySelector(`[data-numoj-nav-count="${name}"]`);
-          if (!target) return;
-          target.textContent = String(value);
-          target.classList.remove('d-none');
+          sidebars.forEach((sidebar) => {
+            const target = sidebar.querySelector(`[data-numoj-nav-count="${name}"]`);
+            if (!target) return;
+            target.textContent = String(value);
+            target.classList.remove('d-none');
+          });
         });
-        if (data.agent_active) {
-          sidebar.querySelector('[data-numoj-agent-active]')?.classList.remove('d-none');
-        }
+        sidebars.forEach((sidebar) => {
+          sidebar
+            .querySelector('[data-numoj-agent-active]')
+            ?.classList.toggle('d-none', !data.agent_active);
+        });
       })
       .catch(() => {});
   }
