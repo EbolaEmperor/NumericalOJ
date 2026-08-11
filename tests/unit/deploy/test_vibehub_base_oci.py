@@ -338,7 +338,7 @@ def test_export_uses_docker_image_save_and_publishes_by_engine_id(tmp_path):
     assert save[-1] == "numericaloj-vibehub-runtime:deploy-test"
 
 
-def test_offline_probe_uses_exact_oci_context_resources_and_prune(tmp_path):
+def test_offline_probe_uses_exact_oci_context_and_prune(tmp_path):
     _root, release, info = _converted_release(tmp_path)
     commands = []
 
@@ -366,6 +366,33 @@ def test_offline_probe_uses_exact_oci_context_resources_and_prune(tmp_path):
     assert ["--network", "none"] == build[build.index("--network") : build.index("--network") + 2]
     assert "--pull=false" in build
     assert "--load" in build
-    assert build.count("--resource") == 4
+    assert "--resource" not in build
     prune = next(command for command in commands if command[:3] == ["docker", "buildx", "prune"])
     assert prune[-2:] == ["--max-used-space", "4294967296"]
+
+
+def test_offline_probe_preserves_bounded_buildx_error(tmp_path):
+    _root, release, _info = _converted_release(tmp_path)
+
+    def runner(command, **_kwargs):
+        if command[:3] == ["docker", "buildx", "build"]:
+            return subprocess.CompletedProcess(
+                command,
+                125,
+                "",
+                "unknown flag: --future-option\n" + ("x" * 2000),
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(
+        oci.OCIExportError,
+        match=r"退出码：125.*unknown flag: --future-option",
+    ) as exc_info:
+        oci.probe_builder(
+            builder="numoj-vibehub",
+            release=release,
+            run_id="deploy-test",
+            command_runner=runner,
+        )
+
+    assert len(str(exc_info.value)) <= 1100
