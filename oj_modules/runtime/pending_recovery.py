@@ -785,7 +785,8 @@ def _requeue_orphaned_agent_judge_submissions(agent_judge_task, reverse_judge_ta
 
 def requeue_pending_on_startup(*, evaluate_task, written_task, promptly_task=None,
                                ranking_task, elo_initial_burst_task,
-                               agent_judge_task=None, reverse_judge_task=None):
+                               agent_judge_task=None, reverse_judge_task=None,
+                               agent_session_recovery_task=None):
     """启动时扫描 MySQL 并重新入队所有未完成任务（程序题 / 书面作业 / 打榜赛）。"""
     try:
         _recover_written_publications(min_age_seconds=0)
@@ -797,6 +798,8 @@ def requeue_pending_on_startup(*, evaluate_task, written_task, promptly_task=Non
             agent_judge_task,
             reverse_judge_task,
         )
+        if agent_session_recovery_task is not None:
+            agent_session_recovery_task.apply_async()
         print(
             f"[StartupRequeue] 启动重新入队完成："
             f"程序题/书面作业 {prog} 条，打榜赛 {rank} 条。"
@@ -810,7 +813,8 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
                                            ranking_task=None,
                                            elo_initial_burst_task=None,
                                            agent_judge_task=None,
-                                           reverse_judge_task=None):
+                                           reverse_judge_task=None,
+                                           agent_session_recovery_task=None):
     """注册周期性 Pending 回收任务。
 
     不依赖 celery beat：任务运行结束前会自我调度下一跳，和 ELO matchmaker 一样用
@@ -855,6 +859,7 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
         requeued = 0
         ranking_requeued = 0
         agent_requeued = 0
+        agent_sessions_scheduled = False
         written_publications = {}
         repository_upload_cleanup = {}
         try:
@@ -875,6 +880,9 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
             agent_requeued = _requeue_orphaned_agent_judge_submissions(
                 agent_judge_task, reverse_judge_task,
             )
+            if agent_session_recovery_task is not None:
+                agent_session_recovery_task.apply_async()
+                agent_sessions_scheduled = True
         finally:
             try:
                 self.apply_async(args=[owner_id], countdown=_PENDING_REQUEUE_INTERVAL_SECONDS)
@@ -885,6 +893,7 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
             'requeued': requeued,
             'ranking_requeued': ranking_requeued,
             'agent_judge_requeued': agent_requeued,
+            'agent_session_recovery_scheduled': agent_sessions_scheduled,
             'written_publications': written_publications,
             'repository_upload_cleanup': repository_upload_cleanup,
         }

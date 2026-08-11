@@ -176,16 +176,18 @@ def test_save_unicode_attachments_and_remove_only_listed_files(workspace_root):
     )
 
     public = workspace_root / "sessions" / "session" / "workspace"
+    generation = metadata[0]["path"].split("/")[1]
+    assert generation.startswith("task-")
     assert metadata == [
         {
             "name": "报告 π.md",
-            "path": "attachments/task/报告 π.md",
+            "path": f"attachments/{generation}/报告 π.md",
             "size": len("附件内容".encode()),
             "sha256": metadata[0]["sha256"],
         },
         {
             "name": "solver.m",
-            "path": "attachments/task/solver.m",
+            "path": f"attachments/{generation}/solver.m",
             "size": len(b"disp('ok')\n"),
             "sha256": metadata[1]["sha256"],
         },
@@ -193,7 +195,7 @@ def test_save_unicode_attachments_and_remove_only_listed_files(workspace_root):
     assert len(metadata[0]["sha256"]) == 64
     assert (public / metadata[0]["path"]).read_text() == "附件内容"
     assert _mode(public / metadata[0]["path"]) == 0o600
-    assert _mode(public / "attachments" / "task") == 0o700
+    assert _mode(public / "attachments" / generation) == 0o700
 
     assert workspace.remove_agent_attachments("session", metadata[:1]) == 1
     assert not (public / metadata[0]["path"]).exists()
@@ -228,7 +230,7 @@ def test_save_agent_attachments_rejects_unsafe_names_without_publication(
         )
 
     public = workspace_root / "sessions" / "session" / "workspace"
-    assert not (public / "attachments" / "task").exists()
+    assert not any((public / "attachments").glob("task-*"))
 
 
 def test_save_agent_attachments_rejects_casefold_duplicates(workspace_root):
@@ -266,8 +268,8 @@ def test_attachment_limits_rollback_only_failed_attempt(
 
     session = workspace_root / "sessions" / "session"
     public = session / "workspace"
-    assert not (public / "attachments" / "large").exists()
-    assert not (public / "attachments" / "total").exists()
+    assert not any((public / "attachments").glob("large-*"))
+    assert not any((public / "attachments").glob("total-*"))
     assert list((session / ".attachment-staging").iterdir()) == []
 
 
@@ -282,18 +284,18 @@ def test_attachment_count_limit_is_checked_before_reading(
     assert not workspace_root.exists()
 
 
-def test_save_agent_attachments_never_overwrites_existing_turn(workspace_root):
+def test_save_agent_attachments_uses_independent_generations(workspace_root):
     first = workspace.save_agent_attachments(
         "session", "task", [Upload("answer.txt", b"original")]
     )
-
-    with pytest.raises(workspace.AgentAttachmentError, match="拒绝覆盖"):
-        workspace.save_agent_attachments(
-            "session", "task", [Upload("answer.txt", b"replacement")]
-        )
+    second = workspace.save_agent_attachments(
+        "session", "task", [Upload("answer.txt", b"replacement")]
+    )
 
     public = workspace_root / "sessions" / "session" / "workspace"
+    assert first[0]["path"] != second[0]["path"]
     assert (public / first[0]["path"]).read_bytes() == b"original"
+    assert (public / second[0]["path"]).read_bytes() == b"replacement"
 
 
 def test_remove_agent_attachments_rejects_paths_outside_attachment_namespace(
@@ -706,7 +708,7 @@ def test_attachment_publication_cannot_cross_persistent_session_quota(
             [Upload("new.bin", b"56")],
         )
 
-    assert not (public / "attachments" / "turn-2").exists()
+    assert not any((public / "attachments").glob("turn-2-*"))
     staging = workspace_root / "sessions" / "session" / ".attachment-staging"
     assert list(staging.iterdir()) == []
 

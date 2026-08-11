@@ -50,6 +50,32 @@ def test_hydrate_agent_run_snapshot_reads_canonical_jsonl_only(
     assert trace["trace_files"][0]["path"] == "codex_agent_judge.jsonl"
 
 
+def test_canonical_journal_marks_trace_incremental_before_usage_arrives(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(tmp_path))
+    trace_dir = agent_runs.agent_run_trace_dir("task-canonical-running")
+    trace_dir.mkdir(parents=True)
+    (trace_dir / "numoj_trace_v1.jsonl").write_text(
+        json.dumps({
+            "v": 1,
+            "record_type": "trace",
+            "kind": "thinking",
+            "text": "正在分析",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    trace = agent_runs.build_agent_execution_trace({
+        "task_id": "task-canonical-running",
+        "status": "Running",
+    })
+
+    assert trace["incremental"] is True
+    assert trace["token_usage"] is None
+
+
 @pytest.mark.parametrize(
     ("task_status", "trace_status"),
     [
@@ -223,6 +249,56 @@ def test_session_usage_sums_incremental_tasks_and_overlays_duplicate_task_id():
     assert usage["output_tokens"] == 18
     assert usage["turn_count"] == 2
     assert usage["cost_rmb"] == "0.18"
+
+
+def test_session_usage_sums_canonical_incremental_pi_and_claude_tasks():
+    usage = agent_runs.aggregate_agent_session_token_usage([
+        ("pi-first", {
+            "source": "pi",
+            "incremental": True,
+            "request_count": 1,
+            "input_uncached_tokens": 100,
+            "input_cached_tokens": 20,
+            "input_cache_write_tokens": 0,
+            "input_total_tokens": 120,
+            "output_tokens": 10,
+            "reasoning_output_tokens": 2,
+            "cost_rmb": "0.1",
+        }),
+        ("pi-second", {
+            "source": "pi",
+            "incremental": True,
+            "request_count": 2,
+            "input_uncached_tokens": 200,
+            "input_cached_tokens": 30,
+            "input_cache_write_tokens": 5,
+            "input_total_tokens": 235,
+            "output_tokens": 20,
+            "reasoning_output_tokens": 3,
+            "cost_rmb": "0.2",
+        }),
+        ("claude-third", {
+            "source": "claude_code",
+            "incremental": True,
+            "request_count": 1,
+            "input_uncached_tokens": 300,
+            "input_cached_tokens": 40,
+            "input_cache_write_tokens": 7,
+            "input_total_tokens": 347,
+            "output_tokens": 30,
+            "reasoning_output_tokens": 4,
+            "cost_rmb": "0.3",
+        }),
+    ])
+
+    assert usage["request_count"] == 4
+    assert usage["input_uncached_tokens"] == 600
+    assert usage["input_cached_tokens"] == 90
+    assert usage["input_cache_write_tokens"] == 12
+    assert usage["input_total_tokens"] == 702
+    assert usage["output_tokens"] == 60
+    assert usage["reasoning_output_tokens"] == 9
+    assert usage["cost_rmb"] == "0.6"
 
 
 def test_session_usage_hides_partial_cost_when_any_metered_turn_is_unpriced():

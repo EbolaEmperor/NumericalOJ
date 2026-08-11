@@ -20,10 +20,16 @@
 {% set is_running = state_status in ('pending', 'running') %}
 {% set has_resume_point = agent_session.native_session_id|default('', true)|trim %}
 {% set can_resume = can_resume|default(false) %}
-{% set is_blocked = (not can_resume) or state_status in ('cleanupfailed', 'cleanup_failed') or agent_session.is_legacy|default(false) or (not is_running and not has_resume_point) %}
+{% set message_state = agent_message_state|default(current_state, true) %}
+{% set queue_paused = message_state.queue_paused|default(agent_session.queue_paused|default(false)) %}
+{% set has_queued_messages = message_state.queued_messages|default([], true)|length > 0 %}
+{% set is_hard_blocked = (not can_resume) or state_status in ('cleanupfailed', 'cleanup_failed') or agent_session.is_legacy|default(false) %}
+{% set is_blocked = is_hard_blocked or (not is_running and not has_resume_point and not queue_paused and not has_queued_messages) %}
 {% set access_role = agent_session.access_role|default('user', true) %}
 {% set harness_labels = {'claude_code': 'Claude Code', 'codex': 'Codex', 'opencode': 'OpenCode', 'pi': 'Pi'} %}
 {% set harness_name = agent_session.harness_label|default(harness_labels.get(agent_session.harness, agent_session.harness|default('Harness', true)), true) %}
+{% set message_urls = agent_message_urls|default({}, true) %}
+{% set steer_supported = message_state.steer_supported|default(agent_session.steer_supported|default(true)) %}
 
 {% macro attachment_item(attachment, previewable=true) %}
   {% set attachment_path = attachment.path|default(attachment.workspace_path|default('', true), true) %}
@@ -45,6 +51,37 @@
       </a>
     {% endif %}
   </span>
+{% endmacro %}
+
+{% macro steer_message(message) %}
+  {% set message_id = message.message_id|default('', true) %}
+  {% set message_text = message.user_message|default(message.message|default('', true), true) %}
+  {% set message_html = message.user_message_html|default(message.message_html|default('', true), true) %}
+  {% set delivery_status = message.status|default('queued', true)|lower %}
+  {% set delivery_labels = {
+    'queued': '等待投递',
+    'dispatching': '等待投递',
+    'sent': '已发送',
+    'delivered': '已发送',
+    'failed': '失败',
+    'unknown': '状态未知',
+    'canceled': '已取消'
+  } %}
+  <section class="agent-steer-message agent-steer-message--{{ delivery_status }}"
+           data-agent-steer-message data-message-id="{{ message_id }}">
+    <div class="agent-user-bubble{% if message_html %} numoj-markdown{% endif %}"
+         {% if message_html %}data-numoj-markdown{% endif %}>
+      {% if message_html %}{{ message_html|safe }}{% else %}<p>{{ message_text }}</p>{% endif %}
+    </div>
+    {% if message.attachments %}
+      <div class="agent-message-attachments">
+        {% for attachment in message.attachments %}{{ attachment_item(attachment) }}{% endfor %}
+      </div>
+    {% endif %}
+    <span class="agent-steer-status" role="status">
+      <i aria-hidden="true"></i>{{ delivery_labels.get(delivery_status, delivery_status) }}
+    </span>
+  </section>
 {% endmacro %}
 
 {% macro trace_message(message) %}
@@ -112,7 +149,16 @@
       data-workspace-file-url="{{ url_for('problem_core.admin_agent_workspace_file', session_id=session_id) }}"
       data-status-url-template="{{ url_for('problem_core.admin_agent_run_status', task_id='__TASK_ID__') }}"
       data-stream-url-template="{{ url_for('problem_core.admin_agent_run_stream', task_id='__TASK_ID__') }}"
-      data-cancel-url-template="{{ url_for('problem_core.admin_agent_run_cancel', task_id='__TASK_ID__') }}">
+      data-cancel-url-template="{{ url_for('problem_core.admin_agent_run_cancel', task_id='__TASK_ID__') }}"
+      data-session-state-url="{{ message_urls['state']|default('', true) }}"
+      data-session-stream-url="{{ message_urls['stream']|default('', true) }}"
+      data-queue-update-url-template="{{ message_urls['update']|default('', true) }}"
+      data-queue-delete-url-template="{{ message_urls['delete']|default('', true) }}"
+      data-queue-reorder-url="{{ message_urls['reorder']|default('', true) }}"
+      data-queue-resume-url="{{ message_urls['resume']|default('', true) }}"
+      data-queue-paused="{{ 'true' if queue_paused else 'false' }}"
+      data-steer-supported="{{ 'true' if steer_supported else 'false' }}"
+      data-steer-unavailable-reason="{{ message_state.steer_unavailable_reason|default(agent_session.steer_unavailable_reason|default('', true), true) }}">
 
   <section class="agent-conversation-pane" aria-label="Agent 会话">
     <header class="agent-session-header">
@@ -174,7 +220,8 @@
         {% for turn in turns|default([], true) %}
           {% set detail_messages = turn.detail_messages|default(turn.messages|default(turn.execution_trace.trace_messages|default([], true), true), true) %}
           <article class="agent-turn" data-agent-turn
-                   data-agent-task-id="{{ turn.task_id }}">
+                   data-agent-task-id="{{ turn.task_id }}"
+                   data-message-id="{{ turn.message_id|default(turn.task_id, true) }}">
             <section class="agent-user-message">
               <div class="agent-user-message-row">
                 {% if can_retry and loop.last and turn.task_id == current_task_id %}
@@ -196,6 +243,12 @@
                 </div>
               {% endif %}
             </section>
+
+            {% if turn.steer_messages and not (is_running and turn.task_id == current_task_id) %}
+              <div class="agent-steer-messages agent-steer-messages--historical">
+                {% for message in turn.steer_messages %}{{ steer_message(message) }}{% endfor %}
+              </div>
+            {% endif %}
 
             {% if not (is_running and turn.task_id == current_task_id) %}
             <section class="agent-response">
@@ -219,6 +272,7 @@
         {% endfor %}
 
         <article class="agent-turn agent-turn--live" data-agent-live-turn {% if not is_running %}hidden{% endif %}>
+          <div class="agent-steer-messages" data-agent-live-steers></div>
           <section class="agent-response">
             <details class="agent-turn-details" data-agent-live-details {% if is_running %}open{% endif %}>
               <summary>
@@ -244,6 +298,24 @@
     </div>
 
     <footer class="agent-resume-dock">
+      <section class="agent-message-queue" data-agent-queue-panel hidden aria-label="排队消息">
+        <header class="agent-message-queue-header">
+          <div>
+            <i class="fas fa-layer-group" aria-hidden="true"></i>
+            <strong>接下来</strong>
+            <span data-agent-queue-count aria-live="polite" aria-atomic="true">0</span>
+          </div>
+          <button type="button" data-agent-queue-resume hidden>
+            <i class="fas fa-play" aria-hidden="true"></i><span>继续队列</span>
+          </button>
+        </header>
+        <div class="agent-queue-paused" data-agent-queue-paused-banner hidden>
+          <i class="fas fa-pause-circle" aria-hidden="true"></i>
+          <span data-agent-queue-pause-reason>队列已暂停</span>
+        </div>
+        <ol class="agent-message-queue-list" data-agent-queue-list
+            aria-label="等待执行的消息，可使用箭头按钮调整顺序"></ol>
+      </section>
       <form class="agent-resume-composer{% if is_running %} is-running{% endif %}{% if is_blocked %} is-blocked{% endif %}"
             method="post"
             action="{{ url_for('problem_core.admin_agent_task_detail', session_id=session_id) }}"
@@ -253,7 +325,7 @@
         <label class="visually-hidden" for="agentResumeMessage">继续会话</label>
         <textarea id="agentResumeMessage" name="message" rows="2"
                   maxlength="100000" placeholder="继续这项任务…"
-                  {% if is_running or is_blocked %}disabled{% endif %}
+                  {% if is_blocked %}disabled{% endif %}
                   required data-agent-resume-message></textarea>
         <div class="agent-resume-attachments" data-agent-resume-attachments hidden></div>
         <div class="agent-resume-footer">
@@ -264,7 +336,7 @@
           </div>
           <div class="agent-resume-actions">
             <input id="agentResumeAttachments" class="visually-hidden" type="file"
-                   name="attachments" multiple data-agent-resume-file {% if is_running or is_blocked %}disabled{% endif %}>
+                   name="attachments" multiple data-agent-resume-file {% if is_blocked %}disabled{% endif %}>
             <label class="agent-resume-attach" for="agentResumeAttachments"
                    title="添加附件" aria-label="添加附件">
               <i class="fas fa-plus" aria-hidden="true"></i>
@@ -273,9 +345,17 @@
                     {% if not is_running %}hidden{% endif %}>
               <i class="fas fa-stop" aria-hidden="true"></i><span>停止</span>
             </button>
+            <button class="agent-resume-steer" type="submit" name="delivery_mode" value="steer"
+                    data-agent-resume-steer
+                    aria-label="中途插话" title="中途插话：在当前动作结束后转向"
+                    {% if not is_running %}hidden{% endif %}
+                    {% if is_blocked or not steer_supported %}disabled{% endif %}>
+              <i class="fas fa-comment-dots" aria-hidden="true"></i>
+            </button>
             <button class="agent-resume-send" type="submit" data-agent-resume-send
-                    aria-label="发送消息" title="发送"
-                    {% if is_running or is_blocked %}disabled{% endif %}>
+                    aria-label="{{ '加入队列' if is_running else '发送消息' }}"
+                    title="{{ '加入队列' if is_running else '发送' }}"
+                    {% if is_blocked %}disabled{% endif %}>
               <i class="fas fa-arrow-up" aria-hidden="true"></i>
             </button>
           </div>
@@ -346,6 +426,7 @@
   </aside>
 
   <script type="application/json" data-agent-current-state-json>{{ current_state|default({}, true)|tojson }}</script>
+  <script type="application/json" data-agent-message-state-json>{{ message_state|default({}, true)|tojson }}</script>
   <script type="application/json" data-agent-initial-workspace-json>{{ workspace_tree|default([], true)|tojson }}</script>
 </main>
 

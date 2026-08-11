@@ -115,6 +115,8 @@
     var feedback = root.querySelector('[data-agent-create-feedback]');
     var harnessChoice = root.querySelector('[data-agent-harness-choice] [data-rk-choice]');
     var endpointChoice = root.querySelector('[data-agent-endpoint-choice] [data-rk-choice]');
+    var accessInput = root.querySelector('input[name="access_role"]');
+    var accessChoice = accessInput && accessInput.closest('[data-rk-choice]');
     if (!form || !textarea || !input || !strip || !submit || !global.ChoicePicker) return;
 
     var rawHarnesses = readJson('[data-agent-harnesses-json]', []);
@@ -214,6 +216,8 @@
     global.ChoicePicker.init(root);
     var endpointInput = endpointChoice && endpointChoice.querySelector('.rk-choice-value');
     if (endpointInput) endpointInput.addEventListener('change', updateReadyState);
+    var clientMessageId = '';
+    var clientMessageFingerprint = '';
 
     function resizeTextarea() {
       textarea.style.height = 'auto';
@@ -328,6 +332,20 @@
       var body = new FormData(form);
       body.delete(input.name);
       files.forEach(function (file) { body.append(input.name, file, file.name); });
+      var fingerprint = JSON.stringify([
+        asText(textarea.value),
+        selectedValue(harnessChoice),
+        selectedValue(endpointChoice),
+        selectedValue(accessChoice),
+        files.map(fileKey)
+      ]);
+      if (!clientMessageId || clientMessageFingerprint !== fingerprint) {
+        clientMessageId = global.crypto && typeof global.crypto.randomUUID === 'function'
+          ? global.crypto.randomUUID().replace(/-/g, '')
+          : ('msg' + Date.now().toString(36) + Math.random().toString(36).slice(2));
+        clientMessageFingerprint = fingerprint;
+      }
+      body.set('message_id', clientMessageId);
       feedbackMessage('', false);
       setSubmitting(true);
       global.fetch(form.action, {

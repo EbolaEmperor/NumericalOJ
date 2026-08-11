@@ -6,15 +6,19 @@ import json
 from collections import deque
 import http.server
 import os
+import queue
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 OPENCODE_PROVIDER_ID = "agent-judge"
 PI_PROVIDER_NAME = "agent-judge"
@@ -49,6 +53,708 @@ SESSION_KEYS = {
 }
 CLAUDE_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 ENDPOINT_THINKING_FORMATS = frozenset({"enable_thinking", "thinking_type", "none"})
+NUMOJ_CONTROL_PROTOCOL = "numoj-ndjson-v1"
+_NUMOJ_OUTPUT_LOCK = threading.Lock()
+CONTROL_ACK_DRAIN_SECONDS = 2.0
+_TRACE_EVENT_ID_MAX_CHARS = 512
+_TRACE_DETAIL_MAX_CHARS = 1200
+_TRACE_ASSISTANT_MAX_CHARS = 2 * 1024 * 1024
+_TRACE_METADATA_MAX_CHARS = 512
+OPENCODE_SSE_RECONNECT_FAILURE_SECONDS = 15.0
+OPENCODE_DURABLE_RECONCILE_INTERVAL_SECONDS = 0.5
+OPENCODE_PROMPT_PERSISTENCE_SECONDS = 15.0
+
+
+def _emit_numoj(payload):
+    with _NUMOJ_OUTPUT_LOCK:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+
+def _emit_control(command_id, status, error=""):
+    payload = {
+        "type": "numoj_control",
+        "version": 1,
+        "id": str(command_id or ""),
+        "status": str(status or ""),
+    }
+    if error:
+        payload["error"] = str(error)
+    _emit_numoj(payload)
+
+
+def _stable_trace_event_id(*values, suffix=""):
+    """Return a bounded native identifier suitable for journal deduplication."""
+
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        suffix = str(suffix or "")
+        return text[:max(1, _TRACE_EVENT_ID_MAX_CHARS - len(suffix))] + suffix
+    return ""
+
+
+def _emit_trace(
+        kind, text, *, title="", meta="", is_error=False, fmt="",
+        event_id=""):
+    kind = str(kind or "")
+    text = str(text or "").strip()
+    if not text:
+        return
+    text_limit = (
+        _TRACE_ASSISTANT_MAX_CHARS
+        if kind == "assistant" else _TRACE_DETAIL_MAX_CHARS
+    )
+    if len(text) > text_limit:
+        text = text[:max(0, text_limit - 1)] + "…"
+    event = {
+        "kind": kind,
+        "text": text,
+    }
+    event_id = _stable_trace_event_id(event_id)
+    if event_id:
+        event["id"] = event_id
+    if title:
+        event["title"] = str(title)[:_TRACE_METADATA_MAX_CHARS]
+    if meta:
+        event["meta"] = str(meta)[:_TRACE_METADATA_MAX_CHARS]
+    if is_error:
+        event["is_error"] = True
+    if fmt:
+        event["format"] = str(fmt)
+    _emit_numoj({"type": "numoj_trace", "version": 1, "event": event})
+
+
+def _emit_usage(source, usage, record_id=""):
+    if not isinstance(usage, dict):
+        return
+    _emit_numoj({
+        "type": "numoj_usage",
+        "version": 1,
+        "source": str(source or ""),
+        "id": str(record_id or ""),
+        "usage": usage,
+    })
+
+
+class _NumOJCommandQueue:
+    def __init__(self):
+        self.items = queue.Queue()
+        self.thread = threading.Thread(target=self._read, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def _read(self):
+        for raw in sys.stdin:
+            try:
+                command = json.loads(raw)
+            except Exception:
+                _emit_control("", "rejected", "控制帧不是合法 JSON")
+                continue
+            if not isinstance(command, dict):
+                _emit_control("", "rejected", "控制帧必须是对象")
+                continue
+            command_id = str(command.get("id") or "").strip()
+            command_type = str(command.get("type") or "").strip().lower()
+            if not command_id or command_type not in {"steer", "interrupt"}:
+                _emit_control(command_id, "rejected", "控制命令缺少 id 或类型无效")
+                continue
+            if command_type == "steer" and not str(command.get("message") or "").strip():
+                _emit_control(command_id, "rejected", "插话消息不能为空")
+                continue
+            self.items.put(command)
+
+    def drain(self):
+        result = []
+        while True:
+            try:
+                result.append(self.items.get_nowait())
+            except queue.Empty:
+                return result
+
+
+def _read_numoj_start():
+    raw = sys.stdin.readline()
+    if not raw:
+        _emit_control("__start__", "rejected", "缺少 start 控制帧")
+        return None
+    try:
+        command = json.loads(raw)
+    except Exception:
+        _emit_control("__start__", "rejected", "start 控制帧不是合法 JSON")
+        return None
+    if not isinstance(command, dict) or command.get("type") != "start":
+        _emit_control(str((command or {}).get("id") or ""), "rejected", "首帧必须是 start")
+        return None
+    if not str(command.get("message") or "").strip():
+        _emit_control(str(command.get("id") or "__start__"), "rejected", "首轮消息不能为空")
+        return None
+    return command
+
+
+def _start_json_process(args, env):
+    if shutil.which(args[0], path=env.get("PATH")) is None:
+        raise RuntimeError(f"{args[0]} CLI is not installed")
+    proc = subprocess.Popen(
+        args,
+        cwd=env.get("AJ_WORKSPACE") or "/workspace",
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_events = queue.Queue()
+
+    def read_stdout():
+        try:
+            for line in proc.stdout:
+                try:
+                    stdout_events.put(json.loads(line))
+                except Exception:
+                    if line.strip():
+                        _emit_trace("tool_result", line, title="Harness 输出", meta=args[0])
+        finally:
+            stdout_events.put(None)
+
+    def read_stderr():
+        for line in proc.stderr:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+    threading.Thread(target=read_stdout, daemon=True).start()
+    threading.Thread(target=read_stderr, daemon=True).start()
+    return proc, stdout_events
+
+
+def _write_json(proc, payload):
+    proc.stdin.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+    proc.stdin.flush()
+
+
+def _content_blocks(message):
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return content if isinstance(content, list) else []
+
+
+def _token_count(value):
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _joined_text(value):
+    if isinstance(value, list):
+        return "\n\n".join(str(item) for item in value if str(item or "").strip())
+    return str(value or "")
+
+
+def _stream_terminal_status(source, event):
+    """返回上游稳定终态；非终态返回空字符串。"""
+
+    if not isinstance(event, dict):
+        return ""
+    source = str(source or "").strip().lower()
+    typ = str(event.get("type") or event.get("method") or "").strip()
+    payload = event.get("params") if isinstance(event.get("params"), dict) else event
+    if source == "codex" and typ == "turn/completed":
+        turn = payload.get("turn") if isinstance(payload.get("turn"), dict) else {}
+        status = str(turn.get("status") or "completed").strip().lower()
+        if status in {"failed", "interrupted"}:
+            return status
+        return "completed"
+    if source == "claude_code" and typ == "result":
+        return "failed" if bool(event.get("is_error")) else "completed"
+    if source == "pi" and typ == "agent_settled":
+        return "completed"
+    return ""
+
+
+def _pi_event_failure_status(event):
+    """记住 Pi 在 agent_settled 前公布的失败或中止原因。"""
+
+    if not isinstance(event, dict):
+        return ""
+    message = event.get("message") if isinstance(event.get("message"), dict) else {}
+    if str(message.get("role") or "") != "assistant":
+        return ""
+    reason = str(message.get("stopReason") or "").strip().lower()
+    if reason in {"aborted", "cancelled", "canceled"}:
+        return "interrupted"
+    if reason == "error" or str(message.get("errorMessage") or "").strip():
+        return "failed"
+    return ""
+
+
+def _normalize_stream_event(source, event, *, active_turn_id=""):
+    """把四套上游流事件投影到稳定 journal；返回是否已经到达终态。"""
+
+    if not isinstance(event, dict):
+        return False
+    source = str(source or "").strip().lower()
+    typ = str(event.get("type") or event.get("method") or "").strip()
+    payload = event.get("params") if isinstance(event.get("params"), dict) else event
+
+    if source == "codex":
+        if typ == "item/completed":
+            item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+            item_type = str(item.get("type") or "")
+            item_id = _stable_trace_event_id(
+                item.get("id"), item.get("callId"), item.get("call_id"),
+            )
+            if item_type in {"agentMessage", "message"}:
+                _emit_trace(
+                    "assistant",
+                    item.get("text") or item.get("content"),
+                    meta="codex",
+                    event_id=item_id,
+                )
+            elif item_type in {"reasoning", "reasoningSummary"}:
+                _emit_trace(
+                    "thinking",
+                    _joined_text(
+                        item.get("summary") or item.get("text") or item.get("content")
+                    ),
+                    meta="codex",
+                    event_id=item_id,
+                )
+            elif item_type == "commandExecution":
+                _emit_trace(
+                    "tool",
+                    item.get("command"),
+                    title="执行命令",
+                    meta=item.get("cwd") or "Shell",
+                    event_id=_stable_trace_event_id(item_id, suffix=":call"),
+                )
+                _emit_trace(
+                    "tool_result",
+                    item.get("aggregatedOutput") or item.get("status"),
+                    title="命令结果",
+                    meta=(
+                        f"exit {item.get('exitCode')}"
+                        if item.get("exitCode") is not None else item.get("status")
+                    ),
+                    is_error=str(item.get("status") or "") in {"failed", "declined"},
+                    event_id=_stable_trace_event_id(item_id, suffix=":result"),
+                )
+            elif item_type in {"fileChange", "mcpToolCall", "dynamicToolCall"}:
+                name = item.get("tool") or item.get("server") or item_type
+                arguments = item.get("arguments")
+                if arguments is None:
+                    arguments = item.get("changes") or {}
+                _emit_trace(
+                    "tool",
+                    json.dumps(arguments, ensure_ascii=False),
+                    title="调用工具",
+                    meta=name,
+                    fmt="json",
+                    event_id=_stable_trace_event_id(item_id, suffix=":call"),
+                )
+                result = item.get("result")
+                if result is None:
+                    result = item.get("contentItems") or item.get("status")
+                error = item.get("error")
+                if error is not None:
+                    result = error
+                _emit_trace(
+                    "tool_result",
+                    json.dumps(result, ensure_ascii=False),
+                    title="工具结果",
+                    meta=name,
+                    is_error=bool(error) or str(item.get("status") or "") == "failed",
+                    fmt="json",
+                    event_id=_stable_trace_event_id(item_id, suffix=":result"),
+                )
+            elif item_type in {"collabAgentToolCall", "subAgentActivity"}:
+                _emit_trace(
+                    "subagent",
+                    item.get("prompt") or json.dumps(item, ensure_ascii=False),
+                    title="派出 subagent",
+                    meta=item.get("tool") or item.get("agentPath") or "subagent",
+                    event_id=item_id,
+                )
+        if typ == "thread/tokenUsage/updated":
+            event_turn_id = str(payload.get("turnId") or "")
+            if not active_turn_id or event_turn_id != str(active_turn_id):
+                # thread/resume 会立即回放整个历史的累计 usage；
+                # 只接收当前 turn 的 last，保证 journal 是本轮增量。
+                return False
+            token_usage = (
+                payload.get("tokenUsage")
+                if isinstance(payload.get("tokenUsage"), dict) else {}
+            )
+            usage = token_usage.get("last") if isinstance(token_usage.get("last"), dict) else {}
+            total_input = _token_count(usage.get("inputTokens"))
+            cached = min(total_input, _token_count(usage.get("cachedInputTokens")))
+            # total 是单调增长的累计值，纳入 ID 可去掉重放，
+            # 同时不会把同一 turn 内的多次模型调用合并掉。
+            digest_payload = json.dumps(
+                token_usage.get("total") or usage,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            record_id = (
+                event_turn_id + ":" + hashlib.sha256(
+                    digest_payload.encode("utf-8", "replace")
+                ).hexdigest()[:20]
+            )
+            _emit_usage("codex", {
+                "input_uncached_tokens": total_input - cached,
+                "input_cached_tokens": cached,
+                "input_cache_write_tokens": 0,
+                "output_tokens": _token_count(usage.get("outputTokens")),
+                "reasoning_output_tokens": _token_count(
+                    usage.get("reasoningOutputTokens")
+                ),
+            }, record_id)
+        if typ == "turn/completed":
+            return True
+        return False
+
+    if source in {"pi", "claude_code"}:
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        is_assistant_message = str(message.get("role") or "") == "assistant"
+        if (
+            (typ == "message_end" and is_assistant_message)
+            or (typ == "assistant" and (is_assistant_message or source == "claude_code"))
+            or (typ == "message" and is_assistant_message)
+        ):
+            message_id = _stable_trace_event_id(
+                message.get("id"), event.get("uuid"), event.get("id"),
+            )
+            for block_index, block in enumerate(_content_blocks(message)):
+                block_type = str(block.get("type") or "")
+                block_id = _stable_trace_event_id(
+                    block.get("id"),
+                    message_id,
+                    suffix=f":{block_type or 'block'}:{block_index}",
+                )
+                if block_type == "text":
+                    _emit_trace(
+                        "assistant", block.get("text"), meta=source,
+                        event_id=block_id,
+                    )
+                elif block_type in {"thinking", "reasoning"}:
+                    _emit_trace(
+                        "thinking",
+                        block.get("thinking") or block.get("text"),
+                        meta=source,
+                        event_id=block_id,
+                    )
+                elif block_type == "tool_use":
+                    _emit_trace(
+                        "tool",
+                        json.dumps(block.get("input") or {}, ensure_ascii=False),
+                        title=f"调用 {block.get('name') or '工具'}",
+                        meta=block.get("name"),
+                        fmt="json",
+                        event_id=_stable_trace_event_id(
+                            block.get("id"), block_id, suffix=":call",
+                        ),
+                    )
+            usage = message.get("usage") if isinstance(message.get("usage"), dict) else None
+            if usage and source == "pi":
+                _emit_usage(source, {
+                    "input_uncached_tokens": _token_count(usage.get("input_tokens") or usage.get("input")),
+                    "input_cached_tokens": _token_count(usage.get("cache_read_input_tokens") or usage.get("cacheRead")),
+                    "input_cache_write_tokens": _token_count(usage.get("cache_creation_input_tokens") or usage.get("cacheWrite")),
+                    "output_tokens": _token_count(usage.get("output_tokens") or usage.get("output")),
+                    "reasoning_output_tokens": _token_count(usage.get("reasoning")),
+                }, str(message.get("id") or event.get("uuid") or event.get("id") or ""))
+            elif usage and source == "claude_code":
+                # Claude 的一个 CLI turn 可能包含多个 assistant/tool 模型
+                # 回合。每条 assistant message 的 usage 才是增量；result 上
+                # 的 usage 可能是整轮聚合，不能与这些记录重复相加。
+                _emit_usage(source, {
+                    "input_uncached_tokens": _token_count(
+                        usage.get("input_tokens") or usage.get("input")
+                    ),
+                    "input_cached_tokens": _token_count(
+                        usage.get("cache_read_input_tokens")
+                        or usage.get("cacheRead")
+                    ),
+                    "input_cache_write_tokens": _token_count(
+                        usage.get("cache_creation_input_tokens")
+                        or usage.get("cacheWrite")
+                    ),
+                    "output_tokens": _token_count(
+                        usage.get("output_tokens") or usage.get("output")
+                    ),
+                    "reasoning_output_tokens": _token_count(
+                        usage.get("reasoning")
+                    ),
+                }, str(
+                    message.get("id") or event.get("uuid")
+                    or event.get("id") or ""
+                ))
+        elif typ in {"tool_execution_start", "tool_use"}:
+            _emit_trace(
+                "tool",
+                json.dumps(
+                    event.get("args") or event.get("input") or {},
+                    ensure_ascii=False,
+                ),
+                title=f"调用 {event.get('toolName') or event.get('name') or '工具'}",
+                meta=event.get("toolName") or event.get("name"),
+                fmt="json",
+                event_id=_stable_trace_event_id(
+                    event.get("toolCallId"), event.get("tool_use_id"),
+                    event.get("id"), suffix=":call",
+                ),
+            )
+        elif typ in {"tool_execution_end", "tool_result"}:
+            _emit_trace(
+                "tool_result",
+                event.get("result") or event.get("content") or event.get("output"),
+                title="工具结果",
+                meta=event.get("toolName") or event.get("name"),
+                is_error=bool(event.get("isError")),
+                event_id=_stable_trace_event_id(
+                    event.get("toolCallId"), event.get("tool_use_id"),
+                    event.get("id"), suffix=":result",
+                ),
+            )
+        elif source == "claude_code" and typ == "user":
+            # Claude 把工具结果包装在 user role 事件中；它不是 NumOJ 用户
+            # 消息 replay，但仍属于工作详情的稳定工具轨迹。
+            for block in _content_blocks(message):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                content = block.get("content")
+                if not isinstance(content, str):
+                    content = json.dumps(content or {}, ensure_ascii=False)
+                _emit_trace(
+                    "tool_result",
+                    content,
+                    title="工具结果",
+                    meta=block.get("tool_use_id") or "claude_code",
+                    is_error=bool(block.get("is_error")),
+                    fmt="json" if not isinstance(block.get("content"), str) else "",
+                    event_id=_stable_trace_event_id(
+                        block.get("tool_use_id"), event.get("uuid"),
+                        event.get("id"), suffix=":result",
+                    ),
+                )
+        if source == "pi" and typ == "agent_settled":
+            return True
+        if source == "claude_code" and typ == "result":
+            usage = event.get("usage") if isinstance(event.get("usage"), dict) else None
+            if usage and bool(event.get("_numoj_emit_result_usage", True)):
+                _emit_usage("claude_code", {
+                    "input_uncached_tokens": _token_count(usage.get("input_tokens")),
+                    "input_cached_tokens": _token_count(usage.get("cache_read_input_tokens")),
+                    "input_cache_write_tokens": _token_count(usage.get("cache_creation_input_tokens")),
+                    "output_tokens": _token_count(usage.get("output_tokens")),
+                    "reasoning_output_tokens": 0,
+                }, str(
+                    event.get("id")
+                    or event.get("uuid")
+                    or event.get("_numoj_usage_record_id")
+                    or event.get("session_id")
+                    or ""
+                ))
+            return True
+        return False
+
+    if source == "opencode":
+        data = event.get("data") if isinstance(event.get("data"), dict) else None
+        if data is None and isinstance(event.get("properties"), dict):
+            data = event["properties"]
+        if data is None:
+            data = event
+        event_type = str(event.get("type") or "")
+        native_event_id = _stable_trace_event_id(
+            data.get("id"), event.get("id"), data.get("callID"),
+        )
+        if event_type == "session.next.text.ended":
+            _emit_trace(
+                "assistant", data.get("text"), meta="opencode",
+                event_id=native_event_id,
+            )
+        elif event_type == "session.next.reasoning.ended":
+            _emit_trace(
+                "thinking", data.get("text"), meta="opencode",
+                event_id=native_event_id,
+            )
+        elif event_type == "session.next.tool.called":
+            _emit_trace(
+                "tool",
+                json.dumps(data.get("input") or {}, ensure_ascii=False),
+                title=f"调用 {data.get('tool') or '工具'}",
+                meta=data.get("tool"),
+                fmt="json",
+                event_id=_stable_trace_event_id(
+                    native_event_id, suffix=":call",
+                ),
+            )
+        elif event_type in {"session.next.tool.success", "session.next.tool.failed"}:
+            _emit_trace(
+                "tool_result",
+                json.dumps(
+                    data.get("content") or data.get("error")
+                    or data.get("result") or {},
+                    ensure_ascii=False,
+                ),
+                title="工具结果",
+                meta=data.get("callID"),
+                is_error=event_type.endswith("failed"),
+                fmt="json",
+                event_id=_stable_trace_event_id(
+                    native_event_id, suffix=":result",
+                ),
+            )
+        elif event_type == "session.next.step.failed":
+            _emit_trace(
+                "tool_result",
+                json.dumps(data.get("error") or {}, ensure_ascii=False),
+                title="模型调用失败",
+                meta="opencode",
+                is_error=True,
+                fmt="json",
+                event_id=native_event_id,
+            )
+        elif event_type == "session.next.step.ended":
+            tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+            reasoning = _token_count(tokens.get("reasoning"))
+            _emit_usage("opencode", {
+                "input_uncached_tokens": _token_count(tokens.get("input")),
+                "input_cached_tokens": _token_count(cache.get("read")),
+                "input_cache_write_tokens": _token_count(cache.get("write")),
+                "output_tokens": _token_count(tokens.get("output")) + reasoning,
+                "reasoning_output_tokens": reasoning,
+            }, str(data.get("assistantMessageID") or event.get("id") or ""))
+        # OpenCode 1.18.3 的稳定 V1 Session API 事件。只接收由 adapter
+        # 过滤后的当前 assistant part；delta/control/user replay 不进入
+        # 规范 journal。
+        elif event_type == "message.part.updated":
+            part = data.get("part") if isinstance(data.get("part"), dict) else {}
+            part_type = str(part.get("type") or "")
+            part_id = _stable_trace_event_id(
+                part.get("id"), event.get("id"),
+            )
+            if part_type == "text":
+                _emit_trace(
+                    "assistant", part.get("text"), meta="opencode",
+                    event_id=_stable_trace_event_id(
+                        part_id, suffix=":text",
+                    ),
+                )
+            elif part_type == "reasoning":
+                _emit_trace(
+                    "thinking", part.get("text"), meta="opencode",
+                    event_id=_stable_trace_event_id(
+                        part_id, suffix=":reasoning",
+                    ),
+                )
+            elif part_type == "tool":
+                state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                status = str(state.get("status") or "")
+                if status == "running":
+                    _emit_trace(
+                        "tool",
+                        json.dumps(state.get("input") or {}, ensure_ascii=False),
+                        title=f"调用 {part.get('tool') or '工具'}",
+                        meta=part.get("tool"),
+                        fmt="json",
+                        event_id=_stable_trace_event_id(
+                            part_id, part.get("callID"), suffix=":call",
+                        ),
+                    )
+                elif status in {"completed", "error"}:
+                    result = state.get("output")
+                    if result is None:
+                        result = state.get("error") or state.get("metadata") or {}
+                    if not isinstance(result, str):
+                        result = json.dumps(result, ensure_ascii=False)
+                    _emit_trace(
+                        "tool_result",
+                        result,
+                        title=str(state.get("title") or "工具结果"),
+                        meta=part.get("callID") or part.get("tool"),
+                        is_error=status == "error",
+                        fmt="" if isinstance(state.get("output"), str) else "json",
+                        event_id=_stable_trace_event_id(
+                            part_id, part.get("callID"), suffix=":result",
+                        ),
+                    )
+            elif part_type == "step-finish":
+                tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+                cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+                reasoning = _token_count(tokens.get("reasoning"))
+                _emit_usage("opencode", {
+                    "input_uncached_tokens": _token_count(tokens.get("input")),
+                    "input_cached_tokens": _token_count(cache.get("read")),
+                    "input_cache_write_tokens": _token_count(cache.get("write")),
+                    "output_tokens": _token_count(tokens.get("output")) + reasoning,
+                    "reasoning_output_tokens": reasoning,
+                }, str(part.get("id") or event.get("id") or ""))
+        elif event_type == "session.error":
+            error = data.get("error")
+            if isinstance(error, dict):
+                error_data = error.get("data") if isinstance(error.get("data"), dict) else {}
+                text = error_data.get("message") or error.get("message") or error.get("name")
+            else:
+                text = error
+            _emit_trace(
+                "tool_result",
+                text or "OpenCode 会话失败",
+                title="模型调用失败",
+                meta="opencode",
+                is_error=True,
+                event_id=_stable_trace_event_id(
+                    data.get("id"), event.get("id"), suffix=":error",
+                ),
+            )
+        # v1 `opencode run --format json` fallback，旧会话只保留 resume，
+        # 但仍投影为同一规范 journal。
+        elif event_type in {"text", "message"}:
+            part = event.get("part") if isinstance(event.get("part"), dict) else event
+            _emit_trace(
+                "assistant",
+                part.get("text") or part.get("content"),
+                meta="opencode",
+                event_id=_stable_trace_event_id(
+                    part.get("id"), event.get("id"), suffix=":text",
+                ),
+            )
+        elif event_type in {"tool_use", "tool"}:
+            part = event.get("part") if isinstance(event.get("part"), dict) else event
+            _emit_trace(
+                "tool",
+                json.dumps(part, ensure_ascii=False),
+                title=f"调用 {part.get('tool') or part.get('name') or '工具'}",
+                meta=part.get("tool") or part.get("name"),
+                fmt="json",
+                event_id=_stable_trace_event_id(
+                    part.get("id"), event.get("id"), suffix=":call",
+                ),
+            )
+        elif event_type == "step_finish":
+            part = event.get("part") if isinstance(event.get("part"), dict) else event
+            tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+            reasoning = _token_count(tokens.get("reasoning"))
+            _emit_usage("opencode", {
+                "input_uncached_tokens": _token_count(tokens.get("input")),
+                "input_cached_tokens": _token_count(cache.get("read")),
+                "input_cache_write_tokens": _token_count(cache.get("write")),
+                "output_tokens": _token_count(tokens.get("output")) + reasoning,
+                "reasoning_output_tokens": reasoning,
+            }, str(part.get("id") or event.get("id") or ""))
+        return False
+    return False
 
 
 def _web_search_mcp_settings():
@@ -459,14 +1165,22 @@ def _record_live_session(session_id, *, env=None):
             runtime_env.get("AJ_SESSION_STATE")
             or "/workspace/.aj_session_state.json"
         )
-        _write_session_event(state_path, {
+        event = {
             "harness": harness,
             "phase": runtime_env.get("AJ_PHASE") or "",
             "session_id": normalized_session_id,
             "resume_session_id": resume_session_id or "",
             "returncode": None,
             "running": True,
-        })
+        }
+        if runtime_env.get("AJ_CONTROL_PROTOCOL") == NUMOJ_CONTROL_PROTOCOL:
+            event["interactive_supported"] = (
+                str(runtime_env.get("AJ_INTERACTIVE_SUPPORTED") or "1") == "1"
+            )
+            reason = str(runtime_env.get("AJ_INTERACTIVE_UNSUPPORTED_REASON") or "").strip()
+            if reason:
+                event["interactive_unsupported_reason"] = reason
+        _write_session_event(state_path, event)
     except Exception as exc:
         # 状态旁路不能阻塞 stdout drain；正常结束时 _record_session 会重试。
         print(f"failed to persist live AJ session state: {exc}", file=sys.stderr)
@@ -495,6 +1209,13 @@ def _record_session(harness, proc, resume_session_id=None):
         "resume_session_id": resume_session_id or "",
         "returncode": int(getattr(proc, "returncode", 0) or 0),
     }
+    if os.environ.get("AJ_CONTROL_PROTOCOL") == NUMOJ_CONTROL_PROTOCOL:
+        event["interactive_supported"] = (
+            str(os.environ.get("AJ_INTERACTIVE_SUPPORTED") or "1") == "1"
+        )
+        reason = str(os.environ.get("AJ_INTERACTIVE_UNSUPPORTED_REASON") or "").strip()
+        if reason:
+            event["interactive_unsupported_reason"] = reason
     try:
         _write_session_event(state_path, event)
     except Exception as exc:
@@ -660,7 +1381,10 @@ def _write_codex_config(
         'name = "Agent Judge OpenAI Compatible"',
         "base_url = " + json.dumps(base_url),
         'env_key = "AJ_ENDPOINT_API_KEY"',
-        'wire_api = "chat"',
+        # Codex 0.144.5 已删除 chat wire API；自定义 OpenAI-compatible
+        # endpoint 统一由下方 localhost relay 把 Responses 请求转换为
+        # Chat Completions，不能再把旧 wire_api 配置交给 CLI。
+        'wire_api = "responses"',
     ]
     if model:
         lines.insert(0, "model = " + json.dumps(model))
@@ -799,6 +1523,216 @@ def _open_endpoint_request(opener, request):
     return opener.open(request, timeout=300)
 
 
+def _codex_response_content_to_chat(content):
+    """把 Responses message content 收敛为 Chat Completions content。"""
+
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    converted = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = str(part.get("type") or "").strip().lower()
+        if part_type in {"input_text", "output_text", "text"}:
+            converted.append({"type": "text", "text": str(part.get("text") or "")})
+        elif part_type in {"input_image", "image_url"}:
+            image_url = part.get("image_url") or part.get("url")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            if image_url:
+                converted.append({"type": "image_url", "image_url": {"url": str(image_url)}})
+    if not converted:
+        return ""
+    if all(item.get("type") == "text" for item in converted):
+        return "".join(str(item.get("text") or "") for item in converted)
+    return converted
+
+
+def _codex_responses_request_to_chat(raw_body):
+    """把 Codex 0.144.5 的 Responses 请求转换到通用 Chat 接口。"""
+
+    payload = json.loads(raw_body.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Codex Responses 请求必须是对象")
+    messages = []
+    instructions = payload.get("instructions")
+    if instructions:
+        messages.append({"role": "system", "content": str(instructions)})
+    for item in payload.get("input") or []:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip().lower()
+        role = str(item.get("role") or "").strip().lower()
+        if item_type in {"message", ""} and role:
+            if role == "developer":
+                role = "system"
+            if role not in {"system", "user", "assistant", "tool"}:
+                continue
+            messages.append({
+                "role": role,
+                "content": _codex_response_content_to_chat(item.get("content")),
+            })
+        elif item_type == "function_call":
+            call = {
+                "id": str(item.get("call_id") or item.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": str(item.get("name") or ""),
+                    "arguments": str(item.get("arguments") or "{}"),
+                },
+            }
+            if messages and messages[-1].get("role") == "assistant":
+                messages[-1].setdefault("tool_calls", []).append(call)
+            else:
+                messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
+        elif item_type == "function_call_output":
+            output = item.get("output")
+            if not isinstance(output, str):
+                output = json.dumps(
+                    output if output is not None else "",
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": str(item.get("call_id") or ""),
+                "content": output,
+            })
+        elif item_type in {"custom_tool_call", "custom_tool_call_output"}:
+            # Chat Completions 没有 freeform custom tool 的等价历史格式。
+            # 不能把已经发生的 apply_patch 调用静默删除后继续生成。
+            raise ValueError(
+                f"Chat 兼容节点不能恢复 Codex {item_type} 历史；"
+                "请在支持 Responses API 的节点继续该原生会话"
+            )
+        # reasoning 和客户端内部引用不属于兼容端点的可见消息。
+
+    chat = {
+        "model": str(payload.get("model") or ""),
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": int(payload.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS),
+    }
+    tools = []
+    disabled_custom_tools = []
+    disabled_namespace_tools = []
+    disabled_builtin_tools = []
+    for tool in payload.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        tool_type = str(tool.get("type") or "").strip().lower()
+        if tool_type == "custom" and str(tool.get("name") or "") == "apply_patch":
+            # apply_patch 是 Codex 的 freeform grammar tool，Chat Completions
+            # 无法无损表达。显式从上游能力中禁用，并告知模型改用 shell；
+            # 不能像旧实现一样悄悄丢掉全部 custom tools。
+            disabled_custom_tools.append("apply_patch")
+            continue
+        if tool_type == "namespace":
+            # Chat Completions 没有 Responses namespace tool 的返回类型；
+            # 若直接展平，function_call 名称又无法无损映射回 namespace。
+            # 显式禁用并通知模型，保留普通 function tools 的单 Agent 能力。
+            disabled_namespace_tools.append(
+                str(tool.get("name") or "namespace")
+            )
+            continue
+        if tool_type in {"web_search", "web_search_preview"}:
+            disabled_builtin_tools.append(tool_type)
+            continue
+        if tool_type != "function":
+            raise ValueError(
+                f"Chat 兼容节点不支持 Codex Responses tool type: "
+                f"{tool_type or 'unknown'}"
+                f" (name={str(tool.get('name') or '')[:80]}, "
+                f"keys={','.join(sorted(str(key) for key in tool))[:240]})"
+            )
+        function = {
+            "name": str(tool.get("name") or ""),
+            "description": str(tool.get("description") or ""),
+            "parameters": tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {},
+        }
+        if tool.get("strict") is not None:
+            function["strict"] = bool(tool.get("strict"))
+        tools.append({"type": "function", "function": function})
+    if disabled_custom_tools or disabled_namespace_tools or disabled_builtin_tools:
+        notices = []
+        if disabled_custom_tools:
+            notices.append(
+                "Codex 的 freeform apply_patch 工具不可用；"
+                "请使用 shell 工具修改文件"
+            )
+        if disabled_namespace_tools:
+            notices.append(
+                "Codex 的 namespace 工具不可用；请在当前 Agent 内完成任务"
+            )
+        if disabled_builtin_tools:
+            notices.append(
+                "Codex 的内建 web_search 工具不可用；"
+                "如页面提供了 Web Search MCP，请使用对应 MCP 工具"
+            )
+        notice = (
+            "当前模型节点使用 Chat Completions 兼容桥接，"
+            + "；".join(notices)
+            + "。"
+        )
+        if messages and messages[0].get("role") == "system":
+            existing = str(messages[0].get("content") or "")
+            messages[0]["content"] = (existing + "\n\n" + notice).strip()
+        else:
+            messages.insert(0, {"role": "system", "content": notice})
+    if tools:
+        chat["tools"] = tools
+        tool_choice = payload.get("tool_choice")
+        if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+            chat["tool_choice"] = {
+                "type": "function",
+                "function": {"name": str(tool_choice.get("name") or "")},
+            }
+        elif tool_choice is not None:
+            chat["tool_choice"] = tool_choice
+        if payload.get("parallel_tool_calls") is not None:
+            chat["parallel_tool_calls"] = bool(payload.get("parallel_tool_calls"))
+    reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else {}
+    if reasoning.get("effort"):
+        chat["reasoning_effort"] = str(reasoning["effort"])
+    for field in (
+        "enable_thinking", "thinking", "temperature", "top_p",
+        "service_tier", "user",
+    ):
+        if payload.get(field) is not None:
+            chat[field] = payload[field]
+    return json.dumps(chat, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _codex_response_sse_event(event):
+    event_type = str(event.get("type") or "")
+    data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event_type}\ndata: {data}\n\n".encode("utf-8")
+
+
+def _relay_upstream_url(base_url, request_target):
+    """将 relay 请求路径追加到端点，同时保留两侧 query。"""
+
+    base = urllib.parse.urlsplit(str(base_url or "").strip())
+    target = urllib.parse.urlsplit(str(request_target or ""))
+    base_path = (base.path or "").rstrip("/")
+    target_path = "/" + str(target.path or "").lstrip("/")
+    if target_path.startswith("/v1/") and base_path.lower().endswith("/v1"):
+        target_path = target_path[len("/v1"):]
+    query = "&".join(
+        part for part in (base.query, target.query) if str(part or "")
+    )
+    return urllib.parse.urlunsplit((
+        base.scheme,
+        base.netloc,
+        base_path + target_path,
+        query,
+        "",
+    ))
+
+
 class _CodexEndpointRelay:
     """为 Codex 补齐上游未暴露的输出上限与 thinking 兼容开关。"""
 
@@ -813,7 +1747,7 @@ class _CodexEndpointRelay:
     def __init__(
             self, base_url, max_output_tokens, thinking_compatibility,
             upstream_model=None, endpoint_thinking_format=None):
-        self.base_url = str(base_url or "").rstrip("/")
+        self.base_url = str(base_url or "").strip()
         self.max_output_tokens = int(max_output_tokens)
         self.thinking_compatibility = bool(thinking_compatibility)
         self.upstream_model = str(upstream_model or "").strip()
@@ -843,6 +1777,17 @@ class _CodexEndpointRelay:
             def do_POST(self):
                 self._forward()
 
+            def _send_json_error(self, status, message):
+                error = json.dumps(
+                    {"error": str(message or "upstream request failed")},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                self.send_response(int(status))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(error)))
+                self.end_headers()
+                self.wfile.write(error)
+
             def _forward(self):
                 try:
                     content_length = int(self.headers.get("Content-Length") or 0)
@@ -854,6 +1799,25 @@ class _CodexEndpointRelay:
                 body = self.rfile.read(content_length) if content_length else b""
                 if body:
                     body = relay._rewrite_request_body(self.path, body)
+                normalized_path = self.path.split("?", 1)[0].rstrip("/")
+                translate_codex = (
+                    self.command == "POST"
+                    and normalized_path.endswith("/responses")
+                    and type(relay) is _CodexEndpointRelay
+                )
+                upstream_path = self.path
+                if translate_codex:
+                    try:
+                        body = _codex_responses_request_to_chat(body)
+                    except Exception as exc:
+                        print(
+                            f"Codex Responses bridge rejected request: {exc}",
+                            file=sys.stderr,
+                        )
+                        self._send_json_error(400, str(exc))
+                        return
+                    suffix = self.path[len(normalized_path):]
+                    upstream_path = normalized_path[:-len("/responses")] + "/chat/completions" + suffix
                 headers = {
                     key: value
                     for key, value in self.headers.items()
@@ -862,7 +1826,7 @@ class _CodexEndpointRelay:
                     }
                 }
                 request = urllib.request.Request(
-                    relay.base_url + (self.path if self.path.startswith("/") else "/" + self.path),
+                    _relay_upstream_url(relay.base_url, upstream_path),
                     data=body if self.command != "GET" else None,
                     headers=headers,
                     method=self.command,
@@ -873,25 +1837,47 @@ class _CodexEndpointRelay:
                 except urllib.error.HTTPError as exc:
                     if 300 <= int(exc.code) < 400:
                         exc.close()
-                        error = json.dumps({
-                            "error": "upstream redirects are refused",
-                        }).encode("utf-8")
-                        self.send_response(502)
-                        self.send_header("Content-Type", "application/json")
-                        self.send_header("Content-Length", str(len(error)))
-                        self.end_headers()
-                        self.wfile.write(error)
+                        self._send_json_error(
+                            502, "upstream redirects are refused",
+                        )
                         return
                     response = exc
                 except Exception as exc:
-                    error = json.dumps({"error": str(exc)}).encode("utf-8")
-                    self.send_response(502)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(error)))
-                    self.end_headers()
-                    self.wfile.write(error)
+                    self._send_json_error(502, str(exc))
                     return
                 with response:
+                    if translate_codex and int(response.status) < 300:
+                        content_type = str(
+                            response.headers.get("Content-Type") or ""
+                        ).split(";", 1)[0].strip().lower()
+                        content_encoding = str(
+                            response.headers.get("Content-Encoding") or ""
+                        ).strip().lower()
+                        if content_encoding not in {"", "identity"}:
+                            self._send_json_error(
+                                502,
+                                "Chat 兼容节点返回了不支持的压缩 SSE",
+                            )
+                            return
+                        if content_type != "text/event-stream":
+                            preview = response.read(64 * 1024)
+                            detail = "Chat 兼容节点没有返回 SSE"
+                            try:
+                                upstream_error = json.loads(
+                                    preview.decode("utf-8", "replace")
+                                )
+                                if isinstance(upstream_error, dict):
+                                    raw_error = upstream_error.get("error")
+                                    if isinstance(raw_error, dict):
+                                        raw_error = raw_error.get("message")
+                                    if raw_error:
+                                        detail += f"：{raw_error}"
+                            except Exception:
+                                pass
+                            self._send_json_error(502, detail)
+                            return
+                        self._forward_chat_as_responses(response)
+                        return
                     self.send_response(int(response.status))
                     for key, value in response.headers.items():
                         if key.lower() not in {
@@ -905,6 +1891,279 @@ class _CodexEndpointRelay:
                             break
                         self.wfile.write(chunk)
                         self.wfile.flush()
+
+            def _forward_chat_as_responses(self, response):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                response_id = "resp_numoj_" + uuid.uuid4().hex
+                message_id = "msg_numoj_" + uuid.uuid4().hex
+                created = False
+                message_started = False
+                text_parts = []
+                reasoning_parts = []
+                tool_calls = {}
+                usage = {}
+                sequence_number = 0
+                saw_chat_chunk = False
+                saw_done = False
+                saw_success_finish = False
+                incomplete_finish_reason = ""
+
+                def emit(event):
+                    nonlocal sequence_number
+                    event = dict(event)
+                    event.setdefault("sequence_number", sequence_number)
+                    sequence_number += 1
+                    self.wfile.write(_codex_response_sse_event(event))
+                    self.wfile.flush()
+
+                def emit_failure(message, code="upstream_error"):
+                    nonlocal created
+                    message = str(message or "Chat 兼容节点返回流式错误")
+                    if not created:
+                        emit({
+                            "type": "response.created",
+                            "response": {
+                                "id": response_id,
+                                "status": "in_progress",
+                            },
+                        })
+                        created = True
+                    emit({
+                        "type": "error",
+                        "code": str(code or "upstream_error"),
+                        "message": message,
+                        "param": None,
+                    })
+                    emit({
+                        "type": "response.failed",
+                        "response": {
+                            "id": response_id,
+                            "status": "failed",
+                            "error": {
+                                "code": str(code or "upstream_error"),
+                                "message": message,
+                            },
+                        },
+                    })
+
+                def start_message():
+                    nonlocal message_started
+                    if message_started:
+                        return
+                    message_started = True
+                    emit({
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "id": message_id,
+                            "status": "in_progress",
+                            "content": [],
+                        },
+                    })
+                    emit({
+                        "type": "response.content_part.added",
+                        "output_index": 0,
+                        "item_id": message_id,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": ""},
+                    })
+
+                for raw_line in response:
+                    line = raw_line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    raw_data = line[5:].strip()
+                    if raw_data == b"[DONE]":
+                        saw_done = True
+                        break
+                    try:
+                        chunk = json.loads(raw_data.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    upstream_error = chunk.get("error")
+                    if upstream_error:
+                        if isinstance(upstream_error, dict):
+                            error_message = (
+                                upstream_error.get("message")
+                                or upstream_error.get("code")
+                                or json.dumps(upstream_error, ensure_ascii=False)
+                            )
+                            error_code = upstream_error.get("code")
+                        else:
+                            error_message = upstream_error
+                            error_code = "upstream_error"
+                        emit_failure(error_message, error_code)
+                        return
+                    saw_chat_chunk = True
+                    upstream_id = str(chunk.get("id") or "").strip()
+                    if upstream_id and not created:
+                        response_id = upstream_id
+                    if not created:
+                        emit({"type": "response.created", "response": {"id": response_id}})
+                        created = True
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = chunk["usage"]
+                    choices = chunk.get("choices") if isinstance(chunk.get("choices"), list) else []
+                    if not choices or not isinstance(choices[0], dict):
+                        continue
+                    finish_reason = str(
+                        choices[0].get("finish_reason") or ""
+                    ).strip().lower()
+                    if finish_reason in {"stop", "tool_calls", "function_call"}:
+                        saw_success_finish = True
+                    elif finish_reason:
+                        incomplete_finish_reason = finish_reason
+                    delta = choices[0].get("delta") if isinstance(choices[0].get("delta"), dict) else {}
+                    content = delta.get("content")
+                    if content:
+                        content = str(content)
+                        text_parts.append(content)
+                        start_message()
+                        emit({
+                            "type": "response.output_text.delta",
+                            "output_index": 0,
+                            "item_id": message_id,
+                            "content_index": 0,
+                            "delta": content,
+                        })
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    if reasoning:
+                        reasoning_parts.append(str(reasoning))
+                    for partial in delta.get("tool_calls") or []:
+                        if not isinstance(partial, dict):
+                            continue
+                        index = int(partial.get("index") or 0)
+                        stored = tool_calls.setdefault(index, {
+                            "id": "",
+                            "name": "",
+                            "arguments": "",
+                        })
+                        if partial.get("id"):
+                            stored["id"] = str(partial["id"])
+                        function = partial.get("function") if isinstance(partial.get("function"), dict) else {}
+                        if function.get("name"):
+                            stored["name"] += str(function["name"])
+                        if function.get("arguments"):
+                            stored["arguments"] += str(function["arguments"])
+
+                if not saw_chat_chunk:
+                    emit_failure(
+                        "Chat 兼容节点返回了空的或无法解析的 SSE",
+                        "invalid_upstream_stream",
+                    )
+                    return
+                if incomplete_finish_reason:
+                    emit_failure(
+                        "Chat 兼容节点未正常完成"
+                        f"（finish_reason={incomplete_finish_reason}）",
+                        "incomplete_upstream_stream",
+                    )
+                    return
+                if not saw_done and not saw_success_finish:
+                    emit_failure(
+                        "Chat 兼容节点在稳定终态前中断了 SSE",
+                        "incomplete_upstream_stream",
+                    )
+                    return
+                if not created:
+                    emit({"type": "response.created", "response": {"id": response_id}})
+                if reasoning_parts:
+                    emit({
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "reasoning",
+                            "id": "rs_numoj_" + uuid.uuid4().hex,
+                            "summary": [{
+                                "type": "summary_text",
+                                "text": "".join(reasoning_parts),
+                            }],
+                        },
+                    })
+                if text_parts:
+                    text = "".join(text_parts)
+                    emit({
+                        "type": "response.output_text.done",
+                        "output_index": 0,
+                        "item_id": message_id,
+                        "content_index": 0,
+                        "text": text,
+                    })
+                    emit({
+                        "type": "response.content_part.done",
+                        "output_index": 0,
+                        "item_id": message_id,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": text},
+                    })
+                    emit({
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "id": message_id,
+                            "status": "completed",
+                            "content": [{
+                                "type": "output_text",
+                                "text": text,
+                            }],
+                        },
+                    })
+                for index in sorted(tool_calls):
+                    call = tool_calls[index]
+                    call_id = call["id"] or "call_numoj_" + uuid.uuid4().hex
+                    emit({
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "function_call",
+                            "id": "fc_numoj_" + uuid.uuid4().hex,
+                            "call_id": call_id,
+                            "name": call["name"],
+                            "arguments": call["arguments"] or "{}",
+                        },
+                    })
+                input_tokens = _token_count(
+                    usage.get("prompt_tokens", usage.get("input_tokens"))
+                )
+                output_tokens = _token_count(
+                    usage.get("completion_tokens", usage.get("output_tokens"))
+                )
+                details = usage.get("prompt_tokens_details")
+                if not isinstance(details, dict):
+                    details = usage.get("input_tokens_details")
+                cached_tokens = _token_count(
+                    (details or {}).get("cached_tokens")
+                    if isinstance(details, dict) else 0
+                )
+                output_details = usage.get("completion_tokens_details")
+                if not isinstance(output_details, dict):
+                    output_details = usage.get("output_tokens_details")
+                reasoning_tokens = _token_count(
+                    (output_details or {}).get("reasoning_tokens")
+                    if isinstance(output_details, dict) else 0
+                )
+                emit({
+                    "type": "response.completed",
+                    "response": {
+                        "id": response_id,
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "input_tokens_details": {"cached_tokens": cached_tokens},
+                            "output_tokens": output_tokens,
+                            "output_tokens_details": {
+                                "reasoning_tokens": reasoning_tokens,
+                            },
+                            "total_tokens": input_tokens + output_tokens,
+                        },
+                    },
+                })
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
@@ -995,7 +2254,195 @@ def _endpoint_settings(allowed_protocols):
     return protocol, base_url, api_key, model
 
 
-def _run_codex(prompt):
+def _codex_rpc_call(
+        proc, events, request_id, method, params, *, deferred_events=None):
+    _write_json(proc, {"method": method, "id": request_id, "params": params})
+    while True:
+        event = events.get(timeout=30)
+        if event is None:
+            raise RuntimeError(f"Codex app-server 在 {method} 响应前退出")
+        if event.get("id") == request_id:
+            if isinstance(event.get("error"), dict):
+                raise RuntimeError(str(event["error"].get("message") or event["error"]))
+            return event.get("result") if isinstance(event.get("result"), dict) else {}
+        if isinstance(deferred_events, list):
+            deferred_events.append(event)
+        else:
+            _normalize_stream_event("codex", event)
+
+
+def _run_codex_interactive(prompt, commands, env, resume_session_id, model):
+    proc, events = _start_json_process(
+        ["codex", "app-server", "--listen", "stdio://"], env,
+    )
+    pending = {}
+    start_accepted = False
+    try:
+        _codex_rpc_call(proc, events, "numoj-init", "initialize", {
+            "clientInfo": {
+                "name": "numoj",
+                "title": "NumericalOJ Agent",
+                "version": "1",
+            },
+            "capabilities": None,
+        })
+        _write_json(proc, {"method": "initialized", "params": {}})
+        thread_method = "thread/resume" if resume_session_id else "thread/start"
+        thread_params = {
+            "cwd": "/workspace",
+            "model": model,
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+        }
+        if resume_session_id:
+            thread_params["threadId"] = resume_session_id
+        thread_result = _codex_rpc_call(
+            proc, events, "numoj-thread", thread_method, thread_params,
+        )
+        thread = thread_result.get("thread") if isinstance(thread_result.get("thread"), dict) else {}
+        thread_id = str(thread.get("id") or resume_session_id or "")
+        if not thread_id:
+            raise RuntimeError("Codex app-server 没有返回 thread id")
+        _record_live_session(thread_id, env=env)
+        deferred_turn_events = []
+        turn_result = _codex_rpc_call(
+            proc,
+            events,
+            "numoj-turn",
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "clientUserMessageId": "__start__",
+                "input": [{"type": "text", "text": prompt, "text_elements": []}],
+            },
+            deferred_events=deferred_turn_events,
+        )
+        turn = turn_result.get("turn") if isinstance(turn_result.get("turn"), dict) else {}
+        turn_id = str(turn.get("id") or "")
+        if not turn_id:
+            raise RuntimeError("Codex app-server 没有返回 active turn id")
+        _emit_control("__start__", "accepted")
+        start_accepted = True
+
+        done = False
+        terminal_status = ""
+        for event in deferred_turn_events:
+            terminal_status = (
+                _stream_terminal_status("codex", event) or terminal_status
+            )
+            done = (
+                _normalize_stream_event(
+                    "codex", event, active_turn_id=turn_id,
+                ) or done
+            )
+        control_drain_deadline = None
+        while True:
+            if done:
+                if not pending:
+                    break
+                if (
+                    control_drain_deadline is not None
+                    and time.monotonic() >= control_drain_deadline
+                ):
+                    break
+            else:
+                pending_commands = commands.drain()
+            for command in ([] if done else pending_commands):
+                command_id = str(command.get("id") or "")
+                rpc_id = "numoj-command-" + command_id
+                if command.get("type") == "steer":
+                    method = "turn/steer"
+                    params = {
+                        "threadId": thread_id,
+                        "expectedTurnId": turn_id,
+                        "clientUserMessageId": command_id,
+                        "input": [{
+                            "type": "text",
+                            "text": str(command.get("message") or ""),
+                            "text_elements": [],
+                        }],
+                    }
+                else:
+                    method = "turn/interrupt"
+                    params = {"threadId": thread_id, "turnId": turn_id}
+                pending[rpc_id] = command_id
+                try:
+                    _write_json(proc, {"method": method, "id": rpc_id, "params": params})
+                except (BrokenPipeError, OSError) as exc:
+                    pending.pop(rpc_id, None)
+                    _emit_control(command_id, "unknown", str(exc))
+            try:
+                timeout = 0.1
+                if done and control_drain_deadline is not None:
+                    timeout = max(
+                        0.001,
+                        min(timeout, control_drain_deadline - time.monotonic()),
+                    )
+                event = events.get(timeout=timeout)
+            except queue.Empty:
+                if done:
+                    continue
+                if proc.poll() is not None:
+                    raise RuntimeError("Codex app-server 意外退出")
+                continue
+            if event is None:
+                if done:
+                    break
+                raise RuntimeError("Codex app-server 意外退出")
+            response_id = str(event.get("id") or "")
+            if response_id in pending:
+                command_id = pending.pop(response_id)
+                error = event.get("error") if isinstance(event.get("error"), dict) else None
+                _emit_control(
+                    command_id,
+                    "rejected" if error else "accepted",
+                    str((error or {}).get("message") or ""),
+                )
+                continue
+            terminal_status = (
+                _stream_terminal_status("codex", event) or terminal_status
+            )
+            done = _normalize_stream_event(
+                "codex", event, active_turn_id=turn_id,
+            ) or done
+            if done and pending and control_drain_deadline is None:
+                # app-server 的 turn/completed 与同一 turn 的控制 RPC 响应
+                # 来自不同通知通道，终态可能先到。给已发送命令一个短暂、
+                # 有界的回执排空窗口，避免把成功 steer/interrupt 误标 unknown。
+                control_drain_deadline = (
+                    time.monotonic() + CONTROL_ACK_DRAIN_SECONDS
+                )
+        returncode = (
+            2 if terminal_status == "failed"
+            else 130 if terminal_status == "interrupted"
+            else 0
+        )
+    except Exception as exc:
+        if not start_accepted:
+            _emit_control("__start__", "rejected", str(exc))
+        print(f"Codex interactive adapter failed: {exc}", file=sys.stderr)
+        returncode = 2
+    finally:
+        for command_id in pending.values():
+            _emit_control(command_id, "unknown", "Codex turn 已结束但未返回控制回执")
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    completed = subprocess.CompletedProcess(proc.args, returncode, "", "")
+    completed.aj_session_id = locals().get("thread_id", "")
+    return completed
+
+
+def _run_codex(prompt, commands=None):
     try:
         resume_session_id = _resume_session_id_from_env("codex")
         _protocol, base_url, api_key, model = _endpoint_settings({"openai"})
@@ -1038,6 +2485,15 @@ def _run_codex(prompt):
         env = os.environ.copy()
         env["CODEX_HOME"] = home
         audit_read_only = _audit_read_only_enabled()
+        if commands is not None and audit_read_only:
+            _emit_control("__start__", "rejected", "只读审计模式不支持交互控制")
+            return 2
+        if commands is not None:
+            proc = _run_codex_interactive(
+                prompt, commands, env, resume_session_id, model,
+            )
+            _record_session("codex", proc, resume_session_id)
+            return proc.returncode
         if resume_session_id and not audit_read_only:
             args = [
                 "codex", "exec", "resume",
@@ -1070,6 +2526,15 @@ def _run_codex(prompt):
         _record_session("codex", proc, resume_session_id)
         return proc.returncode
     finally:
+        # Codex 会在 CODEX_HOME/tmp/arg0 创建指向镜像内 helper 的绝对
+        # symlink。这些文件只服务当前进程，不能进入可恢复 checkpoint；
+        # sessions、sqlite 和配置等持久原生状态仍完整保留。
+        try:
+            shutil.rmtree(os.path.join(home, "tmp"))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"failed to clean Codex ephemeral runtime: {exc}", file=sys.stderr)
         relay.stop()
 
 
@@ -1129,7 +2594,722 @@ def _opencode_config_content(
     return json.dumps(cfg, ensure_ascii=False)
 
 
-def _run_opencode(prompt):
+def _free_loopback_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _http_request(base_url, path, *, method="GET", payload=None, timeout=30):
+    data = None
+    headers = {"x-opencode-directory": "/workspace"}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["content-type"] = "application/json"
+    request = urllib.request.Request(
+        base_url + path,
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+
+
+def _wait_opencode_server(base_url, proc):
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError("OpenCode serve 启动失败")
+        try:
+            _http_request(base_url, "/session?limit=1", timeout=1)
+            return
+        except Exception:
+            time.sleep(0.1)
+    raise RuntimeError("OpenCode serve 就绪超时")
+
+
+def _opencode_message_id(command_id, task_id=""):
+    # V1 loop 仍通过 ``lastUser.id < lastAssistant.id`` 判断当前回复是否已
+    # 完成，因此不能直接把无序 UUID/hash 放在 ID 的时间前缀。固定一个
+    # 小于原生递增 ID 的 12 位前缀，再用 task/control digest 保证幂等与
+    # 唯一；后续 assistant ID 必然排在它之后，不会无限追加模型 step。
+    identity = f"{str(task_id or '').strip()}:{str(command_id or '')}"
+    digest = hashlib.sha256(identity.encode("utf-8", "replace")).hexdigest()
+    return "msg_000000000001" + digest[:14]
+
+
+def _run_opencode_legacy_interactive(args, env, commands, resume_session_id):
+    proc, events = _start_json_process(args, env)
+    _emit_control("__start__", "accepted")
+    session_id = resume_session_id
+    try:
+        while proc.poll() is None:
+            for command in commands.drain():
+                command_id = str(command.get("id") or "")
+                if command.get("type") == "interrupt":
+                    proc.terminate()
+                    _emit_control(command_id, "accepted")
+                else:
+                    _emit_control(
+                        command_id,
+                        "rejected",
+                        "这个旧 OpenCode 会话不能使用中途插话，请等待本轮结束后续聊",
+                    )
+            try:
+                event = events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if event is None:
+                break
+            discovered = _walk_json_session_id(event, "opencode")
+            if discovered:
+                session_id = discovered
+                _record_live_session(discovered, env=env)
+            _normalize_stream_event("opencode", event)
+        returncode = int(proc.wait())
+    except Exception as exc:
+        print(f"OpenCode legacy adapter failed: {exc}", file=sys.stderr)
+        returncode = 2
+    completed = subprocess.CompletedProcess(args, returncode, "", "")
+    completed.aj_session_id = session_id
+    return completed
+
+
+def _run_opencode_interactive(
+        prompt, commands, env, resume_session_id, model_id, legacy_args):
+    is_new_session = not bool(str(resume_session_id or "").strip())
+    port = _free_loopback_port()
+    base_url = f"http://127.0.0.1:{port}"
+    server = subprocess.Popen(
+        ["opencode", "serve", "--hostname", "127.0.0.1", "--port", str(port)],
+        cwd="/workspace",
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    def relay_server_output(stream):
+        for line in stream:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+    threading.Thread(target=relay_server_output, args=(server.stdout,), daemon=True).start()
+    threading.Thread(target=relay_server_output, args=(server.stderr,), daemon=True).start()
+    session_id = resume_session_id
+    try:
+        _wait_opencode_server(base_url, server)
+        if session_id:
+            try:
+                _http_request(base_url, "/session/" + urllib.parse.quote(session_id, safe=""))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    # 极早期或损坏的会话可能无法由 serve 读取。保留旧的
+                    # 一次性 resume，但明确拒绝 steer，不能伪造成功。
+                    reason = "这个旧 OpenCode 会话不能使用中途插话"
+                    env["AJ_INTERACTIVE_SUPPORTED"] = "0"
+                    env["AJ_INTERACTIVE_UNSUPPORTED_REASON"] = reason
+                    os.environ["AJ_INTERACTIVE_SUPPORTED"] = "0"
+                    os.environ["AJ_INTERACTIVE_UNSUPPORTED_REASON"] = reason
+                    _record_live_session(resume_session_id, env=env)
+                    try:
+                        server.terminate()
+                        server.wait(timeout=5)
+                    except Exception:
+                        server.kill()
+                    return _run_opencode_legacy_interactive(
+                        legacy_args, env, commands, resume_session_id,
+                    )
+                raise
+        else:
+            # OpenCode 1.18.3 的实验 v2 runner 不会加载
+            # OPENCODE_CONFIG_CONTENT 中的自定义 provider，虽然 prompt 会被
+            # durable journal 接收，随后却必然报 ModelUnavailableError。
+            # 稳定 V1 Session API 使用同一原生 session 存储，能够正确读取
+            # 管理员配置的 endpoint，并在 busy 时把新 user message 留给
+            # 当前 loop 的下一安全边界处理。
+            created = _http_request(base_url, "/session", method="POST", payload={
+                "model": {"providerID": OPENCODE_PROVIDER_ID, "id": model_id},
+                "permission": [
+                    {"permission": "*", "pattern": "*", "action": "allow"},
+                    {"permission": "question", "pattern": "*", "action": "deny"},
+                    {"permission": "plan_enter", "pattern": "*", "action": "deny"},
+                    {"permission": "plan_exit", "pattern": "*", "action": "deny"},
+                ],
+            })
+            session_id = str((created or {}).get("id") or "")
+            if not session_id:
+                raise RuntimeError("OpenCode 没有返回 session id")
+        _record_live_session(session_id, env=env)
+        quoted_session = urllib.parse.quote(session_id, safe="")
+        events = queue.Queue()
+        event_connected = threading.Event()
+        stop_sse = threading.Event()
+        received_event_seq = {"value": 0}
+
+        def read_sse():
+            request = urllib.request.Request(
+                base_url + "/event",
+                headers={"accept": "text/event-stream", "x-opencode-directory": "/workspace"},
+            )
+            failure_started_at = None
+            connection_attempt = 0
+            while not stop_sse.is_set():
+                try:
+                    with urllib.request.urlopen(request, timeout=None) as response:
+                        connection_attempt += 1
+                        failure_started_at = None
+                        events.put({
+                            "_numoj_sse_connected": connection_attempt,
+                        })
+                        for raw in response:
+                            if stop_sse.is_set():
+                                break
+                            if not raw.startswith(b"data:"):
+                                continue
+                            try:
+                                event = json.loads(raw[5:].strip().decode("utf-8"))
+                                if (
+                                    isinstance(event, dict)
+                                    and event.get("type") == "server.connected"
+                                ):
+                                    event_connected.set()
+                                received_event_seq["value"] += 1
+                                if isinstance(event, dict):
+                                    event = dict(event)
+                                    event["_numoj_received_seq"] = received_event_seq["value"]
+                                events.put(event)
+                            except Exception:
+                                continue
+                except Exception as exc:
+                    if stop_sse.is_set():
+                        break
+                    if server.poll() is not None:
+                        events.put({"_numoj_sse_error": str(exc)})
+                        break
+                    now = time.monotonic()
+                    if failure_started_at is None:
+                        failure_started_at = now
+                    if (
+                        now - failure_started_at
+                        >= OPENCODE_SSE_RECONNECT_FAILURE_SECONDS
+                    ):
+                        events.put({
+                            "_numoj_sse_error": (
+                                "OpenCode 事件流持续重连失败：" + str(exc)
+                            ),
+                        })
+                        break
+                # OpenCode/Bun 会在 SSE 一段时间无事件时正常关闭连接。
+                # 立即重连并继续消费后续事件；server 退出仍由主循环判定。
+                if stop_sse.wait(0.1):
+                    break
+            events.put(None)
+
+        latest_prompt_baseline_ids = set()
+        latest_prompt_user_id = ""
+        latest_prompt_accepted_at = 0.0
+        previous_prompt_tracking = None
+
+        def message_snapshot():
+            raw = _http_request(
+                base_url,
+                f"/session/{quoted_session}/message",
+                timeout=5,
+            )
+            if isinstance(raw, list):
+                items = raw
+            elif isinstance(raw, dict):
+                items = None
+                for key in ("messages", "data", "items"):
+                    if isinstance(raw.get(key), list):
+                        items = raw[key]
+                        break
+                if items is None:
+                    items = [raw] if ("info" in raw or "role" in raw) else []
+            else:
+                items = []
+            result = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                info = item.get("info") if isinstance(item.get("info"), dict) else None
+                if info is None:
+                    info = (
+                        item.get("message")
+                        if isinstance(item.get("message"), dict) else item
+                    )
+                parts = item.get("parts") if isinstance(item.get("parts"), list) else []
+                result.append((info, parts))
+            return result
+
+        def send_prompt(command_id, message, *, deterministic_id=False):
+            nonlocal completion_must_follow_seq, failed
+            nonlocal latest_prompt_accepted_at
+            nonlocal latest_prompt_baseline_ids, latest_prompt_user_id
+            nonlocal previous_prompt_tracking
+            nonlocal saw_assistant_after_latest_prompt, session_error_seen
+            try:
+                before = message_snapshot()
+            except Exception:
+                before = []
+            proposed_baseline_ids = {
+                str(info.get("id") or "")
+                for info, _parts in before
+                if str(info.get("id") or "")
+            }
+            proposed_user_id = ""
+            payload = {
+                "model": {
+                    "providerID": OPENCODE_PROVIDER_ID,
+                    "modelID": model_id,
+                },
+                "parts": [{"type": "text", "text": str(message or "")}],
+            }
+            if deterministic_id:
+                # 只有全新 session 的第一条消息可以使用固定低 ID。resume
+                # 或 steer 必须由 OpenCode 生成递增 ID，否则它会排在已有
+                # assistant 之前，被 V1 loop 当成已经回复过的旧消息。
+                payload["messageID"] = _opencode_message_id(
+                    command_id,
+                    env.get("AJ_TASK_ID"),
+                )
+                proposed_user_id = payload["messageID"]
+            previous = (
+                set(latest_prompt_baseline_ids),
+                latest_prompt_user_id,
+                completion_must_follow_seq,
+                saw_assistant_after_latest_prompt,
+                session_error_seen,
+                latest_prompt_accepted_at,
+                failed,
+            )
+
+            def commit_tracking():
+                nonlocal completion_must_follow_seq, failed
+                nonlocal latest_prompt_accepted_at
+                nonlocal latest_prompt_baseline_ids, latest_prompt_user_id
+                nonlocal saw_assistant_after_latest_prompt, session_error_seen
+                latest_prompt_baseline_ids = proposed_baseline_ids
+                latest_prompt_user_id = proposed_user_id
+                completion_must_follow_seq = received_event_seq["value"]
+                saw_assistant_after_latest_prompt = False
+                session_error_seen = False
+                latest_prompt_accepted_at = time.monotonic()
+                failed = False
+
+            try:
+                _http_request(
+                    base_url,
+                    f"/session/{quoted_session}/prompt_async",
+                    method="POST",
+                    payload=payload,
+                )
+            except urllib.error.HTTPError:
+                # 明确拒绝时必须完整保留原轮 tracking；队列里可能已经有
+                # 原轮的 final assistant + idle，不能因一次迟到 steer 丢掉。
+                raise
+            except Exception:
+                # 传输错误无法证明服务端是否已接收。暂时按可能已接收发布
+                # 新 tracking；若 durable API 显示没有新 user 且已经 idle，
+                # reconcile 会恢复 previous tracking。
+                commit_tracking()
+                previous_prompt_tracking = previous
+                raise
+            commit_tracking()
+            previous_prompt_tracking = None
+
+        threading.Thread(target=read_sse, daemon=True).start()
+        if not event_connected.wait(10):
+            raise RuntimeError("OpenCode 事件流连接超时")
+        completion_must_follow_seq = received_event_seq["value"]
+        failed = False
+        interrupted = False
+        saw_assistant_after_latest_prompt = False
+        session_error_seen = False
+        assistant_ids = set()
+        projected_part_states = set()
+        settled = False
+        send_prompt("__start__", prompt, deterministic_id=is_new_session)
+        _emit_control("__start__", "accepted")
+        start_accepted = True
+
+        def project_v1_event(
+                event, *, from_snapshot=False, snapshot_terminal=False):
+            nonlocal failed, saw_assistant_after_latest_prompt, session_error_seen, settled
+            nonlocal latest_prompt_user_id
+            if not isinstance(event, dict):
+                return
+            event_type = str(event.get("type") or "")
+            props = (
+                event.get("properties")
+                if isinstance(event.get("properties"), dict) else {}
+            )
+            if str(props.get("sessionID") or "") != session_id:
+                return
+            if event_type == "message.updated":
+                info = props.get("info") if isinstance(props.get("info"), dict) else {}
+                if info.get("role") == "assistant":
+                    assistant_id = str(info.get("id") or "")
+                    if assistant_id:
+                        assistant_ids.add(assistant_id)
+                    received_seq = int(event.get("_numoj_received_seq") or 0)
+                    parent_id = str(
+                        info.get("parentID") or info.get("parentId") or ""
+                    )
+                    belongs_to_latest_prompt = bool(
+                        parent_id
+                        and (
+                            parent_id == latest_prompt_user_id
+                            or (
+                                not latest_prompt_user_id
+                                and parent_id not in latest_prompt_baseline_ids
+                            )
+                        )
+                    )
+                    if (
+                        from_snapshot
+                        or (
+                            received_seq > completion_must_follow_seq
+                            and belongs_to_latest_prompt
+                        )
+                    ):
+                        if not latest_prompt_user_id and parent_id:
+                            latest_prompt_user_id = parent_id
+                        saw_assistant_after_latest_prompt = True
+                    if (
+                        info.get("error")
+                        and not interrupted
+                        and (from_snapshot or belongs_to_latest_prompt)
+                    ):
+                        failed = True
+                return
+            if event_type == "message.part.updated":
+                part = props.get("part") if isinstance(props.get("part"), dict) else {}
+                if str(part.get("messageID") or "") not in assistant_ids:
+                    return
+                part_type = str(part.get("type") or "")
+                part_id = str(part.get("id") or "")
+                if part_type in {"text", "reasoning"}:
+                    part_time = part.get("time") if isinstance(part.get("time"), dict) else {}
+                    state_key = (part_id, part_type, "ended")
+                    if (
+                        (part_time.get("end") is None and not snapshot_terminal)
+                        or state_key in projected_part_states
+                    ):
+                        return
+                    projected_part_states.add(state_key)
+                elif part_type == "tool":
+                    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                    status = str(state.get("status") or "")
+                    if status not in {"running", "completed", "error"}:
+                        return
+                    state_key = (part_id, part_type, status)
+                    if state_key in projected_part_states:
+                        return
+                    projected_part_states.add(state_key)
+                elif part_type == "step-finish":
+                    state_key = (part_id, part_type, "ended")
+                    if state_key in projected_part_states:
+                        return
+                    projected_part_states.add(state_key)
+                else:
+                    return
+                _normalize_stream_event("opencode", event)
+                return
+            if event_type == "session.error":
+                session_error_seen = not interrupted
+                if not interrupted:
+                    _normalize_stream_event("opencode", event)
+                return
+            if event_type == "session.status":
+                status = props.get("status") if isinstance(props.get("status"), dict) else {}
+                if (
+                    status.get("type") == "idle"
+                    and (
+                        saw_assistant_after_latest_prompt
+                        or interrupted
+                        or failed
+                    )
+                ):
+                    if session_error_seen and not failed and not interrupted:
+                        # ContextOverflowError 等错误可由 OpenCode 自动压缩后
+                        # 继续；必须由 durable assistant/status 判定最终结果。
+                        return
+                    settled = True
+                    stop_sse.set()
+
+        def reconcile_durable_snapshot():
+            nonlocal completion_must_follow_seq, failed
+            nonlocal latest_prompt_accepted_at
+            nonlocal latest_prompt_baseline_ids, latest_prompt_user_id
+            nonlocal previous_prompt_tracking
+            nonlocal saw_assistant_after_latest_prompt, session_error_seen, settled
+            entries = message_snapshot()
+            indexed = []
+            for index, (info, parts) in enumerate(entries):
+                message_id = str(info.get("id") or "")
+                role = str(info.get("role") or "")
+                indexed.append((index, message_id, role, info, parts))
+
+            target_index = None
+            if latest_prompt_user_id:
+                for index, message_id, role, _info, _parts in indexed:
+                    if message_id == latest_prompt_user_id and role == "user":
+                        target_index = index
+                        break
+            else:
+                new_users = [
+                    item for item in indexed
+                    if item[2] == "user"
+                    and item[1]
+                    and item[1] not in latest_prompt_baseline_ids
+                ]
+                if new_users:
+                    target_index, latest_prompt_user_id = (
+                        new_users[-1][0], new_users[-1][1]
+                    )
+            def durable_status_type():
+                statuses = _http_request(base_url, "/session/status", timeout=5)
+                if not isinstance(statuses, dict):
+                    return False, ""
+                status = statuses.get(session_id)
+                # OpenCode 会从 status map 删除已经 idle 的 session。
+                if status is None:
+                    return True, "idle"
+                if isinstance(status, dict):
+                    return True, str(status.get("type") or "")
+                return True, ""
+
+            if target_index is None and previous_prompt_tracking is not None:
+                try:
+                    status_known, status_type = durable_status_type()
+                except Exception:
+                    status_known, status_type = False, ""
+                if status_known and status_type == "idle":
+                    (
+                        latest_prompt_baseline_ids,
+                        latest_prompt_user_id,
+                        completion_must_follow_seq,
+                        saw_assistant_after_latest_prompt,
+                        session_error_seen,
+                        latest_prompt_accepted_at,
+                        failed,
+                    ) = previous_prompt_tracking
+                    previous_prompt_tracking = None
+                    for index, message_id, role, _info, _parts in indexed:
+                        if message_id == latest_prompt_user_id and role == "user":
+                            target_index = index
+                            break
+            if target_index is None:
+                if (
+                    latest_prompt_accepted_at > 0
+                    and time.monotonic() - latest_prompt_accepted_at
+                    >= OPENCODE_PROMPT_PERSISTENCE_SECONDS
+                ):
+                    try:
+                        status_known, status_type = durable_status_type()
+                    except Exception:
+                        status_known, status_type = False, ""
+                    if status_known and status_type == "idle":
+                        failed = True
+                        settled = True
+                        stop_sse.set()
+                return
+
+            saw_candidate = False
+            for index, message_id, role, info, parts in indexed:
+                if role != "assistant" or not message_id:
+                    continue
+                parent_id = str(info.get("parentID") or info.get("parentId") or "")
+                if not (
+                    parent_id == latest_prompt_user_id
+                    or (
+                        index > target_index
+                        and message_id not in latest_prompt_baseline_ids
+                    )
+                ):
+                    continue
+                saw_candidate = True
+                error = info.get("error")
+                time_info = info.get("time") if isinstance(info.get("time"), dict) else {}
+                has_terminal_part = any(
+                    isinstance(part, dict)
+                    and str(part.get("type") or "") in {"step-finish", "step_finish"}
+                    for part in parts
+                )
+                is_terminal = bool(
+                    error
+                    or info.get("finish")
+                    or info.get("finishReason")
+                    or time_info.get("completed")
+                    or time_info.get("end")
+                    or has_terminal_part
+                )
+                project_v1_event({
+                    "type": "message.updated",
+                    "properties": {
+                        "sessionID": session_id,
+                        "info": info,
+                    },
+                }, from_snapshot=True, snapshot_terminal=is_terminal)
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    project_v1_event({
+                        "type": "message.part.updated",
+                        "properties": {
+                            "sessionID": session_id,
+                            "part": part,
+                        },
+                    }, from_snapshot=True, snapshot_terminal=is_terminal)
+                if error and not interrupted:
+                    project_v1_event({
+                        "type": "session.error",
+                        "properties": {
+                            "sessionID": session_id,
+                            "error": error,
+                        },
+                    }, from_snapshot=True, snapshot_terminal=True)
+
+            if failed and not interrupted:
+                try:
+                    status_known, status_type = durable_status_type()
+                except Exception:
+                    status_known, status_type = False, ""
+                if status_known and status_type == "idle":
+                    settled = True
+                    stop_sse.set()
+                return
+            if interrupted:
+                try:
+                    status_known, status_type = durable_status_type()
+                except Exception:
+                    status_known, status_type = False, ""
+                if status_known and status_type == "idle":
+                    settled = True
+                    stop_sse.set()
+                return
+            if session_error_seen and not saw_candidate:
+                try:
+                    status_known, status_type = durable_status_type()
+                except Exception:
+                    status_known, status_type = False, ""
+                if status_known and status_type == "idle":
+                    failed = True
+                    settled = True
+                    stop_sse.set()
+                return
+            if not saw_candidate:
+                if (
+                    latest_prompt_accepted_at > 0
+                    and time.monotonic() - latest_prompt_accepted_at
+                    >= OPENCODE_PROMPT_PERSISTENCE_SECONDS
+                ):
+                    try:
+                        status_known, status_type = durable_status_type()
+                    except Exception:
+                        status_known, status_type = False, ""
+                    if status_known and status_type == "idle":
+                        failed = True
+                        settled = True
+                        stop_sse.set()
+                return
+            status_known = False
+            status_type = ""
+            try:
+                status_known, status_type = durable_status_type()
+            except Exception:
+                pass
+            # `step-finish` 也会出现在工具调用前的中间模型 step；只有
+            # durable status 明确 idle（含 status map 已删除该 session）
+            # 才能把成功轮次收束；is_terminal 只用于稳定投影对应 part。
+            if status_known and status_type == "idle":
+                settled = True
+                stop_sse.set()
+
+        last_reconcile_at = 0.0
+        while not settled:
+            for command in commands.drain():
+                command_id = str(command.get("id") or "")
+                try:
+                    if command.get("type") == "steer":
+                        send_prompt(command_id, command.get("message"))
+                    else:
+                        _http_request(
+                            base_url,
+                            f"/session/{quoted_session}/abort",
+                            method="POST",
+                        )
+                        interrupted = True
+                    _emit_control(command_id, "accepted")
+                except urllib.error.HTTPError as exc:
+                    detail = exc.read().decode("utf-8", "replace")
+                    _emit_control(command_id, "rejected", detail or str(exc))
+                except Exception as exc:
+                    _emit_control(command_id, "unknown", str(exc))
+            now = time.monotonic()
+            if (
+                now - last_reconcile_at
+                >= OPENCODE_DURABLE_RECONCILE_INTERVAL_SECONDS
+            ):
+                last_reconcile_at = now
+                try:
+                    reconcile_durable_snapshot()
+                except Exception:
+                    # 实时 SSE 仍是主路径；durable API 的瞬时失败不应中断
+                    # 正在进行的 turn，持续 SSE 失败另有有界截止。
+                    pass
+                if settled:
+                    break
+            try:
+                event = events.get(timeout=0.1)
+            except queue.Empty:
+                if server.poll() is not None:
+                    raise RuntimeError("OpenCode serve 意外退出")
+                continue
+            if event is None:
+                if not settled:
+                    raise RuntimeError("OpenCode 事件流意外关闭")
+                break
+            if event.get("_numoj_sse_error"):
+                raise RuntimeError(str(event.get("_numoj_sse_error")))
+            if event.get("_numoj_sse_connected"):
+                try:
+                    reconcile_durable_snapshot()
+                except Exception:
+                    pass
+                continue
+            project_v1_event(event)
+        returncode = 130 if interrupted else (2 if failed else 0)
+    except Exception as exc:
+        if not locals().get("start_accepted", False):
+            _emit_control("__start__", "rejected", str(exc))
+        print(f"OpenCode interactive adapter failed: {exc}", file=sys.stderr)
+        returncode = 2
+    finally:
+        if "stop_sse" in locals():
+            stop_sse.set()
+        try:
+            server.terminate()
+            server.wait(timeout=5)
+        except Exception:
+            try:
+                server.kill()
+            except Exception:
+                pass
+    completed = subprocess.CompletedProcess(server.args, returncode, "", "")
+    completed.aj_session_id = session_id
+    return completed
+
+
+def _run_opencode(prompt, commands=None):
     try:
         resume_session_id = _resume_session_id_from_env("opencode")
         _protocol, base_url, api_key, model = _endpoint_settings({"openai"})
@@ -1218,6 +3398,21 @@ def _run_opencode(prompt):
             ]
         if resume_session_id and not audit_read_only:
             args.extend(["--session", resume_session_id])
+        legacy_args = [*args, prompt]
+        if commands is not None:
+            if audit_read_only:
+                _emit_control("__start__", "rejected", "只读审计模式不支持交互控制")
+                return 2
+            proc = _run_opencode_interactive(
+                prompt,
+                commands,
+                env,
+                resume_session_id,
+                model_id,
+                legacy_args,
+            )
+            _record_session("opencode", proc, resume_session_id)
+            return proc.returncode
         args.append(prompt)
         proc = _run(args, env)
         _record_session("opencode", proc, resume_session_id)
@@ -1336,7 +3531,192 @@ def _write_pi_models_config(
         json.dump(config, f, ensure_ascii=False)
 
 
-def _run_pi(prompt):
+def _run_pi_interactive(base_args, env, prompt, commands, resume_session_id):
+    args = list(base_args)
+    mode_index = args.index("--mode") + 1
+    args[mode_index] = "rpc"
+    if resume_session_id:
+        args.extend(["--session", resume_session_id])
+    proc, events = _start_json_process(args, env)
+    pending = {
+        "__numoj-state__": "get_state",
+        "__start__": "prompt",
+    }
+    session_id = resume_session_id
+    failure_status = ""
+    settled = False
+    output_limited = False
+    previous_limited_message_id = ""
+    continuation_index = 0
+    auto_resume_output_limit = (
+        str(env.get("AJ_TASK_SCOPE") or "").strip().lower()
+        == PROBLEM_AGENT_TASK_SCOPE
+        and not str(env.get("AJ_PHASE") or "").strip()
+    )
+    try:
+        # Pi 的普通事件不携带 session ID。RPC get_state 是固定版本公开的
+        # 唯一稳定来源，必须在首条 prompt 前读取并立即落盘，才能在外部
+        # stop 或宿主崩溃后继续同一个原生会话。
+        _write_json(proc, {"type": "get_state", "id": "__numoj-state__"})
+        _write_json(proc, {"type": "prompt", "id": "__start__", "message": prompt})
+        done = False
+        while not done:
+            for command in commands.drain():
+                command_id = str(command.get("id") or "")
+                upstream_type = "prompt" if command.get("type") == "steer" else "abort"
+                payload = {"type": upstream_type, "id": command_id}
+                if upstream_type == "prompt":
+                    payload["message"] = str(command.get("message") or "")
+                    payload["streamingBehavior"] = "steer"
+                try:
+                    _write_json(proc, payload)
+                    pending[command_id] = upstream_type
+                except (BrokenPipeError, OSError) as exc:
+                    _emit_control(command_id, "unknown", str(exc))
+            try:
+                event = events.get(timeout=0.1)
+            except queue.Empty:
+                if proc.poll() is not None:
+                    raise RuntimeError("Pi RPC 意外退出")
+                continue
+            if event is None:
+                raise RuntimeError("Pi RPC 意外退出")
+            discovered_session_id = _walk_json_session_id(event, "pi")
+            if discovered_session_id and discovered_session_id != session_id:
+                session_id = discovered_session_id
+                _record_live_session(session_id, env=env)
+            if event.get("type") == "response":
+                response_id = str(event.get("id") or "")
+                if not response_id:
+                    command_name = str(event.get("command") or "")
+                    candidates = [
+                        command_id for command_id, name in pending.items()
+                        if name == command_name
+                    ]
+                    response_id = candidates[0] if len(candidates) == 1 else ""
+                if response_id == "__numoj-state__":
+                    pending.pop(response_id, None)
+                    if not bool(event.get("success")):
+                        raise RuntimeError(
+                            str(event.get("error") or "Pi get_state 失败")
+                        )
+                    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                    discovered = str(data.get("sessionId") or "").strip()
+                    if not discovered:
+                        raise RuntimeError("Pi get_state 没有返回 session id")
+                    if discovered != session_id:
+                        session_id = discovered
+                        _record_live_session(session_id, env=env)
+                    continue
+                if response_id in pending:
+                    pending_name = pending.pop(response_id, None)
+                    success = bool(event.get("success"))
+                    if response_id.startswith("__numoj-cont-"):
+                        if not success:
+                            raise RuntimeError(
+                                str(event.get("error") or "Pi 自动续写被拒绝")
+                            )
+                    else:
+                        _emit_control(
+                            response_id,
+                            "accepted" if success else "rejected",
+                            str(event.get("error") or event.get("message") or "") if not success else "",
+                        )
+                    if response_id == "__start__" and not success:
+                        raise RuntimeError(
+                            str(event.get("error") or "Pi 首轮消息被拒绝")
+                        )
+                    if pending_name == "prompt" and response_id != "__start__":
+                        if success:
+                            # prompt(streamingBehavior=steer) 在活动时排入安全
+                            # 边界、空闲时直接启动；此前看到的 settled 属于旧 run。
+                            settled = False
+                        elif settled and not any(
+                            name in {"prompt", "abort", "continuation"}
+                            for name in pending.values()
+                        ):
+                            done = True
+                    elif pending_name == "abort" and settled:
+                        # Pi abort 会先发 agent_settled，再返回 success response。
+                        done = not any(
+                            name in {"prompt", "abort", "continuation"}
+                            for name in pending.values()
+                        )
+                    continue
+            event_failure_status = _pi_event_failure_status(event)
+            if event.get("type") == "message_end":
+                message = event.get("message") if isinstance(event.get("message"), dict) else {}
+                if str(message.get("role") or "") == "assistant":
+                    is_limited = (
+                        str(message.get("stopReason") or "").strip().lower() == "length"
+                        or str(message.get("rawStopReason") or "").strip().lower()
+                        == "max_tokens"
+                    )
+                    if is_limited and auto_resume_output_limit:
+                        # 某些 OpenAI 兼容端点会把 token 上限同时报告成
+                        # stopReason=error、rawStopReason=max_tokens。既然这里会在
+                        # 同一原生会话自动续写，就不能把这次中间终态保留为整轮失败。
+                        event_failure_status = ""
+                        message_id = str(message.get("id") or "").strip()
+                        if message_id and message_id == previous_limited_message_id:
+                            raise RuntimeError("Pi 自动续写没有产生新的 assistant 消息")
+                        previous_limited_message_id = message_id
+                        output_limited = True
+            failure_status = event_failure_status or failure_status
+            terminal = _normalize_stream_event("pi", event)
+            if terminal:
+                settled = True
+                active_pending = any(
+                    name in {"prompt", "abort", "continuation"}
+                    for name in pending.values()
+                )
+                if not active_pending and output_limited:
+                    continuation_index += 1
+                    continuation_id = f"__numoj-cont-{continuation_index}"
+                    pending[continuation_id] = "continuation"
+                    _write_json(proc, {
+                        "type": "prompt",
+                        "id": continuation_id,
+                        "message": PI_OUTPUT_LIMIT_CONTINUATION_PROMPT,
+                    })
+                    output_limited = False
+                    settled = False
+                elif not active_pending:
+                    done = True
+        returncode = (
+            2 if failure_status == "failed"
+            else 130 if failure_status == "interrupted"
+            else 0
+        )
+    except Exception as exc:
+        if "__start__" in pending:
+            _emit_control("__start__", "rejected", str(exc))
+            pending.pop("__start__", None)
+        print(f"Pi interactive adapter failed: {exc}", file=sys.stderr)
+        returncode = 2
+    finally:
+        for command_id in pending:
+            if command_id == "__numoj-state__":
+                continue
+            _emit_control(command_id, "unknown", "Pi 已结束但未返回控制回执")
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    completed = subprocess.CompletedProcess(args, returncode, "", "")
+    completed.aj_session_id = session_id
+    return completed
+
+
+def _run_pi(prompt, commands=None):
     try:
         resume_session_id = _resume_session_id_from_env("pi")
         protocol, base_url, api_key, model = _endpoint_settings(
@@ -1426,6 +3806,16 @@ def _run_pi(prompt):
             elif effort in PI_THINKING_LEVELS:
                 base_args.extend(["--thinking", effort])
 
+        if commands is not None:
+            if audit_read_only:
+                _emit_control("__start__", "rejected", "只读审计模式不支持交互控制")
+                return 2
+            proc = _run_pi_interactive(
+                base_args, env, prompt, commands, resume_session_id,
+            )
+            _record_session("pi", proc, resume_session_id)
+            return proc.returncode
+
         current_prompt = prompt
         current_session_id = resume_session_id
         task_scope = str(os.environ.get("AJ_TASK_SCOPE") or "").strip().lower()
@@ -1491,7 +3881,251 @@ def _run_pi(prompt):
             relay.stop()
 
 
-def _run_claude_code(prompt):
+def _stable_control_uuid(command_id, task_id=""):
+    digest = hashlib.sha256(
+        f"{str(task_id or '').strip()}:{str(command_id or '')}".encode(
+            "utf-8", "replace",
+        )
+    ).hexdigest()[:32]
+    return f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:]}"
+
+
+def _claude_user_frame(message, command_id, task_id=""):
+    return {
+        "type": "user",
+        "uuid": _stable_control_uuid(command_id, task_id),
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": str(message or "")}],
+        },
+        "parent_tool_use_id": None,
+        # SDK 协议层的通道 ID，与需要落盘的 Claude 原生
+        # session_id 无关；顶层单会话始终使用 default。
+        "session_id": "default",
+    }
+
+
+def _claude_replayed_user_uuid(event):
+    if (
+        not isinstance(event, dict)
+        or event.get("type") != "user"
+        or not bool(event.get("isReplay"))
+    ):
+        return ""
+    return str(event.get("uuid") or "").strip()
+
+
+def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
+    stream_args = list(args)
+    output_index = stream_args.index("--output-format") + 1
+    stream_args[output_index] = "stream-json"
+    stream_args.extend([
+        "--input-format", "stream-json",
+        "--replay-user-messages",
+        "--verbose",
+    ])
+    proc, events = _start_json_process(stream_args, env)
+    task_id = str(env.get("AJ_TASK_ID") or "").strip()
+    start_uuid = _stable_control_uuid("__start__", task_id)
+    waiting_user_acks = {start_uuid: "__start__"}
+    pending_interrupts = {}
+    result_waiting_for_replay = False
+    interrupt_accepted = False
+    result_sequence = 0
+    assistant_usage_since_result = False
+    terminal_waiting_for_control = False
+    terminal_failed_while_waiting = False
+    control_drain_deadline = None
+    try:
+        _write_json(proc, _claude_user_frame(prompt, "__start__", task_id))
+        done = False
+        terminal_status = ""
+        while not done:
+            if (
+                control_drain_deadline is not None
+                and time.monotonic() >= control_drain_deadline
+            ):
+                done = True
+                continue
+            pending_commands = (
+                [] if terminal_waiting_for_control else commands.drain()
+            )
+            for command in pending_commands:
+                command_id = str(command.get("id") or "")
+                try:
+                    if command.get("type") == "steer":
+                        frame_uuid = _stable_control_uuid(command_id, task_id)
+                        _write_json(
+                            proc,
+                            _claude_user_frame(
+                                command.get("message"), command_id, task_id,
+                            ),
+                        )
+                        waiting_user_acks[frame_uuid] = command_id
+                    else:
+                        request_id = "numoj-" + command_id
+                        _write_json(proc, {
+                            "type": "control_request",
+                            "request_id": request_id,
+                            "request": {"subtype": "interrupt"},
+                        })
+                        pending_interrupts[request_id] = command_id
+                except (BrokenPipeError, OSError) as exc:
+                    _emit_control(command_id, "unknown", str(exc))
+            try:
+                timeout = 0.1
+                if control_drain_deadline is not None:
+                    timeout = max(
+                        0.001,
+                        min(timeout, control_drain_deadline - time.monotonic()),
+                    )
+                event = events.get(timeout=timeout)
+            except queue.Empty:
+                if control_drain_deadline is not None:
+                    continue
+                if proc.poll() is not None:
+                    raise RuntimeError("Claude Code stream-json 意外退出")
+                continue
+            if event is None:
+                if terminal_waiting_for_control:
+                    done = True
+                    continue
+                raise RuntimeError("Claude Code stream-json 意外退出")
+            session_id = _walk_json_session_id(event, "claude_code")
+            if session_id:
+                _record_live_session(session_id, env=env)
+            event_type = str(event.get("type") or "")
+            message = (
+                event.get("message")
+                if isinstance(event.get("message"), dict) else {}
+            )
+            if (
+                event_type == "assistant"
+                and isinstance(message.get("usage"), dict)
+            ):
+                assistant_usage_since_result = True
+            if event_type == "result":
+                result_sequence += 1
+                event = dict(event)
+                native_result_id = str(
+                    event.get("id") or event.get("uuid") or ""
+                ).strip()
+                event["_numoj_usage_record_id"] = (
+                    native_result_id
+                    or f"{session_id or resume_session_id or 'claude'}:result:{result_sequence}"
+                )
+                event["_numoj_emit_result_usage"] = not assistant_usage_since_result
+            replayed_uuid = _claude_replayed_user_uuid(event)
+            if replayed_uuid and replayed_uuid in waiting_user_acks:
+                command_id = waiting_user_acks.pop(replayed_uuid)
+                _emit_control(command_id, "accepted")
+                if command_id != "__start__":
+                    if terminal_failed_while_waiting:
+                        pass
+                    elif result_waiting_for_replay:
+                        result_waiting_for_replay = False
+                        terminal_waiting_for_control = False
+                        control_drain_deadline = None
+            elif (
+                event_type == "system"
+                and start_uuid in waiting_user_acks
+            ):
+                # init 只会在 CLI 已解析首条 streaming input 后出现。
+                command_id = waiting_user_acks.pop(start_uuid)
+                _emit_control(command_id, "accepted")
+            elif event_type == "control_response":
+                response = event.get("response") if isinstance(event.get("response"), dict) else event
+                request_id = str(response.get("request_id") or event.get("request_id") or "")
+                command_id = pending_interrupts.pop(request_id, "")
+                if command_id:
+                    subtype = str(response.get("subtype") or "").lower()
+                    rejected = subtype in {"error", "failure", "rejected"}
+                    if not rejected:
+                        interrupt_accepted = True
+                        terminal_status = "interrupted"
+                    _emit_control(
+                        command_id,
+                        "rejected" if rejected else "accepted",
+                        str(response.get("error") or "") if rejected else "",
+                    )
+            pending_followup_ack = any(
+                command_id != "__start__"
+                for command_id in waiting_user_acks.values()
+            )
+            if (
+                terminal_waiting_for_control
+                and not pending_followup_ack
+                and not pending_interrupts
+                and not result_waiting_for_replay
+            ):
+                done = True
+                continue
+            current_terminal = _stream_terminal_status("claude_code", event)
+            if current_terminal and interrupt_accepted:
+                current_terminal = "interrupted"
+            terminal_status = current_terminal or terminal_status
+            normalized_done = _normalize_stream_event("claude_code", event)
+            if normalized_done:
+                assistant_usage_since_result = False
+                pending_followup_ack = any(
+                    command_id != "__start__"
+                    for command_id in waiting_user_acks.values()
+                )
+                if current_terminal == "failed":
+                    terminal_failed_while_waiting = True
+                    if pending_followup_ack or pending_interrupts:
+                        terminal_waiting_for_control = True
+                        control_drain_deadline = (
+                            time.monotonic() + CONTROL_ACK_DRAIN_SECONDS
+                        )
+                    else:
+                        done = True
+                elif pending_followup_ack:
+                    result_waiting_for_replay = True
+                    terminal_waiting_for_control = True
+                    control_drain_deadline = (
+                        time.monotonic() + CONTROL_ACK_DRAIN_SECONDS
+                    )
+                elif pending_interrupts:
+                    terminal_waiting_for_control = True
+                    control_drain_deadline = (
+                        time.monotonic() + CONTROL_ACK_DRAIN_SECONDS
+                    )
+                else:
+                    done = True
+        returncode = (
+            2 if terminal_status == "failed"
+            else 130 if terminal_status == "interrupted"
+            else 0
+        )
+    except Exception as exc:
+        if start_uuid in waiting_user_acks:
+            waiting_user_acks.pop(start_uuid, None)
+            _emit_control("__start__", "rejected", str(exc))
+        print(f"Claude interactive adapter failed: {exc}", file=sys.stderr)
+        returncode = 2
+    finally:
+        for command_id in waiting_user_acks.values():
+            _emit_control(command_id, "unknown", "Claude Code 已结束但未回放用户消息")
+        for command_id in pending_interrupts.values():
+            _emit_control(command_id, "unknown", "Claude Code 已结束但未返回 interrupt 回执")
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    completed = subprocess.CompletedProcess(stream_args, returncode, "", "")
+    completed.aj_session_id = locals().get("session_id", "") or resume_session_id
+    return completed
+
+
+def _run_claude_code(prompt, commands=None):
     audit_read_only = _audit_read_only_enabled()
     try:
         resume_session_id = _resume_session_id_from_env("claude_code")
@@ -1595,7 +4229,8 @@ def _run_claude_code(prompt):
     effort = (os.environ.get("AJ_EFFORT") or "").strip().lower()
     if thinking_compatibility and effort in CLAUDE_EFFORT_LEVELS:
         args.extend(["--effort", effort])
-    args.append(prompt)
+    if commands is None:
+        args.append(prompt)
     relay = None
     if endpoint_thinking_format is None:
         relay = _ClaudeEndpointRelay(
@@ -1617,6 +4252,15 @@ def _run_claude_code(prompt):
         print(f"failed to start Claude endpoint relay: {exc}", file=sys.stderr)
         return 2
     try:
+        if commands is not None:
+            if audit_read_only:
+                _emit_control("__start__", "rejected", "只读审计模式不支持交互控制")
+                return 2
+            proc = _run_claude_interactive(
+                args, env, prompt, commands, resume_session_id,
+            )
+            _record_session("claude_code", proc, resume_session_id)
+            return proc.returncode
         proc = _run(args, env=env)
         _record_session("claude_code", proc, resume_session_id)
         return proc.returncode
@@ -1626,17 +4270,39 @@ def _run_claude_code(prompt):
 
 
 def main():
-    prompt = _prompt_from_env()
     harness = (os.environ.get("AJ_HARNESS") or "claude_code").strip().lower().replace("-", "_")
     if harness == "pi_agent":
         harness = "pi"
+    commands = None
+    if (os.environ.get("AJ_CONTROL_PROTOCOL") or "").strip() == NUMOJ_CONTROL_PROTOCOL:
+        start = _read_numoj_start()
+        if start is None:
+            return 2
+        prompt = str(start.get("message") or "")
+        task_id = str(start.get("target_task_id") or "").strip()
+        if task_id:
+            os.environ["AJ_TASK_ID"] = task_id
+        commands = _NumOJCommandQueue()
+        commands.start()
+        os.environ["AJ_INTERACTIVE_SUPPORTED"] = "1"
+        os.environ.pop("AJ_INTERACTIVE_UNSUPPORTED_REASON", None)
+    else:
+        prompt = _prompt_from_env()
+    if commands is None:
+        if harness == "codex":
+            return _run_codex(prompt)
+        if harness == "opencode":
+            return _run_opencode(prompt)
+        if harness == "pi":
+            return _run_pi(prompt)
+        return _run_claude_code(prompt)
     if harness == "codex":
-        return _run_codex(prompt)
+        return _run_codex(prompt, commands)
     if harness == "opencode":
-        return _run_opencode(prompt)
+        return _run_opencode(prompt, commands)
     if harness == "pi":
-        return _run_pi(prompt)
-    return _run_claude_code(prompt)
+        return _run_pi(prompt, commands)
+    return _run_claude_code(prompt, commands)
 
 
 if __name__ == "__main__":

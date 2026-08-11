@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from functools import wraps
 from pathlib import Path
 import re
 import tempfile
@@ -35,11 +36,14 @@ from oj_modules.tasks.agent.shared import (
     agent_run_is_canceled,
     canceled_agent_task_result,
     existing_agent_terminal_result,
+    finalize_unhandled_agent_failure,
 )
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
+from oj_modules.tasks.agent.queue import build_agent_control_bridge
 from oj_modules.tasks.agent.titles import (
     generate_initial_agent_session_title,
 )
+from oj_modules.agents.sessions import get_agent_session
 
 
 _LANGUAGE_SUFFIXES = {
@@ -147,6 +151,74 @@ def _harness_failure_reason(run_result):
     return "harness 未生成预期的测试数据 ZIP"
 
 
+def _conclude_unhandled_testdata_failures(function):
+    @wraps(function)
+    def wrapped(
+        self,
+        problem_id,
+        requested_by,
+        test_point_count,
+        standard_code,
+        data_requirement="",
+        standard_filename="",
+        harness=None,
+        endpoint_id=None,
+        session_cookie="",
+        session_cookie_name="session",
+        endpoint_revision=None,
+    ):
+        task_id = str(
+            getattr(getattr(self, "request", None), "id", None) or ""
+        ).strip() or f"unknown-{int(time.time())}"
+        try:
+            normalized_problem_id = int(problem_id)
+        except (TypeError, ValueError):
+            normalized_problem_id = None
+        state = {
+            "task_id": task_id,
+            "session_id": task_id,
+            "problem_id": normalized_problem_id,
+            "problem_title": "",
+            "requested_by": requested_by,
+            "task_kind": AGENT_TASK_TESTDATA,
+            "access_role": AGENT_ACCESS_ROLE_USER,
+            "harness": str(harness or ""),
+            "endpoint_id": endpoint_id,
+            "status": "Running",
+            "message": "造数据 Agent 启动中",
+            "attempts": [],
+            "native_session_id": "",
+            "conclusion": "",
+        }
+        try:
+            return function(
+                self,
+                problem_id,
+                requested_by,
+                test_point_count,
+                standard_code,
+                data_requirement,
+                standard_filename,
+                harness,
+                endpoint_id,
+                session_cookie,
+                session_cookie_name,
+                endpoint_revision,
+            )
+        except Exception as exc:
+            return finalize_unhandled_agent_failure(
+                state,
+                exc,
+                task_label="造数据 Agent",
+                update_state=_update_agent_state,
+                terminal_result_reader=existing_agent_terminal_result,
+                cancellation_check=agent_run_is_canceled,
+                canceled_result_factory=canceled_agent_task_result,
+            )
+
+    return wrapped
+
+
 def register_agent_generate_testdata_task(celery_app):
     existing = celery_app.tasks.get(AGENT_GENERATE_TESTDATA_TASK_NAME)
     if existing:
@@ -156,6 +228,7 @@ def register_agent_generate_testdata_task(celery_app):
         bind=True,
         name=AGENT_GENERATE_TESTDATA_TASK_NAME,
     )
+    @_conclude_unhandled_testdata_failures
     def agent_generate_testdata(
         self,
         problem_id,
@@ -236,9 +309,19 @@ def register_agent_generate_testdata_task(celery_app):
             _update_agent_state(state, message, status="Failed", stage="finished")
             return {"success": False, "message": message, "task_id": task_id}
         if not str(session_cookie or "").strip():
-            message = "Agent 任务身份已失效"
-            _update_agent_state(state, message, status="Failed", stage="finished")
-            return {"success": False, "message": message, "task_id": task_id}
+            persisted_session = get_agent_session(task_id)
+            if not persisted_session or not (
+                str(persisted_session.get("current_task_id") or "") == task_id
+                and str(persisted_session.get("requested_by") or "")
+                == str(requested_by or "")
+                and str(persisted_session.get("access_role") or "").lower()
+                == AGENT_ACCESS_ROLE_USER
+                and str(persisted_session.get("task_kind") or "").lower()
+                == AGENT_TASK_TESTDATA
+            ):
+                message = "Agent 任务身份已失效"
+                _update_agent_state(state, message, status="Failed", stage="finished")
+                return {"success": False, "message": message, "task_id": task_id}
 
         try:
             endpoint = resolve_launch_endpoint(
@@ -315,6 +398,10 @@ def register_agent_generate_testdata_task(celery_app):
         _update_agent_state(state)
         if agent_run_is_canceled(task_id):
             return canceled_agent_task_result(task_id)
+        control_source, control_callback = build_agent_control_bridge(
+            task_id,
+            task_id,
+        )
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
@@ -335,6 +422,9 @@ def register_agent_generate_testdata_task(celery_app):
                 artifact_files=(_STAGED_ZIP_RELATIVE_PATH,),
                 trace_callback=lambda: _publish_agent_trace(state),
                 cancel_check=lambda: agent_run_is_canceled(task_id),
+                control_source=control_source,
+                control_callback=control_callback,
+                control_target_task_id=task_id,
                 reset_trace=False,
             )
         except AgentHarnessCleanupError as exc:

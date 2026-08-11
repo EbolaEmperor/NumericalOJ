@@ -13,10 +13,13 @@ from oj_modules.tasks.promptly_tasks import register_promptly_generate_submissio
 from oj_modules.tasks.agent.registry import (
     build_agent_run_terminator,
     get_agent_run_snapshot,
+    init_agent_queue_dispatcher,
     init_agent_progress_cache,
     register_agent_generate_testdata_task,
     register_agent_run_turn_task,
+    register_agent_queue_tasks,
     register_agent_solve_problem_task,
+    read_agent_steer_capability,
     subscribe_agent_run_events,
 )
 from oj_modules.tasks.repository_index_tasks import register_repository_index_build_task
@@ -66,6 +69,7 @@ __all__ = [
     "register_agent_solve_problem_task",
     "register_agent_generate_testdata_task",
     "register_agent_run_turn_task",
+    "register_agent_queue_tasks",
     "register_repository_index_build_task",
     "register_ai_detection_tasks",
     "register_ranking_evaluate_task",
@@ -92,7 +96,9 @@ __all__ = [
     "get_bulk_rejudge_job",
     "save_bulk_rejudge_job",
     "init_agent_progress_cache",
+    "init_agent_queue_dispatcher",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",
     "build_agent_run_terminator",
+    "read_agent_steer_capability",
 ]

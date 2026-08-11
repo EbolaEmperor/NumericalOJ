@@ -75,7 +75,7 @@ def test_generic_task_has_stable_celery_name_and_exact_signature():
         "(self, session_id, requested_by, access_role, harness, endpoint_id, "
         "session_cookie, prompt, session_cookie_name='session', "
         "resume_session_id='', generate_title=False, "
-        "restore_runtime_checkpoint_id='')"
+        "restore_runtime_checkpoint_id='', start_fresh_native_session=False)"
     )
 
 
@@ -604,6 +604,74 @@ def test_generic_retry_can_restore_first_turn_without_native_session(monkeypatch
         harness_calls[0]["restore_runtime_checkpoint_id"]
         == "empty-first-turn-checkpoint"
     )
+
+
+def test_generic_explicit_continue_can_start_fresh_without_native_session(
+    monkeypatch,
+):
+    task_id = "fresh-native-turn"
+    session = {
+        "session_id": "fresh-native-session",
+        "current_task_id": task_id,
+        "title": "已停止的首轮",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "admin",
+        "harness": "codex",
+        "endpoint_id": 8,
+        "endpoint_revision": 4,
+        "native_session_id": "",
+        "turn_count": 2,
+        "is_legacy": False,
+    }
+    _patch_generic(monkeypatch, session)
+    monkeypatch.setattr(
+        generic,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: _endpoint(),
+    )
+    monkeypatch.setattr(
+        generic,
+        "extract_agent_conclusion",
+        lambda _task_id: "已在原 workspace 中重新开始。",
+    )
+    harness_calls = []
+    monkeypatch.setattr(
+        generic,
+        "run_agent_harness",
+        lambda **kwargs: (
+            harness_calls.append(kwargs)
+            or HarnessRunResult(
+                0,
+                False,
+                "",
+                "",
+                native_session_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            )
+        ),
+    )
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self(task_id),
+        "fresh-native-session",
+        "admin",
+        "admin",
+        "codex",
+        8,
+        "",
+        "继续处理 workspace 中的文件",
+        "session",
+        "",
+        False,
+        "",
+        True,
+    )
+
+    assert result["success"] is True
+    assert harness_calls[0]["resume_session_id"] == ""
+    assert harness_calls[0]["restore_runtime_checkpoint_id"] == ""
 
 
 def test_generic_cleanup_failure_stays_nonterminal(monkeypatch):
