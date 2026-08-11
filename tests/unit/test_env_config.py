@@ -110,14 +110,14 @@ def test_development_vibehub_defaults_remain_local_daemon_compatible(tmp_path):
         tmp_path,
         process_overrides={"NUMOJ_ENVIRONMENT": "development"},
         expression=(
-            "(config.VIBEHUB_OCI_RUNTIME, config.VIBEHUB_BUILD_BUILDER, "
+            "(config.VIBEHUB_BUILD_BUILDER, "
             "config.VIBEHUB_REQUIRE_DEDICATED_BUILDER, "
             "config.VIBEHUB_BASE_OCI_LAYOUT_ROOT)"
         ),
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "('', '', False, '.deploy/vibehub-base-oci')"
+    assert result.stdout.strip() == "('', False, '.deploy/vibehub-base-oci')"
 
 
 def test_production_vibehub_defaults_do_not_require_private_env_entries(tmp_path):
@@ -125,7 +125,7 @@ def test_production_vibehub_defaults_do_not_require_private_env_entries(tmp_path
         tmp_path,
         process_overrides={"NUMOJ_ENVIRONMENT": "production"},
         expression=(
-            "(config.VIBEHUB_OCI_RUNTIME, config.VIBEHUB_BUILD_BUILDER, "
+            "(config.VIBEHUB_BUILD_BUILDER, "
             "config.VIBEHUB_REQUIRE_DEDICATED_BUILDER, "
             "config.VIBEHUB_BASE_OCI_LAYOUT_ROOT, "
             "sorted(key for key in config.ENV_FILE_KEYS "
@@ -135,7 +135,7 @@ def test_production_vibehub_defaults_do_not_require_private_env_entries(tmp_path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == (
-        "('runsc', 'numoj-vibehub', True, '.deploy/vibehub-base-oci', [])"
+        "('numoj-vibehub', True, '.deploy/vibehub-base-oci', [])"
     )
 
 

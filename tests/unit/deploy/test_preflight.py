@@ -32,7 +32,6 @@ def _config(**overrides):
         "MYSQL_PORT": 3306,
         "REDIS_PORT": 6379,
         "REDIS_DB": 0,
-        "VIBEHUB_OCI_RUNTIME": "runsc",
         "VIBEHUB_BUILD_BUILDER": "numoj-vibehub",
         "VIBEHUB_REQUIRE_DEDICATED_BUILDER": True,
         "VIBEHUB_BASE_OCI_LAYOUT_ROOT": ".deploy/vibehub-base-oci",
@@ -138,72 +137,6 @@ def test_validate_config_checks_required_keys_and_decoded_types(tmp_path):
             path,
             config_loader=lambda: _config(MYSQL_PORT=True),
         )
-
-    with pytest.raises(preflight.PreflightError, match="VIBEHUB_OCI_RUNTIME=runsc"):
-        preflight.validate_production_config(
-            path,
-            config_loader=lambda: _config(VIBEHUB_OCI_RUNTIME=""),
-        )
-
-
-def test_validate_vibehub_runtime_requires_registered_runsc():
-    calls = []
-
-    def runner(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout='{"runc":{"path":"runc"},"runsc":{"path":"runsc"}}',
-            stderr="",
-        )
-
-    preflight.validate_vibehub_runtime(
-        config_loader=_config,
-        command_runner=runner,
-    )
-
-    assert calls == [
-        (
-            ["docker", "info", "--format", "{{json .Runtimes}}"],
-            {
-                "capture_output": True,
-                "text": True,
-                "timeout": 20,
-                "check": False,
-            },
-        )
-    ]
-
-
-@pytest.mark.parametrize(
-    "config, result, message",
-    [
-        (_config(VIBEHUB_OCI_RUNTIME=""), None, "必须使用"),
-        (_config(), subprocess.CompletedProcess([], 1, "", "failed"), "读取失败"),
-        (
-            _config(),
-            subprocess.CompletedProcess([], 0, '{"runc":{}}', ""),
-            "尚未注册",
-        ),
-        (
-            _config(),
-            subprocess.CompletedProcess([], 0, "not-json", ""),
-            "格式无效",
-        ),
-    ],
-)
-def test_validate_vibehub_runtime_fails_closed(config, result, message):
-    def runner(*_args, **_kwargs):
-        assert result is not None
-        return result
-
-    with pytest.raises(preflight.PreflightError, match=message):
-        preflight.validate_vibehub_runtime(
-            config_loader=lambda: config,
-            command_runner=runner,
-        )
-
 
 def test_validate_vibehub_builder_requires_all_running_network_none_nodes():
     calls = []

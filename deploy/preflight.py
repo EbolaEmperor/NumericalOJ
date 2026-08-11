@@ -33,7 +33,6 @@ REQUIRED_ENV_KEYS = REQUIRED_STRING_SETTINGS + (
     "REDIS_DB",
 )
 SOURCE_DIGEST_DOMAIN = b"NumericalOJ Docker source v1\0"
-REQUIRED_VIBEHUB_OCI_RUNTIME = "runsc"
 REQUIRED_VIBEHUB_OCI_LAYOUT_ROOT = ROOT / ".deploy" / "vibehub-base-oci"
 BUILDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 BUILDER_NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -93,9 +92,6 @@ def _validate_config_values(config: ModuleType) -> None:
     redis_db = getattr(config, "REDIS_DB", None)
     if not isinstance(redis_db, int) or isinstance(redis_db, bool) or redis_db < 0:
         raise PreflightError("生产 .env 的 REDIS_DB 无效")
-
-    if getattr(config, "VIBEHUB_OCI_RUNTIME", None) != REQUIRED_VIBEHUB_OCI_RUNTIME:
-        raise PreflightError("生产 VibeHub 必须使用 VIBEHUB_OCI_RUNTIME=runsc")
 
     builder = getattr(config, "VIBEHUB_BUILD_BUILDER", None)
     if not isinstance(builder, str) or BUILDER_NAME_RE.fullmatch(builder) is None:
@@ -164,41 +160,6 @@ def validate_production_config(
         _validate_config_values(config)
     finally:
         os.close(descriptor)
-
-
-def validate_vibehub_runtime(
-    *,
-    config_loader: Callable[[], ModuleType] | None = None,
-    command_runner=None,
-) -> None:
-    """确认生产配置选择的 gVisor runtime 已由 Docker 注册。"""
-
-    loader = config_loader or _load_project_config
-    config = loader()
-    runtime = getattr(config, "VIBEHUB_OCI_RUNTIME", None)
-    if runtime != REQUIRED_VIBEHUB_OCI_RUNTIME:
-        raise PreflightError(
-            "生产 VibeHub 必须使用已注册的 gVisor runsc runtime"
-        )
-    runner = command_runner or subprocess.run
-    try:
-        result = runner(
-            ["docker", "info", "--format", "{{json .Runtimes}}"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise PreflightError("无法读取 Docker OCI runtime 清单") from exc
-    if result.returncode != 0:
-        raise PreflightError("Docker OCI runtime 清单读取失败")
-    try:
-        runtimes = json.loads(result.stdout)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise PreflightError("Docker OCI runtime 清单格式无效") from exc
-    if not isinstance(runtimes, dict) or runtime not in runtimes:
-        raise PreflightError("Docker 尚未注册生产必需的 gVisor runsc runtime")
 
 
 def _run_builder_inspect(command_runner, command: list[str]):
@@ -373,11 +334,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("env_file", type=Path)
 
     commands.add_parser(
-        "validate-vibehub-runtime",
-        description="Validate the production gVisor runtime registration.",
-    )
-
-    commands.add_parser(
         "validate-vibehub-builder",
         description="Validate the dedicated, network-isolated Buildx builder.",
     )
@@ -396,8 +352,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "validate-config":
             validate_production_config(args.env_file)
-        elif args.command == "validate-vibehub-runtime":
-            validate_vibehub_runtime()
         elif args.command == "validate-vibehub-builder":
             print(validate_vibehub_builder())
         else:
